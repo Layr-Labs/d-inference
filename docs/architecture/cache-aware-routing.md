@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-13 · commit `d66a38b77`
+> Last updated: 2026-09-14 · commit `06b6f634b`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -24,7 +24,7 @@ defaults to `off` (`CacheRoutingOff`, `coordinator/registry/cache_routing.go`)
 and can select `on` (`CacheRoutingOn`); `off` prevents new cache participation.
 This coordinator switch is independent of the provider's default-enabled
 `DARKBLOOM_PREFIX_CACHE` gate (`PrefixCachePolicy.isEnabled`,
-`provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift`). Local
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift`). Local
 cache reuse and provider HTTP measurements do not imply that coordinator cache
 routing is enabled or deployed. The cross-machine routing scenarios have Go
 regression coverage; live two-machine cache-routing latency is unmeasured.
@@ -95,8 +95,8 @@ and the provider forwards `prefixCacheEnabled=false` to the engine. This gates
 network cache use without a second provider allowlist. Local HTTP/standalone
 policy remains independent, and a listed artifact must still satisfy the
 provider's intrinsic backend/codec/identity gates
-(`provider-swift/Sources/ProviderCore/Inference/PrefixCacheReceipts.swift`,
-`provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Translation.swift`).
+(`provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCacheReceipts.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift`).
 
 Two operational controls sit between mode `on` and planning
 (`cacheActivationGate`, `coordinator/registry/cache_activation.go`): a
@@ -208,7 +208,7 @@ be reused only at actual bank checkpoint endpoints. For example, a 4,353-token
 input has a 4,352-token proof floor, while its reusable checkpoint may be 4,096.
 A resident or checkpoint-mode SSD receipt may publish that earlier boundary; it does not invent
 state at 4,352 (`ResidentPrefixCachePromptProof`,
-`provider-swift/Sources/ProviderCore/Inference/ResidentPrefixCacheEvidence.swift`).
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/ResidentPrefixCacheEvidence.swift`).
 
 These identities are prefix-based, not turn-based. If machine A publishes the
 original 4,096 checkpoint and machine B later publishes only a longer checkpoint,
@@ -359,7 +359,7 @@ increases `ThisReqMs`; the provider still attempts its longest eligible SSD
 checkpoint and has no prefill-time comparison that bypasses an expensive hit
 (`SSDHybridCheckpointStore.stage`,
 `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Read.swift`;
-`provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Submission.swift`).
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`).
 The priced component applies the existing long-prompt prefill multiplier to
 both savings and overhead, with stage cost counted once. Model load and its multiplier, decode, queue, pending, backlog,
 health and capacity penalties remain intact. The cold TTFT ceiling and full
@@ -435,7 +435,7 @@ reported/unreported loaded totals. The vocabularies
   `scan_failed`, `disk_unavailable`, or `cache_init_failed`.
   `paged_hybrid_unsupported` is still decoded for older providers; the current
   provider maps the engine's unsupported-reason enum in
-  `provider-swift/Sources/ProviderCore/Inference/PrefixCacheEligibilityStatus.swift`,
+  `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCacheEligibilityStatus.swift`,
   and the engine (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/PrefixReusePlan.swift`)
   no longer produces the dual-cursor case, so such slots report
   `unsupported_layout` instead;
@@ -567,7 +567,7 @@ planning; ordinary inference continues cold.
 Provider caching has one global local kill switch,
 [`DARKBLOOM_PREFIX_CACHE`](../reference/configuration.md#ssd-prefix-cache)
 (`PrefixCachePolicy.environmentFlag`,
-`provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift`).
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift`).
 Resident payload retention additionally requires `DARKBLOOM_PREFIX_CACHE_MEMORY=1`;
 SSD caching defaults on for eligible slots, independently of the coordinator
 routing switch, whose default remains `off`.
@@ -583,7 +583,7 @@ bank with verified model identity and prompt contract; local paged L1 currently
 has no publication callback and does not advertise resident routing evidence.
 The two gates are independent: a resident-only slot can use protocol v2 without
 claiming SSD readiness (`EngineV2Bridge`,
-`provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift`;
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift`;
 `prefixCacheV2Advertisement`,
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientState.swift`).
 The provider correlates complete SSD and resident publication by a submission-unique
@@ -680,7 +680,7 @@ and `coordinator/api/cache_model_telemetry.go`.
 | Configuration and validation | `coordinator/registry/config.go` — `CacheRoutingConfig`, `Check`; `coordinator/registry/cache_routing.go` — `ConfigureCacheRouting` |
 | Optional artifact membership | `coordinator/registry/cache_artifact_allowlist.go` — exact tuple parsing, validation and immutable membership; unset unrestricted, `[]` denied |
 | Activation cohort and plan QPS | `coordinator/registry/cache_activation.go` — `cacheActivationGate`, `CacheRoutingActivationStatus` |
-| Resident proof/publication and unique receipt correlation | `provider-swift/Sources/ProviderCore/Inference/ResidentPrefixCacheEvidence.swift` — `ResidentPrefixCacheEvidence`, `ResidentPrefixCachePromptProof`; `PrefixCacheEvidenceSequencer.swift` |
+| Resident proof/publication and unique receipt correlation | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/ResidentPrefixCacheEvidence.swift` — `ResidentPrefixCacheEvidence`, `ResidentPrefixCachePromptProof`; `PrefixCacheEvidenceSequencer.swift` |
 | Per-tier holders and bounded lifetime | `coordinator/registry/cache_tiers.go` — `cacheTierBoundaryKey`, `receiptTTL`; `cache_routing_hints.go` — `hints` |
 | Route keys and scopes | `coordinator/registry/cache_route_keys.go` |
 | Receipts, v2 proof acceptance and quarantine, legacy cache-bust key | `coordinator/registry/cache_receipts.go`, `coordinator/registry/cache_receipts_v2.go` — `ApplyPrefixCacheLookupV2`, `ApplyPrefixCacheReadyV2`, `rejectCapability` |
@@ -690,7 +690,7 @@ and `coordinator/api/cache_model_telemetry.go`.
 | Status endpoint and gauges | `coordinator/api/exact_cache_status.go`, `coordinator/api/exact_cache_metrics.go` |
 | Terminal tags, calibration/reputation exclusion | `coordinator/api/provider.go` — `cacheSelectionTerminalTags`; `coordinator/api/settlement.go` — `observeTTFTCalibration`; `coordinator/api/dispatch.go` |
 | Sidecar | `coordinator/promptcontract/` — `provisioner.go` (`Counts`) |
-| Provider-side cache | `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` |
+| Provider-side cache | `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` |
 
 ## Related
 

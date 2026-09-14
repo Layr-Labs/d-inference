@@ -5,8 +5,8 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
-Current local changes add durable root maintenance to host-runtime and a separate
-native relay test-harness patch11. Pushed3c34dbbdd adds the root-only base source/machine lock scope, private
+Pushedf12f72810 adds durable root maintenance to host-runtime; pushedd8fa61dc5
+adds native relay test-harness patch11. Pushed3c34dbbdd adds the root-only base source/machine lock scope, private
 source reader, shared raw ownership decoding and real process-lock tests.
 Pushed3ac8a7fb6 adds recoverable accountless payload staging and its durable
 journal. Pushedf235b8ad2 adds signal cancellation, actual GUI-session monitoring
@@ -20,7 +20,8 @@ build, docs lint, UI lint and Next.js build pass. CI34811478625 and integration
 34811478687 passed6cf8f3381. CI34813684236 and integration34813684227
 passed3ac8a7fb6. Integration34815356765 passed3c34dbbdd, but CI34815356747
 failed the native relay fixture's large-frame test; other jobs passed. The
-test-harness correction needs fresh CI; benchmark
+test-harness correction has freshCI34819884262 and integration34819884263
+running atd8fa61dc5; benchmark
 environment approval is separate and has not been granted.
 
 Physical guest exercise14 and coldboot15 PASS on the test Mac. They prove
@@ -42,7 +43,7 @@ explicit temporary runtime-group membership until the machine campaign finishes.
 - Worktree: `.worktrees/sandbox-completion-20260913`.
 - Branch: `codex/sandbox-completion-20260913`.
 - Starting sandbox tip0950ac41e; master93337ef05 integrated in453b37667.
-- Latest pushed code:3c34dbbdd; root source guard, lifecycle commitf235b8ad2 and accountless staging
+- Latest pushed code:d8fa61dc5; maintenancef12f72810, root source guard, lifecycle commitf235b8ad2 and accountless staging
   are included. Verify git HEAD and remote before resuming.
 - Local GUI plan commit3abe05f712de1d2dcc6958315c1fbf56b4b693ff follows
   host context50145d4b4 and qualification validator4cab8f470.
@@ -1255,3 +1256,13 @@ receipt capture/removal, installed checkpoint, clone qualification/cold boot,
 teardown and actual ready-template publication. No root marker, mount, VM run,
 service/group mutation, model/cache deletion or production action occurred here.
 Go-cache approval remains pending; elapsed time/goal continuation is not approval.
+
+Maintenance SDK committedf12f72810; native test-only patch11/pin and evidence
+committedd8fa61dc58a33f3275be1acb4de141dd74461970. Both pushed; mandatory
+pre-push checks passed (maintenance-relay-push.log). PR996 body now states the
+maintenance protocol, native harness correction, actual verification boundaries
+and remaining per-image/root-operator work. FreshCI34819884262 and integration
+34819884263 are runningd8fa61dc5; benchmark34819884349 waits for separate
+approval, not granted. Go-cache approval remains pending. No remote mutations.
+Next is per-image broker/native offline fencing as patch12, then typed root
+maintenance begin/recovery integration and the guarded mount/bootstrap pipeline.

@@ -54,7 +54,7 @@ Two things the diagram makes visible. First, the consumer receives no bytes unti
 | 3 | Authenticate | Bearer resolved to an API key, Privy user, active provider device token, or admin; API-key lookups cached for [`keyCacheTTL`](../reference/api-contracts.md#timeouts-and-constants) | `RequireAuth` (`coordinator/api/requestauth/middleware.go`), `BearerToken` (`coordinator/api/requestauth/bearer.go`) |
 | 4 | Rate limit | Per-key `rpm_limit`, then the account limiter; 429 with `Retry-After` | `rateLimitConsumer`, `applyKeyRPMLimit` (`coordinator/api/request_rate_limits.go`) |
 | 5 | Unseal (optional) | `application/eigeninference-sealed+json` bodies are decrypted; the response will be sealed per event | `sealedTransport` (`coordinator/api/sender_encryption.go`); [`security/encryption.md`](security/encryption.md) |
-| 6 | Parse and validate | Inference body cap [`maxInferenceBodyBytes`](../reference/api-contracts.md#limits-and-validation), tool-schema normalisation, `model` required, key allow-list, `n == 1`, tool-choice and vision rules | `parseInferencePrelude` (`coordinator/api/inference_preprocess.go`), `toolpolicy.ValidateParsed` (`coordinator/inference/toolpolicy/validate.go`), `visionToolsFailFast` |
+| 6 | Parse and validate | Inference body cap [`maxInferenceBodyBytes`](../reference/api-contracts.md#limits-and-validation), tool-schema normalisation, `model` required, key allow-list, `n == 1`, tool-choice and vision rules | `parseInferencePrelude` (`coordinator/api/inference_preprocess.go`), `toolpolicy.ValidateParsed` / `toolpolicy.ValidateBytes` (`coordinator/inference/toolpolicy/validate.go`), `visionToolsFailFast` |
 | 7 | Resolve model | Alias → concrete build; the response will still echo the alias | `resolveRequestedModel` (`coordinator/api/consumer.go`); [`model-registry.md`](model-registry.md) |
 | 8 | Deadline and shedding | First-content deadline computed from the prompt size; rejecting models shed with 429 | `FirstContentDeadline`, `shedIfModelRejected` (`coordinator/api/consumer.go`) |
 | 9 | Token-rate admission | Input/output tokens per minute | `applyTokenRateLimitWithAdmission` (`coordinator/api/token_admission.go`) |
@@ -118,7 +118,7 @@ Each row is the stage at which a request can end early and what the consumer see
 | Credential authentication and key-cache state | `coordinator/api/requestauth/` — `Authenticator`, `RequireAuth`, `RequirePrivyAuth`; `coordinator/api/authentication.go` binds current Server configuration |
 | Drain gate | `coordinator/api/readiness/gate.go` — `Controller.Gate` |
 | Sealed client transport | `coordinator/api/sender_encryption.go` — `sealedTransport` |
-| Prelude parsing and validation | `coordinator/api/inference_preprocess.go` — `parseInferencePrelude`; `coordinator/inference/toolpolicy/validate.go` — `toolpolicy.ValidateParsed` |
+| Prelude parsing and validation | `coordinator/api/inference_preprocess.go` — `parseInferencePrelude`; `coordinator/inference/toolpolicy/validate.go` — `toolpolicy.ValidateParsed` / `toolpolicy.ValidateBytes` |
 | Model resolution and first-content deadline | `coordinator/api/consumer.go` — `resolveRequestedModel`, `FirstContentDeadline`, `shedIfModelRejected` |
 | Attempt cancellation | `coordinator/inference/attempt/cancel.go` — `Service.Cancel`, `Service.SendCancel` |
 | Response services and accepted-write binding | `coordinator/api/response_writer.go` — `responseWriter`, `responseServices`, `responseWriteObserver` |

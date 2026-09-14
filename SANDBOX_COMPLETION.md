@@ -5,6 +5,14 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
+The newest local work adds asynchronous root image use, an overlap/completion
+gate, inherited machine EX for owned system children, and typed APFS Data-volume
+inspection. Full sandbox576tests/7skips/0failures and focused20tests pass. A new
+real-root experiment proves the child retains EX after parent exit and blocks
+recovery until it terminates, then exact cleanup restores admission. Details and
+exact digests are in the final section. These are still prerequisites for the
+unbuilt guarded attach/mount/detach workflow, not mounted-image qualification.
+
 Pushedb1743dd53 adds typed root image-maintenance begin/recovery/completion and its
 staging-journal binding. Local full sandbox565tests/7skips/0failures and
 host-runtime19tests pass. A real-root disposable-image campaign on the test Mac
@@ -1484,3 +1492,97 @@ probe, new VM, image attachment or transient maintenance fence remains. The old
 CI-service pause and temporary runtime-group membership remain as documented;
 Go-cache approval remains pending. Continue with actual guarded Data mounting,
 then phase-specific GUI installer boot/collection and final qualification.
+
+
+## Async root use, inherited children and APFS bindings (2026-09-14)
+
+Root scope refactored into LumeRootImageMaintenance.swift. Its synchronous and
+async withOfflineImage operations share LumeMaintenanceUseGate; completion and
+overlapping/reentrant work reject while an image callback is active. The gate
+also limits startOwnedProcess to an active IO callback. The child inherits the
+same machine EX open-file description synchronously at spawn through the existing
+HostRuntimeLease.withInheritedDescriptor/ProcessRunner start API. Source/native
+locks and both fences stay retained across async work. Completion stays closed
+after it starts. LumeImageMaintenanceCleanup is now Sendable. The staging facade
+mirrors async access and owned child start; callers must await child termination
+and independently observe cleanup before finishing.
+
+New focused daemon files: AccountlessDiskIdentifier (bounded parsed BSD names),
+AccountlessDiskPlist (bounded plist/typed bool/UUID extraction),
+AccountlessAPFSVolumeBinding (exact GUID whole/main partition/sole physical store/
+container/Data role graph and mounted readback), AccountlessDiskTools (bounded
+read-only diskutil query chain, optional owned-child executor inside staging).
+The client is serial and intentionally not Sendable when it captures an operation.
+It neither attaches nor mounts and does not confer image-to-whole-disk authority.
+That missing association belongs to the guarded hdiutil inventory workflow.
+Mounted checks require exact DeviceNode/DeviceIdentifier/APFSContainerReference/
+VolumeUUID/FilesystemType/MountPoint/GlobalPermissionsEnabled/Writable. A live
+read-only diskutil info of the existing encrypted test volume confirmed all
+fields and bool/string types (disk3s7/container disk3, existing volume UUID).
+That read is schema evidence, not a successful guest Data-volume selection.
+
+Validation in /private/tmp/darkbloom-sandbox-completion-evidence:
+- disk-binding-tool-tests.log and disk-binding-owned-tool-tests.log:20 tests pass
+  (APFS7, disk-tool3, use-gate1, existing image-maintenance9).
+- disk-binding-full-tests.log:576tests/7skips/0failures,121.617s after refactor.
+- An initial use-gate XCTest closure inferred throws inside DispatchQueue.async;
+  replaced its assertion autoclosure with explicit do/catch before passing runs.
+- Native pin and signed artifacts remain unchanged; final runtime12 still needs
+  actual VM/installation physical validation. Earlier legacy SSH-wrapper stress
+  concern remains unresolved; the idle pass does not close that issue.
+
+A new external test-only root probe compiled against current RuntimeLume debug
+objects. It does not link or physically validate the daemon disk-tool client.
+Primary directory: evidence/root-image-maintenance-v2.
+- RootImageMaintenanceProbe.swift SHA
+  e405b452b5e12d68f5829cdfb0070038948ab170180c452df0ec6956d5a86a96.
+- RootImageMaintenanceProbeV2 executable SHA
+  6468846f46558b9663672885745eb691955967c07786e71555c5b995e5527e52.
+- run-root-image-maintenance-probe.py SHA
+  2db0cb0f97996c7c40e6b0d3e52691a1a607b6ac473c88eb6df795487b011fd8.
+- Captured physical-evidence.json SHA
+  3eb0bfddb035b2879d3fdac052d9a65aad6b10ca96eb9a51e054924ebfe53ccf.
+- Remote protected fixture /private/tmp/darkbloom-root-maintenance-20260914-0920
+  retains its request/completion and operator-evidence.json. Remote incoming
+  binary RootImageMaintenanceProbeV2 and helper run-root-image-maintenance-probe-v2.py
+  are under /private/tmp/darkbloom-root-maintenance-incoming-20260914. Previous
+  primary v1 probe/evidence files remain unchanged. A compile-only probe error
+  about definite initialization after a Never-returning async callback was fixed
+  by an explicit unreachable-error branch; no production code weakening.
+
+The live probe enters an async image callback, spawns /bin/sleep5 through the
+owned-process API, proves reentrant completion rejects, and _exit(86)s. Root lsof
+then observes only childPID86429 (csleep, fd4) on the permanent authority; exact
+root recovery rejects with occupied while that child lives. The bounded operator
+waits for this known holder to exit, then ordinary admission still rejects the
+durable maintenance marker. A second root process persists completion and exits86;
+exact recovery refuses new IO and releases both fences. Fresh ordinary EX and SH
+acquisition pass. Permanent dev16777229/inode29088927 stays root:431/660, one link,
+zero bytes. Transient machine inode30658877 and image inode30658879 are now absent.
+No image attachment, VM, sandboxd, foreign image opener or authority holder
+remains; this was a tiny sparse nonbootable fixture, not a guest installation.
+No service/group/model/cache/production change occurred. Go-cache approval is
+still unanswered. b1743dd53 CI34825232114 now passes; integration34825232144 was
+still running at the last read. Benchmark approval remains separate and absent.
+
+NEXT: wire the real attach/mount/detach controller, not more unrelated scaffolding.
+Reuse the inspected older physical helpers as evidence only:
+/private/tmp/darkbloom-physical-acceptance/gui-offline-inspection-v1/offline_mount_support.py
+and accountless-offline-v3.py. Attach -nomount/-nobrowse/-noautoopen/-owners on,
+select Data through the new typed graph, mount only the root-private empty
+mountpoint with owners/nosuid/nodev/noexec, verify diskutil+fstatfs readback, stage,
+close all Data descriptors, detach exact whole disk, and reobserve absence/openers.
+Preserve preexisting Apple Metal attachment and bind device nodes to this exact
+image every time; never guess disk IDs or detach based only on a saved /dev name.
+Persist attach intent/baseline before spawn, support interruption before attach
+output is recorded, and retain fences whenever pending helper IO/cleanup cannot
+be proven complete. Do not equate killing hdiutil with no pending DiskImages IO;
+owned child lifetime is now protected, but its terminal state alone is not detach
+proof. The native status reader reports unknown while root owns the config/POSIX
+locks: LumeController.getDetails uses RunLockProbe; do not accept unknown as
+stopped or remove locks casually. A strict stopped observation before source
+locking plus retained native exclusion and exact no-foreign-openers checks must
+be deliberately integrated; final qualification still needs fresh native stopped
+proof. Lsof exclusion must be only our exact PID+retained image fd, not all root
+processes or all fds in the current process. The completed staging phase, post-boot
+collection phase and final released-lease qualification need distinct journals.

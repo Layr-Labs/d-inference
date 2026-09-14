@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import SandboxRuntime
 import SandboxRuntimeLume
 
 /// Binds the protected staging journal to root's exact reserved source. The
@@ -38,8 +39,18 @@ final class AccountlessStagingMaintenance {
         return try operation.withOfflineImage(body)
     }
 
+    func withOfflineImage<T>(_ body: (URL, Int32) async throws -> T) async throws -> T {
+        try journal.requireStagingAllowed()
+        return try await operation.withOfflineImage(body)
+    }
+
     func finishAfterVerifiedCleanup() throws {
         try operation.finishAfterVerifiedCleanup { try journal.recordDetached($0) }
+    }
+
+    func startOwnedProcess(executable: URL, arguments: [String]) throws -> SandboxManagedProcess {
+        try journal.requireStagingAllowed()
+        return try operation.startOwnedProcess(executable: executable, arguments: arguments)
     }
 
     private static func binding(_ journal: AccountlessInstallationStagingJournal) throws

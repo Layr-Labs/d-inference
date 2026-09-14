@@ -65,7 +65,7 @@ package final class LumeRootBaseImageGuard {
             snapshotPolicy: .rootMaintenanceRecovery)
     }
 
-    fileprivate func withImage<T>(_ body: (URL, Int32) throws -> T) throws -> T {
+    func withImage<T>(_ body: (URL, Int32) throws -> T) throws -> T {
         try Self.requireRoot(); try machine.validateSystemExclusive(); try source.validateIdentity()
         return try body(source.imageURL, source.retainedImageDescriptor)
     }
@@ -74,35 +74,5 @@ package final class LumeRootBaseImageGuard {
         guard getuid() == 0, geteuid() == 0, getegid() == 0 else {
             throw SandboxRuntimeError.unsupported("offline base operations require the root operator")
         }
-    }
-}
-
-/// Serial root operation: both durable fences are installed before image IO is
-/// exposed. Finish requires independently observed detach/stopped-state cleanup
-/// and a synchronously persisted journal checkpoint. No deinit clears fences.
-package final class LumeRootImageMaintenance {
-    private let source: LumeRootBaseImageGuard
-    private let maintenance: HostRuntimeMaintenanceScope
-    private let image: LumeImageMaintenanceState
-
-    fileprivate init(guard source: LumeRootBaseImageGuard, maintenance: HostRuntimeMaintenanceScope,
-                     image: LumeImageMaintenanceState) throws {
-        self.source = source; self.maintenance = maintenance; self.image = image
-        try maintenance.runtimeLease.validateSystemExclusive(); try maintenance.validate()
-    }
-
-    package func withOfflineImage<T>(_ body: (URL, Int32) throws -> T) throws -> T {
-        try maintenance.validate(); try image.validateForOfflineIO()
-        let result = try source.withImage(body)
-        try image.validateForOfflineIO(); try maintenance.validate()
-        return result
-    }
-
-    package func finishAfterVerifiedCleanup(persist: (LumeImageMaintenanceCleanup) throws -> Void) throws {
-        try maintenance.validate()
-        try image.removeFenceAfterVerifiedCleanup(persist: persist)
-        // Image fence first, global fence last. Both EX and the retained image
-        // descriptor remain owned until this scope and its guard are released.
-        try maintenance.finishAfterVerifiedCleanup()
     }
 }

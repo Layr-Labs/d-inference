@@ -311,6 +311,24 @@ also permits completion after a crash between image-fence and machine-fence
 removal. Live fence replacement, changed completion snapshots and inconsistent
 journals fail closed. Deinitialization never clears either fence.
 
+`LumeRootImageMaintenance` supports bounded asynchronous image work. Its use
+gate rejects overlapping work and completion, including reentrant completion
+from inside the image callback. System children spawned through
+`startOwnedProcess` inherit the existing machine EX lease; recovery remains
+excluded if the parent exits before the child. That behavior has passed a real
+root parent-exit/child-lifetime test. Child termination remains a prerequisite
+for cleanup observations, not proof that an attachment was detached.
+
+`AccountlessDiskTools` supplies bounded read-only diskutil queries, with an
+owned-child variant for an active staging operation. Its APFS binding follows
+the exact whole disk, one main Apple_APFS physical partition, one synthesized
+container with that sole store, and one Data-role volume. Volume labels confer
+no authority. Foreign/duplicate identifiers, existing volume mounts, ambiguous
+roles and invalid UUIDs fail closed; mounted readback checks the UUID, device,
+mountpoint, filesystem, owner handling and requested write policy. These helpers
+do not attach or mount disks and do not establish which image owns a whole disk;
+that authority must come from the guarded attachment workflow.
+
 These ownership primitives do not observe mounted-device cleanup themselves.
 The enclosing operator still needs guarded Data-volume attach/mount/detach,
 independent no-openers/stopped-state checks, GUI installer boot, and receipt

@@ -4,7 +4,7 @@ import Foundation
 /// Persist in the protected operator journal before releasing either fence.
 /// This is a snapshot bound to one operation, not an independent observation
 /// of detach or stopped state. The root operator must observe those first.
-package struct LumeImageMaintenanceCleanup: Codable, Equatable {
+package struct LumeImageMaintenanceCleanup: Codable, Equatable, Sendable {
     package let schemaVersion: UInt16
     package let imageFenceSHA256: String
     package let disk: LumeCandidateDiskIdentity
@@ -24,4 +24,4 @@ package struct LumeImageMaintenanceCleanup: Codable, Equatable {
     }
 }
 
-enum LumeImageMaintenanceError: Error { case changed, completionStarted }
+enum LumeImageMaintenanceError: Error { case changed, completionStarted, operationInProgress, noActiveOperation }

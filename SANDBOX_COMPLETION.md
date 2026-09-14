@@ -6,12 +6,13 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 ## Current verified state
 
 Goal remains active; PR996 is draft. No production deployment.
-Owner implementation f43af65d83df35a277a89cdc9fca2bc63f2fa48c is pushed; its CI
-34858536670 and integration34858537007 now pass. Benchmark34858536943 awaits
-its environment approval. Local checkpoint4485bbbf1 is one commit ahead.
+Discard implementation b8917eda1e75efc7c0695cc477306600d07da4e5 is committed/pushed.
+Current CI34862480863 and integration34862480870 run; benchmark34862480928 waits
+for environment approval. Predecessor owner f43 passes CI/integration.
 
-Signed release7-owner is installed immutably on the test Mac:
-/Library/Application Support/Darkbloom/qualification-release7-owner.
+Signed release8-discard is installed immutably on the test Mac:
+/Library/Application Support/Darkbloom/qualification-release8-discard.
+Use its matching newly rebuilt guest for the next factory; release7 is retained.
 Host/guest/manifest/Lume signatures and16-file inventory pass independently on
 both Macs. No sandbox provisioning profile or notarization; persistent-keychain
 and fresh physical factory/qualification remain release gates. Runtime13 has
@@ -23,7 +24,7 @@ The complete public qualify command is implemented: durable intent, exact capaci
 reservation, native clone/isolation/cold-boot checks, deletion/release and guarded
 ready publication/readback. Recovery cleans up and aborts or verifies an existing
 exact publication; saved success flags cannot create readiness. Latest committed
-suite:660tests/7skips/0failures. Root APFS collection crash/recovery passes a
+suite:671tests/7skips/0failures. Root APFS collection crash/recovery passes a
 synthetic nonbootable fixture; it is not a real installer/VM result.
 
 Six obsolete task VM fixtures were safely removed on2026-09-14. Native deletion
@@ -38,15 +39,16 @@ cache68.2GiB plus qwen3.5-27b-claude-opus-8bit26.6GiB, gemma-4-31b-4bit17.2GiB
 and gpt-oss-20b11.3GiB. Do not delete these without a reply. Old8bitGemma deletion
 was already completed earlier; no other user cache was removed by VM retirement.
 
-Current source work adds discard-base for an exact unqualified raw installation,
+Committed source adds discard-base for an exact unqualified raw installation,
 using selected-user identity, machineEX and existing durable stopped deletion.
 It rejects ready/unknown/running sources and maintenance fences, and recovers only
 an intent marked for that exact unqualified discard. No guest package, GUI or
 free-space admission is required for cleanup. Focused initial22tests and full671tests/7skips/0failures passed (156.044s).
-Three actual CLI checks and docs-check286files pass. Source commit is next.
+Three actual CLI checks and docs-check286files pass. Signed package is staged;
+real-Mac discard command acceptance remains to be run.
 
-Next: finish discard validation; obtain adequate test storage without reducing
-policy; fresh reserve/payload/stage/authorize/GUIboot/collect/qualify; actual GUI
+Next: physically verify the signed discard command; obtain adequate test storage
+without reducing policy; fresh reserve/payload/stage/authorize/GUIboot/collect/qualify; actual GUI
 service login/logout/recovery; full two-VM coordinator/consumer acceptance;
 build-tool compatibility, performance/stress and final release validation.
 Keep current diagnostic VM, restore IPSW, encrypted volume/passphrase, authority,
@@ -2664,3 +2666,39 @@ discard-base-docs.log286filespass. Full suite contains an additional fresh/recov
 root-fence case beyond the initial focused run. Test native processes are synthetic;
 the newly signed discard command still needs physical validation. No further user
 cache deletion, VM start, service mutation or production action occurred.
+
+## 2026-09-14 — Release8 signed package ready for physical testing
+
+Commitb8917eda1e75efc7c0695cc477306600d07da4e5 pushed to PR996; predecessor local
+checkpoint4485bbbf1 included. Clean source was packaged with unchanged runtime13,
+--sign --jobs4 and NO guest reuse. Package build16.98s, completed0:
+/private/tmp/darkbloom-sandbox-lab-20260913/packages/release-8-discard.
+All16manifest files match, all Developer ID signatures verify, bundle metadata
+and virtualization entitlement correct, no keychain-access-groups, host help
+contains discard-base and qualify, guest qualify-tenant rejects host78/emptyout.
+HostSHA7bb2589b90d9c7036d2488f1fbc4065b22cdd114b3081b418562d03008ac400d
+GuestSHA6a7f3a9d800666936ae8c63b740560511d4c275fae00a1f27ed76ee74ea8fc00
+ManifestSHA46ddc2baa7999c0204497abf4f25d6cc673098e26100ef884e708b01f712ea54
+ZIPSHA3841eafea37fa271174f05cc97e3caa74a6a645f29426dfe1aaeb917e65a7344
+InstallerSHAe4c44481cd6044de62d5695bf153003cf208b6936a34594c90c495f49dcdcbce
+Root installer read/hash-binds the ZIP, checks path inventory, signatures and
+ownership, and stages root:0 immutable555/444 without replacing old packages.
+Remote /Library/Application Support/Darkbloom/qualification-release8-discard.
+Remote incoming /private/tmp/darkbloom-release8-incoming-20260914; root operator
+/private/tmp/darkbloom-release8-root-20260914. Host help passes as UID501/GID20;
+permanent authority inode unchanged. No service or VM started. No provisioning
+profile, notarization or persistent-keychain qualification; production_readyfalse.
+Primary verification and installed export:
+/private/tmp/darkbloom-sandbox-completion-evidence/release8-discard-verification.json
+/private/tmp/darkbloom-sandbox-completion-evidence/release8-discard-installed-evidence.json
+Installed evidenceSHA7cde016a4aa13c1deb257e7fecd18eaa3dc8f030411f6f04b3625971231b7b68.
+PR description updated with exact discard flow, validation and remaining gates.
+Current-head CI34862480863/integration34862480870 stillrunning; benchmark34862480928
+waiting approval. Source full suite671/7skips/0failure is local evidence.
+
+Pending user answer still required for four exact caches listed near the top.
+Do not infer cache permission from continued goal execution. Until space is
+available, independent next work can verify signed discard on an explicitly
+nonbootable owned filesystem fixture using real native inventory and exact host
+identity. This must not be represented as new VM/isolation/factory proof. Then
+continue full fresh factory and two-VM acceptance without lowering admission.

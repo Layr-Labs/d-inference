@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-13 · commit `38375bc12`
+> Last updated: 2026-09-14 · commit `ecebe0f01`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -313,7 +313,7 @@ curl -fsS "$COORD/v1/admin/releases" -H "Authorization: Bearer $ADMIN_KEY" | jq 
   `/v1/releases/latest?platform=macos-arm64`
   (`provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`). Watch the
   Datadog gauge `providers.per_version` (tag `version:<x.y.z>`, emitted from
-  `coordinator/api/server.go` via `registry.ProviderCountByVersion`) converge
+  `coordinator/api/fleet_gauges.go` via `registry.ProviderCountByVersion`) converge
   over the next hour.
 - If the release-policy gate is enforced, confirm evidence for the new binary
   hash is accepted: see

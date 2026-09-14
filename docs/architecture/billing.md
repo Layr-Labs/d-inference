@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-14 · commit `cdef55575`
+> Last updated: 2026-09-14 · commit `6ad3d5605`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -40,7 +40,7 @@ how-to is [`consumer/billing.md`](../consumer/billing.md).
 ### HTTP controller ownership
 
 `coordinator/api/billing/` owns billing, pricing, referral, earnings and payout
-HTTP operations (`Controller`). `coordinator/api/server.go` keeps route paths,
+HTTP operations (`Controller`). `coordinator/api/routes.go` keeps route paths,
 authentication and financial-limit middleware. `billingController` in
 `coordinator/api/billing_controller.go` supplies a narrow account/pricing store,
 the existing read cache and metric sink, and the router's admin authorization
@@ -474,7 +474,7 @@ balance still serves free self-route.
 | Stripe / Connect / referral not configured | 503 | `billing_error` | `StripeCreateSession`, `StripeWithdraw`, `ReferralRegister` |
 | Admin route without admin credentials | 403 | `forbidden` | `isAdminAuthorized`, `requireAdminKey` |
 | Endpoint requires a linked user but the request context has none | 401 | `auth_error` | `RequirePrivyUser` (`coordinator/api/requestauth/identity.go`) |
-| Privy-only route called with an API key | 403 | `forbidden` | `requirePrivyAuth` (`coordinator/api/server.go`) |
+| Privy-only route called with an API key | 403 | `forbidden` | `requirePrivyAuth` (`coordinator/api/authentication.go`) |
 
 ### Stripe Checkout webhook: deposit dedup gap
 
@@ -544,7 +544,7 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 
 | Concern | Files and symbols | Routes |
 |---|---|---|
-| HTTP ownership | `coordinator/api/billing/controller.go` (`Controller`, `Dependencies`); `coordinator/api/billing/store.go` (`Store`); `coordinator/api/billing_controller.go` (`billingController`); `coordinator/api/requestauth/identity.go` (`ResolveAccountID`, `RequirePrivyUser`) | Router and middleware remain in `coordinator/api/server.go` (`routes`). |
+| HTTP ownership | `coordinator/api/billing/controller.go` (`Controller`, `Dependencies`); `coordinator/api/billing/store.go` (`Store`); `coordinator/api/billing_controller.go` (`billingController`); `coordinator/api/requestauth/identity.go` (`ResolveAccountID`, `RequirePrivyUser`) | Router and middleware remain in `coordinator/api/routes.go` (`routes`). |
 | Prices and cost | `coordinator/payments/pricing.go` (`DefaultInputPricePerMillion`, `DefaultOutputPricePerMillion`, `minimumChargeMicroUSD`, `platformFeePercent`, `calculateCost`, `CalculateCostWithOverrides`, `CalculateCostWithOverridesNoMinimum`, `resolveFeePercent`, `PlatformFeeWithPercent`, `ProviderPayoutWithPercent`, `FormatPerTokenUSD`); `coordinator/store/postgres/model_prices.go` (`model_prices`, `GetModelPrice`) | `GET /v1/pricing`, `PUT /v1/pricing`, `DELETE /v1/pricing`, `PUT /v1/admin/pricing`, `POST /v1/admin/models/register` |
 | Reservation | `coordinator/inference/settlement/reservation.go` (`Reserve`, `Release`); `coordinator/inference/settlement/reservation_price.go` (`Estimate`, `ReserveForProvider`); `coordinator/inference/settlement/service_holds.go` (`ServiceHolds`); HTTP bounds/cap checks remain in `coordinator/api/inference_admission.go` and `coordinator/api/consumer.go` | — |
 | Settlement | `coordinator/inference/settlement/completion.go` (`Service.Complete`); `completion_price.go`, `completion_finalize.go`, `completion_usage.go`, `completion_credit.go`; `coordinator/inference/settlement/refund.go` (`Refund`, `RefundProviderExtra`); `coordinator/inference/settlement/holder.go` (`Holder`, `DefaultGrace`); lifecycle adapters in `coordinator/api/provider.go` (`handleCompleteAt`) and `coordinator/api/settlement.go` (`holdForSettlement`) | `GET /v1/payments/balance`, `GET /v1/payments/usage` |

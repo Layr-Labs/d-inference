@@ -2,8 +2,10 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/eigeninference/d-inference/coordinator/api/requestauth"
+	"github.com/eigeninference/d-inference/coordinator/auth"
 )
 
 // authenticationSettings reads current configuration after route registration.
@@ -27,3 +29,21 @@ func (s *Server) requirePrivyAuth(next http.HandlerFunc) http.HandlerFunc {
 func extractBearerToken(r *http.Request) string { return requestauth.BearerToken(r) }
 
 func (s *Server) authenticationStore() requestauth.Store { return s.store }
+
+// SetAdminKey configures the admin API key for admin-only endpoints.
+func (s *Server) SetAdminKey(key string) {
+	s.adminKey = key
+}
+
+// SetPrivyAuth configures Privy JWT authentication for consumer endpoints.
+func (s *Server) SetPrivyAuth(pa *auth.PrivyAuth) {
+	s.privyAuth = pa
+}
+
+// SetAdminEmails configures which Privy accounts have admin access.
+func (s *Server) SetAdminEmails(emails []string) {
+	s.adminEmails = make(map[string]bool, len(emails))
+	for _, e := range emails {
+		s.adminEmails[strings.ToLower(strings.TrimSpace(e))] = true
+	}
+}

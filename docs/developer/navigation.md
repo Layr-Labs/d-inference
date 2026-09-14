@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-14 · commit `cdef55575`
+> Last updated: 2026-09-14 · commit `6ad3d5605`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -18,7 +18,10 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Behavior | Start here |
 |---|---|
 | Process startup, configuration binding and shutdown | `coordinator/cmd/coordinator/main.go` (`main`); follow each named setup function to its subsystem file in the same command package. [Startup source map](../architecture/components/coordinator.md#startup-sequence) |
-| API request handling, auth and attestation | `coordinator/api/`; server construction in `server.go` (`NewServer`) |
+| Server construction and HTTP route registration | `coordinator/api/server.go` (`NewServer`); `coordinator/api/routes.go` (`routes`) |
+| HTTP body caps, CORS, panic recovery and request logging | `coordinator/api/http_middleware.go` (`Handler`); `coordinator/api/http_logging.go` (`loggingMiddleware`) |
+| Per-account/per-key rate limits and token admission | `coordinator/api/request_rate_limits.go` (`rateLimitWithTier`); `coordinator/api/token_admission.go` (`applyTokenRateLimitWithAdmission`) |
+| Installer URL rendering | `coordinator/api/installer.go` (`resolveBaseURL`, `installScript`) |
 | Inference dispatch, queue handoff, hedging and failover | `coordinator/inference/dispatch/` (`Controller.Run`); current-service and observation bindings in `coordinator/api/inference_dispatch.go` |
 | HTTP response caching and refresh coalescing | `coordinator/api/readcache/`; catalog fill fences in `generation.go` (`SetIfCurrent`, `SetValueIfCurrent`) |
 | Chat/Responses/Completions/Messages formatting and relays | `coordinator/inference/response/` (`Writer`, `ChatSink`, `EndpointSink`); lifecycle and accepted-write binding in `coordinator/api/response_writer.go` |
@@ -53,7 +56,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Retained dispatch plans and capacity probes | `coordinator/registry/dispatchplan/plan.go` (`Plan`), `coordinator/registry/dispatchplan/quotes.go` (`Probes`); private wrapper in `coordinator/registry/dispatch_plan.go`; live identity/admission in `coordinator/registry/plan_reservation.go`, refresh in `coordinator/registry/plan_refresh.go` and transport in `coordinator/registry/capacity_quotes.go` |
 | Queue storage and throughput | `coordinator/registry/requestqueue/`, `coordinator/registry/throughput/`; live provider state and reservation orchestration stay in `coordinator/registry/` |
 | Billing, pricing, referrals and payout endpoints | `coordinator/api/billing/` (`Controller`); route and shared-dependency binding in `coordinator/api/billing_controller.go` |
-| Model publishing, discovery and aliases | `coordinator/api/catalog/` (`Controller`); shared bindings in `coordinator/api/catalog_controller.go`; runtime publication stays in `server.go` (`SyncModelCatalog`) |
+| Model publishing, discovery and aliases | `coordinator/api/catalog/` (`Controller`); shared bindings in `coordinator/api/catalog_controller.go`; runtime publication stays in `catalog_controller.go` (`SyncModelCatalog`) |
 | Financial services and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/contracts/`, `coordinator/store/postgres/`, `coordinator/store/memory/`, `coordinator/store/cache/` |
 | Provider inference, downloads, security, local serving | `provider-swift/Sources/ProviderCore/`; entrypoints in `provider-swift/Sources/darkbloom/` |
 | Portable model manifests and hashing | `provider-swift/Sources/ProviderCoreFoundation/`; target defined in `provider-swift/Package.swift` (`package`) |

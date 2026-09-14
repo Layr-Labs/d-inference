@@ -1,6 +1,6 @@
 # System overview — how a Darkbloom request works
 
-> Last updated: 2026-09-14 · commit `cdef55575`
+> Last updated: 2026-09-14 · commit `6ad3d5605`
 
 Darkbloom sells inference on other people's Apple Silicon Macs. A Go
 **coordinator** accepts OpenAI- and Anthropic-shaped HTTP requests, picks an
@@ -77,7 +77,7 @@ sequenceDiagram
 2. **Consumer calls.** Every route passes
    `corsMiddleware → recoverMiddleware → loggingMiddleware → bodyLimitMiddleware`;
    inference routes add `readiness.Controller.Gate → requireAuth → rateLimitConsumer →
-   sealedTransport` (`coordinator/api/server.go`, `routes`). `/v1/chat/completions`
+   sealedTransport` (`coordinator/api/routes.go`, `routes`). `/v1/chat/completions`
    and `/v1/responses` share `handleChatCompletions`; `/v1/completions` and
    `/v1/messages` share `handleGenericInference` (`coordinator/api/consumer.go`).
    Routes and shapes: [`../reference/api-contracts.md`](../reference/api-contracts.md).
@@ -195,7 +195,7 @@ consumer routing to a provider it owns (self-route) pays nothing.
 
 | Concern | Entry point |
 |---|---|
-| Route table and middleware | `coordinator/api/server.go` (`routes`) |
+| Route table and middleware | `coordinator/api/routes.go` (`routes`) |
 | Chat / Responses handler | `coordinator/api/consumer.go` (`handleChatCompletions`) |
 | Completions / Messages handler | `coordinator/api/consumer.go` (`handleGenericInference`) |
 | Provider WebSocket, registration, challenges | `coordinator/api/provider.go` |

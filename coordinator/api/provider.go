@@ -430,6 +430,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				})
 
 			// Resolve auth token → account linkage.
+			authenticatedAccountID := ""
 			if regMsg.AuthToken != "" {
 				pt, err := s.store.GetProviderToken(regMsg.AuthToken)
 				if err != nil {
@@ -440,6 +441,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				} else {
 					provider.Mu().Lock()
 					provider.AccountID = pt.AccountID
+					authenticatedAccountID = pt.AccountID
 					provider.Mu().Unlock()
 					// Account linkage can be the provider's ONLY stable identity
 					// (Open Mode / invalid attestation → the acct: fallback), and
@@ -593,7 +595,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				})
 			}
 
-			appAttestShadow = s.startAppAttestShadow(loopCtx, provider, regMsg)
+			appAttestShadow = s.startAppAttestShadow(loopCtx, provider, regMsg, authenticatedAccountID)
 
 		case protocol.TypeAppAttestShadow:
 			if appAttestShadow != nil {

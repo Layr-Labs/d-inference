@@ -46,12 +46,17 @@ func TestAppAttestShadowCannotChangeRoutingOrTrust(t *testing.T) {
 	}
 	before := snapshot()
 	for _, failure := range []string{"unsupported", "not_configured", "apple_unavailable", "apple_invalid_key", "anything-untrusted"} {
-		if next := x.handle(ctx, protocol.AppAttestShadowPayload{Result: failure}); next != "stop" {
+		if next := x.handle(ctx, protocol.AppAttestShadowPayload{Action: x.expected, Session: x.id, Result: failure}); next != "stop" {
 			t.Fatal(next)
 		}
 	}
+	x.archive = failedEvidenceArchive{}
+	if next := x.handle(ctx, protocol.AppAttestShadowPayload{Action: x.expected, Session: x.id, Result: "ok", Proof: "unavailable archive"}); next != "stop" {
+		t.Fatal(next)
+	}
+	x.archive = st
 	x.observe("assertion", "timeout", nil)
-	if next := x.handle(ctx, protocol.AppAttestShadowPayload{Result: "ok", KeyID: record.KeyID, Challenge: x.challenge, Proof: "malformed"}); next != "stop" {
+	if next := x.handle(ctx, protocol.AppAttestShadowPayload{Action: x.expected, Session: x.id, Result: "ok", KeyID: record.KeyID, Challenge: x.challenge, Proof: "malformed"}); next != "stop" {
 		t.Fatal(next)
 	}
 	// A valid assertion updates ONLY its shadow counter. The seeded public key
@@ -63,7 +68,7 @@ func TestAppAttestShadowCannotChangeRoutingOrTrust(t *testing.T) {
 	signed = sha256.Sum256(signed[:])
 	signature, _ := ecdsa.SignASN1(rand.Reader, key, signed[:])
 	proof, _ := cbor.Marshal(map[string]any{"signature": signature, "authenticatorData": auth})
-	if next := x.handle(ctx, protocol.AppAttestShadowPayload{Result: "ok", KeyID: record.KeyID, Challenge: x.challenge, Proof: base64.StdEncoding.EncodeToString(proof)}); next != "wait" {
+	if next := x.handle(ctx, protocol.AppAttestShadowPayload{Action: x.expected, Session: x.id, Result: "ok", KeyID: record.KeyID, Challenge: x.challenge, Proof: base64.StdEncoding.EncodeToString(proof)}); next != "wait" {
 		t.Fatalf("valid assertion: %s", next)
 	}
 	stored, _ := st.GetAppAttestShadowKey(ctx, record.KeyID)
@@ -92,7 +97,7 @@ func TestAppAttestShadowCannotChangeRoutingOrTrust(t *testing.T) {
 	signed = sha256.Sum256(signed[:])
 	signature, _ = ecdsa.SignASN1(rand.Reader, key, signed[:])
 	proof, _ = cbor.Marshal(map[string]any{"signature": signature, "authenticatorData": auth})
-	if next := x.handle(ctx, protocol.AppAttestShadowPayload{Result: "ok", KeyID: record.KeyID, Challenge: x.challenge, Proof: base64.StdEncoding.EncodeToString(proof)}); next != "wait" {
+	if next := x.handle(ctx, protocol.AppAttestShadowPayload{Action: x.expected, Session: x.id, Result: "ok", KeyID: record.KeyID, Challenge: x.challenge, Proof: base64.StdEncoding.EncodeToString(proof)}); next != "wait" {
 		t.Fatal(next)
 	}
 	if !reflect.DeepEqual(before, snapshot()) {

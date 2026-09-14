@@ -10,6 +10,7 @@ import (
 	_ "embed"
 	"encoding/asn1"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -23,6 +24,9 @@ import (
 var appleRoot []byte
 
 const MaxProofBytes = 32 * 1024
+const VerifierVersion = "mac-shadow-v2"
+
+func RootSHA256() string { hash := sha256.Sum256(appleRoot); return hex.EncodeToString(hash[:]) }
 
 type Policy struct {
 	AppID       string

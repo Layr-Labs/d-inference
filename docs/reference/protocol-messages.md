@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-12 · commit `7c394fa2b`
+> Last updated: 2026-09-14 · commit `b7d0735e4`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -19,7 +19,7 @@ Terminal `profile` objects can include optional schema-1
 [`deadline_decision`](prediction-decision-telemetry.md#provider-fields).
 This does not add a message type or change the public error code.
 
-The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol` and `app_attest_shadow` frames. It does not replace the authoritative attestation messages.
+The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 2` (with protocol 1 compatibility) and `app_attest_shadow` frames. Version 2 binds account scope and locally measured status and supports lost-enrollment recovery. It does not replace the authoritative attestation messages.
 
 ## Envelope and the single-parse rule
 

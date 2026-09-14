@@ -108,3 +108,60 @@ final class AppAttestShadowTests: XCTestCase {
         XCTAssertNotNil(object["key_id"])
     }
 }
+
+extension AppAttestShadowTests {
+    func requestV2(_ action: String, key: String? = nil, account: String = String(repeating:"a",count:64)) -> AppAttestShadowPayload {
+        var p=request(action,key:key); p.protocolVersion=2; p.accountScope=account; return p
+    }
+    var statusV2: AppAttestStatus { AppAttestStatus(osVersion:"27.0.0",osBuild:"26A428",appVersion:"0.9.2",chip:"Apple M5 Max",binaryHash:String(repeating:"b",count:64)) }
+
+    func testV2TranscriptBindsAccountAndMeasuredStatus() {
+        var p=requestV2("assert",key:Data(repeating:1,count:32).base64EncodedString()); p.status=statusV2
+        let hash=p.clientHash(publicKey:publicKey)
+        XCTAssertEqual(hash.map { String(format:"%02x",$0) }.joined(),"91a11ff692299f9b8237fa9aaabde46de9f4dbbe5b9b00108b979cd985e1aae6")
+        p.status?.osBuild="spoofed"; XCTAssertNotEqual(hash,p.clientHash(publicKey:publicKey))
+        p.status=statusV2; p.accountScope=String(repeating:"c",count:64); XCTAssertNotEqual(hash,p.clientHash(publicKey:publicKey))
+    }
+
+    func testLostEnrollmentReplyRecoversAcrossRestartWithoutAppleOrKeyRotation() async {
+        let service=FakeService(); let storage=MemoryKeys()
+        let first=AppAttestShadowClient(scope:"server",service:service,storage:storage)
+        let ready=await first.respond(to:requestV2("prepare"),publicKey:publicKey)
+        let original=await first.respond(to:requestV2("attest",key:ready.keyID),publicKey:publicKey,status:statusV2)
+        XCTAssertEqual(original.result,"ok")
+        let restarted=AppAttestShadowClient(scope:"server",service:service,storage:storage)
+        var prepare=requestV2("prepare"); prepare.session=Data(repeating:7,count:32).base64EncodedString()
+        let next=await restarted.respond(to:prepare,publicKey:publicKey)
+        var retry=requestV2("attest",key:next.keyID); retry.session=prepare.session
+        let recovered=await restarted.respond(to:retry,publicKey:publicKey,status:statusV2)
+        XCTAssertEqual(recovered.proof,original.proof); XCTAssertEqual(recovered.enrollmentSession,session)
+        let counts=await service.counts(); XCTAssertEqual(counts,[1,1,0])
+        retry.action="assert"
+        let assertion=await restarted.respond(to:retry,publicKey:publicKey,status:statusV2)
+        XCTAssertEqual(assertion.result,"ok")
+        XCTAssertNil(storage.load(scope:"server:production:account:"+String(repeating:"a",count:64))?.pendingProof)
+    }
+
+    func testAccountScopesDoNotReuseCredentialsOrAcceptMidSessionChanges() async {
+        let service=FakeService(); let storage=MemoryKeys()
+        let client=AppAttestShadowClient(scope:"server",service:service,storage:storage)
+        let ready=await client.respond(to:requestV2("prepare"),publicKey:publicKey)
+        let other=String(repeating:"c",count:64)
+        let bad=await client.respond(to:requestV2("assert",key:ready.keyID,account:other),publicKey:publicKey,status:statusV2)
+        XCTAssertEqual(bad.result,"invalid_request")
+        _ = await client.respond(to:requestV2("prepare",account:other),publicKey:publicKey)
+        let counts=await service.counts(); XCTAssertEqual(counts,[2,0,0])
+    }
+
+    func testCallbackDeadlineHandlesMissingAndDuplicateCallbacks() async throws {
+        do {
+            let _: String = try await CallbackDeadline.call(seconds:0.01) { _ in }
+            XCTFail("missing callback hung past deadline")
+        } catch { XCTAssertEqual(error as? ShadowFailure,.operationTimeout) }
+        let result: String = try await CallbackDeadline.call(seconds:0.01) { complete in
+            complete(.success("first")); complete(.success("second"))
+        }
+        XCTAssertEqual(result,"first")
+        try await Task.sleep(for:.milliseconds(20))
+    }
+}

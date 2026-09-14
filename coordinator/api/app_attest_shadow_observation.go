@@ -1,6 +1,10 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
+	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/google/uuid"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/appattest"
@@ -8,6 +12,9 @@ import (
 )
 
 func (x *appAttestShadowSession) observe(stage, outcome string, metadata *appattest.Key) {
+	if x.evidenceID != "" && stage != "archive" {
+		x.evidenceOutcome = outcome
+	}
 	fields := map[string]any{"inbox_dropped": x.dropped.Load(), "event": "app_attest_shadow", "provider_id": x.provider.ID, "shadow_session": x.id,
 		"stage": stage, "outcome": outcome, "mode": "shadow", "reported_version": boundedShadowLabel(x.version),
 		"reported_os": boundedShadowLabel(x.osVersion), "reported_chip": boundedShadowLabel(x.chip)}
@@ -35,6 +42,19 @@ func (x *appAttestShadowSession) observe(stage, outcome string, metadata *appatt
 			fields["attested_validation_category"] = *metadata.ValidationCategory
 		}
 		x.s.ddIncr("app_attest.shadow.metadata", []string{"result:" + policy})
+	}
+	fields["account_id"] = x.account
+	if x.inventory != nil {
+		identity := x.inventory.snapshot()
+		fields["machine_id"] = identity.ID
+		fields["identity_assurance"] = identity.Assurance
+		raw, _ := json.Marshal(fields)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err := x.inventory.store.RecordAppAttestEvent(ctx, store.AppAttestEvent{ID: uuid.NewString(), SessionID: x.provider.ID, At: time.Now().UTC(), Stage: stage, Outcome: outcome, Fields: raw})
+		cancel()
+		if err != nil {
+			x.s.ddIncr("app_attest.events.storage_failed", nil)
+		}
 	}
 	x.s.ddIncr("app_attest.shadow.events", tags)
 	x.s.emit(nil, protocol.SeverityInfo, protocol.KindCustom, "App Attest shadow observation", fields)

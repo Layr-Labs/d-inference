@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -23,6 +24,8 @@ const shadowAssertionInterval = 10 * time.Minute
 // One bounded inbox/worker per negotiated connection; the read loop never waits
 // for Apple, database, or cryptography. No method on this type changes trust.
 type appAttestShadowSession struct {
+	offerMu                                        sync.Mutex
+	rejectReason                                   string
 	closed                                         atomic.Bool
 	dropped                                        atomic.Uint64
 	s                                              *Server
@@ -34,9 +37,20 @@ type appAttestShadowSession struct {
 	started                                        time.Time
 	verifier                                       *appattest.Verifier
 	store                                          store.AppAttestShadowStore
+	archive                                        store.AppAttestArchiveStore
+	inventory                                      *machineInventorySession
+	account                                        string
+	protocolVersion                                int
+	evidenceID                                     string
+	evidenceOutcome                                string
 }
 
-func (s *Server) startAppAttestShadow(ctx context.Context, provider *registry.Provider, registration *protocol.RegisterMessage) *appAttestShadowSession {
+func (s *Server) startAppAttestShadow(ctx context.Context, provider *registry.Provider, registration *protocol.RegisterMessage, authenticatedAccount ...string) *appAttestShadowSession {
+	account := ""
+	if len(authenticatedAccount) > 0 {
+		account = authenticatedAccount[0]
+	}
+	inventory := s.startMachineInventory(ctx, provider, registration, account)
 	if !s.appAttestShadow.Enabled {
 		return nil
 	}
@@ -45,13 +59,13 @@ func (s *Server) startAppAttestShadow(ctx context.Context, provider *registry.Pr
 		return nil
 	}
 	provider.Mu().Lock()
-	owner := provider.AccountID
+	owner := account
 	if provider.AttestationResult != nil {
 		owner += ":" + provider.AttestationResult.PublicKey
 	}
 	provider.Mu().Unlock()
 	hash := sha256.Sum256([]byte(owner))
-	x := &appAttestShadowSession{s: s, provider: provider, in: make(chan protocol.AppAttestShadowPayload, 2),
+	x := &appAttestShadowSession{s: s, provider: provider, inventory: inventory, account: account, protocolVersion: registration.AppAttestProtocol, in: make(chan protocol.AppAttestShadowPayload, 2),
 		id: base64.StdEncoding.EncodeToString(nonce[:]), owner: hex.EncodeToString(hash[:]),
 		publicKey: registration.PublicKey, version: registration.Version,
 		chip:     registration.Hardware.ChipName,
@@ -64,9 +78,9 @@ func (s *Server) startAppAttestShadow(ctx context.Context, provider *registry.Pr
 	}
 	_ = json.Unmarshal(registration.Attestation, &platform)
 	x.osVersion = platform.Attestation.OSVersion
-	x.observe("registration", "observed", nil)
-	if registration.AppAttestProtocol != 1 {
-		x.observe("prepare", "protocol_unsupported", nil)
+
+	if registration.AppAttestProtocol != 1 && registration.AppAttestProtocol != 2 {
+
 		return nil
 	}
 	if s.appAttestShadow.Environment != "production" && s.appAttestShadow.Environment != "development" || s.appAttestShadow.AppID == "" {
@@ -79,18 +93,54 @@ func (s *Server) startAppAttestShadow(ctx context.Context, provider *registry.Pr
 		x.observe("prepare", "storage_unavailable", nil)
 		return nil
 	}
-	saferun.Go(s.logger, "appAttestShadow", func() { x.run(ctx) })
+	if inventory != nil {
+		inventory.mu.Lock()
+		inventory.dropped = x.dropped.Load
+		inventory.mu.Unlock()
+	}
+	x.archive, ok = store.As[store.AppAttestArchiveStore](s.store)
+	if !ok || inventory == nil {
+		x.observe("prepare", "archive_unavailable", nil)
+		return nil
+	}
+	saferun.Go(s.logger, "appAttestShadow", func() {
+		defer x.closeAndArchivePending()
+		select {
+		case <-ctx.Done():
+			return
+		case <-inventory.ready:
+		}
+		if inventory.snapshot().ID == "" {
+			x.observe("prepare", "inventory_unavailable", nil)
+			return
+		}
+		x.observe("registration", "observed", nil)
+		if x.protocolVersion == 2 {
+			owner := sha256.Sum256([]byte("machine-owner-v1:" + x.account + ":" + inventory.snapshot().ID))
+			x.owner = hex.EncodeToString(owner[:])
+		}
+		x.run(ctx)
+	})
 	return x
 }
 
 func (x *appAttestShadowSession) offer(p protocol.AppAttestShadowPayload) {
+	x.offerMu.Lock()
+	defer x.offerMu.Unlock()
 	if x.closed.Load() {
+		x.dropped.Add(1)
 		return
 	}
 	// Length bounds also cover decode-only fields; oversized proofs never queue.
-	if len(p.KeyID) > 64 || len(p.Challenge) > 64 || len(p.Session) > 64 || len(p.Proof) > 44*1024 || len(p.Result) > 64 {
+	if len(p.Action) > 32 || len(p.Environment) > 32 || len(p.AccountScope) > 64 || len(p.EnrollmentSession) > 64 || len(p.KeyID) > 64 || len(p.Challenge) > 64 || len(p.Session) > 64 || len(p.Proof) > 44*1024 || len(p.Result) > 64 {
 		x.dropped.Add(1)
 		return
+	}
+	for _, value := range p.Status.Values() {
+		if len(value) > 128 {
+			x.dropped.Add(1)
+			return
+		}
 	}
 	select {
 	case x.in <- p:
@@ -100,7 +150,6 @@ func (x *appAttestShadowSession) offer(p protocol.AppAttestShadowPayload) {
 }
 
 func (x *appAttestShadowSession) run(ctx context.Context) {
-	defer x.closed.Store(true)
 	// Spread onboarding so a coordinator restart does not synchronize Apple calls.
 	var jitter [1]byte
 	_, _ = rand.Read(jitter[:])
@@ -133,9 +182,6 @@ func (x *appAttestShadowSession) run(ctx context.Context) {
 			}
 			timer.Reset(shadowResponseTimeout)
 		case reply := <-x.in:
-			if reply.Session != x.id || reply.Action != x.expected {
-				continue
-			}
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
@@ -147,7 +193,10 @@ func (x *appAttestShadowSession) run(ctx context.Context) {
 			select {
 			case x.s.appAttestShadowSlots <- struct{}{}:
 			default:
-				x.observe(x.expected, "busy", nil)
+				x.rejectReason = "verifier_busy"
+				operation, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				x.handle(operation, reply)
+				cancel()
 				return
 			}
 			next := func() string {

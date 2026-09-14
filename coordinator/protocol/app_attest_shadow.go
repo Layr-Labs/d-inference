@@ -16,6 +16,10 @@ type AppAttestShadowMessage struct {
 }
 
 type AppAttestShadowPayload struct {
+	ProtocolVersion    int               `json:"protocol_version,omitempty"`
+	AccountScope       string            `json:"account_scope,omitempty"`
+	EnrollmentSession  string            `json:"enrollment_session,omitempty"`
+	Status             *AppAttestStatus  `json:"status,omitempty"`
 	Action             string            `json:"action"`
 	Session            string            `json:"session"`
 	Environment        string            `json:"environment,omitempty"`

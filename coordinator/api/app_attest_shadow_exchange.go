@@ -23,8 +23,24 @@ func (x *appAttestShadowSession) send(ctx context.Context, action string) bool {
 	if x.key != nil {
 		p.KeyID = x.key.KeyID
 	}
+	if x.protocolVersion == 2 {
+		p.ProtocolVersion = 2
+		p.AccountScope = x.accountScope()
+	}
 	if action == "attest" {
 		p.Challenge = x.challenge
+		if x.protocolVersion == 2 {
+			enrollments, ok := store.As[store.AppAttestEnrollmentStore](x.s.store)
+			if !ok {
+				x.observe(action, "storage_unavailable", nil)
+				return false
+			}
+			err := enrollments.SaveAppAttestEnrollment(ctx, store.AppAttestEnrollment{ID: x.id, Owner: x.owner, KeyID: x.key.KeyID, CreatedAt: time.Now().UTC(), Environment: x.s.appAttestShadow.Environment, AppID: x.s.appAttestShadow.AppID, Challenge: x.challenge, PublicKey: x.publicKey, AccountScope: x.accountScope()})
+			if err != nil {
+				x.observe(action, "storage_error", nil)
+				return false
+			}
+		}
 	}
 	if action == "assert" {
 		pub, err := base64.StdEncoding.DecodeString(x.publicKey)
@@ -56,7 +72,7 @@ func (x *appAttestShadowSession) send(ctx context.Context, action string) bool {
 	return true
 }
 
-func (x *appAttestShadowSession) handle(ctx context.Context, reply protocol.AppAttestShadowPayload) string {
+func (x *appAttestShadowSession) handleExchange(ctx context.Context, reply protocol.AppAttestShadowPayload) string {
 	// Timer and inbox can become ready together; never let select ordering
 	// count a late proof as a timely success.
 	if !x.started.IsZero() && time.Since(x.started) > shadowResponseTimeout {
@@ -83,11 +99,12 @@ func (x *appAttestShadowSession) handle(ctx context.Context, reply protocol.AppA
 			x.key = &store.AppAttestShadowKey{KeyID: reply.KeyID}
 			return "attest"
 		}
-		if key.Owner != x.owner || key.Environment != x.s.appAttestShadow.Environment || key.AppID != x.s.appAttestShadow.AppID {
+		if !x.keyOwnerMatches(ctx, key) || key.Environment != x.s.appAttestShadow.Environment || key.AppID != x.s.appAttestShadow.AppID {
 			x.observe("ready", "key_owner_or_policy", nil)
 			return "stop"
 		}
 		x.key = key
+		x.owner = key.Owner
 		return "assert"
 	}
 	if x.key == nil || reply.KeyID != x.key.KeyID || reply.Challenge != x.challenge {
@@ -103,18 +120,20 @@ func (x *appAttestShadowSession) handle(ctx context.Context, reply protocol.AppA
 	if x.expected == "attestation" {
 		action = "attest"
 	}
-	hash := protocol.AppAttestShadowHash(action, x.id, x.s.appAttestShadow.Environment, x.key.KeyID, x.challenge, x.publicKey)
+	hash, err := x.clientHash(ctx, action, reply)
+	if err != nil {
+		x.observe(x.expected, "enrollment_context", nil)
+		return "stop"
+	}
 	if action == "attest" {
 		verified, err := x.verifier.Attestation(proof, x.key.KeyID, hash)
 		if err != nil {
 			x.observe("attestation", err.Error(), nil)
 			return "stop"
 		}
-		x.key = &store.AppAttestShadowKey{KeyID: x.key.KeyID, Owner: x.owner, PublicKey: verified.PublicKey, AppID: x.s.appAttestShadow.AppID,
+		x.key = &store.AppAttestShadowKey{KeyID: x.key.KeyID, Owner: x.owner, AccountID: x.account, MachineID: x.machineID(), PublicKey: verified.PublicKey, AppID: x.s.appAttestShadow.AppID,
 			Environment: x.s.appAttestShadow.Environment, BundleVersion: verified.BundleVersion, ValidationCategory: verified.ValidationCategory}
-		inserted, err := x.store.InsertAppAttestShadowKey(ctx, *x.key)
-		if err != nil || !inserted {
-			x.observe("attestation", "storage_conflict_or_error", nil)
+		if !x.commitEvidence(ctx, store.AppAttestDecision{Outcome: "verified", Key: x.key, Receipt: x.initialReceipt(proof, hash)}) {
 			return "stop"
 		}
 		x.observe("attestation", "verified", verified)
@@ -125,19 +144,22 @@ func (x *appAttestShadowSession) handle(ctx context.Context, reply protocol.AppA
 		x.observe("assertion", err.Error(), nil)
 		return "stop"
 	}
-	advanced, err := x.store.AdvanceAppAttestShadowCounter(ctx, x.key.KeyID, x.owner, counter)
-	if err != nil || !advanced {
-		x.observe("assertion", "counter_conflict_or_storage_error", nil)
+	details, _ := json.Marshal(map[string]any{"received_counter": counter, "bundle_version": metadata.BundleVersion, "validation_category": metadata.ValidationCategory})
+	if !x.commitEvidence(ctx, store.AppAttestDecision{Outcome: "verified", Counter: &counter, KeyID: x.key.KeyID, Owner: x.owner, Details: details}) {
 		return "stop"
 	}
 	x.key.Counter = counter
 	x.observe("assertion", "verified", metadata)
+	x.observeBuildPolicy(reply.Status)
+	if x.inventory != nil && reply.Status != nil {
+		x.inventory.recordStatus(reply.Status)
+	}
 	return "wait"
 }
 
 func shadowClientResult(value string) string {
 	switch value {
-	case "unsupported", "not_configured", "environment_mismatch", "keychain_error", "apple_unavailable", "apple_invalid_key", "apple_error", "key_unregistered", "busy", "cancelled", "decryption_failed", "invalid_request":
+	case "unsupported", "not_configured", "environment_mismatch", "keychain_error", "apple_unavailable", "apple_invalid_key", "apple_error", "key_unregistered", "busy", "cancelled", "decryption_failed", "invalid_request", "operation_timeout":
 		return value
 	}
 	return "client_error"

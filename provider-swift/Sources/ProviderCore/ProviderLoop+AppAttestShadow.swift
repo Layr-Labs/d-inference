@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import ProviderAppAttest
 
 extension ProviderLoop {
@@ -30,8 +31,10 @@ extension ProviderLoop {
         let publicKey = keyPair.publicKeyBase64
         let generation = appAttestShadowGeneration
         let message = request
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        let status = AppAttestStatus(osVersion: "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)", osBuild: appAttestOSBuild(), appVersion: ProviderCore.version, chip: loopConfig.hardware.chipName, binaryHash: binaryHash ?? "")
         appAttestShadowTask = Task.detached(priority: .utility) { [weak self] in
-            let reply = await client.respond(to: message, publicKey: publicKey)
+            let reply = await client.respond(to: message, publicKey: publicKey, status: status)
             guard !Task.isCancelled else { return }
             await self?.finishAppAttestShadow(reply, generation: generation, send: send)
         }
@@ -48,4 +51,12 @@ extension ProviderLoop {
         appAttestShadowTask?.cancel()
         appAttestShadowTask = nil
     }
+}
+
+private func appAttestOSBuild() -> String {
+    var size=0
+    guard sysctlbyname("kern.osversion",nil,&size,nil,0)==0, size>0, size<128 else { return "" }
+    var bytes=[CChar](repeating:0,count:size)
+    guard sysctlbyname("kern.osversion",&bytes,&size,nil,0)==0 else { return "" }
+    return String(cString:bytes)
 }

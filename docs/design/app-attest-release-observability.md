@@ -1,8 +1,8 @@
 # App Attest release inventory, evidence archive, and machine identity
 
-> Last updated: 2026-09-14 · commit `20d514a90`
+> Last updated: 2026-09-14 · commit `b7d0735e4`
 
-Status: **Proposed** — 2026-09-14 — next-release requirements recorded; the census, complete archive, and identity migration are not implemented.
+Status: **In progress** — 2026-09-14 — machine inventory, stable identities, complete PostgreSQL proof/receipt archive, protocol 2 recovery/status, and private dashboard implemented in draft PR #995; final release qualification remains open. The [as-built reference](../reference/app-attest-shadow.md) describes the implementation. DeviceCheck is deferred.
 
 The next coexistence release must measure unique machines and macOS 27 adoption,
 and retain complete Apple attestations, receipts, and assertions. Keep APNs and

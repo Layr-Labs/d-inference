@@ -200,6 +200,7 @@ type releaseTrustPolicySnapshot struct {
 type Server struct {
 	appAttestShadow               AppAttestShadowConfig
 	appAttestShadowSlots          chan struct{}
+	machineInventorySlots         chan struct{}
 	registry                      *registry.Registry
 	store                         store.Store
 	ledger                        *payments.Ledger
@@ -828,6 +829,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		codeAttestThrottle:       newCodeAttestThrottle(),
 		appAttestShadow:          cfg.AppAttestShadow,
 		appAttestShadowSlots:     make(chan struct{}, 4),
+		machineInventorySlots:    make(chan struct{}, 4),
 		trustReuseCache:          newTrustReuseCache(),
 		mdmSchedulerConfig:       cfg.MDMScheduler,
 		settlements:              newSettlementHolder(),
@@ -855,6 +857,8 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	s.trustCoverage = make(map[string]string)
 	s.trustCoverageCtx, s.trustCoverageCancel = context.WithCancel(context.Background())
 	saferun.Go(logger, "trustCoverageLoop", s.trustCoverageLoop)
+	s.startAppAttestReceiptWorker(s.trustCoverageCtx)
+	s.startMachineInventoryBackfill(s.trustCoverageCtx)
 	if cfg.DurableTrustReuse {
 		journalPath := cfg.TrustReuseJournalPath
 		if strings.TrimSpace(journalPath) == "" {

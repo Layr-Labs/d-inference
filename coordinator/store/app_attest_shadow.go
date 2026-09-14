@@ -14,6 +14,8 @@ type AppAttestShadowStore interface {
 }
 
 type AppAttestShadowKey struct {
+	MachineID          string  `json:"machine_id,omitempty"`
+	AccountID          string  `json:"account_id,omitempty"`
 	KeyID              string  `json:"key_id"`
 	Owner              string  `json:"owner"`
 	PublicKey          []byte  `json:"public_key"`

@@ -29,3 +29,17 @@ func TestAppAttestShadowSwiftTranscriptAndWire(t *testing.T) {
 		t.Fatal("oversized frame accepted")
 	}
 }
+
+func TestAppAttestV2TranscriptBindsAccountAndStatus(t *testing.T) {
+	b64 := func(b byte) string { return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{b}, 32)) }
+	scope := string(bytes.Repeat([]byte("a"), 64))
+	status := &AppAttestStatus{OSVersion: "27.0.0", OSBuild: "26A428", AppVersion: "0.9.2", Chip: "Apple M5 Max", BinaryHash: string(bytes.Repeat([]byte("b"), 64))}
+	hash := AppAttestShadowHashV2("assert", b64(0), "production", b64(1), b64(2), b64(3), scope, status)
+	if hex.EncodeToString(hash[:]) != "91a11ff692299f9b8237fa9aaabde46de9f4dbbe5b9b00108b979cd985e1aae6" {
+		t.Fatal("Swift v2 drift")
+	}
+	status.OSBuild = "spoofed"
+	if hash == AppAttestShadowHashV2("assert", b64(0), "production", b64(1), b64(2), b64(3), scope, status) {
+		t.Fatal("status not bound")
+	}
+}

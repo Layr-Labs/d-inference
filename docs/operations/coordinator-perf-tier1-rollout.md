@@ -1,6 +1,6 @@
 # Coordinator Performance Tier 1 Rollout
 
-> Last updated: 2026-09-14 · commit `0aa108563`
+> Last updated: 2026-09-14 · commit `3b4c75127`
 
 Operator companion to the `perf/coordinator-tier1-2026-09-03` branch (the
 code items 1.1, 1.3–1.8 of the 2026-09-03 coordinator performance proposal).

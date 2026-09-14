@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `01c6761cc`
+> Last updated: 2026-09-13 · commit `2ebb40c4f`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -104,6 +104,18 @@ headroom and fleet benchmark fixtures retain their outcome assertions.
 
 ```bash
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/... -run 'Test.*(WarmPool|WarmTarget|ControllerWarms|ControllerConfigure|DedicatedWarm|MemoryBackoff)' -count=1
+```
+
+Provider transport tests live in `coordinator/registry/providerwriter/`: queue
+priority and saturation, deferred handoff/cancellation, whole-message watchdog,
+raw fragment boundaries and peer-ping liveness. Real `Provider` write/control
+ordering and model-load queue-rejection cleanup remain in the registry. Its
+queue fixture fills the private data lane through accepted writes and cancellation;
+`provider_writer_handoff_test.go` checks submitting-owner reentry before exposure
+and unchanged fragmented message/control ordering.
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/... -run 'TestProviderWrit|TestWriteTextThen|TestSendModelLoadActionsClearsPendingWhenWriterQueueFull|TestUnfragmentedConnWriteStallsPeerPing' -count=1
 ```
 
 Run prediction telemetry checks from the repository root:

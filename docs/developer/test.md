@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `809a1901b`
+> Last updated: 2026-09-14 · commit `d831ee262`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -406,6 +406,13 @@ a completed nonce does not add a challenge success. Heartbeat barriers establish
 frame processing order and final per-model hashes identify the accepted reply.
 The fixture passes against the original implementation and rejects a shared
 tracker mutation. It uses no provider executable, Apple service or model.
+
+The MicroMDM client tests in `coordinator/mdm/command_security_test.go`,
+`coordinator/mdm/command_delivery_test.go` and
+`coordinator/mdm/waiter_ownership_test.go` cover the read-only command boundary,
+solicited replies, push behavior and exclusive waiter correlation through local
+HTTP fixtures. Run them with
+`GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/mdm`.
 
 Durable MDM queue, worker-budget, retry, claim, polling and late-command fixtures
 live with `coordinator/providercontrol/mdmscheduler/`. Their existing test names

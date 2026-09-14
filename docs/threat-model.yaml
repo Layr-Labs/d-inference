@@ -1470,7 +1470,7 @@ threats:
     affected_assets: [A-010]
     affected_files:
       - coordinator/api/server.go
-      - coordinator/mdm/mdm.go
+      - coordinator/mdm/**
       - coordinator/api/provider.go
       - coordinator/providercontrol/verification/security_info.go
       - coordinator/providercontrol/verification/mda.go
@@ -1549,7 +1549,7 @@ threats:
     adversaries: []
     affected_assets: [A-010]
     affected_files:
-      - coordinator/mdm/mdm.go
+      - coordinator/mdm/**
       - coordinator/attestation/**
     mitigations:
       - description: Providers can still operate at self_signed trust level without MDA.
@@ -2190,7 +2190,7 @@ threats:
     affected_assets: [A-010]
     affected_files:
       - coordinator/attestation/**
-      - coordinator/mdm/mdm.go
+      - coordinator/mdm/**
       - coordinator/api/provider.go
       - coordinator/registry/registry.go
       - coordinator/providercontrol/trustreuse/**

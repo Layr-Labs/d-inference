@@ -122,7 +122,7 @@ sentence lede (principle 3). Then, by type:
 Line 3 of every doc:
 
 ```
-> Last updated: 2026-09-14 · commit `e500afd8c`
+> Last updated: YYYY-MM-DD · commit `<short sha>`
 ```
 
 - *Last updated* is the day the content was last written or re-verified

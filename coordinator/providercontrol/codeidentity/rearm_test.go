@@ -312,12 +312,12 @@ func TestClearChallengeDropsOutstanding(t *testing.T) {
 	fastBudgets(srv)
 
 	const seKey = "se-key-1"
-	srv.state.recordChallenge(seKey, "old-nonce")
-	if _, ok := srv.state.outstandingChallenge(seKey); !ok {
+	srv.state.recordChallengeForIdentity(seKey, "old-nonce", "token", "node")
+	if !srv.state.matchChallengeForIdentity(seKey, "old-nonce", "token", "node") {
 		t.Fatal("precondition: a recorded challenge must be outstanding")
 	}
 	srv.state.clearChallenge(seKey)
-	if _, ok := srv.state.outstandingChallenge(seKey); ok {
+	if srv.state.matchChallengeForIdentity(seKey, "old-nonce", "token", "node") {
 		t.Fatal("clearChallenge must drop the outstanding challenge so a stale reply can't attest")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"net/http"
 	"net/http/httptest"
@@ -46,19 +47,6 @@ func TestRequestOutcomeClassificationAndMappings(t *testing.T) {
 	}
 	if got := normalizedAttemptOutcome("deadline_unreachable"); got != "int_provider_deadline_rejected" {
 		t.Fatal(got)
-	}
-}
-
-func TestGeneratedContentEvidenceExcludesPreambleAndTerminals(t *testing.T) {
-	for _, s := range []string{`data: [DONE]`, `data: {broken`, roleOnlyChunkSSE("m"), `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`, `data: {"type":"response.created","response":{}}`, `data: {"error":{"message":"secret"}}`, `data: {"choices":[],"usage":{"completion_tokens":0}}`} {
-		if generatedContentSSE([]byte(s)) {
-			t.Errorf("false content: %s", s)
-		}
-	}
-	for _, s := range []string{contentChunkSSE("m", "a"), `data: {"type":"response.output_text.delta","delta":"a"}`, `data: {"type":"content_block_delta","delta":{"text":"a"}}`} {
-		if !generatedContentSSE([]byte(s)) {
-			t.Errorf("missed content %s", s)
-		}
 	}
 }
 
@@ -158,7 +146,7 @@ func TestRequestOutcomeSealedWriteFailure(t *testing.T) {
 						frame := []byte(contentChunkSSE("m", "answer"))
 						n, err := w.Write(frame)
 						markContentWrite(w, true, n, len(frame), err)
-						newRelayStamps(rp).done()
+						response.NewChatSink(nil, w, nil, rp, nil).Done()
 					} else {
 						writeNonStreamBody(w, rp, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "answer"}}}})
 					}
@@ -207,7 +195,7 @@ func TestRequestOutcomeContentSuccessSurvivesLaterWriteFailure(t *testing.T) {
 				n, err := w.Write(frame)
 				markContentWrite(w, true, n, len(frame), err)
 				w.Write([]byte("data: [DONE]\n\n"))
-				newRelayStamps(rp).done()
+				response.NewChatSink(nil, w, nil, rp, nil).Done()
 				ap.CompleteTerminal()
 				ap.CompleteHandler()
 			}

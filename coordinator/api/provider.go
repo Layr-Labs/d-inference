@@ -28,6 +28,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"maps"
 	"math"
 
@@ -1886,10 +1887,10 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		ap.DecryptUSTotal.Add(time.Since(decryptStart).Microseconds())
 		ap.MarkAt(registry.StampFirstChunkIngress, receivedAt)
 	}
-	if pr.Profile != nil && !pr.Profile.GeneratedContentObserved.Load() && (generatedContentSSE([]byte(chunkData)) || generatedContentJSON([]byte(chunkData))) {
+	if pr.Profile != nil && !pr.Profile.GeneratedContentObserved.Load() && (response.GeneratedContentSSE([]byte(chunkData)) || response.GeneratedContentJSON([]byte(chunkData))) {
 		pr.Profile.GeneratedContentObserved.Store(true)
 	}
-	contentBearing := !isBoilerplateChunk(chunkData)
+	contentBearing := !response.IsBoilerplateChunk(chunkData)
 	firstContent := pr.FinishProviderChunkIngress(receivedAt, contentBearing)
 	ingressClassified = true
 	if firstContent {
@@ -2278,7 +2279,7 @@ func (s *Server) handleCompleteAt(
 	// Store SE signature for the consumer response headers.
 	pr.SESignature = msg.SESignature
 	pr.ResponseHash = msg.ResponseHash
-	pr.MatchedStopSequence = allowedMatchedStopSequence(
+	pr.MatchedStopSequence = response.AllowedMatchedStopSequence(
 		pr.RequestedStopSequences, msg.StopSequence)
 	if msg.StopSequence != "" && pr.MatchedStopSequence == "" {
 		s.logger.Warn("provider reported an unrequested stop sequence",
@@ -2564,7 +2565,7 @@ func (s *Server) handleCompleteAt(
 		// Record in-memory usage (for current session queries).
 		s.ledger.RecordUsage(pr.ConsumerKey, payments.UsageEntry{
 			JobID:            msg.RequestID,
-			Model:            consumerModel(pr),
+			Model:            response.ConsumerModel(pr),
 			PromptTokens:     msg.Usage.PromptTokens,
 			CompletionTokens: msg.Usage.CompletionTokens,
 			CostMicroUSD:     totalCost,
@@ -2583,7 +2584,7 @@ func (s *Server) handleCompleteAt(
 		// RecordUsage above (their session/transparency view).
 		if !freeSelfRoute {
 			saferun.Go(s.logger, "recordUsage", func() {
-				s.store.RecordUsageFullWithPublicModel(providerID, pr.ConsumerKey, pr.KeyID, pr.Model, consumerModel(pr), msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
+				s.store.RecordUsageFullWithPublicModel(providerID, pr.ConsumerKey, pr.KeyID, pr.Model, response.ConsumerModel(pr), msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
 			})
 		}
 

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"net/http"
 	"strings"
 	"time"
@@ -338,7 +339,7 @@ func postCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.In
 	if providerDisconnectedError(msg) {
 		class = "provider_disconnect_after_commit"
 	}
-	out := providerFailedPendingRouteOutcomeWithReason(pr, finalStatusPartialSuccess, class, msg.StatusCode, msg.ErrorReason, clientSafeInferenceErrorMessage(msg))
+	out := providerFailedPendingRouteOutcomeWithReason(pr, finalStatusPartialSuccess, class, msg.StatusCode, msg.ErrorReason, response.ClientSafeInferenceErrorMessage(msg))
 	applyAttemptUsage(out, msg.AttemptUsage)
 	return out
 }
@@ -349,7 +350,7 @@ func preResponseProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.I
 	if providerDisconnectedError(msg) {
 		class = "provider_disconnect_before_response"
 	}
-	out := providerFailedPendingRouteOutcomeWithReason(pr, finalStatusError, class, msg.StatusCode, msg.ErrorReason, clientSafeInferenceErrorMessage(msg))
+	out := providerFailedPendingRouteOutcomeWithReason(pr, finalStatusError, class, msg.StatusCode, msg.ErrorReason, response.ClientSafeInferenceErrorMessage(msg))
 	applyAttemptUsage(out, msg.AttemptUsage)
 	return out
 }
@@ -359,7 +360,7 @@ func preCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.Inf
 	if isDeadlineUnreachableErrorReason(msg.ErrorReason) {
 		out := pendingRouteOutcomeWithReason(
 			pr, finalStatusError, errorClassDeadlineUnreachable,
-			msg.StatusCode, msg.ErrorReason, clientSafeInferenceErrorMessage(msg))
+			msg.StatusCode, msg.ErrorReason, response.ClientSafeInferenceErrorMessage(msg))
 		applyAttemptUsage(out, msg.AttemptUsage)
 		return out
 	}
@@ -374,7 +375,7 @@ func preCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.Inf
 		// vocabulary as the reputation and breaker exemptions
 		// (isNonProviderFaultErrorReason) so the lists cannot drift.
 		// msg.ErrorReason is threaded through so rows keep their reason.
-		out := pendingRouteOutcomeWithReason(pr, finalStatusError, errorClassClientError, msg.StatusCode, msg.ErrorReason, clientSafeInferenceErrorMessage(msg))
+		out := pendingRouteOutcomeWithReason(pr, finalStatusError, errorClassClientError, msg.StatusCode, msg.ErrorReason, response.ClientSafeInferenceErrorMessage(msg))
 		applyAttemptUsage(out, msg.AttemptUsage)
 		return out
 	}
@@ -382,7 +383,7 @@ func preCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.Inf
 	if providerDisconnectedError(msg) {
 		class = "provider_disconnect_pre_commit"
 	}
-	out := providerFailedPendingRouteOutcomeWithReason(pr, finalStatusError, class, msg.StatusCode, msg.ErrorReason, clientSafeInferenceErrorMessage(msg))
+	out := providerFailedPendingRouteOutcomeWithReason(pr, finalStatusError, class, msg.StatusCode, msg.ErrorReason, response.ClientSafeInferenceErrorMessage(msg))
 	applyAttemptUsage(out, msg.AttemptUsage)
 	return out
 }

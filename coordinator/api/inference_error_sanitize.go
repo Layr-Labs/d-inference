@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"net/http"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -22,7 +23,7 @@ func sanitizeProviderInferenceError(msg *protocol.InferenceErrorMessage) (safe p
 		return protocol.InferenceErrorMessage{
 			Type:        protocol.TypeInferenceError,
 			FailureCode: protocol.FailureCodeGenerationFailure,
-			Error:       safeInferenceFailureMessage(protocol.FailureCodeGenerationFailure),
+			Error:       response.SafeInferenceFailureMessage(protocol.FailureCodeGenerationFailure),
 			StatusCode:  http.StatusInternalServerError,
 			ErrorReason: errorReasonProviderError,
 		}, true, false
@@ -90,7 +91,7 @@ func sanitizeProviderInferenceError(msg *protocol.InferenceErrorMessage) (safe p
 	}
 	safe.ErrorReason = safeInferenceErrorReason(safe.FailureCode, suppliedReason)
 	safe.StatusCode = safeInferenceFailureStatus(safe.FailureCode, safe.ErrorReason, safe.TerminalCause, msg.StatusCode)
-	safe.Error = safeInferenceFailureMessage(safe.FailureCode)
+	safe.Error = response.SafeInferenceFailureMessage(safe.FailureCode)
 	return safe, invalidCode, invalidCause
 }
 
@@ -156,37 +157,6 @@ func legacyInferenceFailureCode(status int, reason, terminalCause string) protoc
 		return protocol.FailureCodeCancelled
 	default:
 		return protocol.FailureCodeGenerationFailure
-	}
-}
-
-// safeInferenceFailureMessage is the only provider-failure prose allowed to
-// reach coordinator logs, durable outcomes, telemetry, and API clients.
-func safeInferenceFailureMessage(code protocol.InferenceFailureCode) string {
-	switch code {
-	case protocol.FailureCodeInvalidRequest:
-		return "invalid inference request"
-	case protocol.FailureCodeInvalidMedia:
-		return "invalid media input"
-	case protocol.FailureCodeMediaTooLarge:
-		return "media input exceeds size limit"
-	case protocol.FailureCodeUnsupportedMedia:
-		return "unsupported media input"
-	case protocol.FailureCodeTemplateRender:
-		return "model template could not render the request"
-	case protocol.FailureCodeModelUnavailable:
-		return "model not loaded"
-	case protocol.FailureCodeCapacity:
-		return "request rejected: provider capacity unavailable"
-	case protocol.FailureCodeCancelled:
-		return "request cancelled"
-	case protocol.FailureCodeEncryptionFailure:
-		return "encrypted inference transport failed"
-	case protocol.FailureCodeInternalFailure:
-		return "provider internal error"
-	case protocol.FailureCodeGenerationFailure:
-		fallthrough
-	default:
-		return "inference generation failed"
 	}
 }
 
@@ -301,19 +271,6 @@ func safeInferenceErrorReason(code protocol.InferenceFailureCode, supplied strin
 	default:
 		return errorReasonProviderError
 	}
-}
-
-// clientSafeInferenceErrorMessage also protects response helpers invoked with
-// coordinator-synthetic or directly-constructed messages that did not traverse
-// the provider read-loop sanitizer.
-func clientSafeInferenceErrorMessage(msg protocol.InferenceErrorMessage) string {
-	if msg.CoordinatorCause.IsProviderDisconnect() {
-		return "provider disconnected"
-	}
-	if msg.FailureCode.Valid() {
-		return safeInferenceFailureMessage(msg.FailureCode)
-	}
-	return safeInferenceFailureMessage(protocol.FailureCodeGenerationFailure)
 }
 
 // normalizeInferenceErrorForInternalUse hardens helpers that are also called by

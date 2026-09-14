@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -67,11 +68,11 @@ func emitOutcomeTerminalError(endpoint string, w http.ResponseWriter, pr *regist
 	flusher := w.(http.Flusher)
 	switch endpoint {
 	case "/v1/chat/completions":
-		(&Server{}).writeChatStreamTerminalError(w, flusher, pr, "provider_error", "failed")
+		response.New(response.Dependencies{Observer: responseWriteObserver{}}).ChatError(w, flusher, pr, "provider_error", "failed")
 	case "/v1/responses":
-		newResponsesStreamEmitter(w, flusher, pr, "response-id", 1).emitError("provider_error", "failed")
+		response.NewResponsesSink(w, flusher, pr, "response-id", 1, responseWriteObserver{}).Error("provider_error", "failed")
 	default:
-		newGenericEndpointStreamEmitter(w, flusher, pr).emitError("provider_error", "failed")
+		response.NewEndpointSink(w, flusher, pr, responseWriteObserver{}).Error("provider_error", "failed")
 	}
 }
 
@@ -157,25 +158,25 @@ func TestRequestOutcomeNativeResponseTerminalConflicts(t *testing.T) {
 						pr := terminalOutcomePending(srv, r, "completed")
 						defer pr.Profile.CompleteHandler()
 						defer pr.Profile.CompleteTerminal()
-						relay := newChatStreamRelay(pr, w, w.(http.Flusher), newRelayStamps(pr.Profile.Parent()))
+						relay := response.NewChatSink(pr, w, w.(http.Flusher), pr.Profile.Parent(), responseWriteObserver{})
 						if preamble {
-							relay.handleChunk(`data: {"type":"response.created"}`)
+							relay.Chunk(`data: {"type":"response.created"}`)
 						}
 						var frames []string
 						for _, status := range order {
 							frames = append(frames, fmt.Sprintf("event: response.%s\ndata: {\"type\":\"response.%s\",\"response\":{\"status\":\"%s\"}}", status, status, status))
 						}
 						if grouping == "single_frame_group" {
-							relay.handleChunk(strings.Join(frames, "\n\n"))
+							relay.Chunk(strings.Join(frames, "\n\n"))
 						} else {
 							for _, frame := range frames {
-								relay.handleChunk(frame)
+								relay.Chunk(frame)
 								if grouping == "separate_flushes" {
-									relay.flush()
+									relay.Flush()
 								}
 							}
 						}
-						relay.flush()
+						relay.Flush()
 					})(w, httptest.NewRequest("POST", "/v1/chat/completions", nil))
 					row := awaitRequestOutcomes(t, st, 1)[0]
 					conflict := order[0] != order[1]
@@ -234,9 +235,9 @@ func TestRequestOutcomeTerminalAndContentSurviveLaterFailedWrite(t *testing.T) {
 				pr := terminalOutcomePending(srv, r, "completed")
 				defer pr.Profile.CompleteHandler()
 				defer pr.Profile.CompleteTerminal()
-				relay := newChatStreamRelay(pr, w, w.(http.Flusher), newRelayStamps(pr.Profile.Parent()))
-				relay.handleChunk("data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}")
-				relay.flush()
+				relay := response.NewChatSink(pr, w, w.(http.Flusher), pr.Profile.Parent(), responseWriteObserver{})
+				relay.Chunk("data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}")
+				relay.Flush()
 				emitOutcomeTerminalError(r.URL.Path, w, pr)
 			})(w, httptest.NewRequest("POST", "/v1/chat/completions", nil))
 			row := awaitRequestOutcomes(t, st, 1)[0]
@@ -262,9 +263,9 @@ func TestRequestOutcomeSSETerminalsParseCompleteEventData(t *testing.T) {
 					defer pr.Profile.CompleteHandler()
 					defer pr.Profile.CompleteTerminal()
 					w.Header().Set("Content-Type", "text/event-stream")
-					relay := newChatStreamRelay(pr, w, w.(http.Flusher), newRelayStamps(pr.Profile.Parent()))
-					relay.writeFrame(tc.frame)
-					relay.flush()
+					relay := response.NewChatSink(pr, w, w.(http.Flusher), pr.Profile.Parent(), responseWriteObserver{})
+					relay.Frame(tc.frame)
+					relay.Flush()
 				}
 				req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 				if sealed {
@@ -310,12 +311,12 @@ func TestRequestOutcomeNativeFailureWithoutSnapshotIsNotFulfilled(t *testing.T) 
 				pr := terminalOutcomePending(srv, r, "completed")
 				defer pr.Profile.CompleteHandler()
 				defer pr.Profile.CompleteTerminal()
-				relay := newChatStreamRelay(pr, w, w.(http.Flusher), newRelayStamps(pr.Profile.Parent()))
+				relay := response.NewChatSink(pr, w, w.(http.Flusher), pr.Profile.Parent(), responseWriteObserver{})
 				// A legacy failure event must still conflict with a later DONE,
 				// including when both fit in one consumer write.
-				relay.writeFrame(fmt.Sprintf(`data: {"type":"response.%s"}`, status))
-				relay.writeFrame("data: [DONE]")
-				relay.flush()
+				relay.Frame(fmt.Sprintf(`data: {"type":"response.%s"}`, status))
+				relay.Frame("data: [DONE]")
+				relay.Flush()
 			})(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/chat/completions", nil))
 			row := awaitRequestOutcomes(t, st, 1)[0]
 			first := status

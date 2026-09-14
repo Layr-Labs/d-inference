@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"math"
 	"net/http"
 	"strconv"
@@ -43,7 +44,7 @@ const (
 	// or for the full response (non-streaming). For streaming, the deadline
 	// resets on each received chunk so long-running generations don't time out.
 	// 10 minutes allows 32k tokens at ~55 tok/s on slower hardware.
-	inferenceTimeout = 600 * time.Second
+	inferenceTimeout = response.InferenceTimeout
 
 	// defaultFirstContentDeadlineBase preserves the ordinary coordinator and
 	// unit-test budget. Production overrides it to 9s through validated startup
@@ -353,14 +354,14 @@ func (s *Server) writeGenericProviderError(w http.ResponseWriter, errMsg protoco
 	}
 	if normalizeInferenceErrorReason(errMsg.ErrorReason) == errorReasonToolNoncompliance {
 		writeJSON(w, http.StatusUnprocessableEntity,
-			errorResponse("invalid_request_error", clientSafeInferenceErrorMessage(errMsg), withCode("model_capability")))
+			errorResponse("invalid_request_error", response.ClientSafeInferenceErrorMessage(errMsg), withCode("model_capability")))
 		return
 	}
 	statusCode := errMsg.StatusCode
 	if statusCode == 0 {
 		statusCode = http.StatusBadGateway
 	}
-	writeJSON(w, statusCode, errorResponse("provider_error", clientSafeInferenceErrorMessage(errMsg)))
+	writeJSON(w, statusCode, errorResponse("provider_error", response.ClientSafeInferenceErrorMessage(errMsg)))
 }
 
 // noteInferenceError feeds the circuit breakers for a provider-side error
@@ -699,31 +700,6 @@ func attempt0RouteAnchor(t *registry.RequestTiming) time.Time {
 		return t.MediaFetchedAt
 	}
 	return t.ReservedAt
-}
-
-// consumerModel returns the model name to echo back to the consumer: the public
-// alias they requested when set, otherwise the concrete build id (raw-id
-// requests and any internal caller that didn't populate PublicModel).
-func consumerModel(pr *registry.PendingRequest) string {
-	if pr.PublicModel != "" {
-		return pr.PublicModel
-	}
-	return pr.Model
-}
-
-// rewriteChunkModel replaces the concrete build id in a streamed SSE chunk's
-// "model" field with the public alias the consumer requested, so streaming
-// responses never expose the underlying build/quant. No-op when the request
-// used a raw build id (PublicModel == Model) or no alias was set. Uses a
-// precise key+value string replace (both compact and spaced JSON forms) to
-// avoid parsing every chunk on the hot path.
-func rewriteChunkModel(chunk string, pr *registry.PendingRequest) string {
-	if pr.PublicModel == "" || pr.PublicModel == pr.Model {
-		return chunk
-	}
-	chunk = strings.ReplaceAll(chunk, `"model":"`+pr.Model+`"`, `"model":"`+pr.PublicModel+`"`)
-	chunk = strings.ReplaceAll(chunk, `"model": "`+pr.Model+`"`, `"model": "`+pr.PublicModel+`"`)
-	return chunk
 }
 
 // resolveRequestedModel maps the consumer-requested model — which may be a
@@ -1074,7 +1050,7 @@ func (s *Server) dispatchWithReserver(
 		PreferOwner:            policy.prefer,
 		OwnerAccountID:         policy.ownerAccountID,
 		FreeSelfRoute:          policy.enabled,
-		MetadataDetails:        metadataDetailsFromRequest(r),
+		MetadataDetails:        response.MetadataDetailsFromRequest(r),
 		AcceptedCh:             make(chan struct{}, 1),
 		ChunkCh:                make(chan registry.ProviderChunk, chunkBufferSize),
 		CompleteCh:             make(chan protocol.UsageInfo, 1),
@@ -1858,7 +1834,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if stripProviderRoutingFields(parsed) {
 		body.markDirty()
 	}
-	if applyMetadataDetailsRequest(r, parsed) {
+	if response.ApplyMetadataDetailsRequest(r, parsed) {
 		body.markDirty()
 	}
 
@@ -2399,7 +2375,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		parallelToolCalls:      parallelToolCalls,
 		isResponsesAPI:         isResponsesAPI,
 		stream:                 stream,
-		metadataDetails:        metadataDetailsFromRequest(r),
+		metadataDetails:        response.MetadataDetailsFromRequest(r),
 		policy:                 policy,
 		allowedProviderSerials: allowedProviderSerials,
 		cachePlan:              cachePlan,
@@ -2670,7 +2646,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	var allowedProviderSerials []string
 	stripProviderRoutingFields(parsed)
-	applyMetadataDetailsRequest(r, parsed)
+	response.ApplyMetadataDetailsRequest(r, parsed)
 
 	// "Use my own machine, for free" opt-in (see handleChatCompletions).
 	policy := s.resolveSelfRoutePolicy(r)
@@ -2936,7 +2912,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	cachePlan := registry.CachePlan{}
 	// Response framing is determined by the caller-facing endpoint, never by
 	// whether its request shape could be lowered for cache participation.
-	consumerEndpoint, requestedStopSequences := genericResponseMetadata(endpoint, parsed)
+	consumerEndpoint, requestedStopSequences := response.GenericResponseMetadata(endpoint, parsed)
 	if loweringErr == nil {
 		cachePlan = s.planCacheRoute(
 			r.Context(), consumerKey, model, inferenceBody, requiresVision)
@@ -2987,7 +2963,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		consumerEndpoint:       consumerEndpoint,
 		requestedStopSequences: requestedStopSequences,
 		stream:                 stream,
-		metadataDetails:        metadataDetailsFromRequest(r),
+		metadataDetails:        response.MetadataDetailsFromRequest(r),
 		policy:                 policy,
 		allowedProviderSerials: allowedProviderSerials,
 		cachePlan:              cachePlan,

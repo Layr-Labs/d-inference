@@ -33,6 +33,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"net/http"
 	"strconv"
 	"strings"
@@ -3802,12 +3803,12 @@ func (d *dispatchState) writeCommittedResponse() {
 	// caller opted into metadata_details, snapshot the same consumer-safe
 	// fields onto the pending request so chat-completions writers can attach
 	// them to the JSON body (OpenAI SDKs often hide custom headers).
-	info := collectCommittedProviderInfo(provider)
-	writeCommittedProviderHeaders(w, info)
+	info := response.CollectCommittedProviderInfo(provider)
+	response.WriteCommittedProviderHeaders(w, info)
 	d.writeTimingHeaderWithProfile(w, pr)
 	d.stampCommitted(pr)
-	writeInferenceJobIDHeader(w, pr.RequestID)
-	snapshotChatCompletionMetadata(pr, info)
+	response.WriteInferenceJobIDHeader(w, pr.RequestID)
+	response.SnapshotChatCompletionMetadata(pr, info)
 
 	// On return (disconnect/timeout/completion): free the slot, tell the
 	// provider to stop if it may still be generating, and preserve billing for

@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/api/httpresponse"
 	"io"
 	"net/http"
 	"time"
@@ -68,16 +69,7 @@ const maxInferenceBodyBytes = 16 << 20 // 16 MiB
 // single-frame WebSocket limit, tearing down its session. Disabling escaping
 // keeps the re-marshaled body within a small constant of the (already
 // size-capped) input. Mirrors toolpolicy.NormalizeBytes's own non-escaping round-trip.
-func marshalForwardBody(v any) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		return nil, err
-	}
-	// Encoder.Encode appends a trailing newline the encrypted body shouldn't carry.
-	return bytes.TrimSuffix(buf.Bytes(), []byte{'\n'}), nil
-}
+func marshalForwardBody(v any) ([]byte, error) { return httpresponse.MarshalBody(v) }
 
 // forwardBody is the provider-bound request as the handler reshapes it: the
 // decoded map every rewrite is applied to, plus the bytes that map was last

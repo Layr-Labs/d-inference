@@ -33,6 +33,7 @@ package api
 
 import (
 	"context"
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"net/http"
 	"time"
 
@@ -134,7 +135,7 @@ func holdPreContentBoilerplate(
 	if pr != nil {
 		pr.MarkFirstChunkArrived()
 	}
-	if !isBoilerplateChunk(chunk.Data) {
+	if !response.IsBoilerplateChunk(chunk.Data) {
 		return pr != nil &&
 			!pr.FirstContentDeadline.IsZero() &&
 			!chunk.ReceivedAt.IsZero() &&

@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
-import type { AuthState } from "@/components/providers/PrivyClientProvider";
+import type { AuthState } from "@/components/app-providers/PrivyClientProvider";
 import { useAuth, resetConsoleKeyProvisionBackoff } from "./useAuth";
-import { STORAGE_KEYS } from "@/lib/constants";
+import { STORAGE_KEYS } from "@/lib/storage-keys";
 
 // Mutable holder so each test can drive what useAuthContext returns.
 const h = vi.hoisted(() => ({ auth: null as unknown as AuthState }));
 
-vi.mock("@/components/providers/PrivyClientProvider", () => ({
+vi.mock("@/components/app-providers/PrivyClientProvider", () => ({
   useAuthContext: () => h.auth,
 }));
 vi.mock("@/lib/google-analytics", () => ({ trackEvent: vi.fn() }));

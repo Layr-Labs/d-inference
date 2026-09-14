@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, Moon, Sun } from "lucide-react";
-import { useTheme } from "@/components/providers/ThemeProvider";
+import { useTheme } from "@/components/app-providers/ThemeProvider";
 
 export function AppearanceSettings() {
   const { theme, setTheme } = useTheme();

@@ -29,6 +29,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── payments/         ledger + pricing (+ baserewards/)
 ├── providercontrol/trustreuse/ durable device evidence, revocation journal/replay and continuity (Manager)
 ├── providercontrol/codeidentity/ code proofs, APNs budgets/nonces, encrypted resume and continuity (Manager)
+├── providercontrol/releasepolicy/ active release generations, binary allowlists and runtime manifest (Manager)
 ├── profilesign/      CMS-signing of .mobileconfig enrollment profiles
 ├── protocol/         WebSocket message types shared with provider (type_scan.go: single-parse frame decode)
 ├── ratelimit/        rate limiting

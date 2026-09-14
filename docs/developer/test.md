@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `7466e7fa5`
+> Last updated: 2026-09-14 · commit `90e3f4921`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -137,6 +137,19 @@ heartbeat entry points on a directly constructed server with no attestor.
 ```bash
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/providercontrol/codeidentity
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'CodeIdentity|CodeCoverage|CodeContinuity|CrossVersionReuse|Restart.*Transition|Seeded|HashlessRegistration|PersistOnAttest|TrustReuseShutdown|ApprovedTransitionGrants|MDMSchedulerFleet1500'
+```
+
+Release-policy HTTP, fleet, signed-challenge and inventory-failure regressions
+remain in `coordinator/api/`. Pure manifest-membership and version-precedence
+cases follow `coordinator/providercontrol/releasepolicy/` with their original
+names. `release_policy_owner_test.go` checks current inventory/fleet/logger/
+version-floor bindings and setup on a directly constructed server; these cases
+also pass against the original production code. Resume fixtures seed policy
+through a fixed inventory dependency and inspect detached snapshots; they do
+not mutate the owner's policy maps.
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/providercontrol/releasepolicy ./coordinator/api -run 'Release|RuntimeManifest|BinaryHashPolicy|SyncBinaryHashes|SemverPrerelease'
 ```
 
 The CI formatting step checks tracked Go files with `gofmt`. It excludes

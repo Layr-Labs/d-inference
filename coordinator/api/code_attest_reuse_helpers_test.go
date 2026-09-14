@@ -2,12 +2,13 @@ package api
 
 import (
 	"context"
-	"github.com/eigeninference/d-inference/coordinator/providercontrol/codeidentity"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/providercontrol/codeidentity"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // waitForCond polls cond up to d, returning its final value. Used to observe a
@@ -104,7 +105,7 @@ func armCrossVersionApplicationEvidenceWithPolicy(
 ) {
 	t.Helper()
 	const policyGeneration = 1
-	srv.releaseTrustPolicy.Store(&releaseTrustPolicySnapshot{
+	seedReleasePolicyForTest(t, srv, releasePolicyObservation{
 		Generation:   policyGeneration,
 		Required:     true,
 		ByBinaryHash: byBinaryHash,

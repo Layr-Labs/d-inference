@@ -89,7 +89,7 @@ func TestCodeIdentityAbsentReleasePolicyCannotResume(t *testing.T) {
 	p := crossVersionProvider(pub, se, "0.9.0")
 	seedFreshProcessAttestation(t, srv, se, "0.8.0", p.APNsDeviceToken, pub, trHashB)
 	armCrossVersionApplicationEvidence(t, srv, p, se)
-	srv.releaseTrustPolicy.Store(nil)
+	resetReleasePolicyForTest(srv)
 	if srv.tryCrossVersionReuse(context.Background(), p.ID, p) || p.GetCodeAttested() || p.GetFreshCodeAttested() {
 		t.Fatal("absent release policy authorized a resume or granted code trust")
 	}

@@ -107,7 +107,7 @@ func TestRuntimeManifestAcceptsEveryActiveReleaseMetallib(t *testing.T) {
 	if err := srv.SyncRuntimeManifest(); err != nil {
 		t.Fatalf("SyncRuntimeManifest: %v", err)
 	}
-	accepted := srv.knownRuntimeManifest.TemplateHashes["mlx_metallib"]
+	accepted := srv.releasePolicyOwner().RuntimeManifest().TemplateHashes["mlx_metallib"]
 	if len(accepted) != 2 || !accepted[unionPreviousMetallib] || !accepted[unionNewestMetallib] {
 		t.Fatalf("mlx_metallib accepted set = %v, want both active releases' hashes", sortedTemplateHashes(accepted))
 	}
@@ -174,7 +174,7 @@ func TestRuntimeManifestDeactivationRemovesOnlyThatReleaseMetallib(t *testing.T)
 	if err := srv.SyncRuntimeManifest(); err != nil {
 		t.Fatalf("SyncRuntimeManifest after deactivation: %v", err)
 	}
-	accepted := srv.knownRuntimeManifest.TemplateHashes["mlx_metallib"]
+	accepted := srv.releasePolicyOwner().RuntimeManifest().TemplateHashes["mlx_metallib"]
 	if len(accepted) != 1 || !accepted[unionNewestMetallib] {
 		t.Fatalf("mlx_metallib accepted set = %v, want only the remaining active release", sortedTemplateHashes(accepted))
 	}
@@ -217,7 +217,7 @@ func TestRuntimeManifestUnionsPerFamilyTemplateHashes(t *testing.T) {
 	if err := srv.SyncRuntimeManifest(); err != nil {
 		t.Fatalf("SyncRuntimeManifest: %v", err)
 	}
-	manifest := srv.knownRuntimeManifest
+	manifest := srv.releasePolicyOwner().RuntimeManifest()
 	if got := manifest.TemplateHashes["qwen3.5"]; len(got) != 2 || !got[qwenOld] || !got[qwenNew] {
 		t.Fatalf("qwen3.5 accepted set = %v, want both releases' values", sortedTemplateHashes(got))
 	}
@@ -239,7 +239,7 @@ func TestRuntimeManifestUnionsPerFamilyTemplateHashes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ok, mismatches := srv.verifyRuntimeHashesAgainstManifest(manifest, "", "", report(tc.qwen))
+			ok, mismatches := srv.releasePolicyOwner().VerifyRuntimeHashesAgainstManifest(manifest, "", "", report(tc.qwen))
 			if ok != tc.wantOK {
 				t.Fatalf("verify = %v (%+v), want %v", ok, mismatches, tc.wantOK)
 			}
@@ -256,14 +256,14 @@ func TestRuntimeManifestUnionsPerFamilyTemplateHashes(t *testing.T) {
 	if err := srv.SyncRuntimeManifest(); err != nil {
 		t.Fatalf("SyncRuntimeManifest after deactivation: %v", err)
 	}
-	manifest = srv.knownRuntimeManifest
+	manifest = srv.releasePolicyOwner().RuntimeManifest()
 	if got := manifest.TemplateHashes["qwen3.5"]; len(got) != 1 || !got[qwenNew] {
 		t.Fatalf("qwen3.5 accepted set after deactivation = %v, want only the newer value", sortedTemplateHashes(got))
 	}
-	if ok, _ := srv.verifyRuntimeHashesAgainstManifest(manifest, "", "", report(qwenOld)); ok {
+	if ok, _ := srv.releasePolicyOwner().VerifyRuntimeHashesAgainstManifest(manifest, "", "", report(qwenOld)); ok {
 		t.Fatal("deactivated release's family template must no longer be accepted")
 	}
-	if ok, mismatches := srv.verifyRuntimeHashesAgainstManifest(manifest, "", "", report(qwenNew)); !ok {
+	if ok, mismatches := srv.releasePolicyOwner().VerifyRuntimeHashesAgainstManifest(manifest, "", "", report(qwenNew)); !ok {
 		t.Fatalf("remaining release's family template must still be accepted: %+v", mismatches)
 	}
 }

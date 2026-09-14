@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-13 · commit `c3ff0df7e`
+> Last updated: 2026-09-14 · commit `60557f3b0`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -48,7 +48,7 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/api` | The HTTP router (`routes` in `server.go`), middleware, consumer handlers (`consumer.go`), the provider WebSocket (`provider.go`), dispatch ladder (`dispatch.go`), sender encryption, admin, release, model-registry, device-auth and Stripe handlers, drain, profiler wiring. |
 | `coordinator/api/requestcontext` | Private context keys and typed account, API-key and request-ID access shared by middleware and endpoint packages (`WithAccountID`, `WithAPIKey`, `WithRequestID`). |
 | `coordinator/api/statearchive` | Feature/auth/output gates and streaming HTTP response (`Controller.Download`); `api/state_archive.go` binds current admin credentials/logger, while `stateexport` retains staging and encryption. |
-| `coordinator/api/releases` | Release registration, metadata/origin/bundle verification, deactivation and cached discovery (`Controller`). `api/releases.go` binds current store/cache/policy and existing authorization; `api/admin_auth.go` owns admin authorization and OTP. |
+| `coordinator/api/releases/controller.go` (`Controller`) | Release registration, metadata/origin/bundle verification, deactivation and cached discovery. `coordinator/api/releases.go` (`newReleaseAPI`) binds current store/cache/policy and existing authorization; `coordinator/api/admin_auth.go` (`isAdminAuthorized`) owns admin authorization. |
 | `coordinator/api/httpresponse` | JSON response writing and the common OpenAI-compatible error envelope (`WriteJSON`, `ErrorBody`); `WriteCachedJSON` and `EncodeCachedJSON` preserve pre-encoded response bytes. |
 | `coordinator/registry` | In-memory fleet view, scheduler and cost model, queue, warm pool, capacity breakers, health ejection, cache routing, TTFT calibration and shadow admission. |
 | `coordinator/store` | `Store` interface, Postgres and memory backends, schema migrations. |

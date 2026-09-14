@@ -14,6 +14,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 │   ├── billing_controller.go shared service, store, cache and auth bindings
 │   ├── catalog/          model publishing, discovery, aliases and their tests
 │   ├── catalog_controller.go shared catalog bindings and runtime publication callback
+│   ├── inference_dispatch.go current service and observation bindings for dispatch
 │   ├── requestauth/      shared linked-user identity requirements
 │   ├── device_auth.go      device code flow for linking providers to user accounts
 │   ├── enroll.go           MDM enrollment profile generation
@@ -31,7 +32,8 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── env/              shared env-var helpers/constants
 ├── inference/        toolpolicy/ (request policy), response/ (endpoint formatting and relays),
 │                     settlement/ (reservation, refunds and completion accounting),
-│                     attempt/ (cancellation, terminal policy and provider feedback)
+│                     attempt/ (cancellation, terminal policy and provider feedback),
+│                     dispatch/ (provider preparation, queue/hedge/failover and commit)
 ├── mdm/              MicroMDM client + webhook handling
 ├── payments/         ledger + pricing (+ baserewards/)
 ├── profilesign/      CMS-signing of .mobileconfig enrollment profiles

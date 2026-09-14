@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -11,10 +10,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
-	"runtime"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -24,12 +21,14 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/catalog"
+	"github.com/eigeninference/d-inference/coordinator/api/httpresponse"
 	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/apns"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
 	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/inference/settlement"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
@@ -40,13 +39,13 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/providercontrol/releasepolicy"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
 	"github.com/google/uuid"
-	"golang.org/x/mod/semver"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -291,12 +290,9 @@ type Server struct {
 	// zombieCanceller throttles cancels for chunks on abandoned streams. See zombie_stream.go.
 	attemptTracker *attempt.Tracker
 
-	// hedgeGov is the fleet-wide hedge admission governor (Routing v2 Phase 4):
-	// the mutable half of the speculative-launch verdict — the global
-	// concurrent-hedge counter and per-model win-rate EWMAs. One instance per
-	// Server; runSpeculative consults it before every backup launch and
-	// resolves it exactly once per launched hedge. See hedge_governor.go.
-	hedgeGov *hedgeGovernor
+	// dispatchController owns shared scan admission, hedge feedback and route latency.
+	dispatchOnce       sync.Once
+	dispatchController *dispatch.Controller
 
 	// minProviderVersion is the minimum provider version accepted for routing.
 	// Providers below this version are excluded and told to update.
@@ -445,31 +441,6 @@ type Server struct {
 	// NewServer from env; nil (e.g. a &Server{} built directly in tests)
 	// behaves as disabled and falls back to the legacy pre-dispatch rejection.
 	mediaResolver *mediafetch.Resolver
-	// routingScanSem bounds how many provider-selection scans (the
-	// ReserveProviderEx/ReserveProviderWithPlan family — a read-lock walk of
-	// ~1,260 providers per attempt) may run concurrently. During the
-	// 2026-09-01 congestion collapse, retry-amplified inbound (~100 req/s of
-	// retryable 429 traffic) times a fresh full scan per dispatch attempt
-	// saturated every coordinator CPU (attempt-0 route p50 40ms → 4.6s,
-	// success ~40%, 429s delivered after 11s) — a stable death loop. With the
-	// semaphore, excess requests park cheaply on the channel instead of
-	// piling onto the scheduler; one that cannot acquire within its remaining
-	// first-content budget sheds as a capacity-shaped 429
-	// (errRoutingScanSaturated). Capacity defaults to runtime.NumCPU()
-	// (min 2); override via EIGENINFERENCE_ROUTING_CONCURRENCY
-	// (SetRoutingConcurrency, called before serving starts).
-	routingScanSem chan struct{}
-
-	// routeLatencyEWMAMs is an EWMA of attempt-0 route latency (ReceivedAt →
-	// RoutedAt, milliseconds), updated where RoutedAt is stamped in
-	// dispatchWithReserver. estimateRetryAfter consults it: when routing
-	// itself is degraded (EWMA > 1s) the returned Retry-After scales up so
-	// upstream backoff actually relieves pressure — during the 2026-09-01
-	// collapse the queue-depth heuristic returned 2s on an empty queue and
-	// invited 2s retry storms. Guarded by routeLatencyMu (one tiny critical
-	// section per request; no allocation).
-	routeLatencyMu     sync.Mutex
-	routeLatencyEWMAMs float64
 }
 
 // SetRateLimiter configures the per-account rate limiter applied to
@@ -746,7 +717,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	}
 	firstContentDeadlineBase := cfg.FirstContentDeadlineBase
 	if firstContentDeadlineBase <= 0 {
-		firstContentDeadlineBase = defaultFirstContentDeadlineBase
+		firstContentDeadlineBase = dispatch.DefaultFirstContentDeadlineBase
 	}
 
 	s := &Server{
@@ -765,13 +736,12 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		mdmSchedulerConfig:       cfg.MDMScheduler,
 		settlements:              settlement.NewHolder(),
 		attemptTracker:           attempt.NewTracker(),
-		hedgeGov:                 newHedgeGovernor(),
 		serviceReservations:      settlement.NewServiceHolds(st, cfg.ServiceReservations),
 		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
 		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
 		firstContentDeadlineBase: firstContentDeadlineBase,
-		routingScanSem:           make(chan struct{}, DefaultRoutingConcurrency()),
 	}
+	s.initializeInferenceDispatch(dispatch.Config{RoutingConcurrency: dispatch.DefaultRoutingConcurrency(), HedgeGovernor: true})
 	if _, clampedDown := trustReuseReconnectGapFromEnv(); clampedDown {
 		logger.Warn("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP exceeds the 120s security ceiling; clamping DOWN",
 			"requested", os.Getenv("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP"),
@@ -1286,95 +1256,6 @@ func (s *Server) SetMinDecodeTPS(tps float64) {
 		tps = 0
 	}
 	s.minDecodeTPS = tps
-}
-
-// DefaultRoutingConcurrency is the built-in routing-scan semaphore capacity:
-// one scan per CPU (a scan is pure CPU under the registry read lock), floored
-// at 2 so a tiny container never serializes routing entirely. Exported so
-// main.go can log the effective default alongside the env override.
-func DefaultRoutingConcurrency() int {
-	n := runtime.NumCPU()
-	if n < 2 {
-		n = 2
-	}
-	return n
-}
-
-// SetRoutingConcurrency replaces the routing-scan semaphore with one of the
-// given capacity (EIGENINFERENCE_ROUTING_CONCURRENCY). Values < 2 clamp to 2.
-// Call before serving starts — replacing the channel while scans are in
-// flight would strand slots.
-func (s *Server) SetRoutingConcurrency(n int) {
-	if n < 2 {
-		n = 2
-	}
-	s.routingScanSem = make(chan struct{}, n)
-}
-
-// scanSlotResult is the outcome of acquireRoutingScanSlot. Client
-// disconnection is distinguished from acquisition timeout so callers route a
-// vanished caller onto the existing client-gone terminal (cancelled outcome,
-// refund, no response body) and NEVER onto the routing_saturated 429 /
-// rejection-ledger path.
-type scanSlotResult int
-
-const (
-	scanSlotAcquired scanSlotResult = iota
-	scanSlotTimeout
-	scanSlotClientGone
-)
-
-// acquireRoutingScanSlot blocks until a provider-selection scan slot is free,
-// the wait budget elapses, or done fires (client gone). On scanSlotTimeout the
-// caller sheds the attempt as capacity-shaped (errRoutingScanSaturated)
-// instead of piling another scan onto saturated CPUs; on scanSlotClientGone it
-// takes its ordinary client-gone path. A nil semaphore (a &Server{} built
-// directly in tests) admits immediately, preserving legacy behavior for bare
-// fixtures; a nil done channel never fires.
-func (s *Server) acquireRoutingScanSlot(wait time.Duration, done <-chan struct{}) scanSlotResult {
-	if s.routingScanSem == nil {
-		return scanSlotAcquired
-	}
-	select {
-	case s.routingScanSem <- struct{}{}:
-		return scanSlotAcquired
-	default:
-	}
-	clientGone := func() bool {
-		select {
-		case <-done:
-			return true
-		default:
-			return false
-		}
-	}
-	if wait <= 0 {
-		if clientGone() {
-			return scanSlotClientGone
-		}
-		return scanSlotTimeout
-	}
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-	select {
-	case s.routingScanSem <- struct{}{}:
-		return scanSlotAcquired
-	case <-timer.C:
-		if clientGone() {
-			return scanSlotClientGone
-		}
-		return scanSlotTimeout
-	case <-done:
-		return scanSlotClientGone
-	}
-}
-
-// releaseRoutingScanSlot returns a slot taken by acquireRoutingScanSlot.
-func (s *Server) releaseRoutingScanSlot() {
-	if s.routingScanSem == nil {
-		return
-	}
-	<-s.routingScanSem
 }
 
 // SetServabilityGate toggles the smart early-429 admission gate. See the
@@ -2270,40 +2151,7 @@ func sortedTemplateHashes(accepted map[string]bool) []string {
 	return out
 }
 
-// semverGreater returns true when a has higher SemVer precedence than b,
-// including the numeric/alphanumeric prerelease identifier rules. Invalid
-// non-empty versions sort below valid versions so minimum-version gates fail
-// closed.
-func semverGreater(a, b string) bool {
-	if a == "" {
-		return false
-	}
-	if b == "" {
-		return true
-	}
-	av := a
-	if !strings.HasPrefix(av, "v") {
-		av = "v" + av
-	}
-	bv := b
-	if !strings.HasPrefix(bv, "v") {
-		bv = "v" + bv
-	}
-	aValid, bValid := semver.IsValid(av), semver.IsValid(bv)
-	switch {
-	case aValid && bValid:
-		return semver.Compare(av, bv) > 0
-	case aValid:
-		return true
-	default:
-		return false
-	}
-}
-
-// semverLess returns true if version a is less than version b.
-func semverLess(a, b string) bool {
-	return semverGreater(b, a)
-}
+func semverLess(a, b string) bool { return releasepolicy.VersionLess(a, b) }
 
 // SetRuntimeManifest configures the known-good runtime manifest for provider
 // verification. Pass nil to disable runtime verification (all providers pass).
@@ -3413,7 +3261,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		sw := httpresponse.NewStatusWriter(w, http.StatusOK)
 
 		// Generate (or honor) a request_id and stash it in context +
 		// response headers so logs and the client can correlate.
@@ -3454,14 +3302,14 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 			"method", r.Method,
 			"path", r.URL.Path,
 			"route", route,
-			"status", sw.status,
+			"status", sw.Status(),
 			"duration_ms", dur.Milliseconds(),
 			"remote", r.RemoteAddr,
 			"user_id", userID,
 		)
 
 		pathLabel := httpPathLabel(route)
-		statusStr := strconvItoa(sw.status)
+		statusStr := strconvItoa(sw.Status())
 
 		if s.metrics != nil {
 			s.metrics.IncCounter("http_requests_total",
@@ -3521,45 +3369,6 @@ func newRequestID() string {
 		b[i] = alphabet[int(b[i])&31]
 	}
 	return string(b[:])
-}
-
-// statusWriter wraps http.ResponseWriter to capture the status code
-// for logging. It also implements http.Flusher and http.Hijacker by
-// delegating to the underlying writer, which is required for SSE
-// streaming and WebSocket upgrade respectively.
-type statusWriter struct {
-	http.ResponseWriter
-	status      int
-	wroteHeader bool
-}
-
-func (sw *statusWriter) WriteHeader(code int) {
-	if !sw.wroteHeader {
-		sw.status = code
-		sw.wroteHeader = true
-	}
-	sw.ResponseWriter.WriteHeader(code)
-}
-
-func (sw *statusWriter) Flush() {
-	if f, ok := sw.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
-}
-
-// Hijack implements http.Hijacker by delegating to the underlying writer.
-// This is required for WebSocket upgrade to work through middleware.
-func (sw *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	if hj, ok := sw.ResponseWriter.(http.Hijacker); ok {
-		return hj.Hijack()
-	}
-	return nil, nil, errors.New("underlying ResponseWriter does not implement http.Hijacker")
-}
-
-// Unwrap returns the underlying ResponseWriter, allowing the http package
-// and websocket libraries to discover interfaces like http.Hijacker.
-func (sw *statusWriter) Unwrap() http.ResponseWriter {
-	return sw.ResponseWriter
 }
 
 // extractBearerToken extracts the token from "Authorization: Bearer <token>".

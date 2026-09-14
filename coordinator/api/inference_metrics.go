@@ -9,3 +9,8 @@ func (m inferenceMetrics) Count(name string, value int64, tags []string) {
 func (m inferenceMetrics) Histogram(name string, value float64, tags []string) {
 	m.server.ddHistogram(name, value, tags)
 }
+
+func (m inferenceMetrics) Enabled() bool { return m.server.dd != nil }
+func (m inferenceMetrics) Gauge(name string, value float64, tags []string) {
+	m.server.ddGauge(name, value, tags)
+}

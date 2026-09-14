@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-13 · commit `89a671179`
+> Last updated: 2026-09-14 · commit `0afcf6e47`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -42,6 +42,43 @@ content beyond that. See [`data-flow.md`](data-flow.md) and
 
 ## Mechanism
 
+### Dispatch controller
+
+`Controller.Run` (`coordinator/inference/dispatch/request.go`) receives the
+validated HTTP input and creates one private `execution` for its provider
+attempts. `coordinator/api/inference_dispatch.go` (`initializeInferenceDispatch`)
+binds one controller to each Server. The controller owns the scan semaphore,
+hedge governor and route-latency EWMA; the execution owns its plan, selected
+providers, first-content clock and retry state. HTTP validation and initial
+admission remain in the API pipeline.
+
+The controller uses the existing registry, attempt tracker, settlement holds
+and response writer. Its `Dependencies` getters (`coordinator/inference/dispatch/dependencies.go`)
+read the current API service and configuration at each original read point,
+including billing configured after server construction. `dispatchObserver`
+(`coordinator/api/inference_dispatch.go`) retains the actual route, rejection,
+cache-terminal and request-outcome publication operations.
+
+Pending terminal publication goes through `attempt.PublishPendingOutcome`
+(`coordinator/inference/attempt/pending_outcome.go`): claim the terminal, update
+the profile, publish cache telemetry, then publish the route using the current
+pending identity. A losing claim invokes no observer. Successful terminal outcomes leave
+profile completion to the provider, and callbacks run after the
+request's claim lock is released. The API observer retains its existing
+metrics, storage and nil-Server handling.
+
+```mermaid
+flowchart LR
+  HTTP[API validation and admission] --> Run[dispatch.Controller.Run]
+  Run --> Plan[Registry plan and queue]
+  Plan --> Wire[Prepare and enqueue encrypted request]
+  Wire --> Wait[First content, hedge or failover]
+  Wait -->|content| Commit[Commit and response.Writer]
+  Wait -->|exhausted| Error[Existing JSON error and retry header]
+  Run --> Attempt[Shared attempt and settlement services]
+  Wait --> Observe[API observation sinks]
+```
+
 ### Entry points
 
 `ReserveProviderWithPlan` (`coordinator/registry/scheduler.go`) is the
@@ -51,10 +88,10 @@ dispatch-time entry point. It scans the fleet
 winner (`selectRoutingCandidate`) and
 returns a bounded **dispatch plan** (`coordinator/registry/dispatch_plan.go`)
 holding the winner plus up to `dispatchPlanMaxAlternates = 8` retained
-alternates. The API layer (`coordinator/api/dispatch.go`) consumes the plan:
+alternates. The dispatch controller (`coordinator/inference/dispatch/run.go`) consumes the plan:
 it dispatches to the winner, may probe alternates for capacity quotes
 (`capacityProbeWindow = 250 * time.Millisecond`,
-`dispatchPlanProbeFanout = 8`, `coordinator/api/dispatch_plan_wiring.go`) and
+`dispatchPlanProbeFanout = 8`, `coordinator/inference/dispatch/plan.go`) and
 falls through the plan on retry or hedge. `ReserveNextFromPlan`
 (`coordinator/registry/dispatch_plan.go`) refreshes remaining time after both
 registry and provider locks are acquired, before evaluating and debiting an
@@ -321,12 +358,12 @@ and as the first alternate in the dispatch plan.
 
 A request that has not produced first content by its **speculative point**
 launches a backup and races the two. The mechanics live in
-`coordinator/api/dispatch.go` (`runSpeculative`, `runRace`) with timing in
-`coordinator/api/hedge_schedule.go` and `coordinator/api/first_token_clock.go`.
+`coordinator/inference/dispatch/speculative.go`, `coordinator/inference/dispatch/race.go` (`runSpeculative`, `runRace`) with timing in
+`coordinator/inference/dispatch/hedge_schedule.go` and `coordinator/inference/dispatch/first_content_clock.go`.
 
 **Launch offset.** The initial speculative point is
-`deadline × speculativeTimerRatio`, `speculativeTimerRatio = 0.5`
-(`coordinator/api/consumer.go`). When the probe round returns a
+`deadline × SpeculativeTimerRatio`, `SpeculativeTimerRatio = 0.5`
+(`coordinator/inference/dispatch/limits.go`). When the probe round returns a
 high-confidence quote for the best alternate, it may deliver one strictly
 earlier absolute launch instant through `hedgeAdvanceCh`, computed by
 `hedgeLaunchOffset(deadline, backupTTFTQ90, confidence)`:
@@ -347,7 +384,7 @@ request's `ReceivedAt`, so retries do not restart the clock.
 provider excluded. A `PreferOwner` request being served by the owner's own
 machine never hedges onto the paid public fleet.
 
-**Governor.** `hedgeGovernor.tryAcquireHedge` (`coordinator/api/hedge_governor.go`)
+**Governor.** `hedgeGovernor.tryAcquireHedge` (`coordinator/inference/dispatch/hedge_governor.go`)
 must return `hedgeAllow` before a backup launches; the verdict and the budget
 slot are one atomic operation. Suppression verdicts, in evaluation order:
 
@@ -364,7 +401,7 @@ cancel and releases the reservation. A backup win sets `BackupWon`, emits
 `inference.speculative_win`, and is counted by
 `recordHedgeOutcome`. Both attempts are marked `UsedBackup`; settlement
 excludes them from TTFT calibration (`observeTTFTCalibration`,
-`coordinator/api/ttft_calibration.go`). The acquired governor slot is released
+`coordinator/inference/dispatch/calibration.go`). The acquired governor slot is released
 exactly once on every exit path (`noteHedgeResolved`).
 
 ### Early-429 servability predictor
@@ -455,7 +492,7 @@ accept is gated (`capacity_cooldown`) for `defaultCapacityCooldownTTL =
 `EIGENINFERENCE_CAPACITY_COOLDOWN_MAX_TTL_SECONDS`.
 
 First-content accepts carry their observation time from
-`coordinator/api/dispatch.go` (`commitFirstContent`) to
+`coordinator/inference/dispatch/commit.go` (`commitFirstContent`) to
 `coordinator/registry/capacity_cooldown.go` (`RecordCapacityAcceptObserved`).
 The recorder runs asynchronously so the first client byte does not wait for
 `registry.mu`. Reject strikes after the observation survive a delayed accept;
@@ -481,9 +518,11 @@ removal owned a still-running attempt, and refunds only that attempt's top-up.
 `CancelForFirstContentTimeout` retains the provider's atomic deadline arbitration.
 The tracker mutex orders nonblocking enqueue acceptance and sent marking against
 terminal consumption; expiry and terminal observations follow the tracker
-operation. The API keeps terminal claiming, parking and route-outcome ownership
-(`coordinator/inference/attempt/cancel.go`, `cancel_tracker.go`, `cancel_metrics.go`;
-`coordinator/api/provider.go`, `coordinator/api/dispatch.go`).
+operation. Shared terminal publication belongs to `PublishPendingOutcome`;
+the API keeps provider-frame handling, parking and durable observation
+(`coordinator/inference/attempt/cancel.go`, `cancel_tracker.go`, `cancel_metrics.go`,
+`coordinator/inference/attempt/pending_outcome.go`; `coordinator/api/provider.go`,
+`coordinator/api/route_outcome.go`).
 
 ### Cooldowns, breakers and ejection
 
@@ -634,11 +673,11 @@ never reads it. The header comment in `reputation.go` still says the score
 factors into routing; the code does not. Reputation inputs do reach routing
 indirectly: `RecordChallengeFailure` feeds `challenge_stale`, and the latency
 EWMA is fed only by non-cache, non-hedge first-content samples
-(`coordinator/api/dispatch.go`).
+(`coordinator/inference/dispatch/commit.go`).
 
 ### `Retry-After` derivation
 
-When the consumer path sheds a request with `429`, `estimateRetryAfter` (`coordinator/api/consumer.go`) derives the header:
+When the consumer path sheds a request with `429`, `EstimateRetryAfter` (`coordinator/inference/dispatch/retry_pressure.go`) derives the header:
 
 1. Base `2` seconds. If the model's queue is non-empty,
    `queueDepth × 3`, clamped to [2, 30].
@@ -738,9 +777,9 @@ must not run in parallel with other scheduler tests in the same process.
 
 | Symptom | Cause | What the code does |
 |---|---|---|
-| `no_provider` | No provider advertises the model, or every advertising provider fails a non-capacity gate (`candidateCount == 0` with no capacity rejections). | Preflight returns `429` with `Retry-After` and reason code `no_provider` (`coordinator/api/inference_admission.go`). With [`EIGENINFERENCE_COLD_DISPATCH`](../reference/configuration.md#routing-admission-and-ttft) enabled and an idle on-disk provider that could load the model, the request is queued for a cold dispatch instead (`coldSpillAvailable`, `coordinator/api/cold_dispatch.go`). With breaker-only rejections, fail-open re-scans first (`shouldBypassBreakerFailOpen`). |
+| `no_provider` | No provider advertises the model, or every advertising provider fails a non-capacity gate (`candidateCount == 0` with no capacity rejections). | Preflight returns `429` with `Retry-After` and reason code `no_provider` (`coordinator/api/inference_admission.go`). With [`EIGENINFERENCE_COLD_DISPATCH`](../reference/configuration.md#routing-admission-and-ttft) enabled and an idle on-disk provider that could load the model, the request is queued for a cold dispatch instead (`ColdSpillAvailable`, `coordinator/inference/dispatch/cold.go`). With breaker-only rejections, fail-open re-scans first (`shouldBypassBreakerFailOpen`). |
 | `model_too_large` | Every advertising provider is cold and `modelFitsHardware` fails (`rejectModelTooLarge`). | Permanent rejection for this fleet composition; `routingsim` reports `OutcomeModelTooLarge`. |
-| All gated on capacity (`machine_busy`) | Providers serve the model but all are at `no_headroom`, `free_memory` or `capacity_cooldown`. | With [`EIGENINFERENCE_QUEUE_BEFORE_SHED`](../reference/configuration.md#routing-admission-and-ttft) enabled (`coordinator/api/cold_dispatch.go`) the request queues per [`scheduling.md`](scheduling.md); otherwise `429` with `Retry-After` from `estimateRetryAfter`. |
+| All gated on capacity (`machine_busy`) | Providers serve the model but all are at `no_headroom`, `free_memory` or `capacity_cooldown`. | With [`EIGENINFERENCE_QUEUE_BEFORE_SHED`](../reference/configuration.md#routing-admission-and-ttft) enabled (`coordinator/inference/dispatch/cold.go`) the request queues per [`scheduling.md`](scheduling.md); otherwise `429` with `Retry-After` from `EstimateRetryAfter`. |
 | `ttft_too_slow` | Every candidate's estimated TTFT exceeds the first-content deadline. | Soft by default: the best-available provider still serves. `EIGENINFERENCE_TTFT_HARD_REJECT=true` restores the legacy `429`; vision requests are never TTFT-gated. |
 | Queue timeout | A queued request found no eligible provider within the queue's wait bound. | `ErrQueueTimeout` → `429` with `Retry-After`; see [`scheduling.md`](scheduling.md#per-model-request-queue). |
 | Budget-clamped fleet | Every pair for the model is clamped after capacity 503s. | Pairs show as `free_memory` until release or `defaultBudgetClampTTL` ([above](#gray-box-capacity-signals)); heartbeat headroom plus one accept releases early. |
@@ -767,11 +806,12 @@ must not run in parallel with other scheduler tests in the same process.
 | Cancellation and terminal correlation | `coordinator/inference/attempt/cancel.go` — `Service.Cancel`; `cancel_tracker.go` — `Tracker`; `cancel_delivery.go` — `SendRecordedCancel`, `StrayChunk`; `cancel_metrics.go` — `ResolveCancelledTerminal` |
 | Breakers and ejection | `coordinator/registry/error_cooldown.go`, `coordinator/registry/provider_breaker.go`, `coordinator/registry/health_ejection.go` |
 | Reputation | `coordinator/registry/reputation.go` — `Score`, `RecordLatency` |
-| TTFT calibration | `coordinator/registry/ttft_calibration.go`; fed by `observeTTFTCalibration` in `coordinator/api/ttft_calibration.go` |
-| Hedge timing, governor, race | `coordinator/api/hedge_schedule.go`, `coordinator/api/hedge_governor.go`, `coordinator/api/dispatch.go` (`runSpeculative`, `runRace`), `coordinator/api/first_token_clock.go` |
-| Probes and plan wiring | `coordinator/api/dispatch_plan_wiring.go` |
-| `Retry-After`, speculative ratio, route EWMA | `coordinator/api/consumer.go` — `estimateRetryAfter`, `estimateTTFTRetryAfter`, `speculativeTimerRatio` |
-| Queue-before-shed and cold dispatch flags | `coordinator/api/cold_dispatch.go` |
+| TTFT calibration | `coordinator/registry/ttft_calibration.go`; fed by `observeTTFTCalibration` in `coordinator/inference/dispatch/calibration.go` |
+| Hedge timing, governor, race | `coordinator/inference/dispatch/hedge_schedule.go`, `coordinator/inference/dispatch/hedge_governor.go`, `coordinator/inference/dispatch/speculative.go`, `coordinator/inference/dispatch/race.go` (`runSpeculative`, `runRace`), `coordinator/inference/dispatch/first_content_clock.go` |
+| Dispatch controller and API bindings | `coordinator/inference/dispatch/request.go` — `Controller.Run`; `coordinator/inference/dispatch/run.go` — `execution.run`; `coordinator/api/inference_dispatch.go` — `initializeInferenceDispatch`, `dispatchObserver` |
+| Probes and plan wiring | `coordinator/inference/dispatch/plan.go` |
+| `Retry-After`, speculative ratio, route EWMA | `coordinator/inference/dispatch/capacity.go`, `coordinator/inference/dispatch/retry_pressure.go`, `coordinator/inference/dispatch/limits.go` — `EstimateRetryAfter`, `estimateTTFTRetryAfter`, `SpeculativeTimerRatio` |
+| Queue-before-shed and cold dispatch flags | `coordinator/inference/dispatch/cold.go` |
 | Flag wiring at startup | `coordinator/cmd/coordinator/main.go` |
 | Simulation harness | `coordinator/registry/routingsim/` — `runner.go`, `fleet.go`, `fleet_ndjson.go`, `trace.go`, `report.go` |
 

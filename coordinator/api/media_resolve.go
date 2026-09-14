@@ -1,5 +1,18 @@
 package api
 
+import (
+	"context"
+	"errors"
+	"net/http"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
+	"github.com/eigeninference/d-inference/coordinator/mediafetch"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+)
+
 // media_resolve.go bridges the chat-completions handler to the mediafetch
 // package: it turns remote http(s) image_url/video_url links into inline base64
 // data: URIs on the coordinator (the trusted SSRF chokepoint) before the body is
@@ -21,17 +34,6 @@ package api
 //     so network I/O is gated behind the cost gates (an authenticated but
 //     unfunded/over-quota request can never drive coordinator-side fetches).
 //     The caller refunds the reservation on failure.
-
-import (
-	"context"
-	"errors"
-	"net/http"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/mediafetch"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
-)
 
 // gateRemoteMediaPreDispatch is phase 1 (pre-billing) of remote media handling
 // on the chat surface. handled=true => a terminal response was written and the
@@ -155,7 +157,7 @@ func mediaFetchBudget(receivedAt time.Time, firstContentDeadline time.Duration) 
 	if receivedAt.IsZero() || firstContentDeadline <= 0 {
 		return 0, false
 	}
-	remaining := firstTokenRemainingSince(receivedAt, firstContentDeadline)
+	remaining := dispatch.FirstTokenRemainingSince(receivedAt, firstContentDeadline)
 	reserve := mediaFetchInferenceReserve
 	if half := firstContentDeadline / 2; half < reserve {
 		reserve = half
@@ -240,7 +242,7 @@ func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawB
 
 	start := time.Now()
 	resolveCtx := r.Context()
-	if receivedAt := timingReceivedAt(timing); !receivedAt.IsZero() {
+	if receivedAt := dispatch.TimingReceivedAt(timing); !receivedAt.IsZero() {
 		deadline := meta.firstContentDeadline
 		if deadline <= 0 {
 			deadline = s.FirstContentDeadline(meta.model, meta.estimatedPromptTokens)
@@ -318,20 +320,20 @@ func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawB
 func (s *Server) mediaFetchRejected(w http.ResponseWriter, r *http.Request, parsed map[string]any, meta mediaResolveMeta, status int, code, message string) {
 	reason := mediaRejectionReason(status)
 	s.recordRejection(rejectionInfo{
-		r:                     r,
-		stage:                 "validation",
-		reasonCode:            reason,
-		httpStatus:            status,
-		keyID:                 keyIDFromContext(r.Context()),
-		consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-		requestedModel:        meta.publicModel,
-		resolvedModel:         meta.model,
-		stream:                meta.stream,
-		estimatedPromptTokens: meta.estimatedPromptTokens,
-		requestedMaxTokens:    meta.requestedMaxTokens,
-		requiresVision:        true,
-		hasTools:              meta.hasTools,
-		params:                rejectionSamplingParams(parsed),
+		Request:               r,
+		Stage:                 "validation",
+		ReasonCode:            reason,
+		HttpStatus:            status,
+		KeyID:                 requestcontext.KeyID(r.Context()),
+		ConsumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+		RequestedModel:        meta.publicModel,
+		ResolvedModel:         meta.model,
+		Stream:                meta.stream,
+		EstimatedPromptTokens: meta.estimatedPromptTokens,
+		RequestedMaxTokens:    meta.requestedMaxTokens,
+		RequiresVision:        true,
+		HasTools:              meta.hasTools,
+		Params:                rejectionSamplingParams(parsed),
 	})
 	s.ddIncr("inference.media_fetch.rejected", []string{"code:" + code, "model:" + meta.model})
 	writeJSON(w, status, errorResponse(code, message, withParam("messages")))

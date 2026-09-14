@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `4f6d1c551`
+> Last updated: 2026-09-14 · commit `fbf66cb35`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -104,6 +104,12 @@ part of the same coordinator binary and needs no additional build target.
 Attempt cancellation and provider feedback build as
 `coordinator/inference/attempt/`, bound by `coordinator/api/inference_attempt.go`.
 It shares the coordinator binary and existing registry/accounting services.
+
+Provider dispatch builds as `coordinator/inference/dispatch/`, bound by
+`coordinator/api/inference_dispatch.go`. The normal coordinator build includes
+its queue, hedge, failover and provider-body operations. It uses the same
+attempt, settlement and response owners; see [dispatch ownership](../architecture/routing.md#dispatch-controller)
+and the [test commands](test.md).
 
 Inference accounting builds as `coordinator/inference/settlement/`, bound by
 `coordinator/api/inference_settlement.go` to the existing ledger and hold map.

@@ -15,27 +15,6 @@ import (
 // and provider.go (settlement); the owner filter and trust relaxation live in
 // the registry scheduler.
 
-// selfRoutePolicy carries the authenticated "use my own machine, for free"
-// decision through dispatch so that primary, sequential-retry, and
-// speculative-backup PendingRequests all inherit the same owner filter and
-// free-billing flag. It is resolved entirely server-side (from the request's
-// authenticated identity plus the X-Darkbloom-Route header / per-key flag);
-// no field originates from the request body.
-type selfRoutePolicy struct {
-	// enabled is EXCLUSIVE self-route: restrict routing to providers owned by
-	// ownerAccountID, mark the request free, and never fall back to the paid
-	// fleet. The zero value is a normal paid request to any provider.
-	enabled bool
-	// prefer is "prefer my own machine, fall back to the paid fleet": route to
-	// an owned provider whenever one can serve (free), otherwise use the public
-	// fleet (charged). Mutually exclusive with `enabled`; it takes a normal
-	// reservation up front so the paid fallback can settle, and billing is
-	// decided at settlement by whether an owned machine actually served it.
-	prefer bool
-	// ownerAccountID is the account that must own the serving provider.
-	ownerAccountID string
-}
-
 // resolveSelfRoutePolicy derives the self-route decision from the request's
 // authenticated identity and opt-in signals:
 //
@@ -63,7 +42,7 @@ func (s *Server) resolveSelfRoutePolicy(r *http.Request) selfRoutePolicy {
 	if owner == "" {
 		return selfRoutePolicy{}
 	}
-	return selfRoutePolicy{enabled: exclusive, prefer: prefer, ownerAccountID: owner}
+	return selfRoutePolicy{Enabled: exclusive, Prefer: prefer, OwnerAccountID: owner}
 }
 
 // selfRouteUnavailable reports whether a self-route request cannot proceed and,

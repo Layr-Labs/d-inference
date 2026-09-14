@@ -1,6 +1,6 @@
 # Data flow: one request end to end
 
-> Last updated: 2026-09-13 · commit `89a671179`
+> Last updated: 2026-09-14 · commit `0afcf6e47`
 
 A consumer request travels consumer → coordinator → provider → coordinator → consumer. This page shows that journey once — as a sequence diagram and a stage table naming the code that owns each step — for anyone tracing a request through the coordinator.
 
@@ -26,7 +26,7 @@ sequenceDiagram
     K->>K: resolveRequestedModel (alias → build)
     K->>K: reserveInferenceBalance (worst-case hold)
     K->>K: runInferenceAdmission, planCacheRoute
-    K->>D: dispatchState.run
+    K->>D: dispatch.Controller.Run
     D->>D: select provider from the scheduler plan (routing.md)
     D->>D: e2e.GenerateSessionKeys / e2e.Encrypt
     D->>P: inference_request (encrypted payload)
@@ -62,15 +62,15 @@ Two things the diagram makes visible. First, the consumer receives no bytes unti
 | 11 | Fetch media | Remote `image_url` parts fetched and inlined; billed as media | `resolveRemoteMedia` (`coordinator/api/media_resolve.go`) |
 | 12 | Capacity admission | Is there an eligible provider that can accept this prompt now? 429/503/413 otherwise | `runInferenceAdmission` (`coordinator/api/inference_admission.go`) |
 | 13 | Plan | Cache-aware route plan for the prompt prefix | `planCacheRoute` (`coordinator/api/prompt_artifacts.go`); [`cache-aware-routing.md`](cache-aware-routing.md) |
-| 14 | **Select provider** | Lowest-estimated-cost candidate from the request-local plan, with bounded alternatives for failover | `dispatchPrimary` → `registry.Queue` (`coordinator/api/dispatch.go`); scoring in [`routing.md`](routing.md) |
+| 14 | **Select provider** | Lowest-estimated-cost candidate from the request-local plan, with bounded alternatives for failover | `dispatchPrimary` → `registry.Queue` (`coordinator/inference/dispatch/primary.go`); scoring in [`routing.md`](routing.md) |
 | 15 | Encrypt | Fresh session keys; the job body is sealed to the provider's public key | `e2e.GenerateSessionKeys`, `e2e.Encrypt` (`coordinator/internal/e2e/e2e.go`), called from `dispatchPrimary` |
-| 16 | Send | `inference_request` over the provider WebSocket | `coordinator/api/dispatch.go`, message types in `coordinator/protocol/messages.go` |
+| 16 | Send | `inference_request` written over the provider WebSocket | `dispatchWithReserver` → `writeProviderInferenceRequestDeferred` (`coordinator/inference/dispatch/prepare.go`) → `Provider.WriteTextDeferred`; message types in `coordinator/protocol/messages.go` |
 | 17 | **Provider executes** | Decrypts, loads or reuses the model, streams `inference_response_chunk`, ends with `inference_complete` or `inference_error` | [`inference.md`](inference.md), [`components/provider.md`](components/provider.md) |
-| 18 | Wait for first content | Chunks buffered ([`chunkBufferSize`](../reference/api-contracts.md#timeouts-and-constants)); a speculative backup may race; failover on error or deadline | `waitFirstChunk`, `runSpeculative`, `runRace`, `shouldStopFailover` (`coordinator/api/dispatch.go`) |
-| 19 | Commit | Status, headers and the first frame are written; from here the status cannot change | `commitFirstContent`, `writeCommittedResponse` (`coordinator/api/dispatch.go`), `writeSSEResponseHeader` (`coordinator/inference/response/sse_response.go`), `WriteCommittedProviderHeaders` (`coordinator/inference/response/provider_snapshot.go`) |
+| 18 | Wait for first content | Chunks buffered ([`chunkBufferSize`](../reference/api-contracts.md#timeouts-and-constants)); a speculative backup may race; failover on error or deadline | `waitFirstChunk`, `runSpeculative`, `runRace`, `shouldStopFailover` (`coordinator/inference/dispatch/failure.go`, `coordinator/inference/dispatch/wait.go`, `coordinator/inference/dispatch/speculative.go`, `coordinator/inference/dispatch/race.go`) |
+| 19 | Commit | Status, headers and the first frame are written; from here the status cannot change | `commitFirstContent`, `writeCommittedResponse` (`coordinator/inference/dispatch/commit.go`), `writeSSEResponseHeader` (`coordinator/inference/response/sse_response.go`), `WriteCommittedProviderHeaders` (`coordinator/inference/response/provider_snapshot.go`) |
 | 20 | Relay | Chat events normalised; usage/finish frames held to successful termination, then a single `[DONE]` | `Writer.Stream` (`coordinator/inference/response/stream.go`); `normalizeSSEChunk` (`coordinator/inference/response/sse_normalize.go`); `stripSSEDoneEvents` (`coordinator/inference/response/sse_events.go`) |
 | 21 | Settle | Charge the account from provider-reported usage, record usage against the alias, credit the provider | `handleCompleteAt` (`coordinator/api/provider.go`) → `Service.Complete` (`coordinator/inference/settlement/completion.go`); usage and credits are owned by `completion_usage.go` / `completion_credit.go`; [`billing.md`](billing.md) |
-| 22 | Client gone | Disconnect before commit records 499 and sends `cancel` to the provider | `emitClientGone` (`coordinator/api/dispatch.go`), `attempt.Service.SendCancel` (`coordinator/inference/attempt/cancel.go`) |
+| 22 | Client gone | Disconnect before commit records 499 and sends `cancel` to the provider | `emitClientGone` (`coordinator/inference/dispatch/route_observation.go`), `attempt.Service.SendCancel` (`coordinator/inference/attempt/cancel.go`) |
 
 The platform fee applied at stage 21 is stated once, in [`billing.md#invariants`](billing.md#invariants).
 
@@ -88,13 +88,13 @@ Accepted-write evidence crosses `WriteObserver` after the actual write result. T
 
 ## Invariants
 
-1. **Nothing reaches the consumer before first content.** Status, headers and body are written together at the commit (stage 19), so every earlier failure is an ordinary HTTP error with a real status — `commitFirstContent`, `writeCommittedResponse` (`coordinator/api/dispatch.go`).
-2. **The provider never talks to the consumer.** Both legs terminate at the coordinator, which is what lets it hold the money, the identity and the encryption boundary — `dispatchPrimary` (`coordinator/api/dispatch.go`), provider socket in `coordinator/api/provider.go`.
+1. **Nothing reaches the consumer before first content.** Status, headers and body are written together at the commit (stage 19), so every earlier failure is an ordinary HTTP error with a real status — `commitFirstContent`, `writeCommittedResponse` (`coordinator/inference/dispatch/commit.go`).
+2. **The provider never talks to the consumer.** Both legs terminate at the coordinator, which is what lets it hold the money, the identity and the encryption boundary — `dispatchPrimary` (`coordinator/inference/dispatch/primary.go`), provider socket in `coordinator/api/provider.go`.
 3. **Funds are reserved before dispatch and settled from provider-reported usage** — `reserveInferenceBalance` (`coordinator/api/inference_admission.go`), `handleCompleteAt` (`coordinator/api/provider.go`).
 4. **Every job body is sealed with fresh session keys to the provider's public key** — `e2e.GenerateSessionKeys`, `e2e.Encrypt` (`coordinator/internal/e2e/e2e.go`).
 5. **The response echoes the alias the client sent** even though the provider ran the concrete build — `resolveRequestedModel` (`coordinator/api/consumer.go`).
 6. **Once committed the status cannot change**; successful chat streams finish with the held usage/finish frames and exactly one `[DONE]`. In-band errors terminate without a success marker — `Writer.Stream` (`coordinator/inference/response/stream.go`), `stripSSEDoneEvents` (`coordinator/inference/response/sse_events.go`).
-7. **A client that leaves before commit cancels the job**: 499 is recorded and the provider receives `cancel` — `emitClientGone` (`coordinator/api/dispatch.go`), `attempt.Service.SendCancel` (`coordinator/inference/attempt/cancel.go`).
+7. **A client that leaves before commit cancels the job**: 499 is recorded and the provider receives `cancel` — `emitClientGone` (`coordinator/inference/dispatch/route_observation.go`), `attempt.Service.SendCancel` (`coordinator/inference/attempt/cancel.go`).
 
 ## Failure modes
 
@@ -106,7 +106,7 @@ Each row is the stage at which a request can end early and what the consumer see
 | 4, 8, 9 | 429 with `Retry-After` from key/account rate limits, token-rate admission, or a model that is currently rejecting | `rateLimitConsumer`, `applyTokenRateLimitWithAdmission`, `shedIfModelRejected` |
 | 10 | 402 when the worst-case cost cannot be reserved — taxonomy in [`billing.md`](billing.md#payment-required-responses) | `reserveInferenceBalance` |
 | 12 | 429 / 503 / 413 when no eligible provider can accept the prompt now | `runInferenceAdmission` |
-| 18 | First-content deadline missed on every attempt → 429 with `Retry-After`; provider faults fail over to the next candidate, a speculative backup may win the race | `waitFirstChunk`, `runSpeculative`, `runRace`, `shouldStopFailover` (`coordinator/api/dispatch.go`) |
+| 18 | First-content deadline missed on every attempt → 429 with `Retry-After`; provider faults fail over to the next candidate, a speculative backup may win the race | `waitFirstChunk`, `runSpeculative`, `runRace`, `shouldStopFailover` (`coordinator/inference/dispatch/failure.go`, `coordinator/inference/dispatch/wait.go`, `coordinator/inference/dispatch/speculative.go`, `coordinator/inference/dispatch/race.go`) |
 | 20 | Provider fails after commit → in-band `error` event, status already 200 | `Writer.Stream` (`coordinator/inference/response/stream.go`) |
 | 22 | Client disconnects before commit → 499 in logs, `cancel` to the provider | `emitClientGone`, `attempt.Service.SendCancel` |
 
@@ -125,7 +125,7 @@ Each row is the stage at which a request can end early and what the consumer see
 | Reservation and capacity admission | `coordinator/api/inference_admission.go` — `reserveInferenceBalance`, `runInferenceAdmission` |
 | Remote media | `coordinator/api/media_resolve.go` — `resolveRemoteMedia` |
 | Cache route plan | `coordinator/api/prompt_artifacts.go` — `planCacheRoute` |
-| Dispatch, speculative backup, commit, client-gone | `coordinator/api/dispatch.go` — `dispatchState.run`, `dispatchPrimary`, `waitFirstChunk`, `runSpeculative`, `runRace`, `commitFirstContent`, `writeCommittedResponse`, `emitClientGone`; `coordinator/inference/response/sse_response.go` — `writeSSEResponseHeader`; `coordinator/inference/response/provider_snapshot.go` — `WriteCommittedProviderHeaders`; `coordinator/inference/response/timing.go` — `RequestTimingDetails` |
+| Dispatch, speculative backup, commit, client-gone | `coordinator/inference/dispatch/request.go` — `Controller.Run`; `coordinator/inference/dispatch/run.go` — `execution.run`; detailed [dispatch code map](routing.md#code-map). API observation bindings live in `coordinator/api/inference_dispatch.go` (`dispatchObserver`) |
 | Per-request encryption | `coordinator/internal/e2e/e2e.go` — `GenerateSessionKeys`, `Encrypt` |
 | Wire messages | `coordinator/protocol/messages.go` |
 | Settlement | `coordinator/api/provider.go` — `handleCompleteAt`; `coordinator/api/settlement.go` — `claimSettlement`; `coordinator/inference/settlement/completion.go` — `Service.Complete` |

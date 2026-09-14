@@ -1,8 +1,8 @@
-package registry
+package throughput
 
 import "sort"
 
-// tps_median_cache.go — read-side aggregates for TPSRegistry.
+// medians.go — read-side aggregates for Observations.
 //
 // The routing scan reads Median / SoloMedian / SoloMedianAllChips once PER
 // PROVIDER per scan (snapshotProviderLockedEx and the quality-concurrency cap
@@ -36,7 +36,7 @@ type soloAllChipsStat struct {
 // medianOfRingLocked returns the median of samples without mutating them,
 // sorting a private scratch copy owned by the registry. Caller holds r.mu for
 // writing (the scratch buffer is not safe for concurrent use).
-func (r *TPSRegistry) medianOfRingLocked(samples []float64) float64 {
+func (r *Observations) medianOfRingLocked(samples []float64) float64 {
 	if len(samples) == 0 {
 		return 0
 	}
@@ -70,7 +70,7 @@ func appendRingSample(samples []float64, tps float64, maxSamples int) []float64 
 // refreshSoloAllChipsLocked recomputes the cached cross-class aggregate for
 // model from the per-class stats. O(classes for the model). Caller holds r.mu
 // for writing.
-func (r *TPSRegistry) refreshSoloAllChipsLocked(model string) {
+func (r *Observations) refreshSoloAllChipsLocked(model string) {
 	var agg soloAllChipsStat
 	for _, stat := range r.soloByModel[model] {
 		if stat.n == 0 {

@@ -1,9 +1,9 @@
-package registry
+package throughput
 
 import "testing"
 
 func TestTPSRegistryRecordAndMedian(t *testing.T) {
-	r := NewTPSRegistry()
+	r := NewObservations()
 
 	r.Record("model-a", "m4", 80)
 	r.Record("model-a", "m4", 90)
@@ -16,7 +16,7 @@ func TestTPSRegistryRecordAndMedian(t *testing.T) {
 }
 
 func TestTPSRegistryEvenCount(t *testing.T) {
-	r := NewTPSRegistry()
+	r := NewObservations()
 
 	r.Record("model-a", "m4", 80)
 	r.Record("model-a", "m4", 100)
@@ -29,14 +29,14 @@ func TestTPSRegistryEvenCount(t *testing.T) {
 }
 
 func TestTPSRegistryEmptyReturnsZero(t *testing.T) {
-	r := NewTPSRegistry()
+	r := NewObservations()
 	if got := r.Median("unknown", "unknown"); got != 0 {
 		t.Fatalf("median = %f, want 0 for empty", got)
 	}
 }
 
 func TestTPSRegistryMaxSamples(t *testing.T) {
-	r := NewTPSRegistry()
+	r := NewObservations()
 	// Fill with 50 samples of value 100
 	for i := 0; i < 50; i++ {
 		r.Record("model", "chip", 100)
@@ -53,7 +53,7 @@ func TestTPSRegistryMaxSamples(t *testing.T) {
 }
 
 func TestTPSRegistryIgnoresZeroAndNegative(t *testing.T) {
-	r := NewTPSRegistry()
+	r := NewObservations()
 	r.Record("model", "chip", 0)
 	r.Record("model", "chip", -5)
 	r.Record("", "chip", 50)
@@ -64,7 +64,7 @@ func TestTPSRegistryIgnoresZeroAndNegative(t *testing.T) {
 }
 
 func TestTPSRegistryDifferentKeys(t *testing.T) {
-	r := NewTPSRegistry()
+	r := NewObservations()
 	r.Record("model-a", "m4", 80)
 	r.Record("model-b", "m4", 120)
 	r.Record("model-a", "m3", 50)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/throughput"
 )
 
 const (
@@ -51,51 +52,8 @@ const (
 	kvCacheBytesPerToken = 400_000 // ~0.38 MB; covers 7-8B with slack
 	bytesPerGB           = 1 << 30
 
-	// effectiveTPSLoadFactor controls how aggressively decode TPS
-	// degrades as a provider takes on more concurrent requests. The
-	// effective TPS used in cost is `decodeTPS / (1 + k * batchSize)`
-	// where batchSize is the backend's currently-running request count.
-	//
-	// Measured on M4 Max against the CBv2 engine and a model this
-	// coordinator actually serves — gemma-4-26b-qat-4bit, per-request
-	// decode at B = 1/2/4/8 = 101.8 / 59.6 / 38.0 / 24.7 (v2 rows of
-	// libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-qat4bit-paged-gate-2026-07-09.md).
-	// Method: median of the implied k over B = 2/4/8, solo pinned to the
-	// B=1 measurement — 0.354 / 0.420 / 0.390 -> 0.39. A least-squares fit
-	// of 1/rate against B agrees (0.3895). The SAME method reproduces the
-	// previous 0.27 exactly from the legacy rows (Qwen2.5-7B-4bit on the
-	// legacy engine: 92.8 / 69.5 / 35.9 / 29.6 -> 0.2669), so this is a
-	// change of engine and model, not of method. Cross-checks: gemma
-	// v2-paged 0.388, v2-compiled 0.419; gpt-oss-20b v2-eager 0.432,
-	// v2-paged 0.325.
-	//
-	// 0.27 errs in the LENIENT direction against CBv2 — it UNDER-predicts
-	// degradation, i.e. over-predicts the surviving rate, and the error
-	// grows with batch:
-	//
-	//	B    measured    k=0.27 pred       k=0.39 pred
-	//	2    59.6        66.1   (+10.9%)   57.2   (-4.1%)
-	//	4    38.0        48.9   (+28.8%)   39.8   (+4.6%)
-	//	8    24.7        32.2   (+30.4%)   24.7   (-0.0%)
-	//	                 MAPE 23.4%        MAPE 2.9%
-	//
-	// B=1 is the model's INPUT (solo), not a prediction, so it is not
-	// scored. Mind the SIGN: 0.27 is too SMALL, not too large. A reading
-	// that it was wildly "too aggressive" comes from comparing a
-	// prediction made with the coordinator's sqrt(memory_bandwidth) proxy
-	// solo (16-28 tok/s) against a rate measured at the engine's real solo
-	// (101.8) — that gap is a bad SOLO rate, not a bad k, and it has its
-	// own lever (modelSoloTPSSeedEnv in concurrency_cap.go). Raising k
-	// makes every derived cap TIGHTER, never looser.
-	//
-	// Four systems consume this and a too-small k over-states the quality
-	// batch in all of them at once: the admission cap (concurrency_cap.go),
-	// effectiveDecodeTPS and projectedPerRequestDecodeTPSAtBatch below, and
-	// the warm-pool target (warm_pool_controller.go) — which then
-	// under-warms the pool while admission packs batches that miss the
-	// decode floor.
-	// Set to 0 to disable load scaling.
-	effectiveTPSLoadFactor = 0.39
+	// One measured coefficient shared by admission and warm-pool planning.
+	effectiveTPSLoadFactor = throughput.LoadFactor
 )
 
 type routingSnapshot struct {
@@ -2954,23 +2912,23 @@ func (r *Registry) drainQueuedRequestsForModelsWithReason(models []string, reaso
 }
 
 // drainModelQueue runs the drain pass for one model under the per-model claim
-// (queue_drain_coalesce.go): a trigger that finds a pass in flight hands its
+// (requestqueue/drain.go): a trigger that finds a pass in flight hands its
 // reason to that pass and returns, and the pass reruns once for it after
 // requeueing. A pass that does not complete releases the claim on the way out
 // so a recovered panic cannot leave the model undrainable.
 func (r *Registry) drainModelQueue(queue *RequestQueue, model, reason string) {
-	if !r.drainPasses.begin(model, reason) {
+	if !r.drainPasses.Begin(model, reason) {
 		return
 	}
 	released := false
 	defer func() {
 		if !released {
-			r.drainPasses.abandon(model)
+			r.drainPasses.Abandon(model)
 		}
 	}()
 	for {
 		r.drainModelQueuePass(queue, model, reason)
-		next, again := r.drainPasses.end(model)
+		next, again := r.drainPasses.End(model)
 		if !again {
 			released = true
 			return

@@ -93,12 +93,10 @@ func drainScanCounter(reg *Registry) *atomic.Int64 {
 
 func drainTestQueueOrder(reg *Registry) []string {
 	q := reg.Queue()
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	ids := make([]string, 0, len(q.queues[drainTestModel]))
-	for _, req := range q.queues[drainTestModel] {
+	ids := make([]string, 0)
+	q.queue.Visit(drainTestModel, func(req *QueuedRequest) {
 		ids = append(ids, req.RequestID)
-	}
+	})
 	return ids
 }
 

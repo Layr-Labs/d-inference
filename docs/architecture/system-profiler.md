@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-14 · commit `c84437919`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -228,7 +228,7 @@ JSON-encoded on the sink worker.
 | `capacity_rate_ms`, `cache_discount_ms` | gray-box capacity-503 penalty; exact-cache discount | `scheduler.go` |
 | `shadow_would_shed`, `shadow_idle_alternative` | `NULL` unless the TTFT shadow evaluator ran | `profiler_record.go` |
 | `lock_wait_us`, `scan_us`, `admit_us` | the three phases of `ReserveProviderEx`; `lock_wait_us` is measured from function entry | `scheduler.go` |
-| `queue_position_at_enqueue`, `queue_depth_at_enqueue`, `drain_trigger` | queue path only; `drain_trigger` ∈ {`heartbeat`, `idle`, `challenge`, `load`, `disconnect`, `kick`, `unknown`} (`DrainTrigger*`, `foldDrainTrigger`, `coordinator/registry/queue.go`) | `queue.go` |
+| `queue_position_at_enqueue`, `queue_depth_at_enqueue`, `drain_trigger` | queue path only; `drain_trigger` ∈ {`heartbeat`, `idle`, `challenge`, `load`, `disconnect`, `kick`, `unknown`} (`DrainTrigger*`, `foldDrainTrigger`, `coordinator/registry/queue_policy.go`) | `queue_policy.go` |
 | `slot_state` | `SlotStateFold` → {`running`, `idle`, `idle_shutdown`, `crashed`, `reloading`, `other`}; `other` includes the coordinator's own "unknown" cold candidate. Slot semantics: [`scheduling.md`](scheduling.md) | `gate_reason.go` |
 
 ### Tables
@@ -447,7 +447,7 @@ ring or `DaemonState` mirror.
 | Dispatch hooks, `X-Timing`, relay stamps | `coordinator/api/profiler_dispatch.go` |
 | Admin endpoints | `coordinator/api/profiler_admin.go`, `coordinator/api/admin_telemetry.go` |
 | Profiles and attempts | `coordinator/registry/request_profile.go`, `coordinator/registry/attempt_profile.go`, `coordinator/registry/attempt_profile_finalize.go` |
-| Routing context and folds | `coordinator/registry/scheduler.go`, `coordinator/registry/gate_reason.go`, `coordinator/registry/queue.go` |
+| Routing context and folds | `coordinator/registry/scheduler.go`, `coordinator/registry/gate_reason.go`, `coordinator/registry/queue_policy.go`, `coordinator/registry/queue_waiter.go` |
 | Wire types and fixture | `coordinator/protocol/profile.go`, `coordinator/protocol/testdata/profiler_wire_fixture.json` |
 | Store | `coordinator/store/profile_records.go`, `coordinator/store/postgres_profiles.go`, `coordinator/store/postgres.go`, `coordinator/store/migrations/request_waterfall.sql` |
 | Fleet replay | `coordinator/registry/routingsim/fleet_ndjson.go` |

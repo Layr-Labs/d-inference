@@ -5,20 +5,22 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/registry/warmpool"
 )
 
 // Service-time (E[S]) clamps for the Little's Law target. A near-zero or absurdly
 // large per-request rate must not let the demand-to-concurrency conversion produce
 // a runaway or zero target.
 const (
-	warmPoolMinServiceTime = 500 * time.Millisecond
-	warmPoolMaxServiceTime = 2 * time.Minute
+	warmPoolMinServiceTime = warmpool.MinServiceTime
+	warmPoolMaxServiceTime = warmpool.MaxServiceTime
 )
 
 type warmPoolController struct {
 	registry *Registry
 	config   WarmPoolConfig
-	state    *warmPoolState
+	state    *warmpool.State
 	queueMu  syncQueuePressure
 	tickMu   sync.Mutex
 	triggerC chan struct{}
@@ -134,7 +136,7 @@ func newWarmPoolController(r *Registry, cfg WarmPoolConfig) *warmPoolController 
 	return &warmPoolController{
 		registry: r,
 		config:   cfg,
-		state:    newWarmPoolState(),
+		state:    warmpool.NewState(),
 		queueMu:  syncQueuePressure{models: make(map[string]warmPoolQueuePressure)},
 		triggerC: make(chan struct{}, 1),
 	}
@@ -309,8 +311,8 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 	// Fold accumulated spill arrivals into the per-model EWMA before snapshotting
 	// so the Little's Law target tracks demand. Gate folds at half the control
 	// interval so coalesced hot-path trigger ticks don't spike the rate.
-	c.state.foldArrivalRates(now, c.config.Interval/2, warmPoolArrivalEWMAAlpha)
-	pressure := c.state.snapshot(now, stateWindow)
+	c.state.FoldArrivalRates(now, c.config.Interval/2, warmpool.ArrivalEWMAAlpha)
+	pressure := c.state.Snapshot(now, stateWindow)
 	queue := c.queueSnapshot(now, stateWindow)
 	fleet := c.registry.warmPoolFleetSnapshot(now)
 
@@ -328,8 +330,8 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 	for model, f := range fleet {
 		occupancy[model] = f.running + f.waiting + queue[model].Depth
 	}
-	c.state.foldOccupancyRamp(occupancy, now, c.config.Interval, c.config.Interval/2, warmPoolArrivalEWMAAlpha)
-	pressure = c.state.snapshot(now, stateWindow)
+	c.state.FoldOccupancyRamp(occupancy, now, c.config.Interval, c.config.Interval/2, warmpool.ArrivalEWMAAlpha)
+	pressure = c.state.Snapshot(now, stateWindow)
 
 	models := make(map[string]struct{})
 	for model := range pressure {
@@ -381,7 +383,7 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 		if serviceTPS <= 0 {
 			serviceTPS = f.soloDecodeTPS
 		}
-		svc := estimateServiceTime(f.prefillTPS, serviceTPS, params)
+		svc := warmpool.ServiceTime(f.prefillTPS, serviceTPS, params)
 		target := c.targetWarm(f, p, q, params, svc, now)
 
 		gap := target - f.warm
@@ -391,7 +393,7 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 		// Demand-scaled, bounded per-tick ramp: close a fraction of the gap, at
 		// least MaxLoadsPerTick, capped by the per-tick ceiling, then by what we
 		// can actually warm (eligible cold) and the global pending budget.
-		need := rampLoadsThisTick(gap, c.config.MaxLoadsPerTick, perTickCeiling, c.config.RampGapFraction)
+		need := warmpool.LoadsThisTick(gap, c.config.MaxLoadsPerTick, perTickCeiling, c.config.RampGapFraction)
 		if need > len(f.eligibleCold) {
 			need = len(f.eligibleCold)
 		}
@@ -409,7 +411,7 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 			actions = reserve(actions, now)
 		}
 		loadsRemaining -= len(actions)
-		c.state.rememberTarget(model, target, now)
+		c.state.RememberTarget(model, target, now)
 		// Surface why cold boxes aren't warmable (counts only). For a dedicated pool
 		// this explains a gap between the raw cold count and what we can actually warm.
 		if f.coldIneligible > 0 && c.registry != nil && c.registry.logger != nil && c.registry.IsDedicatedModel(model) {
@@ -430,24 +432,24 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 			ColdDisqualifiers:  warmColdReasonStrings(f.coldDisq),
 			QueueDepth:         q.Depth,
 			OldestQueueAge:     q.OldestAge,
-			CapacityRejects:    p.capacityRejects,
-			TTFTMisses:         p.ttftMisses,
-			SpeculativeStarted: p.speculativeStarted,
-			SpeculativeWon:     p.speculativeWon,
-			ColdDispatches:     p.coldDispatches,
-			LoadDurationEWMA:   p.loadDurationEWMA,
+			CapacityRejects:    p.CapacityRejects,
+			TTFTMisses:         p.TTFTMisses,
+			SpeculativeStarted: p.SpeculativeStarted,
+			SpeculativeWon:     p.SpeculativeWon,
+			ColdDispatches:     p.ColdDispatches,
+			LoadDurationEWMA:   p.LoadDurationEWMA,
 			ObserveOnly:        c.config.ObserveOnly,
 			Actions:            actions,
 			RunningRequests:    f.running,
 			WaitingRequests:    f.waiting,
 			WarmSaturated:      f.warmSaturated,
 			WarmForeignBlocked: f.warmForeignBlocked,
-			OccupancyRamp:      p.occupancyRampEWMA,
-			HeadroomProviders:  headroomProviders(c.targetInputs(f, p, q), params, qualityConcurrency(f.soloDecodeTPS, params.DecodeFloorTPS, params.LoadFactorK, f.maxProviderConc, params.FallbackQualityConcurrency)),
-			SpillArrivalRate:   p.arrivalRateEWMA,
+			OccupancyRamp:      p.OccupancyRampEWMA,
+			HeadroomProviders:  warmpool.HeadroomProviders(c.targetInputs(f, p, q), params, qualityConcurrency(f.soloDecodeTPS, params.DecodeFloorTPS, params.LoadFactorK, f.maxProviderConc, params.FallbackQualityConcurrency)),
+			SpillArrivalRate:   p.ArrivalRateEWMA,
 			ServiceTime:        svc,
 			QualityConcurrency: qualityConcurrency(f.soloDecodeTPS, params.DecodeFloorTPS, params.LoadFactorK, f.maxProviderConc, params.FallbackQualityConcurrency),
-			DemandConcurrency:  demandConcurrency(c.targetInputs(f, p, q), svc),
+			DemandConcurrency:  warmpool.DemandConcurrency(c.targetInputs(f, p, q), svc),
 		})
 	}
 	return out
@@ -457,10 +459,10 @@ func (c *warmPoolController) reserveActions(actions []modelLoadAction, now time.
 	return c.registry.reservePendingModelLoads(actions, now)
 }
 
-// targetParams snapshots the controller config into the pure warmTargetParams
+// targetParams snapshots the controller config into the pure warmpool.Params
 // consumed by the Little's Law math in warm_pool_target.go.
-func (c *warmPoolController) targetParams() warmTargetParams {
-	return warmTargetParams{
+func (c *warmPoolController) targetParams() warmpool.Params {
+	return warmpool.Params{
 		DecodeFloorTPS:             c.config.DecodeFloorTPS,
 		LoadFactorK:                effectiveTPSLoadFactor,
 		BurstBuffer:                c.config.BurstBuffer,
@@ -478,8 +480,8 @@ func (c *warmPoolController) targetParams() warmTargetParams {
 
 // targetInputs assembles the measured per-model inputs for the Little's Law
 // target from the fleet, pressure, and queue snapshots.
-func (c *warmPoolController) targetInputs(fleet warmPoolModelSnapshot, pressure warmPoolPressureBucket, queue warmPoolQueuePressure) warmTargetInputs {
-	return warmTargetInputs{
+func (c *warmPoolController) targetInputs(fleet warmPoolModelSnapshot, pressure warmpool.Pressure, queue warmPoolQueuePressure) warmpool.Inputs {
+	return warmpool.Inputs{
 		Model:              fleet.model,
 		Warm:               fleet.warm,
 		WarmSaturated:      fleet.warmSaturated,
@@ -488,8 +490,8 @@ func (c *warmPoolController) targetInputs(fleet warmPoolModelSnapshot, pressure 
 		RunningRequests:    fleet.running,
 		WaitingRequests:    fleet.waiting,
 		QueueDepth:         queue.Depth,
-		SpillArrivalRate:   pressure.arrivalRateEWMA,
-		OccupancyRamp:      pressure.occupancyRampEWMA,
+		SpillArrivalRate:   pressure.ArrivalRateEWMA,
+		OccupancyRamp:      pressure.OccupancyRampEWMA,
 		SoloDecodeTPS:      fleet.soloDecodeTPS,
 		PrefillTPS:         fleet.prefillTPS,
 		MaxProviderConc:    fleet.maxProviderConc,
@@ -502,19 +504,19 @@ func (c *warmPoolController) targetInputs(fleet warmPoolModelSnapshot, pressure 
 // TTFT misses, cold dispatches, speculative starts/wins (now including the W3
 // preflight-fed near-misses), an aged coordinator queue, and a saturated warm set
 // under any external pressure. With no demand pressure the pool is left as-is.
-func (c *warmPoolController) hasDemandPressure(fleet warmPoolModelSnapshot, pressure warmPoolPressureBucket, queue warmPoolQueuePressure) bool {
-	if pressure.capacityRejects >= c.config.CapacityRejectThreshold ||
-		pressure.ttftMisses >= c.config.TTFTMissThreshold ||
-		pressure.coldDispatches >= c.config.ColdDispatchThreshold ||
-		pressure.speculativeStarted >= c.config.SpeculativeStartThreshold ||
-		pressure.speculativeWon >= c.config.SpeculativeWinThreshold {
+func (c *warmPoolController) hasDemandPressure(fleet warmPoolModelSnapshot, pressure warmpool.Pressure, queue warmPoolQueuePressure) bool {
+	if pressure.CapacityRejects >= c.config.CapacityRejectThreshold ||
+		pressure.TTFTMisses >= c.config.TTFTMissThreshold ||
+		pressure.ColdDispatches >= c.config.ColdDispatchThreshold ||
+		pressure.SpeculativeStarted >= c.config.SpeculativeStartThreshold ||
+		pressure.SpeculativeWon >= c.config.SpeculativeWinThreshold {
 		return true
 	}
 	if queue.Depth > 0 && queue.OldestAge >= c.config.QueueAgeThreshold {
 		return true
 	}
-	externalPressure := queue.Depth > 0 || pressure.capacityRejects > 0 || pressure.ttftMisses > 0 ||
-		pressure.speculativeStarted > 0 || pressure.speculativeWon > 0 || pressure.coldDispatches > 0
+	externalPressure := queue.Depth > 0 || pressure.CapacityRejects > 0 || pressure.TTFTMisses > 0 ||
+		pressure.SpeculativeStarted > 0 || pressure.SpeculativeWon > 0 || pressure.ColdDispatches > 0
 	if fleet.warm > 0 && externalPressure && c.config.WarmSaturationThreshold > 0 &&
 		float64(fleet.warmSaturated)/float64(fleet.warm) >= c.config.WarmSaturationThreshold {
 		return true
@@ -525,10 +527,10 @@ func (c *warmPoolController) hasDemandPressure(fleet warmPoolModelSnapshot, pres
 // targetWarm computes the Little's Law warm-provider target for a model, then
 // applies the dwell guard so a transient demand dip cannot shrink the pool before
 // MinDwell elapses (anti-flap).
-func (c *warmPoolController) targetWarm(fleet warmPoolModelSnapshot, pressure warmPoolPressureBucket, queue warmPoolQueuePressure, params warmTargetParams, svc time.Duration, now time.Time) int {
-	target := warmTarget(c.targetInputs(fleet, pressure, queue), params, svc)
-	if c.config.MinDwell > 0 && pressure.lastTarget > target && now.Sub(pressure.lastTargetChangedAt) < c.config.MinDwell {
-		target = pressure.lastTarget
+func (c *warmPoolController) targetWarm(fleet warmPoolModelSnapshot, pressure warmpool.Pressure, queue warmPoolQueuePressure, params warmpool.Params, svc time.Duration, now time.Time) int {
+	target := warmpool.Target(c.targetInputs(fleet, pressure, queue), params, svc)
+	if c.config.MinDwell > 0 && pressure.LastTarget > target && now.Sub(pressure.LastTargetChangedAt) < c.config.MinDwell {
+		target = pressure.LastTarget
 		if maxReachable := fleet.warm + len(fleet.eligibleCold); target > maxReachable {
 			target = maxReachable
 		}
@@ -665,10 +667,10 @@ func (r *Registry) warmPoolFleetSnapshot(now time.Time) map[string]warmPoolModel
 	}
 	for model, s := range out {
 		sort.Slice(s.eligibleCold, func(i, j int) bool { return s.eligibleCold[i].score > s.eligibleCold[j].score })
-		s.soloDecodeTPS = medianFloat(decodeSamples[model])
-		s.serviceDecodeTPS = medianFloat(serviceSamples[model])
-		s.prefillTPS = medianFloat(prefillSamples[model])
-		s.maxProviderConc = int(medianFloat(concSamples[model]))
+		s.soloDecodeTPS = warmpool.Median(decodeSamples[model])
+		s.serviceDecodeTPS = warmpool.Median(serviceSamples[model])
+		s.prefillTPS = warmpool.Median(prefillSamples[model])
+		s.maxProviderConc = int(warmpool.Median(concSamples[model]))
 		out[model] = s
 	}
 	return out

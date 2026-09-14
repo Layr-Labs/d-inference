@@ -1,4 +1,4 @@
-package registry
+package throughput
 
 import (
 	"math/rand"
@@ -88,7 +88,7 @@ func (s *referenceTPSStore) soloMedianAllChips(model string) (float64, int, int)
 // read-time computation.
 func TestTPSRegistryCachedAggregatesMatchReference(t *testing.T) {
 	rng := rand.New(rand.NewSource(20260902))
-	reg := NewTPSRegistry()
+	reg := NewObservations()
 	ref := newReferenceTPSStore(reg.maxSamples)
 	models := []string{"m-a", "m-b", "m-c"}
 	chips := []string{"M1", "M2|Max", "M3|Pro", "M4|Max"}
@@ -151,12 +151,12 @@ func TestTPSRegistryCachedAggregatesMatchReference(t *testing.T) {
 	}
 }
 
-// TestTPSRegistryZeroValueDoesNotPanic pins that a bare TPSRegistry{} (no
-// NewTPSRegistry: maps nil, maxSamples 0 ⇒ unbounded ring) records and reads
+// TestTPSRegistryZeroValueDoesNotPanic pins that a bare Observations{} (no
+// NewObservations: maps nil, maxSamples 0 ⇒ unbounded ring) records and reads
 // correctly, including a ring longer than the nominal 50-sample bound, which
 // used to make the scratch allocation panic (len > cap).
 func TestTPSRegistryZeroValueDoesNotPanic(t *testing.T) {
-	var reg TPSRegistry
+	var reg Observations
 	ref := newReferenceTPSStore(1 << 30) // effectively unbounded, like maxSamples 0
 	for i := 0; i < 130; i++ {
 		v := float64(1 + i%23)
@@ -181,7 +181,7 @@ func TestTPSRegistryZeroValueDoesNotPanic(t *testing.T) {
 	if gotT != wantT || gotS != wantS || gotC != wantC {
 		t.Fatalf("zero-value SoloMedianAllChips = (%v,%d,%d), want (%v,%d,%d)", gotT, gotS, gotC, wantT, wantS, wantC)
 	}
-	var empty TPSRegistry
+	var empty Observations
 	if empty.Median("x", "y") != 0 {
 		t.Fatal("empty zero-value registry must read 0")
 	}
@@ -193,7 +193,7 @@ func TestTPSRegistryZeroValueDoesNotPanic(t *testing.T) {
 // TestTPSRegistryReadsAllocateNothing pins the hot-path contract: every read
 // aggregate is a map lookup with zero allocations.
 func TestTPSRegistryReadsAllocateNothing(t *testing.T) {
-	reg := NewTPSRegistry()
+	reg := NewObservations()
 	for i := 0; i < 120; i++ {
 		reg.Record("m", "M3", float64(10+i%37))
 		reg.RecordSolo("m", "M3|Max", float64(10+i%29))
@@ -222,7 +222,7 @@ func TestTPSRegistryReadsAllocateNothing(t *testing.T) {
 // oldest sample leaves and the newest enters, so the median tracks the most
 // recent maxSamples observations exactly as the former re-slice form did.
 func TestTPSRegistryRingEvictionSemantics(t *testing.T) {
-	reg := NewTPSRegistry()
+	reg := NewObservations()
 	for i := 1; i <= reg.maxSamples; i++ {
 		reg.Record("m", "M3", 10) // ring full of 10s
 	}

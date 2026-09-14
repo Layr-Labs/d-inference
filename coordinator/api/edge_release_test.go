@@ -470,7 +470,7 @@ func buildOversizedBinaryReleaseBundleForTest(t *testing.T) ([]byte, string) {
 	if err := tw.WriteHeader(&tar.Header{
 		Name: "bin/darkbloom",
 		Mode: 0o755,
-		Size: maxReleaseProviderBinBytes + 1,
+		Size: (512 << 20) + 1, // one byte above the documented provider binary limit
 	}); err != nil {
 		t.Fatalf("write oversized tar header: %v", err)
 	}

@@ -1,6 +1,6 @@
 # Model registry
 
-> Last updated: 2026-09-06 · commit `32b28b0a7`
+> Last updated: 2026-09-14 · commit `c8a3f45d0`
 
 How Darkbloom decides which model builds exist, which bytes are trusted, which
 providers may serve them, and what public name a consumer uses for them. The
@@ -241,7 +241,7 @@ the budget.
 |---|---|---|
 | `POST /v1/admin/models/register` → 400 `failed to fetch manifest` / `manifest file verification failed` | manifest uploaded before files, wrong `version`, or R2 object missing | `fetchModelManifest`, `verifyManifestFileHEAD` (`coordinator/api/model_registry_handlers.go`) |
 | Registration → 409 `model_id collides with an existing public alias` | the concrete id is already a public alias | Invariant 4; pick a different `model_id` |
-| Registered model never appears in `/v1/models/catalog` | not promoted (`model_active_versions` has no row) or `status` not `active`/`beta`; also the 60 s response cache | `PromoteModelVersion`, `handleModelCatalog` (`coordinator/api/billing_handlers.go`) |
+| Registered model never appears in `/v1/models/catalog` | not promoted (`model_active_versions` has no row) or `status` not `active`/`beta`; also the 60 s response cache | `PromoteModelVersion`, `handleModelCatalog` (`coordinator/api/model_catalog_list.go`) |
 | Provider log `models_update weight-hash missing or mismatched; rejecting build` | bytes on disk differ from the registered version, or the provider reported no hash | `mergeProviderModels`; re-download the build |
 | Provider marked untrusted with `provider model weight hash mismatch — possible model swap` | challenge-time hash differs from `CatalogWeightHash` | `coordinator/api/provider.go`; treat as tamper until proven otherwise |
 | Alias flipped but old providers keep serving the previous build | providers below `0.5.17` or not yet members of the alias never receive `desired_models`; prefetch failing with bounded retries | `providerSupportsDesiredModels`, `DesiredModelsForProvider`; provider logs `desired_models: … → converging to …` |
@@ -257,7 +257,7 @@ the budget.
 | Registration, admin actions, publishing-key auth, manifest validation, R2 prefix | `coordinator/api/model_registry_handlers.go` |
 | Alias upsert/list/delete, lineage, `desired_models` fan-out | `coordinator/api/model_alias_handlers.go` |
 | OpenRouter-only aliases | `coordinator/api/openrouter_alias_handlers.go`, `coordinator/api/openrouter_alias_invariants.go` |
-| Public catalog endpoints | `coordinator/api/billing_handlers.go` (`handleModelCatalog`); `coordinator/api/model_registry_handlers.go` (`handleModelCatalogItem`, `handleModelCatalogManifest`) |
+| Public catalog endpoints | `coordinator/api/model_catalog_list.go` (`handleModelCatalog`); `coordinator/api/model_registry_handlers.go` (`handleModelCatalogItem`, `handleModelCatalogManifest`) |
 | Catalog → registry handoff | `coordinator/api/server.go` (`SyncModelCatalog`, `syncModelAliases`) |
 | In-memory catalog, alias resolution, `desired_models` computation, models_update merge | `coordinator/registry/model_catalog.go` (`SetModelCatalog`, `modelAllowedByCatalogLocked`); `coordinator/registry/model_aliases.go` (`SetModelAliases`, `ResolveModel`, `ResolveModelConstrainedWithTraits`, `PublicNameForBuild`); `coordinator/registry/model_commands.go` (`DesiredModelsForProvider`, `SendDesiredModels`); `coordinator/registry/provider_models.go` (`mergeProviderModels`) |
 | Capability requirements per model | `coordinator/registry/provider_capabilities.go` (`providerCanAcquireCatalogModelLocked`, `ProviderCapabilityAppleM5`, `ProviderCapabilityMLXNAX`) |

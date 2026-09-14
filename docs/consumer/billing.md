@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-14 · commit `c8a3f45d0`
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -51,7 +51,7 @@ Open `url` and pay. The coordinator does not credit on redirect; it credits
 when Stripe delivers `checkout.session.completed` to its webhook, usually
 within seconds. The credit lands as a `stripe_deposit` ledger entry on your
 spendable balance; deposits are never withdrawable
-(`coordinator/api/billing_handlers.go` `handleStripeWebhook`).
+(`coordinator/api/billing/checkout_webhook.go` `StripeWebhook`).
 
 In the console, **Buy Credits** on `/billing` reaches the same endpoint through
 the same-origin relay `/api/payments/stripe/checkout`, which forwards your Privy
@@ -67,7 +67,7 @@ curl "https://api.darkbloom.dev/v1/billing/stripe/session?id=3f0e..." \
 ```
 
 `status` moves from `pending` to `completed` when the webhook has been
-processed (`handleStripeSessionStatus`).
+processed (`StripeSessionStatus`).
 
 ### 3. Read your balance and usage
 

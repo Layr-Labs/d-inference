@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-13 · commit `de4e28825`
+> Last updated: 2026-09-14 · commit `c8a3f45d0`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -41,7 +41,7 @@
 - [`architecture/prompt-contract-sidecar.md`](architecture/prompt-contract-sidecar.md): the Rust sidecar that derives token boundaries for cache routing, and its failure isolation.
 - [`architecture/model-registry.md`](architecture/model-registry.md): model manifests, aliases, publishing, and provider downloads.
 - [`architecture/storage.md`](architecture/storage.md): coordinator persistence — Postgres schema, memory store, retention.
-- [`architecture/billing.md`](architecture/billing.md): pricing, reservations, ledger, the platform fee (stated only here), Stripe deposits and payouts, referrals, base rewards.
+- [`architecture/billing.md`](architecture/billing.md): pricing, reservations, ledger, the platform fee (stated only here), Stripe deposits and payouts, referrals, base rewards, and billing HTTP controller ownership.
 - [`architecture/telemetry.md`](architecture/telemetry.md): what telemetry exists, how the Go/Swift/TS mirrors stay symmetric, where it goes.
 - [`architecture/request-accounting.md`](architecture/request-accounting.md): unsampled incoming-request evidence, coverage, revision semantics, and normalized codes.
 - [`architecture/request-outcome-observability.md`](architecture/request-outcome-observability.md): the closed outcome taxonomy for client, provider, and billing dimensions.

@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-08 · commit `efb5517fc`
+> Last updated: 2026-09-14 · commit `c8a3f45d0`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -427,7 +427,7 @@ Unauthenticated; used by providers and `scripts/install.sh`.
 
 | Endpoint | Handler | Response |
 |---|---|---|
-| `GET /v1/models/catalog[?type=text][&include_aliases=1]` | `handleModelCatalog` (`coordinator/api/billing_handlers.go`) | `{"models":[<catalog model>...]}`; with `include_aliases`, also `"aliases"`; cached `time.Minute`; `type` other than `text` → 400 |
+| `GET /v1/models/catalog[?type=text][&include_aliases=1]` | `handleModelCatalog` (`coordinator/api/model_catalog_list.go`) | `{"models":[<catalog model>...]}`; with `include_aliases`, also `"aliases"`; cached `time.Minute`; `type` other than `text` → 400 |
 | `GET /v1/models/catalog/{id}` | `handleModelCatalogItem` | one catalog model, or 404 |
 | `GET /v1/models/catalog/manifest/{id}` | `handleModelCatalogManifest` | the stored `ModelManifest` for the active version, or 404 |
 

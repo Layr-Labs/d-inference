@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `1f52a71fb`
+> Last updated: 2026-09-14 · commit `c8a3f45d0`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -65,6 +65,25 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 ```
 
 ### 2. Coordinator (Go)
+
+Billing controller and payout tests live beside their owner in
+`coordinator/api/billing/`. Authenticated route, financial-rate-limit and
+whole-system billing tests remain in `coordinator/api/`; both packages are
+included by the normal coordinator test target. Run the billing-focused checks
+from the repository root with database environment variables unset:
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api/billing ./coordinator/api/requestauth ./coordinator/api \
+  -run 'Test(Stripe|Connect|GlobalPayout|AccountEarnings|BillingControllerUsesCurrentServices|BillingRequestIdentityContract)'
+```
+
+These cases use real memory-store/ledger operations and local HTTP Stripe
+fixtures. The API boundary tests in `coordinator/api/billing_controller_test.go`
+check late service replacement/clearing through the registered HTTP routes and
+the exact linked-user identity response. `requestauth` is exercised through
+those API tests; it has no separate test file. These checks require no Stripe
+credentials or live payment calls.
 
 Run prediction telemetry checks from the repository root:
 

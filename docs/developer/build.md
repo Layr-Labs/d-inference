@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-13 · commit `1f52a71fb`
+> Last updated: 2026-09-14 · commit `c8a3f45d0`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -76,6 +76,11 @@ Continue with the per-component steps when you need one piece or want to
 understand what `make` runs.
 
 ### 3. Coordinator (Go)
+
+Billing HTTP controllers build as `coordinator/api/billing/` within the same Go
+module; the shared identity helper is `coordinator/api/requestauth/`. The
+coordinator binary imports both through `api`, so the build commands below
+include them without additional targets. See [billing ownership](../architecture/billing.md#http-controller-ownership).
 
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
 its test binary after helper or lifecycle changes. The CPU-only

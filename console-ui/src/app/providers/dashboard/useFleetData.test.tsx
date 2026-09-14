@@ -162,6 +162,21 @@ describe("account-scoped fleet loading", () => {
     await act(async () => pending.resolve(response(fleet("unmounted-machine"))));
   });
 
+  it("clears stale earnings when a summary refresh fails while the fleet stays live", async () => {
+    let summaries = 0;
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (url.endsWith("summary")) return ++summaries === 1
+        ? Promise.resolve(response({ account_id: "account-a", lifetime_micro_usd: 1000000 })) : summaryFailure();
+      return Promise.resolve(response(fleet("machine-a")));
+    }));
+    const { result } = renderHook(() => useFleetData());
+    await waitFor(() => expect(result.current.summary?.lifetime_micro_usd).toBe(1000000));
+    await act(async () => result.current.refetch());
+    expect(result.current.summary).toBeNull();
+    expect(result.current.providersResp?.providers[0].id).toBe("machine-a");
+    expect(result.current.pollFailed).toBe(false);
+  });
+
   it("retains dated data after a failed refresh and rejects malformed initial data", async () => {
     let calls = 0;
     vi.stubGlobal("fetch", vi.fn((url: string) => {

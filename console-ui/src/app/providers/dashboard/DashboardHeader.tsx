@@ -41,10 +41,10 @@ export function DashboardHeader({
   return (
     <div className="flex items-start sm:items-center justify-between gap-3 flex-wrap">
       <div>
-        <h2 className="text-xl font-bold text-text-primary">Fleet</h2>
+        <h2 className="text-xl font-bold text-text-primary">Provider dashboard</h2>
         <p className="text-xs font-mono text-text-tertiary mt-0.5">
           {online}/{total} machine{total === 1 ? "" : "s"} online
-          {latestVersion ? ` · v${latestVersion}` : ""}
+          {latestVersion ? ` · latest release v${latestVersion}` : ""}
         </p>
       </div>
 

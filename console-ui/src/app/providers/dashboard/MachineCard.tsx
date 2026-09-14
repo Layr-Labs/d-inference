@@ -5,6 +5,9 @@
 // the attention feed.
 
 import { Cpu, ShieldCheck, Zap } from "lucide-react";
+import { macIdentity } from "@/lib/mac-hardware";
+import { MacIcon } from "@/components/hardware/MacIcon";
+import { MachineDetails } from "./MachineDetails";
 import type { MyProvider } from "../types";
 import { computeWarnings } from "../warnings";
 import { deriveRouting, routingMeta, selectTopWarning, type RoutingCtx } from "./routing";
@@ -43,11 +46,12 @@ export function MachineCard({
   const removable = provider.status === "offline" || provider.status === "never_seen";
 
   // Identity subline — drop any piece the machine didn't report.
+  const identity = macIdentity(provider.hardware.machine_model);
   const chipName = provider.hardware.chip_name || "Unknown chip";
   const subline = [
-    provider.hardware.machine_model,
-    provider.hardware.memory_gb ? `${provider.hardware.memory_gb}GB` : null,
-    provider.hardware.gpu_cores ? `${provider.hardware.gpu_cores} GPU` : null,
+    chipName,
+    provider.hardware.memory_gb ? `${provider.hardware.memory_gb} GB` : null,
+    provider.hardware.gpu_cores ? `${provider.hardware.gpu_cores} GPU cores` : null,
     provider.version ? `v${provider.version}` : null,
   ]
     .filter(Boolean)
@@ -61,16 +65,17 @@ export function MachineCard({
       {/* Header: identity tile + status/trust pills */}
       <div className={`p-4 flex items-start justify-between gap-3 ${dimmed ? "opacity-70" : ""}`}>
         <div className="flex items-center gap-3 min-w-0">
-          <div className="relative w-10 h-10 rounded-lg bg-accent-brand/10 flex items-center justify-center shrink-0">
-            <Cpu size={20} className="text-accent-brand" />
+          <div className="relative w-16 h-14 rounded-xl bg-accent-brand/10 flex items-center justify-center shrink-0">
+            <MacIcon kind={identity.kind} className="w-14 h-12 text-accent-brand" />
             {/* Pulsing dot when actively serving traffic */}
             {provider.status === "serving" && (
               <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-accent-green ring-2 ring-bg-secondary animate-pulse" />
             )}
           </div>
           <div className="min-w-0">
-            <h3 className="text-sm font-semibold text-text-primary truncate">{chipName}</h3>
-            {subline && <p className="text-[11px] font-mono text-text-tertiary truncate">{subline}</p>}
+            <h3 className="text-sm font-semibold text-text-primary break-words">{identity.name}</h3>
+            <p className="text-[10px] font-mono text-text-tertiary truncate" title={provider.id}>ID {provider.id}</p>
+            {subline && <p className="text-[11px] font-mono text-text-tertiary leading-relaxed">{subline}</p>}
           </div>
         </div>
         <div className="flex flex-col items-end gap-1.5 shrink-0">
@@ -96,6 +101,10 @@ export function MachineCard({
           <BackendSlotsPanel cap={provider.backend_capacity} />
         </ExpandSection>
       )}
+
+      <ExpandSection label="Machine details" icon={Cpu}>
+        <MachineDetails provider={provider} />
+      </ExpandSection>
 
       <ExpandSection label="Trust & attestation" icon={ShieldCheck}>
         <AttestationPanel provider={provider} challengeMaxAgeSeconds={ctx.challenge_max_age_seconds} />

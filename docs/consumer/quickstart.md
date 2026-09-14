@@ -56,7 +56,7 @@ curl -s https://api.darkbloom.dev/v1/chat/completions \
 
 The body is an OpenAI `chat.completion` object whose `model` field echoes the alias you sent and whose `usage` has `prompt_tokens`, `completion_tokens`, `total_tokens`. Response headers `X-Provider-Id`, `X-Provider-Attested` and `X-Timing` tell you which machine served it and how long each coordinator stage took (`WriteCommittedProviderHeaders`, `coordinator/inference/response/provider_snapshot.go`).
 
-Expect a short delay before the first byte: the coordinator sends nothing until a provider has produced content, so it can still fail over or return a real error status in the meantime (`commitFirstContent`, `coordinator/api/dispatch.go`).
+Expect a short delay before the first byte: the coordinator sends nothing until a provider has produced content, so it can still fail over or return a real error status in the meantime (`commitFirstContent`, `coordinator/inference/dispatch/commit.go`).
 
 ### 5. Stream the response
 

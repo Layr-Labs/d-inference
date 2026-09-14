@@ -1,8 +1,7 @@
 package api
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/inference/response"
-	"net/http"
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
 )
 
 // OpenRouter-formula uptime instrumentation.
@@ -43,29 +42,6 @@ import (
 
 const metricRequestOutcome = "inference.request_outcome"
 
-// OR-uptime outcome classes (the request_outcome "class" tag). Keep this set
-// low-cardinality and in sync with the dashboard formula in
-// deploy/datadog/dev-network-dashboard.json.
-const (
-	orClassSuccess     = "success"      // numerator + denominator
-	orClassProvider5xx = "provider_5xx" // denominator (failure)
-	orClassMidStream   = "mid_stream"   // denominator (failure)
-	orClassTimeout     = "timeout"      // denominator (failure)
-	orClassRateLimited = "rate_limited" // EXCLUDED (429, OpenRouter rate-limit)
-	orClassClientError = "client_error" // EXCLUDED (4xx client request error)
-)
-
-func isOpenRouterScoredDispatchEndpoint(endpoint string) bool {
-	return endpoint != response.CompletionsEndpoint && endpoint != response.MessagesEndpoint
-}
-
-func (d *dispatchState) recordDispatchedRequestOutcome(attr kvBackendAttribution, class string) {
-	if d == nil || !isOpenRouterScoredDispatchEndpoint(d.consumerEndpoint) {
-		return
-	}
-	d.s.recordRequestOutcome(d.model, attr, class)
-}
-
 // recordRequestOutcome emits the per-request OR-uptime outcome counter. model is
 // normalized to "unknown" when empty (e.g. a rejection before model resolution)
 // so the tag is always present for dashboard grouping. No-op when Datadog is
@@ -81,14 +57,14 @@ func (d *dispatchState) recordDispatchedRequestOutcome(attr kvBackendAttribution
 // unknown on both: a request that never reached a slot (pre-dispatch rejection)
 // is genuinely unattributable, and must never be booked to a real backend or
 // counted as a slot that did not degrade.
-func (s *Server) recordRequestOutcome(model string, attr kvBackendAttribution, class string) {
+func (s *Server) recordRequestOutcome(model string, attr dispatch.KVBackendAttribution, class string) {
 	if model == "" {
 		model = "unknown"
 	}
 	if s == nil || s.dd == nil {
 		return
 	}
-	tags := attr.appendTags(append(make([]string, 0, 4),
+	tags := attr.AppendTags(append(make([]string, 0, 4),
 		"model:"+model,
 		"class:"+class,
 	))
@@ -97,28 +73,5 @@ func (s *Server) recordRequestOutcome(model string, attr kvBackendAttribution, c
 
 // orUptimeClassForRejection maps a rejection's HTTP status to an OR-uptime class.
 func orUptimeClassForRejection(httpStatus int) string {
-	return classifyOutcomeByCode(httpStatus)
-}
-
-// classifyOutcomeByCode maps an HTTP-like status to an OR-uptime class following
-// OpenRouter's denominator rules (429/400/403/413 excluded; 5xx + timeouts count
-// as failure). 401/402/404 are our deliberate auth/billing/not-found client
-// rejections; we bucket them as client_error (excluded) rather than letting rare,
-// client-caused 4xx depress the uptime we report — the formula tracks PROVIDER
-// reliability. A zero/unknown code with no other signal is treated as a failure.
-func classifyOutcomeByCode(code int) string {
-	switch {
-	case code == http.StatusTooManyRequests: // 429
-		return orClassRateLimited
-	case code == http.StatusGatewayTimeout, code == http.StatusRequestTimeout: // 504, 408
-		return orClassTimeout
-	case code >= 500:
-		return orClassProvider5xx
-	case code >= 400:
-		return orClassClientError
-	case code == 0:
-		return orClassProvider5xx
-	default:
-		return orClassSuccess
-	}
+	return dispatch.ClassifyOutcomeByCode(httpStatus)
 }

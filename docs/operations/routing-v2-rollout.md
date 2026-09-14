@@ -40,7 +40,7 @@ is not explained by one of the behaviours below; roll the binary back per
    below cite where each is read.
 2. Edit the env file, restart the coordinator, and confirm the startup log
    line for that flag (each flag logs its resolved value at boot from
-   `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`), `coordinator/api/cold_dispatch.go`,
+   `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`), `coordinator/inference/dispatch/cold.go`,
    `coordinator/api/throughput_anomaly.go` or `coordinator/registry/config.go`).
 3. Watch the metric named in the row for one observation window before
    deciding whether to keep the flip or revert the binary.
@@ -59,8 +59,8 @@ is not explained by one of the behaviours below; roll the binary back per
 
 | Variable | Default (code) | Read in | Flip | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_QUEUE_BEFORE_SHED` | `true` | `coordinator/api/cold_dispatch.go` | `=false` | `machine_busy` preflight rejections are shed immediately as `429` instead of entering the dispatch queue. Watch queue depth and tail latency. |
-| `EIGENINFERENCE_COLD_DISPATCH` | `true` | `coordinator/api/cold_dispatch.go` | `=false` | `no_provider` is shed instead of spilling to an idle on-disk provider, and enqueue no longer kicks model swaps. Watch provider load/memory churn. |
+| `EIGENINFERENCE_QUEUE_BEFORE_SHED` | `true` | `coordinator/inference/dispatch/cold.go` | `=false` | `machine_busy` preflight rejections are shed immediately as `429` instead of entering the dispatch queue. Watch queue depth and tail latency. |
+| `EIGENINFERENCE_COLD_DISPATCH` | `true` | `coordinator/inference/dispatch/cold.go` | `=false` | `no_provider` is shed instead of spilling to an idle on-disk provider, and enqueue no longer kicks model swaps. Watch provider load/memory churn. |
 | `EIGENINFERENCE_QUEUE_MAX_DEPTH` / `EIGENINFERENCE_QUEUE_MAX_WAIT` | `32` / `120s` | `coordinator/registry/queue.go` | retune | Per-model queue depth and per-request wait bound ([`scheduling.md`](../architecture/scheduling.md#per-model-request-queue)). |
 
 ### Warm pool

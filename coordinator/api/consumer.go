@@ -15,113 +15,26 @@ package api
 //   WebSocket. Providers are attested via Secure Enclave challenge-response.
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
 	"github.com/eigeninference/d-inference/coordinator/inference/response"
-	"github.com/eigeninference/d-inference/coordinator/inference/settlement"
 	"github.com/eigeninference/d-inference/coordinator/inference/toolpolicy"
-	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/google/uuid"
-)
-
-const (
-	// inferenceTimeout is the maximum time to wait between chunks (streaming)
-	// or for the full response (non-streaming). For streaming, the deadline
-	// resets on each received chunk so long-running generations don't time out.
-	// 10 minutes allows 32k tokens at ~55 tok/s on slower hardware.
-	inferenceTimeout = response.InferenceTimeout
-
-	// defaultFirstContentDeadlineBase preserves the ordinary coordinator and
-	// unit-test budget. Production overrides it to 9s through validated startup
-	// configuration; exact model overrides live in modelpolicy and every request
-	// adds 1ms per estimated prompt token.
-	defaultFirstContentDeadlineBase = 5 * time.Second
-
-	// preambleContentTimeout is the relative cap from the first boilerplate
-	// chunk to the first CONTENT chunk. A provider that produced only preamble
-	// (role delta / Responses lifecycle) has written ZERO bytes to the client,
-	// so a role-then-stall zombie must fail over instead of pinning the request
-	// for the full inferenceTimeout. 90s covers the measured pre-content tail
-	// (vision prefill is 6-30s). When ReceivedAt is stamped this cap cannot
-	// exceed leftover request-absolute first-token budget: AcceptedCh is not a
-	// completion token and must not reset that clock.
-	preambleContentTimeout = 90 * time.Second
-
-	// chunkBufferSize is the channel buffer size for SSE chunks flowing from
-	// the provider to the consumer. A larger buffer prevents dropped chunks
-	// when the consumer reads slowly.
-	chunkBufferSize = 256
-
-	// maxDispatchAttempts is a SAFETY CEILING on per-request provider failover,
-	// not the normal stopping point. A request keeps failing over to fresh
-	// healthy providers until one succeeds, OR candidates are exhausted (every
-	// failed provider is excluded from re-selection, so dispatchPrimary returns
-	// outcomeFailFast on the next attempt once no eligible provider remains), OR
-	// the request's deadline/context fires (run() checks r.Context() each
-	// attempt). This ceiling only guards against a pathological retry path that
-	// fails to exclude a provider (an unbounded hot loop); it is set well above
-	// any realistic per-request fault count. Retries never re-queue — only the
-	// first attempt may wait for capacity — so failover stays fast, walking the
-	// immediately-available healthy providers rather than waiting on busy ones.
-	maxDispatchAttempts = 64
-
-	// maxCapacityClassRetries bounds failover specifically for TRANSIENT-capacity
-	// rejections (this provider's live KV budget, a full queue, an update drain).
-	// Such a shortage MAY clear on another provider, so we fail over — but only a
-	// few times, so a fleet-wide transient (or an oversized request the determinism
-	// check didn't tag) cannot walk all maxDispatchAttempts providers and 503 each
-	// (the prod storm: median 22, max 63 attempts, ~8.7 min, 0% eventual success).
-	// A DETERMINISTIC-context rejection (prompt > model context, identical on every
-	// provider) stops on the FIRST attempt regardless — see classifyRejection.
-	maxCapacityClassRetries = 3
-
-	// maxFirstChunkTimeoutRetries bounds failover for coordinator-synthesized
-	// first-chunk TIMEOUTS (the untyped 504 the exhausted ladder reclassifies
-	// to a retryable 429 with reason "first_chunk_timeout"). Unlike capacity
-	// rejections these carried NO cap: every retry re-ran a full fleet
-	// reservation scan (~1,260 providers, registry.ReserveProviderEx), and in
-	// the 2026-09-01 congestion collapse retry-amplified inbound (~100 req/s
-	// of retryable 429 traffic from OpenRouter) times per-request fleet scans
-	// saturated every coordinator CPU — attempt-0 route p50 went 40ms → 4.6s,
-	// success ~40%, 429s were delivered after 11s, inbound ~6k/min vs served
-	// ~550/min. The request-absolute first-content budget already bounds WALL
-	// time per request; this bounds CPU: after this many timed-out attempts
-	// (each on a distinct provider — a timed-out provider is excluded from
-	// re-selection) the ladder exhausts immediately into the existing
-	// synthetic-timeout → 429 reclassification (classifyExhaustedStatus).
-	maxFirstChunkTimeoutRetries = 3
-
-	// speculativeTimerRatio is the fraction of the TTFT deadline at which
-	// the coordinator launches a speculative backup dispatch. The primary
-	// provider gets this fraction of the deadline before the backup is
-	// started, and then both race until one produces the first chunk.
-	speculativeTimerRatio = 0.5
-
-	// maxHeldBoilerplate bounds how many pre-content boilerplate chunks the
-	// dispatch loop holds per provider before committing anyway. Real
-	// preambles are one chunk (chat role delta) or two (Responses
-	// created/in_progress), so the cap exists only to stop a misbehaving
-	// provider from growing the held buffer for the whole inference window.
-	// Excess boilerplate is dropped while the first-content clock continues;
-	// it must never be mistaken for content and commit a bad provider.
-	maxHeldBoilerplate = 8
 )
 
 // FirstContentDeadline returns this server's request-absolute first-content
@@ -132,7 +45,7 @@ const (
 func (s *Server) FirstContentDeadline(model string, estimatedPromptTokens int) time.Duration {
 	base := s.firstContentDeadlineBase
 	if base <= 0 {
-		base = defaultFirstContentDeadlineBase
+		base = dispatch.DefaultFirstContentDeadlineBase
 	}
 	return modelpolicy.CoordinatorFirstContentDeadline(model, estimatedPromptTokens, base)
 }
@@ -145,50 +58,38 @@ func (s *Server) FirstContentDeadline(model string, estimatedPromptTokens int) t
 // rather than dropped/cancelled streams. Exclusive self-route bypasses the shed
 // because it never falls back to the public fleet.
 func (s *Server) shedIfModelRejected(w http.ResponseWriter, r *http.Request, parsed map[string]any, policy selfRoutePolicy, publicModel, model string, stream bool, estimatedPromptTokens, requestedMaxTokens int, requiresVision, hasTools bool) bool {
-	if policy.enabled || !s.modelShed(model, publicModel) {
+	if policy.Enabled || !s.modelShed(model, publicModel) {
 		return false
 	}
-	retryAfter := s.estimateRetryAfter(model)
+	retryAfter := s.inferenceDispatch().EstimateRetryAfter(model)
 	if retryAfter <= 0 {
 		retryAfter = 30
 	}
 	s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_shed"})
 	s.recordRejection(rejectionInfo{
-		r:                     r,
-		stage:                 "model_shed",
-		reasonCode:            "model_shed",
-		httpStatus:            http.StatusTooManyRequests,
-		keyID:                 keyIDFromContext(r.Context()),
-		consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-		requestedModel:        publicModel,
-		resolvedModel:         model,
-		stream:                stream,
-		estimatedPromptTokens: estimatedPromptTokens,
-		requestedMaxTokens:    requestedMaxTokens,
-		requiresVision:        requiresVision,
-		hasTools:              hasTools,
-		selfRouteOnly:         policy.enabled,
-		preferOwner:           policy.prefer,
-		retryAfterMs:          retryAfter * 1000,
-		params:                rejectionSamplingParams(parsed),
+		Request:               r,
+		Stage:                 "model_shed",
+		ReasonCode:            "model_shed",
+		HttpStatus:            http.StatusTooManyRequests,
+		KeyID:                 requestcontext.KeyID(r.Context()),
+		ConsumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+		RequestedModel:        publicModel,
+		ResolvedModel:         model,
+		Stream:                stream,
+		EstimatedPromptTokens: estimatedPromptTokens,
+		RequestedMaxTokens:    requestedMaxTokens,
+		RequiresVision:        requiresVision,
+		HasTools:              hasTools,
+		SelfRouteOnly:         policy.Enabled,
+		PreferOwner:           policy.Prefer,
+		RetryAfterMs:          retryAfter * 1000,
+		Params:                rejectionSamplingParams(parsed),
 	})
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
 		fmt.Sprintf("model %q is temporarily rate-limited — retry after %ds", publicModel, retryAfter),
 		withCode("rate_limit_exceeded")))
 	return true
-}
-
-func writeProviderInferenceRequestDeferred(
-	ctx context.Context,
-	provider *registry.Provider,
-	builder registry.TextFrameBuilder,
-	onHandoff registry.TextFrameHandoff,
-) (registry.TextFrameWriteMetadata, error) {
-	if provider == nil || provider.Conn == nil {
-		return registry.TextFrameWriteMetadata{}, errors.New("provider websocket is not connected")
-	}
-	return provider.WriteTextDeferred(ctx, builder, onHandoff)
 }
 
 // writeGenericProviderError writes the terminal HTTP body for a provider error
@@ -204,10 +105,10 @@ func writeProviderInferenceRequestDeferred(
 // Every other error is mapped from the closed failure_code vocabulary. Raw
 // provider prose is never passed through.
 func (s *Server) writeGenericProviderError(w http.ResponseWriter, errMsg protocol.InferenceErrorMessage) {
-	errMsg = normalizeInferenceErrorForInternalUse(errMsg)
-	if jinjaTerminalRejectEnabled() && attempt.IsJinjaTemplateErrorReason(errMsg.ErrorReason) {
+	errMsg = attempt.NormalizeInferenceErrorForInternalUse(errMsg)
+	if dispatch.JinjaTerminalRejectEnabled() && attempt.IsJinjaTemplateErrorReason(errMsg.ErrorReason) {
 		writeJSON(w, http.StatusUnprocessableEntity,
-			errorResponse("invalid_request_error", jinjaTerminalRejectMessage, withCode("model_capability")))
+			errorResponse("invalid_request_error", dispatch.JinjaTerminalRejectMessage, withCode("model_capability")))
 		return
 	}
 	if attempt.NormalizeInferenceErrorReason(errMsg.ErrorReason) == attempt.ErrorReasonToolNoncompliance {
@@ -220,69 +121,6 @@ func (s *Server) writeGenericProviderError(w http.ResponseWriter, errMsg protoco
 		statusCode = http.StatusBadGateway
 	}
 	writeJSON(w, statusCode, errorResponse("provider_error", response.ClientSafeInferenceErrorMessage(errMsg)))
-}
-
-// failedProviderVersion reads a provider's reported binary version under its
-// lock (mirroring the policy.prefer owner reads). Captured when an attempt
-// fails so the next attempt's Traits.AvoidVersion can steer the retry to a
-// different build — a deterministic per-version bug must not burn every retry
-// on identical binaries.
-func failedProviderVersion(p *registry.Provider) string {
-	if p == nil {
-		return ""
-	}
-	p.Mu().Lock()
-	defer p.Mu().Unlock()
-	return p.Version
-}
-
-// errModelTooLarge is the dispatch error returned when providers serve the
-// requested model but none of them has enough total memory to ever load it.
-// Distinct from "no provider available" so the caller rejects fast instead of
-// queuing for 120s — queueing can't help a model that will never fit.
-const errModelTooLarge = "model too large for any available provider"
-
-// errTTFTTooSlow is the dispatch error returned when providers are available
-// but all of them exceed the per-request TTFT ceiling. Distinct from
-// "no provider available" so the caller returns a retryable 429 instead of
-// queueing for a provider that would miss the OpenRouter SLA target.
-const errTTFTTooSlow = "all available providers exceed the TTFT target"
-
-// errFirstContentDeadlineExpired is returned when the request-absolute
-// first-content clock runs out before an inference_request reaches the provider
-// wire. No provider work was started, so callers surface a deadline 429 without
-// charging provider health.
-const errFirstContentDeadlineExpired = "first-content deadline expired before provider dispatch"
-
-// errRoutingScanSaturated is returned when no provider-selection scan slot
-// (Server.routingScanSem) freed up within the request's remaining
-// first-content budget: the coordinator itself is the bottleneck (the
-// 2026-09-01 congestion collapse). No provider was scanned or contacted, so
-// callers shed ONE capacity-shaped retryable 429 — never a 5xx, never more
-// scans.
-const errRoutingScanSaturated = "routing scan capacity saturated — coordinator busy"
-
-// errClientGoneBeforeScan is returned when the caller's context fired while
-// the dispatch goroutine was parked for a provider-selection scan slot. No
-// provider was scanned or contacted; the dispatch loop takes its ordinary
-// client-gone terminal (cancelled route outcome, refund, no response body) —
-// never the routing_saturated 429 or a rejection-ledger row.
-const errClientGoneBeforeScan = "client disconnected before provider selection"
-
-// attempt0RouteAnchor returns the instant the attempt-0 route-latency EWMA
-// sample is measured from — the SAME anchor applyTimingDecomposition uses for
-// route_ms (MediaFetchedAt when a remote-media fetch happened, else
-// ReservedAt) — so download or parse time can never fake routing distress.
-// Zero when the request never stamped a reservation (bare test fixtures):
-// the caller then records no sample.
-func attempt0RouteAnchor(t *registry.RequestTiming) time.Time {
-	if t == nil {
-		return time.Time{}
-	}
-	if !t.MediaFetchedAt.IsZero() {
-		return t.MediaFetchedAt
-	}
-	return t.ReservedAt
 }
 
 // resolveRequestedModel maps the consumer-requested model — which may be a
@@ -302,8 +140,8 @@ func (s *Server) resolveRequestedModel(
 	traits registry.RequestTraits,
 ) (buildModel, publicModel string, newRawBody []byte, ok bool) {
 	buildID, isAlias, resolved := s.registry.ResolveModelConstrainedWithTraits(
-		requested, allowedProviderSerials, policy.ownerAccountID,
-		policy.enabled, policy.prefer, traits)
+		requested, allowedProviderSerials, policy.OwnerAccountID,
+		policy.Enabled, policy.Prefer, traits)
 	if !resolved {
 		return "", requested, rawBody, false
 	}
@@ -373,73 +211,11 @@ func ttftTooSlow(bestTTFT time.Duration, hasTTFT bool, threshold time.Duration) 
 	return hasTTFT && bestTTFT > threshold
 }
 
-// hardTTFTGateApplies reports whether the scheduler's token-prefill estimate is
-// authoritative enough to reject this request before dispatch. Media requests
-// run CPU decode plus a separate vision tower before text prefill; neither cost
-// exists in estimatedTTFTFromSnapshot, so treating that partial estimate as a
-// hard ceiling rejects healthy video/image requests on a number that cannot
-// predict their TTFT. They still use the best-available provider and remain
-// bounded by the same request-absolute first-content deadline.
-func (s *Server) hardTTFTGateApplies(requiresVision bool) bool {
-	return s.ttftHardReject && !requiresVision
-}
-
 func fasterTTFTEstimate(primaryModel string, primary time.Duration, alternateModel string, alternate time.Duration, alternateOK bool) (string, time.Duration) {
 	if alternateOK && alternate < primary {
 		return alternateModel, alternate
 	}
 	return primaryModel, primary
-}
-
-func (s *Server) estimateTTFTRetryAfter(model string, bestTTFT, threshold time.Duration) int {
-	overage := bestTTFT - threshold
-	seconds := int(math.Ceil(overage.Seconds()))
-	if base := s.estimateRetryAfter(model); seconds < base {
-		seconds = base
-	}
-	if seconds < 2 {
-		seconds = 2
-	}
-	if seconds > 30 {
-		seconds = 30
-	}
-	return seconds
-}
-
-func (s *Server) writeTTFTTooSlow(w http.ResponseWriter, model, publicModel string, bestTTFT, threshold time.Duration) {
-	retryAfter := s.estimateTTFTRetryAfter(model, bestTTFT, threshold)
-	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-	s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_429"})
-	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-		ttftTooSlowMessage(publicModel, bestTTFT, threshold, retryAfter),
-		withCode("rate_limit_exceeded")))
-}
-
-// ttftTooSlowMessage is the single wording for a fleet-wide TTFT rejection.
-func ttftTooSlowMessage(publicModel string, bestTTFT, threshold time.Duration, retryAfter int) string {
-	return fmt.Sprintf(
-		"all providers for model %q are above the %ds TTFT target (best estimate %.1fs); retry after %ds",
-		publicModel, int(math.Ceil(threshold.Seconds())), bestTTFT.Seconds(), retryAfter)
-}
-
-func (s *Server) triggerWarmPool() {
-	if s == nil || s.registry == nil {
-		return
-	}
-	s.registry.RequestWarmPoolTrigger()
-}
-
-func (s *Server) recordWarmPoolQueueState(model string) {
-	if s == nil || s.registry == nil || s.registry.Queue() == nil {
-		return
-	}
-	depth, oldest := s.registry.Queue().QueueStats(model)
-	if depth <= 0 {
-		s.registry.RecordWarmPoolQueueCleared(model)
-		return
-	}
-	s.registry.RecordWarmPoolQueueEnqueued(model, depth, oldest)
-	s.triggerWarmPool()
 }
 
 // ttftMsForRejection converts a pre-flight TTFT estimate to milliseconds for the
@@ -474,616 +250,6 @@ func rejectionSamplingParams(parsed map[string]any) json.RawMessage {
 	return b
 }
 
-type routeDecisionRecorder func(*registry.Provider, *registry.PendingRequest, registry.RoutingDecision)
-
-// dispatchReserver selects and atomically reserves a provider for an
-// already-constructed PendingRequest. It is the ONE seam between provider
-// SELECTION and the single prepare/encrypt/write funnel in
-// dispatchWithReserver: wave-2 callers plug in the retained-plan variants
-// (ReserveNextFromPlan / RefreshDispatchPlan) without forking the funnel.
-// The returned plan is non-nil only for scan-backed reservers that retain
-// alternates.
-type dispatchReserver func(pr *registry.PendingRequest, excludeIDs []string) (*registry.Provider, registry.RoutingDecision, *registry.DispatchPlan)
-
-// dispatchOneProvider encrypts and sends an inference request to a single
-// provider selected by a fresh full scan. It returns the pending request and
-// provider on success, or an error string on failure, plus the bounded
-// DispatchPlan of provisional alternates retained from the SAME scan (nil
-// whenever no provider was reserved) so retries and speculative backups can
-// consume retained identities instead of rescanning the fleet (Routing v2
-// Phase 3). The excludeProviders set is updated on failure. selfRoutePolicy
-// and its resolvers live in self_route.go.
-func (s *Server) dispatchOneProvider(
-	r *http.Request,
-	model string,
-	publicModel string,
-	rawBody []byte,
-	consumerKey string,
-	consumerLocation *store.ProviderLocation,
-	reservedMicroUSD int64,
-	estimatedPromptTokens int,
-	requestDeadline time.Duration,
-	requestedMaxTokens int,
-	tokenAdmission registry.TokenAdmission,
-	requiresVision bool,
-	traits registry.RequestTraits,
-	allowedProviderSerials []string,
-	isResponsesAPI bool,
-	policy selfRoutePolicy,
-	timing *registry.RequestTiming,
-	serviceReservation bool,
-	cachePlan registry.CachePlan,
-	excludeProviders map[string]struct{},
-	attempt int,
-	rp *registry.RequestProfile,
-	backupOf string,
-	recordRoute routeDecisionRecorder,
-	onDispatched func(),
-) (
-	provider *registry.Provider,
-	pr *registry.PendingRequest,
-	decision registry.RoutingDecision,
-	plan *registry.DispatchPlan,
-	lastErr string,
-	lastErrCode int,
-) {
-	return s.dispatchWithReserver(
-		r, model, publicModel, rawBody, consumerKey, consumerLocation,
-		reservedMicroUSD, estimatedPromptTokens, requestDeadline,
-		requestedMaxTokens, tokenAdmission, requiresVision, traits,
-		allowedProviderSerials, isResponsesAPI, policy, timing,
-		serviceReservation, cachePlan, excludeProviders, attempt, rp, backupOf,
-		recordRoute, onDispatched,
-		true, // ReserveProviderWithPlan is the O(fleet) full scan
-		func(pr *registry.PendingRequest, excludeIDs []string) (*registry.Provider, registry.RoutingDecision, *registry.DispatchPlan) {
-			return s.registry.ReserveProviderWithPlan(model, pr, excludeIDs...)
-		},
-	)
-}
-
-// dispatchWithReserver is the single prepare/encrypt/write funnel behind every
-// provider dispatch: pending construction and admission stamps, the pluggable
-// reservation, the billing surcharge, E2E encryption, and the
-// deadline-bounded provider write, with releaseUnsentDispatch cleanup on every
-// failure path. onDispatched (nil-safe) fires inside the write handoff
-// callback — the same instant Timing.DispatchedAt is stamped — so
-// providerDispatches counts frames that actually reached a provider, never
-// loop attempts.
-func (s *Server) dispatchWithReserver(
-	r *http.Request,
-	model string,
-	publicModel string,
-	rawBody []byte,
-	consumerKey string,
-	consumerLocation *store.ProviderLocation,
-	reservedMicroUSD int64,
-	estimatedPromptTokens int,
-	requestDeadline time.Duration,
-	requestedMaxTokens int,
-	tokenAdmission registry.TokenAdmission,
-	requiresVision bool,
-	traits registry.RequestTraits,
-	allowedProviderSerials []string,
-	isResponsesAPI bool,
-	policy selfRoutePolicy,
-	timing *registry.RequestTiming,
-	serviceReservation bool,
-	cachePlan registry.CachePlan,
-	excludeProviders map[string]struct{},
-	attempt int,
-	rp *registry.RequestProfile,
-	backupOf string,
-	recordRoute routeDecisionRecorder,
-	onDispatched func(),
-	fullScan bool,
-	reserve dispatchReserver,
-) (
-	provider *registry.Provider,
-	pr *registry.PendingRequest,
-	decision registry.RoutingDecision,
-	plan *registry.DispatchPlan,
-	lastErr string,
-	lastErrCode int,
-) {
-	receivedAt := timingReceivedAt(timing)
-	_, dispatchable := firstContentBudgetMillis(receivedAt, requestDeadline)
-	if !dispatchable {
-		return nil, nil, decision, nil, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
-	}
-
-	requestID := uuid.New().String()
-	ap := rp.NewAttempt(requestID, attempt, backupOf)
-	s.recordPredictivePolicy(ap, policy, requiresVision)
-	ap.Mark(registry.StampAttemptStart)
-	// Any failure return closes the attempt as not dispatched (terminal half; the handler half lands in finalizeProfile);
-	// a dispatched attempt is left for the provider terminal / relay to close.
-	defer func() {
-		if provider == nil {
-			closeUndispatchedAttempt(ap, lastErr, lastErrCode)
-		}
-	}()
-	pr = &registry.PendingRequest{
-		RequestID: requestID,
-		Profile:   ap,
-		// Attempt is stamped at construction — BEFORE the request is encrypted
-		// and sent to the provider — so a fast provider that returns
-		// inference_complete immediately is correlated to the right route row.
-		// Setting it after the send (on the dispatch goroutine) would race the
-		// provider WS reader goroutine's handleComplete read of pr.Attempt.
-		Attempt:                attempt,
-		Model:                  model,
-		PublicModel:            publicModel,
-		ConsumerKey:            consumerKey,
-		KeyID:                  keyIDFromContext(r.Context()),
-		KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
-		KeyLimitReset:          keyLimitResetFromContext(r.Context()),
-		ConsumerLocation:       consumerLocation,
-		IsResponsesAPI:         isResponsesAPI,
-		EstimatedPromptTokens:  estimatedPromptTokens,
-		RequiresVision:         requiresVision,
-		Traits:                 traits,
-		RequestedMaxTokens:     requestedMaxTokens,
-		TokenAdmission:         tokenAdmission,
-		CachePlan:              cachePlan,
-		ReservedMicroUSD:       reservedMicroUSD,
-		BaseReservedMicroUSD:   reservedMicroUSD,
-		ServiceReservation:     serviceReservation,
-		AllowedProviderSerials: allowedProviderSerials,
-		SelfRouteOnly:          policy.enabled,
-		PreferOwner:            policy.prefer,
-		OwnerAccountID:         policy.ownerAccountID,
-		FreeSelfRoute:          policy.enabled,
-		MetadataDetails:        response.MetadataDetailsFromRequest(r),
-		AcceptedCh:             make(chan struct{}, 1),
-		ChunkCh:                make(chan registry.ProviderChunk, chunkBufferSize),
-		CompleteCh:             make(chan protocol.UsageInfo, 1),
-		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
-		Timing:                 timing,
-	}
-	if !receivedAt.IsZero() {
-		pr.FirstContentDeadline = receivedAt.Add(requestDeadline)
-	}
-
-	// Public inference routes (not self-route / prefer-owner) enforce the
-	// OpenRouter TTFT ceiling inside the scheduler. This makes the preflight
-	// check authoritative: the router cannot select a provider whose estimated
-	// TTFT is above the threshold.
-	// Routing v2 (P1 fix): only enforce the TTFT ceiling inside the scheduler when
-	// the HARD gate is on. In soft mode (default) MaxTTFTMs stays 0 so the primary
-	// dispatch serves the best-available provider instead of re-rejecting an
-	// over-threshold request the preflight already chose to soft-serve. (Mirrors
-	// queueMaxTTFTMs, which already returns 0 in soft mode.)
-	if !policy.enabled && !policy.prefer && s.hardTTFTGateApplies(requiresVision) {
-		pr.MaxTTFTMs = float64(requestDeadline.Milliseconds())
-	}
-	// Refresh immediately before reservation: every retry spends the same
-	// absolute clock, so the scheduler must never see the original ceiling.
-	if !pr.RefreshFirstContentBudget(time.Now()) {
-		return nil, nil, decision, nil, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
-	}
-	// Routing v2 W2: soft per-request decode floor (0 = off). Applies to all
-	// routes; it only ranks providers, never rejects.
-	pr.MinDecodeTPS = s.minDecodeTPS
-
-	excludeList := func() []string {
-		ids := make([]string, 0, len(excludeProviders))
-		for id := range excludeProviders {
-			ids = append(ids, id)
-		}
-		return ids
-	}
-
-	// noteSelectionSample feeds the attempt-0 route-latency distress EWMA
-	// behind estimateRetryAfter (2026-09-01: route p50 40ms → 4.6s while the
-	// empty-queue heuristic kept answering "retry in 2s"). Anchored exactly
-	// where applyTimingDecomposition anchors route_ms (MediaFetchedAt when
-	// set, else ReservedAt) so a multi-second media download or slow body
-	// parse can never masquerade as routing distress. Called on BOTH the
-	// successful reservation (at the RoutedAt stamp) and every failed
-	// attempt-0 selection (semaphore acquisition timeout, scan that yields no
-	// provider): under TOTAL overload no selection ever succeeds, and an
-	// EWMA fed only by successes would sit at 0 — keeping Retry-After at the
-	// legacy 2s exactly when distress scaling matters most.
-	noteSelectionSample := func() {
-		if attempt != 0 {
-			return
-		}
-		if anchor := attempt0RouteAnchor(timing); !anchor.IsZero() {
-			s.noteAttempt0RouteLatency(time.Since(anchor))
-		}
-	}
-
-	// Bound concurrent provider-selection scans (2026-09-01 congestion
-	// collapse: retry-amplified inbound × a fresh full fleet scan per attempt
-	// saturated every coordinator CPU). Only O(fleet) reservers take a slot —
-	// the full scan, the plan REFRESH (itself a full re-scan), and the
-	// speculative-backup scan. A retained-plan step (ReserveNextFromPlan)
-	// revalidates at most the plan's bounded entries, so it bypasses the
-	// semaphore: a held slot must never starve the cheap retry path that
-	// exists precisely to avoid rescans. The wait is bounded by the request's
-	// remaining first-content budget: a goroutine parks cheaply on the channel
-	// and either scans as soon as a slot frees or sheds capacity-shaped
-	// (errRoutingScanSaturated → one retryable 429) once the budget is gone.
-	if fullScan {
-		switch s.acquireRoutingScanSlot(
-			firstTokenRemainingSince(receivedAt, requestDeadline),
-			r.Context().Done(),
-		) {
-		case scanSlotClientGone:
-			// The caller vanished while parked for a slot: this is the
-			// ordinary client-gone terminal, never the routing_saturated
-			// 429/rejection row (and no distress sample — a vanished caller
-			// proves nothing about selection latency).
-			return nil, nil, decision, nil, errClientGoneBeforeScan, 0
-		case scanSlotTimeout:
-			noteSelectionSample()
-			return nil, nil, decision, nil, errRoutingScanSaturated, http.StatusTooManyRequests
-		}
-	}
-	provider, decision, plan = reserve(pr, excludeList())
-	ap.SetReservationTTFTCeiling(pr.MaxTTFTMs)
-	ap.Mark(registry.StampReserveDone)
-	ap.SetDecision(decision)
-	if fullScan {
-		s.releaseRoutingScanSlot()
-	}
-	if provider == nil {
-		noteSelectionSample()
-		// Providers serve this model but none can physically fit it: don't make
-		// the caller queue/retry for something that will never load.
-		if decision.CandidateCount == 0 && decision.CapacityRejections == 0 && decision.ModelTooLargeRejections > 0 {
-			return nil, nil, decision, plan, errModelTooLarge, http.StatusServiceUnavailable
-		}
-		// Providers are available but all exceed the TTFT ceiling. Fail fast
-		// with a retryable 429 rather than queueing or routing to a slow
-		// provider.
-		if decision.TTFTRejections > 0 {
-			return nil, nil, decision, plan, errTTFTTooSlow, http.StatusTooManyRequests
-		}
-		return nil, nil, decision, plan, "no provider available", http.StatusServiceUnavailable
-	}
-	pendingCleanup := true
-	cleanupPending := func() {
-		if pendingCleanup {
-			s.releaseUnsentDispatch(provider, pr)
-			pendingCleanup = false
-		}
-	}
-	defer cleanupPending()
-	if pr.Timing != nil {
-		pr.Timing.RoutedAt = time.Now()
-	}
-	noteSelectionSample()
-	if ap != nil {
-		ap.ProviderID = provider.ID
-		provider.Mu().Lock()
-		ap.ProviderVersion = provider.Version
-		ap.ChipFamily = provider.Hardware.ChipFamily
-		provider.Mu().Unlock()
-		ap.KVBackend, _ = provider.SlotKVBackendTags(model)
-	}
-	if recordRoute != nil {
-		recordRoute(provider, pr, decision)
-	}
-
-	// A request settles FREE when it's served by a machine the caller owns:
-	// exclusive self-route (policy.enabled) always, OR a prefer request whose
-	// SELECTED provider is the caller's own machine (settlement refunds it to
-	// zero). In that case there is no payout and no reservation to top up — and
-	// applying a provider custom price above the platform rate would wrongly 429
-	// the free owned route, so skip both the payout warning and the top-up.
-	settlesFree := policy.enabled
-	if !settlesFree && policy.prefer {
-		provider.Mu().Lock()
-		settlesFree = policy.ownerAccountID != "" && provider.AccountID == policy.ownerAccountID
-		provider.Mu().Unlock()
-	}
-
-	if s.billing != nil && !settlesFree && !settlement.HasPayoutDestination(provider) {
-		s.logger.Warn("provider missing payout destination, crediting to internal ledger",
-			"provider_id", provider.ID)
-	}
-
-	// Free (owned) requests are settled at zero cost (handleComplete), so there
-	// is no reservation to top up for a provider's custom price.
-	if s.billing != nil && !settlesFree {
-		_, err := s.inferenceSettlement().ReserveForProvider(pr, provider)
-		if err != nil {
-			cleanupPending()
-			excludeProviders[provider.ID] = struct{}{}
-			if errors.Is(err, store.ErrInsufficientBalance) {
-				return nil, nil, decision, plan, "insufficient funds for provider price", http.StatusPaymentRequired
-			}
-			s.logger.Error("provider reservation failed (DB error)", "provider_id", provider.ID, "error", err)
-			return nil, nil, decision, plan, "service temporarily unavailable — please retry", http.StatusServiceUnavailable
-		}
-	}
-	ap.Mark(registry.StampTopupDone)
-	// refundExtra credits back the provider-specific surcharge that
-	// Service.ReserveForProvider may have added. The caller's
-	// refundReservation only covers the base reservation.
-	refundExtra := func() {
-		extra := pr.ReservedMicroUSD - reservedMicroUSD
-		if extra > 0 {
-			start := time.Now()
-			_ = s.store.Credit(consumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+requestID)
-			s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + model})
-			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_extra_refund"})
-			pr.ReservedMicroUSD = reservedMicroUSD
-		}
-	}
-
-	// E2E encryption
-	if provider.PublicKey == "" {
-		refundExtra()
-		cleanupPending()
-		excludeProviders[provider.ID] = struct{}{}
-		return nil, nil, decision, plan, "no provider with E2E encryption", http.StatusServiceUnavailable
-	}
-
-	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
-	if err != nil {
-		refundExtra()
-		cleanupPending()
-		excludeProviders[provider.ID] = struct{}{}
-		return nil, nil, decision, plan, "provider public key invalid", http.StatusServiceUnavailable
-	}
-
-	sessionKeys, err := e2e.GenerateSessionKeys()
-	if err != nil {
-		refundExtra()
-		cleanupPending()
-		return nil, nil, decision, plan, "failed to generate session keys", http.StatusInternalServerError
-	}
-
-	if err := s.registry.PrepareCacheAttempt(pr, provider); err != nil {
-		s.registry.ForgetCacheAttempt(pr)
-		refundExtra()
-		cleanupPending()
-		return nil, nil, decision, plan, "failed to prepare cache-safe request", http.StatusInternalServerError
-	}
-	// Pre-fix providers crash on a vision request carrying sampling penalties;
-	// strip them for those providers only. Protocol-0 providers additionally get
-	// a coordinator-authored prompt_cache_key only inside this sealed body.
-	sealedBody, err := bodyForCacheAttempt(rawBody, requiresVision, provider, pr)
-	if err != nil {
-		s.registry.ForgetCacheAttempt(pr)
-		refundExtra()
-		cleanupPending()
-		if errors.Is(err, errProviderBodyTooLarge) {
-			excludeProviders[provider.ID] = struct{}{}
-			return nil, nil, decision, plan, err.Error(), http.StatusRequestEntityTooLarge
-		}
-		return nil, nil, decision, plan, "failed to prepare provider request", http.StatusInternalServerError
-	}
-	encrypted, err := e2e.Encrypt(sealedBody, providerPubKey, sessionKeys)
-	if err != nil {
-		s.registry.ForgetCacheAttempt(pr)
-		refundExtra()
-		cleanupPending()
-		return nil, nil, decision, plan, "failed to encrypt request", http.StatusInternalServerError
-	}
-	if pr.Timing != nil {
-		pr.Timing.EncryptedAt = time.Now()
-	}
-	ap.Mark(registry.StampEncrypted)
-	pr.SessionPrivKey = &sessionKeys.PrivateKey
-	// pr.ReservedMicroUSD was already set in the struct literal and may have
-	// been increased by Service.ReserveForProvider above. Don't overwrite.
-
-	// Bound the provider write by the request-absolute first-token clock (see
-	// firstTokenWriteContext): a congested write lane must not silently eat
-	// the budget while the aggregator's cancel clock keeps running.
-	writeCtx, cancelWrite := firstTokenWriteContext(
-		r.Context(), receivedAt, requestDeadline)
-	ap.Mark(registry.StampWriteSubmitted)
-	_, writeErr := writeProviderInferenceRequestDeferred(
-		writeCtx,
-		provider,
-		providerInferenceFrameBuilder(
-			requestID, encrypted.EphemeralPublicKey, encrypted.Ciphertext, pr),
-		func(metadata registry.TextFrameWriteMetadata) {
-			if pr.Timing != nil {
-				pr.Timing.DispatchedAt = metadata.DequeuedAt
-			}
-			if onDispatched != nil {
-				onDispatched()
-			}
-			ap.MarkAt(registry.StampWriteDequeued, metadata.DequeuedAt)
-		},
-	)
-	cancelWrite()
-	if writeErr == nil {
-		ap.Mark(registry.StampWriteDone)
-	}
-	if writeErr != nil {
-		s.registry.ForgetCacheAttempt(pr)
-		refundExtra()
-		cleanupPending()
-		excludeProviders[provider.ID] = struct{}{}
-		if errors.Is(writeErr, context.DeadlineExceeded) ||
-			errors.Is(writeErr, errFirstContentDeadlineAtWriter) {
-			// The writer either discarded the frame before handoff or aborted
-			// its connection during an in-flight write. Cancel defensively in
-			// case the provider decoded the final bytes before disconnect.
-			ap.Mark(registry.StampCancelSent)
-			s.inferenceAttempts().SendCancel(provider, requestID)
-			return nil, nil, decision, plan, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
-		}
-		return nil, nil, decision, plan, "failed to send request to provider", http.StatusBadGateway
-	}
-	pendingCleanup = false
-
-	return provider, pr, decision, plan, "", 0
-}
-
-// releaseUnsentDispatch returns a reservation after frame construction or
-// socket handoff fails. Resolving speculative completion arbitration first
-// guarantees a provider completion already waiting off the read loop cannot
-// remain stranded after pending state is removed.
-func (s *Server) releaseUnsentDispatch(
-	provider *registry.Provider,
-	pr *registry.PendingRequest,
-) {
-	if provider == nil || pr == nil {
-		return
-	}
-	pr.ResolveSpeculativeEmptyCompletion(false)
-	provider.RemovePending(pr.RequestID)
-	s.registry.SetProviderIdle(provider.ID)
-}
-
-// penaltySafeProviderVersion is the first provider release whose VLM penalty
-// path handles repetition/presence/frequency penalties without crashing (the
-// TokenRing 2D-prompt fix). Providers below it crash on a vision request that
-// carries any of these fields, so the coordinator strips them before sealing
-// for such a provider. Keep in sync with the release that ships the fix.
-const penaltySafeProviderVersion = "0.6.7"
-
-// visionPenaltyFields crash the pre-fix VLM penalty path on image requests.
-var visionPenaltyFields = []string{"repetition_penalty", "presence_penalty", "frequency_penalty"}
-
-// bodyForProvider returns the request body to seal for `provider`. It equals
-// rawBody, except a vision request routed to a pre-fix provider has the
-// crash-inducing penalty fields stripped. Fixed providers receive the penalties
-// unchanged. Per-provider (not pre-routing) so a retry on a fixed provider keeps
-// them. Remove once MIN_PROVIDER_VERSION clears all pre-fix builds.
-func bodyForProvider(rawBody []byte, requiresVision bool, provider *registry.Provider) []byte {
-	if !requiresVision {
-		return rawBody
-	}
-	if provider.Version != "" && !semverLess(provider.Version, penaltySafeProviderVersion) {
-		return rawBody // fixed provider — pass penalties through
-	}
-	// A body carrying none of the penalty fields at its top level is returned
-	// unchanged without decoding it — the same outcome the decode path reaches
-	// through changed=false, minus a full-body parse per sizing probe.
-	if has, ok := topLevelObjectHasAnyKey(rawBody, visionPenaltyFields); ok && !has {
-		return rawBody
-	}
-	parsed, err := decodeInferenceJSONObject(rawBody)
-	if err != nil {
-		return rawBody
-	}
-	changed := false
-	for _, key := range visionPenaltyFields {
-		if _, ok := parsed[key]; ok {
-			delete(parsed, key)
-			changed = true
-		}
-	}
-	if !changed {
-		return rawBody
-	}
-	if stripped, err := marshalForwardBody(parsed); err == nil {
-		return stripped
-	}
-	return rawBody
-}
-
-var errProviderBodyTooLarge = errors.New("provider request body too large")
-
-type providerBodyTooLargeError struct {
-	size int
-}
-
-func (e *providerBodyTooLargeError) Error() string {
-	return fmt.Sprintf("%s: %d bytes exceeds the %d-byte limit after cache isolation",
-		errProviderBodyTooLarge, e.size, maxInferenceBodyBytes)
-}
-
-func (e *providerBodyTooLargeError) Unwrap() error {
-	return errProviderBodyTooLarge
-}
-
-func oversizedProviderBodyBytes(err error) int {
-	var sizeErr *providerBodyTooLargeError
-	if errors.As(err, &sizeErr) {
-		return sizeErr.size
-	}
-	return 0
-}
-
-func legacyCacheBustBodyBytes(
-	rawBody []byte,
-	requiresVision bool,
-	provider *registry.Provider,
-) (int, error) {
-	if provider == nil {
-		return 0, nil
-	}
-	return cacheAttemptSizeError(
-		bodyForProvider(rawBody, requiresVision, provider),
-		strings.Repeat("x", registry.LegacyCacheBustKeyLength))
-}
-
-func providerBodySizeError(
-	rawBody []byte,
-	requiresVision bool,
-	provider *registry.Provider,
-) (int, error) {
-	if provider == nil {
-		return 0, nil
-	}
-	provider.Mu().Lock()
-	usesLegacyCacheBust := provider.PrefixCacheProtocol < 1
-	provider.Mu().Unlock()
-	legacyKey := ""
-	if usesLegacyCacheBust {
-		legacyKey = strings.Repeat("x", registry.LegacyCacheBustKeyLength)
-	}
-	return cacheAttemptSizeError(
-		bodyForProvider(rawBody, requiresVision, provider), legacyKey)
-}
-
-func minimumLegacyCacheBustOverflow(rawBody []byte, requiresVision bool) (int, error) {
-	// An empty-version provider exercises the only provider-specific shrinking
-	// transform: legacy vision penalty removal. Raise a fleet-wide protocol floor
-	// only when even that smallest valid protocol-0 body exceeds the cap.
-	return legacyCacheBustBodyBytes(rawBody, requiresVision, &registry.Provider{})
-}
-
-func routingTraitsForProviderBody(
-	hasTools bool,
-	providerBody []byte,
-	requiresVision bool,
-) (registry.RequestTraits, error) {
-	traits := registry.RequestTraits{HasTools: hasTools}
-	_, err := minimumLegacyCacheBustOverflow(providerBody, requiresVision)
-	if errors.Is(err, errProviderBodyTooLarge) {
-		traits.MinPrefixCacheProtocol = 1
-	}
-	return traits, err
-}
-
-// bodyForCacheAttempt returns the body to seal for one dispatch attempt: the
-// provider-specific body (bodyForProvider) with the protocol-0 cache-bust key
-// added as prompt_cache_key when the attempt carries one, size-checked
-// against the sealed-frame cap.
-func bodyForCacheAttempt(rawBody []byte, requiresVision bool, provider *registry.Provider, pr *registry.PendingRequest) ([]byte, error) {
-	body := bodyForProvider(rawBody, requiresVision, provider)
-	if pr == nil || pr.LegacyCacheBustKey == "" {
-		if len(body) > maxInferenceBodyBytes {
-			return nil, &providerBodyTooLargeError{size: len(body)}
-		}
-		return body, nil
-	}
-	keyJSON, err := json.Marshal(pr.LegacyCacheBustKey)
-	if err != nil {
-		return nil, err
-	}
-	sealed, ok := spliceTopLevelMember(body, legacyCacheBustField, keyJSON)
-	if !ok {
-		if sealed, err = sealLegacyCacheBust(body, keyJSON); err != nil {
-			return nil, err
-		}
-	}
-	if len(sealed) > maxInferenceBodyBytes {
-		return nil, &providerBodyTooLargeError{size: len(sealed)}
-	}
-	return sealed, nil
-}
-
 // defaultMaxOutputTokens is the ceiling injected into requests that don't set
 // max_tokens. It bounds the worst-case cost of a single inference so the
 // pre-flight balance reservation covers the entire generation; without this
@@ -1104,85 +270,10 @@ func explicitMaxTokens(parsed map[string]any) int {
 	return 0
 }
 
-// routeLatencyEWMAAlpha weights the newest attempt-0 route-latency sample in
-// the distress EWMA: ~10 healthy requests pull a degraded average back under
-// the threshold once the collapse clears.
-const routeLatencyEWMAAlpha = 0.2
-
-// degradedRouteEWMAThresholdMs is the attempt-0 route-latency EWMA above which
-// estimateRetryAfter switches from the queue-depth heuristic to distress
-// scaling. Healthy routing runs ~40ms; anything over a second means the
-// coordinator itself is the bottleneck.
-const degradedRouteEWMAThresholdMs = 1000.0
-
-// maxDistressRetryAfter caps the distress-scaled Retry-After (seconds).
-const maxDistressRetryAfter = 60
-
-// noteAttempt0RouteLatency folds one attempt-0 route latency (ReceivedAt →
-// RoutedAt) into the distress EWMA. Called from dispatchWithReserver where
-// RoutedAt is stamped; negative samples (clock skew) are dropped.
-func (s *Server) noteAttempt0RouteLatency(d time.Duration) {
-	ms := float64(d) / float64(time.Millisecond)
-	if ms < 0 {
-		return
-	}
-	s.routeLatencyMu.Lock()
-	if s.routeLatencyEWMAMs == 0 {
-		s.routeLatencyEWMAMs = ms
-	} else {
-		s.routeLatencyEWMAMs = routeLatencyEWMAAlpha*ms +
-			(1-routeLatencyEWMAAlpha)*s.routeLatencyEWMAMs
-	}
-	s.routeLatencyMu.Unlock()
-}
-
-// attempt0RouteEWMAMs reads the current attempt-0 route-latency EWMA (ms).
-func (s *Server) attempt0RouteEWMAMs() float64 {
-	s.routeLatencyMu.Lock()
-	defer s.routeLatencyMu.Unlock()
-	return s.routeLatencyEWMAMs
-}
-
-// estimateRetryAfter returns a suggested wait time in seconds before retrying
-// a request for the given model. Based on queue depth as a rough proxy for
-// fleet backlog. OpenRouter uses the Retry-After header to schedule retries.
-//
-// Distress scaling (2026-09-01 congestion collapse): queue depth alone was a
-// LIAR under CPU saturation — the queue was empty (nothing could even reach
-// it), so every 429 carried "Retry-After: 2" and upstream obligingly hammered
-// the coordinator every 2s, sustaining the death loop. When the attempt-0
-// route-latency EWMA shows routing itself is degraded (> 1s), the answer
-// scales with the observed degradation — max(base, ceil(EWMA seconds)×5),
-// capped at 60s — so upstream backoff actually relieves pressure. Queue-depth
-// behavior is unchanged while routing is healthy.
-func (s *Server) estimateRetryAfter(model string) int {
-	estimate := 2 // Light load, retry soon
-	if queueDepth := s.registry.Queue().QueueSize(model); queueDepth > 0 {
-		// Rough estimate: each queued request takes ~3 seconds to drain.
-		estimate = queueDepth * 3
-		if estimate < 2 {
-			estimate = 2
-		}
-		if estimate > 30 {
-			estimate = 30
-		}
-	}
-	if ewmaMs := s.attempt0RouteEWMAMs(); ewmaMs > degradedRouteEWMAThresholdMs {
-		scaled := int(math.Ceil(ewmaMs/1000)) * 5
-		if scaled > maxDistressRetryAfter {
-			scaled = maxDistressRetryAfter
-		}
-		if scaled > estimate {
-			estimate = scaled
-		}
-	}
-	return estimate
-}
-
 // writeServiceUnavailable writes a retryable 503 with a Retry-After header so
 // clients (and OpenRouter) can schedule the retry instead of blind backoff.
 func (s *Server) writeServiceUnavailable(w http.ResponseWriter, model string) {
-	w.Header().Set("Retry-After", strconv.Itoa(s.estimateRetryAfter(model)))
+	w.Header().Set("Retry-After", strconv.Itoa(s.inferenceDispatch().EstimateRetryAfter(model)))
 	writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable",
 		"service temporarily unavailable — please retry"))
 }
@@ -1254,14 +345,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	input := parsed["input"]
 	if len(messages) == 0 && input == nil {
 		s.recordRejection(rejectionInfo{
-			r:               r,
-			stage:           "validation",
-			reasonCode:      "messages_required",
-			httpStatus:      http.StatusBadRequest,
-			keyID:           keyIDFromContext(r.Context()),
-			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
-			requestedModel:  model,
-			params:          rejectionSamplingParams(parsed),
+			Request:         r,
+			Stage:           "validation",
+			ReasonCode:      "messages_required",
+			HttpStatus:      http.StatusBadRequest,
+			KeyID:           requestcontext.KeyID(r.Context()),
+			ConsumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+			RequestedModel:  model,
+			Params:          rejectionSamplingParams(parsed),
 		})
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "messages or input is required"))
 		return
@@ -1271,15 +362,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// silently returning a single choice the consumer didn't ask for.
 	if copies, ok := intFromRequestValue(parsed["n"]); ok && copies > 1 {
 		s.recordRejection(rejectionInfo{
-			r:               r,
-			stage:           "validation",
-			reasonCode:      "bad_param",
-			httpStatus:      http.StatusBadRequest,
-			keyID:           keyIDFromContext(r.Context()),
-			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
-			requestedModel:  model,
-			n:               copies,
-			params:          rejectionSamplingParams(parsed),
+			Request:         r,
+			Stage:           "validation",
+			ReasonCode:      "bad_param",
+			HttpStatus:      http.StatusBadRequest,
+			KeyID:           requestcontext.KeyID(r.Context()),
+			ConsumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+			RequestedModel:  model,
+			N:               copies,
+			Params:          rejectionSamplingParams(parsed),
 		})
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
 			"n > 1 is not supported", withParam("n")))
@@ -1365,14 +456,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		parsed, model, allowedProviderSerials, policy, aliasTraits)
 	if !ok {
 		s.recordRejection(rejectionInfo{
-			r:               r,
-			stage:           "model_resolution",
-			reasonCode:      "model_unavailable",
-			httpStatus:      http.StatusServiceUnavailable,
-			keyID:           keyIDFromContext(r.Context()),
-			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
-			requestedModel:  model,
-			params:          rejectionSamplingParams(parsed),
+			Request:         r,
+			Stage:           "model_resolution",
+			ReasonCode:      "model_unavailable",
+			HttpStatus:      http.StatusServiceUnavailable,
+			KeyID:           requestcontext.KeyID(r.Context()),
+			ConsumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+			RequestedModel:  model,
+			Params:          rejectionSamplingParams(parsed),
 		})
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 			fmt.Sprintf("model %q has no available build right now", model), withParam("model")))
@@ -1477,20 +568,20 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		loweredProviderBody, err := promptcontract.LowerProviderBody(promptcontract.EndpointResponses, rawBody)
 		if err != nil {
 			s.recordRejection(rejectionInfo{
-				r:                     r,
-				stage:                 "validation",
-				reasonCode:            "bad_param",
-				httpStatus:            http.StatusBadRequest,
-				keyID:                 keyIDFromContext(r.Context()),
-				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-				requestedModel:        publicModel,
-				resolvedModel:         model,
-				stream:                stream,
-				estimatedPromptTokens: estimatedPromptTokens,
-				requestedMaxTokens:    requestedMaxTokens,
-				requiresVision:        requiresVision,
-				hasTools:              hasTools,
-				params:                rejectionSamplingParams(parsed),
+				Request:               r,
+				Stage:                 "validation",
+				ReasonCode:            "bad_param",
+				HttpStatus:            http.StatusBadRequest,
+				KeyID:                 requestcontext.KeyID(r.Context()),
+				ConsumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+				RequestedModel:        publicModel,
+				ResolvedModel:         model,
+				Stream:                stream,
+				EstimatedPromptTokens: estimatedPromptTokens,
+				RequestedMaxTokens:    requestedMaxTokens,
+				RequiresVision:        requiresVision,
+				HasTools:              hasTools,
+				Params:                rejectionSamplingParams(parsed),
 			})
 			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 			return
@@ -1563,23 +654,23 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reject requests for models not in the catalog.
-	if !policy.enabled && !s.registry.IsModelInCatalog(model) {
+	if !policy.Enabled && !s.registry.IsModelInCatalog(model) {
 		refundReservation()
 		s.recordRejection(rejectionInfo{
-			r:                     r,
-			stage:                 "model_resolution",
-			reasonCode:            "model_not_found",
-			httpStatus:            http.StatusNotFound,
-			keyID:                 keyIDFromContext(r.Context()),
-			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-			requestedModel:        publicModel,
-			resolvedModel:         model,
-			stream:                stream,
-			estimatedPromptTokens: estimatedPromptTokens,
-			requestedMaxTokens:    requestedMaxTokens,
-			requiresVision:        requiresVision,
-			hasTools:              hasTools,
-			params:                rejectionSamplingParams(parsed),
+			Request:               r,
+			Stage:                 "model_resolution",
+			ReasonCode:            "model_not_found",
+			HttpStatus:            http.StatusNotFound,
+			KeyID:                 requestcontext.KeyID(r.Context()),
+			ConsumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+			RequestedModel:        publicModel,
+			ResolvedModel:         model,
+			Stream:                stream,
+			EstimatedPromptTokens: estimatedPromptTokens,
+			RequestedMaxTokens:    requestedMaxTokens,
+			RequiresVision:        requiresVision,
+			HasTools:              hasTools,
+			Params:                rejectionSamplingParams(parsed),
 		})
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", publicModel), withParam("model")))
@@ -1606,8 +697,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		requestedMaxTokens:    requestedMaxTokens,
 		hasTools:              hasTools,
 		requiresVision:        requiresVision,
-		selfRoute:             policy.enabled,
-		ownerAccountID:        policy.ownerAccountID,
+		selfRoute:             policy.Enabled,
+		ownerAccountID:        policy.OwnerAccountID,
 		traits:                routingTraits,
 	})
 	if !ok {
@@ -1641,20 +732,20 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			refundReservation()
 			s.recordRejection(rejectionInfo{
-				r:                     r,
-				stage:                 "validation",
-				reasonCode:            "bad_param",
-				httpStatus:            http.StatusBadRequest,
-				keyID:                 keyIDFromContext(r.Context()),
-				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-				requestedModel:        publicModel,
-				resolvedModel:         forModel,
-				stream:                stream,
-				estimatedPromptTokens: estimatedPromptTokens,
-				requestedMaxTokens:    requestedMaxTokens,
-				requiresVision:        requiresVision,
-				hasTools:              hasTools,
-				params:                rejectionSamplingParams(parsed),
+				Request:               r,
+				Stage:                 "validation",
+				ReasonCode:            "bad_param",
+				HttpStatus:            http.StatusBadRequest,
+				KeyID:                 requestcontext.KeyID(r.Context()),
+				ConsumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+				RequestedModel:        publicModel,
+				ResolvedModel:         forModel,
+				Stream:                stream,
+				EstimatedPromptTokens: estimatedPromptTokens,
+				RequestedMaxTokens:    requestedMaxTokens,
+				RequiresVision:        requiresVision,
+				HasTools:              hasTools,
+				Params:                rejectionSamplingParams(parsed),
 			})
 			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 			return false
@@ -1808,43 +899,37 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	d := &dispatchState{
-		s:                      s,
-		w:                      w,
-		r:                      r,
-		model:                  model,
-		publicModel:            publicModel,
-		rawBody:                providerBody,
-		consumerKey:            consumerKey,
-		consumerLocation:       consumerLocation,
-		reservedMicroUSD:       reservedMicroUSD,
-		tokenAdmission:         tokenAdmission,
-		serviceReservation:     serviceReservation,
-		estimatedPromptTokens:  estimatedPromptTokens,
-		requestedMaxTokens:     requestedMaxTokens,
-		requiresVision:         requiresVision,
-		visionImageCount:       shape.mediaParts,
-		hasTools:               hasTools,
-		requiresToolConstraint: requiresToolConstraint,
-		toolChoiceMode:         string(validatedMode),
-		toolChoiceName:         toolChoiceName,
-		parallelToolCalls:      parallelToolCalls,
-		isResponsesAPI:         isResponsesAPI,
-		stream:                 stream,
-		metadataDetails:        response.MetadataDetailsFromRequest(r),
-		policy:                 policy,
-		allowedProviderSerials: allowedProviderSerials,
-		cachePlan:              cachePlan,
-		timing:                 timing,
-		profile:                rp,
-		deadline:               deadline,
-		speculativeAt:          time.Duration(float64(deadline) * speculativeTimerRatio),
-		modelMaxContext:        modelMaxContext,
-		refundReservation:      refundReservation,
-		// Track providers that failed during retry so we don't dispatch to them again.
-		excludeProviders: make(map[string]struct{}),
-	}
-	d.run()
+	s.inferenceDispatch().Run(w, r, dispatch.Request{
+		Model:                  model,
+		PublicModel:            publicModel,
+		RawBody:                providerBody,
+		ConsumerKey:            consumerKey,
+		ConsumerLocation:       consumerLocation,
+		ReservedMicroUSD:       reservedMicroUSD,
+		TokenAdmission:         tokenAdmission,
+		ServiceReservation:     serviceReservation,
+		EstimatedPromptTokens:  estimatedPromptTokens,
+		RequestedMaxTokens:     requestedMaxTokens,
+		RequiresVision:         requiresVision,
+		VisionImageCount:       shape.mediaParts,
+		HasTools:               hasTools,
+		RequiresToolConstraint: requiresToolConstraint,
+		ToolChoiceMode:         string(validatedMode),
+		ToolChoiceName:         toolChoiceName,
+		ParallelToolCalls:      parallelToolCalls,
+		IsResponsesAPI:         isResponsesAPI,
+		Stream:                 stream,
+		MetadataDetails:        response.MetadataDetailsFromRequest(r),
+		Policy:                 policy,
+		AllowedProviderSerials: allowedProviderSerials,
+		CachePlan:              cachePlan,
+		Timing:                 timing,
+		Profile:                rp,
+		Deadline:               deadline,
+		SpeculativeAt:          time.Duration(float64(deadline) * dispatch.SpeculativeTimerRatio),
+		ModelMaxContext:        modelMaxContext,
+		RefundReservation:      refundReservation,
+	})
 }
 
 // handleHealth handles GET /health.
@@ -2136,14 +1221,14 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		parsed, rawBody, model, allowedProviderSerials, policy, aliasTraits)
 	if !ok {
 		s.recordRejection(rejectionInfo{
-			r:               r,
-			stage:           "model_resolution",
-			reasonCode:      "model_unavailable",
-			httpStatus:      http.StatusServiceUnavailable,
-			keyID:           keyIDFromContext(r.Context()),
-			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
-			requestedModel:  model,
-			params:          rejectionSamplingParams(parsed),
+			Request:         r,
+			Stage:           "model_resolution",
+			ReasonCode:      "model_unavailable",
+			HttpStatus:      http.StatusServiceUnavailable,
+			KeyID:           requestcontext.KeyID(r.Context()),
+			ConsumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+			RequestedModel:  model,
+			Params:          rejectionSamplingParams(parsed),
 		})
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 			fmt.Sprintf("model %q has no available build right now", model), withParam("model")))
@@ -2151,17 +1236,17 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 	model = buildModel
 
-	if !policy.enabled && !s.registry.IsModelInCatalog(model) {
+	if !policy.Enabled && !s.registry.IsModelInCatalog(model) {
 		s.recordRejection(rejectionInfo{
-			r:               r,
-			stage:           "model_resolution",
-			reasonCode:      "model_not_found",
-			httpStatus:      http.StatusNotFound,
-			keyID:           keyIDFromContext(r.Context()),
-			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
-			requestedModel:  publicModel,
-			resolvedModel:   model,
-			params:          rejectionSamplingParams(parsed),
+			Request:         r,
+			Stage:           "model_resolution",
+			ReasonCode:      "model_not_found",
+			HttpStatus:      http.StatusNotFound,
+			KeyID:           requestcontext.KeyID(r.Context()),
+			ConsumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+			RequestedModel:  publicModel,
+			ResolvedModel:   model,
+			Params:          rejectionSamplingParams(parsed),
 		})
 		writeJSON(w, http.StatusNotFound, errorResponse("model_not_found",
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", publicModel), withParam("model")))
@@ -2264,7 +1349,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 	routingTraitsForModel := func(candidateModel string) registry.RequestTraits {
 		_, candidateBody, _ := lowerGenericBodyForModel(candidateModel)
-		traits, _ := routingTraitsForProviderBody(
+		traits, _ := dispatch.RoutingTraitsForProviderBody(
 			hasTools, candidateBody, requiresVision)
 		traits.RequiresToolConstraint = requiresToolConstraint
 		traits.ToolChoiceMode = string(validatedMode)
@@ -2274,7 +1359,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 	providerBodyErrorForModel := func(candidateModel string) error {
 		_, candidateBody, _ := lowerGenericBodyForModel(candidateModel)
-		_, sizeErr := routingTraitsForProviderBody(
+		_, sizeErr := dispatch.RoutingTraitsForProviderBody(
 			hasTools, candidateBody, requiresVision)
 		return sizeErr
 	}
@@ -2299,7 +1384,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			return false
 		}
 		endpointBody, inferenceBody, loweringErr = lowerGenericBodyForModel(newModel)
-		routingTraits, _ = routingTraitsForProviderBody(
+		routingTraits, _ = dispatch.RoutingTraitsForProviderBody(
 			hasTools, inferenceBody, requiresVision)
 		routingTraits.RequiresToolConstraint = requiresToolConstraint
 		routingTraits.ToolChoiceMode = string(validatedMode)
@@ -2375,41 +1460,36 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		rp.RequiresVision, rp.HasTools = requiresVision, hasTools
 		rp.BodyBytes = len(rawBody)
 	}
-	d := &dispatchState{
-		s:                      s,
-		w:                      w,
-		r:                      r,
-		model:                  model,
-		publicModel:            publicModel,
-		rawBody:                inferenceBody,
-		consumerKey:            consumerKey,
-		consumerLocation:       consumerLocation,
-		reservedMicroUSD:       reservedMicroUSD,
-		tokenAdmission:         tokenAdmission,
-		serviceReservation:     serviceReservation,
-		estimatedPromptTokens:  estimatedPromptTokens,
-		requestedMaxTokens:     requestedMaxTokens,
-		requiresVision:         requiresVision,
-		visionImageCount:       countMediaParts(parsed),
-		hasTools:               hasTools,
-		requiresToolConstraint: requiresToolConstraint,
-		toolChoiceMode:         string(validatedMode),
-		toolChoiceName:         toolChoiceName,
-		parallelToolCalls:      parallelToolCalls,
-		consumerEndpoint:       consumerEndpoint,
-		requestedStopSequences: requestedStopSequences,
-		stream:                 stream,
-		metadataDetails:        response.MetadataDetailsFromRequest(r),
-		policy:                 policy,
-		allowedProviderSerials: allowedProviderSerials,
-		cachePlan:              cachePlan,
-		timing:                 timing,
-		profile:                rp,
-		deadline:               genericDeadline,
-		speculativeAt:          time.Duration(float64(genericDeadline) * speculativeTimerRatio),
-		modelMaxContext:        modelMaxContext,
-		refundReservation:      refundReservation,
-		excludeProviders:       make(map[string]struct{}),
-	}
-	d.run()
+	s.inferenceDispatch().Run(w, r, dispatch.Request{
+		Model:                  model,
+		PublicModel:            publicModel,
+		RawBody:                inferenceBody,
+		ConsumerKey:            consumerKey,
+		ConsumerLocation:       consumerLocation,
+		ReservedMicroUSD:       reservedMicroUSD,
+		TokenAdmission:         tokenAdmission,
+		ServiceReservation:     serviceReservation,
+		EstimatedPromptTokens:  estimatedPromptTokens,
+		RequestedMaxTokens:     requestedMaxTokens,
+		RequiresVision:         requiresVision,
+		VisionImageCount:       countMediaParts(parsed),
+		HasTools:               hasTools,
+		RequiresToolConstraint: requiresToolConstraint,
+		ToolChoiceMode:         string(validatedMode),
+		ToolChoiceName:         toolChoiceName,
+		ParallelToolCalls:      parallelToolCalls,
+		ConsumerEndpoint:       consumerEndpoint,
+		RequestedStopSequences: requestedStopSequences,
+		Stream:                 stream,
+		MetadataDetails:        response.MetadataDetailsFromRequest(r),
+		Policy:                 policy,
+		AllowedProviderSerials: allowedProviderSerials,
+		CachePlan:              cachePlan,
+		Timing:                 timing,
+		Profile:                rp,
+		Deadline:               genericDeadline,
+		SpeculativeAt:          time.Duration(float64(genericDeadline) * dispatch.SpeculativeTimerRatio),
+		ModelMaxContext:        modelMaxContext,
+		RefundReservation:      refundReservation,
+	})
 }

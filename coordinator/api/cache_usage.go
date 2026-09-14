@@ -1,16 +1,10 @@
 package api
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"math"
-)
 
-func lowCardinalityCacheTier(tier string) string {
-	if tier == "memory" || tier == "ssd" {
-		return tier
-	}
-	return "none"
-}
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+)
 
 func validCacheUsage(usage protocol.UsageInfo) bool {
 	switch usage.CacheOutcome {

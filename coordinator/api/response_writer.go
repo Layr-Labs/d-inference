@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -38,27 +39,27 @@ func (b responseServices) WriteProviderError(w http.ResponseWriter, err protocol
 
 func (b responseServices) ProviderError(pr *registry.PendingRequest, err protocol.InferenceErrorMessage, committed bool) {
 	if committed {
-		b.server.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, err))
+		b.server.updateInferenceRouteOutcomeForPending(pr, attempt.PostCommitProviderErrorOutcome(pr, err))
 	} else {
-		b.server.updateInferenceRouteOutcomeForPending(pr, preResponseProviderErrorOutcome(pr, err))
+		b.server.updateInferenceRouteOutcomeForPending(pr, attempt.PreResponseProviderErrorOutcome(pr, err))
 	}
 }
 func (b responseServices) Incomplete(pr *registry.PendingRequest, committed bool) {
 	if committed {
-		b.server.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
+		b.server.updateInferenceRouteOutcomeForPending(pr, attempt.PostCommitProviderIncompleteOutcome(pr))
 	} else {
-		b.server.updateInferenceRouteOutcomeForPending(pr, preResponseProviderIncompleteOutcome(pr))
+		b.server.updateInferenceRouteOutcomeForPending(pr, attempt.PreResponseProviderIncompleteOutcome(pr))
 	}
 }
 func (b responseServices) Timeout(pr *registry.PendingRequest, committed bool, class string) {
 	if committed {
-		b.server.updateInferenceRouteOutcomeForPending(pr, postCommitStreamTimeoutOutcome(pr))
+		b.server.updateInferenceRouteOutcomeForPending(pr, attempt.PostCommitStreamTimeoutOutcome(pr))
 	} else {
-		b.server.updateInferenceRouteOutcomeForPending(pr, preResponseTimeoutOutcome(pr, class))
+		b.server.updateInferenceRouteOutcomeForPending(pr, attempt.PreResponseTimeoutOutcome(pr, class))
 	}
 }
 func (b responseServices) ClientGone(pr *registry.PendingRequest) {
-	b.server.updateInferenceRouteOutcomeForPending(pr, clientGoneBeforeResponseOutcome(pr))
+	b.server.updateInferenceRouteOutcomeForPending(pr, attempt.ClientGoneBeforeResponseOutcome(pr))
 }
 
 // These existing API operations retain the sealing-writer guard and outcome lock.

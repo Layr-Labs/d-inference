@@ -1,5 +1,14 @@
 package api
 
+import (
+	"encoding/json"
+	"net/http"
+	"strings"
+
+	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
+	"github.com/eigeninference/d-inference/coordinator/store"
+)
+
 // request_introspection.go holds helpers for introspecting and lightly
 // reshaping inbound inference request bodies before routing/dispatch:
 // token and cost estimation (routing vs billing), media/tool detection,
@@ -23,14 +32,6 @@ package api
 // remote reference sits in a shape the resolver does not fetch (see
 // gateRemoteMediaPreDispatch). The generic (completions + Anthropic) surface
 // keeps the unconditional rejection.
-
-import (
-	"encoding/json"
-	"net/http"
-	"strings"
-
-	"github.com/eigeninference/d-inference/coordinator/store"
-)
 
 // Media prompt-token costs. A vision encoder turns each image/video into a
 // bounded number of soft tokens (Gemma 4 caps around a few hundred per image)
@@ -512,18 +513,18 @@ func truncateMediaRef(ref string) string {
 func (s *Server) writeRemoteMediaRejection(w http.ResponseWriter, r *http.Request, parsed map[string]any, model, publicModel string, hasTools bool, message string) {
 	stream, _ := parsed["stream"].(bool)
 	s.recordRejection(rejectionInfo{
-		r:               r,
-		stage:           "validation",
-		reasonCode:      "bad_param",
-		httpStatus:      http.StatusBadRequest,
-		keyID:           keyIDFromContext(r.Context()),
-		consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
-		requestedModel:  publicModel,
-		resolvedModel:   model,
-		stream:          stream,
-		requiresVision:  true,
-		hasTools:        hasTools,
-		params:          rejectionSamplingParams(parsed),
+		Request:         r,
+		Stage:           "validation",
+		ReasonCode:      "bad_param",
+		HttpStatus:      http.StatusBadRequest,
+		KeyID:           requestcontext.KeyID(r.Context()),
+		ConsumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+		RequestedModel:  publicModel,
+		ResolvedModel:   model,
+		Stream:          stream,
+		RequiresVision:  true,
+		HasTools:        hasTools,
+		Params:          rejectionSamplingParams(parsed),
 	})
 	s.ddIncr("inference.media_remote_url_rejected", []string{"model:" + model})
 	writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", message, withParam("messages")))

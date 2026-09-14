@@ -89,9 +89,6 @@ func TestWriteTTFTTooSlowSets429RetryAfter(t *testing.T) {
 	if threshold != 5*time.Second {
 		t.Fatalf("FirstContentDeadline(0) = %v, want 5s", threshold)
 	}
-	if got := srv.estimateTTFTRetryAfter("no-queue", 8*time.Second, threshold); got != 3 {
-		t.Fatalf("Retry-After without queue = %d, want 3s over target", got)
-	}
 
 	model := "slow-ttft-model"
 	for i := 0; i < 5; i++ {
@@ -101,7 +98,7 @@ func TestWriteTTFTTooSlowSets429RetryAfter(t *testing.T) {
 	}
 
 	w := httptest.NewRecorder()
-	srv.writeTTFTTooSlow(w, model, model, 6*time.Second, threshold)
+	srv.inferenceDispatch().WriteTTFTTooSlow(w, model, model, 6*time.Second, threshold)
 
 	if w.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusTooManyRequests)

@@ -339,6 +339,9 @@ func TestEdge_ReleaseRegisterRejectsOversizedBundledBinary(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("release register with oversized bundled binary: status = %d, want 400, body = %s", w.Code, w.Body.String())
 	}
+	if !strings.Contains(w.Body.String(), "provider binary exceeds maximum size") {
+		t.Fatalf("expected the provider binary size guard, got: %s", w.Body.String())
+	}
 }
 
 func TestEdge_ReleaseRegisterRejectsRedirectedBundleDownload(t *testing.T) {
@@ -470,7 +473,7 @@ func buildOversizedBinaryReleaseBundleForTest(t *testing.T) ([]byte, string) {
 	if err := tw.WriteHeader(&tar.Header{
 		Name: "bin/darkbloom",
 		Mode: 0o755,
-		Size: (512 << 20) + 1, // one byte above the documented provider binary limit
+		Size: (512 << 20) + 1, // pinned boundary; the test requires the size-specific error
 	}); err != nil {
 		t.Fatalf("write oversized tar header: %v", err)
 	}

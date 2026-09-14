@@ -234,7 +234,7 @@ Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
 
 ## Important Sync Points
 
-- Protocol changes must be mirrored in both `provider-swift/Sources/ProviderCore/Protocol/` and `coordinator/protocol/messages.go`.
+- Protocol changes must be mirrored in both `provider-swift/Sources/ProviderCore/Protocol/` and `coordinator/protocol/`.
 - Telemetry wire types live in three places and MUST stay aligned:
   - `coordinator/protocol/telemetry.go` (canonical),
   - `provider-swift/Sources/ProviderCore/Telemetry/` (Swift mirror),

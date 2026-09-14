@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-14 · commit `cdef55575`
+> Last updated: 2026-09-14 · commit `303ed6d30`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -108,7 +108,7 @@ deleted from the map when nothing survives the sweep.
 ### Slot states
 
 A provider's heartbeat carries one `BackendSlotCapacity` per model it has
-engine state for (`coordinator/protocol/messages.go`). The coordinator's
+engine state for (`coordinator/protocol/backend_capacity.go`). The coordinator's
 closed `SlotState` vocabulary (`coordinator/registry/gate_reason.go`) folds
 the wire string:
 
@@ -622,7 +622,7 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 | Provider handoff, deadlines and queue policy | `coordinator/registry/queue_waiter.go` — `QueuedRequest`, `WaitForProviderContext`; `coordinator/registry/requestqueue/assignment.go` — `Assignment`; `coordinator/registry/queue_policy.go` — `DrainTrigger*` |
 | Drain orchestration | `coordinator/registry/queue_drain.go` — `drainQueuedRequestsForModelsWithReason`; `coordinator/registry/provider_lifecycle.go` — `SetProviderIdle`; `coordinator/registry/heartbeat.go` — `Heartbeat` |
 | Slot vocabulary | `coordinator/registry/gate_reason.go` — `SlotState`; `coordinator/registry/routingcost/penalties.go` — `SlotStatePenalty`, `SlotStateModelLoaded` |
-| Heartbeat payload | `coordinator/protocol/messages.go` — `BackendCapacity`, `BackendSlotCapacity` |
+| Heartbeat payload | `coordinator/protocol/backend_capacity.go` — `BackendCapacity`, `BackendSlotCapacity` |
 | Token-budget and memory admission | `coordinator/registry/admission/` — `Policy.FreeMemoryAdmits`, `PoolAdmits`, `KnownZeroTokenBudget`, `CommittedTokenBudget`; `coordinator/registry/admission_policy.go` maps the immutable routing snapshot |
 | Provider-version interpretation | `coordinator/registry/providerversion/` — `Policy.Compare`, `Policy.SlotBudgetLayout`; one shared interpreter in `coordinator/registry/provider_version.go` |
 | Concurrency caps | `coordinator/registry/provider.go` — `maxConcurrency`, `maxConcurrencyForModelLocked`; `coordinator/registry/config.go` — `DefaultMaxConcurrent`; `coordinator/registry/quality_cap_config.go` — `SetQualityConcurrencyCap`; `coordinator/registry/quality_cap_admission.go` — `effectiveMaxConcurrencyForModelRateLocked`, `hasConcurrencyHeadroomForModelCapResolvedLocked`; `coordinator/registry/quality_cap_solo.go` — `resolvedSoloModelTPSLocked`; `coordinator/registry/quality_cap_seed.go` — `soloTPSSeedForClass` |

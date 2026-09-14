@@ -1,6 +1,6 @@
 # Consumer surface
 
-> Last updated: 2026-09-14 · commit `641bd53b0`
+> Last updated: 2026-09-13 · commit `89a671179`
 
 The consumer surface is the coordinator's OpenAI- and Anthropic-compatible request pipeline: it speaks OpenAI Chat Completions, OpenAI Responses, Anthropic Messages and legacy Completions to clients and turns each request into one provider job through a single pipeline in `handleChatCompletions` (`coordinator/api/consumer.go`), with an endpoint-specific lowering step before it and a re-shaping step after it. This page is for engineers changing or debugging that pipeline: it explains what "compatible" means concretely, walks the stages, and lists the invariants and failure modes that follow. The exact routes, headers, and JSON shapes are in [`../../reference/api-contracts.md`](../../reference/api-contracts.md).
 
@@ -55,7 +55,7 @@ Provider-side execution between stages 13 and 14 — the WebSocket `inference_re
 4. **Successful chat streams have exactly one `data: [DONE]`**, written after the held usage/finish frame. Successful Responses streams end with `response.completed` / `response.incomplete`; Messages ends with `message_stop`. Error termination keeps its endpoint-specific form and does not synthesize a chat success marker.
 5. **No keepalives.** Silence on a stream means no token has been produced; the first-content deadline bounds it before commit (a miss is a 429 with `Retry-After`) and [`inferenceTimeout`](../../reference/api-contracts.md#timeouts-and-constants) between chunks after (a terminal `error` event).
 6. **Providers never see the caller.** They receive an encrypted job carrying the build id and the prompt, not the API key or account.
-7. **A departed client cancels the job.** Client disconnect before commit is recorded as 499 and sends `cancel` to the provider (`emitClientGone`, `sendProviderCancel`).
+7. **A departed client cancels the job.** Client disconnect before commit is recorded as 499 and sends `cancel` to the provider (`emitClientGone`, `attempt.Service.SendCancel`).
 
 ## Failure modes
 
@@ -66,7 +66,7 @@ Provider-side execution between stages 13 and 14 — the WebSocket `inference_re
 | 429 `rate_limit_exceeded` + the fixed drain [`Retry-After`](../../reference/api-contracts.md#timeouts-and-constants) | Coordinator draining; new inference is refused until the drain completes | `drainGate` (`coordinator/api/drain.go`), `coordinatorDrainRetryAfter` |
 | 503 `service_unavailable` + `Retry-After` | No serving capacity for the model at all | `writeServiceUnavailable` |
 | 503 `machine_offline` / `model_not_loaded` + `Retry-After` | Self-route: the account's machine is offline or has not loaded the model | `selfRouteUnavailable` (`coordinator/api/self_route.go`) |
-| 502 / 503 / 504 `provider_error` | Dispatch exhausted on a genuine provider fault: the provider's own status is passed through (a typed provider 504 — safety deadline or backpressure timeout — stays 504; an untyped 504 becomes the 429 above) | Exhausted branch of `dispatchState.run` (`coordinator/api/dispatch.go`), `isTypedTimeout504Cause` (`coordinator/api/terminal_cause.go`) |
+| 502 / 503 / 504 `provider_error` | Dispatch exhausted on a genuine provider fault: the provider's own status is passed through (a typed provider 504 — safety deadline or backpressure timeout — stays 504; an untyped 504 becomes the 429 above) | Exhausted branch of `dispatchState.run` (`coordinator/api/dispatch.go`), `attempt.IsTypedTimeout504Cause` (`coordinator/inference/attempt/terminal_cause.go`) |
 | 4xx `invalid_request_error` (`code: model_capability` or `payload_too_large`) | Every provider rejected the request deterministically with the same client error; surfaced once with the provider's status | `terminalClientError` handling in the exhausted branch |
 | 504 `timeout` | Non-streaming only: `inferenceTimeout` elapsed after commit while waiting for the response or its usage | `Writer.NonStream` (`coordinator/inference/response/nonstream.go`) |
 | 200 then terminal `data: {"error": …}`, without `[DONE]` (chat) | Provider failed after commit; the status line was already sent | `writeChatStreamProviderError` (`coordinator/inference/response/stream.go`), `Writer.ChatError` (`coordinator/inference/response/chat_metadata_stream.go`) |
@@ -85,7 +85,8 @@ Provider-side execution between stages 13 and 14 — the WebSocket `inference_re
 | Prelude parsing, body cap, vision fail-fast | `coordinator/api/inference_preprocess.go` |
 | Request traits and routing-field stripping | `coordinator/api/request_introspection.go` |
 | Balance reservation and capacity admission | `coordinator/api/inference_admission.go` |
-| Dispatch state machine, failover, speculative backup, commit | `coordinator/api/dispatch.go`, `coordinator/api/dispatch_terminal_write.go`, `coordinator/api/inference_failure_class.go` |
+| Dispatch state machine, failover, speculative backup, commit | `coordinator/api/dispatch.go`, `coordinator/api/dispatch_terminal_write.go` |
+| Attempt cancellation, rejection policy and provider feedback | `coordinator/inference/attempt/` (`Service`, `Tracker`); `coordinator/api/inference_attempt.go` binds shared services |
 | Endpoint lowering | `coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_responses.go`, `coordinator/promptcontract/endpoint_lower_messages.go` |
 | Endpoint-specific response and stream builders | `coordinator/inference/response/generic_endpoint_response.go`, `coordinator/inference/response/generic_stream.go`, `coordinator/inference/response/generic_endpoint_stop.go`, `coordinator/inference/response/responses_stream.go`, `coordinator/inference/response/chat_metadata_stream.go`, `coordinator/inference/response/sse_response.go` |
 | Provider metadata, timing header | `coordinator/inference/response/provider_snapshot.go`, `coordinator/api/profiler_dispatch.go` |

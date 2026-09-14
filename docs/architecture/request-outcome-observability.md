@@ -1,6 +1,6 @@
 # Request Outcome Observability
 
-> Last updated: 2026-09-14 · commit `641bd53b0`
+> Last updated: 2026-09-13 · commit `89a671179`
 
 Every provider dispatch attempt ends in one claimed terminal outcome, and that outcome is recorded three ways: a closed `final_status` / `error_class` / `error_reason` triple on the `inference_routes` row, a per-attempt `request_profiles` row with separate `client_outcome` and `provider_outcome` columns, and a small set of low-cardinality Datadog counters. Requests refused before dispatch land in the `request_rejections` ledger instead. This page explains the existing attempt taxonomy and protected counters. The unsampled incoming-request ledger, its coverage limits, and separate egress/completion evidence are defined in [incoming request accounting](request-accounting.md).
 
@@ -60,7 +60,7 @@ The five persisted values are constants in `coordinator/api/route_outcome.go` (`
 | `error` | `provider_disconnect_pre_commit` | `preCommitProviderErrorOutcome` when the synthetic terminal carries `CoordinatorCause = provider_disconnected` (a Go-only field, `json:"-"`, never on the wire) | provider session dropped before commit (`registry.Disconnect` injects the terminal) |
 | `error` | `provider_error_before_response` / `provider_disconnect_before_response` | `preResponseProviderErrorOutcome` (non-streaming relay) | provider error or disconnect while a non-streaming response was pending |
 | `error` | `provider_incomplete_before_response` | `preResponseProviderIncompleteOutcome`, `error_code = 502` | provider channel closed without a terminal frame before response |
-| `error` | `client_error` | `preCommitProviderErrorOutcome` (`isTerminalClientErrorCode`, `isNonProviderFaultErrorReason`), `dispatchErrorClass` for an oversized body | deterministic request-shape fault: provider `4xx`, `jinja_*` template failure, or `tool_noncompliance`; no reputation penalty, `admitted_but_failed = false` |
+| `error` | `client_error` | `preCommitProviderErrorOutcome` (`isTerminalClientErrorCode`, `attempt.IsNonProviderFaultErrorReason`), `dispatchErrorClass` for an oversized body | deterministic request-shape fault: provider `4xx`, `jinja_*` template failure, or `tool_noncompliance`; no reputation penalty, `admitted_but_failed = false` |
 | `error` | `deadline_unreachable` | `preCommitProviderErrorOutcome` when `error_reason = deadline_unreachable` | provider refused because the remaining first-content budget could not be met; health-neutral |
 | `error` | `insufficient_funds`, `encryption_missing`, `encryption_error` | `dispatchErrorClass` | dispatch could not start: provider-price reservation, no E2E-capable provider, key/encrypt failure |
 | `error` | `ttft_too_slow` | queued-wait exit (`queuedExitOutcome`), HTTP `429` | the live first-content budget cannot be met by any candidate; also a `request_rejections` row (stage `queue` or `dispatch`) |
@@ -173,14 +173,16 @@ was never accepted contributes only to `inference.cancel_unresolved` on expiry,
 even if stray chunks arrived. `inference.cancelled_terminal` includes
 `delivered:true|false` for correlated terminals. Successful enqueue marking and terminal resolution share the tracker lock,
 so an immediate terminal cannot observe an unmarked accepted cancel.
-Enqueue acceptance does not prove a frame reached the provider (`coordinator/api/cancel_lifecycle.go`,
-`sendRecordedCancel`, `resolveCancelledTerminal`, `emitExpiredCancelEntries`).
+Enqueue acceptance does not prove a frame reached the provider
+(`coordinator/inference/attempt/cancel_delivery.go`, `Service.SendRecordedCancel`;
+`coordinator/inference/attempt/cancel_metrics.go`, `Service.ResolveCancelledTerminal`,
+`Service.emitExpiredCancelEntries`).
 The zombie tracker keeps at most `zombieCancelMaxEntries = 4096` entries.
 Insertions at the cap evict one least-recently-active ID with constant-time
 list operations; they do not force an expiry scan. TTL and warning-state
 cleanup remain rate-limited to `zombieSweepEvery`
-(`coordinator/api/zombie_eviction.go`, `makeRoomLocked`;
-`coordinator/api/zombie_stream.go`, `sweepLocked`).
+(`coordinator/inference/attempt/cancel_recency.go`, `makeRoomLocked`;
+`coordinator/inference/attempt/cancel_tracker.go`, `sweepLocked`).
 
 ### Read surfaces
 
@@ -195,10 +197,10 @@ All admin reads require the admin key (`requireAdminKey`).
 
 ## Invariants
 
-- **Closed vocabularies.** `final_status`, `error_class`, `error_reason`, `client_outcome`, `provider_outcome`, rejection `stage`/`reason_code`, and every metric tag value are Go constants or allowlisted strings. `normalizeInferenceErrorReason` turns any provider value outside `validInferenceErrorReasons` into `unknown`.
+- **Closed vocabularies.** `final_status`, `error_class`, `error_reason`, `client_outcome`, `provider_outcome`, rejection `stage`/`reason_code`, and every metric tag value are Go constants or allowlisted strings. `attempt.NormalizeInferenceErrorReason` turns any provider value outside `validInferenceErrorReasons` into `unknown` (`coordinator/inference/attempt/error_reason.go`).
 - **Commit is not success.** `committedRouteOutcome` writes telemetry fields only; `final_status = success` is written by `completeRouteOutcome` at the provider's `inference_complete`, and only when the consumer is still connected.
 - **One terminal per attempt.** `MarkRouteOutcomeFinalized` and the attempt profile's `sync.Once` halves make provider, relay, disconnect and grace paths idempotent; a late terminal after a grace-expiry refund is a no-op on money and outcome (`coordinator/api/settlement_clientgone_test.go`).
-- **Fault attribution is separate from outcome.** `isProviderHealthNeutralErrorReason` exempts `jinja_*`, `tool_noncompliance` and `deadline_unreachable` from reputation, breakers and capacity trackers; `client_gone*` classes never count as provider failures (`RecordJobSuccess` with `FailedJobs == 0` for a completed-after-disconnect request).
+- **Fault attribution is separate from outcome.** `attempt.IsProviderHealthNeutralErrorReason` exempts `jinja_*`, `tool_noncompliance` and `deadline_unreachable` from reputation, breakers and capacity trackers; `client_gone*` classes never count as provider failures (`RecordJobSuccess` with `FailedJobs == 0` for a completed-after-disconnect request).
 - **Metadata only.** Route rows, profiles, rejections and tags carry no prompt or completion text, raw IP, raw user agent, media bytes or raw API keys; client identity is `store.HashKey` output and key/account ids already used for billing. Provider error text is sanitized before it reaches a client and never persisted on a row.
 - **Observability never steers.** Nothing reads `inference_routes` outcomes, `request_profiles`, `request_rejections` or the `kv_backend` tags to make a routing, admission or billing decision.
 
@@ -224,7 +226,8 @@ All admin reads require the admin key (`requireAdminKey`).
 
 | Concern | Files |
 |---|---|
-| Outcome constructors, `final_status` constants, `error_reason` derivation | `coordinator/api/route_outcome.go` |
+| Outcome constructors, `final_status` constants, `error_reason` derivation | `coordinator/api/route_outcome.go`; the shared reason vocabulary and normalization live in `coordinator/inference/attempt/error_reason.go` |
+| Cancel correlation, delivery and expiry | `coordinator/inference/attempt/cancel_tracker.go`, `cancel_recency.go`, `cancel_delivery.go`, `cancel_metrics.go`; `coordinator/api/inference_attempt.go` binds the shared tracker |
 | Pre-commit arms, dispatch error classes, exhausted-status reclassification, `request_outcome` emit | `coordinator/api/dispatch.go`, `coordinator/api/first_token_clock.go`, `coordinator/api/openrouter_uptime.go` |
 | Post-commit and pre-response relay arms | `coordinator/inference/response/stream.go`, `coordinator/inference/response/nonstream.go`, `coordinator/inference/response/generic_relay.go`; `coordinator/api/response_writer.go` (`responseServices`) maps these outcomes; dispatch terminals remain in `coordinator/api/dispatch_terminal_write.go` |
 | Provider terminals, consumer-gone handling | `coordinator/api/provider.go`, `coordinator/api/inference_error_sanitize.go` |

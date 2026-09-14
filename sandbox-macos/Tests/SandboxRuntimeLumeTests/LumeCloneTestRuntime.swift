@@ -2,7 +2,7 @@ import Foundation
 
 /// A bounded two-record native-runtime fixture. Real private source files and
 /// APFS clones exercise ownership/evidence transitions without starting a VM.
-enum LumeQualificationCloneTestRuntime {
+enum LumeCloneTestRuntime {
     static let script = #"""
     #!/bin/sh
     set -eu
@@ -32,6 +32,8 @@ enum LumeQualificationCloneTestRuntime {
             observed_state="$state"
             if [ "$name" = qualification-clone ]; then
               observed_state=stopped
+              if [ -f "$root/vms/$name/fixture-cpu" ]; then observed_cpu="$(cat "$root/vms/$name/fixture-cpu")"; fi
+              if [ -f "$root/vms/$name/fixture-memory" ]; then memory="$(cat "$root/vms/$name/fixture-memory")"; fi
               if [ "$behavior" = clone-resource-mismatch ]; then observed_cpu=5; fi
             fi
             printf '%s{"name":"%s","cpuCount":%s,"memorySize":%s,"diskSize":{"total":%s},"status":"%s","sshAvailable":false}' \
@@ -60,6 +62,17 @@ enum LumeQualificationCloneTestRuntime {
             [ -f "$root/clone-continue" ] || exit 73
             ;;
         esac
+        ;;
+      set)
+        [ "$#" = 8 ] && [ "$2" = qualification-clone ]
+        [ "$3" = --cpu ] && [ "$5" = --memory ] && [ "$7" = --storage ] && [ "$8" = "$root/vms" ]
+        [ -d "$root/vms/qualification-clone" ]
+        printf '%s\n' "$@" > "$root/set-arguments"
+        if [ "$behavior" = clone-set-fails ]; then exit 75; fi
+        if [ "$behavior" != clone-set-ignores ]; then
+          printf '%s\n' "$4" > "$root/vms/qualification-clone/fixture-cpu"
+          printf '%s\n' "${6%B}" > "$root/vms/qualification-clone/fixture-memory"
+        fi
         ;;
       *) exit 64 ;;
     esac

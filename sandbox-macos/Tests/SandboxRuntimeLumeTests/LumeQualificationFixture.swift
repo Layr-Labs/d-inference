@@ -21,7 +21,7 @@ final class LumeQualificationFixture: @unchecked Sendable {
     let source: SandboxGuestBaseSource
 
     init(ownedCPUCount: UInt16 = 4, cloneBehavior: String = "normal") async throws {
-        vm = try FakeLumeFixture(behavior: cloneBehavior, scriptOverride: LumeQualificationCloneTestRuntime.script)
+        vm = try FakeLumeFixture(behavior: cloneBehavior, scriptOverride: LumeCloneTestRuntime.script)
         release = try LumeGuestTemplateTestFixture(accountless: true, signManifest: false)
         let signed = try await SandboxProcessRunner().run(executable: URL(fileURLWithPath: "/usr/bin/codesign"),
             arguments: ["--force", "--sign", "-", "--identifier", "io.darkbloom.sandbox.release-manifest", release.manifest.path],

@@ -25,14 +25,28 @@ extension LumeVirtualMachineRuntime {
                 _ = try await run(arguments: arguments, timeoutSeconds: configuration.createTimeoutSeconds,
                                   operation: "create", environment: creationWorkspace.environment)
             }
-            guard let created = try await inspect(name: specification.name),
-                  created.state == .stopped,
-                  Self.matchesCreation(created, specification: specification)
-            else {
-                throw SandboxRuntimeError.malformedOutput(
-                    "Lume create completed without the requested stopped VM"
-                )
+            var created = try await inspect(name: specification.name)
+            if case .localTemplate = specification.imageSource {
+                guard let inherited = created, inherited.state == .stopped,
+                      inherited.diskBytes == specification.diskBytes else {
+                    throw SandboxRuntimeError.malformedOutput("clone is not stopped with the expected boot disk")
+                }
+                if inherited.cpuCount != specification.resources.cpuCount
+                    || inherited.memoryBytes != specification.resources.memoryBytes {
+                    try revalidateCreationLease(lease, specification: specification)
+                    _ = try await run(arguments: storageArguments([
+                        "set", specification.name, "--cpu", String(specification.resources.cpuCount),
+                        "--memory", "\(specification.resources.memoryBytes)B"
+                    ]), timeoutSeconds: configuration.commandTimeoutSeconds,
+                        operation: "configure clone", environment: creationWorkspace.environment)
+                    created = try await inspect(name: specification.name)
+                }
             }
+            guard let created, created.state == .stopped,
+                  Self.matchesCreation(created, specification: specification) else {
+                throw SandboxRuntimeError.malformedOutput("Lume create completed without the requested stopped VM")
+            }
+            try revalidateCreationLease(lease, specification: specification)
             if let qualification {
                 guard let lease else { throw SandboxRuntimeError.invalidImageReference }
                 try await revalidateConsumedQualificationSource(qualification, lease: lease)
@@ -67,6 +81,18 @@ extension LumeVirtualMachineRuntime {
                 primary: "virtual machine creation completed",
                 cleanup: String(describing: error)
             )
+        }
+    }
+
+    private func revalidateCreationLease(_ lease: SandboxCapacityLease?,
+                                         specification: SandboxVirtualMachineSpecification) throws {
+        try Task.checkCancellation()
+        try configuration.hostRuntimeLease?.validate()
+        guard let lease else { return }
+        guard let capacityArbiter,
+              try capacityArbiter.authorize(scope: lease.scope, virtualMachineName: specification.name,
+                operation: .create, resources: specification.resources, bootDiskBytes: specification.diskBytes) == lease else {
+            throw SandboxRuntimeError.unsupported("creation lease changed before ownership publication")
         }
     }
 

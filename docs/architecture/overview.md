@@ -1,6 +1,6 @@
 # System overview — how a Darkbloom request works
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-13 · commit `c3ff0df7e`
 
 Darkbloom sells inference on other people's Apple Silicon Macs. A Go
 **coordinator** accepts OpenAI- and Anthropic-shaped HTTP requests, picks an
@@ -76,7 +76,7 @@ sequenceDiagram
    Messages: [`../reference/protocol-messages.md`](../reference/protocol-messages.md).
 2. **Consumer calls.** Every route passes
    `corsMiddleware → recoverMiddleware → loggingMiddleware → bodyLimitMiddleware`;
-   inference routes add `drainGate → requireAuth → rateLimitConsumer →
+   inference routes add `readiness.Controller.Gate → requireAuth → rateLimitConsumer →
    sealedTransport` (`coordinator/api/server.go`, `routes`). `/v1/chat/completions`
    and `/v1/responses` share `handleChatCompletions`; `/v1/completions` and
    `/v1/messages` share `handleGenericInference` (`coordinator/api/consumer.go`).

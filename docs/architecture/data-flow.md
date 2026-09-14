@@ -1,6 +1,6 @@
 # Data flow: one request end to end
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-13 · commit `c3ff0df7e`
 
 A consumer request travels consumer → coordinator → provider → coordinator → consumer. This page shows that journey once — as a sequence diagram and a stage table naming the code that owns each step — for anyone tracing a request through the coordinator.
 
@@ -21,7 +21,7 @@ sequenceDiagram
     participant P as Provider (WebSocket)
 
     C->>K: POST /v1/chat/completions (Bearer key, JSON or sealed body)
-    K->>K: drainGate → requireAuth → rateLimitConsumer → sealedTransport
+    K->>K: readiness.Controller.Gate → requireAuth → rateLimitConsumer → sealedTransport
     K->>K: parseInferencePrelude, shape checks, traits, tool preflight
     K->>K: resolveRequestedModel (alias → build)
     K->>K: reserveInferenceBalance (worst-case hold)
@@ -50,7 +50,7 @@ Two things the diagram makes visible. First, the consumer receives no bytes unti
 | # | Stage | What happens | Owning symbol |
 |---|---|---|---|
 | 1 | Ingress | HTTP request hits the mux; `X-Request-ID` is honoured or minted; global body ceiling [`maxRequestBodyBytes`](../reference/api-contracts.md#limits-and-validation) | `loggingMiddleware`, `bodyLimitMiddleware` (`coordinator/api/server.go`) |
-| 2 | Drain gate | While draining, new inference is refused with 429 `rate_limit_exceeded` and a fixed [`Retry-After`](../reference/api-contracts.md#timeouts-and-constants) (`coordinatorDrainRetryAfter`) | `drainGate` (`coordinator/api/drain.go`) |
+| 2 | Drain gate | While draining, new inference is refused with 429 `rate_limit_exceeded` and a fixed [`Retry-After`](../reference/api-contracts.md#timeouts-and-constants) (`coordinatorDrainRetryAfter`) | `Controller.Gate` (`coordinator/api/readiness/gate.go`) |
 | 3 | Authenticate | Bearer resolved to an API key, Privy user, or admin; key lookups cached for [`apiKeyCacheTTL`](../reference/api-contracts.md#timeouts-and-constants) | `requireAuth`, `extractBearerToken` (`coordinator/api/server.go`) |
 | 4 | Rate limit | Per-key `rpm_limit`, then the account limiter; 429 with `Retry-After` | `rateLimitConsumer`, `applyKeyRPMLimit` (`coordinator/api/server.go`) |
 | 5 | Unseal (optional) | `application/eigeninference-sealed+json` bodies are decrypted; the response will be sealed per event | `sealedTransport` (`coordinator/api/sender_encryption.go`); [`security/encryption.md`](security/encryption.md) |
@@ -96,7 +96,7 @@ Each row is the stage at which a request can end early and what the consumer see
 
 | Stage | Symptom | Owning symbol |
 |---|---|---|
-| 2 | 429 `rate_limit_exceeded` with the fixed drain `Retry-After` while the coordinator drains | `drainGate` (`coordinator/api/drain.go`) |
+| 2 | 429 `rate_limit_exceeded` with the fixed drain `Retry-After` while the coordinator drains | `Controller.Gate` (`coordinator/api/readiness/gate.go`) |
 | 4, 8, 9 | 429 with `Retry-After` from key/account rate limits, token-rate admission, or a model that is currently rejecting | `rateLimitConsumer`, `applyTokenRateLimitWithAdmission`, `shedIfModelRejected` |
 | 10 | 402 when the worst-case cost cannot be reserved — taxonomy in [`billing.md`](billing.md#payment-required-responses) | `reserveInferenceBalance` |
 | 12 | 429 / 503 / 413 when no eligible provider can accept the prompt now | `runInferenceAdmission` |
@@ -109,7 +109,7 @@ Each row is the stage at which a request can end early and what the consumer see
 | Concern | File / symbol |
 |---|---|
 | Middleware chain, authentication, rate limits, token-rate admission | `coordinator/api/server.go` — `loggingMiddleware`, `bodyLimitMiddleware`, `requireAuth`, `rateLimitConsumer`, `applyTokenRateLimitWithAdmission` |
-| Drain gate | `coordinator/api/drain.go` — `drainGate` |
+| Drain gate | `coordinator/api/readiness/gate.go` — `Controller.Gate` |
 | Sealed client transport | `coordinator/api/sender_encryption.go` — `sealedTransport` |
 | Prelude parsing and validation | `coordinator/api/inference_preprocess.go` — `parseInferencePrelude`; `coordinator/api/tool_constraints.go` — `validateToolConstraintPolicy` |
 | Model resolution, first-content deadline, cancel | `coordinator/api/consumer.go` — `resolveRequestedModel`, `FirstContentDeadline`, `shedIfModelRejected`, `sendProviderCancel` |

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `1853fc127`
+> Last updated: 2026-09-13 · commit `c3ff0df7e`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -131,6 +131,20 @@ heartbeat entry points on a directly constructed server with no attestor.
 ```bash
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/providercontrol/codeidentity
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'CodeIdentity|CodeCoverage|CodeContinuity|CrossVersionReuse|Restart.*Transition|Seeded|HashlessRegistration|PersistOnAttest|TrustReuseShutdown|ApprovedTransitionGrants|MDMSchedulerFleet1500'
+```
+
+Readiness and drain HTTP/auth/health/capacity tests remain in
+`coordinator/api/drain_test.go`; the 64-worker concurrent gate fixture checks
+that admitted requests are counted. Private state, grace parsing and polling
+fixtures live in `coordinator/api/readiness/state_test.go`.
+`coordinator/api/readiness_zero_test.go` checks public lifecycle methods on a
+directly constructed server. The durable-journal failure in
+`coordinator/api/trust_reuse_journal_test.go` exercises the real trust-safety
+latch through both the gate and readiness endpoint.
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api/readiness
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'ReadinessZero|AdminDrain|DrainGate|Readyz|Health_ReflectsDrainState|ModelsCapacity_EmptyWhileDraining|HardUntrustJournalAppendFailureLatchesRoutingClosed'
 ```
 
 State archive HTTP tests remain in `coordinator/api/state_archive_test.go`:

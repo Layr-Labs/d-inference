@@ -1,6 +1,6 @@
 # Consumer surface
 
-> Last updated: 2026-09-11 · commit `5e41029dd`
+> Last updated: 2026-09-13 · commit `c3ff0df7e`
 
 The consumer surface is the coordinator's OpenAI- and Anthropic-compatible request pipeline: it speaks OpenAI Chat Completions, OpenAI Responses, Anthropic Messages and legacy Completions to clients and turns each request into one provider job through a single pipeline in `handleChatCompletions` (`coordinator/api/consumer.go`), with an endpoint-specific lowering step before it and a re-shaping step after it. This page is for engineers changing or debugging that pipeline: it explains what "compatible" means concretely, walks the stages, and lists the invariants and failure modes that follow. The exact routes, headers, and JSON shapes are in [`../../reference/api-contracts.md`](../../reference/api-contracts.md).
 
@@ -27,7 +27,7 @@ Stages in the order `handleChatCompletions` runs them. Each stage either advance
 
 | # | Stage | Owning symbol | Ends the request with |
 |---|---|---|---|
-| 1 | Middleware: drain, auth, rate limit, sealed transport | `drainGate` (`coordinator/api/drain.go`), `requireAuth`, `rateLimitConsumer` (`coordinator/api/server.go`), `sealedTransport` (`coordinator/api/sender_encryption.go`) | 429 (drain, key or account rate limit), 401, 400 sealed-envelope errors |
+| 1 | Middleware: drain, auth, rate limit, sealed transport | `Controller.Gate` (`coordinator/api/readiness/gate.go`), `requireAuth`, `rateLimitConsumer` (`coordinator/api/server.go`), `sealedTransport` (`coordinator/api/sender_encryption.go`) | 429 (drain, key or account rate limit), 401, 400 sealed-envelope errors |
 | 2 | Parse prelude: body cap [`maxInferenceBodyBytes`](../../reference/api-contracts.md#limits-and-validation), tool-schema normalisation, JSON decode, `model` required, key allow-list | `parseInferencePrelude`, `keyModelAllowed` | 400, 403 `model_not_allowed` |
 | 3 | Shape checks: `messages`/`input` present, `n == 1`; strip routing fields; read metadata-details and self-route opt-ins | `stripProviderRoutingFields` (`coordinator/api/request_introspection.go`), `applyMetadataDetailsRequest` (`coordinator/api/response_metadata.go`), `resolveSelfRoutePolicy` (`coordinator/api/self_route.go`) | 400 |
 | 4 | Traits and tool preflight: media requirement, tools present, Responses lowering for validation, tool-choice policy | `detectMediaRequirement`, `requestHasTools`, `promptcontract.LowerProviderBody`, `validateToolConstraintPolicy` | 400, 422 |
@@ -63,7 +63,7 @@ Provider-side execution between stages 13 and 14 — the WebSocket `inference_re
 |---|---|---|
 | 429 `rate_limit_exceeded` + `Retry-After` | Key `rpm_limit`, account RPM, input/output tokens per minute, admission shedding, the model currently rejecting, or dispatch exhausted on capacity: every attempt was refused for capacity, no provider produced first content within the deadline (the coordinator's own pre-content timeout is reclassified from 504 to 429), or the request cannot fit any provider | `applyKeyRPMLimit`, `rateLimitWithTier`, `writeTokenRateLimited`, `runInferenceAdmission`, `shedIfModelRejected`; `classifyExhaustedStatus` (`coordinator/api/dispatch.go`); delay from `estimateRetryAfter`, capped at [`maxDistressRetryAfter`](../../reference/api-contracts.md#timeouts-and-constants) |
 | 503 `model_unavailable`, **no** `Retry-After` | The alias resolves to no build, or no routable provider can serve the resolved model (including vision requests with no vision-capable provider online). Not transient from the client's point of view | `resolveRequestedModel`, `visionToolsFailFast`, `preContentTerminal` |
-| 429 `rate_limit_exceeded` + the fixed drain [`Retry-After`](../../reference/api-contracts.md#timeouts-and-constants) | Coordinator draining; new inference is refused until the drain completes | `drainGate` (`coordinator/api/drain.go`), `coordinatorDrainRetryAfter` |
+| 429 `rate_limit_exceeded` + the fixed drain [`Retry-After`](../../reference/api-contracts.md#timeouts-and-constants) | Coordinator draining; new inference is refused until the drain completes | `Controller.Gate` (`coordinator/api/readiness/gate.go`), `coordinatorDrainRetryAfter` |
 | 503 `service_unavailable` + `Retry-After` | No serving capacity for the model at all | `writeServiceUnavailable` |
 | 503 `machine_offline` / `model_not_loaded` + `Retry-After` | Self-route: the account's machine is offline or has not loaded the model | `selfRouteUnavailable` (`coordinator/api/self_route.go`) |
 | 502 / 503 / 504 `provider_error` | Dispatch exhausted on a genuine provider fault: the provider's own status is passed through (a typed provider 504 — safety deadline or backpressure timeout — stays 504; an untyped 504 becomes the 429 above) | Exhausted branch of `dispatchState.run` (`coordinator/api/dispatch.go`), `isTypedTimeout504Cause` (`coordinator/api/terminal_cause.go`) |

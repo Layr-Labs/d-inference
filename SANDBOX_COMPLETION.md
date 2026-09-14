@@ -5,7 +5,7 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
-Current local changes add broker/native per-image offline fences as patch12.
+Pushed2812390a5 adds broker/native per-image offline fences as patch12.
 Pushedf12f72810 adds durable root maintenance to host-runtime; pushedd8fa61dc5
 adds native relay test-harness patch11. Pushed3c34dbbdd adds the root-only base source/machine lock scope, private
 source reader, shared raw ownership decoding and real process-lock tests.
@@ -25,7 +25,8 @@ build, docs lint, UI lint and Next.js build pass. CI34811478625 and integration
 passed3ac8a7fb6. Integration34815356765 passed3c34dbbdd, but CI34815356747
 failed the native relay fixture's large-frame test; other jobs passed. The
 test-harness correction has CI34819884262 and integration34819884263
-passing atd8fa61dc5. Current local patch12 needs fresh CI; benchmark
+passing atd8fa61dc5. FreshCI34822858087 and integration34822857983 are
+running2812390a5; benchmark
 environment approval is separate and has not been granted.
 
 Physical guest exercise14 and coldboot15 PASS on the test Mac. They prove
@@ -47,7 +48,7 @@ explicit temporary runtime-group membership until the machine campaign finishes.
 - Worktree: `.worktrees/sandbox-completion-20260913`.
 - Branch: `codex/sandbox-completion-20260913`.
 - Starting sandbox tip0950ac41e; master93337ef05 integrated in453b37667.
-- Latest pushed code:d8fa61dc5; maintenancef12f72810, root source guard, lifecycle commitf235b8ad2 and accountless staging
+- Latest pushed code:2812390a5; per-image fence, maintenancef12f72810, root source guard, lifecycle commitf235b8ad2 and accountless staging
   are included. Verify git HEAD and remote before resuming.
 - Local GUI plan commit3abe05f712de1d2dcc6958315c1fbf56b4b693ff follows
   host context50145d4b4 and qualification validator4cab8f470.
@@ -1352,3 +1353,12 @@ from same-inode recovery after authorized partial writes. No public bypass flag.
 Then finish guarded attach/Data selection/detach, GUI installer boot, receipt
 collection/removal, installed checkpoint, clone qualification/cold boot/teardown,
 and actual ready-template publication. These workflow/writer steps remain unbuilt.
+
+Source2812390a561adbc3c1f8e110bac616f6ce7e8b97 is committed and pushed;
+mandatory pre-push checks passed (offline-fence-push.log). PR996 now includes the
+per-image checks, final signed runtime12,552-test idle result and unresolved
+legacy-wrapper load-sensitivity observation. FreshCI34822858087 and integration
+34822857983 run2812390a5; benchmark34822858029 awaits separate approval, not
+granted. Worktree checkpoint may be one commit ahead; source/pin are pushed.
+Next work is typed root maintenance/fence publication and recovery, then the
+actual guarded mount/bootstrap workflow. Go-cache question remains pending.

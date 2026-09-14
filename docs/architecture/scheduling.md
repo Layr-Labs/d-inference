@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-10 · commit `213b8c2b6`
+> Last updated: 2026-09-13 · commit `d8d0dfb0a`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -31,7 +31,8 @@ plus whatever it has dispatched since. Scheduling therefore has three jobs:
 
 ### Per-model request queue
 
-`RequestQueue` (`coordinator/registry/queue.go`) keeps one FIFO per model,
+`RequestQueue` (`coordinator/registry/queue.go`) delegates FIFO storage and its
+mutex to `requestqueue.Queue` (`coordinator/registry/requestqueue/queue.go`),
 bounded by `defaultQueueMaxDepth` queued requests per model (`maxSize`) and
 `defaultQueueMaxWait` per request (`maxWait`); the `EIGENINFERENCE_QUEUE_*`
 overrides and their defaults are in
@@ -66,7 +67,7 @@ anything else to `unknown`):
 | `unknown` | Any other caller of the public drain helpers (`coordinator/registry/scheduler.go`). |
 
 `drainModelQueue` (`coordinator/registry/scheduler.go`) serializes passes per
-model through `queueDrainCoalescer` (`coordinator/registry/queue_drain_coalesce.go`).
+model through `requestqueue.DrainCoalescer` (`coordinator/registry/requestqueue/drain.go`).
 A trigger arriving during a pass requests another pass after held waiters are
 requeued. Within a pass, `drainDominated` skips a scan only for a request with
 the same structural eligibility that is no smaller and has no looser TTFT
@@ -217,7 +218,7 @@ count across all models must be below its *provider cap*.
 [`EIGENINFERENCE_QUALITY_CONCURRENCY_CAP`](../reference/configuration.md#routing-admission-and-ttft):
 the base cap is
 lowered to `ceil(qualityConcurrency × overcommit)`, where
-`qualityConcurrency` (`coordinator/registry/warm_pool_target.go`) is the
+`throughput.QualityConcurrency` (`coordinator/registry/throughput/batch.go`) is the
 largest batch that keeps per-request decode at or above the floor:
 
 ```text
@@ -330,13 +331,13 @@ warm-saturated fraction (`warmSaturated / warm`) reaches
 `WarmSaturationThreshold`. A warm provider is *saturated* when it has no
 concurrency headroom for the model or its backend slot is busy.
 
-**Target** (`warmTarget`, `coordinator/registry/warm_pool_target.go`) applies
+**Target** (`warmpool.Target`, `coordinator/registry/warmpool/target.go`) applies
 Little's Law when pressure is present and otherwise holds the current warm
 count:
 
 ```text
 serviceTime  = clamp(AssumedPromptTokens / prefillTPS + AssumedCompletionTokens / decodeTPS,
-                     warmPoolMinServiceTime, warmPoolMaxServiceTime)   # 500 * time.Millisecond … 2 * time.Minute
+                     MinServiceTime, MaxServiceTime)   # 500 * time.Millisecond … 2 * time.Minute
 L            = running + waiting + queueDepth + spillArrivalRate × serviceTime
 target       = ceil(L / qualityConcurrency) + BurstBuffer
 target       = max(target, warm + 1)              # reactive: pressure always earns one more
@@ -344,13 +345,13 @@ target       = clamp(target, warm, warm + eligibleCold)
 ```
 
 `spillArrivalRate` is an EWMA of arrivals the warm set could not absorb,
-`warmPoolArrivalEWMAAlpha = 0.3` (`coordinator/registry/warm_pool_state.go`).
+`ArrivalEWMAAlpha = 0.3` (`coordinator/registry/warmpool/state.go`).
 `targetWarm` then applies anti-flap and floors: a target lower than the last
 one is held for `MinDwell`, and `MinWarmByModel` raises the target (both
 capped at `warm + eligibleCold`).
 
 **Ramp.** The gap between target and warm is closed at
-`rampLoadsThisTick(gap, MaxLoadsPerTick, MaxLoadsPerTickCeiling,
+`warmpool.LoadsThisTick(gap, MaxLoadsPerTick, MaxLoadsPerTickCeiling,
 RampGapFraction)` loads per tick — at least the base, scaled up to
 `ceil(gap × RampGapFraction)`, never above the ceiling or the gap — subject
 to `MaxGlobalPendingLoads` outstanding loads fleet-wide. Cold candidates are
@@ -479,7 +480,7 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 
 1. **A queue never exceeds `maxSize` and no waiter outlives `maxWait`** —
    `Enqueue`, `cleanStaleLocked`, `WaitForProviderContext`
-   (`coordinator/registry/queue.go`).
+   (`coordinator/registry/requestqueue/queue.go`, `coordinator/registry/queue_waiter.go`).
 2. **Every drain that reserves a waiter records one of the seven
    `DrainTrigger` values** — `foldDrainTrigger`.
 3. **A request is never admitted past a slot's reported token budget** —
@@ -490,9 +491,9 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 5. **A `load_model` is not re-sent to a pair while its pending entry is
    live** — `pendingModelLoadTTL` handling in `coordinator/registry/model_loading.go`.
 6. **The warm target never exceeds what the fleet can reach and never drops
-   below the current warm count** — `warmTarget`
-   (`coordinator/registry/warm_pool_target.go`).
-7. **Warm-pool loads per tick are bounded** — `rampLoadsThisTick`,
+   below the current warm count** — `warmpool.Target`
+   (`coordinator/registry/warmpool/target.go`).
+7. **Warm-pool loads per tick are bounded** — `warmpool.LoadsThisTick`,
    `MaxGlobalPendingLoads`.
 8. **A provider is evicted only after `evictStrikeThreshold` consecutive stale
    sweeps and a fresh identity/heartbeat recheck at removal** — `evictStale`,
@@ -522,14 +523,16 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 
 | Concern | File / symbol |
 |---|---|
-| Per-model queue, drain triggers, stale sweep | `coordinator/registry/queue.go` — `RequestQueue`, `Enqueue`, `WaitForProviderContext`, `PopNextFresh`, `cleanStaleLocked`, `DrainTrigger*` |
+| Per-model FIFO, stale sweep and drain coalescing | `coordinator/registry/requestqueue/queue.go` — `Queue`, `Enqueue`, `PopNextFresh`, `cleanStaleLocked`; `coordinator/registry/requestqueue/drain.go` — `DrainCoalescer` |
+| Provider handoff, deadlines and queue policy | `coordinator/registry/queue_waiter.go` — `QueuedRequest`, `WaitForProviderContext`; `coordinator/registry/requestqueue/assignment.go` — `Assignment`; `coordinator/registry/queue_policy.go` — `DrainTrigger*` |
 | Drain orchestration | `coordinator/registry/scheduler.go` — `drainQueuedRequestsForModelsWithReason`; `coordinator/registry/provider_lifecycle.go` — `SetProviderIdle`; `coordinator/registry/heartbeat.go` — `Heartbeat` |
 | Slot vocabulary | `coordinator/registry/gate_reason.go` — `SlotState`; `coordinator/registry/scheduler.go` — `slotStatePenalty`, `slotStateModelLoaded` |
 | Heartbeat payload | `coordinator/protocol/messages.go` — `BackendCapacity`, `BackendSlotCapacity` |
 | Token-budget and memory admission | `coordinator/registry/scheduler.go` — `freeMemoryAdmits`, `pooledBudgetAdmits`, `knownZeroTokenBudget`, `committedTokenBudget` |
 | Concurrency caps | `coordinator/registry/provider.go` — `maxConcurrency`, `maxConcurrencyForModelLocked`; `coordinator/registry/config.go` — `DefaultMaxConcurrent`; `coordinator/registry/concurrency_cap.go` — `SetQualityConcurrencyCap`, `effectiveMaxConcurrencyForModelRateLocked`, `hasConcurrencyHeadroomForModelCapResolvedLocked` |
 | Pending loads and swaps | `coordinator/registry/model_loading.go` — `pendingModelLoadTTL`, `TriggerModelSwaps`, `bestModelLoadProviderLocked`; `coordinator/registry/model_commands.go` — `SendLoadModel`; `coordinator/registry/model_swap_coalesce.go` — `modelSwapPlanInterval`, `modelSwapPlanGate`, `triggerModelSwapsFromHeartbeat` |
-| Warm pool | `coordinator/registry/warm_pool_controller.go` — `tick`, `plan`, `hasDemandPressure`, `targetWarm`, `WarmPoolSnapshot`; `coordinator/registry/warm_pool_target.go` — `warmTarget`, `qualityConcurrency`, `estimateServiceTime`, `rampLoadsThisTick`; `coordinator/registry/warm_pool_state.go` — `warmPoolArrivalEWMAAlpha` |
+| Warm pool | `coordinator/registry/warm_pool_controller.go` — `tick`, `plan`, `hasDemandPressure`, `targetWarm`, `WarmPoolSnapshot`; `coordinator/registry/warmpool/target.go` — `Target`, `ServiceTime`, `LoadsThisTick`; `coordinator/registry/warmpool/state.go` — `State`, `ArrivalEWMAAlpha` |
+| Observed throughput and batch policy | `coordinator/registry/throughput/observations.go` — `Observations`; `coordinator/registry/throughput/batch.go` — `QualityConcurrency`; `coordinator/registry/throughput/anomaly.go` — `EvaluateAnomaly` |
 | Warm-pool and quality-cap configuration | `coordinator/registry/config.go` — `WarmPoolConfig`, `QualityCapConfig`, `ReadConfig` |
 | Eviction | `coordinator/registry/provider_lifecycle.go` — `StartEvictionLoop`, `evictStale`, `disconnectProvider`, `evictStrikeThreshold`; wired in `coordinator/cmd/coordinator/main.go` |
 | Provider writer | `coordinator/registry/provider_writer.go` — `providerWriter`, `providerWriteTimeout`, `watchWrites` |

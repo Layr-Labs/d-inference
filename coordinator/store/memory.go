@@ -2844,6 +2844,47 @@ func (s *MemoryStore) GetAccountEarningsSummary(accountID string) (ProviderEarni
 	return summary, nil
 }
 
+// GetAccountEarningsByProvider returns an account's lifetime earnings grouped
+// by provider_key (stable machine identity), highest total first.
+func (s *MemoryStore) GetAccountEarningsByProvider(accountID string) ([]ProviderMachineEarnings, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	byKey := make(map[string]*ProviderMachineEarnings)
+	for _, earning := range s.providerEarnings {
+		if earning.AccountID != accountID {
+			continue
+		}
+		m, ok := byKey[earning.ProviderKey]
+		if !ok {
+			m = &ProviderMachineEarnings{ProviderKey: earning.ProviderKey}
+			byKey[earning.ProviderKey] = m
+		}
+		m.TotalMicroUSD += earning.AmountMicroUSD
+		// base_reward rows add money but are not inference jobs.
+		if earning.Model != "base_reward" {
+			m.JobCount++
+			m.PromptTokens += int64(earning.PromptTokens)
+			m.CompletionTokens += int64(earning.CompletionTokens)
+		}
+		if earning.CreatedAt.After(m.LastEarnedAt) {
+			m.LastEarnedAt = earning.CreatedAt
+		}
+	}
+
+	results := make([]ProviderMachineEarnings, 0, len(byKey))
+	for _, m := range byKey {
+		results = append(results, *m)
+	}
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].TotalMicroUSD != results[j].TotalMicroUSD {
+			return results[i].TotalMicroUSD > results[j].TotalMicroUSD
+		}
+		return results[i].ProviderKey < results[j].ProviderKey
+	})
+	return results, nil
+}
+
 // RecordProviderPayout stores a payout record for a provider wallet.
 func (s *MemoryStore) RecordProviderPayout(payout *ProviderPayout) error {
 	s.mu.Lock()

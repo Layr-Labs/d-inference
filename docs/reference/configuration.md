@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-13 · commit `8670b2a08`
+> Last updated: 2026-09-14 · commit `497fa3502`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -125,7 +125,7 @@ TTFT admission and dispatch termination:
 | `EIGENINFERENCE_TTFT_HARD_REJECT` | `true` | `false` (soft preference) | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`) | Restores the legacy 429 when the best estimated TTFT exceeds the model deadline. |
 | `EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS` | 1000–120000 | `5000` (production pins `9000`) | `coordinator/cmd/coordinator/serving.go` (`serverConfig`) | Live first-content deadline base (`FirstContentDeadlineBase`, plus 1 ms per prompt token); exact-model policy may only tighten it. |
 | `EIGENINFERENCE_TTFT_DEADLINE_BASE_MS` | 1000–120000 | `10000` | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`); `coordinator/registry/ttft_shadow.go` | Deadline base for shadow TTFT evaluation. |
-| `EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA` | float 0–1e6 | `0` (term off) | `coordinator/cmd/coordinator/routing_deadlines.go` (`validateTTFTOccupancyAlpha`) | Weight of the occupancy term in the TTFT estimate. |
+| `EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA` | float 0–1e6 | `0` (term off) | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`) | Weight of the occupancy term in the TTFT estimate. |
 | `EIGENINFERENCE_TTFT_ADMISSION_MODE` | `off`, `shadow`, `enforce` | `off` | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`); `coordinator/registry/ttft_shadow.go` (`ParseTTFTAdmissionMode`) | Shadow evaluation of TTFT admission that emits `routing.ttft_admission` metrics without changing decisions; `enforce` currently behaves like `shadow`. |
 | `EIGENINFERENCE_TTFT_CALIBRATION` | `off`/`false`/`0` disables | `on` (*live*) | `coordinator/registry/ttft_calibration.go` (`ttftCalibrationEnabled`) | Per-model TTFT calibration from observed samples; off makes the apply path return ratio 1.0. |
 | `EIGENINFERENCE_TTFT_TERMINAL_REJECT` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/dispatch.go` (`ttftTerminalRejectEnabled`) | A TTFT-too-slow rejection ends the dispatch ladder on any attempt. |

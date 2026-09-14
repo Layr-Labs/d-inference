@@ -36,6 +36,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/accountfleet"
 	"github.com/eigeninference/d-inference/coordinator/api/network"
 	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/apns"
@@ -57,7 +58,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
 	"github.com/google/uuid"
 	"golang.org/x/mod/semver"
-	"golang.org/x/sync/singleflight"
 )
 
 // apiKeyCacheEntry stores the authenticated key record for a single raw API
@@ -345,8 +345,8 @@ type Server struct {
 	// endpoints (stats, leaderboard, model catalog, etc.). TTLs are
 	// per-key. Never nil.
 	readCache *ttlCache
-	// summaryWindowsFlights coalesces per-account summary reads.
-	summaryWindowsFlights singleflight.Group
+	// accountFleet owns the provider dashboard and account earnings flights.
+	accountFleet *accountfleet.Controller
 	// networkViews owns public aggregation and its background refresh state.
 	networkViews *network.Controller
 
@@ -798,6 +798,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	s.requestOutcomes = newRequestOutcomeSink(s, defaultTelemetrySinkCapacity)
 	s.registerDefaultGauges()
 	s.networkViews = s.newNetworkViews()
+	s.accountFleet = s.newAccountFleet()
 	s.routes()
 
 	// Apply server configuration from ServerConfig.
@@ -2632,12 +2633,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.requireAuth(s.handleAccountEarnings))
 
 	// Account-scoped provider dashboard.
-	s.mux.HandleFunc("GET /v1/me/providers", s.requirePrivyAuth(s.handleMyProviders))
-	s.mux.HandleFunc("GET /v1/me/summary", s.requirePrivyAuth(s.handleMySummary))
+	s.mux.HandleFunc("GET /v1/me/providers", s.requirePrivyAuth(s.accountFleet.Providers))
+	s.mux.HandleFunc("GET /v1/me/summary", s.requirePrivyAuth(s.accountFleet.Summary))
 	// Alias-aware owned live-model ids for the console's self-route key picker.
 	s.mux.HandleFunc("GET /v1/me/self-route-models", s.requirePrivyAuth(s.handleMySelfRouteModels))
 	// Ownership-checked hard delete of a retired/offline machine's record(s).
-	s.mux.HandleFunc("DELETE /v1/me/providers/{id}", s.requirePrivyAuth(s.rateLimitFinancial(s.handleDeleteMyProvider)))
+	s.mux.HandleFunc("DELETE /v1/me/providers/{id}", s.requirePrivyAuth(s.rateLimitFinancial(s.accountFleet.DeleteProvider)))
 
 	// MDM enrollment — generates the per-device .mobileconfig (SCEP + MDM).
 	// No auth needed — trust comes from MDM SecurityInfo verification after

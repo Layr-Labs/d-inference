@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-12 · commit `52ba357f6`
+> Last updated: 2026-09-14 · commit `180eebc20`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -117,7 +117,7 @@ and which balance column moves:
 `RewardLedgerTypes = {referral_reward, admin_reward}` is the set the
 leaderboard and `GET /v1/me/summary` count as "reward" rather than "work"
 earnings (`coordinator/store/interface.go` `IsRewardLedgerType`;
-`coordinator/api/me_handlers.go` `handleMySummary`).
+`coordinator/api/accountfleet/summary.go` `Controller.Summary`).
 
 Three credit primitives (`coordinator/store/postgres.go`):
 

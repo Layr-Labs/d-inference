@@ -39,7 +39,7 @@ func TestDeleteMyProvider_OwnerSucceeds(t *testing.T) {
 	r := reqWithUser(http.MethodDelete, "/v1/me/providers/p1", "", "acct-1")
 	r.SetPathValue("id", "p1")
 	w := httptest.NewRecorder()
-	srv.handleDeleteMyProvider(w, r)
+	srv.accountFleet.DeleteProvider(w, r)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
@@ -71,7 +71,7 @@ func TestDeleteMyProvider_CrossAccount403(t *testing.T) {
 	r := reqWithUser(http.MethodDelete, "/v1/me/providers/p1", "", "acct-2")
 	r.SetPathValue("id", "p1")
 	w := httptest.NewRecorder()
-	srv.handleDeleteMyProvider(w, r)
+	srv.accountFleet.DeleteProvider(w, r)
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403: %s", w.Code, w.Body.String())
@@ -88,7 +88,7 @@ func TestDeleteMyProvider_Anon401(t *testing.T) {
 	r := httptest.NewRequest(http.MethodDelete, "/v1/me/providers/p1", nil)
 	r.SetPathValue("id", "p1")
 	w := httptest.NewRecorder()
-	srv.handleDeleteMyProvider(w, r)
+	srv.accountFleet.DeleteProvider(w, r)
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401: %s", w.Code, w.Body.String())
@@ -101,7 +101,7 @@ func TestDeleteMyProvider_NotFound404(t *testing.T) {
 	r := reqWithUser(http.MethodDelete, "/v1/me/providers/NOPE", "", "acct-1")
 	r.SetPathValue("id", "NOPE")
 	w := httptest.NewRecorder()
-	srv.handleDeleteMyProvider(w, r)
+	srv.accountFleet.DeleteProvider(w, r)
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404: %s", w.Code, w.Body.String())
@@ -119,7 +119,7 @@ func TestDeleteMyProvider_OnlineConflict409(t *testing.T) {
 	r := reqWithUser(http.MethodDelete, "/v1/me/providers/live-p", "", "acct-1")
 	r.SetPathValue("id", "live-p")
 	w := httptest.NewRecorder()
-	srv.handleDeleteMyProvider(w, r)
+	srv.accountFleet.DeleteProvider(w, r)
 
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409: %s", w.Code, w.Body.String())
@@ -139,7 +139,7 @@ func TestDeleteMyProvider_MultiRowSameSerial(t *testing.T) {
 	r := reqWithUser(http.MethodDelete, "/v1/me/providers/a", "", "acct-1")
 	r.SetPathValue("id", "a")
 	w := httptest.NewRecorder()
-	srv.handleDeleteMyProvider(w, r)
+	srv.accountFleet.DeleteProvider(w, r)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
@@ -177,7 +177,7 @@ func TestMyProvidersRedactsDeviceIdentity(t *testing.T) {
 
 	r := reqWithUser(http.MethodGet, "/v1/me/providers", "", "acct-1")
 	w := httptest.NewRecorder()
-	srv.handleMyProviders(w, r)
+	srv.accountFleet.Providers(w, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
 	}

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `1f52a71fb`
+> Last updated: 2026-09-14 · commit `180eebc20`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -69,8 +69,14 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 Run prediction telemetry checks from the repository root:
 
 ```bash
-go test -race ./coordinator/api ./coordinator/registry ./coordinator/protocol ./coordinator/store
+go test -race ./coordinator/api/... ./coordinator/registry/... ./coordinator/protocol/... ./coordinator/store/...
 ```
+
+The recursive package paths include tests beside their subsystem owners.
+Account dashboard query bounds and concurrent misses live in
+`coordinator/api/accountfleet/dashboard_queries_test.go` and
+`coordinator/api/accountfleet/summary_concurrency_test.go`; the real route,
+heartbeat, privacy and removal cases remain in `coordinator/api/`.
 
 API fixtures use isolated encrypted WebSocket providers;
 Postgres tests require an explicitly disposable `DATABASE_URL` and include an

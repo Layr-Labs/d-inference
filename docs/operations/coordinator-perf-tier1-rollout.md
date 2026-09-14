@@ -1,6 +1,6 @@
 # Coordinator Performance Tier 1 Rollout
 
-> Last updated: 2026-09-14 · commit `831869026`
+> Last updated: 2026-09-14 · commit `180eebc20`
 
 Operator companion to the `perf/coordinator-tier1-2026-09-03` branch (the
 code items 1.1, 1.3–1.8 of the 2026-09-03 coordinator performance proposal).
@@ -22,8 +22,8 @@ Canonical code (code wins over this doc; find declarations by symbol):
 | Stats / network totals computation | `coordinator/api/network/stats_snapshot.go` (`computeStats`); `coordinator/api/network/stats.go` (`Controller.Stats`); `coordinator/api/network/totals.go` (`computeNetworkTotals`, `Controller.Totals`) |
 | Analytics transaction and query errors | `coordinator/store/postgres_analytics.go` (`withAnalyticsTx`, `UsageLocationBuckets`, `UsageFlowBuckets`, `NetworkTotals`) |
 | Verification poller cadence + busy floor | `coordinator/api/mdm_scheduler_exec.go` (`shouldLoadDueRows`, `nextDispatchDelay`) |
-| Dashboard rolling windows | `coordinator/store/postgres_dashboard.go` and `coordinator/store/memory_dashboard.go` (`AccountEarningsWindows`); `coordinator/api/me_summary_cache.go` (`accountEarningsWindows`) |
-| Batched reputation reads | `coordinator/store/postgres_dashboard.go` and `coordinator/store/memory_dashboard.go` (`GetReputations`); `coordinator/api/me_handlers.go` (`attachStoredReputations`) |
+| Dashboard rolling windows | `coordinator/store/postgres_dashboard.go` and `coordinator/store/memory_dashboard.go` (`AccountEarningsWindows`); `coordinator/api/accountfleet/summary_cache.go` (`accountEarningsWindows`) |
+| Batched reputation reads | `coordinator/store/postgres_dashboard.go` and `coordinator/store/memory_dashboard.go` (`GetReputations`); `coordinator/api/accountfleet/reputation.go` (`attachStoredReputations`) |
 | Capacity accept off the first-byte path | `coordinator/api/dispatch.go` (`commitFirstContent`); `coordinator/registry/capacity_cooldown.go` (`RecordCapacityAcceptObserved`) |
 | Throttled reputation persist | `coordinator/registry/reputation.go` (`RecordJobSuccess`); `coordinator/registry/provider_lifecycle.go` (`Disconnect`); `coordinator/registry/persistence.go` (`persistReputationThrottled`) |
 | Single provider-frame decode | `coordinator/api/provider.go` (`providerReadLoop`) |
@@ -283,8 +283,8 @@ flowchart LR
     D12[dispatcher loop] --> D13[shouldLoadDueRows: 1 s cadence or empty queue] --> D14[ListDueVerificationJobsPage<br/>make 0,min limit,256]
     D15[RecordJobSuccess] --> D16[persistReputationThrottled; Disconnect flushes]
     D17[providerReadLoop] --> D18[msg.UnmarshalJSON once]
-    D19[handleMySummary] --> D20[AccountEarningsWindows aggregate + 15 s cache]
-    D21[handleMyProviders] --> D22[GetReputations ANY]
+    D19[accountfleet.Controller.Summary] --> D20[AccountEarningsWindows aggregate + 15 s cache]
+    D21[accountfleet.Controller.Providers] --> D22[GetReputations ANY]
     D23[request-path recorders] --> D24[registry.lockWrite site<br/>registry.mu.write_wait_ms histogram]
     D25[reserveProvider] --> D26[RoutingDecision.ScanCount -> routing.scans]
   end

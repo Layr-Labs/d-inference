@@ -30,7 +30,7 @@ func TestMyProvidersSurfacesIdleUnloadPolicy(t *testing.T) {
 		t.Helper()
 		r := reqWithUser(http.MethodGet, "/v1/me/providers", "", "acct-1")
 		w := httptest.NewRecorder()
-		srv.handleMyProviders(w, r)
+		srv.accountFleet.Providers(w, r)
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
 		}

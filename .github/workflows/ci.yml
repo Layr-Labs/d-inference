@@ -25,6 +25,10 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0 # Frozen source links are checked at their stamped commits.
+      - name: Test historical source-link validation
+        run: python3 scripts/test-docs-check-historical-links.py
       - name: Check freshness stamps, links, cited paths, orphans
         run: ./scripts/docs-check.sh
 

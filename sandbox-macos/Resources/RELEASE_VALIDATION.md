@@ -94,6 +94,10 @@ created. Cleanup therefore removes the fixed domains again after the worker
 exits, then checks zero tenant processes and verifies domain quiescence. A
 missing successful removal, unrecognized domain output, and a non-absent login
 domain retain separate fixed diagnostic codes; no domain contents are logged.
+Removal and verification retry a bounded number of transient observations while
+launchd finishes teardown. A slain domain with pending requests is never accepted
+as empty; it must become absent or pass the same strict empty-domain parser.
+Prior successful user-domain removal remains required for empty-domain acceptance.
 No physical-host scheduler configuration is changed.
 There is no Python, package manager, or Xcode dependency inside the guest.
 The offline CPU profile intentionally has no tenant username. Account-dependent

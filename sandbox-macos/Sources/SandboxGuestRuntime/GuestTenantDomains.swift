@@ -6,35 +6,47 @@ import SandboxRuntime
 /// fixed tenant domains are addressed; cleanup never targets system or root.
 enum GuestTenantDomains {
     static let domains = ["gui/2001", "user/2001"]
+    typealias Command = @Sendable ([String]) async throws -> SandboxProcessResult
+    typealias Pause = @Sendable () async throws -> Void
     struct Removal: Sendable { let userDomainBootedOut: Bool }
     enum VerificationFailure: String, Error, Sendable {
         case unknownDomain = "unknown_domain"
         case inspectionUnproven = "domain_inspection_unproven"
+        case removalUnproven = "domain_removal_unproven"
         case loginDomainNotAbsent = "login_domain_not_absent"
         case userDomainRemovalUnproven = "user_domain_removal_unproven"
         case userDomainFormatUnproven = "user_domain_format_unproven"
     }
 
-    static func remove() async throws -> Removal {
+    static func remove(run: Command = command, pause: Pause = delay) async throws -> Removal {
         var userDomainBootedOut = false
         for domain in domains {
-            let status = try await command(["print", domain])
-            if absent(status, domain: domain) { continue }
-            guard status.exitCode == 0 else { throw GuestProtocolError.cleanupUncertain }
-            let removed = try await command(["bootout", domain])
-            if domain == "user/2001", removed.exitCode == 0 { userDomainBootedOut = true }
-            if removed.exitCode != 0 {
-                guard absent(try await command(["print", domain]), domain: domain)
-                else { throw GuestProtocolError.cleanupUncertain }
+            let removed = try await stabilize(pause: pause) {
+                let status = try await run(["print", domain])
+                if absent(status, domain: domain) { return .complete(false) }
+                guard status.exitCode == 0, !status.standardOutputTruncated, !status.standardErrorTruncated else {
+                    return .pending(.inspectionUnproven)
+                }
+                let removed = try await run(["bootout", domain])
+                if removed.exitCode == 0, !removed.standardOutputTruncated, !removed.standardErrorTruncated {
+                    return .complete(true)
+                }
+                if absent(try await run(["print", domain]), domain: domain) { return .complete(false) }
+                return .pending(.removalUnproven)
             }
+            if domain == "user/2001", removed { userDomainBootedOut = true }
         }
         return Removal(userDomainBootedOut: userDomainBootedOut)
     }
 
-    static func verifyQuiescent(after removal: Removal) async throws {
+    static func verifyQuiescent(after removal: Removal, run: Command = command,
+                                pause: Pause = delay) async throws {
         for domain in domains {
-            let result = try await command(["print", domain])
-            if let failure = verificationFailure(result, domain: domain, after: removal) { throw failure }
+            _ = try await stabilize(pause: pause) {
+                let result = try await run(["print", domain])
+                if let failure = verificationFailure(result, domain: domain, after: removal) { return .pending(failure) }
+                return .complete(true)
+            }
         }
     }
 
@@ -65,6 +77,27 @@ enum GuestTenantDomains {
 
     private static func command(_ arguments: [String]) async throws -> SandboxProcessResult {
         try await SandboxProcessRunner().run(executable: URL(fileURLWithPath: "/bin/launchctl"),
-            arguments: arguments, timeoutSeconds: 5, maximumOutputBytes: 65536)
+            arguments: arguments, timeoutSeconds: 1, maximumOutputBytes: 65536)
+    }
+
+    private enum Observation { case complete(Bool), pending(VerificationFailure) }
+
+    private static func stabilize(pause: Pause, observe: () async throws -> Observation) async throws -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        var lastFailure = VerificationFailure.inspectionUnproven
+        for attempt in 0..<8 {
+            try Task.checkCancellation()
+            switch try await observe() {
+            case .complete(let value): return value
+            case .pending(let failure): lastFailure = failure
+            }
+            guard attempt < 7, ContinuousClock.now < deadline else { break }
+            try await pause()
+        }
+        throw lastFailure
+    }
+
+    private static func delay() async throws {
+        try await Task.sleep(for: .milliseconds(50))
     }
 }

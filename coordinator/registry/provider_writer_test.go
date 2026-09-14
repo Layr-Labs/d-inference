@@ -2,15 +2,13 @@ package registry
 
 import (
 	"context"
-
 	"net/http"
 	"net/http/httptest"
-
 	"strings"
-
-	"nhooyr.io/websocket"
 	"testing"
 	"time"
+
+	"nhooyr.io/websocket"
 )
 
 func testWebSocketPair(t *testing.T) (*websocket.Conn, *websocket.Conn) {

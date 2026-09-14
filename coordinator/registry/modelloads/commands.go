@@ -28,6 +28,9 @@ func (c *Commands) Reserve(providerID, modelID string, now time.Time) bool {
 	if c.pending == nil {
 		c.pending = make(map[key]time.Time)
 	}
+	if c.started == nil {
+		c.started = make(map[key]time.Time)
+	}
 	if c.hasProviderLocked(providerID) {
 		return false
 	}

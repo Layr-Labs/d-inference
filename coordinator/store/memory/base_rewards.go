@@ -134,7 +134,7 @@ func (s *Store) ListProviderSessionsOverlapping(_ context.Context, start, end ti
 	out := []contracts.ProviderSession{}
 	for i := range s.providerSessions {
 		ps := s.providerSessions[i]
-		sessEnd := ps.LastSeen
+		var sessEnd time.Time
 		if ps.DisconnectedAt != nil {
 			sessEnd = *ps.DisconnectedAt
 		} else {

@@ -5,6 +5,17 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
+Owner source f43af65d83df35a277a89cdc9fca2bc63f2fa48c is committed and pushed.
+A new Developer ID release7-owner package was built from that clean source and
+installed immutably on the test Mac at
+/Library/Application Support/Darkbloom/qualification-release7-owner.
+Host/guest/manifest/Lume signatures and16-file inventory pass independently on
+both Macs; selected UID501 can run host help. No service/VM started. No sandbox
+provisioning profile or notarization; persistent-keychain/physical gates remain.
+Next: reclaim only verified obsolete task VM artifacts, then fresh real factory
+and two-VM acceptance; no user cache deletion is authorized beyond the old8bit
+Gemma deletion. The latest GUI diagnostic VM and restore IPSW must be retained.
+
 The public qualify phase is now wired through a durable actor-owned journal:
 intent -> exact capacity reservation -> clone/start -> identity/native checks ->
 delete/release -> guarded publication/readback. Recovery cleans up and aborts,
@@ -2566,3 +2577,83 @@ Test-Mac storage is still below the300GiB proof floor; Go-cache approval is pend
 No cache/model/old-VM deletion, service/group/authority or production mutation
 occurred in this code segment. Native profile13 remains unbooted; current physical
 guest evidence is still the older exercise14/coldboot15 diagnostic image.
+
+
+## 2026-09-14 — Signed owner/guest package and root test-Mac staging
+
+Built with package-sandbox-release.py --sign --lume-runtime pointing to the
+unchanged runtime13 tree, --jobs4, and NO --guest-release reuse. Primary package:
+/private/tmp/darkbloom-sandbox-lab-20260913/packages/release-7-owner.
+Sourcef43af65d83df35a277a89cdc9fca2bc63f2fa48c, source_dirty:false, Developer ID
+Eigen Labs SLDQ2GJ6TL. Build completed28.52s. No sandbox-specific provisioning
+profile was found among task artifacts; host carries virtualization entitlement
+only. production_ready:false, notarization/persistent-keychain/physical tests
+remain unperformed. This is a signed physical-test package, not a production
+release or deployment. The packaging-notarization skill was applied/read.
+
+Independent primary verification:
+-host app, guest, detached release manifest, Lume and detached provenance all
+ pass strict Developer ID requirements with exact expected identifiers.
+-all16manifest-listed files hash-match; bundle identifier/executable are correct.
+-host virtualization entitlement true; no keychain-access-groups entitlement.
+-signed host help lists qualify/qualification-dir; signed guest probe rejects host
+ execution with78 and empty stdout.
+HostSHA76125bd122ab741fba66fc2fb3b2409f41f860b4fdec0f374ce016b2409bb305
+GuestSHA7387658b327dd8ba6a667b9805b91a38c23bd33a07425151d94cd4be6a52e363
+ManifestSHA76880da45d697ce32195ce9c3f0fa2375cbbe6ee4f656298b836c393cb4be8c3
+Ditto ZIP (preserves signing xattrs) SHA20b00e5cb13edc541aac1932b8d55484674820c4bb85a95426cb161e54d29905
+ZIP primary /private/tmp/darkbloom-sandbox-completion-evidence/release7-owner.zip.
+Primary verification /private/tmp/darkbloom-sandbox-completion-evidence/release7-owner-verification.json.
+Build log same evidence root/package-release7-owner.log.
+
+Root installer script same evidence root/install-release7-owner.py
+SHA2bac18d8fdf9e19524223409405dc5fc3e7e1fd712bcf20a5c02fdb071dc9379.
+It checked archive owner/link/stable identity and exact hash, rejected unsafe ZIP
+paths, unpacked to a new root-private directory, verified complete file inventory
+and signatures, made every entry root:0/read-only (directories/executables555,
+data444), moved to a new immutable target and reverified. It did not replace any
+existing package, start a job/VM, mutate authority or touch production.
+Remote target /Library/Application Support/Darkbloom/qualification-release7-owner.
+Remote incoming /private/tmp/darkbloom-release7-incoming-20260914.
+Remote operator /private/tmp/darkbloom-release7-root-20260914.
+Root verified host help as UID501/GID20. Permanent authority remains
+16777229:29088927 root:431/660/size0/link1. All operations completed.
+Export copied to primary evidence/release7-owner-installed-evidence.json
+SHAbe6c1edf47a6c6429e66753dbbeec7aa7c512f8506d041be343f87be11963f1d.
+It confirms matching source/hash/signatures/immutable ownership, no service/VM
+start and no production readiness claim.
+
+READ-ONLY storage planning (du allocation may double-count APFS clones):
+-/private/tmp/darkbloom-sandbox-lab-20260913:117,869,203,456bytes, including old
+ disposable VM fixtures and the19,772,231,540byte restore IPSW (keep for fresh restore).
+-/Volumes/DarkbloomSandboxTest-20260913/host:73,194,065,920bytes; ROOT access was
+ needed. This is newly measured, not proof that every file is disposable. Inspect
+ its exact old VM identities, lease/material state and process/image openers.
+-/Volumes/DarkbloomSandboxTest-20260913/gui501:23,610,413,056bytes; KEEP latest
+ diagnostic VM/evidence. It remains the only actual exercise14/coldboot15 image.
+-old nonbootable APFS fixtures:initial collection1,085,980,672bytes; staging
+ initial1,121,677,312bytes; staging-v2 1,084,731,392bytes. Preserve evidence and
+ verify authority/detach before any future cleanup. No deletion occurred.
+
+Remaining model caches, queried as user (not deletion authorization):
+-EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp:18,544,263,168bytes
+-EigenLabs/Qwen3.8-27B-4bit-mtp:16,320,466,944bytes
+-gemma-4-26b-qat-4bit:23,583,088,640bytes
+-gpt-oss-20b:12,104,245,248bytes
+-mlx-community/gemma-4-31b-4bit:18,444,447,744bytes
+-qwen3-vl-30b-a3b-instruct:18,268,209,152bytes
+-qwen3.5-27b-claude-opus-8bit:28,599,943,168bytes
+All live under /Users/gaj/.cache/huggingface/hub/models--<name encoding>.
+The approved older models--gemma-4-26b8bit deletion is already complete. Go build
+cache remains unapproved (last68.2GiB). Do NOT delete these other models/caches
+merely because inventoried. First reclaim only verified obsolete OWN artifacts
+under existing task authorization, then remeasure actual important/free capacity
+before requesting any additional exact cache cleanup. Never assume du totals are
+reclaimable bytes; preserve source repos, latest GUI diagnostic VM, encrypted
+volume/passphrase and permanent runtime authority. No new permissions requested.
+
+Ownerf43 source: CI34858536670 and integration34858537007 are running;
+benchmark34858536943 waits for separate environment approval. PR996 remains draft.
+Physical fresh complete factory, explicit failed-base discard operation, actual
+GUI service recovery, full two-VM consumer campaign, build tools/performance and
+final release validation remain required. Keep goal active.

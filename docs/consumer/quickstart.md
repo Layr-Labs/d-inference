@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-13 · commit `f7a3ef1fd`
+> Last updated: 2026-09-14 · commit `42e32adf3`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -56,7 +56,7 @@ curl -s https://api.darkbloom.dev/v1/chat/completions \
 
 The body is an OpenAI `chat.completion` object whose `model` field echoes the alias you sent and whose `usage` has `prompt_tokens`, `completion_tokens`, `total_tokens`. Response headers `X-Provider-Id`, `X-Provider-Attested` and `X-Timing` tell you which machine served it and how long each coordinator stage took (`WriteCommittedProviderHeaders`, `coordinator/inference/response/provider_snapshot.go`).
 
-Expect a short delay before the first byte: the coordinator sends nothing until a provider has produced content, so it can still fail over or return a real error status in the meantime (`commitFirstContent`, `coordinator/api/dispatch.go`).
+Expect a short delay before the first byte: the coordinator sends nothing until a provider has produced content, so it can still fail over or return a real error status in the meantime (`commitFirstContent`, `coordinator/inference/dispatch/commit.go`).
 
 ### 5. Stream the response
 

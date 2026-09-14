@@ -51,6 +51,8 @@ created: "2026-05-14"
 # remaining trust boundaries retain their earlier verification scope.
 # Billing controller citations in TB-008 and T-030 moved to api/billing against
 # commit c8a3f45d0. The non-atomic checkout replay limitation is unchanged.
+# T-025 runtime-manifest cache-reader coverage re-verified 2026-09-14 against
+# commit 9d9c688dc; its shared key and the platform discovery key remain invalidated.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
@@ -929,6 +931,10 @@ threats:
       - coordinator/api/consumer.go
       - coordinator/api/inference_preprocess.go
       - coordinator/api/server.go
+      - coordinator/inference/dispatch/body_contract.go
+      - coordinator/inference/dispatch/provider_body.go
+      - coordinator/inference/dispatch/prepare.go
+      - coordinator/api/httpresponse/marshal.go
     mitigations:
       - description: >
           http.MaxBytesReader caps on every body: 64 MiB global (bodyLimitMiddleware),
@@ -1022,6 +1028,11 @@ threats:
     affected_files:
       - coordinator/api/consumer.go
       - coordinator/store/postgres/usage.go
+      - coordinator/inference/dispatch/prepare.go
+      - coordinator/inference/dispatch/request_metrics.go
+      - coordinator/inference/dispatch/route_observation.go
+      - coordinator/inference/attempt/pending_outcome.go
+      - coordinator/api/inference_dispatch.go
     mitigations:
       - description: Usage rows written per request to the ledger.
         status: implemented
@@ -1649,6 +1660,7 @@ threats:
       - coordinator/api/releases.go
       - coordinator/api/releases/cache.go
       - coordinator/api/releases/latest.go
+      - coordinator/api/releases/runtime_manifest.go
       - coordinator/api/releases/registration.go
       - coordinator/api/releases/deactivation.go
     mitigations:
@@ -1658,7 +1670,9 @@ threats:
     severity: medium
     detection_hint: >
       Any change to release registration, deletion, or cache logic in
-      coordinator/api/releases/cache.go or coordinator/api/releases/latest.go must verify that platform-specific cache keys are
+      coordinator/api/releases/cache.go, coordinator/api/releases/latest.go or
+      coordinator/api/releases/runtime_manifest.go must verify that the
+      platform-specific discovery key and shared runtime-manifest key are
       invalidated on both register and delete operations.
 
   - id: T-026

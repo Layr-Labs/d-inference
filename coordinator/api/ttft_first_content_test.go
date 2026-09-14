@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -169,7 +170,7 @@ func TestAbandonedAttemptDoesNotStampCommittedTTFT(t *testing.T) {
 	if shared.FirstContentAt.IsZero() {
 		t.Fatal("committed retry's first-content stamp must win")
 	}
-	out := completeRouteOutcome(committed, protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 5}, 0, false)
+	out := attempt.CompleteRouteOutcome(committed, protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 5}, 0, false)
 	if out.ActualTTFTMs <= 0 {
 		t.Fatalf("committed retry actual_ttft_ms must be > 0 (its own first-content time), got %f", out.ActualTTFTMs)
 	}

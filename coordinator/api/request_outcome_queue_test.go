@@ -28,65 +28,40 @@ func TestRequestOutcomeQueuedDispatchDoesNotInheritPriorError(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			const model = "accounting-queued-dispatch"
-			complete := make(chan struct{})
 			fp := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
 				Name: "queued-provider", Version: "0.8.10", Models: []failoverModelSpec{{ID: model}},
-				Script: func(ctx context.Context, fp *failoverProvider, req protocol.InferenceRequestMessage, _ []byte) {
-					select {
-					case <-complete:
-						fp.sendComplete(ctx, req, protocol.UsageInfo{PromptTokens: 5})
-					case <-ctx.Done():
-					}
-				},
 			})
 			p := reg.GetProvider(fp.registryID)
-			capacity := func(used int64) {
-				writeAdaptiveHeartbeat(t, ctx, fp.conn, model, &protocol.BackendCapacity{
-					TotalMemoryGB: 64,
-					Slots:         []protocol.BackendSlotCapacity{{Model: model, State: "running", MaxConcurrency: 1, ActiveTokenBudgetUsed: used, ActiveTokenBudgetMax: 1000}},
-				})
-			}
-			capacity(950)
-			waitForAdaptiveCondition(t, time.Second, func() bool {
-				p.Mu().Lock()
-				defer p.Mu().Unlock()
-				return p.BackendCapacity != nil && p.BackendCapacity.Slots[0].ActiveTokenBudgetUsed == 950
-			})
-			var d *dispatchState
-			var previousError string
-			var previousStatus int
+			var pr *registry.PendingRequest
 			srv.observeRequestOutcome(func(w http.ResponseWriter, r *http.Request) {
-				received := time.Now()
-				d = &dispatchState{
-					s: srv, r: r, w: w,
-					model: model, publicModel: model, rawBody: []byte(`{"model":"accounting-queued-dispatch","messages":[{"role":"user","content":"hello"}],"max_tokens":64}`),
-					consumerKey: "test-key", estimatedPromptTokens: 16, requestedMaxTokens: 64,
-					deadline: 5 * time.Second, timing: &registry.RequestTiming{ReceivedAt: received},
-					excludeProviders: map[string]struct{}{}, refundReservation: func() {},
-				}
-				d.profile = srv.newRequestProfile(d.r, model, model, false)
-				defer d.finalizeProfile()
+				rp := srv.newRequestProfile(r, model, model, false)
+				index := 0
 				if priorOverflow {
-					// This is the supported retry-to-queue path: an incompatible
-					// provider failed preparation while the compatible one was busy.
-					d.attempt = 1
-					d.lastErr = errProviderBodyTooLarge.Error()
-					d.lastErrCode = http.StatusRequestEntityTooLarge
-					d.providerBodyTooLargeErr = d.lastErr
+					index = 1
+					prior := rp.NewAttempt("incompatible-provider", 0, "")
+					prior.SetOutcome("error", "client_error", "", "not_dispatched", "error_response")
+					prior.CompleteTerminal()
+					prior.CompleteHandler()
 				}
-				previousError, previousStatus = d.lastErr, d.lastErrCode
-				result := make(chan dispatchOutcome, 1)
-				go func() { result <- d.dispatchPrimary() }()
-				waitForAdaptiveCondition(t, time.Second, func() bool { return reg.Queue().QueueSize(model) == 1 })
-				capacity(0)
-				select {
-				case got := <-result:
-					if got != outcomeProceed {
-						t.Fatalf("dispatch outcome=%v error=%q code=%d", got, d.lastErr, d.lastErrCode)
-					}
-				case <-ctx.Done():
-					t.Fatal("queued dispatch did not finish")
+				// The dispatch owner's real queue/writer fixture proves these
+				// producer facts and unchanged routing history. Here they enter
+				// the actual compact-record and provider-terminal API boundary.
+				ap := rp.NewAttempt("queued-write", index, "")
+				ap.ProviderID = p.ID
+				ap.Mark(registry.StampQueued)
+				ap.Mark(registry.StampDequeued)
+				ap.Mark(registry.StampWriteSubmitted)
+				ap.Mark(registry.StampWriteDone)
+				pr = &registry.PendingRequest{
+					RequestID: ap.RequestID, Attempt: index, Model: model, PublicModel: model, ProviderID: p.ID,
+					ConsumerKey: "test-key", Profile: ap, EstimatedPromptTokens: 16, RequestedMaxTokens: 64,
+					FirstContentDeadline: time.Now().Add(5 * time.Second),
+					Timing:               &registry.RequestTiming{ReceivedAt: rp.T0, DispatchedAt: time.Now()},
+					ChunkCh:              make(chan registry.ProviderChunk, 1), CompleteCh: make(chan protocol.UsageInfo, 1), ErrorCh: make(chan protocol.InferenceErrorMessage, 1),
 				}
+				p.AddPending(pr)
+				ap.SetOutcome("", "", "", "", "error_response")
+				ap.CompleteHandler()
 			})(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx))
 			// Read the ordinary handler-finished revision from the sink/store
 			// before letting the real provider terminal enrich the same record.
@@ -108,7 +83,7 @@ func TestRequestOutcomeQueuedDispatchDoesNotInheritPriorError(t *testing.T) {
 				if row.Attempts[i].WriteCompleted {
 					dispatchedCount++
 				}
-				if row.Attempts[i].RequestID == d.pr.RequestID {
+				if row.Attempts[i].RequestID == pr.RequestID {
 					dispatched = &row.Attempts[i]
 				}
 			}
@@ -118,13 +93,11 @@ func TestRequestOutcomeQueuedDispatchDoesNotInheritPriorError(t *testing.T) {
 			if dispatched.RawReason != "" || dispatched.FinalStatus != "" || dispatched.ProviderOutcome != "no_terminal" {
 				t.Fatalf("successful queued dispatch inherited an error: %+v", *dispatched)
 			}
-			if d.lastErr != previousError || d.lastErrCode != previousStatus {
-				t.Fatalf("accounting changed routing history: error=%q status=%d", d.lastErr, d.lastErrCode)
-			}
-			close(complete)
+			// The terminal still arrives over the real registered provider socket.
+			fp.sendComplete(ctx, protocol.InferenceRequestMessage{RequestID: pr.RequestID}, protocol.UsageInfo{PromptTokens: 5})
 			final := awaitRequestOutcomes(t, st, 1)[0]
 			for _, attempt := range final.Attempts {
-				if attempt.RequestID == d.pr.RequestID && (attempt.ProviderOutcome != "completed" || attempt.RawReason != "" || attempt.FinalStatus != "success") {
+				if attempt.RequestID == pr.RequestID && (attempt.ProviderOutcome != "completed" || attempt.RawReason != "" || attempt.FinalStatus != "success") {
 					t.Fatalf("late provider success inherited previous error: %+v", final)
 				}
 			}

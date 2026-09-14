@@ -215,7 +215,7 @@ func TestHandleCompleteDefersSpeculativeEmptySettlementToDispatchOwner(t *testin
 	default:
 	}
 
-	srv.releaseUnsentDispatch(provider, pr)
+	releaseRejectedEmptyForFrameTest(srv, provider, pr)
 	select {
 	case <-done:
 	case <-time.After(time.Second):

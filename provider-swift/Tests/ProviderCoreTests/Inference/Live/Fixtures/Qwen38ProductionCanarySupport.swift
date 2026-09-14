@@ -99,6 +99,9 @@ enum Qwen38ProductionCanary {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
         let image = URL(
             fileURLWithPath: environment[imagePathOverride]
                 ?? repositoryRoot.appendingPathComponent("libs/mlx/docs/logo/mlx_logo.png").path)

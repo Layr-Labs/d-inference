@@ -17,6 +17,16 @@ rejected before further removal. A repeated collection cannot restart a complete
 transaction; explicit abort settles attachments without installing or publishing.
 Focused collection/recovery/publication tests:27passed. Full suite:639tests,
 7skips,0failures,131.717s. Four actual CLI checks and docs-check286files pass.
+Collection source c58df40b67b4090de16e56ac2f6a8df216a418f0 is committed/pushed.
+Its physical APFS component campaign now PASSES: deliberately exit86 after
+removing the temporary job, observe both durable fences and rejected admission,
+recover via a new root process, finish removal/detach, replay twice unchanged.
+Independent read-only inspection verifies signed installed files and unrelated
+sentinel preserved, all temporary entries absent, source/journals unchanged,
+no image openers/authority holders and preserved Apple Metal attachment.
+This is a nonbootable sparse100GiB fixture (12,845,056allocated bytes), with a
+synthetic complete receipt and release6 guest bytes. No guest installer, VM boot,
+GUI installed publication or template qualification was executed.
 
 Pushed058cb555776ef9bad2565b9ae536eca1c8bf67f4 implements one-use root authorization
 and GUI-owned installer-v1 boot. Its full suite passes626tests/7skips/0failures.
@@ -2149,3 +2159,93 @@ root authority/deletion proof exists yet. Keep the GUI diagnostic VM, encrypted
 volume, permanent authority inode and restore IPSW. Go-cache deletion is still
 unapproved. The already pushed handoff058cb5557 passes CI34844573163 and
 integration34844573303. Keep PR996 draft and acquire fresh CI after this push.
+
+
+## 2026-09-14 — Physical collection crash recovery and independent Data verification
+
+Previous goal turn classification: progress (c58df40b6 implements/pushes collection).
+This turn also makes progress: real root/native/APFS component evidence changes
+collection from local-only to physically verified disk operations. Full fresh-VM
+installation/qualification remains incomplete; keep goal active and PR996 draft.
+
+No product source code changed in this physical campaign. The probe links the
+actual c58df40b6 debug objects and uses signed root-installed runtime13 for native
+metadata. It copies real Developer ID release6 guest files into a synthetic
+filesystem fixture; it does not execute the guest installer or start a VM.
+The dummy ownership/config/reservation and complete receipt are fixture data.
+The protected public directory includes a NONBOOTABLE README and points to an
+absent NOT_A_HOST_IDENTITY.json. No template/readiness receipt is created.
+
+Initial fixture /private/tmp/darkbloom-apfs-collection-20260914 (public io1):
+-1GiB flat APFS, prepared and signed overlay staged/detached successfully.
+-authorize-fixture refused the normal disk/workspace policy before boot claim or
+ collection. Both fences absent and no image attachment remained at failure.
+-Preserved as failed fixture evidence; never modify product policy to accept it.
+-The first probe build referenced a staging-only convenience method; corrected
+ to use the actual owned system worker. A later local v2 build script initially
+ pointed to the prior output directory; corrected before any v2 execution.
+
+Successful fixture /private/tmp/darkbloom-apfs-collection-20260914-v2:
+-public /Library/Application Support/Darkbloom/qualification-collection-io2.
+-root parent/probe protected; vms/base owned501:20/700, disk600/one link.
+-100GiB raw sparse image created with ftruncate, then its independently bound
+ virtual disk partitioned as GPT/APFS. All device IDs resolved from the exact
+ newly attached image, excluding baseline devices. No preexisting disk modified.
+-Data UUID24E3AB8B-817E-4B2F-9746-62362BCA8E38; boot impossible (no OS/hardware,
+ fake NVRAM). Allocated12,845,056bytes after campaign; test-Mac df49GiB free.
+-seed operator /private/tmp/darkbloom-apfs-collection-seed-20260914-v2.
+-probe prepared raw fixture records as501, staged asroot, closed staging and
+ published synthetic root boot permit, then501published a synthetic consumed
+ claim. These fixture steps prove contracts, not actual GUI/boot behavior.
+-root claimed source scope captured the disk, persisted collection intent and
+ both maintenance fences, attached/mounted exact Data, copied signed installed
+ fixtures and wrote a synthetic complete receipt. Actual collector verified
+ signature/files/result, saved logs/plan and unlinked temporary boot job.
+-_exit(86) ran immediately after that unlink. The APFS image remained attached;
+ global/image fences persisted. An ordinary admission probe failed as expected.
+-new process AccountlessCollectionMaintenance.open recovered the exact intent;
+ cleanup detached attempt0001, remounted in0002, used the saved result/removal
+ plan, removed remaining temporary payload and verified installed bytes.
+-final stopped/snapshot/no-openers checks passed, both fences cleared, bounded
+ root public collection record written0444/one link. Two verify-completed
+ replays left every operation file/digest/inode/timestamp and disk unchanged.
+-Independent Python verifier held original machineEX, resolved the exact image
+ and DataUUID, mounted read-only owners/noexec/nosuid/nodev/nobrowse, verified
+ signed guest and three installed hashes, workspace synthetic entry, all13
+ temporary files and four temporary directories absent, and unrelated sentinel
+ preserved. It detached and confirmed unchanged image/journals, no image openers,
+ no authority holders and identical preexisting Apple Metal attachment.
+-Permanent authority dev16777229/inode29088927/root:431/mode660 remains unchanged.
+-No cache/model/obsolete VM deletion, inference/service/group/fan/production
+ mutation occurred. Go-cache approval remains unanswered. All probe processes
+ completed; the fixture is detached and unfenced. Preserve diagnostics/keys.
+
+Primary artifacts: /private/tmp/darkbloom-sandbox-completion-evidence/collection-root-proof/v2
+-CollectionRootProbe SHA788db52f5dd3a78d40c08e58ec929ce6b0fbe7c29f6b6a7ac824060c1ff154aa
+-CollectionRootProbe.swift SHAff4483c1f4234f40a21c64f94fe166ff7ad9f92ed543574eeb22104e7eda65bb
+-run.py SHA9dc42e4269686fe1a93ec53a0dc5489bf02c6f33862a10cdb21d01e9e6711794
+-seed.py SHA2c7d30a8a6b0f603c5e09155bbbab8cdca7d9fece466e02895323d7ab68c93d0
+-verify-content.py SHA657d091582207ccb06ecb05898d741e415446271a2f9091f726647e70ebb1608
+-evidence.json SHAe893daa05c89d2791bcd920d29dba3764f8240803affc53b4f703020007d1073
+Collection public record SHA4cf4f769ec4eb93bfa39a8462ab6b53f202e77030d3b68e4a0eb3577c305152f.
+Remote v2 fixture contains campaign.json,verified.json,independent-verified.json.
+Export copied from /private/tmp/darkbloom-collection-incoming-20260914-v2/evidence.json
+and parsed locally:10phase outcomes[0,0,0,0,86,1,0,0,0,0], both verifiers pass,
+guestInstallerExecuted/vmBooted/templateQualified are all explicitlyfalse.
+
+Sourcec58df40b6 CI34848597007: sandbox,coordinator,docs,lint,UI,release-integrity
+jobs pass; Provider Tests still in_progress. Integration34848597005 in_progress.
+Benchmark34848598921 waits on separate environment approval. Do not mark the
+whole source CI passed until fresh final conclusions are observed.
+
+Next implementation gate: connect installed checkpoint to durable native
+qualification attempt, real clone lifecycle/checks/restart and final cleanup.
+LumeQualificationCloneCapability currently retains source locks but its source
+validation also authorizes an ACTIVE create lease. That validator cannot simply
+be reused after deleteAndRelease: readiness must instead bind the exact released
+deletion scope durably, clone installation/material identity captured before
+removal, missing clone/material state, unchanged stopped source and passed native
+checks. HostCapacityArbiter.deletionConfirmed and releasedDeletionScope provide
+existing release receipts. Add no caller-supplied success bypass. Physical fresh
+Apple restore/GUI boot/collection, actual logout/login, full two-VM coordinator
+acceptance, build tools/performance and final packaging remain required.

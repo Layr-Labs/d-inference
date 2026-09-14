@@ -23,8 +23,10 @@ immutably for native status and staging tests; its latest lifecycle patches
 still need VM testing. Exercise14/coldboot15 remains the last actual guest proof.
 
 Guarded staging is pushed as ce33b36ea0db927881be82acc9475c9cc8fb6a4c.
-CI34837780288 and integration34837780295 are running that source; its macOS
-sandbox job has passed. The operator commands need their own commit and CI. Benchmark environment approval remains separate.
+Operator commands are pushed as bb58af5ecb106c5f1cfa845788001fc2d87c4398.
+CI34838853984 and integration34838853908 are running that source. The preceding
+staging source ce33b36ea has a passing macOS sandbox job; its overall CI/provider
+and integration runs were still in progress at the last observation. Benchmark environment approval remains separate.
 Legacy SSH-wrapper timing failures under concurrent release compilation remain
 an open stress concern, despite the idle full-suite passes.
 
@@ -1808,3 +1810,30 @@ VM owner, records boot intent before spawn, waits for guest shutdown and proves
 stop on cancellation/session loss. A replay must observe/collect that one attempt,
 never silently boot the installer again. Then qualification clone, released-lease
 cleanup proof and readiness publication; full real two-VM acceptance and release.
+
+
+Operator sourcebb58af5ecb106c5f1cfa845788001fc2d87c4398 is committed and pushed.
+All pre-push checks pass (accountless-operator-push.log); PR996 remains draft and
+its Before/After description includes the operator phases and completed replay.
+CI34838853984 and integration34838853908 are now running; benchmark34838853878
+awaits separate environment approval. No local shell/test/probe session is live.
+This checkpoint-only commit follows the pushed code.
+
+Next boot-path audit found a concrete native prerequisite. Current pinned
+DarkbloomDevicePolicy.isolated-v1 REQUIRES both .darkbloom-guest/control.cdr and
+workspace.cdr. Source installation/collection guards deliberately forbid
+.darkbloom-guest material on a raw candidate, so the tenant profile cannot simply
+be reused or faked for installer boot. The ordinary base start also waits for
+legacy SSH and does not inherit machine EX. Implement a narrow managed offline
+installer device profile (boot disk only, no IP/peripherals/shares/guest bridge)
+with the same actual-owner machine EX and broker lifecycle requirements. Update
+Run validation, device application and DarkbloomRuntimeAuthority retention while
+preserving existing isolated-v1 behavior. Keep bridge creation tenant-only.
+Native reference files are in the editable tree:
+ /private/tmp/darkbloom-managed-restore-native/work/libs/lume/src/Virtualization/DarkbloomDevicePolicy.swift
+ /private/tmp/darkbloom-managed-restore-native/work/libs/lume/src/Commands/Run.swift
+ /private/tmp/darkbloom-managed-restore-native/work/libs/lume/src/VM/DarkbloomRuntimeAuthority.swift
+Existing patches1..12 and their pins are unchanged. A new profile must become a
+new pinned patch and signed native build with its own tests; no unknown-profile
+fallback or legacy networking shortcut. Then implement the GUI one-use boot
+permit/journal, lifecycle and separate root collection transaction described above.

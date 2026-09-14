@@ -13,11 +13,11 @@ import (
 //
 //   - providerPassesRoutingGatesLockedEx (scheduler.go) — dispatch hot path
 //   - providerCanRouteBuildLocked        (model_aliases.go)  — alias routability
-//   - providerHasWarmModelLocked         (model_loading.go)  — warm detection
+//   - providerHasWarmModelLocked         (model_load_plan.go)  — warm detection
 //   - publiclyRoutableLocked             (model_capacity.go)  — capacity feeds
 //   - warmPoolCandidateReasonLocked      (warm_pool_controller.go) — warming
 //
-// plus modelLoadCandidatePendingLocked (model_loading.go), which shares the same
+// plus modelLoadCandidatePendingLocked (model_load_plan.go), which shares the same
 // liveness/trust/privacy core and is also folded onto the shared helper.
 //
 // These tests pin the EXACT current decision of every gate across a matrix of

@@ -825,14 +825,5 @@ func warmPoolBackendSlotBusyLocked(p *Provider) bool {
 func (r *Registry) pendingModelLoadCount(now time.Time) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	count := 0
-	for key, expiresAt := range r.pendingModelLoads {
-		if now.After(expiresAt) {
-			delete(r.pendingModelLoads, key)
-			delete(r.pendingModelLoadStarted, key)
-			continue
-		}
-		count++
-	}
-	return count
+	return r.modelLoads.Count(now)
 }

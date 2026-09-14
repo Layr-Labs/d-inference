@@ -8,7 +8,7 @@ import "time"
 //
 //   - providerPassesRoutingGatesLockedEx (scheduler.go) — dispatch hot path
 //   - providerCanRouteBuildLocked        (model_aliases.go)  — alias routability
-//   - providerHasWarmModelLocked         (model_loading.go)  — warm detection
+//   - providerHasWarmModelLocked         (model_load_plan.go)  — warm detection
 //   - publiclyRoutableLocked             (model_capacity.go)  — public capacity feeds
 //   - warmPoolCandidateReasonLocked      (warm_pool_controller.go) — warming
 //

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `316c35e4b`
+> Last updated: 2026-09-14 · commit `83c465555`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -84,6 +84,16 @@ HTTP/writer and terminal telemetry paths as well, run from the repository root:
 
 ```bash
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run '^(Test.*Cache|Test.*ProviderInference|Test.*ProviderWire|Test.*CacheTerminal|Test.*CacheOpportunity)' -count=1
+```
+
+Model-load command concurrency tests live in `coordinator/registry/modelloads/`.
+Registry tests retain the exact-deadline, backoff, session-disconnect, capability
+revocation and trailing-timer fixtures; the API tests retain unsolicited-status
+rejection and warm-state publication. Run the affected groups from the repository
+root:
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/... ./coordinator/api -run 'Test.*(ModelLoad|ModelSwap|SwapPlan|Trailing|PendingLoad|WarmPool|LoadModel|StableFault|DisconnectKeepsStable|CommandsReserve)' -count=1
 ```
 
 Run prediction telemetry checks from the repository root:

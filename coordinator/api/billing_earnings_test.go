@@ -61,7 +61,7 @@ func TestAccountEarningsUsesLifetimeTotalsAndCurrentBalance(t *testing.T) {
 	req = req.WithContext(requestcontext.WithAccountID(req.Context(), accountID))
 	w := httptest.NewRecorder()
 
-	srv.handleAccountEarnings(w, req)
+	srv.billingController().AccountEarnings(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())

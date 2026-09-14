@@ -1,4 +1,4 @@
-package api
+package toolpolicy
 
 import (
 	"bytes"
@@ -25,7 +25,7 @@ func TestNormalizeToolSchemas_Corpus_EmptyPropertySchema(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
 	  "parameters":{"type":"object","properties":{"x":{}}}}}]}`)
 
-	x := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["x"], "x")
+	x := tsnMap(t, tsnProps(t, NormalizeBytes(body))["x"], "x")
 	expected := map[string]any{
 		"type":                   "string",
 		originalBooleanSchemaKey: true,
@@ -43,7 +43,7 @@ func TestNormalizeToolSchemas_Corpus_ConstantCombinatorsPreserveBooleanSemantics
 	    "deny":{"allOf":[{"type":"integer"},false]},
 	    "one":{"oneOf":[true]}
 	  }}}}]}`)
-	props := tsnProps(t, NormalizeToolSchemas(body))
+	props := tsnProps(t, NormalizeBytes(body))
 	for name, want := range map[string]bool{
 		"all": true, "any": true, "deny": false, "one": true,
 	} {
@@ -77,7 +77,7 @@ func TestConstrainedValidationAcceptsNormalizedEmptySchemaMarker(t *testing.T) {
 	if _, err := validateToolConstraintRequest(body); err != nil {
 		t.Fatalf("pre-normalization validation: %v", err)
 	}
-	normalized := NormalizeToolSchemas(body)
+	normalized := NormalizeBytes(body)
 	if _, err := validateToolConstraintRequest(normalized); err != nil {
 		t.Fatalf("post-normalization validation: %v\n%s", err, normalized)
 	}
@@ -119,7 +119,7 @@ func TestNormalizeToolSchemas_Corpus_MarkerlessAnnotationOnlyNodes(t *testing.T)
 	for name, schema := range cases {
 		body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
 		  "parameters":{"type":"object","properties":{"x":` + schema + `}}}}]}`)
-		out := NormalizeToolSchemas(body)
+		out := NormalizeBytes(body)
 		x := tsnMap(t, tsnProps(t, out)["x"], name)
 		if got := tsnType(t, x, name); got != "string" {
 			t.Errorf("%s: type = %q, want string", name, got)
@@ -150,7 +150,7 @@ func TestNormalizeToolSchemas_Corpus_TypelessAssertionFamilies(t *testing.T) {
 	for name, tc := range cases {
 		body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
 		  "parameters":{"type":"object","properties":{"x":` + tc.schema + `}}}}]}`)
-		x := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["x"], name)
+		x := tsnMap(t, tsnProps(t, NormalizeBytes(body))["x"], name)
 		if got := tsnType(t, x, name); got != tc.want {
 			t.Errorf("%s: type = %q, want %q", name, got, tc.want)
 		}
@@ -165,7 +165,7 @@ func TestNormalizeToolSchemas_Corpus_BooleanPropertySchemas(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
 	  "parameters":{"type":"object","properties":{"x":true,"y":false}}}}]}`)
 
-	props := tsnProps(t, NormalizeToolSchemas(body))
+	props := tsnProps(t, NormalizeBytes(body))
 	for name, want := range map[string]bool{"x": true, "y": false} {
 		node := tsnMap(t, props[name], name)
 		expected := map[string]any{
@@ -183,7 +183,7 @@ func TestNormalizeToolSchemas_Corpus_BooleanItems(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
 	  "parameters":{"type":"object","properties":{"arr":{"type":"array","items":true}}}}}]}`)
 
-	arr := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["arr"], "arr")
+	arr := tsnMap(t, tsnProps(t, NormalizeBytes(body))["arr"], "arr")
 	items := tsnMap(t, arr["items"], "arr.items")
 	expected := map[string]any{
 		"type":                   "string",
@@ -203,7 +203,7 @@ func TestNormalizeToolSchemas_Corpus_ScalarNonStringType(t *testing.T) {
 	    "b":{"type":true},
 	    "o":{"type":42,"properties":{"inner":{}}}}}}}]}`)
 
-	props := tsnProps(t, NormalizeToolSchemas(body))
+	props := tsnProps(t, NormalizeBytes(body))
 	if got := tsnType(t, tsnMap(t, props["n"], "n"), "n"); got != "string" {
 		t.Errorf("n type = %q, want string", got)
 	}
@@ -226,7 +226,7 @@ func TestNormalizeToolSchemas_Corpus_PatternProperties(t *testing.T) {
 	  "parameters":{"type":"object","properties":{
 	    "env":{"type":"object","patternProperties":{"^ENV_":{},"^NUM_":{"minimum":0},"^ANY_":true}}}}}}]}`)
 
-	env := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["env"], "env")
+	env := tsnMap(t, tsnProps(t, NormalizeBytes(body))["env"], "env")
 	pp := tsnMap(t, env["patternProperties"], "env.patternProperties")
 	// `{}` and boolean values default to string; the minimum-bearing value
 	// keeps its assertion's number family so validation stays satisfiable.
@@ -241,7 +241,7 @@ func TestNormalizeToolSchemas_Corpus_PatternProperties(t *testing.T) {
 	// A typeless node whose only marker is patternProperties infers "object".
 	body2 := []byte(`{"tools":[{"type":"function","function":{"name":"f",
 	  "parameters":{"type":"object","properties":{"env":{"patternProperties":{"^X_":{"type":"string"}}}}}}}]}`)
-	env2 := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body2))["env"], "env2")
+	env2 := tsnMap(t, tsnProps(t, NormalizeBytes(body2))["env"], "env2")
 	if got := tsnType(t, env2, "env2"); got != "object" {
 		t.Errorf("patternProperties-only node type = %q, want object", got)
 	}
@@ -254,7 +254,7 @@ func TestNormalizeToolSchemas_Corpus_PrefixItems(t *testing.T) {
 	  "parameters":{"type":"object","properties":{
 	    "pair":{"prefixItems":[{},{"const":1},true]}}}}}]}`)
 
-	pair := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["pair"], "pair")
+	pair := tsnMap(t, tsnProps(t, NormalizeBytes(body))["pair"], "pair")
 	if got := tsnType(t, pair, "pair"); got != "array" {
 		t.Errorf("pair type = %q, want array (inferred from prefixItems)", got)
 	}
@@ -278,7 +278,7 @@ func TestNormalizeToolSchemas_Corpus_TupleFormItems(t *testing.T) {
 	  "parameters":{"type":"object","properties":{
 	    "tup":{"type":"array","items":[{},false]}}}}}]}`)
 
-	tup := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["tup"], "tup")
+	tup := tsnMap(t, tsnProps(t, NormalizeBytes(body))["tup"], "tup")
 	items, ok := tup["items"].([]any)
 	if !ok || len(items) != 2 {
 		t.Fatalf("items = %v, want 2 members", tup["items"])
@@ -299,7 +299,7 @@ func TestNormalizeToolSchemas_Corpus_MarkerlessUnionMembers(t *testing.T) {
 	    "o":{"oneOf":[{"format":"uuid"}]},
 	    "a":{"allOf":[{}]}}}}}]}`)
 
-	props := tsnProps(t, NormalizeToolSchemas(body))
+	props := tsnProps(t, NormalizeBytes(body))
 	// anyOf containing allow-all and allOf containing only allow-all are
 	// themselves allow-all; preserve that instead of inheriting the marker's
 	// render-only string type.
@@ -329,7 +329,7 @@ func TestNormalizeToolSchemas_Corpus_EmptyMapAdditionalProperties(t *testing.T) 
 	  "parameters":{"type":"object","properties":{
 	    "meta":{"type":"object","additionalProperties":{}}}}}}]}`)
 
-	meta := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["meta"], "meta")
+	meta := tsnMap(t, tsnProps(t, NormalizeBytes(body))["meta"], "meta")
 	addl := tsnMap(t, meta["additionalProperties"], "meta.additionalProperties")
 	if got := tsnType(t, addl, "additionalProperties"); got != "string" {
 		t.Errorf("additionalProperties type = %q, want string", got)
@@ -344,7 +344,7 @@ func TestNormalizeToolSchemas_Corpus_RootStaysMarkerGated(t *testing.T) {
 		`{"type":"function","function":{"name":"noargs","parameters":{}}},` +
 		`{"type":"function","function":{"name":"junk","parameters":{"foo":"bar"}}}]}`)
 
-	out := NormalizeToolSchemas(body)
+	out := NormalizeBytes(body)
 	if !bytes.Equal(out, body) {
 		t.Fatalf("marker-less roots must not be repaired (no re-encode):\n in: %s\nout: %s", body, out)
 	}
@@ -364,7 +364,7 @@ func TestNormalizeToolSchemas_Corpus_TypelessFiniteValues(t *testing.T) {
 	    "tag":{"enum":["a","b"]},
 	    "none":{"const":null}}}}}]}`)
 
-	props := tsnProps(t, NormalizeToolSchemas(body))
+	props := tsnProps(t, NormalizeBytes(body))
 	for name, want := range map[string]string{
 		"count": "number",
 		"level": "number",
@@ -397,11 +397,11 @@ func TestNormalizeToolSchemas_Corpus_Idempotent(t *testing.T) {
 	    "u":{"anyOf":[{}]}},
 	  "patternProperties":{"^root_":{"default":1}}}}}]}`)
 
-	once := NormalizeToolSchemas(body)
+	once := NormalizeBytes(body)
 	if bytes.Equal(once, body) {
 		t.Fatal("first pass did not normalize")
 	}
-	twice := NormalizeToolSchemas(once)
+	twice := NormalizeBytes(once)
 	if !bytes.Equal(once, twice) {
 		t.Errorf("not idempotent:\n once: %s\ntwice: %s", once, twice)
 	}
@@ -416,7 +416,7 @@ func TestNormalizeToolSchemas_Corpus_Idempotent(t *testing.T) {
 // maxToolSchemaDepth returns the deep tail unrepaired (and unchanged).
 func TestNormalizeToolSchemas_Corpus_DepthCeilingStillHolds(t *testing.T) {
 	body := tsnDeepPropertiesBody(maxToolSchemaDepth + 4)
-	out := NormalizeToolSchemas(body)
+	out := NormalizeBytes(body)
 	// The document normalizes (outer levels gain types) without hanging or
 	// blowing the stack; the leaf past the ceiling is allowed to stay typeless.
 	if bytes.Equal(out, body) {
@@ -434,7 +434,7 @@ func TestNormalizeToolSchemas_Corpus_ObjectNodesAlwaysCarryProperties(t *testing
 	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
 	  "parameters":{"type":"object","properties":{
 	    "env":{"type":"object","patternProperties":{"^ENV_":{"type":"string"}}}}}}}]}`)
-	env := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["env"], "env")
+	env := tsnMap(t, tsnProps(t, NormalizeBytes(body))["env"], "env")
 	injected, ok := env["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("object node with patternProperties must gain a properties map, got %T", env["properties"])
@@ -446,7 +446,7 @@ func TestNormalizeToolSchemas_Corpus_ObjectNodesAlwaysCarryProperties(t *testing
 	// A typeless patternProperties-only node infers "object" and must gain it too.
 	body2 := []byte(`{"tools":[{"type":"function","function":{"name":"f",
 	  "parameters":{"type":"object","properties":{"env":{"patternProperties":{"^X_":{"type":"string"}}}}}}}]}`)
-	env2 := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body2))["env"], "env2")
+	env2 := tsnMap(t, tsnProps(t, NormalizeBytes(body2))["env"], "env2")
 	if got := tsnType(t, env2, "env2"); got != "object" {
 		t.Fatalf("inferred type = %q, want object", got)
 	}
@@ -458,7 +458,7 @@ func TestNormalizeToolSchemas_Corpus_ObjectNodesAlwaysCarryProperties(t *testing
 	// (the template's `is mapping` guard would otherwise re-expose the fallback).
 	body3 := []byte(`{"tools":[{"type":"function","function":{"name":"f",
 	  "parameters":{"type":"object","properties":{"o":{"type":"object","properties":"junk"}}}}}]}`)
-	o := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body3))["o"], "o")
+	o := tsnMap(t, tsnProps(t, NormalizeBytes(body3))["o"], "o")
 	if _, ok := o["properties"].(map[string]any); !ok {
 		t.Fatalf("non-mapping properties must become an empty map, got %T", o["properties"])
 	}

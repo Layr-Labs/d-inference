@@ -19,7 +19,8 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── profilesign/      CMS-signing of .mobileconfig enrollment profiles
 ├── protocol/         WebSocket message types shared with provider (type_scan.go: single-parse frame decode)
 ├── ratelimit/        Rate limiting
-├── registry/         Provider registry, queueing, routing, reputation, token-budget admission,
+├── registry/         Provider registry, queueing, routing, reputation, admission/ capacity math,
+│                     providerversion/ interpretation, token-budget admission,
 │                     warm-pool controller, two-lane provider WS writer (provider_writer.go), routingsim/
 ├── saferun/          Panic-safe goroutine runners
 ├── stateexport/      Consistent encrypted archive of MicroMDM (+ legacy step-ca) state (migration)

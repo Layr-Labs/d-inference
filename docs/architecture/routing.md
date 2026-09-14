@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-13 · commit `f6b5e111c`
+> Last updated: 2026-09-14 · commit `cdaf37d64`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -381,9 +381,9 @@ reasons:
   (`FleetMaxBudget`). If any eligible provider's budget is unknown the
   verdict stays servable.
 
-A provider's structural budget (`snapshotStructuralBudget`) is its reported
+A provider's structural budget (`Policy.StructuralBudget`, `coordinator/registry/admission/request_budget.go`) is its reported
 `ActiveTokenBudgetMax` when the slot reports one; for a provider that is not
-resident it is `coldTokenBudgetEstimate`:
+resident it is `Policy.ColdTokenBudgetEstimate`:
 
 ```text
 weightsGiB   = measured resident GiB (version ≥ 0.8.16 and model in table) else catalogGB × coldLoadCatalogGBToMemGiB
@@ -392,12 +392,12 @@ tokens       = (postLoadGiB − activationFloorGiB) × 2^30 / kvBytesPerToken  #
 ```
 
 `coldLoadCatalogGBToMemGiB = 1.2 * (1e9 / float64(int64(1)<<30))` (≈ 1.1176,
-`coordinator/registry/scheduler.go`). `servabilityCapFraction`,
+`coordinator/registry/admission/memory.go`). `servabilityCapFraction`,
 `servabilityActivationFloorGB` and `servabilityModelActivationFloorsGB` mirror
 the provider's `UnifiedMemoryCap` constants, whose values are stated once in
 [`hardware-support.md`](hardware-support.md#constants); the two tables move in
 the same commit. The activation floor is version-gated
-(`servabilityActivationFloor`):
+(`Policy.ActivationFloor`, `coordinator/registry/admission/model_memory.go`):
 
 | Provider version | Floor |
 |---|---|
@@ -405,7 +405,7 @@ the same commit. The activation floor is version-gated
 | `< 0.8.16` (`servabilityPerModelFloorMinVersion = "0.8.16"`) | `servabilityActivationFloorGB` |
 | `≥ 0.8.16` | per-model table, else `servabilityActivationFloorGB` |
 
-Per-model tables (`coordinator/registry/servability.go`):
+Per-model tables (`coordinator/registry/admission/model_memory.go`):
 
 | Table | Entries |
 |---|---|
@@ -740,7 +740,9 @@ must not run in parallel with other scheduler tests in the same process.
 | Two-phase reservation (scan, commit, plan consumption) | `coordinator/registry/scheduler.go` — `scanProviderReservation`, `commitProviderReservation`, `providerCanAdmitLockedEx`; `coordinator/registry/dispatch_plan.go` — `ReserveNextFromPlan` |
 | Per-identity fault-state gates | `coordinator/registry/gate_state.go` — `gateState`, `publishLocked`, `breakerOpenAt`, `ejectedAt`; `coordinator/registry/gate_index.go` — `gateOf`, `gateView`, `attachSessionGate`, `detachSessionGate`; `coordinator/registry/gate_migrate.go` — `bindStableFaultKey`, `migrateGateLocked`, `mergeLocked`; `coordinator/registry/gate_lock.go` — `lockGate`, `gateRef`, `SetGateWaitObserver`; `coordinator/registry/gate_sweep.go` — `sweepGates`, `gateIdleGrace`; `coordinator/registry/gate_commit_mode.go` — `reserveCommitMode`, `commitLock` |
 | Bounded dispatch plan | `coordinator/registry/dispatch_plan.go` — `dispatchPlanMaxAlternates`, `PlanEntry` |
-| Servability predictor | `coordinator/registry/servability.go` — `PredictServable`, `coldTokenBudgetEstimate`, `servabilityActivationFloor` |
+| Fleet servability predictor | `coordinator/registry/servability.go` — `PredictServable`; fleet iteration and verdict remain in the registry |
+| Capacity and cold-load arithmetic | `coordinator/registry/admission/request_budget.go` — `Policy.ColdTokenBudgetEstimate`, `Policy.StructuralBudget`; `coordinator/registry/admission/model_memory.go` — `Policy.ActivationFloor`, `Policy.ColdWeightsGiB` |
+| Provider-version interpretation | `coordinator/registry/providerversion/` — `Policy.Compare`, `Policy.SlotBudgetLayout`; shared instance in `coordinator/registry/provider_version.go` |
 | Budget clamp | `coordinator/registry/budget_clamp.go` — `recordBudgetClampLocked`, `releaseBudgetClampsOnHeartbeat` |
 | Capacity-rate penalty and cooldown | `coordinator/registry/capacity_rate.go`, `coordinator/registry/capacity_cooldown.go` |
 | Breakers and ejection | `coordinator/registry/error_cooldown.go`, `coordinator/registry/provider_breaker.go`, `coordinator/registry/health_ejection.go` |

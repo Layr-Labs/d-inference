@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-13 · commit `d8d0dfb0a`
+> Last updated: 2026-09-14 · commit `cdaf37d64`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -50,6 +50,8 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/api/httpresponse` | JSON response writing and the common OpenAI-compatible error envelope (`WriteJSON`, `ErrorBody`); `WriteCachedJSON` and `EncodeCachedJSON` preserve pre-encoded response bytes. |
 | `coordinator/registry` | Live fleet identity, snapshots, routing and atomic reservation, queue policy and warm-pool orchestration. |
 | `coordinator/registry/requestqueue` | Per-model FIFO, expiration, reservation handoff acknowledgment and drain-pass coalescing (`Queue`, `Assignment`, `DrainCoalescer`). |
+| `coordinator/registry/admission` | Immutable capacity snapshots, pooled slot/KV accounting and measured cold-load budgets (`Policy`, `Snapshot`, `Pool`); live reservation locks stay in the registry. |
+| `coordinator/registry/providerversion` | Exact dotted-version interpretation and bounded memo state shared by capability, slot-layout and memory-floor gates (`Policy`). |
 | `coordinator/registry/throughput` | Observed throughput samples and medians, decode expectations and batch quality policy (`Observations`, `Policy`, `QualityConcurrency`). |
 | `coordinator/registry/warmpool` | Demand/occupancy state and target arithmetic (`State`, `Target`, `ServiceTime`); fleet commands remain in the registry controller. |
 | `coordinator/store` | `Store` interface, Postgres and memory backends, schema migrations. |

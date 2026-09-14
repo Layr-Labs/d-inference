@@ -1,6 +1,6 @@
 # Beta features
 
-> Last updated: 2026-09-14 · commit `316c35e4b`
+> Last updated: 2026-09-14 · commit `83c465555`
 
 Turn experimental engine behaviour on or off per machine with `darkbloom beta`,
 which writes keys into `provider.toml` so every serve path (LaunchAgent daemon,

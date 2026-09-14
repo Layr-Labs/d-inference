@@ -106,6 +106,14 @@ The normal build also includes `coordinator/providercontrol/releasepolicy/`: rel
 policy generations, runtime hashes and live fleet revalidation. It uses the
 existing Go module and needs no additional service or build step.
 
+The normal Go build includes `coordinator/providercontrol/verification/` through
+`coordinator/api/provider_verification.go` (`newProviderVerifier`). The verifier
+uses the existing registry, store and MDM client; it starts no worker.
+
+The normal Go build includes `coordinator/providercontrol/challenge/`. The API
+creates its connection sessions through `coordinator/api/provider_challenge.go`;
+there is no additional executable, worker service or build target.
+
 The normal Go build includes the device-evidence owner at
 `coordinator/providercontrol/trustreuse/` (`Manager`) through the API adapters; it has no
 separate binary or configuration surface.

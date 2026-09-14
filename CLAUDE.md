@@ -16,6 +16,8 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── env/              Shared env-var helpers/constants
 ├── mdm/              MicroMDM integration for device attestation
 ├── payments/         Internal ledger, pricing tables, base rewards
+├── providercontrol/challenge/ connection-local nonces, challenge transport and ordered verification (Session, Verifier)
+├── providercontrol/verification/ signed registration, reconnect recovery and MDM/MDA evidence checks (Verifier)
 ├── providercontrol/codeidentity/ per-device code proofs, APNs budgets/nonces and encrypted resume (Manager)
 ├── providercontrol/releasepolicy/ active release policy, binary allowlists and runtime manifest (Manager)
 ├── profilesign/      CMS-signing of .mobileconfig enrollment profiles

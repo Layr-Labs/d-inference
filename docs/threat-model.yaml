@@ -1,6 +1,14 @@
 # Startup ownership re-verified 2026-09-13 against commit 8670b2a08:
 # Mnemonic, HTTP header limits and profile-signing selectors follow their setup files.
 # This source-map update does not re-verify unrelated threat entries.
+
+# Registration/device verification ownership re-verified 2026-09-13 against commit 3957e1d82:
+# providercontrol/verification keeps the existing signature, restore, grant and MDA
+# checks; API retains scheduler claims and late-command authorization. This does
+# not re-verify unrelated threat entries or change the public evidence contract.
+# Challenge ownership in TB-009 re-verified against commit 7945db8d4:
+# per-connection Session nonce state and the existing Verifier gate order.
+# This source-ownership check does not re-verify other threat entries.
 version: "1.0"
 created: "2026-05-14"
 # Partially re-verified 2026-09-03 against commit 5d400cf75: A-001, A-003, T-003
@@ -315,9 +323,10 @@ trust_boundaries:
       - "No pre-authentication rate limiting or per-IP connection caps before WebSocket
         upgrade. Any client can open arbitrary connections and attempt registration
         (provider.go, SEC-034)."
-      - "Provider is added to the active registry before attestation verification
-        completes. There is an async window where a provider with an invalid attestation
-        is technically registered (provider.go registry.Register vs async verifyProviderAttestation)."
+      - "Provider is added to the live registry before synchronous registration verification
+        and state recovery finish (api/provider.go providerReadLoop, followed by
+        providercontrol/verification/registration.go Verifier.VerifyRegistration).
+        Registry presence alone does not satisfy the trust and routing gates."
       - "Weight hash enforcement is fail-open: a provider can omit weight_hash entirely
         and still be admitted, even for models with a known expected hash in the catalog
         (registry.go, SEC-007)."
@@ -748,16 +757,21 @@ trust_boundaries:
       RuntimeCapabilities, and MetallibHash stripped.
 
       Challenge-response: every 5 minutes the coordinator generates a 32-byte random
-      nonce (base64), stores it in a one-time-use map keyed by nonce string, and sends
+      nonce (base64), stores it in a one-time-use map private to that connection, and sends
       it with a UTC RFC3339 timestamp. The provider signs (nonce + timestamp) with the
       SE key — raw string concatenation with no delimiter. The coordinator verifies the
       ECDSA signature, checks nonce matches, and checks that SIPEnabled is not nil and
-      not false. SIP=false (and other security failures: bad signature, hash mismatch,
-      impersonation) trigger immediate, non-recoverable MarkUntrusted(). 3 consecutive
+      not false. Nonce/key/signature failures clear challenge freshness immediately;
+      three consecutive hard failures mark untrusted. SIP=false, explicit Secure
+      Boot=false, enforced binary-hash mismatch and model-hash mismatch directly
+      mark untrusted. 3 consecutive
       challenge *timeouts* (sleep / network blip) trigger MarkUntrustedTransient() via the
       3-strike counter: the provider is derouted but the challenge loop keeps probing it,
       and the next fully passing challenge restores it to online (RecordChallengeSuccess).
-      Signature/SIP/hash failures are never auto-recovered and still require a reconnect.
+      A hard-untrusted provider requires reconnect. Session.Run and Session.Deliver
+      in coordinator/providercontrol/challenge/loop.go and transport.go retain
+      per-connection nonce ownership; Verifier.VerifyResponse in verify.go keeps
+      the ordered checks and existing policy/trust callbacks.
 
       Status signature: nonce, timestamp and the reported fields in
       StatusCanonicalInput are signed separately. StatusCanonical.build in
@@ -773,7 +787,7 @@ trust_boundaries:
       P-256 DER signature over SHA-256 of those canonical bytes. Byte compatibility
       fixes false signature failures without changing the signed field set or trust
       policy. Malformed or mismatching signatures remain challenge failures in
-      coordinator/api/provider.go (verifyChallengeResponse). If status_signature is
+      coordinator/providercontrol/challenge/signature.go (verifySignatures). If status_signature is
       absent, ErrStatusSignatureMissing is returned; the caller treats the fields as
       advisory for compatibility with providers older than v0.3.11. Negative status
       reports (SIP=false) are still acted on regardless of whether the status_signature
@@ -782,7 +796,7 @@ trust_boundaries:
       - "status_signature is optional for pre-v0.3.11 providers. A compromised provider
         running OS-level code can report a valid (nonce, timestamp) signature from the
         SE while reporting SIP=true in unsigned status fields, avoiding untrust during
-        the rollout window (provider.go)."
+        the rollout window (coordinator/providercontrol/challenge/signature.go)."
       - "Nonce and timestamp are concatenated without a delimiter for the challenge
         signature (nonce + timestamp). A crafted nonce ending with a partial timestamp
         string could theoretically produce the same signed bytes as a different
@@ -1007,6 +1021,8 @@ threats:
     affected_files:
       - coordinator/api/provider.go
       - coordinator/registry/registry.go
+      - coordinator/providercontrol/verification/registration.go
+      - coordinator/api/provider_verification.go
     mitigations:
       - description: Binary hash verified at registration against known blessed hashes.
         status: implemented
@@ -1269,6 +1285,10 @@ threats:
       - provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift
       - coordinator/api/provider.go
       - coordinator/registry/registry.go
+      - coordinator/providercontrol/verification/registration.go
+      - coordinator/providercontrol/verification/security_info.go
+      - coordinator/providercontrol/verification/dependencies.go
+      - coordinator/api/provider_verification.go
     mitigations:
       - description: darkbloom checks SIP at startup and refuses to serve if disabled.
         status: implemented
@@ -1420,6 +1440,11 @@ threats:
       - coordinator/api/server.go
       - coordinator/mdm/mdm.go
       - coordinator/api/provider.go
+      - coordinator/providercontrol/verification/security_info.go
+      - coordinator/providercontrol/verification/mda.go
+      - coordinator/providercontrol/verification/attempt.go
+      - coordinator/providercontrol/verification/dependencies.go
+      - coordinator/api/provider_verification.go
     mitigations:
       - description: Coordinator verifies MDA cert chain against Apple Enterprise Attestation Root CA.
         status: implemented
@@ -1970,6 +1995,11 @@ threats:
       - provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift
       - provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift
       - provider-swift/Sources/ProviderCore/Security/AttestationSigner.swift
+      - coordinator/providercontrol/verification/registration.go
+      - coordinator/providercontrol/verification/restore.go
+      - coordinator/providercontrol/verification/config.go
+      - coordinator/providercontrol/verification/dependencies.go
+      - coordinator/api/provider_verification.go
     mitigations:
       - description: Attestation blob includes ISO 8601 timestamp; coordinator checks freshness.
         status: implemented
@@ -2014,6 +2044,10 @@ threats:
       - coordinator/registry/registry.go
       - provider-swift/Sources/ProviderCore/ProviderLoop.swift
       - provider-swift/Sources/darkbloom/ProviderAppKitHost.swift
+      - coordinator/providercontrol/verification/registration.go
+      - coordinator/providercontrol/verification/restore.go
+      - coordinator/providercontrol/verification/dependencies.go
+      - coordinator/api/provider_verification.go
     mitigations:
       - description: >
           Same-process code continuity is observed only on online hardware-trusted
@@ -2078,6 +2112,10 @@ threats:
       - provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift
       - provider-swift/Sources/ProviderCore/Security/SecureEnclaveIdentity.swift
       - coordinator/api/provider.go
+      - coordinator/providercontrol/verification/registration.go
+      - coordinator/providercontrol/verification/restore.go
+      - coordinator/providercontrol/verification/dependencies.go
+      - coordinator/api/provider_verification.go
     mitigations:
       - description: Coordinator logs registration events with SE public key fingerprint.
         status: implemented
@@ -2114,11 +2152,13 @@ threats:
       - coordinator/api/provider.go
       - coordinator/registry/registry.go
       - coordinator/providercontrol/trustreuse/**
+      - coordinator/providercontrol/verification/**
+      - coordinator/api/provider_verification.go
     mitigations:
       - description: >
           Hardware grant requires SE signature verification and then an MDM SecurityInfo
           cross-check whose SIP and SecureBootLevel == full agree with the SE blob
-          (verifyProviderViaMDM); a posture mismatch proven by a received SecurityInfo
+          (providercontrol/verification/security_info.go Verifier.VerifySecurityInfo); a posture mismatch proven by a received SecurityInfo
           is terminal (MarkUntrusted), while lookup failures and timeouts leave trust
           unchanged and retry. The MDA cert chain from the Apple root CA is verified
           afterwards and attached only if hardware is already held
@@ -2183,6 +2223,10 @@ threats:
     affected_files:
       - provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift
       - coordinator/api/provider.go
+      - coordinator/providercontrol/verification/registration.go
+      - coordinator/providercontrol/verification/security_info.go
+      - coordinator/providercontrol/verification/dependencies.go
+      - coordinator/api/provider_verification.go
     mitigations:
       - description: SIP checked at startup, before every request, and in every 5-minute challenge.
         status: implemented

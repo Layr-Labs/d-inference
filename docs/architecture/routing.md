@@ -135,8 +135,8 @@ providers rejected by gates 8–9 (`breakerRejected`) and providers that would
 have been routable but for gate 7 (`capacityRejections`) because both feed the
 fail-open and 429 decisions described under [Failure modes](#failure-modes).
 
-Registration recovery (`coordinator/api/provider_restore.go`,
-`restorePersistedProviderState`) retries transient reads within one bounded
+Registration recovery (`coordinator/providercontrol/verification/restore.go`,
+`Verifier.Restore`) retries transient reads within one bounded
 deadline. Until it completes, `providerStateRestoreRequiredLocked` keeps the
 verified identity out of routing, public capacity and warm-pool candidates.
 A sustained failure closes the new connection for retry before evicting an

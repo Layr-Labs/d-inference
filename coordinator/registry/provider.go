@@ -70,7 +70,7 @@ type Provider struct {
 	// restoredMDAChain holds the durable Apple-signed MDA cert chain recovered
 	// from the store on reconnect (see RestoreProviderState). It is a CANDIDATE
 	// only: it is surfaced as a verified proof (MDAVerified/MDACertChain/MDAResult)
-	// solely after attachCachedMDAProof re-verifies it against Apple's pinned root
+	// solely after verification.Verifier.AttachCachedMDA re-verifies it against Apple's pinned root
 	// AND re-binds it to this connection's SE key at hardware-grant time. Kept
 	// unexported so it never serializes to the store or the attestation endpoint.
 	restoredMDAChain [][]byte

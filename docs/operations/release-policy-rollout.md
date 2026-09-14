@@ -56,7 +56,8 @@ The boot grace defaults to `minEnforceGrace = 20 * time.Minute` and is
 clamp up, invalid values keep 20m. It exists because a restarted coordinator has
 an empty provider registry (zero evidence) and would otherwise 429 the whole
 fleet until reconnected providers complete their first challenge cycle
-(`DefaultChallengeInterval = 5 * time.Minute` in `coordinator/api/provider.go`).
+(`DefaultChallengeInterval` aliases `challenge.DefaultInterval = 5 * time.Minute`
+in `coordinator/providercontrol/challenge/config.go`; API alias in `coordinator/api/provider.go`).
 
 Application evidence proves exactly two facts, checked identically at grant
 (`coordinator/providercontrol/releasepolicy/evidence.go` (`DeriveApprovedTransition`,

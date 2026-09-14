@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-13 · commit `a3493b5ac`
+> Last updated: 2026-09-13 · commit `285f7c9f8`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -28,7 +28,7 @@ per-token cost, or a free-form provider string to storage.
 
 | Artefact | Grain | Producer | Sink | Retention |
 |---|---|---|---|---|
-| `request_profiles` row | dispatched attempt (pre-dispatch rejections never produce one) | stamps on `registry.RequestProfile` / `AttemptProfile`, flattened by `buildProfileRecord` (`coordinator/api/profiler_record.go`) | `profilequeue.Sink` (`coordinator/telemetry/profilequeue/queue.go`) → multi-row INSERT | `profileRetainProfiles` — value in [`../reference/telemetry-inventory.md#coordinator-per-request-records-postgres`](../reference/telemetry-inventory.md#coordinator-per-request-records-postgres) |
+| `request_profiles` row | dispatched attempt (pre-dispatch rejections never produce one) | stamps on `registry.RequestProfile` / `AttemptProfile`, flattened by `Builder.Build` (`coordinator/telemetry/profiler/record.go`) | `profilequeue.Sink` (`coordinator/telemetry/profilequeue/queue.go`) → multi-row INSERT | `profileRetainProfiles` — value in [`../reference/telemetry-inventory.md#coordinator-per-request-records-postgres`](../reference/telemetry-inventory.md#coordinator-per-request-records-postgres) |
 | `fleet_snapshots` row | (provider session, slot) per 60 s + one `provider_id = 'coordinator'` row | `registry.FleetSample`, `CoordinatorSample` (`coordinator/registry/fleet_sample.go`) | sampler goroutine, `pgx.CopyFrom` (`coordinator/store/postgres_profiles.go`) | `profileRetainFleet` — same page |
 | `X-Timing` additive keys | committed response | `writeTimingHeaderWithProfile` (`coordinator/api/profiler_dispatch.go`) | response header ([`../reference/api-contracts.md#headers`](../reference/api-contracts.md#headers)) | n/a |
 | Datadog counters | process | [Operations](#operations) | DogStatsD / HTTPS series | n/a |
@@ -72,7 +72,7 @@ attempt stamps.
 | `client_gone_us`, `client_gone_phase` ∈ {`before_first_token`, `after_commit`} | dispatch / consumer / `finalizeProfile` | client disconnect |
 | `cancel_sent_us` | dispatch, after the relay returns | cancel frame to the provider |
 | `complete_ingress_us` | terminal frame ingress (`provider.go`; parked, complete and error sites) | provider terminal received |
-| `finalized_us` | `buildProfileRecord` | both halves done → row built |
+| `finalized_us` | `AttemptProfile.runFinalize` (`coordinator/registry/attempt_profile_finalize.go`) | both halves done → finalization callback; `Builder.Build` copies this stamp |
 
 Outcome columns are written first-wins by `AttemptProfile.SetOutcome`: provider
 complete (`handleComplete`), provider error with `terminal_cause`
@@ -181,12 +181,13 @@ The WS read loop does one thing with `profile`: `SetProviderProfileRaw`
 `maxProviderProfileBytes` (the same bound as `MaxInferenceProfileBytes`) and
 retains the bytes on the attempt, first
 profile wins. Everything else runs on the profile-sink worker
-(`decodeInferenceProfile`, `applyProviderProfile`, `coordinator/api/profiler_provider.go`)
+(`decodeInferenceProfile`, `coordinator/telemetry/profiler/provider_decode.go`;
+`Builder.applyProviderProfile`, `coordinator/telemetry/profiler/provider_record.go`)
 after the terminal has been fully processed.
 
 | Step | Rule | Outcome (`provider_profile_invalid_reason`) |
 |---|---|---|
-| 1 | no object on the terminal | `absent` (`providerProfileAbsent`, `profiler_record.go`) |
+| 1 | no object on the terminal | `absent` (`providerProfileAbsent`, `coordinator/telemetry/profiler/record.go`) |
 | 2 | `len(raw) > maxProviderProfileBytes` | `size` |
 | 3 | second profile for the attempt; profile after finalize | `duplicate`; `late` (`ProviderProfileStatus`) |
 | 4 | decode into the pointer-typed struct fails (unknown keys are ignored) | `decode` — stored `NULL` |
@@ -226,7 +227,7 @@ JSON-encoded on the sink worker.
 | `predicted_ttft_ms`, `raw_ttft_ms`, `ttft_calibration_ratio`, `prefill_decode_ratio`, `predicted_decode_tps` | calibrated vs raw estimate, the (model, chip) ratio applied, the decode→prefill fallback multiplier, `projectedPerRequestDecodeTPS` | `scheduler.go` |
 | `pending_for_model`, `total_pending` | winner's coordinator-side pending counts before this reservation | `scheduler.go` |
 | `capacity_rate_ms`, `cache_discount_ms` | gray-box capacity-503 penalty; exact-cache discount | `scheduler.go` |
-| `shadow_would_shed`, `shadow_idle_alternative` | `NULL` unless the TTFT shadow evaluator ran | `profiler_record.go` |
+| `shadow_would_shed`, `shadow_idle_alternative` | `NULL` unless the TTFT shadow evaluator ran | `Builder.Build`, `coordinator/telemetry/profiler/record.go` |
 | `lock_wait_us`, `scan_us`, `admit_us` | the three phases of `ReserveProviderEx`; `lock_wait_us` is measured from function entry | `scheduler.go` |
 | `queue_position_at_enqueue`, `queue_depth_at_enqueue`, `drain_trigger` | queue path only; `drain_trigger` ∈ {`heartbeat`, `idle`, `challenge`, `load`, `disconnect`, `kick`, `unknown`} (`DrainTrigger*`, `foldDrainTrigger`, `coordinator/registry/queue.go`) | `queue.go` |
 | `slot_state` | `SlotStateFold` → {`running`, `idle`, `idle_shutdown`, `crashed`, `reloading`, `other`}; `other` includes the coordinator's own "unknown" cold candidate. Slot semantics: [`scheduling.md`](scheduling.md) | `gate_reason.go` |
@@ -296,8 +297,8 @@ producer status.
 
 | Rule | Value |
 |---|---|
-| Keep an attempt when `alwaysRecord(rec)` or `sampled(coord_request_id)`; otherwise `profiler.records{status:sampled_out}` | `profiler_record.go` |
-| `sampled` | FNV-1a 32 of the minted `coord_request_id` / 2^32 `< rate`; rate ≥ 1 or empty id ⇒ keep; all attempts of one logical request land together (`profiler.go`) |
+| Keep an attempt when `alwaysRecord(rec)` or `sampled(coord_request_id)`; otherwise `profiler.records{status:sampled_out}` | `Profiler.buildQueuedProfile`, `coordinator/telemetry/profiler/profiler.go` |
+| `sampled` | FNV-1a 32 of the minted `coord_request_id` / 2^32 `< rate`; rate ≥ 1 or empty id ⇒ keep; all attempts of one logical request land together (`Profiler.sampled`, `coordinator/telemetry/profiler/sampling.go`) |
 | always recorded | `final_status != "success"`; `first_content_us > profileSlowFirstContent = 5 s`; `finalized_us > profileSlowTotal = 30 s`; `attempts_total > 1`; `backup_launched`; `timing_anomaly`; `client_gone_phase` set; `provider_profile_valid = false` with a reason other than `absent` |
 | `timing_anomaly` | any decreasing pair along `handler_entry_us, parsed_us, reserved_us, attempt_start_us, reserve_done_us, encrypted_us, write_submitted_us, write_dequeued_us, write_done_us, first_chunk_ingress_us, first_content_us, complete_ingress_us` (`profileTimingAnomaly`); never rejects the row |
 | finalize | two halves (handler, terminal) under `sync.Once`; a fallback timer `profileFallbackGrace = defaultTerminalSettleGrace + 1 s` = 31 s arms when the handler half completes first and on expiry sets `provider_outcome = no_terminal`; a provider frame that owns the terminal claim completes the terminal half itself, the route-outcome funnel completes it only when no frame owns it (`CompleteTerminalUnlessClaimed`) |
@@ -308,9 +309,14 @@ producer status.
 | memory store | implements the same `TelemetryStore` methods and prunes its slices (`coordinator/store/interface_domains.go`; `TestMemoryPruneCapsProfilerSlices`) |
 | `request_waterfall` view | not in the boot migrations; apply by hand with `psql "$EIGENINFERENCE_DATABASE_URL" -f coordinator/store/migrations/request_waterfall.sql`; explicit column list, `LEFT JOIN inference_routes ON (request_id, attempt)`; re-run after adding a column (`TestRequestWaterfallViewListsEveryProfileColumn`) |
 
-The profile queue owns its channel, worker and drop/write counters. The API
-adapter supplies record construction, sampling, metrics and a writer resolved
-at flush time (`coordinator/api/profiler_sink.go`, `newProfileSink`). `Close`
+`telemetry/profiler.Profiler` owns immutable configuration, row construction
+and sampling, and composes the profile queue (`New`,
+`coordinator/telemetry/profiler/profiler.go`). The API supplies metrics and a
+writer resolved at flush time (`newProfiler`, `coordinator/api/profiler.go`).
+`Builder.Build` reconstructs only the allowlisted record on the worker; request
+stamps and terminal ownership remain with the API and registry.
+
+The profile queue owns its channel, worker and drop/write counters. `Close`
 signals this worker without waiting: it flushes a batch already being collected,
 but does not guarantee a drain of buffered jobs. The compact outcome queue has
 its own [bounded drain policy](request-accounting.md); neither queue shares the
@@ -319,14 +325,17 @@ routing buffer.
 ### Operations
 
 The only two knobs are the kill switch `EIGENINFERENCE_PROFILER` and the
-sample rate `EIGENINFERENCE_PROFILE_SAMPLE_RATE` (`newProfilerFromEnv`,
-`coordinator/api/profiler.go`; values and defaults in
+sample rate `EIGENINFERENCE_PROFILE_SAMPLE_RATE` (`ConfigFromEnv`,
+`coordinator/telemetry/profiler/config.go`; values and defaults in
 [`../reference/configuration.md#telemetry-datadog-and-profiling`](../reference/configuration.md#telemetry-datadog-and-profiling)).
-`off` (trimmed, case-insensitive) means no `RequestProfile` is created, no
-sink, no fleet sampler and no provider-profile decode — the retention sweep
-still runs; any other value is on. The sample rate is clamped to [0, 1], an
-unparseable value falls back to the default (`defaultProfileSample`), and the
-always-record predicates bypass it.
+`off` (trimmed, case-insensitive) disables heavy profile records, the profile
+sink, fleet sampling and provider-profile decode; any other value is on.
+Compact accounting evidence remains independent (`newRequestProfile`,
+`coordinator/api/profiler.go`), and the retention sweep still runs. Numeric
+rates below zero or above one clamp to those bounds; an unparseable value
+falls back to `DefaultSampleRate`. The existing float parser also accepts NaN,
+which fails the sampling comparison for nonempty IDs. Always-record predicates
+and empty IDs still bypass sampling.
 
 Admin endpoints (`requireAdminKey`; `coordinator/api/profiler_admin.go`):
 
@@ -439,7 +448,7 @@ ring or `DaemonState` mirror.
 | New column: append at the end of the Go struct, the DDL and `requestProfileColumns` / `fleetSnapshotColumns` in one change | `TestRequestProfileColumnsStayAligned` |
 | Never `ALTER` a hot table in the boot loop; new indexes are built `CONCURRENTLY` outside it | `coordinator/store/postgres.go` migration slice |
 | Anything read under `r.mu` is a fixed-size value copy — no maps, slices, pointers or JSON | `BenchmarkReserveProviderEx_350x2` shows 0 added allocs |
-| Nothing on the WS read loop beyond a length check and atomic adds | `SetProviderProfileRaw`; decode in `profiler_provider.go` |
+| Nothing on the WS read loop beyond a length check and atomic adds | `SetProviderProfileRaw`; `decodeInferenceProfile` in `coordinator/telemetry/profiler/provider_decode.go` |
 | Tags: only `stage`, `model`, `status`, `valid`, `reason`, `sink`, `kind`; never an id | [Operations](#operations) |
 | Re-run `request_waterfall.sql` after adding a column the view should expose | `TestRequestWaterfallViewListsEveryProfileColumn` |
 
@@ -447,10 +456,13 @@ ring or `DaemonState` mirror.
 
 | Concern | Path |
 |---|---|
-| Knobs, constants, sampling, middleware stamps | `coordinator/api/profiler.go` |
-| Row builder, folds, always-record, anomaly | `coordinator/api/profiler_record.go` |
-| Provider profile decode and validation | `coordinator/api/profiler_provider.go` |
-| Profile queue and API adapter | `coordinator/telemetry/profilequeue/` (`Sink`, `Submit`, `Close`); `coordinator/api/profiler_sink.go` (`newProfileSink`, `buildQueuedProfile`) |
+| Request context, middleware stamps and finalization wiring | `coordinator/api/profiler.go` (`newRequestProfile`, `finalizeAttemptProfile`, `newProfiler`) |
+| Configuration and worker composition | `coordinator/telemetry/profiler/config.go` (`ConfigFromEnv`), `coordinator/telemetry/profiler/profiler.go` (`Profiler`, `New`) |
+| Row builder, provider folds and routing JSON | `coordinator/telemetry/profiler/record.go` (`Builder.Build`), `coordinator/telemetry/profiler/routing_record.go` (`candidateJSON`, `decisionJSON`) |
+| Sampling, always-record and timing anomaly | `coordinator/telemetry/profiler/sampling.go` (`sampled`, `alwaysRecord`, `profileTimingAnomaly`) |
+| Provider profile types, bounds and validation | `coordinator/telemetry/profiler/provider_types.go`, `coordinator/telemetry/profiler/provider_bounds.go`, `coordinator/telemetry/profiler/provider_decode.go` (`decodeInferenceProfile`), `coordinator/telemetry/profiler/provider_record.go` (`Builder.applyProviderProfile`), `coordinator/telemetry/profiler/provider_deadline.go` (`storeDeadlineDecision`) |
+| Terminal ingress retention and compatibility aliases | `coordinator/api/profiler_provider.go` (`retainProviderProfile`, `StoredInferenceProfile`) |
+| Profile queue | `coordinator/telemetry/profilequeue/` (`Sink`, `Submit`, `Close`) |
 | Routing queue | `coordinator/telemetry/routequeue/` (`Sink`, `CloseAndWait`) |
 | Fleet sampler, retention loop, metrics | `coordinator/api/profiler_fleet.go`, `coordinator/registry/fleet_sample.go` |
 | Dispatch hooks, `X-Timing`, relay stamps | `coordinator/api/profiler_dispatch.go` |

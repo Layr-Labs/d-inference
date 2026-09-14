@@ -1,4 +1,4 @@
-package api
+package network
 
 import (
 	"crypto/sha256"

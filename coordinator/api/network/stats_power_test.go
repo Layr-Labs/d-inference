@@ -1,4 +1,4 @@
-package api
+package network
 
 import (
 	"encoding/json"
@@ -15,7 +15,7 @@ import (
 
 // registerOnlineProviderWithHardware registers a live provider with the given
 // hardware and promotes it to attested hardware trust so it renders as online
-// in handleStats.
+// in Stats.
 func registerOnlineProviderWithHardware(t *testing.T, reg *registry.Registry, id string, hw protocol.Hardware) {
 	t.Helper()
 	p := reg.Register(id, nil, &protocol.RegisterMessage{
@@ -34,7 +34,7 @@ func TestStatsActiveNetworkPower(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := registry.New(logger)
 	st := store.NewMemory(store.Config{})
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := newTestController(reg, st, logger)
 
 	m1Max := protocol.Hardware{ChipName: "Apple M1 Max", ChipFamily: "M1", ChipTier: "Max", GPUCores: 32, MemoryGB: 64}
 	m4Pro := protocol.Hardware{ChipName: "Apple M4 Pro", ChipFamily: "M4", ChipTier: "Pro", GPUCores: 20, MemoryGB: 48}
@@ -45,7 +45,7 @@ func TestStatsActiveNetworkPower(t *testing.T) {
 		registry.EstimateMachineWatts(m4Pro.ChipFamily, m4Pro.ChipTier, m4Pro.GPUCores)
 
 	rr := httptest.NewRecorder()
-	srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+	srv.Stats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 	}
@@ -72,7 +72,7 @@ func TestStatsActivePowerExcludesPrivate(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := registry.New(logger)
 	st := store.NewMemory(store.Config{})
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := newTestController(reg, st, logger)
 
 	m4Pro := protocol.Hardware{ChipName: "Apple M4 Pro", ChipFamily: "M4", ChipTier: "Pro", GPUCores: 20, MemoryGB: 48}
 
@@ -88,7 +88,7 @@ func TestStatsActivePowerExcludesPrivate(t *testing.T) {
 	priv.Mu().Unlock()
 
 	rr := httptest.NewRecorder()
-	srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+	srv.Stats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 	}

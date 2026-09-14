@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-14 · commit `9d9c688dc`
+> Last updated: 2026-09-14 · commit `dd5026fdf`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -217,7 +217,7 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | GET / POST | `/v1/admin/models/openrouter-aliases` | `handleOpenRouterAliasList`, `handleOpenRouterAliasUpsert` (`coordinator/api/openrouter_alias_handlers.go`) | `publishing` | Two registrations |
 | DELETE | `/v1/admin/models/openrouter-aliases/{aliasID}` | `handleOpenRouterAliasDelete` (`coordinator/api/openrouter_alias_handlers.go`) | `publishing` | |
 | GET / DELETE | `/v1/admin/releases` | `Controller.List` (`coordinator/api/releases/inventory.go`), `Controller.Delete` (`coordinator/api/releases/deactivation.go`) | `admin-key` | Two registrations |
-| GET | `/v1/admin/state-export` | `handleAdminStateExport` (`coordinator/api/admin_state_export.go`) | `admin-key` | 404 unless `EIGENINFERENCE_STATE_EXPORT_ENABLED=true`; 412 `precondition_failed` without an encryption recipient. See [`../operations/state-export.md`](../operations/state-export.md) |
+| GET | `/v1/admin/state-export` | `Controller.Download` (`coordinator/api/statearchive/handler.go`) | `admin-key` | 404 unless `EIGENINFERENCE_STATE_EXPORT_ENABLED=true`; 412 `precondition_failed` without an encryption recipient unless plaintext is explicitly allowed. See [`../operations/state-export.md`](../operations/state-export.md) |
 | POST | `/v1/admin/auth/init` | `handleAdminAuthInit` (`coordinator/api/admin_auth.go`) | `—` | Body `{"email"}`; starts a Privy email OTP for an admin email. 503 `not_configured` when Privy is not configured; 500 `otp_error` when sending fails |
 | POST | `/v1/admin/auth/verify` | `handleAdminAuthVerify` (`coordinator/api/admin_auth.go`) | `—` | Verifies the OTP and returns a session token for the admin console |
 | POST | `/v1/admin/invite-codes` | `handleAdminCreateInviteCode` (`coordinator/api/invite_handlers.go`) | `admin` (`fin`) | 409 `conflict` on code collision |
@@ -558,6 +558,6 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Stats | `coordinator/api/stats.go`, `coordinator/api/cache_refresher.go`, `coordinator/api/network_totals.go`, `coordinator/api/leaderboard.go`, `coordinator/api/network_series.go` |
 | Release registration, discovery, inventory and runtime manifest | `coordinator/api/releases/registration.go` (`Controller.Register`), `coordinator/api/releases/latest.go` (`Controller.Latest`), `coordinator/api/releases/inventory.go` (`Controller.List`), `coordinator/api/releases/deactivation.go` (`Controller.Delete`), `coordinator/api/releases/runtime_manifest.go` (`Controller.RuntimeManifest`) |
 | Enrollment, provider WS, log reports | `coordinator/api/enroll.go`, `coordinator/api/provider.go`, `coordinator/api/log_report_handlers.go` |
-| Drain, admin telemetry, profiler, state export, telemetry stub | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/admin_state_export.go`, `coordinator/api/telemetry_handlers.go` |
+| Drain, admin telemetry, profiler, state export, telemetry stub | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/statearchive/handler.go`, `coordinator/api/telemetry_handlers.go` |
 | Rate-limit bucket consumption | `coordinator/ratelimit/ratelimit.go` (`allowBucket`, `debitBucket`): fixed and per-key rate paths share token consumption and retry calculation while keeping their own admission and clamp rules |
 | Shared types and helpers | `coordinator/api/types/types.go`, `coordinator/api/httputil.go`, `coordinator/ratelimit/ratelimit.go`, `coordinator/modelpolicy/first_content_deadline.go` |

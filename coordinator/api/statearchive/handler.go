@@ -1,4 +1,4 @@
-package api
+package statearchive
 
 import (
 	"crypto/sha256"
@@ -10,42 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/env"
+	"github.com/eigeninference/d-inference/coordinator/api/httpresponse"
 	"github.com/eigeninference/d-inference/coordinator/stateexport"
 )
 
-// State-export env vars (all namespaced under env.EnvPrefix == "EIGENINFERENCE").
-const (
-	// envStateExportEnabled is the master switch. When != "true" the route 404s.
-	envStateExportEnabled = env.EnvPrefix + "_STATE_EXPORT_ENABLED"
-	// envStateExportRecipient is an age recipient ("age1..."). When set, output is
-	// encrypted to it; this is the default-secure path.
-	envStateExportRecipient = env.EnvPrefix + "_STATE_EXPORT_RECIPIENT"
-	// envStateExportAllowPlaintext permits a raw (unencrypted) zip ONLY when no
-	// recipient is configured. Must be explicitly "true".
-	envStateExportAllowPlaintext = env.EnvPrefix + "_STATE_EXPORT_ALLOW_PLAINTEXT"
-	// envStateExportRoot overrides the export root (primarily for tests).
-	envStateExportRoot = env.EnvPrefix + "_STATE_EXPORT_ROOT"
-)
-
-// resolveStateExportRoot picks the directory to archive:
-// EIGENINFERENCE_STATE_EXPORT_ROOT -> USER_PERSISTENT_DATA_PATH -> /mnt/disks/userdata.
-func resolveStateExportRoot() string {
-	return env.FirstNonEmpty(
-		os.Getenv(envStateExportRoot),
-		os.Getenv("USER_PERSISTENT_DATA_PATH"),
-		"/mnt/disks/userdata",
-	)
-}
-
-// envTrue reports whether the named env var is set to "true" (case-insensitive,
-// trimmed). Used for the boolean state-export gates.
-func envTrue(name string) bool {
-	b, _ := strconv.ParseBool(strings.TrimSpace(os.Getenv(name)))
-	return b
-}
-
-// handleAdminStateExport handles GET /v1/admin/state-export — it streams a
+// Download handles GET /v1/admin/state-export — it streams a
 // consistent (and, by default, encrypted) archive of the coordinator's sealed
 // on-disk state under /data for migration off EigenCloud (DAR-70).
 //
@@ -53,7 +22,7 @@ func envTrue(name string) bool {
 //  1. master switch (404 when off — route stays invisible/inert),
 //  2. admin auth (admin-key only; Privy admin is intentionally NOT accepted),
 //  3. output protection (encrypt to recipient, else 412 unless plaintext allowed).
-func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) {
+func (s *Controller) Download(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
 	// (a) Master switch — 404 when disabled so the route is indistinguishable
@@ -69,17 +38,17 @@ func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) 
 	// Privy admin email must not be able to pull the CA key. (The route is also
 	// not wrapped in Privy auth middleware, so auth.UserFromContext is nil here
 	// regardless.)
-	token := extractBearerToken(r)
+	token := s.bearerToken(r)
 	// Hash both sides to a fixed 32 bytes before the constant-time compare so the
 	// check leaks neither the admin key's contents nor its length. (A bare
 	// ConstantTimeCompare returns early when the two byte slices differ in
 	// length — a minor timing side-channel on key length. This is the CA-key
 	// exfil endpoint, so close it.)
 	providedDigest := sha256.Sum256([]byte(token))
-	expectedDigest := sha256.Sum256([]byte(s.adminKey))
-	if s.adminKey == "" || subtle.ConstantTimeCompare(providedDigest[:], expectedDigest[:]) != 1 {
-		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "admin access required"))
-		s.logger.Warn("state-export: unauthorized access attempt",
+	expectedDigest := sha256.Sum256([]byte(s.adminKey()))
+	if s.adminKey() == "" || subtle.ConstantTimeCompare(providedDigest[:], expectedDigest[:]) != 1 {
+		httpresponse.WriteJSON(w, http.StatusForbidden, httpresponse.ErrorBody("forbidden", "admin access required"))
+		s.logger().Warn("state-export: unauthorized access attempt",
 			"remote_addr", r.RemoteAddr, "authorized", false)
 		return
 	}
@@ -90,10 +59,10 @@ func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) 
 	encrypted := recipientStr != ""
 
 	if !encrypted && !allowPlaintext {
-		writeJSON(w, http.StatusPreconditionFailed, errorResponse("precondition_failed",
+		httpresponse.WriteJSON(w, http.StatusPreconditionFailed, httpresponse.ErrorBody("precondition_failed",
 			"set "+envStateExportRecipient+" to an age recipient, or set "+
 				envStateExportAllowPlaintext+"=true to download unencrypted"))
-		s.logger.Warn("state-export: refused (no recipient, plaintext not allowed)",
+		s.logger().Warn("state-export: refused (no recipient, plaintext not allowed)",
 			"remote_addr", r.RemoteAddr, "authorized", true, "encrypted", false)
 		return
 	}
@@ -117,10 +86,10 @@ func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) 
 	// failure is a clean 500 rather than a half-written stream.
 	if encrypted {
 		if err := stateexport.ValidateRecipient(recipientStr); err != nil {
-			writeJSON(w, http.StatusInternalServerError, errorResponse("export_error",
+			httpresponse.WriteJSON(w, http.StatusInternalServerError, httpresponse.ErrorBody("export_error",
 				"state export recipient is misconfigured"))
 			// Do not log the recipient material; log only that parsing failed.
-			s.logger.Error("state-export: recipient parse failed",
+			s.logger().Error("state-export: recipient parse failed",
 				"remote_addr", r.RemoteAddr, "authorized", true, "encrypted", true)
 			return
 		}
@@ -133,15 +102,15 @@ func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) 
 	// staging dir we always RemoveAll, and a torn db that can't snapshot aborts
 	// the whole export up front.
 	arch := stateexport.NewArchiver()
-	arch.Logger = s.logger
+	arch.Logger = s.logger()
 	// Propagate the request context (no artificial deadline — a legit large
 	// export must not be truncated by a timer) so a client disconnect cancels the
 	// snapshot/walk cleanly.
 	staged, stageErr := arch.Stage(r.Context(), root)
 	if stageErr != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("export_error",
+		httpresponse.WriteJSON(w, http.StatusInternalServerError, httpresponse.ErrorBody("export_error",
 			"state export could not produce a consistent snapshot"))
-		s.logger.Error("state-export: staging failed (no bytes written)",
+		s.logger().Error("state-export: staging failed (no bytes written)",
 			"remote_addr", r.RemoteAddr, "authorized", true, "encrypted", encrypted,
 			"root", root, "error", stageErr.Error())
 		return
@@ -167,7 +136,7 @@ func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) 
 		aw, err := stateexport.EncryptWriter(counter, recipientStr)
 		if err != nil {
 			// Headers already sent; we can only abort the stream.
-			s.logger.Error("state-export: age writer init failed after headers",
+			s.logger().Error("state-export: age writer init failed after headers",
 				"remote_addr", r.RemoteAddr, "error", err.Error())
 			return
 		}
@@ -187,13 +156,13 @@ func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) 
 	if archErr != nil {
 		// Headers/body already in flight — cannot change status. Log the failure;
 		// the truncated stream signals the error to the client.
-		s.logger.Error("state-export: archive failed mid-stream",
+		s.logger().Error("state-export: archive failed mid-stream",
 			"remote_addr", r.RemoteAddr, "authorized", true, "encrypted", encrypted,
 			"bytes", counter.n, "files", res.Files, "error", archErr.Error())
 		return
 	}
 
-	s.logger.Info("state-export: completed",
+	s.logger().Info("state-export: completed",
 		"remote_addr", r.RemoteAddr,
 		"authorized", true,
 		"encrypted", encrypted,
@@ -203,16 +172,4 @@ func (s *Server) handleAdminStateExport(w http.ResponseWriter, r *http.Request) 
 		"duration_ms", time.Since(start).Milliseconds(),
 		"outcome", "ok",
 	)
-}
-
-// countingWriter tallies bytes written for the audit log without buffering.
-type countingWriter struct {
-	w io.Writer
-	n int64
-}
-
-func (c *countingWriter) Write(p []byte) (int, error) {
-	n, err := c.w.Write(p)
-	c.n += int64(n)
-	return n, err
 }

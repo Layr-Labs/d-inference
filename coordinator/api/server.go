@@ -1641,7 +1641,7 @@ func (s *Server) routes() {
 	// inert (404) unless EIGENINFERENCE_STATE_EXPORT_ENABLED=true; admin-gated;
 	// encrypted to an age recipient by default. Auth + output protection are
 	// enforced inside the handler.
-	s.mux.HandleFunc("GET /v1/admin/state-export", s.handleAdminStateExport)
+	s.mux.HandleFunc("GET /v1/admin/state-export", s.newStateArchiveAPI().Download)
 
 	// Admin CLI auth — Privy email OTP for getting admin tokens without a browser.
 	s.mux.HandleFunc("POST /v1/admin/auth/init", s.handleAdminAuthInit)     // no auth (sends OTP)

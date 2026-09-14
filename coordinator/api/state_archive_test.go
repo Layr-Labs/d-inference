@@ -38,7 +38,7 @@ func newStateExportServer(t *testing.T) (*httptest.Server, string) {
 	srv.SetAdminKey(stateExportAdminKey)
 
 	root := buildStateExportRoot(t)
-	t.Setenv(envStateExportRoot, root)
+	t.Setenv("EIGENINFERENCE_STATE_EXPORT_ROOT", root)
 
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -147,7 +147,7 @@ func assertNoArchiveBytes(t *testing.T, resp *http.Response) {
 // (a) 404 when the master switch is unset — and no archive bytes.
 func TestStateExport_DisabledReturns404_DAR70(t *testing.T) {
 	ts, _ := newStateExportServer(t)
-	// envStateExportEnabled deliberately not set.
+	// "EIGENINFERENCE_STATE_EXPORT_ENABLED" deliberately not set.
 	resp := getExport(t, ts.URL, stateExportAdminKey)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
@@ -160,7 +160,7 @@ func TestStateExport_DisabledReturns404_DAR70(t *testing.T) {
 // regardless of auth (master switch precedes auth).
 func TestStateExport_DisabledMasksAuth404_DAR70(t *testing.T) {
 	ts, _ := newStateExportServer(t)
-	// envStateExportEnabled deliberately not set.
+	// "EIGENINFERENCE_STATE_EXPORT_ENABLED" deliberately not set.
 	for _, key := range []string{"", "wrong-key"} {
 		resp := getExport(t, ts.URL, key)
 		if resp.StatusCode != http.StatusNotFound {
@@ -176,8 +176,8 @@ func TestStateExport_DisabledMasksAuth404_DAR70(t *testing.T) {
 // responses must contain zero archive bytes.
 func TestStateExport_AdminAuth_DAR70(t *testing.T) {
 	ts, _ := newStateExportServer(t)
-	t.Setenv(envStateExportEnabled, "true")
-	t.Setenv(envStateExportAllowPlaintext, "true")
+	t.Setenv("EIGENINFERENCE_STATE_EXPORT_ENABLED", "true")
+	t.Setenv("EIGENINFERENCE_STATE_EXPORT_ALLOW_PLAINTEXT", "true")
 
 	// Missing key.
 	resp := getExport(t, ts.URL, "")
@@ -208,7 +208,7 @@ func TestStateExport_AdminAuth_DAR70(t *testing.T) {
 // (c) 412 when no recipient and plaintext not allowed — and no archive bytes.
 func TestStateExport_PreconditionFailed_DAR70(t *testing.T) {
 	ts, _ := newStateExportServer(t)
-	t.Setenv(envStateExportEnabled, "true")
+	t.Setenv("EIGENINFERENCE_STATE_EXPORT_ENABLED", "true")
 	// No recipient, no plaintext allowance.
 	resp := getExport(t, ts.URL, stateExportAdminKey)
 	defer resp.Body.Close()
@@ -227,9 +227,9 @@ func TestStateExport_RootMissing500_DAR70(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
-	t.Setenv(envStateExportRoot, filepath.Join(t.TempDir(), "does-not-exist"))
-	t.Setenv(envStateExportEnabled, "true")
-	t.Setenv(envStateExportAllowPlaintext, "true")
+	t.Setenv("EIGENINFERENCE_STATE_EXPORT_ROOT", filepath.Join(t.TempDir(), "does-not-exist"))
+	t.Setenv("EIGENINFERENCE_STATE_EXPORT_ENABLED", "true")
+	t.Setenv("EIGENINFERENCE_STATE_EXPORT_ALLOW_PLAINTEXT", "true")
 
 	resp := getExport(t, ts.URL, stateExportAdminKey)
 	defer resp.Body.Close()
@@ -237,27 +237,6 @@ func TestStateExport_RootMissing500_DAR70(t *testing.T) {
 		t.Fatalf("missing root: got %d, want 500", resp.StatusCode)
 	}
 	assertNoArchiveBytes(t, resp)
-}
-
-// resolveStateExportRoot precedence:
-// EIGENINFERENCE_STATE_EXPORT_ROOT -> USER_PERSISTENT_DATA_PATH -> /mnt/disks/userdata.
-func TestResolveStateExportRootPrecedence_DAR70(t *testing.T) {
-	// Default when nothing is set.
-	t.Setenv(envStateExportRoot, "")
-	t.Setenv("USER_PERSISTENT_DATA_PATH", "")
-	if got := resolveStateExportRoot(); got != "/mnt/disks/userdata" {
-		t.Fatalf("default = %q, want /mnt/disks/userdata", got)
-	}
-	// USER_PERSISTENT_DATA_PATH wins over the hardcoded default.
-	t.Setenv("USER_PERSISTENT_DATA_PATH", "/persist")
-	if got := resolveStateExportRoot(); got != "/persist" {
-		t.Fatalf("with USER_PERSISTENT_DATA_PATH = %q, want /persist", got)
-	}
-	// Explicit override wins over everything.
-	t.Setenv(envStateExportRoot, "/explicit")
-	if got := resolveStateExportRoot(); got != "/explicit" {
-		t.Fatalf("with override = %q, want /explicit", got)
-	}
 }
 
 // HTTP-level encrypted export through a SYMLINKED root still captures children
@@ -274,9 +253,9 @@ func TestStateExport_SymlinkedRoot_DAR70(t *testing.T) {
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
-	t.Setenv(envStateExportRoot, link)
-	t.Setenv(envStateExportEnabled, "true")
-	t.Setenv(envStateExportAllowPlaintext, "true")
+	t.Setenv("EIGENINFERENCE_STATE_EXPORT_ROOT", link)
+	t.Setenv("EIGENINFERENCE_STATE_EXPORT_ENABLED", "true")
+	t.Setenv("EIGENINFERENCE_STATE_EXPORT_ALLOW_PLAINTEXT", "true")
 
 	resp := getExport(t, ts.URL, stateExportAdminKey)
 	defer resp.Body.Close()
@@ -297,8 +276,8 @@ func TestStateExport_SymlinkedRoot_DAR70(t *testing.T) {
 // .push_imported included, bolt db opens ReadOnly with intact buckets/keys.
 func TestStateExport_PlaintextZip_DAR70(t *testing.T) {
 	ts, _ := newStateExportServer(t)
-	t.Setenv(envStateExportEnabled, "true")
-	t.Setenv(envStateExportAllowPlaintext, "true")
+	t.Setenv("EIGENINFERENCE_STATE_EXPORT_ENABLED", "true")
+	t.Setenv("EIGENINFERENCE_STATE_EXPORT_ALLOW_PLAINTEXT", "true")
 
 	resp := getExport(t, ts.URL, stateExportAdminKey)
 	defer resp.Body.Close()
@@ -367,8 +346,8 @@ func TestStateExport_EncryptedToRecipient_DAR70(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(envStateExportEnabled, "true")
-	t.Setenv(envStateExportRecipient, id.Recipient().String())
+	t.Setenv("EIGENINFERENCE_STATE_EXPORT_ENABLED", "true")
+	t.Setenv("EIGENINFERENCE_STATE_EXPORT_RECIPIENT", id.Recipient().String())
 
 	resp := getExport(t, ts.URL, stateExportAdminKey)
 	defer resp.Body.Close()
@@ -416,8 +395,8 @@ func TestStateExport_ConsistencyUnderWrites_DAR70(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(envStateExportEnabled, "true")
-	t.Setenv(envStateExportRecipient, id.Recipient().String())
+	t.Setenv("EIGENINFERENCE_STATE_EXPORT_ENABLED", "true")
+	t.Setenv("EIGENINFERENCE_STATE_EXPORT_RECIPIENT", id.Recipient().String())
 
 	// Open the live db RW and hammer it with writes (mirrors MicroMDM).
 	dbPath := filepath.Join(root, "micromdm", "micromdm.db")

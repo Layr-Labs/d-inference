@@ -26,12 +26,12 @@ func TestCacheAffinityStableAcrossPoolOrderAndFailsOver(t *testing.T) {
 		t.Fatal("affinity overrode queue headroom")
 	}
 	winner.effectiveQueue = 0
-	winner.snapshot.totalPending = 1
+	winner.snapshot.TotalPending = 1
 	fallback, _, _, _ = selectRoutingCandidateWithAffinity(pool, "scoped-prefix")
 	if fallback == winner {
 		t.Fatal("affinity overrode pending load")
 	}
-	winner.snapshot.totalPending = 0
+	winner.snapshot.TotalPending = 0
 	winner.costMs = 10000
 	fallback, _, _, _ = selectRoutingCandidateWithAffinity(pool, "scoped-prefix")
 	if fallback == winner {

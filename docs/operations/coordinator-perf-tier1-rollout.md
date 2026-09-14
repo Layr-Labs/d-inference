@@ -1,6 +1,6 @@
 # Coordinator Performance Tier 1 Rollout
 
-> Last updated: 2026-09-13 · commit `8bba9916a`
+> Last updated: 2026-09-14 · commit `3b4c75127`
 
 Operator companion to the `perf/coordinator-tier1-2026-09-03` branch (the
 code items 1.1, 1.3–1.8 of the 2026-09-03 coordinator performance proposal).
@@ -30,7 +30,7 @@ Canonical code (code wins over this doc; find declarations by symbol):
 | Cancel only when generation still needs stopping | `coordinator/api/dispatch.go` (`writeCommittedResponse`); `coordinator/api/provider.go` (`handleChunk`, synthesized-error cancellation) |
 | No shed-path fleet walk | `coordinator/api/inference_admission.go` (`runInferenceAdmission`, `skipServability`) |
 | Lock-wait histogram by call site | `coordinator/registry/lock_wait.go` (`lockWrite`); `coordinator/api/server.go` (`NewServer`) |
-| Scan counter | `coordinator/registry/scheduler.go` (`RoutingDecision.ScanCount`); `coordinator/api/dispatch.go` (`recordRoutingDecisionFor`) |
+| Scan counter | `coordinator/registry/routing_decision.go` (`RoutingDecision.ScanCount`); `coordinator/api/dispatch.go` (`recordRoutingDecisionFor`) |
 | Contention profiles | `coordinator/cmd/coordinator/main.go` (`enableContentionProfiling`) |
 
 ## Prerequisites

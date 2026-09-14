@@ -2,14 +2,13 @@ package registry
 
 import (
 	"fmt"
-	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/routingcost"
 )
 
 // withTTFTConfig snapshots and restores the package-level Phase-0 TTFT knobs so
@@ -32,187 +31,10 @@ func withTTFTConfig(t *testing.T, alpha, deadlineBaseMs float64, mode TTFTAdmiss
 	SetTTFTAdmissionMode(mode)
 }
 
-// TestTTFTOccupancyTermZeroWhenAlphaZero pins the behavior-neutral default: with
-// alpha=0 the occupancy term contributes nothing, so ttftMsFromSnapshot is
-// byte-for-byte the pre-Phase-0 estimate no matter how herded the box is.
-func TestTTFTOccupancyTermZeroWhenAlphaZero(t *testing.T) {
-	if TTFTOccupancyAlpha() != 0 {
-		t.Fatalf("default occupancy alpha must be 0, got %f", TTFTOccupancyAlpha())
-	}
-	snap := routingSnapshot{
-		hasBackendCapacity: true,
-		slotState:          "running",
-		decodeTPS:          55,
-		prefillTPS:         660,
-		backendRunning:     8,
-		pendingForModel:    8,
-	}
-	if got := ttftOccupancyMs(snapPtr(snap)); got != 0 {
-		t.Fatalf("ttftOccupancyMs must be 0 when alpha=0, got %f", got)
-	}
-}
-
-// TestTTFTEstimateOccupancyTermActiveAndMonotonic exercises the flag ON via the
-// SHADOW estimate (occupancyAwareTTFTMsFromSnapshot — the only place the term is
-// added; ttftMsFromSnapshot stays occupancy-free, see Fix D): the occupancy term
-// raises the estimate, the estimate is strictly increasing in occupancy, and it
-// crosses the verified ~10s deadline at a knee. It also pins the safety invariant
-// at the unit level — ttftMsFromSnapshot (the live input) is unchanged by alpha.
-func TestTTFTEstimateOccupancyTermActiveAndMonotonic(t *testing.T) {
-	withTTFTConfig(t, 45, defaultTTFTDeadlineBaseMs, TTFTAdmissionOff)
-
-	mk := func(running int) routingSnapshot {
-		return routingSnapshot{
-			hasBackendCapacity: true,
-			slotState:          "running",
-			decodeTPS:          55, // gpt-oss solo ~55 tok/s
-			prefillTPS:         660,
-			backendRunning:     running,
-		}
-	}
-	const reqPrompt = 1000
-	const model = "ordinary-shadow-model"
-
-	// The occupancy term must add to the SHADOW estimate at b>0 (compare alpha on
-	// vs off). The LIVE estimate (ttftMsFromSnapshot) must NOT move with alpha.
-	SetTTFTOccupancyAlpha(0)
-	liveOff := ttftMsFromSnapshot(snapPtr(mk(4)), reqPrompt)
-	shadowOff := occupancyAwareTTFTMsFromSnapshot(snapPtr(mk(4)), reqPrompt)
-	SetTTFTOccupancyAlpha(45)
-	liveOn := ttftMsFromSnapshot(snapPtr(mk(4)), reqPrompt)
-	shadowOn := occupancyAwareTTFTMsFromSnapshot(snapPtr(mk(4)), reqPrompt)
-	if liveOn != liveOff {
-		t.Fatalf("ttftMsFromSnapshot must be occupancy-FREE (invariant): alpha=0 %f vs alpha=45 %f", liveOff, liveOn)
-	}
-	if shadowOff != liveOff {
-		t.Fatalf("at alpha=0 the shadow estimate must equal the base: shadow=%f base=%f", shadowOff, liveOff)
-	}
-	if shadowOn <= shadowOff {
-		t.Fatalf("occupancy term must raise the shadow estimate at b=4: with=%f base=%f", shadowOn, shadowOff)
-	}
-
-	// Strictly increasing in occupancy, crossing the deadline at a knee.
-	deadline := ttftDeadlineMsForPrompt(model, reqPrompt)
-	last := -1.0
-	knee := -1
-	for b := 0; b <= 8; b++ {
-		est := occupancyAwareTTFTMsFromSnapshot(snapPtr(mk(b)), reqPrompt)
-		if est <= last {
-			t.Fatalf("estimate not strictly increasing at b=%d: %f <= %f", b, est, last)
-		}
-		last = est
-		if knee < 0 && est > deadline {
-			knee = b
-		}
-	}
-	if knee < 1 || knee > 8 {
-		t.Fatalf("estimate should cross the %.0fms deadline at a knee in b=1..8, got knee=%d", deadline, knee)
-	}
-	// b=0 (idle) must stay well under the deadline — route-to-idle is preserved.
-	if idle := occupancyAwareTTFTMsFromSnapshot(snapPtr(mk(0)), reqPrompt); idle > deadline {
-		t.Fatalf("idle box (b=0) must be under the deadline, got %f > %f", idle, deadline)
-	}
-}
-
-func TestTTFTShadowDeadlineUsesExactModelPolicy(t *testing.T) {
-	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
-	const promptTokens = 321
-
-	if got, want := ttftDeadlineMsForPrompt(
-		"ordinary-shadow-model", promptTokens,
-	), 10_321.0; got != want {
-		t.Fatalf("ordinary shadow deadline = %.0fms, want %.0fms", got, want)
-	}
-	if got, want := ttftDeadlineMsForPrompt(
-		modelpolicy.Qwen3VL30BA3BInstructModelID, promptTokens,
-	), 5_321.0; got != want {
-		t.Fatalf("Qwen3-VL shadow deadline = %.0fms, want %.0fms", got, want)
-	}
-	if got, want := ttftDeadlineMsForPrompt(
-		modelpolicy.Qwen3VL30BA3BInstructModelID+"-preview", promptTokens,
-	), 10_321.0; got != want {
-		t.Fatalf("lookalike shadow deadline = %.0fms, want %.0fms", got, want)
-	}
-	SetTTFTDeadlineBaseMs(3_000)
-	if got, want := ttftDeadlineMsForPrompt(
-		modelpolicy.Qwen3VL30BA3BInstructModelID, promptTokens,
-	), 3_321.0; got != want {
-		t.Fatalf("tight global shadow deadline = %.0fms, want %.0fms", got, want)
-	}
-}
-
-// TestTTFTOccupancyTermRateUsesOccupancyNotBackendRunning pins Fix C: in the herd
-// case (pendingForModel > backend_running) the occupancy term must project the
-// per-request decode rate at the batch the request ACTUALLY joins (occ), not the
-// stale heartbeat backend_running gauge. Charging the backend_running rate would
-// divide by an idle/low-batch rate and UNDER-state the term — the opposite of
-// intended — in exactly the case the term exists to measure.
-func TestTTFTOccupancyTermRateUsesOccupancyNotBackendRunning(t *testing.T) {
-	withTTFTConfig(t, 45, defaultTTFTDeadlineBaseMs, TTFTAdmissionOff)
-
-	// Heartbeat still reads backend_running=2, but the coordinator has already
-	// reserved 8 dispatched-not-terminal requests for this model (pendingForModel
-	// =8) → occ=8. The new request joins a batch of 8, not 2.
-	herd := routingSnapshot{
-		hasBackendCapacity: true,
-		slotState:          "running",
-		decodeTPS:          55,
-		prefillTPS:         660,
-		backendRunning:     2,
-		backendWaiting:     0,
-		pendingForModel:    8,
-	}
-	occ := snapshotOccupancy(snapPtr(herd))
-	if occ != 8 {
-		t.Fatalf("precondition: occ should be 8 (herd), got %d", occ)
-	}
-	got := ttftOccupancyMs(snapPtr(herd))
-
-	// Correct: rate projected at the batch the request joins (occ).
-	wantRate := projectedPerRequestDecodeTPSAtBatch(snapPtr(herd), occ)
-	want := 45 * float64(occ) * 1000.0 / wantRate
-	if math.Abs(got-want) > 1e-6 {
-		t.Fatalf("occupancy term must use occ for the rate: got %f want %f", got, want)
-	}
-
-	// The pre-fix rate (projected at the bare backend_running gauge) is FASTER, so
-	// the buggy term would be SMALLER. Assert the fix charges strictly more.
-	buggyRate := projectedPerRequestDecodeTPSAtBatch(snapPtr(herd), herd.backendRunning)
-	buggyTerm := 45 * float64(occ) * 1000.0 / buggyRate
-	if !(got > buggyTerm) {
-		t.Fatalf("herd term must exceed the backend_running-rate term: got %f buggy %f", got, buggyTerm)
-	}
-
-	// At an EQUAL heartbeat gauge, a larger pending burst (higher occ) must grow
-	// the term — both via the occ numerator AND the shrinking occ-projected rate.
-	lowBurst := herd
-	lowBurst.pendingForModel = 3 // occ = max(3, 2) = 3
-	if !(ttftOccupancyMs(snapPtr(herd)) > ttftOccupancyMs(snapPtr(lowBurst))) {
-		t.Fatalf("term must grow with pending burst at equal backend_running: occ8=%f occ3=%f",
-			ttftOccupancyMs(snapPtr(herd)), ttftOccupancyMs(snapPtr(lowBurst)))
-	}
-}
-
-func TestParseTTFTAdmissionMode(t *testing.T) {
-	cases := map[string]TTFTAdmissionMode{
-		"":        TTFTAdmissionOff,
-		"off":     TTFTAdmissionOff,
-		"garbage": TTFTAdmissionOff,
-		"shadow":  TTFTAdmissionShadow,
-		" SHADOW": TTFTAdmissionShadow,
-		"enforce": TTFTAdmissionEnforce,
-	}
-	for in, want := range cases {
-		if got := ParseTTFTAdmissionMode(in); got != want {
-			t.Errorf("ParseTTFTAdmissionMode(%q) = %v, want %v", in, got, want)
-		}
-	}
-}
-
 // TestTTFTAdmissionModeOffNoShadowEval confirms the default mode leaves the
 // RoutingDecision shadow fields untouched (behavior-neutral observability).
 func TestTTFTAdmissionModeOffNoShadowEval(t *testing.T) {
-	withTTFTConfig(t, 45, defaultTTFTDeadlineBaseMs, TTFTAdmissionOff)
+	withTTFTConfig(t, 45, routingcost.DefaultTTFTDeadlineBaseMs, TTFTAdmissionOff)
 	reg := New(testLogger())
 	model := "shadow-off-model"
 	makeSchedulerProvider(t, reg, "p1", model, 100)
@@ -231,7 +53,7 @@ func TestTTFTAdmissionModeOffNoShadowEval(t *testing.T) {
 // would_shed, yet the request is STILL served (the decision is unchanged). This
 // is the behavior-neutral guarantee of shadow mode.
 func TestTTFTShadowEvalWouldShedButStillServes(t *testing.T) {
-	withTTFTConfig(t, 45, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	withTTFTConfig(t, 45, routingcost.DefaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
 	reg := New(testLogger())
 	model := "shadow-shed-model"
 	p := makeSchedulerProvider(t, reg, "busy", model, 55)
@@ -259,7 +81,7 @@ func TestTTFTShadowEvalWouldShedButStillServes(t *testing.T) {
 // instantly-usable loaded-idle box for the same model was routable. Shadow flags
 // would_redirect_to_idle=true without changing the (herded) selection.
 func TestTTFTShadowEvalRedirectToIdle(t *testing.T) {
-	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	withTTFTConfig(t, 0, routingcost.DefaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
 	reg := New(testLogger())
 	model := "shadow-spread-model"
 
@@ -294,7 +116,7 @@ func TestTTFTShadowEvalRedirectToIdle(t *testing.T) {
 // TestTTFTShadowEvalNoRedirectWhenWinnerIdle confirms the spread signal is false
 // when the request already landed on an idle box (nothing better to spread to).
 func TestTTFTShadowEvalNoRedirectWhenWinnerIdle(t *testing.T) {
-	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	withTTFTConfig(t, 0, routingcost.DefaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
 	reg := New(testLogger())
 	model := "shadow-idle-winner-model"
 	makeSchedulerProvider(t, reg, "idle", model, 100)
@@ -338,7 +160,7 @@ func TestTTFTOccupancyAlphaDoesNotMoveLiveCeiling(t *testing.T) {
 	}
 
 	// Baseline: alpha=0, no shadow. The herded box passes the 5s live ceiling.
-	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionOff)
+	withTTFTConfig(t, 0, routingcost.DefaultTTFTDeadlineBaseMs, TTFTAdmissionOff)
 	regOff := New(testLogger())
 	pOff := mkHerded(regOff)
 	selOff, decOff := regOff.ReserveProviderEx(model, newReq())
@@ -374,7 +196,7 @@ func TestTTFTOccupancyAlphaDoesNotMoveLiveCeiling(t *testing.T) {
 // scheduler would have vision-rejected it), and the same fleet must count it for a
 // text request and count a vision-capable peer for the vision request.
 func TestLoadedIdleAlternativeHonorsVisionGate(t *testing.T) {
-	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	withTTFTConfig(t, 0, routingcost.DefaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
 	reg := New(testLogger())
 	model := "shadow-vision-gate-model"
 
@@ -423,7 +245,7 @@ func TestLoadedIdleAlternativeHonorsVisionGate(t *testing.T) {
 // prefer-owner) still counts the public peer, and an OWNED idle peer counts for the
 // prefer-owner request.
 func TestLoadedIdleAlternativeHonorsPreferOwnerPool(t *testing.T) {
-	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	withTTFTConfig(t, 0, routingcost.DefaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
 	reg := New(testLogger())
 	model := "shadow-prefer-owner-model"
 	const owner = "owner-account-1"
@@ -469,7 +291,7 @@ func TestLoadedIdleAlternativeHonorsPreferOwnerPool(t *testing.T) {
 // request with AllowedProviderSerials must not count an idle peer whose serial is
 // not in the allowlist, but must count one whose serial is.
 func TestLoadedIdleAlternativeHonorsAllowlist(t *testing.T) {
-	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	withTTFTConfig(t, 0, routingcost.DefaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
 	reg := New(testLogger())
 	model := "shadow-allowlist-model"
 
@@ -498,7 +320,7 @@ func TestLoadedIdleAlternativeHonorsAllowlist(t *testing.T) {
 // exclusion: an idle peer that the selector excluded (passed in excludeIDs) must
 // not be counted as a spread alternative.
 func TestLoadedIdleAlternativeHonorsExcludeIDs(t *testing.T) {
-	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	withTTFTConfig(t, 0, routingcost.DefaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
 	reg := New(testLogger())
 	model := "shadow-exclude-model"
 
@@ -526,7 +348,7 @@ func TestLoadedIdleAlternativeHonorsExcludeIDs(t *testing.T) {
 // the pool). Reusing scanCandidatesLocked means the shadow scan honors this
 // automatically. The plain-request contrast proves the peer is otherwise eligible.
 func TestLoadedIdleAlternativeHonorsAvoidVersionPool(t *testing.T) {
-	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	withTTFTConfig(t, 0, routingcost.DefaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
 	reg := New(testLogger())
 	model := "shadow-avoidversion-model"
 
@@ -565,7 +387,7 @@ func TestLoadedIdleAlternativeHonorsAvoidVersionPool(t *testing.T) {
 // idle peer below MinDecodeTPS (the selector drops it from the pool). The
 // plain-request contrast proves the peer is otherwise eligible.
 func TestLoadedIdleAlternativeHonorsMinDecodeTPS(t *testing.T) {
-	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	withTTFTConfig(t, 0, routingcost.DefaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
 	reg := New(testLogger())
 	model := "shadow-mindecode-model"
 
@@ -596,7 +418,7 @@ func TestLoadedIdleAlternativeHonorsMinDecodeTPS(t *testing.T) {
 // pending debit to the same winner. The second request must rescan and report
 // occupancy one.
 func TestConcurrentReservationShadowUsesCommitTimeOccupancy(t *testing.T) {
-	withTTFTConfig(t, 50, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	withTTFTConfig(t, 50, routingcost.DefaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
 	reg := New(testLogger())
 	model := "shadow-commit-occupancy"
 	p := planTestProvider(t, reg, "shadow-provider", model, 0)

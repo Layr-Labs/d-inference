@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-13 · commit `8bba9916a`
+> Last updated: 2026-09-14 · commit `3b4c75127`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -27,6 +27,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Warm-pool control loop, pressure and latest observations | `coordinator/registry/warmpool/` (`Controller`, `State`, `Snapshot`); live fleet/eligibility adapters in `coordinator/registry/warm_pool_fleet.go` and `coordinator/registry/warm_pool_eligibility.go` |
 | Provider socket writes, cancellation and watchdog | `coordinator/registry/providerwriter/` (`Writer`); current provider binding in `coordinator/registry/provider_writer.go`; handoff transaction in `handoff.go`, priority/serve in `run.go`, socket fragments in `frames.go` |
 | Identity fault histories and session migration | `coordinator/registry/faultstate/`; registry bindings in `coordinator/registry/fault_binding.go` and `coordinator/registry/fault_capacity.go` |
+| Routing latency and reservation | `coordinator/registry/routingcost/` owns shared calibration and startup tuning; `coordinator/registry/reservation.go`, `coordinator/registry/reservation_commit.go`, `coordinator/registry/routing_scan.go` retain live registry transactions; `coordinator/registry/candidate_cost.go` composes cost over the same snapshot. |
 | Queue storage and throughput | `coordinator/registry/requestqueue/`, `coordinator/registry/throughput/`; live provider state and reservation orchestration stay in `coordinator/registry/` |
 | Billing and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/` |
 | Provider inference, downloads, security, local serving | `provider-swift/Sources/ProviderCore/`; entrypoints in `provider-swift/Sources/darkbloom/` |

@@ -509,7 +509,7 @@ func main() {
 
 	// Routing: decode→prefill ratio fallback, used to estimate prefill TPS when a
 	// provider does not report a measured prefill_tps. Defaults to
-	// registry.defaultPrefillToDecodeRatio.
+	// routingcost.DefaultPrefillToDecodeRatio.
 	if v := os.Getenv("EIGENINFERENCE_PREFILL_DECODE_RATIO"); v != "" {
 		if ratio, err := strconv.ParseFloat(v, 64); err == nil && ratio > 0 {
 			registry.SetPrefillToDecodeRatio(ratio)
@@ -523,10 +523,10 @@ func main() {
 	// knobs are behavior-neutral at their defaults:
 	//
 	//   - EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA (float, default 0): coefficient of
-	//     the occupancy term added to the TTFT estimate (ttftMsFromSnapshot). 0
-	//     leaves the estimate — and therefore the routing cost's TTFTMs, the
-	//     candidate-loop ceiling, and the preflight bestTTFT — byte-for-byte the
-	//     pre-Phase-0 value. Reuses the occupancy the snapshot already tracks
+	//     the occupancy term in routingcost.Policy.OccupancyAwareTTFTMs. It
+	//     affects only the shadow estimate; the live cost's TTFTMs, candidate
+	//     ceiling, and preflight bestTTFT stay occupancy-free at every alpha.
+	//     Reuses the occupancy the snapshot already tracks
 	//     (max(pendingForModel, backend_running+backend_waiting)); herd-aware.
 	//   - EIGENINFERENCE_TTFT_DEADLINE_BASE_MS (float, default 10000): the
 	//     ordinary-model SLA base the shadow evaluator gates against. The

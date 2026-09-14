@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `a16c87ff2`
+> Last updated: 2026-09-14 · commit `701e707cc`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -71,6 +71,13 @@ in `coordinator/registry/admission/` and `coordinator/registry/providerversion/`
 Concurrent reservation, fleet preflight and routing simulations remain in the
 registry and `routingsim` packages. From the repository root,
 `GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/...` runs all of them.
+
+Private calibration, pending prediction expiry and pure latency cases live in
+`coordinator/registry/routingcost/`. The same command also runs the real
+preflight/reservation and cross-registry policy-binding fixtures retained at
+registry; `TestRoutingPolicySharedAcrossRegistryBindings` in
+`coordinator/registry/routing_policy_binding_test.go` verifies shared calibration
+and startup tuning through those public operations.
 
 Cache-attempt ownership tests in `coordinator/registry/cacheattempt/` verify
 receipt cleanup outside the preparation mutex and ticket-bound legacy metadata.

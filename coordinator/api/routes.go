@@ -128,6 +128,7 @@ func (s *Server) routes() {
 	// five-minute caches.
 	s.mux.HandleFunc("GET /v1/leaderboard", s.networkViews.Leaderboard)
 	s.mux.HandleFunc("GET /v1/network/totals", s.networkViews.Totals)
+	// Public time series uses a one-minute cache.
 	s.mux.HandleFunc("GET /v1/network/series", s.networkViews.Series)
 
 	// Provider version check — no auth needed. Providers call this to check for updates.

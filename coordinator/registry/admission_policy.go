@@ -63,11 +63,6 @@ func freeMemoryAdmits(snap *routingSnapshot, prompt, maxTokens int) bool {
 	view := admissionSnapshot(snap)
 	return admissionPolicy().FreeMemoryAdmits(&view, prompt, maxTokens)
 }
-func committedTokenBudget(snap *routingSnapshot) int64 {
-	view := admissionSnapshot(snap)
-	return admission.CommittedTokenBudget(&view)
-}
-
 func snapshotStructuralBudget(snap *routingSnapshot) (int64, bool) {
 	view := admissionSnapshot(snap)
 	return admissionPolicy().StructuralBudget(&view)

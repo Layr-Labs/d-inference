@@ -1,6 +1,6 @@
 # Model registry
 
-> Last updated: 2026-09-06 · commit `32b28b0a7`
+> Last updated: 2026-09-13 · commit `8670b2a08`
 
 How Darkbloom decides which model builds exist, which bytes are trusted, which
 providers may serve them, and what public name a consumer uses for them. The
@@ -93,7 +93,7 @@ and compares `Content-Length` to the manifest. Only after all of that does
 
 Every admin mutation (register, promote, status, capabilities,
 runtime-parameters, alias upsert/delete) and coordinator boot
-(`coordinator/cmd/coordinator/main.go`) ends by calling
+(`coordinator/cmd/coordinator/release_policy.go` (`configureReleasePolicy`)) ends by calling
 `coordinator/api/server.go` (`SyncModelCatalog`). It re-reads the active rows
 and installs two in-memory structures in the registry:
 

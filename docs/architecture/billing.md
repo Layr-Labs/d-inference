@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-13 · commit `38375bc12`
+> Last updated: 2026-09-13 · commit `8670b2a08`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -249,7 +249,7 @@ key (`coordinator/store/postgres.go` `KeySpendSince`) — see invariant 11.
 
 `coordinator/payments/baserewards/` pays eligible provider machines a
 per-epoch base income on top of organic earnings. It is wired in
-`coordinator/cmd/coordinator/main.go` only when `EIGENINFERENCE_BASE_REWARDS=true`
+`coordinator/cmd/coordinator/accounts.go` (`configureAccounts`) only when `EIGENINFERENCE_BASE_REWARDS=true`
 (default `false`, `coordinator/api/server_config.go`); the engine loop is
 `Engine.Run`. Per closed `SettlementPeriod = 5 * time.Minute` epoch
 (`epoch.go`), for each machine that passes every gate in

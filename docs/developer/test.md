@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `c3ff0df7e`
+> Last updated: 2026-09-13 · commit `8670b2a08`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -65,6 +65,25 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 ```
 
 ### 2. Coordinator (Go)
+
+The command's process fixture lives in
+`coordinator/cmd/coordinator/startup_process_test.go`
+(`TestCoordinatorStartupAndDrainProcess`). It launches the actual `main` in a
+child process with an isolated environment and temporary home: readiness,
+admin drain/undrain, liveness while draining, inference rejection and SIGTERM
+exit ordering. Separate child cases refuse missing durable-store configuration
+and an invalid APNs enforcement deadline before the public HTTP listener starts.
+The APNs case uses a generated local signing key and makes no Apple request.
+Existing parser and pprof tests live beside `provider_trust.go`,
+`routing_deadlines.go` and `profiling.go` in the command package.
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/cmd/coordinator ./coordinator/config
+```
+
+The PostgreSQL maintenance-process fixture still requires an isolated disposable
+database; it is skipped when its database environment is absent.
 
 Run prediction telemetry checks from the repository root:
 

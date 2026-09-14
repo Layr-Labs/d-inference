@@ -1,6 +1,6 @@
 # Roll out the release-policy routing gate (shadow → enforce)
 
-> Last updated: 2026-09-13 · commit `f913aeaef9`
+> Last updated: 2026-09-13 · commit `8670b2a08`
 
 Runbook for the two production changes that involve the coordinator's
 release-policy routing gate: (1) deploying a coordinator that contains the gate
@@ -15,7 +15,7 @@ gate-specific checks, acceptance criteria, and rollback lever.
 
 - First production deploy of any coordinator build that evaluates application
   evidence (the `EIGENINFERENCE_RELEASE_POLICY_MODE` switch in
-  `coordinator/cmd/coordinator/main.go`).
+  `coordinator/cmd/coordinator/release_policy.go` (`configureReleasePolicy`)).
 - Turning enforcement on after shadow coverage has been proven.
 - Turning enforcement back off (incident lever).
 
@@ -43,7 +43,7 @@ side ([`provider-release.md`](provider-release.md)).
 ### Background
 
 The gate has two modes, chosen at boot from `EIGENINFERENCE_RELEASE_POLICY_MODE`
-(`coordinator/cmd/coordinator/main.go`):
+(`coordinator/cmd/coordinator/release_policy.go` (`configureReleasePolicy`)):
 
 | Value | Behaviour | Startup log line |
 |---|---|---|

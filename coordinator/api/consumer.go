@@ -2415,26 +2415,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	d.run()
 }
 
-// createAPIKeyRequest is the POST /v1/keys (and rotate inherit) body. Money is
-// supplied in USD; the wire never sees the secret after the create response.
-type createAPIKeyRequest struct {
-	Name          string     `json:"name"`
-	LimitUSD      *float64   `json:"limit_usd"`
-	LimitReset    string     `json:"limit_reset"`
-	RPMLimit      *int64     `json:"rpm_limit"`
-	ITPMLimit     *int64     `json:"itpm_limit"`
-	OTPMLimit     *int64     `json:"otpm_limit"`
-	AllowedModels []string   `json:"allowed_models"`
-	SelfRouteOnly bool       `json:"self_route_only"`
-	ExpiresAt     *time.Time `json:"expires_at"`
-}
-
-// usdToMicro converts a USD dollar amount to micro-USD (rounded).
-func usdToMicro(usd float64) int64 { return int64(math.Round(usd * 1_000_000)) }
-
-// microToUSD converts micro-USD to a USD float.
-func microToUSD(micro int64) float64 { return float64(micro) / 1_000_000 }
-
 // handleHealth handles GET /health.
 // Returns the coordinator's status and the number of connected providers.
 // This endpoint does not require authentication.

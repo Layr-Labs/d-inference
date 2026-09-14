@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `c8a3f45d0`
+> Last updated: 2026-09-14 · commit `ea5ce6b16`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -84,6 +84,23 @@ check late service replacement/clearing through the registered HTTP routes and
 the exact linked-user identity response. `requestauth` is exercised through
 those API tests; it has no separate test file. These checks require no Stripe
 credentials or live payment calls.
+
+Catalog policy and projection tests live in `coordinator/api/catalog/`.
+Authenticated route, provider-notification and cache-publication tests remain in
+`coordinator/api/`. Run both owners from the repository root:
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api/catalog ./coordinator/api \
+  -run 'Test(Catalog|Model|Register|OpenRouter|ProviderCapability|HuggingFace|Publishing|StandardAlias|Alias|ListModels)'
+```
+
+The new route fixture in `coordinator/api/catalog_controller_test.go` replaces
+the publishing credential and memory store after mounting routes, then checks
+the actual mutation, routing publication and immediately refreshed marketplace and
+install views. The existing `TestCatalogSyncRejectsInflightCachePublication`
+keeps delayed fills from publishing into a newer cache generation. These cases
+use local stores and HTTP fixtures; they require no model or production access.
 
 Run prediction telemetry checks from the repository root:
 

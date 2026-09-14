@@ -1,6 +1,6 @@
 # Self-route: use your own machine through the coordinator
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-14 · commit `ea5ce6b16`
 
 Send your normal Darkbloom API requests to the provider your account owns —
 free, end-to-end, through the same `api.darkbloom.dev` endpoint and SDK
@@ -52,8 +52,8 @@ fleet traffic whose scheduler is told which machine may serve it.
    also works with a sealed private-text body.
 
 3. Discover what your machine serves with the same header. `GET /v1/models`
-   follows the resolved route mode (`coordinator/api/models_endpoints.go`,
-   `handleListModels`): with `self` (or a `self_route_only` key) it lists only
+   follows the resolved route mode (`coordinator/api/catalog/consumer_list.go`,
+   `ListModels`): with `self` (or a `self_route_only` key) it lists only
    models on your online owned machines; header-less and `prefer` requests see
    the public catalog.
 

@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-14 · commit `a53d6e937`
+> Last updated: 2026-09-14 · commit `ea5ce6b16`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -25,7 +25,7 @@ responses and error codes are unchanged.
 | `privy` | Bearer must be a Privy JWT. API keys → 403 `forbidden` | `requirePrivyAuth` |
 | `user` | `key` or `privy` plus an in-handler check that a resolved account user is in the context (Privy JWT, or an API key linked to a Privy account). Admin key and unlinked legacy keys → 401 `auth_error` | `RequirePrivyUser` (`coordinator/api/requestauth/identity.go`) |
 | `admin` | In-handler check: Bearer equals the admin key (`EIGENINFERENCE_ADMIN_KEY`), or the context holds a Privy user whose email is in the admin list. Otherwise 403 `forbidden`. When the route is registered *without* `requireAuth` no user is ever placed in the context, so only the admin key can pass; those rows say `admin-key` | `isAdminAuthorized` (`coordinator/api/release_handlers.go`), `requireAdminKey` (`coordinator/api/invite_handlers.go`), `isAdmin` (`coordinator/api/auth_identity.go`) |
-| `publishing` | `X-Darkbloom-Publishing-Key` header or Bearer equal to the bootstrap `MODEL_REGISTRY_PUBLISHING_KEY`, the admin key, or a publishing key stored in the DB | `requirePublishingAPIKey` (`coordinator/api/model_registry_handlers.go`) |
+| `publishing` | `X-Darkbloom-Publishing-Key` header or Bearer equal to the bootstrap `MODEL_REGISTRY_PUBLISHING_KEY`, the admin key, or a publishing key stored in the DB | `requirePublishingAPIKey` (`coordinator/api/catalog/publishing_auth.go`) |
 | `release` | Bearer equal to `EIGENINFERENCE_RELEASE_KEY`; otherwise 401 `unauthorized` | `handleRegisterRelease` (`coordinator/api/release_handlers.go`) |
 | `stripe-sig` | Stripe webhook signature | `StripeWebhook` (`coordinator/api/billing/checkout_webhook.go`), `StripeConnectWebhook` (`coordinator/api/billing/connect_webhook.go`) |
 | `mdm-secret` | Webhook secret via `X-Webhook-Token` header or `?token=`; body capped at [`maxMDMWebhookBodyBytes`](#limits-and-validation) | `HandleMDMWebhook` |
@@ -58,13 +58,13 @@ All four share the chain `drainGate → requireAuth → rateLimitConsumer → se
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
-| GET | `/v1/models` | `handleListModels` (`coordinator/api/models_endpoints.go`) | `key` | — | `ModelListResponse`: public aliases plus un-aliased builds (`?include_builds=1` also lists hidden builds). With `X-Darkbloom-Route: self` or a `self_route_only` key it returns the account's own machines' models filtered by the key's `allowed_models`. Field reference in [`../consumer/models.md`](../consumer/models.md) |
-| GET | `/v1/models/openrouter` | `handleListModelsOpenRouter` (`coordinator/api/openrouter_endpoint.go`) | `key` | — | `OpenRouterModelsResponse` projection |
-| GET | `/v1/models/{id...}` | `handleGetModel` (`coordinator/api/models_endpoints.go`) | `key` | — | One `ModelEntry`; 404 `model_not_found` when neither a build id nor an alias matches |
+| GET | `/v1/models` | `ListModels` (`coordinator/api/catalog/consumer_list.go`) | `key` | — | `ModelListResponse`: public aliases plus un-aliased builds (`?include_builds=1` also lists hidden builds). With `X-Darkbloom-Route: self` or a `self_route_only` key it returns the account's own machines' models filtered by the key's `allowed_models`. Field reference in [`../consumer/models.md`](../consumer/models.md) |
+| GET | `/v1/models/openrouter` | `ListOpenRouterModels` (`coordinator/api/catalog/marketplace_feed.go`) | `key` | — | `OpenRouterModelsResponse` projection |
+| GET | `/v1/models/{id...}` | `GetModel` (`coordinator/api/catalog/consumer_get.go`) | `key` | — | One `ModelEntry`; 404 `model_not_found` when neither a build id nor an alias matches |
 | GET | `/v1/models/capacity` | `handleModelsCapacity` (`coordinator/api/capacity.go`) | `—` | — | Per-model provider capacity, cached 2 s |
-| GET | `/v1/models/catalog` | `handleModelCatalog` (`coordinator/api/model_catalog_list.go`) | `—` | — | Registry catalog; `?type=` selects the catalog kind, unknown → 400 |
-| GET | `/v1/models/catalog/manifest/` | `handleModelCatalogManifest` (`coordinator/api/model_registry_handlers.go`) | `—` | — | Per-model manifest by path suffix |
-| GET | `/v1/models/catalog/` | `handleModelCatalogItem` (`coordinator/api/model_registry_handlers.go`) | `—` | — | Single catalog item by path suffix |
+| GET | `/v1/models/catalog` | `ListInstallCatalog` (`coordinator/api/catalog/install_list.go`) | `—` | — | Registry catalog; `?type=` selects the catalog kind, unknown → 400 |
+| GET | `/v1/models/catalog/manifest/` | `GetInstallManifest` (`coordinator/api/catalog/install_get.go`) | `—` | — | Per-model manifest by path suffix |
+| GET | `/v1/models/catalog/` | `GetInstallModel` (`coordinator/api/catalog/install_get.go`) | `—` | — | Single catalog item by path suffix |
 | GET | `/v1/runtime/manifest` | `handleRuntimeManifest` | `—` | — | Hashes the coordinator accepts from provider runtimes: `{"configured":false}` or `{"configured":true,"python_hashes":{…},"runtime_hashes":{…},"template_hashes":{"<name>":[<sorted hashes accepted across active releases>]}}`; cached 1 min ([runtime manifest](../architecture/security/attestation.md#runtime-manifest)) |
 | GET | `/v1/cache/status` | `handleExactCacheStatus` (`coordinator/api/exact_cache_status.go`) | `—` | — | Exact-cache status, cached for [`exactCacheStatusCacheTTL`](#timeouts-and-constants) |
 
@@ -212,12 +212,12 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | PUT | `/v1/admin/pricing` | `AdminPricing` (`coordinator/api/billing/pricing.go`) | `admin` | Platform default price table |
 | PUT | `/v1/admin/users/role` | `AdminSetUserRole` (`coordinator/api/billing/account_policy.go`) | `admin` | Role selects the consumer or service limiter |
 | PUT | `/v1/admin/users/platform-fee` | `AdminSetUserPlatformFee` (`coordinator/api/billing/account_policy.go`) | `admin` | Per-user fee override; fee policy in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants) |
-| POST | `/v1/admin/models/register` | `handleRegisterModel` (`coordinator/api/model_registry_handlers.go`) | `publishing` | Publish a model build |
-| POST | `/v1/admin/models/` | `handleAdminModelRegistryAction` (`coordinator/api/model_registry_handlers.go`) | `publishing` | Registry actions selected by path suffix |
-| GET / POST | `/v1/admin/models/aliases` | `handleModelAliasList`, `handleModelAliasUpsert` (`coordinator/api/model_alias_handlers.go`) | `publishing` | Two registrations; upserts fan out `desired_models` (see [Version gating](#version-gating)) |
-| DELETE | `/v1/admin/models/aliases/{aliasID}` | `handleModelAliasDelete` (`coordinator/api/model_alias_handlers.go`) | `publishing` | |
-| GET / POST | `/v1/admin/models/openrouter-aliases` | `handleOpenRouterAliasList`, `handleOpenRouterAliasUpsert` (`coordinator/api/openrouter_alias_handlers.go`) | `publishing` | Two registrations |
-| DELETE | `/v1/admin/models/openrouter-aliases/{aliasID}` | `handleOpenRouterAliasDelete` (`coordinator/api/openrouter_alias_handlers.go`) | `publishing` | |
+| POST | `/v1/admin/models/register` | `RegisterModel` (`coordinator/api/catalog/register_model.go`) | `publishing` | Publish a model build |
+| POST | `/v1/admin/models/` | `AdminModelAction` (`coordinator/api/catalog/registry_action.go`) | `publishing` | Registry actions selected by path suffix |
+| GET / POST | `/v1/admin/models/aliases` | `ListAliases`, `UpsertAlias` (`coordinator/api/catalog/aliases.go`) | `publishing` | Two registrations; upserts fan out `desired_models` (see [Version gating](#version-gating)) |
+| DELETE | `/v1/admin/models/aliases/{aliasID}` | `DeleteAlias` (`coordinator/api/catalog/aliases.go`) | `publishing` | |
+| GET / POST | `/v1/admin/models/openrouter-aliases` | `ListOpenRouterAliases`, `UpsertOpenRouterAlias` (`coordinator/api/catalog/marketplace_aliases.go`) | `publishing` | Two registrations |
+| DELETE | `/v1/admin/models/openrouter-aliases/{aliasID}` | `DeleteOpenRouterAlias` (`coordinator/api/catalog/marketplace_aliases.go`) | `publishing` | |
 | GET / DELETE | `/v1/admin/releases` | `handleAdminListReleases`, `handleAdminDeleteRelease` (`coordinator/api/release_handlers.go`) | `admin-key` | Two registrations |
 | GET | `/v1/admin/state-export` | `handleAdminStateExport` (`coordinator/api/admin_state_export.go`) | `admin-key` | 404 unless `EIGENINFERENCE_STATE_EXPORT_ENABLED=true`; 412 `precondition_failed` without an encryption recipient. See [`../operations/state-export.md`](../operations/state-export.md) |
 | POST | `/v1/admin/auth/init` | `handleAdminAuthInit` (`coordinator/api/release_handlers.go`) | `—` | Body `{"email"}`; starts a Privy email OTP for an admin email. 503 `not_configured` when Privy is not configured; 500 `otp_error` when sending fails |
@@ -503,7 +503,7 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 Three distinct version values govern providers:
 
 - `LatestProviderVersion = "0.8.16"` (`coordinator/api/server.go`) is the newest provider build the coordinator knows about. `handleVersion` (`/api/version`) and `/v1/me/summary` report the highest active release in the store and fall back to this constant when none is registered.
-- `minProviderVersionForDesiredModels = "0.5.17"` (`coordinator/api/server.go`) is a **feature floor for the WebSocket `desired_models` message**: only Swift-runtime providers at or above it receive the message (`providerSupportsDesiredModels`, `fanOutDesiredModels` in `coordinator/api/model_alias_handlers.go`), because older decoders disconnect on unknown message types. It does not affect HTTP routes.
+- `minProviderVersionForDesiredModels = "0.5.17"` (`coordinator/api/server.go`) is a **feature floor for the WebSocket `desired_models` message**: only Swift-runtime providers at or above it receive the message (`providerSupportsDesiredModels`, `fanOutDesiredModels` in `coordinator/api/desired_models.go`), because older decoders disconnect on unknown message types. It does not affect HTTP routes.
 - `EIGENINFERENCE_MIN_PROVIDER_VERSION` (`MinProviderVersion`, `coordinator/api/server_config.go`; `SetMinProviderVersion`) is the **routing floor**: a provider that registers or re-attests below it stays connected but is marked not runtime-verified and excluded from routing (`coordinator/api/provider.go`, registration and `applyChallengeMinVersionPolicy`), and its log uploads get 426 `upgrade_required`.
 - **Feature floors** exclude too-old providers from serving specific request traits rather than the whole model: tools require providers ≥ `0.6.3` (`capabilityVersionFloors`, `coordinator/registry/request_traits.go`); vision requests strip repetition-penalty fields for providers below `penaltySafeProviderVersion` = `0.6.7` (`coordinator/api/consumer.go`); reconnect attestation needs `minProviderVersionForReconnectAttestation` = `0.8.15` (`coordinator/api/provider.go`); servability gating uses `servabilityActivationFloorMinVersion` = `0.8.0` and `servabilityPerModelFloorMinVersion` = `0.8.16` (`coordinator/registry/servability.go`); private slot grants need `privateSlotGrantsMinVersion` = `0.7.5` (`coordinator/registry/pooled_admission.go`). When no provider clears the floor for a request, the client sees 503 `model_unavailable` (or 400 `param: tool_choice` when the fleet serves the model but no provider advertises the tool-constraint protocol).
 
@@ -554,7 +554,7 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | SSE, timing and provider metadata | `coordinator/api/sse_response.go`, `coordinator/api/chat_metadata_stream.go`, `coordinator/api/response_metadata.go`, `coordinator/api/profiler_dispatch.go` |
 | Tools, media, constraints | `coordinator/api/toolschema.go`, `coordinator/api/tool_constraints.go`, `coordinator/api/media_resolve.go` |
 | Sealed transport | `coordinator/api/sender_encryption.go` |
-| Models and catalog | `coordinator/api/models_endpoints.go`, `coordinator/api/concrete_model_entries.go`, `coordinator/api/openrouter_endpoint.go`, `coordinator/api/model_registry_handlers.go`, `coordinator/api/model_alias_handlers.go`, `coordinator/api/openrouter_alias_handlers.go`, `coordinator/api/capacity.go`, `coordinator/api/exact_cache_status.go` |
+| Models and catalog | `coordinator/api/catalog/` (`Controller`); `coordinator/api/catalog_controller.go` (`catalogController`); `coordinator/api/desired_models.go` (runtime notifications); `coordinator/api/capacity.go`, `coordinator/api/exact_cache_status.go` (separate live status endpoints) |
 | Keys, device code, accounts | `coordinator/api/apikey_handlers.go`, `coordinator/store/apikey.go`, `coordinator/api/device_auth.go`, `coordinator/api/me_handlers.go` |
 | Billing, Stripe, referral, invites | `coordinator/api/billing/` (`Controller`); `coordinator/api/billing_controller.go` (`billingController`); `coordinator/api/requestauth/identity.go` (`RequirePrivyUser`); `coordinator/api/invite_handlers.go` |
 | Stats | `coordinator/api/stats.go`, `coordinator/api/cache_refresher.go`, `coordinator/api/readcache/`, `coordinator/api/network_totals.go`, `coordinator/api/leaderboard.go`, `coordinator/api/network_series.go` |

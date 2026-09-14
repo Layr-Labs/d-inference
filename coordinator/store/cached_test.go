@@ -489,7 +489,7 @@ func TestCachedStoreReturnsRecordCopies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Exactly what api/model_registry_handlers.go does before an upsert, plus
+	// Exactly what api/catalog/registry_action.go does before an upsert, plus
 	// every other reference-typed field.
 	r1.RuntimeParameters["reasoning_parser"] = "tampered"
 	r1.RuntimeParameters["nested"].(map[string]any)["k"].([]any)[0] = "tampered"

@@ -5,6 +5,15 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
+The public qualify phase is now wired through a durable actor-owned journal:
+intent -> exact capacity reservation -> clone/start -> identity/native checks ->
+delete/release -> guarded publication/readback. Recovery cleans up and aborts,
+or verifies an already-published exact receipt without re-running native work.
+Full suite660tests/7skips/0failures,148.349s; focused19tests,3CLI smoke checks and
+286docs pass. Signed release packaging is next; the new full workflow has not
+run on a real restored VM. Older notes saying the owner is unwired are historical.
+Prior native sourcecf4dad33a passes CI34854400942 and integration34854400631.
+
 Newest work implements the signed guest qualify-tenant probe, one-use native
 qualification sequence and lock-retaining readiness-publication callback. Full
 suite651tests/7skips/0failures,156.059s; focused8tests and CLI host-denial smoke pass.
@@ -2469,3 +2478,91 @@ fresh restore/GUIboot/real collection, new signed-guest qualification, two-VM
 coordinator acceptance, login/logout recovery, build tools/performance and final
 packaging remain unchanged. Storage approval remains pending; no cache/model,
 fixture, service/group or production mutation occurred in this code segment.
+
+
+## 2026-09-14 — Public durable qualification owner and recovery
+
+Previous goal turn: progress (native engine and guarded publication). This turn:
+progress (qualify CLI, durable owner, recovery and integration tests). Goal remains
+active; complete real factory, two-VM acceptance and release gates remain open.
+
+Implemented public ninth phase prepare-accountless-base qualify with existing
+common host/name/storage flags plus --permit-file,--collection-file,--guest-release,
+--capacity-dir,--qualification-dir. It requires the actual selected GUI/audit
+session, protected root inputs, encrypted storage, machineEX, production runtime
+identity and an existing capacity store. The private attempt directory is separate
+from VM/capacity/release namespaces, and its parent must exist. It never starts
+serve or widens the host's capacity policy.
+
+AccountlessQualificationOwner confines the journal to an actor and wires the
+actual SDK: verify/complete installed checkpoint, reserve, create qualification
+capability/clone, start, observe identities, run native checks/cold boot, delete
+and release, then withVerifiedQualificationReceipt. Its callback saves the exact
+ready record before BaseGuestTemplateStore publication; the published marker and
+qualified report follow SDK readback. Cancellation/failure awaits detached cleanup.
+The configured lease limit is used (default300seconds), not an invented30minutes.
+The integration test caught the initial1800second/default300 mismatch and fixed
+it without widening policy.
+
+Journal records intent before allocation, then lease, clone identity, boot/marker
+checks, ready record and publication. Terminal markers are canonical JSON bound
+to the intent and ready digest. Checks bind the exact shared marker payload for
+the qualification/clone IDs. Existing attempts never allocate or run checks again.
+Recovery first resolves/releases only the original resource identity; a crash
+between reserve and lease journaling can backfill from exactly one matching
+capacity row. Name/ID/generation/resources/expiry changes and ambiguous rows fail.
+Expiry fencing may advance the token while retaining issuedAt. Unknown same-name
+files/directories are preserved and capacity stays reserved.
+
+Guest release hashing/signature validation is deferred for existing journals so
+cleanup does not require a missing old guest package; fresh work/publication still
+validate it. Runtime SHA must match the permit before any fresh/recovery action.
+Low disk space does not block recovery with fresh-work host admission. An existing
+matching ready source may be reverified with verifyPublishedQualification under
+fresh source/machine guards, exact root installation/disk/boot claim/runtime and
+normal guest-ready validation. Missing ready files are never recreated from saved
+flags. Other recovered attempts report qualificationAborted and exit75; installed
+status is omitted/unverified instead of falsely reporting the base uninstalled.
+Use a new private attempt directory for another native sequence.
+
+Validation /private/tmp/darkbloom-sandbox-completion-evidence:
+-qualification-owner-build.log:first compile missed qualify in the root-phase
+ exhaustive switch; fixed. qualification-owner-build-v2.log builds.
+-qualification-owner-tests.log:11pass (journal/options/source replay).
+-qualification-owner-integration-tests.log:3fixture failures from noncanonical
+ installation receipt hash in synthetic root collection; fixture normalized to
+ the actual root journal encoding. No production validator was relaxed.
+-qualification-owner-integration-v2-tests.log:2failures exposed default capacity
+ lease limit300 vs proposed1800; owner/journal now use current policy/default300.
+-qualification-owner-integration-v3-tests.log:14pass.
+-qualification-owner-completed-replay-tests.log:19pass, including actual owner
+ recovery with real capacity/ownership files and a bounded native subprocess.
+ Allocation before lease journaling is recovered without a guest package; unknown
+ directory data and allocation remain. Synthetic saved checks/ready record do not
+ publish a missing template; an exact preexisting ready file is read back without
+ changing it. These synthetic historical records are NOT native/VM evidence.
+-qualification-owner-full-tests.log:660tests/7skips/0failures,148.349s; process0.
+-qualification-owner-cli-smoke.json:actual debug help lists qualify; missing
+ capacity and runtime override return64 before operation IO. No real VM.
+-qualification-owner-docs.log:286filespass; git diff --check clean. Build/test/
+ acceptance docs stamped and operator/release references updated.
+SDK tests now have a test-only daemon dependency to share native/capacity fixtures
+for owner integration. No production module dependency cycle or fixture shipping.
+
+Current worktree next action: commit/push this clean tested implementation, build
+new signed host+guest package with runtime13 and NO guest reuse (new probe needed),
+verify signatures/entitlements/inventory and stage for authorized test Mac. The
+packaging-notarization skill was read; distribution goal is a signed physical-test
+package. Eigen Labs Developer ID identity is available locally. No sandbox-specific
+provisioning profile was found in task artifacts; omit profile for this test
+package and retain persistent-keychain/notarization as explicit release gates.
+Local runtime13 exact hashes rechecked: lume53ec2a7073c67c5f0bc712ba1a3d59e0205edfd5c91fb8e156208c430e0389e4;
+provenance7a67269640df0daa6643e016584ccad721556b319ddfcfab3d29192165958f03.
+
+Physical fresh restore/stage/boot/collect/qualify, failed-base discard workflow,
+actual GUI service logout/login, full two-VM coordinator acceptance, build tools,
+performance/stress timeout resolution and final release validation remain required.
+Test-Mac storage is still below the300GiB proof floor; Go-cache approval is pending.
+No cache/model/old-VM deletion, service/group/authority or production mutation
+occurred in this code segment. Native profile13 remains unbooted; current physical
+guest evidence is still the older exercise14/coldboot15 diagnostic image.

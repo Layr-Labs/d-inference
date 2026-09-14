@@ -169,12 +169,13 @@ requirements are in `RELEASE_VALIDATION.md`.
 
 ## Accountless operator commands
 
-`darkbloom-sandboxd prepare-accountless-base` exposes eight explicit phases. Every
+`darkbloom-sandboxd prepare-accountless-base` exposes nine explicit phases. Every
 phase requires `--storage DIR --name NAME --host-id UUID --host-identity-file FILE`.
 The identity file is the protected selected-user binding from host preparation.
-`--json` returns the observed phase and candidate/attempt IDs. Only
-`publish-installed` returns `installed: true`; all phases return `qualified: false`.
-An installed image still requires native qualification before ordinary cloning.
+`--json` returns the observed phase and candidate/attempt IDs. `publish-installed`
+returns `installed: true`; successful `qualify` additionally returns `qualified: true`.
+An aborted qualification omits unverified installation status and exits75 after
+its structured report. An installed image requires qualification before ordinary cloning.
 
 | Phase | Execution context | Additional options | Completed result |
 |---|---|---|---|
@@ -186,6 +187,7 @@ An installed image still requires native qualification before ordinary cloning.
 | `collect` | Root | `--permit-file FILE --boot-journal-dir DIR --collection-dir DIR --collection-file FILE` | Complete guest receipt, verified installed payload, temporary material removed, detached/stopped proof, immutable root collection record |
 | `abort-collection` | Root | `--permit-file FILE --boot-journal-dir DIR --collection-dir DIR` | Settle owned attachments and close collection without an installation claim |
 | `publish-installed` | Selected user's actual GUI/audit session | `--permit-file FILE --collection-file FILE --guest-release DIR` | Validated private installed checkpoint; `installedAwaitingQualification` |
+| `qualify` | Selected user's actual GUI/audit session | `--permit-file FILE --collection-file FILE --guest-release DIR --capacity-dir DIR --qualification-dir DIR` | Native clone checks, cold boot, durable cleanup and verified ready publication; interrupted attempts clean up and abort |
 
 `reserve` verifies the selected identity, actual GUI session, eligible host,
 encrypted APFS storage and exclusive machine ownership. It uses raw Apple restore
@@ -277,6 +279,37 @@ pinned production runtime, consumed boot claim, signed guest release and final
 disk snapshot before publishing private installed evidence. It never boots the
 base or publishes template readiness.
 
+`qualify` requires an existing capacity store in `sandbox_dedicated` mode and a
+private attempt directory whose parent exists. The attempt directory must be
+separate from VM storage, capacity state and release files. The broker must have
+released machine ownership before this GUI command can acquire exclusive access.
+Its journal commits intent before allocation and binds the root permit/collection,
+runtime, guest package, capacity directory, fresh sandbox/qualification IDs and
+expiry. The lease uses the store's configured maximum duration (300s by default)
+and consumes ordinary reserved CPU, memory and disk growth. The command verifies
+or completes the installed checkpoint, creates the qualification clone, starts
+it, records actual clone/material identity, runs native checks and a cold boot,
+then performs normal owned deletion and durable capacity release.
+
+The owner saves the exact ready record inside the SDK's guarded publication
+callback, publishes the source template, and reports `templateQualified` only
+after SDK readback succeeds. The journal and callback are confined to one actor;
+cancellation waits for detached cleanup. Failure preserves uncertain resources.
+No service is started and no host capacity policy is widened by this command.
+
+Repeating the same directory never allocates or runs native checks again. It
+resolves a reservation lost between allocation and journal publication only by
+the original sandbox ID, generation, name, resources and expiry. Expiry fencing
+may advance its token; a different or ambiguous allocation is rejected. Unknown
+same-name files/directories are preserved and capacity remains reserved. Recovery
+does not require the guest package to remain readable merely to stop/delete the
+clone, and does not apply fresh-work disk admission. Runtime identity must still
+match the protected permit. After cleanup, a matching already-published ready
+record is independently verified against the root installation, boot claim,
+current guest release and unchanged stopped source. Recovery never creates a
+missing ready file from saved success flags. Otherwise it returns
+`qualificationAborted` with exit75; use a new directory for another attempt.
+
 ## Installed-candidate validation
 
 `LumeInstalledCandidateCheckpoint` defines immutable host evidence for the next
@@ -349,9 +382,9 @@ removal, expiration or VM absence alone cannot prove cleanup. This read-only
 operation returns matching cleanup evidence and never publishes readiness.
 
 The observation belongs to its issuing runtime and cannot be recovered by
-decoding a journal. A future durable qualification owner must define interrupted
-attempt recovery and preserve original clone identity; it must not manufacture
-an observation or promote saved success booleans after a process restart.
+decoding a journal. `AccountlessQualificationOwner` cleans up and aborts an
+interrupted attempt, preserving original identity; it never manufactures an
+observation or promotes saved success booleans after a process restart.
 
 `runNativeQualification` runs the native check sequence only for that runtime's
 live managed VM owner, private endpoint and matching material instance. A
@@ -379,8 +412,8 @@ publication callback while explicitly retaining the result, source lock and
 machine authority. It then reads back the exact receipt, applies ordinary clone
 readiness validation, and rechecks source ownership, stopped resources, disk
 snapshot and deleted clone. It exposes no ready receipt to publish after releasing
-those guards. The durable attempt journal and public qualification command still
-need integration, and this sequence requires fresh real-VM acceptance. Existing
+those guards. The durable journal and `qualify` command integrate this sequence,
+which still requires fresh real-VM acceptance. Existing
 guest bundles lack the new probe: rebuild/sign the guest release and prepare a
 matching base before running it.
 

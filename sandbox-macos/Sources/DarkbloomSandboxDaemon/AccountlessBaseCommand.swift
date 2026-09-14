@@ -15,6 +15,7 @@ enum AccountlessBaseCommand {
         case .collect: report = try await AccountlessCollectCommand.run(options, aborting: false)
         case .abortCollection: report = try await AccountlessCollectCommand.run(options, aborting: true)
         case .publishInstalled: report = try await AccountlessPublishInstalledCommand.run(options)
+        case .qualify: report = try await AccountlessQualificationCommand.run(options)
         }
         if options.json {
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -26,8 +27,9 @@ enum AccountlessBaseCommand {
             if let path = report.journalPath { print("Journal: \(path)") }
             if let path = report.permitPath { print("Boot permit: \(path)") }
             if let path = report.collectionPath { print("Collection: \(path)") }
-            print("Installed: \(report.installed); qualified: false")
+            print("Installed: \(report.installed.map(String.init) ?? "unverified"); qualified: \(report.qualified)")
         }
+        if report.phase == .qualificationAborted { throw DaemonCLIError.qualificationIncomplete }
     }
 }
 
@@ -35,6 +37,7 @@ struct AccountlessBasePhaseReport: Encodable, Sendable {
     enum Phase: String, Encodable, Sendable {
         case awaitingRootInstallation, payloadPrepared, payloadStaged, installerBootAuthorized, installerBootStopped, installerAttemptRecovered
         case installationCollected, collectionAborted, installedAwaitingQualification
+        case templateQualified, qualificationAborted
     }
     let phase: Phase
     let name: String
@@ -48,18 +51,20 @@ struct AccountlessBasePhaseReport: Encodable, Sendable {
     let observedRunning: Bool?
     let sourceStopped: Bool?
     let collectionPath: String?
-    let installed: Bool
-    let qualified = false
+    let installed: Bool?
+    let qualified: Bool
+    let qualificationID: UUID?
 
     init(phase: Phase, candidate: AccountlessBaseCandidateRecord, payloadPath: String? = nil,
          journalPath: String? = nil, replayed: Bool = false, permitPath: String? = nil,
          nativeExitCode: Int32? = nil, observedRunning: Bool? = nil, sourceStopped: Bool? = nil,
-         collectionPath: String? = nil, installed: Bool = false) {
+         collectionPath: String? = nil, installed: Bool? = false, qualified: Bool = false, qualificationID: UUID? = nil) {
         self.phase = phase; name = candidate.source.name; candidateID = candidate.candidateID
         bootstrapAttemptID = candidate.bootstrapAttemptID; self.payloadPath = payloadPath
         self.journalPath = journalPath; self.replayed = replayed
         self.permitPath = permitPath; self.nativeExitCode = nativeExitCode
         self.observedRunning = observedRunning; self.sourceStopped = sourceStopped
         self.collectionPath = collectionPath; self.installed = installed
+        self.qualified = qualified; self.qualificationID = qualificationID
     }
 }

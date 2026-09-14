@@ -6,6 +6,7 @@ struct AccountlessBaseOptions: Sendable {
     enum Phase: String, Sendable {
         case reserve, payload, stage, authorizeBoot = "authorize-boot", boot, collect
         case abortCollection = "abort-collection", publishInstalled = "publish-installed"
+        case qualify
     }
     let phase: Phase
     let storage: URL
@@ -73,6 +74,7 @@ struct AccountlessBaseOptions: Sendable {
         .collect: ["--permit-file", "--boot-journal-dir", "--collection-dir", "--collection-file"],
         .abortCollection: ["--permit-file", "--boot-journal-dir", "--collection-dir"],
         .publishInstalled: ["--permit-file", "--collection-file", "--guest-release"],
+        .qualify: ["--permit-file", "--collection-file", "--guest-release", "--capacity-dir", "--qualification-dir"],
     ]
     private static let required: [Phase: Set<String>] = [
         .reserve: ["--lume", "--ipsw", "--guest-release"],
@@ -83,10 +85,12 @@ struct AccountlessBaseOptions: Sendable {
         .collect: ["--permit-file", "--boot-journal-dir", "--collection-dir", "--collection-file"],
         .abortCollection: ["--permit-file", "--boot-journal-dir", "--collection-dir"],
         .publishInstalled: ["--permit-file", "--collection-file", "--guest-release"],
+        .qualify: ["--permit-file", "--collection-file", "--guest-release", "--capacity-dir", "--qualification-dir"],
     ]
     private static let pathOptions: Set<String> = [
         "--storage", "--host-identity-file", "--lume", "--ipsw", "--guest-release", "--output", "--payload", "--journal-dir",
         "--boot-journal-dir", "--permit-file",
         "--collection-dir", "--collection-file",
+        "--capacity-dir", "--qualification-dir",
     ]
 }

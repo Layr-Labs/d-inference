@@ -8,7 +8,7 @@ enum AccountlessBaseRootCommand {
     static func run(_ options: AccountlessBaseOptions) async throws -> AccountlessBasePhaseReport {
         let input = try AccountlessBaseRootInput(options)
         switch options.phase {
-        case .reserve, .authorizeBoot, .boot, .collect, .abortCollection, .publishInstalled:
+        case .reserve, .authorizeBoot, .boot, .collect, .abortCollection, .publishInstalled, .qualify:
             throw DaemonCLIError.invalidArguments("prepare-accountless-base")
         case .payload:
             let output = try options.path("--output")

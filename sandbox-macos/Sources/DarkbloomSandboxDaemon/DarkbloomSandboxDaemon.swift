@@ -131,8 +131,10 @@ enum DarkbloomSandboxDaemon {
                 collect: --permit-file FILE --boot-journal-dir DIR --collection-dir DIR --collection-file FILE
                 abort-collection: --permit-file FILE --boot-journal-dir DIR --collection-dir DIR
                 publish-installed: --permit-file FILE --collection-file FILE --guest-release DIR
-                Reserve, boot and publish-installed run in the selected GUI session; other phases require root.
-                Only publish-installed publishes an installed checkpoint. Qualification remains separate.
+                qualify: --permit-file FILE --collection-file FILE --guest-release DIR --capacity-dir DIR --qualification-dir DIR
+                Reserve, boot, publish-installed and qualify run in the selected GUI session; other phases require root.
+                Qualify uses an existing dedicated-host capacity store and one private journal per attempt.
+                Repeating an incomplete qualification cleans up and aborts; use a new journal for a fresh attempt.
               darkbloom-sandboxd reconcile-expired --lume PATH --storage DIR
                 --capacity-dir DIR --max-cpu N --max-memory-gib N
                 [--max-growth-gib N] [--storage-headroom-gib N] [--json]
@@ -160,6 +162,7 @@ enum DaemonCLIError: Error, CustomStringConvertible {
     case invalidArguments(String)
     case hostIneligible
     case reconciliationIncomplete
+    case qualificationIncomplete
     case outputEncoding
 
     var exitCode: Int32 {
@@ -168,7 +171,7 @@ enum DaemonCLIError: Error, CustomStringConvertible {
             64
         case .hostIneligible:
             78
-        case .reconciliationIncomplete:
+        case .reconciliationIncomplete, .qualificationIncomplete:
             75
         case .outputEncoding:
             70
@@ -187,6 +190,8 @@ enum DaemonCLIError: Error, CustomStringConvertible {
             return "host is not eligible for macOS sandbox workloads"
         case .reconciliationIncomplete:
             return "one or more expired leases remain fenced for reconciliation"
+        case .qualificationIncomplete:
+            return "interrupted qualification was cleaned up; use a new --qualification-dir for a fresh attempt"
         case .outputEncoding:
             return "failed to encode command output"
         }

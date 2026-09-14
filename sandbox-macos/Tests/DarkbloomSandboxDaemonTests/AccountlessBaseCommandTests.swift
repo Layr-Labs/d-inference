@@ -42,6 +42,8 @@ final class AccountlessBaseCommandTests: XCTestCase {
             + ["--collection-file", "/root-plan/collection.json"]).phase, .collect)
         XCTAssertEqual(try AccountlessBaseOptions(["abort-collection"] + common + collection).phase, .abortCollection)
         XCTAssertEqual(try AccountlessBaseOptions(["publish-installed"] + common + publication).phase, .publishInstalled)
+        XCTAssertEqual(try AccountlessBaseOptions(["qualify"] + common + publication
+            + ["--capacity-dir", "/operator/capacity", "--qualification-dir", "/operator/qualification"]).phase, .qualify)
         for args in [["reserve"] + common + reserve + ["--journal-dir", "/operator/journal"],
                      ["stage"] + common + stage + ["--ipsw", "/image"],
                      ["payload"] + common + payload + ["--lume", "/runtime/lume"],
@@ -52,6 +54,8 @@ final class AccountlessBaseCommandTests: XCTestCase {
                      ["abort-collection"] + common + collection + ["--collection-file", "/root-plan/collection.json"],
                      ["publish-installed"] + common + publication + ["--lume", "/other-runtime"],
                      ["publish-installed"] + common + publication + ["--collection-dir", "/operator/collection"],
+                     ["qualify"] + common + publication,
+                     ["qualify"] + common + publication + ["--capacity-dir", "/operator/capacity", "--qualification-dir", "/operator/qualification", "--lume", "/other"],
                      ["boot"] + common, ["stage"] + common] {
             XCTAssertThrowsError(try AccountlessBaseOptions(args), args.joined(separator: " "))
         }
@@ -93,6 +97,11 @@ final class AccountlessBaseCommandTests: XCTestCase {
         XCTAssertEqual(json["installed"] as? Bool, true)
         XCTAssertEqual(json["qualified"] as? Bool, false)
         XCTAssertEqual(json["collectionPath"] as? String, "/root-plan/collection.json")
+        let qualified = AccountlessBasePhaseReport(phase: .templateQualified, candidate: fixture.candidate,
+            sourceStopped: true, installed: true, qualified: true, qualificationID: UUID())
+        let qualifiedJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(qualified)) as? [String: Any])
+        XCTAssertEqual(qualifiedJSON["qualified"] as? Bool, true)
+        XCTAssertNotNil(qualifiedJSON["qualificationID"])
     }
 
     func testAClaimedInstallerCannotBeReservedAsANewRawCandidate() throws {

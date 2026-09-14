@@ -1,6 +1,6 @@
 # Prepare isolated physical sandbox acceptance
 
-> Last updated: 2026-09-13 · commit `f097a7116`
+> Last updated: 2026-09-14 · commit `cf4dad33a`
 
 Use the real coordinator, PostgreSQL store, consumer API authentication and
 dedicated host WebSocket on an authorized test Mac. The fixture tool creates
@@ -26,6 +26,7 @@ caller-owned mode-0700 directory. Do not put these materials in unencrypted `/pr
 
 - An explicitly authorized nonproduction test Mac and the source checkout used to build its artifacts.
 - A qualified signed host daemon, pinned Lume, signed guest release, prepared base image, encrypted APFS VM storage and initialized capacity directory. Host installation, mode changes and VM qualification remain separate operator steps in [release validation](../../sandbox-macos/Resources/RELEASE_VALIDATION.md#prepare-a-dedicated-host).
+- For an accountless base, complete `prepare-accountless-base qualify` in the selected GUI session and require `templateQualified`, `qualified: true` and exit0. A recovered `qualificationAborted` report exits75 and does not qualify the base; use a new attempt directory after its cleanup. See the [operator phase reference](../../sandbox-macos/Resources/ACCOUNTLESS_RECEIPTS.md#accountless-operator-commands).
 - An empty dedicated PostgreSQL database named `darkbloom_sandbox_acceptance_<suffix>`, with a suffix of 1–24 lowercase letters, digits or underscores. Create it from `template0`; the fixture refuses existing user relations, functions and types before running migrations.
 - A private, owner-only file containing the database URL. It must use a loopback IP literal, explicit port, username/password and only `sslmode=disable`. A database on another machine requires an explicitly managed private tunnel terminating on loopback. Never use a production proxy or production credentials.
 - Separate absolute paths for the coordinator binary, consumer CLI and new private fixture directory on the test Mac. Select an unused unprivileged loopback API port.

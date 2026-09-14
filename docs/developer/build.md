@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-13 · commit `642cf31a6`
+> Last updated: 2026-09-14 · commit `cf4dad33a`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -69,6 +69,12 @@ through `LumeRuntimeConfiguration.pinnedManagedRestorePatchPath` in
 `sandbox-macos/Sources/SandboxRuntimeLume/LumeRuntimeConfiguration.swift`.
 The `SandboxProcessLifecycleProbe` executable is a test fixture and is not part
 of the signed host or guest package.
+
+Rebuild both sandbox products when changing native qualification. The guest
+includes the fixed `qualify-tenant` probe; the host's `prepare-accountless-base
+qualify` phase uses an existing dedicated capacity store and its own private
+attempt journal. Package/sign the new guest and prepare a matching base; an old
+guest binary cannot satisfy the new probe. See the [operator commands](../../sandbox-macos/Resources/ACCOUNTLESS_RECEIPTS.md#accountless-operator-commands).
 
 Provider tests are grouped by subsystem inside their existing SwiftPM targets.
 See [finding provider tests](test.md#finding-provider-tests) for the folder map;

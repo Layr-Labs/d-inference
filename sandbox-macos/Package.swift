@@ -111,7 +111,8 @@ let package = Package(
         ),
         .testTarget(
             name: "SandboxRuntimeLumeTests",
-            dependencies: ["SandboxCore", "SandboxRuntime", "SandboxRuntimeLume"],
+            // Qualification-owner integration shares the real native/capacity fixtures.
+            dependencies: ["SandboxCore", "SandboxRuntime", "SandboxRuntimeLume", "DarkbloomSandboxDaemon"],
             path: "Tests/SandboxRuntimeLumeTests"
         ),
         .testTarget(

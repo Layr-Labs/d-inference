@@ -23,6 +23,7 @@ coordinator deployment.
 
 ## Unreleased — sandbox private-alpha control
 
+- Wire `prepare-accountless-base qualify` to durable attempt journaling, native checks, clone cleanup and guarded ready publication. Recovery settles exact prior resources without rerunning checks or publishing from saved flags; aborted attempts report exit75 and preserve unknown source status.
 - Add a signed guest isolation probe and internal native qualification sequence with authenticated command checks, verified workspace transfer, cold-boot identity and persistence checks, and guarded readiness publication after durable clone cleanup. The operator workflow and physical acceptance remain release gates.
 - Add accountless base preparation through controlled staging, one-use installer boot, root receipt collection and resumable temporary-file cleanup. Publish an installed checkpoint only after exact source/runtime/boot bindings and detached cleanup pass; native qualification and physical acceptance remain separate release gates.
 - Require exclusive host ownership for managed raw Apple restores, retain it in the installer process through cancellation or broker death, and preserve files when native VM stop is unproven. This requires a matching rebuilt and signed Lume runtime.

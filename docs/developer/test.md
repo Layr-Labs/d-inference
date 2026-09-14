@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `642cf31a6`
+> Last updated: 2026-09-14 · commit `cf4dad33a`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -81,6 +81,13 @@ establish physical isolation. The `macOS Sandbox Tests` CI job separately builds
 and tests the exact pinned Lume patches and builds release host/guest products.
 See the [sandbox CLI workflow](../consumer/sandbox-cli.md) and
 [sandbox API contract](../reference/sandbox-api.md).
+
+Qualification owner integration tests share the native-runtime fixture through
+the `SandboxRuntimeLumeTests` target's test-only dependency on the daemon. They
+exercise real capacity and ownership files, allocation-gap recovery, preservation
+of unknown same-name data and read-only published replay. These fixtures do not
+run a VM or issue a native qualification result. Complete physical factory and
+two-VM acceptance remain separate [release gates](../../sandbox-macos/Resources/RELEASE_VALIDATION.md).
 
 `ManagedProcessOwnershipTests` in
 `sandbox-macos/Tests/SandboxRuntimeTests/ManagedProcessOwnershipTests.swift`

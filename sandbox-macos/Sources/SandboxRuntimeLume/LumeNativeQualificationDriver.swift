@@ -29,8 +29,7 @@ struct LumeNativeQualificationDriver: Sendable {
         let initial = try await bootID("boot-before")
         let directory = "qualification-" + qualificationID.uuidString.lowercased()
         let path = directory + "/roundtrip.marker"
-        let bytes = Data(("qualification-v1\n" + qualificationID.uuidString.lowercased() + "\n"
-            + cloneInstallationID.uuidString.lowercased() + "\n").utf8)
+        let bytes = GuestQualificationProtocol.marker(qualificationID: qualificationID, cloneInstallationID: cloneInstallationID)
         let hash = Self.digest(bytes), transferID = identifier("marker-transfer")
         _ = try await send(.init(id: identifier("mkdir"), operation: .mkdir, path: directory))
         let begin = try await send(.init(id: identifier("upload-begin"), operation: .uploadBegin,

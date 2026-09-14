@@ -73,7 +73,9 @@ grant permission to retry an installer, prove that the root job completed, or
 publish a ready template. The selected-GUI boot owner must first consume a durable
 one-use boot intent and, after guest shutdown or cancellation, independently
 prove stopped state. Root receipt collection/removal uses a separate maintenance
-transaction. These orchestration and physical profile checks remain open.
+transaction. The operator phases and durable qualification owner are implemented;
+fresh physical profile and complete factory acceptance remain release gates. See
+[accountless operator commands](ACCOUNTLESS_RECEIPTS.md#accountless-operator-commands).
 
 For a host, Lume, or tooling update that retains an already qualified guest,
 add `--guest-release /absolute/existing/signed-release`. Packaging verifies that

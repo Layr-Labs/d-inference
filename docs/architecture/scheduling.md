@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-14 · commit `42e32adf3`
+> Last updated: 2026-09-14 · commit `6a886f9f6`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -94,10 +94,20 @@ active update or shutdown barrier remains authoritative
 `setRetirementReconnectBarrier`).
 
 `PopNextFresh` skips stale entries as it pops; `RequeueFront` returns a
-waiter that could not be placed; `PreferWaiterOwners` lets a drain favour
-waiters that own the provider that just freed. `FailQueuedRequestsForModel`
-fails every waiter for a model with a specific error (used for
-capability-unavailable and disconnect outcomes).
+waiter that could not be placed (`coordinator/registry/queue.go`).
+`PreferWaiterOwners` gathers owner IDs before
+the registry computes their eligibility outside the queue lock.
+`FailQueuedRequestsForModel` reports timeout to public waiters while preserving
+exclusive self-route waiters and prefer-owner waiters whose owners remain
+eligible (`coordinator/registry/queue_policy.go`). Specific deadline, TTFT and
+tool-constraint causes use `QueuedRequest.failWithReason` instead.
+
+Both rejection paths and stale cleanup share `QueuedRequest.expireFromQueue`:
+mark the waiter done, release any scheduler-owned assignment, then publish a
+nonblocking nil sentinel. A full response channel does not count as a new
+notification. Successful assignment transfers cleanup ownership only when
+`WaitForProviderContext` accepts it; cancellation still releases an unaccepted
+offer (`coordinator/registry/queue_waiter.go`).
 
 **Lazy stale sweep.** There is no background timer. `cleanStaleLocked` runs
 inside `Enqueue` and `QueuedModels`, dropping entries older than `maxWait`
@@ -245,6 +255,13 @@ decode rate is the provider's median solo sample (at least
 `defaultQualityCapSoloMinSamples`, the default of
 `EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES`), or a seeded/benchmark rate.
 
+Solo samples require at most one running or waiting request across the whole
+provider and a running decode in the sampled slot (`coordinator/registry/solo_tps.go`,
+`soloSampleEligible`; `coordinator/registry/heartbeat.go`, `Heartbeat`). Each
+occupancy count is compared against the remaining allowance before addition,
+so an overflowing busy report cannot enter the solo sample pool. The separate
+load-inclusive TPS store still receives valid observed rates from busy providers.
+
 ### Model slots, pending loads and swaps
 
 **`maxModelSlots`.** The number of models a provider keeps resident at once
@@ -369,24 +386,43 @@ warm-saturated fraction (`warmSaturated / warm`) reaches
 `WarmSaturationThreshold`. A warm provider is *saturated* when it has no
 concurrency headroom for the model or its backend slot is busy.
 
-**Target** (`warmpool.Target`, `coordinator/registry/warmpool/target.go`) applies
-Little's Law when pressure is present and otherwise holds the current warm
-count:
+**Rate cohort.** `warmPoolFleetSnapshot` collects rates from warm providers and
+eligible cold providers. Rejected cold providers contribute reason counts but
+no rate sample. Static solo rates size quality concurrency; observed service
+rates estimate request duration. Each uses the same eligible cohort and its
+median (`coordinator/registry/warm_pool_fleet.go`).
+
+**Target** (`warmpool.Target`, `coordinator/registry/warmpool/target.go`) sizes to
+observed load when proactive headroom is enabled. Disabling headroom restores
+the purely reactive mode, which holds the current warm count until pressure
+appears:
 
 ```text
 serviceTime  = clamp(AssumedPromptTokens / prefillTPS + AssumedCompletionTokens / decodeTPS,
                      MinServiceTime, MaxServiceTime)   # 500 * time.Millisecond … 2 * time.Minute
 L            = running + waiting + queueDepth + spillArrivalRate × serviceTime
 target       = ceil(L / qualityConcurrency) + BurstBuffer
-target       = max(target, warm + 1)              # reactive: pressure always earns one more
+target       = max(target, headroomTarget)        # proactive floor when enabled
+target       = max(target, warm + 1)              # only when demand pressure is present
 target       = clamp(target, warm, warm + eligibleCold)
 ```
 
 `spillArrivalRate` is an EWMA of arrivals the warm set could not absorb,
 `ArrivalEWMAAlpha = 0.3` (`coordinator/registry/warmpool/state.go`).
+The proactive floor covers occupied capacity plus growth expected during a
+cold load, with a correction for providers blocked by a co-resident model.
+`HeadroomProviders` (`coordinator/registry/warmpool/target.go`) derives spare
+providers from the measured occupancy ramp, load windows and quality
+concurrency, subject to the configured override/cap. Negative occupancy
+deltas become zero-growth samples; they do not subtract from the ramp, but
+still apply ordinary EWMA decay. Pressure and occupancy observations retain
+separate expiry clocks (`State.FoldOccupancyRamp`,
+`coordinator/registry/warmpool/state.go`).
 `planningPass.targetWarm` then applies anti-flap and floors: a target lower than the last
 one is held for `MinDwell`, and `MinWarmByModel` raises the target (both
-capped at `warm + eligibleCold`).
+capped at `warm + eligibleCold`). For a dedicated build under demand pressure,
+it targets the entire eligible pool; the ramp below still bounds issued loads
+(`coordinator/registry/warmpool/target_policy.go`).
 
 **Ramp.** The gap between target and warm is closed at
 `warmpool.LoadsThisTick(gap, MaxLoadsPerTick, MaxLoadsPerTickCeiling,

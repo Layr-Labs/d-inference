@@ -161,13 +161,16 @@ func (p Policy) ProviderBudgetFits(snap *Snapshot, reqPromptTokens, reqMaxTokens
 	if !known {
 		return true, false
 	}
-	prompt := reqPromptTokens
-	if prompt < 0 {
-		prompt = 0
+	return budget >= 0 && RequestTokens(reqPromptTokens, reqMaxTokens) <= uint64(budget), true
+}
+
+// RequestTokens shares the request-size normalization used by live
+// provider fit and structural fleet prediction. Two nonnegative int values fit
+// in uint64 even when their sum cannot be represented by int, so an enormous
+// request cannot wrap below a known budget or context ceiling.
+func RequestTokens(prompt, output int) uint64 {
+	if output <= 0 {
+		output = DefaultRequestedMaxTokens
 	}
-	maxTok := reqMaxTokens
-	if maxTok <= 0 {
-		maxTok = DefaultRequestedMaxTokens
-	}
-	return int64(prompt)+int64(maxTok) <= budget, true
+	return uint64(max(prompt, 0)) + uint64(output)
 }

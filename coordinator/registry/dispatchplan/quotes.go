@@ -8,11 +8,12 @@ import (
 )
 
 // quoteDelivery is the tracker→collector handoff for one settled probe.
-// quote == nil means transport failure (send error or disconnect).
+// timeout marks an expiry sweep; otherwise quote == nil means transport failure.
 type quoteDelivery struct {
 	quoteID    string
 	providerID string
 	quote      *protocol.CapacityQuoteMessage
+	timeout    bool
 }
 
 // pendingQuote is one outstanding probe: the provider binding the quote must
@@ -52,10 +53,10 @@ type Probes[C comparable] struct {
 	sweeps    int
 }
 
-// add registers an outstanding probe. The opportunistic sweep (same idiom as
-// the sibling cooldown maps) drops expired entries whose collector died
-// before its window sweep — a leak only a panicked collector can create,
-// since a live one takes back every silent entry at expiry. The >1024 size
+// add registers an outstanding probe. The opportunistic sweep settles expired
+// entries, including when its collector has not yet processed the timer. Every
+// removal must deliver an outcome: collectors treat a missing entry as a claim
+// whose delivery is in flight. The >1024 size
 // trigger merely makes a sweep WORTH considering; the time gate
 // (quoteTrackerSweepInterval) decides whether one actually runs.
 func (t *Probes[C]) add(quoteID string, pq *pendingQuote) {
@@ -72,6 +73,9 @@ func (t *Probes[C]) add(quoteID string, pq *pendingQuote) {
 			for id, e := range t.pending {
 				if now.After(e.expiresAt) {
 					delete(t.pending, id)
+					if e.deliver != nil {
+						e.deliver <- quoteDelivery{quoteID: id, providerID: e.providerID, timeout: true}
+					}
 				}
 			}
 		}

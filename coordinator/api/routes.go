@@ -125,7 +125,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/stats", s.networkViews.Stats)
 
 	// Public leaderboard + network totals — no auth, pseudonymized,
-	// 5-min/1-min cache.
+	// five-minute caches.
 	s.mux.HandleFunc("GET /v1/leaderboard", s.networkViews.Leaderboard)
 	s.mux.HandleFunc("GET /v1/network/totals", s.networkViews.Totals)
 	s.mux.HandleFunc("GET /v1/network/series", s.networkViews.Series)

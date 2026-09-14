@@ -39,7 +39,7 @@ does not gate any model (`provider-swift/Sources/ProviderCore/Hardware/HardwareD
 
 Which model loads on a given Mac is decided twice: the coordinator routes only
 to boxes whose total memory is at least the catalog's `min_ram_gb`
-(`coordinator/registry/scheduler.go`, `modelFitsHardware`), and the provider
+(`coordinator/registry/admission/memory.go`, `ModelFitsHardware`), and the provider
 then requires, at load time, free memory of at least the model's padded weights
 plus its activation reserve plus the minimum KV headroom
 (`requiredToLoadGb`, [load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)).

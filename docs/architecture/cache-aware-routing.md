@@ -144,10 +144,20 @@ publishing the nonce. Reconfiguration, including an
 unchanged-key update, revokes the old generation and clears its tracker maps
 (`PlanCacheRouteWithResult`, `PreparePrefixCacheV2Attempt`, `ConfigureCacheRouting`).
 
-A queued frame retains one immutable attempt owner. At writer dequeue,
-`CacheAttemptSnapshot.ApplyTo` checks revocation without registry or tracker
-locks. A revoked attempt sends the ordinary encrypted request with its remaining
-deadline budget and no scope, nonce or cache negotiation. That check is the
+`cacheattempt.State` owns the request's preparation ticket, terminal closure
+and active attempt (`coordinator/registry/cacheattempt/state.go`). `Begin`
+revokes the previous attempt and resets `LegacyCacheBustKey` under the same
+mutex; `PublishLegacy` writes that key only while its ticket is still current
+and open. The registry's `publishCacheAttempt` keeps the final tracker,
+connection and capability check under `r.mu` then `provider.mu` before
+`State.Publish`. Receipt removal and terminal-grace updates run after the
+request mutex is released; the receipt directory retains its own lock.
+
+A queued frame retains one immutable attempt snapshot. At writer dequeue,
+`cacheattempt.Snapshot.ApplyTo` checks revocation without registry or tracker
+locks (`coordinator/registry/cacheattempt/snapshot.go`). The public
+`registry.CacheAttemptSnapshot` name is an alias. A revoked attempt sends the
+ordinary encrypted request with its remaining deadline budget and no scope, nonce or cache negotiation. That check is the
 cutoff: an accepted write may finish after reconfiguration. Cancellation,
 timeout and failed dispatch clean up the original owner and tracker; a late
 cleanup cannot modify a replacement attempt. A stale proof mismatch likewise
@@ -157,8 +167,10 @@ Cache participation is an atomic per-attempt observation. Revocation before the
 first accepted dequeue restores ordinary calibration eligibility; an already
 accepted cache write remains excluded. Terminal requests retain the existing
 bounded grace period for authenticated durable-ready receipts while revoking
-queued dispatch (`coordinator/registry/cache_attempt_ownership.go`,
-`coordinator/api/provider_wire.go`).
+queued dispatch (`State.Terminal`, `coordinator/registry/cacheattempt/state.go`;
+`coordinator/api/provider_wire.go`). `Generation.Revoke`
+(`coordinator/registry/cacheattempt/generation.go`) permanently invalidates a
+configuration generation without retaining its receipt maps.
 
 ### Protocol v2 proof
 
@@ -200,7 +212,7 @@ checkpoints. Each explicit checkpoint is independently matched against the
 coordinator's prompt plan. It cannot claim an unverified generated continuation.
 Sequence numbers increase strictly for each provider/model/tier/epoch. Lookup
 and publication state are separate per tier, even if epoch UUIDs coincide
-(`coordinator/registry/cache_receipts_v2.go`, `cache_tiers.go`).
+(`coordinator/registry/cachedirectory/proof.go`, `coordinator/registry/cachedirectory/tiers.go`).
 
 The provider hashes the tokenized prompt with the shared 256-token chain. A
 physical 16-token page hash is not a routing anchor. Hybrid recurrent state can
@@ -230,10 +242,10 @@ a fully authenticated matching read or a successful streamed encrypted commit,
 with donor/export aliases retired before the ready callback; same-request
 deduplication also checks that its authenticated file identity is unchanged. A resident holder instead requires a valid memory lookup or
 publication from a separately advertised resident slot. Its lifetime is bounded
-by `min(configured TTL, cacheRoutingMemoryTTL = 30 * time.Second)`; repeated or
+by `min(configured TTL, MemoryTTL = 30 * time.Second)`; repeated or
 replayed publication cannot extend the lifetime. The holder key includes a
 separate tier domain, preventing resident evidence from replacing SSD evidence
-(`cacheTierBoundaryKey`, `receiptTTL`, `coordinator/registry/cache_tiers.go`). It records the live provider connection, model, aggregate
+(`TierBoundaryKey`, `receiptTTL`, `coordinator/registry/cachedirectory/tiers.go`). It records the live provider connection, model, aggregate
 hash, prompt contract, cache epoch, exact anchor, recompute requirement, expected
 saved tokens, measured staging cost, and bounded expiry.
 
@@ -253,7 +265,7 @@ simulated multi-provider, and API wire tests; it is not a live two-machine
 measurement ([source and test evidence](../reports/evidence/2026-09-05-ssd-checkpoint-cache/coordinator-evidence-manifest.json)).
 
 Holder removals are counted under one of seven reasons
-(`coordinator/registry/cache_routing.go`): `ttl`, `disconnect`,
+(`coordinator/registry/cachedirectory/removal.go`, `HolderRemovalReasons`): `ttl`, `disconnect`,
 `epoch_change`, `capability_change`, `proof_mismatch`, `miss_invalidation`,
 `capacity_eviction`. SSD capacity eviction rotates its durable epoch. Resident LRU eviction does not
 rotate the whole slot epoch: its remaining checkpoints stay useful, and stale
@@ -270,6 +282,26 @@ provider epochs ([`EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS`](../reference/confi
 heap-evicted. V1 receipt
 frames remain decodable for mixed-version safety but cannot mutate routing
 evidence (`coordinator/registry/cache_receipts.go`).
+
+### Directory transaction ownership
+
+`Directory[*Provider]` in `coordinator/registry/cachedirectory/` owns receipt
+attempts, holders, sequence and rejection fences, both eviction heaps and their
+indexes, stage measurements and lifecycle counters under one private mutex.
+The provider pointer is opaque connection identity; no directory operation
+calls back into the registry or locks a provider. Matching returns copied
+holder records, and status returns copied counters and index cardinalities.
+
+Preparation registers the attempt, releases the directory lock, then rechecks
+registry generation, connection and capability revision under registry → provider
+locks before request publication (`publishCacheAttempt`). Cleanup runs after the
+request lock is released. Quarantine retains registry → provider → directory
+ordering. Reconfiguration revokes the old generation under the registry lock;
+retired-directory cleanup runs after that lock is released. These boundaries
+keep stale receipts from restoring retired evidence or poisoning replacement
+connections (`coordinator/registry/cache_attempt_ownership.go`,
+`coordinator/registry/cache_receipts_v2.go`,
+`coordinator/registry/cachedirectory/retirement.go`).
 
 ### Prepared assistant replacement
 
@@ -295,8 +327,9 @@ Unchanged models retain their evidence under the normal
 
 `cacheRoutingHints` (`coordinator/registry/cache_routing_hints.go`) derives one
 keyed content digest per request boundary and queries both tier buckets before
-inspecting provider capabilities. It snapshots only matching machines, outside
-the tracker lock. With `B` boundaries and at most `H` holders per bucket, the
+inspecting provider capabilities. `Directory.MatchingHolders` copies the
+matching records, then the registry snapshots only those machines outside the
+directory lock. With `B` boundaries and at most `H` holders per bucket, the
 lookup hashes `B` times and visits at most `2 × B × H` holder records; this work
 does not grow with unrelated fleet members. The normal eligibility scan still
 visits its ordinary candidate pool once. Epoch, connection pointer, capability
@@ -328,8 +361,8 @@ holder availability but never extends the original lookup measurement's expiry.
 The routing query resolves the cost at its captured timestamp, so scan and
 reservation share one observation. Once the measurement expires, a live holder
 uses the latest Ready estimate; a newer hit supplies a new measurement.
-`coordinator/registry/cache_stage_measurement.go` (`cacheStageMeasurement`,
-`preserveStageMeasurementLocked`, `stageCostAt`) owns this provenance. Existing
+`coordinator/registry/cachedirectory/stage.go` (`cacheStageMeasurement`,
+`preserveStageMeasurementLocked`, `Holder.StageCostAt`) owns this provenance. Existing
 configuration, connection, epoch and holder invalidation also discard it.
 
 Ready still has one stage-cost field for all its anchors. Complete SSD publishes
@@ -630,8 +663,8 @@ back are operator procedures, kept in the runbook
 6. **A proof mismatch quarantines that exact capability**; a changed
    capability or cache epoch participates only after a fresh valid proof, and
    evidence sequence numbers increase strictly per provider/model/tier/epoch
-   (`rejectCapability`, `acceptV2SequenceLocked`,
-   `coordinator/registry/cache_receipts_v2.go`).
+   (`Directory.RejectCapability`, `acceptV2SequenceLocked`,
+   `coordinator/registry/cachedirectory/proof.go`).
 7. **Route keys, account identifiers, raw boundaries and prompts are never
    persisted or attached to telemetry**; `GET /v1/cache/status` and the
    terminal tags carry bounded categorical values only
@@ -659,7 +692,7 @@ back are operator procedures, kept in the runbook
 Receipt rejection telemetry distinguishes invalid shape, missing/expired attempt,
 request/connection/capability changes, prior rejection fencing, duplicate or stale
 sequence, missing accepted lookup, and identity/prompt/ready-anchor disagreement.
-The closed reasons come from `coordinator/registry/cache_receipt_result.go`;
+The closed reasons come from `coordinator/registry/cachedirectory/result.go`;
 `exact_cache.receipt` and `exact_cache_receipt_total` label type, outcome and reason.
 Provider-reported usage remains separate from accepted proof-backed lookup hits.
 No nonce, scope, prompt or prefix hash is emitted by these counters.
@@ -676,14 +709,18 @@ and `coordinator/api/cache_model_telemetry.go`.
 
 | Concern | File / symbol |
 |---|---|
-| Mode, TTL, holder cap, discount bounds, removal reasons | `coordinator/registry/cache_routing.go` — `CacheRoutingOff`, `CacheRoutingOn`, `newCacheRoutingTracker`, `CacheRoutingLifecycleStatus` |
+| Mode, discount bounds and owner wiring | `coordinator/registry/cache_routing.go` — `CacheRoutingOff`, `CacheRoutingOn`, `newCacheRoutingTracker`, `CacheRoutingLifecycleStatus` |
+| Directory limits, removal reasons and accounting | `coordinator/registry/cachedirectory/limits.go`, `coordinator/registry/cachedirectory/removal.go`, `coordinator/registry/cachedirectory/status.go` — `DefaultTTL`, `DefaultMaxHolders`, `HolderRemovalReasons`, `LifecycleStatus` |
 | Configuration and validation | `coordinator/registry/config.go` — `CacheRoutingConfig`, `Check`; `coordinator/registry/cache_routing.go` — `ConfigureCacheRouting` |
 | Optional artifact membership | `coordinator/registry/cache_artifact_allowlist.go` — exact tuple parsing, validation and immutable membership; unset unrestricted, `[]` denied |
 | Activation cohort and plan QPS | `coordinator/registry/cache_activation.go` — `cacheActivationGate`, `CacheRoutingActivationStatus` |
 | Resident proof/publication and unique receipt correlation | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/ResidentPrefixCacheEvidence.swift` — `ResidentPrefixCacheEvidence`, `ResidentPrefixCachePromptProof`; `PrefixCacheEvidenceSequencer.swift` |
-| Per-tier holders and bounded lifetime | `coordinator/registry/cache_tiers.go` — `cacheTierBoundaryKey`, `receiptTTL`; `cache_routing_hints.go` — `hints` |
-| Route keys and scopes | `coordinator/registry/cache_route_keys.go` |
-| Receipts, v2 proof acceptance and quarantine, legacy cache-bust key | `coordinator/registry/cache_receipts.go`, `coordinator/registry/cache_receipts_v2.go` — `ApplyPrefixCacheLookupV2`, `ApplyPrefixCacheReadyV2`, `rejectCapability` |
+| Per-tier holders, indexed eviction and bounded lifetime | `coordinator/registry/cachedirectory/tiers.go`, `coordinator/registry/cachedirectory/entries.go`, `coordinator/registry/cachedirectory/order.go` — `TierBoundaryKey`, `receiptTTL`, `upsertHolderLocked`; `coordinator/registry/cache_routing_hints.go` — live capability selection |
+| Route keys and scopes | `coordinator/registry/cache_route_keys.go` — authenticated scope derivation; `coordinator/registry/cachedirectory/keys.go` — shared HMAC and exact-boundary digest |
+| Request preparation and queued-frame lifetime | `coordinator/registry/cacheattempt/` — `State`, `Attempt`, `Snapshot.ApplyTo`, `Generation` |
+| Live publication and public compatibility adapters | `coordinator/registry/cache_attempt_ownership.go` — `publishCacheAttempt`, `CacheAttemptSnapshot`; provider/registry locks remain here |
+| V2 receipt transaction and proof fences | `coordinator/registry/cachedirectory/lookup.go`, `coordinator/registry/cachedirectory/ready.go`, `coordinator/registry/cachedirectory/proof.go` — `Directory.ApplyLookup`, `Directory.ApplyReady`, `Directory.RejectCapability` |
+| Live receipt prerequisites, quarantine and legacy cache-bust key | `coordinator/registry/cache_receipts.go`, `coordinator/registry/cache_receipts_v2.go` — `ApplyPrefixCacheLookupV2`, `ApplyPrefixCacheReadyV2`, `disablePrefixCacheV2Model` |
 | Status vocabularies and sanitization | `coordinator/registry/cache_eligibility.go`, `coordinator/registry/cache_status.go`, `coordinator/registry/cache_snapshot.go` |
 | Discount in the cost model | `coordinator/registry/scheduler.go` — `applyCacheRoutingCost`, `SelectionCacheTiebreak` |
 | Plan construction and sealed body | `coordinator/api/prompt_artifacts.go` — `planCacheRoute`; `coordinator/api/consumer.go` — `bodyForCacheAttempt` |

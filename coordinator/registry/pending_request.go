@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/cacheattempt"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -131,11 +132,8 @@ type PendingRequest struct {
 	MinDecodeTPS float64
 	// CachePlan contains exact sidecar block boundaries and opaque build scope.
 	// It is never logged or persisted.
-	CachePlan              CachePlan
-	cacheAttempt           atomic.Pointer[cacheAttemptOwner]
-	cacheAttemptMu         sync.Mutex
-	cachePreparationTicket uint64
-	cachePreparationClosed bool
+	CachePlan    CachePlan
+	cacheAttempt cacheattempt.State
 	// LegacyCacheBustKey is injected only into the encrypted provider-bound
 	// request body for protocol-0 providers. It is never reflected to the caller.
 	LegacyCacheBustKey string
@@ -237,7 +235,7 @@ type PendingRequest struct {
 	emptyCompletionAccepted   bool
 	emptyCompletionDecision   chan struct{}
 	// rateOutcomeCounted marks that this request's ONE capacity-503 rate
-	// outcome (capacity_rate.go denominator) was recorded by the commit-time
+	// outcome (faultstate/capacity_rate.go denominator) was recorded by the commit-time
 	// accept — RecordCapacityAccept returned rateOutcomeRecorded=true. The
 	// completion-time accept (noteInferenceSuccess) re-offers the outcome only
 	// when this is false, covering requests that never commit content while a

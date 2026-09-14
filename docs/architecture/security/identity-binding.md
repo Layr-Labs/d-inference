@@ -74,7 +74,7 @@ machine, not the session UUID.
 | Use | Key | Code |
 |---|---|---|
 | Stored provider record lookup on registration | `serialNumber` from the fresh blob first, then `"sekey:" + <SE public key>` | `coordinator/providercontrol/verification/registration.go` (`Verifier.VerifyRegistration`) |
-| Fault / reputation key | `serial:<serial>` → `sekey:<SE key>` → `acct:<account_id>` → `""` (valid attestation required for the first two; the account fallback is safe because `AccountID` comes from the authenticated token, never from the blob) | `coordinator/registry/health_ejection.go` (`stableProviderIdentityLocked`) |
+| Fault / reputation key | `serial:<serial>` → `sekey:<SE key>` → `acct:<account_id>` → `""` (valid attestation required for the first two; the account fallback is safe because `AccountID` comes from the authenticated token, never from the blob) | `coordinator/registry/fault_identity.go` (`stableProviderIdentityLocked`) |
 | Trust reuse, code-identity proofs, push budgets | SE public key (plus token hash for budgets) | `coordinator/providercontrol/trustreuse/evidence.go` (`record`); `coordinator/providercontrol/codeidentity/state.go` (`deviceState`) |
 
 ### Device-code account linking
@@ -108,10 +108,10 @@ RFC 8628-style flow owned by `Controller` in `coordinator/api/accounts/` and
 3. Code identity is granted only if `K` and the APNs token are unchanged since the challenge was issued — `coordinator/registry/provider_evidence.go` (`GrantProcessCodeAttested`).
 4. An MDA chain is attached only when it binds this SE key or the blob's serial, and only on a `hardware` connection — `coordinator/registry/provider_evidence.go` (`SetMDAProofIfHardwareBound`).
 5. Hardware posture is taken from the device selected by the blob's serial and must agree with the blob — `coordinator/providercontrol/verification/security_info.go` (`Verifier.VerifySecurityInfo`).
-6. `AccountID` is set only from a valid device-linked token, never from anything in the attestation blob — `coordinator/api/provider.go` (`handleProviderWS`), `coordinator/registry/health_ejection.go` (`stableProviderIdentityLocked`).
+6. `AccountID` is set only from a valid device-linked token, never from anything in the attestation blob — `coordinator/api/provider.go` (`handleProviderWS`), `coordinator/registry/fault_identity.go` (`stableProviderIdentityLocked`).
 7. Provider tokens and API keys are stored and looked up by SHA-256 hash only — `coordinator/store/contracts/keys.go` (`hashKey`), `coordinator/api/accounts/device_tokens.go` (`Controller.DeviceToken`).
 8. Privy tokens are accepted only with `ES256`, issuer `privy.io`, and the configured audience, under the static configured key — `coordinator/auth/privy.go` (`VerifyToken`).
-9. The provider UUID is never used as an identity for trust, reputation, or reuse — `coordinator/registry/health_ejection.go` (`stableProviderIdentityLocked`).
+9. The provider UUID is never used as an identity for trust, reputation, or reuse — `coordinator/registry/fault_identity.go` (`stableProviderIdentityLocked`).
 
 ## Failure modes
 
@@ -136,7 +136,7 @@ RFC 8628-style flow owned by `Controller` in `coordinator/api/accounts/` and
 | Code identity | `coordinator/providercontrol/codeidentity/response.go` (`HandleResponse`); `coordinator/providercontrol/codeidentity/reuse.go` (`reuseAttestation`); `coordinator/providercontrol/codeidentity/persistence.go` (`persistCodeAttestation`); `coordinator/registry/provider_evidence.go` (`GrantProcessCodeAttested`) |
 | MDA binding | `coordinator/mdm/mdm.go` (`RequestDeviceAttestation`); `coordinator/attestation/mda.go`; `coordinator/registry/provider_evidence.go` (`SetMDAProofIfHardwareBound`); `coordinator/providercontrol/verification/mda_reuse.go` (`Verifier.AttachCachedMDA`) |
 | MDM posture binding | `coordinator/mdm/mdm.go` (`LookupDevice`, `VerifyProviderWithUDIDObserver`); `coordinator/providercontrol/verification/security_info.go` (`Verifier.VerifySecurityInfo`) |
-| Stable identity | `coordinator/registry/health_ejection.go` (`stableProviderIdentityLocked`); `coordinator/registry/provider_evidence.go` (`RebindStableFaultKey`); `coordinator/registry/persistence.go` (`RestoreProviderState`) |
+| Stable identity | `coordinator/registry/fault_identity.go` (`stableProviderIdentityLocked`); `coordinator/registry/provider_evidence.go` (`RebindStableFaultKey`); `coordinator/registry/persistence.go` (`RestoreProviderState`) |
 | Account linking | `coordinator/api/accounts/device_codes.go`, `coordinator/api/accounts/device_tokens.go`, `coordinator/api/accounts/device_approval.go` (`Controller.DeviceCode`, `Controller.DeviceToken`, `Controller.ApproveDevice`, `DeviceCodeExpiry`, `DeviceCodePollInterval`); `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` (`AuthTokenStore`) |
 | Consumer identity | `coordinator/auth/privy.go` (`NewPrivyAuth`, `VerifyToken`, `GetOrCreateUser`); `coordinator/auth/config.go`; `coordinator/api/requestauth/privy_session.go` (`RequirePrivyAuth`) |
 

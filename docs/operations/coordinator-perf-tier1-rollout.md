@@ -24,7 +24,7 @@ Canonical code (code wins over this doc; find declarations by symbol):
 | Verification poller cadence + busy floor | `coordinator/api/mdm_scheduler_exec.go` (`shouldLoadDueRows`, `nextDispatchDelay`) |
 | Dashboard rolling windows | `coordinator/store/postgres/dashboard.go` and `coordinator/store/memory/dashboard.go` (`AccountEarningsWindows`); `coordinator/api/accountfleet/summary_cache.go` (`accountEarningsWindows`) |
 | Batched reputation reads | `coordinator/store/postgres/dashboard.go` and `coordinator/store/memory/dashboard.go` (`GetReputations`); `coordinator/api/accountfleet/reputation.go` (`attachStoredReputations`) |
-| Capacity accept off the first-byte path | `coordinator/api/dispatch.go` (`commitFirstContent`); `coordinator/registry/capacity_cooldown.go` (`RecordCapacityAcceptObserved`) |
+| Capacity accept off the first-byte path | `coordinator/api/dispatch.go` (`commitFirstContent`); `coordinator/registry/fault_capacity.go` (`RecordCapacityAcceptObserved`); `coordinator/registry/faultstate/capacity_accept.go` (`CapacityAccept.Apply`) |
 | Throttled reputation persist | `coordinator/registry/reputation.go` (`RecordJobSuccess`); `coordinator/registry/provider_lifecycle.go` (`Disconnect`); `coordinator/registry/persistence.go` (`persistReputationThrottled`) |
 | Single provider-frame decode | `coordinator/api/provider.go` (`providerReadLoop`) |
 | Cancel only when generation still needs stopping | `coordinator/api/dispatch.go` (`writeCommittedResponse`); `coordinator/api/provider.go` (`handleChunk`, synthesized-error cancellation) |

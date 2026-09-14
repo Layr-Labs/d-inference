@@ -63,7 +63,16 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/inference/attempt` | Cancellation tracking and delivery, terminal/rejection policy and provider-health feedback (`Tracker`, `Service`); API binds current services in `inference_attempt.go`, and response relays use the same feedback owner. |
 | `coordinator/inference/settlement` | Reservation pricing, service holds, refunds, parked billing records and completion accounting (`Service`, `ServiceHolds`, `Holder`); API retains terminal ownership, outcome observations and consumer-channel signaling. |
 | `coordinator/inference/toolpolicy` | Tool-schema normalization, tool-choice and history validation (`NormalizeParsed`, `ValidateParsed`); HTTP error mapping and resolved-model compatibility remain in `coordinator/api/tool_constraints.go`. |
-| `coordinator/registry` | In-memory fleet view, scheduler and cost model, queue, warm pool, capacity breakers, health ejection, cache routing, TTFT calibration and shadow admission. |
+| `coordinator/registry` | Live fleet identity, snapshots, routing and atomic reservation, queue policy and warm-pool fleet/command bindings. |
+| `coordinator/registry/requestqueue` | Per-model FIFO, expiration, reservation handoff acknowledgment and drain-pass coalescing (`Queue`, `Assignment`, `DrainCoalescer`). |
+| `coordinator/registry/admission` | Immutable capacity snapshots, pooled slot/KV accounting and measured cold-load budgets (`Policy`, `Snapshot`, `Pool`); live reservation locks stay in the registry. |
+| `coordinator/registry/cachedirectory` | One private receipt/holder transaction lock, connection identity, sequence/rejection fences, indexed eviction, stage provenance and copied lifecycle status (`Directory`); provider callbacks and live locks stay in the registry. |
+| `coordinator/registry/cacheattempt` | Per-request preparation, terminal closure, immutable queued-frame identity and atomic generation revocation (`State`, `Snapshot`, `Generation`); live provider validation remains in the registry. |
+| `coordinator/registry/providerversion` | Exact dotted-version interpretation and bounded memo state shared by capability, slot-layout and memory-floor gates (`Policy`). |
+| `coordinator/registry/throughput` | Observed throughput samples and medians, decode expectations and batch quality policy (`Observations`, `Policy`, `QualityConcurrency`). |
+| `coordinator/registry/modelloads` | Private session command deadlines/start times and fleet plan coalescing (`Commands`, `PlanGate`); live eligibility, provider publication and command I/O remain in the registry. |
+| `coordinator/registry/warmpool` | Controller runner, coalesced triggers, private queue/pressure/observation state and target arithmetic (`Controller`, `State`, `Snapshot`, `Target`, `ServiceTime`); live fleet and command bindings stay in the registry. |
+| `coordinator/registry/providerwriter` | Private two-lane WebSocket transport, dequeue acknowledgment, cancellation/completion arbitration, fragmentation and watchdog (`Writer`); registry `Provider` methods bind the current connection. |
 | `coordinator/store` | Compatible constructors and type aliases; [persistence code map](../storage.md#code-map). |
 | `coordinator/store/contracts` | Domain records and interfaces (`Store`, composed `BillingStore` and `ProviderStore`). |
 | `coordinator/store/memory`, `coordinator/store/postgres` | Backend-owned locks, pool, transactions and domain operations; `postgres/schema` assembles ordered startup DDL. |

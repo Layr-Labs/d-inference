@@ -163,6 +163,16 @@ The shared bounded JSON decoder lives in `coordinator/api/httprequest/`.
 The API router imports these packages, so the coordinator build targets below
 include them automatically.
 
+The registry imports `coordinator/registry/admission/` for capacity calculations,
+`coordinator/registry/providerversion/` for version interpretation and
+`coordinator/registry/cacheattempt/` for request cache lifetime and
+`coordinator/registry/cachedirectory/` for receipt/holder transactions.
+`coordinator/registry/modelloads/` owns pending command clocks and heartbeat plan timing;
+`coordinator/registry/warmpool/` owns the controller loop, pressure and latest observations.
+`coordinator/registry/providerwriter/` owns provider WebSocket transport and its
+handoff/watchdog lifecycle. These packages build through the standard coordinator
+targets below.
+
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
 its test binary after helper or lifecycle changes. The CPU-only
 `TestPrepareConnectedInputBindings` check uses the actual fixture input/report

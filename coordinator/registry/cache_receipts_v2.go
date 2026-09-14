@@ -1,10 +1,10 @@
 package registry
 
 import (
-	"math"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/cacheattempt"
 )
 
 // PreparePrefixCacheV2Attempt requests provider proof for an exact sidecar
@@ -79,25 +79,20 @@ func (r *Registry) PreparePrefixCacheV2Attempt(
 		CreatedAt:          now,
 		ExpiresAt:          now.Add(cacheRoutingInFlightAttemptTTL),
 		V2:                 true,
-		Plan:               plan,
+		Plan:               directoryPlan(plan),
 		V2Capability:       capability,
 		MemoryCapability:   memoryCapability,
 		ExpectedPrompt:     promptAnchor,
 		ExpectedBoundaries: boundaries,
 	}
-	owner := &cacheAttemptOwner{tracker: tracker, generation: plan.generation,
-		nonce: nonce, scope: plan.CacheScope}
+	metadata := cacheattempt.Metadata{Nonce: nonce, Scope: plan.CacheScope}
 	if capable {
-		owner.boundaryMode = capability.ReadyBoundaryMode
+		metadata.BoundaryMode = capability.ReadyBoundaryMode
 	}
-	tracker.mu.Lock()
-	tracker.storeAttemptLocked(nonce, attempt)
-	if len(tracker.attempts) > tracker.maxAttempts {
-		tracker.enforceAttemptCapLocked()
-	}
-	tracker.mu.Unlock()
+	owner := cacheattempt.New(plan.generation, tracker.directory, metadata)
+	tracker.directory.RegisterAttempt(nonce, attempt)
 
-	if r.publishCacheAttempt(pr, provider, revision, ticket, owner) {
+	if r.publishCacheAttempt(pr, provider, revision, ticket, tracker, owner) {
 		ttftCalibration.discardPrediction(pr.RequestID, pr.Attempt)
 	}
 	return nil
@@ -127,9 +122,9 @@ func (r *Registry) ApplyPrefixCacheLookupV2Result(
 	if mode != CacheRoutingOn || tracker == nil {
 		return rejectCacheReceipt(CacheReceiptInactive)
 	}
-	decision := tracker.applyLookupV2Decision(
+	decision := tracker.directory.ApplyLookup(
 		providerID, provider, capability, msg, routeKey, time.Now())
-	if decision.mismatch {
+	if decision.ProofMismatch() {
 		r.disablePrefixCacheV2Model(providerID, msg.ModelID, msg.Tier, provider, tracker, capability)
 	}
 	return decision
@@ -159,9 +154,9 @@ func (r *Registry) ApplyPrefixCacheReadyV2Result(
 	if mode != CacheRoutingOn || tracker == nil {
 		return rejectCacheReceipt(CacheReceiptInactive)
 	}
-	decision := tracker.applyReadyV2Decision(
+	decision := tracker.directory.ApplyReady(
 		providerID, provider, capability, msg, routeKey, time.Now())
-	if decision.mismatch {
+	if decision.ProofMismatch() {
 		r.disablePrefixCacheV2Model(providerID, msg.ModelID, msg.Tier, provider, tracker, capability)
 	}
 	return decision
@@ -192,7 +187,7 @@ func (r *Registry) currentPrefixCacheV2CapabilityResult(
 		return protocol.PrefixCacheV2Capability{}, CacheReceiptCapabilityUnavailable
 	}
 	if tracker != nil &&
-		tracker.capabilityRejected(providerID, modelID, tier, capability) {
+		tracker.directory.CapabilityRejected(providerID, modelID, tier, capability) {
 		return protocol.PrefixCacheV2Capability{}, CacheReceiptCapabilityFenced
 	}
 	return capability, CacheReceiptAccepted
@@ -214,111 +209,8 @@ func (r *Registry) disablePrefixCacheV2Model(
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
 	capability, ok := provider.prefixCacheCapabilityLocked(modelID, tier)
-	if ok && capability == expected && tracker.rejectCapability(providerID, modelID, tier, capability) {
-		tracker.invalidateProviderModel(providerID, modelID, cacheHolderRemovalProofMismatch)
+	if ok && capability == expected && tracker.directory.RejectCapability(providerID, modelID, tier, capability) {
+		tracker.directory.InvalidateProviderModel(providerID, modelID, cacheHolderRemovalProofMismatch)
 		provider.prefixCacheRevision++
 	}
-}
-
-func (t *cacheRoutingTracker) capabilityRejected(
-	providerID, modelID, tier string,
-	capability protocol.PrefixCacheV2Capability,
-) bool {
-	key := cacheV2ProviderModelKey{ProviderID: providerID, ModelID: modelID, Tier: tier}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	rejected, ok := t.rejectedV2[key]
-	if ok && rejected != capability {
-		delete(t.rejectedV2, key)
-		return false
-	}
-	return ok
-}
-
-func (t *cacheRoutingTracker) rejectCapability(
-	providerID, modelID, tier string,
-	capability protocol.PrefixCacheV2Capability,
-) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.generation.revoked.Load() {
-		return false
-	}
-	t.rejectedV2[cacheV2ProviderModelKey{
-		ProviderID: providerID,
-		ModelID:    modelID,
-		Tier:       tier,
-	}] = capability
-	return true
-}
-
-func (t *cacheRoutingTracker) applyLookupV2(
-	providerID string,
-	capability protocol.PrefixCacheV2Capability,
-	msg *protocol.PrefixCacheLookupV2Message,
-	now time.Time,
-) bool {
-	accepted, _ := t.applyLookupV2Result(
-		providerID, nil, capability, msg, []byte("test-cache-route-key"), now)
-	return accepted
-}
-
-func (t *cacheRoutingTracker) applyReadyV2(
-	providerID string,
-	capability protocol.PrefixCacheV2Capability,
-	msg *protocol.PrefixCacheReadyV2Message,
-	now time.Time,
-) bool {
-	accepted, _ := t.applyReadyV2Result(
-		providerID, nil, capability, msg, []byte("test-cache-route-key"), now)
-	return accepted
-}
-
-func (t *cacheRoutingTracker) acceptV2SequenceLocked(
-	providerID string,
-	capability protocol.PrefixCacheV2Capability,
-	tier string,
-	sequence uint64,
-) bool {
-	if sequence == 0 || t.generation.revoked.Load() {
-		return false
-	}
-	key := cacheV2SequenceKey{
-		ProviderID: providerID,
-		ModelID:    capability.ModelID,
-		CacheEpoch: capability.CacheEpoch,
-		Tier:       tier,
-	}
-	if sequence <= t.v2Sequences[key] {
-		return false
-	}
-	t.v2Sequences[key] = sequence
-	return true
-}
-
-func v2IdentityMatches(
-	modelID, aggregateHash, contractID, epoch string,
-	capability protocol.PrefixCacheV2Capability,
-) bool {
-	return modelID == capability.ModelID &&
-		aggregateHash == capability.ModelAggregateHash &&
-		contractID == capability.PromptContractID &&
-		epoch == capability.CacheEpoch &&
-		capability.Enabled &&
-		capability.Ready
-}
-
-func validV2Anchor(anchor protocol.PrefixCacheAnchor, blockSize uint32) bool {
-	return blockSize > 0 &&
-		anchor.TokenCount > 0 &&
-		anchor.TokenCount <= cacheRoutingMaxReceiptTokens &&
-		anchor.TokenCount%int(blockSize) == 0 &&
-		validLowerHex256(anchor.ChainHash)
-}
-
-func validV2Stage(stage float64) bool {
-	return stage >= 0 &&
-		stage <= cacheRoutingMaxStageMs &&
-		!math.IsNaN(stage) &&
-		!math.IsInf(stage, 0)
 }

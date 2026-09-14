@@ -507,8 +507,8 @@ func (p *Provider) SetAttestationResult(result *attestation.VerificationResult) 
 	}
 	// Re-derive the stable identity and bind it while p.mu is STILL held
 	// (lock order r.mu → p.mu → gatesMu → gate.mu; bindStableFaultKey takes the
-	// last two). The bind — which repoints p.gate — must not land inside a
-	// section that reads p.gate and acts on it under p.mu: the reservation
+	// last two). The bind — which repoints p.faultSession — must not land inside a
+	// section that reads p.faultSession and acts on it under p.mu: the reservation
 	// commit's admit re-check through its pending debit, the scan's gate chain,
 	// the alias resolver's routability read. Binding at attestation time is what
 	// re-attaches a reconnecting machine's fault state (breakers/cooldowns keyed

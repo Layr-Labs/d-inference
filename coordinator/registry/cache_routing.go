@@ -2,30 +2,30 @@ package registry
 
 import (
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/cachedirectory"
 )
 
 const (
 	CacheRoutingOff = "off"
 	CacheRoutingOn  = "on"
 
-	defaultCacheRoutingTTL                = 10 * time.Minute
-	defaultCacheRoutingMaxHolders         = 4
+	defaultCacheRoutingTTL                = cachedirectory.DefaultTTL
+	defaultCacheRoutingMaxHolders         = cachedirectory.DefaultMaxHolders
 	defaultCacheRoutingActivationPct      = 100.0
 	defaultCacheRoutingMaxPlanQPS         = 0.0
 	maxCacheRoutingPlanQPS                = 1_000_000.0
-	cacheRoutingAttemptTTL                = 2 * time.Minute
-	cacheRoutingInFlightAttemptTTL        = 2 * time.Hour
-	cacheRoutingSweepInterval             = 30 * time.Second
-	cacheRoutingMaxEntries                = 10_000
-	cacheRoutingMaxAttempts               = 50_000
-	cacheRoutingMaxReceiptTokens          = 1_000_000
-	cacheRoutingMaxStageMs                = 10 * 60 * 1000.0
-	cacheRoutingMemoryTTL                 = 30 * time.Second
-	cacheRoutingMaxCheckpointReadyAnchors = 16
+	cacheRoutingAttemptTTL                = cachedirectory.AttemptTTL
+	cacheRoutingInFlightAttemptTTL        = cachedirectory.InFlightAttemptTTL
+	cacheRoutingSweepInterval             = cachedirectory.SweepInterval
+	cacheRoutingMaxEntries                = cachedirectory.MaxEntries
+	cacheRoutingMaxAttempts               = cachedirectory.MaxAttempts
+	cacheRoutingMaxReceiptTokens          = cachedirectory.MaxReceiptTokens
+	cacheRoutingMaxStageMs                = cachedirectory.MaxStageMs
+	cacheRoutingMemoryTTL                 = cachedirectory.MemoryTTL
+	cacheRoutingMaxCheckpointReadyAnchors = cachedirectory.MaxCheckpointReadyAnchors
 )
 
 type CachePlan struct {
@@ -55,8 +55,7 @@ func (p CachePlan) present() bool {
 // contributing ordinary TTFT/reputation feedback.
 func (pr *PendingRequest) CacheRoutingParticipates() bool {
 	if pr != nil {
-		owner := pr.cacheAttempt.Load()
-		return owner != nil && owner.dispatchState.Load() != cacheDispatchCold
+		return pr.cacheAttempt.Participates()
 	}
 	return false
 }
@@ -73,53 +72,6 @@ type cacheRouteKeys struct {
 	route      []byte
 	scope      []byte
 	activation []byte
-}
-
-type cacheHolder struct {
-	ProviderID              string
-	Provider                *Provider
-	ModelID                 string
-	ModelAggregateHash      string
-	PromptContractID        string
-	CacheEpoch              string
-	Anchor                  protocol.PrefixCacheAnchor
-	RequiredRecomputeTokens int
-	StageMs                 float64
-	stageMeasurement        *cacheStageMeasurement
-	UpdatedAt               time.Time
-	ExpiresAt               time.Time
-}
-
-type cacheAttempt struct {
-	RequestID             string
-	ProviderID            string
-	Provider              *Provider
-	Model                 string
-	ExpiresAt             time.Time
-	CreatedAt             time.Time
-	LookupSeen            bool
-	V2                    bool
-	Plan                  CachePlan
-	V2Capability          protocol.PrefixCacheV2Capability
-	MemoryCapability      protocol.PrefixCacheV2Capability
-	MemoryLookupSeen      bool
-	MemoryLastReadyAnchor protocol.PrefixCacheAnchor
-	ExpectedPrompt        protocol.PrefixCacheAnchor
-	ExpectedBoundaries    map[int]string
-	LastReadyAnchor       protocol.PrefixCacheAnchor
-}
-
-type cacheV2SequenceKey struct {
-	ProviderID string
-	ModelID    string
-	CacheEpoch string
-	Tier       string
-}
-
-type cacheV2ProviderModelKey struct {
-	ProviderID string
-	ModelID    string
-	Tier       string
 }
 
 type cacheRoutingHint struct {
@@ -142,141 +94,10 @@ type cacheRoutingCapability struct {
 	CapabilityRevision uint64
 }
 
-type cacheHolderRemovalReason string
-
-const (
-	cacheHolderRemovalTTL              cacheHolderRemovalReason = "ttl"
-	cacheHolderRemovalDisconnect       cacheHolderRemovalReason = "disconnect"
-	cacheHolderRemovalEpochChange      cacheHolderRemovalReason = "epoch_change"
-	cacheHolderRemovalCapabilityChange cacheHolderRemovalReason = "capability_change"
-	cacheHolderRemovalProofMismatch    cacheHolderRemovalReason = "proof_mismatch"
-	cacheHolderRemovalMissInvalidation cacheHolderRemovalReason = "miss_invalidation"
-	cacheHolderRemovalCapacityEviction cacheHolderRemovalReason = "capacity_eviction"
-)
-
-func CacheHolderRemovalReasons() []string {
-	return []string{
-		string(cacheHolderRemovalTTL),
-		string(cacheHolderRemovalDisconnect),
-		string(cacheHolderRemovalEpochChange),
-		string(cacheHolderRemovalCapabilityChange),
-		string(cacheHolderRemovalProofMismatch),
-		string(cacheHolderRemovalMissInvalidation),
-		string(cacheHolderRemovalCapacityEviction),
-	}
-}
-
-type cacheAttemptOrderEntry struct {
-	nonce     string
-	createdAt time.Time
-	index     int
-}
-
-type cacheAttemptOrderHeap []*cacheAttemptOrderEntry
-
-func (h cacheAttemptOrderHeap) Len() int { return len(h) }
-
-func (h cacheAttemptOrderHeap) Less(i, j int) bool {
-	if h[i].createdAt.Equal(h[j].createdAt) {
-		return h[i].nonce < h[j].nonce
-	}
-	return h[i].createdAt.Before(h[j].createdAt)
-}
-
-func (h cacheAttemptOrderHeap) Swap(i, j int) {
-	h[i], h[j] = h[j], h[i]
-	h[i].index = i
-	h[j].index = j
-}
-
-func (h *cacheAttemptOrderHeap) Push(value any) {
-	entry := value.(*cacheAttemptOrderEntry)
-	entry.index = len(*h)
-	*h = append(*h, entry)
-}
-
-func (h *cacheAttemptOrderHeap) Pop() any {
-	old := *h
-	last := len(old) - 1
-	entry := old[last]
-	old[last] = nil
-	entry.index = -1
-	*h = old[:last]
-	return entry
-}
-
-type cacheHolderRef struct {
-	key        string
-	providerID string
-}
-
-type cacheHolderOrderEntry struct {
-	ref       cacheHolderRef
-	updatedAt time.Time
-	index     int
-}
-
-type cacheHolderOrderHeap []*cacheHolderOrderEntry
-
-func (h cacheHolderOrderHeap) Len() int { return len(h) }
-
-func (h cacheHolderOrderHeap) Less(i, j int) bool {
-	if !h[i].updatedAt.Equal(h[j].updatedAt) {
-		return h[i].updatedAt.Before(h[j].updatedAt)
-	}
-	if h[i].ref.key != h[j].ref.key {
-		return h[i].ref.key < h[j].ref.key
-	}
-	return h[i].ref.providerID < h[j].ref.providerID
-}
-
-func (h cacheHolderOrderHeap) Swap(i, j int) {
-	h[i], h[j] = h[j], h[i]
-	h[i].index = i
-	h[j].index = j
-}
-
-func (h *cacheHolderOrderHeap) Push(value any) {
-	entry := value.(*cacheHolderOrderEntry)
-	entry.index = len(*h)
-	*h = append(*h, entry)
-}
-
-func (h *cacheHolderOrderHeap) Pop() any {
-	old := *h
-	last := len(old) - 1
-	entry := old[last]
-	old[last] = nil
-	entry.index = -1
-	*h = old[:last]
-	return entry
-}
-
 type cacheRoutingTracker struct {
-	demand              *cacheDemandTracker
-	generation          *cacheRoutingGeneration
-	mu                  sync.Mutex
-	ttl                 time.Duration
-	maxHolders          int
-	maxEntries          int
-	maxAttempts         int
-	holderCount         int
-	lastSweep           time.Time
-	holders             map[string]map[string]cacheHolder
-	attempts            map[string]cacheAttempt
-	holderOrder         cacheHolderOrderHeap
-	holderOrderByRef    map[cacheHolderRef]*cacheHolderOrderEntry
-	attemptOrder        cacheAttemptOrderHeap
-	attemptOrderByNonce map[string]*cacheAttemptOrderEntry
-	v2Sequences         map[cacheV2SequenceKey]uint64
-	rejectedV2          map[cacheV2ProviderModelKey]protocol.PrefixCacheV2Capability
-	ssdLookups          uint64
-	ssdHits             uint64
-	ssdMisses           uint64
-	ssdDonations        uint64
-	holderAdded         uint64
-	holderRemoved       map[string]uint64
-	donationOutcomes    map[string]uint64
+	demand     *cacheDemandTracker
+	generation *cacheRoutingGeneration
+	directory  *cachedirectory.Directory[*Provider]
 }
 
 func newCacheRoutingTracker(ttl time.Duration, maxHolders int) *cacheRoutingTracker {
@@ -286,16 +107,11 @@ func newCacheRoutingTracker(ttl time.Duration, maxHolders int) *cacheRoutingTrac
 	if maxHolders <= 0 {
 		maxHolders = defaultCacheRoutingMaxHolders
 	}
+	generation := &cacheRoutingGeneration{}
 	return &cacheRoutingTracker{
-		generation: &cacheRoutingGeneration{},
+		generation: generation,
 		demand:     newCacheDemandTracker(cacheRoutingMaxEntries, ttl),
-		ttl:        ttl, maxHolders: maxHolders, maxEntries: cacheRoutingMaxEntries, maxAttempts: cacheRoutingMaxAttempts,
-		holders: make(map[string]map[string]cacheHolder), attempts: make(map[string]cacheAttempt),
-		holderOrderByRef: make(map[cacheHolderRef]*cacheHolderOrderEntry), attemptOrderByNonce: make(map[string]*cacheAttemptOrderEntry),
-		v2Sequences:      make(map[cacheV2SequenceKey]uint64),
-		rejectedV2:       make(map[cacheV2ProviderModelKey]protocol.PrefixCacheV2Capability),
-		holderRemoved:    make(map[string]uint64),
-		donationOutcomes: make(map[string]uint64),
+		directory:  cachedirectory.New[*Provider](generation, ttl, maxHolders, prefixCacheDonationOutcomes),
 	}
 }
 
@@ -311,20 +127,7 @@ func (r *Registry) CacheRoutingStateCounts() (holders, attempts int) {
 	if tracker == nil {
 		return 0, 0
 	}
-	tracker.mu.Lock()
-	defer tracker.mu.Unlock()
-	tracker.sweepIfDueLocked(time.Now())
-	return tracker.holderCount, len(tracker.attempts)
-}
-
-type CacheRoutingLifecycleStatus struct {
-	SSDLookups       uint64            `json:"ssd_lookups"`
-	SSDHits          uint64            `json:"ssd_hits"`
-	SSDMisses        uint64            `json:"ssd_misses"`
-	SSDDonations     uint64            `json:"ssd_donations"`
-	HolderAdded      uint64            `json:"holder_added"`
-	HolderRemoved    map[string]uint64 `json:"holder_removed"`
-	DonationOutcomes map[string]uint64 `json:"donation_outcomes"`
+	return tracker.directory.StateCounts(time.Now())
 }
 
 func (r *Registry) CacheRoutingLifecycleStatus() CacheRoutingLifecycleStatus {
@@ -337,49 +140,7 @@ func (r *Registry) CacheRoutingLifecycleStatus() CacheRoutingLifecycleStatus {
 	if tracker == nil {
 		return CacheRoutingLifecycleStatus{}
 	}
-	tracker.mu.Lock()
-	defer tracker.mu.Unlock()
-	holderRemoved := zeroUint64Buckets(CacheHolderRemovalReasons())
-	for reason, count := range tracker.holderRemoved {
-		holderRemoved[reason] = count
-	}
-	donationOutcomes := zeroUint64Buckets(prefixCacheDonationOutcomes)
-	for outcome, count := range tracker.donationOutcomes {
-		donationOutcomes[outcome] = count
-	}
-	return CacheRoutingLifecycleStatus{
-		SSDLookups: tracker.ssdLookups, SSDHits: tracker.ssdHits,
-		SSDMisses: tracker.ssdMisses, SSDDonations: tracker.ssdDonations,
-		HolderAdded: tracker.holderAdded, HolderRemoved: holderRemoved,
-		DonationOutcomes: donationOutcomes,
-	}
-}
-
-func zeroUint64Buckets(values []string) map[string]uint64 {
-	result := make(map[string]uint64, len(values))
-	for _, value := range values {
-		result[value] = 0
-	}
-	return result
-}
-
-func (t *cacheRoutingTracker) recordDonationOutcomes(deltas map[string]uint64) {
-	if t == nil || len(deltas) == 0 {
-		return
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	for outcome, delta := range deltas {
-		if delta == 0 || !containsFixed(prefixCacheDonationOutcomes, outcome) {
-			continue
-		}
-		current := t.donationOutcomes[outcome]
-		if ^uint64(0)-current < delta {
-			t.donationOutcomes[outcome] = ^uint64(0)
-		} else {
-			t.donationOutcomes[outcome] = current + delta
-		}
-	}
+	return tracker.directory.LifecycleStatus()
 }
 
 func (r *Registry) ConfigureCacheRouting(cfg CacheRoutingConfig) error {
@@ -411,7 +172,7 @@ func (r *Registry) ConfigureCacheRouting(cfg CacheRoutingConfig) error {
 	r.mu.Lock()
 	previous := r.cacheRouting
 	if previous != nil {
-		previous.generation.revoked.Store(true)
+		previous.generation.Revoke()
 	}
 	r.cacheRouting = tracker
 	r.cacheActivation = activation
@@ -421,7 +182,9 @@ func (r *Registry) ConfigureCacheRouting(cfg CacheRoutingConfig) error {
 	r.cacheRoutingMaxDiscountMs = cloneCacheScoreLimit(cfg.MaxDiscountMs)
 	r.cacheRoutingMaxCostFraction = cloneCacheScoreLimit(cfg.MaxCostFraction)
 	r.mu.Unlock()
-	previous.clearRetired()
+	if previous != nil {
+		previous.directory.ClearRetired()
+	}
 	return nil
 }
 
@@ -433,8 +196,8 @@ func (r *Registry) CacheRoutingConfigSnapshot() CacheRoutingConfig {
 		AllowedArtifacts: r.cacheRoutingAllowedArtifacts.snapshot(),
 		ActivationPct:    r.cacheActivation.percent,
 		MaxPlanQPS:       r.cacheActivation.maxQPS,
-		TTL:              r.cacheRouting.ttl,
-		MaxHolders:       r.cacheRouting.maxHolders,
+		TTL:              r.cacheRouting.directory.Config().TTL,
+		MaxHolders:       r.cacheRouting.directory.Config().MaxHolders,
 		MaxDiscountMs:    cloneCacheScoreLimit(r.cacheRoutingMaxDiscountMs),
 		MaxCostFraction:  cloneCacheScoreLimit(r.cacheRoutingMaxCostFraction),
 	}

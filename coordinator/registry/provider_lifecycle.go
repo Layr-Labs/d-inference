@@ -301,12 +301,7 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 		}
 		delete(r.providers, id)
 		// Clear any pending model load entries for this provider.
-		for key := range r.pendingModelLoads {
-			if key.ProviderID == id {
-				delete(r.pendingModelLoads, key)
-				delete(r.pendingModelLoadStarted, key)
-			}
-		}
+		r.modelLoads.Disconnect(id)
 		p.detachModelIndexLocked(r)
 		// FAULT STATE IS NOT CLEARED ON DISCONNECT. Every fault tracker
 		// (node-health breaker, inference-error cooldowns, dispatch-load
@@ -344,7 +339,9 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 	r.drainQueuedRequestsForModelsWithReason(disconnectedModels, DrainTriggerDisconnect)
 	// Cache holders and nonce-bound attempts are connection-scoped. Clear them
 	// after releasing registry/provider locks.
-	cacheTracker.disconnect(id, cacheHolderRemovalDisconnect)
+	if cacheTracker != nil {
+		cacheTracker.directory.Disconnect(id, cacheHolderRemovalDisconnect)
+	}
 	// Outstanding capacity-probe waiters bound to this connection can never be
 	// answered now (the socket is gone) — resolve them as SendFailed so probe
 	// collectors demote the entries immediately instead of burning the full
@@ -553,7 +550,7 @@ func (r *Registry) evictStale(timeout time.Duration) {
 		}
 	}
 
-	// Bound the per-identity gate index on the same cadence (gate_state.go):
+	// Bound the per-identity gate index on the same cadence (faultstate/state.go):
 	// prunes dead per-model entries and drops gates no live session references
 	// once idle. Off the request path and outside r.mu.
 	r.sweepGates(now)

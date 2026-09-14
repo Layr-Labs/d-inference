@@ -2,19 +2,7 @@ package registry
 
 import (
 	"math"
-	"time"
 )
-
-// cacheEvidenceWeight is a conservative age policy, not an empirically fitted
-// hit probability. Capture it once per query so scan and reservation use the
-// same evidence weight even as the wall clock advances between them.
-func cacheEvidenceWeight(holder cacheHolder, now time.Time) float64 {
-	lifetime := holder.ExpiresAt.Sub(holder.UpdatedAt)
-	if lifetime <= 0 || !now.Before(holder.ExpiresAt) {
-		return 0
-	}
-	return min(1, float64(holder.ExpiresAt.Sub(now))/float64(lifetime))
-}
 
 // cacheServiceCost replaces the matched prompt's weighted prefill with its
 // restore cost. A positive delta means staging costs more than recomputing;

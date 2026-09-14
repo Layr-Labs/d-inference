@@ -72,17 +72,21 @@ is not explained by one of the behaviours below; roll the binary back per
 | `EIGENINFERENCE_WARM_POOL_MAX_LOADS_PER_TICK` / `_MAX_LOADS_PER_TICK_CEILING` / `_MAX_GLOBAL_PENDING_LOADS` | `4` / `16` / `16` | `coordinator/registry/config.go` | lower | Slows the ramp; `0` for either loads-per-tick or global-pending is equivalent to observe-only. |
 | `EIGENINFERENCE_WARM_POOL_MIN_WARM` | empty | `coordinator/registry/config.go` | `model=n,...` | Pins a per-model warm floor while a demand signal is being debugged. |
 
-The full `WarmPoolConfig` table, including thresholds and Little's-Law
-parameters, is in [`scheduling.md`](../architecture/scheduling.md#warm-pool-controller).
+The environment reads remain in `coordinator/registry/config.go` (`ReadConfig`);
+`WarmPoolConfig` aliases `warmpool.Config` in
+`coordinator/registry/warmpool/config.go`. The runner and planning policy are
+`Controller.Run` and `Controller.Plan` in `coordinator/registry/warmpool/controller.go`
+and `coordinator/registry/warmpool/planning_pass.go`. The full configuration table, including
+thresholds and Little's-Law parameters, is in [`scheduling.md`](../architecture/scheduling.md#warm-pool-controller).
 
 ### Capacity fault handling
 
 | Variable | Default (code) | Read in | Flip | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_BUDGET_CLAMP` | on | `coordinator/registry/budget_clamp.go` (`loadBudgetClampConfig`) | `=false` | Stops treating a capacity 503 as proof that a pair's heartbeat budget is stale. `EIGENINFERENCE_BUDGET_CLAMP_TTL_SECONDS` retunes the `5m` fail-open TTL. |
-| `EIGENINFERENCE_HEALTH_EJECTION` | on | `coordinator/registry/health_ejection.go` (`healthEjectionEnabled`) | `=off` | Disables stable-identity health ejection; the node-health breaker still applies. |
-| `EIGENINFERENCE_CAPACITY_COOLDOWN_THRESHOLD` / `_WINDOW_SECONDS` / `_TTL_SECONDS` / `_MAX_TTL_SECONDS` | `5` / `60` / `120` / `600` | `coordinator/registry/capacity_cooldown.go` | retune | Pair capacity-reject cooldown. |
-| `EIGENINFERENCE_CAPACITY_RATE_PENALTY_MS` | `15_000.0` | `coordinator/registry/capacity_rate.go` | `=0` | Removes the gray-box capacity-503 cost penalty. |
+| `EIGENINFERENCE_BUDGET_CLAMP` | on | `coordinator/registry/faultstate/budget_clamp.go` (`loadBudgetClampConfig`) | `=false` | Stops treating a capacity 503 as proof that a pair's heartbeat budget is stale. `EIGENINFERENCE_BUDGET_CLAMP_TTL_SECONDS` retunes the `5m` fail-open TTL. |
+| `EIGENINFERENCE_HEALTH_EJECTION` | on | `coordinator/registry/health_ejection_switch.go` (`healthEjectionEnabled`) | `=off` | Disables stable-identity health ejection; the node-health breaker still applies. |
+| `EIGENINFERENCE_CAPACITY_COOLDOWN_THRESHOLD` / `_WINDOW_SECONDS` / `_TTL_SECONDS` / `_MAX_TTL_SECONDS` | `5` / `60` / `120` / `600` | `coordinator/registry/faultstate/capacity_policy.go` | retune | Pair capacity-reject cooldown. |
+| `EIGENINFERENCE_CAPACITY_RATE_PENALTY_MS` | `15_000.0` | `coordinator/registry/faultstate/capacity_rate.go` | `=0` | Removes the gray-box capacity-503 cost penalty. |
 | `EIGENINFERENCE_QUALITY_CONCURRENCY_CAP` | `true` | `coordinator/registry/config.go` (`QualityCapConfig`) | `=false` | Reverts to the flat per-provider concurrency cap. `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT` (effective default `1.2`) retunes instead of disabling. |
 
 ### Throughput anomaly detector

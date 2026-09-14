@@ -108,7 +108,7 @@ func TestMemoryRoutingOriginalAcrossProvidersUsesPublishedCheckpoint(t *testing.
 	if !r.ApplyPrefixCacheReadyV2(b.ID, readyBoth) {
 		t.Fatal("both checkpoints on B were rejected")
 	}
-	r.cacheRouting.disconnect(a.ID, cacheHolderRemovalDisconnect)
+	r.cacheRouting.directory.Disconnect(a.ID, cacheHolderRemovalDisconnect)
 	removeTestProvider(r, a.ID)
 	repeated.RequestID = "original-after-a-disconnected"
 	selected, decision = r.ReserveProviderEx("model", repeated)
@@ -155,7 +155,7 @@ func TestMemoryRoutingExpiryReplayMissAndSlotInvalidation(t *testing.T) {
 					t.Fatal("old hint survived slot capability mutation")
 				}
 			case "disconnect":
-				r.cacheRouting.disconnect(p.ID, cacheHolderRemovalDisconnect)
+				r.cacheRouting.directory.Disconnect(p.ID, cacheHolderRemovalDisconnect)
 			case "connection-replaced":
 				removeTestProvider(r, p.ID)
 				memoryTestProvider(t, r, p.ID, capability)

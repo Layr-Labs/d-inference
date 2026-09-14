@@ -31,12 +31,12 @@ func TestCacheSnapshotOtherModelChangePreservesIssuedReceiptAndHolder(t *testing
 		t.Fatal("initial donation rejected")
 	}
 	_, next := checkpointTestAttempt(t, r, p, a, "next-a", exactTestPlan(exactTestAnchor(16, "d")), 3)
-	before := r.cacheRouting.holderCount
+	before := r.cacheRouting.directory.Snapshot().Holders
 	b.CacheEpoch = "22222222-2222-2222-2222-222222222222"
 	if err := r.UpdatePrefixCacheCapabilities(p.ID, 2, []protocol.PrefixCacheV2Capability{a, b}); err != nil {
 		t.Fatal(err)
 	}
-	if r.cacheRouting.holderCount != before {
+	if r.cacheRouting.directory.Snapshot().Holders != before {
 		t.Fatal("unrelated model refresh erased valid holder")
 	}
 	if !r.ApplyPrefixCacheReadyV2(p.ID, next) {

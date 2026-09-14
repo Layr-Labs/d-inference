@@ -232,8 +232,8 @@ func TestProviderCapabilityEligibilityHotCatalogAndCommandDefenses(t *testing.T)
 	}
 
 	fleet := reg.warmPoolFleetSnapshot(time.Now())[Qwen38NAXModelID]
-	if len(fleet.eligibleCold) != 1 || fleet.eligibleCold[0].providerID != eligible.ID {
-		t.Fatalf("warm-pool cold candidates = %+v, want only eligible provider", fleet.eligibleCold)
+	if len(fleet.EligibleCold) != 1 || fleet.EligibleCold[0].ProviderID != eligible.ID {
+		t.Fatalf("warm-pool cold candidates = %+v, want only eligible provider", fleet.EligibleCold)
 	}
 
 	// A hot requirement change immediately hides an ordinary provider-model pair

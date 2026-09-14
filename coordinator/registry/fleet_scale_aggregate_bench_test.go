@@ -206,7 +206,7 @@ func BenchmarkFleetTickWarmPoolPlanObserveOnly(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if len(c.planObserveOnly(time.Now(), nil)) == 0 {
+		if len(c.PlanObserveOnly(time.Now(), nil)) == 0 {
 			b.Fatal("no snapshots")
 		}
 	}

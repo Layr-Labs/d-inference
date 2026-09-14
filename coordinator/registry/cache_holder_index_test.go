@@ -17,7 +17,7 @@ func indexTestCapability(index int) protocol.PrefixCacheV2Capability {
 func TestCacheHolderIndexBoundsIndependentEpochsAndSurvivesChurn(t *testing.T) {
 	r, _, _ := exactTestRegistry(t)
 	removeTestProvider(r, "provider-a")
-	r.cacheRouting.maxHolders = 4
+	r.cacheRouting = newCacheRoutingTracker(r.cacheRouting.directory.Config().TTL, 4)
 	anchor := exactTestAnchor(16, "c")
 	plan := exactTestPlan(anchor)
 	providers := make([]*Provider, 8)
@@ -42,9 +42,10 @@ func TestCacheHolderIndexBoundsIndependentEpochsAndSurvivesChurn(t *testing.T) {
 			t.Fatalf("oldest-holder eviction: machine %d present=%v", i, present)
 		}
 	}
-	r.cacheRouting.mu.Lock()
-	buckets, holders, order := len(r.cacheRouting.holders), r.cacheRouting.holderCount, len(r.cacheRouting.holderOrder)
-	r.cacheRouting.mu.Unlock()
+
+	snapshot := r.cacheRouting.directory.Snapshot()
+	buckets, holders, order := snapshot.Buckets, snapshot.Holders, snapshot.HolderOrder
+
 	if buckets != 1 || holders != 4 || order != 4 {
 		t.Fatalf("content index not bounded: buckets=%d holders=%d order=%d", buckets, holders, order)
 	}

@@ -1,13 +1,17 @@
 package registry
 
-import "testing"
+import (
+	"github.com/eigeninference/d-inference/coordinator/registry/providerversion"
+	"testing"
+)
 
 // TestVersionMemosOnlySeeGatePassingProviders pins that versions rejected by
 // the public trust gates never reach the routing scan's memos. The memo's
 // bounds do not depend on this: owner self-route may relax those gates.
 func TestVersionMemosOnlySeeGatePassingProviders(t *testing.T) {
-	versionSegmentsMemo.reset()
-	slotBudgetLayoutMemo.reset()
+	previous := providerVersions
+	providerVersions = &providerversion.Policy{}
+	t.Cleanup(func() { providerVersions = previous })
 	reg := New(testLogger())
 	const model = "memo-gate-model"
 	const trustedVersion = "77.66.56-memo-trusted"
@@ -36,13 +40,15 @@ func TestVersionMemosOnlySeeGatePassingProviders(t *testing.T) {
 	// Positive control: the gate-passing provider's version reached both memos
 	// through the budget-layout selection (keyed on the numeric core), so the
 	// negative assertions below are not vacuous.
-	if core := versionNumericCore(trustedVersion); !slotBudgetLayoutMemo.has(core) || !versionSegmentsMemo.has(core) {
+	core := providerversion.NumericCore(trustedVersion)
+	segments, layout := providerVersions.Memoized(core)
+	if !layout || !segments {
 		t.Fatalf("gate-passing provider's version core %q was not memoized (layout=%v segments=%v)",
-			core, slotBudgetLayoutMemo.has(core), versionSegmentsMemo.has(core))
+			core, layout, segments)
 	}
 	// The gated-out provider's version never reached a parser.
-	for _, key := range []string{untrustedVersion, versionNumericCore(untrustedVersion)} {
-		if versionSegmentsMemo.has(key) || slotBudgetLayoutMemo.has(key) {
+	for _, key := range []string{untrustedVersion, providerversion.NumericCore(untrustedVersion)} {
+		if segments, layout := providerVersions.Memoized(key); segments || layout {
 			t.Fatalf("gate-failing provider's version %q reached a version memo", key)
 		}
 	}

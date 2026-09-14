@@ -508,8 +508,8 @@ Go `PrefixCacheReadyMessage` · Swift `PrefixCacheReady`. May arrive after
 Go `PrefixCacheLookupV2Message` · Swift `PrefixCacheLookupV2`. Accepted only
 for `tier = ssd` or `memory` with that tier's separately advertised capability.
 Both require the exact nonce-bound prompt proof; memory cannot borrow an SSD
-lookup or sequence. Acceptance: `applyLookupV2Result`,
-`coordinator/registry/cache_receipts_v2.go`.
+lookup or sequence. Acceptance: `Directory.ApplyLookup`,
+`coordinator/registry/cachedirectory/lookup.go`.
 
 | JSON key | Go | Presence |
 |---|---|---|
@@ -531,8 +531,8 @@ input checkpoints are accepted, with zero recompute and positive `stage_ms`.
 Memory requires a published resident checkpoint and its own live
 capability. Every explicit checkpoint must match an input boundary in the nonce-bound
 coordinator plan; a shorter actual checkpoint is valid even when the longest
-prompt boundary is not reusable. Acceptance: `applyReadyV2Result`,
-`coordinator/registry/cache_receipts_v2.go`.
+prompt boundary is not reusable. Acceptance: `Directory.ApplyReady`,
+`coordinator/registry/cachedirectory/ready.go`.
 
 For a complete-checkpoint slot, a pre-v2 coordinator's legacy attempt is settled
 with `skipped_policy`; no count-only HIT/READY is emitted. Protocol v2 without
@@ -552,7 +552,7 @@ inference responses continue in both cases (`ProviderLoop+InferenceHandler.swift
 | `stage_ms` | `float64` | opt |
 
 Memory holder lifetime is `min(configured TTL, 30s)` (`receiptTTL`,
-`coordinator/registry/cache_tiers.go`). `stage_ms = 0` means no external disk
+`coordinator/registry/cachedirectory/tiers.go`). `stage_ms = 0` means no external disk
 staging for resident KV. Sequences increase independently per tier/model/epoch;
 nonce, connection, model/hash/contract, epoch, order, and replay checks still
 apply. Repeated ready anchors cannot refresh expired evidence. Resident LRU
@@ -691,7 +691,7 @@ provider only as a `desired_models` reconciliation (prefetch → hard-swap →
 default in [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli),
 `0` disables). The coordinator observes the result on the next heartbeat
 (`warm_models`, `slots[]`); its assumption about that idle-unload cycle is a
-comment in `coordinator/registry/capacity_cooldown.go`.
+comment on `RecordCapacityRejectLifecycle` in `coordinator/registry/fault_capacity.go`.
 
 ## Tests that pin the wire
 

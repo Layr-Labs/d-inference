@@ -111,7 +111,7 @@ func (r *Registry) coldSpillProviderEligibleLocked(p *Provider, model string, tr
 	}
 
 	// Idle enough to evict+load. Mirror TriggerModelSwaps' planner gate EXACTLY
-	// (coordinator pending AND backend slot busy — warm_pool_controller.go:499);
+	// (coordinator pending AND backend slot busy — warm_pool_eligibility.go);
 	// otherwise a provider with an empty coordinator-pending map but a running/
 	// waiting backend slot passes here, the request is enqueued, and the planner
 	// then refuses to load it — so it just waits out the 120s queue timeout

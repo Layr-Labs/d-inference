@@ -395,7 +395,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	p.mu.Unlock()
 
 	// This heartbeat may be the release proof for a budget clamp
-	// (budget_clamp.go): drop any clamp entry this heartbeat's snapshot proves
+	// (faultstate/budget_clamp.go): drop any clamp entry this heartbeat's snapshot proves
 	// inactive so a released pair returns to the accept fast path and cannot
 	// be re-blocked by a lingering entry on its next reconnect. The sweep
 	// evaluates the heartbeat's OWN stamped time and report (not a re-read of

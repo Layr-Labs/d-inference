@@ -71,23 +71,17 @@ func reserveOnce(r *Registry, model, requestID string) (*Provider, RoutingDecisi
 // ageBudgetClamp rewinds the pair's clamp time by d (simulating TTL passage
 // without sleeping), keyed by the pair's CURRENT fault key.
 func ageBudgetClamp(r *Registry, providerID, model string, d time.Duration) {
-	withGateForSession(r, providerID, func(g *gateState) {
-		if e, ok := g.budgetClamps[model]; ok {
-			e.clampedAt = e.clampedAt.Add(-d)
-		}
-	})
+	s := r.faults.StatusForSession(providerID, model, "")
+	if !s.ClampPresent {
+		return
+	}
+	withFaultFixtureTime(r, s.ClampAt.Add(-d), func() { r.RecordCapacityReject(providerID, model) })
 }
 
 // clampEntryUnderKey reports whether the identity filed under key holds a
 // clamp entry for model (the old budgetClamps[key] presence check).
 func clampEntryUnderKey(r *Registry, key, model string) bool {
-	found := false
-	readGateForKey(r, key, func(g *gateState) {
-		if g != nil {
-			_, found = g.budgetClamps[model]
-		}
-	})
-	return found
+	return r.faults.StatusForKey(key, model, "").ClampPresent
 }
 
 // One capacity-503 must IMMEDIATELY stop admission for a request that fit
@@ -210,7 +204,7 @@ func TestBudgetClampNoMeaningfulHeadroomDoesNotRelease(t *testing.T) {
 // accepts) expires after the TTL, so a slot can never be stranded. A
 // subsequent reject re-arms it.
 func TestBudgetClampTTLFailOpen(t *testing.T) {
-	r := New(testLogger())
+	r := newClockedFaultRegistry(t)
 	const model = "gemma-4-26b-qat-4bit"
 	p := makeTokenBudgetProvider(t, r, "gray-ttl", model, 100, grayBoxBudgetUsed, grayBoxBudgetMax, 100)
 
@@ -350,24 +344,10 @@ func TestBudgetClampAndRateStateMigrateOnFirstBind(t *testing.T) {
 
 	// The session-keyed gate is gone after the bind (its state moved); read
 	// the raw index so a forwarded pointer cannot mask leftover residue.
-	var sessClamp bool
-	var sessRejects int
-	if g := rawGateForKey(r, "migrate-sess"); g != nil {
-		g.mu.Lock()
-		_, sessClamp = g.budgetClamps[model]
-		sessRejects = len(g.capacityRateRejects[model])
-		g.mu.Unlock()
-	}
-	var serialClamp bool
-	var serialRejects, serialAccepts int
-	readGateForKey(r, "serial:SER-MIG-CLAMP", func(g *gateState) {
-		if g == nil {
-			return
-		}
-		_, serialClamp = g.budgetClamps[model]
-		serialRejects = len(g.capacityRateRejects[model])
-		serialAccepts = len(g.capacityRateAccepts[model])
-	})
+	sessionStatus := r.faults.StatusForKey("migrate-sess", model, "")
+	sessClamp, sessRejects := sessionStatus.ClampPresent, len(sessionStatus.RateRejects)
+	serialStatus := r.faults.StatusForKey("serial:SER-MIG-CLAMP", model, "")
+	serialClamp, serialRejects, serialAccepts := serialStatus.ClampPresent, len(serialStatus.RateRejects), len(serialStatus.RateAccepts)
 
 	if sessClamp || sessRejects > 0 {
 		t.Fatal("session-keyed gray-box state orphaned after the identity bind")
@@ -560,7 +540,7 @@ func TestBudgetClampInactiveEntriesAreDeleted(t *testing.T) {
 	}
 
 	t.Run("TTL-expired entry dropped on the next accept", func(t *testing.T) {
-		r := New(testLogger())
+		r := newClockedFaultRegistry(t)
 		p := makeTokenBudgetProvider(t, r, "ttl-drop", model, 100, grayBoxBudgetUsed, grayBoxBudgetMax, 100)
 		r.RecordCapacityReject(p.ID, model)
 		ageBudgetClamp(r, p.ID, model, defaultBudgetClampTTL+time.Second)
@@ -571,7 +551,7 @@ func TestBudgetClampInactiveEntriesAreDeleted(t *testing.T) {
 	})
 
 	t.Run("budgetless-armed entry dropped on the next accept", func(t *testing.T) {
-		r := New(testLogger())
+		r := newClockedFaultRegistry(t)
 		p := makeSchedulerProvider(t, r, "budgetless-drop", model, 100) // no token budget
 		// A generic capacity reject during a budgetless window arms a
 		// never-gating entry (lifecycle misses no longer touch the clamp at
@@ -587,7 +567,7 @@ func TestBudgetClampInactiveEntriesAreDeleted(t *testing.T) {
 	})
 
 	t.Run("active entry survives accepts until the full release proof", func(t *testing.T) {
-		r := New(testLogger())
+		r := newClockedFaultRegistry(t)
 		p := makeTokenBudgetProvider(t, r, "active-keep", model, 100, grayBoxBudgetUsed, grayBoxBudgetMax, 100)
 		r.RecordCapacityReject(p.ID, model)
 		// Accept with a stale (pre-clamp) heartbeat: release unproven — the
@@ -615,7 +595,7 @@ func TestBudgetClampInactiveEntriesAreDeleted(t *testing.T) {
 // budget-armed clamp that gates for another TTL — exactly what the
 // budgetless-armed exemption forbids.
 func TestBudgetClampExpiredEntryDoesNotDonateBudgetState(t *testing.T) {
-	r := New(testLogger())
+	r := newClockedFaultRegistry(t)
 	const model = "gemma-4-26b-qat-4bit"
 	p := makeTokenBudgetProvider(t, r, "expired-donor", model, 100, grayBoxBudgetUsed, grayBoxBudgetMax, 100)
 

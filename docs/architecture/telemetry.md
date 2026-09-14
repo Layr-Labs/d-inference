@@ -320,7 +320,7 @@ and diagnostics; none of these queue packages depends on the HTTP server.
 
 Cache receipt diagnostics use `exact_cache.receipt` (Datadog) and
 `exact_cache_receipt_total` (admin metrics), with bounded `type`, `outcome`,
-and `reason` labels from `coordinator/registry/cache_receipt_result.go`. They
+and `reason` labels from `coordinator/registry/cachedirectory/result.go`. They
 distinguish rejected evidence from provider-reported hits. APNs recovery emits
 `code_attest.resume_proof_sent{basis:recent_apns|process_continuity}`,
 `code_attest.proof_verified{kind:apns|resume}` and

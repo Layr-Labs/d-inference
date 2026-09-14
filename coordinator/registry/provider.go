@@ -7,6 +7,8 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/faultstate"
+	"github.com/eigeninference/d-inference/coordinator/registry/providerwriter"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
@@ -90,7 +92,7 @@ type Provider struct {
 	// (drain_state.go). Guarded by p.mu.
 	drainingUntil    time.Time
 	Conn             *websocket.Conn
-	writer           *providerWriter
+	writer           *providerwriter.Writer
 	LastHeartbeat    time.Time
 	Stats            protocol.HeartbeatStats // lifetime counters shown to users
 	lastSessionStats protocol.HeartbeatStats // raw counters from the current provider process
@@ -288,14 +290,9 @@ type Provider struct {
 	// identity so the fault-tracking state (breakers/cooldowns) keys by identity
 	// and survives reconnect churn. Read-only after Register.
 	registry *Registry
-	// gate is this session's current routing-gate state (gate_state.go): the
-	// session-keyed gate from Register until attestation binds the stable
-	// identity, then the identity's gate. Atomic so the scan (under p.mu) and
-	// the recorders (without p.mu) read it without another lock; written only
-	// under r.gatesMu (attachSessionGate / bindStableFaultKey). nil for a bare
-	// test Provider — every gate read treats nil as "no state".
-	gate                 atomic.Pointer[gateState]
-	gateDisconnectedAtNS atomic.Int64
+	// faultSession is this exact connection generation's opaque identity binding.
+	// It is never copied after registration. The owner publishes all gate pointers.
+	faultSession faultstate.Session[*Provider]
 }
 
 // AddPending registers a pending request on this provider.

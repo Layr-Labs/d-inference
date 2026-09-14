@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/registry/faultstate"
 )
 
 // Tests for the gate index (gate_index.go): session → gate resolution through
@@ -40,15 +41,15 @@ func TestGateReadsAreNilSafe(t *testing.T) {
 	bare := &Provider{ID: "bare"}
 	g := reg.gateOf(bare)
 	now := time.Now()
-	if g != nil {
+	if g.Present() {
 		t.Fatalf("bare provider resolved to a gate: %+v", g)
 	}
-	if g.breakerOpenAt(now.UnixNano()) || g.ejectedAt(now.UnixNano()) || g.dispatchLoadCooled("m", now) ||
-		g.inferenceErrorCooled("m", "base", now) || g.capacityCooled("m", now) ||
-		g.budgetClampActive(reg.budgetClampCfg, "m", now, 0, false, now) {
+	if g.BreakerOpenAt(now.UnixNano()) || g.EjectedAt(now.UnixNano()) || g.DispatchLoadCooled("m", now) ||
+		g.InferenceErrorCooled("m", "base", now) || g.CapacityCooled("m", now) ||
+		g.BudgetClampActive("m", now, 0, false, now) {
 		t.Fatal("a nil gate must read as no state")
 	}
-	if pen, rate := g.capacityRatePenalty(reg.capacityRateCfg, "m", now); pen != 0 || rate != 0 {
+	if pen, rate := g.CapacityRatePenalty("m", now); pen != 0 || rate != 0 {
 		t.Fatal("a nil gate must carry no rate penalty")
 	}
 	if !reg.tryClaimCapacityProbe(bare, "m", now) || !reg.tryClaimCapacityProbe(nil, "m", now) {
@@ -77,7 +78,7 @@ func TestScanRevalidatesGateAcrossSharedRebind(t *testing.T) {
 	cases := []struct {
 		name   string
 		fault  func(reg *Registry, sessionID string)
-		read   func(g *gateState, now time.Time) bool // the unconfirmed read the scan used to make
+		read   func(g faultstate.View[*Provider], now time.Time) bool // the unconfirmed read the scan used to make
 		reason GateReason
 	}{
 		{
@@ -87,13 +88,13 @@ func TestScanRevalidatesGateAcrossSharedRebind(t *testing.T) {
 					reg.RecordProviderOutcome(id, false, 500, "internal error")
 				}
 			},
-			read:   func(g *gateState, now time.Time) bool { return g.breakerOpenAt(now.UnixNano()) },
+			read:   func(g faultstate.View[*Provider], now time.Time) bool { return g.BreakerOpenAt(now.UnixNano()) },
 			reason: GateBreaker,
 		},
 		{
 			name:   "dispatch-load cooldown",
 			fault:  func(reg *Registry, id string) { reg.RecordDispatchLoadFailure(id, model) },
-			read:   func(g *gateState, now time.Time) bool { return g.dispatchLoadCooled(model, now) },
+			read:   func(g faultstate.View[*Provider], now time.Time) bool { return g.DispatchLoadCooled(model, now) },
 			reason: GateDispatchLoadCooldown,
 		},
 	}
@@ -107,8 +108,8 @@ func TestScanRevalidatesGateAcrossSharedRebind(t *testing.T) {
 				pk := &attestation.VerificationResult{Valid: true, PublicKey: "PK-VIEW"}
 				p1.SetAttestationResult(pk)
 				p2.SetAttestationResult(pk)
-				shared := reg.lookupGateForKey("sekey:PK-VIEW")
-				if shared == nil || p1.gate.Load() != shared || p2.gate.Load() != shared {
+				shared := reg.faults.ViewForKey("sekey:PK-VIEW")
+				if !shared.Present() || !reg.gateOf(p1).SameGate(shared) || !reg.gateOf(p2).SameGate(shared) {
 					t.Fatal("both sessions must share the identity's gate")
 				}
 				tc.fault(reg, p1.ID)
@@ -130,14 +131,14 @@ func TestScanRevalidatesGateAcrossSharedRebind(t *testing.T) {
 
 				// Two scans load the shared gate, one per session...
 				view1, view2 := reg.gateViewOf(p1), reg.gateViewOf(p2)
-				if view1.g != shared || view2.g != shared {
+				if !view1.g.SameGate(shared) || !view2.g.SameGate(shared) {
 					t.Fatalf("views = %+v / %+v, want the shared gate", view1, view2)
 				}
 				// ...and p1 enriches to a serial before either reads it.
 				p1.SetAttestationResult(&attestation.VerificationResult{Valid: true, PublicKey: "PK-VIEW", SerialNumber: "SER-VIEW"})
-				target := p1.gate.Load()
-				if target == shared || target.key != "serial:SER-VIEW" || p2.gate.Load() != shared {
-					t.Fatalf("after the rebind p1 → %+v, p2 → %+v; want p1 on serial:SER-VIEW and p2 unmoved", target, p2.gate.Load())
+				target := reg.gateOf(p1)
+				if target.SameGate(shared) || target.Key() != "serial:SER-VIEW" || !reg.gateOf(p2).SameGate(shared) {
+					t.Fatalf("after the rebind p1 → %+v, p2 → %+v; want p1 on serial:SER-VIEW and p2 unmoved", target, reg.gateOf(p2))
 				}
 				// The race: the gate the scan holds now reads clean — the state
 				// moved with p1 and the shared source was reset for p2.
@@ -150,7 +151,7 @@ func TestScanRevalidatesGateAcrossSharedRebind(t *testing.T) {
 				if ok, reason := verdict(&view1); ok || reason != tc.reason {
 					t.Fatalf("p1's stale view verdict = (%v, %v), want gated by %v", ok, reason, tc.reason)
 				}
-				if view1.g != target || view1.rereads != 1 {
+				if !view1.g.SameGate(target) || view1.g.Rereads() != 1 {
 					t.Fatalf("p1's view after the verdict = %+v, want rebased on serial:SER-VIEW after one re-read", view1)
 				}
 				// p2's scan reads its own identity, which now has nothing: not
@@ -158,7 +159,7 @@ func TestScanRevalidatesGateAcrossSharedRebind(t *testing.T) {
 				if ok, reason := verdict(&view2); !ok || reason != GateReasonCount {
 					t.Fatalf("p2's view verdict = (%v, %v), want not gated — a rebind must not make the other session look faulty", ok, reason)
 				}
-				if view2.g != shared || view2.rereads != 0 {
+				if !view2.g.SameGate(shared) || view2.g.Rereads() != 0 {
 					t.Fatalf("p2's view after the verdict = %+v, want the shared gate, unmoved", view2)
 				}
 

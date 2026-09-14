@@ -1,9 +1,10 @@
 package registry
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/registry/cachedirectory"
 	"io"
 	"log/slog"
-	"math"
+
 	"strings"
 	"testing"
 	"time"
@@ -32,15 +33,15 @@ func testV2Attempt(
 	prompt protocol.PrefixCacheAnchor,
 ) {
 	now := time.Now()
-	tracker.mu.Lock()
-	tracker.storeAttemptLocked(nonce, cacheAttempt{
+
+	tracker.directory.RegisterAttempt(nonce, cacheAttempt{
 		RequestID:  "request-" + nonce,
 		ProviderID: "provider",
 		Model:      capability.ModelID,
 		CreatedAt:  now,
 		ExpiresAt:  now.Add(time.Minute),
 		V2:         true,
-		Plan: CachePlan{
+		Plan: cachedirectory.Plan{
 			ModelAggregateHash: capability.ModelAggregateHash,
 			PromptContractID:   capability.PromptContractID,
 			CacheScope:         "scope",
@@ -51,7 +52,7 @@ func testV2Attempt(
 		ExpectedPrompt:     prompt,
 		ExpectedBoundaries: map[int]string{prompt.TokenCount: prompt.ChainHash},
 	})
-	tracker.mu.Unlock()
+
 }
 
 func testV2Lookup(
@@ -96,98 +97,6 @@ func testV2Ready(
 		ReadyAnchors:               []protocol.PrefixCacheAnchor{prompt},
 		ExpectedPrefillTokensSaved: prompt.TokenCount,
 		StageMs:                    2,
-	}
-}
-
-func TestPrefixCacheV2RejectsReadyBeforeLookupAndReplay(t *testing.T) {
-	tracker := newCacheRoutingTracker(time.Minute, 2)
-	capability := testV2Capability("11111111-1111-1111-1111-111111111111")
-	prompt := protocol.PrefixCacheAnchor{
-		ChainHash:  strings.Repeat("c", 64),
-		TokenCount: int(promptcontract.BlockSize),
-	}
-	testV2Attempt(tracker, "nonce", capability, prompt)
-
-	if tracker.applyReadyV2("provider", capability, testV2Ready(
-		"nonce", capability, prompt, 1), time.Now()) {
-		t.Fatal("accepted ready before lookup")
-	}
-	if !tracker.applyLookupV2("provider", capability, testV2Lookup(
-		"nonce", capability, prompt, 1), time.Now()) {
-		t.Fatal("rejected valid lookup after rejected ready")
-	}
-	if !tracker.applyReadyV2("provider", capability, testV2Ready(
-		"nonce", capability, prompt, 2), time.Now()) {
-		t.Fatal("rejected valid ready")
-	}
-	if tracker.applyReadyV2("provider", capability, testV2Ready(
-		"nonce", capability, prompt, 2), time.Now()) {
-		t.Fatal("accepted replayed sequence")
-	}
-}
-
-func TestPrefixCacheV2IdentityProofAndEpochValidation(t *testing.T) {
-	tracker := newCacheRoutingTracker(time.Minute, 2)
-	oldCapability := testV2Capability("11111111-1111-1111-1111-111111111111")
-	newCapability := testV2Capability("22222222-2222-2222-2222-222222222222")
-	prompt := protocol.PrefixCacheAnchor{
-		ChainHash:  strings.Repeat("c", 64),
-		TokenCount: int(promptcontract.BlockSize),
-	}
-	testV2Attempt(tracker, "old", oldCapability, prompt)
-	mismatch := testV2Lookup("old", oldCapability, prompt, 1)
-	mismatch.PromptAnchor.ChainHash = strings.Repeat("d", 64)
-	if tracker.applyLookupV2("provider", oldCapability, mismatch, time.Now()) {
-		t.Fatal("accepted a prompt proof mismatch")
-	}
-	staleEpoch := testV2Lookup("old", oldCapability, prompt, 1)
-	staleEpoch.CacheEpoch = newCapability.CacheEpoch
-	if tracker.applyLookupV2("provider", oldCapability, staleEpoch, time.Now()) {
-		t.Fatal("accepted a stale attempt under a different epoch")
-	}
-	if !tracker.applyLookupV2("provider", oldCapability, testV2Lookup(
-		"old", oldCapability, prompt, 1), time.Now()) {
-		t.Fatal("identity rejection consumed sequence")
-	}
-
-	testV2Attempt(tracker, "new", newCapability, prompt)
-	if !tracker.applyLookupV2("provider", newCapability, testV2Lookup(
-		"new", newCapability, prompt, 1), time.Now()) {
-		t.Fatal("new epoch did not receive an independent sequence")
-	}
-}
-
-func TestPrefixCacheV2Bounds(t *testing.T) {
-	capability := testV2Capability("11111111-1111-1111-1111-111111111111")
-	prompt := protocol.PrefixCacheAnchor{
-		ChainHash:  strings.Repeat("c", 64),
-		TokenCount: int(promptcontract.BlockSize),
-	}
-	for name, mutate := range map[string]func(*protocol.PrefixCacheReadyV2Message){
-		"too many anchors": func(message *protocol.PrefixCacheReadyV2Message) {
-			message.ReadyAnchors = []protocol.PrefixCacheAnchor{prompt, prompt, prompt}
-		},
-		"nonfinite stage": func(message *protocol.PrefixCacheReadyV2Message) {
-			message.StageMs = math.Inf(1)
-		},
-		"oversized token count": func(message *protocol.PrefixCacheReadyV2Message) {
-			message.ReadyAnchors[0].TokenCount = cacheRoutingMaxReceiptTokens +
-				int(promptcontract.BlockSize)
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			tracker := newCacheRoutingTracker(time.Minute, 2)
-			testV2Attempt(tracker, name, capability, prompt)
-			if !tracker.applyLookupV2("provider", capability, testV2Lookup(
-				name, capability, prompt, 1), time.Now()) {
-				t.Fatal("setup lookup rejected")
-			}
-			message := testV2Ready(name, capability, prompt, 2)
-			mutate(message)
-			if tracker.applyReadyV2("provider", capability, message, time.Now()) {
-				t.Fatal("accepted out-of-bounds ready receipt")
-			}
-		})
 	}
 }
 
@@ -243,33 +152,24 @@ func TestPrefixCacheV2CapabilityEpochChangeClearsEvidence(t *testing.T) {
 		TokenCount: int(promptcontract.BlockSize),
 	}
 	testV2Attempt(registry.cacheRouting, "nonce", oldCapability, prompt)
-	registry.cacheRouting.v2Sequences[cacheV2SequenceKey{
-		ProviderID: provider.ID,
-		ModelID:    oldCapability.ModelID,
-		CacheEpoch: oldCapability.CacheEpoch,
-	}] = 4
-	registry.cacheRouting.upsertHolderLocked("epoch-holder", cacheHolder{
-		ProviderID: provider.ID,
-		ModelID:    oldCapability.ModelID,
-		CacheEpoch: oldCapability.CacheEpoch,
-		UpdatedAt:  time.Now(),
-		ExpiresAt:  time.Now().Add(time.Minute),
-	})
+	if !registry.cacheRouting.applyLookupV2(provider.ID, oldCapability, testV2Lookup("nonce", oldCapability, prompt, 4), time.Now()) ||
+		!registry.cacheRouting.applyReadyV2(provider.ID, oldCapability, testV2Ready("nonce", oldCapability, prompt, 5), time.Now()) {
+		t.Fatal("setup evidence rejected")
+	}
 
 	if err := registry.UpdatePrefixCacheCapabilities(
 		provider.ID, 2, []protocol.PrefixCacheV2Capability{newCapability}); err != nil {
 		t.Fatal(err)
 	}
-	registry.cacheRouting.mu.Lock()
-	defer registry.cacheRouting.mu.Unlock()
-	if len(registry.cacheRouting.attempts) != 0 ||
-		len(registry.cacheRouting.v2Sequences) != 0 {
+
+	if registry.cacheRouting.directory.Snapshot().Attempts != 0 ||
+		registry.cacheRouting.directory.Snapshot().Sequences != 0 {
 		t.Fatalf(
 			"epoch refresh retained evidence: attempts=%d sequences=%d",
-			len(registry.cacheRouting.attempts),
-			len(registry.cacheRouting.v2Sequences))
+			registry.cacheRouting.directory.Snapshot().Attempts,
+			registry.cacheRouting.directory.Snapshot().Sequences)
 	}
-	if got := registry.cacheRouting.holderRemoved[string(cacheHolderRemovalEpochChange)]; got != 1 {
+	if got := registry.cacheRouting.directory.LifecycleStatus().HolderRemoved[string(cacheHolderRemovalEpochChange)]; got != 1 {
 		t.Fatalf("epoch-change holder removals=%d, want 1", got)
 	}
 }

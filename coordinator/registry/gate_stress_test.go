@@ -51,21 +51,6 @@ func TestGateRecordersRaceRebindsAndSweeps(t *testing.T) {
 		t.Fatal("precondition: the cooled session's pair must be dispatch-load cooled")
 	}
 
-	backdateAll := func() {
-		reg.gatesMu.RLock()
-		gates := make([]*gateState, 0, len(reg.gates))
-		for _, g := range reg.gates {
-			gates = append(gates, g)
-		}
-		reg.gatesMu.RUnlock()
-		past := time.Now().Add(-gateIdleGrace - time.Minute)
-		for _, g := range gates {
-			g.mu.Lock()
-			g.touched = past
-			g.mu.Unlock()
-		}
-	}
-
 	const iters = 1500
 	var wg sync.WaitGroup
 	recorders := []func(i int){
@@ -128,7 +113,7 @@ func TestGateRecordersRaceRebindsAndSweeps(t *testing.T) {
 				cooled.mu.Lock()
 				ok, reason := reg.gateStateReasonLocked(&view, model, RequestTraits{}, time.Now(), false, false)
 				cooled.mu.Unlock()
-				if view.rereads >= gateRelockMaxRetries {
+				if view.g.Rereads() >= gateRelockMaxRetries {
 					bounded.Add(1)
 					continue
 				}
@@ -148,7 +133,6 @@ func TestGateRecordersRaceRebindsAndSweeps(t *testing.T) {
 				return
 			default:
 			}
-			backdateAll()
 			reg.sweepGates(time.Now())
 		}
 	}()
@@ -156,17 +140,12 @@ func TestGateRecordersRaceRebindsAndSweeps(t *testing.T) {
 	close(stop)
 	<-sweeperDone
 
-	reg.gatesMu.RLock()
-	for key, g := range reg.gates {
-		g.mu.Lock()
-		retired := g.retired
-		g.mu.Unlock()
-		if retired {
-			t.Errorf("retired gate %q is still in the index", key)
+	for _, row := range reg.faults.IndexStatus() {
+		if row.Retired {
+			t.Errorf("retired gate %q is still in the index", row.Key)
 		}
 	}
-	reg.gatesMu.RUnlock()
-	if g := p2.gate.Load(); g == nil || g.key != "sekey:PK-STRESS" || rawGateForKey(reg, "sekey:PK-STRESS") != g {
+	if g := reg.gateOf(p2); !g.Present() || g.Key() != "sekey:PK-STRESS" || !reg.faults.FiledView("sekey:PK-STRESS").SameGate(g) {
 		t.Fatalf("p2's binding was disturbed: %+v", g)
 	}
 	if n := admitted.Load(); n != 0 {
@@ -175,7 +154,7 @@ func TestGateRecordersRaceRebindsAndSweeps(t *testing.T) {
 	if n := bounded.Load(); n != 0 {
 		t.Logf("%d routing reads hit the re-read bound", n)
 	}
-	if g := sibling.gate.Load(); g == nil || g.key != "sekey:PK-COOLED" || rawGateForKey(reg, "sekey:PK-COOLED") != g {
+	if g := reg.gateOf(sibling); !g.Present() || g.Key() != "sekey:PK-COOLED" || !reg.faults.FiledView("sekey:PK-COOLED").SameGate(g) {
 		t.Fatalf("the cooled sibling's binding was disturbed: %+v", g)
 	}
 	if !reg.dispatchLoadCooled(cooled.ID, model, time.Now()) {
@@ -183,9 +162,8 @@ func TestGateRecordersRaceRebindsAndSweeps(t *testing.T) {
 	}
 	p1.SetAttestationResult(enriched)
 	reg.RecordProviderOutcome(p1.ID, false, 500, "internal error")
-	readGateForSession(reg, p1.ID, func(g *gateState) {
-		if g == nil || g.key != "serial:SER-STRESS" || g.outcomes == nil {
-			t.Fatalf("a quiescent fault must land on p1's current gate: %+v", g)
-		}
-	})
+	s := reg.faults.StatusForSession(p1.ID, model, "base")
+	if !s.Found || s.Key != "serial:SER-STRESS" || !s.BreakerPresent {
+		t.Fatalf("a quiescent fault must land on p1's current gate: %+v", s)
+	}
 }

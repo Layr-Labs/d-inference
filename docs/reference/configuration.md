@@ -115,7 +115,7 @@ Trust floor, model routing and per-request quality:
 | `EIGENINFERENCE_PREFILL_DECODE_RATIO` | float > 0 | `12.0` | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`); `coordinator/registry/scheduler.go` (`SetPrefillToDecodeRatio`) | Prefill-to-decode speed ratio in the TTFT estimate. |
 | `EIGENINFERENCE_PROMPT_CALIBRATION` | `family:factor,…` (factors ≥ 1.0) | built-in table (`gpt-oss:1.3`) | `coordinator/api/prompt_calibration.go` (`SetPromptContextCalibrationFromEnv`) | Replaces the per-family prompt-token calibration used by the context gate. |
 | `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES` | `model=upstream_ms,…` (`0`/`off` removes) | built-in table | `coordinator/modelpolicy/first_content_deadline.go` (`SetFirstContentBasesFromEnv`) | Overrides exact-model first-content deadline bases. |
-| `EIGENINFERENCE_HEALTH_EJECTION` | `off`/`0`/`false`/`no` disables | on | `coordinator/registry/health_ejection_switch.go` (`healthEjectionSwitch`, parsed once at package init); `coordinator/registry/health_ejection.go` (`healthEjectionEnabled`) | Kill switch for provider health ejection; see [`../architecture/routing.md`](../architecture/routing.md). |
+| `EIGENINFERENCE_HEALTH_EJECTION` | `off`/`0`/`false`/`no` disables | on | `coordinator/registry/health_ejection_switch.go` (`healthEjectionSwitch`, parsed once at package init; `healthEjectionEnabled`) | Kill switch for provider health ejection; see [`../architecture/routing.md`](../architecture/routing.md). |
 | `EIGENINFERENCE_DISABLE_CLIENT_ERROR_STOP` | bool | `false` | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`) | Lets deterministic provider 4xx errors fail over instead of stopping the dispatch ladder. |
 
 TTFT admission and dispatch termination:
@@ -144,13 +144,13 @@ Capacity breakers:
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_BUDGET_CLAMP` | bool | `true` | `coordinator/registry/budget_clamp.go` | Clamp admission to a provider whose reported token budget is stale after a capacity 503. |
-| `EIGENINFERENCE_BUDGET_CLAMP_TTL_SECONDS` | seconds | `300` | `coordinator/registry/budget_clamp.go` | Fail-open bound on how long a clamp can hold. |
-| `EIGENINFERENCE_CAPACITY_COOLDOWN_THRESHOLD` | integer (`0` disables) | `5` | `coordinator/registry/capacity_cooldown.go` | Consecutive capacity rejects before a (provider, model) pair is cooled down. |
-| `EIGENINFERENCE_CAPACITY_COOLDOWN_WINDOW_SECONDS` | seconds | `60` | `coordinator/registry/capacity_cooldown.go` | Window in which rejects count toward the threshold. |
-| `EIGENINFERENCE_CAPACITY_COOLDOWN_TTL_SECONDS` | seconds | `120` | `coordinator/registry/capacity_cooldown.go` | Initial cooldown; doubles on each failed probe. |
-| `EIGENINFERENCE_CAPACITY_COOLDOWN_MAX_TTL_SECONDS` | seconds | `600` | `coordinator/registry/capacity_cooldown.go` | Ceiling of the exponential cooldown. |
-| `EIGENINFERENCE_CAPACITY_RATE_PENALTY_MS` | milliseconds (≤ 0 disables) | `15000` | `coordinator/registry/capacity_rate.go` | Scores a penalty proportional to a provider's recent capacity-reject rate. |
+| `EIGENINFERENCE_BUDGET_CLAMP` | bool | `true` | `coordinator/registry/faultstate/budget_clamp.go` | Clamp admission to a provider whose reported token budget is stale after a capacity 503. |
+| `EIGENINFERENCE_BUDGET_CLAMP_TTL_SECONDS` | seconds | `300` | `coordinator/registry/faultstate/budget_clamp.go` | Fail-open bound on how long a clamp can hold. |
+| `EIGENINFERENCE_CAPACITY_COOLDOWN_THRESHOLD` | integer (`0` disables) | `5` | `coordinator/registry/faultstate/capacity_policy.go` | Consecutive capacity rejects before a (provider, model) pair is cooled down. |
+| `EIGENINFERENCE_CAPACITY_COOLDOWN_WINDOW_SECONDS` | seconds | `60` | `coordinator/registry/faultstate/capacity_policy.go` | Window in which rejects count toward the threshold. |
+| `EIGENINFERENCE_CAPACITY_COOLDOWN_TTL_SECONDS` | seconds | `120` | `coordinator/registry/faultstate/capacity_policy.go` | Initial cooldown; doubles on each failed probe. |
+| `EIGENINFERENCE_CAPACITY_COOLDOWN_MAX_TTL_SECONDS` | seconds | `600` | `coordinator/registry/faultstate/capacity_policy.go` | Ceiling of the exponential cooldown. |
+| `EIGENINFERENCE_CAPACITY_RATE_PENALTY_MS` | milliseconds (≤ 0 disables) | `15000` | `coordinator/registry/faultstate/capacity_rate.go` | Scores a penalty proportional to a provider's recent capacity-reject rate. |
 
 Reservation commit lock:
 
@@ -208,7 +208,7 @@ Cache-aware routing (semantics in [`../architecture/cache-aware-routing.md`](../
 | `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` | JSON array of exact identity triples; at most 64 KiB / 128 entries | unset (unrestricted eligibility) | `coordinator/registry/cache_artifact_allowlist.go` (`readCacheRoutingArtifacts`, `newCacheArtifactAllowlist`) | Restricts network cache participation before cohort/QPS/sidecar work; `[]` denies all. Invalid configuration refuses startup, including while mode is `off`. |
 | `EIGENINFERENCE_CACHE_ROUTING_PERCENT` | float (0, 100] | `100` | `coordinator/registry/config.go` (`envStrictFloat`) | Share of eligible requests that use cache routing; malformed values refuse startup. |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS` | float 0–1,000,000 | `0` (unlimited) | `coordinator/registry/config.go` (`envStrictFloat`) | Rate limit on cache-plan computation. |
-| `EIGENINFERENCE_CACHE_ROUTING_TTL` | Go duration ≥ 0 | `10m` | `coordinator/registry/config.go` | SSD holder lifetime; resident holders use the smaller of this value and `cacheRoutingMemoryTTL = 30 * time.Second` (`coordinator/registry/cache_tiers.go`, `receiptTTL`). |
+| `EIGENINFERENCE_CACHE_ROUTING_TTL` | Go duration ≥ 0 | `10m` | `coordinator/registry/config.go` | SSD holder lifetime; resident holders use the smaller of this value and `MemoryTTL = 30 * time.Second` (`coordinator/registry/cachedirectory/tiers.go`, `receiptTTL`; `coordinator/registry/cachedirectory/limits.go`). |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS` | integer 1–32 | `4` | `coordinator/registry/config.go` | Maximum machines per exact content prefix and tier, across provider epochs. |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS` | optional float 0–10000 | unset/blank | `coordinator/registry/cache_score_config.go` (`optionalCacheScoreLimit`) | Optional millisecond cap on avoidable-prefill score credit; explicit `0` grants no credit. |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION` | optional float 0–1 | unset/blank | `coordinator/registry/cache_score_config.go` (`optionalCacheScoreLimit`) | Optional cap as a fraction of baseline total cost, alongside the prefill-work bound; explicit `0` grants no credit. |

@@ -26,7 +26,7 @@ func TestDelayedTrailingPlanPreservesNewWindowHeartbeat(t *testing.T) {
 	stub := installTrailingTimerStub(reg)
 	t0 := time.Now()
 	now := t0
-	reg.swapPlanGate.now = func() time.Time { return now }
+	stub.now = func() time.Time { return now }
 	reg.triggerModelSwapsFromHeartbeat(t0)
 	reg.triggerModelSwapsFromHeartbeat(t0.Add(100 * time.Millisecond))
 	if len(stub.fire) != 1 {
@@ -64,7 +64,7 @@ func TestDelayedTrailingPlanPreservesNewWindowHeartbeat(t *testing.T) {
 	default:
 		t.Fatal("no reload after the delayed timer's follow-up")
 	}
-	if reg.swapPlanGate.planRuns() != 3 || reg.swapPlanGate.trailingArmed() {
+	if reg.swapPlanGate.Runs() != 3 || reg.swapPlanGate.TrailingArmed() {
 		t.Fatal("trailing callback did not finish the third plan")
 	}
 }
@@ -114,7 +114,7 @@ func TestHeartbeatSwapPlanClaimsAfterSlowQueueDrain(t *testing.T) {
 	warmProvider.mu.Lock()
 	heartbeatAt := warmProvider.LastHeartbeat
 	warmProvider.mu.Unlock()
-	if ok, _ := reg.swapPlanGate.claim(heartbeatAt); !ok {
+	if ok, _ := reg.swapPlanGate.Claim(heartbeatAt); !ok {
 		t.Fatal("precondition: another plan opens a window at the heartbeat timestamp")
 	}
 	if remaining := time.Until(heartbeatAt.Add(modelSwapPlanInterval + time.Millisecond)); remaining > 0 {

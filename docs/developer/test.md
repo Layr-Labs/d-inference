@@ -178,6 +178,58 @@ completion. The unchanged fixture also passes against the original API owner.
 `cancel_lifecycle_test.go` checks cancellation through real provider writers and
 consumes the same terminal receipts as ingress; tracker internals stay private.
 
+Capacity arithmetic and version-interpretation tests live beside their owners
+in `coordinator/registry/admission/` and `coordinator/registry/providerversion/`.
+Concurrent reservation, fleet preflight and routing simulations remain in the
+registry and `routingsim` packages. From the repository root,
+`GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/...` runs all of them.
+
+Cache-attempt ownership tests in `coordinator/registry/cacheattempt/` verify
+receipt cleanup outside the preparation mutex and ticket-bound legacy metadata.
+The registry retains concurrent reconfiguration/cancellation, connection
+replacement, authenticated late receipts and accepted-write cutoff fixtures.
+Directory proof and eviction tests live in `coordinator/registry/cachedirectory/`;
+registry fixtures establish holders through validated receipt transactions and
+observe copied status instead of sharing private maps or locks. The full registry
+command above includes all these groups. To check the affected
+HTTP/writer and terminal telemetry paths as well, run from the repository root:
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run '^(Test.*Cache|Test.*ProviderInference|Test.*ProviderWire|Test.*CacheTerminal|Test.*CacheOpportunity)' -count=1
+```
+
+Model-load command concurrency tests live in `coordinator/registry/modelloads/`.
+Registry tests retain the exact-deadline, backoff, session-disconnect, capability
+revocation and trailing-timer fixtures; the API tests retain unsolicited-status
+rejection and warm-state publication. Run the affected groups from the repository
+root:
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/... ./coordinator/api -run 'Test.*(ModelLoad|ModelSwap|SwapPlan|Trailing|PendingLoad|WarmPool|LoadModel|StableFault|DisconnectKeepsStable|CommandsReserve)' -count=1
+```
+
+Warm-pool controller concurrency tests live beside `Controller` in
+`coordinator/registry/warmpool/`. The registry retains real fleet eligibility,
+reservation, private action JSON and publication-before-send checks in
+`coordinator/registry/warm_pool_publication_test.go`. The existing root warm-pool,
+headroom and fleet benchmark fixtures retain their outcome assertions.
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/... -run 'Test.*(WarmPool|WarmTarget|ControllerWarms|ControllerConfigure|DedicatedWarm|MemoryBackoff)' -count=1
+```
+
+Provider transport tests live in `coordinator/registry/providerwriter/`: queue
+priority and saturation, deferred handoff/cancellation, whole-message watchdog,
+raw fragment boundaries and peer-ping liveness. Real `Provider` write/control
+ordering and model-load queue-rejection cleanup remain in the registry. Its
+queue fixture fills the private data lane through accepted writes and cancellation;
+`provider_writer_handoff_test.go` checks submitting-owner reentry before exposure
+and unchanged fragmented message/control ordering.
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/... -run 'TestProviderWrit|TestWriteTextThen|TestSendModelLoadActionsClearsPendingWhenWriterQueueFull|TestUnfragmentedConnWriteStallsPeerPing' -count=1
+```
+
 Run prediction telemetry checks from the repository root:
 
 ```bash

@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { VerificationModeProvider, useVerificationMode } from "./verification-mode";
-import { STORAGE_KEYS } from "@/lib/constants";
+import { STORAGE_KEYS } from "@/lib/storage-keys";
 
 // Records the mode on every render so a test can assert the FIRST render is
 // deterministic (server-safe) even when localStorage diverges. Reading

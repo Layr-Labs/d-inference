@@ -24,7 +24,7 @@ struct SwiftJinjaCompatibilityTests {
         struct Case: Decodable { let template: String; let expected: String }
         struct Corpus: Decodable { let date: String; let cases: [Case] }
         var root = URL(fileURLWithPath: #filePath)
-        for _ in 0 ..< 4 { root.deleteLastPathComponent() }
+        for _ in 0 ..< 6 { root.deleteLastPathComponent() }
         let corpus = try JSONDecoder().decode(Corpus.self, from: Data(contentsOf:
             root.appendingPathComponent("fixtures/prompt-contract/v1/request_date_vectors.json")))
         let clock = try #require(PromptRenderDate(corpus.date))

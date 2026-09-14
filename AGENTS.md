@@ -36,7 +36,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── saferun/          panic-safe goroutine runners
 ├── stateexport/      consistent encrypted archive of MicroMDM (+ legacy step-ca) state (migration)
 ├── store/            in-memory or Postgres persistence
-├── telemetry/        telemetry event emitter (process logs + Datadog forwarding)
+├── telemetry/        event emitter, metrics/, routequeue/, profilequeue/, outcomequeue/
 ├── datadog/          Datadog APM / DogStatsD / Logs API client
 ├── deploy/           container entrypoint (start.sh)
 └── internal/e2e/     X25519 request-encryption helpers (+ cross-compat/tamper tests)

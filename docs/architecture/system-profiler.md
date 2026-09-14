@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-13 · commit `2b6a10301`
+> Last updated: 2026-09-13 · commit `a3493b5ac`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -28,7 +28,7 @@ per-token cost, or a free-form provider string to storage.
 
 | Artefact | Grain | Producer | Sink | Retention |
 |---|---|---|---|---|
-| `request_profiles` row | dispatched attempt (pre-dispatch rejections never produce one) | stamps on `registry.RequestProfile` / `AttemptProfile`, flattened by `buildProfileRecord` (`coordinator/api/profiler_record.go`) | `profileSink` (`coordinator/api/profiler_sink.go`) → multi-row INSERT | `profileRetainProfiles` — value in [`../reference/telemetry-inventory.md#coordinator-per-request-records-postgres`](../reference/telemetry-inventory.md#coordinator-per-request-records-postgres) |
+| `request_profiles` row | dispatched attempt (pre-dispatch rejections never produce one) | stamps on `registry.RequestProfile` / `AttemptProfile`, flattened by `buildProfileRecord` (`coordinator/api/profiler_record.go`) | `profilequeue.Sink` (`coordinator/telemetry/profilequeue/queue.go`) → multi-row INSERT | `profileRetainProfiles` — value in [`../reference/telemetry-inventory.md#coordinator-per-request-records-postgres`](../reference/telemetry-inventory.md#coordinator-per-request-records-postgres) |
 | `fleet_snapshots` row | (provider session, slot) per 60 s + one `provider_id = 'coordinator'` row | `registry.FleetSample`, `CoordinatorSample` (`coordinator/registry/fleet_sample.go`) | sampler goroutine, `pgx.CopyFrom` (`coordinator/store/postgres_profiles.go`) | `profileRetainFleet` — same page |
 | `X-Timing` additive keys | committed response | `writeTimingHeaderWithProfile` (`coordinator/api/profiler_dispatch.go`) | response header ([`../reference/api-contracts.md#headers`](../reference/api-contracts.md#headers)) | n/a |
 | Datadog counters | process | [Operations](#operations) | DogStatsD / HTTPS series | n/a |
@@ -301,12 +301,20 @@ producer status.
 | always recorded | `final_status != "success"`; `first_content_us > profileSlowFirstContent = 5 s`; `finalized_us > profileSlowTotal = 30 s`; `attempts_total > 1`; `backup_launched`; `timing_anomaly`; `client_gone_phase` set; `provider_profile_valid = false` with a reason other than `absent` |
 | `timing_anomaly` | any decreasing pair along `handler_entry_us, parsed_us, reserved_us, attempt_start_us, reserve_done_us, encrypted_us, write_submitted_us, write_dequeued_us, write_done_us, first_chunk_ingress_us, first_content_us, complete_ingress_us` (`profileTimingAnomaly`); never rejects the row |
 | finalize | two halves (handler, terminal) under `sync.Once`; a fallback timer `profileFallbackGrace = defaultTerminalSettleGrace + 1 s` = 31 s arms when the handler half completes first and on expiry sets `provider_outcome = no_terminal`; a provider frame that owns the terminal claim completes the terminal half itself, the route-outcome funnel completes it only when no frame owns it (`CompleteTerminalUnlessClaimed`) |
-| sink | own channel of `defaultTelemetrySinkCapacity = 4096`, one worker, non-blocking submit; drop ⇒ `telemetry.sink_dropped{sink:profile}` and a warning at powers of ten; batches of `profileBatchMax = 64` or `profileBatchWait = 250 ms` |
+| sink | own channel of `defaultTelemetrySinkCapacity = 4096`, one worker, non-blocking submit; drop ⇒ `telemetry.sink_dropped{sink:profile}` and a warning at powers of ten; batches of `batchMax = 64` or `batchWait = 250 * time.Millisecond` (`coordinator/telemetry/profilequeue/worker.go`) |
 | store write | multi-row INSERT padded to `profileInsertShapes = {1, 8, 64}`, `ON CONFLICT (request_id, attempt) DO NOTHING`, 5 s context (`RecordRequestProfiles`, `coordinator/store/postgres_profiles.go`) |
 | fleet write | never on the sink: one `CopyFrom` per 60 s tick, 10 s context; row-count mismatch is an error |
 | retention | `PruneTelemetry`: per table, `cutoff = MAX(id) WHERE time < before` via the time index, then `DELETE … WHERE id >= lo AND id < hi` in `profilePruneBatch = 5000` windows, each its own transaction with `SET LOCAL lock_timeout = '2s'`; hourly (`profilePruneInterval`), 10 min context; **runs even when the profiler is off** so old rows stay bounded |
 | memory store | implements the same `TelemetryStore` methods and prunes its slices (`coordinator/store/interface_domains.go`; `TestMemoryPruneCapsProfilerSlices`) |
 | `request_waterfall` view | not in the boot migrations; apply by hand with `psql "$EIGENINFERENCE_DATABASE_URL" -f coordinator/store/migrations/request_waterfall.sql`; explicit column list, `LEFT JOIN inference_routes ON (request_id, attempt)`; re-run after adding a column (`TestRequestWaterfallViewListsEveryProfileColumn`) |
+
+The profile queue owns its channel, worker and drop/write counters. The API
+adapter supplies record construction, sampling, metrics and a writer resolved
+at flush time (`coordinator/api/profiler_sink.go`, `newProfileSink`). `Close`
+signals this worker without waiting: it flushes a batch already being collected,
+but does not guarantee a drain of buffered jobs. The compact outcome queue has
+its own [bounded drain policy](request-accounting.md); neither queue shares the
+routing buffer.
 
 ### Operations
 
@@ -442,7 +450,8 @@ ring or `DaemonState` mirror.
 | Knobs, constants, sampling, middleware stamps | `coordinator/api/profiler.go` |
 | Row builder, folds, always-record, anomaly | `coordinator/api/profiler_record.go` |
 | Provider profile decode and validation | `coordinator/api/profiler_provider.go` |
-| Sink | `coordinator/api/profiler_sink.go`, `coordinator/telemetry/routequeue/` |
+| Profile queue and API adapter | `coordinator/telemetry/profilequeue/` (`Sink`, `Submit`, `Close`); `coordinator/api/profiler_sink.go` (`newProfileSink`, `buildQueuedProfile`) |
+| Routing queue | `coordinator/telemetry/routequeue/` (`Sink`, `CloseAndWait`) |
 | Fleet sampler, retention loop, metrics | `coordinator/api/profiler_fleet.go`, `coordinator/registry/fleet_sample.go` |
 | Dispatch hooks, `X-Timing`, relay stamps | `coordinator/api/profiler_dispatch.go` |
 | Admin endpoints | `coordinator/api/profiler_admin.go`, `coordinator/api/admin_telemetry.go` |

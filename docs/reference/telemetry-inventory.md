@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-13 · commit `2b6a10301`
+> Last updated: 2026-09-13 · commit `a3493b5ac`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -230,7 +230,7 @@ Datadog's; nothing is stored locally.
 | `providers`, `provider_reputation` | one row per provider | `UpsertProvider`, `UpsertReputation`, throttled to 30 s | none |
 | `provider_sessions` | one row per WebSocket session | `OpenProviderSession`, `TouchProviderSession`, `CloseProviderSession` | none |
 | `provider_log_reports` | one row per uploaded bundle | `StoreLogReport` | none |
-| `request_profiles` | one row per `(request_id, attempt)`, sampled | profile sink (`coordinator/api/profiler_sink.go`), batches of 64 or 250 ms | 14 d, hourly sweep, 5000-id windows |
+| `request_profiles` | one row per `(request_id, attempt)`, sampled | `profilequeue.Sink` (`coordinator/telemetry/profilequeue/worker.go`), batches of 64 or 250 ms | 14 d, hourly sweep, 5000-id windows |
 | `fleet_snapshots` | one row per provider slot plus one `provider_id = "coordinator"` row | fleet sampler (`coordinator/api/profiler_fleet.go`) every 60 s | 30 d, same sweep |
 
 The retention sweep (`PruneTelemetry`, `coordinator/store/postgres_profiles.go`)

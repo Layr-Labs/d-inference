@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `1f52a71fb`
+> Last updated: 2026-09-13 · commit `a3493b5ac`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -84,6 +84,15 @@ output capacity. The HTTP cases cover both a feasible alternative behind a
 long pending prompt and a long arrival completing behind a short pending prompt.
 They use a real isolated coordinator and encrypted WebSocket providers with
 scripted compute. It does not require model downloads or production access.
+
+Queue tests live with their owners in `coordinator/telemetry/profilequeue/`
+and `coordinator/telemetry/outcomequeue/`. They cover nonblocking construction,
+batch limits, quiet flushing, write failures and the outcome drain deadline.
+The API keeps the live store-binding and full HTTP/accounting fixtures:
+
+```bash
+go test -race ./coordinator/telemetry/profilequeue ./coordinator/telemetry/outcomequeue ./coordinator/api -run 'Profile|RequestOutcome|PersistenceSinks|FleetSample'
+```
 
 The CI formatting step checks tracked Go files with `gofmt`. It excludes
 `docs/reports/evidence/`, whose captured source bytes are immutable and bound

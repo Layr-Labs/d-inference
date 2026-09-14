@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/payments"
@@ -45,7 +46,7 @@ func testWithdrawServer(t *testing.T) (*Server, *store.MemoryStore) {
 // withPrivyUser returns a request with the given user set in context, simulating
 // Privy authentication without requiring JWT verification.
 func withPrivyUser(r *http.Request, user *store.User) *http.Request {
-	ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
+	ctx := requestcontext.WithAccountID(r.Context(), user.AccountID)
 	ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
 	return r.WithContext(ctx)
 }

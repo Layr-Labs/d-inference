@@ -77,7 +77,7 @@ func planWiringProvider(t *testing.T, reg *registry.Registry, id, model string, 
 
 // planWiringPlan reserves through the production scan to obtain a real
 // DispatchPlan, then releases the primary reservation (the routability-probe
-// idiom, helpers_ws_test.go findRoutableProvider).
+// idiom, provider_websocket_helpers_test.go findRoutableProvider).
 func planWiringPlan(t *testing.T, reg *registry.Registry, model string) *registry.DispatchPlan {
 	t.Helper()
 	probe := &registry.PendingRequest{

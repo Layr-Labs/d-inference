@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-14 · commit `303ed6d30`
+> Last updated: 2026-09-14 · commit `0fca530ee`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -184,6 +184,12 @@ profile wins. Everything else runs on the profile-sink worker
 (`decodeInferenceProfile`, `coordinator/telemetry/profiler/provider_decode.go`;
 `Builder.applyProviderProfile`, `coordinator/telemetry/profiler/provider_record.go`)
 after the terminal has been fully processed.
+
+The stored projection owns its optional scalar values. `cloneProfileValue`
+preserves `nil`, `false` and zero while copying each scalar; `profileBounds`
+performs the separate range checks
+(`coordinator/telemetry/profiler/provider_bounds.go`). The wire struct, stored
+profile and queryable columns keep their existing field mappings and nullability.
 
 | Step | Rule | Outcome (`provider_profile_invalid_reason`) |
 |---|---|---|

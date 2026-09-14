@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-14 · commit `303ed6d30`
+> Last updated: 2026-09-14 · commit `fe8edab67`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -80,7 +80,7 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/store/contracts` | Domain records and interfaces (`Store`, composed `BillingStore` and `ProviderStore`). |
 | `coordinator/store/memory`, `coordinator/store/postgres` | Backend-owned locks, pool, transactions and domain operations; `postgres/schema` assembles ordered startup DDL. |
 | `coordinator/store/cache` | Bounded user/model caches (`Store`, `Unwrap`) with domain invalidation and generation fences. |
-| `coordinator/protocol/doc.go` | Wire records grouped by registration, heartbeat, inference, models, cache and attestation; `coordinator/protocol/messages.go` (`DecodeProviderMessage`) owns the envelope. [Protocol source map](../../reference/protocol-messages.md#source-files). |
+| `coordinator/protocol/doc.go` | Wire records grouped by registration, heartbeat, inference, models, cache and attestation; `coordinator/protocol/provider_message.go` (`DecodeProviderMessage`) owns the envelope. [Protocol source map](../../reference/protocol-messages.md#source-files). |
 | `coordinator/internal/e2e` | NaCl Box (X25519 + XSalsa20-Poly1305) for coordinator↔provider and sender↔coordinator sealing. |
 | `coordinator/attestation` | Secure Enclave attestation verification and Apple MDA certificate chains. |
 | `coordinator/apns` | APNs push attestor for code identity. |

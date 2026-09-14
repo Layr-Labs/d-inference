@@ -52,23 +52,9 @@ func (b *profileBounds) count(p *int) *int {
 	return &v
 }
 
-func cloneBoolPtr(p *bool) *bool {
-	if p == nil {
-		return nil
-	}
-	v := *p
-	return &v
-}
-
-func cloneInt64Ptr(p *int64) *int64 {
-	if p == nil {
-		return nil
-	}
-	v := *p
-	return &v
-}
-
-func cloneIntPtr(p *int) *int {
+// cloneProfileValue preserves an absent scalar and gives each projection its
+// own value. Range-checked numerics still go through profileBounds.
+func cloneProfileValue[T bool | int | int64](p *T) *T {
 	if p == nil {
 		return nil
 	}

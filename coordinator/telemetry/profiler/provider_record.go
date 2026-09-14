@@ -59,27 +59,27 @@ func (b Builder) applyProviderProfile(rec *store.RequestProfileRecord, ap *regis
 		return
 	}
 
-	rec.ProvTotalUS = cloneInt64Ptr(stored.TotalUS)
-	rec.ProvFirstDeltaUS = cloneInt64Ptr(stored.FirstDeltaUS)
-	rec.ProvEngineSubmitUS = cloneInt64Ptr(stored.EngineSubmitUS)
-	rec.ProvEngineAdmittedUS = cloneInt64Ptr(stored.EngineAdmittedUS)
+	rec.ProvTotalUS = cloneProfileValue(stored.TotalUS)
+	rec.ProvFirstDeltaUS = cloneProfileValue(stored.FirstDeltaUS)
+	rec.ProvEngineSubmitUS = cloneProfileValue(stored.EngineSubmitUS)
+	rec.ProvEngineAdmittedUS = cloneProfileValue(stored.EngineAdmittedUS)
 	rec.ProvPromptPrepUS = spanUS(stored.PromptPrepStartUS, stored.PromptPrepEndUS)
 	rec.ProvLoadWaitUS = spanUS(stored.LoadWaitStartUS, stored.LoadWaitEndUS)
-	rec.ProvLoadCold = cloneBoolPtr(stored.LoadCold)
-	rec.ProvRunningAtAdmit = cloneIntPtr(stored.RunningAtAdmit)
-	rec.ProvWaitingAtAdmit = cloneIntPtr(stored.WaitingAtAdmit)
-	rec.ProvKVBytesInUseAtAdmit = cloneInt64Ptr(stored.KVBytesInUseAtAdmit)
+	rec.ProvLoadCold = cloneProfileValue(stored.LoadCold)
+	rec.ProvRunningAtAdmit = cloneProfileValue(stored.RunningAtAdmit)
+	rec.ProvWaitingAtAdmit = cloneProfileValue(stored.WaitingAtAdmit)
+	rec.ProvKVBytesInUseAtAdmit = cloneProfileValue(stored.KVBytesInUseAtAdmit)
 	rec.ProvCancelStage = string(stored.CancelStage)
 	if e := stored.Engine; e != nil {
-		rec.EngQueueWaitNS = cloneInt64Ptr(e.AdmittedNS)
-		rec.EngFirstTokenNS = cloneInt64Ptr(e.FirstTokenNS)
-		rec.EngPromptComputedNS = cloneInt64Ptr(e.PromptComputedNS)
-		rec.EngPrefillChunks = cloneIntPtr(e.PrefillChunks)
-		rec.EngDecodeSteps = cloneIntPtr(e.DecodeSteps)
-		rec.EngMTPAccepted = cloneIntPtr(e.MTPAccepted)
+		rec.EngQueueWaitNS = cloneProfileValue(e.AdmittedNS)
+		rec.EngFirstTokenNS = cloneProfileValue(e.FirstTokenNS)
+		rec.EngPromptComputedNS = cloneProfileValue(e.PromptComputedNS)
+		rec.EngPrefillChunks = cloneProfileValue(e.PrefillChunks)
+		rec.EngDecodeSteps = cloneProfileValue(e.DecodeSteps)
+		rec.EngMTPAccepted = cloneProfileValue(e.MTPAccepted)
 		rec.EngFinishReason = string(e.FinishReason)
 	}
-	rec.SleptUS = cloneInt64Ptr(stored.SleptUS)
+	rec.SleptUS = cloneProfileValue(stored.SleptUS)
 
 	// Consistency flag (never invalidates). Two checks, each evaluated
 	// independently and only when both of its inputs are present:

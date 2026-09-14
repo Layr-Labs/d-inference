@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-14 · commit `78526e60f`
+> Last updated: 2026-09-14 · commit `280ebb2ae`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -97,6 +97,15 @@ lists every name).
 | `provider.load_model_status_rejected` | count | `reason:invalid_status`, `no_pending_command` | `load_model_status` frame that did not match an outstanding `load_model` |
 | `attestation.challenges_sent`, `attestation.challenges` (`outcome:passed`, `failed`, `status_sig_missing`, `status_sig_failed`), `attestation.failures{reason}`, `attestation.force_reconnect{reason}` | count | as listed | SE challenge lifecycle per provider session |
 
+The throughput anomaly evaluator (`Policy.EvaluateAnomaly`,
+`coordinator/registry/throughput/anomaly.go`) ignores non-finite or non-positive
+observed rates and unusable expected rates. Invalid configured ratios and
+efficiencies retain their defaults. Invalid advertised bandwidth falls back
+to the chip-class table; a bucket without usable bandwidth is skipped. The API
+sweep emits `routing.throughput_anomaly` only for a completed evaluation whose
+observed/expected ratio is below the threshold
+(`coordinator/api/throughput_anomaly.go`, `sweepThroughputAnomalies`).
+
 ### From request outcomes
 
 | Metric | Type | Tags | Emitted |
@@ -184,6 +193,13 @@ have different populations and must not be summed together.
 | `profiler.pruned_rows` | count | — | each hourly retention sweep |
 | `providers.online`, `providers.per_model{model}`, `providers.per_version{version}`, `providers.by_trust_status{…}`, `providers.by_mdm_failure{reason}`, `attestation.code_attested`, `attestation.code_enforced`, `coordinator.min_provider_version_set{min_version}`, `request_queue.depth`, `utilization.network`, `utilization.warm`, `utilization.token_budget`, `utilization.bottleneck`, `utilization.model{model}`, `capacity.tps`, `capacity.demand_concurrency`, `capacity.serving_capacity`, `capacity.spill_arrival_rate` | gauge | as listed | every 15 s from `StartDDGaugeLoop` (`coordinator/api/server.go`), which also pushes the `exact_cache.*` gauges (`emitExactCacheDDGauges`, `coordinator/api/exact_cache_metrics.go`); the loop returns immediately when no Datadog client is configured |
 | `request_queue.depth_by_model`, `request_queue.oldest_age_ms` | gauge | `model` | every gauge-loop tick for served or queued models; a disappearing model gets one final zero for both series and is then forgotten (`coordinator/api/fleet_gauges.go`, `emitPerModelQueueGauges`) |
+
+`providers.per_version` uses `Registry.ProviderCountByVersion`
+(`coordinator/registry/fleet_views.go`): each connected provider's status and
+version are read together under its mutex, excluding offline and untrusted
+providers and grouping an empty version as `unknown`. A concurrent
+`Provider.SetVersion` therefore cannot race with the gauge snapshot. The fleet
+is not frozen across the complete walk; these remain observational counts.
 
 ### In-process registry (not Datadog)
 

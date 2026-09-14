@@ -1,0 +1,125 @@
+diff --git a/libs/lume/src/Virtualization/DarkbloomGuestBridge.swift b/libs/lume/src/Virtualization/DarkbloomGuestBridge.swift
+index 90e3ba8..ba829bd 100644
+--- a/libs/lume/src/Virtualization/DarkbloomGuestBridge.swift
++++ b/libs/lume/src/Virtualization/DarkbloomGuestBridge.swift
+@@ -74,7 +74,12 @@ final class DarkbloomGuestBridge: @unchecked Sendable {
+     func stop() {
+         let pending = lock.withLock {
+             stopped = true
+-            if listenerOpen { _ = shutdown(listener, SHUT_RDWR) }
++            if listenerOpen {
++                _ = shutdown(listener, SHUT_RDWR)
++                // Process exit may follow stop immediately, before the accept
++                // queue runs again. Remove only this bound endpoint now.
++                Self.unlinkOwned(parent: parent, name: name, identity: pathIdentity)
++            }
+             return Array(clients.values)
+         }
+         pending.forEach { $0.stop() }
+@@ -82,9 +87,12 @@ final class DarkbloomGuestBridge: @unchecked Sendable {
+ 
+     private func acceptConnections() {
+         defer {
+-            lock.withLock { listenerOpen = false; close(listener) }
+-            Self.unlinkOwned(parent: parent, name: name, identity: pathIdentity)
+-            close(parent)
++            lock.withLock {
++                listenerOpen = false
++                close(listener)
++                Self.unlinkOwned(parent: parent, name: name, identity: pathIdentity)
++                close(parent)
++            }
+         }
+         while !lock.withLock({ stopped }) {
+             var event = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
+diff --git a/libs/lume/tests/DarkbloomGuestBridgeTests.swift b/libs/lume/tests/DarkbloomGuestBridgeTests.swift
+index fc4918d..ce35161 100644
+--- a/libs/lume/tests/DarkbloomGuestBridgeTests.swift
++++ b/libs/lume/tests/DarkbloomGuestBridgeTests.swift
+@@ -5,6 +5,33 @@ import Testing
+ 
+ @Suite("Darkbloom private guest bridge")
+ struct DarkbloomGuestBridgeTests {
++    @Test func stopRemovesEndpointBeforeReturningAndAllowsImmediateRebind() throws {
++        let root = URL(fileURLWithPath: "/private/tmp").appendingPathComponent(".dbg-\(UUID())")
++        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
++        defer { try? FileManager.default.removeItem(at: root) }
++        let path = root.appendingPathComponent("s").path
++        for _ in 0..<32 {
++            let bridge = try DarkbloomGuestBridge(path: path, connect: { _ in })
++            bridge.stop()
++            var metadata = stat()
++            #expect(lstat(path, &metadata) == -1 && errno == ENOENT)
++            bridge.stop()
++        }
++    }
++
++    @Test func stopPreservesAReplacementAtTheOldEndpointName() throws {
++        let root = URL(fileURLWithPath: "/private/tmp").appendingPathComponent(".dbg-\(UUID())")
++        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
++        defer { try? FileManager.default.removeItem(at: root) }
++        let path = root.appendingPathComponent("s")
++        let bridge = try DarkbloomGuestBridge(path: path.path, connect: { _ in })
++        #expect(unlink(path.path) == 0)
++        let replacement = Data("preserve replacement".utf8)
++        try replacement.write(to: path, options: .withoutOverwriting)
++        bridge.stop()
++        #expect(try Data(contentsOf: path) == replacement)
++    }
++
+     @Test func rejectsPublicParentAndPreservesExistingSocketPath() throws {
+         let root = URL(fileURLWithPath: "/private/tmp").appendingPathComponent(".dbg-\(UUID())")
+         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o755])
+diff --git a/libs/lume/tests/DarkbloomGuestRelayTests.swift b/libs/lume/tests/DarkbloomGuestRelayTests.swift
+index 14bdfc3..4d3861a 100644
+--- a/libs/lume/tests/DarkbloomGuestRelayTests.swift
++++ b/libs/lume/tests/DarkbloomGuestRelayTests.swift
+@@ -79,23 +79,31 @@ struct DarkbloomGuestRelayTests {
+     }
+ 
+     @Test func lateConnectAfterStopCannotCloseReusedDescriptorOrFinishTwice() throws {
+-        let sockets = try RelaySocketPair(), guest = try RelaySocketPair(), finish = Counter()
+-        // Give the client its own duplicate; the socketpair retains its originals.
+-        let owned = dup(sockets.first)
+-        #expect(owned >= 0)
+-        let client = DarkbloomGuestClient(descriptor: owned) { finish.increment() }
+-        client.stop()
+-        #expect(finish.value == 1)
+-        let replacement = dup(sockets.first)
+-        defer { close(replacement) }
+-        #expect(replacement == owned)
+-        client.connected(.success(DarkbloomGuestEndpoint(descriptor: guest.first, owner: guest)))
+-        client.stop()
+-        #expect(finish.value == 1)
+-        #expect(fcntl(replacement, F_GETFD) >= 0)
+-        var byte: UInt8 = 7
+-        #expect(write(replacement, &byte, 1) == 1)
+-        #expect(read(sockets.second, &byte, 1) == 1)
++        let sockets = try RelaySocketPair(), guest = try RelaySocketPair()
++        for _ in 0..<64 {
++            let finish = Counter()
++            // Other concurrently running tests may free a lower descriptor or
++            // take this hole. F_DUPFD never replaces another test's descriptor;
++            // retry until this fixture actually observes the intended reuse.
++            let owned = dup(sockets.first)
++            #expect(owned >= 0)
++            let client = DarkbloomGuestClient(descriptor: owned) { finish.increment() }
++            client.stop()
++            #expect(finish.value == 1)
++            let replacement = fcntl(sockets.first, F_DUPFD_CLOEXEC, owned)
++            #expect(replacement >= 0)
++            defer { if replacement >= 0 { close(replacement) } }
++            if replacement != owned { continue }
++            client.connected(.success(DarkbloomGuestEndpoint(descriptor: guest.first, owner: guest)))
++            client.stop()
++            #expect(finish.value == 1)
++            #expect(fcntl(replacement, F_GETFD) >= 0)
++            var byte: UInt8 = 7
++            #expect(write(replacement, &byte, 1) == 1)
++            #expect(read(sockets.second, &byte, 1) == 1)
++            return
++        }
++        Issue.record("fixture could not establish descriptor reuse")
+     }
+ 
+     private final class Flag: @unchecked Sendable {

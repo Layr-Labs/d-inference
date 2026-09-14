@@ -28,6 +28,11 @@ preserve signing extended attributes and does not re-sign any Lume artifact.
 Distribute with a format preserving those attributes, such as a `ditto` archive.
 The release manifest is separately signed and covers the guest bootstrap files.
 
+Native bridge shutdown removes its own Unix socket entry before returning,
+under the descriptor-lifetime lock. It preserves a replacement inode and lets
+the accept loop finish closing its descriptors. The broker still allocates a
+fresh private endpoint directory on every stopped-to-running transition.
+
 Managed raw Apple restore requires the current managed-installer patch and a new
 matching signed Lume artifact. `LumeManagedRestoreProcess` retains exclusive
 machine ownership in the installer child and sends broker-lifecycle EOF on

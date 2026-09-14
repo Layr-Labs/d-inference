@@ -39,6 +39,10 @@
     {
       "path": "ThirdParty/lume-patches/0009-bound-managed-apple-restores.patch",
       "sha256": "d8b710292632def0c987ca7a70b7e53c0f8452f17250823963f133e1525aa861"
+    },
+    {
+      "path": "ThirdParty/lume-patches/0010-unlink-owned-guest-endpoint-before-stop-returns.patch",
+      "sha256": "6abb6aa1cb582fe0157fc147159a0168160d1e79f39d3df8d40b96bbbade07ca"
     }
   ],
   "license": "MIT",

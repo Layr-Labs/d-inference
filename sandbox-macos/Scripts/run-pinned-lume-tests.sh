@@ -40,6 +40,8 @@ REQUIRED_BROKER_LIFECYCLE_TESTS=(
     restoreCancelBeforeInstallation
     restoreCancellationWaitsForInstallerCompletion
     managedRestoreRequiresStoppedProofBeforeCleanup
+    stopRemovesEndpointBeforeReturningAndAllowsImmediateRebind
+    stopPreservesAReplacementAtTheOldEndpointName
 )
 for test_name in "${REQUIRED_BROKER_LIFECYCLE_TESTS[@]}"; do
     (

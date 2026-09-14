@@ -50,6 +50,9 @@ public struct LumeRuntimeConfiguration: Sendable {
     public static let pinnedManagedRestorePatchPath = "ThirdParty/lume-patches/0009-bound-managed-apple-restores.patch"
     public static let pinnedManagedRestorePatchSHA256 = "d8b710292632def0c987ca7a70b7e53c0f8452f17250823963f133e1525aa861"
 
+    public static let pinnedGuestEndpointCleanupPatchPath = "ThirdParty/lume-patches/0010-unlink-owned-guest-endpoint-before-stop-returns.patch"
+    public static let pinnedGuestEndpointCleanupPatchSHA256 = "6abb6aa1cb582fe0157fc147159a0168160d1e79f39d3df8d40b96bbbade07ca"
+
     public static let pinnedPatches = [
         pinnedPatchPath: pinnedPatchSHA256,
         pinnedLivenessPatchPath: pinnedLivenessPatchSHA256,
@@ -60,6 +63,7 @@ public struct LumeRuntimeConfiguration: Sendable {
         pinnedFailureDiagnosticPatchPath: pinnedFailureDiagnosticPatchSHA256,
         pinnedStopCoalescingPatchPath: pinnedStopCoalescingPatchSHA256,
         pinnedManagedRestorePatchPath: pinnedManagedRestorePatchSHA256,
+        pinnedGuestEndpointCleanupPatchPath: pinnedGuestEndpointCleanupPatchSHA256,
     ]
 
     public let executable: URL

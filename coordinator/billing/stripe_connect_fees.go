@@ -1,7 +1,5 @@
 package billing
 
-import ()
-
 // InstantFeeBps is the fee charged on Instant Payout withdrawals, in basis
 // points (150 bps = 1.5%). Calls to FeeForInstantPayoutMicroUSD use this.
 const InstantFeeBps int64 = 150

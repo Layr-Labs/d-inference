@@ -114,7 +114,7 @@ func TestCatalogSyncRejectsInflightCachePublication(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, key := range []string{modelEntriesCacheKey(false), modelListBodyCacheKey(false), openRouterFeedCacheKey} {
-				if _, ok := h.srv.readCache.lookup(key); ok {
+				if readCacheContains(h.srv.readCache, key) {
 					t.Fatalf("pre-sync request repopulated %q after invalidation", key)
 				}
 			}
@@ -127,9 +127,16 @@ func TestCatalogSyncRejectsInflightCachePublication(t *testing.T) {
 			} else if view == "openrouter" {
 				key = openRouterFeedCacheKey
 			}
-			if _, ok := h.srv.readCache.lookup(key); !ok {
+			if !readCacheContains(h.srv.readCache, key) {
 				t.Fatalf("post-sync request did not cache %q", key)
 			}
 		})
 	}
+}
+
+// Both representations share the same generation fence.
+func readCacheContains(c *ttlCache, key string) bool {
+	_, bytesPresent := c.Get(key)
+	_, valuePresent := c.GetValue(key)
+	return bytesPresent || valuePresent
 }

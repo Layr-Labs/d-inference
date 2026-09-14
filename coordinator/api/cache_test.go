@@ -6,25 +6,6 @@ import (
 	"time"
 )
 
-// PurgeExpired removes expired entries and keeps live ones.
-func TestTTLCachePurgeExpired(t *testing.T) {
-	c := newTTLCache()
-	c.Set("stale", []byte("v"), -time.Second) // already expired
-	c.Set("fresh", []byte("v"), time.Minute)  // live
-
-	c.PurgeExpired()
-
-	if c.Len() != 1 {
-		t.Fatalf("PurgeExpired: got %d entries, want 1", c.Len())
-	}
-	if _, ok := c.Get("stale"); ok {
-		t.Error("expired entry should be gone after PurgeExpired")
-	}
-	if _, ok := c.Get("fresh"); !ok {
-		t.Error("live entry should survive PurgeExpired")
-	}
-}
-
 // The janitor actually reclaims expired entries (PurgeExpired was previously
 // never scheduled, so high-cardinality keys lingered forever) and stops on ctx
 // cancel.

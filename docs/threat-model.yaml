@@ -931,6 +931,8 @@ threats:
       - coordinator/api/consumer.go
       - coordinator/api/inference_preprocess.go
       - coordinator/api/server.go
+      - coordinator/api/http_middleware.go
+      - coordinator/api/routes.go
       - coordinator/inference/dispatch/body_contract.go
       - coordinator/inference/dispatch/provider_body.go
       - coordinator/inference/dispatch/prepare.go
@@ -947,11 +949,11 @@ threats:
         resolution: >
           Closed: plaintext inference bodies are wrapped in http.MaxBytesReader at
           16 MiB (inference_preprocess.go maxInferenceBodyBytes) and every request is
-          bounded by the 64 MiB bodyLimitMiddleware ceiling (server.go).
+          bounded by the 64 MiB bodyLimitMiddleware ceiling (http_middleware.go).
     severity: high
     detection_hint: >
       Any change to request body reading in consumer.go, inference_preprocess.go, or
-      server.go (io.ReadAll, json.Decode, r.Body) should verify the MaxBytesReader
+      http_middleware.go (io.ReadAll, json.Decode, r.Body) should verify the MaxBytesReader
       caps remain in place at every tier.
 
   - id: T-003
@@ -1000,6 +1002,8 @@ threats:
     affected_files:
       - coordinator/auth/**
       - coordinator/api/server.go
+      - coordinator/api/routes.go
+      - coordinator/api/authentication.go
       - coordinator/api/admin_auth.go
       - coordinator/api/releases/registration.go
       - coordinator/api/releases/deactivation.go
@@ -1013,7 +1017,7 @@ threats:
     severity: high
     detection_hint: >
       Changes to middleware ordering, key validation logic, or new route registration
-      in server.go should verify admin vs consumer key scopes are not merged.
+      in routes.go should verify admin vs consumer key scopes are not merged.
 
   - id: T-005
     trust_boundary: TB-001
@@ -1598,6 +1602,7 @@ threats:
       - coordinator/api/releases/metadata.go
       - coordinator/api/releases/bundle.go
       - coordinator/api/server.go
+      - coordinator/api/routes.go
     mitigations:
       - description: Registration checks the scoped release key independently of consumer/admin authorization.
         status: implemented
@@ -2376,6 +2381,8 @@ threats:
     affected_assets: [A-011]
     affected_files:
       - coordinator/api/server.go
+      - coordinator/api/routes.go
+      - coordinator/api/installer.go
       - coordinator/api/enroll.go
       - coordinator/api/consumer.go
     mitigations:

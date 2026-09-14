@@ -1,6 +1,6 @@
 # Encryption and privacy model
 
-> Last updated: 2026-09-14 · commit `cdef55575`
+> Last updated: 2026-09-14 · commit `6ad3d5605`
 
 An inference request crosses three NaCl Box hops: consumer → coordinator
 (optional), coordinator → provider (mandatory), provider → coordinator
@@ -59,7 +59,7 @@ sequenceDiagram
 
 | Property | Value | Code |
 |---|---|---|
-| Transport | HTTPS; plaintext JSON bodies are accepted on the same routes | `coordinator/api/server.go` (`sealedTransport` wraps `/v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`) |
+| Transport | HTTPS; plaintext JSON bodies are accepted on the same routes | `coordinator/api/routes.go` (`routes`, where `sealedTransport` wraps `/v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`) |
 | Key discovery | `GET /v1/encryption-key` (no auth) → `{kid, public_key, algorithm: "x25519-nacl-box"}`, `Cache-Control: public, max-age=300`; `503 encryption_unavailable` when no coordinator key is configured | `coordinator/api/sender_encryption.go` (`handleEncryptionKey`) |
 | Coordinator key | BIP39 mnemonic from `MNEMONIC` / `EIGENINFERENCE_MNEMONIC` ([configuration](../../reference/configuration.md#auth-admin-key-privy-release-key-sender-encryption)) → seed → HKDF-SHA256 with info `eigeninference-coordinator-e2e-v1` → X25519 private key; `kid` = first 16 hex chars of SHA-256(public key) | `coordinator/internal/e2e/coordinator_key.go` (`DeriveCoordinatorKey`, `CoordinatorKeyHKDFInfo`) |
 | Detection | `Content-Type: application/eigeninference-sealed+json` only (parameters ignored, case-insensitive); there is no marker header | `coordinator/api/sender_encryption.go` (`SealedContentType`, `isSealedContentType`) |
@@ -111,7 +111,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 
 | Retained or logged (metadata only) | Code |
 |---|---|
-| Access log, one `request` line per HTTP request: `request_id`, `method`, `path`, `route`, `status`, `duration_ms`, `remote` (the connection's remote address), `user_id` (account, when authenticated) | `coordinator/api/server.go` (`loggingMiddleware`) |
+| Access log, one `request` line per HTTP request: `request_id`, `method`, `path`, `route`, `status`, `duration_ms`, `remote` (the connection's remote address), `user_id` (account, when authenticated) | `coordinator/api/http_logging.go` (`loggingMiddleware`) |
 | `inference request dispatched`: `trace_id`, `request_id`, `model`, `provider_id`, `stream`, `attempt` | `coordinator/inference/dispatch/run.go` |
 | Request / route records: token counts, timing, non-content params (`temperature`, `top_p`); the record types document that they contain no prompt or response content | `coordinator/store/contracts/telemetry.go` |
 | Cache-affinity keys: keyed digests of identity / prefix bytes; raw bytes are never stored, logged, or returned | `coordinator/registry/cache_route_keys.go` |
@@ -147,7 +147,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | Sender used an old `kid` after key rotation | `400 kid_mismatch`; the client must refetch `GET /v1/encryption-key` | `coordinator/api/sender_encryption.go` |
 | Corrupt envelope or wrong key | `400 invalid_sealed_envelope` / `400 decryption_failed`; nothing is forwarded | `coordinator/api/sender_encryption.go` |
 | Sealed body over the [inference body limit](../../reference/api-contracts.md#limits-and-validation) | `400 invalid_request_error` | `coordinator/api/sender_encryption.go` |
-| Plaintext inference body over `maxInferenceBodyBytes` | `413 invalid_request_error`; the global ceiling for any body is `maxRequestBodyBytes` ([limits](../../reference/api-contracts.md#limits-and-validation)) | `coordinator/api/inference_preprocess.go` (`parseInferencePrelude`, `maxInferenceBodyBytes`); `coordinator/api/server.go` (`bodyLimitMiddleware`) |
+| Plaintext inference body over `maxInferenceBodyBytes` | `413 invalid_request_error`; the global ceiling for any body is `maxRequestBodyBytes` ([limits](../../reference/api-contracts.md#limits-and-validation)) | `coordinator/api/inference_preprocess.go` (`parseInferencePrelude`, `maxInferenceBodyBytes`); `coordinator/api/http_middleware.go` (`bodyLimitMiddleware`) |
 | Provider registered without an X25519 key or without `encrypted_response_chunks` | Never routable for private text | `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`) |
 | Provider returns a plaintext or wrong-key chunk | Provider marked `untrusted`; request fails `502` with `FailureCodeEncryptionFailure` | `coordinator/api/provider.go` |
 | Provider disconnects mid-stream | Session key forgotten; `chunkKeyCache` cap (8192) bounds leaked entries and drops the cache wholesale when full | `coordinator/api/chunk_key_cache.go` |

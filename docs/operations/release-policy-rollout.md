@@ -1,6 +1,6 @@
 # Roll out the release-policy routing gate (shadow → enforce)
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-13 · commit `f913aeaef9`
 
 Runbook for the two production changes that involve the coordinator's
 release-policy routing gate: (1) deploying a coordinator that contains the gate
@@ -59,7 +59,7 @@ fleet until reconnected providers complete their first challenge cycle
 (`DefaultChallengeInterval = 5 * time.Minute` in `coordinator/api/provider.go`).
 
 Application evidence proves exactly two facts, checked identically at grant
-(`coordinator/api/server.go` (`deriveApprovedReleaseTransition`,
+(`coordinator/providercontrol/releasepolicy/evidence.go` (`DeriveApprovedTransition`,
 `releaseMetallibMatches`)) and at every policy sweep
 (`releaseEvidenceStillApproved`): the Secure-Enclave-signed challenge
 `binary_hash` matches an **active** release row for the provider's (version,
@@ -192,8 +192,8 @@ recreate the container with the same image. This is the incident lever.
 
 1. A new global trust gate ships in shadow first; enforcement is a separate,
    human-approved action after live coverage is proven.
-2. `deriveApprovedReleaseTransition` and `releaseEvidenceStillApproved`
-   (`coordinator/api/server.go`) compare the same fact set. Changing one side
+2. `DeriveApprovedTransition` and `releaseEvidenceStillApproved`
+   (`coordinator/providercontrol/releasepolicy/evidence.go`) compare the same fact set. Changing one side
    desynchronises grant from sweep and wipes evidence on every policy rebuild.
 3. Never add a release-row fact to evidence derivation unless the production
    provider build demonstrably reports it — check

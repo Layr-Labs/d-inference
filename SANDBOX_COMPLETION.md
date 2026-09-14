@@ -5,11 +5,12 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
-Source244009eca is pushed and mergeable after integrating master5dcb43e69.
-Full sandbox suite:497tests,7explicit skips,0failures. Coordinator suite, Linux
+Source6cf8f3381 adds installed-checkpoint publication after qualification-clone
+consumerb48455139 and requested-resource configuration32be94642.
+Full sandbox suite:513tests,7explicit skips,0failures. Coordinator suite, Linux
 build, docs lint, UI lint and Next.js build pass. CI34809434499 and integration
-34809434503 are validating the latest push; benchmark environment approval is
-separate and has not been granted.
+34809434503 passed244009eca. The latest code requires fresh CI; benchmark
+environment approval is separate and has not been granted.
 
 Physical guest exercise14 and coldboot15 PASS on the test Mac. They prove
 selected authenticated execution/files/isolation/cleanup, retained workspace,
@@ -19,8 +20,8 @@ inode32638, SHA8dd96a80d7c96d15cf49e143416c8bf665c9a47464885ee1733d06b8544a3369;
 it is not a qualified production template. The full details and exact root proof
 digests are recorded at the end of this checkpoint.
 
-Next: complete accountless root installation orchestration/checkpoint publication,
-qualification clone consumer and ready-template publication; actual GUI host
+Next: complete accountless privileged staging/boot/collection orchestration and
+the automatic qualification/cleanup-to-ready-template handoff; actual GUI host
 service termination/login recovery; full2VM coordinator acceptance, build tools,
 performance and final release qualification. Keep test CI paused and gaj's
 explicit temporary runtime-group membership until the machine campaign finishes.
@@ -30,7 +31,7 @@ explicit temporary runtime-group membership until the machine campaign finishes.
 - Worktree: `.worktrees/sandbox-completion-20260913`.
 - Branch: `codex/sandbox-completion-20260913`.
 - Starting sandbox tip0950ac41e; master93337ef05 integrated in453b37667.
-- Latest pushed commit:244009ecaa38adb1ac7ac11baf76e1e752995d44.
+- Latest code commit:6cf8f3381 (push validation in progress; verify remote ref).
 - Local GUI plan commit3abe05f712de1d2dcc6958315c1fbf56b4b693ff follows
   host context50145d4b4 and qualification validator4cab8f470.
 - Managed restore lifetime commitb5680748bd9d4670f3ee4c02ea2ffc38810c981d
@@ -876,3 +877,65 @@ readiness publication; actual selected-user host service signals/session recover
 full two-VM ordinary-consumer coordinator campaign, build tools and paired workload
 measurements. Runtime10 is still not physically substituted for8. Keep CI paused
 and temporary gaj431 membership while the authorized machine campaign continues.
+
+
+## Qualification consumer, clone resources and installed publisher
+
+b48455139 implements package-only createQualificationClone. A capability is
+single-use, bound to the issuing runtime, source snapshot and exact active lease.
+Creation holds destination operation/lease locks and the retained source lock,
+checks source/lease before and after native cloning, then writes fresh ordinary
+lease ownership. Cancellation, expiry, changed source, native failure and bad
+resource observations clean only destination artifacts; source and lease remain.
+The shared creation executor is a separate focused module. 19 targeted tests
+and full504tests/7skips pass (qualification-clone-full-tests.log).
+
+32be94642 fixes ordinary clones retaining the base CPU/memory. A stopped clone
+with the correct boot disk is configured through native lume set when necessary,
+then observed again before ownership publication. The exact lease is revalidated
+before settings changes and before publication. Native failure or ignored settings
+cannot report the requested resources. The test runtime is now LumeCloneTestRuntime.
+Ten targeted tests and full507tests/7skips pass (clone-resource-full-tests.log).
+This is source/unit validation, not a physical different-size VM result yet.
+
+6cf8f3381 implements publishInstalledCandidate in the exclusive, unfenced base
+runtime. It validates bounded, duplicate-free complete installation and cleanup
+JSON, immutable reservation binding, actual stopped source/ownership/resources,
+current disk metadata and signed guest compatibility. It preflights all existing
+files, publishes only matching-or-absent immutable evidence, writes the checkpoint
+last and revalidates. Matching partial prefixes replay; conflicting, shared,
+linked, special or unsafe names fail without overwrite. Reads use O_NONBLOCK to
+reject FIFOs rather than block. The writer never mounts, installs or marks ready.
+Six targeted publication tests and full513tests/7skips/0failures pass in149.389s
+(installed-candidate-publisher-full-tests.log). Installation and cleanup inputs
+remain caller-collected observations; root capture orchestration is not built.
+
+No new physical VM runs occurred during these changes. Physical proof remains
+exercise14/coldboot15 on guest244009eca and native runtime8. The test machine stays
+quiescent with CI paused and temporary431 membership intact. No real host enroll,
+two-VM campaign, guest build-tool installation or production mutation has occurred.
+
+NEXT implementation order:
+1. Add termination-signal cancellation around the GUI service and installation
+   job, route cancellation through VM cleanup, monitor the actual graphical/audit
+   session (not console user), and give launchd an adequate ExitTimeOut. Existing
+   Serve cleanup begins only around its final client loop; include reconciliation
+   and earlier post-runtime work. Use a subprocess test fixture for actual signals
+   so XCTest's own signal state is never changed.
+2. Implement the privileged base operator using the existing tested offline
+   staging/reading helpers as the behavioral reference. It must generate its
+   root payload from the verified package, take machine/source/native locks,
+   prove stopped/no-openers, attach only the owned raw source, select only its
+   Data volume, preserve preexisting Apple attachments, and persist root intents
+   for partial-stage recovery. Root must not impersonate GUI VZ context.
+3. Use a real selected-user GUI job for managed installer boot and actual native
+   qualification. Collect installation/cleanup observations and call the new
+   publisher, then issue/consume the new clone capability. Qualification still
+   needs a durable attempt journal, actual guest checks and cold boot, clone stop/
+   deletion proof, and source revalidation before ready-template publication.
+   Existing consumed-capability revalidation requires an ACTIVE lease: the final
+   source check after clone deletion must instead bind the durable released-lease
+   cleanup proof while retaining source identity/lock. Do not bypass that by
+   fabricating readiness or silently dropping source namespace identity.
+4. Finish selected-user recurring service lifecycle, build tools, real coordinator
+   two-VM/expiry/crash/ownership tests, workload measurements and final release gates.

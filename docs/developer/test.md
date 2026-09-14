@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `60557f3b0`
+> Last updated: 2026-09-14 · commit `0c93416c7`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -155,16 +155,17 @@ GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'ReadinessZero|AdminDr
 
 State archive HTTP tests remain in `coordinator/api/state_archive_test.go`:
 feature/auth/output gates, symlinked roots, plaintext ZIP, age decryption and
-snapshot consistency during live BoltDB writes. The pure root-precedence test
-lives beside the configuration in `coordinator/api/statearchive/config_test.go`.
+snapshot consistency during live BoltDB writes. The pure root-precedence test,
+`TestResolveStateExportRootPrecedence_DAR70`, lives beside the configuration in
+`coordinator/api/statearchive/config_test.go`.
 The HTTP fixture sets the admin key and export environment after server
 construction, so the controller must read current settings.
 
 ```bash
 env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
-  go test -race ./coordinator/api ./coordinator/api/statearchive -run StateExport
+  go test -race ./coordinator/api -run StateExport
 env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
-  go test -race ./coordinator/stateexport
+  go test -race ./coordinator/api/statearchive ./coordinator/stateexport
 ```
 
 Release HTTP and artifact regressions stay in `coordinator/api/` and reach

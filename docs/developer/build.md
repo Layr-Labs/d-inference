@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `4e90ac8b1`
+> Last updated: 2026-09-14 · commit `2c9c6f3f1`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -53,7 +53,7 @@ Before describing the candidate as reproducible:
 
 1. Record the selected source trees/patch digests and approved immutable core,
    C, Swift, SDK and provider pins. Inspect the composed SDK's
-   `libs/mlx-swift-lm/QWEN4-COMPOSITION.md` for required source selection and
+   `libs/mlx-swift-lm/docs/qwen4/composition.md` for required source selection and
    excluded experiments.
 2. Resolve CMake/package revisions and nested gitlinks in a fresh recursive
    private checkout. A machine-specific dependency symlink, local package

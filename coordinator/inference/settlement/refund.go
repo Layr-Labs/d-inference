@@ -11,7 +11,7 @@ import (
 // the shared base reservation when an attempt is abandoned. It is idempotent:
 // after refunding it resets ReservedMicroUSD to the base so a second call (or a
 // later settlement) cannot double-refund. The shared base is never refunded
-// here — that is handled once by refundReservation (full failure) or by the
+// here — that is handled once by Refund (full failure) or by the
 // winning attempt's settlement.
 func (s Service) RefundProviderExtra(pr *registry.PendingRequest) {
 	if pr == nil {

@@ -603,8 +603,8 @@ func (s *Server) noteInferenceSuccess(pr *registry.PendingRequest) {
 // registry.Disconnect's pending flush) remove the pending request BEFORE
 // pushing the error, so the arm's cancelDispatch sees RemovePending()==nil and
 // skips its own refund — without this the custom-price surcharge reserved by
-// reserveAdditionalForProvider would be stranded for the failed attempt.
-// refundProviderExtra is idempotent (it resets ReservedMicroUSD to the base),
+// Service.ReserveForProvider would be stranded for the failed attempt.
+// Service.RefundProviderExtra is idempotent (it resets ReservedMicroUSD to the base),
 // so arms where cancelDispatch did refund are safe, and a failed pre-commit
 // attempt never reaches settlement (its channels are closed and it is neither
 // pending nor parked), so this can never double-credit against a settle.
@@ -1199,7 +1199,7 @@ func (s *Server) dispatchWithReserver(
 	}
 	ap.Mark(registry.StampTopupDone)
 	// refundExtra credits back the provider-specific surcharge that
-	// reserveAdditionalForProvider may have added. The caller's
+	// Service.ReserveForProvider may have added. The caller's
 	// refundReservation only covers the base reservation.
 	refundExtra := func() {
 		extra := pr.ReservedMicroUSD - reservedMicroUSD
@@ -1268,7 +1268,7 @@ func (s *Server) dispatchWithReserver(
 	ap.Mark(registry.StampEncrypted)
 	pr.SessionPrivKey = &sessionKeys.PrivateKey
 	// pr.ReservedMicroUSD was already set in the struct literal and may have
-	// been increased by reserveAdditionalForProvider above. Don't overwrite.
+	// been increased by Service.ReserveForProvider above. Don't overwrite.
 
 	// Bound the provider write by the request-absolute first-token clock (see
 	// firstTokenWriteContext): a congested write lane must not silently eat

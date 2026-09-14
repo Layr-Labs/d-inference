@@ -13,7 +13,7 @@ func (s Service) priceCompletion(providerID string, provider *registry.Provider,
 	// Resolve the consumer once: platform-fee override (nil = global default)
 	// and whether this is a wholesale/service channel (e.g. OpenRouter). A
 	// failed lookup (raw API-key account with no user row) falls back to
-	// defaults. Service accounts run on a 0% fee.
+	// defaults. The same per-user fee override applies to service accounts.
 	var feePercent *int64
 	isServiceConsumer := false
 	settleStart := time.Now()

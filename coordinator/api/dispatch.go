@@ -1700,7 +1700,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		d.pr.Profile.Mark(registry.StampEncrypted)
 		d.pr.SessionPrivKey = &sessionKeys.PrivateKey
 		// pr.ReservedMicroUSD was already set in the struct literal and may
-		// have been increased by reserveAdditionalForProvider. Don't overwrite.
+		// have been increased by Service.ReserveForProvider. Don't overwrite.
 		// Bound the provider write by the request-absolute first-token clock:
 		// WriteText blocks until the frame is on the wire (write watchdog
 		// allows 5-30s per frame), so an unbounded write could eat the budget

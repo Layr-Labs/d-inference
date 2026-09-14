@@ -97,11 +97,21 @@ func TestCompletionPublishesUsageBeforeCreditsAndConsumerTerminal(t *testing.T) 
 	case <-time.After(2 * time.Second):
 		t.Fatal("completion did not return after credit finished")
 	}
-	if got, ok := <-pr.CompleteCh; !ok || got != usage {
-		t.Fatalf("consumer terminal = %+v, open=%v; want usage %+v", got, ok, usage)
+	select {
+	case got, ok := <-pr.CompleteCh:
+		if !ok || got != usage {
+			t.Fatalf("consumer terminal = %+v, open=%v; want usage %+v", got, ok, usage)
+		}
+	default:
+		t.Fatal("completion returned without publishing consumer usage")
 	}
-	if _, ok := <-pr.ChunkCh; ok {
-		t.Fatal("completion did not close the consumer chunk channel")
+	select {
+	case _, ok := <-pr.ChunkCh:
+		if ok {
+			t.Fatal("completion did not close the consumer chunk channel")
+		}
+	default:
+		t.Fatal("completion returned without closing the consumer chunk channel")
 	}
 	if got := st.GetWithdrawableBalance(account); got != payments.ProviderPayout(cost) {
 		t.Fatalf("provider credit = %d, want %d", got, payments.ProviderPayout(cost))

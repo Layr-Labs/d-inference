@@ -167,13 +167,13 @@ func (s *Server) topUpReservationForInlinedMedia(w http.ResponseWriter, r *http.
 		s.ddIncr("billing.media_reservation_topup", []string{"model:" + p.model, "outcome:rejected"})
 		writeJSON(w, http.StatusPaymentRequired, errorResponse(code, msg, withCode("insufficient_quota")))
 	}
-	// Cap check against the new TOTAL, matching reserveAdditionalForProvider.
+	// Cap check against the new TOTAL, matching Service.ReserveForProvider.
 	if msg, ok := s.checkKeySpendCap(r.Context(), want); !ok {
 		reject("insufficient_quota", "insufficient_quota", msg)
 		return currentMicroUSD, true
 	}
 	consumerKey := consumerKeyFromContext(r.Context())
-	// Charge only the delta; reserveInitialBalance re-derives the same
+	// Charge only the delta; Service.Reserve re-derives the same
 	// service-vs-ledger mode for this account, so the hold stays consistent.
 	if _, err := s.inferenceSettlement().Reserve(consumerKey, p.model, want-currentMicroUSD); err != nil {
 		if errors.Is(err, store.ErrInsufficientBalance) {

@@ -1,33 +1,5 @@
 package codeidentity
 
-// recordChallenge stores the nonce just pushed to a device so the read-loop
-// delivery path can match the provider's reply — even one that lands on a
-// different (re)connection from the same device. Overwrites any prior
-// outstanding challenge for the device (only the latest push is honored).
-func (t *deviceState) recordChallenge(seKey, nonce string) {
-	if seKey == "" {
-		return
-	}
-	t.mu.Lock()
-	now := t.now()
-	// Keep EVERY still-unexpired nonce, not just the latest: in alert mode the push
-	// cooldown (75s) is shorter than the challenge validity (the APNs expiry window),
-	// so a second challenge can be pushed while the first is still deliverable. If we
-	// kept only the newest nonce, a delayed delivery of the first alert would make the
-	// device reply with a nonce we had already discarded, we'd reject a valid proof,
-	// and repeated delayed deliveries could strand attestation. Prune
-	// expired entries on the way in so the slice stays bounded by validity/cooldown.
-	old := t.outstanding[seKey]
-	kept := make([]pushChallenge, 0, len(old)+1)
-	for _, ch := range old {
-		if now.Sub(ch.at) < t.challengeValidity {
-			kept = append(kept, ch)
-		}
-	}
-	t.outstanding[seKey] = append(kept, pushChallenge{nonce: nonce, at: now})
-	t.mu.Unlock()
-}
-
 func (t *deviceState) recordChallengeForIdentity(
 	seKey, nonce, token, nodeKey string,
 ) {
@@ -84,45 +56,6 @@ func (t *deviceState) consumeChallengeForIdentity(
 			} else {
 				t.outstanding[seKey] = challenges
 			}
-			return true
-		}
-	}
-	return false
-}
-
-// outstandingChallenge reports whether the device has ANY still-valid pushed
-// challenge, returning the most recent one. The delivery path matches a specific
-// reply nonce via matchChallenge; this is the existence / most-recent view.
-func (t *deviceState) outstandingChallenge(seKey string) (pushChallenge, bool) {
-	if seKey == "" {
-		return pushChallenge{}, false
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	now := t.now()
-	var best pushChallenge
-	found := false
-	for _, ch := range t.outstanding[seKey] {
-		if now.Sub(ch.at) < t.challengeValidity && (!found || ch.at.After(best.at)) {
-			best = ch
-			found = true
-		}
-	}
-	return best, found
-}
-
-// matchChallenge reports whether nonce equals ANY still-unexpired challenge pushed
-// to this device. Accepting a reply to any in-flight challenge (not only the latest)
-// is what prevents a delayed alert delivery from being rejected.
-func (t *deviceState) matchChallenge(seKey, nonce string) bool {
-	if seKey == "" || nonce == "" {
-		return false
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	now := t.now()
-	for _, ch := range t.outstanding[seKey] {
-		if ch.nonce == nonce && now.Sub(ch.at) < t.challengeValidity {
 			return true
 		}
 	}

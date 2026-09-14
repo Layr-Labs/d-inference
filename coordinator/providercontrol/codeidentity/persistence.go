@@ -9,7 +9,7 @@ import (
 
 // persistCodeAttestation best-effort writes a successful code-identity round-trip
 // to the store so it survives a coordinator restart/deploy. It mirrors
-// the in-memory recordAttested and is called from the same event
+// the in-memory recordAttestedForProcess and is called from the same event
 // (HandleResponse). Behind the store seam (no-op until
 // Seed wires a store): prod runs the Postgres store, so this makes
 // reuse durable across blue-green deploys (avoiding a fleet-wide re-push storm).

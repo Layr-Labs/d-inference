@@ -17,21 +17,20 @@ func TestCodeAttestThrottleBudgetAndReuse(t *testing.T) {
 	th := newDeviceState()
 	th.now = func() time.Time { return cur }
 	const se, nodeKey = "se-key-1", "node-key-1"
+	generation := th.beginLoop(se)
 
-	if !th.allowPush(se, false) {
+	if !th.tryReservePush(context.Background(), se, "token", false, generation) {
 		t.Fatal("first push should be allowed")
 	}
 	if th.reuseAttestation(se, "0.6.0", "token", nodeKey) {
 		t.Fatal("no attestation yet → no reuse")
 	}
-	th.recordPush(se)
-
-	cur = cur.Add(th.backgroundPushCooldown - time.Minute) // still inside the cooldown
-	if th.allowPush(se, false) {
+	cur = cur.Add(th.backgroundPushCooldown - time.Minute)
+	if th.tryReservePush(context.Background(), se, "token", false, generation) {
 		t.Fatal("a background push within the cooldown must be blocked (background-push budget)")
 	}
-	cur = cur.Add(2 * time.Minute) // now just past the cooldown
-	if !th.allowPush(se, false) {
+	cur = cur.Add(2 * time.Minute)
+	if !th.tryReservePush(context.Background(), se, "token", false, generation) {
 		t.Fatal("a background push after the cooldown should be allowed")
 	}
 
@@ -42,7 +41,7 @@ func TestCodeAttestThrottleBudgetAndReuse(t *testing.T) {
 	if th.reuseAttestation(se, "0.6.1", "token", nodeKey) {
 		t.Fatal("must NOT reuse across a binary version change")
 	}
-	cur = cur.Add(th.reuseWindow) // window elapsed
+	cur = cur.Add(th.reuseWindow)
 	if th.reuseAttestation(se, "0.6.0", "token", nodeKey) {
 		t.Fatal("reuse must expire after the window")
 	}
@@ -71,14 +70,14 @@ func TestCodeAttestThrottleTokenBinding(t *testing.T) {
 		t.Fatal("an empty current process key reused a process-bound proof")
 	}
 
-	// Legacy records missing either identity binding cannot satisfy current
-	// registration inputs and must bootstrap a genuine push.
 	th.seed([]store.CodeAttestation{{SEPubKey: "se-legacy-token", Version: "0.6.0", AttestedAt: cur}})
 	if th.reuseAttestation("se-legacy-token", "0.6.0", "any-token", nodeKey) {
 		t.Fatal("a legacy token-less record bypassed current-token binding")
 	}
 	legacyNodeLess := newDeviceState()
-	legacyNodeLess.recordAttested("se-legacy-node", "0.6.0", "tokA")
+	legacyNodeLess.seed([]store.CodeAttestation{{
+		SEPubKey: "se-legacy-node", Version: "0.6.0", APNsToken: "tokA", AttestedAt: time.Now(),
+	}})
 	if legacyNodeLess.reuseAttestation("se-legacy-node", "0.6.0", "tokA", nodeKey) {
 		t.Fatal("a legacy process-key-less record bypassed current process-key binding")
 	}
@@ -144,15 +143,13 @@ func TestCodeAttestThrottleTransitionProcessKeyBinding(t *testing.T) {
 	}
 
 	legacy := newDeviceState()
-	legacy.recordAttested("se", "0.8.17", "token")
+	legacy.seed([]store.CodeAttestation{{
+		SEPubKey: "se", Version: "0.8.17", APNsToken: "token", AttestedAt: time.Now(),
+	}})
 	if _, ok := legacy.reuseAttestationForTransition("se", "token"); ok {
 		t.Fatal("proof without a cached process-key binding reused for a transition")
 	}
 
-	// A legacy identity-less record (process-key bound, but earned before
-	// binary-identity binding — e.g. seeded from a pre-migration durable row)
-	// never authorizes a transition resume; it must fall through to a real
-	// APNs challenge (Codex 05:55Z P1).
 	identityless := newDeviceState()
 	identityless.recordAttestedForProcess("se", "0.8.17", "token", "node-key-A", "")
 	if _, ok := identityless.reuseAttestationForTransition("se", "token"); ok {
@@ -289,24 +286,36 @@ func TestCodeAttestAPNsChallengeBindsTokenAndProcessKey(t *testing.T) {
 // shorter per-device budget than background pushes, so a missed alert push retries
 // promptly instead of being pinned to the long background budget.
 func TestCodeAttestThrottleModeAwareBudget(t *testing.T) {
-	cur := time.Unix(1_700_000_000, 0)
-	th := newDeviceState()
-	th.now = func() time.Time { return cur }
-	const se = "se-key-1"
-
-	if th.alertPushCooldown >= th.backgroundPushCooldown {
-		t.Fatalf("alert cooldown (%s) must be shorter than background (%s)",
-			th.alertPushCooldown, th.backgroundPushCooldown)
-	}
-
-	th.recordPush(se)
-	// Just past the (short) alert cooldown but well inside the background cooldown.
-	cur = cur.Add(th.alertPushCooldown + time.Second)
-	if !th.allowPush(se, true) {
-		t.Fatal("alert push should be allowed once the short alert cooldown elapses")
-	}
-	if th.allowPush(se, false) {
-		t.Fatal("background push must still be blocked inside the long background cooldown")
+	for _, alert := range []bool{false, true} {
+		name := "background"
+		if alert {
+			name = "alert"
+		}
+		t.Run(name, func(t *testing.T) {
+			cur := time.Unix(1_700_000_000, 0)
+			th := newDeviceState()
+			th.now = func() time.Time { return cur }
+			const se = "se-key-1"
+			generation := th.beginLoop(se)
+			if th.alertPushCooldown >= th.backgroundPushCooldown {
+				t.Fatal("alert cooldown must be shorter than background")
+			}
+			if !th.tryReservePush(context.Background(), se, "token", alert, generation) {
+				t.Fatal("initial push was not admitted")
+			}
+			cooldown := th.backgroundPushCooldown
+			if alert {
+				cooldown = th.alertPushCooldown
+			}
+			cur = cur.Add(cooldown - time.Nanosecond)
+			if th.tryReservePush(context.Background(), se, "token", alert, generation) {
+				t.Fatal("push admitted before its mode's cooldown elapsed")
+			}
+			cur = cur.Add(time.Nanosecond)
+			if !th.tryReservePush(context.Background(), se, "token", alert, generation) {
+				t.Fatal("push remained blocked at its mode's cooldown boundary")
+			}
+		})
 	}
 }
 
@@ -319,37 +328,30 @@ func TestCodeAttestThrottleClearPushBudget(t *testing.T) {
 	th := newDeviceState()
 	th.now = func() time.Time { return cur }
 	const se = "se-key-1"
-
-	th.recordPush(se)
-	cur = cur.Add(time.Minute) // deep inside both cooldowns
-	if th.allowPush(se, false) {
-		t.Fatal("precondition: a push within the cooldown must be blocked")
+	ctx := context.Background()
+	generation := th.beginLoop(se)
+	if !th.tryReservePush(ctx, se, "token-A", false, generation) {
+		t.Fatal("initial push was not admitted")
 	}
-	if !th.clearPushBudget(context.Background(), se) {
-		t.Fatal("the first budget reset must be honored")
+	cur = cur.Add(time.Minute)
+	if th.tryReservePush(ctx, se, "token-A", false, generation) {
+		t.Fatal("a push within the cooldown must be blocked")
 	}
-	if !th.allowPush(se, false) {
-		t.Fatal("clearPushBudget must let the next push proceed immediately (rotated token has its own budget)")
-	}
-
-	// Anti-DoS (threat-model): a second reset within budgetClearCooldown must be
-	// throttled, so a provider flooding token changes can't spam APNs.
-	th.recordPush(se)          // consume the budget again
-	cur = cur.Add(time.Minute) // still within budgetClearCooldown
-	if th.clearPushBudget(context.Background(), se) {
-		t.Fatal("a second budget reset within budgetClearCooldown must be throttled")
-	}
-	if th.allowPush(se, false) {
-		t.Fatal("a throttled reset must NOT clear the cooldown (flood protection)")
+	generation = th.rotateLoopAndClearPushBudget(ctx, se)
+	if !th.tryReservePush(ctx, se, "token-B", false, generation) {
+		t.Fatal("first rotation must admit the new token immediately")
 	}
 
-	// Once budgetClearCooldown elapses, a reset is honored again.
+	cur = cur.Add(time.Minute)
+	generation = th.rotateLoopAndClearPushBudget(ctx, se)
+	if th.tryReservePush(ctx, se, "token-C", false, generation) {
+		t.Fatal("a repeated rotation bypassed the cooldown")
+	}
+
 	cur = cur.Add(th.budgetClearCooldown)
-	if !th.clearPushBudget(context.Background(), se) {
-		t.Fatal("a reset after budgetClearCooldown must be honored")
-	}
-	if !th.allowPush(se, false) {
-		t.Fatal("an honored reset must clear the cooldown")
+	generation = th.rotateLoopAndClearPushBudget(ctx, se)
+	if !th.tryReservePush(ctx, se, "token-D", false, generation) {
+		t.Fatal("rotation remained blocked after the reset cooldown elapsed")
 	}
 }
 
@@ -362,32 +364,28 @@ func TestCodeAttestThrottleOutstandingChallenge(t *testing.T) {
 	th.now = func() time.Time { return cur }
 	const se = "se-key-1"
 
-	if _, ok := th.outstandingChallenge(se); ok {
+	if th.matchChallengeForIdentity(se, "nonce-A", "token", "node") {
 		t.Fatal("no challenge recorded yet")
 	}
-	th.recordChallenge(se, "nonce-A")
+	th.recordChallengeForIdentity(se, "nonce-A", "token", "node")
 
-	// Within the validity window: matchable.
 	cur = cur.Add(th.challengeValidity - time.Second)
-	ch, ok := th.outstandingChallenge(se)
-	if !ok || ch.nonce != "nonce-A" {
-		t.Fatalf("challenge should still be valid within the window, got %q ok=%v", ch.nonce, ok)
+	if !th.matchChallengeForIdentity(se, "nonce-A", "token", "node") {
+		t.Fatal("challenge should still be valid within the window")
 	}
 
-	// A non-matching clear must NOT drop it; a matching clear must.
 	th.clearChallengeIf(se, "nonce-WRONG")
-	if _, ok := th.outstandingChallenge(se); !ok {
+	if !th.matchChallengeForIdentity(se, "nonce-A", "token", "node") {
 		t.Fatal("clearChallengeIf with a non-matching nonce must not drop the challenge")
 	}
 	th.clearChallengeIf(se, "nonce-A")
-	if _, ok := th.outstandingChallenge(se); ok {
+	if th.matchChallengeForIdentity(se, "nonce-A", "token", "node") {
 		t.Fatal("clearChallengeIf with the matching nonce must drop the challenge")
 	}
 
-	// Re-record then let it expire past the validity window (fail-closed staleness).
-	th.recordChallenge(se, "nonce-B")
+	th.recordChallengeForIdentity(se, "nonce-B", "token", "node")
 	cur = cur.Add(th.challengeValidity)
-	if _, ok := th.outstandingChallenge(se); ok {
+	if th.matchChallengeForIdentity(se, "nonce-B", "token", "node") {
 		t.Fatal("challenge must expire after the validity window")
 	}
 }
@@ -403,32 +401,30 @@ func TestCodeAttestThrottleMultipleInFlightNonces(t *testing.T) {
 	th.now = func() time.Time { return cur }
 	const se = "se-key-1"
 
-	th.recordChallenge(se, "nonce-A")
-	cur = cur.Add(th.alertPushCooldown + time.Second) // second push, first still valid
-	th.recordChallenge(se, "nonce-B")
+	th.recordChallengeForIdentity(se, "nonce-A", "token", "node")
+	cur = cur.Add(th.alertPushCooldown + time.Second)
+	th.recordChallengeForIdentity(se, "nonce-B", "token", "node")
 
-	if !th.matchChallenge(se, "nonce-A") {
+	if !th.matchChallengeForIdentity(se, "nonce-A", "token", "node") {
 		t.Fatal("a reply to the FIRST (still-valid) nonce must be accepted, not clobbered by the second")
 	}
-	if !th.matchChallenge(se, "nonce-B") {
+	if !th.matchChallengeForIdentity(se, "nonce-B", "token", "node") {
 		t.Fatal("a reply to the second nonce must be accepted")
 	}
-	if th.matchChallenge(se, "nonce-UNKNOWN") {
+	if th.matchChallengeForIdentity(se, "nonce-UNKNOWN", "token", "node") {
 		t.Fatal("an unknown nonce must never match")
 	}
 
-	// Answering one nonce leaves the other in flight.
 	th.clearChallengeIf(se, "nonce-A")
-	if th.matchChallenge(se, "nonce-A") {
+	if th.matchChallengeForIdentity(se, "nonce-A", "token", "node") {
 		t.Fatal("a cleared nonce must no longer match")
 	}
-	if !th.matchChallenge(se, "nonce-B") {
+	if !th.matchChallengeForIdentity(se, "nonce-B", "token", "node") {
 		t.Fatal("clearing one nonce must not drop the other")
 	}
 
-	// Both expire past the validity window (fail-closed staleness).
 	cur = cur.Add(th.challengeValidity)
-	if th.matchChallenge(se, "nonce-B") {
+	if th.matchChallengeForIdentity(se, "nonce-B", "token", "node") {
 		t.Fatal("a nonce must stop matching after the validity window")
 	}
 }

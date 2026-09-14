@@ -18,31 +18,10 @@ func (t *deviceState) pushCooldown(alert bool) time.Duration {
 	return t.backgroundPushCooldown
 }
 
-// allowPush reports whether the per-device push budget permits another push now,
-// for the given delivery mode (alert is allowed to push far more often).
-func (t *deviceState) allowPush(seKey string, alert bool) bool {
-	if seKey == "" {
-		return true // no device identity to throttle on; fall back to the loop's cap
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	last, ok := t.lastPush[seKey]
-	return !ok || t.now().Sub(last) >= t.pushCooldown(alert)
-}
-
 // retryDelay is the loop's wait between wake-ups: a base spacing plus jitter.
 // Decoupled from the push budget so attestation is noticed promptly.
 func (t *deviceState) retryDelay() time.Duration {
 	return t.retrySpacing + t.jitter(t.retryJitter)
-}
-
-func (t *deviceState) recordPush(seKey string) {
-	if seKey == "" {
-		return
-	}
-	t.mu.Lock()
-	t.lastPush[seKey] = t.now()
-	t.mu.Unlock()
 }
 
 func codeAttestTokenHash(token string) string {
@@ -168,17 +147,4 @@ func (t *deviceState) noteBudgetTokenReservationHeld(seKey, tokenHash string) {
 		order = order[1:]
 	}
 	t.budgetTokenOrder[seKey] = order
-}
-
-func (t *deviceState) tryReservePush(
-	ctx context.Context,
-	seKey, token string,
-	alert bool,
-	generation uint64,
-) bool {
-	release, ok := t.reservePush(ctx, seKey, token, alert, generation)
-	if release != nil {
-		release()
-	}
-	return ok
 }

@@ -414,6 +414,17 @@ characterizations also pass before extraction.
 `code_identity_disabled_test.go` additionally preserves the no-op loop and
 heartbeat entry points on a directly constructed server with no attestor.
 
+`coordinator/providercontrol/codeidentity/device_state_test.go`
+(`TestCodeAttestThrottleModeAwareBudget`, `TestCodeAttestThrottleMultipleInFlightNonces`)
+checks both APNs cooldown boundaries and retention of earlier valid nonces
+through the serving reservation and identity-bound challenge operations.
+The reservation adapters in
+`coordinator/providercontrol/codeidentity/push_fixture_test.go`
+(`tryReservePush`, `clearPushBudget`) use the production reservation lock and
+release it before the fixture's next step. Token-rotation cases call
+`coordinator/providercontrol/codeidentity/push_rotation.go`
+(`rotateLoopAndClearPushBudget`); legacy proof cases use durable-row seeding.
+
 ```bash
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/providercontrol/codeidentity
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'CodeIdentity|CodeCoverage|CodeContinuity|CrossVersionReuse|Restart.*Transition|Seeded|HashlessRegistration|PersistOnAttest|TrustReuseShutdown|ApprovedTransitionGrants|MDMSchedulerFleet1500'

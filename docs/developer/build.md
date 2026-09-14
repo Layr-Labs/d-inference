@@ -105,6 +105,9 @@ bindings. They share the Go module and build targets below. Use the
 [repository source map](navigation.md) to find each subsystem and
 [the test guide](test.md#2-coordinator-go) for its focused checks.
 
+The adapters in `coordinator/providercontrol/codeidentity/push_fixture_test.go`
+(`tryReservePush`, `clearPushBudget`) compile only into the package's test binary.
+
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
 its test binary after helper or lifecycle changes. The CPU-only
 `TestPrepareConnectedInputBindings` check uses the actual fixture input/report

@@ -172,7 +172,7 @@ func TestRefundReservedBalanceDoesNotFinalizeWhenCreditFails(t *testing.T) {
 		ReservedMicroUSD: 50_000,
 	}
 
-	if ok := srv.refundReservedBalance(pr, "forced-failure"); ok {
+	if ok := srv.inferenceSettlement().Refund(pr, "forced-failure"); ok {
 		t.Fatal("refundReservedBalance returned true despite store credit failure")
 	}
 	if ok := pr.MarkReservationFinalized(); !ok {

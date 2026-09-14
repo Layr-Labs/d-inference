@@ -103,7 +103,7 @@ func TestAdminSetUserRole(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPut, "/v1/admin/users/role", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer admin-key")
 		rec := httptest.NewRecorder()
-		srv.handleAdminSetUserRole(rec, req)
+		srv.billingController().AdminSetUserRole(rec, req)
 		return rec
 	}
 
@@ -140,7 +140,7 @@ func TestAdminSetUserRoleRequiresAdmin(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/v1/admin/users/role", strings.NewReader(`{"account_id":"acct-or","role":"service"}`))
 	req.Header.Set("Authorization", "Bearer wrong-key")
 	rec := httptest.NewRecorder()
-	srv.handleAdminSetUserRole(rec, req)
+	srv.billingController().AdminSetUserRole(rec, req)
 	if rec.Code == http.StatusOK {
 		t.Errorf("non-admin got %d, want non-200", rec.Code)
 	}
@@ -157,7 +157,7 @@ func TestAdminSetUserPlatformFee(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPut, "/v1/admin/users/platform-fee", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer admin-key")
 		rec := httptest.NewRecorder()
-		srv.handleAdminSetUserPlatformFee(rec, req)
+		srv.billingController().AdminSetUserPlatformFee(rec, req)
 		return rec
 	}
 

@@ -33,7 +33,7 @@ curl -s https://api.darkbloom.dev/v1/models \
   -H "Authorization: Bearer $DARKBLOOM_API_KEY" | jq '.data[] | {id, context_length, input_modalities, supported_features}'
 ```
 
-A 200 with a `data` array confirms the key works (`handleListModels`, `coordinator/api/models_endpoints.go`). The `id` values are the model names to send; they are aliases maintained in the coordinator's database, so the list is authoritative and this page does not repeat it. Field meanings are in [`models.md`](models.md).
+A 200 with a `data` array confirms the key works (`ListModels`, `coordinator/api/catalog/consumer_list.go`). The `id` values are the model names to send; they are aliases maintained in the coordinator's database, so the list is authoritative and this page does not repeat it. Field meanings are in [`models.md`](models.md).
 
 Pick one id and export it:
 
@@ -54,7 +54,7 @@ curl -s https://api.darkbloom.dev/v1/chat/completions \
   }'
 ```
 
-The body is an OpenAI `chat.completion` object whose `model` field echoes the alias you sent and whose `usage` has `prompt_tokens`, `completion_tokens`, `total_tokens`. Response headers `X-Provider-Id`, `X-Provider-Attested` and `X-Timing` tell you which machine served it and how long each coordinator stage took (`writeCommittedProviderHeaders`, `coordinator/api/response_metadata.go`).
+The body is an OpenAI `chat.completion` object whose `model` field echoes the alias you sent and whose `usage` has `prompt_tokens`, `completion_tokens`, `total_tokens`. Response headers `X-Provider-Id`, `X-Provider-Attested` and `X-Timing` tell you which machine served it and how long each coordinator stage took (`WriteCommittedProviderHeaders`, `coordinator/inference/response/provider_snapshot.go`).
 
 Expect a short delay before the first byte: the coordinator sends nothing until a provider has produced content, so it can still fail over or return a real error status in the meantime (`commitFirstContent`, `coordinator/api/dispatch.go`).
 
@@ -71,7 +71,7 @@ curl -N https://api.darkbloom.dev/v1/chat/completions \
   }'
 ```
 
-You receive `text/event-stream` frames, one `data: {...}` chunk per provider token group, a final frame carrying `usage` and `finish_reason`, then exactly one `data: [DONE]`. There are no keepalive comments; silence means no token has been produced yet (`handleStreamingResponseWithFirstChunkAndError`, `coordinator/api/consumer_stream.go`).
+A successful request returns `text/event-stream` frames, one `data: {...}` chunk per provider token group, a final frame carrying `usage` and `finish_reason`, then exactly one `data: [DONE]`. A provider error after content ends the chat stream with an error frame and no `[DONE]`; handle it as a failed stream. There are no keepalive comments; silence means no token has been produced yet (`Writer.Stream`, `coordinator/inference/response/stream.go`).
 
 ### 6. Use the OpenAI SDK
 

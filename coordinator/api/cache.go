@@ -35,10 +35,3 @@ func (s *Server) readCacheSet(key string, body []byte, ttl time.Duration) {
 		s.readCache.Set(key, body, ttl)
 	}
 }
-
-func (s *Server) readCacheGetValue(key string) (any, bool) {
-	if s.readCache == nil {
-		return nil, false
-	}
-	return s.readCache.GetValue(key)
-}

@@ -1,6 +1,9 @@
 package api
 
-import "net/http"
+import (
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
+	"net/http"
+)
 
 // OpenRouter-formula uptime instrumentation.
 //
@@ -53,7 +56,7 @@ const (
 )
 
 func isOpenRouterScoredDispatchEndpoint(endpoint string) bool {
-	return endpoint != completionsEndpoint && endpoint != messagesEndpoint
+	return endpoint != response.CompletionsEndpoint && endpoint != response.MessagesEndpoint
 }
 
 func (d *dispatchState) recordDispatchedRequestOutcome(attr kvBackendAttribution, class string) {

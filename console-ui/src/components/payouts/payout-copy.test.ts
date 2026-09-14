@@ -137,7 +137,7 @@ describe("classifyOnboardError", () => {
 
 describe("classifyDashboardError", () => {
   // Codes must match the coordinator's existing payout vocabulary
-  // (stripe_payouts.go / stripe_withdraw.go), not a parallel spelling.
+  // in coordinator/api/billing/connect_dashboard.go and connect_withdraw.go.
   it("stripe_account_gone: unlink message + status refresh", () => {
     const p = classifyDashboardError(new ApiError("your Stripe account no longer exists", "stripe_account_gone", 409));
     expect(p.message).toContain("Your Stripe account was closed, so we've unlinked it");

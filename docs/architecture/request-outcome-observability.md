@@ -24,7 +24,7 @@ Every terminal goes through `coordinator/api/route_outcome.go`. The constructors
 ```mermaid
 flowchart LR
   A[dispatch loop<br/>dispatch.go] -->|pre-commit arms| F[route_outcome.go<br/>constructors]
-  B[consumer relay<br/>consumer.go / generic_endpoint_stream.go] -->|post-commit arms| F
+  B[consumer relay<br/>response/stream.go / response/generic_relay.go] -->|post-commit arms| F
   C[provider terminal<br/>provider.go handleComplete / handleInferenceError] --> F
   D[settlement grace<br/>settlement.go] -->|no terminal| F
   F --> G[updateInferenceRouteOutcomeForPending]
@@ -54,13 +54,13 @@ The five persisted values are constants in `coordinator/api/route_outcome.go` (`
 | `final_status` | `error_class` | Decided in | When |
 |---|---|---|---|
 | `cancelled` | `client_gone` | `dispatch.go` (`r.Context().Done()` arms while waiting for accept/first chunk, queued-wait exit) | client disconnected before the first content chunk |
-| `cancelled` | `client_gone_before_response` | `consumer.go` non-streaming and generic relays (`clientGoneBeforeResponseOutcome`) | client disconnected while the coordinator was still waiting for the full response |
+| `cancelled` | `client_gone_before_response` | `coordinator/inference/response/nonstream.go` and `coordinator/inference/response/generic_relay.go` call `responseServices.ClientGone` (`coordinator/api/response_writer.go`), which uses `clientGoneBeforeResponseOutcome` | client disconnected while the coordinator was still waiting for the full response |
 | `cancelled` | `speculative_loser` | `dispatch.go` (`speculativeLoserOutcome`) | the other attempt of a speculative/backup race won |
 | `error` | `provider_error` | `preCommitProviderErrorOutcome`; `dispatchErrorClass` for a failed send | provider terminal before commit that is not otherwise classified |
 | `error` | `provider_disconnect_pre_commit` | `preCommitProviderErrorOutcome` when the synthetic terminal carries `CoordinatorCause = provider_disconnected` (a Go-only field, `json:"-"`, never on the wire) | provider session dropped before commit (`registry.Disconnect` injects the terminal) |
 | `error` | `provider_error_before_response` / `provider_disconnect_before_response` | `preResponseProviderErrorOutcome` (non-streaming relay) | provider error or disconnect while a non-streaming response was pending |
 | `error` | `provider_incomplete_before_response` | `preResponseProviderIncompleteOutcome`, `error_code = 502` | provider channel closed without a terminal frame before response |
-| `error` | `client_error` | `preCommitProviderErrorOutcome` (`isTerminalClientErrorCode`, `isNonProviderFaultErrorReason`), `dispatchErrorClass` for an oversized body | deterministic request-shape fault: provider `4xx`, `jinja_*` template failure, or `tool_noncompliance`; no reputation penalty, `admitted_but_failed = false` |
+| `error` | `client_error` | `preCommitProviderErrorOutcome` (`isTerminalClientErrorCode`, `attempt.IsNonProviderFaultErrorReason`), `dispatchErrorClass` for an oversized body | deterministic request-shape fault: provider `4xx`, `jinja_*` template failure, or `tool_noncompliance`; no reputation penalty, `admitted_but_failed = false` |
 | `error` | `deadline_unreachable` | `preCommitProviderErrorOutcome` when `error_reason = deadline_unreachable` | provider refused because the remaining first-content budget could not be met; health-neutral |
 | `error` | `insufficient_funds`, `encryption_missing`, `encryption_error` | `dispatchErrorClass` | dispatch could not start: provider-price reservation, no E2E-capable provider, key/encrypt failure |
 | `error` | `ttft_too_slow` | queued-wait exit (`queuedExitOutcome`), HTTP `429` | the live first-content budget cannot be met by any candidate; also a `request_rejections` row (stage `queue` or `dispatch`) |
@@ -68,8 +68,8 @@ The five persisted values are constants in `coordinator/api/route_outcome.go` (`
 | `timeout` | `first_chunk_timeout` | `first_token_clock.go`, `dispatch.go` first-chunk waits and speculative timeouts | dispatched but no first content before the live first-content deadline |
 | `timeout` | `accepted_timeout` | `dispatch.go` accepted-wait arm | provider sent `inference_accepted` (or a cold load) but no content in time |
 | `timeout` | `preamble_liveness_timeout` | `dispatch.go` preamble-liveness arm | provider emitted only role/lifecycle preamble, then stalled |
-| `timeout` | `usage_timeout_before_response`, `response_timeout_before_response` | `consumer.go` non-streaming relay (`preResponseTimeoutOutcome`) | non-streaming response or its usage frame did not arrive in time |
-| `partial_success` | `provider_error_after_commit` / `provider_disconnect_after_commit` | `postCommitProviderErrorOutcome` (streaming relays, `generic_endpoint_stream.go`) | provider error or disconnect after the client had content |
+| `timeout` | `usage_timeout_before_response`, `response_timeout_before_response` | `Writer.NonStream` (`coordinator/inference/response/nonstream.go`) calls `responseServices.Timeout` (`coordinator/api/response_writer.go`), which uses `preResponseTimeoutOutcome` | non-streaming response or its usage frame did not arrive in time |
+| `partial_success` | `provider_error_after_commit` / `provider_disconnect_after_commit` | `postCommitProviderErrorOutcome` (streaming relays, `coordinator/inference/response/generic_relay.go`) | provider error or disconnect after the client had content |
 | `partial_success` | `provider_incomplete_after_commit` | `postCommitProviderIncompleteOutcome`, `502` | provider channel closed mid-stream with no terminal |
 | `partial_success` | `stream_timeout_after_commit` | `postCommitStreamTimeoutOutcome`, `504` | idle-stream timer expired mid-stream |
 | `partial_success` | `client_gone_after_commit_provider_completed` | `provider.go` `handleComplete` when `consumerGone` (`completeRouteOutcome`) | client left after commit; provider completed; consumer charged and provider paid |
@@ -173,14 +173,16 @@ was never accepted contributes only to `inference.cancel_unresolved` on expiry,
 even if stray chunks arrived. `inference.cancelled_terminal` includes
 `delivered:true|false` for correlated terminals. Successful enqueue marking and terminal resolution share the tracker lock,
 so an immediate terminal cannot observe an unmarked accepted cancel.
-Enqueue acceptance does not prove a frame reached the provider (`coordinator/api/cancel_lifecycle.go`,
-`sendRecordedCancel`, `resolveCancelledTerminal`, `emitExpiredCancelEntries`).
+Enqueue acceptance does not prove a frame reached the provider
+(`coordinator/inference/attempt/cancel_delivery.go`, `Service.SendRecordedCancel`;
+`coordinator/inference/attempt/cancel_metrics.go`, `Service.ResolveCancelledTerminal`,
+`Service.emitExpiredCancelEntries`).
 The zombie tracker keeps at most `zombieCancelMaxEntries = 4096` entries.
 Insertions at the cap evict one least-recently-active ID with constant-time
 list operations; they do not force an expiry scan. TTL and warning-state
 cleanup remain rate-limited to `zombieSweepEvery`
-(`coordinator/api/zombie_eviction.go`, `makeRoomLocked`;
-`coordinator/api/zombie_stream.go`, `sweepLocked`).
+(`coordinator/inference/attempt/cancel_recency.go`, `makeRoomLocked`;
+`coordinator/inference/attempt/cancel_tracker.go`, `sweepLocked`).
 
 ### Read surfaces
 
@@ -195,10 +197,10 @@ All admin reads require the admin key (`requireAdminKey`).
 
 ## Invariants
 
-- **Closed vocabularies.** `final_status`, `error_class`, `error_reason`, `client_outcome`, `provider_outcome`, rejection `stage`/`reason_code`, and every metric tag value are Go constants or allowlisted strings. `normalizeInferenceErrorReason` turns any provider value outside `validInferenceErrorReasons` into `unknown`.
+- **Closed vocabularies.** `final_status`, `error_class`, `error_reason`, `client_outcome`, `provider_outcome`, rejection `stage`/`reason_code`, and every metric tag value are Go constants or allowlisted strings. `attempt.NormalizeInferenceErrorReason` turns any provider value outside `validInferenceErrorReasons` into `unknown` (`coordinator/inference/attempt/error_reason.go`).
 - **Commit is not success.** `committedRouteOutcome` writes telemetry fields only; `final_status = success` is written by `completeRouteOutcome` at the provider's `inference_complete`, and only when the consumer is still connected.
 - **One terminal per attempt.** `MarkRouteOutcomeFinalized` and the attempt profile's `sync.Once` halves make provider, relay, disconnect and grace paths idempotent; a late terminal after a grace-expiry refund is a no-op on money and outcome (`coordinator/api/settlement_clientgone_test.go`).
-- **Fault attribution is separate from outcome.** `isProviderHealthNeutralErrorReason` exempts `jinja_*`, `tool_noncompliance` and `deadline_unreachable` from reputation, breakers and capacity trackers; `client_gone*` classes never count as provider failures (`RecordJobSuccess` with `FailedJobs == 0` for a completed-after-disconnect request).
+- **Fault attribution is separate from outcome.** `attempt.IsProviderHealthNeutralErrorReason` exempts `jinja_*`, `tool_noncompliance` and `deadline_unreachable` from reputation, breakers and capacity trackers; `client_gone*` classes never count as provider failures (`RecordJobSuccess` with `FailedJobs == 0` for a completed-after-disconnect request).
 - **Metadata only.** Route rows, profiles, rejections and tags carry no prompt or completion text, raw IP, raw user agent, media bytes or raw API keys; client identity is `store.HashKey` output and key/account ids already used for billing. Provider error text is sanitized before it reaches a client and never persisted on a row.
 - **Observability never steers.** Nothing reads `inference_routes` outcomes, `request_profiles`, `request_rejections` or the `kv_backend` tags to make a routing, admission or billing decision.
 
@@ -224,11 +226,12 @@ All admin reads require the admin key (`requireAdminKey`).
 
 | Concern | Files |
 |---|---|
-| Outcome constructors, `final_status` constants, `error_reason` derivation | `coordinator/api/route_outcome.go` |
+| Outcome constructors, `final_status` constants, `error_reason` derivation | `coordinator/api/route_outcome.go`; the shared reason vocabulary and normalization live in `coordinator/inference/attempt/error_reason.go` |
+| Cancel correlation, delivery and expiry | `coordinator/inference/attempt/cancel_tracker.go`, `cancel_recency.go`, `cancel_delivery.go`, `cancel_metrics.go`; `coordinator/api/inference_attempt.go` binds the shared tracker |
 | Pre-commit arms, dispatch error classes, exhausted-status reclassification, `request_outcome` emit | `coordinator/api/dispatch.go`, `coordinator/api/first_token_clock.go`, `coordinator/api/openrouter_uptime.go` |
-| Post-commit and pre-response relay arms | `coordinator/api/consumer.go`, `coordinator/api/generic_endpoint_stream.go`, `coordinator/api/dispatch_terminal_write.go` |
+| Post-commit and pre-response relay arms | `coordinator/inference/response/stream.go`, `coordinator/inference/response/nonstream.go`, `coordinator/inference/response/generic_relay.go`; `coordinator/api/response_writer.go` (`responseServices`) maps these outcomes; dispatch terminals remain in `coordinator/api/dispatch_terminal_write.go` |
 | Provider terminals, consumer-gone handling | `coordinator/api/provider.go`, `coordinator/api/inference_error_sanitize.go` |
-| Settlement grace and no-terminal refund | `coordinator/api/settlement.go` |
+| Settlement grace and no-terminal refund | `coordinator/api/settlement.go` (`holdForSettlement`) keeps the outcome/metric policy; `coordinator/inference/settlement/holder.go` (`Holder`) owns parked records and `coordinator/inference/settlement/refund.go` (`Refund`) owns the financial operation |
 | Client-gone and partial-success counters | `coordinator/api/prompt_buckets.go`, `coordinator/api/partial_success_metrics.go` |
 | Timing histograms, KV-backend attribution | `coordinator/api/timing_metrics.go`, `coordinator/api/kv_backend_metrics.go`, `coordinator/registry/kv_backend.go` |
 | Rejection ledger and servability gate | `coordinator/api/rejection_telemetry.go`, `coordinator/api/inference_admission.go`, `coordinator/api/servability_gate.go` |

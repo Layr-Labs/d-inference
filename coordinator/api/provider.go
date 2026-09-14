@@ -24,17 +24,16 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
-	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/providercontrol/challenge"
 	"github.com/eigeninference/d-inference/coordinator/providercontrol/codeidentity"
@@ -1004,7 +1003,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		// owned. noteStrayChunk re-sends the cancel on the escalating zombie
 		// schedule and rate-limits the log line per provider; request_id stays
 		// out of the log until it matches coordinator state.
-		s.noteStrayChunk(provider, providerID, msg.RequestID, receivedAt)
+		s.inferenceAttempts().StrayChunk(provider, providerID, msg.RequestID, receivedAt)
 		return
 	}
 	ingressClassified := false
@@ -1027,7 +1026,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		// will not send a cancel for it (a settled terminal means "nothing
 		// left to stop"). Stop the real work here, like the deadline and
 		// overflow branches do.
-		s.sendProviderCancel(provider, msg.RequestID)
+		s.inferenceAttempts().SendCancel(provider, msg.RequestID)
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
 			Type:        protocol.TypeInferenceError,
 			RequestID:   msg.RequestID,
@@ -1042,10 +1041,10 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		ap.DecryptUSTotal.Add(time.Since(decryptStart).Microseconds())
 		ap.MarkAt(registry.StampFirstChunkIngress, receivedAt)
 	}
-	if pr.Profile != nil && !pr.Profile.GeneratedContentObserved.Load() && (generatedContentSSE([]byte(chunkData)) || generatedContentJSON([]byte(chunkData))) {
+	if pr.Profile != nil && !pr.Profile.GeneratedContentObserved.Load() && (response.GeneratedContentSSE([]byte(chunkData)) || response.GeneratedContentJSON([]byte(chunkData))) {
 		pr.Profile.GeneratedContentObserved.Store(true)
 	}
-	contentBearing := !isBoilerplateChunk(chunkData)
+	contentBearing := !response.IsBoilerplateChunk(chunkData)
 	firstContent := pr.FinishProviderChunkIngress(receivedAt, contentBearing)
 	ingressClassified = true
 	if firstContent {
@@ -1061,13 +1060,13 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		// either late first content or an on-time chunk that finished
 		// classification as boilerplate only after the deadline.
 		s.ddIncr("inference.first_content_after_deadline", []string{})
-		s.sendAbandonCancel(provider, pr.RequestID, pr.Model, cancelCauseLateContent)
+		s.inferenceAttempts().SendAbandonCancel(provider, pr.RequestID, pr.Model, attempt.CancelCauseLateContent)
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
 			Type:        protocol.TypeInferenceError,
 			RequestID:   pr.RequestID,
 			Error:       "first content was unavailable at the request deadline",
 			StatusCode:  http.StatusServiceUnavailable,
-			ErrorReason: errorReasonDeadlineUnreachable,
+			ErrorReason: attempt.ErrorReasonDeadlineUnreachable,
 			FailureCode: protocol.FailureCodeCapacity,
 		})
 		return
@@ -1092,7 +1091,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 			"request_id", msg.RequestID,
 		)
 		s.ddIncr("inference.chunk_overflow_abort", []string{})
-		s.sendAbandonCancel(provider, pr.RequestID, pr.Model, cancelCauseOverflow)
+		s.inferenceAttempts().SendAbandonCancel(provider, pr.RequestID, pr.Model, attempt.CancelCauseOverflow)
 		// 499 + "request cancelled" classifies as a consumer-side terminal in
 		// handleInferenceError: no provider reputation hit for our backpressure.
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
@@ -1284,7 +1283,7 @@ func (s *Server) handleCompleteAt(
 				RequestID:   pending.RequestID,
 				Error:       "provider completed after the first-content deadline",
 				StatusCode:  http.StatusServiceUnavailable,
-				ErrorReason: errorReasonDeadlineUnreachable,
+				ErrorReason: attempt.ErrorReasonDeadlineUnreachable,
 				FailureCode: protocol.FailureCodeCapacity,
 			}, true)
 			// handleInferenceError completes the terminal only when it still
@@ -1333,20 +1332,20 @@ func (s *Server) handleCompleteAt(
 	// pre-commit attempt was refunded when it was abandoned. Only a terminal
 	// that finds no live record is matched, so the coordinator's own
 	// synthesized errors (raised while the record is live) never resolve one.
-	var cancelled zombieEntry
+	var cancelled attempt.Cancellation
 	wasCancelled := false
 	if pr == nil {
-		cancelled, wasCancelled = s.resolveCancelledTerminal(
-			msg.RequestID, cancelTerminalComplete, cancelledOutcomeCompletePartial, receivedAt)
+		cancelled, wasCancelled = s.inferenceAttempts().ResolveCancelledTerminal(
+			msg.RequestID, attempt.CancelTerminalComplete, attempt.CancelledOutcomeCompletePartial, receivedAt)
 		pr = parked
 	}
 	if pr == nil {
-		if wasCancelled && cancelled.cause != cancelCauseStrayChunk {
+		if wasCancelled && cancelled.Cause() != attempt.CancelCauseStrayChunk {
 			// The id matched a cancel the coordinator recorded, so it is
 			// coordinator-minted and safe to log: the provider honored the
 			// cancel with a partial completion.
 			s.logger.Debug("complete for cancelled request",
-				"request_id", msg.RequestID, "provider_id", providerID, "cause", cancelled.cause)
+				"request_id", msg.RequestID, "provider_id", providerID, "cause", cancelled.Cause())
 		} else {
 			// Until it matches pending state, request_id is provider-controlled and
 			// therefore an arbitrary log-exfiltration channel.
@@ -1434,7 +1433,7 @@ func (s *Server) handleCompleteAt(
 	// Store SE signature for the consumer response headers.
 	pr.SESignature = msg.SESignature
 	pr.ResponseHash = msg.ResponseHash
-	pr.MatchedStopSequence = allowedMatchedStopSequence(
+	pr.MatchedStopSequence = response.AllowedMatchedStopSequence(
 		pr.RequestedStopSequences, msg.StopSequence)
 	if msg.StopSequence != "" && pr.MatchedStopSequence == "" {
 		s.logger.Warn("provider reported an unrequested stop sequence",
@@ -1489,260 +1488,7 @@ func (s *Server) handleCompleteAt(
 	// Serving this model proves the pair can load — lift any cool-down early.
 	s.registry.ClearDispatchLoadCooldown(providerID, pr.Model)
 
-	// Resolve the consumer once: platform-fee override (nil = global default)
-	// and whether this is a wholesale/service channel (e.g. OpenRouter). A
-	// failed lookup (raw API-key account with no user row) falls back to
-	// defaults. Service accounts run on a 0% fee.
-	var feePercent *int64
-	isServiceConsumer := false
-	settleStart := time.Now()
-	if u, err := s.store.GetUserByAccountID(pr.ConsumerKey); err == nil && u != nil {
-		feePercent = u.PlatformFeePercent
-		isServiceConsumer = u.Role == store.RoleService
-	}
-
-	// Calculate cost. Direct consumers: provider custom price, then platform DB
-	// price, then hardcoded defaults, with the per-request minimum applied.
-	// Service/wholesale traffic is billed at the advertised platform price
-	// (never a provider's higher custom price) and is exempt from the minimum,
-	// so the debit matches the published per-token OpenRouter feed exactly.
-	providerAccountForPricing := ""
-	if p := s.registry.GetProvider(providerID); p != nil {
-		providerAccountForPricing = providerPricingKeys(p)
-	}
-	var customIn, customOut int64
-	var hasCustom bool
-	if !isServiceConsumer {
-		customIn, customOut, hasCustom = s.store.GetModelPrice(providerAccountForPricing, pr.Model)
-	}
-	if !hasCustom {
-		customIn, customOut, hasCustom = s.store.GetModelPrice("platform", pr.Model)
-	}
-	var totalCost int64
-	if isServiceConsumer {
-		totalCost = payments.CalculateCostWithOverridesNoMinimum(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
-	} else {
-		totalCost = payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
-	}
-
-	providerPayout := payments.ProviderPayoutWithPercent(totalCost, feePercent)
-
-	// Free settlement when an OWNED machine served the request. Two paths reach
-	// here:
-	//   - FreeSelfRoute (exclusive self-route): the router only ever picks owned
-	//     providers, so a mismatch should be impossible (machine unlinked
-	//     mid-flight); a mismatch falls back to paid to close the "mark free,
-	//     serve elsewhere" hole.
-	//   - PreferOwner (prefer-with-fallback): the request may legitimately have
-	//     fallen back to a PUBLIC provider, in which case paid settlement is the
-	//     correct, expected outcome — not an error.
-	// Either way: free iff the provider that actually served it is owned by the
-	// requesting account. Ownership is read from the serving provider object
-	// (stable across deregistration), not a fresh lookup.
-	freeSelfRoute := false
-	if pr.FreeSelfRoute || pr.PreferOwner {
-		serving := s.registry.GetProvider(providerID)
-		if serving == nil {
-			serving = provider
-		}
-		serving.Mu().Lock()
-		servingOwner := serving.AccountID
-		serving.Mu().Unlock()
-		if servingOwner != "" && servingOwner == pr.ConsumerKey {
-			// Owned machine served it → free. For PreferOwner this also fully
-			// refunds the up-front reservation below (totalCost 0 < reserved).
-			freeSelfRoute = true
-			totalCost = 0
-			providerPayout = 0
-		} else if pr.FreeSelfRoute {
-			// Exclusive self-route should never be served by a non-owned
-			// provider — surface it and settle as paid (defense-in-depth).
-			s.logger.Error("self-route completion served by a non-owned provider — settling as paid (defense-in-depth)",
-				"provider_id", providerID,
-				"request_id", msg.RequestID,
-				"serving_owner", servingOwner,
-				"consumer_key", pr.ConsumerKey,
-			)
-		}
-		// PreferOwner served by a public provider is the normal fallback — no
-		// log, settle as paid against the reservation.
-	}
-
-	billingFinalized := true
-
-	// Settle billing against the pre-flight reservation. All balance
-	// mutations (overage charge, refund) happen inside the finalization
-	// gate so that a concurrent timeout/error refund path cannot race
-	// with the settlement here.
-	if pr.ServiceReservation && pr.ReservedMicroUSD > 0 {
-		var chargeErr error
-		finalized, _ := pr.FinalizeReservation(func() error {
-			if totalCost > 0 {
-				start := time.Now()
-				chargeErr = s.ledger.Charge(pr.ConsumerKey, totalCost, msg.RequestID)
-				s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:service_reservation_settle"})
-			}
-			s.releaseServiceReservation(pr, "finalize")
-			return nil
-		})
-		if !finalized {
-			billingFinalized = false
-			s.logger.Warn("skipping completion billing for already-finalized service reservation",
-				"provider_id", providerID,
-				"request_id", msg.RequestID,
-			)
-		} else if chargeErr != nil {
-			if errors.Is(chargeErr, store.ErrInsufficientBalance) {
-				s.logger.Warn("service reservation settlement failed (insufficient balance) — zeroing uncollected charge",
-					"consumer_key", pr.ConsumerKey,
-					"cost_micro_usd", totalCost,
-				)
-			} else {
-				s.logger.Error("service reservation settlement failed (DB error) — zeroing uncollected charge",
-					"consumer_key", pr.ConsumerKey,
-					"cost_micro_usd", totalCost,
-					"error", chargeErr,
-				)
-			}
-			totalCost = 0
-			providerPayout = 0
-			s.ddIncr("billing.uncollected_zeroed", []string{"model:" + pr.Model, "mode:service_hold"})
-		} else {
-			s.ddIncr("billing.reservation_finalize", []string{"model:" + pr.Model, "mode:service_hold", "outcome:charged"})
-			s.ddHistogram("billing.service_settlement_micro_usd", float64(totalCost), []string{"model:" + pr.Model})
-		}
-	} else if pr.ReservedMicroUSD > 0 {
-		if !pr.MarkReservationFinalized() {
-			billingFinalized = false
-			s.logger.Warn("skipping completion billing for already-finalized reservation",
-				"provider_id", providerID,
-				"request_id", msg.RequestID,
-			)
-		} else if totalCost > pr.ReservedMicroUSD {
-			// Actual cost exceeds reservation (e.g. provider custom
-			// pricing above platform rate). Attempt to charge the
-			// consumer the difference. Cap overage at the reservation
-			// amount as a fraud circuit-breaker — a provider cannot
-			// bill more than 2x the pre-flight estimate.
-			overage := totalCost - pr.ReservedMicroUSD
-			if overage > pr.ReservedMicroUSD {
-				s.logger.Error("overage exceeds reservation cap — clamping",
-					"provider_id", providerID,
-					"request_id", msg.RequestID,
-					"reported_cost_micro_usd", totalCost,
-					"reserved_micro_usd", pr.ReservedMicroUSD,
-					"uncapped_overage_micro_usd", overage,
-				)
-				s.ddIncr("billing.cost_clamped", []string{"model:" + pr.Model})
-				overage = pr.ReservedMicroUSD
-				totalCost = pr.ReservedMicroUSD * 2
-			}
-			if err := s.ledger.Charge(pr.ConsumerKey, overage, "overage:"+msg.RequestID); err != nil {
-				// Overage charge failed — clamp to reservation so
-				// the provider still gets paid something.
-				if errors.Is(err, store.ErrInsufficientBalance) {
-					s.logger.Warn("overage charge failed (insufficient balance) — clamping to reservation",
-						"provider_id", providerID,
-						"request_id", msg.RequestID,
-						"reported_cost_micro_usd", totalCost,
-						"reserved_micro_usd", pr.ReservedMicroUSD,
-						"overage_micro_usd", overage,
-					)
-				} else {
-					s.logger.Error("overage charge failed (DB error) — clamping to reservation",
-						"provider_id", providerID,
-						"request_id", msg.RequestID,
-						"reported_cost_micro_usd", totalCost,
-						"reserved_micro_usd", pr.ReservedMicroUSD,
-						"overage_micro_usd", overage,
-						"error", err,
-					)
-				}
-				s.ddIncr("billing.cost_clamped", []string{"model:" + pr.Model})
-				totalCost = pr.ReservedMicroUSD
-			} else {
-				s.logger.Info("overage charged to consumer",
-					"provider_id", providerID,
-					"request_id", msg.RequestID,
-					"overage_micro_usd", overage,
-					"total_cost_micro_usd", totalCost,
-				)
-				s.ddIncr("billing.overage_charged", []string{"model:" + pr.Model})
-				s.ddHistogram("billing.overage_micro_usd", float64(overage), []string{"model:" + pr.Model})
-				pr.ReservedMicroUSD = totalCost
-			}
-			// Recompute payout after potential clamp.
-			providerPayout = payments.ProviderPayoutWithPercent(totalCost, feePercent)
-		} else if totalCost < pr.ReservedMicroUSD {
-			refund := pr.ReservedMicroUSD - totalCost
-			start := time.Now()
-			// Financial: a failed refund over-charges the consumer. Never swallow it.
-			if err := s.store.Credit(pr.ConsumerKey, refund, store.LedgerRefund, msg.RequestID); err != nil {
-				s.logger.Error("failed to credit settlement refund to consumer",
-					"request_id", msg.RequestID, "refund_micro_usd", refund, "error", err)
-				s.ddIncr("billing.credit_failed", []string{"op:settlement_refund"})
-			}
-			s.ddHistogram("billing.settlement_refund_micro_usd", float64(refund), []string{"model:" + pr.Model})
-			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:settlement_refund"})
-		}
-	} else if !freeSelfRoute {
-		start := time.Now()
-		if err := s.ledger.Charge(pr.ConsumerKey, totalCost, msg.RequestID); err != nil {
-			if errors.Is(err, store.ErrInsufficientBalance) {
-				s.logger.Warn("could not charge consumer (insufficient balance)",
-					"consumer_key", pr.ConsumerKey,
-					"cost_micro_usd", totalCost,
-				)
-			} else {
-				s.logger.Error("could not charge consumer (DB error)",
-					"consumer_key", pr.ConsumerKey,
-					"cost_micro_usd", totalCost,
-					"error", err,
-				)
-			}
-			// If this was a self-route request that FELL BACK to paid settlement
-			// (marked free at dispatch, but mid-flight ownership revalidation
-			// failed), the owner has no balance because self-route skips
-			// reservation — so a failed charge means no money was collected and
-			// we must NOT credit the provider from an unfunded balance. Zero the
-			// cost and payout. (Other no-reservation paths — e.g. admin /
-			// platform-covered usage — keep their existing payout behavior.)
-			if pr.FreeSelfRoute {
-				totalCost = 0
-				providerPayout = 0
-				s.ddIncr("billing.uncollected_zeroed", []string{"model:" + pr.Model})
-			}
-		}
-		s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:charge"})
-	}
-
-	if billingFinalized {
-		// Record in-memory usage (for current session queries).
-		s.ledger.RecordUsage(pr.ConsumerKey, payments.UsageEntry{
-			JobID:            msg.RequestID,
-			Model:            consumerModel(pr),
-			PromptTokens:     msg.Usage.PromptTokens,
-			CompletionTokens: msg.Usage.CompletionTokens,
-			CostMicroUSD:     totalCost,
-			Timestamp:        time.Now(),
-		})
-
-		// Persist usage to DB asynchronously — billing has already been
-		// settled above, so this INSERT is not on the critical path. KeyID
-		// carries per-key usage/spend attribution (empty for legacy callers).
-		//
-		// Skip the persistent (public-stats-feeding) row for FREE self-route:
-		// it is private, owner-only traffic and must not appear in the public
-		// /stats time-series, request-location, or flow aggregations. Private-only
-		// providers only ever serve free self-route, so this also keeps their
-		// traffic out of public stats. The owner still sees it via the in-memory
-		// RecordUsage above (their session/transparency view).
-		if !freeSelfRoute {
-			saferun.Go(s.logger, "recordUsage", func() {
-				s.store.RecordUsageFullWithPublicModel(providerID, pr.ConsumerKey, pr.KeyID, pr.Model, consumerModel(pr), msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
-			})
-		}
-
+	result := s.inferenceSettlement().Complete(providerID, provider, pr, msg, func(totalCost int64) {
 		// Fallback actual_ttft_ms anchor for the COMMITTED attempt only. The
 		// dispatch/handler goroutine normally stamps FirstContentAt at the
 		// content-commit site (commitFirstContent / the generic stamp); this
@@ -1834,86 +1580,8 @@ func (s *Server) handleCompleteAt(
 		// this one.
 		s.emitRequestBackendLatency(pr.Model, s.providerKVBackendAttribution(provider, pr.Model),
 			outcome.ActualTTFTMs, outcome.ActualDecodeTPS)
-
-		// Resolve provider identity for payout.
-		p := s.registry.GetProvider(providerID)
-		if p == nil {
-			p = provider
-		}
-
-		// Compute platform fee (needs referral lookup before spawning goroutines).
-		platformFee := payments.PlatformFeeWithPercent(totalCost, feePercent)
-		if platformFee > 0 && s.billing != nil && s.billing.Referral() != nil {
-			platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
-		}
-
-		// Run provider credit and platform fee credit concurrently —
-		// they target different accounts so there is no data dependency.
-		var settlementWg sync.WaitGroup
-
-		// Credit the provider's linked account (if any).
-		if p != nil {
-			p.Mu().Lock()
-			accountID := p.AccountID
-			publicKey := p.PublicKey
-			p.Mu().Unlock()
-
-			// Credit the provider only when there is an actual payout. A zero
-			// payout means either free self-route (consumer == provider account)
-			// or an uncollected charge (e.g. a self-route paid-fallback whose
-			// owner had no balance) — in both cases we must not record a
-			// (zero-value) earning row. Mirrors the platformFee > 0 guard below.
-			if accountID != "" && !freeSelfRoute && providerPayout > 0 {
-				settlementWg.Add(1)
-				go func() {
-					defer settlementWg.Done()
-					start := time.Now()
-					if err := s.store.CreditProviderAccount(&store.ProviderEarning{
-						AccountID:        accountID,
-						ProviderID:       providerID,
-						ProviderKey:      publicKey,
-						JobID:            msg.RequestID,
-						Model:            pr.Model,
-						AmountMicroUSD:   providerPayout,
-						PromptTokens:     msg.Usage.PromptTokens,
-						CompletionTokens: msg.Usage.CompletionTokens,
-						CreatedAt:        time.Now(),
-					}); err != nil {
-						s.logger.Error("failed to credit linked provider account",
-							"provider_id", providerID,
-							"account_id", accountID,
-							"request_id", msg.RequestID,
-							"error", err,
-						)
-					}
-					s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:provider_account_credit"})
-					s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:account"})
-				}()
-			}
-		}
-
-		// Record platform fee.
-		if platformFee > 0 {
-			settlementWg.Add(1)
-			go func() {
-				defer settlementWg.Done()
-				start := time.Now()
-				// Financial: a failed platform-fee credit drops revenue accounting. Never swallow it.
-				if err := s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID); err != nil {
-					s.logger.Error("failed to credit platform fee",
-						"request_id", msg.RequestID, "platform_fee_micro_usd", platformFee, "error", err)
-					s.ddIncr("billing.credit_failed", []string{"op:platform_fee"})
-				}
-				s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:platform_fee"})
-				s.ddCount("billing.platform_fees_micro_usd", platformFee, []string{"model:" + pr.Model})
-			}()
-		}
-
-		settlementWg.Wait()
-		if ap := pr.Profile; ap != nil {
-			ap.SettleDBUS.Add(time.Since(settleStart).Microseconds())
-		}
-	}
+	})
+	totalCost, providerPayout := result.CostMicroUSD, result.ProviderPayoutMicroUSD
 
 	// Signal completion to the consumer response handler. This must happen
 	// AFTER usage/billing is recorded because closing ChunkCh immediately
@@ -1964,8 +1632,8 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 	if invalidTerminalCause {
 		// Never tag the counter with the untrusted value: the value itself may be
 		// an exfiltration payload and would also create unbounded cardinality.
-		s.ddIncr(metricUnknownTerminalCause, nil)
-		s.ddIncr(metricTypedTerminal, []string{"cause:unknown"})
+		s.ddIncr(attempt.MetricUnknownTerminalCause, nil)
+		s.ddIncr(attempt.MetricTypedTerminal, []string{"cause:unknown"})
 	}
 	// Ownership is decided BEFORE the pending request is removed. Completions
 	// settle on a worker goroutine while error frames run inline on the read
@@ -1998,7 +1666,7 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 		s.retainProviderProfile(pending.Profile, msg.Profile)
 		msg.Profile = nil
 	}
-	if pending != nil && isDrainingErrorReason(msg.ErrorReason) {
+	if pending != nil && attempt.IsDrainingErrorReason(msg.ErrorReason) {
 		s.noteProviderDraining(providerID, pending.Model)
 	}
 	pr := provider.RemovePending(msg.RequestID)
@@ -2007,20 +1675,20 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 	parked := s.claimSettlement(msg.RequestID)
 	// See handleCompleteAt: a terminal with no live pending record is matched
 	// against the cancel the coordinator sent for it (metric-only).
-	var cancelled zombieEntry
+	var cancelled attempt.Cancellation
 	wasCancelled := false
 	if pr == nil {
-		cancelled, wasCancelled = s.resolveCancelledTerminal(
-			msg.RequestID, cancelTerminalError, cancelledErrorOutcome(msg), time.Now())
+		cancelled, wasCancelled = s.inferenceAttempts().ResolveCancelledTerminal(
+			msg.RequestID, attempt.CancelTerminalError, attempt.CancelledErrorOutcome(msg), time.Now())
 		pr = parked
 	}
 	if pr == nil {
-		if wasCancelled && cancelled.cause != cancelCauseStrayChunk {
+		if wasCancelled && cancelled.Cause() != attempt.CancelCauseStrayChunk {
 			// Coordinator-minted id (it matched a recorded cancel): the
 			// provider honored the cancel before producing output.
 			s.logger.Debug("error for cancelled request",
 				"request_id", msg.RequestID, "provider_id", providerID,
-				"cause", cancelled.cause, "status_code", msg.StatusCode)
+				"cause", cancelled.Cause(), "status_code", msg.StatusCode)
 		} else {
 			// request_id is provider-controlled until it matches coordinator-owned
 			// pending state. Do not log it: an attacker could use unknown IDs as an
@@ -2041,7 +1709,7 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 	}
 	// From this point onward use only the coordinator-owned identifier.
 	msg.RequestID = pr.RequestID
-	if pending == nil && isDrainingErrorReason(msg.ErrorReason) {
+	if pending == nil && attempt.IsDrainingErrorReason(msg.ErrorReason) {
 		// A consumer-gone request may already be parked outside the pending
 		// map. Fence its provider before SetProviderIdle drains queued work.
 		s.noteProviderDraining(providerID, pr.Model)
@@ -2108,15 +1776,15 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 	// (admission_timeout — healthy but busy) causes are exempt from the fault
 	// recorder below regardless of status/string shape. Absent, engine_error,
 	// or unknown causes keep the legacy heuristics bit-for-bit.
-	causeClass := s.noteTypedTerminalCause(msg.TerminalCause)
-	causeNeutralForHealth := causeClass == causeClassNeutral || causeClass == causeClassCapacity
+	causeClass := s.inferenceAttempts().TypedTerminal(msg.TerminalCause)
+	causeNeutralForHealth := causeClass == attempt.CauseClassNeutral || causeClass == attempt.CauseClassCapacity
 
 	capacityRejection := msg.FailureCode == protocol.FailureCodeCapacity ||
 		msg.FailureCode == protocol.FailureCodeModelUnavailable ||
-		causeClass == causeClassCapacity
+		causeClass == attempt.CauseClassCapacity
 	cancelTerminal := msg.FailureCode == protocol.FailureCodeCancelled ||
-		msg.TerminalCause == terminalCauseCancelled
-	providerHealthNeutral := isProviderHealthNeutralErrorReason(msg.ErrorReason)
+		msg.TerminalCause == attempt.TerminalCauseCancelled
+	providerHealthNeutral := attempt.IsProviderHealthNeutralErrorReason(msg.ErrorReason)
 	if !capacityRejection && !cancelTerminal && !providerHealthNeutral && !causeNeutralForHealth {
 		s.registry.RecordJobFailure(providerID)
 	}
@@ -2137,8 +1805,8 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 	// text never carries the load-failure vocabulary anyway; the explicit
 	// allowlist (legacy or fault only) makes both guarantees unconditional
 	// rather than dependent on provider error-string phrasing.
-	if (causeClass == causeClassLegacy || causeClass == causeClassFault) &&
-		msg.ErrorReason == errorReasonModelLoad {
+	if (causeClass == attempt.CauseClassLegacy || causeClass == attempt.CauseClassFault) &&
+		msg.ErrorReason == attempt.ErrorReasonModelLoad {
 		if s.registry.RecordDispatchLoadFailure(providerID, pr.Model) {
 			s.logger.Warn("load-failure cool-down started",
 				"provider_id", providerID,
@@ -2184,7 +1852,7 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 		refundPr := pr
 		refundID := msg.RequestID
 		saferun.Go(s.logger, "api.refundAfterDisconnect", func() {
-			s.refundReservedBalance(refundPr, "provider_error_after_disconnect:"+refundID)
+			s.inferenceSettlement().Refund(refundPr, "provider_error_after_disconnect:"+refundID)
 		})
 		return
 	}

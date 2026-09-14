@@ -410,7 +410,7 @@ better choice, while an only-available expensive holder remains eligible
 
 Cache-participating attempts (`PendingRequest.CacheRoutingParticipates`) are
 excluded from TTFT calibration (`observeTTFTCalibration`,
-`coordinator/api/settlement.go`) and from the first-content reputation sample
+`coordinator/api/ttft_calibration.go`) and from the first-content reputation sample
 (`coordinator/api/dispatch.go`). Terminal cache metrics use bounded categorical
 tags only.
 
@@ -639,7 +639,7 @@ back are operator procedures, kept in the runbook
    `cacheSelectionTerminalTags`, `coordinator/api/provider.go`).
 8. **Cache-participating attempts never train TTFT calibration or
    first-content reputation** (`observeTTFTCalibration`,
-   `coordinator/api/settlement.go`; `coordinator/api/dispatch.go`).
+   `coordinator/api/ttft_calibration.go`; `coordinator/api/dispatch.go`).
 9. **Mode `on` without a valid master key does not start**
    (`CacheRoutingConfig.Check`, `coordinator/registry/config.go`).
 
@@ -688,7 +688,7 @@ and `coordinator/api/cache_model_telemetry.go`.
 | Discount in the cost model | `coordinator/registry/scheduler.go` — `applyCacheRoutingCost`, `SelectionCacheTiebreak` |
 | Plan construction and sealed body | `coordinator/api/prompt_artifacts.go` — `planCacheRoute`; `coordinator/api/consumer.go` — `bodyForCacheAttempt` |
 | Status endpoint and gauges | `coordinator/api/exact_cache_status.go`, `coordinator/api/exact_cache_metrics.go` |
-| Terminal tags, calibration/reputation exclusion | `coordinator/api/provider.go` — `cacheSelectionTerminalTags`; `coordinator/api/settlement.go` — `observeTTFTCalibration`; `coordinator/api/dispatch.go` |
+| Terminal tags, calibration/reputation exclusion | `coordinator/api/provider.go` — `cacheSelectionTerminalTags`; `coordinator/api/ttft_calibration.go` — `observeTTFTCalibration`; `coordinator/api/dispatch.go` |
 | Sidecar | `coordinator/promptcontract/` — `provisioner.go` (`Counts`) |
 | Provider-side cache | `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` |
 

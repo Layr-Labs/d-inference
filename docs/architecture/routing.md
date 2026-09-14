@@ -359,12 +359,12 @@ slot are one atomic operation. Suppression verdicts, in evaluation order:
 | `hedgeSuppressWinRate` | Model win-rate EWMA (`hedgeWinRateAlpha = 0.2`) < `hedgeWinRateFloor = 0.10` after ≥ `hedgeWinRateMinSamples = 8` outcomes; every `hedgeWinRateExploreInterval = 16` suppressions one hedge is allowed through to re-measure. |
 
 **Cancel and win.** `runRace` commits whichever attempt delivers first
-content and calls `cancelDispatch` on the other, which sends the provider a
+content and calls `attempt.Service.Cancel` on the other, which sends the provider a
 cancel and releases the reservation. A backup win sets `BackupWon`, emits
 `inference.speculative_win`, and is counted by
 `recordHedgeOutcome`. Both attempts are marked `UsedBackup`; settlement
 excludes them from TTFT calibration (`observeTTFTCalibration`,
-`coordinator/api/settlement.go`). The acquired governor slot is released
+`coordinator/api/ttft_calibration.go`). The acquired governor slot is released
 exactly once on every exit path (`noteHedgeResolved`).
 
 ### Early-429 servability predictor
@@ -464,6 +464,26 @@ independently reach the threshold. Old exponential trip history is reset,
 and a valid newer half-open probe remains claimed. A later budget clamp also requires a later accept to prove release.
 The request is stamped before scheduling the recorder to count its capacity-rate
 outcome exactly once at first content or completion.
+
+### Attempt feedback and cancellation ownership
+
+`coordinator/inference/attempt/` owns the operations shared by dispatch,
+provider ingress and response relays. `Service.Error`, `Success` and
+`DispatchError` classify an attempt and feed the existing registry recorders;
+`ClassifyRejection` and `ClassifyTerminalCause` supply the same policy to the
+callers. `coordinator/api/inference_attempt.go` binds the current registry,
+model store, reservation service, logger and metrics. The response writer uses
+that same service as its feedback dependency.
+
+One startup-owned `Tracker` holds cancellation correlation and resend history.
+`Service.Cancel` records before removing pending work, sends only when its
+removal owned a still-running attempt, and refunds only that attempt's top-up.
+`CancelForFirstContentTimeout` retains the provider's atomic deadline arbitration.
+The tracker mutex orders nonblocking enqueue acceptance and sent marking against
+terminal consumption; expiry and terminal observations follow the tracker
+operation. The API keeps terminal claiming, parking and route-outcome ownership
+(`coordinator/inference/attempt/cancel.go`, `cancel_tracker.go`, `cancel_metrics.go`;
+`coordinator/api/provider.go`, `coordinator/api/dispatch.go`).
 
 ### Cooldowns, breakers and ejection
 
@@ -692,7 +712,7 @@ must not run in parallel with other scheduler tests in the same process.
    acquisition and release are exactly-once (`tryAcquireHedge`,
    `noteHedgeResolved`).
 9. **Exactly one attempt of a race commits; the other is cancelled** —
-   `runRace` calls `cancelDispatch` on the loser before committing.
+   `runRace` calls `attempt.Service.Cancel` on the loser before committing.
 10. **Fault memory survives reconnects** — `Disconnect` preserves breaker,
     cooldown and ejection state keyed by stable identity
     (`detachSessionGate`, `coordinator/registry/gate_index.go`).
@@ -743,9 +763,11 @@ must not run in parallel with other scheduler tests in the same process.
 | Servability predictor | `coordinator/registry/servability.go` — `PredictServable`, `coldTokenBudgetEstimate`, `servabilityActivationFloor` |
 | Budget clamp | `coordinator/registry/budget_clamp.go` — `recordBudgetClampLocked`, `releaseBudgetClampsOnHeartbeat` |
 | Capacity-rate penalty and cooldown | `coordinator/registry/capacity_rate.go`, `coordinator/registry/capacity_cooldown.go` |
+| Attempt feedback, rejection and terminal policy | `coordinator/inference/attempt/feedback.go` — `Service.Error`, `Success`, `DispatchError`; `rejection.go` — `ClassifyRejection`; `terminal_cause.go` — `ClassifyTerminalCause` |
+| Cancellation and terminal correlation | `coordinator/inference/attempt/cancel.go` — `Service.Cancel`; `cancel_tracker.go` — `Tracker`; `cancel_delivery.go` — `SendRecordedCancel`, `StrayChunk`; `cancel_metrics.go` — `ResolveCancelledTerminal` |
 | Breakers and ejection | `coordinator/registry/error_cooldown.go`, `coordinator/registry/provider_breaker.go`, `coordinator/registry/health_ejection.go` |
 | Reputation | `coordinator/registry/reputation.go` — `Score`, `RecordLatency` |
-| TTFT calibration | `coordinator/registry/ttft_calibration.go`; fed by `observeTTFTCalibration` in `coordinator/api/settlement.go` |
+| TTFT calibration | `coordinator/registry/ttft_calibration.go`; fed by `observeTTFTCalibration` in `coordinator/api/ttft_calibration.go` |
 | Hedge timing, governor, race | `coordinator/api/hedge_schedule.go`, `coordinator/api/hedge_governor.go`, `coordinator/api/dispatch.go` (`runSpeculative`, `runRace`), `coordinator/api/first_token_clock.go` |
 | Probes and plan wiring | `coordinator/api/dispatch_plan_wiring.go` |
 | `Retry-After`, speculative ratio, route EWMA | `coordinator/api/consumer.go` — `estimateRetryAfter`, `estimateTTFTRetryAfter`, `speculativeTimerRatio` |

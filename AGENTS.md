@@ -10,9 +10,12 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── api/              HTTP + WebSocket handlers
 │   ├── consumer.go         OpenAI-compatible chat/completions/responses + Anthropic messages
 │   ├── provider.go         provider registration, heartbeats, attestation, relay
-│   ├── requestauth/      HTTP credential middleware and shared API-key cache
+│   ├── requestauth/      credential middleware, shared API-key cache and linked-user identity
 │   ├── authentication.go current credential/store bindings for the router
-│   ├── billing_handlers.go Stripe/referral/pricing endpoints
+│   ├── billing/          billing/referral/pricing/payout HTTP controllers and tests
+│   ├── billing_controller.go shared service, store, cache and auth bindings
+│   ├── catalog/          model publishing, discovery, aliases and their tests
+│   ├── catalog_controller.go shared catalog bindings and runtime publication callback
 │   ├── accounts/           key management/policy, provider device login and invites
 │   ├── account_controller.go current account-store/config/auth-cache bindings
 │   ├── authorization.go    shared in-handler admin authorization
@@ -34,6 +37,9 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── billing/          Stripe (deposits + Connect payouts), referrals
 ├── config/           AppConfig aggregation of per-package configs
 ├── env/              shared env-var helpers/constants
+├── inference/        toolpolicy/ (request policy), response/ (endpoint formatting and relays),
+│                     settlement/ (reservation, refunds and completion accounting),
+│                     attempt/ (cancellation, terminal policy and provider feedback)
 ├── mdm/              MicroMDM client + webhook handling
 ├── payments/         ledger + pricing (+ baserewards/)
 ├── providercontrol/trustreuse/ durable device evidence, revocation journal/replay and continuity (Manager)

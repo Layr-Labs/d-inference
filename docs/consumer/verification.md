@@ -85,8 +85,8 @@ send without self-routing is served only by a provider that passes all of them
 ## Per-response signals
 
 Once a provider has been committed to your request, the coordinator writes
-these headers (`writeCommittedProviderHeaders`,
-`coordinator/api/response_metadata.go`):
+these headers (`WriteCommittedProviderHeaders`,
+`coordinator/inference/response/provider_snapshot.go`):
 
 | Header | Value |
 |---|---|

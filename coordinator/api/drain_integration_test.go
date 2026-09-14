@@ -1,13 +1,5 @@
 package api
 
-// R2 (coordinator half) integration tests: drain awareness through the real
-// HTTP + WebSocket path. A provider that reports heartbeat status "draining",
-// or that refuses a dispatch with the typed error_reason "draining", is
-// skipped by routing and counted as TRANSIENT capacity; the typed refusal
-// consumes none of the request's transient-capacity retries and derates no
-// gray-box capacity state for the pair. Legacy providers (untyped 503 →
-// capacity_busy) keep today's bounded path — used here as the control.
-
 import (
 	"context"
 	"net/http"
@@ -15,9 +7,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
+
+// R2 (coordinator half) integration tests: drain awareness through the real
+// HTTP + WebSocket path. A provider that reports heartbeat status "draining",
+// or that refuses a dispatch with the typed error_reason "draining", is
+// skipped by routing and counted as TRANSIENT capacity; the typed refusal
+// consumes none of the request's transient-capacity retries and derates no
+// gray-box capacity state for the pair. Legacy providers (untyped 503 →
+// capacity_busy) keep today's bounded path — used here as the control.
 
 // sendHeartbeatStatus emits a heartbeat with the given status from the fake
 // provider's socket (the same frame a Swift provider sends every ~30s).
@@ -102,7 +103,7 @@ func TestDrain_TypedRejection_NoRetryChargeNoDerate(t *testing.T) {
 	for i, tps := range []float64{200, 150, 100, 50} {
 		draining = append(draining, startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
 			Name: "draining-" + strings.Repeat("x", i+1), Version: "0.9.0", DecodeTPS: tps,
-			Models: []failoverModelSpec{{ID: model}}, Script: typedRejectScript(errorReasonDraining),
+			Models: []failoverModelSpec{{ID: model}}, Script: typedRejectScript(attempt.ErrorReasonDraining),
 		}))
 	}
 	serving := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
@@ -168,7 +169,7 @@ func TestDrain_LegacyCapacityBusyControl_StillBounded(t *testing.T) {
 	for i, tps := range []float64{200, 150, 100, 50} {
 		busy = append(busy, startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
 			Name: "busy-" + strings.Repeat("x", i+1), Version: "0.9.0", DecodeTPS: tps,
-			Models: []failoverModelSpec{{ID: model}}, Script: typedRejectScript(errorReasonCapacityBusy),
+			Models: []failoverModelSpec{{ID: model}}, Script: typedRejectScript(attempt.ErrorReasonCapacityBusy),
 		}))
 	}
 	serving := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
@@ -211,7 +212,7 @@ func TestDrain_TypedRejectionClearedByIdleHeartbeat(t *testing.T) {
 
 	pA := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
 		Name: "provider-a", Version: "0.9.0", DecodeTPS: 200,
-		Models: []failoverModelSpec{{ID: model}}, Script: typedRejectScript(errorReasonDraining),
+		Models: []failoverModelSpec{{ID: model}}, Script: typedRejectScript(attempt.ErrorReasonDraining),
 	})
 	startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
 		Name: "provider-b", Version: "0.9.0", DecodeTPS: 1,

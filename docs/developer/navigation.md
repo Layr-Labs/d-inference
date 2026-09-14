@@ -19,6 +19,11 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 |---|---|
 | Process startup, configuration binding and shutdown | `coordinator/cmd/coordinator/main.go` (`main`); follow each named setup function to its subsystem file in the same command package. [Startup source map](../architecture/components/coordinator.md#startup-sequence) |
 | API request handling, auth, attestation, dispatch | `coordinator/api/`; server construction in `server.go` (`NewServer`) |
+| HTTP response caching and refresh coalescing | `coordinator/api/readcache/`; catalog fill fences in `generation.go` (`SetIfCurrent`, `SetValueIfCurrent`) |
+| Chat/Responses/Completions/Messages formatting and relays | `coordinator/inference/response/` (`Writer`, `ChatSink`, `EndpointSink`); lifecycle and accepted-write binding in `coordinator/api/response_writer.go` |
+| Attempt cancellation, terminal correlation and provider feedback | `coordinator/inference/attempt/` (`Service`, private `Tracker` state); `coordinator/api/inference_attempt.go` binds current services and the shared tracker |
+| Inference reservations, refunds and completion accounting | `coordinator/inference/settlement/` (`Service`, `ServiceHolds`, `Holder`); live dependencies in `coordinator/api/inference_settlement.go`, terminal lifecycle in `coordinator/api/provider.go` |
+| Tool schemas, tool-choice policy and tool-call history | `coordinator/inference/toolpolicy/`; `NormalizeParsed` and `ValidateParsed` preserve validation of the original schemas |
 | Metrics and asynchronous observation writes | `coordinator/telemetry/metrics/`, `coordinator/telemetry/routequeue/`, `coordinator/telemetry/profilequeue/`, `coordinator/telemetry/outcomequeue/`; API adapters supply request context and persistence dependencies |
 | Operator telemetry reads and exports | `coordinator/api/operations/` (`Controller`); `routes.go`, `rejections.go`, `profiles.go`, `snapshots.go`, `request_outcomes.go`, `metrics.go`, `utilization.go`; current owner bindings in `coordinator/api/operations.go` (`newOperations`) |
 | Profile construction, provider diagnostics and sampling | `coordinator/telemetry/profiler/` (`Builder`, `Profiler`); request/terminal lifecycle wiring remains in `coordinator/api/profiler.go` |
@@ -32,11 +37,12 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Active releases, binary allowlists, runtime verification and evidence generations | `coordinator/providercontrol/releasepolicy/` (`Manager`, `Snapshot`); `coordinator/api/release_policy.go` binds inventory and fleet |
 | HTTP credentials and API-key cache | `coordinator/api/requestauth/` (`Authenticator`); current Server bindings in `coordinator/api/authentication.go`; Privy cryptographic verification in `coordinator/auth/` |
 | Account keys, per-key policy, device login and invites | `coordinator/api/accounts/` (`Controller`); `account_controller.go` binds current store/configuration and the shared authenticator; `authorization.go` owns the in-handler admin check |
-| HTTP response caching and refresh coalescing | `coordinator/api/readcache/`; catalog fill fences in `generation.go` (`SetIfCurrent`, `SetValueIfCurrent`) |
 | Public stats, geography, earnings totals and leaderboards | `coordinator/api/network/`; `controller.go` (`Controller`) owns refresh state, `stats_snapshot.go` owns fleet aggregation, and `totals_refresh.go` bounds concurrent earnings queries |
 | Account provider dashboard and offline-machine removal | `coordinator/api/accountfleet/`; `merge.go` reconciles persisted and live machines, `summary_cache.go` coalesces account earnings, and `removal.go` preserves ownership checks |
 | Provider selection, admission, queueing | `coordinator/registry/`; request eligibility in `request_traits.go` (`providerEligibleForTraitsLocked`) |
-| Billing and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/contracts/`, `coordinator/store/postgres/`, `coordinator/store/memory/`, `coordinator/store/cache/` |
+| Billing, pricing, referrals and payout endpoints | `coordinator/api/billing/` (`Controller`); route and shared-dependency binding in `coordinator/api/billing_controller.go` |
+| Model publishing, discovery and aliases | `coordinator/api/catalog/` (`Controller`); shared bindings in `coordinator/api/catalog_controller.go`; runtime publication stays in `server.go` (`SyncModelCatalog`) |
+| Financial services and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/contracts/`, `coordinator/store/postgres/`, `coordinator/store/memory/`, `coordinator/store/cache/` |
 | Provider inference, downloads, security, local serving | `provider-swift/Sources/ProviderCore/`; entrypoints in `provider-swift/Sources/darkbloom/` |
 | Portable model manifests and hashing | `provider-swift/Sources/ProviderCoreFoundation/`; target defined in `provider-swift/Package.swift` (`package`) |
 | Console, operations dashboard, landing page | `console-ui/src/`, `admin-ui/src/`, `landing/` |
@@ -70,7 +76,7 @@ separately when you need measurements or the state at a historical commit.
 ### 3. Name and place files by responsibility
 
 Use the feature followed by the behavior: `code_attest_reuse_policy_test.go`
-groups the attestation reuse policy cases, and `stripe_transfer_reversal_test.go`
+groups the attestation reuse policy cases, and `coordinator/api/billing/connect_transfer_reversal_test.go`
 groups transfer reversal cases. A shared fixture belongs in a domain-specific
 helper file, such as `coordinator/api/attestation_helpers_test.go`
 (`testStatusSignature`).

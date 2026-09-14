@@ -103,6 +103,81 @@ go test -race ./coordinator/api/accounts ./coordinator/api \
   -run 'Test(AccountController|Authentication|Handle.*APIKey|Device|Key|Security)'
 ```
 
+Billing controller and payout tests live beside their owner in
+`coordinator/api/billing/`. Authenticated route, financial-rate-limit and
+whole-system billing tests remain in `coordinator/api/`; both packages are
+included by the normal coordinator test target. Run the billing-focused checks
+from the repository root with database environment variables unset:
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api/billing ./coordinator/api/requestauth ./coordinator/api \
+  -run 'Test(Stripe|Connect|GlobalPayout|AccountEarnings|BillingControllerUsesCurrentServices|BillingRequestIdentityContract)'
+```
+
+These cases use real memory-store/ledger operations and local HTTP Stripe
+fixtures. The API boundary tests in `coordinator/api/billing_controller_test.go`
+check late service replacement/clearing through the registered HTTP routes and
+the exact linked-user identity response. `requestauth` is exercised through
+those API tests; it has no separate test file. These checks require no Stripe
+credentials or live payment calls.
+
+Catalog policy and projection tests live in `coordinator/api/catalog/`.
+Authenticated route, provider-notification and cache-publication tests remain in
+`coordinator/api/`. Run both owners from the repository root:
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api/catalog ./coordinator/api \
+  -run 'Test(Catalog|Model|Register|OpenRouter|ProviderCapability|HuggingFace|Publishing|StandardAlias|Alias|ListModels)'
+```
+
+The new route fixture in `coordinator/api/catalog_controller_test.go` replaces
+the publishing credential and memory store after mounting routes, then checks
+the actual mutation, routing publication and immediately refreshed marketplace and
+install views. The existing `TestCatalogSyncRejectsInflightCachePublication`
+keeps delayed fills from publishing into a newer cache generation. These cases
+use local stores and HTTP fixtures; they require no model or production access.
+
+Reservation/holder tests live beside their owner in
+`coordinator/inference/settlement/`. API tests retain actual terminal handling,
+service configuration, refund failures and client-disconnect outcomes. Run the
+accounting and response boundaries together from the repository root:
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api/... ./coordinator/inference/... -count=1
+```
+
+`TestCompletionPublishesUsageBeforeCreditsAndConsumerTerminal`
+(`coordinator/api/settlement_order_test.go`) pauses the real provider credit to
+check that the charge and in-memory usage precede payout and consumer-channel
+completion. It also passes against the pre-extraction API implementation.
+`TestCompletionObservationPrecedesCurrentReferralAndPayouts`
+(`coordinator/inference/settlement/completion_order_test.go`) checks the public
+usage alias, late referral binding, exact credit amounts and reservation
+finalization using real memory-store/ledger operations and an explicit account
+fee. These checks require no payment credentials or model runtime.
+
+Cancellation-history and pure rejection/terminal-policy tests live beside
+`coordinator/inference/attempt/`. Real provider WebSocket, refund and response
+boundary tests remain in `coordinator/api/`. From the repository root:
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/inference/attempt
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api -run 'Cancel|TerminalCause|TypedTerminal|Capacity|ResponseFeedbackUsesCurrentAttemptBindings'
+```
+
+`TestResponseFeedbackUsesCurrentAttemptBindings`
+(`coordinator/api/inference_attempt_binding_test.go`) constructs the response
+writer before replacing its registry/model store and configuring metrics, then
+checks actual error responses, capacity classification and recovery on a clean
+completion. The unchanged fixture also passes against the original API owner.
+`cancel_lifecycle_test.go` checks cancellation through real provider writers and
+consumes the same terminal receipts as ingress; tracker internals stay private.
+
 Run prediction telemetry checks from the repository root:
 
 ```bash
@@ -137,6 +212,17 @@ output capacity. The HTTP cases cover both a feasible alternative behind a
 long pending prompt and a long arrival completing behind a short pending prompt.
 They use a real isolated coordinator and encrypted WebSocket providers with
 scripted compute. It does not require model downloads or production access.
+
+Response formatting tests live beside their owner in `coordinator/inference/response/`: chat/tool reconstruction, endpoint framing, metadata sanitization and normalization. The API retains real request/outcome, short-write, failed-write, sealed-transport and settlement fixtures. Run both owners from the repository root (no model or provider process is required):
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/inference/response
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'Test(RequestOutcome|ProfilerKillSwitch|Streaming|StreamRelay|NonStream|NonStreamingCompleteObject|ConfigurePendingCopiesMetadataDetails|MarshalForwardBody)'
+```
+
+`TestMarshalForwardBodyDoesNotHTMLEscape` keeps the API adapter bound to
+`httpresponse.MarshalBody`; cached response encoding has separate byte-equivalence
+fixtures. Neither command measures model quality or runtime throughput.
 
 Profiler construction, allowlist, sampling and environment tests live in
 `coordinator/telemetry/profiler/`. Its worker fixtures use a real memory store

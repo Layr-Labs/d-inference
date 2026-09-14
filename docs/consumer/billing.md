@@ -51,7 +51,7 @@ Open `url` and pay. The coordinator does not credit on redirect; it credits
 when Stripe delivers `checkout.session.completed` to its webhook, usually
 within seconds. The credit lands as a `stripe_deposit` ledger entry on your
 spendable balance; deposits are never withdrawable
-(`coordinator/api/billing_handlers.go` `handleStripeWebhook`).
+(`coordinator/api/billing/checkout_webhook.go` `StripeWebhook`).
 
 In the console, **Buy Credits** on `/billing` reaches the same endpoint through
 the same-origin relay `/api/payments/stripe/checkout`, which forwards your Privy
@@ -67,7 +67,7 @@ curl "https://api.darkbloom.dev/v1/billing/stripe/session?id=3f0e..." \
 ```
 
 `status` moves from `pending` to `completed` when the webhook has been
-processed (`handleStripeSessionStatus`).
+processed (`StripeSessionStatus`).
 
 ### 3. Read your balance and usage
 
@@ -88,7 +88,9 @@ rewards) and can pay out through Stripe Connect; deposits and invite credits
 never count toward it, so a pure consumer sees `0`. `GET /v1/payments/usage` lists settled
 requests with `job_id`, `model`, `prompt_tokens`, `completion_tokens`,
 `cost_micro_usd`, `timestamp` (`coordinator/api/consumer.go` `handleBalance`,
-`handleUsage`). Console users get the same figures from `GET /v1/me/summary`
+`handleUsage`; usage is recorded by `recordCompletionUsage` in
+`coordinator/inference/settlement/completion_usage.go`). Console users get the
+same figures from `GET /v1/me/summary`
 (**Privy**). Usage is a recent-history view, not a complete billing export;
 the process retains the newest entries up to the [usage history limit](../reference/pricing-model.md#constants).
 Dashboard earnings windows include every row in each window, without the old

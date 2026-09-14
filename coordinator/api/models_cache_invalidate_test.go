@@ -85,14 +85,18 @@ func TestCatalogSyncRejectsInflightCachePublication(t *testing.T) {
 			read := func() error {
 				switch view {
 				case "entries":
-					_, err := h.srv.cachedModelEntries(false)
+					_, err := h.srv.catalogController().Entries(false)
 					return err
 				case "list":
-					_, err := h.srv.cachedModelListBody(false)
-					return err
+					rr := httptest.NewRecorder()
+					h.srv.catalogController().ListModels(rr, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+					if rr.Code != http.StatusOK {
+						return fmt.Errorf("catalog status = %d, body = %s", rr.Code, rr.Body.String())
+					}
+					return nil
 				default:
 					rr := httptest.NewRecorder()
-					h.srv.handleListModelsOpenRouter(rr, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
+					h.srv.catalogController().ListOpenRouterModels(rr, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
 					if rr.Code != http.StatusOK {
 						return fmt.Errorf("catalog status = %d, body = %s", rr.Code, rr.Body.String())
 					}

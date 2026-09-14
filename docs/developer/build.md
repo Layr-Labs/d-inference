@@ -129,6 +129,28 @@ The code-identity owner at `coordinator/providercontrol/codeidentity/` (`Manager
 also links through the API adapters into this binary. It uses the existing APNs
 configuration and store; no additional service or build step is needed.
 
+Billing HTTP controllers build as `coordinator/api/billing/` within the same Go
+module; the shared identity helper is `coordinator/api/requestauth/`. The
+coordinator binary imports both through `api`, so the build commands below
+include them without additional targets. See [billing ownership](../architecture/billing.md#http-controller-ownership).
+
+Model publishing and discovery build as `coordinator/api/catalog/` in the same
+module. The API binds that owner through `catalog_controller.go`; no additional
+binary, service or build target is required. See [catalog ownership](../architecture/model-registry.md#http-controller-ownership).
+
+Inference response formatting and relays build as `coordinator/inference/response/`,
+with lifecycle services supplied by `coordinator/api/response_writer.go`. It is
+part of the same coordinator binary and needs no additional build target.
+
+Attempt cancellation and provider feedback build as
+`coordinator/inference/attempt/`, bound by `coordinator/api/inference_attempt.go`.
+It shares the coordinator binary and existing registry/accounting services.
+
+Inference accounting builds as `coordinator/inference/settlement/`, bound by
+`coordinator/api/inference_settlement.go` to the existing ledger and hold map.
+It uses the same module and coordinator build targets; see
+[billing ownership](../architecture/billing.md#inference-accounting-ownership).
+
 The normal Go build includes the profiler owner and telemetry queue packages
 under `coordinator/telemetry/`. Their API adapters link them into the same
 coordinator binary; no separate worker executable or build flag is required.

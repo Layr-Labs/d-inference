@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/toolpolicy"
 )
 
 // toolNormalizationParityBodies cover every schema home and repair class the
@@ -45,13 +47,13 @@ func decodeForParity(t *testing.T, body string) map[string]any {
 }
 
 // The parsed-map normalization must leave the handler with exactly the map
-// the bytes path produced (decode(NormalizeToolSchemas(body))), marshal to the
+// the bytes path produced (decode(toolpolicy.NormalizeBytes(body))), marshal to the
 // same provider bytes, and hand back the caller's tools untouched.
 func TestNormalizeParsedToolSchemasMatchesBytesPath(t *testing.T) {
 	for name, body := range toolNormalizationParityBodies {
 		t.Run(name, func(t *testing.T) {
 			raw := []byte(body)
-			normalizedBytes := NormalizeToolSchemas(raw)
+			normalizedBytes := toolpolicy.NormalizeBytes(raw)
 			bytesChanged := !bytes.Equal(normalizedBytes, raw)
 			wantParsed := decodeForParity(t, string(normalizedBytes))
 			wantForward, err := marshalForwardBody(wantParsed)
@@ -61,7 +63,7 @@ func TestNormalizeParsedToolSchemasMatchesBytesPath(t *testing.T) {
 
 			parsed := decodeForParity(t, body)
 			wantOriginalTools := decodeForParity(t, body)["tools"]
-			originalTools, changed := normalizeParsedToolSchemas(parsed, raw)
+			originalTools, changed := toolpolicy.NormalizeParsed(parsed, raw)
 			if changed != bytesChanged {
 				t.Fatalf("changed = %v, bytes path changed = %v", changed, bytesChanged)
 			}
@@ -91,16 +93,16 @@ func TestNormalizeParsedToolSchemasMatchesBytesPath(t *testing.T) {
 func TestNormalizeParsedToolSchemasRespectsSizeGate(t *testing.T) {
 	body := toolNormalizationParityBodies["chat missing type"]
 	parsed := decodeForParity(t, body)
-	before := cloneJSONValue(parsed)
-	padded := append([]byte(body), bytes.Repeat([]byte(" "), maxToolNormalizationBytes)...)
-	if _, changed := normalizeParsedToolSchemas(parsed, padded); changed {
+	before := decodeForParity(t, body)
+	padded := append([]byte(body), bytes.Repeat([]byte(" "), 4*1024*1024)...)
+	if _, changed := toolpolicy.NormalizeParsed(parsed, padded); changed {
 		t.Fatal("oversize body was normalized")
 	}
 	if !reflect.DeepEqual(parsed, before) {
 		t.Fatal("oversize body was mutated")
 	}
 	// The bytes path skips the same bodies.
-	if got := NormalizeToolSchemas(padded); !bytes.Equal(got, padded) {
+	if got := toolpolicy.NormalizeBytes(padded); !bytes.Equal(got, padded) {
 		t.Fatal("bytes path normalized an oversize body")
 	}
 }
@@ -112,33 +114,32 @@ func TestParsedConstraintValidationSeesPreNormalizationTools(t *testing.T) {
 	body := `{"model":"m","messages":[{"role":"user","content":"x"}],"tool_choice":"auto",
 		"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"any":true}}}}]}`
 	parsed := decodeForParity(t, body)
-	originalTools, changed := normalizeParsedToolSchemas(parsed, []byte(body))
+	originalTools, changed := toolpolicy.NormalizeParsed(parsed, []byte(body))
 	if !changed || originalTools == nil {
 		t.Fatal("boolean positional schema was not repaired")
 	}
 	// The repaired copy now carries the reserved marker …
 	repaired, _ := marshalForwardBody(parsed["tools"])
-	if !bytes.Contains(repaired, []byte(originalBooleanSchemaKey)) {
+	if !bytes.Contains(repaired, []byte("x-darkbloom-original-boolean-schema")) {
 		t.Fatalf("repaired tools lack the marker: %s", repaired)
 	}
 	// … so validating the repaired view would wrongly reject the request …
-	if _, err := validateParsedToolConstraintPolicy(parsed); err == nil {
+	if _, err := toolpolicy.ValidateParsed(parsed, nil); err == nil {
 		t.Fatal("repaired view accepted (marker not detected); test premise broken")
 	}
 	// … while the original view (what the handler validates) accepts it.
-	view := constraintView(parsed, originalTools)
-	if _, err := validateParsedToolConstraintPolicy(view); err != nil {
+	if _, err := toolpolicy.ValidateParsed(parsed, originalTools); err != nil {
 		t.Fatalf("original view rejected: %v", err)
 	}
 	// And a genuinely forged marker in the caller's body still fails closed.
-	forged := strings.Replace(body, `"any":true`, `"any":{"type":"string","`+originalBooleanSchemaKey+`":true}`, 1)
+	forged := strings.Replace(body, `"any":true`, `"any":{"type":"string","x-darkbloom-original-boolean-schema":true}`, 1)
 	forgedParsed := decodeForParity(t, forged)
-	forgedTools, forgedChanged := normalizeParsedToolSchemas(forgedParsed, []byte(forged))
-	if _, err := validateParsedToolConstraintPolicy(constraintView(forgedParsed, forgedTools)); err == nil {
+	forgedTools, forgedChanged := toolpolicy.NormalizeParsed(forgedParsed, []byte(forged))
+	if _, err := toolpolicy.ValidateParsed(forgedParsed, forgedTools); err == nil {
 		t.Fatalf("forged marker accepted (changed=%v)", forgedChanged)
 	}
 	// The bytes validator agrees with the map validator on the same input.
-	if _, err := validateToolConstraintPolicy([]byte(forged)); err == nil {
+	if _, err := toolpolicy.ValidateBytes([]byte(forged)); err == nil {
 		t.Fatal("bytes validator accepted the forged marker")
 	}
 }
@@ -158,13 +159,13 @@ func TestParsedAndBytesConstraintValidatorsAgree(t *testing.T) {
 		`{"model":"m","messages":[{"role":"user","content":"x"}]}`,
 	}
 	for i, body := range bodies {
-		wantPolicy, wantErr := validateToolConstraintPolicy([]byte(body))
-		gotPolicy, gotErr := validateParsedToolConstraintPolicy(decodeForParity(t, body))
+		wantPolicy, wantErr := toolpolicy.ValidateBytes([]byte(body))
+		gotPolicy, gotErr := toolpolicy.ValidateParsed(decodeForParity(t, body), nil)
 		if gotPolicy != wantPolicy || !reflect.DeepEqual(gotErr, wantErr) {
 			t.Errorf("body %d: parsed=(%+v, %v) bytes=(%+v, %v)", i, gotPolicy, gotErr, wantPolicy, wantErr)
 		}
 	}
-	if _, err := validateToolConstraintPolicy([]byte(`not json`)); err == nil || err.Error() != "invalid request body" {
+	if _, err := toolpolicy.ValidateBytes([]byte(`not json`)); err == nil || err.Error() != "invalid request body" {
 		t.Fatalf("bytes validator lost its decode error: %v", err)
 	}
 }

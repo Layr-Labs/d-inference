@@ -101,7 +101,8 @@ A raw historical `dispatch_exhausted` can represent a retained real provider err
 | Concern | Source |
 |---|---|
 | Observation, lifecycle and mapping | `coordinator/api/request_outcome.go` |
-| Content and write evidence | `coordinator/api/request_outcome_egress.go`, `coordinator/api/sender_encryption.go` |
+| Content and terminal classification | `coordinator/inference/response/content_evidence.go`, `coordinator/inference/response/terminal_evidence.go`; pure classifiers used by the response formatters and API writer |
+| Accepted writes and sealed transport | `coordinator/api/response_writer.go` (`responseWriteObserver`), `coordinator/api/request_outcome_egress.go`, `coordinator/api/request_outcome_terminal.go`, `coordinator/api/sender_encryption.go`; the API retains the sealing-buffer guard and outcome lock |
 | Bounded persistence | `coordinator/telemetry/outcomequeue/` (`Sink`, `Submit`, `Close`, `Stats`); `coordinator/api/request_outcome_sink.go` (`newRequestOutcomeSink`) injects the active-store writer and metrics |
 | Health endpoint | `coordinator/api/operations/request_outcomes.go` (`Controller.RequestOutcomes`) reads independent process counters through `Stats` |
 | Schema, revision merge and reads | `coordinator/store/contracts/request_outcomes.go`, `coordinator/store/postgres/request_outcomes.go`, `coordinator/store/memory/request_outcomes.go` |

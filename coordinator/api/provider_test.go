@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -476,7 +477,7 @@ func TestHandleInferenceErrorPreservesModelLoadCategories(t *testing.T) {
 				RequestID:   pending.RequestID,
 				Error:       "UNTRUSTED_LOAD_DETAIL",
 				StatusCode:  tc.statusCode,
-				ErrorReason: errorReasonModelLoad,
+				ErrorReason: attempt.ErrorReasonModelLoad,
 				FailureCode: tc.failureCode,
 			})
 
@@ -484,9 +485,9 @@ func TestHandleInferenceErrorPreservesModelLoadCategories(t *testing.T) {
 			case delivered := <-pending.ErrorCh:
 				if delivered.FailureCode != tc.failureCode ||
 					delivered.StatusCode != tc.statusCode ||
-					delivered.ErrorReason != errorReasonModelLoad {
+					delivered.ErrorReason != attempt.ErrorReasonModelLoad {
 					t.Fatalf("delivered load failure = %+v, want code=%q status=%d reason=%q",
-						delivered, tc.failureCode, tc.statusCode, errorReasonModelLoad)
+						delivered, tc.failureCode, tc.statusCode, attempt.ErrorReasonModelLoad)
 				}
 			default:
 				t.Fatal("model-load terminal was not delivered")

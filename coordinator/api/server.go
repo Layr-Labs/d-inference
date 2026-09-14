@@ -1,16 +1,3 @@
-// Package api provides the HTTP and WebSocket server for the Darkbloom coordinator.
-//
-// This package is the network-facing layer of the coordinator. It handles:
-//   - Consumer HTTP endpoints (OpenAI-compatible chat completions, model listing)
-//   - Provider WebSocket connections (registration, heartbeats, inference relay)
-//   - Payment endpoints (deposit, balance, usage)
-//   - Authentication via API keys (Bearer token)
-//   - CORS middleware for development
-//   - Request logging
-//
-// The coordinator runs in a GCP Confidential VM (AMD SEV). Consumer traffic
-// arrives over HTTPS/TLS. The coordinator reads requests for routing but never
-// logs prompt content.
 package api
 
 import (
@@ -34,6 +21,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/accountfleet"
+	"github.com/eigeninference/d-inference/coordinator/api/catalog"
 	"github.com/eigeninference/d-inference/coordinator/api/httprequest"
 	"github.com/eigeninference/d-inference/coordinator/api/network"
 	"github.com/eigeninference/d-inference/coordinator/api/readiness"
@@ -43,6 +31,9 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/datadog"
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
+	"github.com/eigeninference/d-inference/coordinator/inference/settlement"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
@@ -109,14 +100,15 @@ type Server struct {
 	baseRewards                   *baserewards.Engine
 	logger                        *slog.Logger
 	mux                           *http.ServeMux
-	modelAliasMutationMu          sync.Mutex      // serializes cross-endpoint alias validation + persistence
-	challengeInterval             time.Duration   // 0 means use DefaultChallengeInterval
-	skipChallenge                 bool            // if true, skip attestation challenges entirely (testing only)
-	allowDuplicateProviderSerials bool            // in-process multi-provider testbed only
-	privyAuth                     *auth.PrivyAuth // Privy JWT authentication (nil if not configured)
-	adminEmails                   map[string]bool // emails that have admin access
-	adminKey                      string          // EIGENINFERENCE_ADMIN_KEY for admin endpoints
-	mdmClient                     *mdm.Client     // MicroMDM client for provider security verification
+	catalogOnce                   sync.Once
+	modelCatalog                  *catalog.Controller // shared listing and alias mutation owner
+	challengeInterval             time.Duration       // 0 means use DefaultChallengeInterval
+	skipChallenge                 bool                // if true, skip attestation challenges entirely (testing only)
+	allowDuplicateProviderSerials bool                // in-process multi-provider testbed only
+	privyAuth                     *auth.PrivyAuth     // Privy JWT authentication (nil if not configured)
+	adminEmails                   map[string]bool     // emails that have admin access
+	adminKey                      string              // EIGENINFERENCE_ADMIN_KEY for admin endpoints
+	mdmClient                     *mdm.Client         // MicroMDM client for provider security verification
 	mdmScheduler                  *mdmVerificationScheduler
 	mdmSchedulerConfig            MDMSchedulerConfig
 	mdmWebhookSecret              string              // optional shared secret MicroMDM must present on the webhook
@@ -205,11 +197,11 @@ type Server struct {
 	// settlements parks billing records for requests whose consumer disconnected
 	// mid-stream, so a late provider terminal can settle them (or the reservation
 	// is refunded on grace expiry). See settlement.go.
-	settlements *settlementHolder
+	settlements *settlement.Holder
 	// settleGrace overrides defaultTerminalSettleGrace (tests set it small).
 	settleGrace time.Duration
 	// zombieCanceller throttles cancels for chunks on abandoned streams. See zombie_stream.go.
-	zombieCanceller *zombieStreamCanceller
+	attemptTracker *attempt.Tracker
 
 	// hedgeGov is the fleet-wide hedge admission governor (Routing v2 Phase 4):
 	// the mutable half of the speculative-launch verdict — the global
@@ -307,7 +299,7 @@ type Server struct {
 
 	// serviceReservations avoids hot-row pre-router ledger debits for trusted
 	// service accounts when enabled. Normal consumers still use ledger debits.
-	serviceReservations *serviceReservationManager
+	serviceReservations *settlement.ServiceHolds
 
 	// consumerTokenLimiter / serviceTokenLimiter enforce per-account input
 	// (ITPM) and output (OTPM) token-per-minute limits on inference endpoints,
@@ -664,10 +656,10 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		geoResolver:              newProviderGeoResolverFromEnv(logger),
 		requestAuth:              requestauth.New(),
 		mdmSchedulerConfig:       cfg.MDMScheduler,
-		settlements:              newSettlementHolder(),
-		zombieCanceller:          newZombieStreamCanceller(),
+		settlements:              settlement.NewHolder(),
+		attemptTracker:           attempt.NewTracker(),
 		hedgeGov:                 newHedgeGovernor(),
-		serviceReservations:      newServiceReservationManager(st, cfg.ServiceReservations),
+		serviceReservations:      settlement.NewServiceHolds(st, cfg.ServiceReservations),
 		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
 		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
 		firstContentDeadlineBase: firstContentDeadlineBase,
@@ -1091,7 +1083,7 @@ func (s *Server) syncModelAliases(registryRows []store.ModelRegistryRecord) {
 		}
 		var target registry.AliasTarget
 		var ok bool
-		if openRouterAliasUsesConcreteSource(a) {
+		if catalog.AliasUsesConcreteSource(a) {
 			if _, ok = activeConcreteModels[a.SourceModel]; ok {
 				target = registry.AliasTarget{Desired: a.SourceModel}
 			}
@@ -1109,30 +1101,8 @@ func (s *Server) syncModelAliases(registryRows []store.ModelRegistryRecord) {
 	s.logger.Info("model aliases synced to registry", "active_aliases", len(resolved))
 }
 
-// invalidateCatalogCache removes all cached model catalog responses so the
-// next request picks up any changes made by admin endpoints.
-func (s *Server) invalidateCatalogCache() {
-	if s.readCache == nil {
-		return
-	}
-	for _, typeFilter := range []string{"", "text"} {
-		for _, includeAliases := range []bool{false, true} {
-			s.readCache.Invalidate(modelCatalogCacheKey(typeFilter, includeAliases))
-		}
-	}
-	// /v1/models entry memo + list bodies (both include_builds values) and the
-	// OpenRouter feed are derived from the same catalog; drop them too so an
-	// admin alias/registry change is visible on the next request instead of
-	// after their 2s/5s TTLs (which remain the bound for out-of-band DB edits).
-	for _, includeBuilds := range []bool{false, true} {
-		s.readCache.Invalidate(modelEntriesCacheKey(includeBuilds))
-		s.readCache.Invalidate(modelListBodyCacheKey(includeBuilds))
-	}
-	s.readCache.Invalidate(openRouterFeedCacheKey)
-	// stats:v1 is deliberately NOT evicted here: the stats refresher recomputes
-	// it every minute, and evicting it made every concurrent /v1/stats request
-	// rerun the multi-second usage analytics statements.
-}
+// invalidateCatalogCache applies the catalog owner's existing shared-cache invalidation.
+func (s *Server) invalidateCatalogCache() { s.catalogController().Invalidate() }
 
 // SetKnownBinaryHashes configures the set of accepted provider binary hashes.
 // SetBinaryHashEnforcement toggles whether a self-reported binaryHash mismatch
@@ -1416,6 +1386,8 @@ func (s *Server) routes() {
 	releaseAPI := s.newReleaseAPI()
 	operations := s.newOperations()
 	accountHandlers := s.accountController()
+	modelCatalog := s.catalogController()
+	billingHandlers := s.billingController()
 	// Install script — served from the generated embed with the coordinator URL
 	// substituted per environment.
 	s.mux.HandleFunc("GET /install.sh", func(w http.ResponseWriter, r *http.Request) {
@@ -1478,12 +1450,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/responses", readinessAPI.Gate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions))))) // Responses API — same handler, auto-detects input vs messages
 	s.mux.HandleFunc("POST /v1/completions", readinessAPI.Gate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleCompletions)))))
 	s.mux.HandleFunc("POST /v1/messages", readinessAPI.Gate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleAnthropicMessages)))))
-	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
+	s.mux.HandleFunc("GET /v1/models", s.requireAuth(modelCatalog.ListModels))
 	// Dedicated OpenRouter provider feed — pure OpenRouter schema, no Darkbloom metadata.
-	s.mux.HandleFunc("GET /v1/models/openrouter", s.requireAuth(s.handleListModelsOpenRouter))
+	s.mux.HandleFunc("GET /v1/models/openrouter", s.requireAuth(modelCatalog.ListOpenRouterModels))
 	// OpenAI "retrieve model" — {id...} matches slashed HuggingFace-style ids;
 	// the literal /v1/models/openrouter and /v1/models/capacity routes win.
-	s.mux.HandleFunc("GET /v1/models/{id...}", s.requireAuth(s.handleGetModel))
+	s.mux.HandleFunc("GET /v1/models/{id...}", s.requireAuth(modelCatalog.GetModel))
 
 	// Sender encryption — public key publication for sender→coordinator E2E.
 	// Optional: senders may use this to encrypt request bodies; plaintext path
@@ -1500,7 +1472,7 @@ func (s *Server) routes() {
 	// Provider earnings — no API key auth (providers identify by provider address).
 	s.mux.HandleFunc("GET /v1/provider/earnings", s.handleProviderEarnings)
 
-	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.requireAuth(s.handleAccountEarnings))
+	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.requireAuth(billingHandlers.AccountEarnings))
 
 	// Account-scoped provider dashboard.
 	s.mux.HandleFunc("GET /v1/me/providers", s.requirePrivyAuth(s.accountFleet.Providers))
@@ -1550,21 +1522,21 @@ func (s *Server) routes() {
 
 	// Stripe — financial limiter on session creation (creates a checkout
 	// intent, hits external API). Read-only status endpoint not throttled.
-	s.mux.HandleFunc("POST /v1/billing/stripe/create-session", s.requireAuth(s.rateLimitFinancial(s.handleStripeCreateSession)))
-	s.mux.HandleFunc("POST /v1/billing/stripe/webhook", s.handleStripeWebhook) // no auth — Stripe signs it
-	s.mux.HandleFunc("GET /v1/billing/stripe/session", s.requireAuth(s.handleStripeSessionStatus))
+	s.mux.HandleFunc("POST /v1/billing/stripe/create-session", s.requireAuth(s.rateLimitFinancial(billingHandlers.StripeCreateSession)))
+	s.mux.HandleFunc("POST /v1/billing/stripe/webhook", billingHandlers.StripeWebhook) // no auth — Stripe signs it
+	s.mux.HandleFunc("GET /v1/billing/stripe/session", s.requireAuth(billingHandlers.StripeSessionStatus))
 
 	// Wallet balance
-	s.mux.HandleFunc("GET /v1/billing/wallet/balance", s.requireAuth(s.handleWalletBalance))
+	s.mux.HandleFunc("GET /v1/billing/wallet/balance", s.requireAuth(billingHandlers.WalletBalance))
 
 	// A single bank withdrawal experience, with separate payout lifecycles.
-	s.mux.HandleFunc("POST /v1/billing/stripe/quote", s.requirePrivyAuth(s.rateLimitFinancial(s.handleGlobalPayoutQuote)))
-	s.mux.HandleFunc("POST /v1/billing/stripe/global/webhook", s.handleGlobalPayoutWebhook)
+	s.mux.HandleFunc("POST /v1/billing/stripe/quote", s.requirePrivyAuth(s.rateLimitFinancial(billingHandlers.GlobalPayoutQuote)))
+	s.mux.HandleFunc("POST /v1/billing/stripe/global/webhook", billingHandlers.GlobalPayoutWebhook)
 	// Stripe Payouts (Connect Express) — bank/card withdrawals.
-	s.mux.HandleFunc("POST /v1/billing/stripe/onboard", s.requirePrivyAuth(s.rateLimitFinancial(s.handleStripeOnboard)))
-	s.mux.HandleFunc("GET /v1/billing/stripe/status", s.requireAuth(s.handleStripeStatus))
-	s.mux.HandleFunc("POST /v1/billing/withdraw/stripe", s.requirePrivyAuth(s.rateLimitFinancial(s.handleStripeWithdraw)))
-	s.mux.HandleFunc("GET /v1/billing/stripe/withdrawals", s.requireAuth(s.handleStripeWithdrawals))
+	s.mux.HandleFunc("POST /v1/billing/stripe/onboard", s.requirePrivyAuth(s.rateLimitFinancial(billingHandlers.StripeOnboard)))
+	s.mux.HandleFunc("GET /v1/billing/stripe/status", s.requireAuth(billingHandlers.StripeStatus))
+	s.mux.HandleFunc("POST /v1/billing/withdraw/stripe", s.requirePrivyAuth(s.rateLimitFinancial(billingHandlers.StripeWithdraw)))
+	s.mux.HandleFunc("GET /v1/billing/stripe/withdrawals", s.requireAuth(billingHandlers.StripeWithdrawals))
 	// requirePrivyAuth (not requireAuth): both of these are account-management
 	// operations — a leaked inference API key must not be able to detach the
 	// user's payout account, nor mint a dashboard session that can point their
@@ -1575,35 +1547,35 @@ func (s *Server) routes() {
 	// session must not be able to loop it and burn the platform's Stripe
 	// request capacity. Chained INSIDE requirePrivyAuth because the limiter
 	// keys on the account ID the auth middleware puts in the request context.
-	s.mux.HandleFunc("POST /v1/billing/stripe/dashboard", s.requirePrivyAuth(s.rateLimitFinancial(s.handleStripeDashboardLink)))
-	s.mux.HandleFunc("DELETE /v1/billing/stripe/account", s.requirePrivyAuth(s.handleStripeUnlink))
-	s.mux.HandleFunc("POST /v1/billing/stripe/connect/webhook", s.handleStripeConnectWebhook) // no auth — Stripe signs it
+	s.mux.HandleFunc("POST /v1/billing/stripe/dashboard", s.requirePrivyAuth(s.rateLimitFinancial(billingHandlers.StripeDashboardLink)))
+	s.mux.HandleFunc("DELETE /v1/billing/stripe/account", s.requirePrivyAuth(billingHandlers.StripeUnlink))
+	s.mux.HandleFunc("POST /v1/billing/stripe/connect/webhook", billingHandlers.StripeConnectWebhook) // no auth — Stripe signs it
 
 	// Pricing — GET is public, PUT/DELETE require auth
-	s.mux.HandleFunc("GET /v1/pricing", s.handleGetPricing)                        // public
-	s.mux.HandleFunc("PUT /v1/pricing", s.requireAuth(s.handleSetPricing))         // provider sets own prices
-	s.mux.HandleFunc("DELETE /v1/pricing", s.requireAuth(s.handleDeletePricing))   // revert to default
-	s.mux.HandleFunc("PUT /v1/admin/pricing", s.requireAuth(s.handleAdminPricing)) // platform sets defaults
+	s.mux.HandleFunc("GET /v1/pricing", billingHandlers.GetPricing)                        // public
+	s.mux.HandleFunc("PUT /v1/pricing", s.requireAuth(billingHandlers.SetPricing))         // provider sets own prices
+	s.mux.HandleFunc("DELETE /v1/pricing", s.requireAuth(billingHandlers.DeletePricing))   // revert to default
+	s.mux.HandleFunc("PUT /v1/admin/pricing", s.requireAuth(billingHandlers.AdminPricing)) // platform sets defaults
 
 	// Admin account management (service-role + per-account platform fee)
-	s.mux.HandleFunc("PUT /v1/admin/users/role", s.requireAuth(s.handleAdminSetUserRole))
-	s.mux.HandleFunc("PUT /v1/admin/users/platform-fee", s.requireAuth(s.handleAdminSetUserPlatformFee))
+	s.mux.HandleFunc("PUT /v1/admin/users/role", s.requireAuth(billingHandlers.AdminSetUserRole))
+	s.mux.HandleFunc("PUT /v1/admin/users/platform-fee", s.requireAuth(billingHandlers.AdminSetUserPlatformFee))
 
 	// Admin model registry (manifest-backed). The legacy supported_models CRUD
 	// (bare GET/POST/DELETE /v1/admin/models) was removed; the model_registry is
 	// the single source of truth. Use register + the per-model action endpoints.
-	s.mux.HandleFunc("POST /v1/admin/models/register", s.handleRegisterModel)
+	s.mux.HandleFunc("POST /v1/admin/models/register", modelCatalog.RegisterModel)
 	// OpenRouter-only feed aliases clone a standard alias while exposing custom
 	// provider id, marketplace slug, and Hugging Face identity.
-	s.mux.HandleFunc("GET /v1/admin/models/openrouter-aliases", s.handleOpenRouterAliasList)
-	s.mux.HandleFunc("POST /v1/admin/models/openrouter-aliases", s.handleOpenRouterAliasUpsert)
-	s.mux.HandleFunc("DELETE /v1/admin/models/openrouter-aliases/{aliasID}", s.handleOpenRouterAliasDelete)
+	s.mux.HandleFunc("GET /v1/admin/models/openrouter-aliases", modelCatalog.ListOpenRouterAliases)
+	s.mux.HandleFunc("POST /v1/admin/models/openrouter-aliases", modelCatalog.UpsertOpenRouterAlias)
+	s.mux.HandleFunc("DELETE /v1/admin/models/openrouter-aliases/{aliasID}", modelCatalog.DeleteOpenRouterAlias)
 	// Public model aliases (stable names → concrete builds). More-specific
 	// patterns take precedence over the POST /v1/admin/models/ subtree below.
-	s.mux.HandleFunc("GET /v1/admin/models/aliases", s.handleModelAliasList)
-	s.mux.HandleFunc("POST /v1/admin/models/aliases", s.handleModelAliasUpsert)
-	s.mux.HandleFunc("DELETE /v1/admin/models/aliases/{aliasID}", s.handleModelAliasDelete)
-	s.mux.HandleFunc("POST /v1/admin/models/", s.handleAdminModelRegistryAction)
+	s.mux.HandleFunc("GET /v1/admin/models/aliases", modelCatalog.ListAliases)
+	s.mux.HandleFunc("POST /v1/admin/models/aliases", modelCatalog.UpsertAlias)
+	s.mux.HandleFunc("DELETE /v1/admin/models/aliases/{aliasID}", modelCatalog.DeleteAlias)
+	s.mux.HandleFunc("POST /v1/admin/models/", modelCatalog.AdminModelAction)
 	s.mux.HandleFunc("GET /v1/admin/releases", releaseAPI.List)      // admin key or Privy admin
 	s.mux.HandleFunc("DELETE /v1/admin/releases", releaseAPI.Delete) // admin key or Privy admin
 
@@ -1619,22 +1591,22 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/admin/auth/verify", s.handleAdminAuthVerify) // no auth (returns token)
 
 	// Public model catalog — providers and install script fetch this
-	s.mux.HandleFunc("GET /v1/models/catalog", s.handleModelCatalog)
-	s.mux.HandleFunc("GET /v1/models/catalog/manifest/", s.handleModelCatalogManifest)
-	s.mux.HandleFunc("GET /v1/models/catalog/", s.handleModelCatalogItem)
+	s.mux.HandleFunc("GET /v1/models/catalog", modelCatalog.ListInstallCatalog)
+	s.mux.HandleFunc("GET /v1/models/catalog/manifest/", modelCatalog.GetInstallManifest)
+	s.mux.HandleFunc("GET /v1/models/catalog/", modelCatalog.GetInstallModel)
 
 	// Runtime manifest — providers and users can inspect accepted runtime hashes.
 	s.mux.HandleFunc("GET /v1/runtime/manifest", releaseAPI.RuntimeManifest)
 
 	// Payment methods info
-	s.mux.HandleFunc("GET /v1/billing/methods", s.handleBillingMethods) // no auth needed
+	s.mux.HandleFunc("GET /v1/billing/methods", billingHandlers.BillingMethods) // no auth needed
 
 	// Referral system — register/apply mutate referral graph (financial
 	// limiter); stats/info are read-only.
-	s.mux.HandleFunc("POST /v1/referral/register", s.requireAuth(s.rateLimitFinancial(s.handleReferralRegister)))
-	s.mux.HandleFunc("POST /v1/referral/apply", s.requireAuth(s.rateLimitFinancial(s.handleReferralApply)))
-	s.mux.HandleFunc("GET /v1/referral/stats", s.requireAuth(s.handleReferralStats))
-	s.mux.HandleFunc("GET /v1/referral/info", s.requireAuth(s.handleReferralInfo))
+	s.mux.HandleFunc("POST /v1/referral/register", s.requireAuth(s.rateLimitFinancial(billingHandlers.ReferralRegister)))
+	s.mux.HandleFunc("POST /v1/referral/apply", s.requireAuth(s.rateLimitFinancial(billingHandlers.ReferralApply)))
+	s.mux.HandleFunc("GET /v1/referral/stats", s.requireAuth(billingHandlers.ReferralStats))
+	s.mux.HandleFunc("GET /v1/referral/info", s.requireAuth(billingHandlers.ReferralInfo))
 
 	// Invite codes (admin)
 	// Invite code creation accepts amount_usd and produces a credit-bearing
@@ -1650,8 +1622,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/invite/redeem", s.requireAuth(s.rateLimitFinancial(accountHandlers.RedeemInvite)))
 
 	// Admin credit & reward
-	s.mux.HandleFunc("POST /v1/admin/credit", s.requireAuth(s.handleAdminCredit))
-	s.mux.HandleFunc("POST /v1/admin/reward", s.requireAuth(s.handleAdminReward))
+	s.mux.HandleFunc("POST /v1/admin/credit", s.requireAuth(billingHandlers.AdminCredit))
+	s.mux.HandleFunc("POST /v1/admin/reward", s.requireAuth(billingHandlers.AdminReward))
 
 	// Retain the client-telemetry route for mixed-version compatibility. The
 	// handler returns 410 before reading a request body; coordinator-owned
@@ -1664,7 +1636,7 @@ func (s *Server) routes() {
 
 	// Metrics snapshot (admin only)
 	s.mux.HandleFunc("GET /v1/admin/metrics", operations.Metrics)
-	s.mux.HandleFunc("GET /v1/admin/base-rewards", s.handleAdminBaseRewards)
+	s.mux.HandleFunc("GET /v1/admin/base-rewards", billingHandlers.AdminBaseRewards)
 
 	// Network utilization snapshot (admin only) — handler enforces admin auth
 	// internally via requireAdminKey.
@@ -2031,7 +2003,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		} else {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, "+metadataDetailsHeader)
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, "+response.MetadataDetailsHeader)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 		}
 

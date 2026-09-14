@@ -52,8 +52,8 @@ fleet traffic whose scheduler is told which machine may serve it.
    also works with a sealed private-text body.
 
 3. Discover what your machine serves with the same header. `GET /v1/models`
-   follows the resolved route mode (`coordinator/api/models_endpoints.go`,
-   `handleListModels`): with `self` (or a `self_route_only` key) it lists only
+   follows the resolved route mode (`coordinator/api/catalog/consumer_list.go`,
+   `ListModels`): with `self` (or a `self_route_only` key) it lists only
    models on your online owned machines; header-less and `prefer` requests see
    the public catalog.
 

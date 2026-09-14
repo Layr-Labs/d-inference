@@ -1,11 +1,5 @@
 package api
 
-// DAR-347 follow-ups: the dispatch-time "stop the storm" logic must NOT turn a
-// memory-pressured provider's ambiguous "batch token budget" rejection into a
-// permanent fleet-wide 429 (#1), and a deterministic verdict observed from a
-// speculative race LOSER must survive even when the surviving racer reports a
-// transient/timeout error (#2).
-
 import (
 	"context"
 	"io"
@@ -14,10 +8,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/catalog"
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
+
+// DAR-347 follow-ups: the dispatch-time "stop the storm" logic must NOT turn a
+// memory-pressured provider's ambiguous "batch token budget" rejection into a
+// permanent fleet-wide 429 (#1), and a deterministic verdict observed from a
+// speculative race LOSER must survive even when the surviving racer reports a
+// transient/timeout error (#2).
 
 // registerModelContext registers modelID in the store with a known context window
 // so the dispatch path's modelMaxContext is populated (it reads
@@ -32,7 +34,7 @@ func registerModelContext(t *testing.T, st *store.MemoryStore, modelID string, c
 	}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
 	if err := st.SetModelVersion(entry, &store.ModelVersion{
-		ModelID: modelID, Version: "v1", R2Prefix: modelR2Prefix(modelID, "v1"),
+		ModelID: modelID, Version: "v1", R2Prefix: catalog.ModelR2Prefix(modelID, "v1"),
 		AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready",
 	}, files); err != nil {
 		t.Fatalf("SetModelVersion: %v", err)
@@ -170,7 +172,7 @@ func TestLatchDeterministicLoser_Latches(t *testing.T) {
 	// Unknown budget + unknown context → the bounded batch-budget reason is deterministic.
 	d.latchDeterministicLoser(nil, protocol.InferenceErrorMessage{
 		FailureCode: protocol.FailureCodeCapacity,
-		ErrorReason: errorReasonRequestExceedsBatchBudget,
+		ErrorReason: attempt.ErrorReasonRequestExceedsBatchBudget,
 	})
 	if !d.unservable || d.unservableReason != rejectionReasonOversized {
 		t.Fatalf("deterministic loser must latch unservable; got unservable=%v reason=%q", d.unservable, d.unservableReason)
@@ -183,7 +185,7 @@ func TestLatchDeterministicLoser_IgnoresTransient(t *testing.T) {
 	d := &dispatchState{s: newTestServerForDispatch(t), model: "m"}
 	d.latchDeterministicLoser(nil, protocol.InferenceErrorMessage{
 		FailureCode: protocol.FailureCodeCapacity,
-		ErrorReason: errorReasonQueueFull,
+		ErrorReason: attempt.ErrorReasonQueueFull,
 	})
 	if d.unservable {
 		t.Fatalf("a transient loser must NOT latch unservable (it would block legitimate failover)")
@@ -201,7 +203,7 @@ func TestLatchDeterministicLoser_PressuredBatchBudgetNotLatched(t *testing.T) {
 	d := &dispatchState{s: newTestServerForDispatch(t), model: "m", modelMaxContext: 131072}
 	d.latchDeterministicLoser(p, protocol.InferenceErrorMessage{
 		FailureCode: protocol.FailureCodeCapacity,
-		ErrorReason: errorReasonRequestExceedsBatchBudget,
+		ErrorReason: attempt.ErrorReasonRequestExceedsBatchBudget,
 	})
 	if d.unservable {
 		t.Fatalf("a pressured (budget<context) batch-budget loser must NOT latch unservable")

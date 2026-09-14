@@ -1,5 +1,15 @@
 package api
 
+import (
+	"testing"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+)
+
 // Attempt-usage observability (deadline incident fix): a typed error terminal
 // can carry the engine-reconciled partial usage of the failed attempt
 // (InferenceErrorMessage.AttemptUsage). The coordinator persists those token
@@ -7,22 +17,13 @@ package api
 // prompt_tokens/completion_tokens" gap — WITHOUT touching billing: refunds,
 // reservations, earnings, and cost stay exactly as for a usage-less error.
 
-import (
-	"testing"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
-)
-
 func attemptUsageErrMsg(reqID string, usage *protocol.UsageInfo) protocol.InferenceErrorMessage {
 	return protocol.InferenceErrorMessage{
 		Type:          protocol.TypeInferenceError,
 		RequestID:     reqID,
 		Error:         "request exceeded safety deadline",
 		StatusCode:    504,
-		TerminalCause: terminalCauseSafetyDeadline,
+		TerminalCause: attempt.TerminalCauseSafetyDeadline,
 		AttemptUsage:  usage,
 	}
 }

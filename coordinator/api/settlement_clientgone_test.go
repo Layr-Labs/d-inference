@@ -483,7 +483,7 @@ func TestHandleInferenceErrorEmitsAfterCommitClientGone(t *testing.T) {
 
 // TestHoldForSettlementSkipsAlreadyFinalizedReservation pins the fix for the
 // timeout-mislabeled-as-client-gone bug: a request whose reservation was already
-// refunded by a provider-timeout/error relay branch (refundReservedBalance
+// refunded by a provider-timeout/error relay branch (Service.Refund
 // finalizes the reservation but does NOT RemovePending, so the deferred cleanup
 // still reaches holdForSettlement) must NOT be parked. Parking it would let a
 // late provider terminal see consumerGone and mislabel a timeout/error as an
@@ -502,7 +502,7 @@ func TestHoldForSettlementSkipsAlreadyFinalizedReservation(t *testing.T) {
 
 	// Simulate the provider-timeout relay branch that already refunded the
 	// reservation (finalizes it, but leaves it in the deferred cleanup path).
-	if !srv.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID) {
+	if !srv.inferenceSettlement().Refund(pr, "provider_timeout:"+pr.RequestID) {
 		t.Fatalf("precondition: refundReservedBalance should finalize the reservation")
 	}
 	if !pr.IsReservationFinalized() {

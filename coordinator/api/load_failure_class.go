@@ -1,6 +1,10 @@
 package api
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+)
 
 // Load-failure reason buckets for the routing.load_model_rejects counter.
 // The reason is derived ENTIRELY from the provider's
@@ -42,7 +46,7 @@ func classifyLoadFailure(errStr string) string {
 	case strings.Contains(s, "insufficient memory") ||
 		strings.Contains(s, "insufficient kv") ||
 		strings.Contains(s, "out of memory") ||
-		containsWord(s, "oom"):
+		attempt.ContainsWord(s, "oom"):
 		// "insufficient memory to load model '…'", evictUntilAvailable's
 		// "Insufficient memory (… GB free, need … GB) …", the post-load
 		// "insufficient KV headroom" guard, and the documented "GPU OOM" reason.
@@ -79,32 +83,4 @@ func classifyLoadFailure(errStr string) string {
 // short backoff so a provider whose memory frees is reconsidered quickly.
 func loadFailureIsPermanent(reason string) bool {
 	return reason == loadFailureModelNotFound
-}
-
-// containsWord reports whether word appears in s delimited by non-alphanumeric
-// boundaries, so a short token like "oom" matches "gpu oom" but not "boom" or
-// "room". word is assumed lowercase and alphanumeric; s is already lowercased.
-func containsWord(s, word string) bool {
-	for from := 0; from+len(word) <= len(s); {
-		i := strings.Index(s[from:], word)
-		if i < 0 {
-			return false
-		}
-		start := from + i
-		end := start + len(word)
-		beforeOK := start == 0 || !isWordByte(s[start-1])
-		afterOK := end == len(s) || !isWordByte(s[end])
-		if beforeOK && afterOK {
-			return true
-		}
-		from = start + 1
-	}
-	return false
-}
-
-func isWordByte(b byte) bool {
-	return b == '_' ||
-		(b >= 'a' && b <= 'z') ||
-		(b >= 'A' && b <= 'Z') ||
-		(b >= '0' && b <= '9')
 }

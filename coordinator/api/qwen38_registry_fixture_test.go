@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/catalog"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -194,7 +195,7 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 	}}
 	if err := st.SetModelVersion(entry, &store.ModelVersion{
 		ModelID: qwen38ConcreteModel, Version: version,
-		R2Prefix:        modelR2Prefix(qwen38ConcreteModel, version),
+		R2Prefix:        catalog.ModelR2Prefix(qwen38ConcreteModel, version),
 		AggregateSHA256: testHash, TotalSizeBytes: 17_000_000_000,
 		FileCount: len(files), Status: "ready",
 	}, files); err != nil {
@@ -328,7 +329,7 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 
 	t.Run("consumer model alias", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		srv.handleListModels(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+		srv.catalogController().ListModels(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 		}
@@ -354,7 +355,7 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 
 	t.Run("OpenRouter feed", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		srv.handleListModelsOpenRouter(rec, httptest.NewRequest(
+		srv.catalogController().ListOpenRouterModels(rec, httptest.NewRequest(
 			http.MethodGet, "/v1/models/openrouter", nil))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())

@@ -7,23 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/api/catalog"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
-
-// End-to-end coverage for the smart servability gate (early-429 admission).
-//
-// The gate (s.shedIfUnservable, wired into handleChatCompletions' public
-// preflight) asks registry.PredictServable whether the fleet could STRUCTURALLY
-// serve a request of this size before admitting it. When the gate is ON (the
-// default — EIGENINFERENCE_SERVABILITY_GATE unset behaves as true) and the
-// request is unservable it returns an uptime-neutral 429 + Retry-After (so
-// OpenRouter fails over) instead of admitting it and letting a provider 5xx.
-// When explicitly disabled (EIGENINFERENCE_SERVABILITY_GATE=false) it is a
-// no-op and the request flows into the normal capacity ladder.
-//
-// The A/B tests below use an identical server + provider + oversized request,
-// the ONLY difference being the gate state (on / env-default-on / env-off).
 
 // servabilityHarness builds the shared fixture: a server with one routable,
 // model-resident provider whose single slot advertises a deliberately small
@@ -225,7 +212,7 @@ func TestServabilityGate_CalibrationShedsContextOversized(t *testing.T) {
 	}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
 	if err := st.SetModelVersion(entry, &store.ModelVersion{
-		ModelID: model, Version: "v1", R2Prefix: modelR2Prefix(model, "v1"),
+		ModelID: model, Version: "v1", R2Prefix: catalog.ModelR2Prefix(model, "v1"),
 		AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready",
 	}, files); err != nil {
 		t.Fatalf("SetModelVersion: %v", err)

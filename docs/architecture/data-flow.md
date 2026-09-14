@@ -1,6 +1,6 @@
 # Data flow: one request end to end
 
-> Last updated: 2026-09-14 · commit `303ed6d30`
+> Last updated: 2026-09-14 · commit `f066a94f8`
 
 A consumer request travels consumer → coordinator → provider → coordinator → consumer. This page shows that journey once — as a sequence diagram and a stage table naming the code that owns each step — for anyone tracing a request through the coordinator.
 
@@ -128,7 +128,7 @@ Each row is the stage at which a request can end early and what the consumer see
 | Cache route plan | `coordinator/api/prompt_artifacts.go` — `planCacheRoute` |
 | Dispatch, speculative backup, commit, client-gone | `coordinator/inference/dispatch/request.go` — `Controller.Run`; `coordinator/inference/dispatch/run.go` — `execution.run`; detailed [dispatch code map](routing.md#code-map). API observation bindings live in `coordinator/api/inference_dispatch.go` (`dispatchObserver`) |
 | Per-request encryption | `coordinator/internal/e2e/e2e.go` — `GenerateSessionKeys`, `Encrypt` |
-| Wire messages | `coordinator/protocol/inference.go` (`InferenceRequestMessage`, `InferenceCompleteMessage`, `InferenceErrorMessage`); `coordinator/protocol/messages.go` (`DecodeProviderMessage`) |
+| Wire messages | `coordinator/protocol/inference.go` (`InferenceRequestMessage`, `InferenceCompleteMessage`, `InferenceErrorMessage`); `coordinator/protocol/provider_message.go` (`DecodeProviderMessage`) |
 | Settlement | `coordinator/api/provider.go` — `handleCompleteAt`; `coordinator/api/settlement.go` — `claimSettlement`; `coordinator/inference/settlement/completion.go` — `Service.Complete` |
 
 ## Related

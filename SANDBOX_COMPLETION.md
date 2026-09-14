@@ -5,15 +5,17 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
+Current local changes add the root-only base source/machine lock scope, private
+source reader, shared raw ownership decoding and real process-lock tests.
 Pushed3ac8a7fb6 adds recoverable accountless payload staging and its durable
 journal. Pushedf235b8ad2 adds signal cancellation, actual GUI-session monitoring
 and cleanup covering all post-runtime startup/service exits. Source6cf8f3381 adds
 installed-checkpoint publication after qualification-clone consumerb48455139 and
-requested-resource configuration32be94642. Full sandbox suite passes539tests,
-7explicit skips,0failures (130.665s). Coordinator suite, Linux
+requested-resource configuration32be94642. Full sandbox suite passes548tests,
+7explicit skips,0failures (132.522s). Coordinator suite, Linux
 build, docs lint, UI lint and Next.js build pass. CI34811478625 and integration
-34811478687 passed6cf8f3381. FreshCI34813684236 and integration34813684227
-are running3ac8a7fb6; benchmark
+34811478687 passed6cf8f3381. CI34813684236 and integration34813684227
+passed3ac8a7fb6. Current local source needs fresh CI; benchmark
 environment approval is separate and has not been granted.
 
 Physical guest exercise14 and coldboot15 PASS on the test Mac. They prove
@@ -1062,3 +1064,88 @@ CI34811478625 and integration34811478687 both passed preceding6cf8f3381.
 FreshCI34813684236 and integration34813684227 are in progress at3ac8a7fb6.
 Benchmark34813684136 awaits its separate environment approval; no approval was
 granted. Current pending Go-cache cleanup question has not been answered.
+
+## Root source authority and process-lock proof
+
+Current source implements LumeRootBaseImageGuard. Real/effective UID and effective
+GID must be zero before accessing system authority. It acquires the permanent
+machine EX inode itself; no configurable alternate authority or nonroot bypass
+is exposed. Its explicit source owner must be nonroot. The private source reader
+walks trusted root/selected-owner ancestors, retains the existing private source
+namespace, verifies owner/GID/modes/ACLs/link counts and bounds record reads.
+Ordinary runtime filesystem ownership rules are unchanged.
+
+LumeBaseImageSourceLocks validates exact immutable reservation bytes, raw Apple
+source ownership and resource commitments, and the supplied disk snapshot. It
+holds base-preparation -> broker operation -> native resize -> config flock ->
+POSIX run-owner locks, then retains a descriptor for disk.img. Missing native
+resize/run-owner guards can be created exclusively with the selected owner's
+UID/GID (raw creation can relocate a VM out of its scratch storage, leaving the
+parent resize guard behind); existing guard inodes are never replaced. Native
+config files may be0644 under the private source; mutable files must retain owner
+read/write. Staging/prepared artifacts and provisioning/resize remnants reject.
+
+Strict unchanged-snapshot validation is separate from collecting a new snapshot
+after authorized offline IO. Both rebind source paths and records; the latter
+still requires original device/inode/size. Neither hashes the disk or proves
+native stopped state/zero foreign image openers. Root scope closure explicitly
+closes source/image locks before releasing machine EX. The run-owner POSIX lock
+is never reopened during validation: closing any second fd for the same inode
+would release the process's lock. Two subprocess tests prove held/revalidated/
+released behavior and denial while a different live process owns the native lock.
+
+Ownership parsing was split into LumeVirtualMachineOwnershipRecord.swift and
+LumeRawBaseOwnership.swift. The privileged decoder uses the same schema and
+rejects duplicate keys, legacy restore sources and mixed ownership. The ordinary
+ownership API behavior remains covered by the full suite.
+
+Validation:9 focused source/process-lock tests passed in0.459s
+(root-source-lock-targeted-tests.log); earlier raw restore/contract tests12 with
+3explicit opt-in skips passed. A trivial compile failure from naming the explicit
+scope cleanup method close shadowed Darwin.close; renamed closeForScopeEnd.
+Full548tests/7skips passed after that correction (root-source-guard-full-tests-v2.log).
+A final namespace recheck after record/image reads was added; FINAL full548tests,
+7skips,0failures passed132.522s in root-source-guard-final-tests.log. These tests
+use private nonroot fixtures, real descriptor/flock/POSIX operations and a real
+child; they do NOT prove successful root constructor execution, disk attachment,
+physical stopped-state or mount cleanup. No remote actions occurred this turn.
+
+IMPORTANT NEXT SAFETY GATE BEFORE ANY ATTACH IMPLEMENTATION/USE:
+A root process crash releases EX/native locks while a disk image attachment can
+remain in the kernel. Add durable pending-maintenance admission to host-runtime
+so new inference SH and ordinary sandbox EX cannot start until root recovery
+proves cleanup. Recovery must be a root-only, exact-intent-bound path, not a
+public ignore-maintenance switch. Couple it with a per-source offline-operation
+marker enforced by the broker and pinned native runtime to prevent direct Lume
+run/clone/delete/settings mutation after a crash. Root must persist intent/fences
+BEFORE attach and remove them only AFTER exact detach/no-openers/source proof.
+The new root process-lifetime guard alone does NOT provide this crash guarantee.
+
+Do NOT reuse .provisioning as that durable fence. Current native source
+LumeController.getVMDetailsLightweight automatically clears a provisioning marker
+whenever disk.img and nvram.bin exist. That would erase offline recovery state.
+Relevant native mutation entry points: VMDirectory.tryAcquireResizeGuard,
+VMDirectory.saveConfig/delete; LumeController.clone, loadVM/get, updateSettings,
+runVM, delete and create/setup. Trace every mutation and readonly inspection;
+protect destination overwrite paths as well as source use, and preserve actual
+stopped-state inspection needed by root recovery. The native worktree has NOT
+been edited this turn and patch11 does NOT exist yet. Runtime pin remains10patches.
+
+Native editable tree: /private/tmp/darkbloom-managed-restore-native/work/libs/lume.
+It contains earlier uncommitted9/10 changes over its baseline; do not reset it or
+accidentally include those again in patch11. Repo pin:
+sandbox-macos/ThirdParty/lume.lock.json; patches under ThirdParty/lume-patches;
+build-pinned-lume.sh carries mandatory selector gates. Prepare a clean base10
+snapshot/diff for any new patch and verify a clean replay through the whole list.
+The latest signed native artifact remains runtime10, physically untested; last
+physical guest exercise14/coldboot15 used runtime8 and guest244009eca.
+
+After durable fencing: finish the root attach/mount/detach wrapper and use the
+staging overlay, then selected-user GUI installer boot, receipt collection and
+temporary payload cleanup. Native status may interpret the root-held POSIX
+run-owner lock as a live owner: define pre/post inspection ordering deliberately,
+with machine/fence ownership retained, and keep image opener positive controls.
+The retained root image fd is expected; exclude only that exact own fd, not all
+root processes. Preserve the preexisting Apple Metal toolchain image attachment.
+No base-template readiness, host enrollment, two-VM acceptance or build-tool gate
+is complete. Go-cache cleanup approval remains pending and unacted upon.

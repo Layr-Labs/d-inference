@@ -45,6 +45,40 @@ identity before handing control to the GUI installer job. A staged record alone
 does not grant boot authority. Tests use private directory fixtures, including
 real ad-hoc signature preservation; production still requires Developer ID.
 
+`LumeRootBaseImageGuard` supplies the root operator's machine and source lock
+scope. It rejects nonroot callers before accessing system authority, acquires
+the existing machine EX inode, and binds an explicit nonroot source owner. Its
+filesystem reader neither adopts directories nor relaxes ordinary runtime IO.
+It compares the exact reserved-candidate bytes, decodes raw Apple ownership
+through the normal ownership schema, and verifies resources and the disk
+snapshot. Prepared artifacts, partial native provisioning/resize state,
+replaced paths, shared permissions and linked files are rejected.
+
+The scope holds the existing base-preparation and broker operation locks, then
+native resize/config flocks and the process-owner POSIX record lock. Missing
+native guard inodes are created exclusively for the selected source owner;
+existing inodes are never replaced. Revalidation uses descriptor metadata and
+does not reopen the process-owner lock file: closing a second descriptor for
+that inode would release the process's POSIX lock. The source/image descriptors
+are closed before machine EX is released. A strict unchanged-snapshot check is
+separate from collecting a new snapshot after authorized offline IO; neither is
+a disk-content hash or native stopped-state proof.
+
+This scope is not yet connected to an attach/mount entrypoint. The enclosing
+operator must still prove native stopped state, exclude foreign image openers,
+bind the hdiutil attachment and sole Data-volume UUID, preserve preexisting
+attachments, and prove detach. Its retained image descriptor is an expected
+opener; only that exact owned descriptor may be excluded from the opener check.
+Before attaching, the complete workflow also needs a durable offline-operation
+fence enforced by the broker and pinned native runtime after a process crash,
+plus pending-maintenance admission in the machine ownership library so inference
+cannot resume while offline cleanup is unproven. Those fences are not implemented
+by this process-lifetime guard.
+Lume's legacy provisioning marker is unsuitable because details lookup can
+automatically remove it when the VM's required files exist. No offline-mount
+crash-recovery or successful root entrypoint execution is claimed by the local
+nonroot filesystem and subprocess-lock tests.
+
 Existing schema1 installation and template records retain their legacy
 `bootstrapRetired` field and encoding. They are never converted into native
 qualification. Normal clone validation rejects a schema1 template when its

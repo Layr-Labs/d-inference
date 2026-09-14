@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-13 · commit `8670b2a08`
+> Last updated: 2026-09-14 · commit `e79e77553`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -53,7 +53,7 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/api/requestauth` | Credential middleware, shared API-key cache (`Authenticator`) and linked-user identity resolution (`ResolveAccountID`, `RequirePrivyUser`); current configuration and accounting hooks bind through `coordinator/api/authentication.go`. |
 | `coordinator/api/requestcontext` | Private context keys and typed account, API-key and request-ID access shared by middleware and endpoint packages (`WithAccountID`, `WithAPIKey`, `WithRequestID`). |
 | `coordinator/api/statearchive` | Feature/auth/output gates and streaming HTTP response (`Controller.Download`); `api/state_archive.go` binds current admin credentials/logger, while `stateexport` retains staging and encryption. |
-| `coordinator/api/releases` | Release registration, metadata/origin/bundle verification, deactivation and cached discovery (`Controller`). `api/releases.go` binds current store/cache/policy and existing authorization; `api/admin_auth.go` owns admin authorization and OTP. |
+| `coordinator/api/releases/controller.go` (`Controller`) | Release registration, metadata/origin/bundle verification, deactivation and cached discovery. `coordinator/api/releases.go` (`newReleaseAPI`) binds current store/cache/policy and existing authorization; `coordinator/api/admin_auth.go` (`isAdminAuthorized`) owns admin authorization. |
 | `coordinator/api/operations` | Read-only operator telemetry queries, JSON/CSV/NDJSON exports, metrics and utilization (`Controller`); current store, authorization and observation readers are wired in `coordinator/api/operations.go` (`newOperations`). |
 | `coordinator/api/httpresponse` | JSON response writing and the common OpenAI-compatible error envelope (`WriteJSON`, `ErrorBody`); `WriteCachedJSON` and `EncodeCachedJSON` preserve cached response encoding; `MarshalBody` preserves non-HTML-escaped inference-body encoding without a trailing newline. |
 | `coordinator/api/readcache` | Cached response bytes and immutable values, expiry, generation-fenced catalog fills and per-entry refresh coalescing (`Cache`, `Refresher`). Endpoint packages retain cache keys, TTLs and schedules. |

@@ -17,7 +17,7 @@ func TestSeededReuseSkipsRePush(t *testing.T) {
 	logger := quietLogger()
 	st := store.NewMemory(store.Config{})
 	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
-	fastBudgets(srv)
+	srvControls := fastBudgets(srv)
 
 	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
 
@@ -35,7 +35,7 @@ func TestSeededReuseSkipsRePush(t *testing.T) {
 	}})
 	provider := newCodeAttestProvider(kPubB64, sePubB64)
 	provider.Version = "0.6.0"
-	srv.codeResumeSender = func(
+	srvControls.resumeSender = func(
 		_ string, message protocol.CodeAttestationResumeChallenge,
 	) error {
 		return completeResumeRoundTrip(
@@ -100,10 +100,10 @@ func TestSeededStalePersistedRowForcesRealChallenge(t *testing.T) {
 	logger := quietLogger()
 	st := store.NewMemory(store.Config{})
 	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
-	fastBudgets(srv)
+	srvControls := fastBudgets(srv)
 
 	cur := time.Unix(1_700_000_000, 0)
-	srv.codeAttestThrottle.now = func() time.Time { return cur }
+	srvControls.now = func() time.Time { return cur }
 
 	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
 
@@ -117,9 +117,9 @@ func TestSeededStalePersistedRowForcesRealChallenge(t *testing.T) {
 
 	// ...then advance the clock so the seeded row is now PAST the reuse window.
 	cur = cur.Add(15 * time.Minute) // row is now 35m old > 30m window
-	if srv.codeAttestThrottle.reuseAttestation(
+	if srv.codeIdentity.ReuseBasis(
 		sePubB64, "0.6.0", "devtok", kPubB64,
-	) {
+	) != "" {
 		t.Fatal("an aged-out seeded row must not be reusable (fail-closed staleness)")
 	}
 
@@ -164,9 +164,9 @@ func TestSeededWrongVersionRowForcesRealChallenge(t *testing.T) {
 	}
 	srv.SeedCodeAttestCache(context.Background())
 
-	if srv.codeAttestThrottle.reuseAttestation(
+	if srv.codeIdentity.ReuseBasis(
 		sePubB64, "0.6.0", "devtok", kPubB64,
-	) {
+	) != "" {
 		t.Fatal("a seeded row for a different version must not be reusable")
 	}
 
@@ -259,7 +259,7 @@ func TestHashlessRegistrationPersistsApplicationEvidenceHashForRestartReuse(t *t
 	if !provider.GetFreshCodeAttested() {
 		t.Fatal("production-shape hashless registration did not complete its genuine APNs proof")
 	}
-	if got, ok := srv.codeAttestThrottle.reuseAttestationForTransition(
+	if got, ok := srv.codeIdentity.TransitionBinaryHash(
 		sePubB64, provider.APNsDeviceToken,
 	); !ok || got != trHashA {
 		t.Fatalf("in-memory APNs proof binary hash = %q, ok=%v; want application hash %q", got, ok, trHashA)
@@ -283,9 +283,9 @@ func TestHashlessRegistrationPersistsApplicationEvidenceHashForRestartReuse(t *t
 	}
 
 	restarted := NewServer(registry.New(logger), st, ServerConfig{}, logger)
-	fastBudgets(restarted)
+	restartedControls := fastBudgets(restarted)
 	restarted.SeedCodeAttestCache(context.Background())
-	if got, ok := restarted.codeAttestThrottle.reuseAttestationForTransition(
+	if got, ok := restarted.codeIdentity.TransitionBinaryHash(
 		sePubB64, provider.APNsDeviceToken,
 	); !ok || got != trHashA {
 		t.Fatalf("restart-seeded APNs proof binary hash = %q, ok=%v; want %q", got, ok, trHashA)
@@ -306,7 +306,7 @@ func TestHashlessRegistrationPersistsApplicationEvidenceHashForRestartReuse(t *t
 		atomic.AddInt32(&pushes, 1)
 		return nil
 	}})
-	restarted.codeResumeSender = func(
+	restartedControls.resumeSender = func(
 		_ string, message protocol.CodeAttestationResumeChallenge,
 	) error {
 		return completeResumeRoundTrip(
@@ -343,7 +343,7 @@ func TestHashlessRegistrationWithoutApplicationEvidenceRemainsIdentityless(t *te
 	if !provider.GetFreshCodeAttested() {
 		t.Fatal("identity-less registration did not complete its genuine APNs proof")
 	}
-	if hash, ok := srv.codeAttestThrottle.reuseAttestationForTransition(
+	if hash, ok := srv.codeIdentity.TransitionBinaryHash(
 		sePubB64, provider.APNsDeviceToken,
 	); ok || hash != "" {
 		t.Fatalf("identity-less proof authorized transition reuse: hash=%q ok=%v", hash, ok)

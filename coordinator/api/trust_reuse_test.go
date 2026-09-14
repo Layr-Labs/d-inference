@@ -5,6 +5,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/providercontrol/codeidentity"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"strings"
@@ -250,7 +251,8 @@ func TestApprovedTransitionGrantsWithoutMDMOrAPNs(t *testing.T) {
 			return nil
 		},
 	})
-	srv.codeResumeSender = func(
+	srvControls := configureCodeIdentityFixture(srv, codeidentity.DefaultConfig())
+	srvControls.resumeSender = func(
 		_ string, message protocol.CodeAttestationResumeChallenge,
 	) error {
 		return completeResumeRoundTrip(
@@ -260,10 +262,10 @@ func TestApprovedTransitionGrantsWithoutMDMOrAPNs(t *testing.T) {
 	}
 	// The no-new-push path is authorized only by this prior genuine APNs proof,
 	// then completed by a live encrypted process-key possession challenge.
-	srv.codeAttestThrottle.recordAttestedForProcess(
+	seedFreshProcessAttestation(t, srv,
 		sePublic, "0.8.14", "token-current", processKey, trHashA)
 	provider.SignalApplicationProofSettled()
-	srv.codeAttestLoopWithResume(context.Background(), "prov-fs", provider, true)
+	srv.codeAttestLoop(context.Background(), "prov-fs", provider)
 	if pushes != 0 || !provider.GetCodeAttested() ||
 		!provider.GetFreshCodeAttested() {
 		t.Fatalf("combined reusable APNs proof: pushes=%d code=%v fresh=%v",

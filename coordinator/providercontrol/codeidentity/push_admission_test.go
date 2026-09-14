@@ -1,4 +1,4 @@
-package api
+package codeidentity
 
 import (
 	"context"
@@ -53,7 +53,7 @@ func (s *blockingCodeAttestStore) callCount(seKey string) int {
 
 func TestCodeAttestPushAdmissionAtomicAcrossLoopGenerations(t *testing.T) {
 	st := store.NewMemory(store.Config{})
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	th.store = st
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	th.now = func() time.Time { return now }
@@ -88,7 +88,7 @@ func TestCodeAttestTokenRotationSerializesBudgetResetWithReservation(t *testing.
 		release:     make(chan struct{}),
 		calls:       make(map[string]int),
 	}
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	th.store = st
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	th.now = func() time.Time { return now }
@@ -130,7 +130,7 @@ func TestCodeAttestTokenRotationSerializesBudgetResetWithReservation(t *testing.
 
 func TestCodeAttestZeroCooldownStillMakesValidDurableReservation(t *testing.T) {
 	st := store.NewMemory(store.Config{})
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	th.store = st
 	th.backgroundPushCooldown = 0
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
@@ -158,7 +158,7 @@ func TestCodeAttestSlowReservationDoesNotBlockOtherDevices(t *testing.T) {
 		blockSE:     "se-slow", started: make(chan struct{}), release: make(chan struct{}),
 		calls: make(map[string]int),
 	}
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	th.store = st
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	th.now = func() time.Time { return now }
@@ -198,7 +198,7 @@ func TestCodeAttestSameDeviceConcurrentReservationAdmitsOnce(t *testing.T) {
 		blockSE:     "se-one", started: make(chan struct{}), release: make(chan struct{}),
 		calls: make(map[string]int),
 	}
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	th.store = st
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	th.now = func() time.Time { return now }
@@ -238,21 +238,21 @@ func TestCodeAttestSameDeviceConcurrentReservationAdmitsOnce(t *testing.T) {
 
 func TestCodeAttestReservationLeaseCoversPushDispatch(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := NewServer(
+	srv := newTestManager(
 		registry.New(logger), store.NewMemory(store.Config{}),
-		ServerConfig{}, logger,
+		testServerConfig{}, logger,
 	)
 	t.Cleanup(srv.Close)
-	srv.codeAttestThrottle.backgroundPushCooldown = 0
-	srv.codeAttestThrottle.retrySpacing = time.Millisecond
-	srv.codeAttestThrottle.retryJitter = 0
-	srv.codeAttestThrottle.maxAttempts = 1
+	srv.state.backgroundPushCooldown = 0
+	srv.state.retrySpacing = time.Millisecond
+	srv.state.retryJitter = 0
+	srv.state.maxAttempts = 1
 	kPub, _, _, sePub := providerKeyMaterial(t)
 	provider := newCodeAttestProvider(kPub, sePub)
 	rotated := make(chan uint64, 1)
 	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, _, _ string) error {
 		go func() {
-			rotated <- srv.codeAttestThrottle.beginLoop(sePub)
+			rotated <- srv.state.beginLoop(sePub)
 		}()
 		select {
 		case <-rotated:
@@ -263,7 +263,7 @@ func TestCodeAttestReservationLeaseCoversPushDispatch(t *testing.T) {
 	}})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	srv.codeAttestLoop(ctx, provider.ID, provider)
+	srv.Loop(ctx, provider.ID, provider)
 	select {
 	case generation := <-rotated:
 		if generation == 0 {
@@ -275,7 +275,7 @@ func TestCodeAttestReservationLeaseCoversPushDispatch(t *testing.T) {
 }
 
 func TestCodeAttestLoopGenerationChurnRetainsNoSEKeys(t *testing.T) {
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	const churn = 2000
 	for i := range churn {
 		seKey := fmt.Sprintf("se-loop-churn-%d", i)
@@ -297,7 +297,7 @@ func TestCodeAttestLoopGenerationChurnRetainsNoSEKeys(t *testing.T) {
 func TestCodeAttestPushCooldownSurvivesCoordinatorRestart(t *testing.T) {
 	st := store.NewMemory(store.Config{})
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
-	first := newCodeAttestThrottle()
+	first := newDeviceState()
 	first.store = st
 	first.now = func() time.Time { return now }
 	gen := first.beginLoop("se-restart")
@@ -306,12 +306,12 @@ func TestCodeAttestPushCooldownSurvivesCoordinatorRestart(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+	srv := newTestManager(registry.New(logger), st, testServerConfig{}, logger)
 	t.Cleanup(srv.Close)
-	srv.codeAttestThrottle.now = func() time.Time { return now.Add(time.Minute) }
-	srv.SeedCodeAttestCache(context.Background())
-	restartedGeneration := srv.codeAttestThrottle.beginLoop("se-restart")
-	if srv.codeAttestThrottle.tryReservePush(context.Background(), "se-restart", "token", false, restartedGeneration) {
+	srv.state.now = func() time.Time { return now.Add(time.Minute) }
+	srv.Seed(context.Background())
+	restartedGeneration := srv.state.beginLoop("se-restart")
+	if srv.state.tryReservePush(context.Background(), "se-restart", "token", false, restartedGeneration) {
 		t.Fatal("restart forgot the persisted APNs cooldown")
 	}
 }
@@ -333,32 +333,32 @@ func TestCodeAttestNovelTokenAfterRestartWaitsForSeededFloor(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+	srv := newTestManager(registry.New(logger), st, testServerConfig{}, logger)
 	t.Cleanup(srv.Close)
 	cur := now.Add(time.Minute)
-	srv.codeAttestThrottle.now = func() time.Time { return cur }
-	srv.SeedCodeAttestCache(context.Background())
-	generation := srv.codeAttestThrottle.beginLoop("se-rotated-after-restart")
-	if srv.codeAttestThrottle.tryReservePush(
+	srv.state.now = func() time.Time { return cur }
+	srv.Seed(context.Background())
+	generation := srv.state.beginLoop("se-rotated-after-restart")
+	if srv.state.tryReservePush(
 		context.Background(), "se-rotated-after-restart",
 		"new-token", false, generation,
 	) {
 		t.Fatal("novel token bypassed the seeded per-device admission floor after restart")
 	}
-	oldGeneration := srv.codeAttestThrottle.beginLoop(
+	oldGeneration := srv.state.beginLoop(
 		"se-rotated-after-restart",
 	)
-	if srv.codeAttestThrottle.tryReservePush(
+	if srv.state.tryReservePush(
 		context.Background(), "se-rotated-after-restart",
 		"old-token", false, oldGeneration,
 	) {
 		t.Fatal("restart forgot the old token's exact cooldown")
 	}
 	cur = now.Add(21 * time.Minute)
-	lateGeneration := srv.codeAttestThrottle.beginLoop(
+	lateGeneration := srv.state.beginLoop(
 		"se-rotated-after-restart",
 	)
-	if !srv.codeAttestThrottle.tryReservePush(
+	if !srv.state.tryReservePush(
 		context.Background(), "se-rotated-after-restart",
 		"new-token", false, lateGeneration,
 	) {
@@ -367,7 +367,7 @@ func TestCodeAttestNovelTokenAfterRestartWaitsForSeededFloor(t *testing.T) {
 }
 
 func TestCodeAttestNovelTokenChurnHonorsPerDeviceFloor(t *testing.T) {
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	cur := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	th.now = func() time.Time { return cur }
 	th.budgetClearCooldown = 10 * time.Minute
@@ -400,7 +400,7 @@ func TestCodeAttestNovelTokenChurnHonorsPerDeviceFloor(t *testing.T) {
 }
 
 func TestCodeAttestLocalBudgetPreservesABACooldown(t *testing.T) {
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	cur := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	th.now = func() time.Time { return cur }
 	th.budgetClearCooldown = time.Minute
@@ -426,7 +426,7 @@ func TestCodeAttestLocalBudgetPreservesABACooldown(t *testing.T) {
 }
 
 func TestCodeAttestTokenRotationInvalidatesLoopAndProofNotDeviceEvidence(t *testing.T) {
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	th.now = func() time.Time { return now }
 	th.recordAttestedForProcess("se", "1.0", "old-token", "process", trHashA)
@@ -465,7 +465,7 @@ func TestCodeAttestTokenRotationInvalidatesLoopAndProofNotDeviceEvidence(t *test
 // stay bounded.
 func TestCodeAttestReconnectTokenChurnPacedByAdmissionFloor(t *testing.T) {
 	st := store.NewMemory(store.Config{})
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	th.store = st
 	cur := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	th.now = func() time.Time { return cur }
@@ -541,7 +541,7 @@ func TestCodeAttestReconnectTokenChurnPacedByAdmissionFloor(t *testing.T) {
 // gate — preserving Codex #9 while the floor blocks registration churn.
 func TestCodeAttestGenuineRotationClearsDurableFloor(t *testing.T) {
 	st := store.NewMemory(store.Config{})
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	th.store = st
 	cur := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	th.now = func() time.Time { return cur }
@@ -569,7 +569,7 @@ func TestCodeAttestRotationClearCooldownSurvivesRestart(t *testing.T) {
 	const se = "se-restart-rotation"
 	ctx := context.Background()
 
-	first := newCodeAttestThrottle()
+	first := newDeviceState()
 	first.store = st
 	first.now = func() time.Time { return now }
 	generation := first.beginLoop(se)
@@ -586,7 +586,7 @@ func TestCodeAttestRotationClearCooldownSurvivesRestart(t *testing.T) {
 	// RESTART: a fresh throttle over the SAME store one minute later has an
 	// empty lastBudgetClear map, but the durable last-clear is recent.
 	cur := now.Add(time.Minute)
-	second := newCodeAttestThrottle()
+	second := newDeviceState()
 	second.store = st
 	second.now = func() time.Time { return cur }
 	rotatedAfterRestart := second.rotateLoopAndClearPushBudget(ctx, se)
@@ -611,10 +611,10 @@ func TestCodeAttestRotationClearAdmitsOnceAcrossPeers(t *testing.T) {
 	const se = "se-blue-green-rotation"
 	ctx := context.Background()
 
-	blue := newCodeAttestThrottle()
+	blue := newDeviceState()
 	blue.store = st
 	blue.now = func() time.Time { return cur }
-	green := newCodeAttestThrottle()
+	green := newDeviceState()
 	green.store = st
 	green.now = func() time.Time { return cur }
 

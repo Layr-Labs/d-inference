@@ -1,4 +1,4 @@
-package api
+package codeidentity
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 // version.
 func TestCodeAttestThrottleBudgetAndReuse(t *testing.T) {
 	cur := time.Unix(1_700_000_000, 0)
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	th.now = func() time.Time { return cur }
 	const se, nodeKey = "se-key-1", "node-key-1"
 
@@ -53,7 +53,7 @@ func TestCodeAttestThrottleBudgetAndReuse(t *testing.T) {
 // identity inputs require a real bootstrap challenge.
 func TestCodeAttestThrottleTokenBinding(t *testing.T) {
 	cur := time.Unix(1_700_000_000, 0)
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	th.now = func() time.Time { return cur }
 	const se, nodeKey = "se-key-1", "node-key-1"
 
@@ -77,7 +77,7 @@ func TestCodeAttestThrottleTokenBinding(t *testing.T) {
 	if th.reuseAttestation("se-legacy-token", "0.6.0", "any-token", nodeKey) {
 		t.Fatal("a legacy token-less record bypassed current-token binding")
 	}
-	legacyNodeLess := newCodeAttestThrottle()
+	legacyNodeLess := newDeviceState()
 	legacyNodeLess.recordAttested("se-legacy-node", "0.6.0", "tokA")
 	if legacyNodeLess.reuseAttestation("se-legacy-node", "0.6.0", "tokA", nodeKey) {
 		t.Fatal("a legacy process-key-less record bypassed current process-key binding")
@@ -85,7 +85,7 @@ func TestCodeAttestThrottleTokenBinding(t *testing.T) {
 }
 
 func TestCodeAttestThrottleProcessKeyBinding(t *testing.T) {
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	th.recordAttestedForProcess("se", "0.8.17", "token", "node-key-A", "hash-a")
 	if !th.reuseAttestation(
 		"se", "0.8.17", "token", "node-key-A",
@@ -108,7 +108,7 @@ func TestCodeAttestThrottleProcessKeyBinding(t *testing.T) {
 		t.Fatal("rotated token reused process proof")
 	}
 
-	seeded := newCodeAttestThrottle()
+	seeded := newDeviceState()
 	seeded.seed([]store.CodeAttestation{{
 		SEPubKey: "se", Version: "0.8.17", AttestedAt: time.Now(),
 		APNsToken: "token", NodePublicKey: "node-key-A",
@@ -127,7 +127,7 @@ func TestCodeAttestThrottleProcessKeyBinding(t *testing.T) {
 // challenge, not by this cache lookup. A rotated token, empty inputs, or a
 // legacy record without a process-key or binary-identity binding still refuse.
 func TestCodeAttestThrottleTransitionProcessKeyBinding(t *testing.T) {
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	th.recordAttestedForProcess("se", "0.8.17", "token", "node-key-A", "hash-a")
 
 	if hash, ok := th.reuseAttestationForTransition("se", "token"); !ok || hash != "hash-a" {
@@ -143,7 +143,7 @@ func TestCodeAttestThrottleTransitionProcessKeyBinding(t *testing.T) {
 		t.Fatal("empty SE key reused a transition APNs proof")
 	}
 
-	legacy := newCodeAttestThrottle()
+	legacy := newDeviceState()
 	legacy.recordAttested("se", "0.8.17", "token")
 	if _, ok := legacy.reuseAttestationForTransition("se", "token"); ok {
 		t.Fatal("proof without a cached process-key binding reused for a transition")
@@ -153,12 +153,12 @@ func TestCodeAttestThrottleTransitionProcessKeyBinding(t *testing.T) {
 	// binary-identity binding — e.g. seeded from a pre-migration durable row)
 	// never authorizes a transition resume; it must fall through to a real
 	// APNs challenge (Codex 05:55Z P1).
-	identityless := newCodeAttestThrottle()
+	identityless := newDeviceState()
 	identityless.recordAttestedForProcess("se", "0.8.17", "token", "node-key-A", "")
 	if _, ok := identityless.reuseAttestationForTransition("se", "token"); ok {
 		t.Fatal("identity-less cached proof authorized a transition resume")
 	}
-	seeded := newCodeAttestThrottle()
+	seeded := newDeviceState()
 	seeded.seed([]store.CodeAttestation{{
 		SEPubKey: "se", Version: "0.8.17", AttestedAt: time.Now(),
 		APNsToken: "token", NodePublicKey: "node-key-A",
@@ -166,7 +166,7 @@ func TestCodeAttestThrottleTransitionProcessKeyBinding(t *testing.T) {
 	if _, ok := seeded.reuseAttestationForTransition("se", "token"); ok {
 		t.Fatal("seeded pre-migration row without a binary identity authorized a transition resume")
 	}
-	seededWithHash := newCodeAttestThrottle()
+	seededWithHash := newDeviceState()
 	seededWithHash.seed([]store.CodeAttestation{{
 		SEPubKey: "se", Version: "0.8.17", AttestedAt: time.Now(),
 		APNsToken: "token", NodePublicKey: "node-key-A", BinaryHash: "hash-a",
@@ -184,8 +184,8 @@ func TestCodeAttestResumeChallengeUsesExactResumeDeadline(t *testing.T) {
 		seKey      = "se"
 		token      = "token"
 	)
-	newThrottle := func(now *time.Time) *codeAttestThrottle {
-		th := newCodeAttestThrottle()
+	newThrottle := func(now *time.Time) *deviceState {
+		th := newDeviceState()
 		th.now = func() time.Time { return *now }
 		th.recordResumeChallenge(nonce, providerID, nodeKey, seKey, token)
 		return th
@@ -270,7 +270,7 @@ func TestCodeAttestResumeChallengeUsesExactResumeDeadline(t *testing.T) {
 }
 
 func TestCodeAttestAPNsChallengeBindsTokenAndProcessKey(t *testing.T) {
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	th.recordChallengeForIdentity("se", "nonce", "token", "K1")
 	if th.matchChallengeForIdentity("se", "nonce", "token", "K2") ||
 		th.consumeChallengeForIdentity("se", "nonce", "token", "K2") {
@@ -290,7 +290,7 @@ func TestCodeAttestAPNsChallengeBindsTokenAndProcessKey(t *testing.T) {
 // promptly instead of being pinned to the long background budget.
 func TestCodeAttestThrottleModeAwareBudget(t *testing.T) {
 	cur := time.Unix(1_700_000_000, 0)
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	th.now = func() time.Time { return cur }
 	const se = "se-key-1"
 
@@ -316,7 +316,7 @@ func TestCodeAttestThrottleModeAwareBudget(t *testing.T) {
 // while it waits out a cooldown that was spent on a different token.
 func TestCodeAttestThrottleClearPushBudget(t *testing.T) {
 	cur := time.Unix(1_700_000_000, 0)
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	th.now = func() time.Time { return cur }
 	const se = "se-key-1"
 
@@ -358,7 +358,7 @@ func TestCodeAttestThrottleClearPushBudget(t *testing.T) {
 // (Fix 1), bounded by a validity window consistent with the APNs expiry (Fix 5).
 func TestCodeAttestThrottleOutstandingChallenge(t *testing.T) {
 	cur := time.Unix(1_700_000_000, 0)
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	th.now = func() time.Time { return cur }
 	const se = "se-key-1"
 
@@ -399,7 +399,7 @@ func TestCodeAttestThrottleOutstandingChallenge(t *testing.T) {
 // nonce was pushed after it.
 func TestCodeAttestThrottleMultipleInFlightNonces(t *testing.T) {
 	cur := time.Unix(1_700_000_000, 0)
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	th.now = func() time.Time { return cur }
 	const se = "se-key-1"
 
@@ -437,7 +437,7 @@ func TestCodeAttestThrottleMultipleInFlightNonces(t *testing.T) {
 // spacing plus injected jitter, and is decoupled from (and much shorter than) the
 // push budget (Fix 3).
 func TestCodeAttestThrottleRetryDelayJitter(t *testing.T) {
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	th.retrySpacing = 10 * time.Second
 	th.retryJitter = 4 * time.Second
 
@@ -458,7 +458,7 @@ func TestCodeAttestThrottleRetryDelayJitter(t *testing.T) {
 // live resume PoP expires at 30s, APNs replies remain valid for 300s, and the
 // alert budget is short while the background budget stays long.
 func TestCodeAttestThrottleDefaultsConsistent(t *testing.T) {
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	if ChallengeResponseTimeout != 30*time.Second {
 		t.Fatalf("ChallengeResponseTimeout = %s, want exact 30s",
 			ChallengeResponseTimeout)

@@ -1,7 +1,10 @@
 package api
 
 import (
+	"context"
+	"github.com/eigeninference/d-inference/coordinator/providercontrol/codeidentity"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 	"strings"
 	"testing"
 	"time"
@@ -20,18 +23,28 @@ func waitForCond(d time.Duration, cond func() bool) bool {
 	return cond()
 }
 
-func fastBudgets(srv *Server) {
-	srv.codeAttestThrottle.backgroundPushCooldown = time.Millisecond
-	srv.codeAttestThrottle.alertPushCooldown = time.Millisecond
-	srv.codeAttestThrottle.budgetClearCooldown = time.Millisecond
-	srv.codeAttestThrottle.retrySpacing = time.Millisecond
-	srv.codeAttestThrottle.retryJitter = 0
+type codeIdentityFixture struct {
+	now          func() time.Time
+	resumeSender codeidentity.ResumeSender
 }
 
-func providerToken(p *registry.Provider) string {
-	p.Mu().Lock()
-	defer p.Mu().Unlock()
-	return p.APNsDeviceToken
+func configureCodeIdentityFixture(srv *Server, cfg codeidentity.Config) *codeIdentityFixture {
+	control := &codeIdentityFixture{now: cfg.Now}
+	cfg.Now = func() time.Time { return control.now() }
+	deps := srv.codeIdentityDependencies()
+	deps.ResumeSender = func() codeidentity.ResumeSender { return control.resumeSender }
+	srv.codeIdentity = codeidentity.New(cfg, deps)
+	return control
+}
+
+func fastBudgets(srv *Server) *codeIdentityFixture {
+	cfg := codeidentity.DefaultConfig()
+	cfg.BackgroundPushCooldown = time.Millisecond
+	cfg.AlertPushCooldown = time.Millisecond
+	cfg.BudgetClearCooldown = time.Millisecond
+	cfg.RetrySpacing = time.Millisecond
+	cfg.RetryJitter = 0
+	return configureCodeIdentityFixture(srv, cfg)
 }
 
 // crossVersionProvider builds a fully-fenced provider running newVersion: valid
@@ -52,10 +65,22 @@ func crossVersionProvider(kPubB64, sePubB64, newVersion string) *registry.Provid
 }
 
 func seedFreshProcessAttestation(
-	srv *Server, seKey, oldVersion, token, nodeKey, binaryHash string,
+	t *testing.T, srv *Server, seKey, oldVersion, token, nodeKey, binaryHash string,
 ) {
-	srv.codeAttestThrottle.recordAttestedForProcess(
-		seKey, oldVersion, token, nodeKey, binaryHash)
+	t.Helper()
+	proof := store.CodeAttestation{SEPubKey: seKey, Version: oldVersion, APNsToken: token,
+		NodePublicKey: nodeKey, BinaryHash: binaryHash, AttestedAt: time.Now()}
+	seedCodeIdentityProof(t, srv, proof)
+}
+
+// Seed through the real store interface rather than reaching into the owner's
+// private cache. This is fixture evidence, never a live trust grant.
+func seedCodeIdentityProof(t *testing.T, srv *Server, proof store.CodeAttestation) {
+	t.Helper()
+	if err := srv.store.UpsertCodeAttestation(context.Background(), proof); err != nil {
+		t.Fatal(err)
+	}
+	srv.SeedCodeAttestCache(context.Background())
 }
 
 // armCrossVersionApplicationEvidence publishes a release policy whose ACTIVE

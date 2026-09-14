@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/providercontrol/codeidentity"
 	"github.com/eigeninference/d-inference/coordinator/providercontrol/trustreuse"
 	"io"
 	"log/slog"
@@ -1713,13 +1714,20 @@ func TestMDMSchedulerFleet1500LifecycleSimulation(t *testing.T) {
 	// Exact application proof binding: approved same-process reuse spends no APNs;
 	// a changed process key cannot reuse the proof and an absent release policy
 	// cannot grant an unapproved binary.
-	th := newCodeAttestThrottle()
-	th.now = func() time.Time { return now }
-	th.recordAttestedForProcess("fleet-se-app", "1.0", "token", "process-a", trHashA)
-	if !th.reuseAttestation("fleet-se-app", "1.0", "token", "process-a") {
+	proofStore := store.NewMemory(store.Config{})
+	if err := proofStore.UpsertCodeAttestation(context.Background(), store.CodeAttestation{
+		SEPubKey: "fleet-se-app", Version: "1.0", APNsToken: "token", NodePublicKey: "process-a", BinaryHash: trHashA, AttestedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	proofConfig := codeidentity.DefaultConfig()
+	proofConfig.Now = func() time.Time { return now }
+	th := codeidentity.New(proofConfig, srv.codeIdentityDependencies())
+	th.Seed(context.Background(), proofStore)
+	if th.ReuseBasis("fleet-se-app", "1.0", "token", "process-a") == "" {
 		t.Fatal("valid exact process proof was not reusable")
 	}
-	if th.reuseAttestation("fleet-se-app", "1.0", "token", "process-b") {
+	if th.ReuseBasis("fleet-se-app", "1.0", "token", "process-b") != "" {
 		t.Fatal("changed process key reused APNs proof")
 	}
 	unapproved := schedulerTestProvider(t, srv, "unapproved", "fleet-se-unapproved")

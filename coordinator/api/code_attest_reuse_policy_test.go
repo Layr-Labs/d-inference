@@ -17,12 +17,12 @@ import (
 func TestCrossVersionReuseAboveFloorSameProcessKeyReuses(t *testing.T) {
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
-	fastBudgets(srv)
+	srvControls := fastBudgets(srv)
 	srv.minProviderVersion = "0.6.0"
 
 	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
 	provider := crossVersionProvider(kPubB64, sePubB64, "0.6.14") // bumped, above floor
-	seedFreshProcessAttestation(
+	seedFreshProcessAttestation(t,
 		srv, sePubB64, "0.6.13", provider.APNsDeviceToken, provider.PublicKey,
 		trHashB)
 	armCrossVersionApplicationEvidence(t, srv, provider, sePubB64)
@@ -32,7 +32,7 @@ func TestCrossVersionReuseAboveFloorSameProcessKeyReuses(t *testing.T) {
 		atomic.AddInt32(&pushes, 1)
 		return nil
 	}})
-	srv.codeResumeSender = func(
+	srvControls.resumeSender = func(
 		_ string, message protocol.CodeAttestationResumeChallenge,
 	) error {
 		return completeResumeRoundTrip(
@@ -62,7 +62,7 @@ func TestCrossVersionReuseBelowFloorForcesChallenge(t *testing.T) {
 
 	var pushes int32
 	provider := crossVersionProvider(kPubB64, sePubB64, "0.6.0") // DOWNGRADE, below floor
-	seedFreshProcessAttestation(
+	seedFreshProcessAttestation(t,
 		srv, sePubB64, "0.6.13", provider.APNsDeviceToken, provider.PublicKey,
 		trHashB)
 	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
@@ -91,7 +91,7 @@ func TestCrossVersionReuseTokenChangeForcesChallenge(t *testing.T) {
 	var pushes int32
 	provider := crossVersionProvider(kPubB64, sePubB64, "0.6.14")
 	provider.APNsDeviceToken = "newtok" // rotated token
-	seedFreshProcessAttestation(
+	seedFreshProcessAttestation(t,
 		srv, sePubB64, "0.6.13", "oldtok", provider.PublicKey, trHashB)
 	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
 		atomic.AddInt32(&pushes, 1)
@@ -119,7 +119,7 @@ func TestCrossVersionReuseUnfencedForcesChallenge(t *testing.T) {
 	// newCodeAttestProvider sets AttestationResult.Valid but leaves
 	// RuntimeVerified / RuntimeManifestChecked / ChallengeVerifiedSIP false.
 	provider := newCodeAttestProvider(kPubB64, sePubB64)
-	seedFreshProcessAttestation(
+	seedFreshProcessAttestation(t,
 		srv, sePubB64, "0.6.13", provider.APNsDeviceToken, provider.PublicKey,
 		trHashB)
 	provider.Version = "0.6.14"
@@ -147,7 +147,7 @@ func TestCrossVersionReuseEmptyVersionForcesChallenge(t *testing.T) {
 
 	var pushes int32
 	provider := crossVersionProvider(kPubB64, sePubB64, "") // NO version reported
-	seedFreshProcessAttestation(
+	seedFreshProcessAttestation(t,
 		srv, sePubB64, "0.6.13", provider.APNsDeviceToken, provider.PublicKey,
 		trHashB)
 	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
@@ -168,12 +168,12 @@ func TestCrossVersionReuseEmptyVersionForcesChallenge(t *testing.T) {
 func TestCrossVersionReuseCurrentApplicationEvidenceSameProcessReuses(t *testing.T) {
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
-	fastBudgets(srv)
+	srvControls := fastBudgets(srv)
 	srv.minProviderVersion = "0.6.0"
 
 	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
 	provider := crossVersionProvider(kPubB64, sePubB64, "0.6.14")
-	seedFreshProcessAttestation(
+	seedFreshProcessAttestation(t,
 		srv, sePubB64, "0.6.13", provider.APNsDeviceToken, provider.PublicKey,
 		trHashB)
 	armCrossVersionApplicationEvidence(t, srv, provider, sePubB64)
@@ -182,7 +182,7 @@ func TestCrossVersionReuseCurrentApplicationEvidenceSameProcessReuses(t *testing
 		atomic.AddInt32(&pushes, 1)
 		return nil
 	}})
-	srv.codeResumeSender = func(
+	srvControls.resumeSender = func(
 		_ string, message protocol.CodeAttestationResumeChallenge,
 	) error {
 		return completeResumeRoundTrip(
@@ -221,7 +221,7 @@ func TestCrossVersionReuseUsesLiveTokenNotCaptured(t *testing.T) {
 	var pushes int32
 	provider := crossVersionProvider(kPubB64, sePubB64, "0.6.14")
 	provider.APNsDeviceToken = "newtok" // live token already rotated (rotation won the lock)
-	seedFreshProcessAttestation(
+	seedFreshProcessAttestation(t,
 		srv, sePubB64, "0.6.13", "oldtok", provider.PublicKey, trHashB)
 	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
 		atomic.AddInt32(&pushes, 1)

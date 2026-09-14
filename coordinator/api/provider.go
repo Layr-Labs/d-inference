@@ -28,6 +28,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"github.com/eigeninference/d-inference/coordinator/providercontrol/codeidentity"
 	"maps"
 	"math"
 
@@ -54,7 +55,7 @@ const (
 	DefaultChallengeInterval = 5 * time.Minute
 
 	// ChallengeResponseTimeout is how long to wait for a challenge response.
-	ChallengeResponseTimeout = 30 * time.Second
+	ChallengeResponseTimeout = codeidentity.ChallengeResponseTimeout
 	// RegistrationAttestationMaxAge bounds replay of a previously valid signed
 	// registration claim. Challenge nonces provide ongoing liveness afterward.
 	RegistrationAttestationMaxAge = 2 * time.Minute
@@ -250,9 +251,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		if s.mdmScheduler != nil {
 			s.mdmScheduler.Unbind(schedulerSEKey, schedulerGeneration)
 		}
-		if s.codeAttestThrottle != nil {
-			s.codeAttestThrottle.clearResumeChallenges(providerID)
-		}
+		s.codeIdentity.ClearResumeChallenges(providerID)
 		// End connection-continuity coverage with the EXACT coordinator-
 		// observed disconnect time (before registry.Disconnect tears the
 		// provider down), so the measured reconnect gap starts here rather
@@ -586,7 +585,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// happens in the read-loop delivery path (handleCodeAttestationResponse),
 			// so a single dropped/late background push doesn't strand a capable
 			// provider, and a reply on a reconnected socket still attests (Fix 1).
-			if s.codeAttestor != nil {
+			if s.codeIdentity.Enabled() {
 				saferun.Go(s.logger, "codeAttest", func() {
 					s.codeAttestLoop(loopCtx, providerID, provider)
 				})
@@ -944,8 +943,8 @@ func (s *Server) emitCacheSelectionTTFT(pr *registry.PendingRequest, usage proto
 // delivery path (handleCodeAttestationResponse), so this is the acceptance window
 // for the pushed nonce. Kept consistent with the APNs apns-expiration window
 // (apns.challengeExpirySeconds, Fix 5) — a reply is honored for as long as the
-// push could still be delivered. It seeds codeAttestThrottle.challengeValidity.
-const CodeAttestResponseTimeout = 300 * time.Second
+// push could still be delivered. It seeds codeidentity.Config.ChallengeValidity.
+const CodeAttestResponseTimeout = codeidentity.CodeAttestResponseTimeout
 
 func validLoadModelStatus(status string) bool {
 	switch status {

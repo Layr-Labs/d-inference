@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/providercontrol/codeidentity"
 	"github.com/eigeninference/d-inference/coordinator/providercontrol/trustreuse"
 	"io"
 	"log/slog"
@@ -159,12 +160,8 @@ type Server struct {
 	exactCacheStatusCacheMu       sync.Mutex
 	exactCacheStatusCache         ExactCacheStatus
 	exactCacheStatusCacheExpires  time.Time
-	codeAttestor                  apns.CodeIdentityAttestor // APNs code-identity attestor (nil = disabled; v0.6.0)
-	codeResumeSender              func(string, protocol.CodeAttestationResumeChallenge) error
-	codeResumeBeforeIdentityCheck func()              // test seam between cache match and challenge record
-	codeResumeFallbackBeforeAPNs  func()              // test seam after nonce consume, before ctx recheck
-	codeAttestThrottle            *codeAttestThrottle // per-device APNs push budget + reuse cache (v0.6.0)
-	trustReuse                    *trustreuse.Manager // durable device evidence, revocation, replay and continuity
+	codeIdentity                  *codeidentity.Manager // per-device code proof, nonce and APNs budget lifecycle
+	trustReuse                    *trustreuse.Manager   // durable device evidence, revocation, replay and continuity
 
 	// Graceful-drain state (DAR-327 Phase 1, zero-downtime upgrades). Set
 	// coordinatorDraining=true before a restart/swap so the drain gate rejects
@@ -737,7 +734,6 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		readCache:                newTTLCache(),
 		geoResolver:              newProviderGeoResolverFromEnv(logger),
 		apiKeyCache:              make(map[string]apiKeyCacheEntry),
-		codeAttestThrottle:       newCodeAttestThrottle(),
 		mdmSchedulerConfig:       cfg.MDMScheduler,
 		settlements:              newSettlementHolder(),
 		zombieCanceller:          newZombieStreamCanceller(),
@@ -755,6 +751,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	reg.SetLockWaitObserver(func(site string, wait time.Duration) {
 		s.ddHistogram("registry.mu.write_wait_ms", float64(wait.Microseconds())/1000, []string{"site:" + site})
 	})
+	s.codeIdentity = codeidentity.New(codeidentity.DefaultConfig(), s.codeIdentityDependencies())
 	s.trustReuse = trustreuse.New(trustreuse.Config{
 		DurableTrustReuse:     cfg.DurableTrustReuse,
 		TrustReuseJournalPath: cfg.TrustReuseJournalPath,
@@ -1064,7 +1061,10 @@ func (s *Server) StartMDMScheduler() {
 // leaves the feature disabled. Call once during server setup, before providers
 // connect.
 func (s *Server) SetCodeAttestor(a apns.CodeIdentityAttestor) {
-	s.codeAttestor = a
+	if s.codeIdentity == nil {
+		s.codeIdentity = codeidentity.New(codeidentity.DefaultConfig(), s.codeIdentityDependencies())
+	}
+	s.codeIdentity.SetAttestor(a)
 	s.registry.SetCodeAttestationConfigured(a != nil)
 }
 

@@ -1,15 +1,16 @@
-package api
+package codeidentity
 
 import (
 	"context"
-	"github.com/eigeninference/d-inference/coordinator/attestation"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // TestRearmOnHeartbeatTokenArrivalTriggersChallenge proves W5 Fix 2 (2a): a
@@ -18,7 +19,7 @@ import (
 // round-trip — no reconnect required.
 func TestRearmOnHeartbeatTokenArrivalTriggersChallenge(t *testing.T) {
 	logger := quietLogger()
-	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	srv := newTestManager(registry.New(logger), store.NewMemory(store.Config{}), testServerConfig{}, logger)
 	fastBudgets(srv)
 
 	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
@@ -33,7 +34,7 @@ func TestRearmOnHeartbeatTokenArrivalTriggersChallenge(t *testing.T) {
 	}})
 
 	// A heartbeat now carries the token that arrived after registration.
-	srv.maybeRearmCodeAttest(context.Background(), "p1", provider, &protocol.HeartbeatMessage{
+	srv.Rearm(context.Background(), "p1", provider, &protocol.HeartbeatMessage{
 		Type:            protocol.TypeHeartbeat,
 		Status:          "idle",
 		APNsDeviceToken: "late-tok",
@@ -57,9 +58,9 @@ func TestRearmOnHeartbeatTokenArrivalTriggersChallenge(t *testing.T) {
 // connection stays un-attested (fail-closed).
 func TestHeartbeatTokenAloneNeverGrantsAttestation(t *testing.T) {
 	logger := quietLogger()
-	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	srv := newTestManager(registry.New(logger), store.NewMemory(store.Config{}), testServerConfig{}, logger)
 	fastBudgets(srv)
-	srv.codeAttestThrottle.maxAttempts = 2
+	srv.state.maxAttempts = 2
 
 	kPubB64, _, _, sePubB64 := providerKeyMaterial(t)
 	provider := newCodeAttestProvider(kPubB64, sePubB64)
@@ -72,7 +73,7 @@ func TestHeartbeatTokenAloneNeverGrantsAttestation(t *testing.T) {
 		return nil
 	}})
 
-	srv.maybeRearmCodeAttest(context.Background(), "p1", provider, &protocol.HeartbeatMessage{
+	srv.Rearm(context.Background(), "p1", provider, &protocol.HeartbeatMessage{
 		Type:            protocol.TypeHeartbeat,
 		Status:          "idle",
 		APNsDeviceToken: "tok",
@@ -92,7 +93,7 @@ func TestHeartbeatTokenAloneNeverGrantsAttestation(t *testing.T) {
 // short-circuiting on the prior proof via the reuse cache.
 func TestRearmChangedTokenForcesRealChallengeNoReuseBypass(t *testing.T) {
 	logger := quietLogger()
-	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	srv := newTestManager(registry.New(logger), store.NewMemory(store.Config{}), testServerConfig{}, logger)
 	fastBudgets(srv)
 
 	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
@@ -110,11 +111,11 @@ func TestRearmChangedTokenForcesRealChallengeNoReuseBypass(t *testing.T) {
 		}
 		return nil // phase 2: deliver but drop (so we can observe a real push, no reply)
 	}})
-	srv.codeAttestLoop(context.Background(), "p1", p)
+	srv.Loop(context.Background(), "p1", p)
 	if !p.GetCodeAttested() {
 		t.Fatal("phase 1 should attest")
 	}
-	if !srv.codeAttestThrottle.reuseAttestation(
+	if !srv.state.reuseAttestation(
 		sePubB64, "0.6.0", "tok1", kPubB64,
 	) {
 		t.Fatal("phase 1 should leave a reusable record")
@@ -136,7 +137,7 @@ func TestRearmChangedTokenForcesRealChallengeNoReuseBypass(t *testing.T) {
 
 	// Phase 2: the APNs token changes in a heartbeat.
 	atomic.StoreInt32(&complete, 0)
-	srv.maybeRearmCodeAttest(context.Background(), "p1", p, &protocol.HeartbeatMessage{
+	srv.Rearm(context.Background(), "p1", p, &protocol.HeartbeatMessage{
 		Type:            protocol.TypeHeartbeat,
 		Status:          "idle",
 		APNsDeviceToken: "tok2",
@@ -146,7 +147,7 @@ func TestRearmChangedTokenForcesRealChallengeNoReuseBypass(t *testing.T) {
 	if p.GetCodeAttested() {
 		t.Fatal("a changed token must reset CodeAttested (fail-closed) until re-proven")
 	}
-	if srv.codeAttestThrottle.reuseAttestation(
+	if srv.state.reuseAttestation(
 		sePubB64, "0.6.0", "tok2", kPubB64,
 	) {
 		t.Fatal("a changed token must invalidate the reuse record (no bypass)")
@@ -182,7 +183,7 @@ func TestRearmChangedTokenForcesRealChallengeNoReuseBypass(t *testing.T) {
 func TestRearmChangedTokenDeletesPersistedReuse(t *testing.T) {
 	logger := quietLogger()
 	st := store.NewMemory(store.Config{})
-	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+	srv := newTestManager(registry.New(logger), st, testServerConfig{}, logger)
 	fastBudgets(srv)
 	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, _, _ string) error { return nil }})
 
@@ -199,10 +200,10 @@ func TestRearmChangedTokenDeletesPersistedReuse(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	srv.SeedCodeAttestCache(context.Background())
+	srv.Seed(context.Background())
 
 	// Token rotation in a heartbeat.
-	srv.maybeRearmCodeAttest(context.Background(), "p1", p, &protocol.HeartbeatMessage{
+	srv.Rearm(context.Background(), "p1", p, &protocol.HeartbeatMessage{
 		Type:            protocol.TypeHeartbeat,
 		Status:          "idle",
 		APNsDeviceToken: "tok2",
@@ -234,7 +235,7 @@ func TestRearmChangedTokenDeletesPersistedReuse(t *testing.T) {
 func TestRearmChangedTokenKicksImmediateOrdinaryChallenge(t *testing.T) {
 	logger := quietLogger()
 	reg := registry.New(logger)
-	srv := NewServer(reg, store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	srv := newTestManager(reg, store.NewMemory(store.Config{}), testServerConfig{}, logger)
 	fastBudgets(srv)
 	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, _, _ string) error { return nil }})
 
@@ -260,7 +261,7 @@ func TestRearmChangedTokenKicksImmediateOrdinaryChallenge(t *testing.T) {
 	}
 
 	// Steady state: an unchanged token must not kick.
-	srv.maybeRearmCodeAttest(context.Background(), "kick-provider", p, &protocol.HeartbeatMessage{
+	srv.Rearm(context.Background(), "kick-provider", p, &protocol.HeartbeatMessage{
 		Type: protocol.TypeHeartbeat, Status: "idle", APNsDeviceToken: "tok1",
 	})
 	select {
@@ -270,7 +271,7 @@ func TestRearmChangedTokenKicksImmediateOrdinaryChallenge(t *testing.T) {
 	}
 
 	// Rotation: evidence is cleared AND the ordinary challenge loop is kicked.
-	srv.maybeRearmCodeAttest(context.Background(), "kick-provider", p, &protocol.HeartbeatMessage{
+	srv.Rearm(context.Background(), "kick-provider", p, &protocol.HeartbeatMessage{
 		Type: protocol.TypeHeartbeat, Status: "idle", APNsDeviceToken: "tok2",
 	})
 	if _, ok := p.ApplicationEvidenceSnapshot(); ok {
@@ -291,7 +292,7 @@ func TestRearmChangedTokenKicksImmediateOrdinaryChallenge(t *testing.T) {
 	late.AttestationResult = &attestation.VerificationResult{Valid: true, PublicKey: sePubB64}
 	late.APNsDeviceToken = ""
 	late.Mu().Unlock()
-	srv.maybeRearmCodeAttest(context.Background(), "late-provider", late, &protocol.HeartbeatMessage{
+	srv.Rearm(context.Background(), "late-provider", late, &protocol.HeartbeatMessage{
 		Type: protocol.TypeHeartbeat, Status: "idle", APNsDeviceToken: "late-tok",
 	})
 	select {
@@ -307,16 +308,16 @@ func TestRearmChangedTokenKicksImmediateOrdinaryChallenge(t *testing.T) {
 // re-challenge — even before the fresh push records a new nonce.
 func TestClearChallengeDropsOutstanding(t *testing.T) {
 	logger := quietLogger()
-	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	srv := newTestManager(registry.New(logger), store.NewMemory(store.Config{}), testServerConfig{}, logger)
 	fastBudgets(srv)
 
 	const seKey = "se-key-1"
-	srv.codeAttestThrottle.recordChallenge(seKey, "old-nonce")
-	if _, ok := srv.codeAttestThrottle.outstandingChallenge(seKey); !ok {
+	srv.state.recordChallenge(seKey, "old-nonce")
+	if _, ok := srv.state.outstandingChallenge(seKey); !ok {
 		t.Fatal("precondition: a recorded challenge must be outstanding")
 	}
-	srv.codeAttestThrottle.clearChallenge(seKey)
-	if _, ok := srv.codeAttestThrottle.outstandingChallenge(seKey); ok {
+	srv.state.clearChallenge(seKey)
+	if _, ok := srv.state.outstandingChallenge(seKey); ok {
 		t.Fatal("clearChallenge must drop the outstanding challenge so a stale reply can't attest")
 	}
 }

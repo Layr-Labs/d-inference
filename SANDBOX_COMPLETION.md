@@ -8,8 +8,10 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 - Worktree: `.worktrees/sandbox-completion-20260913`.
 - Branch: `codex/sandbox-completion-20260913`.
 - Starting sandbox tip0950ac41e; master93337ef05 integrated in453b37667.
-- Latest pushed commit:c8fb1889b2c69ecabf41c522458415d3dd5ad32f.
-- Local HEAD b5680748bd9d4670f3ee4c02ea2ffc38810c981d. Managed restore lifetime
+- Latest pushed commit:9646f2b78c10495e61ca180456de0a57bc75ee27.
+- Local GUI plan commit3abe05f712de1d2dcc6958315c1fbf56b4b693ff follows
+  host context50145d4b4 and qualification validator4cab8f470.
+- Managed restore lifetime commitb5680748bd9d4670f3ee4c02ea2ffc38810c981d
   and native patch9 are implemented; signed runtime9 still needs physical tests.
 - Local updates:c5d452148 requires explicit schema2 accountless installation/
   native qualification/cleanup evidence;4245ae67a persists one-shot raw candidates.
@@ -435,3 +437,187 @@ launch_gui_v2.py fixes complete restoration attestation and failed-test exit
 status, with9Python tests passing locally and3newtests on remote Python3.9.
 Its SHA223fcc9ee0a7555939d2dfd6e877b1246374c445fa9176b088ea8da47c269af8.
 Do not restore group membership until independent root stopped proof exists.
+
+## Follow-up guest inspection and current source work
+
+Full CI34800803900 passed on9646f2b78, including macOS Sandbox Tests
+job103842928274 (5m24s). The bounded race-fixture regression no longer hangs.
+Integration34800804091 also passed; E2E benchmark34800803894
+awaits its human environment gate. No benchmark approval was taken.
+
+GUI deployment preparation3abe05f71 replaces the unsupported daemon generator
+with explicit --gui-user-plan and exact existing local hostUser binding. It
+generates only qualification artifacts, no activation or relogin startup.
+Selected administrator is explicit trusted host owner; separate nonadmin GUI
+account is recommended, not created. UID2001 rejected.65release-tool tests pass.
+Actual readonly gaj501:20/GeneratedUID4835FFC8-BFB9-4D11-A185-C0BEB5389D5C/home
+/Users/gaj validation passed, admin=true and runtime431 membership=true.
+Protected identity-file binding at actual Serve startup is now being built;
+continuous session-loss handling and login persistence remain subsequent work.
+The accountless product first-boot payload/receipt producer is also in progress,
+separate from diagnostic schema1 receipts and legacy SSH preparation.
+
+Root92147 staged immutable qualification-inspection1 modules; root81384 read
+the GUI replica Data volume read-only. Artifacts/daemon/synthetic manifest all
+match release6 and root metadata. State/control directory exists; root
+instance.json is absent. No credential/log content read. Inspection SHA
+0cdb4ab5f16b7287b845db4200ea05d1bb74fde143a4a637671e7cea04d74e1d under
+/private/tmp/darkbloom-vsock-operator-20260913/gui-offline1/inspection-result.json.
+Fully detached, stopped, no openers; original Apple attachment and image
+mtime/ctime unchanged. GUI boot disk inode529, NVRAM530, control533, workspace538
+on encrypted device16777240. DataUUID A3B3C469-3618-441B-B64B-79E80D5E5921.
+
+Root88143 staged immutable qualification-inspection2 and performed another
+read-only pass, bounded to four public diskutil scratch plists. DBCONTROL is
+disk3s1 backed by disk1s1, APFS and WritableMedia=false; DBWORK is disk6s1.
+The current scratch physical.plist is empty. No missing/invalid physical-store
+field was found. Same independent detach/unchanged/stopped proofs passed.
+Result /private/tmp/darkbloom-vsock-operator-20260913/gui-offline2/inspection-result.json.
+
+Next diagnostic changes only the disposable GUI replica's guest LaunchDaemon
+to retain its existing stdout/stderr under root-private state. No bootstrap or
+guest binary changes, no original-source change, no readiness claim. The
+physical agent is preparing that exact guarded mutation; it is not executed yet.
+Root30254 prepared new host control /Library/Application Support/Darkbloom/gui-discriminator2
+and GUI501/evidence2, retaining the same exact label required by the frozen agent:
+io.darkbloom.sandbox.gui-discriminator1. New agent config SHA
+a42a96a52db613fce8e9d6f3b85a3e753d434dcdffdc87a2ca767d937fc3a696.
+No VM started. Prepared watchdog launch_gui_diagnostic2.py differs from testedv2
+only in new control and evidence paths. Its next root evidence directory is
+/private/tmp/darkbloom-vsock-operator-20260913/gui-watchdog2. All VMs remain stopped.
+
+## Latest continuation: native guest cleanup investigation
+
+Committed host process identity binding5b52226af and accountless payload
+generatorc9927c968. Full Swift488tests/7skips/0failures in106.7s; subsequent
+guest cleanup diagnostic commitb8c63ade1 has14focused passing tests and a
+successful release guest build. Agents then hit usage limits; root continues.
+Latest pushed revision remains9646f2b78; these local changes are not pushed yet.
+
+Root12576 installed only diagnostic stdout/stderr keys in the GUI clone's guest
+LaunchDaemon, preserving original bytes; new plist inode23845, SHA
+f49340dabd4c8addeefe64cddcc85c30d36b45555c6e8352e994efff3ac8f3bd.
+Root45685 boot2 reproduced HMAC readiness timeout, owner0 and independent
+quiescence. Rootwatchdog2 SHA
+c78a988758fe1a1f985c6fed47944de09d9447fa5a5e61419f455a568cabc0bb.
+Root10694 read512bytes of generic native startup errors, no configuration.
+Read gate gui-diagnostics-read1/diagnostic-result.json SHA
+3201230c70e86808a53cdd58f55cc6f69a0a2a13aff77dc25d0b815898ade00d.
+Root24792 read only classification counts from actual guest sudoers:1709bytes,
+no NOPASSWD text at all. The comment-parser hypothesis is ruled out; no policy
+change made. Source raw-comment check remains a possible separate robustness
+issue, and numeric #UID rules must never be stripped as comments.
+
+Signed diagnostic guestb8c63ade1 SHA
+241262632542257a82e6779f2592c5e6bd9bf997444ecbeedd756b3bcd953546,
+2466704bytes, in both labs guest-cleanup-diagnostics-b8c63. Root62333 replaced
+only the GUI clone's exact prior guest binary inode22454/bc7364..., preserving
+it in root evidence. New guest inode24744; bootstrap/plist unchanged.
+All host attaches detached with Apple attachment unchanged and native stop proof.
+
+Boot3 session20481 failed BEFORE guest execution due stale fixed diagnostic
+socket: owner1 Address already in use, client143. Guest logs/VM images unchanged.
+Watchdog3 SHA0ec1838c20cfc32624a9affeb6d760aab8a2970cfc92013e6e851ae60c20875f.
+The PRODUCT already allocates unique endpoint directories per start. Root fixed
+the diagnostic harness to allocate run/attemptN/guest.sock and a matching new
+harness configuration for each later attempt; no stale endpoint was unlinked.
+
+Boot4 root14479 with freshendpoint run/attempt4 passed hoststart/owner0, failed
+authenticated readiness. Watchdog4 SHA
+bbe493015d226f70f345eb497b22f0786a7c2bf4ca0d9c1c2ea0aca6ba386b2b.
+Read99842 observed eight new fixed diagnostic errors:
+guest_bootstrap.tenant_domain_verification.policy_mismatch. This rules out
+earlier context, identity, guest policy, removal, worker and process-count stages
+for those invocations; no tenant jobs were admitted.
+
+Root91463 installed ONE read-only diagnostic guest LaunchDaemon
+io.darkbloom.sandbox.tenant-domain-probe, inode25633, SHA
+66adfab0d9ebb8219b07ee0e037769ad7357fd15c2306295678b8868a77628ff.
+It checks virtual root, sleeps30s, prints only gui/2001 and user/2001. New logs
+tenant-domain-probe.stdout/stderr remain in root0700 state. Image is diagnostic,
+never ready. Boot5 root63244, freshendpoint attempt5, owner0/native stopped/root
+quiescence true; host config571905068e3ca15bea4c839b2b49df85535b28e4307309b47924cc37bd3a314e.
+Watchdog5 SHA58510ec15e2ce0fa596a9d153aa19f4398b7284d191b89e8f7b0c6cafa305385.
+Read36464 fully detached/stopped/noopeners. gui-domain-probe-read1 contains raw
+bounded domain logs. GUI domain absent112; user domain is an empty Background
+domain with services/unmanaged/endpoints all empty, creatorlaunchctl[818],
+activecount3, externalactivation1, inprogressbootstrap1, propertiesempty and
+ordinary bootstrap/access ports. This format appears to match the existing
+parser; the failure may instead concern prior-removal evidence or the exact
+immediate verification snapshot. Do not weaken empty-domain proof based on a
+later sample. Next action: refine fixed diagnostic reasons or explicitly retire
+domains again after the UID2001 cleanup worker before final verification.
+
+Native endpoint cleanup WIP: patch0010 makes bridge.stop unlink its own socket
+synchronously under descriptor-lifetime lock, preserving replacement inodes.
+Tests cover immediate rebind/replacement preservation. A preexisting relay test
+incorrectly assumed dup() reused its old FD despite concurrent tests; it now
+uses F_DUPFD at the owned hole and bounded retry without replacing foreign FDs.
+Patch currentSHA6abb6aa1cb582fe0157fc147159a0168160d1e79f39d3df8d40b96bbbade07ca;
+lock/Swiftpin/contract test/required selectors updated but NOT committed.
+Private work /private/tmp/darkbloom-managed-restore-native/work includes patch9
+uncommitted relative to its baseline8; patch10 diff is only bridge and two tests.
+Focused4 and combined11 tests pass. Initial full run diedSIGPIPE13; debugger
+run found the descriptor-reuse fixture mismatch. After fixture correction,
+full195tests and11mandatory selectors pass (native-bridge-full-tests-v2.log).
+Initial SIGPIPE remains unattributed; retain its log and repeat/CI evidence.
+Clean10patch replay, Swiftpin tests, final native artifact build and physical
+validation remain. All VMs currently stopped; temporary GUI runtime membership
+and CI pause remain active. Primary providers and production untouched.
+
+## Current physical run and validated local tip
+
+Local HEAD398a0c294 includes tenant cleanup sequencingf6fbae859 and native
+endpoint patch10. Full sandbox494tests/7skips/0failures (104.99s), log
+sandbox-domain-cleanup-full-tests.log. Native patch10 is now committed at
+SHA6abb6aa1cb582fe0157fc147159a0168160d1e79f39d3df8d40b96bbbade07ca.
+Clean replay of all10patches in /private/tmp/darkbloom-endpoint-patch-replay-b5makhme
+matched edited source and passed full195tests plus11mandatory selectors.
+The initial SIGPIPE was not reproduced in the corrected full run or clean
+replay; its earlier log remains preserved. The independent descriptor-reuse
+fixture mismatch was reproduced under LLDB and fixed with bounded F_DUPFD retry.
+
+Signed runtime10 built successfully at primary lab/runtime/lume-endpoint-cleanup-10:
+lume SHA c12b314eeb9374eafe898441a4a3383880d51592406dd0fbb619c084039a2752,
+provenance SHA4632bdc88b4a6236502960e7e53239bc9e281ced1b0833711b00df06e0e76aa9.
+Not yet transferred or physically tested. Diagnostic VM continues using exact
+runtime8 so host runtime changes do not confound guest debugging.
+
+Guestf6fbae859 adds domain removal after the numeric-UID cleanup worker exits,
+then zero-process and domain verification; prior-removal requirements remain.
+It also distinguishes fixed domain-verification failure reasons. Tests cover
+worker-created domains, respawn during removal, persistent processes and failure.
+Signed guest /private/tmp/darkbloom-sandbox-lab-20260913/guest-domain-retirement-f6fba:
+2490592bytes, SHAfd293b45cee8aeea48bd434eec4e821a2a62d432f787892a4a2b3ed36aef1101.
+Root98258 installed it only in diagnostic GUI clone, replacing prior guest
+inode24744; new inode26517. Exact temporary domain-probe job inode25633 was
+backed up and removed. Bootstrap/permanent diagnostic guest plist unchanged.
+All attachments detached, Apple image unchanged, VM stopped/noopeners proven.
+
+Boot6 root7264 with freshendpoint attempt6: hostowner0, HMAC readiness timeout,
+rootquiescence true. Configd0cd2db5231b7c0d410a1720d281f523847935b63c86d786e9ffe2f70b042c10.
+Watchdog6 SHAcf0c6e86429de3fcede55793243449b7d02c3b15a1c6682f7e403cd1fe3d2a3e.
+Read29650 (gui-diagnostics-read4) shows newer failures at
+guest_bootstrap.tenant_domain_removal.policy_mismatch; the extra removal did not
+resolve readiness and may expose an already-in-progress domain teardown.
+Do not infer successful cleanup or relax proof from the later empty-domain sample.
+
+Root56002 installed a new ONE-SHOT diagnostic job in this disposable clone:
+io.darkbloom.sandbox.tenant-domain-sequence1, inode27413,
+SHAd9b8b2eba1ff459e871fefe9fd7ff843e3553777ab81591deb4d81760f1c9459.
+Its fixed script checks virtual root, sleeps10s, unloads ONLY the owned guest
+daemon to prevent competing cleanup, then captures exact print/bootout statuses
+for gui/2001 and user/2001 before/after the fixed tenant-cleanup worker. It never
+changes accounts or host services. Logs are tenant-domain-sequence1.stdout/stderr
+inside the guest's root-private state. Remove this exact job after evidence.
+
+CURRENT root session66008 is running GUI attempt7, freshendpoint attempt7.
+Root control /Library/Application Support/Darkbloom/gui-discriminator7;
+GUI evidence /Volumes/DarkbloomSandboxTest-20260913/gui501/evidence7;
+config820f141b9993337310736a4bbd2e0b8abd8b25301e09b9886bc23d03323a90bc.
+Root watchdog output is /private/tmp/darkbloom-vsock-operator-20260913/gui-watchdog7.
+Expect readiness to fail deliberately while its diagnostic job unloads the guest
+daemon. Wait for actual terminal/quiescence, then collect only the fixed domain
+sequence logs with a read-only helper bound to watchdog7. This should distinguish
+launchctl errors/in-progress teardown from an output parser mismatch. No native
+tenant workload qualification or ready-template publication has occurred.

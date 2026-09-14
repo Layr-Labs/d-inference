@@ -625,7 +625,7 @@ func TestPrefixCacheDonationDeltasAndModelUpdateCleanup(t *testing.T) {
 		PrefixCacheDonationOutcomes: &baseline,
 	})
 
-	publishTestCacheHolder(t, reg.cacheRouting, []byte("test-route"), exactTestPlan(exactTestAnchor(1, "c")), cacheHolder{
+	publishTestCacheHolder(t, reg.cacheRouting, []byte("test-route"), exactTestPlan(exactTestAnchor(1, "c")), capability, cacheHolder{
 		ProviderID: provider.ID, Provider: provider, ModelID: "old",
 		ModelAggregateHash: capability.ModelAggregateHash, PromptContractID: capability.PromptContractID, CacheEpoch: capability.CacheEpoch, Anchor: exactTestAnchor(1, "c"),
 		UpdatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Minute),

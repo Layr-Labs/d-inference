@@ -52,12 +52,10 @@ var testCacheHolderNonce atomic.Uint64
 
 // Receipt time fixes the requested expiry while the directory performs normal
 // proof validation, sequence accounting, holder indexing, and capacity eviction.
-func publishTestCacheHolder(t testing.TB, tracker *cacheRoutingTracker, key []byte, plan CachePlan, holder cacheHolder) {
+func publishTestCacheHolder(t testing.TB, tracker *cacheRoutingTracker, key []byte, plan CachePlan, cap protocol.PrefixCacheV2Capability, holder cacheHolder) {
 	t.Helper()
 	nonce := fmt.Sprintf("holder-%d", testCacheHolderNonce.Add(1))
 	now := holder.ExpiresAt.Add(-tracker.directory.Config().TTL)
-	cap := testV2Capability(holder.CacheEpoch)
-	cap.ModelID, cap.ModelAggregateHash, cap.PromptContractID = holder.ModelID, holder.ModelAggregateHash, holder.PromptContractID
 	tracker.directory.RegisterAttempt(nonce, cacheAttempt{RequestID: "request-" + nonce, ProviderID: holder.ProviderID, Provider: holder.Provider, Model: holder.ModelID, ExpiresAt: now.Add(time.Minute), CreatedAt: now, V2: true, Plan: directoryPlan(plan), V2Capability: cap, ExpectedPrompt: holder.Anchor, ExpectedBoundaries: map[int]string{holder.Anchor.TokenCount: holder.Anchor.ChainHash}})
 	seq := tracker.directory.LifecycleStatus().SSDLookups + 1
 	msg := testV2Lookup(nonce, cap, holder.Anchor, seq)

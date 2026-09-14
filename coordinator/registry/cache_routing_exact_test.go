@@ -688,7 +688,7 @@ func TestExactRoutingExpiryAndDisconnectRemoveConnectionEvidence(t *testing.T) {
 	plan := exactTestPlan(anchor)
 	now := time.Now()
 
-	publishTestCacheHolder(t, r.cacheRouting, r.cacheRouteKeys.route, plan, cacheHolder{
+	publishTestCacheHolder(t, r.cacheRouting, r.cacheRouteKeys.route, plan, capability, cacheHolder{
 		ProviderID:         provider.ID,
 		Provider:           provider,
 		ModelID:            "model",
@@ -713,7 +713,7 @@ func TestExactRoutingExpiryAndDisconnectRemoveConnectionEvidence(t *testing.T) {
 		t.Fatal("expired holder remained available")
 	}
 
-	publishTestCacheHolder(t, r.cacheRouting, r.cacheRouteKeys.route, plan, cacheHolder{
+	publishTestCacheHolder(t, r.cacheRouting, r.cacheRouteKeys.route, plan, capability, cacheHolder{
 		ProviderID: provider.ID, Provider: provider, ModelID: "model",
 		ModelAggregateHash: capability.ModelAggregateHash,
 		PromptContractID:   capability.PromptContractID,

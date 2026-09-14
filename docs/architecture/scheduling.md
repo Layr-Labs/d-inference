@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-14 · commit `dedb0f894`
+> Last updated: 2026-09-14 · commit `391e1ebd4`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -550,10 +550,12 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 ## Verification dispatcher cadence
 
 The verification scheduler is separate from inference admission. Its dispatcher
-reloads durable due rows at `mdmSchedulerDispatchInterval = time.Second` or on a
-wake with an empty queue (`coordinator/api/mdm_scheduler_exec.go`,
+uses the existing constants in `coordinator/providercontrol/mdmscheduler/policy.go`
+(`dispatchInterval`, `busyRetryDelay`). It reloads durable due rows at
+`dispatchInterval = time.Second` or on a
+wake with an empty queue (`coordinator/providercontrol/mdmscheduler/dispatch.go`,
 `shouldLoadDueRows`). A due job blocked by occupied workers or the reserved urgent
-slot waits at most `mdmSchedulerBusyRetryDelay = 250 * time.Millisecond`; an
+slot waits at most `busyRetryDelay = 250 * time.Millisecond`; an
 earlier future job retains its shorter timer (`nextDispatchDelay`). Worker
 completion signals the dispatcher immediately. Due-row pages start at
 `min(limit, verificationDuePageHint)` with `verificationDuePageHint = 256`

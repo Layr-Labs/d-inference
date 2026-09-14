@@ -1,4 +1,4 @@
-package api
+package mdmscheduler
 
 import (
 	"context"
@@ -29,11 +29,11 @@ type timerRecorder struct {
 	durations []time.Duration
 }
 
-func (r *timerRecorder) newTimer(d time.Duration) mdmSchedulerTimer {
+func (r *timerRecorder) newTimer(d time.Duration) Timer {
 	r.mu.Lock()
 	r.durations = append(r.durations, d)
 	r.mu.Unlock()
-	return realMDMSchedulerTimer{time.NewTimer(d)}
+	return realTimer{time.NewTimer(d)}
 }
 
 func (r *timerRecorder) reset() {
@@ -61,26 +61,26 @@ func (r *timerRecorder) shortest() (time.Duration, int) {
 func TestMDMSchedulerBusyWorkersDoNotReloadDueRowsPerWake(t *testing.T) {
 	release := make(chan struct{})
 	var active atomic.Int32
-	execute := func(ctx context.Context, _ mdmLiveBinding, _ store.VerificationTaskKind, _ string) mdmSchedulerAttemptResult {
+	execute := func(ctx context.Context, _ Target, _ store.VerificationTaskKind, _ string) AttemptResult {
 		active.Add(1)
 		defer active.Add(-1)
 		select {
 		case <-release:
 		case <-ctx.Done():
 		}
-		return mdmSchedulerAttemptResult{outcome: store.VerificationOutcomeTransient}
+		return AttemptResult{Outcome: store.VerificationOutcomeTransient}
 	}
 	timers := &timerRecorder{}
 	st := &countingVerificationStore{MemoryStore: store.NewMemory(store.Config{})}
-	srv, sch := newSchedulerTestServerWithStore(t, st, MDMSchedulerConfig{
+	srv, sch := newSchedulerHarnessWithStore(t, st, Config{
 		Workers: 1, QueueCapacity: 256, InitialSpreadMax: time.Nanosecond,
-	}, mdmSchedulerDeps{
-		jitter:   func(time.Duration, time.Duration) time.Duration { return 0 },
-		execute:  execute,
-		newTimer: timers.newTimer,
+	}, Dependencies{
+		Jitter:   func(time.Duration, time.Duration) time.Duration { return 0 },
+		Execute:  execute,
+		NewTimer: timers.newTimer,
 	})
 	for i := range 100 {
-		p := schedulerTestProvider(t, srv, fmt.Sprintf("busy-%d", i), fmt.Sprintf("se-busy-%d", i))
+		p := schedulerProvider(t, srv, fmt.Sprintf("busy-%d", i), fmt.Sprintf("se-busy-%d", i))
 		sch.Submit(context.Background(), p.ID, p, store.VerificationPriorityFirstOrExpired)
 		sch.ChallengeSettled(p, false)
 	}
@@ -110,8 +110,8 @@ func TestMDMSchedulerBusyWorkersDoNotReloadDueRowsPerWake(t *testing.T) {
 	if armed == 0 {
 		t.Fatal("dispatcher armed no timers during the busy window")
 	}
-	if shortest < mdmSchedulerBusyRetryDelay {
-		t.Fatalf("shortest retry timer while no worker was free = %s, want >= %s", shortest, mdmSchedulerBusyRetryDelay)
+	if shortest < busyRetryDelay {
+		t.Fatalf("shortest retry timer while no worker was free = %s, want >= %s", shortest, busyRetryDelay)
 	}
 
 	close(release)
@@ -123,9 +123,9 @@ func TestMDMSchedulerBusyWorkersDoNotReloadDueRowsPerWake(t *testing.T) {
 // restart) are picked up without waiting for the cadence.
 func TestMDMSchedulerEmptyQueueReloadsOnWake(t *testing.T) {
 	st := &countingVerificationStore{MemoryStore: store.NewMemory(store.Config{})}
-	_, sch := newSchedulerTestServerWithStore(t, st, MDMSchedulerConfig{
+	_, sch := newSchedulerHarnessWithStore(t, st, Config{
 		Workers: 1, QueueCapacity: 8,
-	}, mdmSchedulerDeps{})
+	}, Dependencies{})
 	sch.Start()
 	waitSchedulerCondition(t, func() bool { return st.loads.Load() >= 1 }, "dispatcher never loaded on start")
 
@@ -139,11 +139,11 @@ func TestMDMSchedulerEmptyQueueReloadsOnWake(t *testing.T) {
 // job keeps the 1 ms retry.
 func TestMDMSchedulerRetryTimerStaysFastWhenWorkerFree(t *testing.T) {
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
-	_, _, sch := newSchedulerTestServer(t, MDMSchedulerConfig{Workers: 2, QueueCapacity: 8}, mdmSchedulerDeps{
-		now: func() time.Time { return now },
+	_, _, sch := newSchedulerHarness(t, Config{Workers: 2, QueueCapacity: 8}, Dependencies{
+		Now: func() time.Time { return now },
 	})
 	sch.mu.Lock()
-	sch.jobs["due"] = &mdmScheduledJob{record: store.VerificationJob{
+	sch.jobs["due"] = &scheduledJob{record: store.VerificationJob{
 		State: store.VerificationStatePending, NextAttemptAt: now.Add(-time.Second),
 	}}
 	sch.mu.Unlock()
@@ -153,8 +153,8 @@ func TestMDMSchedulerRetryTimerStaysFastWhenWorkerFree(t *testing.T) {
 	sch.mu.Lock()
 	sch.active[store.VerificationTaskSecurityInfo] = 2
 	sch.mu.Unlock()
-	if got := sch.nextDispatchDelay(); got != mdmSchedulerBusyRetryDelay {
-		t.Fatalf("delay with every worker busy = %s, want %s", got, mdmSchedulerBusyRetryDelay)
+	if got := sch.nextDispatchDelay(); got != busyRetryDelay {
+		t.Fatalf("delay with every worker busy = %s, want %s", got, busyRetryDelay)
 	}
 
 	// One worker busy leaves only the reserved urgent slot: a due non-urgent
@@ -163,8 +163,8 @@ func TestMDMSchedulerRetryTimerStaysFastWhenWorkerFree(t *testing.T) {
 	sch.mu.Lock()
 	sch.active[store.VerificationTaskSecurityInfo] = 1
 	sch.mu.Unlock()
-	if got := sch.nextDispatchDelay(); got != mdmSchedulerBusyRetryDelay {
-		t.Fatalf("delay with only the reserved urgent slot free and a refresh job due = %s, want %s", got, mdmSchedulerBusyRetryDelay)
+	if got := sch.nextDispatchDelay(); got != busyRetryDelay {
+		t.Fatalf("delay with only the reserved urgent slot free and a refresh job due = %s, want %s", got, busyRetryDelay)
 	}
 	// An urgent (first/expired SecurityInfo) job may take that slot: fast retry.
 	sch.mu.Lock()
@@ -183,18 +183,18 @@ func TestMDMSchedulerRetryTimerStaysFastWhenWorkerFree(t *testing.T) {
 // job due later than the floor is covered by it.
 func TestMDMSchedulerBusyFloorDoesNotDelayNearerDueJob(t *testing.T) {
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
-	_, _, sch := newSchedulerTestServer(t, MDMSchedulerConfig{Workers: 2, QueueCapacity: 8}, mdmSchedulerDeps{
-		now: func() time.Time { return now },
+	_, _, sch := newSchedulerHarness(t, Config{Workers: 2, QueueCapacity: 8}, Dependencies{
+		Now: func() time.Time { return now },
 	})
 	sch.mu.Lock()
 	// One worker busy leaves only the reserved urgent slot: the due refresh
 	// job cannot dispatch.
 	sch.active[store.VerificationTaskSecurityInfo] = 1
-	sch.jobs["blocked-refresh"] = &mdmScheduledJob{record: store.VerificationJob{
+	sch.jobs["blocked-refresh"] = &scheduledJob{record: store.VerificationJob{
 		Kind: store.VerificationTaskMDA, Priority: store.VerificationPriorityRefresh,
 		State: store.VerificationStatePending, NextAttemptAt: now.Add(-time.Second),
 	}}
-	sch.jobs["urgent-soon"] = &mdmScheduledJob{record: store.VerificationJob{
+	sch.jobs["urgent-soon"] = &scheduledJob{record: store.VerificationJob{
 		Kind: store.VerificationTaskSecurityInfo, Priority: store.VerificationPriorityFirstOrExpired,
 		State: store.VerificationStateBackoff, NextAttemptAt: now.Add(100 * time.Millisecond),
 	}}
@@ -207,7 +207,7 @@ func TestMDMSchedulerBusyFloorDoesNotDelayNearerDueJob(t *testing.T) {
 	sch.mu.Lock()
 	sch.jobs["urgent-soon"].record.NextAttemptAt = now.Add(300 * time.Millisecond)
 	sch.mu.Unlock()
-	if got := sch.nextDispatchDelay(); got != mdmSchedulerBusyRetryDelay {
-		t.Fatalf("delay with a blocked due job and the next job due in 300ms = %s, want %s", got, mdmSchedulerBusyRetryDelay)
+	if got := sch.nextDispatchDelay(); got != busyRetryDelay {
+		t.Fatalf("delay with a blocked due job and the next job due in 300ms = %s, want %s", got, busyRetryDelay)
 	}
 }

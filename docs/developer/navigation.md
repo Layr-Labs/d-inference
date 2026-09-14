@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-13 · commit `3957e1d82`
+> Last updated: 2026-09-14 · commit `391e1ebd4`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -22,7 +22,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Profile construction, provider diagnostics and sampling | `coordinator/telemetry/profiler/` (`Builder`, `Profiler`); request/terminal lifecycle wiring remains in `coordinator/api/profiler.go` |
 | Durable device evidence, revocation and reconnect continuity | `coordinator/providercontrol/trustreuse/` (`Manager`); HTTP lifecycle integration remains in `coordinator/api/` |
 | Provider challenge nonces, replies and verification | `coordinator/providercontrol/challenge/` (`Session`, `Verifier`); `coordinator/api/provider_challenge.go` binds current dependencies and `providerReadLoop` owns the connection lifecycle |
-| Registration, reconnect state and device verification | `coordinator/providercontrol/verification/` (`Verifier`, `Attempt`); `coordinator/api/provider_verification.go` binds current resources; scheduler claims and late-command ownership remain in `coordinator/api/mdm_scheduler.go` and `coordinator/api/mdm_scheduler_callbacks.go` |
+| Registration, reconnect state and device verification | `coordinator/providercontrol/verification/` (`Verifier`, `Attempt`); `coordinator/api/provider_verification.go` binds current resources; durable scheduling and command ownership live in `coordinator/providercontrol/mdmscheduler/` (`Scheduler`) |
 | Code-identity proof, APNs budgets and encrypted resume | `coordinator/providercontrol/codeidentity/` (`Manager`); the API adapter binds the release snapshot, startup proof store and live coverage store |
 | Provider selection, admission, queueing | `coordinator/registry/`; request eligibility in `request_traits.go` (`providerEligibleForTraitsLocked`) |
 | Billing and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/` |

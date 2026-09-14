@@ -26,7 +26,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"github.com/eigeninference/d-inference/coordinator/providercontrol/trustreuse"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -37,6 +36,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/providercontrol/trustreuse"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -105,7 +105,7 @@ func TestUpgradeStormReconnectReusesEvidenceWithoutMDMStorm(t *testing.T) {
 		Workers: 12, QueueCapacity: 128,
 		InitialSpreadMin: 0, InitialSpreadMax: time.Nanosecond,
 	}, mdmSchedulerDeps{
-		jitter: func(minimum, _ time.Duration) time.Duration { return minimum },
+		Jitter: func(minimum, _ time.Duration) time.Duration { return minimum },
 	})
 	srv.mdmScheduler = sch
 	srv.SetMDMClient(mdm.NewClient(ts.URL, "test-key", logger))
@@ -247,9 +247,7 @@ func TestUpgradeStormReconnectReusesEvidenceWithoutMDMStorm(t *testing.T) {
 				fp.id, job.State, job.LastOutcome)
 		}
 	}
-	sch.mu.Lock()
-	queued := len(sch.jobs)
-	sch.mu.Unlock()
+	queued, _ := schedulerQueueCounts(srv)
 	if queued != 0 {
 		t.Fatalf("%d scheduler jobs still queued after fleet-wide fast-skip", queued)
 	}
@@ -305,7 +303,7 @@ func TestUpgradeStormDueVerificationStaysBoundedAndDurable(t *testing.T) {
 		}
 		active.Add(-1)
 		// A timeout proves nothing about posture: transient, never terminal.
-		return mdmSchedulerAttemptResult{outcome: store.VerificationOutcomeTimeout}
+		return mdmSchedulerAttemptResult{Outcome: store.VerificationOutcomeTimeout}
 	}
 	srv, st, sch := newSchedulerTestServer(t, MDMSchedulerConfig{
 		Workers: workerBound, QueueCapacity: 128,
@@ -314,8 +312,8 @@ func TestUpgradeStormDueVerificationStaysBoundedAndDurable(t *testing.T) {
 		// Floor jitter: due rows dispatch immediately; a stage-1 retry lands
 		// a full 2 minutes out, so drained attempts cannot re-dispatch and
 		// spin within the test window.
-		jitter:  func(minimum, _ time.Duration) time.Duration { return minimum },
-		execute: execute,
+		Jitter:  func(minimum, _ time.Duration) time.Duration { return minimum },
+		Execute: execute,
 	})
 	srv.mdmClient = dummyMDMClient() // satisfy the fast-skip "MDM configured" gate
 
@@ -539,7 +537,7 @@ func TestCoordinatorRestartContinuityReconnectAvoidsMDMStorm(t *testing.T) {
 		Workers: 12, QueueCapacity: 128,
 		InitialSpreadMin: 0, InitialSpreadMax: time.Nanosecond,
 	}, mdmSchedulerDeps{
-		jitter: func(minimum, _ time.Duration) time.Duration { return minimum },
+		Jitter: func(minimum, _ time.Duration) time.Duration { return minimum },
 	})
 	srv.mdmScheduler = sch
 	srv.SetMDMClient(mdm.NewClient(ts.URL, "test-key", logger))
@@ -665,8 +663,8 @@ func TestCoordinatorRestartBeyondAllowanceFallsBackToSchedulerWave(t *testing.T)
 		Workers: 4, QueueCapacity: 128,
 		InitialSpreadMin: time.Hour, InitialSpreadMax: 2 * time.Hour,
 	}, mdmSchedulerDeps{
-		now:    func() time.Time { return reconnectAt },
-		jitter: func(_, maximum time.Duration) time.Duration { return maximum },
+		Now:    func() time.Time { return reconnectAt },
+		Jitter: func(_, maximum time.Duration) time.Duration { return maximum },
 	})
 	srv.mdmScheduler = sch
 	srv.mdmClient = dummyMDMClient() // satisfy the fast-skip "MDM configured" gate

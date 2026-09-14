@@ -1,9 +1,10 @@
-package api
+package mdmscheduler
 
 import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/telemetry/metrics"
 )
 
 func schedulerPriorityLabel(priority store.VerificationPriority) string {
@@ -27,9 +28,9 @@ func schedulerRetryStageLabel(stage int) string {
 	return "steady"
 }
 
-func (s *mdmVerificationScheduler) metricCounter(name, labelName, labelValue string) {
-	if s.server.metrics != nil {
-		s.server.metrics.IncCounter(name, MetricLabel{Name: labelName, Value: labelValue})
+func recordCounter(deps Dependencies, name, labelName, labelValue string) {
+	if deps.Metrics() != nil {
+		deps.Metrics().IncCounter(name, metrics.Label{Name: labelName, Value: labelValue})
 	}
 	ddName := map[string]string{
 		"mdm_scheduler_enqueued_total":       "mdm.scheduler.enqueued",
@@ -42,44 +43,44 @@ func (s *mdmVerificationScheduler) metricCounter(name, labelName, labelValue str
 	if ddName == "" {
 		ddName = name
 	}
-	s.server.ddIncr(ddName, []string{labelName + ":" + labelValue})
+	deps.Counter(ddName, []string{labelName + ":" + labelValue})
 }
 
-func (s *mdmVerificationScheduler) observeAttempt(work mdmSchedulerWork, result mdmSchedulerAttemptResult, duration time.Duration) {
+func (s *Scheduler) observeAttempt(work workItem, result AttemptResult, duration time.Duration) {
 	kind := string(work.job.Kind)
-	outcome := string(result.outcome)
-	queueWait := s.deps.now().Sub(work.enqueuedAt)
+	outcome := string(result.Outcome)
+	queueWait := s.deps.Now().Sub(work.enqueuedAt)
 	if queueWait < 0 {
 		queueWait = 0
 	}
-	if s.server.metrics != nil {
-		s.server.metrics.IncCounter("mdm_scheduler_attempts_total", MetricLabel{Name: "kind", Value: kind}, MetricLabel{Name: "outcome", Value: outcome})
-		s.server.metrics.ObserveHistogram("mdm_scheduler_attempt_seconds", duration.Seconds(), MetricLabel{Name: "kind", Value: kind}, MetricLabel{Name: "outcome", Value: outcome})
-		s.server.metrics.ObserveHistogram("mdm_scheduler_queue_wait_seconds", queueWait.Seconds(), MetricLabel{Name: "kind", Value: kind}, MetricLabel{Name: "priority", Value: schedulerPriorityLabel(work.job.Priority)})
-		if result.outcome == store.VerificationOutcomeTimeout {
-			s.server.metrics.IncCounter("mdm_scheduler_timeouts_total", MetricLabel{Name: "kind", Value: kind})
+	if s.deps.Metrics() != nil {
+		s.deps.Metrics().IncCounter("mdm_scheduler_attempts_total", metrics.Label{Name: "kind", Value: kind}, metrics.Label{Name: "outcome", Value: outcome})
+		s.deps.Metrics().ObserveHistogram("mdm_scheduler_attempt_seconds", duration.Seconds(), metrics.Label{Name: "kind", Value: kind}, metrics.Label{Name: "outcome", Value: outcome})
+		s.deps.Metrics().ObserveHistogram("mdm_scheduler_queue_wait_seconds", queueWait.Seconds(), metrics.Label{Name: "kind", Value: kind}, metrics.Label{Name: "priority", Value: schedulerPriorityLabel(work.job.Priority)})
+		if result.Outcome == store.VerificationOutcomeTimeout {
+			s.deps.Metrics().IncCounter("mdm_scheduler_timeouts_total", metrics.Label{Name: "kind", Value: kind})
 		}
 	}
-	s.server.ddIncr("mdm.scheduler.attempts", []string{"kind:" + kind, "outcome:" + outcome})
-	s.server.ddHistogram("mdm.scheduler.attempt_seconds", duration.Seconds(), []string{"kind:" + kind, "outcome:" + outcome})
-	s.server.ddHistogram("mdm.scheduler.queue_wait_seconds", queueWait.Seconds(),
+	s.deps.Counter("mdm.scheduler.attempts", []string{"kind:" + kind, "outcome:" + outcome})
+	s.deps.Histogram("mdm.scheduler.attempt_seconds", duration.Seconds(), []string{"kind:" + kind, "outcome:" + outcome})
+	s.deps.Histogram("mdm.scheduler.queue_wait_seconds", queueWait.Seconds(),
 		[]string{"kind:" + kind, "priority:" + schedulerPriorityLabel(work.job.Priority)})
-	if result.outcome == store.VerificationOutcomeTimeout {
-		s.server.ddIncr("mdm.scheduler.timeouts", []string{"kind:" + kind})
+	if result.Outcome == store.VerificationOutcomeTimeout {
+		s.deps.Counter("mdm.scheduler.timeouts", []string{"kind:" + kind})
 	}
-	if result.granted && work.job.Kind == store.VerificationTaskSecurityInfo {
+	if result.Granted && work.job.Kind == store.VerificationTaskSecurityInfo {
 		s.metricCounter("mdm_scheduler_grants_total", "path", "live")
 	}
 	if work.job.Kind == store.VerificationTaskMDA {
 		mdaOutcome := outcome
-		if result.outcome == store.VerificationOutcomeSuccess {
+		if result.Outcome == store.VerificationOutcomeSuccess {
 			mdaOutcome = "verified"
 		}
 		s.metricCounter("mda_verification_total", "outcome", mdaOutcome)
 	}
 }
 
-func (s *mdmVerificationScheduler) publishDogStatsDGauges() {
+func (s *Scheduler) publishDogStatsDGauges() {
 	type gauge struct {
 		name  string
 		value float64
@@ -118,24 +119,24 @@ func (s *mdmVerificationScheduler) publishDogStatsDGauges() {
 	}
 	s.mu.Unlock()
 	for _, value := range values {
-		s.server.ddGauge(value.name, value.value, value.tags)
+		s.deps.Gauge(value.name, value.value, value.tags)
 	}
 }
 
-func (s *mdmVerificationScheduler) registerMetrics() {
-	if s.server.metrics == nil {
+func (s *Scheduler) registerMetrics() {
+	if s.deps.Metrics() == nil {
 		return
 	}
 	for _, kind := range []store.VerificationTaskKind{store.VerificationTaskSecurityInfo, store.VerificationTaskMDA} {
 		kind := kind
-		s.server.metrics.RegisterGaugeLabels("mdm_scheduler_active_attempts", func() float64 {
+		s.deps.Metrics().RegisterGaugeLabels("mdm_scheduler_active_attempts", func() float64 {
 			s.mu.Lock()
 			defer s.mu.Unlock()
 			return float64(s.active[kind])
-		}, MetricLabel{Name: "kind", Value: string(kind)})
+		}, metrics.Label{Name: "kind", Value: string(kind)})
 		for _, priority := range []store.VerificationPriority{store.VerificationPriorityFirstOrExpired, store.VerificationPriorityRecovery, store.VerificationPriorityRefresh} {
 			priority := priority
-			s.server.metrics.RegisterGaugeLabels("mdm_scheduler_queue_depth", func() float64 {
+			s.deps.Metrics().RegisterGaugeLabels("mdm_scheduler_queue_depth", func() float64 {
 				s.mu.Lock()
 				defer s.mu.Unlock()
 				count := 0
@@ -145,7 +146,11 @@ func (s *mdmVerificationScheduler) registerMetrics() {
 					}
 				}
 				return float64(count)
-			}, MetricLabel{Name: "kind", Value: string(kind)}, MetricLabel{Name: "priority", Value: schedulerPriorityLabel(priority)})
+			}, metrics.Label{Name: "kind", Value: string(kind)}, metrics.Label{Name: "priority", Value: schedulerPriorityLabel(priority)})
 		}
 	}
+}
+
+func (s *Scheduler) metricCounter(name, labelName, labelValue string) {
+	recordCounter(s.deps, name, labelName, labelValue)
 }

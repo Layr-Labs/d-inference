@@ -7,6 +7,10 @@ coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
 source-matched `mlx.metallib`), and the two Next.js UIs. `make build` does all
 of it; the per-component steps below explain what each target runs.
 
+Docs Lint needs Git history to validate moved source links in frozen records;
+its checkout uses `fetch-depth: 0` (`.github/workflows/ci.yml`, `docs` job).
+See [historical source references](historical-references.md) for local setup.
+
 Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 `scripts/publish-model.sh` to registration. See the
 [model publishing procedure](../operations/model-migration.md).
@@ -51,6 +55,13 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 | `admin-ui/` | Next.js 16 / React 19 | `npm`; dev/start on port `4001`. |
 | `landing/` | static HTML/JS | No build step; `earn-calculator-core.test.js` runs with `node --test`. |
 | `Makefile` | — | Every target below; `make help` lists them. |
+
+Provider tests are grouped by subsystem inside their existing SwiftPM targets.
+See [finding provider tests](test.md#finding-provider-tests) for the folder map;
+`provider-swift/Package.swift` (`package`) retains recursive source discovery.
+The [inference source map](../architecture/inference.md#code-map) locates engine,
+memory, caching and request-processing code within the same `ProviderCore`
+target; building these folders requires no separate products or commands.
 
 ## Steps
 
@@ -323,7 +334,7 @@ an XCTest runner may report zero tests before Swift Testing executes its suite.
 It retains the separate post-build live OS/activation headroom gate.
 The mode requires the candidate SSD serving path; it cannot be combined with
 resident reproduction, native-probe-only mode or an explicit grant
-(`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkGrant.swift`,
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkGrant.swift`,
 `benchmarkProductionGrant`; `BenchmarkOptions.swift`).
 
 For explicit envelope controls, use `--kv-budget-gib N`. Without either flag,

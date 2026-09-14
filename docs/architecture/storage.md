@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-13 · commit `d8647602b`
+> Last updated: 2026-09-14 · commit `f8a00f83d`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -180,7 +180,8 @@ finishes, persisted rows omit the indexed serial and SE key, including late writ
 from a registration that already disconnected. Provider-record and reputation persistence share a mutex, and pending reputation
 writes are skipped. Completed records publish together with their reputation in
 one Postgres transaction or MemoryStore lock (`UpsertProviderWithReputation`,
-`coordinator/store/postgres/provider_record_write.go`), so an older zero snapshot cannot
+`coordinator/store/postgres/provider_record_write.go` and
+`coordinator/store/memory/provider_record_write.go`), so an older zero snapshot cannot
 overwrite the completed state and no completed identity appears without its
 reputation. Registration retries history/reputation reads up to three times,
 within one five-second deadline shared with `RestoreProviderStateContext`.

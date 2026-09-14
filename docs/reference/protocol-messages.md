@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-14 · commit `33fc15a6b`
+> Last updated: 2026-09-14 · commit `359c62293`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -44,7 +44,7 @@ frame ordering are unchanged.
 | `prefix_cache_lookup`, `prefix_cache_ready`, and their `_v2` forms | `coordinator/providercontrol/session/cache_receipts.go` (`cacheLookup`, `cacheReady`, `cacheLookupV2`, `cacheReadyV2`) |
 | `load_model_status`, `models_update` | `coordinator/providercontrol/session/model_status.go` (`loadModelStatus`, `modelsUpdate`); `prefetch_model_status` remains ignored advisory progress in `Session.Run` |
 | `attestation_response`, `code_attestation_response` | `Session.Run` delivers to the existing challenge session and code-identity manager |
-| Inference accepted, chunk, complete and error | `coordinator/providercontrol/session/dependencies.go` (`InferenceFrames`) binds the existing API handlers; completion captures ingress time before its asynchronous callback, while the other three callbacks remain synchronous |
+| Inference accepted, chunk, complete and error | `coordinator/providercontrol/session/dependencies.go` (`InferenceFrames`) binds `providerframe.Service.Accepted`, `Chunk`, `CompleteAt` and `Error` through `coordinator/api/provider_session.go`; completion captures ingress time before its asynchronous callback, while the other three callbacks remain synchronous |
 
 See the [connection lifecycle](../architecture/components/coordinator.md#provider-connection-lifecycle)
 for teardown order and current resource bindings.

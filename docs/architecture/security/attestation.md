@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-14 · commit `33fc15a6b`
+> Last updated: 2026-09-14 · commit `359c62293`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -440,7 +440,7 @@ received (`darkbloom status`, `Trust: <level> / <status>`).
 3. Only a posture mismatch proven by a received SecurityInfo demotes; lookup failures, timeouts, and not-enrolled outcomes leave trust unchanged and retry — `coordinator/providercontrol/verification/security_info.go` (`Verifier.VerifySecurityInfo`).
 4. The coordinator sends only `SecurityInfo` and `DeviceInformation` MDM commands and honours only webhook responses for an outstanding `CommandUUID` — `coordinator/mdm/mdm.go` (`assertReadOnlyCommand`, `HandleWebhook`).
 5. Every challenge and code-identity signature is verified against the SE key from the registration blob, never a key carried in the reply — `coordinator/providercontrol/challenge/signature.go` (`verifySignatures`), `coordinator/providercontrol/codeidentity/response.go` (`HandleResponse`).
-6. `sip_enabled == false` or `secure_boot_enabled == false` in any challenge reply, an enforced binary-hash mismatch, a model-hash mismatch, or an encrypted-chunk violation untrusts the provider immediately, without the three-strike count — `coordinator/providercontrol/challenge/posture.go` (`verifyPosture`), `integrity.go` (`verifyBinaryHash`, `verifyModelHashes`); `coordinator/api/provider.go` (`decryptTextResponseChunk`).
+6. `sip_enabled == false` or `secure_boot_enabled == false` in any challenge reply, an enforced binary-hash mismatch, a model-hash mismatch, or an encrypted-chunk violation untrusts the provider immediately, without the three-strike count — `coordinator/providercontrol/challenge/posture.go` (`verifyPosture`), `integrity.go` (`verifyBinaryHash`, `verifyModelHashes`); `coordinator/inference/providerframe/encryption.go` (`decryptTextResponseChunk`).
 7. A code-identity proof is accepted only for the exact (SE key, APNs token, `K`) it was issued to and only within `challengeValidity`; cached proofs authorise a resume challenge, never a grant — `coordinator/providercontrol/codeidentity/challenge_loop.go` (`codeAttestLoopForGeneration`); `coordinator/providercontrol/codeidentity/response.go` (`HandleResponse`), `coordinator/providercontrol/codeidentity/apns_challenge.go` (`matchChallengeForIdentity`).
 8. Code identity becomes mandatory only when an attestor is configured and `APNS_ENFORCE_AFTER` has passed — `coordinator/registry/attestation_policy.go` (`codeAttestationEnforcedLocked`).
 9. Routing evaluates `providerLivenessGateReasonLocked` in a fixed order and skips any provider whose last verified challenge is older than [`challengeFreshnessMaxAge`](../routing.md#challenge-freshness) — `coordinator/registry/routing_eligibility.go`, `coordinator/registry/routing_constants.go`.

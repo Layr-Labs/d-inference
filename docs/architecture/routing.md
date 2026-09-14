@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-14 · commit `33fc15a6b`
+> Last updated: 2026-09-14 · commit `359c62293`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -578,9 +578,10 @@ removal owned a still-running attempt, and refunds only that attempt's top-up.
 The tracker mutex orders nonblocking enqueue acceptance and sent marking against
 terminal consumption; expiry and terminal observations follow the tracker
 operation. Shared terminal publication belongs to `PublishPendingOutcome`;
-the API keeps provider-frame handling, parking and durable observation
+the frame service handles provider terminals; the API keeps parking and durable observation
 (`coordinator/inference/attempt/cancel.go`, `cancel_tracker.go`, `cancel_metrics.go`,
-`coordinator/inference/attempt/pending_outcome.go`; `coordinator/api/provider.go`,
+`coordinator/inference/attempt/pending_outcome.go`; `coordinator/inference/providerframe/error.go` (`Service.Error`),
+`coordinator/inference/providerframe/complete.go` (`Service.CompleteAt`), `coordinator/api/settlement.go`,
 `coordinator/api/route_outcome.go`).
 
 ### Cooldowns, breakers and ejection

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `33fc15a6b`
+> Last updated: 2026-09-14 · commit `359c62293`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -152,12 +152,26 @@ env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
 `TestCompletionPublishesUsageBeforeCreditsAndConsumerTerminal`
 (`coordinator/api/settlement_order_test.go`) pauses the real provider credit to
 check that the charge and in-memory usage precede payout and consumer-channel
-completion. It also passes against the pre-extraction API implementation.
+completion. It binds the frame service before replacing the store, so the same
+fixture also checks current-store lookup. It passes against the pre-extraction
+API implementation.
 `TestCompletionObservationPrecedesCurrentReferralAndPayouts`
 (`coordinator/inference/settlement/completion_order_test.go`) checks the public
 usage alias, late referral binding, exact credit amounts and reservation
 finalization using real memory-store/ledger operations and an explicit account
 fee. These checks require no payment credentials or model runtime.
+
+Shared-key cache and pure cache-usage validation tests live in
+`coordinator/inference/providerframe/`. The API retains registered-socket,
+encrypted-chunk, overflow, completion/refund and profile-order fixtures. The
+accounting/response command above includes both packages.
+`TestHandleChunkOverflowFailsRequest`
+(`coordinator/api/provider_chunk_overflow_test.go`) verifies terminal key eviction
+through a new encrypted request using the same session-key pointer and fresh key
+bytes; retaining the old cache entry makes that request fail to decrypt. The
+fixture passes against the original API owner and rejects an overlay that omits
+the real error-path eviction. Relay benchmarks bind the production frame service
+before timing (`coordinator/api/relay_bench_test.go`).
 
 Cancellation-history and pure rejection/terminal-policy tests live beside
 `coordinator/inference/attempt/`. Real provider WebSocket, refund and response

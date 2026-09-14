@@ -5,10 +5,10 @@ import SandboxRuntime
 
 enum GuestTenantCleanup {
     struct Operations: Sendable {
-        let removeDomains: @Sendable () async throws -> GuestTenantDomains.Removal
+        let removeDomains: @Sendable () async throws -> Void
         let cleanProcesses: @Sendable () async throws -> Void
         let activeProcesses: @Sendable () throws -> Int
-        let verifyDomains: @Sendable (GuestTenantDomains.Removal) async throws -> Void
+        let verifyLoginDomain: @Sendable () async throws -> Void
         let pause: @Sendable () async -> Void
     }
 
@@ -20,13 +20,13 @@ enum GuestTenantCleanup {
                     arguments: ["tenant-cleanup"], timeoutSeconds: 3, maximumOutputBytes: 1024)
             },
             activeProcesses: activeTenantProcesses,
-            verifyDomains: { try await GuestTenantDomains.verifyQuiescent(after: $0) },
+            verifyLoginDomain: { try await GuestTenantDomains.verifyLoginDomainAbsent() },
             pause: { try? await Task.sleep(for: .milliseconds(100)) }))
     }
 
     static func run(operations: Operations) async throws {
         for _ in 0..<5 {
-            let before = try await GuestBootstrapDiagnostic.runAsync(.tenantDomainRemoval) {
+            try await GuestBootstrapDiagnostic.runAsync(.tenantDomainRemoval) {
                 try await operations.removeDomains()
             }
             try await GuestBootstrapDiagnostic.runAsync(.tenantCleanupWorker) {
@@ -35,16 +35,18 @@ enum GuestTenantCleanup {
             // The cleanup worker drops to UID2001. That transition can create
             // a user domain even when none existed before the worker started.
             // Retire it after the worker exits, then recheck process quiescence.
-            let after = try await GuestBootstrapDiagnostic.runAsync(.tenantDomainRemoval) {
+            try await GuestBootstrapDiagnostic.runAsync(.tenantDomainRemoval) {
                 try await operations.removeDomains()
             }
             if try GuestBootstrapDiagnostic.run(.tenantProcessInventory, operations.activeProcesses) == 0 {
-                let removal = GuestTenantDomains.Removal(
-                    userDomainBootedOut: before.userDomainBootedOut || after.userDomainBootedOut)
                 try await GuestBootstrapDiagnostic.runAsync(.tenantDomainVerification) {
-                    try await operations.verifyDomains(removal)
+                    try await operations.verifyLoginDomain()
                 }
-                return
+                // Verification must not create a domain; still take the final
+                // process snapshot after all launchctl calls have completed.
+                if try GuestBootstrapDiagnostic.run(.tenantProcessInventory, operations.activeProcesses) == 0 {
+                    return
+                }
             }
             await operations.pause()
         }

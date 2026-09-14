@@ -45,6 +45,13 @@ final class GuestTenantCleanupTests: XCTestCase {
         XCTAssertEqual(state.workerCalls, 1)
     }
 
+    func testProcessAppearingDuringFinalVerificationRequiresAnotherCleanup() async throws {
+        let state = Fixture(respawnDuringVerification: true)
+        try await GuestTenantCleanup.run(operations: state.operations)
+        XCTAssertEqual(state.workerCalls, 2)
+        XCTAssertTrue(state.verified)
+    }
+
     private final class Fixture: @unchecked Sendable {
         private let lock = NSLock()
         private var domain = false
@@ -55,9 +62,11 @@ final class GuestTenantCleanupTests: XCTestCase {
         private let respawnOnce: Bool
         private let persistentProcesses: Bool
         private let workerFails: Bool
+        private let respawnDuringVerification: Bool
 
-        init(respawnOnce: Bool = false, persistentProcesses: Bool = false, workerFails: Bool = false) {
+        init(respawnOnce: Bool = false, persistentProcesses: Bool = false, workerFails: Bool = false, respawnDuringVerification: Bool = false) {
             self.respawnOnce = respawnOnce; self.persistentProcesses = persistentProcesses; self.workerFails = workerFails
+            self.respawnDuringVerification = respawnDuringVerification
         }
         var verified: Bool { lock.withLock { didVerify } }
         var domainExists: Bool { lock.withLock { domain } }
@@ -66,15 +75,14 @@ final class GuestTenantCleanupTests: XCTestCase {
         var operations: GuestTenantCleanup.Operations {
             .init(removeDomains: { self.remove() }, cleanProcesses: { try self.clean() },
                   activeProcesses: { self.lock.withLock { self.processes } },
-                  verifyDomains: { try self.verify($0) }, pause: {})
+                  verifyLoginDomain: { try self.verify() }, pause: {})
         }
 
-        private func remove() -> GuestTenantDomains.Removal {
+        private func remove() {
             lock.withLock {
                 removals += 1
-                let existed = domain; domain = false
+                domain = false
                 if respawnOnce && removals == 2 { processes = 1 }
-                return .init(userDomainBootedOut: existed)
             }
         }
         private func clean() throws {
@@ -85,10 +93,11 @@ final class GuestTenantCleanupTests: XCTestCase {
                 processes = persistentProcesses ? 1 : 0
             }
         }
-        private func verify(_ removal: GuestTenantDomains.Removal) throws {
+        private func verify() throws {
             try lock.withLock {
-                guard removal.userDomainBootedOut, !domain, processes == 0 else { throw GuestProtocolError.cleanupUncertain }
+                guard !domain, processes == 0 else { throw GuestProtocolError.cleanupUncertain }
                 didVerify = true
+                if respawnDuringVerification && workers == 1 { processes = 1 }
             }
         }
     }

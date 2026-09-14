@@ -8,63 +8,48 @@ enum GuestTenantDomains {
     static let domains = ["gui/2001", "user/2001"]
     typealias Command = @Sendable ([String]) async throws -> SandboxProcessResult
     typealias Pause = @Sendable () async throws -> Void
-    struct Removal: Sendable { let userDomainBootedOut: Bool }
+    private enum RetiredState: Sendable { case absent, bootedOut }
     enum VerificationFailure: String, Error, Sendable {
-        case unknownDomain = "unknown_domain"
         case inspectionUnproven = "domain_inspection_unproven"
         case removalUnproven = "domain_removal_unproven"
         case loginDomainNotAbsent = "login_domain_not_absent"
-        case userDomainRemovalUnproven = "user_domain_removal_unproven"
-        case userDomainFormatUnproven = "user_domain_format_unproven"
     }
 
-    static func remove(run: Command = command, pause: Pause = delay) async throws -> Removal {
-        var userDomainBootedOut = false
-        for domain in domains {
-            let removed = try await stabilize(pause: pause) {
-                let status = try await run(["print", domain])
-                if absent(status, domain: domain) { return .complete(false) }
-                guard status.exitCode == 0, !status.standardOutputTruncated, !status.standardErrorTruncated else {
-                    return .pending(.inspectionUnproven)
-                }
-                let removed = try await run(["bootout", domain])
-                if removed.exitCode == 0, !removed.standardOutputTruncated, !removed.standardErrorTruncated {
-                    return .complete(true)
-                }
-                if absent(try await run(["print", domain]), domain: domain) { return .complete(false) }
-                return .pending(.removalUnproven)
-            }
-            if domain == "user/2001", removed { userDomainBootedOut = true }
+    static func remove(run: Command = command, pause: Pause = delay) async throws {
+        // On qualified macOS, querying gui/UID returns 125 while a Background
+        // user domain exists. Retire that domain first; do not interpret 125
+        // as absence. A successful GUI removal can leave a user domain behind.
+        _ = try await remove(domain: "user/2001", run: run, pause: pause)
+        if try await remove(domain: "gui/2001", run: run, pause: pause) == .bootedOut {
+            _ = try await remove(domain: "user/2001", run: run, pause: pause)
         }
-        return Removal(userDomainBootedOut: userDomainBootedOut)
     }
 
-    static func verifyQuiescent(after removal: Removal, run: Command = command,
-                                pause: Pause = delay) async throws {
-        for domain in domains {
-            _ = try await stabilize(pause: pause) {
-                let result = try await run(["print", domain])
-                if let failure = verificationFailure(result, domain: domain, after: removal) { return .pending(failure) }
+    private static func remove(domain: String, run: Command, pause: Pause) async throws -> RetiredState {
+        let removed = try await stabilize(pause: pause) {
+            let status = try await run(["print", domain])
+            if absent(status, domain: domain) { return .complete(false) }
+            guard status.exitCode == 0, !status.standardOutputTruncated, !status.standardErrorTruncated else {
+                return .pending(.inspectionUnproven)
+            }
+            let removed = try await run(["bootout", domain])
+            if removed.exitCode == 0, !removed.standardOutputTruncated, !removed.standardErrorTruncated {
                 return .complete(true)
             }
+            return .pending(.removalUnproven)
         }
+        return removed ? .bootedOut : .absent
     }
 
-    static func quiescent(_ result: SandboxProcessResult, domain: String, after removal: Removal) -> Bool {
-        verificationFailure(result, domain: domain, after: removal) == nil
-    }
-
-    static func verificationFailure(_ result: SandboxProcessResult, domain: String,
-                                    after removal: Removal) -> VerificationFailure? {
-        guard domains.contains(domain) else { return .unknownDomain }
-        if absent(result, domain: domain) { return nil }
-        guard result.exitCode == 0, !result.standardOutputTruncated, !result.standardErrorTruncated else {
-            return .inspectionUnproven
+    static func verifyLoginDomainAbsent(run: Command = command, pause: Pause = delay) async throws {
+        // After remove() succeeds, do not print user/UID again: print recreates its domain
+        // and asynchronously loads Apple services, even if its output is empty.
+        // The caller checks zero live tenant processes after this GUI check.
+        _ = try await stabilize(pause: pause) {
+            let result = try await run(["print", "gui/2001"])
+            if absent(result, domain: "gui/2001") { return .complete(true) }
+            return .pending(result.exitCode == 0 ? .loginDomainNotAbsent : .inspectionUnproven)
         }
-        guard domain == "user/2001" else { return .loginDomainNotAbsent }
-        guard removal.userDomainBootedOut else { return .userDomainRemovalUnproven }
-        guard GuestEmptyUserDomain.matches(result) else { return .userDomainFormatUnproven }
-        return nil
     }
 
     static func absent(_ result: SandboxProcessResult, domain: String) -> Bool {

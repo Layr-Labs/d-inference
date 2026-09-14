@@ -80,14 +80,7 @@ func (s *Scheduler) CompleteLateSecurityInfo(
 		store.VerificationOutcomeSuccess, now,
 	)
 	cancel()
-	if s.deps.ReuseMDA(binding.Target()) {
-		s.metricCounter("mda_verification_total", "outcome", "reused")
-		s.mu.Lock()
-		delete(s.bindings, binding.attestation.PublicKey)
-		s.mu.Unlock()
-	} else {
-		s.enqueueMDA(binding, udid)
-	}
+	s.finishSecurityInfo(binding, udid)
 	s.metricCounter("mdm_scheduler_grants_total", "path", "late")
 	s.signal()
 }

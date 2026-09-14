@@ -83,10 +83,6 @@ func (s *Scheduler) ObserveAttemptCommand(
 		job.record.UDID != udid {
 		return
 	}
-	if oldUDID := job.record.UDID; oldUDID != "" &&
-		oldUDID != udid && s.byUDID[oldUDID] == key {
-		delete(s.byUDID, oldUDID)
-	}
 	job.callbackGen = binding.generation
 	job.callbackUUID = commandUUID
 	s.byUDID[udid] = key

@@ -75,7 +75,7 @@ checks with `GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/protocol`.
 
 Wire-contract tests remain in `coordinator/protocol/` beside the message families.
 `GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/protocol/...` checks the existing
-JSON round trips, omitted-versus-empty fields, Swift telemetry symmetry and
+JSON round trips, omitted-versus-empty fields, Go telemetry JSON contracts and
 provider-envelope/scanner equivalence cases. [The protocol source map](../reference/protocol-messages.md#source-files)
 locates each record and its decoder.
 

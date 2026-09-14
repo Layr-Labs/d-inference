@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-13 · commit `d8d0dfb0a`
+> Last updated: 2026-09-14 · commit `4f405581d`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -151,11 +151,17 @@ stateDiagram-v2
 
 ### Token-budget admission per slot
 
+`coordinator/registry/admission/` owns capacity calculations over immutable
+`Snapshot` and `Pool` values. The registry captures those values under its
+existing locks, then keeps the live reservation recheck and pending-token debit.
+`admissionSnapshot` (`coordinator/registry/admission_policy.go`) is the explicit
+field mapping; the calculation package owns no provider or registry mutex.
+
 Modern providers report a live KV budget per slot: `ActiveTokenBudgetMax`
 (tokens the slot can hold given current free memory), `ActiveTokenBudgetUsed`
 (reserved by running requests), `QueuedTokenBudget` (reserved by requests in
-the backend queue) and `KVBytesPerToken`. `freeMemoryAdmits`
-(`coordinator/registry/scheduler.go`) admits a request of
+the backend queue) and `KVBytesPerToken`. `Policy.FreeMemoryAdmits`
+(`coordinator/registry/admission/memory.go`) admits a request of
 `requestTokens = promptTokens + max_tokens` when
 
 ```text
@@ -164,10 +170,11 @@ ActiveTokenBudgetUsed + QueuedTokenBudget + coordinatorExtra + requestTokens ≤
 
 where `coordinatorExtra` is the coordinator's own in-flight `max_tokens` for
 the slot that the provider has not yet reflected (`pendingMaxTokens −
-committedTokenBudget`, floored at 0). A budget-clamped pair
+admission.CommittedTokenBudget`, floored at 0; implementation in
+`coordinator/registry/admission/memory.go`). A budget-clamped pair
 ([`routing.md`](routing.md#gray-box-capacity-signals)) and a slot that reports
-`KVBytesPerToken` with a zero budget (`knownZeroTokenBudget`) are refused
-outright. `pooledBudgetAdmits` then checks the provider-wide pool that all
+`KVBytesPerToken` with a zero budget (`admission.KnownZeroTokenBudget`) are refused
+outright. `PoolAdmits` (`coordinator/registry/admission/pool_accounting.go`) then checks the provider-wide pool that all
 slots share, in bytes when the provider reports byte-mode budgets.
 
 **Memory fallback** for slots without a token budget: a resident model needs
@@ -484,7 +491,8 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 2. **Every drain that reserves a waiter records one of the seven
    `DrainTrigger` values** — `foldDrainTrigger`.
 3. **A request is never admitted past a slot's reported token budget** —
-   `freeMemoryAdmits`, `pooledBudgetAdmits` (`coordinator/registry/scheduler.go`).
+   `Policy.FreeMemoryAdmits` (`coordinator/registry/admission/memory.go`) and
+   `PoolAdmits` (`coordinator/registry/admission/pool_accounting.go`).
 4. **In-flight requests never exceed the effective per-model cap or the
    provider cap** — `hasConcurrencyHeadroomForModelCapResolvedLocked`
    (`coordinator/registry/concurrency_cap.go`).
@@ -528,7 +536,8 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 | Drain orchestration | `coordinator/registry/scheduler.go` — `drainQueuedRequestsForModelsWithReason`; `coordinator/registry/provider_lifecycle.go` — `SetProviderIdle`; `coordinator/registry/heartbeat.go` — `Heartbeat` |
 | Slot vocabulary | `coordinator/registry/gate_reason.go` — `SlotState`; `coordinator/registry/scheduler.go` — `slotStatePenalty`, `slotStateModelLoaded` |
 | Heartbeat payload | `coordinator/protocol/messages.go` — `BackendCapacity`, `BackendSlotCapacity` |
-| Token-budget and memory admission | `coordinator/registry/scheduler.go` — `freeMemoryAdmits`, `pooledBudgetAdmits`, `knownZeroTokenBudget`, `committedTokenBudget` |
+| Token-budget and memory admission | `coordinator/registry/admission/` — `Policy.FreeMemoryAdmits`, `PoolAdmits`, `KnownZeroTokenBudget`, `CommittedTokenBudget`; `coordinator/registry/admission_policy.go` maps the immutable routing snapshot |
+| Provider-version interpretation | `coordinator/registry/providerversion/` — `Policy.Compare`, `Policy.SlotBudgetLayout`; one shared interpreter in `coordinator/registry/provider_version.go` |
 | Concurrency caps | `coordinator/registry/provider.go` — `maxConcurrency`, `maxConcurrencyForModelLocked`; `coordinator/registry/config.go` — `DefaultMaxConcurrent`; `coordinator/registry/concurrency_cap.go` — `SetQualityConcurrencyCap`, `effectiveMaxConcurrencyForModelRateLocked`, `hasConcurrencyHeadroomForModelCapResolvedLocked` |
 | Pending loads and swaps | `coordinator/registry/model_loading.go` — `pendingModelLoadTTL`, `TriggerModelSwaps`, `bestModelLoadProviderLocked`; `coordinator/registry/model_commands.go` — `SendLoadModel`; `coordinator/registry/model_swap_coalesce.go` — `modelSwapPlanInterval`, `modelSwapPlanGate`, `triggerModelSwapsFromHeartbeat` |
 | Warm pool | `coordinator/registry/warm_pool_controller.go` — `tick`, `plan`, `hasDemandPressure`, `targetWarm`, `WarmPoolSnapshot`; `coordinator/registry/warmpool/target.go` — `Target`, `ServiceTime`, `LoadsThisTick`; `coordinator/registry/warmpool/state.go` — `State`, `ArrivalEWMAAlpha` |

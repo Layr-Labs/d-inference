@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `c84437919`
+> Last updated: 2026-09-14 · commit `cf3427a1e`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -65,6 +65,12 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 ```
 
 ### 2. Coordinator (Go)
+
+Capacity arithmetic and version-interpretation tests live beside their owners
+in `coordinator/registry/admission/` and `coordinator/registry/providerversion/`.
+Concurrent reservation, fleet preflight and routing simulations remain in the
+registry and `routingsim` packages. From the repository root,
+`GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/...` runs all of them.
 
 Run prediction telemetry checks from the repository root:
 

@@ -1,8 +1,8 @@
-package registry
+package admission
 
-// pooled_kv_rates.go — the per-slot KV-rate table inside pooledTokenBudget.
+// kv_rates.go — the per-slot KV-rate table inside Pool.
 //
-// providerPooledTokenBudgetWithLayout used to allocate a map[string]int64 for
+// NewPool used to allocate a map[string]int64 for
 // every provider on every routing scan (~11% of the fleet-scale scan's
 // allocation volume) to remember each budget slot's KVBytesPerToken. A box
 // serves a handful of co-resident models, so the table is a fixed inline
@@ -21,7 +21,7 @@ type slotKVRate struct {
 }
 
 // setKVRate records (or overwrites) the rate for model.
-func (p *pooledTokenBudget) setKVRate(model string, rate int64) {
+func (p *Pool) setKVRate(model string, rate int64) {
 	for i := 0; i < p.kvRateCount && i < pooledKVRateInline; i++ {
 		if p.kvRates[i].model == model {
 			p.kvRates[i].rate = rate
@@ -42,9 +42,9 @@ func (p *pooledTokenBudget) setKVRate(model string, rate int64) {
 	p.kvRateCount++
 }
 
-// kvRateFor returns the recorded rate for model, or 0 when no budget slot
+// KVRateFor returns the recorded rate for model, or 0 when no budget slot
 // reported one (the same "map miss ⇒ 0" every consumer relied on).
-func (p *pooledTokenBudget) kvRateFor(model string) int64 {
+func (p *Pool) KVRateFor(model string) int64 {
 	for i := 0; i < p.kvRateCount && i < pooledKVRateInline; i++ {
 		if p.kvRates[i].model == model {
 			return p.kvRates[i].rate

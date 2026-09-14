@@ -1,17 +1,18 @@
-package registry
+package admission
 
 import (
 	"fmt"
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/providerversion"
 )
 
 // TestPooledKVRateTableMatchesMapSemantics pins the inline table against the
 // map it replaced: last write wins per model, unknown reads as 0, and entries
 // past the inline capacity spill without losing or reordering anything.
 func TestPooledKVRateTableMatchesMapSemantics(t *testing.T) {
-	var pool pooledTokenBudget
+	var pool Pool
 	ref := map[string]int64{}
 	set := func(model string, rate int64) {
 		pool.setKVRate(model, rate)
@@ -23,11 +24,11 @@ func TestPooledKVRateTableMatchesMapSemantics(t *testing.T) {
 	set("m-0", 5)                                     // overwrite inline
 	set(fmt.Sprintf("m-%d", 2*pooledKVRateInline), 6) // overwrite spilled
 	for model, want := range ref {
-		if got := pool.kvRateFor(model); got != want {
+		if got := pool.KVRateFor(model); got != want {
 			t.Fatalf("kvRateFor(%s) = %d, want %d", model, got, want)
 		}
 	}
-	if got := pool.kvRateFor("absent"); got != 0 {
+	if got := pool.KVRateFor("absent"); got != 0 {
 		t.Fatalf("unknown model rate = %d, want 0", got)
 	}
 	if pool.kvRateCount != len(ref) {
@@ -46,8 +47,8 @@ func TestPooledBudgetReconstructionAllocatesNothing(t *testing.T) {
 	}
 	var sink int64
 	allocs := testing.AllocsPerRun(200, func() {
-		pool := providerPooledTokenBudgetWithLayout(slots, privateSlotGrants)
-		sink += pool.kvRateFor("b") + pool.totalBytes
+		pool := NewPool(slots, providerversion.PrivateSlotGrants)
+		sink += pool.KVRateFor("b") + pool.totalBytes
 	})
 	if allocs != 0 {
 		t.Fatalf("pool reconstruction allocated %v per run; want 0", allocs)

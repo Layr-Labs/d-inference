@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-13 · commit `8483a172d`
+> Last updated: 2026-09-13 · commit `002aecd5b`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -23,6 +23,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Cache receipt proofs, holder indexes and lifecycle | `coordinator/registry/cachedirectory/` (`Directory`); live capability/connection prerequisites in `coordinator/registry/cache_receipts_v2.go` |
 | Cache preparation, queued-frame revocation and terminal lifetime | `coordinator/registry/cacheattempt/` (`State`, `Snapshot`); live connection/capability publication adapter in `coordinator/registry/cache_attempt_ownership.go` |
 | Provider-version comparison and slot layout | `coordinator/registry/providerversion/` (`Policy`); shared interpreter binding in `coordinator/registry/provider_version.go` |
+| Pending model commands and heartbeat plan timing | `coordinator/registry/modelloads/` (`Commands`, `PlanGate`); live selection in `coordinator/registry/model_load_plan.go`, command adapters in `coordinator/registry/model_load_state.go` |
 | Queue storage, throughput and warm-pool targets | `coordinator/registry/requestqueue/`, `coordinator/registry/throughput/`, `coordinator/registry/warmpool/`; live provider state and reservation orchestration stay in `coordinator/registry/` |
 | Billing and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/` |
 | Provider inference, downloads, security, local serving | `provider-swift/Sources/ProviderCore/`; entrypoints in `provider-swift/Sources/darkbloom/` |

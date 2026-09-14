@@ -470,7 +470,8 @@ func TestResolveRemoteMediaSelfRouteUnavailableSkipsFetch(t *testing.T) {
 	cfg := mediafetch.DefaultConfig()
 	cfg.AllowPrivateIPs = true
 	cfg.AllowNonStandardPorts = true
-	srv.deps.MediaResolver = func() *mediafetch.Resolver { return mediafetch.NewResolver(cfg, srv.deps.Logger()) }
+	resolver := mediafetch.NewResolver(cfg, srv.deps.Logger())
+	srv.deps.MediaResolver = func() *mediafetch.Resolver { return resolver }
 
 	var hits int32
 	media := httptest.NewServer(inferencefixture.PNGHandler(t, &hits))
@@ -507,7 +508,8 @@ func TestPreludeDefersRemoteMediaResolution(t *testing.T) {
 	cfg := mediafetch.DefaultConfig()
 	cfg.AllowPrivateIPs = true
 	cfg.AllowNonStandardPorts = true
-	srv.deps.MediaResolver = func() *mediafetch.Resolver { return mediafetch.NewResolver(cfg, srv.deps.Logger()) }
+	resolver := mediafetch.NewResolver(cfg, srv.deps.Logger())
+	srv.deps.MediaResolver = func() *mediafetch.Resolver { return resolver }
 
 	var hits int32
 	media := httptest.NewServer(inferencefixture.PNGHandler(t, &hits))
@@ -600,7 +602,8 @@ func TestResolveRemoteMediaSelfRouteUsesFullTraits(t *testing.T) {
 	cfg := mediafetch.DefaultConfig()
 	cfg.AllowPrivateIPs = true
 	cfg.AllowNonStandardPorts = true
-	srv.deps.MediaResolver = func() *mediafetch.Resolver { return mediafetch.NewResolver(cfg, srv.deps.Logger()) }
+	resolver := mediafetch.NewResolver(cfg, srv.deps.Logger())
+	srv.deps.MediaResolver = func() *mediafetch.Resolver { return resolver }
 
 	// An owned, online, vision- and tool-capable machine that does NOT advertise
 	// the tool-constraint protocol: serviceable for HasTools alone, ineligible

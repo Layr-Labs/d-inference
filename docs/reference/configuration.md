@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-14 · commit `ea5ce6b16`
+> Last updated: 2026-09-14 · commit `f37d74777`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,

@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-14 · commit `ea5ce6b16`
+> Last updated: 2026-09-14 · commit `f37d74777`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each

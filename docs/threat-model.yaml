@@ -1626,6 +1626,7 @@ threats:
       - coordinator/providercontrol/session/dependencies.go
       - coordinator/api/provider_session.go
       - coordinator/api/server.go
+      - coordinator/api/routes.go
       - coordinator/mdm/**
       - coordinator/api/provider.go
       - coordinator/providercontrol/verification/security_info.go

@@ -147,11 +147,12 @@ type routingSnapshot struct {
 	// can load right now (net of cap/reserve/headroom, idle models reclaimed).
 	// When non-nil it is the authoritative cold-load gate; nil = legacy provider
 	// (fall back to the total-memory heuristic). See protocol.BackendCapacity.
-	freeForLoadGB   *float64
-	modelSizeGB     float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
-	minRAMGb        int     // catalog authoritative min RAM (GB) to run the model (0 = unknown)
-	modelLoaded     bool    // true when the requested model is resident (running or idle)
-	availableOnDisk bool    // model is in provider's Models list but not currently loaded
+	freeForLoadGB              *float64
+	modelSizeGB                float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
+	estimatedOffloadedMemoryGB float64 // validated padded native weights; zero preserves legacy policy
+	minRAMGb                   int     // catalog authoritative min RAM (GB) to run the model (0 = unknown)
+	modelLoaded                bool    // true when the requested model is resident (running or idle)
+	availableOnDisk            bool    // model is in provider's Models list but not currently loaded
 
 	observedDecodeTPS     float64
 	observedPrefillTPS    float64 // measured per-slot prefill EWMA; 0 = unreported (fall back to prefillTPS chain)
@@ -1700,6 +1701,7 @@ func (r *Registry) snapshotProviderIntoPLockedEx(dst *routingSnapshot, p *Provid
 	snap.prefillTPS = resolvedPrefillTPS(p)
 	snap.totalMemoryGB = float64(p.Hardware.MemoryGB)
 	snap.modelSizeGB = r.modelSizeGBForFitLocked(p, model)
+	snap.estimatedOffloadedMemoryGB = advertisedOffloadedMemoryGBLocked(p, model)
 	snap.minRAMGb = r.catalogMinRAMGbLocked(model)
 	// Heartbeat age from the scan clock (system-profiler record); a zero
 	// LastHeartbeat saturates rather than reading as "fresh".
@@ -1809,16 +1811,13 @@ func backendFreeForLoadGB(bc *protocol.BackendCapacity) *float64 {
 // or unknown catalog size that can't be normalized). Used by every cold-load
 // decision path (direct admission, the swap planner, the warm pool, and the
 // cold-spill predicate) so they cannot drift.
-// The PADDED conversion on purpose, for every binary and model: this
+// The legacy PADDED conversion is deliberate without explicit SSD offload: it
 // mirrors the provider's ADMIT gate, which deliberately charges the
 // disk×1.2 load-transient figure (shard staging exceeds steady residency).
 // Measured post-load residency (servabilityMeasuredResidentGiB) informs
 // only coldTokenBudgetEstimate — the POST-load arithmetic.
 func reportedFreeForLoadAdmits(catalogSizeGB float64, freeForLoadGB *float64) (admit bool, reported bool) {
-	if freeForLoadGB == nil || catalogSizeGB <= 0 {
-		return false, false
-	}
-	return catalogSizeGB*coldLoadCatalogGBToMemGiB <= *freeForLoadGB, true
+	return reportedFreeForLoadAdmitsWithOffload(catalogSizeGB, 0, freeForLoadGB)
 }
 
 // freeMemoryAdmits returns true when the provider has enough headroom.
@@ -1923,7 +1922,7 @@ func freeMemoryAdmits(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int) 
 		// provider's padded-GiB load basis so it exactly mirrors the provider's own
 		// ModelLoadAdmission gate (no over-admit → OOM, no under-admit on evictable
 		// weights).
-		if admit, reported := reportedFreeForLoadAdmits(snap.modelSizeGB, snap.freeForLoadGB); reported {
+		if admit, reported := reportedFreeForLoadAdmitsWithOffload(snap.modelSizeGB, snap.estimatedOffloadedMemoryGB, snap.freeForLoadGB); reported {
 			return admit
 		}
 		// Fallback for legacy providers that don't report freeForLoadGB: the old

@@ -1,6 +1,6 @@
 # Models reference
 
-> Last updated: 2026-09-11 · commit `49b62bfe6`
+> Last updated: 2026-09-14 · commit `4e90ac8b1`
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
@@ -129,6 +129,23 @@ these defaults.
 | Prefix caching | Encrypted complete paged SSD checkpoints enabled, subject to loaded capability, verified identity, cache key and tenant scope. A cache hit is not guaranteed; explicit cache disable wins | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Activation.swift` (`isEnabled`); [cache defaults](../architecture/prefix-cache.md#kv-layouts) |
 | Multi-token prediction (MTP) | `mtp_mode = "auto"` resolves the catalog-declared assistant; adaptive decoding chooses ordinary decode or one draft token. Missing, invalid or memory-ineligible assistants retain target-only serving; explicit `off` and the process kill switch win | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); [MTP policy and controls](../architecture/inference.md#multi-token-prediction) |
 | Assistant activation | Requests continue during download and preparation. Network providers also serve during rollout jitter, then temporarily close admissions only for this model while accepted requests finish and the prepared engine swaps in. Racing/new acquisitions can receive transient 503; timeout or cancellation reopens the original engine without force-cancelling accepted work. Random jitter provides no fleet availability guarantee | `provider-swift/Sources/ProviderCore/Inference/MTPIdleUpgrade.swift` (`run`); [provider memory and availability](../provider/hardware-requirements.md#gemma-qat-assistant-footprint-and-availability) |
+
+## Native Flash-Next candidate
+
+The [native Flash-Next candidate](../reference/qwen4-next-support.md)
+adds a private provider serving identity, not a public catalog entry. It serves
+text only; retained vision configuration/tensors do not advertise media, and
+unsupported image/video requests are rejected rather than silently reduced to
+text (`provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift`,
+`advertisesMedia`). Its local listing and bridge apply the
+[candidate context policy](../reference/configuration.md#native-flash-next-candidate)
+to prompt plus reserved completion tokens. That local policy does not edit the
+coordinator's catalog limits, aliases, prices or marketplace feed.
+
+Paging/cache defaults and embedded-MTP source support do not certify a cache
+hit, device tier or answer quality. Final same-artifact build, serving and
+restart qualification remain pending; no 128 GB, vision or production-readiness
+claim is made by this source addition.
 
 ## Related
 

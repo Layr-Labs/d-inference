@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `1f52a71fb`
+> Last updated: 2026-09-14 · commit `4e90ac8b1`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -36,6 +36,54 @@ preparation seam before tokenization. The shared public corpus covers JSON-objec
 and schema response formats plus multi-system and text/tool/endpoint forms; it compares
 actual Swift tokens and scope-bound hashes with Rust plans. No production
 prompts or model weights are needed (`scripts/verify-prompt-parity.sh`).
+
+## Native Flash-Next candidate
+
+The [candidate reference](../reference/qwen4-next-support.md#validation-status-and-next-gates)
+records completed local checks and remaining gates. The following are commands
+for a prepared checkout, not claims that this composed candidate has passed
+them. Use the [exact dependency/build prerequisites](build.md#native-flash-next-candidate).
+
+The [Qwen 3.8 Next reproducibility scripts](../../scripts/qwen38_validation/README.md)
+exercise an existing loopback release server across MTP OFF/ON, reasoning
+OFF/ON, Chat/Responses tools/history, unsupported-effort HTTP 400 boundaries and
+isolated ephemeral complete-cache lifecycle checks. The same page gives the
+separate real-state and quiet-cancellation/reload Swift opt-ins and their limits.
+These local fixtures do not qualify a hosted OpenRouter route or authorize
+model uploads, signing or production changes.
+
+```bash
+python3 -B -m unittest discover -s scripts/qwen38_conversion -p 'test_qwen38_provenance.py' -v
+go test ./coordinator/protocol ./coordinator/registry
+swift test --package-path provider-swift --filter Qwen4SupportPolicyTests
+```
+
+The conversion suite uses synthetic files and a stub quantizer/serializer; it
+does not execute MLX or establish numerical conversion parity. Provider source
+coverage also includes `Qwen4EmbeddedMTPTests`, `Qwen4FactorySelectionTests`,
+`Qwen4ExpMmapFootprintTests`, `Qwen4ReasoningControlTests` and Foundation
+`Qwen4MediaPolicyTests`. Run relevant tests without skips after the matching
+resources/build are available; a syntax-only SDK pass is not a unit-suite pass.
+
+For actual model qualification, keep PLE enabled and bind every result to one
+source/dependency/binary/metallib/artifact tuple:
+
+1. Exercise the real default standalone load guard before weights, qualified
+   identity and same-type/name-collision negatives, reservation cleanup, then
+   ordinary cold CLI first generation and unload/reload. Exercise the coordinator
+   path independently; a preloaded engine or listing is not cold-start evidence.
+2. Compare target-only with actual embedded MTP on native paging, prefix cache
+   off: target/state/output checks, widths and output boundaries, rejection and
+   rollback, PLE first-use/sparse-threshold crossing and exact row gathers.
+3. Turn complete prefix caching on separately: cold miss, hot repeat, real suffix,
+   SSD-only file-read restore, mixed hit/miss, signed persistent restart,
+   tenant/model/template/numerical identity and corrupt/stale-state rejection.
+   Confirm native dtypes, ownership and truthful cached-token accounting.
+4. Cover disconnect versus legal half-close, cancellation during prefill/decode/
+   cache I/O, readmission, model switches, pressure and actual admitted concurrency.
+   Check Chat/Responses reasoning/tools/usage/finish behavior and text-only media
+   rejection. Preserve failed cells and distinguish natural stops from full output
+   budget tests. Speed targets remain deferred.
 
 ## Prerequisites
 
@@ -1089,6 +1137,14 @@ prompt-contract tests: `contract_vectors.json` and `block_hash_vectors.json`
 sanitization, Harmony and Gemma normalization, reasoning effort, Unicode, all
 four endpoints, exact block multiples, long prompts, response formats and
 multiple system turns),
+`tool_choice_parallel_vectors.json` (16 exact required/named/auto/none
+instruction cases across omitted/null/true/false parallel controls, consumed by
+`CachePromptParityTests.parallelToolInstructionVectors` and Rust
+`tool_choice_parallel.rs`),
+`native_reasoning_vectors.json` (25 shared context/error cases for native
+Qwen4 reasoning ON/OFF, typed effort precedence and legacy-model preservation,
+consumed by `CachePromptParityTests.nativeReasoningContextVectors` and Rust
+`cache_prompt_parity.rs`),
 `production_vectors.json` (per-model normalized bodies, token IDs and
 boundaries) and `manifests/` (the catalog snapshot the vectors were generated
 from). Production tokenizer/template/config artifacts are **not** in the

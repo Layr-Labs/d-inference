@@ -57,16 +57,33 @@ enum ToolChoicePromptPolicy {
             }
             let instruction: String
             if tools.count == 1, let name = tools.first?.function.name {
-                instruction =
-                    "Call the declared function '\(name)' now. You must emit a tool call with valid "
-                    + "arguments before any final answer, even when the user's request does not require the tool. "
-                    + "Your entire response must be the tool call; a text answer is forbidden. For any required "
-                    + "string argument without an obvious value, use the user's request text."
+                if allowsParallelCalls {
+                    instruction =
+                        "Call the declared function '\(name)' now. You must emit one or more '\(name)' tool calls with valid "
+                        + "arguments before any final answer, even when the user's request does not require the tool. "
+                        + parallelCallsInstruction(function: name)
+                        + "Your entire response must consist of tool calls; a text answer is forbidden. For any required "
+                        + "string argument without an obvious value, use the user's request text."
+                } else {
+                    instruction =
+                        "Call the declared function '\(name)' now. You must emit a tool call with valid "
+                        + "arguments before any final answer, even when the user's request does not require the tool. "
+                        + "Your entire response must be the tool call; a text answer is forbidden. For any required "
+                        + "string argument without an obvious value, use the user's request text."
+                }
             } else {
-                instruction =
-                    "Call one of the declared tools now. You must emit a tool call with valid arguments "
-                    + "before any final answer, even when the user's request does not require a tool. "
-                    + "Your entire response must be the tool call; a text answer is forbidden."
+                if allowsParallelCalls {
+                    instruction =
+                        "Call one or more of the declared tools now. You must emit one or more tool calls with valid arguments "
+                        + "before any final answer, even when the user's request does not require a tool. "
+                        + parallelCallsInstruction(function: nil)
+                        + "Your entire response must consist of tool calls; a text answer is forbidden."
+                } else {
+                    instruction =
+                        "Call one of the declared tools now. You must emit a tool call with valid arguments "
+                        + "before any final answer, even when the user's request does not require a tool. "
+                        + "Your entire response must be the tool call; a text answer is forbidden."
+                }
             }
             let compiled = try compileConstrainedTools(tools, mode: .required)
             return Prepared(
@@ -82,11 +99,21 @@ enum ToolChoicePromptPolicy {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
                     "tool_choice names an undeclared function")
             }
-            let instruction =
-                "Call the declared function '\(name)' now. You must emit a '\(name)' tool call with "
-                + "valid arguments before any final answer, even when another function seems more relevant. "
-                + "Your entire response must be that tool call; a text answer is forbidden. For any required "
-                + "string argument without an obvious value, use the user's request text."
+            let instruction: String
+            if allowsParallelCalls {
+                instruction =
+                    "Call the declared function '\(name)' now. You must emit one or more '\(name)' tool calls with "
+                    + "valid arguments before any final answer, even when another function seems more relevant. "
+                    + parallelCallsInstruction(function: name)
+                    + "Your entire response must consist of '\(name)' tool calls; a text answer is forbidden. For any required "
+                    + "string argument without an obvious value, use the user's request text."
+            } else {
+                instruction =
+                    "Call the declared function '\(name)' now. You must emit a '\(name)' tool call with "
+                    + "valid arguments before any final answer, even when another function seems more relevant. "
+                    + "Your entire response must be that tool call; a text answer is forbidden. For any required "
+                    + "string argument without an obvious value, use the user's request text."
+            }
             let compiled = try compileConstrainedTools(
                 [selected], mode: .named(name))
             return Prepared(
@@ -97,6 +124,15 @@ enum ToolChoicePromptPolicy {
                 allowsParallelCalls: allowsParallelCalls,
                 allowedToolNames: [name])
         }
+    }
+
+    /// Required means at least one call, not exactly one. Preserve the user's
+    /// requested independent calls when parallel output is allowed; never ask
+    /// the model to invoke every declaration merely because it is available.
+    private static func parallelCallsInstruction(function: String?) -> String {
+        let selection = function.map { " to '\($0)'" } ?? " from the declared tools"
+        return "Include all independent calls\(selection) requested by the user in this response. "
+            + "Do not stop after the first call or wait for results between independent calls. "
     }
 
     private static func validateToolNames(_ tools: [OpenAITool]?) throws {

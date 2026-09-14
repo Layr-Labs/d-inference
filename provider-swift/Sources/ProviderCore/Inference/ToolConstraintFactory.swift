@@ -32,6 +32,12 @@ enum ToolConstraintFactory {
             let strategy = try ToolChoiceEnforcementPolicy.forcedStrategy(
                 mode: prepared.mode, modelContext: modelContext)
             if strategy == .structuredPostValidation {
+                if modelContext.modelId == ModelMediaPolicy.ownedQwen4ModelID,
+                   modelContext.modelType == "qwen4_exp" {
+                    return try Qwen4ToolEnvelopeConstraint(mode: prepared.mode,
+                        maxTokens: request.maxTokens ?? defaultMaxTokens,
+                        vocabulary: tokenizer.qwen4FramingVocabulary(stopTokenIDs: stopTokenIDs))
+                }
                 // The structured parser withholds call bytes until finish; the
                 // shared validator below the stream rejects missing, wrong,
                 // undeclared, or schema-invalid calls before exposing them.

@@ -9,11 +9,14 @@ struct NativeToolStreamRouter {
     private let requiresToolCall: Bool
     private var parser: NativeChannelSplitter?
 
-    init(handler: BatchedToolStreamHandler?, requiresToolCall: Bool, nativePrefix: String?) {
+    init(handler: BatchedToolStreamHandler?, requiresToolCall: Bool, nativePrefix: String?,
+         preserveInnerReasoningSpans: Bool = false) {
         self.handler = handler
         self.requiresToolCall = requiresToolCall
         if let nativePrefix {
-            self.parser = NativeChannelSplitter(prefix: nativePrefix, protectToolFrames: handler != nil)
+            self.parser = NativeChannelSplitter(prefix: nativePrefix, protectToolFrames: handler != nil,
+                qwenStructuredFrames: handler?.format == .qwen35,
+                preserveInnerReasoningSpans: preserveInnerReasoningSpans)
         }
     }
 
@@ -21,11 +24,21 @@ struct NativeToolStreamRouter {
 
     mutating func process(_ text: String) throws -> [MLXServerGenerationEvent] {
         let pieces = parser != nil ? parser!.parse(text) : [.init(content: text, reasoningContent: nil)]
+        try checkReasoningState()
         return try route(pieces)
     }
 
     mutating func finishText() throws -> [MLXServerGenerationEvent] {
-        try route(parser?.finish() ?? [])
+        let pieces = parser?.finish() ?? []
+        try checkReasoningState()
+        return try route(pieces)
+    }
+
+    private func checkReasoningState() throws {
+        if parser?.reasoningNestingLimitExceeded == true {
+            throw MultiModelBatchSchedulerEngineError.toolChoiceViolation(
+                "native reasoning span nesting exceeded the safety limit")
+        }
     }
 
     func visibleEvent(_ text: String) -> MLXServerGenerationEvent {

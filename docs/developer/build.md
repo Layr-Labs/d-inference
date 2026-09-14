@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-13 · commit `1f52a71fb`
+> Last updated: 2026-09-14 · commit `4e90ac8b1`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -38,6 +38,37 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
   `git submodule update --init --recursive`). `provider-swift/Package.swift`
   depends on `../libs/mlx-swift` and `../libs/mlx-swift-lm` by local path.
 - **Docker** only for the coordinator container image (step 9).
+
+### Native Flash-Next candidate
+
+Use the repository-owned [conversion tools](../../scripts/qwen38_conversion/README.md)
+for the pinned official source. Metadata verification is distinct from full
+payload hashing; conversion validates each source shard and writes a new
+output/manifest while retaining the trained assistant and packed PLE table.
+Inspect the tool's storage requirements before full hashing or conversion and
+coordinate the model/GPU operator. Never create a missing mount path or reuse
+an existing output directory. These commands do not publish an artifact.
+
+Before describing the candidate as reproducible:
+
+1. Record the selected source trees/patch digests and approved immutable core,
+   C, Swift, SDK and provider pins. Inspect the composed SDK's
+   `libs/mlx-swift-lm/QWEN4-COMPOSITION.md` for required source selection and
+   excluded experiments.
+2. Resolve CMake/package revisions and nested gitlinks in a fresh recursive
+   private checkout. A machine-specific dependency symlink, local package
+   override or unrecorded core patch does not close this gate. After each
+   dependency merge, record the resulting approved commit, update its consumers
+   and repeat affected checks; a review-head pin is not a final merged pin.
+3. Build the provider with the source-matched metallib and required SwiftPM
+   resources using the procedures below; record actual binary/library/resource
+   identities. Source parsing alone is not a build or runtime test.
+4. Complete the [candidate test matrix](test.md#native-flash-next-candidate)
+   on that final artifact. Keep private draft staging, signing/release, model
+   publication, catalog activation and deployment as distinct outcomes.
+
+Current source and validation limits are in the
+[candidate reference](../reference/qwen4-next-support.md#validation-status-and-next-gates).
 
 ### Repository layout for builders
 

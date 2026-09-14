@@ -347,14 +347,15 @@ public final class MockCoordinator: @unchecked Sendable {
         chatRequestJSON: Data,
         firstContentBudgetMs: Int64? = nil,
         cacheReceiptNonce: String? = nil,
-        cacheScope: String? = nil
+        cacheScope: String? = nil,
+        consumerKeyPair: NodeKeyPair? = nil
     ) async throws {
         guard let providerPubKeyData = Data(base64Encoded: providerPublicKeyBase64),
               providerPubKeyData.count == 32
         else {
             throw MockCoordinatorError.invalidProviderPublicKey
         }
-        let consumerKeys = NodeKeyPair.generate()
+        let consumerKeys = consumerKeyPair ?? NodeKeyPair.generate()
         let payload = try consumerKeys.encryptPayload(
             recipientPublicKey: providerPubKeyData,
             plaintext: chatRequestJSON

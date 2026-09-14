@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-09-11 · commit `ef7b5a9aa`
+> Last updated: 2026-09-14 · commit `4e90ac8b1`
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -41,7 +41,7 @@ SSD snapshots survive beyond a request without retaining their KV in resident me
 | Prefix-reuse backend | `.contiguousUnquantized` | `.pagedFP16` |
 
 The default setting remains `"auto"`. In the candidate, it prefers paged only
-for these exact fleet model IDs, not family names, aliases or substrings:
+for these exact fleet/private-candidate identities, not family names, aliases or substrings:
 
 - `qwen3.5-35b-a3b`
 - `qwen3.6-35b-a3b-vl-mtp-mxfp8`
@@ -51,6 +51,7 @@ for these exact fleet model IDs, not family names, aliases or substrings:
 - `nvidia-nemotron-3.5-lightning`
 - `EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp`
 - `mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit` (target-only artifact)
+- The [owned Flash-Next candidate](../reference/qwen4-next-support.md#identity-and-serving-policy)
 
 Every other ID, including unlisted Qwen artifacts, Gemma 8-bit and unknown
 models, resolves contiguous under `auto`. Per-model configuration still overrides
@@ -107,6 +108,25 @@ local/connected load hashing and benchmark expectations use the model-scoped
 `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Activation.swift`.
 Resident retention remains off unless explicitly enabled through the separate
 memory flag (`PrefixCachePolicy.isMemoryEnabled`).
+
+### Flash-Next complete state
+
+Native Flash-Next uses the complete-checkpoint path, not an attention-only
+prefix claim. The codec retains target KV, QSA index/positions, GDN/PLE state
+and the embedded assistant's compatible history. The engine adopts
+request-owned state and preserves capture/import reservations and rollback
+frontiers (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointQwen4.swift`).
+`EngineV2SlotFactory` and `PrefixCachePolicy+LoadHash.swift` require loaded
+capabilities, the resolved storage identity and a verified load hash before
+constructing reusable SSD state. Source default-on eligibility is not evidence
+that a store became ready or a request restored it.
+
+Learned PLE table mappings are immutable model weights and stay active when
+request prefix caching is disabled. Complete SSD cache ON, actual file reads,
+hot/suffix reuse, signed persistent restart, isolation and cancellation still
+need evidence on the final candidate tuple. Paged resident ordinary-prefix
+eligibility must not be inferred from the complete SSD codec. See the
+[candidate state and validation reference](../reference/qwen4-next-support.md#state-and-resource-ownership).
 
 The production paged factory binds its empty segmented pool to the shared
 process memory owner before constructing the engine. Its native admission owns

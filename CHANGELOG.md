@@ -21,6 +21,42 @@ coordinator deployment.
 - Prevent large process lists from blocking `doctor` and `verify`. Capture contention and sleep-probe output without pipe backpressure and apply an execution deadline; preserve diagnostic output and failure handling.
 - Match the coordinator's canonical status bytes for mixed-case model IDs and template names, including Unicode separators. Preserve signed fields, omission rules and signature verification.
 
+## Unreleased — Qwen 3.8 Next (Flash-Next) private candidate
+
+- Mirror parallel-aware required/named tool instructions in the coordinator's
+  prompt sidecar. Advance normalization to v4 in Swift, Go and Rust so old and
+  new prompt contracts cannot share cache credits. Regenerate immutable
+  prompt vectors; preserve ordinary serving across mixed versions.
+- Preserve non-reasoning Qwen 3.8 Next function-call history on the standalone
+  Responses endpoint and emit Responses SSE lifecycle/item events, including
+  incomplete and failed terminals. Add actual cold-load admission regressions
+  covering the Nemotron standalone-guard lesson.
+- Drain native completion before the final empty-pool memory refund; retain
+  strict allocator and scoped-stream ordering tests.
+- Reject unsupported thinking efforts for the owned Next artifact with a
+  typed HTTP 400 before template rendering. Preserve native low/medium/xhigh
+  controls, disabled-thinking precedence and other models' templates.
+- Make required/named tool instructions respect allowed parallel calls. Retain
+  the singular contract when parallel calls are disabled; do not contradict
+  a request for several independent calls with singular forcing instructions.
+
+Private support work based on `7c394fa2`; no provider version bump,
+model publication, catalog activation, release or deployment is implied.
+
+- Add native Qwen4 text serving with retained embedded MTP, SSD-backed learned
+  PLE tables, native paged state and complete-checkpoint support. Scope automatic
+  paging/cache defaults to the exact owned private identity; preserve artifact,
+  runtime, dtype and cache-identity gates.
+- Enforce a lower-only local context limit over prompt plus reserved completion,
+  reject overflow with a sanitized client error, keep unsupported media out of
+  the text path and preserve request-owned cache usage and connection cancellation.
+- Carry validated SSD-offloaded weight declarations through provider/coordinator
+  admission and add repository-owned pinned conversion/provenance tooling.
+- Record current component/synthetic checks and remaining fresh-build, real-model,
+  cache/restart, API and hardware qualification in the
+  [native support reference](docs/reference/qwen4-next-support.md).
+  Speed optimization is deferred; no production-readiness claim is made.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

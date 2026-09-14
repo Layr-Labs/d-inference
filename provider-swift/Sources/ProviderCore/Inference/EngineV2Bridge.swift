@@ -54,6 +54,8 @@ public actor EngineV2Bridge {
     /// rebuild instead of resizing; `updateBytesCapacity` is a no-op on
     /// a physically preallocated pool).
     public let kvBackendKind: EngineV2KVBackendKind
+    /// Observed pool geometry from backend preparation, never a default guess.
+    public let pagedPageSize: Int?
     /// Construction-time fallback reason, retained for heartbeat reporting.
     /// Admission and resizing depend on the actual kvBackendKind only.
     public let kvBackendFallbackReason: String?
@@ -149,6 +151,9 @@ public actor EngineV2Bridge {
         .configDisabled, configured: false)
     /// Injectable telemetry sink (tests); nil ⇒ `TelemetryClient.shared`.
     let emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
+    /// Immutable request-envelope limit for this loaded candidate. Listing and
+    /// admission share it; prefix hits never permit a larger prompt/output sum.
+    nonisolated let advertisedContextTokens: Int?
 
     // MARK: - Per-request bookkeeping
 
@@ -312,14 +317,20 @@ public actor EngineV2Bridge {
         residentPrefixCacheEvidence: ResidentPrefixCacheEvidence? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
         kvBackendKind: EngineV2KVBackendKind = .contiguous,
+        pagedPageSize: Int? = nil,
         kvBackendFallbackReason: String? = nil,
+        advertisedContextTokens: Int? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
         self.ownedEngine = engine
         self.modelId = modelId
         self.tokenizer = tokenizer
         self.kvBackendKind = kvBackendKind
+        self.pagedPageSize = kvBackendKind == .paged && (pagedPageSize ?? 0) > 0 ? pagedPageSize : nil
         self.kvBackendFallbackReason = kvBackendFallbackReason
+        self.advertisedContextTokens =
+            Qwen4SupportPolicy.boundedContextTokens(advertisedContextTokens)
+            ?? Qwen4SupportPolicy.contextLimit(modelID: modelId)
         self.clampedKVBackendFallbackReason =
             Self.heartbeatFallbackReason(kvBackendFallbackReason)
         self.stopTokenIds = EngineV2Translation.stopTokenIds(

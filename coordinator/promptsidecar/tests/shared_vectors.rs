@@ -31,6 +31,7 @@ struct ContractCorpus {
 struct ContractVector {
     artifacts: Vec<PromptArtifact>,
     expected_prompt_contract_id: String,
+    legacy_v3_prompt_contract_id: String,
 }
 
 #[derive(Deserialize)]
@@ -88,6 +89,18 @@ fn shared_contract_vectors_match() {
             compute_contract_id(&vector.artifacts, &ContractVersions::default()).unwrap(),
             vector.expected_prompt_contract_id
         );
+        assert_ne!(
+            vector.expected_prompt_contract_id,
+            vector.legacy_v3_prompt_contract_id
+        );
+        let legacy = ContractVersions {
+            normalization: "darkbloom-request-normalization-v3".to_owned(),
+            ..ContractVersions::default()
+        };
+        assert!(matches!(
+            compute_contract_id(&vector.artifacts, &legacy),
+            Err(promptsidecar::contract::ContractError::UnsupportedVersions)
+        ));
     }
 }
 

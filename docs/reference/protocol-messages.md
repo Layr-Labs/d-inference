@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-13 · commit `3cf03209a`
+> Last updated: 2026-09-13 · commit `e4df336bc` · composed with private Qwen candidate `d16abe87`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -134,7 +134,18 @@ Go `ModelInfo` · Swift `ModelInfo` (`Types.swift`).
 | `is_vision` | `bool` | `Bool?` | opt | v0.6.0+; Swift encodes only `true`; absent decodes `false` → never selected for media |
 | `template_render_ok` | `*bool` | `Bool?` | ptr | 0.6.5+; **explicit `false` survives the wire** and excludes the model from tool requests; absent = no opinion |
 | `tool_constraint_template_hash` | `string` | `String?` | opt | binds grammar capability to the loaded template bytes |
-| `estimated_memory_gb`, `parameters` | — | `Double`, `UInt64?` | Swift only | encoded by Swift, dropped by Go |
+| `estimated_memory_gb` | `float64` | `Double` | Go opt; Swift always encodes | Padded native-weight load estimate in GiB; used for reduced offload admission only with a valid family-matched offload declaration |
+| `ssd_offloaded_weight_bytes` | `int64` | `UInt64?` | opt | Validated immutable payload excluded from native weight allocation; Swift omits nil/zero. It is not a KV cache byte count or a claim that OS-mapped pages use no RAM |
+| `parameters` | — | `UInt64?` | Swift only | encoded by Swift, dropped by Go |
+
+Both memory fields are defined by `coordinator/protocol/messages.go`
+(`ModelInfo`) and `provider-swift/Sources/ProviderCore/Protocol/Types.swift`
+(`ModelInfo`). The coordinator accepts the offload estimate only for native
+Qwen4 types, an ID matching the requested model, finite positive memory, and a positive offloaded
+payload smaller than the artifact; it floors the estimate against padded
+remaining weight bytes (`coordinator/registry/offloaded_weights.go`,
+`advertisedOffloadedMemoryGBLocked`). Missing/invalid declarations retain the
+existing catalog/measurement policy. See [offloaded-weight admission](../architecture/routing.md#ssd-offloaded-model-weights).
 
 #### `privacy_capabilities`
 

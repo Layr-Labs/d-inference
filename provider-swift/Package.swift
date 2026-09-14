@@ -49,6 +49,9 @@ let package = Package(
         // target which declares `from: "2.23.0"` (introduced in upstream
         // PR #26, "Add OpenAI-compatible inference server").
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", exact: "2.23.0"),
+        // Already resolved transitively at this version; make the transport
+        // ownership and embedded-channel test dependencies explicit.
+        .package(url: "https://github.com/apple/swift-nio.git", exact: "2.99.0"),
         // Test-only: WebSocket upgrade support so the mock coordinator under
         // Tests/ProviderCoreTests/Helpers can host a `/ws/provider` route.
         .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", exact: "2.6.0"),
@@ -125,6 +128,7 @@ let package = Package(
                 .product(name: "Sodium", package: "swift-sodium"),
                 .product(name: "TOMLKit", package: "TOMLKit"),
                 .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "NIOCore", package: "swift-nio"),
             ],
             path: "Sources/ProviderCore"
         ),
@@ -230,6 +234,7 @@ let package = Package(
                 "ProviderBenchmark",
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
+                .product(name: "NIOEmbedded", package: "swift-nio"),
                 .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
                 // Direct Jinja access for the served-template render
                 // regression (Gemma4ServedTemplateRenderTests) — the

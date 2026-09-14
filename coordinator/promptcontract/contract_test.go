@@ -96,6 +96,7 @@ func TestSharedContractVectors(t *testing.T) {
 		Vectors []struct {
 			Artifacts                []Artifact `json:"artifacts"`
 			ExpectedPromptContractID string     `json:"expected_prompt_contract_id"`
+			LegacyV3PromptContractID string     `json:"legacy_v3_prompt_contract_id"`
 		} `json:"vectors"`
 	}
 	encoded, err := os.ReadFile(filepath.Join("..", "..", "fixtures", "prompt-contract", "v1", "contract_vectors.json"))
@@ -112,6 +113,14 @@ func TestSharedContractVectors(t *testing.T) {
 		}
 		if actual != fixture.ExpectedPromptContractID {
 			t.Fatalf("shared contract vector mismatch: %s != %s", actual, fixture.ExpectedPromptContractID)
+		}
+		if fixture.LegacyV3PromptContractID == "" || actual == fixture.LegacyV3PromptContractID {
+			t.Fatal("parallel instruction semantics reused the legacy v3 contract")
+		}
+		legacy := CurrentVersions()
+		legacy.Normalization = "darkbloom-request-normalization-v3"
+		if _, err := ContractID(fixture.Artifacts, legacy); !errors.Is(err, ErrInvalidVersions) {
+			t.Fatalf("legacy contract accepted: %v", err)
 		}
 	}
 }

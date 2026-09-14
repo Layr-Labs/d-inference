@@ -1470,7 +1470,7 @@ struct EngineV2RequestRoutingTests {
             Issue.record("expected Qwen parser mismatch rejection")
         } catch let error as MultiModelBatchSchedulerEngineError {
             #expect(error == .invalidToolPayload(
-                "inference-enforced structured tool_choice requires an XML or Nemotron tool parser"))
+                "inference-enforced structured tool_choice requires the native model's framed or XML tool parser"))
         }
         #expect(engine.submitted.isEmpty)
     }

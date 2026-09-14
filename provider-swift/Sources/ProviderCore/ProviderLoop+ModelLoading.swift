@@ -171,7 +171,7 @@ extension ProviderLoop {
             await markWeightHashUnavailable(modelId: modelId)
             return nil
         case .changed:
-            newcomer.release()
+            await newcomer.releaseAfterExternalResources()
             MLX.Memory.clearCache()
             let message =
                 "Model '\(modelId)' changed while loading reusable SSD cache state — unloaded"
@@ -439,7 +439,7 @@ extension ProviderLoop {
             // weights BEFORE survivor grants are restored/regrown. Never
             // bind `borrow()` to a long-lived local — that would keep the
             // weights alive past `release()`.
-            let newcomer = EngineV2NewcomerBox(try await loadModelContainer(from: modelPath))
+            let newcomer = EngineV2NewcomerBox(try await loadModelContainer(from: modelPath, modelID: modelId))
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 
@@ -511,11 +511,11 @@ extension ProviderLoop {
             guard await kvBudget.reducePendingLoad(
                 acceptedLoad, remainingWeightBytes: extraWeightBytes)
             else {
-                newcomer.release()
+                await newcomer.releaseAfterExternalResources()
                 throw InferenceError.modelLoadFailed("Model load ownership changed during setup")
             }
             if isShuttingDown || Task.isCancelled {
-                newcomer.release()
+                await newcomer.releaseAfterExternalResources()
                 MLX.Memory.clearCache()
                 throw CancellationError()
             }
@@ -544,7 +544,7 @@ extension ProviderLoop {
                     format: "%.1f", Double(UnifiedMemoryCap.minimumLoadKVBytes) / (1024.0 * 1024.0 * 1024.0))
                 // Pre-shrink failure: no grants were mutated, so ordering is
                 // moot — but drop the weights promptly all the same.
-                newcomer.release()
+                await newcomer.releaseAfterExternalResources()
                 MLX.Memory.clearCache()
                 let message = "Model '\(modelId)' loaded but has insufficient KV headroom "
                     + "under the memory cap (\(headroomGb) GB free, need \(minGb) GB to serve) — unloaded"
@@ -569,7 +569,7 @@ extension ProviderLoop {
             // maps it to a 503 so the coordinator reroutes (and coordinator
             // pushes get `load_model_status: failed`). There is no legacy
             // fallback: a model that cannot build a v2 engine does not load.
-            let slotIsVLM = Self.modelIsVLM(at: modelPath)
+            let slotIsVLM = Self.modelIsVLM(at: modelPath, modelID: modelId)
             // The re-slice gate is held across the WHOLE shrink → build →
             // guard → install-slot sequence: a concurrent idle-timeout
             // unload's regrow parked on the gate must not run in the gap
@@ -855,6 +855,7 @@ extension ProviderLoop {
         await engineV2Runtime.unregister(modelId: modelId)
         await engineV2.shutdown()
         engineBundle.releaseAssistant()
+        await ModelContainerLoading.releaseExternalResources(in: modelSlots[modelId]?.container)
         // Drops the slot's container and MTP drafter references with the
         // target (the drafter is slot-owned — plan D5 teardown).
         modelSlots.removeValue(forKey: modelId)
@@ -1271,24 +1272,21 @@ extension ProviderLoop {
             errorReason: .modelLoad)
     }
 
-    private func loadModelContainer(from directory: URL) async throws -> MLXLMCommon.ModelContainer {
+    private func loadModelContainer(from directory: URL, modelID: String) async throws -> MLXLMCommon.ModelContainer {
         // Vision-language models (config declares `vision_config`) load via
         // VLMModelFactory so image/video requests can run the container's
         // prepare/generate vision path. Their text path still works through the
         // batched engine since VLMModel refines LanguageModel. Shared with the
         // standalone server via `ModelContainerLoading`.
-        try await ModelContainerLoading.loadContainer(from: directory)
+        try await ModelContainerLoading.loadContainer(from: directory, modelID: modelID)
     }
 
     /// A model is a vision-language model when its `config.json` declares a
-    /// `vision_config`. Cheap, dependency-free check used to pick the model
-    /// factory and to route multimodal requests.
-    static func modelIsVLM(at directory: URL) -> Bool {
-        let configURL = directory.appendingPathComponent("config.json")
-        guard let data = try? Data(contentsOf: configURL),
-            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return false }
-        return json["vision_config"] != nil
+    /// `vision_config` and does not opt out with `language_model_only`.
+    /// The loader and advertised media capability share one predicate.
+    static func modelIsVLM(at directory: URL, modelID: String? = nil) -> Bool {
+        ModelScanner.configDeclaresVision(
+            at: directory.appendingPathComponent("config.json"), modelID: modelID)
     }
 
 }

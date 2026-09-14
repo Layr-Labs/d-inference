@@ -288,10 +288,17 @@ type ServabilityVerdict struct {
 // load, which the dispatch path retries elsewhere — strictly better than a
 // terminal 429 on a request that was servable all along.
 func coldTokenBudgetEstimate(totalMemoryGB, modelSizeGB float64, kvBytesPerToken int64, providerVersion, modelID string) int64 {
+	return coldTokenBudgetEstimateWithOffload(totalMemoryGB, modelSizeGB, 0, kvBytesPerToken, providerVersion, modelID)
+}
+
+func coldTokenBudgetEstimateWithOffload(totalMemoryGB, modelSizeGB, offloadedMemoryGB float64, kvBytesPerToken int64, providerVersion, modelID string) int64 {
 	if totalMemoryGB <= 0 || modelSizeGB <= 0 {
 		return 0
 	}
 	weightsGB := servabilityColdWeightsGiB(providerVersion, modelID, modelSizeGB)
+	if finitePositiveMemory(offloadedMemoryGB) {
+		weightsGB = offloadedMemoryGB
+	}
 	postLoadGB := servabilityCapFraction*totalMemoryGB - weightsGB
 	if postLoadGB <= 0 {
 		return 0
@@ -329,8 +336,8 @@ func snapshotStructuralBudget(snap *routingSnapshot) (budget int64, known bool) 
 	if snap.totalMemoryGB <= 0 || snap.modelSizeGB <= 0 {
 		return 0, false
 	}
-	return coldTokenBudgetEstimate(
-		snap.totalMemoryGB, snap.modelSizeGB, snap.kvBytesPerToken,
+	return coldTokenBudgetEstimateWithOffload(
+		snap.totalMemoryGB, snap.modelSizeGB, snap.estimatedOffloadedMemoryGB, snap.kvBytesPerToken,
 		snap.binaryVersion, snap.model), true
 }
 

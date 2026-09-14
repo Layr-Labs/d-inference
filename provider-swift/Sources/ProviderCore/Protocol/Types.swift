@@ -91,6 +91,9 @@ public struct ModelInfo: Codable, Sendable, Equatable {
     public var quantization: String?
     public var sizeBytes: UInt64
     public var estimatedMemoryGb: Double
+    /// Validated immutable payload excluded from native weight allocation.
+    /// Omitted for ordinary models; mapped OS pages still consume real memory.
+    public var ssdOffloadedWeightBytes: UInt64?
     public var weightHash: String?
     /// True when this build can serve image/video (VLM) input. Encoded only when
     /// true (matches the coordinator's `is_vision,omitempty`), so pre-0.6.0
@@ -116,6 +119,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         case quantization
         case sizeBytes = "size_bytes"
         case estimatedMemoryGb = "estimated_memory_gb"
+        case ssdOffloadedWeightBytes = "ssd_offloaded_weight_bytes"
         case weightHash = "weight_hash"
         case isVision = "is_vision"
         case templateRenderOK = "template_render_ok"
@@ -132,7 +136,8 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         weightHash: String? = nil,
         isVision: Bool? = nil,
         templateRenderOK: Bool? = nil,
-        toolConstraintTemplateHash: String? = nil
+        toolConstraintTemplateHash: String? = nil,
+        ssdOffloadedWeightBytes: UInt64? = nil
     ) {
         self.id = id
         self.modelType = modelType
@@ -140,6 +145,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         self.quantization = quantization
         self.sizeBytes = sizeBytes
         self.estimatedMemoryGb = estimatedMemoryGb
+        self.ssdOffloadedWeightBytes = ssdOffloadedWeightBytes
         self.weightHash = weightHash
         self.isVision = isVision
         self.templateRenderOK = templateRenderOK
@@ -154,6 +160,9 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         try container.encodeIfPresent(quantization, forKey: .quantization)
         try container.encode(sizeBytes, forKey: .sizeBytes)
         try container.encode(estimatedMemoryGb, forKey: .estimatedMemoryGb)
+        if let bytes = ssdOffloadedWeightBytes, bytes > 0 {
+            try container.encode(bytes, forKey: .ssdOffloadedWeightBytes)
+        }
         try container.encodeIfPresent(weightHash, forKey: .weightHash)
         // Encode only when true so text-only builds stay byte-compatible on the wire.
         if isVision == true {

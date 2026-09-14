@@ -170,6 +170,9 @@ extension ProviderLoop {
             modelType: modelType,
             templateControls: templateControls)
         guard promptFloor > 0 else { return nil }
-        return Int64(promptFloor + max(0, request.maxTokens ?? schedulerDefaultMaxTokens))
+        let (envelope, overflow) = promptFloor.addingReportingOverflow(
+            max(0, request.maxTokens ?? schedulerDefaultMaxTokens))
+        guard !overflow else { return nil }
+        return Int64(exactly: envelope)
     }
 }

@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-14 · commit `cdef55575`
+> Last updated: 2026-09-14 · commit `84ec8c673`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -53,6 +53,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Retained dispatch plans and capacity probes | `coordinator/registry/dispatchplan/plan.go` (`Plan`), `coordinator/registry/dispatchplan/quotes.go` (`Probes`); private wrapper in `coordinator/registry/dispatch_plan.go`; live identity/admission in `coordinator/registry/plan_reservation.go`, refresh in `coordinator/registry/plan_refresh.go` and transport in `coordinator/registry/capacity_quotes.go` |
 | Queue storage and throughput | `coordinator/registry/requestqueue/`, `coordinator/registry/throughput/`; live provider state and reservation orchestration stay in `coordinator/registry/` |
 | Billing, pricing, referrals and payout endpoints | `coordinator/api/billing/` (`Controller`); route and shared-dependency binding in `coordinator/api/billing_controller.go` |
+| Stripe Connect accounts, payouts and webhooks | `coordinator/billing/stripe_connect.go` (`StripeConnect`) maps the client files; `coordinator/billing/stripe_connect_accounts.go` (`CreateExpressAccount`), `coordinator/billing/stripe_connect_transport.go` (`do`), `coordinator/billing/stripe_connect_errors.go` (`APIError`) and `coordinator/billing/stripe_connect_webhooks.go` (`VerifyConnectWebhookSignature`) own the operations |
 | Model publishing, discovery and aliases | `coordinator/api/catalog/` (`Controller`); shared bindings in `coordinator/api/catalog_controller.go`; runtime publication stays in `server.go` (`SyncModelCatalog`) |
 | Financial services and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/contracts/`, `coordinator/store/postgres/`, `coordinator/store/memory/`, `coordinator/store/cache/` |
 | Provider inference, downloads, security, local serving | `provider-swift/Sources/ProviderCore/`; entrypoints in `provider-swift/Sources/darkbloom/` |

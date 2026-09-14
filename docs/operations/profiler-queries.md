@@ -1,6 +1,6 @@
 # Profiler queries
 
-> Last updated: 2026-09-04 · commit `d574bd5af`
+> Last updated: 2026-09-13 · commit `285f7c9f8`
 
 How to answer the recurring latency, routing and fleet questions from the
 system profiler's two Postgres tables, `request_profiles` and
@@ -135,7 +135,7 @@ GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
 ```
 
 `candidates->0` is the chosen provider (`cost_ms` is a key of the persisted
-candidate JSON, `candidateJSON` in `coordinator/api/profiler_record.go`). A `near_tie`
+candidate JSON, `candidateJSON` in `coordinator/telemetry/profiler/routing_record.go`). A `near_tie`
 bucket whose realised first-content latency is far above its predicted TTFT
 means the cost model is not separating the candidates.
 

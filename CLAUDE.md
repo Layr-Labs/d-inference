@@ -14,6 +14,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── billing/          Stripe (deposits + Connect payouts), referral system
 ├── config/           AppConfig aggregation of per-package configs
 ├── env/              Shared env-var helpers/constants
+├── inference/        toolpolicy/ (request policy), response/ (endpoint formatting and relays)
 ├── mdm/              MicroMDM integration for device attestation
 ├── payments/         Internal ledger, pricing tables, base rewards
 ├── profilesign/      CMS-signing of .mobileconfig enrollment profiles

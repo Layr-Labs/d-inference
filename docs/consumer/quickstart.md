@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-14 · commit `f37d74777`
+> Last updated: 2026-09-14 · commit `42d0741b1`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -54,7 +54,7 @@ curl -s https://api.darkbloom.dev/v1/chat/completions \
   }'
 ```
 
-The body is an OpenAI `chat.completion` object whose `model` field echoes the alias you sent and whose `usage` has `prompt_tokens`, `completion_tokens`, `total_tokens`. Response headers `X-Provider-Id`, `X-Provider-Attested` and `X-Timing` tell you which machine served it and how long each coordinator stage took (`writeCommittedProviderHeaders`, `coordinator/api/response_metadata.go`).
+The body is an OpenAI `chat.completion` object whose `model` field echoes the alias you sent and whose `usage` has `prompt_tokens`, `completion_tokens`, `total_tokens`. Response headers `X-Provider-Id`, `X-Provider-Attested` and `X-Timing` tell you which machine served it and how long each coordinator stage took (`WriteCommittedProviderHeaders`, `coordinator/inference/response/provider_snapshot.go`).
 
 Expect a short delay before the first byte: the coordinator sends nothing until a provider has produced content, so it can still fail over or return a real error status in the meantime (`commitFirstContent`, `coordinator/api/dispatch.go`).
 
@@ -71,7 +71,7 @@ curl -N https://api.darkbloom.dev/v1/chat/completions \
   }'
 ```
 
-You receive `text/event-stream` frames, one `data: {...}` chunk per provider token group, a final frame carrying `usage` and `finish_reason`, then exactly one `data: [DONE]`. There are no keepalive comments; silence means no token has been produced yet (`handleStreamingResponseWithFirstChunkAndError`, `coordinator/api/consumer_stream.go`).
+A successful request returns `text/event-stream` frames, one `data: {...}` chunk per provider token group, a final frame carrying `usage` and `finish_reason`, then exactly one `data: [DONE]`. A provider error after content ends the chat stream with an error frame and no `[DONE]`; handle it as a failed stream. There are no keepalive comments; silence means no token has been produced yet (`Writer.Stream`, `coordinator/inference/response/stream.go`).
 
 ### 6. Use the OpenAI SDK
 

@@ -1,0 +1,98 @@
+package response
+
+import (
+	"fmt"
+	"testing"
+)
+
+// capCallID builds the distinct id for the i-th flood call.
+func capCallID(i int) string { return fmt.Sprintf("c%d", i) }
+
+// A malicious all-index-0 stream of cap+1 distinct-id calls keeps exactly
+// the first maxLogicalToolCalls calls, in arrival order, and drops the rest.
+func TestExtractMessageCapsLogicalToolCalls(t *testing.T) {
+	var chunks []string
+	for i := 1; i <= maxLogicalToolCalls+1; i++ {
+		chunks = append(chunks, tcDelta(0, capCallID(i), "fn", fmt.Sprintf(`{"n":%d}`, i)))
+	}
+
+	msg := extractMessage(chunks)
+	if len(msg.ToolCalls) != maxLogicalToolCalls {
+		t.Fatalf("tool_calls length = %d, want cap %d", len(msg.ToolCalls), maxLogicalToolCalls)
+	}
+	for i, tc := range msg.ToolCalls {
+		if wantID := capCallID(i + 1); tc["id"] != wantID {
+			t.Fatalf("call %d id = %v, want %s (arrival order must be stable under the cap)", i, tc["id"], wantID)
+		}
+	}
+	last := msg.ToolCalls[maxLogicalToolCalls-1]
+	fn := last["function"].(map[string]any)
+	if want := fmt.Sprintf(`{"n":%d}`, maxLogicalToolCalls); fn["arguments"] != want {
+		t.Errorf("last kept call arguments = %q, want %q (dropped call must not contaminate it)", fn["arguments"], want)
+	}
+}
+
+// Past the cap, kept calls still accumulate their own argument fragments,
+// and fragments belonging to a dropped call are swallowed — never merged
+// onto a kept call at the same wire index.
+func TestExtractMessageAtCapKeepsAccumulatingKeptCalls(t *testing.T) {
+	chunks := []string{
+		// A long-running kept call on its own wire index.
+		tcDelta(5, "keeper", "keep_fn", `{"k":`),
+	}
+	// Fill the remaining cap slots with distinct-id calls at index 0.
+	for i := 1; i <= maxLogicalToolCalls-1; i++ {
+		chunks = append(chunks, tcDelta(0, capCallID(i), "fn", fmt.Sprintf(`{"n":%d}`, i)))
+	}
+	chunks = append(chunks,
+		// Cap is full: this new logical call must be dropped...
+		tcDelta(0, "overflow", "fn", `{"evil":true}`),
+		// ...and its id-less fragments swallowed, not merged onto the
+		// last kept index-0 call.
+		tcDelta(0, "", "", `LEAK`),
+		// The kept call keeps accumulating fragments as usual.
+		tcDelta(5, "", "", `1}`),
+	)
+
+	msg := extractMessage(chunks)
+	if len(msg.ToolCalls) != maxLogicalToolCalls {
+		t.Fatalf("tool_calls length = %d, want cap %d", len(msg.ToolCalls), maxLogicalToolCalls)
+	}
+	// Output is index-ordered: the index-0 group first, keeper (index 5) last.
+	keeper := msg.ToolCalls[maxLogicalToolCalls-1]
+	if keeper["id"] != "keeper" {
+		t.Fatalf("last call id = %v, want keeper (index 5 sorts after index 0)", keeper["id"])
+	}
+	keeperFn := keeper["function"].(map[string]any)
+	if keeperFn["arguments"] != `{"k":1}` {
+		t.Errorf("keeper arguments = %q, want %q (kept calls must keep accumulating past the cap)", keeperFn["arguments"], `{"k":1}`)
+	}
+	lastKept := msg.ToolCalls[maxLogicalToolCalls-2]
+	if wantID := capCallID(maxLogicalToolCalls - 1); lastKept["id"] != wantID {
+		t.Fatalf("last index-0 call id = %v, want %s", lastKept["id"], wantID)
+	}
+	lastKeptFn := lastKept["function"].(map[string]any)
+	if want := fmt.Sprintf(`{"n":%d}`, maxLogicalToolCalls-1); lastKeptFn["arguments"] != want {
+		t.Errorf("last kept index-0 arguments = %q, want %q (dropped call's fragments must be swallowed, not merged)", lastKeptFn["arguments"], want)
+	}
+	for _, tc := range msg.ToolCalls {
+		if tc["id"] == "overflow" {
+			t.Errorf("dropped call id overflow must not appear in output: %v", tc)
+		}
+	}
+}
+
+// Huge and sparse wire indices are fine for Go maps (no preallocation by
+// key value), but each distinct index could otherwise add a tracking entry
+// forever; the logical-call cap bounds that too.
+func TestExtractMessageCapBoundsSparseHugeIndices(t *testing.T) {
+	var chunks []string
+	for i := 1; i <= maxLogicalToolCalls+10; i++ {
+		// Distinct sparse indices, including very large ones.
+		chunks = append(chunks, tcDelta(i*1000003, capCallID(i), "fn", `{}`))
+	}
+	msg := extractMessage(chunks)
+	if len(msg.ToolCalls) != maxLogicalToolCalls {
+		t.Fatalf("tool_calls length = %d, want cap %d", len(msg.ToolCalls), maxLogicalToolCalls)
+	}
+}

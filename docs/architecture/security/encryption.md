@@ -1,6 +1,6 @@
 # Encryption and privacy model
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-14 · commit `42727c9fc`
 
 An inference request crosses three NaCl Box hops: consumer → coordinator
 (optional), coordinator → provider (mandatory), provider → coordinator
@@ -122,7 +122,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | Explicitly avoided | Code |
 |---|---|
 | Prompt content is decrypted for routing "but never logs prompt content, then re-encrypts each request to the provider" | `coordinator/api/consumer.go` (package comment) |
-| Provider inference errors are reduced to a closed vocabulary before logging or returning | `coordinator/api/inference_error_sanitize.go` (`sanitizeProviderInferenceError`, `clientSafeInferenceErrorMessage`) |
+| Provider inference errors are reduced to a closed vocabulary before logging or returning | `coordinator/api/inference_error_sanitize.go` (`sanitizeProviderInferenceError`), `coordinator/inference/response/error_message.go` (`ClientSafeInferenceErrorMessage`) |
 | `POST /v1/telemetry/events` answers `telemetry_ingest_disabled` ([api-contracts](../../reference/api-contracts.md#telemetry-1)) and never reads the body, because provider telemetry has free-form `message` / `stack` fields | `coordinator/api/telemetry_handlers.go` (`handleTelemetryIngest`) |
 | Sealed requests never trigger remote-media fetching (no coordinator egress derived from sealed content) | `coordinator/api/sender_encryption.go` (`isSealedRequest`) |
 | Session private key and memoized shared key are dropped at request end | `coordinator/api/chunk_key_cache.go` (`forget`) |
@@ -164,7 +164,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | Chunk decryption and violation handling | `coordinator/api/provider.go` (`decryptTextResponseChunk`) |
 | Wire types | `coordinator/protocol/messages.go` (`EncryptedPayload`, `InferenceRequestMessage`, `InferenceResponseChunkMessage`, `RegisterMessage`) |
 | Private-text routing gate | `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`) |
-| Consumer-visible headers | `coordinator/api/response_metadata.go` (`writeCommittedProviderHeaders`) |
+| Consumer-visible headers | `coordinator/inference/response/provider_snapshot.go` (`WriteCommittedProviderHeaders`) |
 | Telemetry ingest disabled | `coordinator/api/telemetry_handlers.go` (`handleTelemetryIngest`) |
 | Provider key pair and decrypt/encrypt | `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift`, `provider-swift/Sources/ProviderCore/ProviderLoop.swift` |
 | Console sealing | `console-ui/src/lib/encryption.ts` |

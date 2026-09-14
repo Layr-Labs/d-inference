@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `f37d74777`
+> Last updated: 2026-09-14 · commit `42d0741b1`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -96,6 +96,14 @@ include them without additional targets. See [billing ownership](../architecture
 Model publishing and discovery build as `coordinator/api/catalog/` in the same
 module. The API binds that owner through `catalog_controller.go`; no additional
 binary, service or build target is required. See [catalog ownership](../architecture/model-registry.md#http-controller-ownership).
+
+Inference response formatting and relays build as `coordinator/inference/response/`,
+with lifecycle services supplied by `coordinator/api/response_writer.go`. It is
+part of the same coordinator binary and needs no additional build target.
+
+The normal Go build includes the profiler owner and telemetry queue packages
+under `coordinator/telemetry/`. Their API adapters link them into the same
+coordinator binary; no separate worker executable or build flag is required.
 
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
 its test binary after helper or lifecycle changes. The CPU-only
@@ -462,7 +470,7 @@ local stub servers; its default observation mode sends only public GETs.
 | `e2e-integration` | `go test ./e2e/... -run TestIntegration -v` |
 | `e2e-benchmark` | `go test ./e2e/... -run TestBenchmark -v` |
 | `e2e` | `e2e-integration` |
-| `docs-check` | `scripts/docs-check.sh` (stamps, links, cited paths, orphans) |
+| `docs-check` | `scripts/docs-check.sh` (stamps, links, cited paths, orphans; frozen source links require their stamped Git objects when the current path is absent) |
 | `docs-stamp` | `scripts/docs-stamp.sh $(FILES)` — refresh freshness stamps |
 | `test` | `coordinator-test prompt-sidecar-test provider-test ui-test benchmark-wrapper-test docs-check` |
 | `build` | `coordinator-build prompt-sidecar-build provider-build ui-build` |

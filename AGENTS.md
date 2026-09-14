@@ -29,6 +29,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── billing/          Stripe (deposits + Connect payouts), referrals
 ├── config/           AppConfig aggregation of per-package configs
 ├── env/              shared env-var helpers/constants
+├── inference/        toolpolicy/ (request policy), response/ (endpoint formatting and relays)
 ├── mdm/              MicroMDM client + webhook handling
 ├── payments/         ledger + pricing (+ baserewards/)
 ├── profilesign/      CMS-signing of .mobileconfig enrollment profiles
@@ -40,7 +41,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── saferun/          panic-safe goroutine runners
 ├── stateexport/      consistent encrypted archive of MicroMDM (+ legacy step-ca) state (migration)
 ├── store/            in-memory or Postgres persistence
-├── telemetry/        telemetry event emitter (process logs + Datadog forwarding)
+├── telemetry/        event emitter, metrics/, profiler/, routequeue/, profilequeue/, outcomequeue/
 ├── datadog/          Datadog APM / DogStatsD / Logs API client
 ├── deploy/           container entrypoint (start.sh)
 └── internal/e2e/     X25519 request-encryption helpers (+ cross-compat/tamper tests)

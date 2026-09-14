@@ -1,6 +1,6 @@
 # Darkbloom docs — how this documentation is organised and maintained
 
-> Last updated: 2026-09-14 · commit `f37d74777`
+> Last updated: 2026-09-14 · commit `42d0741b1`
 
 Rules for anyone — human or agent — who reads, writes, or checks a file under
 `docs/`. The code is the source of truth; a doc that disagrees with the code is
@@ -142,13 +142,16 @@ missing file; an inline-code citation of a repo path that does not exist
 doc links to. Run it before opening a PR that touches `docs/`. It checks only
 git-tracked files by default; `--all` includes untracked drafts.
 
-For a missing relative source link in a frozen report, release note, or design
-record, the checker can verify the source at that document's exact stamped
-commit. The commit and target must exist in local Git history; current docs
-and relative documentation links still require an existing working-tree
-target. Keep frozen records unchanged and use the
-[historical source procedure](developer/historical-references.md) to navigate
-their original source. Docs Lint checks out full history for this validation.
+Frozen `reports/`, `releases/` and `design/` records keep their original bytes.
+If a relative source link no longer exists, the checker requires that exact
+repository-normalized source path at the record's freshness-stamp commit.
+It does not extend this fallback to Markdown or other documentation targets,
+and rejects paths above the repository root, invalid stamps and unavailable
+Git objects. Docs Lint uses a full-history checkout; fetch complete history
+locally if the checker reports an unavailable commit. To browse a moved source
+link, open the record at its stamped commit in the repository host.
+See the [historical source procedure](developer/historical-references.md)
+for navigating these original source snapshots.
 
 ## 7. When you change code, change these docs
 

@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-14 · commit `ea5ce6b16`
+> Last updated: 2026-09-14 · commit `42727c9fc`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -50,8 +50,8 @@ All four share the chain `drainGate → requireAuth → rateLimitConsumer → se
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
 | POST | `/v1/chat/completions` | `handleChatCompletions` (`coordinator/api/consumer.go`) | `key` | `drain`, `rpm`, token limits | OpenAI Chat Completions, streaming and non-streaming |
-| POST | `/v1/responses` | `handleChatCompletions` — the same handler; it detects `input` (Responses) versus `messages` (Chat) | `key` | same | OpenAI Responses; lowered by `coordinator/promptcontract/endpoint_lower_responses.go`, streamed by `newResponsesStreamEmitter` (`coordinator/api/responses_stream.go`) |
-| POST | `/v1/completions` | `handleCompletions` (`coordinator/api/consumer.go`) | `key` | same | Legacy text completions; response built by `coordinator/api/generic_endpoint_response.go`, streamed by `newGenericEndpointStreamEmitter` (`coordinator/api/generic_endpoint_stream.go`) |
+| POST | `/v1/responses` | `handleChatCompletions` — the same handler; it detects `input` (Responses) versus `messages` (Chat) | `key` | same | OpenAI Responses; lowered by `coordinator/promptcontract/endpoint_lower_responses.go`, streamed by `NewResponsesSink` (`coordinator/inference/response/responses_stream.go`) |
+| POST | `/v1/completions` | `handleCompletions` (`coordinator/api/consumer.go`) | `key` | same | Legacy text completions; response built by `coordinator/inference/response/generic_endpoint_response.go`, streamed by `NewEndpointSink` (`coordinator/inference/response/generic_stream.go`) |
 | POST | `/v1/messages` | `handleAnthropicMessages` (`coordinator/api/consumer.go`) | `key` | same | Anthropic Messages; lowered by `coordinator/promptcontract/endpoint_lower_messages.go`, streamed by `newMessagesStreamEmitter` |
 
 ### Models and catalog (9)
@@ -314,7 +314,7 @@ contract behavior are defined in [prompt-contract sidecar](../architecture/promp
 | `Authorization: Bearer <token>` | `extractBearerToken` | The only credential header; scheme match is case-insensitive |
 | `X-Request-ID` | `loggingMiddleware` | Honoured if present, otherwise generated (`newRequestID`); echoed back and logged, never persisted |
 | `Content-Type: application/eigeninference-sealed+json` | `sealedTransport` (`coordinator/api/sender_encryption.go`) | Switches the inference endpoint into sealed mode (`SealedContentType`) |
-| `X-Darkbloom-Metadata-Details` | `applyMetadataDetailsRequest` (`coordinator/api/response_metadata.go`) | Requests the extended `metadata` object (`timing`, `location`) on chat completions; `?metadata=details` does the same |
+| `X-Darkbloom-Metadata-Details` | `ApplyMetadataDetailsRequest` (`coordinator/inference/response/metadata_optin.go`) | Requests the extended `metadata` object (`timing`, `location`) on chat completions; `?metadata=details` does the same |
 | `X-Darkbloom-Route: self` / `prefer` | `resolveSelfRoutePolicy` (`coordinator/api/self_route.go`) | `self` restricts dispatch to the account's own machines; `prefer` tries them first and falls back to the fleet; see [`../provider/self-route.md`](../provider/self-route.md) |
 | `X-Darkbloom-Publishing-Key` | `requirePublishingAPIKey` | Publishing credential for `/v1/admin/models/*` |
 | `X-Provider-Wallet` | `handleProviderEarnings` | Wallet address for the legacy earnings lookup (fallback when `?wallet=` is absent) |
@@ -331,11 +331,11 @@ contract behavior are defined in [prompt-contract sidecar](../architecture/promp
 | `X-RateLimit-Reset`, `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, `x-ratelimit-reset-requests` | `rateLimitWithTier`, `setRequestRateLimitHeaders` | Request-rate limited routes (`rpm`, `fin`); the first only on rejection |
 | `x-ratelimit-limit-input-tokens`, `x-ratelimit-remaining-input-tokens`, `x-ratelimit-reset-input-tokens`, and the `-output-tokens` triple | `setTokenRateLimitHeaders` | Inference responses when token limits are configured |
 | `X-Timing` | `writeTimingHeaderWithProfile` (`coordinator/api/profiler_dispatch.go`) | Committed inference responses. A JSON object with the `RequestTimingDetails` fields (`coordinator/api/types/types.go`): `parse_us`, `reserve_us`, `media_fetch_us`, `route_us`, `queue_us`, `encrypt_us`, `dispatch_us`, `provider_us`, plus profiler-only additive keys (`pre_handler_us`, `preflight_us`, `route_reserve_us`, `queue_pure_us`, `writer_us`, `socket_us`, `provider_ack_us`, `timing_anomaly`) |
-| `X-Inference-Job-ID` | `writeInferenceJobIDHeader` (`coordinator/api/sse_response.go`) | Committed inference responses; the coordinator job id, which can differ from `X-Request-ID` across retries |
-| `X-Provider-Id`, `X-Provider-Attested` (`true`/`false`), `X-Provider-Trust-Level`, `X-Provider-Chip`, `X-Provider-Model`, `X-Provider-Encrypted` (only when `true`), `X-Provider-Secure-Enclave` (when known), `X-Provider-Mda-Verified` (only when `true`) | `writeCommittedProviderHeaders` (`coordinator/api/response_metadata.go`) | Committed inference responses; the same facts as the `metadata` object |
-| `X-Attestation-Se-Public-Key` | `writeCommittedProviderHeaders` | When the provider attested with a Secure Enclave key; see [`../consumer/verification.md`](../consumer/verification.md) |
+| `X-Inference-Job-ID` | `WriteInferenceJobIDHeader` (`coordinator/inference/response/sse_response.go`) | Committed inference responses; the coordinator job id, which can differ from `X-Request-ID` across retries |
+| `X-Provider-Id`, `X-Provider-Attested` (`true`/`false`), `X-Provider-Trust-Level`, `X-Provider-Chip`, `X-Provider-Model`, `X-Provider-Encrypted` (only when `true`), `X-Provider-Secure-Enclave` (when known), `X-Provider-Mda-Verified` (only when `true`) | `WriteCommittedProviderHeaders` (`coordinator/inference/response/provider_snapshot.go`) | Committed inference responses; the same facts as the `metadata` object |
+| `X-Attestation-Se-Public-Key` | `WriteCommittedProviderHeaders` | When the provider attested with a Secure Enclave key; see [`../consumer/verification.md`](../consumer/verification.md) |
 | `X-Eigen-Sealed: true`, `X-Eigen-Sealed-Kid` | `sealingResponseWriter` (`coordinator/api/sender_encryption.go`) | Sealed-mode responses |
-| `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive` | `writeSSEResponseHeader` (`coordinator/api/sse_response.go`) | Streaming responses, written at commit |
+| `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive` | `writeSSEResponseHeader` (`coordinator/inference/response/sse_response.go`) | Streaming responses, written at commit |
 | `Cache-Control: public, max-age=300` | `handleEncryptionKey` | `/v1/encryption-key` |
 | `Access-Control-Allow-*` | `corsMiddleware` | Methods `GET, POST, PUT, PATCH, DELETE, OPTIONS`; allowed request headers include `Authorization`, `Content-Type`, `X-Darkbloom-Metadata-Details` |
 
@@ -354,7 +354,7 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `withCode` in `coo
 }
 ```
 
-`code` mirrors `type` unless a handler overrides it (`withCode`, e.g. `payload_too_large`, `model_capability_unsupported`); `param` is present only when a handler names the offending field (`withParam`, e.g. `"model"` on `model_not_found`). Errors raised *after* a stream has committed cannot change the status line; they surface as a terminal SSE `error` event followed by `data: [DONE]` (`writeChatStreamTerminalError`, `coordinator/api/chat_metadata_stream.go`; `writeChatStreamProviderError`, `coordinator/api/consumer_stream.go`).
+`code` mirrors `type` unless a handler overrides it (`withCode`, e.g. `payload_too_large`, `model_capability_unsupported`); `param` is present only when a handler names the offending field (`withParam`, e.g. `"model"` on `model_not_found`). Errors raised *after* a stream has committed cannot change the status line. Chat and Completions errors end with a terminal `data: {"error": ...}` frame and no `[DONE]`; Responses and Messages use their endpoint error events without a successful terminal marker (`Writer.ChatError`, `coordinator/inference/response/chat_metadata_stream.go`; `coordinator/inference/response/responses_items.go`, `coordinator/inference/response/messages_stream.go`, `coordinator/inference/response/completions_stream.go`, `Error`).
 
 | Status | `type` values | Raised by |
 |---|---|---|
@@ -393,7 +393,7 @@ Requests are decoded into a generic JSON object with `json.Number` preserved (`p
 | `n` | Values above 1 → 400 `invalid_request_error` |
 | `max_tokens`, `max_completion_tokens` | `max_completion_tokens` is mapped to `max_tokens`. An explicit value is passed through unchanged (not clamped); when none is set the coordinator fills in the output bound from [pricing-model.md → Formulas](pricing-model.md#formulas) (`ensureMaxTokensBound`, `coordinator/api/consumer.go`) |
 | `stop` | A single string is normalised to a one-element array in `parseInferencePrelude` |
-| `tools`, `tool_choice`, `parallel_tool_calls` | Schemas normalised by `NormalizeToolSchemas` (`coordinator/api/toolschema.go`); constraints validated by `validateToolConstraintPolicy` (`coordinator/api/tool_constraints.go`) |
+| `tools`, `tool_choice`, `parallel_tool_calls` | Schemas normalised by `toolpolicy.NormalizeParsed` (`coordinator/inference/toolpolicy/normalize.go`); constraints validated by `toolpolicy.ValidateParsed` (`coordinator/inference/toolpolicy/validate.go`) |
 | `response_format` | Passed through to the provider without coordinator validation |
 | `reasoning`, `reasoning_effort` | Applied per model policy by `applyResolvedModelReasoningPolicy` (`coordinator/api/reasoning_request_policy.go`) |
 | `provider` and other routing hints | Removed by `stripProviderRoutingFields` (`coordinator/api/request_introspection.go`) |
@@ -425,7 +425,7 @@ Requests are decoded into a generic JSON object with `json.Number` preserved (`p
 }
 ```
 
-`model` echoes the requested string, alias included (`buildNonStreamingResponse`, `coordinator/api/chat_response.go`). `se_signature` and `response_hash` are present when the provider signed the response; verification is described in [`../consumer/verification.md`](../consumer/verification.md). `metadata` is `ChatCompletionMetadata`:
+`model` echoes the requested string, alias included (`buildNonStreamingResponse`, `coordinator/inference/response/chat_response.go`). `se_signature` and `response_hash` are present when the provider signed the response; verification is described in [`../consumer/verification.md`](../consumer/verification.md). `metadata` is `ChatCompletionMetadata`:
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -441,24 +441,28 @@ Requests are decoded into a generic JSON object with `json.Number` preserved (`p
 
 ### Responses API
 
-Bodies are lowered into the chat pipeline (`coordinator/promptcontract/endpoint_lower_responses.go`) and the provider's chat output is raised back into `ResponsesResponse` (`coordinator/api/types/types.go`): `id` (`resp_…`), `object`, `created_at`, `status`, `error`, `incomplete_details.reason`, `instructions`, `max_output_tokens`, `model`, `output[]`, `parallel_tool_calls`, `temperature`, `tool_choice`, `tools`, `top_p`, `metadata`, `usage` (`input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`), `se_signature`, `response_hash`. Streams use `event:`-typed frames from `response.created` / `response.in_progress` through the item deltas to `response.completed` (or `response.incomplete` when truncated) and carry **no** `data: [DONE]` (`newResponsesStreamEmitter`, `coordinator/api/responses_stream.go`).
+Bodies are lowered into the chat pipeline (`coordinator/promptcontract/endpoint_lower_responses.go`) and the provider's chat output is raised back into `ResponsesResponse` (`coordinator/api/types/types.go`): `id` (`resp_…`), `object`, `created_at`, `status`, `error`, `incomplete_details.reason`, `instructions`, `max_output_tokens`, `model`, `output[]`, `parallel_tool_calls`, `temperature`, `tool_choice`, `tools`, `top_p`, `metadata`, `usage` (`input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`), `se_signature`, `response_hash`. Streams use `event:`-typed frames from `response.created` / `response.in_progress` through the item deltas to `response.completed` (or `response.incomplete` when truncated) and carry **no** `data: [DONE]` (`NewResponsesSink`, `coordinator/inference/response/responses_stream.go`).
 
 ### Completions and Messages
 
-`/v1/completions` and `/v1/messages` are lowered to the chat contract (`coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_messages.go`); responses are re-shaped by `coordinator/api/generic_endpoint_response.go` and streams by `coordinator/api/generic_endpoint_stream.go`, which terminates with `data: [DONE]`.
+`/v1/completions` and `/v1/messages` are lowered to the chat contract (`coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_messages.go`); responses are re-shaped by `coordinator/inference/response/generic_endpoint_response.go` and streams by `NewEndpointSink` (`coordinator/inference/response/generic_stream.go`). Successful Completions streams terminate with `data: [DONE]`; Messages streams terminate with `event: message_stop` (`coordinator/inference/response/completions_stream.go`, `coordinator/inference/response/messages_stream.go`, `Finish`).
 
 ## SSE framing
 
-Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consumer_stream.go`), `coordinator/api/sse_response.go`, and `coordinator/api/chat_metadata_stream.go`; ordering guarantees come from the dispatch state machine in `coordinator/api/dispatch.go`.
+Built by `Writer.Stream` (`coordinator/inference/response/stream.go`), `coordinator/inference/response/sse_response.go`, and `coordinator/inference/response/chat_metadata_stream.go`; ordering guarantees come from the dispatch state machine in `coordinator/api/dispatch.go`.
 
 1. **Deferred commit.** No status line, headers, or bytes are written until the first *content* chunk arrives from a provider (`commitFirstContent`). Until then the coordinator can still fail over to another provider or return a JSON error with a real status code (`preContentTerminal`, `coordinator/api/dispatch_terminal_write.go`). Clients see a delayed 200, never a 200 that turns into an error mid-preamble.
 2. **Headers at commit**: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Inference-Job-ID` (`writeSSEResponseHeader`), plus `X-Timing` and the `X-Provider-*` headers.
-3. **Each provider chunk** is forwarded as one `data: <json>\n\n` event after `normalizeSSEChunk` (`coordinator/api/sse_normalize.go`); the coordinator does not re-tokenise or coalesce content. Chunks that arrive before commit are buffered (`chunkBufferSize` = 256).
+3. **Each provider chunk** is forwarded as one `data: <json>\n\n` event after `normalizeSSEChunk` (`coordinator/inference/response/sse_normalize.go`); the coordinator does not re-tokenise content. It batches writes while retaining individual SSE events, with `MaxBatchChunks = 32` and `MaxBatchBytes = 256 * 1024` (`coordinator/inference/response/chat_stream_relay.go`, `ChatSink`; `coordinator/inference/response/stream_coalesce.go`). Chunks that arrive before commit are buffered (`chunkBufferSize` = 256).
 4. **Usage and finish chunks are held.** A chunk that only carries `usage` (`parseUsageOnlyStreamChunk`) is held so the reasoning-token breakdown can be spliced in; the chunk carrying the terminal `finish_reason` (`parseFinishStreamChunk`) is held so it can be corrected to `length` against the authoritative token counts. Both are written after every content delta. `se_signature`, `response_hash` and opt-in `metadata` ride on the held usage chunk; when there is none they are emitted as one additional fully-shaped `chat.completion.chunk` (`newChatCompletionExtrasEvent`) immediately before termination. Every chunk's `model` is rewritten to the alias you sent (`rewriteChunkModel`).
-5. **Termination**: exactly one `data: [DONE]\n\n`, written by the coordinator after every coordinator-appended event. Any `[DONE]` from the provider is stripped first (`stripSSEDoneEvents`). Responses streams end with `response.completed` / `response.incomplete` instead.
+5. **Successful chat termination**: exactly one `data: [DONE]\n\n`, written by the coordinator after every coordinator-appended event. Any `[DONE]` from the provider is stripped first (`stripSSEDoneEvents`). Responses streams end with `response.completed` / `response.incomplete` instead.
 6. **No keepalives.** The coordinator never writes comment frames or pings; a silent stream means the provider has not produced a token. Before commit the first-content deadline bounds the silence (a miss is answered with 429 + `Retry-After`, see the status table); after commit `inferenceTimeout` bounds it (a terminal `error` event of type `timeout`).
-7. **Errors after commit** are one `data: {"error": {...}}` event followed by `data: [DONE]`.
+7. **Chat errors after commit** end with `data: {"error": {...}}` and no `[DONE]` (`Writer.ChatError`). The coordinator may first append its authoritative metadata frame when available; it does not turn an error into a successful terminal marker.
 8. **Sealed mode** seals each SSE event individually (see below).
+
+### Forwarded-body JSON encoding
+
+`httpresponse.MarshalBody` (`coordinator/api/httpresponse/marshal.go`) serializes rewritten inference bodies without HTML escaping and removes the encoder's trailing newline. The API's `marshalForwardBody` adapter uses this codec. `EncodeCachedJSON` is a separate response-cache codec and retains its default HTML escaping and trailing newline (`coordinator/api/httpresponse/cached.go`).
 
 ## Limits and validation
 
@@ -473,8 +477,8 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 | Prompt size at admission | 413 `payload_too_large` when the estimated prompt exceeds what the model's providers can accept | `runInferenceAdmission` (`coordinator/api/inference_admission.go`) |
 | Catalog membership | Model resolved but absent from the routable catalog → 404 `model_not_found`, after the balance reservation is released | `handleChatCompletions` |
 | Key allow-list | `model` not in the key's `allowed_models` → 403 `model_not_allowed` | `keyModelAllowed` |
-| `tool_choice` | `"none"`, `"auto"`, `"required"`, or `{"type": "function", "function": {"name": …}}`; a named function must exist in `tools`; `required` or a named choice with no tools → 400 | `validateToolConstraintPolicy` |
-| Tool schemas | Normalised to strict JSON Schema before dispatch; schemas the constraint parser cannot compile → 422 | `NormalizeToolSchemas`, `validateResolvedToolConstraintParser` |
+| `tool_choice` | `"none"`, `"auto"`, `"required"`, or `{"type": "function", "function": {"name": …}}`; a named function must exist in `tools`; `required` or a named choice with no tools → 400 | `toolpolicy.ValidateParsed` |
+| Tool schemas | Normalised to strict JSON Schema before dispatch; schemas the constraint parser cannot compile → 422 | `toolpolicy.NormalizeParsed`, `validateResolvedToolConstraintParser` |
 | Vision | Image parts require a vision-capable model, otherwise 400; a vision model with no vision-capable provider online → 503 `model_unavailable` | `detectMediaRequirement` (`coordinator/api/request_introspection.go`), `visionToolsFailFast` (`coordinator/api/inference_preprocess.go`) |
 | Remote images | `http(s)` `image_url` parts are gated before dispatch and fetched by the coordinator; the fetch is billed as media | `gateRemoteMediaPreDispatch`, `resolveRemoteMedia` (`coordinator/api/media_resolve.go`) |
 | Inference-enforced `tool_choice` + images | `required` or a named `tool_choice` (modes that need provider-side constraint enforcement) together with image content → 400, `param: tool_choice`. `response_format` is not validated by the coordinator | `handleChatCompletions` |
@@ -550,9 +554,10 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 |---|---|
 | Route registration, middleware, request-id, CORS, admin/version constants | `coordinator/api/server.go`, `coordinator/api/server_config.go` |
 | Inference pipeline | `coordinator/api/consumer.go`, `coordinator/api/inference_preprocess.go`, `coordinator/api/inference_admission.go`, `coordinator/api/request_introspection.go`, `coordinator/api/reasoning_request_policy.go`, `coordinator/api/dispatch.go`, `coordinator/api/dispatch_terminal_write.go`, `coordinator/api/inference_failure_class.go` |
-| Endpoint lowering (Responses, Completions, Messages) | `coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_responses.go`, `coordinator/promptcontract/endpoint_lower_messages.go`, `coordinator/api/generic_endpoint_response.go`, `coordinator/api/generic_endpoint_stream.go`, `coordinator/api/responses_stream.go` |
-| SSE, timing and provider metadata | `coordinator/api/sse_response.go`, `coordinator/api/chat_metadata_stream.go`, `coordinator/api/response_metadata.go`, `coordinator/api/profiler_dispatch.go` |
-| Tools, media, constraints | `coordinator/api/toolschema.go`, `coordinator/api/tool_constraints.go`, `coordinator/api/media_resolve.go` |
+| Endpoint lowering and response formatting (Responses, Completions, Messages) | `coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_responses.go`, `coordinator/promptcontract/endpoint_lower_messages.go`, `coordinator/inference/response/generic_endpoint_response.go`, `coordinator/inference/response/generic_stream.go`, `coordinator/inference/response/responses_stream.go` |
+| Response lifecycle binding | `coordinator/api/response_writer.go` (`responseWriter`, `responseServices`, `responseWriteObserver`) binds shared settlement, feedback, route outcomes and accepted-write evidence to `coordinator/inference/response/writer.go` (`Dependencies`, `Writer`) |
+| SSE, timing and provider metadata | `coordinator/inference/response/sse_response.go`, `coordinator/inference/response/chat_metadata_stream.go`, `coordinator/inference/response/provider_snapshot.go`, `coordinator/api/profiler_dispatch.go` |
+| Tools, media, constraints | `coordinator/inference/toolpolicy/`, `coordinator/api/tool_constraints.go`, `coordinator/api/media_resolve.go` |
 | Sealed transport | `coordinator/api/sender_encryption.go` |
 | Models and catalog | `coordinator/api/catalog/` (`Controller`); `coordinator/api/catalog_controller.go` (`catalogController`); `coordinator/api/desired_models.go` (runtime notifications); `coordinator/api/capacity.go`, `coordinator/api/exact_cache_status.go` (separate live status endpoints) |
 | Keys, device code, accounts | `coordinator/api/apikey_handlers.go`, `coordinator/store/apikey.go`, `coordinator/api/device_auth.go`, `coordinator/api/me_handlers.go` |

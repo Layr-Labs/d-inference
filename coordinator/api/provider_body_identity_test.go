@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/toolpolicy"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -262,7 +263,7 @@ func TestProviderBodyByteIdentity(t *testing.T) {
 			`"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"q":{"description":"x"},"n":{"type":["integer","null"]}}}}}]}`
 		got := postAndCapture(t, ctx, ts, fp, "/v1/chat/completions", "test-key", body)
 		// Oracle: the bytes path's normalization, then the same serialization.
-		assertProviderBytes(t, got, forwardOracle(t, string(NormalizeToolSchemas([]byte(body))), nil))
+		assertProviderBytes(t, got, forwardOracle(t, string(toolpolicy.NormalizeBytes([]byte(body))), nil))
 	})
 
 	t.Run("responses lowering", func(t *testing.T) {

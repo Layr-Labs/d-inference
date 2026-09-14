@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -24,120 +23,6 @@ func newProfilerTestServer(t *testing.T) *Server {
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{AdminKey: "admin-test-key"}, logger)
 	t.Cleanup(srv.Close)
 	return srv
-}
-
-func TestProfilerSamplingIsDeterministicPerLogicalRequest(t *testing.T) {
-	p := &profiler{enabled: true, sampleRate: 0.5}
-	a, b := p.sampled("coord-abc"), p.sampled("coord-abc")
-	if a != b {
-		t.Fatal("sampling must be deterministic on the coordinator-minted id")
-	}
-	if !(&profiler{sampleRate: 1}).sampled("x") || (&profiler{sampleRate: 0}).sampled("x") {
-		t.Fatal("rate 1 keeps everything, rate 0 keeps nothing")
-	}
-	if !(&profiler{sampleRate: 0}).sampled("") {
-		t.Fatal("a missing id is always kept")
-	}
-	kept := 0
-	for i := 0; i < 2000; i++ {
-		if (&profiler{sampleRate: 0.1}).sampled(newRequestID()) {
-			kept++
-		}
-	}
-	if kept < 120 || kept > 300 {
-		t.Fatalf("10%% sample kept %d of 2000", kept)
-	}
-}
-
-func TestProfilerAlwaysRecordPredicates(t *testing.T) {
-	p := &profiler{enabled: true, sampleRate: 0}
-	slow := int64(6 * time.Second / time.Microsecond)
-	cases := []struct {
-		name string
-		rec  store.RequestProfileRecord
-		want bool
-	}{
-		{"plain success", store.RequestProfileRecord{FinalStatus: finalStatusSuccess, ProviderProfileInvalidReason: providerProfileAbsent}, false},
-		{"error", store.RequestProfileRecord{FinalStatus: "error", ProviderProfileInvalidReason: providerProfileAbsent}, true},
-		{"slow first content", store.RequestProfileRecord{FinalStatus: finalStatusSuccess, FirstContentUS: &slow, ProviderProfileInvalidReason: providerProfileAbsent}, true},
-		{"retried", store.RequestProfileRecord{FinalStatus: finalStatusSuccess, AttemptsTotal: 2, ProviderProfileInvalidReason: providerProfileAbsent}, true},
-		{"backup", store.RequestProfileRecord{FinalStatus: finalStatusSuccess, BackupLaunched: true, ProviderProfileInvalidReason: providerProfileAbsent}, true},
-		{"anomaly", store.RequestProfileRecord{FinalStatus: finalStatusSuccess, TimingAnomaly: true, ProviderProfileInvalidReason: providerProfileAbsent}, true},
-		{"client gone", store.RequestProfileRecord{FinalStatus: finalStatusSuccess, ClientGonePhase: phaseAfterCommit, ProviderProfileInvalidReason: providerProfileAbsent}, true},
-		{"invalid provider profile", store.RequestProfileRecord{FinalStatus: finalStatusSuccess, ProviderProfileInvalidReason: "range"}, true},
-	}
-	for _, tc := range cases {
-		rec := tc.rec
-		if got := p.alwaysRecord(&rec); got != tc.want {
-			t.Errorf("%s: alwaysRecord=%v want %v", tc.name, got, tc.want)
-		}
-	}
-}
-
-func TestBuildProfileRecordFlattensStampsAndDecision(t *testing.T) {
-	srv := newProfilerTestServer(t)
-	t0 := time.Now().Add(-500 * time.Millisecond)
-	rp := registry.NewRequestProfile(t0, "coord-1", nil, 0)
-	rp.Endpoint = "POST-/v1/chat/completions"
-	rp.Stream = true
-	rp.Model = "m"
-	rp.AuthDoneUS = 120
-	rp.Stamp(&rp.HandlerEntryUS)
-	rp.Stamp(&rp.ParsedUS)
-	ap := rp.NewAttempt("attempt-uuid", 0, "")
-	ap.Mark(registry.StampAttemptStart)
-	ap.Mark(registry.StampReserveDone)
-	ap.ProviderID = "prov-1"
-	ap.ProviderVersion = "0.8.13"
-	ap.ChipFamily = "M4"
-	ap.SetDecision(registry.RoutingDecision{
-		ProviderID: "prov-1", TTFTMs: 900, RawTTFTMs: 1000, CandidateSetSize: 3, NearTiePoolSize: 2,
-		RunnerUp: registry.CandidateSummary{Present: true, ProviderID: "prov-2", CostMs: 1234},
-		Top:      [4]registry.CandidateSummary{{Present: true, ProviderID: "prov-1", CostMs: 1000}},
-	})
-	ap.Mark(registry.StampWriteDone)
-	ap.Mark(registry.StampFirstContent)
-	ap.SetOutcome(finalStatusSuccess, "", "", "completed", "")
-	ap.Winning.Store(true)
-
-	rec := srv.buildProfileRecord(rp, ap)
-	if rec == nil {
-		t.Fatal("nil record")
-	}
-	if rec.CoordRequestID != "coord-1" || rec.RequestID != "attempt-uuid" || !rec.Winning {
-		t.Fatalf("identity mismatch: %+v", rec)
-	}
-	if rec.AuthDoneUS == nil || *rec.AuthDoneUS != 120 {
-		t.Fatal("pre-handler stamp not copied")
-	}
-	if rec.ParsedUS == nil || rec.ReservedUS != nil {
-		t.Fatal("unset stamps must be nil, set stamps non-nil")
-	}
-	if rec.ProviderVersion != "0.8.13" || rec.ChipFamily != "m4" {
-		t.Fatalf("provider snapshot not folded: %q %q", rec.ProviderVersion, rec.ChipFamily)
-	}
-	if rec.RunnerUpProviderID != "prov-2" || rec.RunnerUpCostMs != 1234 || rec.PredictedTTFTMs != 900 || rec.RawTTFTMs != 1000 {
-		t.Fatalf("decision context missing: %+v", rec)
-	}
-	var cands []candidateJSON
-	if err := json.Unmarshal(rec.Candidates, &cands); err != nil || len(cands) != 1 || cands[0].ProviderID != "prov-1" {
-		t.Fatalf("candidates JSON: %s (%v)", rec.Candidates, err)
-	}
-	if rec.ProviderProfileValid || rec.ProviderProfileInvalidReason != providerProfileAbsent {
-		t.Fatal("no provider profile must be recorded as absent")
-	}
-	if rec.TimingAnomaly {
-		t.Fatal("monotonic stamps must not flag an anomaly")
-	}
-}
-
-func TestFoldHelpersNeverPassProviderStringsVerbatim(t *testing.T) {
-	if foldChipFamily("M3 Max (evil=1)") != "m3" || foldChipFamily("weird") != profileOther {
-		t.Fatal("chip family fold")
-	}
-	if foldProviderVersion("0.8.13") != "0.8.13" || foldProviderVersion("0.8.13-rc.1") != "0.8.13-rc.1" || foldProviderVersion("v0.8; drop") != "invalid" {
-		t.Fatal("version fold")
-	}
 }
 
 func TestCSVCellGuardsFormulaPrefixes(t *testing.T) {
@@ -192,7 +77,7 @@ func containsKey(b []byte, key string) bool {
 
 func TestProfileSinkBatchesIntoStoreAndAdminEndpointsServeThem(t *testing.T) {
 	srv := newProfilerTestServer(t)
-	if !srv.profilerEnabled() || srv.profiler.sink == nil {
+	if !srv.profilerEnabled() || !srv.profiler.HasSink() {
 		t.Fatal("profiler must be on by default with a store")
 	}
 	for i := 0; i < 100; i++ {
@@ -202,7 +87,7 @@ func TestProfileSinkBatchesIntoStoreAndAdminEndpointsServeThem(t *testing.T) {
 		ap.ProviderID = "prov"
 		ap.Mark(registry.StampWriteSubmitted)
 		ap.SetOutcome("error", "provider_error", "", "error", "")
-		if !srv.profiler.sink.submit(rp, ap) {
+		if !srv.profiler.Submit(rp, ap) {
 			t.Fatal("submit dropped with an empty buffer")
 		}
 	}
@@ -324,8 +209,10 @@ func TestProfilerKillSwitchMakesEverySiteNoOp(t *testing.T) {
 	ap.ClaimTerminal()
 	closeUndispatchedAttempt(ap, "e", 503)
 	pr := &registry.PendingRequest{}
-	profileClientGone(pr, phaseAfterCommit)
-	newRelayStamps(pr.Profile.Parent()).flushed(3)
+	// The real relay must keep both write and client-departure stamps nil-safe.
+	relayContext, cancelRelay := context.WithCancel(req.Context())
+	cancelRelay()
+	srv.handleStreamingResponseWithFirstChunkAndError(httptest.NewRecorder(), req.WithContext(relayContext), pr, []string{contentChunkSSE("m", "nil-profile")}, nil)
 	d := &dispatchState{s: srv}
 	tj := types.RequestTimingDetails{ParseUs: -5}
 	d.applyProfileTiming(&tj, pr)
@@ -341,22 +228,6 @@ func TestProfilerKillSwitchMakesEverySiteNoOp(t *testing.T) {
 		}
 	}))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/health", nil))
-}
-
-func TestBuildProfileRecordDerivesFinalStatusFromTerminal(t *testing.T) {
-	srv := newProfilerTestServer(t)
-	rp := registry.NewRequestProfile(time.Now(), "c", nil, 0)
-	ap := rp.NewAttempt("a", 0, "")
-	ap.SetOutcome("", "", "watchdog", "error", "")
-	rec := srv.buildProfileRecord(rp, ap)
-	if rec.FinalStatus != "error" || rec.TerminalCause != "watchdog" {
-		t.Fatalf("derived status: %+v", rec)
-	}
-	ap2 := rp.NewAttempt("b", 1, "")
-	ap2.SetOutcome("", "", "", "completed", "")
-	if rec := srv.buildProfileRecord(rp, ap2); rec.FinalStatus != finalStatusSuccess {
-		t.Fatalf("completed must derive success, got %q", rec.FinalStatus)
-	}
 }
 
 func TestCloseUndispatchedAttemptCoversWriteFailure(t *testing.T) {
@@ -1232,95 +1103,4 @@ func TestClaimedErrorFrameFinalizesAfterPendingRemoved(t *testing.T) {
 		return
 	}
 	t.Fatalf("the remover never won the claim→RemovePending window in %d attempts", attempts)
-}
-
-// TestRelayStampsCountOnlyWrittenBytes pins the egress accounting contract:
-// only bytes the ResponseWriter accepted are flushed, a failed write marks
-// client_write_err, and a stream whose write failed never claims done.
-func TestRelayStampsCountOnlyWrittenBytes(t *testing.T) {
-	rp := registry.NewRequestProfile(time.Now(), "c", nil, 0)
-	rs := newRelayStamps(rp)
-	rs.wrote(5, nil)
-	rs.wrote(7, nil)
-	if got := rp.BytesOut.Load(); got != 12 || rp.ChunksOut.Load() != 2 || rp.FirstFlushUS.Load() == 0 {
-		t.Fatalf("clean writes: bytes=%d chunks=%d first_flush=%d", got, rp.ChunksOut.Load(), rp.FirstFlushUS.Load())
-	}
-	rs.wrote(0, errors.New("broken pipe"))
-	if rp.BytesOut.Load() != 12 || rp.ChunksOut.Load() != 2 || !rp.ClientWriteErr.Load() {
-		t.Fatalf("failed write must count nothing and flag client_write_err: bytes=%d chunks=%d err=%v", rp.BytesOut.Load(), rp.ChunksOut.Load(), rp.ClientWriteErr.Load())
-	}
-	rs.wrote(3, errors.New("short")) // partial: the 3 accepted bytes count, the error is kept
-	if rp.BytesOut.Load() != 15 || !rp.ClientWriteErr.Load() {
-		t.Fatalf("short write: bytes=%d err=%v", rp.BytesOut.Load(), rp.ClientWriteErr.Load())
-	}
-	rs.done()
-	if rp.DoneFlushedUS.Load() != 0 || rp.LastFlushUS.Load() == 0 {
-		t.Fatalf("done after a failed write must not claim done_flushed (done=%d last=%d)", rp.DoneFlushedUS.Load(), rp.LastFlushUS.Load())
-	}
-	clean := registry.NewRequestProfile(time.Now(), "c", nil, 0)
-	cs := newRelayStamps(clean)
-	cs.wrote(4, nil)
-	cs.done()
-	if clean.DoneFlushedUS.Load() == 0 || clean.ClientWriteErr.Load() {
-		t.Fatal("clean stream must stamp done_flushed")
-	}
-}
-
-// TestRelayStampsCoalescedWriteCountsFrames pins the contract the chat relay's
-// batched flush relies on: one client write carrying several SSE frames
-// advances chunks_out by the frame count (the field keeps meaning "frames
-// delivered" whether or not chunks were coalesced), bytes_out by the accepted
-// bytes only, and a failed write flags client_write_err exactly as wrote does.
-func TestRelayStampsCoalescedWriteCountsFrames(t *testing.T) {
-	rp := registry.NewRequestProfile(time.Now(), "c", nil, 0)
-	rs := newRelayStamps(rp)
-	rs.wroteFrames(3, 100, nil)
-	if rp.ChunksOut.Load() != 3 || rp.BytesOut.Load() != 100 || rp.FirstFlushUS.Load() == 0 {
-		t.Fatalf("coalesced write: chunks=%d bytes=%d first_flush=%d, want 3/100/stamped",
-			rp.ChunksOut.Load(), rp.BytesOut.Load(), rp.FirstFlushUS.Load())
-	}
-	rs.wroteFrames(0, 0, nil) // an empty batch (relay.flush with nothing buffered) counts nothing
-	rs.wroteFrames(2, 0, errors.New("broken pipe"))
-	if rp.ChunksOut.Load() != 3 || rp.BytesOut.Load() != 100 || !rp.ClientWriteErr.Load() {
-		t.Fatalf("failed coalesced write must count nothing and flag client_write_err: chunks=%d bytes=%d err=%v",
-			rp.ChunksOut.Load(), rp.BytesOut.Load(), rp.ClientWriteErr.Load())
-	}
-	rs.wroteFrames(2, 10, errors.New("short")) // partial: the accepted bytes and the frames count, the error is kept
-	if rp.ChunksOut.Load() != 5 || rp.BytesOut.Load() != 110 || !rp.ClientWriteErr.Load() {
-		t.Fatalf("short coalesced write: chunks=%d bytes=%d err=%v",
-			rp.ChunksOut.Load(), rp.BytesOut.Load(), rp.ClientWriteErr.Load())
-	}
-	// wrote stays the one-frame case of the same accounting.
-	rs.wrote(4, nil)
-	if rp.ChunksOut.Load() != 6 || rp.BytesOut.Load() != 114 {
-		t.Fatalf("wrote after wroteFrames: chunks=%d bytes=%d, want 6/114", rp.ChunksOut.Load(), rp.BytesOut.Load())
-	}
-}
-
-// TestChatStreamRelayFlushReportsFramesAndBytes pins the relay side of the
-// same contract: flush records the number of frames in the batch and the bytes
-// the ResponseWriter accepted in the request profile, in one write and one
-// Flush, and an empty batch neither writes nor flushes.
-func TestChatStreamRelayFlushReportsFramesAndBytes(t *testing.T) {
-	w := newCapturingResponseWriter()
-	rp := registry.NewRequestProfile(time.Now(), "c", nil, 0)
-	relay := newChatStreamRelay(&registry.PendingRequest{}, w, w, newRelayStamps(rp))
-	relay.writeFrame(`data: {"a":1}`)
-	relay.writeFrame(`data: {"b":2}`)
-	relay.writeFrame("data: [DONE]")
-	relay.flush()
-	want := "data: {\"a\":1}\n\ndata: {\"b\":2}\n\ndata: [DONE]\n\n"
-	if w.body.String() != want || w.writes != 1 || w.flushes != 1 {
-		t.Fatalf("flush wrote %q in %d write(s) / %d flush(es); want %q in 1 / 1",
-			w.body.String(), w.writes, w.flushes, want)
-	}
-	if rp.ChunksOut.Load() != 3 || rp.BytesOut.Load() != int64(len(want)) || rp.ClientWriteErr.Load() {
-		t.Fatalf("profile chunks_out=%d bytes_out=%d client_write_err=%v; want 3 / %d / false",
-			rp.ChunksOut.Load(), rp.BytesOut.Load(), rp.ClientWriteErr.Load(), len(want))
-	}
-	relay.flush()
-	if w.writes != 1 || w.flushes != 1 || rp.ChunksOut.Load() != 3 || rp.BytesOut.Load() != int64(len(want)) {
-		t.Fatalf("empty flush must neither write nor flush nor count: writes=%d flushes=%d chunks_out=%d bytes_out=%d",
-			w.writes, w.flushes, rp.ChunksOut.Load(), rp.BytesOut.Load())
-	}
 }

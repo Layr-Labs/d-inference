@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-14 · commit `ea5ce6b16`
+> Last updated: 2026-09-14 · commit `42727c9fc`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -50,8 +50,10 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/api/catalog` | Model publishing, manifests, aliases, consumer/marketplace/install projections and cache invalidation (`Controller`); `catalog_controller.go` in the parent API package binds current store and credentials, fleet views, the shared cache and runtime publication callback. |
 | `coordinator/api/requestauth` | Shared linked-user identity resolution and HTTP rejection (`ResolveAccountID`, `RequirePrivyUser`); route middleware still decides which credentials are admitted. |
 | `coordinator/api/requestcontext` | Private context keys and typed account, API-key and request-ID access shared by middleware and endpoint packages (`WithAccountID`, `WithAPIKey`, `WithRequestID`). |
-| `coordinator/api/httpresponse` | JSON response writing and the common OpenAI-compatible error envelope (`WriteJSON`, `ErrorBody`); `WriteCachedJSON` and `EncodeCachedJSON` preserve pre-encoded response bytes. |
+| `coordinator/api/httpresponse` | JSON response writing and the common OpenAI-compatible error envelope (`WriteJSON`, `ErrorBody`); `WriteCachedJSON` and `EncodeCachedJSON` preserve cached response encoding; `MarshalBody` preserves non-HTML-escaped inference-body encoding without a trailing newline. |
 | `coordinator/api/readcache` | Cached response bytes and immutable values, expiry, generation-fenced catalog fills and per-entry refresh coalescing (`Cache`, `Refresher`). Endpoint packages retain cache keys, TTLs and schedules. |
+| `coordinator/inference/response` | Endpoint response formatting, provider-output relays, SSE batching and egress profile stamps (`Writer`, `ChatSink`, `EndpointSink`). `coordinator/api/response_writer.go` binds the existing settlement, feedback, metrics and accepted-write owners. |
+| `coordinator/inference/toolpolicy` | Tool-schema normalization, tool-choice and history validation (`NormalizeParsed`, `ValidateParsed`); HTTP error mapping and resolved-model compatibility remain in `coordinator/api/tool_constraints.go`. |
 | `coordinator/registry` | In-memory fleet view, scheduler and cost model, queue, warm pool, capacity breakers, health ejection, cache routing, TTFT calibration and shadow admission. |
 | `coordinator/store` | `Store` interface, Postgres and memory backends, schema migrations. |
 | `coordinator/protocol` | Wire types for the provider WebSocket: register, heartbeat, capacity, inference frames, telemetry, profiles. |
@@ -71,6 +73,11 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/stateexport` | Snapshot, zip and age encryption for the admin state export. |
 | `coordinator/datadog` | Metrics (HTTP API and DogStatsD), Logs API forwarding, trace handler. |
 | `coordinator/telemetry` | Structured telemetry emitter. |
+| `coordinator/telemetry/metrics` | In-process counters, histograms, computed gauges and JSON/Prometheus snapshots (`Registry`, `Histogram`, `Snapshot`). |
+| `coordinator/telemetry/routequeue` | Bounded FIFO routing-telemetry persistence, grouping, failure handling and shutdown (`Sink`, `SubmitRoute`, `SubmitOutcome`, `CloseAndWait`). |
+| `coordinator/telemetry/profiler` | Profiler configuration, allowlisted row construction and deterministic sampling; composes the profile queue (`ConfigFromEnv`, `Builder.Build`, `Profiler`). |
+| `coordinator/telemetry/profilequeue` | Worker-side profile construction and batched persistence, private buffer/drop counters and signal-only close (`Sink`, `Submit`, `Close`). |
+| `coordinator/telemetry/outcomequeue` | Independent unsampled outcome snapshot buffer, process counters and bounded close-time drain (`Sink`, `Submit`, `Stats`, `Close`). |
 | `coordinator/saferun` | Panic-safe goroutine launcher used by every background loop. |
 | `coordinator/deploy` | `start.sh` container entrypoint (persistent disk, MicroMDM). |
 

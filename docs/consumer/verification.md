@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-13 · commit `1f52a71fb`
+> Last updated: 2026-09-14 · commit `42727c9fc`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -71,8 +71,8 @@ send without self-routing is served only by a provider that passes all of them
 ## Per-response signals
 
 Once a provider has been committed to your request, the coordinator writes
-these headers (`writeCommittedProviderHeaders`,
-`coordinator/api/response_metadata.go`):
+these headers (`WriteCommittedProviderHeaders`,
+`coordinator/inference/response/provider_snapshot.go`):
 
 | Header | Value |
 |---|---|

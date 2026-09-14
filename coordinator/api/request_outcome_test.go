@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"net/http"
 	"net/http/httptest"
@@ -49,19 +50,6 @@ func TestRequestOutcomeClassificationAndMappings(t *testing.T) {
 	}
 }
 
-func TestGeneratedContentEvidenceExcludesPreambleAndTerminals(t *testing.T) {
-	for _, s := range []string{`data: [DONE]`, `data: {broken`, roleOnlyChunkSSE("m"), `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`, `data: {"type":"response.created","response":{}}`, `data: {"error":{"message":"secret"}}`, `data: {"choices":[],"usage":{"completion_tokens":0}}`} {
-		if generatedContentSSE([]byte(s)) {
-			t.Errorf("false content: %s", s)
-		}
-	}
-	for _, s := range []string{contentChunkSSE("m", "a"), `data: {"type":"response.output_text.delta","delta":"a"}`, `data: {"type":"content_block_delta","delta":{"text":"a"}}`} {
-		if !generatedContentSSE([]byte(s)) {
-			t.Errorf("missed content %s", s)
-		}
-	}
-}
-
 type outcomeFailWriter struct {
 	header http.Header
 	short  bool
@@ -88,7 +76,7 @@ func TestRequestOutcomeFailedAndShortWrites(t *testing.T) {
 			st := store.NewMemory(store.Config{})
 			srv := &Server{store: st}
 			srv.requestOutcomes = newRequestOutcomeSink(srv, 16)
-			defer srv.requestOutcomes.close()
+			defer srv.requestOutcomes.Close()
 			handler := srv.observeRequestOutcome(func(w http.ResponseWriter, r *http.Request) {
 				rp := srv.newRequestProfile(r, "m", "m", false)
 				ap := rp.NewAttempt("a", 0, "")
@@ -111,7 +99,7 @@ func TestRequestOutcomeLateProviderCompletionPreservesDeparture(t *testing.T) {
 	st := store.NewMemory(store.Config{})
 	srv := &Server{store: st}
 	srv.requestOutcomes = newRequestOutcomeSink(srv, 16)
-	defer srv.requestOutcomes.close()
+	defer srv.requestOutcomes.Close()
 	var ap *registry.AttemptProfile
 	ctx, cancel := context.WithCancel(context.Background())
 	handler := srv.observeRequestOutcome(func(w http.ResponseWriter, r *http.Request) {
@@ -140,7 +128,7 @@ func TestRequestOutcomeSealedWriteFailure(t *testing.T) {
 				st := store.NewMemory(store.Config{})
 				srv := &Server{store: st}
 				srv.requestOutcomes = newRequestOutcomeSink(srv, 16)
-				defer srv.requestOutcomes.close()
+				defer srv.requestOutcomes.Close()
 				coord, err := e2e.DeriveCoordinatorKey(senderTestMnemonic)
 				if err != nil {
 					t.Fatal(err)
@@ -158,7 +146,7 @@ func TestRequestOutcomeSealedWriteFailure(t *testing.T) {
 						frame := []byte(contentChunkSSE("m", "answer"))
 						n, err := w.Write(frame)
 						markContentWrite(w, true, n, len(frame), err)
-						newRelayStamps(rp).done()
+						response.NewChatSink(nil, w, nil, rp, nil).Done()
 					} else {
 						writeNonStreamBody(w, rp, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "answer"}}}})
 					}
@@ -195,7 +183,7 @@ func TestRequestOutcomeContentSuccessSurvivesLaterWriteFailure(t *testing.T) {
 			st := store.NewMemory(store.Config{})
 			srv := &Server{store: st}
 			srv.requestOutcomes = newRequestOutcomeSink(srv, 16)
-			defer srv.requestOutcomes.close()
+			defer srv.requestOutcomes.Close()
 			write := func(w http.ResponseWriter, r *http.Request) {
 				rp := srv.newRequestProfile(r, "m", "m", true)
 				ap := rp.NewAttempt("two-write-attempt", 0, "")
@@ -207,7 +195,7 @@ func TestRequestOutcomeContentSuccessSurvivesLaterWriteFailure(t *testing.T) {
 				n, err := w.Write(frame)
 				markContentWrite(w, true, n, len(frame), err)
 				w.Write([]byte("data: [DONE]\n\n"))
-				newRelayStamps(rp).done()
+				response.NewChatSink(nil, w, nil, rp, nil).Done()
 				ap.CompleteTerminal()
 				ap.CompleteHandler()
 			}

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `f37d74777`
+> Last updated: 2026-09-14 · commit `42d0741b1`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -105,7 +105,7 @@ use local stores and HTTP fixtures; they require no model or production access.
 Run prediction telemetry checks from the repository root:
 
 ```bash
-go test -race ./coordinator/api ./coordinator/registry ./coordinator/protocol ./coordinator/store
+go test -race ./coordinator/api ./coordinator/registry ./coordinator/protocol ./coordinator/store ./coordinator/telemetry/profiler
 ```
 
 API fixtures use isolated encrypted WebSocket providers;
@@ -120,6 +120,29 @@ output capacity. The HTTP cases cover both a feasible alternative behind a
 long pending prompt and a long arrival completing behind a short pending prompt.
 They use a real isolated coordinator and encrypted WebSocket providers with
 scripted compute. It does not require model downloads or production access.
+
+Response formatting tests live beside their owner in `coordinator/inference/response/`: chat/tool reconstruction, endpoint framing, metadata sanitization and normalization. The API retains real request/outcome, short-write, failed-write, sealed-transport and settlement fixtures. Run both owners from the repository root (no model or provider process is required):
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/inference/response
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'Test(RequestOutcome|ProfilerKillSwitch|Streaming|StreamRelay|NonStream|NonStreamingCompleteObject|ConfigurePendingCopiesMetadataDetails|MarshalForwardBody)'
+```
+
+`TestMarshalForwardBodyDoesNotHTMLEscape` keeps the API adapter bound to
+`httpresponse.MarshalBody`; cached response encoding has separate byte-equivalence
+fixtures. Neither command measures model quality or runtime throughput.
+
+Profiler construction, allowlist, sampling and environment tests live in
+`coordinator/telemetry/profiler/`. Its worker fixtures use a real memory store
+to check sampled-out successes and retained failures. Queue tests live with
+their owners in `coordinator/telemetry/profilequeue/` and
+`coordinator/telemetry/outcomequeue/`; they cover nonblocking construction,
+batch limits, quiet flushing, write failures and the outcome drain deadline.
+The API keeps the live store-binding and full HTTP/accounting fixtures:
+
+```bash
+go test -race ./coordinator/telemetry/profiler ./coordinator/telemetry/profilequeue ./coordinator/telemetry/outcomequeue ./coordinator/api -run 'Profile|RequestOutcome|PersistenceSinks|FleetSample'
+```
 
 The CI formatting step checks tracked Go files with `gofmt`. It excludes
 `docs/reports/evidence/`, whose captured source bytes are immutable and bound
@@ -139,7 +162,7 @@ matches the difference of coordinator and provider spans. Negative values remain
 valid observations; this is not a direct nonnegative network-latency measurement.
 The focused `TestApplyProviderProfileTransportEstimateArithmetic` regression covers
 positive, negative and missing operands in
-`coordinator/api/profiler_provider_test.go`.
+`coordinator/telemetry/profiler/provider_test.go`.
 
 Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
 (`coordinator/store/harness_test.go`, `testPostgresStore`); CI provides a
@@ -1108,8 +1131,16 @@ file has moved; current missing links still fail. See
 
 ```bash
 make docs-check          # scripts/docs-check.sh — stamps, relative links, cited paths, orphans
+python3 scripts/test-docs-check-historical-links.py  # isolated Git history/rename regressions
 make docs-stamp FILES="docs/developer/test.md"   # refresh a stamp after editing
 ```
+
+Docs Lint checks out complete Git history. A frozen report, release or design
+record may keep a relative source link after a move only when the exact target
+exists at its freshness-stamp commit. The isolated Git fixtures cover renamed
+source, path normalization and shallow-history recovery. Current-doc links,
+documentation targets, invalid stamps and unavailable historical targets still
+fail; see [the documentation rules](../AGENTS.md#6-checks-make-docs-check-ci-job-docs-lint).
 
 ### 8. End-to-end suite
 
@@ -1262,7 +1293,7 @@ token IDs are accepted.
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh` · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm run build` |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — full-history checkout, isolated historical-source-link regressions and `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh` · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm run build` |
 | [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 120 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) → current coordinator vs released v0.7.12 provider (`scripts/fetch-v0712-provider.sh`, `DARKBLOOM_MIXED_VERSION_EXPECT=artifact`, fails unless `MIXED_VERSION_TIER_ARTIFACT_OK` appears) → released v0.7.12 coordinator (`git worktree add … v0.7.12`) vs candidate provider (`NonStreamingInference`, `StreamingInference`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |

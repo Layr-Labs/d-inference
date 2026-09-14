@@ -1,6 +1,6 @@
 # Coordinator Performance Tier 1 Rollout
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-13 · commit `285f7c9f8`
 
 Operator companion to the `perf/coordinator-tier1-2026-09-03` branch (the
 code items 1.1, 1.3–1.8 of the 2026-09-03 coordinator performance proposal).
@@ -204,7 +204,7 @@ process start.
 |---|---|---|---|
 | 0.1 | `EIGENINFERENCE_MIN_PROVIDER_VERSION` | `0.7.5` today → `0.8.12`, then `0.8.15` | Deroutes the ~4 % of the fleet on old builds that produce a large share of `first_chunk_timeout`; staged so no more than that share drops at once. The floor is manual by design (`coordinator/api/server.go`, `SetMinProviderVersion`). |
 | 0.3 | `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES` | `qwen3-vl-30b-a3b-instruct=off` | Removes the hardcoded 4 s first-content cutoff for that model (`0`/`off` deletes the built-in entry so the model uses the global base; parsed by `main` in `coordinator/cmd/coordinator/main.go`). Risk removal for the 2026-08-31 class of incident. |
-| 0.5 | `EIGENINFERENCE_PROFILE_SAMPLE_RATE` | operator decision, `0..1` (default `0.1`) | Today ≈53 % of successes are recorded because every non-success / slow / retried request bypasses sampling (`coordinator/api/profiler.go`, `profiler.sampled`). Decide whether ~9 GB/day of `request_profiles` is intended before touching it; `EIGENINFERENCE_PROFILER=off` is the kill switch. |
+| 0.5 | `EIGENINFERENCE_PROFILE_SAMPLE_RATE` | operator decision, `0..1` (default `0.1`) | Today ≈53 % of successes are recorded because every non-success / slow / retried request bypasses sampling (`coordinator/telemetry/profiler/sampling.go`, `Profiler.sampled`). Decide whether ~9 GB/day of `request_profiles` is intended before touching it; `EIGENINFERENCE_PROFILER=off` is the kill switch. |
 
 Commands for one knob (repeat per key; values are the ones from the table):
 

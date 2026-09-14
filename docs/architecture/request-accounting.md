@@ -1,6 +1,6 @@
 # Incoming request accounting
 
-> Last updated: 2026-09-11 · commit `5e41029dd`
+> Last updated: 2026-09-14 · commit `42727c9fc`
 
 `request_outcomes` records unsampled observations of incoming inference requests, including early rejections, independently of sampled attempt profiles. Operators use this source to distinguish final request outcomes from internal retries. The dashboard aggregation and presentation work in issue #845 remains open.
 
@@ -25,14 +25,14 @@ flowchart LR
   Relay --> Finish[Recovered handler return: one request observation]
   Attempts --> Late[Late provider terminal or bounded fallback]
   Late --> Revision[Enrich same coordinator UUID]
-  Finish --> Sink[Dedicated bounded requestOutcomeSink]
+  Finish --> Sink[Dedicated bounded outcomequeue.Sink]
   Revision --> Sink
   Sink --> Ledger[(request_outcomes)]
 ```
 
 Only the compact fixed schema is unsampled. The existing in-memory request/attempt lifecycle objects collect evidence when the heavy profiler is off; `CompactOnly` preserves the profiler-off timing-header behavior. Heavy `request_profiles` persistence, provider-profile payload retention, sampling and fleet sampling retain their existing switches.
 
-The request sink has 4,096 queued snapshots, one worker, batches of up to 128, and a 100 ms flush interval. Each database transaction has a one-second context deadline. Upserts run through one `pgx.Batch`. A full/closed queue drops the snapshot, while failed transactions increment a separate failure count. No telemetry write blocks the inference path. Shutdown waits up to two seconds for draining. The existing hourly retention loop deletes ledger rows by receipt time after 14 days, even with the heavy profiler off.
+The request sink (`coordinator/telemetry/outcomequeue/queue.go`, `Sink`) has 4,096 queued snapshots, one worker, batches of up to 128, and a 100 ms flush interval. Each database transaction has a one-second context deadline. Upserts run through one `pgx.Batch`. A full/closed queue drops the snapshot, while failed transactions increment a separate failure count. No telemetry write blocks the inference path. Shutdown waits up to two seconds for draining. The existing hourly retention loop deletes ledger rows by receipt time after 14 days, even with the heavy profiler off.
 
 ## Identity, coverage and time
 
@@ -101,8 +101,10 @@ A raw historical `dispatch_exhausted` can represent a retained real provider err
 | Concern | Source |
 |---|---|
 | Observation, lifecycle and mapping | `coordinator/api/request_outcome.go` |
-| Content and write evidence | `coordinator/api/request_outcome_egress.go`, `coordinator/api/sender_encryption.go` |
-| Bounded persistence and health | `coordinator/api/request_outcome_sink.go`, `coordinator/api/request_outcome_admin.go` |
+| Content and terminal classification | `coordinator/inference/response/content_evidence.go`, `coordinator/inference/response/terminal_evidence.go`; pure classifiers used by the response formatters and API writer |
+| Accepted writes and sealed transport | `coordinator/api/response_writer.go` (`responseWriteObserver`), `coordinator/api/request_outcome_egress.go`, `coordinator/api/request_outcome_terminal.go`, `coordinator/api/sender_encryption.go`; the API retains the sealing-buffer guard and outcome lock |
+| Bounded persistence | `coordinator/telemetry/outcomequeue/` (`Sink`, `Submit`, `Close`, `Stats`); `coordinator/api/request_outcome_sink.go` (`newRequestOutcomeSink`) injects the active-store writer and metrics |
+| Health endpoint | `coordinator/api/request_outcome_admin.go` (`handleAdminRequestOutcomes`) reads independent process counters through `Stats` |
 | Schema, revision merge and reads | `coordinator/store/request_outcomes.go`, `coordinator/store/postgres_request_outcomes.go`, `coordinator/store/memory_request_outcomes.go` |
 | Live isolated endpoint regressions | `coordinator/api/request_outcome_integration_test.go`, `coordinator/api/request_outcome_test.go`, `coordinator/api/deadline_unreachable_integration_test.go` |
 | Memory/Postgres parity and retention | `coordinator/store/request_outcomes_test.go` |

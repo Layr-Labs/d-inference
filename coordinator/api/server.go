@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"io"
 	"log/slog"
 	"net"
@@ -860,7 +861,7 @@ func (s *Server) handleRuntimeCapabilitiesPromoted(providerID string) {
 // behavior — a per-write panic-safe goroutine — so those tests keep working.
 func (s *Server) submitTelemetry(name string, fn func()) {
 	if s.routeTelemetry != nil {
-		s.routeTelemetry.submit(fn)
+		s.routeTelemetry.Submit(fn)
 		return
 	}
 	saferun.Go(s.logger, name, fn)
@@ -895,10 +896,10 @@ func (s *Server) Close() {
 		// store Close (registered earlier, so it runs after this) tears down the
 		// pool. A stuck store cannot hold shutdown past the deadline; whatever
 		// is still unwritten then is counted as dropped by the sink.
-		if !s.routeTelemetry.closeAndWait(telemetrySinkShutdownFlush) && s.logger != nil {
+		if !s.routeTelemetry.CloseAndWait(telemetrySinkShutdownFlush) && s.logger != nil {
 			s.logger.Warn("routing telemetry sink did not finish flushing before the shutdown deadline",
 				"deadline", telemetrySinkShutdownFlush,
-				"dropped_total", s.routeTelemetry.dropped.Load(),
+				"dropped_total", s.routeTelemetry.DroppedTotal(),
 			)
 		}
 	}
@@ -909,10 +910,10 @@ func (s *Server) Close() {
 	}
 	s.trustAuthorityMu.Unlock()
 	if s.requestOutcomes != nil {
-		s.requestOutcomes.close()
+		s.requestOutcomes.Close()
 	}
 	if s.profiler != nil {
-		s.profiler.close()
+		s.profiler.Close()
 	}
 }
 
@@ -3393,7 +3394,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		} else {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, "+metadataDetailsHeader)
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, "+response.MetadataDetailsHeader)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 		}
 
@@ -3462,14 +3463,14 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 
 		if s.metrics != nil {
 			s.metrics.IncCounter("http_requests_total",
-				MetricLabel{"method", r.Method},
-				MetricLabel{"path", pathLabel},
-				MetricLabel{"status", statusStr},
+				MetricLabel{Name: "method", Value: r.Method},
+				MetricLabel{Name: "path", Value: pathLabel},
+				MetricLabel{Name: "status", Value: statusStr},
 			)
 			s.metrics.ObserveHistogram("http_request_duration_ms",
 				float64(dur.Milliseconds()),
-				MetricLabel{"method", r.Method},
-				MetricLabel{"path", pathLabel},
+				MetricLabel{Name: "method", Value: r.Method},
+				MetricLabel{Name: "path", Value: pathLabel},
 			)
 		}
 

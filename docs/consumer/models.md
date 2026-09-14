@@ -1,6 +1,6 @@
 # Models reference
 
-> Last updated: 2026-09-14 · commit `f37d74777`
+> Last updated: 2026-09-14 · commit `42d0741b1`
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/catalog/aliases.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
@@ -90,7 +90,7 @@ A key created with `allowed_models` can only use those ids. Any other `model` fa
 | Capability | Where to read it | What the API enforces |
 |---|---|---|
 | Vision | `"image"` in `input_modalities` | Image parts on a model without it → 400; a vision model with no vision-capable provider online → 503 `model_unavailable` (`visionToolsFailFast`, `coordinator/api/inference_preprocess.go`) |
-| Tools | `"tools"` in `supported_features` | Tool definitions are normalised and validated for every model (`NormalizeToolSchemas`, `coordinator/api/toolschema.go`; `validateToolConstraintPolicy`, `coordinator/api/tool_constraints.go`); uncompilable schemas → 422; only providers at or above the `tools` version floor (`capabilityVersionFloors`, `coordinator/registry/request_traits.go`) are eligible, and an inference-enforced `tool_choice` (`required` / named) cannot be combined with image content (400) |
+| Tools | `"tools"` in `supported_features` | Tool definitions are normalised and validated for every model (`toolpolicy.NormalizeParsed`, `coordinator/inference/toolpolicy/normalize.go`; `toolpolicy.ValidateParsed`, `coordinator/inference/toolpolicy/validate.go`); uncompilable schemas → 422; only providers at or above the `tools` version floor (`capabilityVersionFloors`, `coordinator/registry/request_traits.go`) are eligible, and an inference-enforced `tool_choice` (`required` / named) cannot be combined with image content (400) |
 | JSON / structured output | `"json_mode"`, `"structured_outputs"` in `supported_features` | `response_format` is forwarded to the provider without coordinator validation; whether it is honoured depends on the build's capabilities |
 | Reasoning | `"reasoning"` in `supported_features` | `reasoning` / `reasoning_effort` are applied per model policy (`applyResolvedModelReasoningPolicy`, `coordinator/api/reasoning_request_policy.go`); reasoning tokens are reported in `usage.completion_tokens_details.reasoning_tokens` |
 | Context | `context_length`, `max_output_length` | `max_tokens` clamped to `max_output_length`; prompts no provider can accept → 413 `payload_too_large` (`runInferenceAdmission`, `coordinator/api/inference_admission.go`) |

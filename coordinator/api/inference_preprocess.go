@@ -22,10 +22,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/api/httpresponse"
 	"io"
 	"net/http"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/toolpolicy"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -66,17 +68,8 @@ const maxInferenceBodyBytes = 16 << 20 // 16 MiB
 // — e.g. a prompt containing a long run of '<' — past the provider's
 // single-frame WebSocket limit, tearing down its session. Disabling escaping
 // keeps the re-marshaled body within a small constant of the (already
-// size-capped) input. Mirrors NormalizeToolSchemas's own non-escaping round-trip.
-func marshalForwardBody(v any) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		return nil, err
-	}
-	// Encoder.Encode appends a trailing newline the encrypted body shouldn't carry.
-	return bytes.TrimSuffix(buf.Bytes(), []byte{'\n'}), nil
-}
+// size-capped) input. Mirrors toolpolicy.NormalizeBytes's own non-escaping round-trip.
+func marshalForwardBody(v any) ([]byte, error) { return httpresponse.MarshalBody(v) }
 
 // forwardBody is the provider-bound request as the handler reshapes it: the
 // decoded map every rewrite is applied to, plus the bytes that map was last
@@ -180,7 +173,7 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 	// coordinator deploys, instead of waiting out provider update lag. The
 	// repair runs on the decoded map (one parse per request); the caller's
 	// original tools are kept for constraint validation.
-	originalTools, _ := normalizeParsedToolSchemas(parsed, rawBody)
+	originalTools, _ := toolpolicy.NormalizeParsed(parsed, rawBody)
 	if stop, ok := parsed["stop"].(string); ok {
 		parsed["stop"] = []any{stop}
 	}

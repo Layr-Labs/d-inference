@@ -262,8 +262,8 @@ func TestReputationNoUptimeStillNeutral(t *testing.T) {
 
 // TestReputationRampUptimeNeverBelowLegacyCap is the ramp-down
 // regression flagged in review: once Heartbeat starts crediting uptime, a
-// freshly-connected (or freshly-restarted, since prod uses the in-memory store
-// that resets TotalUptime) provider has a TINY TotalUptime. Without the neutral
+// freshly-connected provider with no restored history has a TINY TotalUptime.
+// Without the neutral
 // floor, uptimeRate = 30s/24h ≈ 0.0003 would crater a perfect provider from
 // 0.85 to ~0.70 for ~12h and deroute it. The floor must hold the score at or
 // above the legacy 0.85 throughout the ramp, only ever adding above it.

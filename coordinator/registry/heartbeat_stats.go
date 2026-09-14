@@ -38,31 +38,17 @@ func applyHeartbeatStatsDelta(total *protocol.HeartbeatStats, previous, current 
 
 func mergeHeartbeatSessionStats(previous, current protocol.HeartbeatStats) protocol.HeartbeatStats {
 	merged := current
-	if merged.CancellationsReceived == 0 {
-		merged.CancellationsReceived = previous.CancellationsReceived
-	}
-	if merged.CancellationsBeforeOutput == 0 {
-		merged.CancellationsBeforeOutput = previous.CancellationsBeforeOutput
-	}
-	if merged.CancellationsPartialComplete == 0 {
-		merged.CancellationsPartialComplete = previous.CancellationsPartialComplete
-	}
-	if merged.GenerationErrorsAfterOutput == 0 {
-		merged.GenerationErrorsAfterOutput = previous.GenerationErrorsAfterOutput
-	}
-	if merged.ChunkEncryptionErrors == 0 {
-		merged.ChunkEncryptionErrors = previous.ChunkEncryptionErrors
-	}
-	if merged.StreamClosedWithoutTerminal == 0 {
-		merged.StreamClosedWithoutTerminal = previous.StreamClosedWithoutTerminal
-	}
-	if merged.CancelDuringModelLoad == 0 {
-		merged.CancelDuringModelLoad = previous.CancelDuringModelLoad
-	}
-	if merged.UsageGaps == 0 {
-		merged.UsageGaps = previous.UsageGaps
-	}
+	// Required primary counters may reset to zero; omitted optional counters
+	// retain the previous sample so a legacy heartbeat cannot double-count them.
 	for _, f := range []struct{ cur, prev *int64 }{
+		{&merged.CancellationsReceived, &previous.CancellationsReceived},
+		{&merged.CancellationsBeforeOutput, &previous.CancellationsBeforeOutput},
+		{&merged.CancellationsPartialComplete, &previous.CancellationsPartialComplete},
+		{&merged.GenerationErrorsAfterOutput, &previous.GenerationErrorsAfterOutput},
+		{&merged.ChunkEncryptionErrors, &previous.ChunkEncryptionErrors},
+		{&merged.StreamClosedWithoutTerminal, &previous.StreamClosedWithoutTerminal},
+		{&merged.CancelDuringModelLoad, &previous.CancelDuringModelLoad},
+		{&merged.UsageGaps, &previous.UsageGaps},
 		{&merged.CancelStagePreAcceptTotal, &previous.CancelStagePreAcceptTotal},
 		{&merged.CancelStagePreEngineTotal, &previous.CancelStagePreEngineTotal},
 		{&merged.CancelStagePrefillTotal, &previous.CancelStagePrefillTotal},

@@ -6,7 +6,7 @@ package dispatchplan
 func applyQuoteDelivery[C comparable](plan *Plan[C], d quoteDelivery) QuoteOutcome {
 	if d.quote == nil {
 		plan.DemoteEntry(d.providerID)
-		return QuoteOutcome{ProviderID: d.providerID, SendFailed: true}
+		return QuoteOutcome{ProviderID: d.providerID, Timeout: d.timeout, SendFailed: !d.timeout}
 	}
 	if d.quote.AdmissibleNow {
 		plan.ConfirmEntry(d.providerID, d.quote)

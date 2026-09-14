@@ -116,10 +116,8 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 
 // SetTrustLevel updates a provider's trust level (thread-safe).
 func (r *Registry) SetTrustLevel(providerID string, level TrustLevel) {
-	r.mu.RLock()
-	p, ok := r.providers[providerID]
-	r.mu.RUnlock()
-	if !ok {
+	p := r.GetProvider(providerID)
+	if p == nil {
 		return
 	}
 	p.mu.Lock()

@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `ea5ce6b16`
+> Last updated: 2026-09-14 · commit `42727c9fc`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -85,6 +85,10 @@ include them without additional targets. See [billing ownership](../architecture
 Model publishing and discovery build as `coordinator/api/catalog/` in the same
 module. The API binds that owner through `catalog_controller.go`; no additional
 binary, service or build target is required. See [catalog ownership](../architecture/model-registry.md#http-controller-ownership).
+
+Inference response formatting and relays build as `coordinator/inference/response/`,
+with lifecycle services supplied by `coordinator/api/response_writer.go`. It is
+part of the same coordinator binary and needs no additional build target.
 
 The normal Go build includes the profiler owner and telemetry queue packages
 under `coordinator/telemetry/`. Their API adapters link them into the same

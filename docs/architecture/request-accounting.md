@@ -1,6 +1,6 @@
 # Incoming request accounting
 
-> Last updated: 2026-09-13 · commit `a3493b5ac`
+> Last updated: 2026-09-14 · commit `42727c9fc`
 
 `request_outcomes` records unsampled observations of incoming inference requests, including early rejections, independently of sampled attempt profiles. Operators use this source to distinguish final request outcomes from internal retries. The dashboard aggregation and presentation work in issue #845 remains open.
 
@@ -101,7 +101,8 @@ A raw historical `dispatch_exhausted` can represent a retained real provider err
 | Concern | Source |
 |---|---|
 | Observation, lifecycle and mapping | `coordinator/api/request_outcome.go` |
-| Content and write evidence | `coordinator/api/request_outcome_egress.go`, `coordinator/api/sender_encryption.go` |
+| Content and terminal classification | `coordinator/inference/response/content_evidence.go`, `coordinator/inference/response/terminal_evidence.go`; pure classifiers used by the response formatters and API writer |
+| Accepted writes and sealed transport | `coordinator/api/response_writer.go` (`responseWriteObserver`), `coordinator/api/request_outcome_egress.go`, `coordinator/api/request_outcome_terminal.go`, `coordinator/api/sender_encryption.go`; the API retains the sealing-buffer guard and outcome lock |
 | Bounded persistence | `coordinator/telemetry/outcomequeue/` (`Sink`, `Submit`, `Close`, `Stats`); `coordinator/api/request_outcome_sink.go` (`newRequestOutcomeSink`) injects the active-store writer and metrics |
 | Health endpoint | `coordinator/api/request_outcome_admin.go` (`handleAdminRequestOutcomes`) reads independent process counters through `Stats` |
 | Schema, revision merge and reads | `coordinator/store/request_outcomes.go`, `coordinator/store/postgres_request_outcomes.go`, `coordinator/store/memory_request_outcomes.go` |

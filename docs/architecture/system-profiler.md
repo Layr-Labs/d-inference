@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-13 · commit `285f7c9f8`
+> Last updated: 2026-09-14 · commit `42727c9fc`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -68,7 +68,7 @@ attempt stamps.
 | `first_content_ingress_us` | read loop | preamble frames before the first content-bearing chunk |
 | `first_chunk_dequeued_us`, `first_content_us`, `held_preamble_chunks` | dispatch goroutine (`profiler_dispatch.go`) | channel hand-off + commit decision |
 | `headers_written_us` | `stampCommitted` for streams; `writeNonStreamBody` for JSON bodies | `X-Timing` computed, headers written |
-| `first_flush_us`, `last_flush_us`, `done_flushed_us`, `chunks_out`, `bytes_out`, `max_chunk_gap_us`, `client_write_err` | `relayStamps` from the chat, Responses and generic SSE relays; non-stream bodies stamp the same fields once | relay to the client; a failed or short write sets `client_write_err` and leaves `done_flushed_us` absent |
+| `first_flush_us`, `last_flush_us`, `done_flushed_us`, `chunks_out`, `bytes_out`, `max_chunk_gap_us`, `client_write_err` | `relayStamps` (`coordinator/inference/response/egress_profile.go`) from the chat, Responses and generic SSE relays; `Writer.Body` stamps the same fields once for non-stream bodies | relay to the client; a failed or short write sets `client_write_err` and leaves `done_flushed_us` absent |
 | `client_gone_us`, `client_gone_phase` ∈ {`before_first_token`, `after_commit`} | dispatch / consumer / `finalizeProfile` | client disconnect |
 | `cancel_sent_us` | dispatch, after the relay returns | cancel frame to the provider |
 | `complete_ingress_us` | terminal frame ingress (`provider.go`; parked, complete and error sites) | provider terminal received |
@@ -465,7 +465,8 @@ ring or `DaemonState` mirror.
 | Profile queue | `coordinator/telemetry/profilequeue/` (`Sink`, `Submit`, `Close`) |
 | Routing queue | `coordinator/telemetry/routequeue/` (`Sink`, `CloseAndWait`) |
 | Fleet sampler, retention loop, metrics | `coordinator/api/profiler_fleet.go`, `coordinator/registry/fleet_sample.go` |
-| Dispatch hooks, `X-Timing`, relay stamps | `coordinator/api/profiler_dispatch.go` |
+| Dispatch hooks and `X-Timing` | `coordinator/api/profiler_dispatch.go`; timing projection in `coordinator/inference/response/timing.go` |
+| Response egress stamps | `coordinator/inference/response/egress_profile.go` (`relayStamps`, `Writer.Body`); actual writer results are supplied to the API through `WriteObserver` |
 | Admin endpoints | `coordinator/api/profiler_admin.go`, `coordinator/api/admin_telemetry.go` |
 | Profiles and attempts | `coordinator/registry/request_profile.go`, `coordinator/registry/attempt_profile.go`, `coordinator/registry/attempt_profile_finalize.go` |
 | Routing context and folds | `coordinator/registry/scheduler.go`, `coordinator/registry/gate_reason.go`, `coordinator/registry/queue.go` |

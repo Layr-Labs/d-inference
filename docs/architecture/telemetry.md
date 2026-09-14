@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-13 · commit `285f7c9f8`
+> Last updated: 2026-09-14 · commit `90e3f4921`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -89,12 +89,12 @@ remain in provider metadata.
 ### Slot posture sampler lifecycle
 
 `EngineV2Bridge.configureMTPStatus` in
-`provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+MTP.swift` emits
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MTP.swift` emits
 the opening slot-posture sample synchronously and starts a periodic task. Periodic delivery rechecks task
 cancellation inside the bridge actor, after the scheduling hop; cancellation
 while queued cannot emit a stale sample. `EngineV2Bridge.shutdown` cancels and
 joins the sampler before returning
-(`provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift`). This preserves the opening observation while
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Lifecycle.swift`). This preserves the opening observation while
 preventing the periodic producer from emitting after teardown.
 
 ### Durable prefix-cache observations
@@ -181,7 +181,7 @@ gauge identifies bytes that cannot hold KV pages; usable slack excludes them.
 The optional last-allocation allowance gauge records conservative reservation
 bytes released after a successful preparation, rather than retained memory
 (`PagedStorageTelemetryCapture`,
-`provider-swift/Sources/ProviderCore/Inference/PagedStorageTelemetryAdapter.swift`).
+`provider-swift/Sources/ProviderCore/Inference/Memory/PagedStorageTelemetryAdapter.swift`).
 Ownership gauges overlap and must not be summed. Failure/refusal totals become
 positive deltas within one generation; the first sample and reload seed a
 baseline. Stale samples expose their age instead of new ownership measurements.
@@ -192,7 +192,7 @@ These fields are available in backend snapshots and Datadog; they are not new
 
 `ProcessMemoryTelemetrySampler` captures the process ledger's coherent
 ownership and allocator snapshot during the provider capacity refresh
-(`provider-swift/Sources/ProviderCore/Inference/ProcessMemoryTelemetrySampler.swift`).
+(`provider-swift/Sources/ProviderCore/Inference/Memory/ProcessMemoryTelemetrySampler.swift`).
 The [wire object](../reference/protocol-messages.md#backend_capacitytelemetryprocess_memory)
 reports outstanding promises as charged bytes minus covered materialized bytes.
 Operators can distinguish active allocations, reserved future memory, and debt
@@ -287,7 +287,7 @@ and diagnostics; none of these queue packages depends on the HTTP server.
    from source and compared by `TestTelemetryAllowlistThreeWayParity`
    (`coordinator/api/telemetry_allowlist_parity_test.go`); the enums and JSON
    encoding by `coordinator/protocol/telemetry_symmetry_test.go` and
-   `provider-swift/Tests/ProviderCoreTests/TelemetrySymmetryTests.swift`. The
+   `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift`. The
    five shipped gaps are enumerated in `telemetryKnownMirrorGaps` and a stale
    entry fails the build.
 3. **Telemetry never changes control flow.** Nil emitter, nil Datadog client,
@@ -351,8 +351,8 @@ for populations, labels and reset semantics (`coordinator/api/cache_model_teleme
 | Profile construction and sampling | `coordinator/telemetry/profiler/` (`ConfigFromEnv`, `Builder.Build`, `Profiler`) |
 | Profile/fleet API wiring | `coordinator/api/profiler.go` (`newProfiler`), `coordinator/api/profiler_fleet.go` (`sampleFleetOnce`) |
 | Disconnect classification | `coordinator/registry/disconnect_classify.go` |
-| Provider side | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift` (`buildHeartbeatJSON`), `provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift`, `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Capacity.swift`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift` (no-op facade) |
-| Tests | `coordinator/api/telemetry_allowlist_parity_test.go`, `coordinator/api/telemetry_handlers_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/metrics_http_test.go`, `provider-swift/Tests/ProviderCoreTests/TelemetrySymmetryTests.swift` |
+| Provider side | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift` (`buildHeartbeatJSON`), `provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Capacity.swift`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift` (no-op facade) |
+| Tests | `coordinator/api/telemetry_allowlist_parity_test.go`, `coordinator/api/telemetry_handlers_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/metrics_http_test.go`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` |
 
 ## Related
 

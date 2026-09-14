@@ -6,6 +6,10 @@ enum DarkbloomSandboxGuest {
     static func main() async {
         let arguments = Array(CommandLine.arguments.dropFirst())
         do {
+            if arguments == [GuestTenantQualification.command] {
+                FileHandle.standardOutput.write(try GuestTenantQualification.run())
+                return
+            }
             if arguments == ["validate-tenant-identity"] {
                 try GuestBootstrapInstallation.validateNumericIdentity()
                 return

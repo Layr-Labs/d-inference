@@ -19,6 +19,7 @@ package final class LumeQualificationCloneCapability: @unchecked Sendable {
     // different actor from reading or consuming this mutable state.
     var consumed = false
     var createdInstallationID: UUID?
+    var nativeChecksAttempted = false
 
     private init(qualificationID: UUID, specification: SandboxVirtualMachineSpecification,
                  lease: SandboxCapacityLease, issuingRuntime: LumeVirtualMachineRuntime,

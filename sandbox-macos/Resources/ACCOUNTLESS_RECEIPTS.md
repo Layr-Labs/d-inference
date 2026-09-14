@@ -353,6 +353,37 @@ decoding a journal. A future durable qualification owner must define interrupted
 attempt recovery and preserve original clone identity; it must not manufacture
 an observation or promote saved success booleans after a process restart.
 
+`runNativeQualification` runs the native check sequence only for that runtime's
+live managed VM owner, private endpoint and matching material instance. A
+capability permits one sequence; failure requires cleanup and a new attempt.
+The signed guest executable now includes `qualify-tenant`, an unprivileged probe
+that requires virtualized UID/GID2001, only tenant supplementary groups, absent
+numeric account records and inability to restore UID0. It requires explicit
+EACCES/EPERM when opening the fixed root configuration, control configuration,
+guest executable for writing and all observed disk/rdisk devices. ENOENT and other
+I/O failures cannot satisfy this check. It also rejects non-loopback IP addresses.
+The probe writes no file, reads no credential and adds no privileged RPC method.
+
+The host requires the exact versioned probe response through normal authenticated
+execution, records the kernel boot-session UUID, uploads and reads back a marker
+bound to the qualification and clone IDs, then stops and starts the clone. It
+requires a different boot UUID, reruns the probe and reads the exact marker again.
+Command IDs are deterministic per attempt/clone/step and differ before and after
+restart, preventing the durable command journal from replaying an old boot ID.
+Every upload acknowledgment and downloaded size/hash/revision is checked. A
+revision may change on remount; persisted content is compared by bytes and hash.
+
+Success returns an opaque `LumeNativeQualificationResult`. After normal teardown,
+`withVerifiedQualificationReceipt` verifies durable cleanup and invokes the
+publication callback while explicitly retaining the result, source lock and
+machine authority. It then reads back the exact receipt, applies ordinary clone
+readiness validation, and rechecks source ownership, stopped resources, disk
+snapshot and deleted clone. It exposes no ready receipt to publish after releasing
+those guards. The durable attempt journal and public qualification command still
+need integration, and this sequence requires fresh real-VM acceptance. Existing
+guest bundles lack the new probe: rebuild/sign the guest release and prepare a
+matching base before running it.
+
 No template is published and no reservation is added or extended by this path.
 Ordinary `create` still requires `LumeGuestTemplate.requireReady`; there is no
 public bypass flag. Qualification clones use the existing encrypted-storage,

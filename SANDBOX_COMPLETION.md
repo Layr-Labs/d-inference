@@ -5,6 +5,13 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
+Newest work implements the signed guest qualify-tenant probe, one-use native
+qualification sequence and lock-retaining readiness-publication callback. Full
+suite651tests/7skips/0failures,156.059s; focused8tests and CLI host-denial smoke pass.
+The public durable qualification owner/CLI is STILL NOT WIRED. The new guest
+binary must be packaged/signed and physically tested; no real VM ran this probe.
+Prior cleanup source4863f1e9a passes CI34851620108 and integration34851620200.
+
 The newest SDK change binds qualification clone/material identity before teardown
 and verifies the exact durable deletion receipt after release. It does not yet
 run native checks or publish readiness. Full suite643tests/7skips/0failures,
@@ -2354,3 +2361,111 @@ Next integration work:
    do not call the installed-only reader after successfully publishing readiness.
 Physical fresh restore/GUIboot/real receipt collection, login/logout recovery,
 build tools/performance, two-VM coordinator acceptance and packaging remain open.
+
+
+## 2026-09-14 — Native guest checks, cold-boot sequence and guarded publication
+
+Previous goal turn was progress (released-lease cleanup SDK). This turn is
+progress (native check/receipt implementation with automated evidence). The
+full goal is not complete: durable owner/CLI integration and physical gates remain.
+
+Implemented:
+-GuestQualificationProtocol pins the ordinary command executable/argument and
+ exact versioned output. No guest RPC operation or wire version was added.
+-GuestTenantQualification in the signed guest binary runs only as virtualized
+ real/effective UID/GID2001 with only2001supplementary groups (or no groups).
+ It checks absent numeric identities and legacy darkbloomtenant name, inability
+ to regain UID0, explicit EACCES/EPERM for root instance/control configuration,
+ guest executable write access and all observed disk/rdisk nodes (6...256), and
+ no non-loopback IPv4/IPv6 address. It opens but never reads protected data;
+ writable opens are closed without writing. It returns only a fixed success
+ marker. It uses ordinary authenticated command execution, no privileged RPC.
+-LumeNativeQualificationDriver verifies exact clean probe output, captures a
+ kernel boot UUID, uploads/downloads a marker binding qualification and clone
+ IDs, stops/starts, requires a DIFFERENT boot UUID, rechecks probe and marker.
+ Upload acknowledgment ID/state/offset/size/hash and download bytes/hash/size/
+ revision are validated. Revisions may change after remount; contents may not.
+ Command IDs hash attempt+clone+step and differ before/after boot, so the durable
+ host command journal cannot replay the old boot-ID response as a new boot.
+-LumeVirtualMachineRuntime.runNativeQualification requires the issuing runtime,
+ real managed process still running, private endpoint and matching cached
+ material instance in addition to the existing clone observation. A capability
+ gets one sequence; its flag is set before guest work. Driver closures in tests
+ do NOT construct the opaque package result. Actual production operations use
+ the normal fenced execute/file/stop/start methods and authenticate every reply.
+-LumeNativeQualificationResult has no caller constructor or Codable conformance.
+ It retains its observation/capability/source lock and records boot IDs/hash.
+-withVerifiedQualificationReceipt checks durable cleanup, constructs the schema2
+ record, invokes the callback under explicit withExtendedLifetime(result), then
+ reads back the exact published receipt through private/named descriptors and
+ the normal clone-readiness validator. Source ownership, stopped resources,
+ unchanged disk and deleted-clone/release proof are rechecked. No unguarded ready
+ receipt escapes for later publication after source authority is dropped.
+-The publication verifier is factored for focused file/readback tests. Those
+ fixtures explicitly synthesize native-check booleans; they test readback only
+ and cannot instantiate the real native result or confer actual qualification.
+
+Validation /private/tmp/darkbloom-sandbox-completion-evidence:
+-qualification-tenant-probe-tests.log:2tests pass for credential/virtualization
+ boundaries, raw-device names and denial-vs-missing/other errno classification.
+-native-qualification-build.log:first build used the wrong template initializer;
+ fixed to init(accountless:) with evidence.ready validation. Build-v2 passes.
+-native-qualification-driver-tests.log:6tests pass. Positive complete sequence,
+ deterministic but distinct pre/post command IDs, changing revision accepted;
+ wrong output/exit/stderr/truncation/timeout/boot IDs/response IDs, cleanup-required
+ replies, mismatched transfers/offset/hash/revision, lost marker and cancelled
+ restart rejected. Fake running metadata/materials cannot grant managed authority.
+-native-qualification-full-tests.log:649tests/7skips/0failures,143.121s before the
+ lock-retaining callback and publication verifier changes.
+-native-qualification-publication-tests.log:10affected tests pass after callback.
+-native-qualification-readback-tests.log:8pass; missing/changed/linked receipt,
+ changed disk and reappeared clone fail; exact existing receipt replays unchanged
+ while source guard remains held.
+-native-qualification-final-tests.log:651tests/7skips/0failures,156.059s; process0.
+-native-qualification-cli-smoke.json:actual guest executable rejects host execution
+ with exit78 and empty stdout. This is NOT a positive guest/VM test.
+-native-qualification-docs.log:286filespass; git diff --check clean.
+No native Lume patch changed. No guest package was built/signed/installed on the
+test Mac and no physical VM/profile was exercised with the new Swift probe.
+The earlier physical C fixture inspired the checks but is not evidence for this
+new binary. Old guest packages do not implement qualify-tenant; their hash/command
+must not be treated as compatible evidence for the new qualifier.
+
+Next concrete work is the durable selected-GUI qualification command, not another
+native-check helper. Use existing machineEX, protected permit/collection binding,
+current signed guest release and openExisting capacity state. Intent must precede
+reservation; reserve a fresh sandboxID/generation1/name/expiry and persist exact
+lease. Native create/start -> observe IDs -> native checks -> normal owned
+ deleteAndRelease -> withVerifiedQualificationReceipt callback. The callback
+ must durably save the exact ready record before BaseGuestTemplateStore publishes
+ it; SDK readback must finish before reporting qualified. Keep source/capability
+ retained across publication; the new callback API enforces this part.
+
+Recovery design constraints:
+-Use an actor owner so its private journal descriptors stay confined while
+ cancellation cleanup calls the runtime through detached work.
+-A prior incomplete attempt must settle its exact existing reservation/clone and
+ abort, then require a separately identified fresh attempt. Do not decode saved
+ booleans into the opaque observation/native result or rerun a consumed sequence.
+-Crash after reserve but before lease-journal publication: resolve only one
+ matching capacity row by original sandboxID/generation/name/resources/expiry;
+ never adopt another same-name VM. Use the normal owned deleteAndRelease path
+ for factory reservations, including a failed create with no surviving VM.
+-Fresh work uses host/disk admission. Recovery must retain cleanup availability
+ when disk space falls; do not expose a general ignore-disk switch.
+-Already-published replay may READ and verify the exact ready record against the
+ journal, original root collection disk/source and current signed guest files.
+ It must not publish a new ready record from saved booleans. The installed-only
+ store deliberately rejects ready files, so use its diskIdentity accessor plus
+ the ordinary ready-file validator for this readback, under a fresh source guard.
+-If publication failed after writing, preserve the file and treat the outcome as
+ uncertain until exact readback. Never overwrite a mismatched existing receipt.
+-Successful native checks plus cleanup are not enough without final publication;
+ command reports must keep installed/qualified/aborted states separate.
+
+Prior source4863f1e9a complete CI34851620108 and integration34851620200 now PASS.
+This new source needs its own CI after push. Keep PR996 draft. Remaining physical
+fresh restore/GUIboot/real collection, new signed-guest qualification, two-VM
+coordinator acceptance, login/logout recovery, build tools/performance and final
+packaging remain unchanged. Storage approval remains pending; no cache/model,
+fixture, service/group or production mutation occurred in this code segment.

@@ -9,7 +9,7 @@ import SandboxRuntime
 package final class LumeQualificationCloneObservation: Sendable {
     package let cloneInstallationID: UUID
     package let materialsInstanceID: UUID
-    fileprivate let capability: LumeQualificationCloneCapability
+    let capability: LumeQualificationCloneCapability
 
     fileprivate init(capability: LumeQualificationCloneCapability, cloneInstallationID: UUID, materialsInstanceID: UUID) {
         self.capability = capability; self.cloneInstallationID = cloneInstallationID
@@ -76,7 +76,7 @@ extension LumeVirtualMachineRuntime {
             specification: capability.specification) == capability.snapshot else { throw qualificationCleanupFailure() }
     }
 
-    private func requireQualificationDeletion(_ arbiter: SandboxHostCapacityArbiter, capability: LumeQualificationCloneCapability) throws {
+    func requireQualificationDeletion(_ arbiter: SandboxHostCapacityArbiter, capability: LumeQualificationCloneCapability) throws {
         guard let released = try arbiter.releasedDeletionScope(matching: capability.lease.scope,
                 virtualMachineName: capability.specification.name),
               try arbiter.deletionConfirmed(scope: released, virtualMachineName: capability.specification.name) else {
@@ -84,7 +84,7 @@ extension LumeVirtualMachineRuntime {
         }
     }
 
-    private func requireQualificationDirectoryAbsent(_ name: String) throws {
+    func requireQualificationDirectoryAbsent(_ name: String) throws {
         let directory = try SandboxAuthorityFileSystem.openPrivateDirectory(at: configuration.storageDirectory, createIfMissing: false)
         defer { close(directory) }
         var info = stat()

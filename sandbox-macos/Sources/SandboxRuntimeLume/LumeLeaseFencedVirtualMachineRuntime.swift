@@ -74,6 +74,15 @@ public actor LumeLeaseFencedVirtualMachineRuntime {
         try await runtime.verifyQualificationCleanup(observation)
     }
 
+    package func runNativeQualification(_ observation: LumeQualificationCloneObservation) async throws -> LumeNativeQualificationResult {
+        try await runtime.runNativeQualification(observation)
+    }
+
+    package func withVerifiedQualificationReceipt(_ result: LumeNativeQualificationResult,
+        publish: @Sendable (SandboxGuestTemplateReceipt) async throws -> Void) async throws {
+        try await runtime.withVerifiedQualificationReceipt(result, publish: publish)
+    }
+
     package func execute(
         scope: SandboxOperationScope,
         name: String,

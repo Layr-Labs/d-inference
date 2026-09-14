@@ -61,11 +61,29 @@ func (v *Verifier) authData(data []byte, attest bool) (*authenticator, error) {
 		}
 	}
 	if raw, ok := extensions["apple_validation_category_01"]; ok {
-		var category uint32
-		if decoder.Unmarshal(raw, &category) != nil {
-			return nil, invalid("validation_category")
+		category, err := validationCategory(raw)
+		if err != nil {
+			return nil, err
 		}
 		a.category = &category
 	}
 	return a, nil
+}
+
+func validationCategory(raw cbor.RawMessage) (uint32, error) {
+	if len(raw) != 0 {
+		switch raw[0] >> 5 {
+		case 0: // The validation article describes a UInt32.
+			var category uint32
+			if decoder.Unmarshal(raw, &category) == nil {
+				return category, nil
+			}
+		case 2: // Apple's worked example encodes four little-endian bytes.
+			var encoded []byte
+			if decoder.Unmarshal(raw, &encoded) == nil && len(encoded) == 4 {
+				return binary.LittleEndian.Uint32(encoded), nil
+			}
+		}
+	}
+	return 0, invalid("validation_category")
 }

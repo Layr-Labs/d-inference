@@ -90,7 +90,7 @@ func testAuth(t *testing.T, key *ecdsa.PrivateKey, counter uint32, attestation b
 		cose, _ := cbor.Marshal(map[int]any{1: 2, 3: -7, -1: 1, -2: public[1:33], -3: public[33:]})
 		b = append(b, cose...)
 	}
-	ext, _ := cbor.Marshal(map[string]any{"apple_bundle_version_01": "0.9.2", "apple_validation_category_01": 6})
+	ext, _ := cbor.Marshal(map[string]any{"apple_bundle_version_01": "0.9.2", "apple_validation_category_01": []byte{6, 0, 0, 0}})
 	return append(b, ext...)
 }
 

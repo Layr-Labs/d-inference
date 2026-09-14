@@ -1,6 +1,6 @@
 # App Attest shadow protocol and observations
 
-> Last updated: 2026-09-14 · commit `82d2bbafd`
+> Last updated: 2026-09-14 · commit `2f39698d2`
 
 Reference for the optional App Attest exchange alongside APNs and MDM. Shadow evidence is stored and measured independently; it never changes provider trust, routing, rewards, or the minimum supported macOS version. The rollout decision is in [the coexistence plan](../design/app-attest-migration.md).
 
@@ -59,6 +59,8 @@ The coordinator emits `App Attest shadow observation` through its telemetry emit
 
 `verified` establishes cryptographic validity and the required Mac ACL for an attestation, or signature/freshness/counter validity for an assertion. Missing or mismatched app-version/launch metadata is a separate observation, never silently promoted to an accepted release policy. A metadata match compares the app fields with registration; it does not establish membership in the approved-release catalog. Apple-originated fields are distinct from provider reports. Fraud-receipt polling is not implemented in this release.
 
+`coordinator/appattest/authenticator.go` (`validationCategory`) accepts an unsigned CBOR integer fitting `uint32` or an exact four-byte little-endian byte string for `apple_validation_category_01`. It rejects other representations, including null; unknown numeric values remain unknown categories. This compatibility rule does not relax signature or Mac policy checks. See the [specification review](../reports/2026-09-14-app-attest-spec-review.md) and [proposed retirement policy](../design/app-attest-retirement.md) for evidence and remaining work.
+
 Coverage analysis must count distinct provider/session identities, not raw event counts. Separate registration, preparation, key enrollment, and assertion populations. Group logs by reported OS/build/hardware; keep unsupported, unconfigured, disconnected, busy, timeout, invalid-proof, and dropped observations visible. Do not equate repeated assertions from one Mac with coverage of additional Macs. The database key table is not a coverage denominator: it contains successful enrollments only. Logs/metrics retain their existing telemetry retention and delivery limits.
 
 ## Storage
@@ -75,6 +77,6 @@ The real adapter checks macOS 27+, `DCAppAttestService.isSupported`, the app bun
 
 ## Validation
 
-Run `go test ./coordinator/appattest ./coordinator/protocol ./coordinator/store ./coordinator/api -run TestAppAttest`, and repeat with `-race`. PostgreSQL tests require a disposable `DATABASE_URL`; the store harness truncates test tables. In `provider-swift`, run `swift test --filter 'AppAttestShadowTests|AppAttestEntitlementPolicyTests'`. Run `python3 scripts/test-app-attest-entitlements.py` and `python3 scripts/test-provider-signing-validation.py` for packaging controls.
+Run `go test ./coordinator/appattest ./coordinator/protocol ./coordinator/store ./coordinator/api -run 'TestAppAttest|TestValidationCategoryEncodings|TestAssertionAuthenticatesByteEncodedCategory'`, and repeat with `-race`. PostgreSQL tests require a disposable `DATABASE_URL`; the store harness truncates test tables. In `provider-swift`, run `swift test --filter 'AppAttestShadowTests|AppAttestEntitlementPolicyTests'`. Run `python3 scripts/test-app-attest-entitlements.py` and `python3 scripts/test-provider-signing-validation.py` for packaging controls.
 
 The API coexistence test first proves a provider is eligible, processes failed and successful shadow evidence, checks authoritative state/capacity, and completes encrypted inference. Tests use private fixtures without allowing production root overrides. Live Mac, final signing/notarization, and production rollout remain separate acceptance results.

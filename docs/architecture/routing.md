@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-13 · commit `f6b5e111c`
+> Last updated: 2026-09-14 · commit `641bd53b0`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -364,7 +364,7 @@ cancel and releases the reservation. A backup win sets `BackupWon`, emits
 `inference.speculative_win`, and is counted by
 `recordHedgeOutcome`. Both attempts are marked `UsedBackup`; settlement
 excludes them from TTFT calibration (`observeTTFTCalibration`,
-`coordinator/api/settlement.go`). The acquired governor slot is released
+`coordinator/api/ttft_calibration.go`). The acquired governor slot is released
 exactly once on every exit path (`noteHedgeResolved`).
 
 ### Early-429 servability predictor
@@ -745,7 +745,7 @@ must not run in parallel with other scheduler tests in the same process.
 | Capacity-rate penalty and cooldown | `coordinator/registry/capacity_rate.go`, `coordinator/registry/capacity_cooldown.go` |
 | Breakers and ejection | `coordinator/registry/error_cooldown.go`, `coordinator/registry/provider_breaker.go`, `coordinator/registry/health_ejection.go` |
 | Reputation | `coordinator/registry/reputation.go` — `Score`, `RecordLatency` |
-| TTFT calibration | `coordinator/registry/ttft_calibration.go`; fed by `observeTTFTCalibration` in `coordinator/api/settlement.go` |
+| TTFT calibration | `coordinator/registry/ttft_calibration.go`; fed by `observeTTFTCalibration` in `coordinator/api/ttft_calibration.go` |
 | Hedge timing, governor, race | `coordinator/api/hedge_schedule.go`, `coordinator/api/hedge_governor.go`, `coordinator/api/dispatch.go` (`runSpeculative`, `runRace`), `coordinator/api/first_token_clock.go` |
 | Probes and plan wiring | `coordinator/api/dispatch_plan_wiring.go` |
 | `Retry-After`, speculative ratio, route EWMA | `coordinator/api/consumer.go` — `estimateRetryAfter`, `estimateTTFTRetryAfter`, `speculativeTimerRatio` |

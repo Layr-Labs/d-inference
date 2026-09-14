@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `42727c9fc`
+> Last updated: 2026-09-14 · commit `641bd53b0`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -89,6 +89,11 @@ binary, service or build target is required. See [catalog ownership](../architec
 Inference response formatting and relays build as `coordinator/inference/response/`,
 with lifecycle services supplied by `coordinator/api/response_writer.go`. It is
 part of the same coordinator binary and needs no additional build target.
+
+Inference accounting builds as `coordinator/inference/settlement/`, bound by
+`coordinator/api/inference_settlement.go` to the existing ledger and hold map.
+It uses the same module and coordinator build targets; see
+[billing ownership](../architecture/billing.md#inference-accounting-ownership).
 
 The normal Go build includes the profiler owner and telemetry queue packages
 under `coordinator/telemetry/`. Their API adapters link them into the same

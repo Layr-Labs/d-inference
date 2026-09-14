@@ -1,6 +1,6 @@
 # Request Outcome Observability
 
-> Last updated: 2026-09-14 · commit `42727c9fc`
+> Last updated: 2026-09-14 · commit `641bd53b0`
 
 Every provider dispatch attempt ends in one claimed terminal outcome, and that outcome is recorded three ways: a closed `final_status` / `error_class` / `error_reason` triple on the `inference_routes` row, a per-attempt `request_profiles` row with separate `client_outcome` and `provider_outcome` columns, and a small set of low-cardinality Datadog counters. Requests refused before dispatch land in the `request_rejections` ledger instead. This page explains the existing attempt taxonomy and protected counters. The unsampled incoming-request ledger, its coverage limits, and separate egress/completion evidence are defined in [incoming request accounting](request-accounting.md).
 
@@ -228,7 +228,7 @@ All admin reads require the admin key (`requireAdminKey`).
 | Pre-commit arms, dispatch error classes, exhausted-status reclassification, `request_outcome` emit | `coordinator/api/dispatch.go`, `coordinator/api/first_token_clock.go`, `coordinator/api/openrouter_uptime.go` |
 | Post-commit and pre-response relay arms | `coordinator/inference/response/stream.go`, `coordinator/inference/response/nonstream.go`, `coordinator/inference/response/generic_relay.go`; `coordinator/api/response_writer.go` (`responseServices`) maps these outcomes; dispatch terminals remain in `coordinator/api/dispatch_terminal_write.go` |
 | Provider terminals, consumer-gone handling | `coordinator/api/provider.go`, `coordinator/api/inference_error_sanitize.go` |
-| Settlement grace and no-terminal refund | `coordinator/api/settlement.go` |
+| Settlement grace and no-terminal refund | `coordinator/api/settlement.go` (`holdForSettlement`) keeps the outcome/metric policy; `coordinator/inference/settlement/holder.go` (`Holder`) owns parked records and `coordinator/inference/settlement/refund.go` (`Refund`) owns the financial operation |
 | Client-gone and partial-success counters | `coordinator/api/prompt_buckets.go`, `coordinator/api/partial_success_metrics.go` |
 | Timing histograms, KV-backend attribution | `coordinator/api/timing_metrics.go`, `coordinator/api/kv_backend_metrics.go`, `coordinator/registry/kv_backend.go` |
 | Rejection ledger and servability gate | `coordinator/api/rejection_telemetry.go`, `coordinator/api/inference_admission.go`, `coordinator/api/servability_gate.go` |

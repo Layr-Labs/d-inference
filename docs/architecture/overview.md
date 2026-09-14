@@ -1,6 +1,6 @@
 # System overview — how a Darkbloom request works
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-14 · commit `641bd53b0`
 
 Darkbloom sells inference on other people's Apple Silicon Macs. A Go
 **coordinator** accepts OpenAI- and Anthropic-shaped HTTP requests, picks an
@@ -165,8 +165,10 @@ consumer routing to a provider it owns (self-route) pays nothing.
    `coordinator/api/inference_admission.go`) and settled from
    `inference_complete` (`handleComplete`, `coordinator/api/provider.go`): the
    difference is refunded, an overage is charged. A request that fails before
-   any provider usage is reported is refunded in full (`refundReservedBalance`,
-   `coordinator/api/consumer.go`).
+   any provider usage is reported is refunded in full (`Service.Refund`,
+   `coordinator/inference/settlement/refund.go`). Accounting is owned by
+   `Service.Complete` (`coordinator/inference/settlement/completion.go`); the API
+   retains the terminal claim and consumer-channel signals.
 6. The provider version the coordinator advertises (`LatestProviderVersion`,
    `coordinator/api/server.go`) equals `ProviderCore.version`; the test
    `coordinator/api/provider_version_sync_test.go` enforces it.

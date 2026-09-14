@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-14 · commit `42727c9fc`
+> Last updated: 2026-09-14 · commit `641bd53b0`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -466,6 +466,7 @@ ring or `DaemonState` mirror.
 | Routing queue | `coordinator/telemetry/routequeue/` (`Sink`, `CloseAndWait`) |
 | Fleet sampler, retention loop, metrics | `coordinator/api/profiler_fleet.go`, `coordinator/registry/fleet_sample.go` |
 | Dispatch hooks and `X-Timing` | `coordinator/api/profiler_dispatch.go`; timing projection in `coordinator/inference/response/timing.go` |
+| Settlement timing | `coordinator/inference/settlement/completion.go` (`Service.Complete`) stamps `SettleDBUS` after referral and credit operations; provider-terminal/profile lifecycle remains in `coordinator/api/provider.go` |
 | Response egress stamps | `coordinator/inference/response/egress_profile.go` (`relayStamps`, `Writer.Body`); actual writer results are supplied to the API through `WriteObserver` |
 | Admin endpoints | `coordinator/api/profiler_admin.go`, `coordinator/api/admin_telemetry.go` |
 | Profiles and attempts | `coordinator/registry/request_profile.go`, `coordinator/registry/attempt_profile.go`, `coordinator/registry/attempt_profile_finalize.go` |

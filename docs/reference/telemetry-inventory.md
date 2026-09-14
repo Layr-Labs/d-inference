@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-13 · commit `a3493b5ac`
+> Last updated: 2026-09-14 · commit `641bd53b0`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -127,7 +127,7 @@ lists every name).
 | `inference.cancel_to_terminal_ms` | histogram | `terminal`, `model`, `cause` | first successful enqueue to terminal or last later stray chunk; no sample for an unsent cancel (`emitExpiredCancelEntries`) |
 | `routing.client_gone` | count | `model`, `prompt_bucket`, `chip_family`, `phase` (`before_first_token`, `after_commit`), `deadline_bucket` | consumer disconnect (`coordinator/api/prompt_buckets.go`, `emitClientGoneBucketed`) |
 | `routing.provider_breaker_open` / `_closed`, `routing.provider_ejected` / `routing.provider_ejection_recovered`, `routing.cooldown_entered`, `routing.capacity_cooldown_tripped`, `routing.load_failure_cooldowns` | count | `model` (+ `provider_id` for capacity cooldown) | fault-tracker transitions (`coordinator/api/consumer.go`, `provider.go`) |
-| `routing.ttft_calibration_ratio` | gauge | `model` | each TTFT observation (`coordinator/api/settlement.go`) |
+| `routing.ttft_calibration_ratio` | gauge | `model` | each TTFT observation (`coordinator/api/ttft_calibration.go`) |
 | `routing.unservable_reclassified`, `routing.first_chunk_timeout_reclassified`, `routing.client_error_passthrough`, `routing.oversized_request_rejected`, `routing.deadline_unreachable_rejected`, `routing.invalid_ttft`, `routing.dispatch_client_error_stop`, `routing.first_chunk_timeout_ladder_capped`, `routing.hedge_governor_suppressed`, `routing.pending_load_backoff`, `routing.scan_admission_timeout`, `routing.ttft_admission`, `routing.ttft_spread`, `routing.provider_selected`, `routing.load_model_rejects` | count | mostly `model` | routing edge cases |
 | `http.requests` (count), `http.latency_ms` (histogram) | — | `method`, `path`, `status_code` | every HTTP request (`loggingMiddleware`, `coordinator/api/server.go`) |
 

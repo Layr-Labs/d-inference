@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-14 · commit `c8a3f45d0`
+> Last updated: 2026-09-14 · commit `641bd53b0`
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -88,7 +88,9 @@ rewards) and can pay out through Stripe Connect; deposits and invite credits
 never count toward it, so a pure consumer sees `0`. `GET /v1/payments/usage` lists settled
 requests with `job_id`, `model`, `prompt_tokens`, `completion_tokens`,
 `cost_micro_usd`, `timestamp` (`coordinator/api/consumer.go` `handleBalance`,
-`handleUsage`). Console users get the same figures from `GET /v1/me/summary`
+`handleUsage`; usage is recorded by `recordCompletionUsage` in
+`coordinator/inference/settlement/completion_usage.go`). Console users get the
+same figures from `GET /v1/me/summary`
 (**Privy**). Usage is a recent-history view, not a complete billing export;
 the process retains the newest entries up to the [usage history limit](../reference/pricing-model.md#constants).
 Dashboard earnings windows include every row in each window, without the old

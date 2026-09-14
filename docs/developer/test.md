@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `42727c9fc`
+> Last updated: 2026-09-14 · commit `641bd53b0`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -101,6 +101,26 @@ the actual mutation, routing publication and immediately refreshed marketplace a
 install views. The existing `TestCatalogSyncRejectsInflightCachePublication`
 keeps delayed fills from publishing into a newer cache generation. These cases
 use local stores and HTTP fixtures; they require no model or production access.
+
+Reservation/holder tests live beside their owner in
+`coordinator/inference/settlement/`. API tests retain actual terminal handling,
+service configuration, refund failures and client-disconnect outcomes. Run the
+accounting and response boundaries together from the repository root:
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api/... ./coordinator/inference/... -count=1
+```
+
+`TestCompletionPublishesUsageBeforeCreditsAndConsumerTerminal`
+(`coordinator/api/settlement_order_test.go`) pauses the real provider credit to
+check that the charge and in-memory usage precede payout and consumer-channel
+completion. It also passes against the pre-extraction API implementation.
+`TestCompletionObservationPrecedesCurrentReferralAndPayouts`
+(`coordinator/inference/settlement/completion_order_test.go`) checks the public
+usage alias, late referral binding, exact credit amounts and reservation
+finalization using real memory-store/ledger operations and an explicit account
+fee. These checks require no payment credentials or model runtime.
 
 Run prediction telemetry checks from the repository root:
 

@@ -5,7 +5,8 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
-The native installer-v1 profile is now implemented as pinned patch13. It accepts
+The native installer-v1 profile is pushed in e518872e7954030e3e17d36de55dde4c11aefc6a
+as pinned patch13. It accepts
 one private boot disk, requires macOS/BLC/EX and disabled display/VNC, rejects
 extra devices/storage overrides and removes all host/guest bridge devices.
 Fresh signed build:205native tests plus19required selectors pass. Sandbox610tests/
@@ -1926,3 +1927,14 @@ snapshot under machine EX, bind real/effective/audit/session identity, preserve
 native/BLC stop cleanup, and retain capacity on uncertain outcomes. Final root
 collection must validate exact guest receipts before installed-checkpoint output;
 qualification still requires released-lease cleanup before ready publication.
+
+
+Profile sourcee518872e7954030e3e17d36de55dde4c11aefc6a is pushed; all pre-push
+checks passed (profile evidence/push.log). PR996 remains draft and now includes
+installer-v1 in its After diagram and explicit physical/one-use orchestration
+limits. New CI34839970219 is queued, integration34839970313 is running, and
+benchmark34839970265 awaits separate environment approval. Operator-source
+CI34838853984/integration34838853908 were still running at the last observation.
+No local build/test/SSH session remains live. This checkpoint-only commit follows
+the pushed code. Continue implementation of the boot journal/GUI owner; do not
+restart native builds or the completed staging campaigns without a new reason.

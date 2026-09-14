@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-13 · commit `c3ff0df7e`
+> Last updated: 2026-09-14 · commit `88a39daa8`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -24,7 +24,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Code-identity proof, APNs budgets and encrypted resume | `coordinator/providercontrol/codeidentity/` (`Manager`); the API adapter binds the release snapshot, startup proof store and live coverage store |
 | Readiness, admin draining and graceful shutdown | `coordinator/api/readiness/` (`Controller.Gate`, `Ready`, `Drain`, `WaitForInflightZero`); `coordinator/api/drain.go` binds one owner for routes and public shutdown methods |
 | Downloading a coordinator state archive | `coordinator/api/statearchive/` (`Controller.Download`, root selection, streamed byte accounting); `coordinator/stateexport/` (`Archiver.Stage`, `Write`, `EncryptWriter`) |
-| Release HTTP, artifact validation, discovery and deactivation | `coordinator/api/releases/` (`Controller`); `coordinator/api/releases.go` binds current inventory, cache and policy dependencies; `coordinator/api/admin_auth.go` retains admin authorization and OTP |
+| Release HTTP, artifact validation, discovery and deactivation | `coordinator/api/releases/controller.go` (`Controller`); `coordinator/api/releases.go` (`newReleaseAPI`) binds current inventory, cache and policy dependencies; `coordinator/api/admin_auth.go` (`isAdminAuthorized`, `handleAdminAuthInit`, `handleAdminAuthVerify`) retains admin authorization and OTP |
 | Active releases, binary allowlists, runtime verification and evidence generations | `coordinator/providercontrol/releasepolicy/` (`Manager`, `Snapshot`); `coordinator/api/release_policy.go` binds inventory and fleet |
 | Provider selection, admission, queueing | `coordinator/registry/`; request eligibility in `request_traits.go` (`providerEligibleForTraitsLocked`) |
 | Billing and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/` |

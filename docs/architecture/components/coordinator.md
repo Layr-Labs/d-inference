@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-14 · commit `60557f3b0`
+> Last updated: 2026-09-14 · commit `88a39daa8`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -47,7 +47,7 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/env` | `EnvPrefix` (`EIGENINFERENCE`) and the `EnvOr`/`EnvInt`/`EnvFloat`/`EnvBool` helpers. |
 | `coordinator/api` | The HTTP router (`routes` in `server.go`), middleware, consumer handlers (`consumer.go`), the provider WebSocket (`provider.go`), dispatch ladder (`dispatch.go`), sender encryption, admin, release, model-registry, device-auth and Stripe handlers, drain, profiler wiring. |
 | `coordinator/api/requestcontext` | Private context keys and typed account, API-key and request-ID access shared by middleware and endpoint packages (`WithAccountID`, `WithAPIKey`, `WithRequestID`). |
-| `coordinator/api/statearchive` | Feature/auth/output gates and streaming HTTP response (`Controller.Download`); `api/state_archive.go` binds current admin credentials/logger, while `stateexport` retains staging and encryption. |
+| `coordinator/api/statearchive` | Feature/auth/output gates and streaming HTTP response (`Controller.Download`); `coordinator/api/state_archive.go` (`newStateArchiveAPI`) binds current admin credentials/logger, while `stateexport` retains staging and encryption. |
 | `coordinator/api/releases/controller.go` (`Controller`) | Release registration, metadata/origin/bundle verification, deactivation and cached discovery. `coordinator/api/releases.go` (`newReleaseAPI`) binds current store/cache/policy and existing authorization; `coordinator/api/admin_auth.go` (`isAdminAuthorized`) owns admin authorization. |
 | `coordinator/api/httpresponse` | JSON response writing and the common OpenAI-compatible error envelope (`WriteJSON`, `ErrorBody`); `WriteCachedJSON` and `EncodeCachedJSON` preserve pre-encoded response bytes. |
 | `coordinator/registry` | In-memory fleet view, scheduler and cost model, queue, warm pool, capacity breakers, health ejection, cache routing, TTFT calibration and shadow admission. |

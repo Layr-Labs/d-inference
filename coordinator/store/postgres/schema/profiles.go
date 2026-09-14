@@ -10,7 +10,7 @@ func profiles() []string {
 		// plain CREATE INDEX statements never lock a populated table; any FUTURE
 		// index on these tables must be built CONCURRENTLY outside this loop
 		// (see ensureProviderEarningsJobIndex). The request_waterfall view is NOT
-		// here — it is applied by hand from store/migrations/request_waterfall.sql.
+		// here — apply store/postgres/migrations/request_waterfall.sql by hand.
 		RequestOutcomesTableDDL,
 		`CREATE INDEX IF NOT EXISTS idx_request_outcomes_received ON request_outcomes (received_at, coord_request_id)`,
 		RequestProfilesTableDDL,

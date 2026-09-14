@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-14 · commit `6b49c898c`
+> Last updated: 2026-09-14 · commit `1470332c8`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -45,7 +45,7 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/cmd/coordinator` | `main.go` (`main`): configuration, resource lifetimes and shutdown; named setup functions in subsystem files bind the owners before serving. |
 | `coordinator/config` | `AppConfig` — composes every package's `ReadConfig` and runs their `Check` methods. |
 | `coordinator/env` | `EnvPrefix` (`EIGENINFERENCE`) and the `EnvOr`/`EnvInt`/`EnvFloat`/`EnvBool` helpers. |
-| `coordinator/api` | The HTTP router (`routes` in `server.go`), middleware, consumer handlers (`consumer.go`), the provider WebSocket (`provider.go`), dispatch ladder (`dispatch.go`), sender encryption, account, admin, release, billing and catalog dependency wiring, runtime catalog publication, drain, profiler wiring. |
+| `coordinator/api` | The HTTP router (`routes` in `server.go`), middleware, consumer handlers (`consumer.go`), the provider WebSocket upgrade and inference frames (`provider.go`), dispatch ladder (`dispatch.go`), sender encryption, account, admin, release, billing and catalog dependency wiring, runtime catalog publication, drain, profiler wiring. |
 | `coordinator/api/billing` | Billing, pricing, referrals, earnings, Stripe Connect and Global Payouts HTTP controllers and payout reconciliation (`Controller`); `billing_controller.go` in the parent API package binds shared services, store, cache, metrics and authorization. |
 | `coordinator/api/catalog` | Model publishing, manifests, aliases, consumer/marketplace/install projections and cache invalidation (`Controller`); `catalog_controller.go` in the parent API package binds current store and credentials, fleet views, the shared cache and runtime publication callback. |
 | `coordinator/api/accounts` | `Controller`: legacy/named API keys, key policy, device code/approval/token exchange and invites. Store operations remain behind narrow key/device/invite interfaces; the router supplies the existing auth cache and live store/console/admin bindings through `account_controller.go`. |
@@ -83,10 +83,11 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/apns` | APNs push attestor for code identity. |
 | `coordinator/mdm` | MicroMDM transport, outstanding-command correlation and webhook dispatch; scheduler claim and worker state live in `coordinator/providercontrol/mdmscheduler/`. |
 | `coordinator/auth` | Privy JWT verification. |
+| `coordinator/providercontrol/session` | Connection-local frame dispatch, registration/capability publication, heartbeat and ordered teardown (`Session`); API adapters bind the existing verification, release-policy, scheduler and inference owners. |
 | `coordinator/providercontrol/trustreuse` | Durable device-evidence cache, trust-reuse admission, journal authority/replay and continuity tracking (`Manager`); API adapters supply verified release facts and keep the ordered shutdown boundary. |
 | `coordinator/providercontrol/challenge` | Per-connection nonce tracking, challenge transport, ordered signature/posture/integrity checks and success/failure transitions (`Session`, `Verifier`); API lifecycle and live policy/trust dependencies stay explicit. |
 | `coordinator/providercontrol/mdmscheduler` | Durable MDM/MDA queue, claims, worker budget, connection generations and exact late-command ownership (`Scheduler`); API adapters keep live resources and trust-grant policy. |
-| `coordinator/providercontrol/verification` | Signed registration, identity-scoped reconnect recovery, SecurityInfo outcomes and cached/fresh MDA checks (`Verifier`); each scheduled `Attempt` shares its observations with API callbacks. Connection publication remains in API; scheduler claims belong to `mdmscheduler`. |
+| `coordinator/providercontrol/verification` | Signed registration, identity-scoped reconnect recovery, SecurityInfo outcomes and cached/fresh MDA checks (`Verifier`); each scheduled `Attempt` shares its observations with API callbacks. Connection publication belongs to `session`; scheduler claims belong to `mdmscheduler`. |
 | `coordinator/providercontrol/codeidentity` | Per-device code-identity proof, APNs budget admission, encrypted resume, nonce verification and code continuity (`Manager`); the API supplies an immutable release-policy view and retains lifecycle ordering. |
 | `coordinator/providercontrol/releasepolicy` | Private release generations, binary allowlist and runtime manifest (`Manager`); `Snapshot` supplies immutable code-identity and evidence decisions. Inventory recovery, challenge runtime policy and live fleet revalidation live here; `api/release_policy.go` supplies current dependencies. |
 | `coordinator/profilesign` | CMS signing of the enrollment profile. |
@@ -107,6 +108,47 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/telemetry/outcomequeue` | Independent unsampled outcome snapshot buffer, process counters and bounded close-time drain (`Sink`, `Submit`, `Stats`, `Close`). |
 | `coordinator/saferun` | Panic-safe goroutine launcher used by every background loop. |
 | `coordinator/deploy` | `start.sh` container entrypoint (persistent disk, MicroMDM). |
+
+## Provider connection lifecycle
+
+`coordinator/api/provider.go` (`handleProviderWS`) keeps the HTTP upgrade,
+connection ID and read limit. Its adapter in `coordinator/api/provider_session.go`
+(`providerReadLoop`, `providerSessionDependencies`) creates one
+`Session` (`coordinator/providercontrol/session/session.go`) for that accepted socket. The session retains
+the original provider pointer, challenge tracker and scheduler generation until
+teardown; the registry and shared verification owners retain their own state.
+
+| Concern | Owner |
+|---|---|
+| Frame decode, registration guards and dispatch | `coordinator/providercontrol/session/read.go` (`Session.Run`) |
+| Registry publication, registration verification, account linkage, runtime policy and loop startup | `coordinator/providercontrol/session/registration.go` (`register`, `VerificationPriority`) |
+| Accepted capacity snapshots and existing metric callbacks | `coordinator/providercontrol/session/heartbeat.go` (`heartbeat`, `ApplyHeartbeat`) |
+| Cache receipt delivery and existing metric callbacks | `coordinator/providercontrol/session/cache_receipts.go` (`cacheLookup`, `cacheReady`, `cacheLookupV2`, `cacheReadyV2`) |
+| Owned load replies and catalog-validated model updates | `coordinator/providercontrol/session/model_status.go` (`loadModelStatus`, `modelsUpdate`) |
+| Read-failure classification, durable reason and teardown | `coordinator/providercontrol/session/disconnect.go` (`readFailed`, `closeSessionWithReason`, `disconnect`) |
+| Current resources and typed inference callbacks | `coordinator/providercontrol/session/dependencies.go` (`Dependencies`, `InferenceFrames`); `coordinator/api/provider_session.go` (`providerSessionDependencies`) |
+
+Accepted, chunk and error callbacks run in the read loop. Completion records its
+ingress timestamp first, then invokes the existing API completion callback in a
+panic-safe goroutine. The inference-frame handlers and terminal lifecycle remain
+in `coordinator/api/provider.go`, calling the existing inference services for
+settlement and response. This owner introduces no second pending-request,
+accounting or cancellation state.
+
+Teardown cancels the connection context, unbinds its exact scheduler key and
+generation, clears code-resume state, stops device then code coverage, calls
+`Registry.DisconnectWithReason`, and closes the socket, in that order
+(`Session.Run`, `disconnect`). Before that deferred teardown, `readFailed` marks
+a registered provider still in the registry offline (preserving untrusted status)
+and attempts the specific durable close reason with a `3 * time.Second` timeout.
+It skips both steps during coordinator shutdown; startup reconciliation owns
+the existing restart reason.
+
+Resource getters preserve current API store, registry, logger and policy reads.
+The MDM scheduler keeps its separately configured startup claim store; Session
+calls the existing release-policy manager instead of copying its inventory or
+runtime manifest. Trust and routing gates are unchanged; see
+[attestation](../security/attestation.md) and [scheduling](../scheduling.md).
 
 ## Startup sequence
 

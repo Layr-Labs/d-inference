@@ -1,6 +1,6 @@
 # System overview — how a Darkbloom request works
 
-> Last updated: 2026-09-13 · commit `c3ff0df7e`
+> Last updated: 2026-09-14 · commit `1470332c8`
 
 Darkbloom sells inference on other people's Apple Silicon Macs. A Go
 **coordinator** accepts OpenAI- and Anthropic-shaped HTTP requests, picks an
@@ -69,7 +69,7 @@ sequenceDiagram
    trust level, and re-challenges every
    [`DefaultChallengeInterval`](security/attestation.md#layer-2--periodic-challenge),
    allowing [`ChallengeResponseTimeout`](security/attestation.md#layer-2--periodic-challenge)
-   for the answer (`coordinator/api/provider.go`). The provider heartbeats every
+   for the answer (`coordinator/providercontrol/challenge/loop.go`, `Session.Run`). The provider heartbeats every
    [`heartbeat_interval_secs`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)
    with capacity, slot state, and telemetry; the coordinator's heartbeat timeout
    and eviction rule are in [`scheduling.md`](scheduling.md#heartbeat-cadence-and-eviction).
@@ -198,7 +198,8 @@ consumer routing to a provider it owns (self-route) pays nothing.
 | Route table and middleware | `coordinator/api/server.go` (`routes`) |
 | Chat / Responses handler | `coordinator/api/consumer.go` (`handleChatCompletions`) |
 | Completions / Messages handler | `coordinator/api/consumer.go` (`handleGenericInference`) |
-| Provider WebSocket, registration, challenges | `coordinator/api/provider.go` |
+| Provider WebSocket and connection lifecycle | `coordinator/api/provider.go` (`handleProviderWS`); `coordinator/providercontrol/session/read.go` (`Session.Run`) |
+| Registration publication and challenge startup | `coordinator/providercontrol/session/registration.go` (`register`); `coordinator/providercontrol/challenge/loop.go` (`Session.Run`) |
 | Attestation verification | `coordinator/attestation/attestation.go` |
 | Eligibility gate | `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`) |
 | Cost model and reservation | `coordinator/registry/scheduler.go` |

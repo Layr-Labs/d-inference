@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-14 · commit `6b49c898c`
+> Last updated: 2026-09-14 · commit `1470332c8`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -60,8 +60,8 @@ anything else to `unknown`):
 |---|---|
 | `heartbeat` | A provider heartbeat for any model it serves (`Heartbeat`, `coordinator/registry/heartbeat.go`). |
 | `idle` | A provider finished a request (`SetProviderIdle`). |
-| `challenge` | A provider passed a challenge and became eligible (`coordinator/api/provider.go`, `coordinator/providercontrol/codeidentity/response.go` (`HandleResponse`)). |
-| `load` | A provider reported a model load complete (`coordinator/api/provider.go`). |
+| `challenge` | A provider passed a challenge and became eligible (`coordinator/providercontrol/challenge/verify.go` (`Verifier.VerifyResponse`), `coordinator/providercontrol/codeidentity/response.go` (`HandleResponse`)). |
+| `load` | A provider reported a model load complete (`coordinator/providercontrol/session/model_status.go`, `loadModelStatus`). |
 | `disconnect` | A provider left; queued requests it alone could have served fail fast (`Disconnect`). |
 | `kick` | Cold-dispatch kick from the API layer when a request is enqueued (`coordinator/api/cold_dispatch.go`). |
 | `unknown` | Any other caller of the public drain helpers (`coordinator/registry/scheduler.go`). |
@@ -521,7 +521,7 @@ classification unchanged.
 
 `Registry.Disconnect` (`coordinator/registry/provider_lifecycle.go`) is the single
 teardown path, reached from socket close and from eviction. On socket close
-the provider handler (`coordinator/api/provider.go`) first flips the record to
+the connection owner (`coordinator/providercontrol/session/disconnect.go`, `readFailed`) first flips the record to
 `StatusOffline` — failing the routing gate `offline` at once, so a slow
 session-close write can never leave a dead provider selectable — and only then
 runs the deferred `Disconnect`. `offline` is therefore a transient state between

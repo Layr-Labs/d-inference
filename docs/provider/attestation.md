@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-14 · commit `6b49c898c`
+> Last updated: 2026-09-14 · commit `1470332c8`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -131,6 +131,8 @@ darkbloom status
 | `self_signed / online`, reason `SE attestation verified, awaiting MDM verification` | Enrolment not complete or the report has not arrived yet — see Troubleshooting |
 | any level `/ untrusted` with a failure reason | The coordinator stopped routing to you — see Troubleshooting |
 
+The coordinator [connection owner](../architecture/components/coordinator.md#provider-connection-lifecycle)
+starts verification and keeps teardown tied to the accepted socket.
 Registration recovery and device checks use the coordinator
 [verification owner](../architecture/security/attestation.md#registration-and-device-verification-ownership).
 A stored MDA chain is only a reuse candidate until it verifies against the current

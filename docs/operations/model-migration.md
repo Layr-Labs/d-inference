@@ -1,6 +1,6 @@
 # Migrate a public model to a new build
 
-> Last updated: 2026-09-14 · commit `ea5ce6b16`
+> Last updated: 2026-09-14 · commit `1470332c8`
 
 Runbook for moving a public model name (an **alias**, e.g. `gemma-4-26b`) from
 one concrete build to another with no downtime and without consumers ever
@@ -51,7 +51,7 @@ Not for: registering a brand-new model (that is just steps 1–2 plus
   calls, and vision if applicable. Disk verification proves bytes, not
   loadability; the hard-swap advertises the build **before** its first load, so
   an unloadable build turns the fleet into 500s until you revert (the
-  `load-failure cool-down started` path in `coordinator/api/provider.go` lets
+  `load-failure cool-down started` path in `coordinator/providercontrol/session/model_status.go` (`loadModelStatus`) lets
   alias resolution fall back to `previous_build`, but treat it as a backstop).
 - **For a takeover migration, pre-position the rollback build first** (step 6).
 - R2 access for publishing: `R2_ACCOUNT_ID`, `GCP_PROJECT`, and the Secret
@@ -215,7 +215,7 @@ lines to watch: `provider now advertises build (models_update)`,
 started`, and the deroute signature `provider active model hash matches no
 advertised model` (should not be sustained). Prefetch progress is **provider-
 side** only: the coordinator ignores `prefetch_model_status` frames
-(`coordinator/api/provider.go`, `TypePrefetchModelStatus`); look at the
+(`coordinator/providercontrol/session/read.go`, `Session.Run` / `TypePrefetchModelStatus`); look at the
 provider's log for `Scheduling desired-build prefetch retry`.
 
 Failed downloads retry with bounded backoff — `desiredPrefetchRetryDelays` in

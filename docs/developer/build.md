@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `5b86d2284`
+> Last updated: 2026-09-14 · commit `1470332c8`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -55,6 +55,7 @@ identifies each owner; changing this layout adds no migration or startup flag.
 |---|---|---|
 | `go.mod` (repo root) | Go | Single module `github.com/eigeninference/d-inference`; contains `coordinator/...` and `e2e/...`. There is no `go.work` and no nested `go.mod`. |
 | `coordinator/cmd/coordinator/` | Go | The coordinator binary; build the whole command package, including `main.go` and its subsystem setup files. |
+| `coordinator/providercontrol/session/` | Go | Per-connection lifecycle, compiled into the same coordinator command through `coordinator/api/provider_session.go` (`providerSessionDependencies`); no additional service or build step. |
 | `coordinator/api/accountfleet/`, `coordinator/api/network/` | Go | Dashboard and public network owners compiled into the coordinator through API wiring; no separate binary or build step. Tests live beside the owners and in the API boundary fixtures ([test.md](test.md)). |
 | `coordinator/promptsidecar/` | Rust | Crate `promptsidecar`, edition 2024, `Cargo.lock` committed; built with `--locked`. |
 | `provider-swift/` | SwiftPM | Products: `darkbloom` (CLI), `darkbloom-enclave`, `darkbloom-fan-helper`, `darkbloom-publish`; libraries `ProviderCore`, `ProviderCoreFoundation`, `DarkbloomFan*`. Platform `macOS 14+`. |

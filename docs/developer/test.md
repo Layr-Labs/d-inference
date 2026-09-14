@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `6b49c898c`
+> Last updated: 2026-09-14 · commit `1470332c8`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -380,6 +380,26 @@ not mutate the owner's policy maps.
 
 ```bash
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/providercontrol/releasepolicy ./coordinator/api -run 'Release|RuntimeManifest|BinaryHashPolicy|SyncBinaryHashes|SemverPrerelease'
+```
+
+Provider connection fixtures keep real WebSockets, registry publication and
+inference-frame boundaries in `coordinator/api/`. The pure disconnect-reason and
+closed load-status grammar tests live beside the owner in
+`coordinator/providercontrol/session/`. Existing test-only adapters preserve the
+heartbeat/priority assertions; heartbeat benchmarks construct their Session
+outside the timed loop.
+
+`coordinator/api/provider_session_ownership_test.go`
+(`TestProviderSessionUsesCurrentStoreForSpecificClose`) switches the API store
+binding during the real registration-token lookup, then closes the socket. The
+first durable close must use the current store and specific peer-close reason,
+after the provider is offline. The same fixture passes the original
+implementation and rejects a captured-store mutation. It uses local HTTP and
+WebSocket fixtures, with no provider executable, Apple service or model.
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api ./coordinator/providercontrol/session -run 'ProviderSession|SessionDisconnectReason|ReadErrorDisconnectReason|ValidLoadModelStatus|Heartbeat|ProviderRegistration' -count=1
 ```
 
 Provider challenge fixtures stay in `coordinator/api/` so they keep real

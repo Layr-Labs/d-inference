@@ -8,7 +8,7 @@ Darkbloom is a decentralized private inference network for Apple Silicon Macs. C
 coordinator/          Go control plane (packages live at top level, not internal/)
 ├── cmd/coordinator/  startup composition and shutdown (main.go); subsystem setup beside it
 ├── api/              HTTP + WebSocket handlers
-│   ├── consumer.go         OpenAI-compatible chat/completions/responses + Anthropic messages
+│   ├── inference_ingress.go live request-owner bindings for all four inference endpoints
 │   ├── provider.go         provider WS upgrade and attestation roster
 │   ├── requestauth/      credential middleware, shared API-key cache and linked-user identity
 │   ├── authentication.go current credential/store bindings for the router
@@ -34,7 +34,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 │   ├── routes.go           HTTP/WS route registration and controller middleware chains
 │   ├── http_middleware.go  global body caps, CORS and panic recovery
 │   ├── http_logging.go     request IDs, access logs and bounded HTTP metric labels
-│   ├── request_rate_limits.go account/key RPM; token_admission.go owns token admission
+│   ├── request_rate_limits.go account/key RPM; token_admission.go configures token limiters
 │   └── server.go           shared server state, construction and lifecycle
 ├── apns/             APNs-push code-identity attestation
 ├── attestation/      Secure Enclave + MDA verification
@@ -42,7 +42,8 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── billing/          Stripe (deposits + Connect payouts), referrals
 ├── config/           AppConfig aggregation of per-package configs
 ├── env/              shared env-var helpers/constants
-├── inference/        toolpolicy/ (request policy), response/ (endpoint formatting and relays),
+├── inference/        ingress/ (consumer preparation, media and token/capacity admission),
+│                     toolpolicy/ (request policy), response/ (endpoint formatting and relays),
 │                     settlement/ (reservation, refunds and completion accounting),
 │                     attempt/ (cancellation, terminal policy and provider feedback),
 │                     dispatch/ (provider preparation, queue/hedge/failover and commit),
@@ -80,7 +81,9 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── telemetry/        event emitter, metrics/, profiler/, routequeue/, profilequeue/, outcomequeue/
 ├── datadog/          Datadog APM / DogStatsD / Logs API client
 ├── deploy/           container entrypoint (start.sh)
-└── internal/e2e/     X25519 request-encryption helpers (+ cross-compat/tamper tests)
+└── internal/
+    ├── e2e/         X25519 request-encryption helpers (+ cross-compat/tamper tests)
+    └── inferencefixture/ shared test-only request bodies and independent estimator
 
 e2e/                  System-level E2E testing framework
 ├── integration_test.go  14 E2E tests (streaming, billing, encryption, attestation, etc.)

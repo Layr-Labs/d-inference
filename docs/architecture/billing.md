@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-14 · commit `6ad3d5605`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -17,7 +17,7 @@ how-to is [`consumer/billing.md`](../consumer/billing.md).
   admitted only after its worst-case cost is debited (or held), so a provider
   can never be owed money the consumer does not have. The reservation bound is
   what makes the `max_tokens` ceiling mandatory
-  (`coordinator/api/consumer.go`, `defaultMaxOutputTokens` comment).
+  (`coordinator/inference/ingress/output_bound.go`, `defaultMaxOutputTokens` comment).
 - **One unit.** Every balance, price, reservation, and ledger row is an
   `int64` in micro-USD (1 USD = 1,000,000 µUSD). Prices are µUSD per
   1,000,000 tokens. Stripe is the only boundary where amounts become integer
@@ -136,7 +136,7 @@ sequenceDiagram
 
 | Step | Function | What happens |
 |---|---|---|
-| 1. Reserve | `coordinator/api/inference_admission.go` `reserveInferenceBalance` | `reserved = Service.Estimate(model, max(billingPromptTokens, estimatedPromptTokens), requestedMaxTokens)` at the platform price. The output bound follows the precedence in [pricing-model.md → Formulas](../reference/pricing-model.md#formulas) (`coordinator/api/consumer.go` `ensureMaxTokensBound`; an explicit value is never clamped). The per-key spend cap is checked first (`accounts.CheckKeySpendCap`), then `Service.Reserve` (`coordinator/inference/settlement/reservation.go`) debits the ledger (`LedgerCharge`, reference `reserve:<account>`) or, for a service account with holds enabled, adds to an in-memory hold (`coordinator/inference/settlement/service_holds.go` `ServiceHolds`). Self-route and a nil billing backend skip the step entirely. |
+| 1. Reserve | `coordinator/inference/ingress/balance.go` `reserveInferenceBalance` | `reserved = Service.Estimate(model, max(billingPromptTokens, estimatedPromptTokens), requestedMaxTokens)` at the platform price. The output bound follows the precedence in [pricing-model.md → Formulas](../reference/pricing-model.md#formulas) (`coordinator/inference/ingress/output_bound.go` `ensureMaxTokensBound`; an explicit value is never clamped). The per-key spend cap is checked first (`accounts.CheckKeySpendCap`), then `Service.Reserve` (`coordinator/inference/settlement/reservation.go`) debits the ledger (`LedgerCharge`, reference `reserve:<account>`) or, for a service account with holds enabled, adds to an in-memory hold (`coordinator/inference/settlement/service_holds.go` `ServiceHolds`). Self-route and a nil billing backend skip the step entirely. |
 | 2. Media top-up | `topUpReservationForInlinedMedia` | After remote media is fetched and inlined, the byte-bound prompt estimate is recomputed; if it exceeds the reservation the delta is reserved with the same cap check and mode. |
 | 3. Provider top-up | `coordinator/inference/settlement/reservation_price.go` `ReserveForProvider` | If the chosen provider has a custom price above the platform price, the delta is debited after a second spend-cap check against the new total. `ErrInsufficientBalance` excludes that provider and dispatch tries another; when none fits the request fails with 402 (`coordinator/inference/dispatch/primary.go`, `coordinator/inference/dispatch/run.go` `dispatchPrimary`, `run`). Service consumers and free self-route skip it. If dispatch to that provider then fails, `RefundProviderExtra` (`coordinator/inference/settlement/refund.go`) credits the delta back (metric `billing.reservation_extra_refunds`). |
 | 4. Settle | `coordinator/inference/settlement/completion_price.go` `priceCompletion`; `completion_finalize.go` `finalizeCompletion` | Resolve the price, compute `totalCost`; an owned machine serving its owner's request settles free (`totalCost = 0`). Exactly one of the settlement or refund paths wins the reservation (`registry.PendingRequest.FinalizeReservation` / `MarkReservationFinalized`). Overage: `overage = totalCost − reserved`, clamped so `totalCost ≤ 2 × reserved` (metric `billing.cost_clamped`), then `Debit(overage, "overage:<request_id>")`; if that debit fails `totalCost = reserved`. Underage: `Credit(reserved − totalCost, LedgerRefund, <request_id>)`. Service hold: `Debit(totalCost)` and release the hold; a failed debit zeroes cost and payout (`billing.uncollected_zeroed`). No reservation and not free: `Debit(totalCost)`. |
@@ -355,7 +355,7 @@ the design record is [`design/base-rewards.md`](../design/base-rewards.md).
    output; settlement charges more only through the overage debit, and never
    more than `2 × reserved` (`coordinator/inference/settlement/completion_finalize.go`
    `finalizeCompletion`; `coordinator/inference/settlement/reservation_price.go`
-   `Estimate`; `coordinator/api/consumer.go` `ensureMaxTokensBound`).
+   `Estimate`; `coordinator/inference/ingress/output_bound.go` `ensureMaxTokensBound`).
 3. **Price resolution order** is provider custom → platform → hardcoded
    default, and service consumers never pay a provider custom price
    (`coordinator/inference/settlement/completion_price.go` `priceCompletion`;
@@ -415,7 +415,7 @@ the design record is [`design/base-rewards.md`](../design/base-rewards.md).
     `Service.ReserveForProvider` performs the same cap comparison before its
     top-up. A rejected reservation or top-up writes no new debit row. The cap is soft (settled usage, so concurrent requests can overshoot
     by their reservations); the ledger balance is the hard ceiling
-    (`coordinator/api/accounts/key_policy.go`; `coordinator/api/inference_admission.go`;
+    (`coordinator/api/accounts/key_policy.go`; `coordinator/inference/ingress/balance.go`;
     `coordinator/inference/settlement/reservation_price.go`).
 12. **Service accounts pay the platform price with no minimum.**
     `isServiceConsumer` selects `CalculateCostWithOverridesNoMinimum`, skips
@@ -525,7 +525,7 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 |---|---|---|---|
 | `billing.reservations` | incr | `model`, `mode:ledger\|service_hold`, `outcome:reserved\|rejected` | `coordinator/inference/settlement/reservation.go` (`Reserve`) |
 | `billing.reserved_micro_usd` | histogram | `model`, `mode` | `coordinator/inference/settlement/reservation.go` (`Reserve`); `coordinator/inference/settlement/reservation_price.go` (`ReserveForProvider`) |
-| `billing.media_reservation_topup` | incr | `model`, `outcome:rejected` | `coordinator/api/inference_admission.go` `topUpReservationForInlinedMedia` |
+| `billing.media_reservation_topup` | incr | `model`, `outcome:rejected` | `coordinator/inference/ingress/balance.go` `topUpReservationForInlinedMedia` |
 | `billing.reservation_refunds` | incr | `model`, `mode` | `coordinator/inference/settlement/refund.go` (`Refund`); `coordinator/inference/settlement/reservation.go` (`Release`) |
 | `billing.reservation_releases` | incr | `model`, `mode`, `reason:refund\|early\|finalize` | `coordinator/inference/settlement/refund.go` (`Refund`); `coordinator/inference/settlement/reservation.go` (`Release`, `releaseServiceReservation`) |
 | `billing.reservation_extra_refunds` | incr | `model` | `coordinator/inference/settlement/refund.go` (`RefundProviderExtra`) |
@@ -550,7 +550,7 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 |---|---|---|
 | HTTP ownership | `coordinator/api/billing/controller.go` (`Controller`, `Dependencies`); `coordinator/api/billing/store.go` (`Store`); `coordinator/api/billing_controller.go` (`billingController`); `coordinator/api/requestauth/identity.go` (`ResolveAccountID`, `RequirePrivyUser`) | Router and middleware remain in `coordinator/api/routes.go` (`routes`). |
 | Prices and cost | `coordinator/payments/pricing.go` (`DefaultInputPricePerMillion`, `DefaultOutputPricePerMillion`, `minimumChargeMicroUSD`, `platformFeePercent`, `calculateCost`, `CalculateCostWithOverrides`, `CalculateCostWithOverridesNoMinimum`, `resolveFeePercent`, `PlatformFeeWithPercent`, `ProviderPayoutWithPercent`, `FormatPerTokenUSD`); `coordinator/store/postgres/model_prices.go` (`model_prices`, `GetModelPrice`) | `GET /v1/pricing`, `PUT /v1/pricing`, `DELETE /v1/pricing`, `PUT /v1/admin/pricing`, `POST /v1/admin/models/register` |
-| Reservation | `coordinator/inference/settlement/reservation.go` (`Reserve`, `Release`); `coordinator/inference/settlement/reservation_price.go` (`Estimate`, `ReserveForProvider`); `coordinator/inference/settlement/service_holds.go` (`ServiceHolds`); HTTP bounds/cap checks remain in `coordinator/api/inference_admission.go` and `coordinator/api/consumer.go` | — |
+| Reservation | `coordinator/inference/settlement/reservation.go` (`Reserve`, `Release`); `coordinator/inference/settlement/reservation_price.go` (`Estimate`, `ReserveForProvider`); `coordinator/inference/settlement/service_holds.go` (`ServiceHolds`); HTTP bounds/cap checks live in `coordinator/inference/ingress/balance.go` and `coordinator/inference/ingress/output_bound.go` | — |
 | Settlement | `coordinator/inference/settlement/completion.go` (`Service.Complete`); `completion_price.go`, `completion_finalize.go`, `completion_usage.go`, `completion_credit.go`; `coordinator/inference/settlement/refund.go` (`Refund`, `RefundProviderExtra`); `coordinator/inference/settlement/holder.go` (`Holder`, `DefaultGrace`); terminal lifecycle in `coordinator/inference/providerframe/complete.go` (`Service.CompleteAt`) and `coordinator/api/settlement.go` (`holdForSettlement`) | `GET /v1/payments/balance`, `GET /v1/payments/usage` |
 | Ledger and balances | `coordinator/store/contracts/ledger.go` (`LedgerEntryType`, `RewardLedgerTypes`); `coordinator/store/postgres/ledger.go` (`creditTx`, `creditWithdrawableTx`, `CreditWithdrawableOnce`, `Debit`); `coordinator/store/postgres/earnings.go` (`CreditProviderAccount`); `coordinator/store/postgres/earnings_index.go` (`ensureProviderEarningsJobIndex`) | `GET /v1/provider/earnings`, `GET /v1/provider/account-earnings`, `GET /v1/me/summary` |
 | Deposits | `coordinator/billing/stripe.go` (`CreateCheckoutSession`, `VerifyWebhookSignature`, `ParseCheckoutSession`); `coordinator/billing/billing.go` (`CreditDeposit`, `IsExternalIDProcessed`); `coordinator/api/billing/checkout.go` (`StripeCreateSession`, `StripeSessionStatus`); `coordinator/api/billing/checkout_webhook.go` (`StripeWebhook`); `coordinator/api/billing/wallet.go` (`WalletBalance`); `coordinator/api/billing/methods.go` (`BillingMethods`) | `POST /v1/billing/stripe/create-session`, `POST /v1/billing/stripe/webhook`, `GET /v1/billing/stripe/session`, `GET /v1/billing/wallet/balance`, `GET /v1/billing/methods` |

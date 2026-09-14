@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-14 · commit `6ad3d5605`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -109,11 +109,11 @@ Trust floor, model routing and per-request quality:
 | `EIGENINFERENCE_REJECT_MODELS` | comma-separated model ids | unset | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`) | Sheds the listed models with 429 at admission. |
 | `EIGENINFERENCE_MIN_DECODE_TPS` | float ≥ 0 (`0` disables) | `15` | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`) | Per-request decode floor (tokens/s) used by admission; see [`../architecture/scheduling.md`](../architecture/scheduling.md). |
 | `EIGENINFERENCE_DECODE_FLOOR_USE_FLEET_MEDIAN` | bool | `true` (*live*) | `coordinator/registry/routingcost/throughput.go` (`DecodeFloorUseFleetMedian`) | Lets the per-request decode projection fall back to the fleet-median solo rate before the static benchmark. |
-| `EIGENINFERENCE_SERVABILITY_GATE` | bool | `true` (*live*) | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`); `coordinator/api/servability_gate.go` (`servabilityGateEnabled`) | Early 429 for requests whose prompt + `max_tokens` fit no provider; only an explicit `false` disables it. |
+| `EIGENINFERENCE_SERVABILITY_GATE` | bool | `true` (*live*) | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`); `coordinator/inference/ingress/servability.go` (`servabilityGateEnabled`) | Early 429 for requests whose prompt + `max_tokens` fit no provider; only an explicit `false` disables it. |
 | `EIGENINFERENCE_LONG_PROMPT_TOKENS` | integer > 0 | unset (preference off) | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`) | Prompts above this size prefer the fastest provider tier. |
 | `EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT` | float (values below 1 clamp to neutral) | `2.0` | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`) | Prefill weight applied to long prompts; read only when the threshold is set. |
 | `EIGENINFERENCE_PREFILL_DECODE_RATIO` | float > 0 | `12.0` | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`); `coordinator/registry/routing_policy.go` (`SetPrefillToDecodeRatio`) | Prefill-to-decode speed ratio in the TTFT estimate. |
-| `EIGENINFERENCE_PROMPT_CALIBRATION` | `family:factor,…` (factors ≥ 1.0) | built-in table (`gpt-oss:1.3`) | `coordinator/api/prompt_calibration.go` (`SetPromptContextCalibrationFromEnv`) | Replaces the per-family prompt-token calibration used by the context gate. |
+| `EIGENINFERENCE_PROMPT_CALIBRATION` | `family:factor,…` (factors ≥ 1.0) | built-in table (`gpt-oss:1.3`) | `coordinator/inference/ingress/prompt_calibration.go` (`SetPromptContextCalibrationFromEnv`) | Replaces the per-family prompt-token calibration used by the context gate. |
 | `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES` | `model=upstream_ms,…` (`0`/`off` removes) | built-in table | `coordinator/modelpolicy/first_content_deadline.go` (`SetFirstContentBasesFromEnv`) | Overrides exact-model first-content deadline bases. |
 | `EIGENINFERENCE_HEALTH_EJECTION` | `off`/`0`/`false`/`no` disables | on | `coordinator/registry/health_ejection_switch.go` (`healthEjectionSwitch`, parsed once at package init; `healthEjectionEnabled`) | Kill switch for provider health ejection; see [`../architecture/routing.md`](../architecture/routing.md). |
 | `EIGENINFERENCE_DISABLE_CLIENT_ERROR_STOP` | bool | `false` | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`) | Lets deterministic provider 4xx errors fail over instead of stopping the dispatch ladder. |

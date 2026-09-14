@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-14 · commit `6ad3d5605`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -50,7 +50,7 @@ attempt stamps.
 | `auth_done_us`, `auth_kind`, `auth_db_read` | `stampAuth` (`coordinator/api/profiler.go`) from the auth middleware | header read + API-key or Privy auth; `auth_db_read` = a key lookup hit the store |
 | `ratelimit_done_us` | rate-limit middleware (`coordinator/api/request_rate_limits.go`, `rateLimitWithTier`) | rate limiter |
 | `sealed_open_us`, `sealed_body_bytes` | `sealedTransport` (`coordinator/api/sender_encryption.go`) | sealed-transport body decrypt; absent for plain HTTPS |
-| `handler_entry_us` | inference handler entry (`coordinator/api/consumer.go`) | remaining middleware + mux (= `X-Timing.pre_handler_us`) |
+| `handler_entry_us` | inference handler entry (`coordinator/inference/ingress/chat.go`, `coordinator/inference/ingress/generic.go`) | remaining middleware + mux (= `X-Timing.pre_handler_us`) |
 | `parsed_us`, `db_us`, `db_calls` | handler; DB accumulator `profileDBCall` | body read, JSON decode, model resolve, registry read |
 | `reserved_us` | handler | balance reservation |
 | `preflight_done_us`, `preflight_us`, `preflight_outcome` ∈ {`passed`, `handled`} | handler | admission preflight |

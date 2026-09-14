@@ -1,6 +1,6 @@
 # Authentication
 
-> Last updated: 2026-09-14 · commit `ecebe0f01`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 How to obtain and manage each credential the coordinator accepts, and which routes take it. Every request authenticates with one header, `Authorization: Bearer <token>` (`BearerToken`, `coordinator/api/requestauth/bearer.go`); the token is an API key, a Privy session JWT, a device-flow provider token, or the operator's admin key, and `RequireAuth` (`coordinator/api/requestauth/middleware.go`) checks configured Privy JWTs first, then the admin key, then API keys and active provider tokens. For API consumers and console users; the per-route auth column is in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -28,7 +28,7 @@ curl -s -X POST https://api.darkbloom.dev/v1/keys \
 
 The response is `{"key": "sk-db-...", "data": {...APIKeyResponse}}` (`CreateAPIKeyResponse`). The secret starts with `sk-db-` (`KeyPrefix`, `coordinator/store/contracts/keys.go`); its exact shape, the `id` format used in `/v1/keys/{id}`, and every per-key setting — `name`, `limit_usd` + `limit_reset` (spend budget), `rpm_limit`, `itpm_limit`, `otpm_limit`, `allowed_models`, `expires_at`, `self_route_only`, `disabled` — are specified in [`../reference/api-contracts.md#api-key-shapes`](../reference/api-contracts.md#api-key-shapes). `label` in the response masks the secret to its prefix, first four and last four characters (`KeyLabel`). Keys minted before the rename start with `eigeninference-` and remain valid, because lookups are by hash, not by prefix (`coordinator/store/contracts/keys.go`).
 
-The settings are enforced in the request prelude: `rpm_limit` → 429 before the account limiter (`applyKeyRPMLimit`, `coordinator/api/request_rate_limits.go`); `allowed_models` → 403 `model_not_allowed` (`accounts.KeyModelAllowed`, `coordinator/api/accounts/key_policy.go`); an exhausted `limit_usd` → 402 (`reserveInferenceBalance`, `coordinator/api/inference_admission.go`; the response taxonomy is in [`../architecture/billing.md#payment-required-responses`](../architecture/billing.md#payment-required-responses)).
+The settings are enforced in the request prelude: `rpm_limit` → 429 before the account limiter (`applyKeyRPMLimit`, `coordinator/api/request_rate_limits.go`); `allowed_models` → 403 `model_not_allowed` (`accounts.KeyModelAllowed`, `coordinator/api/accounts/key_policy.go`); an exhausted `limit_usd` → 402 (`reserveInferenceBalance`, `coordinator/inference/ingress/balance.go`; the response taxonomy is in [`../architecture/billing.md#payment-required-responses`](../architecture/billing.md#payment-required-responses)).
 
 ### 2. Use the key
 

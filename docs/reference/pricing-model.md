@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-14 · commit `ecebe0f01`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -28,7 +28,7 @@ pieces fit together, and what they guarantee, is explained in
 | `DefaultOutputPricePerMillion` | `200_000` | fallback output price ($0.20 / 1M tokens) | `coordinator/payments/pricing.go` |
 | `minimumChargeMicroUSD` | `100` | per-request floor ($0.0001) applied by `CalculateCostWithOverrides`; not applied to service accounts | `coordinator/payments/pricing.go` |
 | `platformFeePercent` | see [billing.md, invariant 4](../architecture/billing.md#invariants) | global platform fee when no per-user override is set | `coordinator/payments/pricing.go` |
-| `defaultMaxOutputTokens` | `8192` | output bound when the request sets no max-tokens field and the registry has no `max_output_length` | `coordinator/api/consumer.go` |
+| `defaultMaxOutputTokens` | `8192` | output bound when the request sets no max-tokens field and the registry has no `max_output_length` | `coordinator/inference/ingress/output_bound.go` |
 | `settlement.DefaultGrace` | `30 * time.Second` | how long a consumer-disconnected request waits for the provider terminal before refund; API `defaultTerminalSettleGrace` aliases this constant | `coordinator/inference/settlement/holder.go`; `coordinator/api/settlement.go` |
 | `MinWithdrawMicroUSD` | `1_000_000` | minimum withdrawal ($1.00) | `coordinator/billing/stripe_connect_fees.go` |
 | `InstantFeeBps` | `150` | instant payout fee (1.5%) | `coordinator/billing/stripe_connect_fees.go` |
@@ -74,10 +74,10 @@ updated_at)`, primary key `(account_id, model)`
 | Cost, direct consumers | `max(rawCost, minimumChargeMicroUSD)` | `CalculateCostWithOverrides` |
 | Cost, service accounts | `rawCost`; `1` when the tokens are non-zero but the product rounds to `0` (no per-request minimum) | `CalculateCostWithOverridesNoMinimum` |
 | Cached tokens | see [billing.md, invariant 5](../architecture/billing.md#invariants) | `calculateCost` |
-| Output bound | explicit `max_tokens` \| `max_completion_tokens` \| `max_output_tokens`, else registry `max_output_length`, else `defaultMaxOutputTokens` | `coordinator/api/consumer.go` (`explicitMaxTokens`, `ensureMaxTokensBound`) |
-| Reservation | `CalculateCostWithOverrides(model, max(billingPromptTokens, estimatedPromptTokens), outputBound, platform price)` | `coordinator/api/inference_admission.go` (`reserveInferenceBalance`); `coordinator/inference/settlement/reservation_price.go` (`Estimate`) |
+| Output bound | explicit `max_tokens` \| `max_completion_tokens` \| `max_output_tokens`, else registry `max_output_length`, else `defaultMaxOutputTokens` | `coordinator/inference/ingress/output_bound.go` (`explicitMaxTokens`, `ensureMaxTokensBound`) |
+| Reservation | `CalculateCostWithOverrides(model, max(billingPromptTokens, estimatedPromptTokens), outputBound, platform price)` | `coordinator/inference/ingress/balance.go` (`reserveInferenceBalance`); `coordinator/inference/settlement/reservation_price.go` (`Estimate`) |
 | Provider top-up | `providerEstimate − reserved` when the dispatched provider's custom price makes it positive; skipped for service consumers | `coordinator/inference/settlement/reservation_price.go` (`ReserveForProvider`) |
-| Media top-up | `Estimate(inlined body) − reserved` when positive | `coordinator/api/inference_admission.go` (`topUpReservationForInlinedMedia`) |
+| Media top-up | `Estimate(inlined body) − reserved` when positive | `coordinator/inference/ingress/balance.go` (`topUpReservationForInlinedMedia`) |
 | Overage | `min(totalCost − reserved, reserved)`; debited as `charge` with reference `overage:<request_id>`; on failure `totalCost = reserved` | `coordinator/inference/settlement/completion_finalize.go` (`finalizeCompletion`) |
 | Settlement refund | `reserved − totalCost` when positive; `refund` entry referenced by `<request_id>` | `coordinator/inference/settlement/completion_finalize.go` (`finalizeCompletion`) |
 | Whole-reservation refund | `reserved`; `refund` entry `reservation_refund:<request_id>` | `coordinator/inference/settlement/refund.go` (`Refund`) |
@@ -133,7 +133,7 @@ rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
 |---|---|---|---|
 | `limit_usd` | `POST /v1/keys`, `PATCH /v1/keys/{id}` body | `>= 0`; stored as `APIKey.LimitMicroUSD` | `coordinator/api/accounts/keys.go`, `coordinator/api/accounts/key_inputs.go` (`validateKeyLimitInputs`, `Controller.CreateKey`) |
 | `limit_reset` | same | `none`, `daily`, `weekly`, `monthly` (`KeyResetNone` …); unknown values normalise to `none` | `coordinator/store/contracts/keys.go` (`NormalizeResetWindow`, `KeySpendWindowStart`) |
-| enforcement points | `reserveInferenceBalance`, `topUpReservationForInlinedMedia`, `ReserveForProvider` | soft cap on settled usage | `coordinator/api/inference_admission.go`; `coordinator/inference/settlement/reservation_price.go` |
+| enforcement points | `reserveInferenceBalance`, `topUpReservationForInlinedMedia`, `ReserveForProvider` | soft cap on settled usage | `coordinator/inference/ingress/balance.go`; `coordinator/inference/settlement/reservation_price.go` |
 
 ## Service accounts
 
@@ -207,9 +207,9 @@ the financial rate limiter ([Constants](#constants)).
 
 | Method and path | Auth | Handler |
 |---|---|---|
-| `GET /v1/payments/balance` | requireAuth | `coordinator/api/consumer.go` (`handleBalance`) → `BalanceResponse` |
-| `GET /v1/payments/usage` | requireAuth | `coordinator/api/consumer.go` (`handleUsage`) → `UsageResponse` |
-| `GET /v1/provider/earnings` | none; identifies by `?wallet=` / `X-Provider-Wallet` (legacy) | `coordinator/api/consumer.go` (`handleProviderEarnings`) |
+| `GET /v1/payments/balance` | requireAuth | `coordinator/api/account_usage.go` (`handleBalance`) → `BalanceResponse` |
+| `GET /v1/payments/usage` | requireAuth | `coordinator/api/account_usage.go` (`handleUsage`) → `UsageResponse` |
+| `GET /v1/provider/earnings` | none; identifies by `?wallet=` / `X-Provider-Wallet` (legacy) | `coordinator/api/provider_earnings.go` (`handleProviderEarnings`) |
 | `GET /v1/provider/account-earnings` | requireAuth | `coordinator/api/billing/earnings.go` (`AccountEarnings`) |
 | `GET /v1/me/summary` | requirePrivyAuth | `coordinator/api/accountfleet/summary.go` (`Controller.Summary`) |
 | `POST /v1/keys`, `PATCH /v1/keys/{id}` | requirePrivyAuth + financial | `coordinator/api/accounts/keys.go` (`Controller.CreateKey`, `Controller.UpdateKey`) |

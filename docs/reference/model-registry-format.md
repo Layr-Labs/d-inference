@@ -360,7 +360,7 @@ fans out `desired_models`), and returns `{"status":"ok","alias": <ModelAlias>}`.
 ### Resolution precedence
 
 `ResolveModelConstrainedWithTraits` (`coordinator/registry/model_aliases.go`),
-called from `resolveRequestedModel` (`coordinator/api/consumer.go`):
+called from `resolveRequestedModel` (`coordinator/inference/ingress/aliases.go`):
 
 1. Not an alias → the id is used as a concrete build.
 2. Alias → `desired_build` if an eligible provider can route it; else

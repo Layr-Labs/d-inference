@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-14 · commit `2d7cc572f`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/routes.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -35,7 +35,7 @@ responses and error codes are unchanged.
 
 | Label | Behaviour | Symbol |
 |---|---|---|
-| `drain` | While draining, new inference requests get **429** `rate_limit_exceeded` with `Retry-After` set to [`coordinatorDrainRetryAfter`](#timeouts-and-constants) (written through `writeTokenRateLimited`) | `Controller.Gate` (`coordinator/api/readiness/gate.go`) |
+| `drain` | While draining, new inference requests get **429** `rate_limit_exceeded` with `Retry-After` set to [`coordinatorDrainRetryAfter`](#timeouts-and-constants) (written through `WriteTokenRateLimited`) | `Controller.Gate` (`coordinator/api/readiness/gate.go`) |
 | `rpm` | Consumer tier: first the key's own `rpm_limit` (`applyKeyRPMLimit`), then the account limiter; service-role accounts use the elevated service limiter. Rejection → 429 `rate_limit_exceeded` (`code: rate_limit_exceeded`) with `Retry-After` and `X-RateLimit-Reset` | `rateLimitConsumer` |
 | `fin` | Financial tier: the stricter limiter installed by `SetFinancialRateLimiter`, applied to every account regardless of role; same 429 shape | `rateLimitFinancial` |
 
@@ -45,14 +45,14 @@ Both tiers set `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, `
 
 ### Inference (4)
 
-All four share the chain `readiness.Controller.Gate → requireAuth → rateLimitConsumer → sealedTransport → handler` and the pipeline in `coordinator/api/consumer.go`.
+All four share the chain `readiness.Controller.Gate → requireAuth → rateLimitConsumer → sealedTransport → handler` and the request owner in `coordinator/inference/ingress/controller.go` (`Controller`).
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
-| POST | `/v1/chat/completions` | `handleChatCompletions` (`coordinator/api/consumer.go`) | `key` | `drain`, `rpm`, token limits | OpenAI Chat Completions, streaming and non-streaming |
-| POST | `/v1/responses` | `handleChatCompletions` — the same handler; it detects `input` (Responses) versus `messages` (Chat) | `key` | same | OpenAI Responses; lowered by `coordinator/promptcontract/endpoint_lower_responses.go`, streamed by `NewResponsesSink` (`coordinator/inference/response/responses_stream.go`) |
-| POST | `/v1/completions` | `handleCompletions` (`coordinator/api/consumer.go`) | `key` | same | Legacy text completions; response built by `coordinator/inference/response/generic_endpoint_response.go`, streamed by `NewEndpointSink` (`coordinator/inference/response/generic_stream.go`) |
-| POST | `/v1/messages` | `handleAnthropicMessages` (`coordinator/api/consumer.go`) | `key` | same | Anthropic Messages; lowered by `coordinator/promptcontract/endpoint_lower_messages.go`, streamed by `newMessagesStreamEmitter` |
+| POST | `/v1/chat/completions` | `Controller.ChatCompletions` (`coordinator/inference/ingress/chat.go`) | `key` | `drain`, `rpm`, token limits | OpenAI Chat Completions, streaming and non-streaming |
+| POST | `/v1/responses` | `Controller.ChatCompletions` — the same handler; it detects `input` (Responses) versus `messages` (Chat) | `key` | same | OpenAI Responses; lowered by `coordinator/promptcontract/endpoint_lower_responses.go`, streamed by `NewResponsesSink` (`coordinator/inference/response/responses_stream.go`) |
+| POST | `/v1/completions` | `Controller.Completions` (`coordinator/inference/ingress/endpoints.go`) | `key` | same | Legacy text completions; response built by `coordinator/inference/response/generic_endpoint_response.go`, streamed by `NewEndpointSink` (`coordinator/inference/response/generic_stream.go`) |
+| POST | `/v1/messages` | `Controller.Messages` (`coordinator/inference/ingress/endpoints.go`) | `key` | same | Anthropic Messages; lowered by `coordinator/promptcontract/endpoint_lower_messages.go`, streamed by `newMessagesStreamEmitter` |
 
 ### Models and catalog (9)
 
@@ -99,11 +99,11 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
-| GET | `/v1/payments/balance` | `handleBalance` (`coordinator/api/consumer.go`) | `key` | — | `BalanceResponse` `{balance_micro_usd, balance_usd, withdrawable_micro_usd, withdrawable_usd}` |
-| GET | `/v1/payments/usage` | `handleUsage` (`coordinator/api/consumer.go`) | `key` | — | `UsageResponse` `{usage: [...]}`; recent history only ([retention](pricing-model.md#constants)) |
+| GET | `/v1/payments/balance` | `handleBalance` (`coordinator/api/account_usage.go`) | `key` | — | `BalanceResponse` `{balance_micro_usd, balance_usd, withdrawable_micro_usd, withdrawable_usd}` |
+| GET | `/v1/payments/usage` | `handleUsage` (`coordinator/api/account_usage.go`) | `key` | — | `UsageResponse` `{usage: [...]}`; recent history only ([retention](pricing-model.md#constants)) |
 | GET | `/v1/billing/wallet/balance` | `WalletBalance` (`coordinator/api/billing/wallet.go`) | `key` | — | Wallet view of the ledger balance |
 | GET | `/v1/billing/methods` | `BillingMethods` (`coordinator/api/billing/methods.go`) | `—` | — | Which top-up methods are enabled |
-| GET | `/v1/provider/earnings` | `handleProviderEarnings` (`coordinator/api/consumer.go`) | `—` | — | Legacy lookup by `?wallet=` query or `X-Provider-Wallet` header; `ProviderEarningsResponse` |
+| GET | `/v1/provider/earnings` | `handleProviderEarnings` (`coordinator/api/provider_earnings.go`) | `—` | — | Legacy lookup by `?wallet=` query or `X-Provider-Wallet` header; `ProviderEarningsResponse` |
 | GET | `/v1/provider/account-earnings` | `AccountEarnings` (`coordinator/api/billing/earnings.go`) | `key` | — | Earnings across the account's providers |
 | GET | `/v1/me/summary` | `Controller.Summary` (`coordinator/api/accountfleet/summary.go`) | `user` | — | Console account summary; includes `latest_provider_version` |
 | GET | `/v1/me/providers` | `Controller.Providers` (`coordinator/api/accountfleet/providers.go`) | `user` | — | Machines linked to the account |
@@ -154,7 +154,7 @@ Ledger semantics, reservations and payouts: [`../architecture/billing.md`](../ar
 | GET | `/v1/leaderboard` | `Controller.Leaderboard` (`coordinator/api/network/leaderboard.go`) | `—` | Cached 5 min for every leaderboard window |
 | GET | `/v1/network/totals` | `Controller.Totals` (`coordinator/api/network/totals.go`) | `—` | Totals refreshed every minute with the same 5 min safety TTL; 503 `service_unavailable` without an unexpired success; canonical windows `24h`, `7d`, `30d`, `all` (`1d` → `24h`, empty/`lifetime` → `all`) |
 | GET | `/v1/network/series` | `Controller.Series` (`coordinator/api/network/series.go`) | `—` | Time series, cached 1 min; 503 `service_unavailable` on a store error after a miss, with no failed result cached |
-| GET | `/health` | `handleHealth` (`coordinator/api/consumer.go`) | `—` | `HealthResponse` `{status: "ok", draining, providers, version, build_commit, build_date}` |
+| GET | `/health` | `handleHealth` (`coordinator/api/health.go`) | `—` | `HealthResponse` `{status: "ok", draining, providers, version, build_commit, build_date}` |
 
 A successful empty analytics window returns 200 with empty arrays or zero totals.
 Core stats query failures retain the unexpired success or return 503; request
@@ -184,7 +184,7 @@ envelope when their required data is unavailable.
 | Method | Path | Handler | Auth | Notes |
 |---|---|---|---|---|
 | GET | `/install.sh` | inline closure in `routes()` rendering `installScript` with the coordinator URL from `resolveBaseURL` | `—` | Provider install script, `text/plain` |
-| GET | `/api/version` | `handleVersion` (`coordinator/api/consumer.go`) | `—` | `VersionResponse` `{version, platform, backend, download_url, binary_hash, bundle_hash, metallib_hash, changelog}`; uses the newest active release in the store, else `LatestProviderVersion` |
+| GET | `/api/version` | `handleVersion` (`coordinator/api/version.go`) | `—` | `VersionResponse` `{version, platform, backend, download_url, binary_hash, bundle_hash, metallib_hash, changelog}`; uses the newest active release in the store, else `LatestProviderVersion` |
 | POST | `/v1/releases` | `Controller.Register` (`coordinator/api/releases/registration.go`) | `release` | Register a release |
 | GET | `/v1/releases/latest` | `Controller.Latest` (`coordinator/api/releases/latest.go`) | `—` | Latest release record |
 | GET | `/readyz` | `Controller.Ready` (`coordinator/api/readiness/probe.go`) | `—` | 200 when ready; 503 while draining or trust safety is blocked |
@@ -298,7 +298,7 @@ not grant admission or assert cache readiness.
 `_darkbloom_prompt_date` is reserved internal body context. The coordinator
 overwrites caller input once with the request's UTC Gregorian `YYYY-MM-DD`
 before lowering, cache planning, fallback and retries (`parseInferencePrelude`,
-`coordinator/api/inference_preprocess.go`; `SetRequestDate`,
+`coordinator/inference/ingress/prelude.go`; `SetRequestDate`,
 `coordinator/promptcontract/request_date.go`). Local provider HTTP captures its
 own date; callers cannot override it (`LocalChatRequest`,
 `provider-swift/Sources/ProviderCore/Server/LocalChatRequest.swift`). It is not a
@@ -315,7 +315,7 @@ contract behavior are defined in [prompt-contract sidecar](../architecture/promp
 | `X-Request-ID` | `loggingMiddleware` | Honoured if present, otherwise generated (`newRequestID`); echoed back and logged, never persisted |
 | `Content-Type: application/eigeninference-sealed+json` | `sealedTransport` (`coordinator/api/sender_encryption.go`) | Switches the inference endpoint into sealed mode (`SealedContentType`) |
 | `X-Darkbloom-Metadata-Details` | `ApplyMetadataDetailsRequest` (`coordinator/inference/response/metadata_optin.go`) | Requests the extended `metadata` object (`timing`, `location`) on chat completions; `?metadata=details` does the same |
-| `X-Darkbloom-Route: self` / `prefer` | `resolveSelfRoutePolicy` (`coordinator/api/self_route.go`) | `self` restricts dispatch to the account's own machines; `prefer` tries them first and falls back to the fleet; see [`../provider/self-route.md`](../provider/self-route.md) |
+| `X-Darkbloom-Route: self` / `prefer` | `ResolveSelfRoutePolicy` (`coordinator/inference/ingress/self_route.go`) | `self` restricts dispatch to the account's own machines; `prefer` tries them first and falls back to the fleet; see [`../provider/self-route.md`](../provider/self-route.md) |
 | `X-Darkbloom-Publishing-Key` | `requirePublishingAPIKey` | Publishing credential for `/v1/admin/models/*` |
 | `X-Provider-Wallet` | `handleProviderEarnings` | Wallet address for the legacy earnings lookup (fallback when `?wallet=` is absent) |
 | `Stripe-Signature` | `StripeWebhook`, `StripeConnectWebhook` | Stripe webhook signature |
@@ -327,7 +327,7 @@ contract behavior are defined in [prompt-contract sidecar](../architecture/promp
 | Header | Where | When |
 |---|---|---|
 | `X-Request-ID` | `loggingMiddleware` | Every response |
-| `Retry-After` | `rateLimitWithTier`, `applyKeyRPMLimit`, `writeTokenRateLimited`, `readiness.Controller.Gate`, `shedIfModelRejected`, `WriteTTFTTooSlow`, `writeServiceUnavailable`, `runInferenceAdmission`, `selfRouteUnavailable`, `preContentTerminal`, the exhausted branch of `execution.run` (`coordinator/inference/dispatch/run.go`) | Every 429 (including the drain 429, [`coordinatorDrainRetryAfter`](#timeouts-and-constants)); 503 `service_unavailable`, `machine_offline` (30 s), `model_not_loaded` (15 s), and 503 `provider_error` from dispatch exhaustion. **Not** set on 503 `model_unavailable`, 502, or 504. Admission values come from `EstimateRetryAfter` (`coordinator/inference/dispatch/retry_pressure.go`), capped at [`maxDistressRetryAfter`](#timeouts-and-constants); a provider-forecast `feasible_after_ms` overrides it, clamped to 2–30 s |
+| `Retry-After` | `rateLimitWithTier`, `applyKeyRPMLimit`, `WriteTokenRateLimited`, `readiness.Controller.Gate`, `shedIfModelRejected`, `WriteTTFTTooSlow`, `writeServiceUnavailable`, `runInferenceAdmission`, `selfRouteUnavailable`, `preContentTerminal`, the exhausted branch of `execution.run` (`coordinator/inference/dispatch/run.go`) | Every 429 (including the drain 429, [`coordinatorDrainRetryAfter`](#timeouts-and-constants)); 503 `service_unavailable`, `machine_offline` (30 s), `model_not_loaded` (15 s), and 503 `provider_error` from dispatch exhaustion. **Not** set on 503 `model_unavailable`, 502, or 504. Admission values come from `EstimateRetryAfter` (`coordinator/inference/dispatch/retry_pressure.go`), capped at [`maxDistressRetryAfter`](#timeouts-and-constants); a provider-forecast `feasible_after_ms` overrides it, clamped to 2–30 s |
 | `X-RateLimit-Reset`, `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, `x-ratelimit-reset-requests` | `rateLimitWithTier`, `setRequestRateLimitHeaders` | Request-rate limited routes (`rpm`, `fin`); the first only on rejection |
 | `x-ratelimit-limit-input-tokens`, `x-ratelimit-remaining-input-tokens`, `x-ratelimit-reset-input-tokens`, and the `-output-tokens` triple | `setTokenRateLimitHeaders` | Inference responses when token limits are configured |
 | `X-Timing` | `writeTimingHeaderWithProfile` (`coordinator/inference/dispatch/profile.go`) | Committed inference responses. A JSON object with the `RequestTimingDetails` fields (`coordinator/api/types/types.go`): `parse_us`, `reserve_us`, `media_fetch_us`, `route_us`, `queue_us`, `encrypt_us`, `dispatch_us`, `provider_us`, plus profiler-only additive keys (`pre_handler_us`, `preflight_us`, `route_reserve_us`, `queue_pure_us`, `writer_us`, `socket_us`, `provider_ack_us`, `timing_anomaly`) |
@@ -360,14 +360,14 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `withCode` in `coo
 |---|---|---|
 | 400 | `invalid_request_error`, `invalid_sealed_envelope`, `kid_mismatch`, `decryption_failed`, `invalid_request`, `bad_request`, `referral_error` | Body/JSON validation, `n > 1`, tool-choice and vision rules, inference-enforced `tool_choice` combined with images (`param: tool_choice`), sealed-envelope faults, device-code and key-management input, unknown catalog `?type=` |
 | 401 | `authentication_error`, `auth_error`, `unauthorized` | Missing/invalid bearer (`requireAuth`, `requirePrivyAuth`), no account user (`RequirePrivyUser`), release key |
-| 402 | `insufficient_funds` (balance below the reservation), `insufficient_quota` (per-key spend cap); `code` is `insufficient_quota` for both | `reserveInferenceBalance` (`coordinator/api/inference_admission.go`); the per-cause table, including the provider-price 402, is [Payment-required responses](../architecture/billing.md#payment-required-responses) |
+| 402 | `insufficient_funds` (balance below the reservation), `insufficient_quota` (per-key spend cap); `code` is `insufficient_quota` for both | `reserveInferenceBalance` (`coordinator/inference/ingress/balance.go`); the per-cause table, including the provider-price 402, is [Payment-required responses](../architecture/billing.md#payment-required-responses) |
 | 403 | `forbidden`, `model_not_allowed` | API key on a `privy` route; non-admin on an `admin` route; model outside the key's `allowed_models` (`accounts.KeyModelAllowed`, `coordinator/api/accounts/key_policy.go`) |
 | 404 | `model_not_found`, `not_found`, `invalid_grant`, `invalid_code`, `referral_error`, `invalid_request_error` | Model or alias not in the catalog; unknown key id; device codes; `/v1/` catch-all; state export when disabled |
 | 409 | `no_linked_machine`, `already_used`, `conflict`, `stripe_account_gone`, `stripe_account_recreate_required` | Self-route without a linked machine; device-approve replay; invite-code collision; Stripe Connect state |
 | 410 | `telemetry_ingest_disabled`, `expired_token`, `expired_code` | [Telemetry endpoint](#telemetry-1); expired [device codes](#device-code-flow-3) |
 | 412 | `precondition_failed` | State export without an encryption recipient |
 | 413 | `invalid_request_error` (plain, or with `code: payload_too_large`) | Inference body over `maxInferenceBodyBytes` ([Limits and validation](#limits-and-validation); `parseInferencePrelude`); admission rejects a prompt no provider can accept (`runInferenceAdmission`) |
-| 422 | `invalid_request_error` | Tool-constraint schema the parser cannot compile (`validateResolvedToolConstraintParser`, `coordinator/api/tool_constraints.go`) |
+| 422 | `invalid_request_error` | Tool-constraint schema the parser cannot compile (`validateResolvedToolConstraintParser`, `coordinator/inference/ingress/tools.go`) |
 | 426 | `upgrade_required` | Log report from a provider below the minimum version |
 | 429 | `rate_limit_exceeded`, `machine_busy` | `machine_busy`: self-route (`X-Darkbloom-Route: self`) when the owned machine is at capacity, with `Retry-After` (`preContentTerminal`, `coordinator/inference/dispatch/terminal_write.go`). `rate_limit_exceeded`: key RPM, account RPM, input/output tokens per minute, coordinator drain (`Retry-After` = [`coordinatorDrainRetryAfter`](#timeouts-and-constants)), admission shedding, model-rejection shedding, fleet TTFT too slow, and dispatch exhausted on capacity: every attempt refused for capacity, no provider produced first content within the deadline (the coordinator's own pre-content timeout is reclassified from 504 by `classifyExhaustedStatus`, `coordinator/inference/dispatch/failure.go`), or the request fits no provider; always with `Retry-After` |
 | 500 | `internal_error`, `server_error`, `auth_error`, `otp_error` | Store failures, token generation, account lookup, admin OTP delivery |
@@ -383,21 +383,21 @@ A client that disconnects before commit receives nothing; the coordinator record
 
 ### Chat Completions request
 
-Requests are decoded into a generic JSON object with `json.Number` preserved (`parseInferencePrelude`, `coordinator/api/inference_preprocess.go`), so fields the coordinator does not interpret pass through to the provider. Fields it does interpret:
+Requests are decoded into a generic JSON object with `json.Number` preserved (`parseInferencePrelude`, `coordinator/inference/ingress/prelude.go`), so fields the coordinator does not interpret pass through to the provider. Fields it does interpret:
 
 | Field | Handling |
 |---|---|
-| `model` | Required. Alias or build id, resolved by `resolveRequestedModel` (`coordinator/api/consumer.go`); see [`../consumer/models.md`](../consumer/models.md) |
+| `model` | Required. Alias or build id, resolved by `resolveRequestedModel` (`coordinator/inference/ingress/aliases.go`); see [`../consumer/models.md`](../consumer/models.md) |
 | `messages` (Chat) / `input` (Responses) | Required; missing → 400 |
 | `stream` | SSE when `true`; the provider's usage chunk, when it sends one, is held and emitted at the end of the stream |
 | `n` | Values above 1 → 400 `invalid_request_error` |
-| `max_tokens`, `max_completion_tokens` | `max_completion_tokens` is mapped to `max_tokens`. An explicit value is passed through unchanged (not clamped); when none is set the coordinator fills in the output bound from [pricing-model.md → Formulas](pricing-model.md#formulas) (`ensureMaxTokensBound`, `coordinator/api/consumer.go`) |
+| `max_tokens`, `max_completion_tokens` | `max_completion_tokens` is mapped to `max_tokens`. An explicit value is passed through unchanged (not clamped); when none is set the coordinator fills in the output bound from [pricing-model.md → Formulas](pricing-model.md#formulas) (`ensureMaxTokensBound`, `coordinator/inference/ingress/output_bound.go`) |
 | `stop` | A single string is normalised to a one-element array in `parseInferencePrelude` |
 | `tools`, `tool_choice`, `parallel_tool_calls` | Schemas normalised by `toolpolicy.NormalizeParsed` (`coordinator/inference/toolpolicy/normalize.go`); native Chat constraints validated by `toolpolicy.ValidateParsed`, with lowered Responses, Messages and Completions bodies validated by `toolpolicy.ValidateBytes` (`coordinator/inference/toolpolicy/validate.go`) |
 | `response_format` | Passed through to the provider without coordinator validation |
-| `reasoning`, `reasoning_effort` | Applied per model policy by `applyResolvedModelReasoningPolicy` (`coordinator/api/reasoning_request_policy.go`) |
-| `provider` and other routing hints | Removed by `stripProviderRoutingFields` (`coordinator/api/request_introspection.go`) |
-| `image_url` parts with `http(s)` URLs | Fetched by the coordinator before dispatch (`resolveRemoteMedia`, `coordinator/api/media_resolve.go`) |
+| `reasoning`, `reasoning_effort` | Applied per model policy by `applyResolvedModelReasoningPolicy` (`coordinator/inference/ingress/reasoning.go`) |
+| `provider` and other routing hints | Removed by `stripProviderRoutingFields` (`coordinator/inference/ingress/request_shape.go`) |
+| `image_url` parts with `http(s)` URLs | Fetched by the coordinator before dispatch (`resolveRemoteMedia`, `coordinator/inference/ingress/media_resolve.go`) |
 
 ### Chat Completions response (`ChatCompletionResponse`, `coordinator/api/types/types.go`)
 
@@ -471,20 +471,20 @@ SSE orchestration lives in `Writer.Stream` (`coordinator/inference/response/stre
 | Rule | Value / behaviour | Symbol |
 |---|---|---|
 | Global request body | 64 MiB ceiling on every request (`maxRequestBodyBytes`, `bodyLimitMiddleware`) | `coordinator/api/http_middleware.go` |
-| Inference body | 16 MiB (`maxInferenceBodyBytes`) → 413 `invalid_request_error`; sealed bodies are read with the same cap (400 `invalid_request_error` when exceeded) | `parseInferencePrelude` (`coordinator/api/inference_preprocess.go`), shared cap `MaxInferenceBodyBytes` (`coordinator/inference/dispatch/body_contract.go`), `sealedTransport` (`coordinator/api/sender_encryption.go`) |
+| Inference body | 16 MiB (`maxInferenceBodyBytes`) → 413 `invalid_request_error`; sealed bodies are read with the same cap (400 `invalid_request_error` when exceeded) | `parseInferencePrelude` (`coordinator/inference/ingress/prelude.go`), shared cap `MaxInferenceBodyBytes` (`coordinator/inference/dispatch/body_contract.go`), `sealedTransport` (`coordinator/api/sender_encryption.go`) |
 | Control-plane bodies | 64 KiB (`maxControlPlaneBodyBytes`) for enroll, device token, admin auth | `coordinator/api/http_middleware.go` |
 | MDM webhook body | 1 MiB (`maxMDMWebhookBodyBytes`) | `HandleMDMWebhook` (`coordinator/api/server.go`) |
-| `n` | Must be 1 | `handleChatCompletions` |
+| `n` | Must be 1 | `Controller.ChatCompletions` |
 | `max_tokens` | `max_completion_tokens` → `max_tokens`; an explicit value is not clamped, a missing one is filled from the [output bound](pricing-model.md#formulas) | `ensureMaxTokensBound` |
-| Prompt size at admission | 413 `payload_too_large` when the estimated prompt exceeds what the model's providers can accept | `runInferenceAdmission` (`coordinator/api/inference_admission.go`) |
-| Catalog membership | Model resolved but absent from the routable catalog → 404 `model_not_found`, after the balance reservation is released | `handleChatCompletions` |
+| Prompt size at admission | 413 `payload_too_large` when the estimated prompt exceeds what the model's providers can accept | `runInferenceAdmission` (`coordinator/inference/ingress/admission.go`) |
+| Catalog membership | Model resolved but absent from the routable catalog → 404 `model_not_found`, after the balance reservation is released | `Controller.ChatCompletions` |
 | Key allow-list | `model` not in the key's `allowed_models` → 403 `model_not_allowed` | `accounts.KeyModelAllowed` |
 | `tool_choice` | `"none"`, `"auto"`, `"required"`, or `{"type": "function", "function": {"name": …}}`; a named function must exist in `tools`; `required` or a named choice with no tools → 400 | `toolpolicy.ValidateParsed` / `toolpolicy.ValidateBytes` |
 | Tool schemas | Normalised to strict JSON Schema before dispatch; schemas the constraint parser cannot compile → 422 | `toolpolicy.NormalizeParsed`, `validateResolvedToolConstraintParser` |
-| Vision | Image parts require a vision-capable model, otherwise 400; a vision model with no vision-capable provider online → 503 `model_unavailable` | `detectMediaRequirement` (`coordinator/api/request_introspection.go`), `visionToolsFailFast` (`coordinator/api/inference_preprocess.go`) |
-| Remote images | `http(s)` `image_url` parts are gated before dispatch and fetched by the coordinator; the fetch is billed as media | `gateRemoteMediaPreDispatch`, `resolveRemoteMedia` (`coordinator/api/media_resolve.go`) |
-| Inference-enforced `tool_choice` + images | `required` or a named `tool_choice` (modes that need provider-side constraint enforcement) together with image content → 400, `param: tool_choice`. `response_format` is not validated by the coordinator | `handleChatCompletions` |
-| Token rate limits | Per-account input and output tokens per minute → 429 with `Retry-After` | `applyTokenRateLimitWithAdmission`, `writeTokenRateLimited` |
+| Vision | Image parts require a vision-capable model, otherwise 400; a vision model with no vision-capable provider online → 503 `model_unavailable` | `detectMediaRequirement` (`coordinator/inference/ingress/media_shape.go`), `visionToolsFailFast` (`coordinator/inference/ingress/capability.go`) |
+| Remote images | `http(s)` `image_url` parts are gated before dispatch and fetched by the coordinator; the fetch is billed as media | `gateRemoteMediaPreDispatch` (`coordinator/inference/ingress/media_gate.go`), `resolveRemoteMedia` (`coordinator/inference/ingress/media_resolve.go`) |
+| Inference-enforced `tool_choice` + images | `required` or a named `tool_choice` (modes that need provider-side constraint enforcement) together with image content → 400, `param: tool_choice`. `response_format` is not validated by the coordinator | `Controller.ChatCompletions` |
+| Token rate limits | Per-account input and output tokens per minute → 429 with `Retry-After` | `applyTokenRateLimitWithAdmission`, `WriteTokenRateLimited` |
 | Model shedding | A model currently rejecting → 429 with `Retry-After` from `EstimateRetryAfter` | `shedIfModelRejected` |
 
 ## Timeouts and constants
@@ -556,14 +556,14 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 |---|---|
 | Route registration | `coordinator/api/routes.go` (`routes`) |
 | Global middleware and request logging | `coordinator/api/http_middleware.go` (`Handler`, `bodyLimitMiddleware`, `recoverMiddleware`, `corsMiddleware`); `coordinator/api/http_logging.go` (`loggingMiddleware`, `newRequestID`) |
-| Rate limits and token admission | `coordinator/api/request_rate_limits.go` (`rateLimitWithTier`, `applyKeyRPMLimit`); `coordinator/api/token_admission.go` (`applyTokenRateLimitWithAdmission`) |
+| Rate limits and token admission | `coordinator/api/request_rate_limits.go` (`rateLimitWithTier`, `applyKeyRPMLimit`); `coordinator/inference/ingress/tokens.go` (`applyTokenRateLimitWithAdmission`, `ReconcileOutputAdmission`); `coordinator/api/token_admission.go` (`SetTokenLimiters`) |
 | Server construction and configuration | `coordinator/api/server.go` (`NewServer`), `coordinator/api/server_config.go` (`ReadServerConfig`) |
-| Inference pipeline | `coordinator/api/consumer.go`, `coordinator/api/inference_preprocess.go`, `coordinator/api/inference_admission.go`, `coordinator/api/request_introspection.go`, `coordinator/api/reasoning_request_policy.go`, `coordinator/inference/dispatch/run.go`, `coordinator/inference/dispatch/terminal_write.go`, `coordinator/inference/attempt/rejection.go` |
+| Inference pipeline | `coordinator/inference/ingress/controller.go` (`Controller`), `coordinator/inference/ingress/chat.go` (`ChatCompletions`), `coordinator/inference/ingress/generic.go` (`handleGenericInference`), `coordinator/inference/ingress/prelude.go` (`parseInferencePrelude`), `coordinator/inference/ingress/admission.go` (`runInferenceAdmission`); dispatch and terminal policy in `coordinator/inference/dispatch/run.go`, `coordinator/inference/dispatch/terminal_write.go`, `coordinator/inference/attempt/rejection.go` |
 | Endpoint lowering and response formatting (Responses, Completions, Messages) | `coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_responses.go`, `coordinator/promptcontract/endpoint_lower_messages.go`, `coordinator/inference/response/generic_endpoint_response.go`, `coordinator/inference/response/generic_stream.go`, `coordinator/inference/response/responses_stream.go` |
 | Response lifecycle binding | `coordinator/api/response_writer.go` (`responseWriter`, `responseServices`, `responseWriteObserver`) binds shared settlement, feedback, route outcomes and accepted-write evidence to `coordinator/inference/response/writer.go` (`Dependencies`, `Writer`) |
 | Provider channel arbitration | `coordinator/inference/response/provider_stream.go` (`relayProviderStream`) preserves queued chunks ahead of a provider error; endpoint callers apply terminal policy |
 | SSE, timing and provider metadata | `coordinator/inference/response/sse_response.go`, `coordinator/inference/response/chat_metadata_stream.go`, `coordinator/inference/response/provider_snapshot.go`, `coordinator/inference/dispatch/profile.go` |
-| Tools, media, constraints | `coordinator/inference/toolpolicy/`, `coordinator/api/tool_constraints.go`, `coordinator/api/media_resolve.go` |
+| Tools, media, constraints | `coordinator/inference/toolpolicy/`, `coordinator/inference/ingress/tools.go`, `coordinator/inference/ingress/media_resolve.go` |
 | Sealed transport | `coordinator/api/sender_encryption.go` |
 | Models and catalog | `coordinator/api/catalog/` (`Controller`); `coordinator/api/catalog_controller.go` (`catalogController`); `coordinator/api/desired_models.go` (runtime notifications); `coordinator/api/capacity.go`, `coordinator/api/exact_cache_status.go` (separate live status endpoints) |
 | Keys, device code, accounts | `coordinator/api/accounts/keys.go`, `coordinator/store/contracts/keys.go`, `coordinator/api/accounts/device_codes.go`, `coordinator/api/accounts/device_approval.go`, `coordinator/api/accounts/device_tokens.go`, `coordinator/api/accountfleet/` |

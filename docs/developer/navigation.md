@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-14 · commit `6ad3d5605`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -20,7 +20,8 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Process startup, configuration binding and shutdown | `coordinator/cmd/coordinator/main.go` (`main`); follow each named setup function to its subsystem file in the same command package. [Startup source map](../architecture/components/coordinator.md#startup-sequence) |
 | Server construction and HTTP route registration | `coordinator/api/server.go` (`NewServer`); `coordinator/api/routes.go` (`routes`) |
 | HTTP body caps, CORS, panic recovery and request logging | `coordinator/api/http_middleware.go` (`Handler`); `coordinator/api/http_logging.go` (`loggingMiddleware`) |
-| Per-account/per-key rate limits and token admission | `coordinator/api/request_rate_limits.go` (`rateLimitWithTier`); `coordinator/api/token_admission.go` (`applyTokenRateLimitWithAdmission`) |
+| Per-account/per-key rate limits and token admission | `coordinator/api/request_rate_limits.go` (`rateLimitWithTier`); `coordinator/inference/ingress/tokens.go` (`applyTokenRateLimitWithAdmission`, `ReconcileOutputAdmission`); `coordinator/api/token_admission.go` (`SetTokenLimiters`) |
+| Consumer request parsing, media and admission | `coordinator/inference/ingress/chat.go` (`Controller.ChatCompletions`), `coordinator/inference/ingress/endpoints.go` (`Controller.Completions`, `Controller.Messages`); current dependency bindings in `coordinator/api/inference_ingress.go` (`inferenceIngress`). [Request stages and code map](../architecture/components/consumer.md#the-request-pipeline) |
 | Installer URL rendering | `coordinator/api/installer.go` (`resolveBaseURL`, `installScript`) |
 | Inference dispatch, queue handoff, hedging and failover | `coordinator/inference/dispatch/` (`Controller.Run`); current-service and observation bindings in `coordinator/api/inference_dispatch.go` |
 | HTTP response caching and refresh coalescing | `coordinator/api/readcache/`; catalog fill fences in `generation.go` (`SetIfCurrent`, `SetValueIfCurrent`) |

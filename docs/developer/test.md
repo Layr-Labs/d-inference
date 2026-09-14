@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `2d7cc572f`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -229,6 +229,36 @@ route order, callback reentry, lost claims and provider-owned completion.
 `coordinator/api/httpresponse/status_writer_test.go` checks implicit writes,
 repeated explicit headers, flush, hijack and unwrap delegation.
 
+Consumer request preparation, tool/media policy, token quotas and capacity
+admission tests live in `coordinator/inference/ingress/`. Authenticated HTTP,
+WebSocket, sealed-transport, settlement and provider-byte fixtures remain in the
+API. Run the owner and its route boundaries from the repository root:
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/inference/ingress
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api -run '^(TestInferenceIngressRoutesUseCurrentStoreAndTokenLimiters|TestModelShed.*)$'
+```
+
+`TestInferenceIngressRoutesUseCurrentStoreAndTokenLimiters`
+(`coordinator/api/inference_ingress_bindings_test.go`) mounts all four inference
+routes before replacing the store and configuring token limiters. It checks
+authentication before parsing, malformed JSON before store access, quota
+rejection before self-route ownership, and the live owned-machine lookup after
+disabling the same limiter. The unchanged route fixture also passes against
+the original API implementation. The retained `TestModelShed*` API fixtures
+exercise real authenticated routes and preserve their rejection-journal checks.
+Shared request bodies, media builders and the independent legacy estimator live
+in `coordinator/internal/inferencefixture/`; that package is imported only by
+tests. The two benchmark groups below smoke-test their fixtures; one iteration
+does not establish a performance comparison:
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test ./coordinator/inference/ingress -run '^$' -bench '^(BenchmarkChatPreprocessHelpers|BenchmarkRequestIntrospection)$' -benchtime=1x
+```
+
 Capacity arithmetic and version-interpretation tests live beside their owners
 in `coordinator/registry/admission/` and `coordinator/registry/providerversion/`.
 Concurrent reservation, fleet preflight and routing simulations remain in the
@@ -362,12 +392,14 @@ Run both owners from the repository root (no model or provider process is requir
 
 ```bash
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/inference/response
-GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'Test(Endpoint|RequestOutcome|ProfilerKillSwitch|Streaming|StreamRelay|NonStream|NonStreamingCompleteObject|ConfigurePendingCopiesMetadataDetails|MarshalForwardBody)'
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'Test(Endpoint|RequestOutcome|ProfilerKillSwitch|Streaming|StreamRelay|NonStream|NonStreamingCompleteObject|ConfigurePendingCopiesMetadataDetails)'
 ```
 
-`TestMarshalForwardBodyDoesNotHTMLEscape` keeps the API adapter bound to
-`httpresponse.MarshalBody`; cached response encoding has separate byte-equivalence
-fixtures. Neither command measures model quality or runtime throughput.
+`TestMarshalForwardBodyDoesNotHTMLEscape` in
+`coordinator/inference/ingress/body_test.go` keeps the request-body adapter bound
+to `httpresponse.MarshalBody`; it runs with the ingress command above. Cached
+response encoding has separate byte-equivalence fixtures. These commands do not
+measure model quality or runtime throughput.
 
 Profiler construction, allowlist, sampling and environment tests live in
 `coordinator/telemetry/profiler/`. Its worker fixtures use a real memory store

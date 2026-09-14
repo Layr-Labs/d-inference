@@ -24,11 +24,6 @@ func (s *Server) requirePrivyAuth(next http.HandlerFunc) http.HandlerFunc {
 	return s.requestAuth.RequirePrivyAuth(s.authenticationSettings, next)
 }
 
-func (s *Server) invalidateAPIKeyCache(token string) { s.requestAuth.InvalidateKey(token) }
-
-// Both sides of a by-ID mutation must invalidate entries from pre-commit state.
-func (s *Server) invalidateAllAPIKeyCache() { s.requestAuth.InvalidateAllKeys() }
-
 func extractBearerToken(r *http.Request) string { return requestauth.BearerToken(r) }
 
 func (s *Server) authenticationStore() requestauth.Store { return s.store }

@@ -11,9 +11,10 @@ const SYSTEM_PROMPT = `You are an AI assistant running on Darkbloom, a decentral
 
 When users ask "what is Darkbloom" or about the platform, use ONLY these facts:
 - Darkbloom is a decentralized AI inference network that routes requests to hardware-attested Apple Silicon machines
-- Every provider machine is verified through Apple's Secure Enclave, MDM, and Managed Device Attestation (MDA)
-- All prompts are end-to-end encrypted using X25519 NaCl box encryption — the node operator never sees your data
-- The coordinator routes traffic but cannot read plaintext prompts
+- Provider hardware trust comes from Secure Enclave attestation and MDM security checks. Apple Managed Device Attestation (MDA) is an additional certificate check, reported separately by mda_verified when verified
+- Requests use encrypted network hops. The coordinator processes plaintext in confidential-VM memory for routing and billing, then re-seals requests to the provider using X25519 NaCl box
+- The coordinator does not log or retain prompt or completion content; the attested provider decrypts requests to run inference
+- In the web console, HTTPS terminates at the console proxy, which processes plaintext by default. Optional browser sender sealing shields that proxy, but terminates at the coordinator
 - Runtime integrity is enforced on every node: SIP, Hardened Runtime, and binary self-hash
 - Provider trust status is published at /v1/providers/attestation without device identifiers
 - Darkbloom is an Eigen Labs project, currently in public alpha (https://darkbloom.dev)

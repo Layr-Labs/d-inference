@@ -33,12 +33,11 @@ const STEPS: StepData[] = [
     iconBg: "bg-purple-light",
     title: "Apple Hardware",
     description:
-      "Your request is processed on a real Apple Silicon Mac, verified by Apple.",
+      "The coordinator verifies the provider's Secure Enclave identity and hardware security posture.",
     technical:
-      "The provider runs on Apple Silicon (M1/M2/M3/M4) with hardware-backed security features. " +
-      "The device identity is established through Apple's Managed Device Attestation (MDA), " +
-      "which uses DeviceInformation DevicePropertiesAttestation OIDs (1.2.840.113635.100.8.9.*, " +
-      "100.8.10.*, 100.8.11.*) to certify serial number, UDID, OS version, and SepOS version.",
+      "The provider runs on Apple Silicon with a Secure Enclave identity key. " +
+      "MDM SecurityInfo checks System Integrity Protection and Secure Boot before hardware trust is granted. " +
+      "Apple Managed Device Attestation (MDA) provides a separate certificate proof when verified.",
   },
   {
     icon: Fingerprint,
@@ -57,28 +56,29 @@ const STEPS: StepData[] = [
     icon: ShieldCheck,
     iconColor: "text-blue",
     iconBg: "bg-blue-light",
-    title: "Apple Certificate",
+    title: "Apple Certificate, When Verified",
     description:
-      "Apple's certificate authority confirms this specific device's identity.",
+      "Providers marked Apple attestation verified have an Apple-signed device certificate checked by the coordinator.",
     technical:
-      "Apple's Enterprise Attestation Root CA (P-384, valid until 2047) signs intermediate " +
-      "certificates that chain to the device leaf certificate. This X.509 chain is verified " +
-      "by the coordinator. The leaf certificate embeds device-specific OIDs signed by Apple; " +
+      "When mda_verified is true, the coordinator has verified the device certificate chain " +
+      "against Apple's pinned Enterprise Attestation Root CA. This proof is reported separately from hardware trust. " +
+      "The leaf certificate embeds device-specific OIDs signed by Apple; " +
       "the raw certificate, serial number, and UDID remain private to the provider and coordinator.",
   },
   {
     icon: Lock,
     iconColor: "text-coral",
     iconBg: "bg-coral-light",
-    title: "End-to-End Encryption",
+    title: "Encryption in Transit",
     description:
-      "Your prompts are encrypted before leaving your browser. Only the verified hardware can decrypt them.",
+      "Requests travel over encrypted connections. The coordinator and provider process plaintext; so does the console proxy when sender sealing is off.",
     technical:
-      "E2E encryption uses X25519/NaCl box (Curve25519 + XSalsa20-Poly1305). " +
-      "The coordinator generates ephemeral X25519 session keys for each request, encrypts " +
-      "the request body with the provider's public key, and forwards the ciphertext. " +
-      "Decryption happens only inside the hardened provider process with PT_DENY_ATTACH, " +
-      "Hardened Runtime, and SIP protections.",
+      "HTTPS terminates at the console service. By default its /api/chat proxy parses plaintext requests " +
+      "before forwarding them over HTTPS. Turning on Encrypt to coordinator adds X25519/NaCl box sealing " +
+      "in the browser, so that proxy forwards ciphertext and the coordinator opens it. " +
+      "The coordinator processes plaintext in confidential-VM memory for routing and billing, " +
+      "without logging or retaining prompt content, then re-seals to the provider's registered key. " +
+      "The attested provider decrypts the request for inference. This is hop-by-hop encryption.",
   },
   {
     icon: RefreshCw,
@@ -86,13 +86,12 @@ const STEPS: StepData[] = [
     iconBg: "bg-gold-light",
     title: "Continuous Verification",
     description:
-      "The machine is re-verified every 5 minutes. If anything changes, it's taken offline.",
+      "Periodic checks keep provider trust up to date. Providers that fail required security checks stop receiving requests.",
     technical:
       "The coordinator sends attestation challenges (32-byte random nonce + timestamp) " +
-      "every 5 minutes. The provider must sign the challenge with its SE key and report " +
-      "fresh security posture: SIP status, Secure Boot, binary hash (self-hash of provider binary), " +
-      "RDMA status, and runtime integrity hashes (MLX-Swift runtime, chat templates, " +
-      "and active model weights). Any mismatch triggers demotion.",
+      "every 5 minutes and verifies the provider's SE signature and required security posture. " +
+      "Trust and routing decisions distinguish proven security failures from transient timeouts; " +
+      "RDMA enablement alone does not revoke hardware trust.",
   },
 ];
 
@@ -222,8 +221,8 @@ export function TrustExplainerModal({ open, onClose }: TrustExplainerModalProps)
                   Privacy-Preserving Verification
                 </p>
                 <p className="text-xs text-text-secondary mt-1 leading-relaxed">
-                  The coordinator verifies Apple&apos;s certificate chain and
-                  publishes the resulting trust status without exposing the
+                  The coordinator publishes hardware trust and the separate
+                  Apple attestation status without exposing the
                   device&apos;s serial number, UDID, or raw certificate.
                 </p>
               </div>

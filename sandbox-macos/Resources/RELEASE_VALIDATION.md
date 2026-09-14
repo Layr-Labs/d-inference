@@ -194,6 +194,11 @@ this preparation path; the manifest records those boundaries separately.
 
 ## Prepare a selected GUI-user host
 
+Run `darkbloom-sandboxd doctor --storage /absolute/vm-storage --json` in the
+selected user's GUI context to inspect the volume used by VM admission. Without
+`--storage`, doctor reports the system volume. Missing/unreadable capacity remains
+a failed check; this diagnostic option does not change admission requirements.
+
 The host broker must run in an existing user's actual Aqua LaunchAgent context.
 A physical nonlogin service launch failed Virtualization security-key creation;
 an otherwise matching GUI-user LaunchAgent started and stopped the VM. Guest

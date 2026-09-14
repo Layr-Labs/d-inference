@@ -64,14 +64,11 @@ enum DarkbloomSandboxDaemon {
     }
 
     private static func runDoctor(_ arguments: [String]) throws {
-        let allowed = Set(["--json", "--development-unsigned"])
-        guard arguments.allSatisfy(allowed.contains) else {
-            throw DaemonCLIError.invalidArguments("doctor")
-        }
+        let options = try DoctorOptions(arguments)
         let report = SandboxHostInspector().inspect(policy: SandboxHostInspectionPolicy(
-            requireVirtualizationEntitlement: !arguments.contains("--development-unsigned")
-        ))
-        if arguments.contains("--json") {
+            requireVirtualizationEntitlement: !options.developmentUnsigned
+        ), storageDirectory: options.storage)
+        if options.json {
             try printJSON(report)
         } else {
             print("Darkbloom macOS sandbox host")
@@ -120,7 +117,7 @@ enum DarkbloomSandboxDaemon {
         print(
             """
             Usage:
-              darkbloom-sandboxd doctor [--json] [--development-unsigned]
+              darkbloom-sandboxd doctor [--storage DIR] [--json] [--development-unsigned]
               darkbloom-sandboxd restore-image latest [--json]
               darkbloom-sandboxd prepare-base --lume PATH --storage DIR
                 --ipsw FILE --name NAME [--cpu N] [--memory-gib N]

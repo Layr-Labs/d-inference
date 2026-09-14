@@ -2756,3 +2756,20 @@ Go/model cache permission remains pending. No new user cache or model removed.
 Full fresh restore/installer/qualification, actual GUI service recovery, two-VM
 consumer acceptance, workload/stress performance and final release gates remain.
 CI34862480863 and integration34862480870 were still in progress at last check.
+
+## 2026-09-14 — Doctor follows the selected VM-storage volume
+
+Found a CLI diagnostic gap: doctor always inspected root while raw reservation
+and qualification inspect the selected storage directory. Added doctor --storage
+DIR with root default retained, strict bounded absolute argument parsing and no
+admission bypass. Missing capacity still reports -1/failure. The actual GUI
+doctor invocation is the next physical prerequisite check; it creates no VM.
+Read-only build/validation: existing SandboxHostDiskInspectionTests2pass;
+doctor-storage-cli-smoke.json6checks verify root has measured capacity, selected
+missing path yields -1 and exit78 without falling back to root, and malformed/
+duplicate/missing options exit64 before inspection. No missing path was created.
+Source graph rebuilt by swift test. Resource release guide and changelog updated.
+No full671suite rerun for this isolated diagnostic CLI change; it does not alter
+runtime/admission policy. Prior full671/7skip/0failure evidence remains b891.
+CIb891 sandbox/coordinator/UI/release/docs/sidecar pass; provider and integration
+remain running at last poll. No cache permission reply.

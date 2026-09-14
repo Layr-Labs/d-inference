@@ -23,6 +23,7 @@ coordinator deployment.
 
 ## Unreleased — sandbox private-alpha control
 
+- Let sandbox host `doctor --storage DIR` inspect the actual VM-storage volume, so its free-space diagnosis matches admission on separate APFS volumes and quotas.
 - Add `discard-base` for exact unqualified Apple-restore installations. Preserve ready templates and unknown data; recover interrupted removal through a durable installation-bound deletion intent without disk-capacity or guest-package admission.
 - Wire `prepare-accountless-base qualify` to durable attempt journaling, native checks, clone cleanup and guarded ready publication. Recovery settles exact prior resources without rerunning checks or publishing from saved flags; aborted attempts report exit75 and preserve unknown source status.
 - Add a signed guest isolation probe and internal native qualification sequence with authenticated command checks, verified workspace transfer, cold-boot identity and persistence checks, and guarded readiness publication after durable clone cleanup. The operator workflow and physical acceptance remain release gates.

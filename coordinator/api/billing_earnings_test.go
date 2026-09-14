@@ -1,13 +1,13 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -58,7 +58,7 @@ func TestAccountEarningsUsesLifetimeTotalsAndCurrentBalance(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/provider/account-earnings?limit=1", nil)
-	req = req.WithContext(context.WithValue(req.Context(), ctxKeyConsumer, accountID))
+	req = req.WithContext(requestcontext.WithAccountID(req.Context(), accountID))
 	w := httptest.NewRecorder()
 
 	srv.handleAccountEarnings(w, req)

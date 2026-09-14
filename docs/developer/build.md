@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `88a39daa8`
+> Last updated: 2026-09-14 · commit `8ecd5df8b`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -87,6 +87,9 @@ Continue with the per-component steps when you need one piece or want to
 understand what `make` runs.
 
 ### 3. Coordinator (Go)
+
+The same binary includes `coordinator/api/readiness/`, the shared HTTP ingress
+and drain owner; it adds no worker or build step.
 
 The state archive route compiles through `coordinator/api/statearchive/`;
 `coordinator/stateexport/` remains the existing snapshot/ZIP/age backend.

@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-14 · commit `dd5026fdf`
+> Last updated: 2026-09-14 · commit `04ccdf3ef`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -35,7 +35,7 @@ responses and error codes are unchanged.
 
 | Label | Behaviour | Symbol |
 |---|---|---|
-| `drain` | While draining, new inference requests get **429** `rate_limit_exceeded` with `Retry-After` set to [`coordinatorDrainRetryAfter`](#timeouts-and-constants) (written through `writeTokenRateLimited`) | `drainGate` (`coordinator/api/drain.go`) |
+| `drain` | While draining, new inference requests get **429** `rate_limit_exceeded` with `Retry-After` set to [`coordinatorDrainRetryAfter`](#timeouts-and-constants) (written through `writeTokenRateLimited`) | `Controller.Gate` (`coordinator/api/readiness/gate.go`) |
 | `rpm` | Consumer tier: first the key's own `rpm_limit` (`applyKeyRPMLimit`), then the account limiter; service-role accounts use the elevated service limiter. Rejection → 429 `rate_limit_exceeded` (`code: rate_limit_exceeded`) with `Retry-After` and `X-RateLimit-Reset` | `rateLimitConsumer` |
 | `fin` | Financial tier: the stricter limiter installed by `SetFinancialRateLimiter`, applied to every account regardless of role; same 429 shape | `rateLimitFinancial` |
 
@@ -45,7 +45,7 @@ Both tiers set `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, `
 
 ### Inference (4)
 
-All four share the chain `drainGate → requireAuth → rateLimitConsumer → sealedTransport → handler` and the pipeline in `coordinator/api/consumer.go`.
+All four share the chain `readiness.Controller.Gate → requireAuth → rateLimitConsumer → sealedTransport → handler` and the pipeline in `coordinator/api/consumer.go`.
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
@@ -185,7 +185,7 @@ envelope when their required data is unavailable.
 | GET | `/api/version` | `handleVersion` (`coordinator/api/consumer.go`) | `—` | `VersionResponse` `{version, platform, backend, download_url, binary_hash, bundle_hash, metallib_hash, changelog}`; uses the newest active release in the store, else `LatestProviderVersion` |
 | POST | `/v1/releases` | `Controller.Register` (`coordinator/api/releases/registration.go`) | `release` | Register a release |
 | GET | `/v1/releases/latest` | `Controller.Latest` (`coordinator/api/releases/latest.go`) | `—` | Latest release record |
-| GET | `/readyz` | `handleReadyz` (`coordinator/api/drain.go`) | `—` | 200 normally; 503 while draining |
+| GET | `/readyz` | `Controller.Ready` (`coordinator/api/readiness/probe.go`) | `—` | 200 when ready; 503 while draining or trust safety is blocked |
 
 Release publishing: [`../operations/provider-release.md`](../operations/provider-release.md).
 
@@ -228,7 +228,7 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | GET | `/v1/admin/metrics` | `handleAdminMetrics` | `admin-key` | Telemetry counters |
 | GET | `/v1/admin/base-rewards` | `handleAdminBaseRewards` (`coordinator/api/base_rewards_handlers.go`) | `admin-key` | |
 | GET | `/v1/admin/utilization` | `handleAdminUtilization` (`coordinator/api/admin_utilization.go`) | `admin-key` | |
-| POST | `/v1/admin/drain` | `handleAdminDrain` (`coordinator/api/drain.go`) | `admin` | Start a drain; default grace [`DefaultDrainGrace`](#timeouts-and-constants) |
+| POST | `/v1/admin/drain` | `Controller.Drain` (`coordinator/api/readiness/drain.go`) | `admin` | Empty body starts draining; `{"draining":false}` resumes admission. Reports current state and in-flight count; SIGTERM separately waits for the drain grace |
 | GET | `/v1/admin/routes`, `/v1/admin/routes/export` | `handleAdminRoutes`, `handleAdminRoutesExport` (`coordinator/api/admin_telemetry.go`) | `admin-key` | Route records |
 | GET | `/v1/admin/rejections`, `/v1/admin/rejections/export` | `handleAdminRejections`, `handleAdminRejectionsExport` (`coordinator/api/admin_telemetry.go`) | `admin-key` | Admission rejections; `could_have_served` is nullable: `null` means not evaluated. CSV uses an empty cell; `could_have_served=true|false` filters exclude unknowns. |
 | GET | `/v1/admin/request-outcomes` | `handleAdminRequestOutcomes` (`coordinator/api/request_outcome_admin.go`) | `admin-key` | Bounded received cohort with versioned request/attempt evidence and current-process sink health; see [accounting](../architecture/request-accounting.md). |
@@ -325,7 +325,7 @@ contract behavior are defined in [prompt-contract sidecar](../architecture/promp
 | Header | Where | When |
 |---|---|---|
 | `X-Request-ID` | `loggingMiddleware` | Every response |
-| `Retry-After` | `rateLimitWithTier`, `applyKeyRPMLimit`, `writeTokenRateLimited`, `drainGate`, `shedIfModelRejected`, `writeTTFTTooSlow`, `writeServiceUnavailable`, `runInferenceAdmission`, `selfRouteUnavailable`, `preContentTerminal`, the exhausted branch of `dispatchState.run` (`coordinator/api/dispatch.go`) | Every 429 (including the drain 429, [`coordinatorDrainRetryAfter`](#timeouts-and-constants)); 503 `service_unavailable`, `machine_offline` (30 s), `model_not_loaded` (15 s), and 503 `provider_error` from dispatch exhaustion. **Not** set on 503 `model_unavailable`, 502, or 504. Admission values come from `estimateRetryAfter` (`coordinator/api/consumer.go`), capped at [`maxDistressRetryAfter`](#timeouts-and-constants); a provider-forecast `feasible_after_ms` overrides it, clamped to 2–30 s |
+| `Retry-After` | `rateLimitWithTier`, `applyKeyRPMLimit`, `writeTokenRateLimited`, `readiness.Controller.Gate`, `shedIfModelRejected`, `writeTTFTTooSlow`, `writeServiceUnavailable`, `runInferenceAdmission`, `selfRouteUnavailable`, `preContentTerminal`, the exhausted branch of `dispatchState.run` (`coordinator/api/dispatch.go`) | Every 429 (including the drain 429, [`coordinatorDrainRetryAfter`](#timeouts-and-constants)); 503 `service_unavailable`, `machine_offline` (30 s), `model_not_loaded` (15 s), and 503 `provider_error` from dispatch exhaustion. **Not** set on 503 `model_unavailable`, 502, or 504. Admission values come from `estimateRetryAfter` (`coordinator/api/consumer.go`), capped at [`maxDistressRetryAfter`](#timeouts-and-constants); a provider-forecast `feasible_after_ms` overrides it, clamped to 2–30 s |
 | `X-RateLimit-Reset`, `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, `x-ratelimit-reset-requests` | `rateLimitWithTier`, `setRequestRateLimitHeaders` | Request-rate limited routes (`rpm`, `fin`); the first only on rejection |
 | `x-ratelimit-limit-input-tokens`, `x-ratelimit-remaining-input-tokens`, `x-ratelimit-reset-input-tokens`, and the `-output-tokens` triple | `setTokenRateLimitHeaders` | Inference responses when token limits are configured |
 | `X-Timing` | `writeTimingHeaderWithProfile` (`coordinator/api/profiler_dispatch.go`) | Committed inference responses. A JSON object with the `RequestTimingDetails` fields (`coordinator/api/types/types.go`): `parse_us`, `reserve_us`, `media_fetch_us`, `route_us`, `queue_us`, `encrypt_us`, `dispatch_us`, `provider_us`, plus profiler-only additive keys (`pre_handler_us`, `preflight_us`, `route_reserve_us`, `queue_pure_us`, `writer_us`, `socket_us`, `provider_ack_us`, `timing_anomaly`) |
@@ -489,7 +489,7 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 | `maxDispatchAttempts` | 64 | `coordinator/api/consumer.go` | Upper bound on provider attempts per request |
 | `chunkBufferSize` | 256 | `coordinator/api/consumer.go` | Pre-commit chunk buffer per attempt |
 | `apiKeyCacheTTL` | 60 s | `coordinator/api/server.go` | API-key lookups are cached; a revocation takes effect within one TTL |
-| `coordinatorDrainRetryAfter` / `DefaultDrainGrace` | 3 s / 600 s | `coordinator/api/drain.go` | `Retry-After` on the drain 429; default drain window |
+| `coordinatorDrainRetryAfter` / `DefaultDrainGrace` | 3 s / 600 s | `coordinator/api/readiness/gate.go`, `coordinator/api/readiness/shutdown.go` | `Retry-After` on the drain 429; default drain window |
 | `DeviceCodeExpiry` / `DeviceCodePollInterval` | see [Device-code flow](#device-code-flow-3) | `coordinator/api/device_auth.go` | Device-code lifetime and poll interval |
 | `maxLogReportBodySize` | 10 MB | `coordinator/api/log_report_handlers.go` | Provider log upload cap |
 | `degradedRouteEWMAThresholdMs` / `maxDistressRetryAfter` | 1000 ms / 60 s | `coordinator/api/consumer.go` | Input threshold and cap for `estimateRetryAfter` |
@@ -558,6 +558,6 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Stats | `coordinator/api/stats.go`, `coordinator/api/cache_refresher.go`, `coordinator/api/network_totals.go`, `coordinator/api/leaderboard.go`, `coordinator/api/network_series.go` |
 | Release registration, discovery, inventory and runtime manifest | `coordinator/api/releases/registration.go` (`Controller.Register`), `coordinator/api/releases/latest.go` (`Controller.Latest`), `coordinator/api/releases/inventory.go` (`Controller.List`), `coordinator/api/releases/deactivation.go` (`Controller.Delete`), `coordinator/api/releases/runtime_manifest.go` (`Controller.RuntimeManifest`) |
 | Enrollment, provider WS, log reports | `coordinator/api/enroll.go`, `coordinator/api/provider.go`, `coordinator/api/log_report_handlers.go` |
-| Drain, admin telemetry, profiler, state export, telemetry stub | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/statearchive/handler.go`, `coordinator/api/telemetry_handlers.go` |
+| Drain, admin telemetry, profiler, state export, telemetry stub | `coordinator/api/readiness/`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/statearchive/handler.go`, `coordinator/api/telemetry_handlers.go` |
 | Rate-limit bucket consumption | `coordinator/ratelimit/ratelimit.go` (`allowBucket`, `debitBucket`): fixed and per-key rate paths share token consumption and retry calculation while keeping their own admission and clamp rules |
 | Shared types and helpers | `coordinator/api/types/types.go`, `coordinator/api/httputil.go`, `coordinator/ratelimit/ratelimit.go`, `coordinator/modelpolicy/first_content_deadline.go` |

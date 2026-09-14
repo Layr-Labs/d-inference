@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
-import { STORAGE_KEYS } from "@/lib/constants";
+import { STORAGE_KEYS } from "@/lib/storage-keys";
 import { useStore } from "@/lib/store";
 import { useProviderAccount } from "./useProviderAccount";
 import { workspaceForPath, type Workspace, type ProviderAccount } from "./workspaces";

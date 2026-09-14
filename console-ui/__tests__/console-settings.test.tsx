@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useConsoleSettings } from "@/app/settings/useConsoleSettings";
-import { STORAGE_KEYS } from "@/lib/constants";
+import { STORAGE_KEYS } from "@/lib/storage-keys";
 import { apiExampleUrl } from "@/lib/api-example-url";
 import { PUBLIC_COORDINATOR_URL } from "@/lib/coordinator-url";
 

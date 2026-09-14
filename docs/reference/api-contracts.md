@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-14 · commit `378e689c4`
+> Last updated: 2026-09-14 · commit `9d9c688dc`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -556,7 +556,7 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Keys, device code, accounts | `coordinator/api/apikey_handlers.go`, `coordinator/store/apikey.go`, `coordinator/api/device_auth.go`, `coordinator/api/me_handlers.go` |
 | Billing, Stripe, referral, invites | `coordinator/api/billing_handlers.go`, `coordinator/api/stripe_payouts.go`, `coordinator/api/stripe_withdraw.go`, `coordinator/api/stripe_payouts_webhooks.go`, `coordinator/api/invite_handlers.go`, `coordinator/api/base_rewards_handlers.go` |
 | Stats | `coordinator/api/stats.go`, `coordinator/api/cache_refresher.go`, `coordinator/api/network_totals.go`, `coordinator/api/leaderboard.go`, `coordinator/api/network_series.go` |
-| Release registration, discovery and inventory | `coordinator/api/releases/registration.go` (`Controller.Register`), `coordinator/api/releases/latest.go` (`Controller.Latest`), `coordinator/api/releases/inventory.go` (`Controller.List`), `coordinator/api/releases/deactivation.go` (`Controller.Delete`) |
+| Release registration, discovery, inventory and runtime manifest | `coordinator/api/releases/registration.go` (`Controller.Register`), `coordinator/api/releases/latest.go` (`Controller.Latest`), `coordinator/api/releases/inventory.go` (`Controller.List`), `coordinator/api/releases/deactivation.go` (`Controller.Delete`), `coordinator/api/releases/runtime_manifest.go` (`Controller.RuntimeManifest`) |
 | Enrollment, provider WS, log reports | `coordinator/api/enroll.go`, `coordinator/api/provider.go`, `coordinator/api/log_report_handlers.go` |
 | Drain, admin telemetry, profiler, state export, telemetry stub | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/admin_state_export.go`, `coordinator/api/telemetry_handlers.go` |
 | Rate-limit bucket consumption | `coordinator/ratelimit/ratelimit.go` (`allowBucket`, `debitBucket`): fixed and per-key rate paths share token consumption and retry calculation while keeping their own admission and clamp rules |

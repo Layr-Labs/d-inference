@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct SandboxProcessResult: Sendable {
@@ -95,6 +96,24 @@ public struct SandboxProcessRunner: Sendable {
     public static let defaultMaximumOutputBytes = 4 * 1_048_576
 
     public init() {}
+
+    /// Root's dedicated system-command worker owns this client to natural exit.
+    /// Platform helpers may legitimately survive their foreground disk utility;
+    /// this narrow path preserves those descendants and inherits no runtime fd.
+    package func startSystemTool(executable: URL, arguments: [String]) throws -> SandboxManagedProcess {
+        guard getuid() == 0, geteuid() == 0, getegid() == 0,
+              ["/usr/bin/hdiutil", "/usr/sbin/diskutil", "/usr/sbin/lsof"].contains(executable.path) else {
+            throw SandboxRuntimeError.unsupported("system command ownership requires root and an allowed disk tool")
+        }
+        try validate(executable: executable, timeoutSeconds: nil, maximumOutputBytes: Self.defaultMaximumOutputBytes)
+        try validateInvocation(arguments: arguments, environment: [:], currentDirectory: nil, cooperativeControl: nil)
+        let execution = try ProcessExecution(executable: executable, arguments: arguments,
+            environment: Self.environment(overrides: [:]), currentDirectory: nil,
+            maximumOutputBytes: Self.defaultMaximumOutputBytes, terminateDescendantsOnExit: false)
+        do { try execution.start() }
+        catch { execution.cleanup(); throw error }
+        return SandboxManagedProcess(execution: execution)
+    }
 
     public func start(
         executable: URL,

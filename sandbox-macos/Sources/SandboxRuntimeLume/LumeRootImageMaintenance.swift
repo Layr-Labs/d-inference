@@ -10,6 +10,7 @@ package final class LumeRootImageMaintenance {
     private let maintenance: HostRuntimeMaintenanceScope
     private let image: LumeImageMaintenanceState
     private let use = LumeMaintenanceUseGate()
+    private var ownedProcesses: [SandboxManagedProcess] = []
 
     init(guard source: LumeRootBaseImageGuard, maintenance: HostRuntimeMaintenanceScope,
                      image: LumeImageMaintenanceState) throws {
@@ -19,6 +20,7 @@ package final class LumeRootImageMaintenance {
 
     package func withOfflineImage<T>(_ body: (URL, Int32) throws -> T) throws -> T {
         try use.enter(); defer { use.leave() }
+        try requireNoRunningChildren()
         try maintenance.validate(); try image.validateForOfflineIO()
         let result = try source.withImage(body)
         try image.validateForOfflineIO(); try maintenance.validate()
@@ -27,6 +29,7 @@ package final class LumeRootImageMaintenance {
 
     package func withOfflineImage<T>(_ body: (URL, Int32) async throws -> T) async throws -> T {
         try use.enter(); defer { use.leave() }
+        try requireNoRunningChildren()
         try maintenance.validate(); try image.validateForOfflineIO()
         let (url, descriptor) = try source.withImage { ($0, $1) }
         let result = try await body(url, descriptor)
@@ -36,6 +39,7 @@ package final class LumeRootImageMaintenance {
 
     package func finishAfterVerifiedCleanup(persist: (LumeImageMaintenanceCleanup) throws -> Void) throws {
         try use.enter(); defer { use.leave() }
+        try requireNoRunningChildren()
         try maintenance.validate()
         try image.removeFenceAfterVerifiedCleanup(persist: persist)
         // Image fence first, global fence last. Both EX and the retained image
@@ -50,10 +54,24 @@ package final class LumeRootImageMaintenance {
                                    runner: SandboxProcessRunner = .init()) throws -> SandboxManagedProcess {
         try use.withActiveClaim {
             try maintenance.validate(); try image.validateForOfflineIO()
-            return try maintenance.runtimeLease.withInheritedDescriptor { descriptor in
+            try requireNoRunningChildren()
+            let child = try maintenance.runtimeLease.withInheritedDescriptor { descriptor in
                 try runner.start(executable: executable, arguments: arguments,
                     maximumOutputBytes: 4 * 1_048_576, runtimeAuthorityDescriptor: descriptor)
             }
+            ownedProcesses.append(child)
+            return child
         }
+    }
+
+    package func validateActiveImageOwnership() throws {
+        try use.withActiveClaim {
+            try maintenance.validate(); try image.validateForOfflineIO()
+        }
+    }
+
+    private func requireNoRunningChildren() throws {
+        ownedProcesses.removeAll { !$0.isRunning }
+        guard ownedProcesses.isEmpty else { throw LumeImageMaintenanceError.operationInProgress }
     }
 }

@@ -5,85 +5,43 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
-Pushed653074530 adds asynchronous root image use, an overlap/completion
-gate, inherited machine EX for owned system children, and typed APFS Data-volume
-inspection. Full sandbox576tests/7skips/0failures and focused20tests pass. A new
-real-root experiment proves the child retains EX after parent exit and blocks
-recovery until it terminates, then exact cleanup restores admission. Details and
-exact digests are in the final section. These are still prerequisites for the
-unbuilt guarded attach/mount/detach workflow, not mounted-image qualification.
+The guarded accountless offline staging operation is implemented and locally
+validated: native stopped inspection, root system-command worker, attach/mount
+journals, exact-image recovery, Data mount policy, signed payload staging and
+verified detach. Latest sandbox suite:602tests/7skips/0failures. Host-runtime:
+21tests/0failures. Provider target builds; docs-check286files passes.
 
-Pushedb1743dd53 adds typed root image-maintenance begin/recovery/completion and its
-staging-journal binding. Local full sandbox565tests/7skips/0failures and
-host-runtime19tests pass. A real-root disposable-image campaign on the test Mac
-passes two abrupt process exits, blocked admission, exact completion recovery,
-restored ordinary SH/EX admission and unchanged permanent ownership inode. The
-new end-of-file section contains exact paths/digests and next work. No image was
-attached or VM booted by that campaign; automatic mounted-base orchestration
-remains unfinished. CI34822858087 and integration34822857983 now both PASS the
-preceding pushed2812390a5; fresh CI is required for the new source.
+A fresh1GiB nonbootable APFS fixture passed actual attach/crash/recovery/stage/
+detach and independent final checks on the test Mac. It proves the filesystem
+component, not an Apple restore, VM boot or template qualification. Exact source,
+artifact paths and digests are in the final dated section. Both fixtures are
+detached and unfenced; no test worker remains. Signed runtime12 is installed
+immutably for native status and staging tests; its latest lifecycle patches
+still need VM testing. Exercise14/coldboot15 remains the last actual guest proof.
 
-Pushed2812390a5 adds broker/native per-image offline fences as patch12.
-Pushedf12f72810 adds durable root maintenance to host-runtime; pushedd8fa61dc5
-adds native relay test-harness patch11. Pushed3c34dbbdd adds the root-only base source/machine lock scope, private
-source reader, shared raw ownership decoding and real process-lock tests.
-Pushed3ac8a7fb6 adds recoverable accountless payload staging and its durable
-journal. Pushedf235b8ad2 adds signal cancellation, actual GUI-session monitoring
-and cleanup covering all post-runtime startup/service exits. Source6cf8f3381 adds
-installed-checkpoint publication after qualification-clone consumerb48455139 and
-requested-resource configuration32be94642. Full sandbox suite passes552tests,
-7explicit skips,0failures (127.380s); host-runtime18tests pass and the provider
-darkbloom target builds. A clean replay of11native patches passes196tests plus
-13required selectors. The new patch12 signed build passes200native tests and
-16required selectors; the final idle sandbox rerun passed after two legacy
-SSH-wrapper timing failures during concurrent release compilation, which remain
-a recorded stress concern. Coordinator suite, Linux
-build, docs lint, UI lint and Next.js build pass. CI34811478625 and integration
-34811478687 passed6cf8f3381. CI34813684236 and integration34813684227
-passed3ac8a7fb6. Integration34815356765 passed3c34dbbdd, but CI34815356747
-failed the native relay fixture's large-frame test; other jobs passed. The
-test-harness correction has CI34819884262 and integration34819884263
-passing atd8fa61dc5. CI34822858087 and integration34822857983 pass
-2812390a5; benchmark
-environment approval is separate and has not been granted.
+CI34827518025 and integration34827517978 passed653074530. The guarded staging
+change needs a fresh push and CI. Benchmark environment approval remains separate.
+Legacy SSH-wrapper timing failures under concurrent release compilation remain
+an open stress concern, despite the idle full-suite passes.
 
-Physical guest exercise14 and coldboot15 PASS on the test Mac. They prove
-selected authenticated execution/files/isolation/cleanup, retained workspace,
-and a genuinely different guest boot. Both VM owner exits and independent root
-quiescence pass. No VM is currently running. The diagnostic clone has guest
-inode32638, SHA8dd96a80d7c96d15cf49e143416c8bf665c9a47464885ee1733d06b8544a3369;
-it is not a qualified production template. The full details and exact root proof
-digests are recorded at the end of this checkpoint.
-
-Next: complete accountless privileged staging/boot/collection orchestration and
-the automatic qualification/cleanup-to-ready-template handoff; physical GUI host
-service termination/login recovery and recurring startup; full2VM coordinator acceptance, build tools,
-performance and final release qualification. Keep test CI paused and gaj's
-explicit temporary runtime-group membership until the machine campaign finishes.
+Next: operator command, selected-GUI installer boot with a distinct journal,
+post-boot collection/removal, installed checkpoint, qualification/coldboot/
+teardown and ready-template publication. Then actual login/logout recovery,
+full two-VM coordinator acceptance, build tools, performance and final signed
+release qualification. No production deployment. Keep PR996 draft.
 
 ## Source and ownership
 
 - Worktree: `.worktrees/sandbox-completion-20260913`.
-- Branch: `codex/sandbox-completion-20260913`.
-- Starting sandbox tip0950ac41e; master93337ef05 integrated in453b37667.
-- Latest pushed code:653074530; typed root recovery, per-image fence, maintenancef12f72810, root source guard, lifecycle commitf235b8ad2 and accountless staging
-  are included. Verify git HEAD and remote before resuming.
-- Local GUI plan commit3abe05f712de1d2dcc6958315c1fbf56b4b693ff follows
-  host context50145d4b4 and qualification validator4cab8f470.
-- Managed restore lifetime commitb5680748bd9d4670f3ee4c02ea2ffc38810c981d
-  and native patch9 are implemented; signed runtime9 still needs physical tests.
-- Local updates:c5d452148 requires explicit schema2 accountless installation/
-  native qualification/cleanup evidence;4245ae67a persists one-shot raw candidates.
-  Candidate14tests pass; receipt34pass/1existing opt-in skip.
-- Local updates:738b594e1 receipt fix;5ec0cb78d merges mastere4df336bc;
-  cbd5687cb adds explicit base-only Apple restore provenance.
-- Earlier integration commits:1ad135ab7,cadaa7fdb,2ee8a4c87,41522b85b.
+- Branch: `codex/sandbox-completion-20260913`; inspect git for the current tip.
 - Draft PR: https://github.com/Layr-Labs/d-inference/pull/996.
 - Main checkout and unrelated providers/edits remain untouched.
 - Evidence: `/private/tmp/darkbloom-sandbox-completion-evidence`.
 - Disposable lab: `/private/tmp/darkbloom-sandbox-lab-20260913` on both Macs.
-- Private primary fixture: `/private/tmp/darkbloom-physical-acceptance` mode0700.
-- Root exclusively owns VM lifecycle and privileged test-host actions.
+- Private primary fixture: `/private/tmp/darkbloom-physical-acceptance`, mode0700.
+- Root owns VM lifecycle and privileged test-host actions.
+- Test CI stays paused and temporary runtime-group membership stays until the
+  machine campaign finishes. Go-cache deletion approval remains unanswered.
 
 ## Product implemented
 
@@ -1598,3 +1556,165 @@ update is local-only. No live root probe, sleep child, new VM or image attachmen
 remains; maintenance markers were removed only by exact recovery. Continue with
 actual attach/mount/detach and its durable intent/recovery path. The existing
 Go-cache approval question remains unanswered; no cache deletion occurred.
+
+
+## Guarded offline staging and real APFS recovery (2026-09-14)
+
+AccountlessStagingMaintenance.begin/recover now require LumeRootNativeInspector.
+It verifies the production runtime pin/signatures, binds the same namespace and
+UID/GID, rejects provisioning/resize markers before native inspection, runs
+--version and get --format json as the selected owner via root sudo -n/env -i,
+and accepts only exact stopped macOS metadata/resources. It runs BEFORE source
+config/POSIX locks, because native status becomes unknown while root owns them.
+The underlying native status path is read-only for this guarded marker-free
+source (no VM object instantiation). It is not guest boot proof.
+
+stagePayload now connects source ownership to the actual filesystem workflow:
+- AccountlessAttachmentInventory parses bounded hdiutil records with exact image
+  path/system-alias matching, owner/write policy, unique devices and mountpoints.
+- AccountlessAttachmentSnapshot preserves metadata identities of preexisting
+  images, devices and mounts. Added unrelated attachments are permitted, but
+  original identities cannot be replaced or reused.
+- AccountlessImageOpeners exempts only the exact current PID + retained image fd.
+  Empty/inconclusive lsof, other root processes, another fd or mappings fail.
+- AccountlessMountAttempts/Attempt maintain a bounded16-attempt closed prefix,
+  intent before attach, attached and selected records before mount, and completion
+  only after detach/no-openers. Both intent and completion carry attemptName, so
+  equal image/plan state cannot replay a prior completion into a later attempt.
+  An interrupted directory-creation prefix can close without authorizing IO.
+  Only a managed UUID-named empty600/no-xattr temporary publication inode can be
+  scavenged; nonempty/linked/shared/special entries remain unmodified and fail.
+- AccountlessMountSystemTools launches fixed system-tool paths through a trusted
+  owner, attaches -nomount, selects the exact whole/physical/container/Data graph,
+  mounts only the journal's root-private Data path with owners/nosuid/nodev/noexec/
+  nobrowse, and detaches only devices resolved from the current exact image.
+- AccountlessMountedDataVolume checks root ownership, no ACL, APFS/from-device/
+  mountpoint and all mount flags through fstatfs around synchronous payload IO.
+- AccountlessOfflineStager replays incomplete cleanup first, records attach intent
+  before any attach, checks attach output against current inventory, stages the
+  signed overlay, closes Data descriptors, detaches and independently verifies
+  absence/openers/source identity. Pending system clients prevent cleanup overlap.
+  Staging failure may leave the maintenance intent pending even after detach;
+  retry resumes under ownership. The parent staging journal will not finalize
+  with an unfinished mount attempt.
+
+Important process-lifetime integration: ordinary ProcessExecution reaps and kills
+remaining descendants after foreground exit. That remains the default for
+sandbox work. The narrow root-only SandboxProcessRunner.startSystemTool whitelist
+uses terminateDescendantsOnExit=false for disk utilities. The same-binary
+__owned-system-command worker retainsRootMaintenanceDescriptor against the exact
+system intent, validates the system lease, closes inheritedfd4, and holds only a
+CLOEXEC duplicate through its vendor child's natural exit. Thus platform helpers
+may survive without accidentally retaining machine EX. The worker code is the
+current immutable root-owned executable, never argv[0] or a mutable checkout.
+AccountlessSystemCommandWait observes independently of caller cancellation and
+retains a timed-out managed wrapper until natural exit; it never kills a mutating
+client just to report cleanup. RootImageMaintenance now tracks owned children and
+rejects new image scopes, overlapping children or completion while one is live.
+Existing generic process-group cleanup and provider coordination stay intact.
+
+Physical testing found two production defects and fixed them with regressions:
+1. PayloadFiles.relativePath rejected a valid /private/tmp spelling after the
+   first signed file because Foundation standardization shortens that alias.
+   It now validates relative components under the already-bound root and still
+   refuses traversal. The new test initially expected the unstripped data-overlay
+   prefix, contrary to inventory's contract; that test expectation was corrected.
+2. hdiutil attach maps Apple_APFS to a readable label while info returns the GUID.
+   Parsing now prefers unmapped-content-hint when present, preserving strict
+   comparisons rather than rejecting equivalent entities. Trace logs prove the
+   exact difference. Invalid canonical hint types still fail closed.
+
+Validation logs in /private/tmp/darkbloom-sandbox-completion-evidence:
+- mount-final-full-tests.log:602tests/7skips/0failures,127.058s.
+- mount-inherited-host-tests.log:21tests/0failures.
+- mount-provider-build.log:darkbloom target builds,19.97s.
+- mount-components-tests.log:17new component tests pass (inventory5 before new
+  hint test, mount journal6 before new replay test, natural wait2, native status2,
+  trusted process policy2). The policy test uses a FIFO barrier to prove the
+  default kills a background child and the system policy preserves it.
+- mount-controller-tests.log:5 tests pass, including durable intent before attach,
+  failed attach cleanup, no cleanup while a client remains pending, recovery of
+  that closed attempt before new attach, and exact whole-device resolution.
+- mount-payload-alias-tests.log:16 tests pass; mount-hint-normalization-tests.log
+  includes the real mapped-hint regression. Earlier full598 run also passed.
+- CI34827518025 and integration34827517978 passed preceding653074530. New source
+  needs its own CI. Legacy SSH-wrapper stress timing concerns remain open.
+
+Native runtime12 was transferred with ditto ZIP preserving signing xattrs and
+installed root-owned/immutable at:
+ /Library/Application Support/Darkbloom/qualification-runtime12
+ExecutableSHA3afc5eb6e291718920a83e881c97e90f4c78866bc49ca66cc011e7f35d86bfad;
+provenanceSHAaa973a866ae5e89e6f02caa448d142ee98c7039b16f6ba2b7a5a81649361b4ba.
+Exact Developer ID signatures were rechecked. ZIP primary evidence path
+lume-runtime12-mount-test.zip SHA238281344251f0e3c4482a3c5ec625cbe4a9fcac0076605237d59e7536474655.
+This is its first physical native status/staging use, NOT a VM-lifecycle test.
+The guest fixture reuses signed qualification-release6 guest files, deliberately
+without claiming the diagnostic244009eca guest or final guest qualification.
+
+FINAL component campaign:
+- Primary directory evidence/mount-root-probe/final.
+- Remote fixture /private/tmp/darkbloom-apfs-stage-20260914-v2, root-owned755
+  parent; vms/base stays501:20/700; operation/ is root-private700; mount-probe
+  executable is root:0/500. Native status runs as501 and needs traversable parents.
+- 1GiB flat UDTO APFS image created fresh; only its sole volume got Data role and
+  empty root-owned Library parents. This emulates filesystem ownership at1GiB,
+  BELOW the normal100GiB VM policy. Fake macOS config and nonbootable NVRAM have
+  no hardware identity. Marker/candidate are fixture metadata, never a real
+  Apple restore, tenant allocation, installation receipt or readiness claim.
+- Seed/operator path /private/tmp/darkbloom-apfs-seed-operator-20260914-v2.
+- DataUUID1DEF796A-C0D8-48D9-A6E1-924F25E9A255; transient whole disk6,
+  physical disk6s1, container disk7, Data disk7s1. Never reuse these IDs without
+  resolving a current owned attachment.
+- ProbeSHA ccb281de303a96416020493806780a74790452215470442f3006f62e2e8a41ab.
+  SourceSHA3a5a9f8197082e875e1bbcbf0e23196b68c42632f28f08833154577e2500da03.
+  Probe links actual debug objects from RuntimeLume AND daemon modules. Its
+  nonisolated run function matches CLI execution; the first inline-main version
+  correctly failed Swift's actor-transfer checks, so no Sendable bypass was used.
+- Final seed scriptSHAa88fbd3eac13f3ecca8c81cd28e13c240e157cbc58d0765c5e578b25623ee2de;
+  run-final-campaign.py SHAb06e3ea4481c17b71ea66674539d2650a3f51a9b04290d2eb46f7a9a8d3f1f60;
+  verify-final.py SHA96d54f92c12d0de5a67d391503956b462a4a0892c8ed429aa1069d3f7b3dc559.
+- Probe confirms parent+worker own EX, vendor lsof does NOT inherit it. A deliberate
+  _exit(86) occurs AFTER successful attach but BEFORE attached.json publication.
+  The image remains attached, both fences persist and ordinary admission fails.
+  A new root process recovers the same intent, resolves/detaches the image,
+  closes0001, performs full Data mount/signed overlay/detach in0002, and clears
+  both fences. Native stopped metadata and ordinary EX/SH admission then pass.
+- Independent root verification proves zero fixture attachments/openers/authority
+  holders, exact completion-to-intent/attempt binding and final image snapshot,
+  original Apple Metal attachment and permanent dev16777229/inode29088927 unchanged.
+  Final staging-detachedSHA ecdc0a28908db9feccbdf17671efbc27302daa363101524a45c1ebd262a8037c.
+- Primary final/campaign.json SHA70d693fe1f5a86c6278a484666c20d31b3475818777fe331a92c2ad2dbcaf50a;
+  final/verified.json SHA9c5ffebb5a34b52e65662d5b22a99c2a39aaad50075f4ef6f95381935559f29c.
+  Remote staging-campaign.json and staging-verified.json retain full results.
+
+Earlier first fixture /private/tmp/darkbloom-apfs-stage-20260914 is also fully
+detached/unfenced. It exposed the payload-parent fixture mistake, then the two
+production bugs above. Its four attempts finished and verify passed, using the
+older pre-attemptName journal format; preserve it as historical evidence and do
+not load it with the final journal decoder. Primary v1 verified evidence is
+mount-root-probe/staging-verified-v1.json. DataUUID3EEF31D2-99A5-4758-8481-95031792BE85;
+probeSHA29b37baace4c00e7d627fbf0e93a4e0e82e38a33ba2f79c78340de8dae97c5c6.
+Its operation/payload-before-path-fix and old probe binaries are retained. All
+fixture payloads are public signed code, not customer data or host credentials.
+An accidental copy of two probe artifacts into the old incoming-20260913 folder
+was removed only after exact hashes/ownership/link checks; other contents stayed.
+
+No VM was booted, no CI/group/model/cache setting changed, and no production action
+occurred. Go-cache approval remains pending. Existing CI pause and temporary
+runtime-group membership remain until the larger physical campaign completes.
+The original exercise14/coldboot15 remains the last actual guest VM proof.
+
+NEXT: expose the accountless workflow through a clear operator command and wire
+selected-GUI installer boot with its own durable phase journal, then receipt
+collection/removal, installed checkpoint and qualification/coldboot/teardown/
+ready-template publication. The old prepare-base command still uses unattended
+SSH; no public accountless CLI is wired yet. Stage payloads need a root-private
+parent while selected-owner source storage needs traversable root ancestors.
+Handle finalization after BOTH fences were already removed using the protected
+completion snapshot and a fresh ordinary EX, never reopening staging. Define an
+explicit abort/discard path for a failed but detached stage rather than silently
+clearing a partially staged candidate. Post-boot collection must not reuse the
+staging journal (it closes on boot intent). Final ready publication after clone
+teardown must verify durable RELEASED-lease cleanup, not the ACTIVE capability.
+Then full real-host enrollment/two-VM consumer campaign, build tools/performance,
+actual GUI logout/login service lifecycle, final signed bundle and release gates.

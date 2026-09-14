@@ -122,10 +122,19 @@ final class AccountlessInstallationPayloadFiles {
     }
 
     private func relativePath(_ path: URL) throws -> String {
-        guard path.standardizedFileURL.path == path.path, path.path.hasPrefix(root.path + "/") else {
+        guard path.isFileURL, path.baseURL == nil, !path.path.contains("\0"),
+              path.path.hasPrefix(root.path + "/") else {
             throw AccountlessInstallationError.unsafeDestination
         }
-        return String(path.path.dropFirst(root.path.count + 1))
+        let relative = String(path.path.dropFirst(root.path.count + 1))
+        let parts = relative.split(separator: "/", omittingEmptySubsequences: false)
+        // Foundation shortens /private/tmp in standardizedFileURL. Validate
+        // relative components against the already-bound root instead of
+        // rejecting that legitimate system alias during publication.
+        guard !parts.isEmpty, parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+            throw AccountlessInstallationError.unsafeDestination
+        }
+        return relative
     }
     private func requireBoundRoot() throws {
         let current = try SandboxAuthorityFileSystem.openPrivateDirectory(at: root, createIfMissing: false)

@@ -22,6 +22,8 @@ enum DarkbloomSandboxDaemon {
             throw DaemonCLIError.usage
         }
         switch command {
+        case AccountlessSystemCommandWorker.command:
+            exit(try await AccountlessSystemCommandWorker.run(Array(arguments.dropFirst())))
         case "doctor":
             try runDoctor(Array(arguments.dropFirst()))
         case "restore-image":

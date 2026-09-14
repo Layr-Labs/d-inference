@@ -40,6 +40,40 @@ public struct HostRuntimeAuthority: Sendable {
         return lease
     }
 
+    /// Retain an inherited root-maintenance lease in a dedicated command owner.
+    /// The caller retains ownership of the supplied descriptor. The returned fd
+    /// is CLOEXEC so vendor tools cannot accidentally retain machine ownership.
+    public func retainRootMaintenanceDescriptor(_ inherited: Int32,
+                                                intent: HostRuntimeMaintenanceIntent) throws -> HostRuntimeLease {
+        try requireMaintenanceOperator()
+        guard inherited >= 3 else { throw HostRuntimeOwnershipError.insecureAuthority }
+        let parent = try openDirectory(); defer { close(parent) }
+        try checkMaintenance(parent: parent, recovering: intent)
+        let groupID: gid_t
+        if let testGroupID { groupID = testGroupID }
+        else {
+            guard let group = getgrnam(Self.groupName), group.pointee.gr_gid != 0 else {
+                throw HostRuntimeOwnershipError.insecureAuthority
+            }
+            groupID = group.pointee.gr_gid
+        }
+        let descriptor = fcntl(inherited, F_DUPFD_CLOEXEC, 64)
+        guard descriptor >= 0 else { throw HostRuntimeOwnershipError.systemError(errno) }
+        do {
+            let metadata = try inspectLock(descriptor, groupID: groupID)
+            let directoryIdentity = try Self.metadata(parent)
+            try validate(descriptor, directoryIdentity: directoryIdentity, lockIdentity: metadata, groupID: groupID)
+            while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+                if errno == EINTR { continue }
+                if errno == EWOULDBLOCK { throw HostRuntimeOwnershipError.occupied }
+                throw HostRuntimeOwnershipError.systemError(errno)
+            }
+            try checkMaintenance(parent: parent, recovering: intent)
+            return HostRuntimeLease(descriptor: descriptor, authority: self, directoryIdentity: directoryIdentity,
+                lockIdentity: metadata, groupID: groupID, exclusive: true)
+        } catch { close(descriptor); throw error }
+    }
+
     func acquire(exclusive: Bool, allowMissing: Bool,
                  recovering intent: HostRuntimeMaintenanceIntent? = nil) throws -> HostRuntimeLease? {
         if intent != nil { try requireMaintenanceOperator() }

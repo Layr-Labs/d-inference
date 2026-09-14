@@ -12,6 +12,7 @@ final class ProcessExecution: @unchecked Sendable {
     private let standardError: BoundedProcessOutput
     private let cooperativeControl: ProcessControlChannel?
     private let runtimeAuthorityDescriptor: Int32?
+    private let terminateDescendantsOnExit: Bool
     private let testHooks: ProcessExecutionTestHooks
     private let lock = NSLock()
     private var started = false
@@ -29,6 +30,7 @@ final class ProcessExecution: @unchecked Sendable {
         cooperativeControl configuration:
             SandboxCooperativeProcessControl? = nil,
         runtimeAuthorityDescriptor: Int32? = nil,
+        terminateDescendantsOnExit: Bool = true,
         testHooks: ProcessExecutionTestHooks = .none
     ) throws {
         let standardOutput = try BoundedProcessOutput(
@@ -75,6 +77,7 @@ final class ProcessExecution: @unchecked Sendable {
         self.standardError = standardError
         self.cooperativeControl = cooperativeControl
         self.runtimeAuthorityDescriptor = runtimeAuthorityDescriptor
+        self.terminateDescendantsOnExit = terminateDescendantsOnExit
         self.executable = executable
         self.arguments = arguments
         self.environment = childEnvironment
@@ -403,7 +406,7 @@ final class ProcessExecution: @unchecked Sendable {
         directChildExitObserved = observedDirectChildExit
         signalAttemptsEnabled = false
         testHooks.didDisableSignalAttempts?()
-        if observedDirectChildExit {
+        if observedDirectChildExit && terminateDescendantsOnExit {
             terminateRemainingProcessGroupLocked(processIdentifier)
         }
 

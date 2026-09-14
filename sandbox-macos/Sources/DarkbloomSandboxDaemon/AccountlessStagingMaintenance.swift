@@ -3,9 +3,9 @@ import Foundation
 import SandboxRuntime
 import SandboxRuntimeLume
 
-/// Binds the protected staging journal to root's exact reserved source. The
-/// caller must still inspect native stopped state and attachment/open-file
-/// inventories before any mount and again before completing the operation.
+/// Binds the protected staging journal to root's exact reserved source. Entry
+/// verifies native stopped state; stagePayload owns attachment, mount policy,
+/// payload IO and independently verified detach before releasing both fences.
 final class AccountlessStagingMaintenance {
     private let journal: AccountlessInstallationStagingJournal
     private let operation: LumeRootImageMaintenance
@@ -15,8 +15,12 @@ final class AccountlessStagingMaintenance {
     }
 
     static func begin(journal: AccountlessInstallationStagingJournal, storage: URL,
-                      ownerUID: uid_t, ownerGID: gid_t, reservationData: Data) throws -> AccountlessStagingMaintenance {
+                      ownerUID: uid_t, ownerGID: gid_t, reservationData: Data,
+                      nativeInspector: LumeRootNativeInspector) async throws -> AccountlessStagingMaintenance {
         try journal.requireStagingAllowed()
+        try nativeInspector.requireSourceNamespace(storage: storage, ownerUID: ownerUID, ownerGID: ownerGID)
+        try await nativeInspector.requireStopped(name: journal.candidate.source.name,
+            resources: journal.candidate.resources, diskBytes: journal.candidate.disk.size)
         let binding = try binding(journal)
         let source = try LumeRootBaseImageGuard(storage: storage, name: journal.candidate.source.name,
             ownerUID: ownerUID, ownerGID: ownerGID, reservationData: reservationData, expectedDisk: binding.disk)
@@ -25,7 +29,11 @@ final class AccountlessStagingMaintenance {
     }
 
     static func recover(journal: AccountlessInstallationStagingJournal, storage: URL,
-                        ownerUID: uid_t, ownerGID: gid_t, reservationData: Data) throws -> AccountlessStagingMaintenance {
+                        ownerUID: uid_t, ownerGID: gid_t, reservationData: Data,
+                        nativeInspector: LumeRootNativeInspector) async throws -> AccountlessStagingMaintenance {
+        try nativeInspector.requireSourceNamespace(storage: storage, ownerUID: ownerUID, ownerGID: ownerGID)
+        try await nativeInspector.requireStopped(name: journal.candidate.source.name,
+            resources: journal.candidate.resources, diskBytes: journal.candidate.disk.size)
         let binding = try binding(journal)
         let operation = try LumeRootBaseImageGuard.recoverMaintenance(storage: storage,
             name: journal.candidate.source.name, ownerUID: ownerUID, ownerGID: ownerGID,
@@ -51,6 +59,29 @@ final class AccountlessStagingMaintenance {
     func startOwnedProcess(executable: URL, arguments: [String]) throws -> SandboxManagedProcess {
         try journal.requireStagingAllowed()
         return try operation.startOwnedProcess(executable: executable, arguments: arguments)
+    }
+
+    func validateActiveImageOwnership() throws {
+        try journal.requireStagingAllowed()
+        try operation.validateActiveImageOwnership()
+    }
+
+    func startOwnedSystemCommand(tool: AccountlessMountSystemTools.Tool, arguments: [String]) throws -> SandboxManagedProcess {
+        let executable = try AccountlessSystemCommandExecutable.current()
+        return try startOwnedProcess(executable: executable, arguments: AccountlessSystemCommandWorker.arguments(
+            intent: journal.maintenanceIntent(), tool: tool, arguments: arguments))
+    }
+
+    /// The mountpoint is always created under this protected journal. Callers
+    /// supply a verified payload directory, never an arbitrary mounted path.
+    func stagePayload(from payloadDirectory: URL) async throws {
+        try await withOfflineImage { image, descriptor in
+            let stager = AccountlessOfflineStager(journal: journal, tools: .init(operation: self),
+                image: image, imageDescriptor: descriptor, validateOwnership: validateActiveImageOwnership)
+            try await stager.stage(payloadDirectory: payloadDirectory)
+        }
+        try finishAfterVerifiedCleanup()
+        try Task.checkCancellation()
     }
 
     private static func binding(_ journal: AccountlessInstallationStagingJournal) throws

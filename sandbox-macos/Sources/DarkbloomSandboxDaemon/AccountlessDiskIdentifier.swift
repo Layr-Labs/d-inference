@@ -34,4 +34,6 @@ enum AccountlessDiskError: Error, Equatable {
     case bindingChanged
     case commandFailed
     case unsafeMountpoint
+    case systemOperationPending
+    case cleanupUnproven
 }

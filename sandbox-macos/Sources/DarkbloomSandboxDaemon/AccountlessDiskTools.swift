@@ -21,9 +21,8 @@ struct AccountlessDiskTools {
     /// machine lease. The ordinary runner initializer remains read-only.
     init(operation: AccountlessStagingMaintenance) {
         execute = { arguments in
-            let child = try operation.startOwnedProcess(executable: URL(fileURLWithPath: "/usr/sbin/diskutil"),
-                arguments: arguments)
-            return try await child.wait(timeoutSeconds: 30, cooperativeGracePeriod: .zero)
+            let child = try operation.startOwnedSystemCommand(tool: .diskutil, arguments: arguments)
+            return try await AccountlessSystemCommandWait.naturalExit(of: child, seconds: 30)
         }
     }
 

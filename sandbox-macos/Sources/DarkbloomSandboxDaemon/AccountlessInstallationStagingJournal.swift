@@ -51,14 +51,39 @@ final class AccountlessInstallationStagingJournal {
         return try .init(operationID: candidate.bootstrapAttemptID, journalSHA256: BaseGuestRelease.digest(intent))
     }
 
+    func mountAttempts() throws -> AccountlessMountAttempts {
+        try requireStagingAllowed()
+        let child = try SandboxAuthorityFileSystem.openPrivateChildDirectory(parentDescriptor: descriptor,
+            name: "mount-attempts", createIfMissing: true)
+        defer { close(child) }
+        try requireBoundDirectory()
+        return try .init(directory: directory.appendingPathComponent("mount-attempts"),
+            maintenanceSHA256: maintenanceIntent().journalSHA256)
+    }
+
     /// This closes offline writes permanently, including after process restart.
     /// The operator calls it only after observing detach and stopped-state proof.
     func recordDetached(_ cleanup: LumeImageMaintenanceCleanup) throws {
         try validateJournal()
         guard try read("staged.json") != nil else { throw AccountlessInstallationError.invalidBinding }
+        if let mounts = try existingMountAttempts() {
+            for attempt in try mounts.existing() {
+                guard try attempt.completion() != nil else { throw AccountlessDiskError.cleanupUnproven }
+            }
+        }
         try requireCleanupBinding(cleanup)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         try publishMatching(encoder.encode(cleanup), name: "staging-detached.json")
+    }
+
+    private func existingMountAttempts() throws -> AccountlessMountAttempts? {
+        var info = stat()
+        if fstatat(descriptor, "mount-attempts", &info, AT_SYMLINK_NOFOLLOW) != 0 {
+            guard errno == ENOENT else { throw AccountlessInstallationError.unsafeDestination }
+            return nil
+        }
+        return try .init(directory: directory.appendingPathComponent("mount-attempts"),
+            maintenanceSHA256: BaseGuestRelease.digest(intent))
     }
 
     func detachedCleanup() throws -> LumeImageMaintenanceCleanup? {

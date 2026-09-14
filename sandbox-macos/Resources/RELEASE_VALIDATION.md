@@ -329,12 +329,39 @@ mountpoint, filesystem, owner handling and requested write policy. These helpers
 do not attach or mount disks and do not establish which image owns a whole disk;
 that authority must come from the guarded attachment workflow.
 
-These ownership primitives do not observe mounted-device cleanup themselves.
-The enclosing operator still needs guarded Data-volume attach/mount/detach,
-independent no-openers/stopped-state checks, GUI installer boot, and receipt
-collection before automatic base installation can be enabled. A disposable
-nonbootable image has passed real root process-crash/recovery checks against the
-test Mac's permanent authority; that is not a mounted-image or qualified-VM test.
+`AccountlessStagingMaintenance.stagePayload` now owns the attach/mount/stage/
+detach operation. A production-pinned native status query runs as the selected
+source owner before source locking; unknown state is rejected. Root keeps the
+native locks through cleanup. An append-only, bounded mount journal publishes
+intent before attachment, binds each completion to its own attempt, and can
+recover an attached image even when attach output was lost. Cleanup selects the
+exact current image and revalidates device nodes; saved disk numbers alone never
+authorize detach. Preexisting attachments are preserved, and the only opener
+exemption is the operator's exact PID and retained image descriptor.
+
+The selected Data volume mounts beneath the root-private journal with owners,
+nosuid, nodev, noexec and nobrowse. Both diskutil identity/policy and fstatfs are
+checked around payload IO; every Data descriptor closes before detach. A separate
+same-binary root system-command worker retains the machine lease but passes no
+lease fd to vendor tools. Its narrow system-tool path preserves platform helpers
+after foreground exit. Other process execution retains descendant cleanup.
+Observation deadlines and caller cancellation do not kill mutating disk clients;
+an unresolved worker retains EX and the durable intent for later recovery.
+
+A fresh 1 GiB nonbootable APFS fixture passed an actual attach/crash/recovery
+campaign: lost attach output, fenced admission, exact detach, signed payload
+staging through the Data mount, final detach and restored native stopped metadata
+and ordinary EX/SH admission. The worker retained ownership and its vendor child
+did not inherit it. The permanent inode and preexisting Apple toolchain mount
+were preserved. Physical testing also found and fixed /private/tmp payload-path
+normalization and readable-versus-GUID hdiutil content hints. This fixture emulates
+the filesystem contract below the normal 100 GiB VM policy and supplies no guest
+boot, actual Apple restore or template qualification evidence.
+
+The public accountless preparation command, selected GUI installer boot, receipt
+collection/removal and automatic qualification-to-readiness workflow remain
+unfinished. The existing prepare-base command still follows its documented
+unattended path. A staging journal cannot be reused for post-boot collection.
 
 Keep coordinator admission disabled and capacity draining during qualification.
 A job's launchctl exit is insufficient stop proof: independently verify the VM

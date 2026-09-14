@@ -245,13 +245,13 @@ func TestApprovedTransitionGrantsWithoutMDMOrAPNs(t *testing.T) {
 	}
 
 	pushes := 0
+	srvControls := configureCodeIdentityFixture(srv, codeidentity.DefaultConfig())
 	srv.SetCodeAttestor(&fakeCodeAttestor{
 		onSend: func(_, _, _, _ string) error {
 			pushes++
 			return nil
 		},
 	})
-	srvControls := configureCodeIdentityFixture(srv, codeidentity.DefaultConfig())
 	srvControls.resumeSender = func(
 		_ string, message protocol.CodeAttestationResumeChallenge,
 	) error {

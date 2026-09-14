@@ -257,7 +257,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		// observed disconnect time (before registry.Disconnect tears the
 		// provider down), so the measured reconnect gap starts here rather
 		// than at the last periodic coverage pass.
-		s.stopTrustCoverageForProvider(providerID)
+		s.trustReuse.StopProviderCoverage(providerID)
 		s.stopCodeAttestCoverageForProvider(providerID)
 		s.registry.DisconnectWithReason(providerID, registry.ClassifyPeerClose(peerCloseStatus, false))
 		conn.Close(websocket.StatusNormalClosure, "goodbye")
@@ -1689,7 +1689,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 // is optimistic: if the fast-skip later DECLINES despite it, the read path
 // promotes the job back to first/expired (PromoteFailedFastSkip).
 func (s *Server) verificationSubmitPriority(seKey, serial string) store.VerificationPriority {
-	if s.trustReuseCache.hasFreshRecord(seKey, serial) {
+	if s.trustReuse.HasFreshRecord(seKey, serial) {
 		return store.VerificationPriorityRefresh
 	}
 	return store.VerificationPriorityFirstOrExpired

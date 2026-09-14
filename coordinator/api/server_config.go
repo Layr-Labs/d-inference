@@ -1,6 +1,7 @@
 package api
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/providercontrol/trustreuse"
 	"os"
 	"strings"
 	"time"
@@ -80,7 +81,7 @@ func ReadServerConfig() ServerConfig {
 		AdminEmails:           ParseCommaList(env.EnvOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
 		ReleaseKey:            os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
 		ServiceReservations:   env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
-		TrustReuseJournalPath: resolveTrustReuseRevocationJournalPath(),
+		TrustReuseJournalPath: trustreuse.JournalPathFromEnv(),
 		MDMScheduler:          readMDMSchedulerConfig(),
 		BaseRewards: BaseRewardsConfig{
 			Enabled:        env.EnvBool(env.EnvPrefix+"_BASE_REWARDS", false),

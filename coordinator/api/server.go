@@ -22,11 +22,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/providercontrol/trustreuse"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
+
 	"runtime"
 	"runtime/debug"
 	"sort"
@@ -163,26 +164,7 @@ type Server struct {
 	codeResumeBeforeIdentityCheck func()              // test seam between cache match and challenge record
 	codeResumeFallbackBeforeAPNs  func()              // test seam after nonce consume, before ctx recheck
 	codeAttestThrottle            *codeAttestThrottle // per-device APNs push budget + reuse cache (v0.6.0)
-	trustReuseCache               *trustReuseCache    // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
-	trustReuseJournal             hardUntrustJournal
-	trustRevocationMu             sync.Mutex
-	trustSafetyMu                 sync.RWMutex
-	trustSafetySticky             bool
-	trustSafetyReplayBlocked      bool
-	pendingHardUntrustKeyHashes   map[string]int
-	trustAuthorityMu              sync.Mutex
-	trustAuthority                *trustAuthorityLock
-	trustReplayCtx                context.Context
-	trustReplayCancel             context.CancelFunc
-	trustReplayMu                 sync.Mutex
-	trustReplayInFlight           map[string]struct{}
-	// Connection-continuity coverage tracker: seKey → providerID of the live
-	// covered connection. Advanced by the batched trustCoverageLoop and the
-	// disconnect/shutdown sweeps (see trust_reuse.go).
-	trustCoverageMu     sync.Mutex
-	trustCoverage       map[string]string
-	trustCoverageCtx    context.Context
-	trustCoverageCancel context.CancelFunc
+	trustReuse                    *trustreuse.Manager // durable device evidence, revocation, replay and continuity
 
 	// Graceful-drain state (DAR-327 Phase 1, zero-downtime upgrades). Set
 	// coordinatorDraining=true before a restart/swap so the drain gate rejects
@@ -756,7 +738,6 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		geoResolver:              newProviderGeoResolverFromEnv(logger),
 		apiKeyCache:              make(map[string]apiKeyCacheEntry),
 		codeAttestThrottle:       newCodeAttestThrottle(),
-		trustReuseCache:          newTrustReuseCache(),
 		mdmSchedulerConfig:       cfg.MDMScheduler,
 		settlements:              newSettlementHolder(),
 		zombieCanceller:          newZombieStreamCanceller(),
@@ -767,34 +748,17 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		firstContentDeadlineBase: firstContentDeadlineBase,
 		routingScanSem:           make(chan struct{}, DefaultRoutingConcurrency()),
 	}
-	if _, clampedDown := trustReuseReconnectGapFromEnv(); clampedDown {
-		logger.Warn("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP exceeds the 120s security ceiling; clamping DOWN",
-			"requested", os.Getenv("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP"),
-			"allowance", maxTrustReuseReconnectGap,
-			"reason", "a contiguous offline gap must stay below the RecoveryOS round-trip floor (Threat-Model T-036)",
-		)
-	}
+
 	// Registry write-lock wait, by call site. This is the acceptance metric
 	// for taking the recorders off the request path: today the wait is only
 	// inferable from goroutine dumps.
 	reg.SetLockWaitObserver(func(site string, wait time.Duration) {
 		s.ddHistogram("registry.mu.write_wait_ms", float64(wait.Microseconds())/1000, []string{"site:" + site})
 	})
-	s.trustCoverage = make(map[string]string)
-	s.trustCoverageCtx, s.trustCoverageCancel = context.WithCancel(context.Background())
-	saferun.Go(logger, "trustCoverageLoop", s.trustCoverageLoop)
-	if cfg.DurableTrustReuse {
-		journalPath := cfg.TrustReuseJournalPath
-		if strings.TrimSpace(journalPath) == "" {
-			journalPath = resolveTrustReuseRevocationJournalPath()
-		}
-		s.trustReuseJournal = newFileHardUntrustJournal(journalPath)
-		s.pendingHardUntrustKeyHashes = make(map[string]int)
-		s.trustReplayCtx, s.trustReplayCancel = context.WithCancel(
-			context.Background(),
-		)
-		s.trustReplayInFlight = make(map[string]struct{})
-	}
+	s.trustReuse = trustreuse.New(trustreuse.Config{
+		DurableTrustReuse:     cfg.DurableTrustReuse,
+		TrustReuseJournalPath: cfg.TrustReuseJournalPath,
+	}, s.trustReuseDependencies())
 	reg.SetRuntimeCapabilitiesPromotedHook(s.handleRuntimeCapabilitiesPromoted)
 	// The per-identity gate locks that replaced the request-path registry
 	// write lock (registry/gate_state.go) report any acquisition wait above
@@ -871,14 +835,10 @@ func (s *Server) Close() {
 	// short deploy reconnects into the continuity fast-skip on the next
 	// coordinator instead of a fleet-wide live MDM herd. A crash skips this —
 	// the last periodic write stands and the gap is over-estimated (fail-safe).
-	if s.trustCoverageCancel != nil {
-		s.trustCoverageCancel()
-	}
-	s.finalTrustCoverageSweep()
+	s.trustReuse.StopCoverage()
+	s.trustReuse.FinalCoverageSweep()
 	s.sweepCodeAttestCoverage()
-	if s.trustReplayCancel != nil {
-		s.trustReplayCancel()
-	}
+	s.trustReuse.StopReplay()
 	if s.mdmScheduler != nil {
 		s.mdmScheduler.Close()
 	}
@@ -900,12 +860,7 @@ func (s *Server) Close() {
 			)
 		}
 	}
-	s.trustAuthorityMu.Lock()
-	if s.trustAuthority != nil {
-		_ = s.trustAuthority.Close()
-		s.trustAuthority = nil
-	}
-	s.trustAuthorityMu.Unlock()
+	s.trustReuse.ReleaseAuthority()
 	if s.requestOutcomes != nil {
 		s.requestOutcomes.Close()
 	}

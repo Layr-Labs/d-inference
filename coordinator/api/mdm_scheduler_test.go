@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/providercontrol/trustreuse"
 	"io"
 	"log/slog"
 	"strings"
@@ -364,11 +365,11 @@ func TestContinuityMissPromotesRefreshSubmitToImmediateDue(t *testing.T) {
 	})
 	srv.mdmClient = dummyMDMClient()
 	cur := now
-	srv.trustReuseCache.now = func() time.Time { return cur }
+	setTrustReuseClock(t, srv, func() time.Time { return cur })
 
 	p := schedulerTestProvider(t, srv, "cont-miss", "se-cont-miss")
 	// Stale window, continuity-covered 60s ago → a reuse candidate at submit.
-	srv.trustReuseCache.recordTrust(coveredReuseRecord(
+	seedTrustReuseRecord(t, srv, coveredReuseRecord(
 		"se-cont-miss", "serial-cont-miss", trHashA,
 		cur.Add(-20*time.Minute), cur.Add(-60*time.Second)))
 	priority := srv.verificationSubmitPriority("se-cont-miss", "serial-cont-miss")
@@ -1637,20 +1638,23 @@ func TestMDMSchedulerFleet1500LifecycleSimulation(t *testing.T) {
 			t.Fatalf("restart reset due time for %s", se)
 		}
 	}
-	transitionCache := newTrustReuseCacheWithWindow(time.Hour)
-	transitionCache.now = func() time.Time { return now }
+	var transitionRows []store.ProviderTrustReuse
+	for i := range providers {
+		transitionRows = append(transitionRows, hardwareReuseRecord(
+			fmt.Sprintf("fleet-se-%04d", i), fmt.Sprintf("serial-fleet-%04d", i), trHashA, now))
+	}
+	transitionCache := trustReuseAssessmentForRecords(t, now, transitionRows)
 	for i := range providers {
 		se := fmt.Sprintf("fleet-se-%04d", i)
 		serial := fmt.Sprintf("serial-fleet-%04d", i)
-		transitionCache.recordTrust(hardwareReuseRecord(se, serial, trHashA, now))
-		decision := transitionCache.decideTrustReuse(trustReuseInput{
+		decision := transitionCache.Assess(trustreuse.Input{
 			SEPubKey: se, Serial: serial, FreshBinaryHash: trHashB,
 			ReleaseTransition: approvedReleaseTransitionFact{
 				Approved: true, BinaryHash: trHashB,
 				ApprovedFromBinaryHashes: map[string]struct{}{trHashA: {}},
 			},
 		})
-		if decision.Decision != trustReuseDecisionApprovedReleaseTransition {
+		if decision.Decision != trustreuse.DecisionApprovedReleaseTransition {
 			t.Fatalf("approved release transition %d required live MDM: %q", i, decision.Decision)
 		}
 	}

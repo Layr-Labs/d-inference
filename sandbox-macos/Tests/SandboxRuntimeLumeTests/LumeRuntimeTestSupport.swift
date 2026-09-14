@@ -1053,6 +1053,7 @@ struct FakeLumeFixture {
         fi
         ;;
       create)
+        printf '%s\\n' "$@" > "$root/create-arguments"
         name="$2"
         shift 2
         storage=""

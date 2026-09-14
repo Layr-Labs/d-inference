@@ -375,6 +375,11 @@ enum LumeVirtualMachineOwnership {
             memoryBytes = specification.resources.memoryBytes
             diskBytes = specification.diskBytes
             switch specification.imageSource {
+            case .appleRestore(let url):
+                sourceKind = "apple_restore"
+                sourceReference = url.standardizedFileURL.path
+                self.sourceInstallationID = nil
+                unattendedPreset = nil
             case .restoreImage(let url, let preset):
                 sourceKind = "restore_image"
                 sourceReference = url.standardizedFileURL.path
@@ -447,6 +452,11 @@ enum LumeVirtualMachineOwnership {
                 return false
             }
             switch sourceKind {
+            case "apple_restore":
+                return ownerKind == "base_template"
+                    && sourceReference.hasPrefix("/")
+                    && sourceInstallationID == nil
+                    && unattendedPreset == nil
             case "restore_image":
                 return sourceInstallationID == nil
                     && unattendedPreset == "tahoe"

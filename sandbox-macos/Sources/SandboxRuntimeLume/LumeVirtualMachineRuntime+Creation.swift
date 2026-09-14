@@ -16,6 +16,9 @@ extension LumeVirtualMachineRuntime {
         guard SandboxVirtualMachineNamePolicy.isValid(specification.name) else {
             throw SandboxRuntimeError.invalidName
         }
+        if case .appleRestore = specification.imageSource, scope != nil {
+            throw SandboxRuntimeError.unsupported("raw Apple restore is restricted to base preparation")
+        }
         try preauthorize(
             scope: scope,
             operation: .create,
@@ -111,24 +114,12 @@ extension LumeVirtualMachineRuntime {
         let arguments: [String]
         var sourceInstallationID: UUID?
         switch specification.imageSource {
-        case .restoreImage(let url, let unattendedPreset):
-            guard FileManager.default.isReadableFile(atPath: url.path) else {
-                throw SandboxRuntimeError.invalidImageReference
-            }
+        case .appleRestore(let url):
             sourceInstallationID = nil
-            arguments = storageArguments([
-                "create",
-                specification.name,
-                "--os", "macOS",
-                "--cpu", String(specification.resources.cpuCount),
-                "--memory", "\(specification.resources.memoryBytes)B",
-                "--disk-size", "\(specification.diskBytes)B",
-                "--ipsw", url.path,
-                "--unattended", unattendedPreset,
-                "--no-display",
-                "--vnc-port", "0",
-                "--network", "nat",
-            ])
+            arguments = try restoreArguments(specification, url: url, unattendedPreset: nil)
+        case .restoreImage(let url, let unattendedPreset):
+            sourceInstallationID = nil
+            arguments = try restoreArguments(specification, url: url, unattendedPreset: unattendedPreset)
         case .localTemplate(let template):
             try LumeVirtualMachineDeletionIntent.requireAbsent(workspace: workspace, name: template)
             guard let templateRecord = try await inspect(name: template) else {
@@ -221,6 +212,24 @@ extension LumeVirtualMachineRuntime {
                 cleanup: String(describing: error)
             )
         }
+    }
+
+    private func restoreArguments(_ specification: SandboxVirtualMachineSpecification,
+                                  url: URL, unattendedPreset: String?) throws -> [String] {
+        guard FileManager.default.isReadableFile(atPath: url.path) else {
+            throw SandboxRuntimeError.invalidImageReference
+        }
+        var arguments = [
+            "create", specification.name, "--os", "macOS",
+            "--cpu", String(specification.resources.cpuCount),
+            "--memory", "\(specification.resources.memoryBytes)B",
+            "--disk-size", "\(specification.diskBytes)B", "--ipsw", url.path,
+        ]
+        if let unattendedPreset {
+            arguments += ["--unattended", unattendedPreset, "--no-display",
+                          "--vnc-port", "0", "--network", "nat"]
+        }
+        return storageArguments(arguments)
     }
 
     private func cleanupFailedCreationIgnoringCancellation(

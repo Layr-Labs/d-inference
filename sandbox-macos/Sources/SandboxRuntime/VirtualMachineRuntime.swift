@@ -87,11 +87,19 @@ public struct SandboxVirtualMachineSpecification: Equatable, Sendable {
 }
 
 public enum SandboxVirtualMachineImageSource: Equatable, Sendable {
+    /// Restore Apple's image without provisioning a bootstrap login account.
+    /// This produces an unqualified base candidate, not a ready tenant template.
+    case appleRestore(url: URL)
     case restoreImage(url: URL, unattendedPreset: String)
     case localTemplate(name: String)
 
     fileprivate func normalized() throws -> Self {
         switch self {
+        case .appleRestore(let url):
+            guard url.isFileURL, url.baseURL == nil, !url.path.isEmpty else {
+                throw SandboxRuntimeError.invalidImageReference
+            }
+            return .appleRestore(url: url.standardizedFileURL)
         case .restoreImage(let url, let unattendedPreset):
             guard url.isFileURL,
                   url.baseURL == nil,

@@ -3,6 +3,19 @@ import SandboxRuntime
 import XCTest
 
 final class VirtualMachineRuntimeTests: XCTestCase {
+    func testAppleRestoreRequiresAnExplicitLocalImage() throws {
+        let resources = try SandboxResourceSpecification.macOSSmall()
+        let image = URL(fileURLWithPath: "/tmp/images/../restore.ipsw")
+        let specification = try SandboxVirtualMachineSpecification(name: "base", resources: resources,
+            imageSource: .appleRestore(url: image), diskBytes: 100 * SandboxResourcePolicy.gibibyte)
+        XCTAssertEqual(specification.imageSource, .appleRestore(url: image.standardizedFileURL))
+        for invalid in [URL(string: "https://example.com/restore.ipsw")!,
+                        URL(string: "restore.ipsw", relativeTo: URL(fileURLWithPath: "/tmp/"))!] {
+            XCTAssertThrowsError(try SandboxVirtualMachineSpecification(name: "base", resources: resources,
+                imageSource: .appleRestore(url: invalid), diskBytes: 100 * SandboxResourcePolicy.gibibyte))
+        }
+    }
+
     func testSpecificationAcceptsBoundedNameAndDisk() throws {
         let resources = try SandboxResourceSpecification.macOSSmall()
         let specification = try SandboxVirtualMachineSpecification(

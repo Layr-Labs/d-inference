@@ -9,7 +9,7 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
     func evictOldestEntry() -> Int {
         for entry in index.oldestEntries() {
             var freed = 0
-            _ = performExternalDestructiveChange {
+            _ = performIndexedDestructiveChange {
                 let url = SSDBlockStore.fileURL(root: self.config.root, tag16Hex: entry.tag16.hexString)
                 if SSDBlockStore.removeItemIfSafe(at: url, under: self.config.root)
                     || SSDBlockStore.indexedBlockFileStatus(at: url, under: self.config.root) == .missing {
@@ -30,10 +30,23 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
             return SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) != .regular
         }
         guard !removed.isEmpty else { return }
-        _ = performExternalDestructiveChange { removed.forEach { _ = self.index.remove(tag16: $0) } }
+        _ = performIndexedDestructiveChange { removed.forEach { _ = self.index.remove(tag16: $0) } }
     }
 
     func performExternalDestructiveChange(_ body: () -> Void) -> Bool {
+        // Whole-root callers do not know this store's index. Reconcile under
+        // the same epoch barrier so later reconcileAll cannot rotate it again
+        // solely to forget entries whose files this mutation removed.
+        performIndexedDestructiveChange {
+            body()
+            self.reconcileIndexWithoutEpoch()
+        }
+    }
+
+    /// Targeted callers remove their known index entries in the body. Keep
+    /// their epoch fence without checking every unrelated checkpoint's file
+    /// status for each victim in a process-wide budget-enforcement loop.
+    private func performIndexedDestructiveChange(_ body: () -> Void) -> Bool {
         let accepted = lock.withLock {
             guard !closed, !destructiveChange else { return false }
             destructiveChange = true
@@ -42,14 +55,24 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
         guard accepted else { return false }
         defer { lock.withLock { destructiveChange = false } }
         if let epochStore = config.epochStore {
-            return epochStore.performOwnedDestructiveChange(body) != nil
+            let completed: Void? = epochStore.performOwnedDestructiveChange(body)
+            return completed != nil
         }
         body()
         return true
     }
 
+    private func reconcileIndexWithoutEpoch() {
+        for tag in index.allTags() {
+            let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: tag.hexString)
+            if SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) != .regular {
+                _ = index.remove(tag16: tag)
+            }
+        }
+    }
+
     func removeCorrupt(_ tag: Data) {
-        _ = performExternalDestructiveChange {
+        _ = performIndexedDestructiveChange {
             let url = SSDBlockStore.fileURL(root: self.config.root, tag16Hex: tag.hexString)
             _ = SSDBlockStore.removeItemIfSafe(at: url, under: self.config.root)
             _ = self.index.remove(tag16: tag)

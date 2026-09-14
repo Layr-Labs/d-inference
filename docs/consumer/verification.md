@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-07 · commit `efcde6334`
+> Last updated: 2026-09-13 · commit `1f52a71fb`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -47,6 +47,13 @@ The grant and loss conditions for each level are tabulated in
 the challenge cadence is in [Layer 2](../architecture/security/attestation.md#layer-2--periodic-challenge)
 and the routing freshness window is
 [`challengeFreshnessMaxAge`](../architecture/routing.md#challenge-freshness).
+
+The coordinator verifies `status_signature` by reconstructing the exact signed
+bytes (`coordinator/attestation/attestation.go`, `VerifyStatusSignature`). The
+provider's canonical encoder matches mixed-case hash-map key ordering and
+U+2028/U+2029 escaping to that format; see [Layer 2](../architecture/security/attestation.md#layer-2--periodic-challenge).
+This byte compatibility changes neither the trust levels nor the public fields,
+routing gates or per-response signals described here.
 
 `mda_verified: true` adds that Apple issued a Managed Device Attestation whose
 certificate chain verifies to the Apple Enterprise Attestation Root CA and

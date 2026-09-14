@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-13 · commit `1f52a71fb`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -260,6 +260,26 @@ for suite in CBv2PagedSafetyTests CBv2PrefixCacheHasherTests CBv2PagedEligibilit
   ../../scripts/run-nested-suite.sh "$suite"
 done
 ```
+
+#### Doctor capture and attestation canonical bytes
+
+After building the provider test targets, run these focused regressions:
+
+```bash
+(cd provider-swift && swift test --filter 'DoctorCaptureTests|statusCanonical')
+(cd coordinator && go test -race ./attestation -count=1)
+```
+
+`provider-swift/Tests/DarkbloomCLITests/DoctorCaptureTests.swift`
+(`DoctorCaptureTests`) uses real subprocesses with output beyond pipe capacity,
+excluded stderr, nonzero exits, deadline escalation and an inherited stdout
+descriptor. Each child has an independent expiry and fixture-owned cleanup.
+`provider-swift/Tests/ProviderCoreTests/StatusCanonicalTests.swift`
+(`statusCanonicalMatchesCoordinatorNestedMapVectors`) and
+`coordinator/attestation/status_canonical_mixed_case_test.go`
+(`TestBuildStatusCanonicalNestedMapVectors`) retain identical
+golden bytes for nested-map ordering, escaping and optional fields. These cases
+need no model weights, active provider or Secure Enclave key.
 
 #### Strict FP32 unit controls
 
@@ -1162,7 +1182,7 @@ token IDs are accepted.
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |
 | [`.github/workflows/provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml) | manual only | Build an exact signed source revision, validate Developer ID signing/provisioning/notarization in a separate job, and retain an Actions artifact; no GitHub environment, deployment, release registration or model execution |
 | [`.github/workflows/register-model.yml`](../../.github/workflows/register-model.yml) | manual | `POST /v1/admin/models/register`; see [`../operations/model-migration.md`](../operations/model-migration.md) |
-| `.github/workflows/threat-model-review.yml`, `.github/workflows/claude.yml`, `.github/workflows/codex.yml` | PR / comment | Review automation; not test gates |
+| `.github/workflows/claude.yml`, `.github/workflows/codex.yml` | PR / comment | Review automation; not test gates |
 
 ## Verify
 

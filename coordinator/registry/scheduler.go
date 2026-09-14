@@ -211,6 +211,7 @@ type routingSnapshot struct {
 }
 
 type routingCandidate struct {
+	cacheAffinityEligible bool
 	// Exact base-score work eligible for a cache credit; never includes load or decode.
 	pricedPromptTokens int
 	prefillCostMs      float64
@@ -593,7 +594,8 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 	// scan itself land on the decision as LockWaitUS / ScanUS; ~25 ns each.
 	tScanStart := time.Now()
 	// Snapshot receipt-confirmed cache hints before taking the registry scan lock.
-	// The tracker has its own mutex and must never be nested under r.mu.
+	// Query holders outside the scan lock; the later candidate quarantine check
+	// uses the same registry -> provider -> tracker order as receipt rejection.
 	r.mu.RLock()
 	cacheTracker, cacheMode := r.cacheRouting, r.cacheRoutingMode
 	// Skip digest derivation and holder lookup unless the request can use them.
@@ -607,8 +609,9 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 	}
 	r.mu.RUnlock()
 	pr.cacheRoutingHints = nil
+	pr.CacheOpportunity = CacheOpportunity{}
 	if wantHints {
-		pr.cacheRoutingHints = r.cacheRoutingHints(
+		pr.cacheRoutingHints, pr.CacheOpportunity = r.cacheRoutingHintsWithObservation(
 			model, pr.CachePlan, cacheTracker, cacheRouteKey, cacheMode, time.Now())
 	}
 	pr.CacheSelectionMode = ""
@@ -629,6 +632,7 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 		r.cacheRouting != cacheTracker {
 		pr.cacheRoutingHints = nil
 		pr.CacheSelectionMode = ""
+		pr.CacheOpportunity = CacheOpportunity{}
 	}
 	selected, candidates := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
 	if r.reservationAfterScan != nil {
@@ -755,15 +759,16 @@ func (r *Registry) commitProviderReservation(
 	}
 	r.applyCacheRoutingCostPLocked(p, model, pr, candidate)
 
-	// Another reservation changed this winner after the shared scan. Re-scan the
-	// fleet so cost ranking observes that debit instead of herding the whole scan
-	// cohort onto the formerly-cheapest provider. The counters compared here
+	// Another reservation or cache quarantine changed this winner after the
+	// shared scan. Re-scan before committing stale cost or affinity preference.
+	// Quarantine can change affinity without changing any cost. The counters here
 	// were read under the p.mu this section still holds, so a concurrent commit
 	// on the same provider is either fully before (and visible) or fully after.
 	if snapshot.pendingForModel != selected.snapshot.pendingForModel ||
 		snapshot.totalPending != selected.snapshot.totalPending ||
 		candidate.effectiveQueue != selected.effectiveQueue ||
-		candidate.costMs != selected.costMs {
+		candidate.costMs != selected.costMs ||
+		candidate.cacheAffinityEligible != selected.cacheAffinityEligible {
 		return nil, nil, reservationNeedsRescan, RoutingDecision{}
 	}
 
@@ -913,20 +918,24 @@ func routingDecisionForCandidate(model string, provider *Provider, candidate *ro
 }
 
 // applyCacheRoutingCost reads the candidate's own snapshot (the scan
-// builds it in place; no copy is taken). The caller does NOT hold p.mu (the
-// scan): the hint currency check takes it.
+// builds it in place; no copy is taken). The caller holds r.mu, but not p.mu;
+// the hint currency and affinity quarantine checks take the provider lock.
 func (r *Registry) applyCacheRoutingCost(p *Provider, model string, pr *PendingRequest, candidate *routingCandidate) {
-	hint, present := pr.cacheRoutingHints[p.ID]
-	if !present {
+	_, present := pr.cacheRoutingHints[p.ID]
+	if !present && pr.CachePlan.affinityKey == "" {
 		return
 	}
 	p.mu.Lock()
-	r.applyCacheHintLocked(hint, model, candidate)
+	r.applyCacheRoutingCostPLocked(p, model, pr, candidate)
 	p.mu.Unlock()
 }
 
-// applyCacheRoutingCostPLocked is the reservation path, already holding p.mu.
+// applyCacheRoutingCostPLocked is shared by scan and reservation; both hold
+// r.mu and p.mu so capability/quarantine checks use the current provider state.
 func (r *Registry) applyCacheRoutingCostPLocked(p *Provider, model string, pr *PendingRequest, candidate *routingCandidate) {
+	if pr.CachePlan.affinityKey != "" {
+		candidate.cacheAffinityEligible = r.cacheAffinityEligibleLocked(p, model, pr.CachePlan)
+	}
 	r.applyCacheHintLocked(pr.cacheRoutingHints[p.ID], model, candidate)
 }
 
@@ -1324,7 +1333,23 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 		return nil, scan
 	}
 
-	winner, runnerUp, nearTieSize, path := selectRoutingCandidate(scan.pool)
+	affinity := ""
+	if pr.CacheSelectionMode == "active" && r.cacheRouting != nil &&
+		pr.CachePlan.generation == r.cacheRouting.generation && !r.cacheRouting.generation.revoked.Load() {
+		affinity = pr.CachePlan.affinityKey
+	}
+	pr.CacheOpportunity.UsableCandidates = 0
+	pr.CacheOpportunity.CreditedCandidates = 0
+	for _, candidate := range scan.pool {
+		if candidate.cacheTier != "" {
+			pr.CacheOpportunity.UsableCandidates++
+			if candidate.breakdown.CacheDiscountMs > 0 {
+				pr.CacheOpportunity.CreditedCandidates++
+			}
+		}
+	}
+	winner, runnerUp, nearTieSize, path := selectRoutingCandidateWithAffinity(scan.pool, affinity)
+	pr.CacheOpportunity.AffinityApplied = path == SelectionPrefixAffinity
 	scan.runnerUp = candidateSummaryOf(runnerUp)
 	scan.nearTieSize = clampInt32(nearTieSize)
 	scan.path = path

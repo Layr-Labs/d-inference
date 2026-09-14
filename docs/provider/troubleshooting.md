@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-09-06 · commit `615d96328`
+> Last updated: 2026-09-13 · commit `1f52a71fb`
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -76,6 +76,16 @@ attestation readiness, trust, model fit, runtime, billing, version;
 | `up to date` | `SelfUpdater.checkForUpdate`; also reports a quarantined release | See [updates](#updates) |
 
 `darkbloom verify` runs the same set and exits 1 on any ⚠.
+
+The process-table, local-port and sleep probes have a five-second execution
+deadline, followed by bounded child termination. Large output is captured in
+a temporary file, which is removed after the probe. A failed contention probe
+adds no hints; a failed sleep probe reports unavailable. These bounds apply
+to `LocalContentionSnapshot.runCapture` and `DoctorRunner.systemSleepPrevented`
+in `provider-swift/Sources/darkbloom/Diagnostics/CompetingInferenceDiagnostics.swift`
+and `provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swift`, using
+`provider-swift/Sources/ProviderCore/Process/BoundedProcess.swift`
+(`runCapturingStandardOutput`).
 
 ## `darkbloom start` fails
 

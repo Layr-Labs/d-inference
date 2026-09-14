@@ -42,6 +42,7 @@ var (
 		"incomplete_layer_state",
 		"stage_size_exceeded",
 		"write_rate_limited",
+		"write_priority_limited",
 		"write_queue_full",
 		"already_durable",
 		"already_queued",

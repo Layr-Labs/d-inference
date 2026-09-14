@@ -57,10 +57,6 @@ type responseCountingWriter struct {
 	flushes int
 }
 
-func newResponseCountingWriter() *responseCountingWriter {
-	return &responseCountingWriter{header: make(http.Header)}
-}
-
 func (w *responseCountingWriter) Header() http.Header { return w.header }
 
 func (w *responseCountingWriter) WriteHeader(code int) { w.status = code }

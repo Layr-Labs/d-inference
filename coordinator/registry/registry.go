@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/dispatchplan"
 	"github.com/eigeninference/d-inference/coordinator/registry/faultstate"
 	"github.com/eigeninference/d-inference/coordinator/registry/modelloads"
 	"github.com/eigeninference/d-inference/coordinator/registry/requestqueue"
@@ -180,7 +181,7 @@ type Registry struct {
 	// by quote_id (routing v2 W2). Value field with an internal LEAF mutex and
 	// a lazily-created map, so bare &Registry{} test constructions work
 	// without New(). See capacity_quotes.go.
-	capacityQuotes quoteTracker
+	capacityQuotes dispatchplan.Probes[*Provider]
 
 	cacheRouting                 *cacheRoutingTracker
 	cacheActivation              *cacheActivationGate

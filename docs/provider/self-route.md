@@ -1,13 +1,13 @@
 # Self-route: use your own machine through the coordinator
 
-> Last updated: 2026-09-14 · commit `ecebe0f01`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 Send your normal Darkbloom API requests to the provider your account owns —
 free, end-to-end, through the same `api.darkbloom.dev` endpoint and SDK
 configuration — by adding one request header or pinning an API key. For
 operators who run a provider and also consume the network. Nothing changes on
 the provider; the policy lives entirely on the coordinator
-(`coordinator/api/self_route.go`, `resolveSelfRoutePolicy`).
+(`coordinator/inference/ingress/self_route.go`, `ResolveSelfRoutePolicy`).
 
 Self-route is not [direct mode](./direct-mode.md): direct mode is a local
 socket on the provider Mac with no coordinator involved; self-route is regular
@@ -110,7 +110,7 @@ returns `503 machine_offline`.
 ## Troubleshooting
 
 Exclusive self-route fails fast with the real cause instead of queueing
-(`coordinator/api/self_route.go`, `selfRouteUnavailable`):
+(`coordinator/inference/ingress/self_route.go`, `selfRouteUnavailable`):
 
 | Status / code | Meaning | Fix |
 |---|---|---|

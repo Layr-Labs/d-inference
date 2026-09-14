@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-13 · commit `d8647602b`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -87,7 +87,7 @@ curl https://api.darkbloom.dev/v1/payments/usage   -H "Authorization: Bearer sk-
 rewards) and can pay out through Stripe Connect; deposits and invite credits
 never count toward it, so a pure consumer sees `0`. `GET /v1/payments/usage` lists settled
 requests with `job_id`, `model`, `prompt_tokens`, `completion_tokens`,
-`cost_micro_usd`, `timestamp` (`coordinator/api/consumer.go` `handleBalance`,
+`cost_micro_usd`, `timestamp` (`coordinator/api/account_usage.go` `handleBalance`,
 `handleUsage`; usage is recorded by `recordCompletionUsage` in
 `coordinator/inference/settlement/completion_usage.go`). Console users get the
 same figures from `GET /v1/me/summary`

@@ -16,7 +16,7 @@ func (s *Server) readinessController() *readiness.Controller {
 			Logger:            func() *slog.Logger { return s.logger },
 			AuthorizeAdmin:    s.isAdminAuthorized,
 			TrustSafetyStatus: s.trustSafetyStatus,
-			WriteRateLimited:  s.writeTokenRateLimited,
+			WriteRateLimited:  s.inferenceIngress().WriteTokenRateLimited,
 			MaxBodyBytes:      maxControlPlaneBodyBytes,
 		})
 	})

@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `ecebe0f01`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -56,6 +56,7 @@ identifies each owner; changing this layout adds no migration or startup flag.
 | `go.mod` (repo root) | Go | Single module `github.com/eigeninference/d-inference`; contains `coordinator/...` and `e2e/...`. There is no `go.work` and no nested `go.mod`. |
 | `coordinator/cmd/coordinator/` | Go | The coordinator binary; build the whole command package, including `main.go` and its subsystem setup files. |
 | `coordinator/api/accountfleet/`, `coordinator/api/network/` | Go | Dashboard and public network owners compiled into the coordinator through API wiring; no separate binary or build step. Tests live beside the owners and in the API boundary fixtures ([test.md](test.md)). |
+| `coordinator/inference/ingress/` | Go | Consumer request preparation and admission compiled into the same coordinator through `coordinator/api/inference_ingress.go` (`inferenceIngress`); no separate artifact. [Owner and real-route tests](test.md#2-coordinator-go) run without a model. |
 | `coordinator/promptsidecar/` | Rust | Crate `promptsidecar`, edition 2024, `Cargo.lock` committed; built with `--locked`. |
 | `provider-swift/` | SwiftPM | Products: `darkbloom` (CLI), `darkbloom-enclave`, `darkbloom-fan-helper`, `darkbloom-publish`; libraries `ProviderCore`, `ProviderCoreFoundation`, `DarkbloomFan*`. Platform `macOS 14+`. |
 | `console-ui/` | Next.js 16 / React 19 | `npm`; tests with Vitest. |
@@ -125,7 +126,7 @@ make coordinator-build-linux      # GOOS=linux GOARCH=amd64 CGO_ENABLED=0 → co
 The host build writes `./coordinator/coordinator`. Version identity is injected
 only by the container build (`-ldflags -X …api.BuildVersion/BuildCommit/BuildDate`
 in `coordinator/Dockerfile`); a local `go build` reports `dev`/`unknown` on
-`GET /health` (`coordinator/api/consumer.go`, `handleHealth`).
+`GET /health` (`coordinator/api/health.go`, `handleHealth`).
 
 ### 4. Prompt-contract sidecar (Rust)
 

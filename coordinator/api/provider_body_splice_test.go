@@ -3,6 +3,8 @@ package api
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/api/httpresponse"
 )
 
 // legacySealCacheBust is the pre-fast-path implementation of the protocol-0
@@ -15,7 +17,7 @@ func legacySealCacheBust(t *testing.T, body []byte, key string) []byte {
 	}
 	keyJSON, _ := json.Marshal(key)
 	parsed["prompt_cache_key"] = keyJSON
-	sealed, err := marshalForwardBody(parsed)
+	sealed, err := httpresponse.MarshalBody(parsed)
 	if err != nil {
 		t.Fatal(err)
 	}

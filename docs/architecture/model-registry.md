@@ -1,6 +1,6 @@
 # Model registry
 
-> Last updated: 2026-09-14 · commit `ecebe0f01`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 How Darkbloom decides which model builds exist, which bytes are trusted, which
 providers may serve them, and what public name a consumer uses for them. The
@@ -66,7 +66,7 @@ alias mutations, and the consumer, marketplace and provider-install views.
 `Controller` per API server and binds the existing store, read cache, fleet
 views, publishing credential and `SyncModelCatalog` callback. Route middleware
 stays in `coordinator/api/routes.go`; exclusive self-route policy stays in
-`coordinator/api/self_route.go`.
+`coordinator/inference/ingress/self_route.go`.
 
 The store and admin credential are read through getters so configuration applied
 after route construction remains visible. Standard and OpenRouter alias upserts
@@ -185,7 +185,7 @@ routable on that provider without a re-register.
 
 ### 6. Aliases turn a public name into a build at request time
 
-`coordinator/api/consumer.go` (`resolveRequestedModel`) calls
+`coordinator/inference/ingress/aliases.go` (`resolveRequestedModel`) calls
 `coordinator/registry/model_aliases.go` (`ResolveModelConstrainedWithTraits`):
 
 1. Not an alias → the id is used unchanged (raw build ids keep working).

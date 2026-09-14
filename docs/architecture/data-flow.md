@@ -1,6 +1,6 @@
 # Data flow: one request end to end
 
-> Last updated: 2026-09-14 · commit `6ad3d5605`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 A consumer request travels consumer → coordinator → provider → coordinator → consumer. This page shows that journey once — as a sequence diagram and a stage table naming the code that owns each step — for anyone tracing a request through the coordinator.
 
@@ -54,14 +54,14 @@ Two things the diagram makes visible. First, the consumer receives no bytes unti
 | 3 | Authenticate | Bearer resolved to an API key, Privy user, active provider device token, or admin; API-key lookups cached for [`keyCacheTTL`](../reference/api-contracts.md#timeouts-and-constants) | `RequireAuth` (`coordinator/api/requestauth/middleware.go`), `BearerToken` (`coordinator/api/requestauth/bearer.go`) |
 | 4 | Rate limit | Per-key `rpm_limit`, then the account limiter; 429 with `Retry-After` | `rateLimitConsumer`, `applyKeyRPMLimit` (`coordinator/api/request_rate_limits.go`) |
 | 5 | Unseal (optional) | `application/eigeninference-sealed+json` bodies are decrypted; the response will be sealed per event | `sealedTransport` (`coordinator/api/sender_encryption.go`); [`security/encryption.md`](security/encryption.md) |
-| 6 | Parse and validate | Inference body cap [`maxInferenceBodyBytes`](../reference/api-contracts.md#limits-and-validation), tool-schema normalisation, `model` required, key allow-list, `n == 1`, tool-choice and vision rules | `parseInferencePrelude` (`coordinator/api/inference_preprocess.go`), `toolpolicy.ValidateParsed` (`coordinator/inference/toolpolicy/validate.go`), `visionToolsFailFast` |
-| 7 | Resolve model | Alias → concrete build; the response will still echo the alias | `resolveRequestedModel` (`coordinator/api/consumer.go`); [`model-registry.md`](model-registry.md) |
-| 8 | Deadline and shedding | First-content deadline computed from the prompt size; rejecting models shed with 429 | `FirstContentDeadline`, `shedIfModelRejected` (`coordinator/api/consumer.go`) |
-| 9 | Token-rate admission | Input/output tokens per minute | `applyTokenRateLimitWithAdmission` (`coordinator/api/token_admission.go`) |
-| 10 | Reserve funds | Worst-case cost held on the account ledger; 402 when it cannot be | `reserveInferenceBalance` (`coordinator/api/inference_admission.go`); [`billing.md`](billing.md) |
-| 11 | Fetch media | Remote `image_url` parts fetched and inlined; billed as media | `resolveRemoteMedia` (`coordinator/api/media_resolve.go`) |
-| 12 | Capacity admission | Is there an eligible provider that can accept this prompt now? 429/503/413 otherwise | `runInferenceAdmission` (`coordinator/api/inference_admission.go`) |
-| 13 | Plan | Cache-aware route plan for the prompt prefix | `planCacheRoute` (`coordinator/api/prompt_artifacts.go`); [`cache-aware-routing.md`](cache-aware-routing.md) |
+| 6 | Parse and validate | Inference body cap [`maxInferenceBodyBytes`](../reference/api-contracts.md#limits-and-validation), tool-schema normalisation, `model` required, key allow-list, `n == 1`, tool-choice and vision rules | `parseInferencePrelude` (`coordinator/inference/ingress/prelude.go`), `toolpolicy.ValidateParsed` (`coordinator/inference/toolpolicy/validate.go`), `visionToolsFailFast` (`coordinator/inference/ingress/capability.go`) |
+| 7 | Resolve model | Alias → concrete build; the response will still echo the alias | `resolveRequestedModel` (`coordinator/inference/ingress/aliases.go`); [`model-registry.md`](model-registry.md) |
+| 8 | Deadline and shedding | First-content deadline computed from the prompt size; rejecting models shed with 429 | `FirstContentDeadline` (`coordinator/inference/ingress/deadline.go`), `shedIfModelRejected` (`coordinator/inference/ingress/rejection.go`) |
+| 9 | Token-rate admission | Input/output tokens per minute | `applyTokenRateLimitWithAdmission` (`coordinator/inference/ingress/tokens.go`) |
+| 10 | Reserve funds | Worst-case cost held on the account ledger; 402 when it cannot be | `reserveInferenceBalance` (`coordinator/inference/ingress/balance.go`); [`billing.md`](billing.md) |
+| 11 | Fetch media | Remote `image_url` parts fetched and inlined; billed as media | `resolveRemoteMedia` (`coordinator/inference/ingress/media_resolve.go`) |
+| 12 | Capacity admission | Is there an eligible provider that can accept this prompt now? 429/503/413 otherwise | `runInferenceAdmission` (`coordinator/inference/ingress/admission.go`) |
+| 13 | Plan | Cache-aware route plan for the prompt prefix | `planCacheRoute` (`coordinator/inference/ingress/cache_plan.go`); [`cache-aware-routing.md`](cache-aware-routing.md) |
 | 14 | **Select provider** | Lowest-estimated-cost candidate from the request-local plan, with bounded alternatives for failover | `dispatchPrimary` → `registry.Queue` (`coordinator/inference/dispatch/primary.go`); scoring in [`routing.md`](routing.md) |
 | 15 | Encrypt | Fresh session keys; the job body is sealed to the provider's public key | `e2e.GenerateSessionKeys`, `e2e.Encrypt` (`coordinator/internal/e2e/e2e.go`), called from `dispatchPrimary` |
 | 16 | Send | `inference_request` written over the provider WebSocket | `dispatchWithReserver` → `writeProviderInferenceRequestDeferred` (`coordinator/inference/dispatch/prepare.go`) → `Provider.WriteTextDeferred`; message types in `coordinator/protocol/messages.go` |
@@ -90,9 +90,9 @@ Accepted-write evidence crosses `WriteObserver` after the actual write result. T
 
 1. **Nothing reaches the consumer before first content.** Status, headers and body are written together at the commit (stage 19), so every earlier failure is an ordinary HTTP error with a real status — `commitFirstContent`, `writeCommittedResponse` (`coordinator/inference/dispatch/commit.go`).
 2. **The provider never talks to the consumer.** Both legs terminate at the coordinator, which is what lets it hold the money, the identity and the encryption boundary — `dispatchPrimary` (`coordinator/inference/dispatch/primary.go`), provider socket in `coordinator/api/provider.go`.
-3. **Funds are reserved before dispatch and settled from provider-reported usage** — `reserveInferenceBalance` (`coordinator/api/inference_admission.go`), `handleCompleteAt` (`coordinator/api/provider.go`).
+3. **Funds are reserved before dispatch and settled from provider-reported usage** — `reserveInferenceBalance` (`coordinator/inference/ingress/balance.go`), `handleCompleteAt` (`coordinator/api/provider.go`).
 4. **Every job body is sealed with fresh session keys to the provider's public key** — `e2e.GenerateSessionKeys`, `e2e.Encrypt` (`coordinator/internal/e2e/e2e.go`).
-5. **The response echoes the alias the client sent** even though the provider ran the concrete build — `resolveRequestedModel` (`coordinator/api/consumer.go`).
+5. **The response echoes the alias the client sent** even though the provider ran the concrete build — `resolveRequestedModel` (`coordinator/inference/ingress/aliases.go`).
 6. **Once committed the status cannot change**; successful chat streams finish with the held usage/finish frames and exactly one `[DONE]`. In-band errors terminate without a success marker — `Writer.Stream` (`coordinator/inference/response/stream.go`), `stripSSEDoneEvents` (`coordinator/inference/response/sse_events.go`).
 7. **A client that leaves before commit cancels the job**: 499 is recorded and the provider receives `cancel` — `emitClientGone` (`coordinator/inference/dispatch/route_observation.go`), `attempt.Service.SendCancel` (`coordinator/inference/attempt/cancel.go`).
 
@@ -114,18 +114,18 @@ Each row is the stage at which a request can end early and what the consumer see
 
 | Concern | File / symbol |
 |---|---|
-| Middleware chain, rate limits, token-rate admission | `coordinator/api/http_middleware.go` (`bodyLimitMiddleware`); `coordinator/api/http_logging.go` (`loggingMiddleware`); `coordinator/api/request_rate_limits.go` (`rateLimitConsumer`); `coordinator/api/token_admission.go` (`applyTokenRateLimitWithAdmission`) |
+| Middleware chain, rate limits, token-rate admission | `coordinator/api/http_middleware.go` (`bodyLimitMiddleware`); `coordinator/api/http_logging.go` (`loggingMiddleware`); `coordinator/api/request_rate_limits.go` (`rateLimitConsumer`); `coordinator/inference/ingress/tokens.go` (`applyTokenRateLimitWithAdmission`) |
 | Credential authentication and key-cache state | `coordinator/api/requestauth/` — `Authenticator`, `RequireAuth`, `RequirePrivyAuth`; `coordinator/api/authentication.go` binds current Server configuration |
 | Drain gate | `coordinator/api/readiness/gate.go` — `Controller.Gate` |
 | Sealed client transport | `coordinator/api/sender_encryption.go` — `sealedTransport` |
-| Prelude parsing and validation | `coordinator/api/inference_preprocess.go` — `parseInferencePrelude`; `coordinator/inference/toolpolicy/validate.go` — `toolpolicy.ValidateParsed` |
-| Model resolution and first-content deadline | `coordinator/api/consumer.go` — `resolveRequestedModel`, `FirstContentDeadline`, `shedIfModelRejected` |
+| Prelude parsing and validation | `coordinator/inference/ingress/prelude.go` — `parseInferencePrelude`; `coordinator/inference/toolpolicy/validate.go` — `toolpolicy.ValidateParsed` |
+| Model resolution and first-content deadline | `coordinator/inference/ingress/aliases.go` (`resolveRequestedModel`), `coordinator/inference/ingress/deadline.go` (`FirstContentDeadline`), `coordinator/inference/ingress/rejection.go` (`shedIfModelRejected`) |
 | Attempt cancellation | `coordinator/inference/attempt/cancel.go` — `Service.Cancel`, `Service.SendCancel` |
 | Response services and accepted-write binding | `coordinator/api/response_writer.go` — `responseWriter`, `responseServices`, `responseWriteObserver` |
 | Response relay and SSE | `coordinator/inference/response/stream.go` — `Writer.Stream`; `coordinator/inference/response/sse_normalize.go` — `normalizeSSEChunk`; `coordinator/inference/response/sse_events.go` — `stripSSEDoneEvents` |
-| Reservation and capacity admission | `coordinator/api/inference_admission.go` — `reserveInferenceBalance`, `runInferenceAdmission` |
-| Remote media | `coordinator/api/media_resolve.go` — `resolveRemoteMedia` |
-| Cache route plan | `coordinator/api/prompt_artifacts.go` — `planCacheRoute` |
+| Reservation and capacity admission | `coordinator/inference/ingress/balance.go` (`reserveInferenceBalance`), `coordinator/inference/ingress/admission.go` (`runInferenceAdmission`) |
+| Remote media | `coordinator/inference/ingress/media_resolve.go` — `resolveRemoteMedia` |
+| Cache route plan | `coordinator/inference/ingress/cache_plan.go` — `planCacheRoute` |
 | Dispatch, speculative backup, commit, client-gone | `coordinator/inference/dispatch/request.go` — `Controller.Run`; `coordinator/inference/dispatch/run.go` — `execution.run`; detailed [dispatch code map](routing.md#code-map). API observation bindings live in `coordinator/api/inference_dispatch.go` (`dispatchObserver`) |
 | Per-request encryption | `coordinator/internal/e2e/e2e.go` — `GenerateSessionKeys`, `Encrypt` |
 | Wire messages | `coordinator/protocol/messages.go` |

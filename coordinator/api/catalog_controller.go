@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/eigeninference/d-inference/coordinator/api/catalog"
+	"github.com/eigeninference/d-inference/coordinator/inference/ingress"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -18,7 +19,7 @@ func (s *Server) catalogController() *catalog.Controller {
 			Models: s.registry, Cache: s.readCache, Logger: s.logger,
 			AdminKey: func() string { return s.adminKey },
 			SelfRouteAccount: func(r *http.Request) (string, bool) {
-				policy := s.resolveSelfRoutePolicy(r)
+				policy := ingress.ResolveSelfRoutePolicy(r)
 				return policy.OwnerAccountID, policy.Enabled
 			},
 			SyncCatalog: s.SyncModelCatalog,

@@ -1,6 +1,6 @@
 # System overview — how a Darkbloom request works
 
-> Last updated: 2026-09-14 · commit `6ad3d5605`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 Darkbloom sells inference on other people's Apple Silicon Macs. A Go
 **coordinator** accepts OpenAI- and Anthropic-shaped HTTP requests, picks an
@@ -78,15 +78,15 @@ sequenceDiagram
    `corsMiddleware → recoverMiddleware → loggingMiddleware → bodyLimitMiddleware`;
    inference routes add `readiness.Controller.Gate → requireAuth → rateLimitConsumer →
    sealedTransport` (`coordinator/api/routes.go`, `routes`). `/v1/chat/completions`
-   and `/v1/responses` share `handleChatCompletions`; `/v1/completions` and
-   `/v1/messages` share `handleGenericInference` (`coordinator/api/consumer.go`).
+   and `/v1/responses` share `Controller.ChatCompletions` (`coordinator/inference/ingress/chat.go`); `/v1/completions` and
+   `/v1/messages` share `handleGenericInference` (`coordinator/inference/ingress/generic.go`).
    Routes and shapes: [`../reference/api-contracts.md`](../reference/api-contracts.md).
 3. **Admission.** The handler validates the body (size cap
    [`maxInferenceBodyBytes`](../reference/api-contracts.md#limits-and-validation),
    tool-schema normalisation), resolves the public alias to a concrete build
-   ([`model-registry.md`](model-registry.md)), reserves the consumer's balance for
-   the worst-case output ([`billing.md`](billing.md)), and applies token-rate
-   admission ([`../reference/api-contracts.md`](../reference/api-contracts.md)).
+   ([`model-registry.md`](model-registry.md)), applies token-rate admission
+   ([`../reference/api-contracts.md`](../reference/api-contracts.md)), then reserves
+   the consumer's balance for the worst-case output ([`billing.md`](billing.md)).
 4. **Selection.** The registry filters providers through one ordered liveness
    gate (`providerLivenessGateReasonLocked`,
    `coordinator/registry/routing_eligibility.go`) — online, trusted at or above
@@ -102,7 +102,8 @@ sequenceDiagram
    dispatch starts at [`SpeculativeTimerRatio`](routing.md#hedged-speculative-dispatch)
    of the first-content deadline; the coordinator tries at most
    [`maxDispatchAttempts`](../reference/api-contracts.md#timeouts-and-constants)
-   providers (`coordinator/api/consumer.go`). [`data-flow.md`](data-flow.md).
+   providers (`coordinator/inference/dispatch/limits.go`, `maxDispatchAttempts`;
+   `coordinator/inference/dispatch/run.go`, `run`). [`data-flow.md`](data-flow.md).
 6. **Inference.** The provider decrypts in-process, runs the continuous-batching
    engine over the pinned MLX forks, and encrypts every response chunk to the
    coordinator's ephemeral key. [`inference.md`](inference.md),
@@ -158,11 +159,12 @@ consumer routing to a provider it owns (self-route) pays nothing.
    (`coordinator/registry/routing_eligibility.go`).
 3. Every coordinator → provider request body is a fresh NaCl Box to the key the
    provider attested at registration (`coordinator/internal/e2e/e2e.go`).
-4. Nothing is written to the consumer's HTTP response before the first content
-   chunk, so a failed dispatch can always fail over or return a JSON error
-   (`handleChatCompletions`, `coordinator/api/consumer.go`).
+4. Successful responses wait for the first content chunk, so a failed dispatch
+   can fail over or return a JSON error before commit
+   (`Controller.ChatCompletions`, `coordinator/inference/ingress/chat.go`;
+   `writeCommittedResponse`, `coordinator/inference/dispatch/commit.go`).
 5. Balance is reserved before dispatch (`reserveInferenceBalance`,
-   `coordinator/api/inference_admission.go`) and settled from
+   `coordinator/inference/ingress/balance.go`) and settled from
    `inference_complete` (`handleComplete`, `coordinator/api/provider.go`): the
    difference is refunded, an overage is charged. A request that fails before
    any provider usage is reported is refunded in full (`Service.Refund`,
@@ -196,8 +198,8 @@ consumer routing to a provider it owns (self-route) pays nothing.
 | Concern | Entry point |
 |---|---|
 | Route table and middleware | `coordinator/api/routes.go` (`routes`) |
-| Chat / Responses handler | `coordinator/api/consumer.go` (`handleChatCompletions`) |
-| Completions / Messages handler | `coordinator/api/consumer.go` (`handleGenericInference`) |
+| Chat / Responses handler | `coordinator/inference/ingress/chat.go` (`Controller.ChatCompletions`) |
+| Completions / Messages handler | `coordinator/inference/ingress/generic.go` (`handleGenericInference`) |
 | Provider WebSocket, registration, challenges | `coordinator/api/provider.go` |
 | Attestation verification | `coordinator/attestation/attestation.go` |
 | Eligibility gate | `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`) |

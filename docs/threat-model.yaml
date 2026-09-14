@@ -1,3 +1,9 @@
+# Consumer ingress ownership re-verified 2026-09-14 against commit d1a831900:
+# Request parsing/admission and media selectors follow inference/ingress; version
+# and legacy earnings remain API concerns. T-025 also follows the version reader.
+# Existing mitigation statuses, open findings and trust policy are unchanged.
+# This scoped source-map review does not re-verify unrelated threat entries.
+
 # MDM scheduler ownership re-verified 2026-09-14 against commit 391e1ebd4:
 # providercontrol/mdmscheduler owns queue/claims/worker and exact late-command state;
 # API keeps the existing trust-grant policy. TB-005 source references and relevant
@@ -271,7 +277,8 @@ trust_boundaries:
       bodyLimitMiddleware applies a 64 MiB ceiling to every request
       (maxRequestBodyBytes, server.go); plaintext inference endpoints
       (chat/completions, responses, completions, messages) are capped at 16 MiB
-      (maxInferenceBodyBytes, inference_preprocess.go — 413 on excess); the
+      (maxInferenceBodyBytes in coordinator/inference/ingress/body.go, enforced
+      by parseInferencePrelude in coordinator/inference/ingress/prelude.go — 413 on excess); the
       unauthenticated control-plane bodies (enroll, device code, admin) at 64 KiB
       (maxControlPlaneBodyBytes); and the MDM webhook at 1 MiB
       (maxMDMWebhookBodyBytes).
@@ -928,8 +935,10 @@ threats:
     adversaries: [ADV-002, ADV-003]
     affected_assets: [A-009]
     affected_files:
-      - coordinator/api/consumer.go
-      - coordinator/api/inference_preprocess.go
+      - coordinator/inference/ingress/chat.go
+      - coordinator/inference/ingress/generic.go
+      - coordinator/inference/ingress/prelude.go
+      - coordinator/inference/ingress/body.go
       - coordinator/api/server.go
       - coordinator/api/http_middleware.go
       - coordinator/api/routes.go
@@ -948,13 +957,17 @@ threats:
       - id: SEC-006
         resolution: >
           Closed: plaintext inference bodies are wrapped in http.MaxBytesReader at
-          16 MiB (inference_preprocess.go maxInferenceBodyBytes) and every request is
+          16 MiB (coordinator/inference/ingress/prelude.go parseInferencePrelude,
+          with maxInferenceBodyBytes in coordinator/inference/ingress/body.go) and every request is
           bounded by the 64 MiB bodyLimitMiddleware ceiling (http_middleware.go).
     severity: high
     detection_hint: >
-      Any change to request body reading in consumer.go, inference_preprocess.go, or
-      http_middleware.go (io.ReadAll, json.Decode, r.Body) should verify the MaxBytesReader
-      caps remain in place at every tier.
+      Changes to coordinator/inference/ingress/prelude.go (parseInferencePrelude),
+      coordinator/inference/ingress/body.go (maxInferenceBodyBytes, decodeInferenceJSONObject),
+      the chat.go/generic.go post-inline checks in that owner, or
+      coordinator/api/http_middleware.go (bodyLimitMiddleware) must retain every
+      MaxBytesReader tier. The shared codec and provider-body preparation paths
+      must preserve the cap before sealing.
 
   - id: T-003
     trust_boundary: TB-001
@@ -1030,7 +1043,11 @@ threats:
     adversaries: [ADV-002]
     affected_assets: [A-009]
     affected_files:
-      - coordinator/api/consumer.go
+      - coordinator/inference/ingress/chat.go
+      - coordinator/inference/ingress/generic.go
+      - coordinator/inference/ingress/balance.go
+      - coordinator/inference/ingress/controller.go
+      - coordinator/api/inference_ingress.go
       - coordinator/store/postgres/usage.go
       - coordinator/inference/dispatch/prepare.go
       - coordinator/inference/dispatch/request_metrics.go
@@ -1045,8 +1062,12 @@ threats:
     open_findings: []
     severity: low
     detection_hint: >
-      Changes to usage recording, ledger writes, or billing calculation should
-      ensure every billable request is persisted before returning a response.
+      Changes to usage recording, ledger writes, or billing calculation must keep
+      the current account and shared reservation service through
+      coordinator/inference/ingress/balance.go (reserveInferenceBalance,
+      topUpReservationForInlinedMedia), coordinator/inference/ingress/controller.go
+      (Dependencies) and coordinator/api/inference_ingress.go (inferenceIngress).
+      Preserve the existing dispatch/settlement audit publication order.
 
   # ── TB-002: Coordinator → Provider WebSocket ─────────────────
 
@@ -1632,6 +1653,8 @@ threats:
       - coordinator/api/releases/cache.go
       - coordinator/api/releases/latest.go
       - coordinator/api/releases/runtime_manifest.go
+      - coordinator/api/version.go
+      - coordinator/api/release_cache.go
       - coordinator/api/releases/registration.go
       - coordinator/api/releases/deactivation.go
     mitigations:
@@ -1644,7 +1667,10 @@ threats:
       coordinator/api/releases/cache.go, coordinator/api/releases/latest.go or
       coordinator/api/releases/runtime_manifest.go must verify that the
       platform-specific discovery key and shared runtime-manifest key are
-      invalidated on both register and delete operations.
+      invalidated on both register and delete operations. The display reader in
+      coordinator/api/version.go (handleVersion) uses apiVersionCacheKey from
+      coordinator/api/release_cache.go; preserve its api_version:v1 key and
+      macos-arm64-only invalidation on both mutation paths.
 
   - id: T-026
     trust_boundary: TB-006
@@ -2004,7 +2030,7 @@ threats:
     adversaries: [ADV-002, ADV-003]
     affected_assets: [A-009]
     affected_files:
-      - coordinator/api/consumer.go
+      - coordinator/api/provider_earnings.go
     mitigations:
       - description: Endpoint is unauthenticated by design for legacy reasons.
         status: open
@@ -2384,7 +2410,7 @@ threats:
       - coordinator/api/routes.go
       - coordinator/api/installer.go
       - coordinator/api/enroll.go
-      - coordinator/api/consumer.go
+      - coordinator/api/version.go
     mitigations:
       - description: baseURL should be set in production; fallback to Host header is the risk.
         status: open
@@ -2400,7 +2426,8 @@ threats:
     open_findings: [SEC-013]
     severity: medium
     detection_hint: >
-      Changes to URL generation in server.go, enroll.go, or consumer.go should
+      Changes to URL generation in coordinator/api/installer.go (resolveBaseURL),
+      coordinator/api/enroll.go or coordinator/api/version.go (handleVersion) should
       verify that production baseURL is required and the Host-header fallback
       cannot be reached in production deployments.
 
@@ -2723,7 +2750,8 @@ threats:
     description: >
       The coordinator fetches remote http(s) image_url/video_url links from chat
       completion requests and inlines them as base64 data: URIs before sealing the
-      body to a provider (coordinator/mediafetch, api/media_resolve.go; default ON,
+      body to a provider (coordinator/mediafetch,
+      coordinator/inference/ingress/media_resolve.go; default ON,
       EIGENINFERENCE_MEDIA_FETCH_ENABLED kill switch). This makes the coordinator —
       the TEE control plane — issue attacker-chosen outbound HTTP requests: the
       classic SSRF surface (internal services, cloud metadata, DNS rebinding,
@@ -2741,9 +2769,14 @@ threats:
       - coordinator/mediafetch/sniff.go
       - coordinator/mediafetch/resolver.go
       - coordinator/mediafetch/config.go
-      - coordinator/api/media_resolve.go
-      - coordinator/api/consumer.go
-      - coordinator/api/inference_admission.go
+      - coordinator/inference/ingress/media_resolve.go
+      - coordinator/inference/ingress/media_gate.go
+      - coordinator/inference/ingress/chat.go
+      - coordinator/inference/ingress/generic.go
+      - coordinator/inference/ingress/admission.go
+      - coordinator/inference/ingress/balance.go
+      - coordinator/inference/ingress/controller.go
+      - coordinator/api/inference_ingress.go
     mitigations:
       - description: >
           Connect-time IP deny policy in net.Dialer.Control — runs on the
@@ -2797,7 +2830,7 @@ threats:
           the per-location base64 multiplication: the projected inlined total
           (sum over targets of the data: URI length, saturating arithmetic) is
           therefore checked against MaxInlinedBytes (16 MiB, mirroring
-          api.maxInferenceBodyBytes) BEFORE the request map is mutated, so eight
+          ingress.maxInferenceBodyBytes) BEFORE the request map is mutated, so eight
           parts sharing one 8 MiB URL are rejected instead of materializing an
           ~85 MiB marshal buffer. Content-Length is only a pre-check. No
           transparent decompression (gzip bombs), per-request worker cap (4),
@@ -2809,7 +2842,9 @@ threats:
         status: implemented
       - description: >
           Cost gating: fetching runs AFTER token-rate admission, the balance
-          reservation, and the catalog check (consumer.go phase-2 call site). The
+          reservation, and the catalog check (coordinator/inference/ingress/chat.go
+          Controller.ChatCompletions and coordinator/inference/ingress/generic.go
+          handleGenericInference). The
           pre-fetch reservation uses the greater of the raw-byte billing bound and
           the media-aware 300/1500-soft-token estimate, so a caller funded only for
           the short URL cannot drive egress. That floor is NOT an upper bound on

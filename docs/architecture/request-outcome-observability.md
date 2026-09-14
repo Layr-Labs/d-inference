@@ -1,6 +1,6 @@
 # Request Outcome Observability
 
-> Last updated: 2026-09-14 · commit `6ad3d5605`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 Every provider dispatch attempt ends in one claimed terminal outcome, and that outcome is recorded three ways: a closed `final_status` / `error_class` / `error_reason` triple on the `inference_routes` row, a per-attempt `request_profiles` row with separate `client_outcome` and `provider_outcome` columns, and a small set of low-cardinality Datadog counters. Requests refused before dispatch land in the `request_rejections` ledger instead. This page explains the existing attempt taxonomy and protected counters. The unsampled incoming-request ledger, its coverage limits, and separate egress/completion evidence are defined in [incoming request accounting](request-accounting.md).
 
@@ -137,11 +137,11 @@ computing the false-rejection rate; unknown is not a necessary rejection.
 
 | `stage` | `reason_code` values written today |
 |---|---|
-| `validation` | `bad_param`, `messages_required`, `payload_too_large`; media fetch failures `media_blocked`, `upstream_timeout`, `upstream_error` (`mediaRejectionReason`, `coordinator/api/media_resolve.go`) |
+| `validation` | `bad_param`, `messages_required`, `payload_too_large`; media fetch failures `media_blocked`, `upstream_timeout`, `upstream_error` (`mediaRejectionReason`, `coordinator/inference/ingress/media_resolve.go`) |
 | `model_resolution` | `model_not_found`, `model_unavailable` |
 | `model_shed` | `model_shed` |
 | `balance` | `insufficient_funds`, `insufficient_quota` |
-| `preflight_capacity` | `machine_busy`, `model_too_large`, `no_provider`, `routing_saturated`, and the servability verdicts `context_exceeded`, `prompt_too_long` (`coordinator/api/servability_gate.go`) |
+| `preflight_capacity` | `machine_busy`, `model_too_large`, `no_provider`, `routing_saturated`, and the servability verdicts `context_exceeded`, `prompt_too_long` (`coordinator/inference/ingress/servability.go`) |
 | `routing_ttft` | `ttft_too_slow` |
 | `queue` | `queue_full`, `queue_timeout`, `ttft_too_slow`, `model_capability_unsupported` |
 | `dispatch` | `ttft_too_slow`; the exhausted-dispatch verdicts from `resolveDominantExhaustedStatus` / `classifyExhaustedStatus`: `dispatch_exhausted` (default), `first_chunk_timeout` (untyped `504` reclassified to `429`), `client_error`, `payload_too_large`, `template_render_failed`, `oversized_request`, `routing_saturated`, `deadline_unreachable`, and `unservable_token_budget` (the servability backstop) |
@@ -249,7 +249,7 @@ All admin reads require the admin key (`requireAdminKey`).
 | Settlement grace and no-terminal refund | `coordinator/api/settlement.go` (`holdForSettlement`) keeps the outcome/metric policy; `coordinator/inference/settlement/holder.go` (`Holder`) owns parked records and `coordinator/inference/settlement/refund.go` (`Refund`) owns the financial operation |
 | Client-gone and partial-success counters | `coordinator/api/prompt_buckets.go`, `coordinator/api/partial_success_metrics.go` |
 | Timing histograms, KV-backend attribution | `coordinator/api/timing_metrics.go`, `coordinator/api/kv_backend_metrics.go`, `coordinator/registry/kv_backend.go` |
-| Rejection ledger and servability gate | `coordinator/api/rejection_telemetry.go`, `coordinator/api/inference_admission.go`, `coordinator/api/servability_gate.go` |
+| Rejection ledger and servability gate | `coordinator/api/rejection_telemetry.go`, `coordinator/inference/ingress/admission.go`, `coordinator/inference/ingress/servability.go` |
 | Per-attempt profile outcomes | `coordinator/inference/dispatch/profile.go`, `coordinator/registry/attempt_profile.go`, `coordinator/registry/attempt_profile_finalize.go` |
 | Storage types and admin reads | `coordinator/store/contracts/telemetry.go` (`InferenceRouteRecord`, `InferenceRouteOutcome`, `RejectionRecord`), `coordinator/api/operations/routes.go`, `coordinator/api/operations/rejections.go` |
 | Regression pins | `coordinator/api/route_outcome_test.go`, `coordinator/inference/attempt/route_outcome_test.go`, `coordinator/api/settlement_clientgone_test.go`, `coordinator/api/nonfault_outcome_generic_test.go`, `coordinator/inference/dispatch/nonfault_outcome_generic_test.go`, `coordinator/inference/dispatch/dispatch_speculative_outcome_test.go`, `coordinator/api/rejection_classify_test.go` |

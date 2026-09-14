@@ -1,6 +1,6 @@
 # Models reference
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/catalog/aliases.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
@@ -44,7 +44,7 @@ What is listed (`listModelEntries`, `aliasModelEntries`):
 | `output_modalities` | string[] | `["text"]` (or `["embedding"]`) | `deriveModalities` |
 | `quantization` | string | Quantization of a concrete build; empty on alias entries because an alias spans quants | `mapQuantizationToOpenRouter` |
 | `context_length` | int | Maximum prompt+completion context of the primary build | registry `MaxContextLength` |
-| `max_output_length` | int | Maximum completion length; `max_tokens` above it is clamped at request time (`ensureMaxTokensBound`, `coordinator/api/consumer.go`) | registry `MaxOutputLength` |
+| `max_output_length` | int | Default output bound when the request supplies no positive max-tokens field; explicit bounds are preserved (`ensureMaxTokensBound`, `coordinator/inference/ingress/output_bound.go`) | registry `MaxOutputLength` |
 | `pricing` | object | `prompt`, `completion`, `image`, `request`, `input_cache_read` — USD per unit as decimal strings, from the platform price table | `buildModelPricing`, `resolvePlatformPricing`; see [`../reference/pricing-model.md`](../reference/pricing-model.md) |
 | `supported_sampling_parameters` | string[] | `temperature`, `top_p`, `top_k`, `frequency_penalty`, `presence_penalty`, `repetition_penalty`, `stop`, `seed`, `max_tokens` | `defaultSamplingParameters` |
 | `supported_features` | string[] | Feature vocabulary derived from registry capabilities: `tools`, `json_mode`, `structured_outputs`, `logprobs`, `web_search`, `reasoning`; omitted when none | `supportedFeaturesFromCapabilities` |
@@ -74,7 +74,7 @@ Handler `GetModel`. Returns one `ModelEntry` for a listed id, a hidden build id,
 
 ## How `model` is resolved on inference
 
-`resolveRequestedModel` (`coordinator/api/consumer.go`) calls `registry.ResolveModelConstrainedWithTraits` with the request's constraints (self-route policy, media/tool traits):
+`resolveRequestedModel` (`coordinator/inference/ingress/aliases.go`) calls `registry.ResolveModelConstrainedWithTraits` with the request's constraints (self-route policy, media/tool traits):
 
 1. **Alias.** The alias is mapped to its desired build; if every desired-build provider is saturated or too slow and the previous build can serve, the request goes to the previous build instead (`maybeFallbackAlias`). The forwarded body carries the build id; every response, stream chunk and usage record echoes the alias you sent (`publicModel`).
 2. **Alias with no routable build** → 503 `model_unavailable`, message `model "<id>" has no available build right now`, `param: "model"`, **no** `Retry-After`.
@@ -89,11 +89,11 @@ A key created with `allowed_models` can only use those ids. Any other `model` fa
 
 | Capability | Where to read it | What the API enforces |
 |---|---|---|
-| Vision | `"image"` in `input_modalities` | Image parts on a model without it → 400; a vision model with no vision-capable provider online → 503 `model_unavailable` (`visionToolsFailFast`, `coordinator/api/inference_preprocess.go`) |
+| Vision | `"image"` in `input_modalities` | Image parts on a model without it → 400; a vision model with no vision-capable provider online → 503 `model_unavailable` (`visionToolsFailFast`, `coordinator/inference/ingress/capability.go`) |
 | Tools | `"tools"` in `supported_features` | Tool definitions are normalised and validated for every model (`toolpolicy.NormalizeParsed`, `coordinator/inference/toolpolicy/normalize.go`; `toolpolicy.ValidateParsed`, `coordinator/inference/toolpolicy/validate.go`); uncompilable schemas → 422; only providers at or above the `tools` version floor (`capabilityVersionFloors`, `coordinator/registry/request_traits.go`) are eligible, and an inference-enforced `tool_choice` (`required` / named) cannot be combined with image content (400) |
 | JSON / structured output | `"json_mode"`, `"structured_outputs"` in `supported_features` | `response_format` is forwarded to the provider without coordinator validation; whether it is honoured depends on the build's capabilities |
-| Reasoning | `"reasoning"` in `supported_features` | `reasoning` / `reasoning_effort` are applied per model policy (`applyResolvedModelReasoningPolicy`, `coordinator/api/reasoning_request_policy.go`); reasoning tokens are reported in `usage.completion_tokens_details.reasoning_tokens` |
-| Context | `context_length`, `max_output_length` | `max_tokens` clamped to `max_output_length`; prompts no provider can accept → 413 `payload_too_large` (`runInferenceAdmission`, `coordinator/api/inference_admission.go`) |
+| Reasoning | `"reasoning"` in `supported_features` | `reasoning` / `reasoning_effort` are applied per model policy (`applyResolvedModelReasoningPolicy`, `coordinator/inference/ingress/reasoning.go`); reasoning tokens are reported in `usage.completion_tokens_details.reasoning_tokens` |
+| Context | `context_length`, `max_output_length` | `max_output_length` supplies omitted output bounds; prompts no provider can accept → 413 `payload_too_large` (`runInferenceAdmission`, `coordinator/inference/ingress/admission.go`) |
 | Availability | `metadata.can_accept`, `routable_providers`, `warm_providers` | Zero routable providers at dispatch → 503 `model_unavailable` |
 
 Prefix reuse is a runtime provider capability scoped to the exact model artifact,
@@ -114,7 +114,7 @@ a model or enable coordinator cache routing.
 | Behavior | Default and limits | Source |
 |---|---|---|
 | Prefix reuse | Requires the loaded historical-attention capability, segmented paged storage, verified model/runtime identity and the same request isolation scope. A miss or refused checkpoint computes the prompt normally | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+CompletePrefixCache.swift` (`prepareCompletePrefixCache`); [cache capability](../reference/ssd-kv-cache.md#per-family-reuse-capability) |
-| Operator control | `DARKBLOOM_PREFIX_CACHE=0` disables reuse; a contiguous fallback also serves cold. Resident retention remains opt-in. API aliases follow their resolved build's default, including `gpt-oss-20b`; other provider artifact IDs remain opt-in | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isEnabled`, `isMemoryEnabled`); `coordinator/api/consumer.go` (`resolveRequestedModel`); [cache controls](../reference/configuration.md#ssd-prefix-cache) |
+| Operator control | `DARKBLOOM_PREFIX_CACHE=0` disables reuse; a contiguous fallback also serves cold. Resident retention remains opt-in. API aliases follow their resolved build's default, including `gpt-oss-20b`; other provider artifact IDs remain opt-in | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isEnabled`, `isMemoryEnabled`); `coordinator/inference/ingress/aliases.go` (`resolveRequestedModel`); [cache controls](../reference/configuration.md#ssd-prefix-cache) |
 | Usage | Successful reuse contributes to `usage.prompt_tokens_details.cached_tokens`; a family name or previous request alone does not guarantee a hit | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefixCache.swift`; [cache usage](../architecture/prefix-cache.md) |
 
 ## Gemma 4 26B QAT runtime defaults

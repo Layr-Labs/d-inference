@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-var trustReuseReplayInitialBackoff = time.Second
+const trustReuseReplayInitialBackoff = time.Second
 
 func (s *Manager) scheduleHardUntrustReplay(
 	seKey string,

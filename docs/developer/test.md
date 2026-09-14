@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `90e3f4921`
+> Last updated: 2026-09-14 · commit `dd4436528`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -77,6 +77,12 @@ Postgres tests require an explicitly disposable `DATABASE_URL` and include an
 upgrade from the old profile schema. See
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
 
+Provider-deletion fixtures in `coordinator/api/me_delete_test.go` cover ownership,
+offline removal and refusal while a reconnect with the same serial remains live.
+The reconnect uses its own session ID so asynchronous registration cannot replace
+the historical record being deleted. Run them with
+`GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run '^TestDeleteMyProvider_'`.
+
 The [admission calibration baseline](../reports/2026-09-06-admission-calibration-baseline.md)
 gives the focused `TestTTFTPendingPrompt` comparison command. Its registry
 cases exercise preflight, reservation, retained-plan revalidation and retained
@@ -137,6 +143,17 @@ heartbeat entry points on a directly constructed server with no attestor.
 ```bash
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/providercontrol/codeidentity
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'CodeIdentity|CodeCoverage|CodeContinuity|CrossVersionReuse|Restart.*Transition|Seeded|HashlessRegistration|PersistOnAttest|TrustReuseShutdown|ApprovedTransitionGrants|MDMSchedulerFleet1500'
+```
+
+Release HTTP and artifact regressions stay in `coordinator/api/` and reach
+`coordinator/api/releases/` through the registered routes. The current store,
+cache and admin credential test is `release_endpoints_owner_test.go`; release
+inventory failures, forced deactivation, artifact limits and mixed-fleet policy
+regressions retain their existing API fixtures. The two direct deactivation
+calls in `provider_registration_test.go` invoke the real release controller.
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api/...
 ```
 
 Release-policy HTTP, fleet, signed-challenge and inventory-failure regressions

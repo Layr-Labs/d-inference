@@ -587,7 +587,7 @@ func TestAdminDeleteReleaseBlocksActiveBinaryHashWhenEnforced(t *testing.T) {
 	req := httptest.NewRequest(http.MethodDelete, "/v1/admin/releases", strings.NewReader(`{"version":"1.0.0","platform":"macos-arm64"}`))
 	req.Header.Set("Authorization", "Bearer admin-key")
 	w := httptest.NewRecorder()
-	srv.handleAdminDeleteRelease(w, req)
+	srv.newReleaseAPI().Delete(w, req)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("delete without force status = %d, want %d; body=%s", w.Code, http.StatusConflict, w.Body.String())
 	}
@@ -598,7 +598,7 @@ func TestAdminDeleteReleaseBlocksActiveBinaryHashWhenEnforced(t *testing.T) {
 	forceReq := httptest.NewRequest(http.MethodDelete, "/v1/admin/releases", strings.NewReader(`{"version":"1.0.0","platform":"macos-arm64","force":true}`))
 	forceReq.Header.Set("Authorization", "Bearer admin-key")
 	forceW := httptest.NewRecorder()
-	srv.handleAdminDeleteRelease(forceW, forceReq)
+	srv.newReleaseAPI().Delete(forceW, forceReq)
 	if forceW.Code != http.StatusOK {
 		t.Fatalf("force delete status = %d, want %d; body=%s", forceW.Code, http.StatusOK, forceW.Body.String())
 	}

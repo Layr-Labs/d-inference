@@ -6,7 +6,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/providercontrol/releasepolicy"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 func (s *Server) releasePolicyDependencies() releasepolicy.Dependencies {
@@ -44,18 +43,6 @@ func (s *Server) SyncRuntimeManifest() error            { return s.releasePolicy
 func (s *Server) SetRuntimeManifest(m *RuntimeManifest) { s.releasePolicyOwner().SetRuntimeManifest(m) }
 func (s *Server) binaryHashPolicySnapshot() (bool, map[string]bool) {
 	return s.releasePolicyOwner().BinaryHashPolicySnapshot()
-}
-func (s *Server) convergeReleasePolicyWithCommittedRelease(r *store.Release, e error) {
-	s.releasePolicyOwner().ConvergeCommittedRelease(r, e)
-}
-func (s *Server) convergeReleasePolicyWithCommittedDeactivation(v, p string, e error) {
-	s.releasePolicyOwner().ConvergeCommittedDeactivation(v, p, e)
-}
-func (s *Server) convergeRuntimeManifestWithCommittedRelease(r *store.Release, e error) {
-	s.releasePolicyOwner().ConvergeCommittedRuntimeRelease(r, e)
-}
-func (s *Server) convergeRuntimeManifestWithCommittedDeactivation(v, p string, e error) {
-	s.releasePolicyOwner().ConvergeCommittedRuntimeDeactivation(v, p, e)
 }
 
 func (s *Server) deriveApprovedReleaseTransition(p *registry.Provider, r *protocol.AttestationResponseMessage, trusted bool) (approvedReleaseTransitionFact, registry.ApplicationEvidence, bool) {

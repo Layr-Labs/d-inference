@@ -1353,40 +1353,6 @@ func (s *Server) SetCoordinatorKey(k *e2e.CoordinatorKey) {
 	s.coordinatorKey = k
 }
 
-// handleRuntimeManifest returns the current runtime manifest as JSON.
-// No auth required — hashes are not secrets.
-func (s *Server) handleRuntimeManifest(w http.ResponseWriter, r *http.Request) {
-	if cached, ok := s.readCache.Get(runtimeManifestCacheKey); ok {
-		writeCachedJSON(w, cached)
-		return
-	}
-	var resp map[string]any
-	if s.releasePolicyOwner().RuntimeManifest() == nil {
-		resp = map[string]any{"configured": false}
-	} else {
-		// template_hashes is rendered as name -> sorted list of every hash
-		// accepted across the active releases: the manifest is a union, not a
-		// single expected value per template.
-		templates := make(map[string][]string, len(s.releasePolicyOwner().RuntimeManifest().TemplateHashes))
-		for name, accepted := range s.releasePolicyOwner().RuntimeManifest().TemplateHashes {
-			templates[name] = sortedTemplateHashes(accepted)
-		}
-		resp = map[string]any{
-			"configured":      true,
-			"python_hashes":   s.releasePolicyOwner().RuntimeManifest().PythonHashes,
-			"runtime_hashes":  s.releasePolicyOwner().RuntimeManifest().RuntimeHashes,
-			"template_hashes": templates,
-		}
-	}
-	body, err := json.Marshal(resp)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode manifest"))
-		return
-	}
-	s.readCache.Set(runtimeManifestCacheKey, body, time.Minute)
-	writeCachedJSON(w, body)
-}
-
 // maxMDMWebhookBodyBytes caps the MicroMDM webhook body. SecurityInfo /
 // DevicePropertiesAttestation responses are a few KB; 1 MiB is generous headroom
 // while preventing an unauthenticated caller from exhausting memory via an
@@ -1478,6 +1444,7 @@ func (s *Server) resolveBaseURL(r *http.Request) string {
 
 // routes mounts all HTTP and WebSocket handlers.
 func (s *Server) routes() {
+	releaseAPI := s.newReleaseAPI()
 	// Install script — served from the generated embed with the coordinator URL
 	// substituted per environment.
 	s.mux.HandleFunc("GET /install.sh", func(w http.ResponseWriter, r *http.Request) {
@@ -1597,8 +1564,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/version", s.handleVersion)
 
 	// Releases — versioned provider binary distribution.
-	s.mux.HandleFunc("POST /v1/releases", s.handleRegisterRelease)     // scoped release key (GitHub Action)
-	s.mux.HandleFunc("GET /v1/releases/latest", s.handleLatestRelease) // public (install.sh)
+	s.mux.HandleFunc("POST /v1/releases", releaseAPI.Register)     // scoped release key (GitHub Action)
+	s.mux.HandleFunc("GET /v1/releases/latest", releaseAPI.Latest) // public (install.sh)
 
 	// Device authorization flow — providers link to user accounts.
 	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)   // no auth — provider not yet authenticated
@@ -1666,8 +1633,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/admin/models/aliases", s.handleModelAliasUpsert)
 	s.mux.HandleFunc("DELETE /v1/admin/models/aliases/{aliasID}", s.handleModelAliasDelete)
 	s.mux.HandleFunc("POST /v1/admin/models/", s.handleAdminModelRegistryAction)
-	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases)     // admin key or Privy admin
-	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease) // admin key or Privy admin
+	s.mux.HandleFunc("GET /v1/admin/releases", releaseAPI.List)      // admin key or Privy admin
+	s.mux.HandleFunc("DELETE /v1/admin/releases", releaseAPI.Delete) // admin key or Privy admin
 
 	// Historical admin state export (DAR-70) — streams the TEE-sealed /data
 	// archive used for the completed EigenCloud migration. Always registered, but
@@ -1686,7 +1653,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/models/catalog/", s.handleModelCatalogItem)
 
 	// Runtime manifest — providers and users can inspect accepted runtime hashes.
-	s.mux.HandleFunc("GET /v1/runtime/manifest", s.handleRuntimeManifest)
+	s.mux.HandleFunc("GET /v1/runtime/manifest", releaseAPI.RuntimeManifest)
 
 	// Payment methods info
 	s.mux.HandleFunc("GET /v1/billing/methods", s.handleBillingMethods) // no auth needed

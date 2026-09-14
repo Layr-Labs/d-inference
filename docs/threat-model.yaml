@@ -19,6 +19,16 @@ created: "2026-05-14"
 # Code-identity ownership in T-034 re-verified 2026-09-14 against commit dedb0f894:
 # proof/nonce/budget state moved into providercontrol/codeidentity. Signature,
 # release-policy and continuity rules are unchanged; other entries were not re-reviewed.
+# Release HTTP ownership in TB-006/T-004/T-024/T-025/T-026 re-verified
+# 2026-09-13 against commit 38375bc12. Paths follow api/releases and admin_auth.go.
+# Existing constant-time release auth and platform-specific cache invalidation
+# supersede the historical SEC-009/SEC-021 descriptions; this refactor does not
+# introduce those fixes or re-verify unrelated threats.
+# Release selector coverage in T-024/T-025 re-verified 2026-09-14 against
+# commit 378e689c4: artifact validators and the latest-release cache reader
+# remain part of the focused review. No mitigation or trust policy changed.
+# T-025 runtime-manifest cache-reader coverage re-verified 2026-09-14 against
+# commit 9d9c688dc; its shared key and the platform discovery key remain invalidated.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
@@ -569,21 +579,20 @@ trust_boundaries:
       membership. The release key is a narrower credential for GitHub Actions that can
       only POST /v1/releases.
     how_it_works: >
-      isAdminAuthorized() (release_handlers.go) first checks the admin key
+      isAdminAuthorized() (coordinator/api/admin_auth.go) first checks the admin key
       using subtle.ConstantTimeCompare(). If that fails it checks whether the Privy
       JWT user is in the configured admin email list. Admin key requests bypass the
       consumer and financial rate limiters entirely (the accountID is set to "admin"
       which hits no rate limit bucket). No per-admin audit log is emitted; all admin
       actions share the same "admin" identity in logs.
 
-      The release key (release_handlers.go) is a separate secret checked with
-      plain string equality (== operator), NOT subtle.ConstantTimeCompare(). It controls
-      POST /v1/releases, which registers a new release, syncs binary hashes into the
-      provider registry gate, and invalidates caches. After registration the cache key
-      invalidated is latest_release:v1, but the actual per-platform cache key used for
-      lookups is latest_release:v1:<platform> (SEC-021). This means installers and
-      auto-updaters may continue receiving stale release metadata from the per-platform
-      cache after a new release is registered or an old one is deactivated.
+      The scoped release key is checked with subtle.ConstantTimeCompare() in
+      coordinator/api/releases/registration.go (authorizedReleaseKey). An admin
+      key alone does not authorize POST /v1/releases. Controller.Register verifies
+      the artifact before committing the inventory, then synchronizes binary and
+      runtime policy. Controller.Register and Controller.Delete invalidate the
+      affected latest_release:v1:<platform> key and runtime_manifest:v1; macos-arm64
+      mutations also invalidate api_version:v1 (coordinator/api/releases/cache.go).
 
       The device auth flow (device_auth.go) has no rate limits on POST /v1/device/code
       (generates device codes) or POST /v1/device/token (polls for tokens). Approved
@@ -591,24 +600,17 @@ trust_boundaries:
       the device code can continue polling and minting provider tokens during the 15-minute
       validity window.
 
-      Admin OTP endpoints (POST /v1/admin/otp/init and /v1/admin/otp/verify) are
+      Admin OTP endpoints (POST /v1/admin/auth/init and /v1/admin/auth/verify) are
       unauthenticated and not rate-limited, creating a spam and brute-force surface
-      (release_handlers.go).
+      (coordinator/api/admin_auth.go).
     current_limitations:
-      - "The release key is compared with plain string equality, not constant-time
-        comparison. A timing attack can enumerate key bytes (release_handlers.go,
-        SEC-009)."
-      - "Cache invalidation on release registration and deletion targets the wrong key
-        (latest_release:v1 instead of latest_release:v1:<platform>). Installers and
-        providers on a specific platform may see stale release metadata for up to 1 minute
-        after a security-critical release update (release_handlers.go, SEC-021)."
       - "Admin key bypasses all rate limiters. A compromised admin key has unconstrained
         API throughput (server.go)."
       - "A single shared admin key means all admin actions are attributed to the same
         identity. Individual admin revocation is not possible without rotating the single
         key (server.go)."
-      - "No alerting or audit log entry on release registration, binary hash sync, or
-        admin trust-level overrides. Malicious registration would be silent."
+      - "Release registration and deactivation emit ordinary structured logs, but these
+        are not a per-admin audit trail."
       - "Admin OTP endpoints are unauthenticated and unrate-limited (SEC-028)."
       - "Device codes are not atomically consumed on first token exchange, allowing
         multiple provider tokens to be minted from one approved code (device_auth.go,
@@ -952,17 +954,23 @@ threats:
     affected_files:
       - coordinator/auth/**
       - coordinator/api/server.go
-      - coordinator/api/release_handlers.go
+      - coordinator/api/admin_auth.go
+      - coordinator/api/releases/registration.go
+      - coordinator/api/releases/deactivation.go
+      - coordinator/api/releases.go
+      - coordinator/api/releases/controller.go
     mitigations:
       - description: Admin endpoints gated by separate admin key middleware.
         status: implemented
-      - description: Release key uses plain string equality rather than constant-time compare.
-        status: open
-    open_findings: [SEC-009]
+      - description: Scoped release key is checked with constant-time comparison in authorizedReleaseKey.
+        status: implemented
+    open_findings: []
     severity: high
     detection_hint: >
       Changes to middleware ordering, key validation logic, or new route registration
       in server.go should verify admin vs consumer key scopes are not merged.
+      Changes to coordinator/api/releases/controller.go (Dependencies, Controller, New) must
+      preserve the ReleaseKey, AuthorizeAdmin and BearerToken dependency bindings.
 
   - id: T-005
     trust_boundary: TB-001
@@ -1506,50 +1514,71 @@ threats:
     stride: Spoofing
     title: Admin API key compromise allows release and trust manipulation
     description: >
-      The admin key controls release registration (binary hash registry), provider
-      trust overrides, and platform configuration. Compromise via key leak, brute
-      force, or non-constant-time comparison allows an attacker to register malicious
-      binary hashes or deactivate legitimate releases.
+      The admin key controls release deactivation, provider trust overrides and
+      platform configuration. The scoped release key separately authorizes
+      registration. A leaked credential can manipulate its authorized release
+      operations; valid artifact checks do not protect against a compromised publisher.
     adversaries: [ADV-003]
     affected_assets: [A-005, A-011]
     affected_files:
-      - coordinator/api/release_handlers.go
+      - coordinator/api/releases.go
+      - coordinator/api/releases/controller.go
+      - coordinator/api/admin_auth.go
+      - coordinator/api/releases/registration.go
+      - coordinator/api/releases/deactivation.go
+      - coordinator/api/releases/artifact_origin.go
+      - coordinator/api/releases/metadata.go
+      - coordinator/api/releases/bundle.go
       - coordinator/api/server.go
     mitigations:
-      - description: Release key gated by separate middleware from consumer keys.
+      - description: Registration checks the scoped release key independently of consumer/admin authorization.
         status: implemented
-      - description: Release key uses plain string equality, not constant-time compare (SEC-009).
+      - description: Release key uses constant-time comparison in authorizedReleaseKey.
+        status: implemented
+      - description: Registration and deactivation emit structured logs; a per-admin audit trail remains absent.
         status: open
-      - description: No alerting or audit log on release registration events.
-        status: open
-    open_findings: [SEC-009]
+    open_findings: []
     severity: critical
     detection_hint: >
       Any change to release key validation, admin middleware, or the /v1/releases
       handler must use constant-time key comparison and emit an audit log entry.
+      Check coordinator/api/releases/controller.go (Dependencies, Controller, New) when changing
+      the ReleaseKey, AuthorizeAdmin or BearerToken callbacks used by those handlers.
 
   - id: T-025
     trust_boundary: TB-006
     stride: Tampering
     title: Stale release cache serves revoked binary hashes after deletion
     description: >
-      Cache invalidation on release registration uses the wrong key
-      (latest_release:v1 instead of latest_release:v1:<platform>). After a release
-      is deactivated, providers and installers may continue receiving the old
-      release metadata from the per-platform cache.
+      A stale cached release record could point providers or installers at a
+      deactivated release. Both mutation paths invalidate the affected platform's
+      discovery key and the runtime manifest; macos-arm64 changes also invalidate
+      the API version display key.
     adversaries: [ADV-003]
     affected_assets: [A-011]
     affected_files:
-      - coordinator/api/release_handlers.go
+      - coordinator/api/releases.go
+      - coordinator/api/consumer.go
+      - coordinator/api/release_cache.go
+      - coordinator/api/releases/cache.go
+      - coordinator/api/releases/latest.go
+      - coordinator/api/releases/runtime_manifest.go
+      - coordinator/api/releases/registration.go
+      - coordinator/api/releases/deactivation.go
     mitigations:
-      - description: Cache invalidation implemented but targeting wrong key (SEC-021).
-        status: open
-    open_findings: [SEC-021]
+      - description: invalidateReleaseCaches uses the same platform-specific key as Controller.Latest, after registration and deletion.
+        status: implemented
+    open_findings: []
     severity: medium
     detection_hint: >
       Any change to release registration, deletion, or cache logic in
-      release_handlers.go must verify that platform-specific cache keys are
+      coordinator/api/releases/cache.go, coordinator/api/releases/latest.go or
+      coordinator/api/releases/runtime_manifest.go must verify that the
+      platform-specific discovery key and shared runtime-manifest key are
       invalidated on both register and delete operations.
+      The handleVersion reader in coordinator/api/consumer.go and apiVersionCacheKey
+      alias in coordinator/api/release_cache.go must share the api_version:v1 key
+      invalidated for macos-arm64 registration and deletion.
 
   - id: T-026
     trust_boundary: TB-006
@@ -1562,7 +1591,7 @@ threats:
     adversaries: [ADV-003]
     affected_assets: []
     affected_files:
-      - coordinator/api/release_handlers.go
+      - coordinator/api/admin_auth.go
     mitigations:
       - description: No per-IP or per-email rate limit on OTP endpoints.
         status: open

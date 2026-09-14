@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// The matching Swift vectors live in ProviderCoreTests/StatusCanonicalTests.swift.
+// The matching Swift vectors live in ProviderCoreTests/Security/StatusCanonicalTests.swift.
 // The production-model vector originates in Jake McAllister's PR #826.
 func statusCanonicalVectors() []struct {
 	name     string

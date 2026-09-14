@@ -150,6 +150,8 @@ and rejects paths above the repository root, invalid stamps and unavailable
 Git objects. Docs Lint uses a full-history checkout; fetch complete history
 locally if the checker reports an unavailable commit. To browse a moved source
 link, open the record at its stamped commit in the repository host.
+See the [historical source procedure](developer/historical-references.md)
+for navigating these original source snapshots.
 
 ## 7. When you change code, change these docs
 

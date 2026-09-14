@@ -5,6 +5,8 @@ import (
 	"math"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/registry/routingcost"
 )
 
 // calibrationTestProvider builds a warm provider whose raw TTFT estimate for a
@@ -84,7 +86,7 @@ func TestTTFTCalibrationUnblocksHardRejectGate(t *testing.T) {
 	}
 
 	// Reality: first content lands in a third of the estimate.
-	feedCalibrationThroughScheduler(t, reg, model, promptTokens, ttftCalibrationWarmupObs, rawEstimateMs*0.3)
+	feedCalibrationThroughScheduler(t, reg, model, promptTokens, routingcost.CalibrationWarmupObservations, rawEstimateMs*0.3)
 
 	// Calibrated: 10010 x 0.3 = 3003ms clears the 5s ceiling.
 	selected, decision = reg.ReserveProviderEx(model, gatedReq("calib-after"))
@@ -142,7 +144,7 @@ func TestTTFTCalibrationLearnsUpward(t *testing.T) {
 	reg.SetProviderIdle(selected.ID)
 
 	// Reality is 2x the estimate; the learned ratio clamps to 1.5 at apply.
-	feedCalibrationThroughScheduler(t, reg, model, promptTokens, ttftCalibrationWarmupObs, rawEstimateMs*2)
+	feedCalibrationThroughScheduler(t, reg, model, promptTokens, routingcost.CalibrationWarmupObservations, rawEstimateMs*2)
 
 	// 4010 x 1.5 = 6015ms breaches the 5s ceiling.
 	req = &PendingRequest{

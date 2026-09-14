@@ -1,10 +1,7 @@
 package registry
 
 import (
-	"strings"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
+	"github.com/eigeninference/d-inference/coordinator/registry/routingcost"
 )
 
 // Phase-0 SLA-aware, occupancy-aware admission — SHADOW + MEASUREMENT slice.
@@ -31,96 +28,6 @@ import (
 // The shadow reuses the occupancy the snapshot ALREADY tracks (snapshotOccupancy
 // = max(pendingForModel, backend_running+backend_waiting)); it does NOT introduce
 // a parallel reservation counter.
-
-// TTFTAdmissionMode selects the Phase-0 admission behavior.
-type TTFTAdmissionMode int
-
-const (
-	// TTFTAdmissionOff is the default: the evaluator is a no-op and behavior is
-	// byte-for-byte the pre-Phase-0 coordinator.
-	TTFTAdmissionOff TTFTAdmissionMode = iota
-	// TTFTAdmissionShadow computes the would-shed / would-redirect signals and
-	// emits metrics, but SERVES exactly as today (no decision change).
-	TTFTAdmissionShadow
-	// TTFTAdmissionEnforce is reserved for a future step that would actually shed
-	// on the signal. In this Phase-0 slice it behaves identically to shadow
-	// (evaluate + emit, no decision change) so it can be wired and validated
-	// without flipping live behavior.
-	TTFTAdmissionEnforce
-)
-
-func (m TTFTAdmissionMode) String() string {
-	switch m {
-	case TTFTAdmissionShadow:
-		return "shadow"
-	case TTFTAdmissionEnforce:
-		return "enforce"
-	default:
-		return "off"
-	}
-}
-
-// ParseTTFTAdmissionMode maps an env string to a mode. Anything unrecognized
-// (including empty) is OFF — the safe, behavior-neutral default.
-func ParseTTFTAdmissionMode(s string) TTFTAdmissionMode {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "shadow":
-		return TTFTAdmissionShadow
-	case "enforce":
-		return TTFTAdmissionEnforce
-	default:
-		return TTFTAdmissionOff
-	}
-}
-
-// defaultTTFTDeadlineBaseMs is the verified standard OpenRouter SLA base.
-// Standard-model cancels fit `10000 + 1ms·prompt_tokens` at a median ratio of
-// 1.002 (telemetry-db findings §2). The live coordinator cutoff is selected
-// separately with response headroom; exact-model policy can tighten either
-// clock without conflating the two.
-const defaultTTFTDeadlineBaseMs = 10000.0
-
-// Both are configured once at startup (from main.go env wiring) and read-only on
-// routing paths thereafter, mirroring prefillToDecodeRatio / ttftOccupancyAlpha.
-var (
-	ttftAdmissionMode  = TTFTAdmissionOff
-	ttftDeadlineBaseMs = defaultTTFTDeadlineBaseMs
-)
-
-// SetTTFTAdmissionMode sets the Phase-0 admission mode. Must be called before
-// serving starts.
-func SetTTFTAdmissionMode(mode TTFTAdmissionMode) {
-	ttftAdmissionMode = mode
-}
-
-// TTFTAdmissionModeValue returns the configured admission mode.
-func TTFTAdmissionModeValue() TTFTAdmissionMode {
-	return ttftAdmissionMode
-}
-
-// SetTTFTDeadlineBaseMs overrides the shadow-evaluation deadline base (ms).
-// Values <= 0 are ignored (keep the verified ~10s default). Must be called
-// before serving starts.
-func SetTTFTDeadlineBaseMs(ms float64) {
-	if ms > 0 {
-		ttftDeadlineBaseMs = ms
-	}
-}
-
-// TTFTDeadlineBaseMs returns the configured shadow-evaluation deadline base (ms).
-func TTFTDeadlineBaseMs() float64 {
-	return ttftDeadlineBaseMs
-}
-
-// ttftDeadlineMsForPrompt is the shadow gate's per-request upstream SLA in ms.
-// Ordinary models use the configured ~10s base; exact per-model overrides use
-// the same shared policy table as the live coordinator clock. This remains
-// shadow only and does not change routing decisions.
-func ttftDeadlineMsForPrompt(model string, promptTokens int) float64 {
-	defaultBase := time.Duration(ttftDeadlineBaseMs * float64(time.Millisecond))
-	deadline := modelpolicy.UpstreamFirstContentDeadline(model, promptTokens, defaultBase)
-	return float64(deadline) / float64(time.Millisecond)
-}
 
 // ttftShadowEval is the result of the read-only Phase-0 evaluation. It is copied
 // onto RoutingDecision (applyTo) so the API layer can emit metrics without the
@@ -163,7 +70,7 @@ func (r *Registry) evaluateTTFTShadowLocked(
 	winner *routingCandidate,
 	scan candidateScan,
 ) ttftShadowEval {
-	mode := ttftAdmissionMode
+	mode := routingPolicy.TTFTAdmissionModeValue()
 	if mode == TTFTAdmissionOff || winner == nil || pr == nil {
 		return ttftShadowEval{}
 	}
@@ -176,9 +83,9 @@ func (r *Registry) evaluateTTFTShadowLocked(
 	// here, in the SHADOW path only — ttftMsFromSnapshot (the live cost / ceiling /
 	// bestTTFT input) stays occupancy-free so raising alpha cannot tighten the
 	// live request-local HARD_REJECT ceiling. See occupancyAwareTTFTMsFromSnapshot.
-	estimate := occupancyAwareTTFTMsFromSnapshot(snap, reqPrompt)
-	deadline := ttftDeadlineMsForPrompt(model, reqPrompt)
-	occ := snapshotOccupancy(snap)
+	estimate := routingPolicy.OccupancyAwareTTFTMs(snap, reqPrompt)
+	deadline := routingPolicy.ShadowDeadlineMs(model, reqPrompt)
+	occ := routingcost.Occupancy(snap)
 
 	eval := ttftShadowEval{
 		Evaluated: true,
@@ -186,7 +93,7 @@ func (r *Registry) evaluateTTFTShadowLocked(
 		// Providers without BackendCapacity have no reliable TTFT estimate
 		// (ttftMsFromSnapshot returns 0), so they never "would_shed" — matching
 		// the live ceiling's behavior.
-		WouldShed:  snap.hasBackendCapacity && estimate > deadline,
+		WouldShed:  snap.HasBackendCapacity && estimate > deadline,
 		EstimateMs: estimate,
 		DeadlineMs: deadline,
 		Occupancy:  occ,
@@ -212,7 +119,7 @@ func loadedIdleAlternativeExistsFromScan(scan candidateScan, winner *Provider) b
 		if candidate.provider == nil || candidate.provider.ID == winnerID {
 			continue
 		}
-		if candidate.snapshot.modelLoaded && snapshotOccupancy(&candidate.snapshot) == 0 {
+		if candidate.snapshot.ModelLoaded && routingcost.Occupancy(&candidate.snapshot) == 0 {
 			return true
 		}
 	}
@@ -235,4 +142,26 @@ func loadedIdleAlternativeExistsFromScan(scan candidateScan, winner *Provider) b
 func (r *Registry) loadedIdleAlternativeExistsLocked(model string, pr *PendingRequest, winner *Provider, excludeIDs ...string) bool {
 	return loadedIdleAlternativeExistsFromScan(
 		r.scanCandidatesLocked(model, pr, false, excludeIDs...), winner)
+}
+
+// currentTTFTShadow recomputes the observational signal from the winner's
+// commit-time pre-reserve snapshot and a fresh, shared-lock candidate pool. It
+// runs after the pending debit is committed, so concurrent reservations cannot
+// leave occupancy and idle-alternative telemetry pinned to the original scan.
+func (r *Registry) currentTTFTShadow(
+	model string,
+	pr *PendingRequest,
+	winner *routingCandidate,
+	excludeIDs ...string,
+) ttftShadowEval {
+	if TTFTAdmissionModeValue() == TTFTAdmissionOff || winner == nil || pr == nil {
+		return ttftShadowEval{}
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var current candidateScan
+	if routingcost.Occupancy(&winner.snapshot) > 0 {
+		current = r.scanCandidatesLocked(model, pr, false, excludeIDs...)
+	}
+	return r.evaluateTTFTShadowLocked(model, pr, winner, current)
 }

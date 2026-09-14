@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/routingcost"
 )
 
 // Bounded dispatch plan — Routing v2 Phase 3 (identity retention).
@@ -197,9 +198,9 @@ func newDispatchPlan(model string, scan candidateScan, winner *routingCandidate)
 				TTFTMs:      c.breakdown.TTFTMs,
 				RawTTFTMs:   c.breakdown.RawTTFTMs,
 				StateMs:     c.breakdown.StateMs,
-				ModelLoaded: c.snapshot.modelLoaded,
-				SlotState:   c.snapshot.slotState,
-				ChipFamily:  c.snapshot.chipFamily,
+				ModelLoaded: c.snapshot.ModelLoaded,
+				SlotState:   c.snapshot.SlotState,
+				ChipFamily:  c.snapshot.ChipFamily,
 			},
 		}
 	}
@@ -317,7 +318,7 @@ func (dp *DispatchPlan) nextEntry() (planEntry, bool) {
 
 // ReserveProviderWithPlan is ReserveProviderEx plus plan retention: identical
 // selection and reservation semantics (it IS the same implementation —
-// reserveProvider in scheduler.go), additionally returning the bounded
+// reserveProvider in reservation.go), additionally returning the bounded
 // DispatchPlan of provisional alternates from the same scan. The plan is nil
 // whenever no provider was reserved.
 func (r *Registry) ReserveProviderWithPlan(model string, pr *PendingRequest, excludeIDs ...string) (*Provider, RoutingDecision, *DispatchPlan) {
@@ -356,7 +357,7 @@ func (r *Registry) ReserveProviderWithPlan(model string, pr *PendingRequest, exc
 // and no concurrent commit can slip between the check and the debit. r.mu is
 // held for reading across the loop (identity checks against r.providers stay
 // valid); the global commit mode takes it for writing instead. See the ledger
-// rationale on reserveProvider's pending-debit path in scheduler.go.
+// rationale on reserveProvider's pending-debit path in reservation.go.
 //
 // Version-diverse retry (SOFT — parity with scanCandidatesLocked's
 // post-candidate AvoidVersion narrowing): when pr.Traits.AvoidVersion is set,
@@ -449,7 +450,7 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 			skip(PlanSkipGateRejected)
 			return nil, RoutingDecision{}, false
 		}
-		if enforceTTFT && snap.hasBackendCapacity && candidate.breakdown.TTFTMs > pr.MaxTTFTMs {
+		if enforceTTFT && snap.HasBackendCapacity && candidate.breakdown.TTFTMs > pr.MaxTTFTMs {
 			p.mu.Unlock()
 			skip(PlanSkipGateRejected)
 			return nil, RoutingDecision{}, false
@@ -474,14 +475,14 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 		}
 		p.mu.Unlock()
 
-		if !slotStateModelLoaded(candidate.snapshot.slotState) {
+		if !routingcost.SlotStateModelLoaded(candidate.snapshot.SlotState) {
 			r.RecordWarmPoolColdDispatch(model)
 		}
 		// Same calibrator-join rule as the primary path: warm text dispatches
 		// only (see reserveProvider).
 		bd := candidate.breakdown
 		if !pr.RequiresVision && bd.RawTTFTMs > 0 && bd.StateMs == 0 {
-			ttftCalibration.notePrediction(pr.RequestID, pr.Attempt, model, candidate.snapshot.chipFamily, bd.RawTTFTMs)
+			routingPolicy.NotePrediction(pr.RequestID, pr.Attempt, model, candidate.snapshot.ChipFamily, bd.RawTTFTMs)
 		}
 		// Winner-specific fields only: the scan tallies belong to the plan
 		// (EligibleCount/…), not to this per-entry revalidation, so the count
@@ -501,7 +502,7 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 			EffectiveQueue:     candidate.effectiveQueue,
 			TTFTMs:             bd.TTFTMs,
 			EffectiveTPS:       candidate.effectiveTPS,
-			StaticTPS:          candidate.snapshot.decodeTPS,
+			StaticTPS:          candidate.snapshot.DecodeTPS,
 		}
 		return p, decision, true
 	}

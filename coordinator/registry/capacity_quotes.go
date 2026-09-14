@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/routingcost"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 )
 
@@ -407,7 +408,7 @@ func (r *Registry) HedgeGovernorSnapshot(model string, pr *PendingRequest, exclu
 		if p.Status != StatusUntrusted && p.Status != StatusOffline {
 			if p.BackendCapacity != nil && !p.PrivateOnly {
 				for _, slot := range p.BackendCapacity.Slots {
-					if slotStateModelLoaded(slot.State) && slot.NumRunning == 0 && slot.NumWaiting == 0 {
+					if routingcost.SlotStateModelLoaded(slot.State) && slot.NumRunning == 0 && slot.NumWaiting == 0 {
 						fleetIdleSlots++
 					}
 				}

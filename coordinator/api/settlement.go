@@ -132,7 +132,7 @@ func (s *Server) claimSettlement(requestID string) *registry.PendingRequest {
 }
 
 // observeTTFTCalibration feeds the online TTFT calibrator
-// (registry/ttft_calibration.go) with the committed attempt's measured
+// (registry/routingcost/calibration.go) with the committed attempt's measured
 // dispatch→first-content latency — the same quantity persisted as
 // actual_ttft_ms. Called from the dispatch goroutine at content commit
 // (commitFirstContent), which owns pr.Timing, so DispatchedAt is safe to read

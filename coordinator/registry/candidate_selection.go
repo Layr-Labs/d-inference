@@ -69,14 +69,14 @@ func selectRoutingCandidateWithAffinity(pool []*routingCandidate, affinity strin
 			winner, queueTies = candidate, 1
 		} else if candidate.effectiveQueue == winner.effectiveQueue {
 			queueTies++
-			if candidate.snapshot.totalPending < winner.snapshot.totalPending {
+			if candidate.snapshot.TotalPending < winner.snapshot.TotalPending {
 				winner = candidate
 			}
 		}
 	}
-	queue, pending := winner.effectiveQueue, winner.snapshot.totalPending
+	queue, pending := winner.effectiveQueue, winner.snapshot.TotalPending
 	isEquivalent := func(c *routingCandidate) bool {
-		return c.effectiveQueue == queue && c.snapshot.totalPending == pending && isNear(c)
+		return c.effectiveQueue == queue && c.snapshot.TotalPending == pending && isNear(c)
 	}
 
 	choices := 0

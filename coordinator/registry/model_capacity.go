@@ -2,6 +2,8 @@ package registry
 
 import (
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/registry/routingcost"
 )
 
 // ModelCapacity describes the live capacity for a single model.
@@ -127,11 +129,11 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			// (the same cold-rate resolver the gate uses), so this feed stays
 			// equivalent to the gate on the cold path too. Inert for legacy boxes.
 			pooledRemaining := pooledRemainingTokens(
-				poolSnap.pooledTokenBudget,
-				poolSnap.pendingMaxTokensAllModels,
-				poolSnap.pendingMaxBytesAllModels,
-				poolSnap.pendingBytesKnown,
-				poolSnap.pooledTokenBudget.KVRateFor(m.ID),
+				poolSnap.PooledTokenBudget,
+				poolSnap.PendingMaxTokensAllModels,
+				poolSnap.PendingMaxBytesAllModels,
+				poolSnap.PendingBytesKnown,
+				poolSnap.PooledTokenBudget.KVRateFor(m.ID),
 			)
 
 			snap := providerCapSnap{
@@ -149,7 +151,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 					if slot.Model != m.ID {
 						continue
 					}
-					snap.warm = slotStateModelLoaded(slot.State)
+					snap.warm = routingcost.SlotStateModelLoaded(slot.State)
 					snap.running = slot.State == "running"
 					slotActive := int(slot.NumRunning) + int(slot.NumWaiting)
 					if slotActive > snap.activeRequests {

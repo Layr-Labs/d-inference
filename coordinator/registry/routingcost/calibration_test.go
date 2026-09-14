@@ -1,4 +1,4 @@
-package registry
+package routingcost
 
 import (
 	"fmt"
@@ -10,8 +10,8 @@ import (
 
 func resetCalibrator(t *testing.T) {
 	t.Helper()
-	ResetTTFTCalibration()
-	t.Cleanup(ResetTTFTCalibration)
+	routingPolicy.ResetCalibration()
+	t.Cleanup(routingPolicy.ResetCalibration)
 }
 
 // feedObservations pushes n prediction+actual pairs for (model, chip) with the
@@ -31,13 +31,13 @@ func TestTTFTCalibratorWarmupUsesUnitRatio(t *testing.T) {
 	resetCalibrator(t)
 	model := "warmup-model"
 
-	feedObservations(t, model, "M3", ttftCalibrationWarmupObs-1, 0.33)
-	if got := TTFTCalibrationRatio(model, "M3"); got != 1.0 {
+	feedObservations(t, model, "M3", CalibrationWarmupObservations-1, 0.33)
+	if got := routingPolicy.CalibrationRatio(model, "M3"); got != 1.0 {
 		t.Fatalf("ratio below warm-up = %f, want 1.0", got)
 	}
 
 	feedObservations(t, model, "M3", 1, 0.33)
-	got := TTFTCalibrationRatio(model, "M3")
+	got := routingPolicy.CalibrationRatio(model, "M3")
 	if math.Abs(got-0.33) > 0.001 {
 		t.Fatalf("ratio at warm-up = %f, want ~0.33", got)
 	}
@@ -54,7 +54,7 @@ func TestTTFTCalibratorConvergesToTrueRatio(t *testing.T) {
 		ttftCalibration.notePrediction(id, 0, model, "M4", predicted)
 		ttftCalibration.recordActual(id, 0, predicted/3.0)
 	}
-	got := TTFTCalibrationRatio(model, "M4")
+	got := routingPolicy.CalibrationRatio(model, "M4")
 	if math.Abs(got-1.0/3.0) > 0.01 {
 		t.Fatalf("converged ratio = %f, want ~0.333", got)
 	}
@@ -63,13 +63,13 @@ func TestTTFTCalibratorConvergesToTrueRatio(t *testing.T) {
 func TestTTFTCalibratorClampsAppliedRatio(t *testing.T) {
 	resetCalibrator(t)
 
-	feedObservations(t, "clamp-low", "M3", ttftCalibrationWarmupObs, 0.05)
-	if got := TTFTCalibrationRatio("clamp-low", "M3"); got != ttftCalibrationRatioMin {
+	feedObservations(t, "clamp-low", "M3", CalibrationWarmupObservations, 0.05)
+	if got := routingPolicy.CalibrationRatio("clamp-low", "M3"); got != ttftCalibrationRatioMin {
 		t.Fatalf("low ratio = %f, want clamp floor %f", got, ttftCalibrationRatioMin)
 	}
 
-	feedObservations(t, "clamp-high", "M3", ttftCalibrationWarmupObs, 5.0)
-	if got := TTFTCalibrationRatio("clamp-high", "M3"); got != ttftCalibrationRatioMax {
+	feedObservations(t, "clamp-high", "M3", CalibrationWarmupObservations, 5.0)
+	if got := routingPolicy.CalibrationRatio("clamp-high", "M3"); got != ttftCalibrationRatioMax {
 		t.Fatalf("high ratio = %f, want clamp ceiling %f", got, ttftCalibrationRatioMax)
 	}
 }
@@ -81,12 +81,12 @@ func TestTTFTCalibratorOutlierBarelyMoves(t *testing.T) {
 	// 100 normal observations around 0.33, then one 30s cold-load actual
 	// against a 1s prediction (ratio 30). The windowed median must not move.
 	feedObservations(t, model, "M3", 100, 0.33)
-	before := TTFTCalibrationRatio(model, "M3")
+	before := routingPolicy.CalibrationRatio(model, "M3")
 
 	ttftCalibration.notePrediction("outlier-req", 0, model, "M3", 1000)
 	ttftCalibration.recordActual("outlier-req", 0, 30_000)
 
-	after := TTFTCalibrationRatio(model, "M3")
+	after := routingPolicy.CalibrationRatio(model, "M3")
 	if math.Abs(after-before) > 0.01 {
 		t.Fatalf("one outlier moved ratio %f -> %f (max drift 0.01)", before, after)
 	}
@@ -95,14 +95,14 @@ func TestTTFTCalibratorOutlierBarelyMoves(t *testing.T) {
 func TestTTFTCalibratorKillSwitch(t *testing.T) {
 	resetCalibrator(t)
 	model := "killswitch-model"
-	feedObservations(t, model, "M3", ttftCalibrationWarmupObs, 0.33)
+	feedObservations(t, model, "M3", CalibrationWarmupObservations, 0.33)
 
 	t.Setenv("EIGENINFERENCE_TTFT_CALIBRATION", "off")
 	if got := ttftCalibration.appliedRatio(model, "M3"); got != 1.0 {
 		t.Fatalf("applied ratio with kill switch = %f, want 1.0", got)
 	}
 	// The learned ratio stays observable while off.
-	if got := TTFTCalibrationRatio(model, "M3"); math.Abs(got-0.33) > 0.001 {
+	if got := routingPolicy.CalibrationRatio(model, "M3"); math.Abs(got-0.33) > 0.001 {
 		t.Fatalf("learned ratio with kill switch = %f, want ~0.33", got)
 	}
 
@@ -118,18 +118,18 @@ func TestTTFTCalibratorChipFamilyFallback(t *testing.T) {
 
 	// Observations from M3 boxes feed both the chip window and the model
 	// aggregate. An unseen chip family falls back to the model-level ratio.
-	feedObservations(t, model, "M3", ttftCalibrationWarmupObs, 0.5)
-	if got := TTFTCalibrationRatio(model, "M9"); math.Abs(got-0.5) > 0.001 {
+	feedObservations(t, model, "M3", CalibrationWarmupObservations, 0.5)
+	if got := routingPolicy.CalibrationRatio(model, "M9"); math.Abs(got-0.5) > 0.001 {
 		t.Fatalf("unseen-chip fallback ratio = %f, want model-level 0.5", got)
 	}
 
 	// Once the other chip has its own warmed-up window, it wins over the
 	// (now mixed) model aggregate.
-	feedObservations(t, model, "M9", ttftCalibrationWarmupObs, 1.2)
-	if got := TTFTCalibrationRatio(model, "M9"); math.Abs(got-1.2) > 0.001 {
+	feedObservations(t, model, "M9", CalibrationWarmupObservations, 1.2)
+	if got := routingPolicy.CalibrationRatio(model, "M9"); math.Abs(got-1.2) > 0.001 {
 		t.Fatalf("chip-specific ratio = %f, want 1.2", got)
 	}
-	if got := TTFTCalibrationRatio(model, "M3"); math.Abs(got-0.5) > 0.001 {
+	if got := routingPolicy.CalibrationRatio(model, "M3"); math.Abs(got-0.5) > 0.001 {
 		t.Fatalf("original chip ratio = %f, want 0.5", got)
 	}
 }
@@ -212,20 +212,20 @@ func TestTTFTCalibratorPendingSweepsBelowCap(t *testing.T) {
 func TestCalibratedTTFTMsLeavesColdPenaltyUnscaled(t *testing.T) {
 	resetCalibrator(t)
 	model := "cold-scale-model"
-	feedObservations(t, model, "M3", ttftCalibrationWarmupObs, 0.5)
+	feedObservations(t, model, "M3", CalibrationWarmupObservations, 0.5)
 
-	warm := routingSnapshot{model: model, chipFamily: "M3", slotState: "running"}
-	if got := calibratedTTFTMs(snapPtr(warm), 3000); math.Abs(got-1500) > 0.001 {
+	warm := routingSnapshot{Model: model, ChipFamily: "M3", SlotState: "running"}
+	if got := routingPolicy.CalibratedTTFTMs(snapPtr(warm), 3000); math.Abs(got-1500) > 0.001 {
 		t.Fatalf("warm calibrated = %f, want 1500", got)
 	}
 
-	cold := routingSnapshot{model: model, chipFamily: "M3", slotState: "unknown"}
-	want := slotStatePenaltyUnknown + 3000*0.5
-	if got := calibratedTTFTMs(snapPtr(cold), slotStatePenaltyUnknown+3000); math.Abs(got-want) > 0.001 {
+	cold := routingSnapshot{Model: model, ChipFamily: "M3", SlotState: "unknown"}
+	want := SlotStatePenaltyUnknown + 3000*0.5
+	if got := routingPolicy.CalibratedTTFTMs(snapPtr(cold), SlotStatePenaltyUnknown+3000); math.Abs(got-want) > 0.001 {
 		t.Fatalf("cold calibrated = %f, want %f (penalty unscaled)", got, want)
 	}
 
-	if got := calibratedTTFTMs(snapPtr(warm), 0); got != 0 {
+	if got := routingPolicy.CalibratedTTFTMs(snapPtr(warm), 0); got != 0 {
 		t.Fatalf("zero estimate calibrated = %f, want 0", got)
 	}
 }
@@ -251,13 +251,13 @@ func TestTTFTCalibratorConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < 400; i++ {
 				_ = ttftCalibration.appliedRatio(model, "M3")
-				_ = TTFTCalibrationRatio(model, "")
-				_ = calibratedTTFTMs(snapPtr(routingSnapshot{model: model, chipFamily: "M3", slotState: "running"}), 2000)
+				_ = routingPolicy.CalibrationRatio(model, "")
+				_ = routingPolicy.CalibratedTTFTMs(snapPtr(routingSnapshot{Model: model, ChipFamily: "M3", SlotState: "running"}), 2000)
 			}
 		}()
 	}
 	wg.Wait()
-	if got := TTFTCalibrationRatio(model, "M3"); math.Abs(got-0.4) > 0.001 {
+	if got := routingPolicy.CalibrationRatio(model, "M3"); math.Abs(got-0.4) > 0.001 {
 		t.Fatalf("post-race ratio = %f, want 0.4", got)
 	}
 }

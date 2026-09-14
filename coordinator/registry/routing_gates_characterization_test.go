@@ -11,7 +11,7 @@ import (
 // This file is a behavior-locking characterization suite for the five
 // overlapping provider-eligibility gate functions:
 //
-//   - providerPassesRoutingGatesLockedEx (scheduler.go) — dispatch hot path
+//   - providerPassesRoutingGatesLockedEx (routing_gates.go) — dispatch hot path
 //   - providerCanRouteBuildLocked        (model_aliases.go)  — alias routability
 //   - providerHasWarmModelLocked         (model_load_plan.go)  — warm detection
 //   - publiclyRoutableLocked             (model_capacity.go)  — capacity feeds

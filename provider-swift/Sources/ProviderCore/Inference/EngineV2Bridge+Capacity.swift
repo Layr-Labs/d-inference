@@ -81,7 +81,7 @@ extension EngineV2Bridge {
 
         // Budget fields — SEMANTICS ALIGNED WITH THE LEGACY SCHEDULER
         // (round-2 PR#499 P2). The coordinator's token-budget admission gate
-        // is (coordinator/registry/scheduler.go):
+        // is (coordinator/registry/routingcost/throughput.go):
         //
         //     activeTokenBudgetUsed + queuedTokenBudget + requestTokens
         //         <= activeTokenBudgetMax        (only when budgetMax > 0)

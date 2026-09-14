@@ -62,12 +62,12 @@ type deviceState struct {
 	reuseWindow      time.Duration
 
 	// Push budget (the hard background-push rate-limit backstop) is mode-aware:
-	// allowPush picks the cooldown by delivery mode.
+	// reservePush picks the cooldown by delivery mode.
 	backgroundPushCooldown time.Duration
 	alertPushCooldown      time.Duration
 
 	// budgetClearCooldown is the minimum spacing between token-rotation budget
-	// resets per device (clearPushBudget). A provider can put any string in the
+	// resets per device (clearPushBudgetReservationHeld). A provider can put any string in the
 	// heartbeat APNs-token field on every heartbeat; without this floor each
 	// "rotation" would reset the push budget and force an immediate push, letting a
 	// misbehaving provider spam APNs (and coordinator work) far beyond Apple's

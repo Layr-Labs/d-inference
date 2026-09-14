@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `7466e7fa5`
+> Last updated: 2026-09-14 · commit `0dbf61910`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -95,6 +95,8 @@ separate binary or configuration surface.
 The code-identity owner at `coordinator/providercontrol/codeidentity/` (`Manager`)
 also links through the API adapters into this binary. It uses the existing APNs
 configuration and store; no additional service or build step is needed.
+The adapters in `coordinator/providercontrol/codeidentity/push_fixture_test.go`
+(`tryReservePush`, `clearPushBudget`) compile only into the package's test binary.
 
 The normal Go build includes the profiler owner and telemetry queue packages
 under `coordinator/telemetry/`. Their API adapters link them into the same

@@ -98,15 +98,6 @@ func (t *deviceState) reuseAttestationForTransition(
 	return r.binaryHash, true
 }
 
-func (t *deviceState) recordAttested(seKey, version, token string) {
-	if seKey == "" {
-		return
-	}
-	t.mu.Lock()
-	t.attested[seKey] = proofRecord{at: t.now(), version: version, token: token}
-	t.mu.Unlock()
-}
-
 func (t *deviceState) recordAttestedForProcess(
 	seKey, version, token, nodeKey, binaryHash string,
 ) {

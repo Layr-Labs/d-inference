@@ -5,7 +5,7 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
-Current local changes add the root-only base source/machine lock scope, private
+Pushed3c34dbbdd adds the root-only base source/machine lock scope, private
 source reader, shared raw ownership decoding and real process-lock tests.
 Pushed3ac8a7fb6 adds recoverable accountless payload staging and its durable
 journal. Pushedf235b8ad2 adds signal cancellation, actual GUI-session monitoring
@@ -15,7 +15,8 @@ requested-resource configuration32be94642. Full sandbox suite passes548tests,
 7explicit skips,0failures (132.522s). Coordinator suite, Linux
 build, docs lint, UI lint and Next.js build pass. CI34811478625 and integration
 34811478687 passed6cf8f3381. CI34813684236 and integration34813684227
-passed3ac8a7fb6. Current local source needs fresh CI; benchmark
+passed3ac8a7fb6. FreshCI34815356747 and integration34815356765 are running
+3c34dbbdd; benchmark
 environment approval is separate and has not been granted.
 
 Physical guest exercise14 and coldboot15 PASS on the test Mac. They prove
@@ -37,7 +38,7 @@ explicit temporary runtime-group membership until the machine campaign finishes.
 - Worktree: `.worktrees/sandbox-completion-20260913`.
 - Branch: `codex/sandbox-completion-20260913`.
 - Starting sandbox tip0950ac41e; master93337ef05 integrated in453b37667.
-- Latest pushed code:3ac8a7fb6; lifecycle commitf235b8ad2 and accountless staging
+- Latest pushed code:3c34dbbdd; root source guard, lifecycle commitf235b8ad2 and accountless staging
   are included. Verify git HEAD and remote before resuming.
 - Local GUI plan commit3abe05f712de1d2dcc6958315c1fbf56b4b693ff follows
   host context50145d4b4 and qualification validator4cab8f470.
@@ -1149,3 +1150,13 @@ The retained root image fd is expected; exclude only that exact own fd, not all
 root processes. Preserve the preexisting Apple Metal toolchain image attachment.
 No base-template readiness, host enrollment, two-VM acceptance or build-tool gate
 is complete. Go-cache cleanup approval remains pending and unacted upon.
+
+Source3c34dbbdd5fd1d2a1fa0493861a84698224db0e9 is pushed; mandatory pre-push
+checks passed (root-source-guard-push.log). PR996 body includes the root guard,
+explicit maintenance-fence gap, before/after diagrams and548-test validation.
+FreshCI34815356747 and integration34815356765 are running at3c34dbbdd;
+benchmark34815356936 waits for separate environment approval, not granted.
+Go-cache question remains pending. Native source/pin were not edited; preserve
+existing9/10 work and prepare any new fence as a distinct patch11 after a clean
+base10 snapshot. Next required work is durable global maintenance admission plus
+per-source broker/native fencing BEFORE adding/using the root attach controller.

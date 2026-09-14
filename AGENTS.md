@@ -10,7 +10,9 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── api/              HTTP + WebSocket handlers
 │   ├── consumer.go         OpenAI-compatible chat/completions/responses + Anthropic messages
 │   ├── provider.go         provider registration, heartbeats, attestation, relay
-│   ├── billing_handlers.go Stripe/referral/pricing endpoints
+│   ├── billing/          billing/referral/pricing/payout HTTP controllers and tests
+│   ├── billing_controller.go shared service, store, cache and auth bindings
+│   ├── requestauth/      shared linked-user identity requirements
 │   ├── device_auth.go      device code flow for linking providers to user accounts
 │   ├── enroll.go           MDM enrollment profile generation
 │   ├── invite_handlers.go  invite code admin/user flows

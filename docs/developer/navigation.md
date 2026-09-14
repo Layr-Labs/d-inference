@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-13 · commit `de4e28825`
+> Last updated: 2026-09-14 · commit `c8a3f45d0`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -19,7 +19,8 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 |---|---|
 | API request handling, auth, attestation, dispatch | `coordinator/api/`; server construction in `server.go` (`NewServer`) |
 | Provider selection, admission, queueing | `coordinator/registry/`; request eligibility in `request_traits.go` (`providerEligibleForTraitsLocked`) |
-| Billing and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/` |
+| Billing, pricing, referrals and payout endpoints | `coordinator/api/billing/` (`Controller`); route and shared-dependency binding in `coordinator/api/billing_controller.go` |
+| Financial services and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/` |
 | Provider inference, downloads, security, local serving | `provider-swift/Sources/ProviderCore/`; entrypoints in `provider-swift/Sources/darkbloom/` |
 | Portable model manifests and hashing | `provider-swift/Sources/ProviderCoreFoundation/`; target defined in `provider-swift/Package.swift` (`package`) |
 | Console, operations dashboard, landing page | `console-ui/src/`, `admin-ui/src/`, `landing/` |
@@ -53,7 +54,7 @@ separately when you need measurements or the state at a historical commit.
 ### 3. Name and place files by responsibility
 
 Use the feature followed by the behavior: `code_attest_reuse_policy_test.go`
-groups the attestation reuse policy cases, and `stripe_transfer_reversal_test.go`
+groups the attestation reuse policy cases, and `coordinator/api/billing/connect_transfer_reversal_test.go`
 groups transfer reversal cases. A shared fixture belongs in a domain-specific
 helper file, such as `coordinator/api/attestation_helpers_test.go`
 (`testStatusSignature`).

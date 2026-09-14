@@ -7,7 +7,7 @@ Darkbloom is a decentralized private inference network for Apple Silicon Macs. C
 ```
 coordinator/          Go control plane (packages live at top level, not internal/)
 ├── cmd/coordinator/  main service entrypoint
-├── api/              HTTP + WebSocket handlers (consumer.go, provider.go, billing_handlers.go, device_auth.go, invite_handlers.go, release_handlers.go, enroll.go, stats.go, server.go, chunk_key_cache.go, types/)
+├── api/              HTTP + WebSocket handlers (consumer.go, provider.go, billing/, billing_controller.go, requestauth/, device_auth.go, invite_handlers.go, release_handlers.go, enroll.go, stats.go, server.go, chunk_key_cache.go, types/)
 ├── apns/             APNs-push code-identity attestation
 ├── attestation/      Secure Enclave + MDA attestation verification
 ├── auth/             Privy JWT verification + user provisioning

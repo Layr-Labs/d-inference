@@ -1,6 +1,6 @@
 # Authentication
 
-> Last updated: 2026-09-13 · commit `f7a3ef1fd`
+> Last updated: 2026-09-14 · commit `5d57fc2b1`
 
 How to obtain and manage each credential the coordinator accepts, and which routes take it. Every request authenticates with one header, `Authorization: Bearer <token>` (`extractBearerToken`, `coordinator/api/server.go`); the token is an API key, a Privy session JWT, a device-flow provider token, or the operator's admin key, and `requireAuth` decides which by shape — JWTs (starting `eyJ`) are verified with Privy, the admin key is compared in constant time, everything else is looked up as an API key. For API consumers and console users; the per-route auth column is in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -62,9 +62,9 @@ The console signs you in with Privy (email only, in an in-page modal — `/login
 | `POST`/`DELETE /v1/auth/keys`, all of `/v1/keys*` | 403 `forbidden` |
 | `GET /v1/me/summary`, `GET /v1/me/providers`, `GET /v1/me/self-route-models`, `DELETE /v1/me/providers/{id}` | 403 `forbidden` |
 | `POST /v1/device/approve` | 403 `forbidden` |
-| `POST /v1/billing/stripe/dashboard`, `DELETE /v1/billing/stripe/account` | 403 `forbidden` |
+| `POST /v1/billing/stripe/onboard`, `POST /v1/billing/stripe/quote`, `POST /v1/billing/withdraw/stripe`, `POST /v1/billing/stripe/dashboard`, `DELETE /v1/billing/stripe/account` | 403 `forbidden` |
 
-A second group accepts `requireAuth` but then insists on a resolved account user (`requirePrivyUser`, `coordinator/api/billing_handlers.go`): `PUT`/`DELETE /v1/pricing`, `POST /v1/referral/register`, `POST /v1/referral/apply`, `POST /v1/billing/stripe/onboard`, `GET /v1/billing/stripe/status`, `POST /v1/billing/withdraw/stripe`, `GET /v1/billing/stripe/withdrawals`. A Privy JWT or an API key that belongs to a Privy account passes; the admin key and unlinked legacy keys get 401 `auth_error`.
+A second group accepts `requireAuth` but then insists on a resolved account user (`RequirePrivyUser`, `coordinator/api/requestauth/identity.go`): `PUT`/`DELETE /v1/pricing`, `POST /v1/referral/register`, `POST /v1/referral/apply`, `GET /v1/billing/stripe/status`, `GET /v1/billing/stripe/withdrawals`. A Privy JWT or an API key that belongs to a Privy account passes; the admin key and unlinked legacy keys get 401 `auth_error`.
 
 ### 5. Link a provider machine (device-code flow)
 

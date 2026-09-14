@@ -13,6 +13,8 @@ created: "2026-05-14"
 # Status-signature canonicalization in TB-009 re-verified 2026-09-13 against
 # commit 1f52a71fb: provider byte compatibility, with signature/trust policy
 # unchanged. This does not re-verify the remaining threat entries.
+# Billing controller citations in TB-008 and T-030 moved to api/billing against
+# commit c8a3f45d0. The non-atomic checkout replay limitation is unchanged.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
@@ -675,14 +677,14 @@ trust_boundaries:
       processes Stripe webhook events for deposits, and uses Stripe Connect for
       provider payouts.
     how_it_works: >
-      Stripe webhook ingestion (billing_handlers.go): the body is read with a
+      Stripe webhook ingestion (coordinator/api/billing/checkout_webhook.go): the body is read with a
       1 MB limit (io.LimitReader). The Stripe-Signature header is verified using the
       Stripe SDK's VerifyWebhookSignature before any processing. Idempotency is checked
       by looking up the billing_session_id from the event metadata in the store and
       returning 200 if status == "completed". The status check and the credit insertion
       are not in a single database transaction; a concurrent duplicate webhook event can
       pass the completed-session check before either marks it complete, resulting in
-      double credit (billing_handlers.go, SEC-012).
+      double credit (coordinator/api/billing/checkout_webhook.go, SEC-012).
 
       The idempotency key used is a custom billing_session_id stored in Stripe metadata,
       not Stripe's own event.id. There is no unique database constraint on the
@@ -694,7 +696,7 @@ trust_boundaries:
       - "Stripe webhook idempotency is not atomic: the completed-session check and the
         balance credit insertion are separate operations. Concurrent duplicate valid
         webhooks can both pass the check before either commits, risking double credit
-        (billing_handlers.go, SEC-012)."
+        (coordinator/api/billing/checkout_webhook.go, SEC-012)."
       - "Idempotency uses a custom billing_session_id rather than Stripe's native
         event.id. There is no unique database constraint enforcing at-most-once credit
         at the storage layer."
@@ -1880,7 +1882,7 @@ threats:
     adversaries: [ADV-002, ADV-003]
     affected_assets: [A-009]
     affected_files:
-      - coordinator/api/billing_handlers.go
+      - coordinator/api/billing/checkout_webhook.go
       - coordinator/store/postgres.go
     mitigations:
       - description: Completed-session check exists but is not atomic with credit insertion.

@@ -1,10 +1,10 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-11 · commit `e3993c611`
+> Last updated: 2026-09-14 · commit `c8a3f45d0`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
-Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`.
+Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`. Billing endpoint methods belong to `billing.Controller` in `coordinator/api/billing/`; `routes` retains their authentication and financial-limiter chain. The binding in `coordinator/api/billing_controller.go` reads the current shared billing and base-rewards services after configuration changes.
 
 The public model catalog optionally includes `hugging_face_artifact` for direct
 provider downloads; the admin registration accepts the same object. See the
@@ -23,11 +23,11 @@ responses and error codes are unchanged.
 | `—` | No authentication | — |
 | `key` | Bearer is an API key ([shape](#api-key-shapes); legacy `eigeninference-…` keys are also accepted), a Privy JWT, or the admin key. Missing or invalid → 401 `authentication_error` | `requireAuth` |
 | `privy` | Bearer must be a Privy JWT. API keys → 403 `forbidden` | `requirePrivyAuth` |
-| `user` | `key` or `privy` plus an in-handler check that a resolved account user is in the context (Privy JWT, or an API key linked to a Privy account). Admin key and unlinked legacy keys → 401 `auth_error` | `requirePrivyUser` (`coordinator/api/billing_handlers.go`) |
-| `admin` | In-handler check: Bearer equals the admin key (`EIGENINFERENCE_ADMIN_KEY`), or the context holds a Privy user whose email is in the admin list. Otherwise 403 `forbidden`. When the route is registered *without* `requireAuth` no user is ever placed in the context, so only the admin key can pass; those rows say `admin-key` | `isAdminAuthorized` (`coordinator/api/release_handlers.go`), `requireAdminKey` (`coordinator/api/invite_handlers.go`), `isAdmin` (`coordinator/api/billing_handlers.go`) |
+| `user` | `key` or `privy` plus an in-handler check that a resolved account user is in the context (Privy JWT, or an API key linked to a Privy account). Admin key and unlinked legacy keys → 401 `auth_error` | `RequirePrivyUser` (`coordinator/api/requestauth/identity.go`) |
+| `admin` | In-handler check: Bearer equals the admin key (`EIGENINFERENCE_ADMIN_KEY`), or the context holds a Privy user whose email is in the admin list. Otherwise 403 `forbidden`. When the route is registered *without* `requireAuth` no user is ever placed in the context, so only the admin key can pass; those rows say `admin-key` | `isAdminAuthorized` (`coordinator/api/release_handlers.go`), `requireAdminKey` (`coordinator/api/invite_handlers.go`), `isAdmin` (`coordinator/api/auth_identity.go`) |
 | `publishing` | `X-Darkbloom-Publishing-Key` header or Bearer equal to the bootstrap `MODEL_REGISTRY_PUBLISHING_KEY`, the admin key, or a publishing key stored in the DB | `requirePublishingAPIKey` (`coordinator/api/model_registry_handlers.go`) |
 | `release` | Bearer equal to `EIGENINFERENCE_RELEASE_KEY`; otherwise 401 `unauthorized` | `handleRegisterRelease` (`coordinator/api/release_handlers.go`) |
-| `stripe-sig` | Stripe webhook signature | `handleStripeWebhook` (`coordinator/api/billing_handlers.go`), `handleStripeConnectWebhook` (`coordinator/api/stripe_payouts_webhooks.go`) |
+| `stripe-sig` | Stripe webhook signature | `StripeWebhook` (`coordinator/api/billing/checkout_webhook.go`), `StripeConnectWebhook` (`coordinator/api/billing/connect_webhook.go`) |
 | `mdm-secret` | Webhook secret via `X-Webhook-Token` header or `?token=`; body capped at [`maxMDMWebhookBodyBytes`](#limits-and-validation) | `HandleMDMWebhook` |
 | `ws` | Provider WebSocket handshake (enrollment credentials + attestation); see [`protocol-messages.md`](protocol-messages.md) | `handleProviderWS` (`coordinator/api/provider.go`) |
 
@@ -62,7 +62,7 @@ All four share the chain `drainGate → requireAuth → rateLimitConsumer → se
 | GET | `/v1/models/openrouter` | `handleListModelsOpenRouter` (`coordinator/api/openrouter_endpoint.go`) | `key` | — | `OpenRouterModelsResponse` projection |
 | GET | `/v1/models/{id...}` | `handleGetModel` (`coordinator/api/models_endpoints.go`) | `key` | — | One `ModelEntry`; 404 `model_not_found` when neither a build id nor an alias matches |
 | GET | `/v1/models/capacity` | `handleModelsCapacity` (`coordinator/api/capacity.go`) | `—` | — | Per-model provider capacity, cached 2 s |
-| GET | `/v1/models/catalog` | `handleModelCatalog` (`coordinator/api/billing_handlers.go`) | `—` | — | Registry catalog; `?type=` selects the catalog kind, unknown → 400 |
+| GET | `/v1/models/catalog` | `handleModelCatalog` (`coordinator/api/model_catalog_list.go`) | `—` | — | Registry catalog; `?type=` selects the catalog kind, unknown → 400 |
 | GET | `/v1/models/catalog/manifest/` | `handleModelCatalogManifest` (`coordinator/api/model_registry_handlers.go`) | `—` | — | Per-model manifest by path suffix |
 | GET | `/v1/models/catalog/` | `handleModelCatalogItem` (`coordinator/api/model_registry_handlers.go`) | `—` | — | Single catalog item by path suffix |
 | GET | `/v1/runtime/manifest` | `handleRuntimeManifest` | `—` | — | Hashes the coordinator accepts from provider runtimes: `{"configured":false}` or `{"configured":true,"python_hashes":{…},"runtime_hashes":{…},"template_hashes":{"<name>":[<sorted hashes accepted across active releases>]}}`; cached 1 min ([runtime manifest](../architecture/security/attestation.md#runtime-manifest)) |
@@ -101,17 +101,17 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 |---|---|---|---|---|---|
 | GET | `/v1/payments/balance` | `handleBalance` (`coordinator/api/consumer.go`) | `key` | — | `BalanceResponse` `{balance_micro_usd, balance_usd, withdrawable_micro_usd, withdrawable_usd}` |
 | GET | `/v1/payments/usage` | `handleUsage` (`coordinator/api/consumer.go`) | `key` | — | `UsageResponse` `{usage: [...]}`; recent history only ([retention](pricing-model.md#constants)) |
-| GET | `/v1/billing/wallet/balance` | `handleWalletBalance` (`coordinator/api/billing_handlers.go`) | `key` | — | Wallet view of the ledger balance |
-| GET | `/v1/billing/methods` | `handleBillingMethods` (`coordinator/api/billing_handlers.go`) | `—` | — | Which top-up methods are enabled |
+| GET | `/v1/billing/wallet/balance` | `WalletBalance` (`coordinator/api/billing/wallet.go`) | `key` | — | Wallet view of the ledger balance |
+| GET | `/v1/billing/methods` | `BillingMethods` (`coordinator/api/billing/methods.go`) | `—` | — | Which top-up methods are enabled |
 | GET | `/v1/provider/earnings` | `handleProviderEarnings` (`coordinator/api/consumer.go`) | `—` | — | Legacy lookup by `?wallet=` query or `X-Provider-Wallet` header; `ProviderEarningsResponse` |
-| GET | `/v1/provider/account-earnings` | `handleAccountEarnings` (`coordinator/api/billing_handlers.go`) | `key` | — | Earnings across the account's providers |
+| GET | `/v1/provider/account-earnings` | `AccountEarnings` (`coordinator/api/billing/earnings.go`) | `key` | — | Earnings across the account's providers |
 | GET | `/v1/me/summary` | `handleMySummary` (`coordinator/api/me_handlers.go`) | `user` | — | Console account summary; includes `latest_provider_version` |
 | GET | `/v1/me/providers` | `handleMyProviders` (`coordinator/api/me_handlers.go`) | `user` | — | Machines linked to the account |
 | GET | `/v1/me/self-route-models` | `handleMySelfRouteModels` (`coordinator/api/me_handlers.go`) | `user` | — | Models the account's own machines can serve |
 | DELETE | `/v1/me/providers/{id}` | `handleDeleteMyProvider` (`coordinator/api/me_handlers.go`) | `user` | `fin` | Unlink a machine |
-| GET | `/v1/pricing` | `handleGetPricing` (`coordinator/api/billing_handlers.go`) | `—` | — | Public price table; see [`pricing-model.md`](pricing-model.md) |
-| PUT | `/v1/pricing` | `handleSetPricing` (`coordinator/api/billing_handlers.go`) | `user` | — | Provider sets its own prices |
-| DELETE | `/v1/pricing` | `handleDeletePricing` (`coordinator/api/billing_handlers.go`) | `user` | — | Revert to defaults |
+| GET | `/v1/pricing` | `GetPricing` (`coordinator/api/billing/pricing.go`) | `—` | — | Public price table; see [`pricing-model.md`](pricing-model.md) |
+| PUT | `/v1/pricing` | `SetPricing` (`coordinator/api/billing/pricing.go`) | `user` | — | Provider sets its own prices |
+| DELETE | `/v1/pricing` | `DeletePricing` (`coordinator/api/billing/pricing.go`) | `user` | — | Revert to defaults |
 
 The four `/v1/me/*` routes are wrapped in `requirePrivyAuth`, so they are Privy-JWT only.
 
@@ -119,18 +119,18 @@ The four `/v1/me/*` routes are wrapped in `requirePrivyAuth`, so they are Privy-
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
-| POST | `/v1/billing/stripe/create-session` | `handleStripeCreateSession` (`coordinator/api/billing_handlers.go`) | `key` | `fin` | 502 `stripe_error` when Stripe rejects |
-| POST | `/v1/billing/stripe/webhook` | `handleStripeWebhook` (`coordinator/api/billing_handlers.go`) | `stripe-sig` | — | Checkout events |
-| GET | `/v1/billing/stripe/session` | `handleStripeSessionStatus` (`coordinator/api/billing_handlers.go`) | `key` | — | Poll a checkout session |
-| POST | `/v1/billing/stripe/onboard` | `handleStripeOnboard` (`coordinator/api/stripe_payouts.go`) | `user` (Privy-only wrapper) | `fin` | Country-aware Connect or Global Payouts onboarding link |
-| GET | `/v1/billing/stripe/status` | `handleStripeStatus` (`coordinator/api/stripe_payouts.go`) | `user` | — | Payout readiness; additive `account_id` scopes browser confirmation recovery, plus `payout_rail`, `payout_currency`, `countries`, `payouts_available`, `recipient_limits` (currency, exponent, published minimum/maximum minor units) |
-| POST | `/v1/billing/withdraw/stripe` | `handleStripeWithdraw` (`coordinator/api/stripe_withdraw.go`) | `user` (Privy-only wrapper) | `fin` | Global Payouts confirms a persisted `quote_id`; 409 `stripe_account_gone` / `stripe_account_recreate_required`; 502 `stripe_error` |
-| GET | `/v1/billing/stripe/withdrawals` | `handleStripeWithdrawals` (`coordinator/api/stripe_payouts.go`) | `user` | — | Withdrawal history |
-| POST | `/v1/billing/stripe/dashboard` | `handleStripeDashboardLink` (`coordinator/api/stripe_payouts.go`) | `user` (Privy-only wrapper) | `fin` | Express dashboard link |
-| DELETE | `/v1/billing/stripe/account` | `handleStripeUnlink` (`coordinator/api/stripe_payouts.go`) | `user` (Privy-only wrapper) | — | Removes the Global Payouts mapping when present; otherwise removes the stored Connect mapping. Does not close Stripe accounts or cancel withdrawals. |
-| POST | `/v1/billing/stripe/connect/webhook` | `handleStripeConnectWebhook` (`coordinator/api/stripe_payouts_webhooks.go`) | `stripe-sig` | — | Connect events |
-| POST | `/v1/billing/stripe/quote` | `handleGlobalPayoutQuote` (`coordinator/api/global_payouts_withdraw.go`) | `user` (Privy-only wrapper) | `fin` | `{amount_usd}` returns quote ID, local amount/currency/exponent, expiry and fee; no ledger debit. |
-| POST | `/v1/billing/stripe/global/webhook` | `handleGlobalPayoutWebhook` (`coordinator/api/global_payouts_reconcile.go`) | `stripe-sig` (separate secret) | — | Reconciles the current outbound-payment state; does not consume Connect sweep events. |
+| POST | `/v1/billing/stripe/create-session` | `StripeCreateSession` (`coordinator/api/billing/checkout.go`) | `key` | `fin` | 502 `stripe_error` when Stripe rejects |
+| POST | `/v1/billing/stripe/webhook` | `StripeWebhook` (`coordinator/api/billing/checkout_webhook.go`) | `stripe-sig` | — | Checkout events |
+| GET | `/v1/billing/stripe/session` | `StripeSessionStatus` (`coordinator/api/billing/checkout.go`) | `key` | — | Poll a checkout session |
+| POST | `/v1/billing/stripe/onboard` | `StripeOnboard` (`coordinator/api/billing/connect_onboarding.go`) | `user` (Privy-only wrapper) | `fin` | Country-aware Connect or Global Payouts onboarding link |
+| GET | `/v1/billing/stripe/status` | `StripeStatus` (`coordinator/api/billing/connect_status.go`) | `user` | — | Payout readiness; additive `account_id` scopes browser confirmation recovery, plus `payout_rail`, `payout_currency`, `countries`, `payouts_available`, `recipient_limits` (currency, exponent, published minimum/maximum minor units) |
+| POST | `/v1/billing/withdraw/stripe` | `StripeWithdraw` (`coordinator/api/billing/connect_withdraw.go`) | `user` (Privy-only wrapper) | `fin` | Global Payouts confirms a persisted `quote_id`; 409 `stripe_account_gone` / `stripe_account_recreate_required`; 502 `stripe_error` |
+| GET | `/v1/billing/stripe/withdrawals` | `StripeWithdrawals` (`coordinator/api/billing/withdrawal_history.go`) | `user` | — | Withdrawal history |
+| POST | `/v1/billing/stripe/dashboard` | `StripeDashboardLink` (`coordinator/api/billing/connect_dashboard.go`) | `user` (Privy-only wrapper) | `fin` | Express dashboard link |
+| DELETE | `/v1/billing/stripe/account` | `StripeUnlink` (`coordinator/api/billing/connect_dashboard.go`) | `user` (Privy-only wrapper) | — | Removes the Global Payouts mapping when present; otherwise removes the stored Connect mapping. Does not close Stripe accounts or cancel withdrawals. |
+| POST | `/v1/billing/stripe/connect/webhook` | `StripeConnectWebhook` (`coordinator/api/billing/connect_webhook.go`) | `stripe-sig` | — | Connect events |
+| POST | `/v1/billing/stripe/quote` | `GlobalPayoutQuote` (`coordinator/api/billing/global_quote.go`) | `user` (Privy-only wrapper) | `fin` | `{amount_usd}` returns quote ID, local amount/currency/exponent, expiry and fee; no ledger debit. |
+| POST | `/v1/billing/stripe/global/webhook` | `GlobalPayoutWebhook` (`coordinator/api/billing/global_webhook.go`) | `stripe-sig` (separate secret) | — | Reconciles the current outbound-payment state; does not consume Connect sweep events. |
 | POST | `/v1/mdm/webhook` | `HandleMDMWebhook` | `mdm-secret` | — | Fleet enrollment webhook |
 
 Ledger semantics, reservations and payouts: [`../architecture/billing.md`](../architecture/billing.md).
@@ -139,10 +139,10 @@ Ledger semantics, reservations and payouts: [`../architecture/billing.md`](../ar
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
-| POST | `/v1/referral/register` | `handleReferralRegister` (`coordinator/api/billing_handlers.go`) | `user` | `fin` | 400 `referral_error` on invalid input |
-| POST | `/v1/referral/apply` | `handleReferralApply` (`coordinator/api/billing_handlers.go`) | `user` | `fin` | 400 `referral_error` |
-| GET | `/v1/referral/stats` | `handleReferralStats` (`coordinator/api/billing_handlers.go`) | `key` | — | 404 `referral_error` when no referral record exists |
-| GET | `/v1/referral/info` | `handleReferralInfo` (`coordinator/api/billing_handlers.go`) | `key` | — | 404 `referral_error` when no referral record exists |
+| POST | `/v1/referral/register` | `ReferralRegister` (`coordinator/api/billing/referrals.go`) | `user` | `fin` | 400 `referral_error` on invalid input |
+| POST | `/v1/referral/apply` | `ReferralApply` (`coordinator/api/billing/referrals.go`) | `user` | `fin` | 400 `referral_error` |
+| GET | `/v1/referral/stats` | `ReferralStats` (`coordinator/api/billing/referrals.go`) | `key` | — | 404 `referral_error` when no referral record exists |
+| GET | `/v1/referral/info` | `ReferralInfo` (`coordinator/api/billing/referrals.go`) | `key` | — | 404 `referral_error` when no referral record exists |
 | POST | `/v1/invite/redeem` | `handleRedeemInviteCode` (`coordinator/api/invite_handlers.go`) | `key` | `fin` | Redeem an invite code |
 | GET | `/v1/providers/attestation` | `handleProviderAttestation` (`coordinator/api/provider.go`) | `—` | — | Public attestation roster; see [`../architecture/security/attestation.md`](../architecture/security/attestation.md) |
 
@@ -207,9 +207,9 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 
 | Method | Path | Handler | Auth | Notes |
 |---|---|---|---|---|
-| PUT | `/v1/admin/pricing` | `handleAdminPricing` (`coordinator/api/billing_handlers.go`) | `admin` | Platform default price table |
-| PUT | `/v1/admin/users/role` | `handleAdminSetUserRole` (`coordinator/api/billing_handlers.go`) | `admin` | Role selects the consumer or service limiter |
-| PUT | `/v1/admin/users/platform-fee` | `handleAdminSetUserPlatformFee` (`coordinator/api/billing_handlers.go`) | `admin` | Per-user fee override; fee policy in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants) |
+| PUT | `/v1/admin/pricing` | `AdminPricing` (`coordinator/api/billing/pricing.go`) | `admin` | Platform default price table |
+| PUT | `/v1/admin/users/role` | `AdminSetUserRole` (`coordinator/api/billing/account_policy.go`) | `admin` | Role selects the consumer or service limiter |
+| PUT | `/v1/admin/users/platform-fee` | `AdminSetUserPlatformFee` (`coordinator/api/billing/account_policy.go`) | `admin` | Per-user fee override; fee policy in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants) |
 | POST | `/v1/admin/models/register` | `handleRegisterModel` (`coordinator/api/model_registry_handlers.go`) | `publishing` | Publish a model build |
 | POST | `/v1/admin/models/` | `handleAdminModelRegistryAction` (`coordinator/api/model_registry_handlers.go`) | `publishing` | Registry actions selected by path suffix |
 | GET / POST | `/v1/admin/models/aliases` | `handleModelAliasList`, `handleModelAliasUpsert` (`coordinator/api/model_alias_handlers.go`) | `publishing` | Two registrations; upserts fan out `desired_models` (see [Version gating](#version-gating)) |
@@ -222,11 +222,11 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | POST | `/v1/admin/auth/verify` | `handleAdminAuthVerify` (`coordinator/api/release_handlers.go`) | `—` | Verifies the OTP and returns a session token for the admin console |
 | POST | `/v1/admin/invite-codes` | `handleAdminCreateInviteCode` (`coordinator/api/invite_handlers.go`) | `admin` (`fin`) | 409 `conflict` on code collision |
 | GET / DELETE | `/v1/admin/invite-codes` | `handleAdminListInviteCodes`, `handleAdminDeactivateInviteCode` (`coordinator/api/invite_handlers.go`) | `admin` | Two registrations |
-| POST | `/v1/admin/credit` | `handleAdminCredit` (`coordinator/api/admin_balance_adjustment.go`) | `admin` | Manual ledger credit |
-| POST | `/v1/admin/reward` | `handleAdminReward` (`coordinator/api/admin_balance_adjustment.go`) | `admin` | Manual provider reward |
+| POST | `/v1/admin/credit` | `AdminCredit` (`coordinator/api/billing/admin_adjustment.go`) | `admin` | Manual ledger credit |
+| POST | `/v1/admin/reward` | `AdminReward` (`coordinator/api/billing/admin_adjustment.go`) | `admin` | Manual provider reward |
 | GET | `/v1/admin/log-reports/{id}` | `handleGetLogReport` (`coordinator/api/log_report_handlers.go`) | `admin` | Fetch an uploaded provider log bundle |
 | GET | `/v1/admin/metrics` | `handleAdminMetrics` | `admin-key` | Telemetry counters |
-| GET | `/v1/admin/base-rewards` | `handleAdminBaseRewards` (`coordinator/api/base_rewards_handlers.go`) | `admin-key` | |
+| GET | `/v1/admin/base-rewards` | `AdminBaseRewards` (`coordinator/api/billing/base_rewards.go`) | `admin-key` | |
 | GET | `/v1/admin/utilization` | `handleAdminUtilization` (`coordinator/api/admin_utilization.go`) | `admin-key` | |
 | POST | `/v1/admin/drain` | `handleAdminDrain` (`coordinator/api/drain.go`) | `admin` | Start a drain; default grace [`DefaultDrainGrace`](#timeouts-and-constants) |
 | GET | `/v1/admin/routes`, `/v1/admin/routes/export` | `handleAdminRoutes`, `handleAdminRoutesExport` (`coordinator/api/admin_telemetry.go`) | `admin-key` | Route records |
@@ -316,7 +316,7 @@ contract behavior are defined in [prompt-contract sidecar](../architecture/promp
 | `X-Darkbloom-Route: self` / `prefer` | `resolveSelfRoutePolicy` (`coordinator/api/self_route.go`) | `self` restricts dispatch to the account's own machines; `prefer` tries them first and falls back to the fleet; see [`../provider/self-route.md`](../provider/self-route.md) |
 | `X-Darkbloom-Publishing-Key` | `requirePublishingAPIKey` | Publishing credential for `/v1/admin/models/*` |
 | `X-Provider-Wallet` | `handleProviderEarnings` | Wallet address for the legacy earnings lookup (fallback when `?wallet=` is absent) |
-| `Stripe-Signature` | `handleStripeWebhook`, `handleStripeConnectWebhook` | Stripe webhook signature |
+| `Stripe-Signature` | `StripeWebhook`, `StripeConnectWebhook` | Stripe webhook signature |
 | `X-Webhook-Token` | `HandleMDMWebhook` | MDM webhook secret (or `?token=`) |
 | `Origin` | `corsMiddleware` | Allowed origins default to `https://console.darkbloom.dev` plus localhost dev ports unless `EIGENINFERENCE_CONSOLE_URL` overrides |
 
@@ -357,7 +357,7 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `withCode` in `coo
 | Status | `type` values | Raised by |
 |---|---|---|
 | 400 | `invalid_request_error`, `invalid_sealed_envelope`, `kid_mismatch`, `decryption_failed`, `invalid_request`, `bad_request`, `referral_error` | Body/JSON validation, `n > 1`, tool-choice and vision rules, inference-enforced `tool_choice` combined with images (`param: tool_choice`), sealed-envelope faults, device-code and key-management input, unknown catalog `?type=` |
-| 401 | `authentication_error`, `auth_error`, `unauthorized` | Missing/invalid bearer (`requireAuth`, `requirePrivyAuth`), no account user (`requirePrivyUser`), release key |
+| 401 | `authentication_error`, `auth_error`, `unauthorized` | Missing/invalid bearer (`requireAuth`, `requirePrivyAuth`), no account user (`RequirePrivyUser`), release key |
 | 402 | `insufficient_funds` (balance below the reservation), `insufficient_quota` (per-key spend cap); `code` is `insufficient_quota` for both | `reserveInferenceBalance` (`coordinator/api/inference_admission.go`); the per-cause table, including the provider-price 402, is [Payment-required responses](../architecture/billing.md#payment-required-responses) |
 | 403 | `forbidden`, `model_not_allowed` | API key on a `privy` route; non-admin on an `admin` route; model outside the key's `allowed_models` (`keyModelAllowed`, `coordinator/api/apikey_handlers.go`) |
 | 404 | `model_not_found`, `not_found`, `invalid_grant`, `invalid_code`, `referral_error`, `invalid_request_error` | Model or alias not in the catalog; unknown key id; device codes; `/v1/` catch-all; state export when disabled |
@@ -534,13 +534,13 @@ See the [Device-code flow](#device-code-flow-3) table for the three bodies. `ver
 
 ### International withdrawal confirmation
 
-For `payout_rail=global`, submit `{amount_usd, method:"standard", quote_id}` to the existing withdrawal endpoint. A confirmed quote returns its original withdrawal on retry. The response/history include `payout_rail`, `destination_amount`, `payout_currency` and `refunded`. Global states are `pending`, `processing`, `posted`, `failed`, `canceled` and `returned`; `posted` does not establish bank receipt. Quotes expire before first confirmation; an already-submitted withdrawal can still be checked with the same ID (`coordinator/api/global_payouts_withdraw.go`, `maybeGlobalWithdraw`).
+For `payout_rail=global`, submit `{amount_usd, method:"standard", quote_id}` to the existing withdrawal endpoint. A confirmed quote returns its original withdrawal on retry. The response/history include `payout_rail`, `destination_amount`, `payout_currency` and `refunded`. Global states are `pending`, `processing`, `posted`, `failed`, `canceled` and `returned`; `posted` does not establish bank receipt. Quotes expire before first confirmation; an already-submitted withdrawal can still be checked with the same ID (`coordinator/api/billing/global_withdraw.go`, `maybeGlobalWithdraw`).
 
-`DELETE /v1/billing/stripe/account` removes a Global Payouts recipient mapping first, when present, and preserves any stored Connect destination; that older destination may become visible again. Otherwise it clears the Connect mapping. Responses are `{unlinked:true}` when a mapping was removed and `{unlinked:false}` when neither exists. Stripe accounts remain open and submitted withdrawals keep their recorded destination (`coordinator/api/stripe_payouts.go`, `handleStripeUnlink`).
+`DELETE /v1/billing/stripe/account` removes a Global Payouts recipient mapping first, when present, and preserves any stored Connect destination; that older destination may become visible again. Otherwise it clears the Connect mapping. Responses are `{unlinked:true}` when a mapping was removed and `{unlinked:false}` when neither exists. Stripe accounts remain open and submitted withdrawals keep their recorded destination (`coordinator/api/billing/connect_dashboard.go`, `StripeUnlink`).
 
-An unsubmitted confirmation invalidated by paused admissions returns 409 `quote_paused`; changed payout settings return 409 `payout_changed`. The browser releases that saved confirmation. Invalidation is atomic with `BeginGlobalPayout`; if another confirmation has already debited, the endpoint returns/reconciles the existing withdrawal instead. A recipient minimum/maximum violation returns 400 `recipient_amount_limit` with the threshold in local currency (`coordinator/api/global_payouts_withdraw.go`, `maybeGlobalWithdraw`, `handleGlobalPayoutQuote`).
+An unsubmitted confirmation invalidated by paused admissions returns 409 `quote_paused`; changed payout settings return 409 `payout_changed`. The browser releases that saved confirmation. Invalidation is atomic with `BeginGlobalPayout`; if another confirmation has already debited, the endpoint returns/reconciles the existing withdrawal instead. A recipient minimum/maximum violation returns 400 `recipient_amount_limit` with the threshold in local currency (`coordinator/api/billing/global_withdraw.go`, `maybeGlobalWithdraw`; `coordinator/api/billing/global_quote.go`, `GlobalPayoutQuote`).
 
-An unknown payout outcome held for manual reconciliation remains `status=pending` and exposes `failure_reason=manual_reconciliation_required`. History displays **Needs review**; the debit remains reserved, and automatic scans and repeated confirmations do not resubmit or refund it (`coordinator/store/global_payouts.go`, `GlobalPayout.RequiresManualReconciliation`; `coordinator/api/global_payouts_history.go`, `globalWithdrawalView`).
+An unknown payout outcome held for manual reconciliation remains `status=pending` and exposes `failure_reason=manual_reconciliation_required`. History displays **Needs review**; the debit remains reserved, and automatic scans and repeated confirmations do not resubmit or refund it (`coordinator/store/global_payouts.go`, `GlobalPayout.RequiresManualReconciliation`; `coordinator/api/billing/global_history.go`, `globalWithdrawalView`).
 
 ## Code map
 
@@ -554,7 +554,7 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Sealed transport | `coordinator/api/sender_encryption.go` |
 | Models and catalog | `coordinator/api/models_endpoints.go`, `coordinator/api/concrete_model_entries.go`, `coordinator/api/openrouter_endpoint.go`, `coordinator/api/model_registry_handlers.go`, `coordinator/api/model_alias_handlers.go`, `coordinator/api/openrouter_alias_handlers.go`, `coordinator/api/capacity.go`, `coordinator/api/exact_cache_status.go` |
 | Keys, device code, accounts | `coordinator/api/apikey_handlers.go`, `coordinator/store/apikey.go`, `coordinator/api/device_auth.go`, `coordinator/api/me_handlers.go` |
-| Billing, Stripe, referral, invites | `coordinator/api/billing_handlers.go`, `coordinator/api/stripe_payouts.go`, `coordinator/api/stripe_withdraw.go`, `coordinator/api/stripe_payouts_webhooks.go`, `coordinator/api/invite_handlers.go`, `coordinator/api/base_rewards_handlers.go` |
+| Billing, Stripe, referral, invites | `coordinator/api/billing/` (`Controller`); `coordinator/api/billing_controller.go` (`billingController`); `coordinator/api/requestauth/identity.go` (`RequirePrivyUser`); `coordinator/api/invite_handlers.go` |
 | Stats | `coordinator/api/stats.go`, `coordinator/api/cache_refresher.go`, `coordinator/api/network_totals.go`, `coordinator/api/leaderboard.go`, `coordinator/api/network_series.go` |
 | Release, enrollment, provider WS, log reports | `coordinator/api/release_handlers.go`, `coordinator/api/enroll.go`, `coordinator/api/provider.go`, `coordinator/api/log_report_handlers.go` |
 | Drain, admin telemetry, profiler, state export, telemetry stub | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/admin_state_export.go`, `coordinator/api/telemetry_handlers.go` |

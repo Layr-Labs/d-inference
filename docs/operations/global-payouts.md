@@ -1,6 +1,6 @@
 # Enable and operate international bank withdrawals
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-14 · commit `c8a3f45d0`
 
 This runbook enables Stripe Global Payouts alongside existing Connect withdrawals. Providers use one bank setup and withdrawal flow. Country selection chooses the payout product; international withdrawals include a local-currency estimate before confirmation.
 
@@ -50,7 +50,7 @@ The source-of-truth payout row is `global_payout_withdrawals` and its `data` obj
 
 Expired unconfirmed quotes are pruned according to the [retention policy](../reference/pricing-model.md#global-payouts-withdrawals); confirmed payout records are preserved.
 
-Each internal quote ID identifies at most one confirmed withdrawal. Retries use its persisted Stripe idempotency key and immutable request. Pending withdrawals with no outbound-payment ID stop resubmitting after 12 hours and receive `failure_code=manual_reconciliation_required`. They keep their debit and remain visible in history, but subsequent automatic scans and claims skip them. Investigate the original request before any manual action; a verified external ID allows readback reconciliation to resume. A definitive first-send rejection is persisted before the refund transaction and reused if the refund write fails. Known external payouts continue to reconcile against their original funding account after configuration changes. An obsolete unconfirmed quote is invalidated before debit. A debited intent that has never reached a send is refunded; prior ambiguous attempts stay held. After an ambiguous first attempt, subsequent API errors do not automatically refund: changed permissions or funding configuration must not cause a refund when money may already have moved (`coordinator/api/global_payouts_reconcile.go`, `syncGlobalPayout`).
+Each internal quote ID identifies at most one confirmed withdrawal. Retries use its persisted Stripe idempotency key and immutable request. Pending withdrawals with no outbound-payment ID stop resubmitting after 12 hours and receive `failure_code=manual_reconciliation_required`. They keep their debit and remain visible in history, but subsequent automatic scans and claims skip them. Investigate the original request before any manual action; a verified external ID allows readback reconciliation to resume. A definitive first-send rejection is persisted before the refund transaction and reused if the refund write fails. Known external payouts continue to reconcile against their original funding account after configuration changes. An obsolete unconfirmed quote is invalidated before debit. A debited intent that has never reached a send is refunded; prior ambiguous attempts stay held. After an ambiguous first attempt, subsequent API errors do not automatically refund: changed permissions or funding configuration must not cause a refund when money may already have moved (`coordinator/api/billing/global_reconcile.go`, `syncGlobalPayout`).
 
 Inspect without exposing the stored request or recipient information:
 

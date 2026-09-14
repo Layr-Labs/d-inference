@@ -80,6 +80,8 @@ docs/                 How-tos, runbooks, reference, architecture, design records
 
 The `.external/` directory is reserved for local external checkouts and **must never be committed to d-inference**. The current Swift provider uses in-process MLX, not a vllm-mlx subprocess.
 
+Coordinator startup composition and subsystem setup live in `coordinator/cmd/coordinator/`. `main.go` (`main`) retains resource lifetimes and shutdown; see [the startup sequence and source map](docs/architecture/components/coordinator.md#startup-sequence).
+
 ## Building & Testing
 
 ### Coordinator (Go)

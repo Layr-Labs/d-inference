@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-14 · commit `8ecd5df8b`
+> Last updated: 2026-09-14 · commit `75f9987ff`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -42,7 +42,7 @@ Every directory under `coordinator/` and what it owns.
 
 | Package | Owns |
 |---|---|
-| `coordinator/cmd/coordinator` | `main`: configuration load, store selection, wiring, background loops, HTTP server, graceful shutdown. |
+| `coordinator/cmd/coordinator` | `main.go` (`main`): configuration, resource lifetimes and shutdown; named setup functions in subsystem files bind the owners before serving. |
 | `coordinator/config` | `AppConfig` — composes every package's `ReadConfig` and runs their `Check` methods. |
 | `coordinator/env` | `EnvPrefix` (`EIGENINFERENCE`) and the `EnvOr`/`EnvInt`/`EnvFloat`/`EnvBool` helpers. |
 | `coordinator/api` | The HTTP router (`routes` in `server.go`), middleware, consumer handlers (`consumer.go`), the provider WebSocket (`provider.go`), dispatch ladder (`dispatch.go`), sender encryption, admin, release, model-registry, device-auth and Stripe handlers, drain, profiler wiring. |
@@ -83,7 +83,10 @@ Every directory under `coordinator/` and what it owns.
 ## Startup sequence
 
 `main` (`coordinator/cmd/coordinator/main.go`) runs these steps in order; a
-failure in any step marked *fatal* exits the process before it listens.
+failure in any step marked *fatal* exits before the public HTTP listener starts.
+The command stays one Go package. `main` retains context cancellation and the
+store, warm-pool, API server, Datadog, sidecar and HTTP cleanup order; setup
+functions below bind each subsystem without introducing another lifecycle owner.
 
 1. **Logging.** JSON `slog`; a Datadog trace handler is layered on when
    `DD_API_KEY` or `DD_AGENT_HOST` is set.
@@ -94,37 +97,47 @@ failure in any step marked *fatal* exits the process before it listens.
    listed in [`../../reference/configuration.md`](../../reference/configuration.md).
 3. **Store** (*fatal*). Postgres when a DSN is set — connect, ping, run the
    idempotent migration slice, seed the admin key — otherwise the memory store
-   with its 15 minute pruner. Provider sessions orphaned by the previous
-   process are closed, best-effort, with a 10 second budget.
+   with its 15 minute pruner. The store is wrapped by the configured read-through
+   cache. Provider sessions orphaned by the previous process are closed,
+   best-effort, with a 10 second budget (`coordinator/cmd/coordinator/storage.go`: `startMemoryStorePruner`,
+   `withStoreCache`, `reconcileProviderSessions`).
 4. **Registry.** `registry.New`, trust floor, dedicated models, quality
    concurrency cap, cache routing (*fatal* on an invalid mode or key), then the
-   warm-pool controller starts.
+   warm-pool controller starts (`coordinator/cmd/coordinator/registry.go`: `configureRegistry`).
 5. **Server.** `api.NewServer` with the live TTFT deadline base, media fetch
    config and durable trust reuse; the prompt-sidecar provisioner if enabled;
    rate limiters (each with its own pruner); telemetry emitter; Datadog tracer
-   and client.
+   and client (`coordinator/cmd/coordinator/serving.go`: `serverConfig`; `coordinator/cmd/coordinator/prompt_contract.go`: `configurePromptArtifacts`; `coordinator/cmd/coordinator/rate_limits.go`: `configureRateLimits`).
 6. **Catalog and policy** (*fatal* for the release inventory). Model catalog
    sync, binary-hash and runtime-manifest sync from the store, then the
    routing knobs read directly from the environment (release policy mode,
    TTFT admission, reject list, decode floor, servability gate, prompt
-   calibration, pprof listener).
+   calibration), then the exact-model deadline overrides and optional pprof
+   listener (`coordinator/cmd/coordinator/release_policy.go`: `configureReleasePolicy`,
+   `configureRuntimeManifest`; `coordinator/cmd/coordinator/routing_admission.go`: `configureAdmission`;
+   `coordinator/cmd/coordinator/routing_deadlines.go`: `configureModelDeadlines`; `coordinator/cmd/coordinator/profiling.go`: `configureProfiling`).
 7. **Money and identity.** Ledger and billing service, base rewards, the
    sender-encryption key from the mnemonic, admin emails, Privy, MDM client
    and verification scheduler, profile signer, APNs attestor and the
    code-attestation cache, the trust-reuse cache (*fatal* if its revocation
-   journal is unusable).
+   journal is unusable). `coordinator/cmd/coordinator/accounts.go` (`configureAccounts`) binds billing/auth;
+   `coordinator/cmd/coordinator/provider_trust.go` (`configureProviderTrust`) binds MDM, profile signing and
+   APNs, then seeds trust reuse.
 8. **Background loops.** Provider eviction sweep (`StartEvictionLoop`, cadence and timeout in [scheduling.md](../scheduling.md#heartbeat-cadence-and-eviction)); DogStatsD gauge loop;
    profiler fleet sampler and retention sweep; read-cache janitor; throughput
    anomaly detector; base-rewards settlement (when enabled); Stripe payout
-   reconciler; the prompt sidecar supervisor and preloader.
+   reconciler (`coordinator/cmd/coordinator/background.go`: `startBackgroundLoops`). After constructing the
+   public HTTP server, the prompt sidecar supervisor and preloader start
+   (`coordinator/cmd/coordinator/prompt_contract.go`: `startPromptSidecar`).
 9. **Listen.** `http.Server` on `:EIGENINFERENCE_PORT` with a 5 s header
    timeout, 10 s read timeout, no write timeout (SSE), 120 s idle timeout and
-   a 64 KiB header cap; an optional private pprof listener.
+   a 64 KiB header cap (`coordinator/cmd/coordinator/serving.go`: `newHTTPServer`). The optional private
+   pprof listener starts earlier in step 6.
 10. **Shutdown.** On SIGINT/SIGTERM: mark draining (`/readyz` turns 503),
     cancel eviction, stop the sidecar, then wait up to
     `EIGENINFERENCE_DRAIN_GRACE` for in-flight requests,
     then `Shutdown` with a 15 s backstop; deferred closes stop Datadog and the
-    Postgres pool.
+    Postgres pool (`coordinator/cmd/coordinator/main.go`: `main`).
 
 ```mermaid
 flowchart TD
@@ -137,6 +150,18 @@ flowchart TD
   G --> H[ListenAndServe]
   H --> I[SIGTERM: drain → cancel → wait → Shutdown]
 ```
+
+The setup files below are all under `coordinator/cmd/coordinator/`:
+
+| Setup | Source and entrypoints |
+|---|---|
+| Persistence and fleet setup | `coordinator/cmd/coordinator/storage.go` (`startMemoryStorePruner`, `withStoreCache`, `reconcileProviderSessions`); `coordinator/cmd/coordinator/registry.go` (`configureRegistry`) |
+| HTTP configuration and rate limits | `coordinator/cmd/coordinator/serving.go` (`serverConfig`, `newHTTPServer`); `coordinator/cmd/coordinator/rate_limits.go` (`configureRateLimits`) |
+| Release inventory and runtime policy | `coordinator/cmd/coordinator/release_policy.go` (`configureReleasePolicy`, `configureRuntimeManifest`) |
+| Admission and model deadlines | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`); `coordinator/cmd/coordinator/routing_deadlines.go` (`configureModelDeadlines`, `validateTTFTDeadlineBaseMs`, `validateTTFTOccupancyAlpha`) |
+| Billing, encryption and accounts | `coordinator/cmd/coordinator/accounts.go` (`configureAccounts`) |
+| MDM, profile signing, APNs and trust reuse | `coordinator/cmd/coordinator/provider_trust.go` (`configureProviderTrust`, `loadAPNsAttestor`, `parseAPNsEnforceAfter`) |
+| Profiling, sidecar and background loops | `coordinator/cmd/coordinator/profiling.go` (`configureProfiling`, `startPprofListener`); `coordinator/cmd/coordinator/prompt_contract.go` (`configurePromptArtifacts`, `startPromptSidecar`); `coordinator/cmd/coordinator/background.go` (`startBackgroundLoops`) |
 
 The routes and public API shutdown methods share one `readiness.Controller`
 (`coordinator/api/drain.go`, `readinessController`). It increments before checking
@@ -153,7 +178,7 @@ while `/readyz` reports drain and trust-safety readiness.
    (`coordinator/api/consumer.go`, `coordinator/api/inference_error_sanitize.go`,
    `coordinator/internal/e2e/e2e.go`).
 2. **A misconfigured coordinator does not serve.** `AppConfig.Check` and the
-   fatal startup steps above exit 1 before the listener opens
+   fatal startup steps above exit 1 before the public HTTP listener opens
    (`coordinator/config/app_config.go`, `coordinator/cmd/coordinator/main.go`).
 3. **Every background loop is panic-safe.** Loops start through
    `saferun.Go`, which logs and recovers instead of taking the process down

@@ -1,6 +1,6 @@
 # MDM enrollment
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-13 · commit `8670b2a08`
 
 How a provider Mac joins Darkbloom's MDM so the coordinator can ask Apple's
 management subsystem, rather than the provider binary, whether SIP and Secure
@@ -114,7 +114,7 @@ MicroMDM is started with `command-webhook-url` pointing at the coordinator.
 | Property | Value | Code |
 |---|---|---|
 | Route | `POST /v1/mdm/webhook` | `coordinator/api/server.go` |
-| Authentication | When `EIGENINFERENCE_MDM_WEBHOOK_SECRET` is set: `X-Webhook-Token: <secret>` header **or** `?token=<secret>` query (MicroMDM cannot add headers), constant-time compare; failure → `403 forbidden` before the body is read. Unset → startup warning; the CommandUUID gate alone protects the webhook | `coordinator/api/server.go` (`HandleMDMWebhook`, `mdmWebhookTokenValid`); `coordinator/cmd/coordinator/main.go` |
+| Authentication | When `EIGENINFERENCE_MDM_WEBHOOK_SECRET` is set: `X-Webhook-Token: <secret>` header **or** `?token=<secret>` query (MicroMDM cannot add headers), constant-time compare; failure → `403 forbidden` before the body is read. Unset → startup warning; the CommandUUID gate alone protects the webhook | `coordinator/api/server.go` (`HandleMDMWebhook`, `mdmWebhookTokenValid`); `coordinator/cmd/coordinator/provider_trust.go` (`configureProviderTrust`) |
 | Body cap | [`maxMDMWebhookBodyBytes`](../../reference/api-contracts.md#limits-and-validation) | `coordinator/api/server.go` |
 | Logging | `Debug` level: `body_size` and a 500-byte `body_preview` (MDM plist, never inference data) | `coordinator/api/server.go` (`HandleMDMWebhook`) |
 | Parsing | JSON `{topic, acknowledge_event: {status, raw_payload}}`; only `status == "Acknowledged"` with a non-empty base64 plist is processed | `coordinator/mdm/mdm.go` (`HandleWebhook`) |
@@ -146,7 +146,7 @@ anything under the unrequested `AccessRights` bits.
 | Mac already managed by another MDM | `darkbloom enroll` refuses (`managedByOtherMDM`); doctor reports "enrolled in another MDM … hardware trust unavailable on this Mac" | `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`; `provider-swift/Sources/darkbloom/DoctorCommand.swift` |
 | Profile downloaded but never installed | MDM lookup returns `device-not-found`; provider stays `self_signed` and the scheduler retries | `coordinator/api/provider.go` (`verifyProviderViaMDM`) |
 | Enrolled but SecurityInfo never arrives (asleep, APNs delivery, Apple throttling) | `securityinfo-timeout`; retried on the MDM scheduler cadence ([attestation, Layer 3](./attestation.md#layer-3--mdm-securityinfo-the-hardware-grant)); a late webhook still grants | `coordinator/api/mdm_scheduler.go`; `coordinator/api/provider.go` (`ApplyLateSecurityInfo`) |
-| `EIGENINFERENCE_MDM_URL` unset | No MDM client, no scheduler; no provider can reach `hardware` | `coordinator/cmd/coordinator/main.go` |
+| `EIGENINFERENCE_MDM_URL` unset | No MDM client, no scheduler; no provider can reach `hardware` | `coordinator/cmd/coordinator/provider_trust.go` (`configureProviderTrust`) |
 | Webhook secret mismatch | `403`; SecurityInfo responses are lost until MicroMDM's `command-webhook-url` token matches | `coordinator/api/server.go` (`mdmWebhookTokenValid`) |
 | Webhook body over `maxMDMWebhookBodyBytes` | `400 bad request`; payload ignored | `coordinator/api/server.go` (`HandleMDMWebhook`) |
 | Forged or replayed SecurityInfo | Dropped by the CommandUUID gate | `coordinator/mdm/mdm.go` (`HandleWebhook`) |
@@ -161,7 +161,7 @@ anything under the unrequested `AccessRights` bits.
 | Base URL pinning | `coordinator/api/server.go` (`resolveBaseURL`); `coordinator/api/server_config.go` |
 | Webhook | `coordinator/api/server.go` (`HandleMDMWebhook`, `mdmWebhookTokenValid`, `maxMDMWebhookBodyBytes`) |
 | MicroMDM client | `coordinator/mdm/mdm.go` (`NewClient`, `LookupDevice`, `VerifyProviderWithUDIDObserver`, `RequestDeviceAttestation`, `HandleWebhook`, `assertReadOnlyCommand`, `parseSecurityInfoPlist`); `coordinator/mdm/config.go` |
-| Wiring and env | `coordinator/cmd/coordinator/main.go` |
+| Wiring and env | `coordinator/cmd/coordinator/provider_trust.go` (`configureProviderTrust`) |
 | Reverse proxy | `coordinator/Caddyfile`; `deploy/gcp/vm-startup.sh` |
 | Provider CLI | `provider-swift/Sources/darkbloom/EnrollCommand.swift`, `provider-swift/Sources/darkbloom/UnenrollCommand.swift`; `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`; `provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift` |
 

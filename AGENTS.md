@@ -6,7 +6,7 @@ Darkbloom is a decentralized private inference network for Apple Silicon Macs. C
 
 ```text
 coordinator/          Go control plane (packages live at top level, not internal/)
-├── cmd/coordinator/  main service entrypoint
+├── cmd/coordinator/  startup composition and shutdown (main.go); subsystem setup beside it
 ├── api/              HTTP + WebSocket handlers
 │   ├── consumer.go         OpenAI-compatible chat/completions/responses + Anthropic messages
 │   ├── provider.go         provider registration, heartbeats, attestation, relay
@@ -106,6 +106,8 @@ docs/                 how-tos, runbooks, reference, architecture, design records
 .github/workflows/    CI (ci.yml), integration tests (integration.yml), Swift release (release-swift.yml),
                       model registration (register-model.yml)
 ```
+
+Coordinator startup: `coordinator/cmd/coordinator/main.go` (`main`) keeps resource creation and shutdown order visible. Setup functions live in `storage.go`, `registry.go`, `serving.go`, `routing_admission.go`, `routing_deadlines.go`, `rate_limits.go`, `release_policy.go`, `accounts.go`, `provider_trust.go`, `profiling.go`, `prompt_contract.go` and `background.go` in that same command package. See [the startup sequence and source map](docs/architecture/components/coordinator.md#startup-sequence).
 
 ## Current Surface Area
 

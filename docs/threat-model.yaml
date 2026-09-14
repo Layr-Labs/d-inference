@@ -1,3 +1,6 @@
+# Startup ownership re-verified 2026-09-13 against commit 8670b2a08:
+# Mnemonic, HTTP header limits and profile-signing selectors follow their setup files.
+# This source-map update does not re-verify unrelated threat entries.
 version: "1.0"
 created: "2026-05-14"
 # Partially re-verified 2026-09-03 against commit 5d400cf75: A-001, A-003, T-003
@@ -246,7 +249,7 @@ trust_boundaries:
       (maxControlPlaneBodyBytes); and the MDM webhook at 1 MiB
       (maxMDMWebhookBodyBytes).
 
-      HTTP server config (cmd/coordinator/main.go): ReadHeaderTimeout=5s,
+      HTTP server config (cmd/coordinator/serving.go, newHTTPServer): ReadHeaderTimeout=5s,
       ReadTimeout=10s, WriteTimeout=0 (streaming), IdleTimeout=120s,
       MaxHeaderBytes=64 KB.
     current_limitations:
@@ -1963,6 +1966,7 @@ threats:
       - coordinator/billing/**
       - coordinator/internal/e2e/**
       - coordinator/cmd/coordinator/main.go
+      - coordinator/cmd/coordinator/accounts.go
     mitigations:
       - description: Mnemonic is injected through the root-only production environment.
         status: implemented
@@ -2232,12 +2236,13 @@ threats:
     affected_assets: []
     affected_files:
       - coordinator/cmd/coordinator/main.go
+      - coordinator/cmd/coordinator/serving.go
     mitigations:
       - description: ReadTimeout and IdleTimeout are set.
         status: implemented
       - description: >
           ReadHeaderTimeout (5s) and MaxHeaderBytes (64 KB) are set in
-          cmd/coordinator/main.go, bounding the slow-header window and
+          cmd/coordinator/serving.go (newHTTPServer), bounding the slow-header window and
           per-connection header memory.
         status: implemented
     open_findings: []
@@ -2323,6 +2328,7 @@ threats:
     affected_files:
       - coordinator/profilesign/signer.go
       - coordinator/cmd/coordinator/main.go
+      - coordinator/cmd/coordinator/provider_trust.go
       - coordinator/api/enroll.go
     mitigations:
       - description: Identity stored in KMS, injected at runtime (same pipeline as MDM_PUSH_P12_B64).

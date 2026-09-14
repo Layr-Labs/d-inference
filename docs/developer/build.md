@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `8ecd5df8b`
+> Last updated: 2026-09-14 · commit `75f9987ff`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -48,7 +48,7 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 | Path | Toolchain | Notes |
 |---|---|---|
 | `go.mod` (repo root) | Go | Single module `github.com/eigeninference/d-inference`; contains `coordinator/...` and `e2e/...`. There is no `go.work` and no nested `go.mod`. |
-| `coordinator/cmd/coordinator/` | Go | The coordinator binary (`main.go`). |
+| `coordinator/cmd/coordinator/` | Go | The coordinator binary; build the whole command package, including `main.go` and its subsystem setup files. |
 | `coordinator/promptsidecar/` | Rust | Crate `promptsidecar`, edition 2024, `Cargo.lock` committed; built with `--locked`. |
 | `provider-swift/` | SwiftPM | Products: `darkbloom` (CLI), `darkbloom-enclave`, `darkbloom-fan-helper`, `darkbloom-publish`; libraries `ProviderCore`, `ProviderCoreFoundation`, `DarkbloomFan*`. Platform `macOS 14+`. |
 | `console-ui/` | Next.js 16 / React 19 | `npm`; tests with Vitest. |
@@ -87,6 +87,10 @@ Continue with the per-component steps when you need one piece or want to
 understand what `make` runs.
 
 ### 3. Coordinator (Go)
+
+Build the command package with the targets below.
+`coordinator/cmd/coordinator/main.go` (`main`) composes setup functions from
+the other files in that package; a single-file invocation omits those functions.
 
 The same binary includes `coordinator/api/readiness/`, the shared HTTP ingress
 and drain owner; it adds no worker or build step.

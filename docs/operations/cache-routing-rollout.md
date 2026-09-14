@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-11 · commit `ef7b5a9aa`
+> Last updated: 2026-09-13 · commit `8670b2a08`
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -165,7 +165,7 @@ the same request from the same account remains in or out of the cohort.
    → "Refresh the env file" and "Swap", with the currently approved image. On
    boot the process logs `provider-confirmed cache routing configured` with
    `mode`, `activation_percent`, `max_plan_qps`, `ttl`, `max_holders`,
-   `max_discount_ms` and `max_cost_fraction` (`coordinator/cmd/coordinator/main.go`);
+   `max_discount_ms` and `max_cost_fraction` (`coordinator/cmd/coordinator/registry.go` (`configureRegistry`));
    `null` means no optional clipping beyond avoidable prefill work. A rejected configuration logs `cache routing configuration rejected` and
    exits before listening.
 

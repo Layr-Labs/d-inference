@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-13 · commit `f6b5e111c`
+> Last updated: 2026-09-13 · commit `8670b2a08`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -232,7 +232,7 @@ the static prefill rate (`resolvedPrefillTPS`: the registered `PrefillTPS`,
 or decode × `prefillToDecodeRatio`), capped at `maxPrefillTPS`.
 `SetPrefillToDecodeRatio` changes the ratio process-wide; the coordinator
 binary wires it to `EIGENINFERENCE_PREFILL_DECODE_RATIO`
-(`coordinator/cmd/coordinator/main.go`).
+(`coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`)).
 
 **Prefill weighting for long prompts.** `longPromptPenalty(promptTokens,
 ttftBlockMs)` returns `(longPromptPrefillWeight − 1) × ttftBlockMs` when a
@@ -415,7 +415,7 @@ Per-model tables (`coordinator/registry/servability.go`):
 The consumer path turns an unservable verdict into an immediate `429` instead
 of queueing; the coordinator binary enables this by default and
 `EIGENINFERENCE_SERVABILITY_GATE=false` disables it
-(`coordinator/cmd/coordinator/main.go`, `SetServabilityGate`).
+(`coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`)).
 
 ### Gray-box capacity signals
 
@@ -750,7 +750,7 @@ must not run in parallel with other scheduler tests in the same process.
 | Probes and plan wiring | `coordinator/api/dispatch_plan_wiring.go` |
 | `Retry-After`, speculative ratio, route EWMA | `coordinator/api/consumer.go` — `estimateRetryAfter`, `estimateTTFTRetryAfter`, `speculativeTimerRatio` |
 | Queue-before-shed and cold dispatch flags | `coordinator/api/cold_dispatch.go` |
-| Flag wiring at startup | `coordinator/cmd/coordinator/main.go` |
+| Flag wiring at startup | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`); `coordinator/cmd/coordinator/registry.go` (`configureRegistry`) |
 | Simulation harness | `coordinator/registry/routingsim/` — `runner.go`, `fleet.go`, `fleet_ndjson.go`, `trace.go`, `report.go` |
 
 ## Related

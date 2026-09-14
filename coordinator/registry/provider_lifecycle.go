@@ -344,7 +344,7 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 	r.drainQueuedRequestsForModelsWithReason(disconnectedModels, DrainTriggerDisconnect)
 	// Cache holders and nonce-bound attempts are connection-scoped. Clear them
 	// after releasing registry/provider locks.
-	cacheTracker.disconnect(id, cacheHolderRemovalDisconnect)
+	cacheTracker.directory.Disconnect(id, cacheHolderRemovalDisconnect)
 	// Outstanding capacity-probe waiters bound to this connection can never be
 	// answered now (the socket is gone) — resolve them as SendFailed so probe
 	// collectors demote the entries immediately instead of burning the full

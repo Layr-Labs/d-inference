@@ -17,9 +17,12 @@ type stageMeasurementFixture struct {
 	checkpoint protocol.PrefixCacheAnchor
 }
 
-func newStageMeasurementFixture(t *testing.T) stageMeasurementFixture {
+func newStageMeasurementFixture(t *testing.T, ttl ...time.Duration) stageMeasurementFixture {
 	t.Helper()
 	r, _, _ := exactTestRegistry(t)
+	if len(ttl) != 0 {
+		r.cacheRouting = newCacheRoutingTracker(ttl[0], r.cacheRouting.directory.Config().MaxHolders)
+	}
 	removeTestProvider(r, "provider-a")
 	capability := indexTestCapability(1)
 	p := checkpointTestProvider(t, r, "ssd", capability)
@@ -110,8 +113,7 @@ func TestSSDMeasuredStageSurvivesReadyAndChangesRouting(t *testing.T) {
 }
 
 func TestSSDReadyDoesNotExtendMeasuredStageDeadline(t *testing.T) {
-	f := newStageMeasurementFixture(t)
-	f.r.cacheRouting.ttl = time.Minute
+	f := newStageMeasurementFixture(t, time.Minute)
 	now := time.Now()
 	first := f.lookup(t, "first-donor", 1, "miss_absent", 1, now)
 	second := f.lookup(t, "second-donor", 2, "miss_absent", 1, now)
@@ -133,8 +135,7 @@ func TestSSDReadyDoesNotExtendMeasuredStageDeadline(t *testing.T) {
 }
 
 func TestSSDNewLookupReplacesPreviousMeasurement(t *testing.T) {
-	f := newStageMeasurementFixture(t)
-	f.r.cacheRouting.ttl = time.Minute
+	f := newStageMeasurementFixture(t, time.Minute)
 	now := time.Now()
 	first := f.lookup(t, "first-donor", 1, "miss_absent", 1, now)
 	second := f.lookup(t, "second-donor", 2, "miss_absent", 1, now)
@@ -204,15 +205,12 @@ func TestSSDMeasurementDoesNotCrossCapabilityOrConnection(t *testing.T) {
 			case "scope":
 				f.plan.CacheScope = "different-account-scope"
 			case "holder_expired":
-				now = now.Add(f.r.cacheRouting.ttl)
+				now = now.Add(f.r.cacheRouting.directory.Config().TTL)
 			case "miss":
 				f.lookup(t, "missing", seq, "miss_absent", 1, now)
 				seq++
 			case "eviction":
-				f.r.cacheRouting.mu.Lock()
-				key := cacheTierBoundaryKey(f.r.cacheRouteKeys.route, f.plan, f.checkpoint, "ssd")
-				f.r.cacheRouting.removeHolderLocked(key, f.p.ID, cacheHolderRemovalCapacityEviction)
-				f.r.cacheRouting.mu.Unlock()
+				evictStageMeasurementHolder(t, f, now)
 			}
 			// A skipped lookup does not erase old holder evidence as a miss would.
 			donor := f.lookup(t, "new-donor", seq, "skipped_policy", 1, now)
@@ -257,8 +255,7 @@ func TestSSDStageMeasurementConcurrentQueryAndReady(t *testing.T) {
 // A routing round captures one query time; a later refresh must not mutate
 // the selected sample through the immutable observation shared by holders.
 func TestSSDStageHintFreezesQueryObservation(t *testing.T) {
-	f := newStageMeasurementFixture(t)
-	f.r.cacheRouting.ttl = time.Minute
+	f := newStageMeasurementFixture(t, time.Minute)
 	now := time.Now()
 	donor := f.lookup(t, "donor", 1, "miss_absent", 1, now)
 	f.lookup(t, "reader", 2, "hit", 900, now)
@@ -275,8 +272,7 @@ func TestSSDStageHintFreezesQueryObservation(t *testing.T) {
 func TestSSDMeasuredStageQueryFencesCapabilityPublication(t *testing.T) {
 	for _, expired := range []bool{false, true} {
 		t.Run(fmt.Sprintf("expired=%v", expired), func(t *testing.T) {
-			f := newStageMeasurementFixture(t)
-			f.r.cacheRouting.ttl = time.Minute
+			f := newStageMeasurementFixture(t, time.Minute)
 			now := time.Now()
 			donor := f.lookup(t, "old-donor", 1, "miss_absent", 1, now)
 			f.lookup(t, "reader", 2, "hit", 900, now)
@@ -301,5 +297,21 @@ func TestSSDMeasuredStageQueryFencesCapabilityPublication(t *testing.T) {
 				t.Fatalf("new valid Ready did not establish current fallback: %v", got)
 			}
 		})
+	}
+}
+
+// Fill the same content bucket with verified newer peers, then disconnect them.
+// The original holder is removed by the production capacity transaction.
+func evictStageMeasurementHolder(t *testing.T, f stageMeasurementFixture, now time.Time) {
+	t.Helper()
+	for i := 0; i < f.r.cacheRouting.directory.Config().MaxHolders; i++ {
+		peer := checkpointTestProvider(t, f.r, fmt.Sprintf("evict-%d", i), indexTestCapability(i+10))
+		cap := indexTestCapability(i + 10)
+		(stageMeasurementFixture{r: f.r, p: peer, capability: cap, plan: f.plan, checkpoint: f.checkpoint}).lookup(t, fmt.Sprintf("evict-%d", i), 1, "hit", 1, now.Add(time.Duration(i+1)*time.Nanosecond))
+	}
+	for i := 0; i < f.r.cacheRouting.directory.Config().MaxHolders; i++ {
+		id := fmt.Sprintf("evict-%d", i)
+		f.r.cacheRouting.directory.Disconnect(id, cacheHolderRemovalDisconnect)
+		removeTestProvider(f.r, id)
 	}
 }

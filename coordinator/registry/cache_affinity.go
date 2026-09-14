@@ -9,7 +9,7 @@ import (
 
 // cacheAffinityEligibleLocked requires the scan's registry lock and p.mu.
 // Quarantine retains the advertised capability, so readiness alone is not
-// sufficient. Follow the same registry -> provider -> tracker lock order as
+// sufficient. Follow the same registry -> provider -> directory lock order as
 // disablePrefixCacheV2Model, using the current capability to check its fence.
 func (r *Registry) cacheAffinityEligibleLocked(p *Provider, model string, plan CachePlan) bool {
 	tracker := r.cacheRouting
@@ -20,7 +20,7 @@ func (r *Registry) cacheAffinityEligibleLocked(p *Provider, model string, plan C
 	for _, tier := range [...]string{"ssd", "memory"} {
 		capability, ok := p.prefixCacheCapabilityLocked(model, tier)
 		if ok && capabilityMatchesPlan(capability, plan) &&
-			!tracker.capabilityRejected(p.ID, model, tier, capability) {
+			!tracker.directory.CapabilityRejected(p.ID, model, tier, capability) {
 			return true
 		}
 	}

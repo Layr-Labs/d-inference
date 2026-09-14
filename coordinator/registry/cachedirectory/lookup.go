@@ -1,4 +1,4 @@
-package registry
+package cachedirectory
 
 import (
 	"time"
@@ -6,21 +6,9 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
-func (t *cacheRoutingTracker) applyLookupV2Result(
+func (t *Directory[C]) ApplyLookup(
 	providerID string,
-	provider *Provider,
-	capability protocol.PrefixCacheV2Capability,
-	msg *protocol.PrefixCacheLookupV2Message,
-	routeKey []byte,
-	now time.Time,
-) (bool, bool) {
-	result := t.applyLookupV2Decision(providerID, provider, capability, msg, routeKey, now)
-	return result.Accepted, result.mismatch
-}
-
-func (t *cacheRoutingTracker) applyLookupV2Decision(
-	providerID string,
-	provider *Provider,
+	provider C,
 	capability protocol.PrefixCacheV2Capability,
 	msg *protocol.PrefixCacheLookupV2Message,
 	routeKey []byte,
@@ -28,9 +16,9 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 ) CacheReceiptResult {
 	if t == nil || msg == nil ||
 		!validCacheOutcome(msg.Outcome) ||
-		!validCacheReceiptTier(msg.Tier) ||
+		!ValidTier(msg.Tier) ||
 		!validV2Stage(msg.StageMs) ||
-		!validV2Anchor(msg.PromptAnchor, capability.BlockSize) {
+		!ValidAnchor(msg.PromptAnchor, capability.BlockSize) {
 		return rejectCacheReceipt(CacheReceiptInvalid)
 	}
 	if msg.Outcome == "hit" {
@@ -39,7 +27,7 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 			return rejectCacheReceipt(CacheReceiptInvalid)
 		}
 		if msg.MatchedAnchor == nil ||
-			!validV2Anchor(*msg.MatchedAnchor, capability.BlockSize) ||
+			!ValidAnchor(*msg.MatchedAnchor, capability.BlockSize) ||
 			msg.MatchedAnchor.TokenCount > msg.PromptAnchor.TokenCount ||
 			msg.RequiredRecomputeTokens < 0 ||
 			msg.RequiredRecomputeTokens > msg.MatchedAnchor.TokenCount ||
@@ -69,7 +57,7 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 	if attempt.capability(msg.Tier) != capability {
 		return rejectCacheReceipt(CacheReceiptCapabilityChanged)
 	}
-	if provider != nil && attempt.Provider != provider {
+	if provider != zeroConnection[C]() && attempt.Provider != provider {
 		return rejectCacheReceipt(CacheReceiptConnectionChanged)
 	}
 	if !v2IdentityMatches(
@@ -103,11 +91,11 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 	switch msg.Outcome {
 	case "hit":
 		anchor := *msg.MatchedAnchor
-		key := cacheTierBoundaryKey(routeKey, attempt.Plan, anchor, msg.Tier)
+		key := TierBoundaryKey(routeKey, attempt.Plan, anchor, msg.Tier)
 		if key == "" {
 			return rejectCacheReceipt(CacheReceiptRouteKey)
 		}
-		holder := cacheHolder{
+		holder := Holder[C]{
 			ProviderID:              providerID,
 			Provider:                provider,
 			ModelID:                 msg.ModelID,
@@ -129,9 +117,9 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 	case "miss_absent", "miss_corrupt":
 		for _, anchor := range attempt.Plan.Boundaries {
 			t.removeHolderLocked(
-				cacheTierBoundaryKey(routeKey, attempt.Plan, anchor, msg.Tier),
+				TierBoundaryKey(routeKey, attempt.Plan, anchor, msg.Tier),
 				providerID,
-				cacheHolderRemovalMissInvalidation,
+				RemovalMissInvalidation,
 			)
 		}
 	}

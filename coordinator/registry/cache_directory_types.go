@@ -1,0 +1,52 @@
+package registry
+
+import "github.com/eigeninference/d-inference/coordinator/registry/cachedirectory"
+
+type CacheReceiptReason = cachedirectory.CacheReceiptReason
+
+const CacheReceiptAccepted = cachedirectory.CacheReceiptAccepted
+const CacheReceiptInvalid = cachedirectory.CacheReceiptInvalid
+const CacheReceiptInactive = cachedirectory.CacheReceiptInactive
+const CacheReceiptProviderMissing = cachedirectory.CacheReceiptProviderMissing
+const CacheReceiptProtocol = cachedirectory.CacheReceiptProtocol
+const CacheReceiptCapabilityUnavailable = cachedirectory.CacheReceiptCapabilityUnavailable
+const CacheReceiptCapabilityFenced = cachedirectory.CacheReceiptCapabilityFenced
+const CacheReceiptAttemptUnavailable = cachedirectory.CacheReceiptAttemptUnavailable
+const CacheReceiptAttemptBinding = cachedirectory.CacheReceiptAttemptBinding
+const CacheReceiptDuplicateLookup = cachedirectory.CacheReceiptDuplicateLookup
+const CacheReceiptLookupNotSeen = cachedirectory.CacheReceiptLookupNotSeen
+const CacheReceiptCapabilityChanged = cachedirectory.CacheReceiptCapabilityChanged
+const CacheReceiptConnectionChanged = cachedirectory.CacheReceiptConnectionChanged
+const CacheReceiptIdentityMismatch = cachedirectory.CacheReceiptIdentityMismatch
+const CacheReceiptPromptMismatch = cachedirectory.CacheReceiptPromptMismatch
+const CacheReceiptMatchedMismatch = cachedirectory.CacheReceiptMatchedMismatch
+const CacheReceiptReadyMismatch = cachedirectory.CacheReceiptReadyMismatch
+const CacheReceiptNonAdvancingReady = cachedirectory.CacheReceiptNonAdvancingReady
+const CacheReceiptSequence = cachedirectory.CacheReceiptSequence
+const CacheReceiptRouteKey = cachedirectory.CacheReceiptRouteKey
+
+type CachePromptMismatch = cachedirectory.CachePromptMismatch
+
+const CachePromptHashMismatch = cachedirectory.CachePromptHashMismatch
+const CachePromptShorter = cachedirectory.CachePromptShorter
+const CachePromptLonger = cachedirectory.CachePromptLonger
+
+type CacheReceiptResult = cachedirectory.CacheReceiptResult
+type cacheHolderRemovalReason = cachedirectory.RemovalReason
+
+const cacheHolderRemovalTTL = cachedirectory.RemovalTTL
+const cacheHolderRemovalDisconnect = cachedirectory.RemovalDisconnect
+const cacheHolderRemovalEpochChange = cachedirectory.RemovalEpochChange
+const cacheHolderRemovalCapabilityChange = cachedirectory.RemovalCapabilityChange
+const cacheHolderRemovalProofMismatch = cachedirectory.RemovalProofMismatch
+const cacheHolderRemovalMissInvalidation = cachedirectory.RemovalMissInvalidation
+
+type CacheRoutingLifecycleStatus = cachedirectory.LifecycleStatus
+type cacheHolder = cachedirectory.Holder[*Provider]
+type cacheAttempt = cachedirectory.Attempt[*Provider]
+type cacheRoutingMatch = cachedirectory.Match[*Provider]
+
+func CacheHolderRemovalReasons() []string { return cachedirectory.HolderRemovalReasons() }
+func rejectCacheReceipt(reason CacheReceiptReason) CacheReceiptResult {
+	return CacheReceiptResult{Reason: reason}
+}

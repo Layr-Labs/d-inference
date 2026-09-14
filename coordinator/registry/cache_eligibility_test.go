@@ -624,12 +624,12 @@ func TestPrefixCacheDonationDeltasAndModelUpdateCleanup(t *testing.T) {
 		PrefixCacheStatuses:         &statuses,
 		PrefixCacheDonationOutcomes: &baseline,
 	})
-	reg.cacheRouting.mu.Lock()
-	reg.cacheRouting.upsertHolderLocked("old-holder", cacheHolder{
-		ProviderID: provider.ID, ModelID: "old",
+
+	publishTestCacheHolder(t, reg.cacheRouting, []byte("test-route"), exactTestPlan(exactTestAnchor(1, "c")), cacheHolder{
+		ProviderID: provider.ID, Provider: provider, ModelID: "old",
+		ModelAggregateHash: capability.ModelAggregateHash, PromptContractID: capability.PromptContractID, CacheEpoch: capability.CacheEpoch, Anchor: exactTestAnchor(1, "c"),
 		UpdatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Minute),
 	})
-	reg.cacheRouting.mu.Unlock()
 
 	five := []protocol.PrefixCacheDonationOutcomeCount{
 		{Outcome: "donated", Count: 5},

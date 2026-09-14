@@ -92,7 +92,7 @@ func TestCheckpointSSDRoutesOnlyCommittedOriginalAcrossProviders(t *testing.T) {
 	if !r.ApplyPrefixCacheReadyV2(b.ID, readyBoth) {
 		t.Fatal("two actually committed checkpoints rejected")
 	}
-	r.cacheRouting.disconnect(a.ID, cacheHolderRemovalDisconnect)
+	r.cacheRouting.directory.Disconnect(a.ID, cacheHolderRemovalDisconnect)
 	removeTestProvider(r, a.ID)
 	repeat.RequestID = "original-after-a-disconnected"
 	selected, decision = r.ReserveProviderEx("model", repeat)
@@ -210,7 +210,7 @@ func TestCheckpointSSDInvalidatesMissingCorruptEpochAndSlotEvidence(t *testing.T
 					t.Fatal(err)
 				}
 			case "disconnect":
-				r.cacheRouting.disconnect(p.ID, cacheHolderRemovalDisconnect)
+				r.cacheRouting.directory.Disconnect(p.ID, cacheHolderRemovalDisconnect)
 			}
 			if hints := memoryTestHints(r, plan, time.Now()); len(hints) != 0 {
 				t.Fatalf("stale holder: %+v", hints)

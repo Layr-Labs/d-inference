@@ -71,7 +71,7 @@ func BenchmarkCacheHolderIndex(b *testing.B) {
 						ModelAggregateHash: capability.ModelAggregateHash, PromptContractID: capability.PromptContractID,
 						CacheEpoch: capability.CacheEpoch, Anchor: warmAnchor, StageMs: 120,
 						UpdatedAt: now, ExpiresAt: now.Add(time.Minute)}
-					tracker.upsertHolderLocked(cacheBoundaryKey(key, plan, warmAnchor), holder)
+					publishTestCacheHolder(b, tracker, key, plan, holder)
 					legacy[legacyEpochKey(key, plan, capability.CacheEpoch, warmAnchor)] = holder
 				}
 			}

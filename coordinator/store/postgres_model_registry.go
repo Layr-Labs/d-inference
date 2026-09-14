@@ -9,10 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-type scanner interface {
-	Scan(dest ...any) error
-}
-
 func (s *PostgresStore) UpsertModelRegistryEntry(entry *ModelRegistryEntry) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -303,7 +299,7 @@ const activeModelRegistryQuery = `
 	JOIN model_versions mv ON mv.id = mav.model_version_id
 	WHERE mr.status IN ('active', 'beta') AND mv.status = 'ready'`
 
-func scanModelRegistryRecord(row scanner) (*ModelRegistryRecord, error) {
+func scanModelRegistryRecord(row rowScanner) (*ModelRegistryRecord, error) {
 	var rec ModelRegistryRecord
 	var version ModelVersion
 	var entryRuntimeParameters, entryMetadata, versionMetadata []byte

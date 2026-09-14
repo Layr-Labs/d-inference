@@ -1288,11 +1288,6 @@ const apiKeyColumns = `id, owner_account_id, name, raw_prefix, key_hash, active,
 	limit_micro_usd, limit_reset, rpm_limit, itpm_limit, otpm_limit,
 	allowed_models, expires_at, created_at, last_used_at, self_route_only`
 
-// rowScanner is satisfied by both pgx.Row and pgx.Rows.
-type rowScanner interface {
-	Scan(dest ...any) error
-}
-
 // scanAPIKeyRow scans one api_keys row (selected via apiKeyColumns) into APIKey.
 func scanAPIKeyRow(row rowScanner) (*APIKey, error) {
 	var (
@@ -2280,94 +2275,6 @@ func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, l
 	return out
 }
 
-// UsageRecords returns usage records from the database, ordered by creation time.
-// Limited to the most recent 10000 rows as a safety guard against unbounded reads.
-func (s *PostgresStore) UsageRecords() []UsageRecord {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT provider_id, consumer_key_hash, model, public_model, prompt_tokens, completion_tokens, created_at, request_id, cost_micro_usd, request_location
-			 FROM usage ORDER BY created_at DESC LIMIT 10000`,
-	)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-
-	var records []UsageRecord
-	for rows.Next() {
-		var r UsageRecord
-		var locationRaw []byte
-		if err := rows.Scan(
-			&r.ProviderID,
-			&r.ConsumerKey,
-			&r.Model,
-			&r.PublicModel,
-			&r.PromptTokens,
-			&r.CompletionTokens,
-			&r.Timestamp,
-			&r.RequestID,
-			&r.CostMicroUSD,
-			&locationRaw,
-		); err != nil {
-			continue
-		}
-		r.CreatedAt = r.Timestamp
-		r.RequestLocation = unmarshalProviderLocation(locationRaw)
-		records = append(records, r)
-	}
-	if records == nil {
-		records = make([]UsageRecord, 0)
-	}
-	return records
-}
-
-// UsageRecordsSince returns usage records created at or after the given time.
-func (s *PostgresStore) UsageRecordsSince(since time.Time) []UsageRecord {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT provider_id, consumer_key_hash, model, public_model, prompt_tokens, completion_tokens, created_at, request_id, cost_micro_usd, request_location
-		 FROM usage
-		 WHERE ($1::timestamptz IS NULL OR created_at >= $1)
-		 ORDER BY created_at ASC`,
-		nullSince(since),
-	)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-
-	var records []UsageRecord
-	for rows.Next() {
-		var r UsageRecord
-		var locationRaw []byte
-		if err := rows.Scan(
-			&r.ProviderID,
-			&r.ConsumerKey,
-			&r.Model,
-			&r.PublicModel,
-			&r.PromptTokens,
-			&r.CompletionTokens,
-			&r.Timestamp,
-			&r.RequestID,
-			&r.CostMicroUSD,
-			&locationRaw,
-		); err != nil {
-			continue
-		}
-		r.CreatedAt = r.Timestamp
-		r.RequestLocation = unmarshalProviderLocation(locationRaw)
-		records = append(records, r)
-	}
-	if records == nil {
-		return []UsageRecord{}
-	}
-	return records
-}
-
 // GetBalance returns the current balance in micro-USD for an account.
 func (s *PostgresStore) GetBalance(accountID string) int64 {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -3046,9 +2953,7 @@ const userSelectColumns = `account_id, privy_user_id, email, role, platform_fee_
 	stripe_account_id, stripe_account_status, stripe_account_country,
 	stripe_destination_type, stripe_destination_last4, stripe_instant_eligible, created_at`
 
-func scanUser(row interface {
-	Scan(...any) error
-}) (*User, error) {
+func scanUser(row rowScanner) (*User, error) {
 	var u User
 	if err := row.Scan(&u.AccountID, &u.PrivyUserID, &u.Email, &u.Role, &u.PlatformFeePercent,
 		&u.StripeAccountID, &u.StripeAccountStatus, &u.StripeAccountCountry,
@@ -3318,7 +3223,7 @@ const stripeWithdrawalSelectColumns = `id, account_id, stripe_account_id, transf
 	amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
 	failure_reason, refunded, fee_refunded, created_at, updated_at`
 
-func scanStripeWithdrawal(row interface{ Scan(...any) error }) (*StripeWithdrawal, error) {
+func scanStripeWithdrawal(row rowScanner) (*StripeWithdrawal, error) {
 	var w StripeWithdrawal
 	if err := row.Scan(&w.ID, &w.AccountID, &w.StripeAccountID, &w.TransferID, &w.PayoutID, &w.SweepPayoutID,
 		&w.AmountMicroUSD, &w.FeeMicroUSD, &w.NetMicroUSD, &w.Method, &w.Status,
@@ -4365,81 +4270,6 @@ func upsertProviderRecord(ctx context.Context, db providerRecordDB, p ProviderRe
 	return nil
 }
 
-func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*ProviderRecord, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	var p ProviderRecord
-	var locationRaw []byte
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, hardware, models, backend, location, trust_level, attested,
-			attestation_result, se_public_key, serial_number,
-			mda_verified, mda_cert_chain,
-			version, runtime_verified, python_hash, runtime_hash,
-			last_challenge_verified, failed_challenges, account_id,
-			lifetime_requests_served, lifetime_tokens_generated,
-			last_session_requests_served, last_session_tokens_generated,
-			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
-		 FROM providers WHERE id = $1`, id,
-	).Scan(
-		&p.ID, &p.Hardware, &p.Models, &p.Backend,
-		&locationRaw,
-		&p.TrustLevel, &p.Attested,
-		&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
-		&p.MDAVerified, &p.MDACertChain,
-		&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
-		&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
-		&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
-		&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
-		&p.LifetimeStats, &p.LastSessionStats,
-		&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: provider not found: %w", err)
-	}
-	p.Location = unmarshalProviderLocation(locationRaw)
-	return &p, nil
-}
-
-func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) (*ProviderRecord, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	var p ProviderRecord
-	var locationRaw []byte
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, hardware, models, backend, location, trust_level, attested,
-			attestation_result, se_public_key, serial_number,
-			mda_verified, mda_cert_chain,
-			version, runtime_verified, python_hash, runtime_hash,
-			last_challenge_verified, failed_challenges, account_id,
-			lifetime_requests_served, lifetime_tokens_generated,
-			last_session_requests_served, last_session_tokens_generated,
-			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
-		 FROM providers WHERE serial_number = $1 AND serial_number != ''
-		 ORDER BY last_seen DESC LIMIT 1`, serial,
-	).Scan(
-		&p.ID, &p.Hardware, &p.Models, &p.Backend,
-		&locationRaw,
-		&p.TrustLevel, &p.Attested,
-		&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
-		&p.MDAVerified, &p.MDACertChain,
-		&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
-		&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
-		&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
-		&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
-		&p.LifetimeStats, &p.LastSessionStats,
-		&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: provider with serial not found: %w", err)
-	}
-	p.Location = unmarshalProviderLocation(locationRaw)
-	return &p, nil
-}
-
 func (s *PostgresStore) GetMDAChainBySerial(ctx context.Context, serial string) (json.RawMessage, error) {
 	if serial == "" {
 		return nil, nil
@@ -5297,11 +5127,7 @@ const verificationJobColumns = `se_pubkey, serial, udid, task_kind, task_state,
 	priority, retry_stage, previous_delay_ns, next_attempt_at, last_outcome,
 	reopen_pending, updated_at, claim_owner, claim_expires_at`
 
-type verificationJobScanner interface {
-	Scan(dest ...any) error
-}
-
-func scanVerificationJob(row verificationJobScanner) (VerificationJob, error) {
+func scanVerificationJob(row rowScanner) (VerificationJob, error) {
 	var rec VerificationJob
 	var previousDelayNS int64
 	var nextAttemptAt *time.Time

@@ -3,12 +3,34 @@
 Status: active goal; implementation under review, physical qualification incomplete.
 No production deployment. Keep PR #996 draft until the physical gates pass.
 
+## Current verified state
+
+Source244009eca is pushed and mergeable after integrating master5dcb43e69.
+Full sandbox suite:497tests,7explicit skips,0failures. Coordinator suite, Linux
+build, docs lint, UI lint and Next.js build pass. CI34809434499 and integration
+34809434503 are validating the latest push; benchmark environment approval is
+separate and has not been granted.
+
+Physical guest exercise14 and coldboot15 PASS on the test Mac. They prove
+selected authenticated execution/files/isolation/cleanup, retained workspace,
+and a genuinely different guest boot. Both VM owner exits and independent root
+quiescence pass. No VM is currently running. The diagnostic clone has guest
+inode32638, SHA8dd96a80d7c96d15cf49e143416c8bf665c9a47464885ee1733d06b8544a3369;
+it is not a qualified production template. The full details and exact root proof
+digests are recorded at the end of this checkpoint.
+
+Next: complete accountless root installation orchestration/checkpoint publication,
+qualification clone consumer and ready-template publication; actual GUI host
+service termination/login recovery; full2VM coordinator acceptance, build tools,
+performance and final release qualification. Keep test CI paused and gaj's
+explicit temporary runtime-group membership until the machine campaign finishes.
+
 ## Source and ownership
 
 - Worktree: `.worktrees/sandbox-completion-20260913`.
 - Branch: `codex/sandbox-completion-20260913`.
 - Starting sandbox tip0950ac41e; master93337ef05 integrated in453b37667.
-- Latest pushed commit:9646f2b78c10495e61ca180456de0a57bc75ee27.
+- Latest pushed commit:244009ecaa38adb1ac7ac11baf76e1e752995d44.
 - Local GUI plan commit3abe05f712de1d2dcc6958315c1fbf56b4b693ff follows
   host context50145d4b4 and qualification validator4cab8f470.
 - Managed restore lifetime commitb5680748bd9d4670f3ee4c02ea2ffc38810c981d
@@ -32,9 +54,11 @@ The private alpha is an opt-in offline macOS CPU sandbox service. The real
 coordinator owns account admission, durable leases/fences, idempotent lifecycle
 and command records. The current nonroot host service holds machine-wide exclusive
 runtime ownership and authenticates a signed root guest supervisor over vsock.
-Its system-daemon deployment is not physically qualified: UID430 VZ startup
-failed host security/key generation. A controlled Aqua LaunchAgent test is now
-running; supported host deployment remains an implementation gate.
+Its prior system-daemon deployment is unsupported: UID430 VZ startup failed host
+security/key generation. Controlled Aqua LaunchAgent execution, authenticated
+guest work and cold-boot persistence now pass. The selected GUI-user plan and
+Serve identity enforcement are implemented; actual persistent service lifecycle
+remains an implementation gate.
 Tenant commands irreversibly drop to never-registered UID/GID2001. File transfers
 are bounded, resumable between acknowledged chunks, and version-bound on reads.
 The Go consumer CLI covers create/list/inspect/execute/jobs/logs/cancel/files,
@@ -796,3 +820,59 @@ The first merge commit attempt stopped in the pre-commit hook because this
 worktree had no console-ui/node_modules (ESLint package resolution failed;
 not a diagnosed lint violation). npm ci completed from the lockfile. Re-running
 UI lint before retrying the merge commit; no hook bypass is used.
+
+## Persistence barriers under physical validation
+
+Merge25db5f754 now integrates master5dcb43e69. UI dependencies were installed;
+lint passes with0errors/81warnings, full coordinator suite and Linux build pass.
+Commit244009eca adds GuestWorkspaceDurability: fsync followed by F_FULLFSYNC,
+required for API-created directory inode AND parent (including retries), upload
+source before clone, and publication parent before success. Eleven focused
+workspace tests pass. This strengthens durability but is not yet a proven fix
+for the restart failure. Native storage remains .fsync and normal VM stop is
+still an immediate VZ power-off; graceful guest shutdown remains a product gap.
+
+Signed244009eca guest: 2,603,248bytes,
+SHA8dd96a80d7c96d15cf49e143416c8bf665c9a47464885ee1733d06b8544a3369.
+Root78068 replaced only diagnostic GUI guest inode30744 with inode32638;
+readonly preinspection was gui-diagnostics-read6, watcher13 bound. Permanent
+bootstrap/plist unchanged; no guest probe jobs. VM/image attachments stopped,
+detached, noopeners and original Apple image unchanged. Fresh exercise attempt14
+and coldboot15 helpers are prepared; do not claim either has passed before its
+actual watchdog and client evidence. Source/library release hash mismatch remains
+explicit in this diagnostic clone; no template readiness has been published.
+
+Current full Swift suite session53115, log guest-workspace-durability-full-tests.log.
+Push session63655 runs the mandatory pre-push Go checks before publishing244009eca.
+
+244009eca is now pushed; mergeability is MERGEABLE. Fresh CI34809434499 queued,
+integration34809434503 running, benchmark34809434497 waiting for its separate
+environment approval. Mandatory pre-push Go checks, UI lint and Next.js build
+passed. No environment approval or production mutation was taken.
+Full Swift suite at244009eca passes497tests,7skips,0failures (134.888s).
+
+Physical attempt14 on244009eca repeats every selected guest exercise successfully,
+including strong-barrier mkdir/uploads, then client0/owner0 and root quiescence.
+It stages a NEW first-boot UUID/marker after the prior directory was proven absent.
+Current attempt15 is the cold-boot followup, rootwatchdog87427, control
+/Library/Application Support/Darkbloom/gui-discriminator15, freshendpointattempt15,
+evidence15. ConfigSHA1b2664bb5068e2f298f9471cea90e0442332847926bd165d12dccf5a5d4d055d.
+Wait for that actual terminal result before claiming persistence or mounting disks.
+
+## Strong-barrier restart PASS
+
+Attempt14 watchdogSHA94bb5e183fbdc40bb1b13c9909e288cc99e36addc18679b78fb9af4e22437ea3.
+Attempt15 watchdogSHA6c4152c06d784d0fb9283fca5d3843c72b9c984690c735a5cc125debe8cf8336.
+Both client/owner exit0 and root quiescence verified. Coldboot15 passes exact
+workspace marker, changed kern.bootsessionuuid, repeated authentication controls,
+numeric identity isolation and native compute. This controlled pair passes after
+the full-sync change, whereas12/13 before that change lost the entire directory.
+This is selected physical restart evidence, not a fleet/crash-power-loss guarantee.
+All test VMs now stopped; guest32638 remains in the diagnostic clone only.
+
+Next product work remains: root accountless installation orchestration and
+installed checkpoint writer, qualification capability clone consumer and genuine
+readiness publication; actual selected-user host service signals/session recovery;
+full two-VM ordinary-consumer coordinator campaign, build tools and paired workload
+measurements. Runtime10 is still not physically substituted for8. Keep CI paused
+and temporary gaj431 membership while the authorized machine campaign continues.

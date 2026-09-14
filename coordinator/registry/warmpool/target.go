@@ -1,11 +1,10 @@
-// Package warmpool owns demand measurements and target capacity calculations.
-// Fleet snapshots and model-load commands stay with the registry controller.
 package warmpool
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/registry/throughput"
 	"math"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/registry/throughput"
 )
 
 // Service-time clamps prevent pathological rates from producing runaway targets.

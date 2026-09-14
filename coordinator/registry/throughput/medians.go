@@ -2,7 +2,7 @@ package throughput
 
 import "sort"
 
-// tps_median_cache.go — read-side aggregates for Observations.
+// medians.go — read-side aggregates for Observations.
 //
 // The routing scan reads Median / SoloMedian / SoloMedianAllChips once PER
 // PROVIDER per scan (snapshotProviderLockedEx and the quality-concurrency cap

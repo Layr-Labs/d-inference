@@ -71,7 +71,7 @@ func (r *Observations) SoloMedian(model, chipClass string) (float64, int) {
 // for solo entries, so grouping by key.Model + key.ChipFamily groups by class.
 //
 // O(1) and allocation-free on read: the aggregate is maintained by RecordSolo
-// (tps_median_cache.go), which is what lets the routing scan resolve the
+// (medians.go), which is what lets the routing scan resolve the
 // quality cap for every provider without copying and sorting the fleet's
 // samples per provider.
 func (r *Observations) SoloMedianAllChips(model string) (tps float64, samples, classes int) {

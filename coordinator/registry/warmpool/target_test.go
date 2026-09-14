@@ -1,9 +1,10 @@
 package warmpool
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/registry/throughput"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/registry/throughput"
 )
 
 func TestWarmTargetLittlesLaw(t *testing.T) {

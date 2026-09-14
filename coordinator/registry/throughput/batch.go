@@ -37,13 +37,13 @@ const (
 	// prediction made with the coordinator's sqrt(memory_bandwidth) proxy
 	// solo (16-28 tok/s) against a rate measured at the engine's real solo
 	// (101.8) — that gap is a bad SOLO rate, not a bad k, and it has its
-	// own lever (modelSoloTPSSeedEnv in concurrency_cap.go). Raising k
+	// own lever (modelSoloTPSSeedEnv in registry/concurrency_cap.go). Raising k
 	// makes every derived cap TIGHTER, never looser.
 	//
 	// Four systems consume this and a too-small k over-states the quality
-	// batch in all of them at once: the admission cap (concurrency_cap.go),
-	// effectiveDecodeTPS and projectedPerRequestDecodeTPSAtBatch below, and
-	// the warm-pool target (warm_pool_controller.go) — which then
+	// batch in all of them at once: the admission cap (registry/concurrency_cap.go),
+	// effectiveDecodeTPS and projectedPerRequestDecodeTPSAtBatch in registry/scheduler.go, and
+	// the warm-pool target (registry/warm_pool_controller.go) — which then
 	// under-warms the pool while admission packs batches that miss the
 	// decode floor.
 	// Set to 0 to disable load scaling.

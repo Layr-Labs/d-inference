@@ -1,8 +1,6 @@
 package throughput
 
-import (
-	"sync"
-)
+import "sync"
 
 // Observations aggregates observed decode TPS values from heartbeats,
 // keyed by model and chip family. Used to provide fleet-calibrated
@@ -14,14 +12,14 @@ import (
 //   - samples (Record/Median): EVERY reported EWMA, including under-load ones.
 //     Feeds fleetMedianTPS → TTFT estimation, whose load-inclusive semantics
 //     are intentional (an estimate of what a request will actually see).
-//   - soloSamples (RecordSolo/SoloMedian, solo_tps.go): only samples taken
+//   - soloSamples (RecordSolo/SoloMedian, solo.go): only samples taken
 //     while the WHOLE box was uncontended. Feeds the quality-concurrency cap,
 //     which needs a static solo rate that cannot collapse under the very
 //     overload the cap exists to prevent.
 //
 // Every read-side aggregate (medians, the cross-class solo aggregate) is
 // maintained on write and served as an O(1), allocation-free lookup — see
-// tps_median_cache.go. The routing scan reads them once per provider.
+// medians.go. The routing scan reads them once per provider.
 type Observations struct {
 	mu          sync.RWMutex
 	samples     map[tpsKey][]float64

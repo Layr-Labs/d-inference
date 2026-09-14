@@ -2,13 +2,13 @@ package registry
 
 import (
 	"context"
-	"github.com/eigeninference/d-inference/coordinator/registry/throughput"
 	"log/slog"
 	"math"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/throughput"
 )
 
 const (

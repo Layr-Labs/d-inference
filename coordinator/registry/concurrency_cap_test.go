@@ -2,13 +2,13 @@ package registry
 
 import (
 	"fmt"
-	"github.com/eigeninference/d-inference/coordinator/registry/warmpool"
 	"math"
 	"testing"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/warmpool"
 )
 
 // budgetSlot turns a makeSchedulerProvider box into a token-budget provider (the

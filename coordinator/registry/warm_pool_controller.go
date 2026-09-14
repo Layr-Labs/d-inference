@@ -2,10 +2,11 @@ package registry
 
 import (
 	"context"
-	"github.com/eigeninference/d-inference/coordinator/registry/warmpool"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/registry/warmpool"
 )
 
 // Service-time (E[S]) clamps for the Little's Law target. A near-zero or absurdly

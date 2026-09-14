@@ -1,8 +1,10 @@
 package registry
 
-import "github.com/eigeninference/d-inference/coordinator/registry/warmpool"
+import (
+	"time"
 
-import "time"
+	"github.com/eigeninference/d-inference/coordinator/registry/warmpool"
+)
 
 func (r *Registry) RecordWarmPoolCapacityReject(model string) {
 	if r.warmPool == nil {

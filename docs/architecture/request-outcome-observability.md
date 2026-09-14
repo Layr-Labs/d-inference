@@ -1,6 +1,6 @@
 # Request Outcome Observability
 
-> Last updated: 2026-09-13 · commit `de4e28825`
+> Last updated: 2026-09-13 · commit `b258e17596`
 
 Every provider dispatch attempt ends in one claimed terminal outcome, and that outcome is recorded three ways: a closed `final_status` / `error_class` / `error_reason` triple on the `inference_routes` row, a per-attempt `request_profiles` row with separate `client_outcome` and `provider_outcome` columns, and a small set of low-cardinality Datadog counters. Requests refused before dispatch land in the `request_rejections` ledger instead. This page explains the existing attempt taxonomy and protected counters. The unsampled incoming-request ledger, its coverage limits, and separate egress/completion evidence are defined in [incoming request accounting](request-accounting.md).
 
@@ -116,8 +116,8 @@ A request that never reaches a provider has no route row. `recordRejection` (`co
 Routing-saturation shedding sets `skipServability` so the telemetry worker does
 not run another fleet scan under overload. `could_have_served` is then SQL NULL
 and JSON `null`, or an empty CSV cell. The admin `could_have_served=true|false`
-filters exclude unknown samples (`coordinator/api/admin_telemetry.go`,
-`filterRejectionRecords`, `csvOptionalBool`). Count only non-NULL values when
+filters exclude unknown samples (`coordinator/api/operations/rejections.go`,
+`filterRejectionRecords`; `coordinator/api/operations/csv.go`, `csvOptionalBool`). Count only non-NULL values when
 computing the false-rejection rate; unknown is not a necessary rejection.
 
 | `stage` | `reason_code` values written today |
@@ -186,8 +186,8 @@ cleanup remain rate-limited to `zombieSweepEvery`
 
 | Surface | Contents |
 |---|---|
-| `GET /v1/admin/routes` (`handleAdminRoutes`) | `store.InferenceRouteRecord`: the decision snapshot plus the merged outcome fields (`final_status`, `error_code`, `error_class`, `error_reason`, token counts, `cost_micro_usd`, `actual_ttft_ms`, `dispatch_to_first_chunk_ms`, `total_duration_ms`, the six timing segments, `actual_decode_tps`, `admitted_but_failed`, `used_backup`, `backup_won`). Filters: `since`, `limit`, `provider`, `model`, `outcome`, `final_status`. |
-| `GET /v1/admin/routes/export?format=csv|ndjson` | same fields; `routeCSVHeader` in `coordinator/api/admin_telemetry.go` is the column order |
+| `GET /v1/admin/routes` (`Controller.Routes`, `coordinator/api/operations/routes.go`) | `store.InferenceRouteRecord`: the decision snapshot plus the merged outcome fields (`final_status`, `error_code`, `error_class`, `error_reason`, token counts, `cost_micro_usd`, `actual_ttft_ms`, `dispatch_to_first_chunk_ms`, `total_duration_ms`, the six timing segments, `actual_decode_tps`, `admitted_but_failed`, `used_backup`, `backup_won`). Filters: `since`, `limit`, `provider`, `model`, `outcome`, `final_status`. |
+| `GET /v1/admin/routes/export?format=csv|ndjson` | same fields; `routeCSVHeader` in `coordinator/api/operations/route_csv.go` is the column order |
 | `GET /v1/admin/rejections`, `/v1/admin/rejections/export` | `RejectionRecord` rows |
 | `GET /v1/admin/profiles`, `GET /v1/admin/snapshots` (each with `/export`) | per-attempt profiles and fleet snapshots ([system-profiler.md](./system-profiler.md)) |
 
@@ -233,7 +233,7 @@ All admin reads require the admin key (`requireAdminKey`).
 | Timing histograms, KV-backend attribution | `coordinator/api/timing_metrics.go`, `coordinator/api/kv_backend_metrics.go`, `coordinator/registry/kv_backend.go` |
 | Rejection ledger and servability gate | `coordinator/api/rejection_telemetry.go`, `coordinator/api/inference_admission.go`, `coordinator/api/servability_gate.go` |
 | Per-attempt profile outcomes | `coordinator/api/profiler_dispatch.go`, `coordinator/registry/attempt_profile.go`, `coordinator/registry/attempt_profile_finalize.go` |
-| Storage types and admin reads | `coordinator/store/interface.go` (`InferenceRouteRecord`, `InferenceRouteOutcome`, `RejectionRecord`), `coordinator/api/admin_telemetry.go` |
+| Storage types and admin reads | `coordinator/store/interface.go` (`InferenceRouteRecord`, `InferenceRouteOutcome`, `RejectionRecord`), `coordinator/api/operations/routes.go`, `coordinator/api/operations/rejections.go` |
 | Regression pins | `coordinator/api/route_outcome_test.go`, `coordinator/api/settlement_clientgone_test.go`, `coordinator/api/nonfault_outcome_generic_test.go`, `coordinator/api/dispatch_speculative_outcome_test.go`, `coordinator/api/rejection_classify_test.go` |
 
 ## Related

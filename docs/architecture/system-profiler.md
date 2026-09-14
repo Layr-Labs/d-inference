@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-13 · commit `285f7c9f8`
+> Last updated: 2026-09-13 · commit `b258e17596`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -337,7 +337,12 @@ falls back to `DefaultSampleRate`. The existing float parser also accepts NaN,
 which fails the sampling comparison for nonempty IDs. Always-record predicates
 and empty IDs still bypass sampling.
 
-Admin endpoints (`requireAdminKey`; `coordinator/api/profiler_admin.go`):
+The operator read controller serves these endpoints through the existing
+`requireAdminKey` callback (`coordinator/api/operations.go`, `newOperations`).
+Profile reads live in `coordinator/api/operations/profiles.go` (`Controller.Profiles`,
+`Controller.ProfilesExport`); snapshot reads live in
+`coordinator/api/operations/snapshots.go` (`Controller.Snapshots`,
+`Controller.SnapshotsExport`):
 
 | Endpoint | Returns | Query |
 |---|---|---|
@@ -466,7 +471,7 @@ ring or `DaemonState` mirror.
 | Routing queue | `coordinator/telemetry/routequeue/` (`Sink`, `CloseAndWait`) |
 | Fleet sampler, retention loop, metrics | `coordinator/api/profiler_fleet.go`, `coordinator/registry/fleet_sample.go` |
 | Dispatch hooks, `X-Timing`, relay stamps | `coordinator/api/profiler_dispatch.go` |
-| Admin endpoints | `coordinator/api/profiler_admin.go`, `coordinator/api/admin_telemetry.go` |
+| Operator read/export policy | `coordinator/api/operations/controller.go` (`Controller`), `coordinator/api/operations/profiles.go`, `coordinator/api/operations/snapshots.go`, `coordinator/api/operations/routes.go`, `coordinator/api/operations/rejections.go` |
 | Profiles and attempts | `coordinator/registry/request_profile.go`, `coordinator/registry/attempt_profile.go`, `coordinator/registry/attempt_profile_finalize.go` |
 | Routing context and folds | `coordinator/registry/scheduler.go`, `coordinator/registry/gate_reason.go`, `coordinator/registry/queue.go` |
 | Wire types and fixture | `coordinator/protocol/profile.go`, `coordinator/protocol/testdata/profiler_wire_fixture.json` |

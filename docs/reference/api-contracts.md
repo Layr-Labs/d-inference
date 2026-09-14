@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-11 · commit `e3993c611`
+> Last updated: 2026-09-13 · commit `b258e17596`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -225,15 +225,15 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | POST | `/v1/admin/credit` | `handleAdminCredit` (`coordinator/api/admin_balance_adjustment.go`) | `admin` | Manual ledger credit |
 | POST | `/v1/admin/reward` | `handleAdminReward` (`coordinator/api/admin_balance_adjustment.go`) | `admin` | Manual provider reward |
 | GET | `/v1/admin/log-reports/{id}` | `handleGetLogReport` (`coordinator/api/log_report_handlers.go`) | `admin` | Fetch an uploaded provider log bundle |
-| GET | `/v1/admin/metrics` | `handleAdminMetrics` | `admin-key` | Telemetry counters |
+| GET | `/v1/admin/metrics` | `Controller.Metrics` (`coordinator/api/operations/metrics.go`) | `admin-key` | Telemetry counters |
 | GET | `/v1/admin/base-rewards` | `handleAdminBaseRewards` (`coordinator/api/base_rewards_handlers.go`) | `admin-key` | |
-| GET | `/v1/admin/utilization` | `handleAdminUtilization` (`coordinator/api/admin_utilization.go`) | `admin-key` | |
+| GET | `/v1/admin/utilization` | `Controller.Utilization` (`coordinator/api/operations/utilization.go`) | `admin-key` | |
 | POST | `/v1/admin/drain` | `handleAdminDrain` (`coordinator/api/drain.go`) | `admin` | Start a drain; default grace [`DefaultDrainGrace`](#timeouts-and-constants) |
-| GET | `/v1/admin/routes`, `/v1/admin/routes/export` | `handleAdminRoutes`, `handleAdminRoutesExport` (`coordinator/api/admin_telemetry.go`) | `admin-key` | Route records |
-| GET | `/v1/admin/rejections`, `/v1/admin/rejections/export` | `handleAdminRejections`, `handleAdminRejectionsExport` (`coordinator/api/admin_telemetry.go`) | `admin-key` | Admission rejections; `could_have_served` is nullable: `null` means not evaluated. CSV uses an empty cell; `could_have_served=true|false` filters exclude unknowns. |
-| GET | `/v1/admin/request-outcomes` | `handleAdminRequestOutcomes` (`coordinator/api/request_outcome_admin.go`) | `admin-key` | Bounded received cohort with versioned request/attempt evidence and current-process sink health; see [accounting](../architecture/request-accounting.md). |
-| GET | `/v1/admin/profiles`, `/v1/admin/profiles/export` | `handleAdminProfiles`, `handleAdminProfilesExport` (`coordinator/api/profiler_admin.go`) | `admin-key` | Request profiles; see [`../architecture/system-profiler.md`](../architecture/system-profiler.md) |
-| GET | `/v1/admin/snapshots`, `/v1/admin/snapshots/export` | `handleAdminSnapshots`, `handleAdminSnapshotsExport` (`coordinator/api/profiler_admin.go`) | `admin-key` | |
+| GET | `/v1/admin/routes`, `/v1/admin/routes/export` | `Controller.Routes`, `Controller.RoutesExport` (`coordinator/api/operations/routes.go`) | `admin-key` | Route records |
+| GET | `/v1/admin/rejections`, `/v1/admin/rejections/export` | `Controller.Rejections`, `Controller.RejectionsExport` (`coordinator/api/operations/rejections.go`) | `admin-key` | Admission rejections; `could_have_served` is nullable: `null` means not evaluated. CSV uses an empty cell; `could_have_served=true|false` filters exclude unknowns. |
+| GET | `/v1/admin/request-outcomes` | `Controller.RequestOutcomes` (`coordinator/api/operations/request_outcomes.go`) | `admin-key` | Bounded received cohort with versioned request/attempt evidence and current-process sink health; see [accounting](../architecture/request-accounting.md). |
+| GET | `/v1/admin/profiles`, `/v1/admin/profiles/export` | `Controller.Profiles`, `Controller.ProfilesExport` (`coordinator/api/operations/profiles.go`) | `admin-key` | Request profiles; see [`../architecture/system-profiler.md`](../architecture/system-profiler.md) |
+| GET | `/v1/admin/snapshots`, `/v1/admin/snapshots/export` | `Controller.Snapshots`, `Controller.SnapshotsExport` (`coordinator/api/operations/snapshots.go`) | `admin-key` | |
 
 ### Catch-all (1)
 
@@ -557,6 +557,7 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Billing, Stripe, referral, invites | `coordinator/api/billing_handlers.go`, `coordinator/api/stripe_payouts.go`, `coordinator/api/stripe_withdraw.go`, `coordinator/api/stripe_payouts_webhooks.go`, `coordinator/api/invite_handlers.go`, `coordinator/api/base_rewards_handlers.go` |
 | Stats | `coordinator/api/stats.go`, `coordinator/api/cache_refresher.go`, `coordinator/api/network_totals.go`, `coordinator/api/leaderboard.go`, `coordinator/api/network_series.go` |
 | Release, enrollment, provider WS, log reports | `coordinator/api/release_handlers.go`, `coordinator/api/enroll.go`, `coordinator/api/provider.go`, `coordinator/api/log_report_handlers.go` |
-| Drain, admin telemetry, profiler, state export, telemetry stub | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/admin_state_export.go`, `coordinator/api/telemetry_handlers.go` |
+| Operator telemetry reads and exports | `coordinator/api/operations.go` (`newOperations`), `coordinator/api/operations/` (`Controller`); read capabilities in `store.go`, query bounds in `query.go`, CSV/NDJSON encoding in `route_csv.go`, `rejection_csv.go`, `csv.go`, `export.go` |
+| Drain, state export, telemetry stub | `coordinator/api/drain.go`, `coordinator/api/admin_state_export.go`, `coordinator/api/telemetry_handlers.go` |
 | Rate-limit bucket consumption | `coordinator/ratelimit/ratelimit.go` (`allowBucket`, `debitBucket`): fixed and per-key rate paths share token consumption and retry calculation while keeping their own admission and clamp rules |
 | Shared types and helpers | `coordinator/api/types/types.go`, `coordinator/api/httputil.go`, `coordinator/ratelimit/ratelimit.go`, `coordinator/modelpolicy/first_content_deadline.go` |

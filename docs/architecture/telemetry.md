@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-13 · commit `285f7c9f8`
+> Last updated: 2026-09-13 · commit `b258e17596`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -345,7 +345,7 @@ for populations, labels and reset semantics (`coordinator/api/cache_model_teleme
 | Datadog client, HTTPS series, trace-aware slog | `coordinator/datadog/datadog.go`, `coordinator/datadog/metrics_http.go`, `coordinator/datadog/slog.go` |
 | Wiring and env | `coordinator/cmd/coordinator/main.go` |
 | Coordinator event emitter | `coordinator/telemetry/emitter.go`; helpers and gauge loop in `coordinator/api/server.go` |
-| In-process metrics registry | `coordinator/telemetry/metrics/registry.go`; `handleAdminMetrics` in `coordinator/api/server.go` |
+| In-process metrics registry | `coordinator/telemetry/metrics/registry.go`; `Controller.Metrics` in `coordinator/api/operations/metrics.go` |
 | Event shape, allowlist, retired ingest | `coordinator/protocol/telemetry.go`, `coordinator/api/telemetry_handlers.go` |
 | Persistence queues | `coordinator/telemetry/routequeue/`, `coordinator/telemetry/profilequeue/`, `coordinator/telemetry/outcomequeue/` (`Sink`) |
 | Profile construction and sampling | `coordinator/telemetry/profiler/` (`ConfigFromEnv`, `Builder.Build`, `Profiler`) |

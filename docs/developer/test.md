@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `38375bc12`
+> Last updated: 2026-09-13 · commit `1853fc127`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -131,6 +131,20 @@ heartbeat entry points on a directly constructed server with no attestor.
 ```bash
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/providercontrol/codeidentity
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'CodeIdentity|CodeCoverage|CodeContinuity|CrossVersionReuse|Restart.*Transition|Seeded|HashlessRegistration|PersistOnAttest|TrustReuseShutdown|ApprovedTransitionGrants|MDMSchedulerFleet1500'
+```
+
+State archive HTTP tests remain in `coordinator/api/state_archive_test.go`:
+feature/auth/output gates, symlinked roots, plaintext ZIP, age decryption and
+snapshot consistency during live BoltDB writes. The pure root-precedence test
+lives beside the configuration in `coordinator/api/statearchive/config_test.go`.
+The HTTP fixture sets the admin key and export environment after server
+construction, so the controller must read current settings.
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api ./coordinator/api/statearchive -run StateExport
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/stateexport
 ```
 
 Release HTTP and artifact regressions stay in `coordinator/api/` and reach

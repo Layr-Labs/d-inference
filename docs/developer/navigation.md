@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-13 · commit `8eba1c7f3`
+> Last updated: 2026-09-13 · commit `3a18afabc`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -26,6 +26,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Pending model commands and heartbeat plan timing | `coordinator/registry/modelloads/` (`Commands`, `PlanGate`); live selection in `coordinator/registry/model_load_plan.go`, command adapters in `coordinator/registry/model_load_state.go` |
 | Warm-pool control loop, pressure and latest observations | `coordinator/registry/warmpool/` (`Controller`, `State`, `Snapshot`); live fleet/eligibility adapters in `coordinator/registry/warm_pool_fleet.go` and `coordinator/registry/warm_pool_eligibility.go` |
 | Provider socket writes, cancellation and watchdog | `coordinator/registry/providerwriter/` (`Writer`); current provider binding in `coordinator/registry/provider_writer.go`; handoff transaction in `handoff.go`, priority/serve in `run.go`, socket fragments in `frames.go` |
+| Identity fault histories and session migration | `coordinator/registry/faultstate/`; registry bindings in `coordinator/registry/fault_binding.go` and `coordinator/registry/fault_capacity.go` |
 | Queue storage and throughput | `coordinator/registry/requestqueue/`, `coordinator/registry/throughput/`; live provider state and reservation orchestration stay in `coordinator/registry/` |
 | Billing and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/` |
 | Provider inference, downloads, security, local serving | `provider-swift/Sources/ProviderCore/`; entrypoints in `provider-swift/Sources/darkbloom/` |

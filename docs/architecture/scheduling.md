@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-13 · commit `19ba12cf7`
+> Last updated: 2026-09-13 · commit `3a18afabc`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -285,7 +285,7 @@ removal. The command mutex is always acquired after those live locks and never
 calls back into the registry (`coordinator/registry/model_load_state.go`,
 `ClearIneligiblePendingModelLoads`). Disconnect removes session command state
 while the separate stable-identity dispatch-load cooldown survives reconnect
-(`coordinator/registry/dispatch_load_cooldown.go`, `RecordDispatchLoadFailure`).
+(`coordinator/registry/faultstate/dispatch_load_cooldown.go`, `RecordDispatchLoadFailure`).
 
 **Model swaps.** `TriggerModelSwaps` (`coordinator/registry/model_loading.go`)
 plans one swap per model with queued requests and no warm provider: it picks
@@ -557,17 +557,17 @@ marked late disconnect flush from a session
 dropped before that reset while holding its mutation lock; request goroutines
 cannot reopen the new binary's quarantine after the reset. Same-version churn
 and a drop after a throttled reset keep their strikes
-(`coordinator/registry/version_reset.go`, `disconnectSource.supersededBy`).
+(`coordinator/registry/faultstate/version_reset.go`, `disconnectSource.supersededBy`).
 The reset and each fault mutation share the identity's `gateState.mu`; both
 live references and the disconnect cache use the same timestamp recorded by
-`detachSessionGate`. These request terminal paths never acquire `Registry.mu`.
+`Manager.Detach` in `coordinator/registry/faultstate/session_lifecycle.go`, called by `detachSessionGate` in `coordinator/registry/fault_binding.go`. These request terminal paths never acquire `Registry.mu`.
 Cached disconnected identities follow enrichment without changing their drop
 times. Version metadata for departed identities remains for
 `identityVersionRetention = 20 * time.Minute` after the last activity or
 disconnect; live identities, recent resets and active fault state retain their
 gate. The existing eviction-loop gate sweep handles this cleanup
-(`coordinator/registry/version_reset.go`, `versionHistoryActive`;
-`coordinator/registry/gate_sweep.go`, `sweepGates`).
+(`coordinator/registry/faultstate/version_reset.go`, `versionHistoryActive`;
+`coordinator/registry/faultstate/sweep.go`, `Manager.Sweep`).
 
 ## Invariants
 

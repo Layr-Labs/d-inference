@@ -33,6 +33,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── registry/         provider registry, queueing, routing, reputation, token-budget admission,
 │                     warmpool/ (controller, pressure and target policy),
 │                     providerwriter/ (two-lane WS writer, handoff and watchdog),
+│                     faultstate/ (identity gates, cooldowns, breaker, ejection and reset history),
 │                     admission/ (immutable capacity math), providerversion/ (shared interpreter),
 │                     cacheattempt/ (request lifetime), cachedirectory/ (receipt/holder transactions),
 │                     modelloads/ (session command clocks and fleet plan gate),

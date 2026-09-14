@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-13 · commit `8483a172d`
+> Last updated: 2026-09-13 · commit `3a18afabc`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -686,7 +686,7 @@ provider only as a `desired_models` reconciliation (prefetch → hard-swap →
 default in [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli),
 `0` disables). The coordinator observes the result on the next heartbeat
 (`warm_models`, `slots[]`); its assumption about that idle-unload cycle is a
-comment in `coordinator/registry/capacity_cooldown.go`.
+comment on `RecordCapacityRejectLifecycle` in `coordinator/registry/fault_capacity.go`.
 
 ## Tests that pin the wire
 

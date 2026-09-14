@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-09-13 · commit `1f52a71fb`
+> Last updated: 2026-09-14 · commit `f37d74777`
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -148,7 +148,7 @@ are tabulated in [`cli-reference.md`](./cli-reference.md#runtime-constants).
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `model fit` ✗ / `recent model load` shows admission refused | `ModelLoadAdmission` (`provider-swift/Sources/ProviderCore/Inference/ModelLoadAdmission.swift`) found less free-for-load memory than the model's padded weights plus headroom ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)) | Close other apps; lower `max_model_slots`; pick a smaller quantisation ([hardware requirements](./hardware-requirements.md)) |
+| `model fit` ✗ / `recent model load` shows admission refused | `ModelLoadAdmission` (`provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift`) found less free-for-load memory than the model's padded weights plus headroom ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)) | Close other apps; lower `max_model_slots`; pick a smaller quantisation ([hardware requirements](./hardware-requirements.md)) |
 | Model missing from `darkbloom models list` | Not in `~/.cache/huggingface/hub`, or filtered by `enabled_models` | `darkbloom models download <id>`; `darkbloom models list --all` |
 | Load fails after a catalog update | New build published for the alias | `darkbloom models remove <id>` then `darkbloom models download <id>` |
 | `Skipping <id>: model_type … has no engine-v2 adapter` | Family not served by CBv2 | Use a supported family; the model is never advertised |
@@ -187,7 +187,7 @@ produce a contiguous slot. Read the reported reason. Set `"contiguous"` to pin
 that backend, or `"auto"` to allow model-aware selection and fallback; `"auto"`
 is not a contiguous pin for the cohort. Explicit `"paged"` bypasses the
 automatic crash-loop guard, not the kill switch or capability vetoes
-(`provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift`,
+(`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift`,
 `degradesPagedFailure`; `EngineV2Factory+BackendPreparation.swift`,
 `prepareProductionBackend`).
 

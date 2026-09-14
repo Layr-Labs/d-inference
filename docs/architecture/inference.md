@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-11 · commit `ef7b5a9aa`
+> Last updated: 2026-09-14 · commit `f37d74777`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process in v0.9.1: one in-process engine (`mlx-swift-lm`
@@ -13,7 +13,7 @@ legacy engine and no subprocess. For the memory model see
 
 Every advertised model is served through CBv2; a `model_type` without a CBv2
 adapter is dropped from the advertised set at scan time and never loads
-(`provider-swift/Sources/ProviderCore/Inference/EngineV2SupportedModels.swift`,
+(`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift`,
 `isSupported`). The path is HTTP/WebSocket → `ProviderLoop` /
 `StandaloneServer` → `MultiModelBatchSchedulerEngine` → `EngineV2Bridge` →
 `EngineV2` → Metal.
@@ -21,11 +21,11 @@ adapter is dropped from the advertised set at scan time and never loads
 | Component | Role | Code |
 |---|---|---|
 | `ProviderLoop` / `StandaloneServer` | Coordinator WebSocket and local HTTP ingress; model load/unload; heartbeat | `provider-swift/Sources/ProviderCore/ProviderLoop.swift`, `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift` |
-| `MultiModelBatchSchedulerEngine` | Implements the upstream `MLXServerEngine` contract: OpenAI translation, chat-template render, tool-parser and tool-choice resolution, model acquire, dispatch by `request.model` | `provider-swift/Sources/ProviderCore/Inference/MultiModelBatchSchedulerEngine.swift` |
-| `EngineV2Bridge` (one per model) | Provider↔CBv2 boundary: request-id normalisation, `CBv2Request` translation, resident/SSD selection, cache evidence, shared-KV reservation, deadline projection, `engine.submit`, event pump, telemetry | `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift` with `+Submission`, `+Admission`, `+Lifecycle`, `+Resizing`, `+Identity`, `+Events`, `+Accounting`, `+Translation`, `+Profile`, `+Liveness`, `+MTP`, and `+PrefixCache` |
-| `EngineV2SlotFactory` | Builds one slot: model prep, MTP assistant, KV-backend selection and vetoes, paged preflight, resident and SSD prefix-cache construction gates | `provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift` |
-| `EngineV2Factory` (production) | `prepareProductionBackend`, `productionSchedulerConfig`, engine assembly | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift` with `+Configuration`, `+BackendPreparation`, and `+ModelAdapter` |
-| `EngineV2Runtime` | Process-wide registry of bridges; capacity summary for heartbeats; cancellation fan-out | `provider-swift/Sources/ProviderCore/Inference/EngineV2Runtime.swift` |
+| `MultiModelBatchSchedulerEngine` | Implements the upstream `MLXServerEngine` contract: OpenAI translation, chat-template render, tool-parser and tool-choice resolution, model acquire, dispatch by `request.model` | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` |
+| `EngineV2Bridge` (one per model) | Provider↔CBv2 boundary: request-id normalisation, `CBv2Request` translation, resident/SSD selection, cache evidence, shared-KV reservation, deadline projection, `engine.submit`, event pump, telemetry | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift` with `+Submission`, `+Admission`, `+Lifecycle`, `+Resizing`, `+Identity`, `+Events`, `+Accounting`, `+Translation`, `+Profile`, `+Liveness`, `+MTP`, and `+PrefixCache` |
+| `EngineV2SlotFactory` | Builds one slot: model prep, MTP assistant, KV-backend selection and vetoes, paged preflight, resident and SSD prefix-cache construction gates | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` |
+| `EngineV2Factory` (production) | `prepareProductionBackend`, `productionSchedulerConfig`, engine assembly | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift` with `+Configuration`, `+BackendPreparation`, and `+ModelAdapter` |
+| `EngineV2Runtime` | Process-wide registry of bridges; capacity summary for heartbeats; cancellation fan-out | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2Runtime.swift` |
 | CBv2 engine loop | Admission, KV allocation, chunked prefill, batched decode, detokenisation, leases | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`, `SchedulerV2.swift` |
 | promptsidecar boundary | Coordinator-side Rust process that computes the same `prompt_contract_id` and block chain ([`prefix-cache.md#block-hashing`](prefix-cache.md#block-hashing)) the provider derives with `PromptContractIdentity.compute(modelDirectory:)`; the provider never calls it | `coordinator/promptsidecar/`, `provider-swift/Sources/ProviderCoreFoundation/PromptContractIdentity.swift` — see [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md) |
 
@@ -122,13 +122,13 @@ receipt (`FirstContentDeadline(relativeBudgetMilliseconds:)`,
 and checked at every pre-content boundary. `prefill_deadline_mode` ∈ {`off`,
 `enforce`}; when the config key is absent, `DARKBLOOM_PREFILL_DEADLINE_MODE`
 exactly `off` disables, anything else enforces
-(`provider-swift/Sources/ProviderCore/Inference/PrefillDeadlineMode.swift`).
+(`provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift`).
 Under `enforce` the bridge builds `CBv2FirstTokenDeadlineAdmission` only when
 `maxConcurrentPartialPrefills == 1`, the request is not multimodal, and the
 isolated cold-prefill EWMA is initialised; prefill and decode rates are haircut
 by `deadlineProjectionRateHaircut = 0.5`. `WedgeMonitor.suspectStallSeconds =
 10` flags a stalled slot
-(`provider-swift/Sources/ProviderCore/Inference/WedgeMonitor.swift`).
+(`provider-swift/Sources/ProviderCore/Inference/Engine/WedgeMonitor.swift`).
 
 ### Multi-token prediction
 
@@ -185,7 +185,7 @@ replacement and insufficient staging memory also preserve the current owner;
 no model is evicted for this optional upgrade. The readiness loop polls with
 10–15 second jitter and retries unsuccessful staging after five minutes. Failed
 artifact fetches independently back off exponentially with jitter, capped at
-five minutes (`provider-swift/Sources/ProviderCore/Inference/MTPIdleUpgrade.swift`,
+five minutes (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPIdleUpgrade.swift`,
 `MTPIdleUpgrade.run`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`,
 `waitBeforeMTPUpgradeDrain`, `beginMTPUpgradeDrain`;
 `provider-swift/Sources/ProviderCore/ProviderLoop+MTPUpgrade.swift`, `commitMTPUpgradeIfIdle`;
@@ -226,7 +226,7 @@ Other stateless assistants and explicit offline Gemma verification controls
 retain fixed depth `1`; `maxRectangularTokens = 8` on
 M3/M4/M5 and `4` on M1/M2/unknown, lowered only by
 `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`
-(`provider-swift/Sources/ProviderCore/Inference/MTPAutomaticVerificationPolicy.swift`).
+(`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`).
 Gemma uses bounded rectangular target verification: one target traversal scores
 its seed and draft columns, while ordered attention and speculative transactions
 preserve causal visibility and discard rejected suffixes. The depth controller
@@ -248,7 +248,7 @@ target-authoritative. Supported sampling uses the target distribution and an
 output-indexed RNG stream. Penalties, bias, logprobs, stop strings and token
 constraints retain their ordinary-decode exclusions. Explicit offline serial
 verification remains available as a diagnostic oracle; drafter-required modes
-retain priority (`provider-swift/Sources/ProviderCore/Inference/EngineV2MTPAssistant.swift`,
+retain priority (`provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).
 Nemotron's assistant uses one speculative request and adaptive depth up to
 seven proposed tokens. Captured target verification, batched M=1 projections
@@ -296,7 +296,7 @@ disabled for this hybrid model.
 ### Sampling parameters
 
 `EngineV2Translation.samplingParams(from:)`
-(`provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Translation.swift`):
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift`):
 
 | OpenAI field | Honoured as | Default |
 |---|---|---|
@@ -318,10 +318,10 @@ disabled for this hybrid model.
 `NativeChannelSplitter` treats tool payloads as opaque while routing reasoning
 markers. It emits unclosed-frame payload incrementally and retains only a
 possible closing-marker suffix; it does not buffer an entire unfinished tool
-call (`provider-swift/Sources/ProviderCore/Inference/NativeChannelSplitter.swift`).
+call (`provider-swift/Sources/ProviderCore/Inference/Streaming/NativeChannelSplitter.swift`).
 
 `ReasoningPromptProbe.streamingPrefix` in
-`provider-swift/Sources/ProviderCore/Inference/ReasoningPromptProbe.swift`
+`provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift`
 decodes only the final eight prompt tokens to initialize Qwen/DeepSeek
 streaming parsing. A prompt ending in `<think>` receives an opening marker;
 a prompt ending in `</think>` receives an empty closed block. The downstream
@@ -378,13 +378,13 @@ and the coordinator can refuse to route
   next; peak attention memory falls from `(Σᵢ nᵢ)²` to `maxᵢ nᵢ²`. Gemma 4's
   SigLIP tower is one image per forward pass already. Each image is checked
   with `MLX.withError` right after `eval`
-  (`provider-swift/Sources/ProviderCore/Inference/EngineV2VisionTowerRun.swift`).
+  (`provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionTowerRun.swift`).
 - **N² budget.** `N_max = floor(sqrt(maxBufferLength / (headFactor ×
   attentionElementBytes)))` with `attentionElementBytes = 2`,
   `fusedAttentionHeadDims = {64, 80, 128}` (`headFactor = 1` when fused-eligible,
   else `numHeads`); `DARKBLOOM_VISION_MAX_TOWER_PATCHES` is a lower-only ceiling
-  (`provider-swift/Sources/ProviderCore/Inference/VisionTowerBudget.swift`).
-- **Media caps** (`provider-swift/Sources/ProviderCore/Inference/MediaIngest.swift`):
+  (`provider-swift/Sources/ProviderCore/Inference/Vision/VisionTowerBudget.swift`).
+- **Media caps** (`provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`):
   `maxImagePixels` 100 Mpx, `maxRequestImagePixels` 384 Mpx,
   `maxMediaDecodedBytes` 25 MiB, `maxVideoDurationSeconds` 600,
   `maxImagesPerRequest` 16, `maxVideosPerRequest` 8,
@@ -395,7 +395,7 @@ and the coordinator can refuse to route
   own regression checks before paged default promotion ([`prefix-cache.md`](prefix-cache.md)).
   `DARKBLOOM_ENGINE_V2_VLM_PARITY_CHECK` gates the load-time parity prefill
   between MLXVLM's inline text model and the extracted MLXLLM target
-  (`provider-swift/Sources/ProviderCore/Inference/EngineV2VLMTextExtraction.swift`).
+  (`provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VLMTextExtraction.swift`).
 
 ### Paged runtime type failures
 
@@ -481,21 +481,36 @@ or change consumer/OpenRouter routing.
 
 ## Code map
 
+Folders under `provider-swift/Sources/ProviderCore/Inference/` separate
+responsibilities within the existing `ProviderCore` target. SwiftPM discovers
+these sources recursively (`provider-swift/Package.swift`, `package`).
+
+| Folder | Responsibility and entry points |
+|---|---|
+| `Engine` | Runtime registration and slot lifetime (`EngineV2Runtime`, `ProviderEngineBundle`); `Bridge` owns request admission, submission and completion (`EngineV2Bridge`), `Factory` constructs slots (`EngineV2SlotFactory`), and `Scheduler` adapts the multi-model engine (`MultiModelBatchSchedulerEngine`). |
+| `Memory` | Process and KV budgets, allocation ownership and memory telemetry (`ProcessMemoryLedger`, `GlobalKVCacheBudget`). |
+| `PrefixCache` | Reuse policy, identity, receipts and routing evidence (`PrefixCachePolicy`, `ResidentPrefixCacheEvidence`). Encrypted storage stays in `provider-swift/Sources/ProviderCore/KVCacheSSD/`. |
+| `MTP` | Assistant loading, verification policy and activation (`ProductionProviderMTPAssistantLoader` in `MTP/EngineV2MTPAssistant.swift`, `MTPAutomaticVerificationPolicy`). |
+| `Prompting` | Request normalization, templates and tokenization (`ProviderPromptContractPipeline`). |
+| `Tools` | Schema normalization and constrained generation (`ToolSchemaNormalization`, `ToolConstraintFactory`). |
+| `Streaming` | Reasoning/tool output routing, logprobs and usage (`NativeToolStreamRouter`, `StreamedGenerationUsage` in `Streaming/UsageAccounting.swift`). |
+| `Vision` | Media decoding, feature preparation and memory gates (`MediaIngest`, `VisionMemoryGate`). |
+
 | Concern | File / symbol |
 |---|---|
-| Bridge submit path | `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Submission.swift` (`submitTokenized`) |
-| Request identity | `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Identity.swift` (`normalizedRequestId`, `mintEngineRequestId`) |
-| Admission and resizing | `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Admission.swift` (`firstTokenDeadlineAdmission`); `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Resizing.swift` (`updateKVBytesCapacity`) |
-| Cancellation and completion | `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift` (`cancel`, `shutdown`); `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift` (`runPump`, `finishAndEmit`) |
-| Sampling translation | `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Translation.swift` (`samplingParams`) |
-| Slot construction | `provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift` |
-| Scheduler config, backend prep | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Configuration.swift` (`productionSchedulerConfig`); `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BackendPreparation.swift` (`prepareProductionBackend`) |
-| Model adaptation and assembly | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+ModelAdapter.swift` (`ProductionModelAdapter`, `directServingModel`); `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift` (`assembleProductionBuild`) |
-| Refusal taxonomy, retired env knobs | `provider-swift/Sources/ProviderCore/Inference/EngineV2Config.swift` (`EngineV2RefusalReason`) |
-| Deadlines | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift`, `provider-swift/Sources/ProviderCore/Inference/PrefillDeadlineMode.swift`, `provider-swift/Sources/ProviderCore/Inference/WedgeMonitor.swift` |
-| MTP | `provider-swift/Sources/ProviderCore/Inference/MTPAutomaticVerificationPolicy.swift`, `provider-swift/Sources/ProviderCore/Inference/EngineV2MTPAssistant.swift`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift` |
-| Vision | `provider-swift/Sources/ProviderCore/Inference/MediaIngest.swift`, `provider-swift/Sources/ProviderCore/Inference/VisionTowerBudget.swift`, `provider-swift/Sources/ProviderCore/Inference/EngineV2VisionTowerRun.swift`, `provider-swift/Sources/ProviderCore/Inference/EngineV2VisionPrefill.swift` |
-| Tool constraints, reasoning probe | `provider-swift/Sources/ProviderCore/Inference/ToolConstraintFactory.swift`, `provider-swift/Sources/ProviderCore/Inference/ReasoningPromptProbe.swift` |
+| Bridge submit path | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`) |
+| Request identity | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Identity.swift` (`normalizedRequestId`, `mintEngineRequestId`) |
+| Admission and resizing | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift` (`firstTokenDeadlineAdmission`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Resizing.swift` (`updateKVBytesCapacity`) |
+| Cancellation and completion | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Lifecycle.swift` (`cancel`, `shutdown`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift` (`runPump`, `finishAndEmit`) |
+| Sampling translation | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift` (`samplingParams`) |
+| Slot construction | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` |
+| Scheduler config, backend prep | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`productionSchedulerConfig`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift` (`prepareProductionBackend`) |
+| Model adaptation and assembly | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift` (`ProductionModelAdapter`, `directServingModel`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift` (`assembleProductionBuild`) |
+| Refusal taxonomy, retired env knobs | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Config.swift` (`EngineV2RefusalReason`) |
+| Deadlines | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/WedgeMonitor.swift` |
+| MTP | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`, `provider-swift/Sources/ProviderCore/Inference/MTP/EngineV2MTPAssistant.swift`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift` |
+| Vision | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/VisionTowerBudget.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionTowerRun.swift`, `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift` |
+| Tool constraints, reasoning probe | `provider-swift/Sources/ProviderCore/Inference/Tools/ToolConstraintFactory.swift`, `provider-swift/Sources/ProviderCore/Inference/Prompting/ReasoningPromptProbe.swift` |
 | Engine contracts, timing, scheduler, loop | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2Contracts.swift`, `SchedulerV2.swift`, `EngineLoopV2.swift`, `CBv2RequestTiming+Stamps.swift` |
 
 ## Related

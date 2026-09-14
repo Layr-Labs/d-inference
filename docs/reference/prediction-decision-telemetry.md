@@ -47,7 +47,7 @@ terminal messages. Sources: `coordinator/protocol/profile_deadline.go`
 | `projected_prefill_tokens`, `projected_decode_tokens` | Engine-projected scheduled work through the target's first-token step, including work ahead of the target; not just the target request's tokens. |
 | `prefill_tps`, `decode_tps` | Effective conservative rates passed to the engine after the existing policy adjustment. Missing/unusable rates remain absent. |
 
-`provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+DeadlineDecision.swift`
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+DeadlineDecision.swift`
 records returned evidence before post-submit expiry/cancellation checks can
 throw. Existing accepted-only stamps and projection fields keep their meaning;
 `accepted` with `continuation=expired` can therefore coexist with a missing

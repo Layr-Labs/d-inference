@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-13 · commit `8670b2a08`
+> Last updated: 2026-09-14 · commit `bf2678202`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -124,7 +124,8 @@ mismatching digest before the registry's attachment check.
 current registry, store, MDM, scheduler, logger and policy dependencies. The
 verifier starts no workers and owns no provider inventory. Registration and
 capability publication remain in `providerReadLoop`; scheduler claims,
-generations and late-command authorization stay in `coordinator/api/mdm_scheduler.go` and `coordinator/api/mdm_scheduler_callbacks.go`.
+generations and late-command authorization belong to
+`coordinator/providercontrol/mdmscheduler/` (`Scheduler`).
 `verification.NewScheduledAttempt` places the same `*Attempt` in the context
 and returns it to the scheduler. Synchronous transport callbacks fill that
 record and publish exact command ownership before command visibility; the
@@ -156,7 +157,7 @@ owner does not start another MDM verification job.
 | Checks after the signatures | Require reported SIP on and RDMA status; an explicitly disabled Secure Boot fails. The configured binary-hash policy is enforced only with its enforcement flag; model hashes are checked against their own catalog entries. Runtime mismatch and a version below the configured floor exclude routing without hard-untrust; live capability reconciliation failure marks untrusted | `coordinator/providercontrol/challenge/posture.go` (`verifyPosture`); `integrity.go` (`verifyBinaryHash`, `verifyModelHashes`); `verify.go` (`VerifyResponse`) |
 | Success | `ChallengeVerifiedSIP = sip_enabled`; `UpdateModelWeightHashes`; `RecordChallengeSuccess` (clears a transient untrust and drains queued requests); then `TryReuse` may re-grant `hardware` from durable device evidence | `coordinator/providercontrol/challenge/verify.go` (`VerifyResponse`); `coordinator/providercontrol/trustreuse/reuse.go` (`TryReuse`) |
 | Failure accounting | `RecordChallengeFailure(providerID, transient)`; `transient` = reason `timeout` / `no response`. A hard failure clears `LastChallengeVerified` and `ChallengeVerifiedSIP` at once (unroutable immediately); at `MaxFailedChallenges` = 3 consecutive failures the provider is `MarkUntrusted` (hard) or `MarkUntrustedTransient` (transient); at `MaxConsecutiveChallengeTimeoutsBeforeReconnect` = 6 transient timeouts the WebSocket is closed with `StatusPolicyViolation` to force a clean re-registration | `coordinator/providercontrol/challenge/failure.go` (`RecordFailure`, `TransientFailure`); `coordinator/registry/attestation_policy.go` (`RecordChallengeFailure`); `coordinator/registry/provider.go` (`MaxFailedChallenges`) |
-| Freshness for routing | `now − LastChallengeVerified ≤ challengeFreshnessMaxAge` ([routing](../routing.md#challenge-freshness)), else the scheduler skips the provider (`GateChallengeStale`) | `coordinator/registry/scheduler.go` (`challengeFreshnessMaxAge`); `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`) |
+| Freshness for routing | `now − LastChallengeVerified ≤ challengeFreshnessMaxAge` ([routing](../routing.md#challenge-freshness)), else the scheduler skips the provider (`GateChallengeStale`) | `coordinator/registry/routing_constants.go` (`challengeFreshnessMaxAge`); `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`) |
 | Stop | `ChallengeShouldStop` when hard-untrusted or gone | `coordinator/registry/provider_evidence.go` (`ChallengeShouldStop`) |
 
 `provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift`
@@ -208,19 +209,42 @@ the SE blob. The device enrols through the profile described in
 the check is owned by a store-backed scheduler rather than re-run on every
 challenge, so a throttled APNs push cannot strand a genuine device.
 
+#### MDM scheduler ownership
+
+`coordinator/providercontrol/mdmscheduler/scheduler.go` (`Scheduler`, `New`, `Close`)
+owns the durable queue, worker budget and private connection-generation/command
+state. `New` captures
+the claim store; `coordinator/api/provider_scheduler.go` (`mdmSchedulerDependencies`)
+keeps registry, verifier, logger and metric reads bound to the API's current
+resources. `Close` cancels and joins workers before releasing its remaining
+claims with the existing bounded cleanup context.
+
+`coordinator/providercontrol/mdmscheduler/bindings.go` (`Binding`, `Binding.Target`) keeps
+the generation private and exposes a copy of the provider/evidence view
+(`coordinator/providercontrol/mdmscheduler/dependencies.go`, `Target`). A late SecurityInfo
+lookup returns this opaque binding only for the current provider generation and
+exact UDID/command. The API applies its existing trust
+grant and persistence in `coordinator/api/provider_late_verification.go`
+(`ApplyLateSecurityInfo`). The owner then rechecks the provider pointer,
+generation and command in `CompleteLateSecurityInfo` or `RejectLateSecurityInfo`
+(`coordinator/providercontrol/mdmscheduler/late_security_info.go`). These API effects run
+outside the scheduler mutex. `coordinator/providercontrol/mdmscheduler/late_mda.go`
+(`ApplyLateMDA`) retains the Apple-chain and SE-key/serial/UDID
+checks before attaching proof and completing the owned claim.
+
 | Fact | Value | Code |
 |---|---|---|
-| Scheduling | One durable `VerificationJob` per live connection binding; kinds `security_info` and `mda`; `Workers` ≤ 12 (`defaultMDMVerificationWorkers`), queue ≤ 4096, one worker reserved for first/expired SecurityInfo attempts, claim TTL 3m, dispatch tick 1s | `coordinator/api/mdm_scheduler.go`, `coordinator/api/mdm_scheduler_config.go`, `coordinator/api/server_config.go`; `coordinator/store/contracts/verification.go` (`VerificationJob`, `VerificationTaskKind`) |
-| Retry after a transient outcome | first retry 2–4m, second 6–12m, then every 15–30m (jittered) | `coordinator/api/mdm_scheduler.go` (`mdmRetryFirstMin` … `mdmRetrySteadyMax`) |
-| Delay before the first attempt | first or expired verification (the provider holds no usable grant): due almost at once, jitter capped by `mdmFirstVerifySpreadMax` (5 s). Refresh or recovery of a still-valid grant: jitter between [`EIGENINFERENCE_MDM_INITIAL_SPREAD_MIN` and `_MAX`](../../reference/configuration.md#mdm-attestation-and-apns), so releases and coordinator restarts do not stampede MDM | `coordinator/api/mdm_scheduler_queue.go` (`initialSpread`), `coordinator/api/mdm_scheduler.go` (`mdmFirstVerifySpreadMax`) |
+| Scheduling | One durable `VerificationJob` per SE public key and task kind, usable only through its current live binding; kinds `security_info` and `mda`; `Workers` ≤ 12 (`defaultWorkers`), queue ≤ 4096, one worker reserved for first/expired SecurityInfo attempts, claim TTL 3m, dispatch tick 1s | `coordinator/providercontrol/mdmscheduler/scheduler.go` (`Scheduler`), `coordinator/providercontrol/mdmscheduler/config.go` (`Config`), `coordinator/providercontrol/mdmscheduler/policy.go` (`reservedUrgentWorkers`, `dispatchInterval`); `coordinator/store/contracts/verification.go` (`VerificationJob`, `VerificationTaskKind`) |
+| Retry after a transient outcome | first retry 2–4m, second 6–12m, then every 15–30m (jittered) | `coordinator/providercontrol/mdmscheduler/policy.go` (`retryFirstMin` … `retrySteadyMax`) |
+| Delay before the first attempt | first or expired verification (the provider holds no usable grant): due almost at once, jitter capped by `firstVerifySpreadMax` (5 s). Refresh or recovery of a still-valid grant: jitter between [`EIGENINFERENCE_MDM_INITIAL_SPREAD_MIN` and `_MAX`](../../reference/configuration.md#mdm-attestation-and-apns), so releases and coordinator restarts do not stampede MDM | `coordinator/providercontrol/mdmscheduler/policy.go` (`initialSpread`, `firstVerifySpreadMax`) |
 | One attempt | Look up the UDID by serial via the MicroMDM API → enqueue `SecurityInfo` → push → await ≤ 90s → `VerificationResult{DeviceEnrolled, MDMSIPEnabled, MDMSecureBootFull, MDMAuthRootVolume, SIPMatch, SecureBootMatch, SecurityMismatch, Error}` | `coordinator/mdm/mdm.go` (`VerifyProviderWithUDIDObserver`, `awaitSecurityInfo`) |
 | Pass condition | `attestResult.Valid`; `DeviceEnrolled`; `SystemIntegrityProtectionEnabled == true`; `SecureBootLevel == "full"`; both equal the SE blob's `sipEnabled` / `secureBootEnabled`. `AuthenticatedRootVolumeEnabled` is recorded, not compared | `coordinator/providercontrol/verification/security_info.go` (`Verifier.VerifySecurityInfo`); `coordinator/mdm/mdm.go` (`VerifyProviderWithUDIDObserver`) |
 | Outcome classes | `verification.Granted` (stop) · `verification.Transient` (retry; `MDMFailureReason` ∈ `error`, `device-not-found`, `found-not-enrolled`, `securityinfo-timeout`; trust unchanged) · `verification.Terminal` (`posture-mismatch`, `MarkUntrusted`, stop). A response proven by a received SecurityInfo is the only path to terminal | `coordinator/providercontrol/verification/config.go` (`Outcome`); `coordinator/providercontrol/verification/security_info.go` (`Verifier.VerifySecurityInfo`) |
 | Grant | Persist first (`RecordVerified` → store CAS `RecoverProviderTrustReuse` / `UpsertProviderTrustReuse`), then apply atomically at the observed untrust epoch: `GrantHardwareEvidenceAtEpochIfNotUntrusted` sets `Attested`, `TrustLevel = hardware`, `DeviceEvidence`; `trust_status{hardware, online, "MDM verification passed"}`; scheduler workers then enqueue the `mda` task | `coordinator/providercontrol/trustreuse/grant.go` (`recordTrustReuseAtGeneration`); `coordinator/registry/provider_evidence.go` (`GrantHardwareEvidenceAtEpochIfNotUntrusted`) |
-| Late response | A SecurityInfo webhook arriving after the await window is applied only for the exact scheduler binding and `CommandUUID` that issued it; reason `"MDM verification passed (late SecurityInfo)"` | `coordinator/api/provider.go` (`ApplyLateSecurityInfo`); `coordinator/providercontrol/trustreuse/grant.go` (`RecordLate`) |
+| Late response | A SecurityInfo webhook arriving after the await window is applied only for the exact scheduler binding and `CommandUUID` that issued it; reason `"MDM verification passed (late SecurityInfo)"` | `coordinator/api/provider_late_verification.go` (`ApplyLateSecurityInfo`); `coordinator/providercontrol/trustreuse/grant.go` (`RecordLate`) |
 | Webhook gate | Only responses whose `CommandUUID` matches an outstanding command (within `outstandingCommandTTL`, [enrollment](enrollment.md#coordinator--micromdm)) are honoured; only `SecurityInfo` and `DeviceInformation` may ever be sent | `coordinator/mdm/mdm.go` (`HandleWebhook`, `assertReadOnlyCommand`, `readOnlyMDMRequestTypes`) |
 | Reconnect | `RestoreProviderState` caps a stored `hardware` to `self_signed`, resets `MDAVerified`, and only *stages* a stored MDA chain. The first fresh signed challenge may re-grant via trust reuse (next table) | `coordinator/registry/persistence.go` (`RestoreProviderState`) |
-| Observability | `mdm.verification{outcome}` counter; `mdm.scheduler.*` (`enqueued`, `attempts`, `grants`, `timeouts`, `queue_depth`, `retry_delay_seconds`, …); gauges `providers.by_trust_status{trust_level,status}` and `providers.by_mdm_failure{reason}` | `coordinator/api/mdm_scheduler_metrics.go`; `coordinator/api/provider.go`; `coordinator/registry/fleet_views.go` |
+| Observability | `mdm.verification{outcome}` counter; `mdm.scheduler.*` (`enqueued`, `attempts`, `grants`, `timeouts`, `queue_depth`, `retry_delay_seconds`, …); gauges `providers.by_trust_status{trust_level,status}` and `providers.by_mdm_failure{reason}` | `coordinator/providercontrol/mdmscheduler/metrics.go` (`observeAttempt`, `recordCounter`); `coordinator/api/provider_late_verification.go` (`ApplyLateSecurityInfo`); `coordinator/registry/fleet_views.go` |
 
 Trust reuse — device evidence carried across a reconnect without a new
 SecurityInfo round-trip. Evaluated in `tryTrustReuseFastSkip` after a fresh
@@ -272,7 +296,7 @@ the same MicroMDM → APNs channel as SecurityInfo).
 
 | Fact | Value | Code |
 |---|---|---|
-| When | After a hardware grant on this connection (`mda` scheduler task, or inline for direct callers) | `coordinator/providercontrol/verification/security_info.go` (`Verifier.VerifySecurityInfo`); `coordinator/providercontrol/verification/mda.go` (`Verifier.VerifyMDA`); `coordinator/api/mdm_scheduler_exec.go` |
+| When | After a hardware grant on this connection (`mda` scheduler task, or inline for direct callers) | `coordinator/providercontrol/verification/security_info.go` (`Verifier.VerifySecurityInfo`); `coordinator/providercontrol/verification/mda.go` (`Verifier.VerifyMDA`); `coordinator/providercontrol/mdmscheduler/executor.go` (`Executor.Execute`) |
 | Fast path | A durable chain from the store is re-verified against the pinned root and re-bound to this connection's SE key; reused only when `FreshnessCode == SHA-256(SE public key string)` (Apple rate-limits fresh attestations to about one per device per 7 days) | `coordinator/providercontrol/verification/mda_reuse.go` (`Verifier.AttachCachedMDA`); `coordinator/providercontrol/verification/mda_stage.go` (`Verifier.StageMDA`) |
 | Fresh request | `DeviceInformation` with `Queries = [DeviceAttestation]` and `DeviceAttestationNonce = SHA-256(SE public key string)`; await ≤ 60s | `coordinator/mdm/mdm.go` (`RequestDeviceAttestation`) |
 | Verification | Chain to the embedded Apple Enterprise Attestation Root CA (P-384); leaf OIDs `OIDSIPStatus 1.2.840.113635.100.8.13.1`, `OIDSecureBootStatus …13.2`, `OIDKextStatus …13.3`, `OIDDeviceSerialNumber …9.1`, `OIDDeviceUDID …9.2`, `OIDSoftwareUpdateDeviceID …9.4`, `OIDOSVersion …10.1`, `OIDSepOSVersion …10.2`, `OIDLLBVersion …10.3`, `OIDFreshnessCode …11.1` | `coordinator/attestation/mda.go` (`VerifyMDADeviceAttestation`) |
@@ -416,7 +440,7 @@ received (`darkbloom status`, `Trust: <level> / <status>`).
 6. `sip_enabled == false` or `secure_boot_enabled == false` in any challenge reply, an enforced binary-hash mismatch, a model-hash mismatch, or an encrypted-chunk violation untrusts the provider immediately, without the three-strike count — `coordinator/providercontrol/challenge/posture.go` (`verifyPosture`), `integrity.go` (`verifyBinaryHash`, `verifyModelHashes`); `coordinator/api/provider.go` (`decryptTextResponseChunk`).
 7. A code-identity proof is accepted only for the exact (SE key, APNs token, `K`) it was issued to and only within `challengeValidity`; cached proofs authorise a resume challenge, never a grant — `coordinator/providercontrol/codeidentity/challenge_loop.go` (`codeAttestLoopForGeneration`); `coordinator/providercontrol/codeidentity/response.go` (`HandleResponse`), `coordinator/providercontrol/codeidentity/apns_challenge.go` (`matchChallengeForIdentity`).
 8. Code identity becomes mandatory only when an attestor is configured and `APNS_ENFORCE_AFTER` has passed — `coordinator/registry/attestation_policy.go` (`codeAttestationEnforcedLocked`).
-9. Routing evaluates `providerLivenessGateReasonLocked` in a fixed order and skips any provider whose last verified challenge is older than [`challengeFreshnessMaxAge`](../routing.md#challenge-freshness) — `coordinator/registry/routing_eligibility.go`, `coordinator/registry/scheduler.go`.
+9. Routing evaluates `providerLivenessGateReasonLocked` in a fixed order and skips any provider whose last verified challenge is older than [`challengeFreshnessMaxAge`](../routing.md#challenge-freshness) — `coordinator/registry/routing_eligibility.go`, `coordinator/registry/routing_constants.go`.
 10. Hard untrust writes a durable tombstone that wins any race with a pending hardware grant — `coordinator/providercontrol/trustreuse/revocation.go` (`Invalidate`), `coordinator/registry/provider_evidence.go` (`GrantHardwareEvidenceAtEpochIfNotUntrusted`).
 11. Effective `RuntimeCapabilities` require hardware trust and code proof; `SetAttested` below hardware and `SetCodeAttested(false)` clear them — `coordinator/registry/provider_evidence.go`.
 12. The [runtime manifest](#runtime-manifest) accepts every active release's values (one set per template name, `mlx_metallib` included); registering a release can only widen it and deactivating one narrows it, so a registration never deroutes providers on the previous release — `coordinator/providercontrol/releasepolicy/runtime_sync.go` (`SyncRuntimeManifest`), `coordinator/providercontrol/releasepolicy/runtime_manifest.go` (`RuntimeManifest`).
@@ -433,7 +457,7 @@ received (`darkbloom status`, `Trust: <level> / <status>`).
 | SIP or Secure Boot reported off | `untrusted` immediately | `coordinator/providercontrol/challenge/verify.go` (`VerifyResponse`) |
 | Reported `mlx_metallib` not in the [runtime manifest](#runtime-manifest)'s accepted set, or manifest withdrawn | `RuntimeVerified`, `RuntimeManifestChecked`, `MetallibVerified` false and `RuntimeCapabilities` cleared; still connected, trust level unchanged, unroutable until a passing registration or challenge; `runtime_status` sent | `coordinator/providercontrol/releasepolicy/runtime_provider.go` (`ApplyChallengeRuntimePolicy`) |
 | MDM `device-not-found` / `found-not-enrolled` | Stays `self_signed`; retried on the scheduler cadence; provider must complete enrolment | `coordinator/providercontrol/verification/security_info.go` (`Verifier.VerifySecurityInfo`) |
-| MDM `securityinfo-timeout` / `error` | Stays `self_signed`; retried; a late webhook can still grant | `coordinator/api/provider.go` (`ApplyLateSecurityInfo`) |
+| MDM `securityinfo-timeout` / `error` | Stays `self_signed`; retried; a late webhook can still grant | `coordinator/api/provider_late_verification.go` (`ApplyLateSecurityInfo`) |
 | MDM `posture-mismatch` | `untrusted`, terminal for the connection | `coordinator/providercontrol/verification/security_info.go` (`Verifier.VerifySecurityInfo`) |
 | MDA chain invalid or unbound | `mda_verified` stays false; level unaffected | `coordinator/providercontrol/verification/mda.go` (`Verifier.VerifyMDA`) |
 | No APNs token / no Aqua session / pushes unanswered | `CodeAttested` false; routable in grace mode, derouted from private text after `APNS_ENFORCE_AFTER` | `coordinator/providercontrol/codeidentity/challenge_loop.go` (`Loop`) |
@@ -447,13 +471,13 @@ received (`darkbloom status`, `Trust: <level> / <status>`).
 | Trust enum, flags, setters | `coordinator/registry/provider.go` (`TrustLevel`, `trustRank`, `MaxFailedChallenges`); `coordinator/registry/provider_evidence.go` (`SetAttested`, `GrantHardwareEvidenceAtEpochIfNotUntrusted`, `SetMDAProofIfHardwareBound`, `GrantProcessCodeAttested`); `coordinator/registry/attestation_policy.go` (`MarkUntrusted`, `MarkUntrustedTransient`, `RecordChallengeFailure`, `RecordChallengeSuccess`) |
 | Registration blob verification | `coordinator/attestation/attestation.go` (`Verify`, `VerifyJSON`, `CheckTimestamp`, `marshalSortedJSON`); `coordinator/providercontrol/verification/registration.go` (`Verifier.VerifyRegistration`) |
 | Challenge loop and verification | `coordinator/providercontrol/challenge/session.go` (`Session`), `loop.go` (`Run`), `transport.go` (`sendChallenge`, `Deliver`), `verify.go` (`VerifyResponse`), `signature.go`, `posture.go`, `integrity.go`, `failure.go`; `coordinator/api/provider_challenge.go` (`newProviderChallengeVerifier`); cryptographic primitives in `coordinator/attestation/attestation.go` |
-| MDM verification and scheduler | `coordinator/providercontrol/verification/security_info.go` (`Verifier.VerifySecurityInfo`); `coordinator/api/provider.go` (`ApplyLateSecurityInfo`); `coordinator/api/mdm_scheduler.go`, `coordinator/api/mdm_scheduler_exec.go`, `coordinator/api/mdm_scheduler_config.go`; `coordinator/mdm/mdm.go` (`VerifyProviderWithUDIDObserver`, `HandleWebhook`) |
+| MDM verification and scheduler | `coordinator/providercontrol/verification/security_info.go` (`Verifier.VerifySecurityInfo`); `coordinator/api/provider_late_verification.go` (`ApplyLateSecurityInfo`); `coordinator/providercontrol/mdmscheduler/scheduler.go` (`Scheduler`), `coordinator/providercontrol/mdmscheduler/dispatch.go` (`dispatcher`), `coordinator/providercontrol/mdmscheduler/config.go` (`ConfigFromEnv`); `coordinator/mdm/mdm.go` (`VerifyProviderWithUDIDObserver`, `HandleWebhook`) |
 | Trust reuse | `coordinator/providercontrol/trustreuse/manager.go` (`Manager`); `coordinator/providercontrol/trustreuse/grant.go` (`RecordVerified`, `RecordLate`); `coordinator/providercontrol/trustreuse/reuse.go` (`TryReuse`); `coordinator/providercontrol/trustreuse/revocation.go` (`Invalidate`) |
 | Reconnect state | `coordinator/providercontrol/verification/restore.go` (`Verifier.Restore`, `tryRestore`); `coordinator/registry/persistence.go` (`RestoreProviderState`) |
 | MDA | `coordinator/attestation/mda.go` (`VerifyMDADeviceAttestation`); `coordinator/providercontrol/verification/mda.go` (`Verifier.VerifyMDA`); `coordinator/providercontrol/verification/mda_reuse.go` (`Verifier.AttachCachedMDA`); `coordinator/mdm/mdm.go` (`RequestDeviceAttestation`) |
 | Code-identity lifecycle and binding | `coordinator/providercontrol/codeidentity/manager.go` (`Manager`); `coordinator/api/provider_codeattest.go` (`codeIdentityDependencies`); `coordinator/cmd/coordinator/provider_trust.go` (`parseAPNsEnforceAfter`) |
 | Code proofs, push admission and continuity | `coordinator/providercontrol/codeidentity/reuse.go` (`reuseAttestationBasis`); `coordinator/providercontrol/codeidentity/push_budget.go` (`reservePush`); `coordinator/providercontrol/codeidentity/coverage.go` (`SweepCoverage`) |
-| Routing gate | `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`); `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`); `coordinator/registry/model_capacity.go` (`publiclyRoutableLocked`); `coordinator/registry/scheduler.go` (`challengeFreshnessMaxAge`) |
+| Routing gate | `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`); `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`); `coordinator/registry/model_capacity.go` (`publiclyRoutableLocked`); `coordinator/registry/routing_constants.go` (`challengeFreshnessMaxAge`) |
 | Release evidence publication | `coordinator/providercontrol/releasepolicy/publish.go` (`publishReleaseTrustPolicy`) and `snapshot.go` (`retainedReleaseTrustPolicy`, `addRelease`): successful sync and committed-mutation recovery publish the snapshot, revalidate the generation, then challenge invalidated providers; cold-start deny-all stays separate in `coordinator/providercontrol/releasepolicy/inventory.go` |
 | Runtime manifest | `coordinator/providercontrol/releasepolicy/runtime_sync.go`, `runtime_manifest.go`, `runtime_verify.go`, `runtime_provider.go` (`SyncRuntimeManifest`, `RuntimeManifest`, `VerifyRuntimeHashesForBackend`, `VerifyRuntimeHashesAgainstManifest`, `RuntimeManifestApprovesMetallib`, `RevalidateConnectedProviders`, `ApplyChallengeRuntimePolicy`); `coordinator/api/releases/runtime_manifest.go` (`Controller.RuntimeManifest`); `coordinator/api/releases/registration.go` (`Controller.Register`), `coordinator/api/releases/deactivation.go` (`Controller.Delete`) |
 | Release-policy / evidence-mode gate | `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextModeLocked`, `releasePolicyEnforcedLocked`, `SetReleasePolicyGeneration`) |

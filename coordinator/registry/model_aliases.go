@@ -2,6 +2,8 @@ package registry
 
 import (
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/registry/routingcost"
 )
 
 // AliasTarget is the declarative resolution target for a public alias: a single
@@ -323,7 +325,7 @@ func (r *Registry) providerStructurallyCanRouteBuildLocked(
 			}
 		}
 	}
-	return slotStateModelLoaded(slotState) ||
+	return routingcost.SlotStateModelLoaded(slotState) ||
 		modelFitsHardware(
 			r.catalogMinRAMGbLocked(buildID),
 			r.modelSizeGBForFitLocked(p, buildID),
@@ -358,7 +360,7 @@ func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minT
 			if slot.Model != buildID {
 				continue
 			}
-			if _, eligible := slotStatePenalty(slot.State); !eligible {
+			if _, eligible := routingcost.SlotStatePenalty(slot.State); !eligible {
 				return false
 			}
 			break

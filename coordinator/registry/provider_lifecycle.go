@@ -346,9 +346,9 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 	// answered now (the socket is gone) — resolve them as SendFailed so probe
 	// collectors demote the entries immediately instead of burning the full
 	// quote window. Like the cache-holder cleanup above, this runs after the
-	// registry/provider locks are released (quoteTracker has its own leaf
+	// registry/provider locks are released (dispatchplan.Probes has its own leaf
 	// mutex; see capacity_quotes.go).
-	r.capacityQuotes.failProvider(id)
+	r.capacityQuotes.FailProvider(id)
 
 	// Close all pending request channels so consumers get errors. Pending
 	// requests created by tests may leave these channels nil, and consumer

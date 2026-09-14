@@ -48,6 +48,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── payments/         ledger + pricing (+ baserewards/)
 ├── providercontrol/trustreuse/ durable device evidence, revocation journal/replay and continuity (Manager)
 ├── providercontrol/challenge/ connection-local nonces, challenge transport and ordered verification (Session, Verifier)
+├── providercontrol/mdmscheduler/ durable MDM/MDA queue, claims, worker budget and exact command ownership (Scheduler)
 ├── providercontrol/verification/ signed registration, reconnect recovery and MDM/MDA evidence checks (Verifier)
 ├── providercontrol/codeidentity/ code proofs, APNs budgets/nonces, encrypted resume and continuity (Manager)
 ├── providercontrol/releasepolicy/ active release generations, binary allowlists and runtime manifest (Manager)
@@ -61,6 +62,8 @@ coordinator/          Go control plane (packages live at top level, not internal
 │                     admission/ (immutable capacity math), providerversion/ (shared interpreter),
 │                     cacheattempt/ (request lifetime), cachedirectory/ (receipt/holder transactions),
 │                     modelloads/ (session command clocks and fleet plan gate),
+│                     dispatchplan/ (private shortlist, quote correlation and probe settlement),
+│                     routingcost/ (shared latency tuning, calibration and snapshot calculations),
 │                     routingsim/ (trace-driven routing simulation harness)
 ├── saferun/          panic-safe goroutine runners
 ├── stateexport/      consistent encrypted archive of MicroMDM (+ legacy step-ca) state (migration)

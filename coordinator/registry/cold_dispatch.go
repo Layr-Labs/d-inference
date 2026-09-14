@@ -1,13 +1,17 @@
 package registry
 
-import "time"
+import (
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/registry/routingcost"
+)
 
 // Routing v2 — W3 cold-dispatch detection.
 //
 // Background: the scheduler already treats an IDLE on-disk provider as an
 // eligible candidate — `slotStatePenalty("unknown")` returns eligible and
 // `freeMemoryAdmits` admits a cold load when the model fits and the provider has
-// no in-flight work (see scheduler.go). So when an idle, fitting cold provider
+// no in-flight work (see routingcost/penalties.go). So when an idle, fitting cold provider
 // exists, `quickCapacityCheck` already counts it as a candidate and the request
 // is dispatched (cold) without any new code.
 //
@@ -104,7 +108,7 @@ func (r *Registry) coldSpillProviderEligibleLocked(p *Provider, model string, tr
 	// target (and would have been a candidate, so we would not be here).
 	if p.BackendCapacity != nil {
 		for _, slot := range p.BackendCapacity.Slots {
-			if slot.Model == model && slotStateModelLoaded(slot.State) {
+			if slot.Model == model && routingcost.SlotStateModelLoaded(slot.State) {
 				return false
 			}
 		}

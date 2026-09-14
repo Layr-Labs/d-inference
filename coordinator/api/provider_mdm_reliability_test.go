@@ -250,27 +250,35 @@ func bindLateSecurityInfoForTest(
 	udid string,
 ) uint64 {
 	t.Helper()
-	generation := srv.mdmScheduler.Submit(
-		context.Background(), provider.ID, provider,
-		store.VerificationPriorityRecovery,
-	)
+	srv.mdmScheduler.Close()
+	observed := make(chan struct{})
+	deps := mdmSchedulerDeps{
+		Jitter: func(time.Duration, time.Duration) time.Duration { return 0 },
+		Execute: func(ctx context.Context, target mdmLiveBinding, kind store.VerificationTaskKind, _ string) mdmSchedulerAttemptResult {
+			if kind == store.VerificationTaskSecurityInfo {
+				srv.mdmScheduler.ObserveAttemptUDID(target.Provider, udid)
+				srv.mdmScheduler.ObserveAttemptCommand(target.Provider, store.VerificationTaskSecurityInfo, udid, lateSecurityInfoCommandUUID)
+				close(observed)
+			}
+			<-ctx.Done()
+			return mdmSchedulerAttemptResult{Outcome: store.VerificationOutcomeCancelled}
+		},
+	}
+	srv.mdmScheduler = newMDMVerificationScheduler(srv, MDMSchedulerConfig{Workers: 1, QueueCapacity: 8, InitialSpreadMax: time.Nanosecond}, deps)
+	generation := srv.mdmScheduler.Submit(context.Background(), provider.ID, provider, store.VerificationPriorityRecovery)
 	if generation == 0 {
 		t.Fatal("scheduler binding was not created")
 	}
 	srv.mdmScheduler.ChallengeSettled(provider, false)
-	seKey := provider.GetAttestationResult().PublicKey
-	key := verificationSchedulerKey(seKey, store.VerificationTaskSecurityInfo)
-	srv.mdmScheduler.mu.Lock()
-	job := srv.mdmScheduler.jobs[key]
-	if job == nil {
-		srv.mdmScheduler.mu.Unlock()
-		t.Fatal("scheduler job was not retained")
+	select {
+	case <-observed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("scheduler worker did not observe its late-command binding")
 	}
-	job.record.UDID = udid
-	job.callbackGen = generation
-	job.callbackUUID = lateSecurityInfoCommandUUID
-	srv.mdmScheduler.byUDID[udid] = key
-	srv.mdmScheduler.mu.Unlock()
+	binding := srv.mdmScheduler.ApplyLateSecurityInfo(udid, lateSecurityInfoCommandUUID, true)
+	if binding == nil || binding.Target().Provider != provider {
+		t.Fatal("scheduler did not retain the exact provider command binding")
+	}
 	return generation
 }
 
@@ -519,13 +527,9 @@ func waitForMDACommand(t *testing.T, fake *fakeMDMServer) string {
 
 func scheduledMDABinding(provider *registry.Provider) mdmLiveBinding {
 	return mdmLiveBinding{
-		providerID:       provider.ID,
-		provider:         provider,
-		attestation:      attestResultOf(provider),
-		generation:       1,
-		ctx:              context.Background(),
-		challengeSettled: true,
-		allowMDA:         true,
+		ProviderID:  provider.ID,
+		Provider:    provider,
+		Attestation: attestResultOf(provider),
 	}
 }
 
@@ -537,7 +541,7 @@ func TestExecuteScheduledMDARequestFailureIsTransient(t *testing.T) {
 		context.Background(), scheduledMDABinding(provider),
 		store.VerificationTaskMDA, "UDID-1",
 	)
-	if result.terminal || result.granted || result.outcome != store.VerificationOutcomeTransient {
+	if result.Terminal || result.Granted || result.Outcome != store.VerificationOutcomeTransient {
 		t.Fatalf("request failure result = %+v, want transient retry", result)
 	}
 }
@@ -565,7 +569,7 @@ func TestExecuteScheduledMDAWaiterOwnershipFailureIsTransient(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("original MDA waiter did not release after cancellation")
 	}
-	if result.terminal || result.granted || result.outcome != store.VerificationOutcomeTransient {
+	if result.Terminal || result.Granted || result.Outcome != store.VerificationOutcomeTransient {
 		t.Fatalf("waiter ownership result = %+v, want transient retry", result)
 	}
 }
@@ -586,7 +590,7 @@ func TestExecuteScheduledMDAReceivedInvalidProofIsTerminal(t *testing.T) {
 	)
 	select {
 	case result := <-resultCh:
-		if !result.terminal || result.granted || result.outcome != store.VerificationOutcomeInvalid {
+		if !result.Terminal || result.Granted || result.Outcome != store.VerificationOutcomeInvalid {
 			t.Fatalf("invalid proof result = %+v, want terminal invalid", result)
 		}
 	case <-time.After(time.Second):

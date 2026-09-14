@@ -52,10 +52,10 @@ func TestPooledZeroBudgetResidentRateStaysSymmetric(t *testing.T) {
 	fillSnapshotPendingAndPool(&pendingSnap, p, gemmaBuild)
 	delete(p.pendingReqs, "known-zero-pending")
 	p.mu.Unlock()
-	if !pendingSnap.pendingBytesKnown {
+	if !pendingSnap.PendingBytesKnown {
 		t.Fatal("zero-budget resident disabled byte accounting")
 	}
-	if got := pendingSnap.pendingMaxBytesAllModels; got != knownZeroRate {
+	if got := pendingSnap.PendingMaxBytesAllModels; got != knownZeroRate {
 		t.Fatalf("zero-budget resident pending bytes = %d, want reported rate %d", got, knownZeroRate)
 	}
 
@@ -578,31 +578,31 @@ func TestPooledPendingColdRequestKeepsByteAccounting(t *testing.T) {
 
 	var snap routingSnapshot
 	fillSnapshotPendingAndPool(&snap, p, "resident-small-kv")
-	snap.kvBytesPerToken = residentRate
+	snap.KVBytesPerToken = residentRate
 
 	wantPendingBytes := int64(2_100) * kvCacheBytesPerToken
-	if !snap.pendingBytesKnown {
+	if !snap.PendingBytesKnown {
 		t.Error("cold pending request disabled provider byte accounting")
 	}
-	if snap.pendingMaxBytesAllModels != wantPendingBytes {
-		t.Errorf("cold pending bytes = %d, want %d at conservative default rate", snap.pendingMaxBytesAllModels, wantPendingBytes)
+	if snap.PendingMaxBytesAllModels != wantPendingBytes {
+		t.Errorf("cold pending bytes = %d, want %d at conservative default rate", snap.PendingMaxBytesAllModels, wantPendingBytes)
 	}
 	if pooledBudgetAdmits(snapPtr(snap), 20_000) {
 		t.Error("subsequent resident request admitted via token fallback after cold pending request consumed byte headroom")
 	}
-	wantRemaining := (snap.pooledTokenBudget.TotalBytes() - wantPendingBytes) / residentRate
+	wantRemaining := (snap.PooledTokenBudget.TotalBytes() - wantPendingBytes) / residentRate
 	if got := pooledRemainingTokens(
-		snap.pooledTokenBudget,
-		snap.pendingMaxTokensAllModels,
-		snap.pendingMaxBytesAllModels,
-		snap.pendingBytesKnown,
-		snap.kvBytesPerToken,
+		snap.PooledTokenBudget,
+		snap.PendingMaxTokensAllModels,
+		snap.PendingMaxBytesAllModels,
+		snap.PendingBytesKnown,
+		snap.KVBytesPerToken,
 	); got != wantRemaining {
 		t.Errorf("resident pooled remaining = %d, want %d after default-priced cold pending request", got, wantRemaining)
 	}
 
 	overflowTokens := int64(math.MaxInt64/kvCacheBytesPerToken + 1)
-	if got := addPooledKVByteCharge(0, overflowTokens, resolvedPooledKVBytesPerToken(poolPtr(snap.pooledTokenBudget), 0)); got != math.MaxInt64 {
+	if got := addPooledKVByteCharge(0, overflowTokens, resolvedPooledKVBytesPerToken(poolPtr(snap.PooledTokenBudget), 0)); got != math.MaxInt64 {
 		t.Errorf("overflowing cold pending charge = %d, want saturated MaxInt64", got)
 	}
 }

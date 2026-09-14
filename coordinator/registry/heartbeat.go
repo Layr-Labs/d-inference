@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/routingcost"
 )
 
 // Sanity caps on provider-reported stats. A malicious (or broken) provider
@@ -15,7 +16,7 @@ import (
 // clamped unnecessarily.
 const (
 	maxDecodeTPS                    = 500.0
-	maxPrefillTPS                   = 5000.0
+	maxPrefillTPS                   = routingcost.MaxPrefillTPS
 	maxMemoryBandwidthGBs           = 2000.0
 	maxMemoryGB                     = 1024
 	maxMemoryGBFloat                = 1024.0

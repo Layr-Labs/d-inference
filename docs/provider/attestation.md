@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-13 · commit `3957e1d82`
+> Last updated: 2026-09-14 · commit `6b49c898c`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -80,6 +80,9 @@ not enrolled, report timed out) leaves your level unchanged and is retried on
 the scheduler's backoff; only a received report that **contradicts** your blob
 demotes you ([Layer 3](../architecture/security/attestation.md#layer-3--mdm-securityinfo-the-hardware-grant),
 [failure modes](../architecture/security/attestation.md#failure-modes)).
+Late responses must match the current connection generation and the exact
+command the [scheduler](../architecture/security/attestation.md#mdm-scheduler-ownership)
+issued; reconnecting does not make an older command proof for the new connection.
 
 To re-check after fixing something, restart the provider so it re-registers:
 

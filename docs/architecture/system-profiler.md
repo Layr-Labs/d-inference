@@ -57,7 +57,7 @@ attempt stamps.
 | `plan_done_us`, `first_content_budget_ms` | handler | second registry read + cache-route plan |
 | `media_fetched_us` | handler, only when media was inlined | remote media fetch |
 | `attempt_start_us` | direct path (`consumer.go`) / queued path (`coordinator/api/dispatch.go`) | retry/backup loop overhead before this attempt |
-| `reserve_lock_acquired_us` | derived: `attempt_start_us + LockWaitUS` (`AttemptProfile.SetDecision`) | wait for `r.mu`, measured from `ReserveProviderEx` entry (`coordinator/registry/scheduler.go`) |
+| `reserve_lock_acquired_us` | derived: `attempt_start_us + LockWaitUS` (`AttemptProfile.SetDecision`) | wait for `r.mu`, measured from `ReserveProviderEx` entry (`coordinator/registry/reservation.go`) |
 | `reserve_done_us` | after `ReserveProviderEx` returns; the `RoutingDecision` is copied by value here | candidate scan + selection + admit re-check (`scan_us`, `admit_us`) |
 | `queued_us`, `dequeued_us` | queued path | enqueue; pure queue wait (= `X-Timing.queue_pure_us`) |
 | `topup_done_us` | handler | provider-specific surcharge reservation |
@@ -210,25 +210,25 @@ of a provider stamp from a coordinator stamp.
 ### Routing decision context
 
 Filled by value under `r.mu` from fixed-size `candidateScan` fields
-(`coordinator/registry/scheduler.go`), returned on `RoutingDecision`, copied
+(`coordinator/registry/routing_candidates.go`), returned on `RoutingDecision`, copied
 into the attempt after the lock is released (`CopyPreDispatchFrom`), and
 JSON-encoded on the sink worker.
 
 | Column(s) | Definition | Where |
 |---|---|---|
 | `scanned` | providers the candidate loop visited. Since the per-model provider index (`coordinator/registry/model_index.go`) the loop visits only providers **advertising** the requested model, so `scanned` is the advertising count, not the fleet size, and `gate_rejections.not_serving_model` is 0 unless an advertiser still fails the catalog rule (off-catalog model on a public route); the `allowlist` / `excluded` tallies likewise count only advertisers. Records written before the index landed have `scanned == fleet size`; fleet size is available from `fleet_snapshots` | `ReserveProviderEx` |
-| `candidate_set_size` | `scanned − gate_rejections.not_serving_model` (unchanged in meaning by the index); exclude/allowlist drops happen before the catalog check and count as advertising | `scheduler.go` |
+| `candidate_set_size` | `scanned − gate_rejections.not_serving_model` (unchanged in meaning by the index); exclude/allowlist drops happen before the catalog check and count as advertising | `coordinator/registry/routing_scan.go` |
 | `gate_rejections` JSONB `{reason: count}` | per-`GateReason` tally, uint16-saturating; keys are `gateReasonNames` (`coordinator/registry/gate_reason.go`): `offline`, `untrusted`, `trust_floor`, `private_only`, `runtime_unverified`, `private_text`, `challenge_stale`, `trait_floor`, `dedicated`, `dispatch_load_cooldown`, `error_cooldown`, `capacity_cooldown`, `breaker`, `ejection`, `slot_crashed`, `slot_reloading`, `thermal_critical`, `no_headroom`, `model_too_large`, `free_memory`, `vision`, `ttft_ceiling`, `excluded`, `allowlist`, `not_serving_model`, `state_restoring`. `allowlist` absorbs exclusive self-route-not-owned and serial allowlist misses; `excluded` is the caller's exclude list. Meaning of each gate: [`routing.md`](routing.md) | `buildCandidateInto` |
 | `candidates` JSONB (≤ 4 rows) | `Top[0]` is the winner, then the lowest-cost other candidates ascending; each row is a `CandidateSummary` (cost + terms, `ttft_ms`, `effective_tps`, `effective_queue`, `total_pending`, `backend_running/waiting`, `active_token_budget_used/max`, `queued_prefill_tokens`, folded `slot_state`, `hb_age_ms`) | `CandidateSummary` (`gate_reason.go`) |
 | `runner_up_provider_id`, `runner_up_cost_ms` | lowest-cost candidate of the narrowed pool other than the winner; absent with one candidate | `selectRoutingCandidate` (`coordinator/registry/candidate_selection.go`) |
-| `best_idle_provider_id`, `best_idle_ttft_ms` | lowest-TTFT candidate with the model resident and `backend_running + backend_waiting == 0`, computed over every gate-passing candidate before pool narrowing | `scheduler.go` |
+| `best_idle_provider_id`, `best_idle_ttft_ms` | lowest-TTFT candidate with the model resident and `backend_running + backend_waiting == 0`, computed over every gate-passing candidate before pool narrowing | `coordinator/registry/routing_scan.go` |
 | `near_tie_pool_size`, `selection_path` | retained cost candidates: exact minima in cache-adjusted pools, otherwise within `nearTieCostWindowMs`; current branches `none`, `unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity` (`selectionPathNames`). `prefix_affinity` is a stable repeat-demand preference among equivalent, non-quarantined cache-capable candidates; it does not prove a cache hit. Historical rows may retain `cache_tiebreak` | `coordinator/registry/candidate_selection.go`, `selectRoutingCandidateWithAffinity`; `coordinator/registry/gate_reason.go`, `SelectionPath` |
 | `snapshot_age_ms`, per-candidate `hb_age_ms` | `now − LastHeartbeat` when the routing snapshot was taken; observability only | `heartbeatAgeMs` |
-| `predicted_ttft_ms`, `raw_ttft_ms`, `ttft_calibration_ratio`, `prefill_decode_ratio`, `predicted_decode_tps` | calibrated vs raw estimate, the (model, chip) ratio applied, the decode→prefill fallback multiplier, `projectedPerRequestDecodeTPS` | `scheduler.go` |
-| `pending_for_model`, `total_pending` | winner's coordinator-side pending counts before this reservation | `scheduler.go` |
-| `capacity_rate_ms`, `cache_discount_ms` | gray-box capacity-503 penalty; exact-cache discount | `scheduler.go` |
+| `predicted_ttft_ms`, `raw_ttft_ms`, `ttft_calibration_ratio`, `prefill_decode_ratio`, `predicted_decode_tps` | calibrated vs raw estimate, the (model, chip) ratio applied, the decode→prefill fallback multiplier, `routingcost.ProjectedPerRequestDecodeTPS` | `coordinator/registry/routing_decision.go` (`routingDecisionForCandidate`) |
+| `pending_for_model`, `total_pending` | winner's coordinator-side pending counts before this reservation | `coordinator/registry/routing_decision.go` (`routingDecisionForCandidate`) |
+| `capacity_rate_ms`, `cache_discount_ms` | gray-box capacity-503 penalty; exact-cache discount | `coordinator/registry/routing_decision.go` (`routingDecisionForCandidate`) |
 | `shadow_would_shed`, `shadow_idle_alternative` | `NULL` unless the TTFT shadow evaluator ran | `Builder.Build`, `coordinator/telemetry/profiler/record.go` |
-| `lock_wait_us`, `scan_us`, `admit_us` | the three phases of `ReserveProviderEx`; `lock_wait_us` is measured from function entry | `scheduler.go` |
+| `lock_wait_us`, `scan_us`, `admit_us` | the three phases of `ReserveProviderEx`; `lock_wait_us` is measured from function entry | `coordinator/registry/reservation.go` |
 | `queue_position_at_enqueue`, `queue_depth_at_enqueue`, `drain_trigger` | queue path only; `drain_trigger` ∈ {`heartbeat`, `idle`, `challenge`, `load`, `disconnect`, `kick`, `unknown`} (`DrainTrigger*`, `foldDrainTrigger`, `coordinator/registry/queue_policy.go`) | `queue_policy.go` |
 | `slot_state` | `SlotStateFold` → {`running`, `idle`, `idle_shutdown`, `crashed`, `reloading`, `other`}; `other` includes the coordinator's own "unknown" cold candidate. Slot semantics: [`scheduling.md`](scheduling.md) | `gate_reason.go` |
 
@@ -475,7 +475,7 @@ ring or `DaemonState` mirror.
 | Response egress stamps | `coordinator/inference/response/egress_profile.go` (`relayStamps`, `Writer.Body`); actual writer results are supplied to the API through `WriteObserver` |
 | Operator read/export policy | `coordinator/api/operations/controller.go` (`Controller`), `coordinator/api/operations/profiles.go`, `coordinator/api/operations/snapshots.go`, `coordinator/api/operations/routes.go`, `coordinator/api/operations/rejections.go` |
 | Profiles and attempts | `coordinator/registry/request_profile.go`, `coordinator/registry/attempt_profile.go`, `coordinator/registry/attempt_profile_finalize.go` |
-| Routing context and folds | `coordinator/registry/scheduler.go`, `coordinator/registry/gate_reason.go`, `coordinator/registry/queue_policy.go`, `coordinator/registry/queue_waiter.go` |
+| Routing context and folds | `coordinator/registry/routing_decision.go` (`RoutingDecision`, `routingDecisionForCandidate`); `coordinator/registry/reservation.go` (`ReserveProviderEx`), `coordinator/registry/gate_reason.go`, `coordinator/registry/queue_policy.go`, `coordinator/registry/queue_waiter.go` |
 | Wire types and fixture | `coordinator/protocol/profile.go`, `coordinator/protocol/testdata/profiler_wire_fixture.json` |
 | Store | `coordinator/store/contracts/profiles.go`, `coordinator/store/postgres/profiles.go`, `coordinator/store/postgres/schema/profile_tables.go`, `coordinator/store/postgres/migrations/request_waterfall.sql` |
 | Fleet replay | `coordinator/registry/routingsim/fleet_ndjson.go` |

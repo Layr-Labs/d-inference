@@ -184,6 +184,26 @@ Concurrent reservation, fleet preflight and routing simulations remain in the
 registry and `routingsim` packages. From the repository root,
 `GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/...` runs all of them.
 
+Private calibration, pending prediction expiry and pure latency cases live in
+`coordinator/registry/routingcost/`. The same command also runs the real
+preflight/reservation and cross-registry policy-binding fixtures retained at
+registry; `TestRoutingPolicySharedAcrossRegistryBindings` in
+`coordinator/registry/routing_policy_binding_test.go` verifies shared calibration
+and startup tuning through those public operations.
+
+Private quote correlation and sweep tests live in
+`coordinator/registry/dispatchplan/`. Real reservation, reconnect identity,
+concurrent admission, heartbeat sequence, probe transport and API hedge tests
+stay at their registry/API boundaries. The registry fixture
+`TestDispatchPlanProbeRejectsWrongProviderBeforeBoundReply` in
+`coordinator/registry/dispatch_plan_boundary_test.go` checks that a wrong-provider
+reply leaves a real probe usable and that its bound reply updates the plan before
+publishing an outcome. From the repository root:
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/... ./coordinator/api -run 'Test.*(DispatchPlan|ReserveNextFromPlan|Quote|CapacitySeq|HedgeGovernorSnapshot)' -count=1
+```
+
 Cache-attempt ownership tests in `coordinator/registry/cacheattempt/` verify
 receipt cleanup outside the preparation mutex and ticket-bound legacy metadata.
 The registry retains concurrent reconfiguration/cancellation, connection
@@ -346,16 +366,17 @@ GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'ReadinessZero|AdminDr
 
 State archive HTTP tests remain in `coordinator/api/state_archive_test.go`:
 feature/auth/output gates, symlinked roots, plaintext ZIP, age decryption and
-snapshot consistency during live BoltDB writes. The pure root-precedence test
-lives beside the configuration in `coordinator/api/statearchive/config_test.go`.
+snapshot consistency during live BoltDB writes. The pure root-precedence test,
+`TestResolveStateExportRootPrecedence_DAR70`, lives beside the configuration in
+`coordinator/api/statearchive/config_test.go`.
 The HTTP fixture sets the admin key and export environment after server
 construction, so the controller must read current settings.
 
 ```bash
 env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
-  go test -race ./coordinator/api ./coordinator/api/statearchive -run StateExport
+  go test -race ./coordinator/api -run StateExport
 env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
-  go test -race ./coordinator/stateexport
+  go test -race ./coordinator/api/statearchive ./coordinator/stateexport
 ```
 
 Release HTTP and artifact regressions stay in `coordinator/api/` and reach
@@ -400,6 +421,25 @@ a completed nonce does not add a challenge success. Heartbeat barriers establish
 frame processing order and final per-model hashes identify the accepted reply.
 The fixture passes against the original implementation and rejects a shared
 tracker mutation. It uses no provider executable, Apple service or model.
+
+Durable MDM queue, worker-budget, retry, claim, polling and late-command fixtures
+live with `coordinator/providercontrol/mdmscheduler/`. Their existing test names
+and private-state assertions stay in that package. The API keeps the real fleet,
+restart, trust-reuse and local MicroMDM/webhook fixtures; it observes existing
+metric snapshots instead of accessing the owner's maps.
+
+`coordinator/api/provider_scheduler_ownership_test.go`
+(`TestMDMSchedulerKeepsClaimsAndCurrentLateBindings`) checks that claims stay on
+the construction-time store while late MDA proof persistence and metrics use
+current API bindings. It replaces those bindings before the dispatcher starts,
+then holds the real worker at its exact command. Adapted API fixtures also run
+against the original implementation; authored MDA certificates remain local
+fixtures, not Apple-issued production evidence.
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/providercontrol/mdmscheduler ./coordinator/api -run 'MDMScheduler|ContinuityMiss|FailedFastSkip|UpgradeStorm|ScheduledSecurityInfo|ApplyLateSecurityInfo|ExecuteScheduledMDA|CoordinatorRestart' -count=1
+```
 
 Registration, reconnect recovery and SecurityInfo/MDA fixtures remain in
 `coordinator/api/` and call the production owner through

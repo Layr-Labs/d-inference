@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-13 · commit `8670b2a08`
+> Last updated: 2026-09-14 · commit `bf2678202`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -340,10 +340,10 @@ provider's evidence from the common bucket.
 All ordinary trust, model, trait, memory, token-budget, queue, cooldown, health,
 and time-to-first-token gates remain mandatory
 ([`routing.md`](routing.md#eligibility-gates-and-the-gatereason-vocabulary)).
-`applyCacheRoutingCost` (`coordinator/registry/scheduler.go`) passes the longest verified
+`applyCacheRoutingCost` (`coordinator/registry/candidate_cost.go`) passes the longest verified
 executable endpoint to `applyCacheHintLocked`
 (`coordinator/registry/cache_service_cost.go`). The hint is priced with the
-candidate's own `resolvePrefillTPS` rate, exactly as its baseline prefill cost is.
+candidate's own `ResolvePrefillTPS` rate (`coordinator/registry/routingcost/throughput.go`), exactly as its baseline prefill cost is.
 The provider currently chooses its longest locally usable endpoint; no request
 field steers a shorter checkpoint, even if its recorded stage cost is lower.
 Complete-checkpoint SSD takes precedence over resident memory. A complete SSD
@@ -415,7 +415,7 @@ No-hint requests have an empty tier and zero estimated saving. The existing
 `exact_cache_estimated_ttft_saved_ms` histogram remains **positive benefit
 only**: `PendingRequest.CacheSelectionSelected` and its savings fields are set
 only when the chosen candidate has a positive `CacheDiscountMs`
-(`coordinator/registry/scheduler.go`; `emitExactCacheEstimatedTTFTSaved`,
+(`coordinator/registry/reservation_commit.go`, `commitProviderReservation`; `emitExactCacheEstimatedTTFTSaved`,
 `coordinator/api/exact_cache_telemetry.go`). It is not a histogram of signed net
 performance. Neither observation is measured request latency.
 
@@ -722,7 +722,7 @@ and `coordinator/api/cache_model_telemetry.go`.
 | V2 receipt transaction and proof fences | `coordinator/registry/cachedirectory/lookup.go`, `coordinator/registry/cachedirectory/ready.go`, `coordinator/registry/cachedirectory/proof.go` — `Directory.ApplyLookup`, `Directory.ApplyReady`, `Directory.RejectCapability` |
 | Live receipt prerequisites, quarantine and legacy cache-bust key | `coordinator/registry/cache_receipts.go`, `coordinator/registry/cache_receipts_v2.go` — `ApplyPrefixCacheLookupV2`, `ApplyPrefixCacheReadyV2`, `disablePrefixCacheV2Model` |
 | Status vocabularies and sanitization | `coordinator/registry/cache_eligibility.go`, `coordinator/registry/cache_status.go`, `coordinator/registry/cache_snapshot.go` |
-| Discount in the cost model | `coordinator/registry/scheduler.go` — `applyCacheRoutingCost`, `SelectionCacheTiebreak` |
+| Discount in the cost model | `coordinator/registry/candidate_cost.go` — `applyCacheRoutingCost`; `coordinator/registry/candidate_selection.go` — `selectRoutingCandidateWithAffinity`; `coordinator/registry/gate_reason.go` — `SelectionCacheTiebreak` (historical vocabulary) |
 | Plan construction and sealed body | `coordinator/api/prompt_artifacts.go` — `planCacheRoute`; `coordinator/api/consumer.go` — `bodyForCacheAttempt` |
 | Status endpoint and gauges | `coordinator/api/exact_cache_status.go`, `coordinator/api/exact_cache_metrics.go` |
 | Terminal tags, calibration/reputation exclusion | `coordinator/api/provider.go` — `cacheSelectionTerminalTags`; `coordinator/api/ttft_calibration.go` — `observeTTFTCalibration`; `coordinator/api/dispatch.go` |

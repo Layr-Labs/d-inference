@@ -33,6 +33,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/providercontrol/codeidentity"
+	"github.com/eigeninference/d-inference/coordinator/providercontrol/mdmscheduler"
 	"github.com/eigeninference/d-inference/coordinator/providercontrol/releasepolicy"
 	"github.com/eigeninference/d-inference/coordinator/providercontrol/trustreuse"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
@@ -94,7 +95,7 @@ type Server struct {
 	adminEmails                   map[string]bool     // emails that have admin access
 	adminKey                      string              // EIGENINFERENCE_ADMIN_KEY for admin endpoints
 	mdmClient                     *mdm.Client         // MicroMDM client for provider security verification
-	mdmScheduler                  *mdmVerificationScheduler
+	mdmScheduler                  *mdmscheduler.Scheduler
 	mdmSchedulerConfig            MDMSchedulerConfig
 	mdmWebhookSecret              string              // optional shared secret MicroMDM must present on the webhook
 	profileSigner                 *profilesign.Signer // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
@@ -529,7 +530,7 @@ func (s *Server) SetAllowDuplicateProviderSerialsForTesting(allow bool) {
 func (s *Server) SetMDMClient(client *mdm.Client) {
 	s.mdmClient = client
 	if client != nil && s.mdmScheduler == nil {
-		s.mdmScheduler = newMDMVerificationScheduler(s, s.mdmSchedulerConfig, mdmSchedulerDeps{})
+		s.mdmScheduler = mdmscheduler.New(s.mdmSchedulerConfig, s.mdmSchedulerDependencies())
 	}
 }
 

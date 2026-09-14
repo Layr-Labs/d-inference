@@ -1,15 +1,20 @@
-package api
+package accountfleet
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/readcache"
+	"github.com/eigeninference/d-inference/coordinator/auth"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -42,22 +47,30 @@ func (c *countingMeStore) GetReputations(ctx context.Context, ids []string) (map
 	return c.Store.GetReputations(ctx, ids)
 }
 
-func newMeTestServer(t *testing.T) (*Server, *countingMeStore) {
+func newMeTestServer(t *testing.T) (*Controller, *countingMeStore) {
 	t.Helper()
-	srv, _ := testServer(t)
-	st := &countingMeStore{Store: srv.store}
-	srv.store = st
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st := &countingMeStore{Store: store.NewMemory(store.Config{AdminKey: "test-key"})}
+	reg := registry.New(logger)
+	cache := readcache.New()
+	srv := New(Dependencies{
+		Store: func() Store { return st }, Registry: func() Registry { return reg }, Cache: func() *readcache.Cache { return cache },
+		MinVersion: func() string { return "" }, LatestVersion: func() string { return "" },
+		RequireUser: func(_ http.ResponseWriter, r *http.Request) *store.User { return auth.UserFromContext(r.Context()) },
+		VersionLess: func(string, string) bool { t.Fatal("unexpected version comparison in earnings fixture"); return false },
+		Logger:      logger,
+	})
 	return srv, st
 }
 
-func getMySummary(t *testing.T, srv *Server, accountID string) mySummaryResponse {
+func getMySummary(t *testing.T, srv *Controller, accountID string) summaryResponse {
 	t.Helper()
 	w := httptest.NewRecorder()
-	srv.handleMySummary(w, reqWithUser(http.MethodGet, "/v1/me/summary", "", accountID))
+	srv.Summary(w, reqWithUser(http.MethodGet, "/v1/me/summary", "", accountID))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
 	}
-	var resp mySummaryResponse
+	var resp summaryResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -158,11 +171,11 @@ func TestMyProvidersBatchesReputationLookups(t *testing.T) {
 	}
 
 	w := httptest.NewRecorder()
-	srv.handleMyProviders(w, reqWithUser(http.MethodGet, "/v1/me/providers", "", account))
+	srv.Providers(w, reqWithUser(http.MethodGet, "/v1/me/providers", "", account))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
 	}
-	var resp myProvidersResponse
+	var resp providersResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}

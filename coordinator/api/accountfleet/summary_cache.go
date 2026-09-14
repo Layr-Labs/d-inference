@@ -1,4 +1,4 @@
-package api
+package accountfleet
 
 import (
 	"encoding/json"
@@ -11,12 +11,12 @@ const mySummaryWindowsCacheTTL = 15 * time.Second
 
 // accountEarningsWindows coalesces concurrent misses per account. The flight
 // group forgets completed calls, so inactive account IDs do not accumulate.
-func (s *Server) accountEarningsWindows(accountID string) (store.AccountEarningsWindows, error) {
+func (s *Controller) accountEarningsWindows(accountID string) (store.AccountEarningsWindows, error) {
 	key := "me:summary:windows:" + accountID
 	cached := func() (store.AccountEarningsWindows, bool) {
 		var windows store.AccountEarningsWindows
-		if s.readCache != nil {
-			if body, ok := s.readCache.Get(key); ok && json.Unmarshal(body, &windows) == nil {
+		if s.readCache() != nil {
+			if body, ok := s.readCache().Get(key); ok && json.Unmarshal(body, &windows) == nil {
 				return windows, true
 			}
 		}
@@ -30,16 +30,16 @@ func (s *Server) accountEarningsWindows(accountID string) (store.AccountEarnings
 		if windows, ok := cached(); ok {
 			return windows, nil
 		}
-		windows, err := s.store.AccountEarningsWindows(accountID, time.Now())
+		windows, err := s.store().AccountEarningsWindows(accountID, time.Now())
 		if err != nil {
 			return nil, err
 		}
-		if s.readCache != nil {
+		if s.readCache() != nil {
 			body, err := json.Marshal(windows)
 			if err != nil {
 				return nil, err
 			}
-			s.readCache.Set(key, body, mySummaryWindowsCacheTTL)
+			s.readCache().Set(key, body, mySummaryWindowsCacheTTL)
 		}
 		return windows, nil
 	})

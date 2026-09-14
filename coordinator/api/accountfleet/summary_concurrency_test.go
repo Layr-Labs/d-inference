@@ -1,4 +1,4 @@
-package api
+package accountfleet
 
 import (
 	"sync"
@@ -26,8 +26,8 @@ func (s *blockingDashboardStore) AccountEarningsWindows(account string, now time
 func TestSummaryConcurrentExpiredMissesCoalescePerAccount(t *testing.T) {
 	srv, base := newMeTestServer(t)
 	st := &blockingDashboardStore{Store: base, entered: make(chan string, 64), release: make(chan struct{})}
-	srv.store = st
-	srv.readCache.Set("me:summary:windows:a", []byte(`{}`), -time.Second)
+	srv.store = func() Store { return st }
+	srv.readCache().Set("me:summary:windows:a", []byte(`{}`), -time.Second)
 	const callers = 30
 	var ready, done sync.WaitGroup
 	ready.Add(callers)

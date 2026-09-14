@@ -5,6 +5,19 @@ Apple restore, root installation, native qualification or cleanup. A preparer
 must observe each step before publishing its result; constructing a Swift value
 is not proof that the physical step ran.
 
+`AccountlessInstallationPayload.prepare` now generates a one-shot first-boot
+overlay from an owned raw candidate and its exact signed guest release. It
+preserves signing attributes, checks the source and copied guest inventory,
+and binds the candidate, installation attempt, source ownership and payload.
+It writes no VM disk and performs no mount, root installation or VM start.
+The generated guest job refuses a physical host before writing any result,
+records actual guest OS/architecture, verifies installation and absent human
+accounts, and atomically publishes complete JSON at every observed phase.
+Unknown observations remain omitted. Bounded failure diagnostics cannot become
+a successful installation or template-readiness receipt. Root staging, boot,
+receipt collection, installed-checkpoint publication and native qualification
+still require their separate orchestration and physical evidence.
+
 Existing schema1 installation and template records retain their legacy
 `bootstrapRetired` field and encoding. They are never converted into native
 qualification. Normal clone validation rejects a schema1 template when its

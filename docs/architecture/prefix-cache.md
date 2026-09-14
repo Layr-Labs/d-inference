@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-14 · commit `14296eaf5`
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:

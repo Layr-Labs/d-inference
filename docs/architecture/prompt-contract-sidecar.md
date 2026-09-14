@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-13 · commit `69454529a`
+> Last updated: 2026-09-14 · commit `14296eaf5`
 
 How the coordinator's `promptsidecar` child process derives deterministic,
 provider-compatible token boundaries so exact-cache routing can predict which

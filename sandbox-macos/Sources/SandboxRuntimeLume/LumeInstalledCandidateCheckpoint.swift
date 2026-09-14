@@ -12,7 +12,7 @@ package struct LumeCandidateDiskIdentity: Codable, Equatable, Sendable {
     package let changedSeconds: Int64
     package let changedNanoseconds: Int64
 
-    init(_ info: stat) {
+    package init(_ info: stat) {
         device = UInt64(UInt32(bitPattern: info.st_dev)); inode = UInt64(info.st_ino)
         size = UInt64(info.st_size); modifiedSeconds = Int64(info.st_mtimespec.tv_sec)
         modifiedNanoseconds = Int64(info.st_mtimespec.tv_nsec)
@@ -25,9 +25,9 @@ package struct LumeCandidateDiskIdentity: Codable, Equatable, Sendable {
     }
 }
 
-/// A future producer publishes this immutable checkpoint after collecting the
-/// schema2 installation receipt and removing its temporary root job/payload.
-/// No production writer exists yet; merely constructing this value grants nothing.
+/// Published after validating the collected installation and cleanup records.
+/// Construction alone neither observes those operations nor grants readiness;
+/// the base runtime rechecks source ownership, resources and the disk snapshot.
 package struct LumeInstalledCandidateCheckpoint: Codable, Equatable, Sendable {
     package static let fileName = ".darkbloom-accountless-installed.json"
     package static let reservationFileName = ".darkbloom-accountless-candidate.json"
@@ -73,6 +73,16 @@ package struct LumeCandidateInstallationCleanup: Codable, Equatable, Sendable {
     package let temporaryPayloadRemoved: Bool
     package let fullyDetached: Bool
     package let sourceStoppedVerified: Bool
+
+    package init(schemaVersion: Int = 1, candidateID: UUID, bootstrapAttemptID: UUID,
+                 source: SandboxGuestBaseSource, installationReceiptSHA256: String,
+                 disk: LumeCandidateDiskIdentity, temporaryJobRemoved: Bool,
+                 temporaryPayloadRemoved: Bool, fullyDetached: Bool, sourceStoppedVerified: Bool) {
+        self.schemaVersion = schemaVersion; self.candidateID = candidateID; self.bootstrapAttemptID = bootstrapAttemptID
+        self.source = source; self.installationReceiptSHA256 = installationReceiptSHA256; self.disk = disk
+        self.temporaryJobRemoved = temporaryJobRemoved; self.temporaryPayloadRemoved = temporaryPayloadRemoved
+        self.fullyDetached = fullyDetached; self.sourceStoppedVerified = sourceStoppedVerified
+    }
 
     func matches(_ checkpoint: LumeInstalledCandidateCheckpoint) -> Bool {
         schemaVersion == 1 && candidateID == checkpoint.candidateID

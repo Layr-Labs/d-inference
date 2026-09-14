@@ -5,10 +5,10 @@ enum SandboxJSONIntegrityError: Error, Equatable {
     case duplicateKey(String)
 }
 
-enum SandboxJSONIntegrity {
+package enum SandboxJSONIntegrity {
     private static let maximumNestingDepth = 64
 
-    static func requireNoDuplicateKeys(_ data: Data) throws {
+    package static func requireNoDuplicateKeys(_ data: Data) throws {
         var parser = Parser(bytes: Array(data))
         try parser.parseDocument()
     }

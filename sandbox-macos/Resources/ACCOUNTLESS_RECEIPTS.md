@@ -113,10 +113,21 @@ must produce these private files in the already-owned source VM directory:
 | `.darkbloom-accountless-cleanup.json` | Schema1 `LumeCandidateInstallationCleanup`; same source/attempt, exact installation-receipt digest, post-cleanup disk snapshot, temporary job/payload removed, detached and source stopped. |
 | `.darkbloom-accountless-installed.json` | Schema1 installed checkpoint; exact hashes of the three preceding files and the current post-installation, post-cleanup disk snapshot. |
 
-There is no production writer for these new files yet. Constructing or decoding
-their types does not observe installation or advance a candidate. The raw
-reservation remains immutable; its disk device/inode/size must match the final
-disk, while the installed checkpoint binds the later modification/change times.
+The package-only `publishInstalledCandidate` base-runtime operation publishes
+these records after validating complete installation/cleanup inputs. It requires
+exclusive host ownership, checks the actual stopped source against its ownership
+and the reserved resources, validates the signed guest payload, and binds the
+current disk snapshot. Input JSON must be bounded and contain no duplicate keys.
+Matching partial files can be completed after interruption; conflicting, linked,
+shared or special files are rejected without overwrite. The installed checkpoint
+is published last, then all records and the stopped source are checked again.
+
+The privileged staging, boot, collection and cleanup orchestration remains to be
+wired into this entrypoint. Constructing or decoding input records does not
+observe those actions. The raw reservation remains immutable; its original disk
+device/inode/size must match the final disk, while the installed checkpoint binds
+the later modification/change times. Neither publication nor replay starts a VM
+or publishes template readiness.
 
 `LumeInstalledCandidateStore` reads at most 16 KiB per evidence file through
 private, stable, named descriptors. It rechecks storage/directory identity,

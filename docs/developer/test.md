@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `4482d5422`
+> Last updated: 2026-09-14 · commit `66fb704f2`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -109,6 +109,12 @@ Both new boundary tests also pass against the pre-extraction source.
 ```bash
 go test -race ./coordinator/providercontrol/trustreuse ./coordinator/api -run 'TrustReuse|HardUntrustJournal|TrustAuthority|TrustCoverage|Continuity|ApprovedTransition|VerifyChallengeFastSkip'
 ```
+
+Journal and inline-retry fixtures use the fixed production delays in
+`coordinator/providercontrol/trustreuse/replay.go` (`trustReuseReplayInitialBackoff`)
+and `coordinator/providercontrol/trustreuse/revocation.go` (`trustReuseDeleteRetryBackoff`).
+They do not mutate package timing between cases: a cancelled replay worker can
+outlive the test that scheduled it. Existing outcome assertions and deadlines remain active.
 
 The isolated journal fixtures do not require PostgreSQL. The full coordinator
 race suite remains the integration gate; unchanged PostgreSQL store tests need

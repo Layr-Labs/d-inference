@@ -34,6 +34,7 @@ func newSchedulerHarnessWithStore(t *testing.T, st store.Store, cfg Config, deps
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	h := &schedulerHarness{registry: registry.New(logger), metrics: metrics.New()}
+	h.registry.SetStore(st)
 	deps.Store = st
 	deps.Registry = func() Registry { return h.registry }
 	deps.Logger = func() *slog.Logger { return logger }

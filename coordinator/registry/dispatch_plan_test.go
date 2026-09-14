@@ -45,12 +45,12 @@ func TestDispatchPlanRetainsBoundedLowestCostAlternates(t *testing.T) {
 	if plan.Len() != dispatchPlanMaxAlternates {
 		t.Fatalf("plan.Len()=%d, want %d (bounded)", plan.Len(), dispatchPlanMaxAlternates)
 	}
-	for i, e := range plan.entries {
+	for i, e := range plan.state.Entries() {
 		want := fmt.Sprintf("p%02d", i+1) // winner p00 excluded, ascending cost
-		if e.view.ProviderID != want {
-			t.Fatalf("entry[%d]=%q, want %q (ascending cost, winner excluded)", i, e.view.ProviderID, want)
+		if e.View.ProviderID != want {
+			t.Fatalf("entry[%d]=%q, want %q (ascending cost, winner excluded)", i, e.View.ProviderID, want)
 		}
-		if e.view.ProviderID == p.ID {
+		if e.View.ProviderID == p.ID {
 			t.Fatalf("winner %q retained as alternate", p.ID)
 		}
 	}
@@ -278,7 +278,7 @@ func TestRefreshDispatchPlanExcludesAttemptedAndRunsOnce(t *testing.T) {
 	if fp == nil || fp.ID != "a2" {
 		t.Fatalf("refresh winner=%v, want a2 (w and a1 attempted)", fp)
 	}
-	if fresh == nil || fresh.Len() != 1 || fresh.entries[0].view.ProviderID != "a3" {
+	if fresh == nil || fresh.Len() != 1 || fresh.state.Entries()[0].View.ProviderID != "a3" {
 		t.Fatalf("fresh plan=%+v, want single a3 alternate", fresh)
 	}
 	if !plan.RefreshUsed() || !fresh.RefreshUsed() {

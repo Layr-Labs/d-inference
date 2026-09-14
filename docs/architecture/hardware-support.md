@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-09-14 · commit `701e707cc`
+> Last updated: 2026-09-14 · commit `ffd0d7c21`
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to

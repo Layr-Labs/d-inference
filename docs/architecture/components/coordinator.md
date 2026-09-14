@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-14 · commit `3b4c75127`
+> Last updated: 2026-09-14 · commit `d01b341cc`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -56,6 +56,7 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/registry/providerversion` | Exact dotted-version interpretation and bounded memo state shared by capability, slot-layout and memory-floor gates (`Policy`). |
 | `coordinator/registry/throughput` | Observed throughput samples and medians, decode expectations and batch quality policy (`Observations`, `Policy`, `QualityConcurrency`). |
 | `coordinator/registry/routingcost/policy.go` (`Policy`) | Shared startup latency tuning and private TTFT calibration joins/windows; `coordinator/registry/routingcost/snapshot.go` (`Snapshot`) carries the original provider values. `coordinator/registry/routing_policy.go` (`routingPolicy`) binds the one process-wide policy; live reservation and provider rechecks remain in the registry. |
+| `coordinator/registry/dispatchplan/plan.go` (`Plan`), `coordinator/registry/dispatchplan/quotes.go` (`Probes`) | Private bounded alternates, quote ranking, attempted IDs and one-refresh claim; quote correlation, expiry and settlement-before-outcome publication. The registry retains exact provider identity, admission, heartbeat and transport bindings. |
 | `coordinator/registry/modelloads` | Private session command deadlines/start times and fleet plan coalescing (`Commands`, `PlanGate`); live eligibility, provider publication and command I/O remain in the registry. |
 | `coordinator/registry/warmpool` | Controller runner, coalesced triggers, private queue/pressure/observation state and target arithmetic (`Controller`, `State`, `Snapshot`, `Target`, `ServiceTime`); live fleet and command bindings stay in the registry. |
 | `coordinator/registry/providerwriter` | Private two-lane WebSocket transport, dequeue acknowledgment, cancellation/completion arbitration, fragmentation and watchdog (`Writer`); registry `Provider` methods bind the current connection. |

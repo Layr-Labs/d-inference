@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `701e707cc`
+> Last updated: 2026-09-14 · commit `ffd0d7c21`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -78,6 +78,19 @@ preflight/reservation and cross-registry policy-binding fixtures retained at
 registry; `TestRoutingPolicySharedAcrossRegistryBindings` in
 `coordinator/registry/routing_policy_binding_test.go` verifies shared calibration
 and startup tuning through those public operations.
+
+Private quote correlation and sweep tests live in
+`coordinator/registry/dispatchplan/`. Real reservation, reconnect identity,
+concurrent admission, heartbeat sequence, probe transport and API hedge tests
+stay at their registry/API boundaries. The registry fixture
+`TestDispatchPlanProbeRejectsWrongProviderBeforeBoundReply` in
+`coordinator/registry/dispatch_plan_boundary_test.go` checks that a wrong-provider
+reply leaves a real probe usable and that its bound reply updates the plan before
+publishing an outcome. From the repository root:
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/... ./coordinator/api -run 'Test.*(DispatchPlan|ReserveNextFromPlan|Quote|CapacitySeq|HedgeGovernorSnapshot)' -count=1
+```
 
 Cache-attempt ownership tests in `coordinator/registry/cacheattempt/` verify
 receipt cleanup outside the preparation mutex and ticket-bound legacy metadata.

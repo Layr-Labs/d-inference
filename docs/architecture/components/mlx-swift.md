@@ -1,6 +1,6 @@
 # MLX stack: the three pinned submodules and the metallib
 
-> Last updated: 2026-09-14 · commit `701e707cc`
+> Last updated: 2026-09-14 · commit `ffd0d7c21`
 
 What the provider links from `libs/`, at which commits, what each submodule
 contributes, how the Metal kernel library (`mlx.metallib`) is built from the

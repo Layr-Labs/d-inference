@@ -81,7 +81,7 @@ console-ui/           Next.js 16 / React 19 frontend
 admin-ui/             Next.js 16 internal read-only ops dashboard (SELECT-only queries against the
                       prod read replica; Basic Auth via src/proxy.ts; has vitest tests, not in CI)
 
-landing/              static landing page (index.html, earn calculator, network stats)
+landing/              Next.js 16 / React 19 marketing site (static export; shared earn calculator)
 
 scripts/              build, signing, install, and deploy helpers
 ├── install.sh        end-user installer served from coordinator (hash + codesign verification)

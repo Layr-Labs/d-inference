@@ -1,0 +1,150 @@
+.hero {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: center;
+  min-height: 657px;
+  padding-block: 58px 62px;
+  gap: 15px;
+}
+.hero-copy {
+  position: relative;
+  z-index: 1;
+  padding-top: 9px;
+}
+.alpha-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font: 9px var(--mono);
+  letter-spacing: 0.07em;
+  margin-bottom: 31px;
+  padding: 7px 9px;
+  border: 1px solid #d1ccdf;
+  border-radius: 4px;
+}
+.alpha-badge svg {
+  width: 13px;
+  margin-left: 7px;
+}
+h1 {
+  font-size: clamp(64px, 6.15vw, 90px);
+  line-height: 0.99;
+  letter-spacing: -0.045em;
+}
+.hero-description {
+  font-size: 20px;
+  line-height: 1.4;
+  letter-spacing: -0.035em;
+  margin-top: 26px;
+}
+.hero-support {
+  font-size: 14px;
+  line-height: 1.75;
+  color: #655f72;
+  max-width: 410px;
+  margin-top: 15px;
+}
+.hero-actions {
+  display: flex;
+  gap: 11px;
+  margin-top: 29px;
+  flex-wrap: wrap;
+}
+.paper-link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 10px;
+  color: #7a7386;
+  margin-top: 24px;
+}
+.paper-link > span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ink);
+}
+.paper-link svg {
+  width: 12px;
+}
+.network-art {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  isolation: isolate;
+  min-width: 0;
+}
+.art-grid {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image: radial-gradient(#65529a44 0.7px, transparent 0.7px);
+  background-size: 17px 17px;
+  mask-image: radial-gradient(ellipse at center, black, transparent 70%);
+}
+.network-art:before {
+  content: "";
+  position: absolute;
+  inset: 8%;
+  z-index: -1;
+  background: radial-gradient(
+    ellipse,
+    #bed4ef80 0%,
+    #c1bed447 37%,
+    transparent 68%
+  );
+}
+.network-svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.art-coordinate {
+  position: absolute;
+  top: 8%;
+  left: 9%;
+  font-size: 8px;
+  color: #7e7398;
+}
+.art-tag {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #ffffffbf;
+  box-shadow: 0 4px 18px #1a0c6d07;
+  border: 1px solid #d7d3e2;
+  border-radius: 4px;
+  font-size: 10px;
+}
+.tag-top {
+  top: 22%;
+  right: 3%;
+}
+.tag-bottom {
+  bottom: 20%;
+  left: 5%;
+}
+.art-caption {
+  position: absolute;
+  bottom: 1%;
+  left: 7%;
+  right: 3%;
+  display: flex;
+  justify-content: space-between;
+  font-size: 8px;
+  color: #766c8c;
+}
+.floating-core {
+  animation: float 7s ease-in-out infinite;
+}
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}

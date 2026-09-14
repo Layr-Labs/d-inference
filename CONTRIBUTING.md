@@ -28,7 +28,7 @@ The full map is [`docs/architecture/overview.md`](docs/architecture/overview.md)
 | `coordinator/promptsidecar/` | Rust | Prompt-contract sidecar, built as a static musl binary into the coordinator image |
 | `provider-swift/` | Swift | Hardened CLI daemon on Apple Silicon Macs (`darkbloom` + `darkbloom-enclave`) |
 | `console-ui/`, `admin-ui/` | Next.js 16 / React 19 | Consumer web app (chat, billing, models) and the operator console |
-| `landing/` | static HTML | Marketing site |
+| `landing/` | Next.js 16 / React 19 | Marketing site (static export) |
 | `e2e/` | Go | End-to-end suite that drives a real coordinator and provider |
 | `deploy/`, `scripts/` | Cloud Build, shell | GCP deployment and operator tooling |
 | `libs/` | git submodules | `mlx-swift`, `mlx-swift-lm`, `mlx` |

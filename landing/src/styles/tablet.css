@@ -1,0 +1,269 @@
+@media (min-width: 1500px) {
+  .hero {
+    min-height: 735px;
+  }
+  .hero-copy {
+    padding-bottom: 25px;
+  }
+  h1 {
+    font-size: 94px;
+  }
+}
+@media (max-width: 1100px) {
+  .desktop-nav {
+    gap: 19px;
+  }
+  .brand span {
+    font-size: 29px;
+  }
+  .header-inner {
+    gap: 20px;
+  }
+  .hero {
+    min-height: 600px;
+    gap: 0;
+  }
+  .hero-actions .button {
+    font-size: 11px;
+    padding-inline: 14px;
+    gap: 15px;
+  }
+  .hero-support {
+    max-width: 360px;
+  }
+  .hero-description {
+    font-size: 18px;
+  }
+  .paper-link {
+    font-size: 9px;
+  }
+  .section-heading {
+    gap: 40px;
+  }
+  .section-heading > p {
+    max-width: 280px;
+  }
+  .developer-section,
+  .earn-grid,
+  .privacy-grid,
+  .faq-section {
+    gap: 40px;
+  }
+  .feature-card {
+    padding: 25px 23px;
+  }
+  .feature-card h3 {
+    font-size: 21px;
+  }
+  .trust-strip {
+    gap: 20px;
+  }
+  .trust-strip > span:not(:first-child) {
+    font-size: 14px;
+  }
+  .calculator {
+    padding: 23px;
+  }
+  .code-window pre {
+    font-size: 10px;
+  }
+  .faq-section h2 {
+    font-size: 48px;
+  }
+}
+@media (max-width: 850px) {
+  .desktop-nav {
+    display: none;
+  }
+  .header-cta {
+    margin-left: auto;
+  }
+  .menu-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .header-inner {
+    height: 72px;
+  }
+  .mobile-nav:not([hidden]) {
+    display: flex;
+    flex-direction: column;
+    padding: 10px 4% 23px;
+    border-top: 1px solid var(--line);
+    position: absolute;
+    top: 72px;
+    left: 0;
+    right: 0;
+    background: var(--off-white);
+    box-shadow: 0 20px 30px #1a0c6d12;
+  }
+  .mobile-nav a {
+    display: flex;
+    justify-content: space-between;
+    padding: 13px 0;
+    font-size: 14px;
+    border-bottom: 1px solid #dfdce6;
+  }
+  .hero {
+    grid-template-columns: 1.1fr 1fr;
+    min-height: 560px;
+    padding-block: 40px;
+  }
+  h1 {
+    font-size: 62px;
+  }
+  .hero-support {
+    font-size: 12px;
+  }
+  .hero-description {
+    font-size: 17px;
+  }
+  .hero-actions {
+    gap: 9px;
+  }
+  .paper-link {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
+  }
+  .tag-top {
+    right: -2%;
+    font-size: 8px;
+    padding: 8px;
+  }
+  .tag-bottom {
+    font-size: 8px;
+    padding: 8px;
+    left: 0;
+  }
+  .art-caption {
+    font-size: 6px;
+    left: 0;
+  }
+  .art-coordinate {
+    font-size: 7px;
+  }
+  .section {
+    padding-block: 75px;
+  }
+  .section-heading {
+    align-items: flex-start;
+    gap: 30px;
+  }
+  .section-heading > div {
+    flex-shrink: 1;
+  }
+  .section-heading > p {
+    font-size: 12px;
+    max-width: 250px;
+    margin-top: 40px;
+  }
+  .feature-grid {
+    gap: 12px;
+  }
+  .feature-card {
+    padding: 22px 18px;
+  }
+  .feature-card h3 {
+    font-size: 19px;
+  }
+  .feature-card > p {
+    font-size: 12px;
+  }
+  .feature-detail {
+    font-size: 7px;
+  }
+  .privacy-grid {
+    gap: 30px;
+  }
+  .privacy-diagram {
+    padding: 20px;
+  }
+  .flow-node {
+    padding: 14px;
+    gap: 12px;
+  }
+  .flow-node strong {
+    font-size: 12px;
+  }
+  .flow-node div > span {
+    font-size: 9px;
+  }
+  .flow-step {
+    display: none;
+  }
+  .privacy-features article {
+    gap: 15px;
+    padding-top: 12px;
+    padding-bottom: 20px;
+  }
+  .privacy-features h3 {
+    font-size: 18px;
+  }
+  .privacy-features p {
+    font-size: 12px;
+  }
+  .privacy-features .text-link {
+    margin-left: 28px;
+    font-size: 10px;
+  }
+  .privacy-section,
+  .earn-section {
+    padding-block: 75px;
+  }
+  .developer-section {
+    grid-template-columns: 1fr 1.2fr;
+    gap: 30px;
+  }
+  .section-description {
+    font-size: 13px;
+  }
+  .developer-features {
+    font-size: 11px;
+  }
+  .code-toolbar {
+    padding-inline: 17px;
+  }
+  .code-window pre {
+    padding-inline: 17px;
+  }
+  .pricing-section {
+    padding-top: 0;
+  }
+  .earn-grid {
+    gap: 30px;
+  }
+  .calculator-fields {
+    gap: 15px 10px;
+  }
+  .calculator {
+    padding: 20px;
+  }
+  .calculator-heading > .small-label {
+    display: none;
+  }
+  .calculator select {
+    font-size: 10px;
+    padding-inline: 6px;
+  }
+  .install-command {
+    flex-wrap: wrap;
+  }
+  .earnings-result {
+    padding: 20px;
+  }
+  .earnings-number {
+    font-size: 56px;
+  }
+  .faq-section {
+    grid-template-columns: 1fr 1.1fr;
+    gap: 40px;
+  }
+  .faq-section h2 {
+    font-size: 43px;
+  }
+  .faq-list summary {
+    font-size: 12px;
+  }
+}

@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-13 · commit `a1f3c09c8`
+> Last updated: 2026-09-14 · commit `5dcb43e69`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -53,7 +53,7 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 | `provider-swift/` | SwiftPM | Products: `darkbloom` (CLI), `darkbloom-enclave`, `darkbloom-fan-helper`, `darkbloom-publish`; libraries `ProviderCore`, `ProviderCoreFoundation`, `DarkbloomFan*`. Platform `macOS 14+`. |
 | `console-ui/` | Next.js 16 / React 19 | `npm`; tests with Vitest. |
 | `admin-ui/` | Next.js 16 / React 19 | `npm`; dev/start on port `4001`. |
-| `landing/` | static HTML/JS | No build step; `earn-calculator-core.test.js` runs with `node --test`. |
+| `landing/` | Next.js 16 / React 19 | Static export to `landing/out/`; lint, typecheck, and Node tests. |
 | `Makefile` | — | Every target below; `make help` lists them. |
 
 Provider tests are grouped by subsystem inside their existing SwiftPM targets.
@@ -392,9 +392,40 @@ npm run dev      # next dev -p 4001
 
 ### 8. Landing page
 
-Static files in `landing/` (`index.html`, `earn-calculator*.js`, `terms.html`,
-`privacy.html`); nothing to build. Run its one test with
-`node --test landing/earn-calculator-core.test.js`.
+1. Install Node 22 with `mise install node@22`, then install dependencies:
+
+   ```bash
+   make landing-install
+   ```
+
+2. Run the checks and generate the static export:
+
+   ```bash
+   make landing-check
+   make landing-build
+   ```
+
+3. Start the development server:
+
+   ```bash
+   npm --prefix landing run dev -- --hostname 0.0.0.0 --port 3001
+   ```
+
+The App Router entry point is `landing/src/app/page.tsx`. Static files in
+`landing/public/` retain their root URLs, including `/terms.html`, `/privacy.html`,
+and `/fonts/`. The shared calculator math stays in `landing/earn-calculator-core.js`.
+
+For static hosting, publish the generated export directory rather than the source
+directory. For a Vercel project, use `landing` as its Root Directory; the checked-in
+`landing/vercel.json` specifies the Next.js build and export output. Applying
+production hosting settings remains a human operation.
+
+For isolated browser tests, set `NEXT_PUBLIC_API_URL` to a local API fixture origin
+and `NEXT_PUBLIC_DISABLE_ANALYTICS=1` before starting or building the app. These are
+build-time variables. Without an override, the pricing component reads the public
+coordinator catalog; reference rows remain usable on failure. Analytics runs only
+in production builds; legal HTML retains its existing analytics behavior, so
+browser tests must also block external analytics requests.
 
 ### 9. Coordinator container image
 
@@ -450,6 +481,7 @@ local stub servers; its default observation mode sends only public GETs.
 | `benchmark-wrapper-test` | `cd scripts && python3 -m unittest discover -s gemma_contbatch/tests -t .` |
 | `benchmark-gemma-contbatch` | `python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)` (needs GPU + weights) |
 | `ui-install` / `ui-lint` / `ui-test` / `ui-build` / `ui` | `npm install` / `npx eslint src/` / `npm test` / `npm run build` in `console-ui/` |
+| `landing-install` / `landing-check` / `landing-build` | Install dependencies / lint, typecheck and Node tests / static Next.js export in `landing/` |
 | `e2e-integration` | `go test ./e2e/... -run TestIntegration -v` |
 | `e2e-benchmark` | `go test ./e2e/... -run TestBenchmark -v` |
 | `e2e` | `e2e-integration` |

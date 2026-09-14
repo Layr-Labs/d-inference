@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `a1f3c09c8`
+> Last updated: 2026-09-14 · commit `5dcb43e69`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -979,6 +979,18 @@ make ui-build                    # next build
 cd admin-ui && npm test && npm run lint && npm run build
 node --test landing/earn-calculator-core.test.js
 ```
+
+For the landing app, run `make landing-check` (ESLint, TypeScript, calculator and
+pricing-parser tests), then `make landing-build` to verify the static export. CI
+runs these checks in **Landing Lint, Types, Tests & Export**.
+
+For browser validation, follow the isolated API/analytics setup in
+[build.md](build.md#8-landing-page). Check desktop and mobile navigation (including
+Escape and keyboard focus), Python/cURL switching and clipboard behavior, pricing
+success and unavailable/malformed responses, every calculator selector and the
+48 GB provider floor, FAQ expansion, and the legal URLs. Verify narrow screens,
+reduced motion, and that the export remains readable without JavaScript. Never
+send test inference or analytics to production.
 
 ### 6. Scripts and release integrity
 

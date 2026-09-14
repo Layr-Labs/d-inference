@@ -1,0 +1,168 @@
+.faq-section {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 80px;
+}
+.faq-section h2 {
+  font-size: 54px;
+}
+.faq-section .text-link {
+  margin-top: 27px;
+  font-size: 11px;
+}
+.faq-list details {
+  border-bottom: 1px solid #d5d0df;
+}
+.faq-list details:first-child {
+  border-top: 1px solid #d5d0df;
+}
+.faq-list summary {
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  list-style: none;
+  padding: 23px 0;
+  font-size: 14px;
+}
+.faq-list summary::-webkit-details-marker {
+  display: none;
+}
+.faq-plus {
+  font-size: 23px;
+  color: #82719e;
+  font-weight: 400;
+  transition: transform 0.2s;
+}
+.faq-list details[open] .faq-plus {
+  transform: rotate(45deg);
+}
+.faq-list details > p {
+  font-size: 12px;
+  line-height: 1.9;
+  color: #756a80;
+  padding: 0 34px 24px 0;
+}
+.final-cta {
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+  background: #dce6f5;
+  border: 1px solid #d3ddeb;
+  border-radius: 10px;
+  padding: 67px 30px 70px;
+  isolation: isolate;
+}
+.final-cta .eyebrow {
+  justify-content: center;
+  margin-bottom: 22px;
+}
+.final-cta h2 {
+  font-size: clamp(48px, 5.5vw, 76px);
+}
+.final-cta > div {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 30px;
+}
+.cta-orbit {
+  position: absolute;
+  border: 1px solid #1a0c6d13;
+  border-radius: 50%;
+  width: 520px;
+  height: 520px;
+  z-index: -1;
+  top: -150px;
+}
+.orbit-one {
+  left: -320px;
+}
+.orbit-two {
+  right: -320px;
+  top: 40px;
+}
+.footer {
+  padding-top: 67px;
+}
+.footer-main {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 60px;
+  padding-bottom: 52px;
+}
+.footer-main > div > p {
+  font-size: 12px;
+  color: #7b7188;
+  margin-top: 14px;
+}
+.footer-byline {
+  display: block;
+  font-size: 8px;
+  color: #8d8298;
+  margin-top: 29px;
+}
+.footer nav {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+}
+.footer nav > span {
+  font: 9px var(--mono);
+  letter-spacing: 0.07em;
+  color: #8b8199;
+  margin-bottom: 5px;
+}
+.footer nav a {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+}
+.footer nav a:hover {
+  text-decoration: underline;
+}
+.footer nav a svg {
+  width: 12px;
+  color: #91869e;
+}
+.footer-bottom {
+  border-top: 1px solid var(--line);
+  padding-block: 23px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  font-size: 9px;
+  color: #8a8294;
+}
+.footer-bottom > div {
+  display: flex;
+  gap: 25px;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.skip-link {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  z-index: 100;
+  background: var(--ink);
+  color: white;
+  padding: 15px;
+  transform: translateY(-150%);
+}
+.skip-link:focus {
+  transform: translateY(0);
+}

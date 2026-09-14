@@ -80,18 +80,8 @@ public enum ThroughputSweep {
         // VLM checkpoints load through the VLM factory and serve through the
         // exact text tower owned by that wrapper, matching production.
         let isVLM = readHasVisionConfig(modelDirectory: modelDirectory)
-        let container: ModelContainer
-        if isVLM {
-            container = try await VLMModelFactory.shared.loadContainer(
-                from: modelDirectory,
-                using: LocalTokenizerLoader()
-            )
-        } else {
-            container = try await LLMModelFactory.shared.loadContainer(
-                from: modelDirectory,
-                using: LocalTokenizerLoader()
-            )
-        }
+        let container = try await BenchmarkModelLoader.load(
+            directory: modelDirectory, isVLM: isVLM)
 
         let facts = try await container.perform { ctx -> ModelFacts in
             eval(ctx.model.parameters().flattened().map { $0.1 })
@@ -612,11 +602,7 @@ public enum ThroughputSweep {
     /// Low median for even counts is avoided: use the two-sided average so the
     /// result matches Python's `statistics.median` (the runner recomputes it).
     static func median(_ values: [Double]) -> Double {
-        guard !values.isEmpty else { return 0 }
-        let sorted = values.sorted()
-        let middle = sorted.count / 2
-        if sorted.count % 2 == 1 { return sorted[middle] }
-        return (sorted[middle - 1] + sorted[middle]) / 2
+        BenchmarkMeasurements.median(values)
     }
 
     /// Whether config.json declares `vision_config` (load through VLMModelFactory

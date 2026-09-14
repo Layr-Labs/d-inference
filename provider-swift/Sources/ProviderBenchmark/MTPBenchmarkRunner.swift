@@ -171,7 +171,7 @@ public enum MTPBenchmarkRunner {
                 measurementRepetitions: configuration.measurementRepetitions,
                 modeOrderSeed: configuration.modeOrderSeed,
                 coverage: coverage,
-                elapsedMs: milliseconds(ContinuousClock.now - startedAt),
+                elapsedMs: BenchmarkMeasurements.milliseconds(ContinuousClock.now - startedAt),
                 cases: results)
         }
 
@@ -953,16 +953,16 @@ public enum MTPBenchmarkRunner {
                     tokenIDs: source.tokenIDs,
                     salt: tokenEvidenceSalt),
                 timeToFirstTokenMs: performanceEligible
-                    ? median(samples.map { $0.batch.rows[row].timing.timeToFirstTokenMs })
+                    ? BenchmarkMeasurements.median(samples.map { $0.batch.rows[row].timing.timeToFirstTokenMs })
                     : nil,
                 interTokenLatencyMs: performanceEligible
-                    ? median(samples.map { $0.batch.rows[row].timing.interTokenLatencyMs })
+                    ? BenchmarkMeasurements.median(samples.map { $0.batch.rows[row].timing.interTokenLatencyMs })
                     : nil,
                 decodeTokensPerSecond: performanceEligible
-                    ? median(samples.map { $0.batch.rows[row].timing.decodeTokensPerSecond })
+                    ? BenchmarkMeasurements.median(samples.map { $0.batch.rows[row].timing.decodeTokensPerSecond })
                     : nil,
                 lastTokenLatencyMs: performanceEligible
-                    ? median(samples.map { $0.batch.rows[row].timing.lastTokenLatencyMs })
+                    ? BenchmarkMeasurements.median(samples.map { $0.batch.rows[row].timing.lastTokenLatencyMs })
                     : nil,
                 finishReason: source.finishReason)
         }
@@ -971,7 +971,7 @@ public enum MTPBenchmarkRunner {
             batchSize: key.batchSize,
             measurementRepetitions: samples.count,
             medianAggregateDecodeTokensPerSecond: performanceEligible
-                ? median(samples.map { $0.batch.aggregateDecodeTokensPerSecond })
+                ? BenchmarkMeasurements.median(samples.map { $0.batch.aggregateDecodeTokensPerSecond })
                 : nil,
             tokenParity: true,
             parityMismatchRows: [],
@@ -995,20 +995,6 @@ public enum MTPBenchmarkRunner {
     ) throws {
         guard artifact.hasVerifiableProvenance else { return }
         try MTPBenchmarkModelFacts.validateUnchanged(artifact, label: label)
-    }
-
-    private static func median(_ values: [Double]) -> Double {
-        let sorted = values.sorted()
-        let middle = sorted.count / 2
-        if sorted.count.isMultiple(of: 2) {
-            return (sorted[middle - 1] + sorted[middle]) / 2
-        }
-        return sorted[middle]
-    }
-
-    static func milliseconds(_ duration: Duration) -> Double {
-        Double(duration.components.seconds) * 1000
-            + Double(duration.components.attoseconds) / 1e15
     }
 
     private static func requireBeforeDeadline(

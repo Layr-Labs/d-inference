@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/catalog"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -90,7 +91,7 @@ func seedRuntimeDefaultsModel(t *testing.T, st store.Store, model string, runtim
 	}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
 	if err := st.SetModelVersion(entry, &store.ModelVersion{
-		ModelID: model, Version: "v1", R2Prefix: modelR2Prefix(model, "v1"),
+		ModelID: model, Version: "v1", R2Prefix: catalog.ModelR2Prefix(model, "v1"),
 		AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready",
 	}, files); err != nil {
 		t.Fatal(err)

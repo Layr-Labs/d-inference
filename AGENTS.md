@@ -12,6 +12,8 @@ coordinator/          Go control plane (packages live at top level, not internal
 │   ├── provider.go         provider registration, heartbeats, attestation, relay
 │   ├── billing/          billing/referral/pricing/payout HTTP controllers and tests
 │   ├── billing_controller.go shared service, store, cache and auth bindings
+│   ├── catalog/          model publishing, discovery, aliases and their tests
+│   ├── catalog_controller.go shared catalog bindings and runtime publication callback
 │   ├── requestauth/      shared linked-user identity requirements
 │   ├── device_auth.go      device code flow for linking providers to user accounts
 │   ├── enroll.go           MDM enrollment profile generation

@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-14 · commit `c8a3f45d0`
+> Last updated: 2026-09-14 · commit `ea5ce6b16`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -59,7 +59,7 @@ Settlement: `coordinator/api/provider.go` (`handleCompleteAt`). Reservation:
 | Price writer | Route | Validation | Citation |
 |---|---|---|---|
 | platform | `PUT /v1/admin/pricing` | `input_price > 0`, `output_price > 0` | `coordinator/api/billing/pricing.go` (`AdminPricing`) |
-| platform | `POST /v1/admin/models/register` | `input_price`, `output_price` required and positive | `coordinator/api/model_registry_handlers.go` (`handleRegisterModel`) |
+| platform | `POST /v1/admin/models/register` | `input_price`, `output_price` required and positive | `coordinator/api/catalog/register_model.go` (`RegisterModel`) |
 | provider custom | `PUT /v1/pricing`, `DELETE /v1/pricing` | positive; no floor or ceiling relative to the platform price | `coordinator/api/billing/pricing.go` (`SetPricing`, `DeletePricing`) |
 
 Storage: `model_prices(account_id, model, input_price, output_price,
@@ -231,7 +231,7 @@ the financial rate limiter ([Constants](#constants)).
 | `PUT /v1/admin/pricing` | requireAuth; admin | `AdminPricing` |
 | `PUT /v1/admin/users/role` | requireAuth; admin | `AdminSetUserRole` |
 | `PUT /v1/admin/users/platform-fee` | requireAuth; admin | `AdminSetUserPlatformFee` |
-| `POST /v1/admin/models/register` | publishing key (`X-Darkbloom-Publishing-Key` or bearer; `MODEL_REGISTRY_PUBLISHING_KEY`, the admin key, or a stored publishing key) | `coordinator/api/model_registry_handlers.go` (`handleRegisterModel`, `requirePublishingAPIKey`) |
+| `POST /v1/admin/models/register` | publishing key (`X-Darkbloom-Publishing-Key` or bearer; `MODEL_REGISTRY_PUBLISHING_KEY`, the admin key, or a stored publishing key) | `coordinator/api/catalog/register_model.go` (`RegisterModel`); `coordinator/api/catalog/publishing_auth.go` (`requirePublishingAPIKey`) |
 | `POST /v1/referral/register` | requireAuth + financial; linked user | `coordinator/api/billing/referrals.go` (`ReferralRegister`) |
 | `POST /v1/referral/apply` | requireAuth + financial; linked user | `ReferralApply` |
 | `GET /v1/referral/stats` | requireAuth | `ReferralStats` |

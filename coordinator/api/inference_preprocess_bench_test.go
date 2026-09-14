@@ -36,6 +36,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/catalog"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -156,7 +157,7 @@ func seedBenchModel(tb testing.TB, st store.Store, model string, runtimeParamete
 	}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
 	if err := st.SetModelVersion(entry, &store.ModelVersion{
-		ModelID: model, Version: "v1", R2Prefix: modelR2Prefix(model, "v1"),
+		ModelID: model, Version: "v1", R2Prefix: catalog.ModelR2Prefix(model, "v1"),
 		AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready",
 	}, files); err != nil {
 		tb.Fatal(err)
@@ -187,10 +188,6 @@ func newBenchServer(tb testing.TB) (*Server, *registry.Registry, *store.MemorySt
 	})
 	return srv, reg, st
 }
-
-// ---------------------------------------------------------------------------
-// Helper-level benchmark
-// ---------------------------------------------------------------------------
 
 // benchPreprocess mirrors handleChatCompletions from the prelude through the
 // routing-trait derivation: traits for the resolved build (handler, then again
@@ -332,10 +329,6 @@ func BenchmarkRequestIntrospection(b *testing.B) {
 		})
 	}
 }
-
-// ---------------------------------------------------------------------------
-// HTTP-level benchmark
-// ---------------------------------------------------------------------------
 
 type benchEnv struct {
 	ts     *httptest.Server

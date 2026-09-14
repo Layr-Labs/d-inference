@@ -707,7 +707,7 @@ func (s *Server) handleMySelfRouteModels(w http.ResponseWriter, r *http.Request)
 	if user == nil {
 		return
 	}
-	entries := s.selfRouteModelEntries(user.AccountID, false)
+	entries := s.catalogController().OwnedModelEntries(user.AccountID, false)
 	models := make([]string, 0, len(entries))
 	for _, e := range entries {
 		models = append(models, e.ID)

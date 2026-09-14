@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-14 · commit `5d57fc2b1`
+> Last updated: 2026-09-14 · commit `f37d74777`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -33,7 +33,7 @@ curl -s https://api.darkbloom.dev/v1/models \
   -H "Authorization: Bearer $DARKBLOOM_API_KEY" | jq '.data[] | {id, context_length, input_modalities, supported_features}'
 ```
 
-A 200 with a `data` array confirms the key works (`handleListModels`, `coordinator/api/models_endpoints.go`). The `id` values are the model names to send; they are aliases maintained in the coordinator's database, so the list is authoritative and this page does not repeat it. Field meanings are in [`models.md`](models.md).
+A 200 with a `data` array confirms the key works (`ListModels`, `coordinator/api/catalog/consumer_list.go`). The `id` values are the model names to send; they are aliases maintained in the coordinator's database, so the list is authoritative and this page does not repeat it. Field meanings are in [`models.md`](models.md).
 
 Pick one id and export it:
 

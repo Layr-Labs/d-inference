@@ -2,9 +2,9 @@ package api
 
 import (
 	"context"
-	"sync"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/readcache"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 )
 
@@ -16,12 +16,8 @@ const (
 	refreshedCacheTTL = 5 * time.Minute
 )
 
-// cacheRefresher coalesces computations of one read-cache entry. Only complete
-// successful results are cached; query errors never become partial JSON data.
-type cacheRefresher struct {
-	mu       sync.Mutex
-	inflight chan struct{}
-}
+// Each response entry owns its coalescing state in the read-cache package.
+type cacheRefresher = readcache.Refresher
 
 // getCachedEntry fills a cold cache. It rechecks the cache under the flight
 // lock so a request delayed after its initial miss cannot start a second
@@ -36,36 +32,18 @@ func (s *Server) refreshCachedEntry(entry *cacheRefresher, key string, compute f
 }
 
 func (s *Server) computeCachedEntry(entry *cacheRefresher, key string, refresh bool, compute func() ([]byte, error)) ([]byte, bool) {
-	entry.mu.Lock()
-	if !refresh {
-		if body, ok := s.readCache.Get(key); ok {
-			entry.mu.Unlock()
-			return body, true
+	computeWithDiagnostics := func() ([]byte, error) {
+		body, err := compute()
+		if err != nil {
+			s.logger.Warn("cache refresh failed; keeping previous value", "key", key, "error", err)
+			s.ddIncr("cache.refresh_failed", []string{"key:" + key})
 		}
+		return body, err
 	}
-	if wait := entry.inflight; wait != nil {
-		entry.mu.Unlock()
-		<-wait
-		return s.readCache.Get(key)
+	if refresh {
+		return entry.Refresh(s.readCache, key, refreshedCacheTTL, computeWithDiagnostics)
 	}
-	done := make(chan struct{})
-	entry.inflight = done
-	entry.mu.Unlock()
-	defer func() {
-		entry.mu.Lock()
-		entry.inflight = nil
-		close(done)
-		entry.mu.Unlock()
-	}()
-
-	body, err := compute()
-	if err != nil {
-		s.logger.Warn("cache refresh failed; keeping previous value", "key", key, "error", err)
-		s.ddIncr("cache.refresh_failed", []string{"key:" + key})
-		return s.readCache.Get(key)
-	}
-	s.readCache.Set(key, body, refreshedCacheTTL)
-	return body, true
+	return entry.Get(s.readCache, key, refreshedCacheTTL, computeWithDiagnostics)
 }
 
 // runCacheRefreshLoop computes once at start and then every interval until

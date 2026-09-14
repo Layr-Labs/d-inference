@@ -36,6 +36,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/catalog"
 	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/apns"
 	"github.com/eigeninference/d-inference/coordinator/auth"
@@ -137,14 +138,15 @@ type Server struct {
 	baseRewards                   *baserewards.Engine
 	logger                        *slog.Logger
 	mux                           *http.ServeMux
-	modelAliasMutationMu          sync.Mutex      // serializes cross-endpoint alias validation + persistence
-	challengeInterval             time.Duration   // 0 means use DefaultChallengeInterval
-	skipChallenge                 bool            // if true, skip attestation challenges entirely (testing only)
-	allowDuplicateProviderSerials bool            // in-process multi-provider testbed only
-	privyAuth                     *auth.PrivyAuth // Privy JWT authentication (nil if not configured)
-	adminEmails                   map[string]bool // emails that have admin access
-	adminKey                      string          // EIGENINFERENCE_ADMIN_KEY for admin endpoints
-	mdmClient                     *mdm.Client     // MicroMDM client for provider security verification
+	catalogOnce                   sync.Once
+	modelCatalog                  *catalog.Controller // shared listing and alias mutation owner
+	challengeInterval             time.Duration       // 0 means use DefaultChallengeInterval
+	skipChallenge                 bool                // if true, skip attestation challenges entirely (testing only)
+	allowDuplicateProviderSerials bool                // in-process multi-provider testbed only
+	privyAuth                     *auth.PrivyAuth     // Privy JWT authentication (nil if not configured)
+	adminEmails                   map[string]bool     // emails that have admin access
+	adminKey                      string              // EIGENINFERENCE_ADMIN_KEY for admin endpoints
+	mdmClient                     *mdm.Client         // MicroMDM client for provider security verification
 	mdmScheduler                  *mdmVerificationScheduler
 	mdmSchedulerConfig            MDMSchedulerConfig
 	mdmWebhookSecret              string              // optional shared secret MicroMDM must present on the webhook
@@ -1204,7 +1206,7 @@ func (s *Server) syncModelAliases(registryRows []store.ModelRegistryRecord) {
 		}
 		var target registry.AliasTarget
 		var ok bool
-		if openRouterAliasUsesConcreteSource(a) {
+		if catalog.AliasUsesConcreteSource(a) {
 			if _, ok = activeConcreteModels[a.SourceModel]; ok {
 				target = registry.AliasTarget{Desired: a.SourceModel}
 			}
@@ -1222,30 +1224,8 @@ func (s *Server) syncModelAliases(registryRows []store.ModelRegistryRecord) {
 	s.logger.Info("model aliases synced to registry", "active_aliases", len(resolved))
 }
 
-// invalidateCatalogCache removes all cached model catalog responses so the
-// next request picks up any changes made by admin endpoints.
-func (s *Server) invalidateCatalogCache() {
-	if s.readCache == nil {
-		return
-	}
-	for _, typeFilter := range []string{"", "text"} {
-		for _, includeAliases := range []bool{false, true} {
-			s.readCache.Invalidate(modelCatalogCacheKey(typeFilter, includeAliases))
-		}
-	}
-	// /v1/models entry memo + list bodies (both include_builds values) and the
-	// OpenRouter feed are derived from the same catalog; drop them too so an
-	// admin alias/registry change is visible on the next request instead of
-	// after their 2s/5s TTLs (which remain the bound for out-of-band DB edits).
-	for _, includeBuilds := range []bool{false, true} {
-		s.readCache.Invalidate(modelEntriesCacheKey(includeBuilds))
-		s.readCache.Invalidate(modelListBodyCacheKey(includeBuilds))
-	}
-	s.readCache.Invalidate(openRouterFeedCacheKey)
-	// stats:v1 is deliberately NOT evicted here: the stats refresher recomputes
-	// it every minute, and evicting it made every concurrent /v1/stats request
-	// rerun the multi-second usage analytics statements.
-}
+// invalidateCatalogCache applies the catalog owner's existing shared-cache invalidation.
+func (s *Server) invalidateCatalogCache() { s.catalogController().Invalidate() }
 
 // SetKnownBinaryHashes configures the set of accepted provider binary hashes.
 // SetBinaryHashEnforcement toggles whether a self-reported binaryHash mismatch
@@ -2552,6 +2532,7 @@ func (s *Server) resolveBaseURL(r *http.Request) string {
 
 // routes mounts all HTTP and WebSocket handlers.
 func (s *Server) routes() {
+	modelCatalog := s.catalogController()
 	billingHandlers := s.billingController()
 	// Install script — served from the generated embed with the coordinator URL
 	// substituted per environment.
@@ -2615,12 +2596,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/responses", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions))))) // Responses API — same handler, auto-detects input vs messages
 	s.mux.HandleFunc("POST /v1/completions", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleCompletions)))))
 	s.mux.HandleFunc("POST /v1/messages", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleAnthropicMessages)))))
-	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
+	s.mux.HandleFunc("GET /v1/models", s.requireAuth(modelCatalog.ListModels))
 	// Dedicated OpenRouter provider feed — pure OpenRouter schema, no Darkbloom metadata.
-	s.mux.HandleFunc("GET /v1/models/openrouter", s.requireAuth(s.handleListModelsOpenRouter))
+	s.mux.HandleFunc("GET /v1/models/openrouter", s.requireAuth(modelCatalog.ListOpenRouterModels))
 	// OpenAI "retrieve model" — {id...} matches slashed HuggingFace-style ids;
 	// the literal /v1/models/openrouter and /v1/models/capacity routes win.
-	s.mux.HandleFunc("GET /v1/models/{id...}", s.requireAuth(s.handleGetModel))
+	s.mux.HandleFunc("GET /v1/models/{id...}", s.requireAuth(modelCatalog.GetModel))
 
 	// Sender encryption — public key publication for sender→coordinator E2E.
 	// Optional: senders may use this to encrypt request bodies; plaintext path
@@ -2729,18 +2710,18 @@ func (s *Server) routes() {
 	// Admin model registry (manifest-backed). The legacy supported_models CRUD
 	// (bare GET/POST/DELETE /v1/admin/models) was removed; the model_registry is
 	// the single source of truth. Use register + the per-model action endpoints.
-	s.mux.HandleFunc("POST /v1/admin/models/register", s.handleRegisterModel)
+	s.mux.HandleFunc("POST /v1/admin/models/register", modelCatalog.RegisterModel)
 	// OpenRouter-only feed aliases clone a standard alias while exposing custom
 	// provider id, marketplace slug, and Hugging Face identity.
-	s.mux.HandleFunc("GET /v1/admin/models/openrouter-aliases", s.handleOpenRouterAliasList)
-	s.mux.HandleFunc("POST /v1/admin/models/openrouter-aliases", s.handleOpenRouterAliasUpsert)
-	s.mux.HandleFunc("DELETE /v1/admin/models/openrouter-aliases/{aliasID}", s.handleOpenRouterAliasDelete)
+	s.mux.HandleFunc("GET /v1/admin/models/openrouter-aliases", modelCatalog.ListOpenRouterAliases)
+	s.mux.HandleFunc("POST /v1/admin/models/openrouter-aliases", modelCatalog.UpsertOpenRouterAlias)
+	s.mux.HandleFunc("DELETE /v1/admin/models/openrouter-aliases/{aliasID}", modelCatalog.DeleteOpenRouterAlias)
 	// Public model aliases (stable names → concrete builds). More-specific
 	// patterns take precedence over the POST /v1/admin/models/ subtree below.
-	s.mux.HandleFunc("GET /v1/admin/models/aliases", s.handleModelAliasList)
-	s.mux.HandleFunc("POST /v1/admin/models/aliases", s.handleModelAliasUpsert)
-	s.mux.HandleFunc("DELETE /v1/admin/models/aliases/{aliasID}", s.handleModelAliasDelete)
-	s.mux.HandleFunc("POST /v1/admin/models/", s.handleAdminModelRegistryAction)
+	s.mux.HandleFunc("GET /v1/admin/models/aliases", modelCatalog.ListAliases)
+	s.mux.HandleFunc("POST /v1/admin/models/aliases", modelCatalog.UpsertAlias)
+	s.mux.HandleFunc("DELETE /v1/admin/models/aliases/{aliasID}", modelCatalog.DeleteAlias)
+	s.mux.HandleFunc("POST /v1/admin/models/", modelCatalog.AdminModelAction)
 	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases)     // admin key or Privy admin
 	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease) // admin key or Privy admin
 
@@ -2756,9 +2737,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/admin/auth/verify", s.handleAdminAuthVerify) // no auth (returns token)
 
 	// Public model catalog — providers and install script fetch this
-	s.mux.HandleFunc("GET /v1/models/catalog", s.handleModelCatalog)
-	s.mux.HandleFunc("GET /v1/models/catalog/manifest/", s.handleModelCatalogManifest)
-	s.mux.HandleFunc("GET /v1/models/catalog/", s.handleModelCatalogItem)
+	s.mux.HandleFunc("GET /v1/models/catalog", modelCatalog.ListInstallCatalog)
+	s.mux.HandleFunc("GET /v1/models/catalog/manifest/", modelCatalog.GetInstallManifest)
+	s.mux.HandleFunc("GET /v1/models/catalog/", modelCatalog.GetInstallModel)
 
 	// Runtime manifest — providers and users can inspect accepted runtime hashes.
 	s.mux.HandleFunc("GET /v1/runtime/manifest", s.handleRuntimeManifest)

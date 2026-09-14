@@ -30,6 +30,8 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Downloading a coordinator state archive | `coordinator/api/statearchive/` (`Controller.Download`, root selection, streamed byte accounting); `coordinator/stateexport/` (`Archiver.Stage`, `Write`, `EncryptWriter`) |
 | Release HTTP, artifact validation, discovery and deactivation | `coordinator/api/releases/` (`Controller`); `coordinator/api/releases.go` binds current inventory, cache and policy dependencies; `coordinator/api/admin_auth.go` retains admin authorization and OTP |
 | Active releases, binary allowlists, runtime verification and evidence generations | `coordinator/providercontrol/releasepolicy/` (`Manager`, `Snapshot`); `coordinator/api/release_policy.go` binds inventory and fleet |
+| HTTP credentials and API-key cache | `coordinator/api/requestauth/` (`Authenticator`); current Server bindings in `coordinator/api/authentication.go`; Privy cryptographic verification in `coordinator/auth/` |
+| Account keys, per-key policy, device login and invites | `coordinator/api/accounts/` (`Controller`); `account_controller.go` binds current store/configuration and the shared authenticator; `authorization.go` owns the in-handler admin check |
 | Provider selection, admission, queueing | `coordinator/registry/`; request eligibility in `request_traits.go` (`providerEligibleForTraitsLocked`) |
 | Billing and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/contracts/`, `coordinator/store/postgres/`, `coordinator/store/memory/`, `coordinator/store/cache/` |
 | Provider inference, downloads, security, local serving | `provider-swift/Sources/ProviderCore/`; entrypoints in `provider-swift/Sources/darkbloom/` |

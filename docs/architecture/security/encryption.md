@@ -117,7 +117,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | Cache-affinity keys: keyed digests of identity / prefix bytes; raw bytes are never stored, logged, or returned | `coordinator/registry/cache_route_keys.go` |
 | Provider identity rows: SE public key, serial, MDA UDID and chain, posture bits (`ProviderTrustReuse`); code-identity proofs `CodeAttestation{se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash}`; push budgets keyed by SE key + APNs token hash | `coordinator/store/contracts/trust_reuse.go`, `coordinator/store/contracts/code_attestation.go` (`ProviderTrustReuse`, `CodeAttestation`, `CodeAttestPushBudget`); `coordinator/providercontrol/trustreuse/evidence.go` (`record`); `coordinator/providercontrol/codeidentity/state.go` (`deviceState`) |
 | MDM webhook body: `body_size` and a 500-byte `body_preview` at `Debug` level (MDM plist, never inference data) | `coordinator/api/server.go` (`HandleMDMWebhook`) |
-| Device-code lifecycle: `user_code`, `account_id` at `Info` level | `coordinator/api/device_auth.go` |
+| Device-code lifecycle: `user_code`, `account_id` at `Info` level | `coordinator/api/accounts/device_codes.go`, `coordinator/api/accounts/device_approval.go`, `coordinator/api/accounts/device_tokens.go` |
 
 | Explicitly avoided | Code |
 |---|---|

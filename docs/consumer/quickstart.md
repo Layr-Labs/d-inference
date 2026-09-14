@@ -18,7 +18,7 @@ Open `https://console.darkbloom.dev` and sign in with your email address.
 
 ### 2. Create an API key
 
-Open the API console page (`/api-console`, `console-ui/src/app/api-console/page.tsx` — not Settings) and create a key. The console calls `POST /v1/keys` with your Privy session through its same-origin `/api/keys` relay (`console-ui/src/app/api/keys/route.ts`; `handleCreateAPIKey`, `coordinator/api/apikey_handlers.go`). The secret starts with `sk-db-` and is shown once — copy it now; its exact shape and how it is stored are in [`../reference/api-contracts.md#api-key-shapes`](../reference/api-contracts.md#api-key-shapes). If you lose it, rotate or create another ([`authentication.md`](authentication.md)).
+Open the API console page (`/api-console`, `console-ui/src/app/api-console/page.tsx` — not Settings) and create a key. The console calls `POST /v1/keys` with your Privy session through its same-origin `/api/keys` relay (`console-ui/src/app/api/keys/route.ts`; `Controller.CreateKey`, `coordinator/api/accounts/keys.go`). The secret starts with `sk-db-` and is shown once — copy it now; its exact shape and how it is stored are in [`../reference/api-contracts.md#api-key-shapes`](../reference/api-contracts.md#api-key-shapes). If you lose it, rotate or create another ([`authentication.md`](authentication.md)).
 
 Export it for the commands below:
 
@@ -92,7 +92,7 @@ print(resp.choices[0].message.content)
 
 ### 7. Use the Anthropic SDK
 
-The Anthropic clients append `/v1/messages` to the base URL, so point them at the bare host. The coordinator reads credentials only from `Authorization: Bearer` (`extractBearerToken`, `coordinator/api/server.go`) and ignores `x-api-key`, so pass the key as the SDK's bearer `auth_token`, not as `api_key`:
+The Anthropic clients append `/v1/messages` to the base URL, so point them at the bare host. The coordinator reads credentials only from `Authorization: Bearer` (`BearerToken`, `coordinator/api/requestauth/bearer.go`) and ignores `x-api-key`, so pass the key as the SDK's bearer `auth_token`, not as `api_key`:
 
 ```python
 import anthropic

@@ -85,6 +85,24 @@ env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
 The PostgreSQL maintenance-process fixture still requires an isolated disposable
 database; it is skipped when its database environment is absent.
 
+Authentication boundary tests use the real registered routes in
+`coordinator/api/authentication_contract_test.go`. Run
+`go test -race ./coordinator/api -run '^TestAuthentication'` from the repository
+root to check credential replacement after route registration, key-cache
+invalidation through management routes, and provider-token revocation. These
+checks use an in-memory store and locally signed JWTs.
+
+Account key and device-flow unit tests live beside their controller in
+`coordinator/api/accounts/`. Keep actual route/auth/rate-limit integration tests
+in `coordinator/api/`; `TestAccountControllerUsesCurrentBindings` checks that
+routes use the current store, console URL and admin policy after registration.
+Run these boundary checks from the repository root:
+
+```bash
+go test -race ./coordinator/api/accounts ./coordinator/api \
+  -run 'Test(AccountController|Authentication|Handle.*APIKey|Device|Key|Security)'
+```
+
 Run prediction telemetry checks from the repository root:
 
 ```bash

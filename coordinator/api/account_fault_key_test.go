@@ -38,7 +38,7 @@ func TestAccountLinkedFaultStateSurvivesReconnect(t *testing.T) {
 	const acct = "acct-open-mode"
 	const rawToken = "eigeninference-pt-account-fault-key-test"
 	if err := st.CreateProviderToken(&store.ProviderToken{
-		TokenHash: sha256Hash(rawToken),
+		TokenHash: store.HashKey(rawToken),
 		AccountID: acct,
 		Active:    true,
 	}); err != nil {

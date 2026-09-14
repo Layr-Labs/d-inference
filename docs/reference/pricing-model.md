@@ -39,7 +39,7 @@ pieces fit together, and what they guarantee, is explained in
 | Stripe deposit minimum | `0.50` USD | `amount_usd` lower bound on `create-session` | `coordinator/api/billing_handlers.go` (`handleStripeCreateSession`) |
 | `ReferralSharePercent` default | `20`; `NewReferralService` resets values outside `(0, 50]` to `20` | referrer's share of the platform fee | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/billing/referral.go` (`NewReferralService`) |
 | Referral code | 3–20 characters, letters/digits/hyphen, no leading or trailing hyphen, uppercased | `validateReferralCode` | `coordinator/billing/referral.go` |
-| Invite code default `max_uses` | `1`; auto-generated code `INV-<8 hex>` | `handleAdminCreateInviteCode` | `coordinator/api/invite_handlers.go` |
+| Invite code default `max_uses` | `1`; auto-generated code `INV-<8 hex>` | `Controller.CreateInvite` | `coordinator/api/accounts/invites.go` |
 | Financial rate limiter | `0.2` rps, burst `3` | `create-session`, `POST/PATCH/DELETE /v1/keys`, referral register/apply, invite create/redeem, Stripe dashboard link | `coordinator/ratelimit/config.go` (`Financial`) |
 | Service rate limiter | `200` rps, burst `600` | `RoleService` accounts | `coordinator/ratelimit/config.go` (`Service`) |
 | `FloorPoolBudgetMicroUSD` | `9_000_000_000` | base-rewards monthly pool ($9,000), prorated per epoch by `PeriodBudget` | `coordinator/payments/baserewards/alloc.go`, `epoch.go` |
@@ -86,7 +86,7 @@ updated_at)`, primary key `(account_id, model)`
 | Provider payout | `totalCost − platformFee` | `coordinator/payments/pricing.go` (`ProviderPayoutWithPercent`) |
 | Withdrawal fee | `0` (standard); `max(gross × InstantFeeBps / 10_000, InstantFeeMinMicroUSD)` (instant) | `coordinator/billing/stripe_connect.go` (`FeeForMethodMicroUSD`) |
 | Withdrawal net | `gross − fee`, transferred as `microUSDToCents(net)`; must be ≥ 1 cent | `coordinator/api/stripe_withdraw.go` (`handleStripeWithdraw`) |
-| Key spend | `Σ usage.cost_micro_usd` for the key since `KeySpendWindowStart(limit_reset, now)`; request rejected when `spend + additional > LimitMicroUSD` | `coordinator/store/postgres/keys.go` (`KeySpendSince`); `coordinator/api/apikey_handlers.go` (`checkKeySpendCap`) |
+| Key spend | `Σ usage.cost_micro_usd` for the key since `KeySpendWindowStart(limit_reset, now)`; request rejected when `spend + additional > LimitMicroUSD` | `coordinator/store/postgres/keys.go` (`KeySpendSince`); `coordinator/api/accounts/key_policy.go` (`accounts.CheckKeySpendCap`) |
 
 ## Ledger entry types
 
@@ -131,7 +131,7 @@ rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
 
 | Field | Where | Values | Citation |
 |---|---|---|---|
-| `limit_usd` | `POST /v1/keys`, `PATCH /v1/keys/{id}` body | `>= 0`; stored as `APIKey.LimitMicroUSD` | `coordinator/api/apikey_handlers.go` (`validateKeyLimitInputs`, `handleCreateAPIKey`) |
+| `limit_usd` | `POST /v1/keys`, `PATCH /v1/keys/{id}` body | `>= 0`; stored as `APIKey.LimitMicroUSD` | `coordinator/api/accounts/keys.go`, `coordinator/api/accounts/key_inputs.go` (`validateKeyLimitInputs`, `Controller.CreateKey`) |
 | `limit_reset` | same | `none`, `daily`, `weekly`, `monthly` (`KeyResetNone` …); unknown values normalise to `none` | `coordinator/store/contracts/keys.go` (`NormalizeResetWindow`, `KeySpendWindowStart`) |
 | enforcement points | `reserveInferenceBalance`, `topUpReservationForInlinedMedia`, `reserveAdditionalForProvider` | soft cap on settled usage | `coordinator/api/inference_admission.go`; `coordinator/api/consumer.go` |
 
@@ -210,7 +210,7 @@ the financial rate limiter ([Constants](#constants)).
 | `GET /v1/provider/earnings` | none; identifies by `?wallet=` / `X-Provider-Wallet` (legacy) | `coordinator/api/consumer.go` (`handleProviderEarnings`) |
 | `GET /v1/provider/account-earnings` | requireAuth | `coordinator/api/billing_handlers.go` (`handleAccountEarnings`) |
 | `GET /v1/me/summary` | requirePrivyAuth | `coordinator/api/me_handlers.go` (`handleMySummary`) |
-| `POST /v1/keys`, `PATCH /v1/keys/{id}` | requirePrivyAuth + financial | `coordinator/api/apikey_handlers.go` (`handleCreateAPIKey`, `handleUpdateAPIKey`) |
+| `POST /v1/keys`, `PATCH /v1/keys/{id}` | requirePrivyAuth + financial | `coordinator/api/accounts/keys.go` (`Controller.CreateKey`, `Controller.UpdateKey`) |
 | `POST /v1/billing/stripe/create-session` | requireAuth + financial | `coordinator/api/billing_handlers.go` (`handleStripeCreateSession`) |
 | `POST /v1/billing/stripe/webhook` | none; `Stripe-Signature` | `handleStripeWebhook` |
 | `GET /v1/billing/stripe/session` | requireAuth | `handleStripeSessionStatus` |
@@ -234,10 +234,10 @@ the financial rate limiter ([Constants](#constants)).
 | `POST /v1/referral/apply` | requireAuth + financial; Privy | `handleReferralApply` |
 | `GET /v1/referral/stats` | requireAuth | `handleReferralStats` |
 | `GET /v1/referral/info` | requireAuth | `handleReferralInfo` |
-| `POST /v1/admin/invite-codes` | requireAuth + financial; admin | `coordinator/api/invite_handlers.go` (`handleAdminCreateInviteCode`) |
-| `GET /v1/admin/invite-codes` | requireAuth; admin | `handleAdminListInviteCodes` |
-| `DELETE /v1/admin/invite-codes` | requireAuth; admin | `handleAdminDeactivateInviteCode` |
-| `POST /v1/invite/redeem` | requireAuth + financial | `handleRedeemInviteCode` |
+| `POST /v1/admin/invite-codes` | requireAuth + financial; admin | `coordinator/api/accounts/invites.go` (`Controller.CreateInvite`) |
+| `GET /v1/admin/invite-codes` | requireAuth; admin | `Controller.ListInvites` |
+| `DELETE /v1/admin/invite-codes` | requireAuth; admin | `Controller.DeactivateInvite` |
+| `POST /v1/invite/redeem` | requireAuth + financial | `Controller.RedeemInvite` |
 | `POST /v1/admin/credit` | requireAuth; admin | `coordinator/api/admin_balance_adjustment.go` (`handleAdminCredit`) |
 | `POST /v1/admin/reward` | requireAuth; admin | `handleAdminReward` |
 | `GET /v1/admin/base-rewards` | admin (in handler) | `coordinator/api/base_rewards_handlers.go` (`handleAdminBaseRewards`) |

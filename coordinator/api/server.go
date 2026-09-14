@@ -19,7 +19,6 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	_ "embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -34,7 +33,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/httprequest"
 	"github.com/eigeninference/d-inference/coordinator/api/readiness"
+	"github.com/eigeninference/d-inference/coordinator/api/requestauth"
 	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/apns"
 	"github.com/eigeninference/d-inference/coordinator/auth"
@@ -58,20 +59,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
 	"github.com/google/uuid"
 	"golang.org/x/sync/singleflight"
-)
-
-// apiKeyCacheEntry stores the authenticated key record for a single raw API
-// key. Cached to skip DB round trips on repeat requests with the same key. A
-// nil key means the token is known-invalid (negative cache).
-type apiKeyCacheEntry struct {
-	key      *store.APIKey
-	cachedAt time.Time
-	gen      uint64 // cache generation this entry was stored under
-}
-
-const (
-	apiKeyCacheTTL     = 60 * time.Second
-	apiKeyCacheMaxSize = 1000
 )
 
 // cryptoRand allows request ID generation to substitute its entropy source.
@@ -305,15 +292,8 @@ type Server struct {
 	dd          *datadog.Client
 	queueGauges queueGaugeState
 
-	// apiKeyCache memoizes ValidateKeyFull results so repeated requests
-	// with the same API key skip the DB round trip. Entries expire after
-	// apiKeyCacheTTL. Bounded at apiKeyCacheMaxSize entries.
-	apiKeyCacheMu sync.RWMutex
-	apiKeyCache   map[string]apiKeyCacheEntry
-	// apiKeyCacheGen is bumped on every key mutation. A cached entry is only
-	// honored when its gen matches, so a single bump atomically invalidates the
-	// whole cache and closes the read-stale-after-mutation race.
-	apiKeyCacheGen uint64
+	// requestAuth owns shared credential authentication and key-cache state.
+	requestAuth *requestauth.Authenticator
 
 	// rateLimiter applies per-account token-bucket rate limits to consumer
 	// inference endpoints. Nil means unlimited (compatibility with old call
@@ -690,7 +670,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		metrics:                  NewMetrics(),
 		readCache:                newTTLCache(),
 		geoResolver:              newProviderGeoResolverFromEnv(logger),
-		apiKeyCache:              make(map[string]apiKeyCacheEntry),
+		requestAuth:              requestauth.New(),
 		mdmSchedulerConfig:       cfg.MDMScheduler,
 		settlements:              newSettlementHolder(),
 		zombieCanceller:          newZombieStreamCanceller(),
@@ -1363,7 +1343,7 @@ const maxRequestBodyBytes = 64 << 20 // 64 MiB
 // maxControlPlaneBodyBytes is the tight cap for small unauthenticated
 // control-plane JSON (enroll, device token, admin auth) — far below the global
 // ceiling so these exposed endpoints buffer at most a few KiB.
-const maxControlPlaneBodyBytes = 64 << 10 // 64 KiB
+const maxControlPlaneBodyBytes = httprequest.ControlPlaneBodyLimit
 
 // HandleMDMWebhook processes a MicroMDM webhook callback.
 // Mount this on the webhook URL configured in MicroMDM.
@@ -1441,6 +1421,7 @@ func (s *Server) routes() {
 	readinessAPI := s.readinessController()
 	releaseAPI := s.newReleaseAPI()
 	operations := s.newOperations()
+	accountHandlers := s.accountController()
 	// Install script — served from the generated embed with the coordinator URL
 	// substituted per environment.
 	s.mux.HandleFunc("GET /install.sh", func(w http.ResponseWriter, r *http.Request) {
@@ -1466,20 +1447,20 @@ func (s *Server) routes() {
 
 	// Key management — requires interactive Privy session (API keys rejected
 	// to prevent self-replication from a leaked key).
-	s.mux.HandleFunc("POST /v1/auth/keys", s.requirePrivyAuth(s.rateLimitFinancial(s.handleCreateKey)))
-	s.mux.HandleFunc("DELETE /v1/auth/keys", s.requirePrivyAuth(s.handleRevokeKey))
+	s.mux.HandleFunc("POST /v1/auth/keys", s.requirePrivyAuth(s.rateLimitFinancial(accountHandlers.CreateLegacyKey)))
+	s.mux.HandleFunc("DELETE /v1/auth/keys", s.requirePrivyAuth(accountHandlers.RevokeLegacyKey))
 
 	// Multi-key management (OpenRouter-shaped CRUD). One account may own many
 	// named, individually-limited keys. Management requires an interactive
 	// Privy session so a leaked inference key can't enumerate or mint keys.
-	s.mux.HandleFunc("GET /v1/keys", s.requirePrivyAuth(s.handleListAPIKeys))
-	s.mux.HandleFunc("POST /v1/keys", s.requirePrivyAuth(s.rateLimitFinancial(s.handleCreateAPIKey)))
-	s.mux.HandleFunc("GET /v1/keys/{id}", s.requirePrivyAuth(s.handleGetAPIKey))
-	s.mux.HandleFunc("PATCH /v1/keys/{id}", s.requirePrivyAuth(s.rateLimitFinancial(s.handleUpdateAPIKey)))
-	s.mux.HandleFunc("DELETE /v1/keys/{id}", s.requirePrivyAuth(s.rateLimitFinancial(s.handleDeleteAPIKey)))
-	s.mux.HandleFunc("POST /v1/keys/{id}/rotate", s.requirePrivyAuth(s.rateLimitFinancial(s.handleRotateAPIKey)))
+	s.mux.HandleFunc("GET /v1/keys", s.requirePrivyAuth(accountHandlers.ListKeys))
+	s.mux.HandleFunc("POST /v1/keys", s.requirePrivyAuth(s.rateLimitFinancial(accountHandlers.CreateKey)))
+	s.mux.HandleFunc("GET /v1/keys/{id}", s.requirePrivyAuth(accountHandlers.GetKey))
+	s.mux.HandleFunc("PATCH /v1/keys/{id}", s.requirePrivyAuth(s.rateLimitFinancial(accountHandlers.UpdateKey)))
+	s.mux.HandleFunc("DELETE /v1/keys/{id}", s.requirePrivyAuth(s.rateLimitFinancial(accountHandlers.DeleteKey)))
+	s.mux.HandleFunc("POST /v1/keys/{id}/rotate", s.requirePrivyAuth(s.rateLimitFinancial(accountHandlers.RotateKey)))
 	// Metadata for the calling key (OpenRouter parity) — API key auth.
-	s.mux.HandleFunc("GET /v1/key", s.requireAuth(s.handleGetCallingKey))
+	s.mux.HandleFunc("GET /v1/key", s.requireAuth(accountHandlers.GetCallingKey))
 
 	// Consumer endpoints — API key auth required + per-account rate limit.
 	// Inference endpoints are wrapped in sealedTransport so senders can opt into
@@ -1564,12 +1545,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/releases/latest", releaseAPI.Latest) // public (install.sh)
 
 	// Device authorization flow — providers link to user accounts.
-	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)   // no auth — provider not yet authenticated
-	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken) // no auth — polls with device_code secret
+	s.mux.HandleFunc("POST /v1/device/code", accountHandlers.DeviceCode)   // no auth — provider not yet authenticated
+	s.mux.HandleFunc("POST /v1/device/token", accountHandlers.DeviceToken) // no auth — polls with device_code secret
 	// Device approve issues a long-lived provider→account linking token —
 	// same risk class as /v1/auth/keys, so financial-tier limit applies.
 	// Uses requirePrivyAuth to reject API keys (interactive session only).
-	s.mux.HandleFunc("POST /v1/device/approve", s.requirePrivyAuth(s.rateLimitFinancial(s.handleDeviceApprove)))
+	s.mux.HandleFunc("POST /v1/device/approve", s.requirePrivyAuth(s.rateLimitFinancial(accountHandlers.ApproveDevice)))
 
 	// --- Billing endpoints (Stripe payments + referrals) ---
 
@@ -1666,13 +1647,13 @@ func (s *Server) routes() {
 	// code; redemption is already financial-tier so the issuance side must
 	// match (otherwise an admin-key holder could spam codes anyway, but
 	// keeping symmetry).
-	s.mux.HandleFunc("POST /v1/admin/invite-codes", s.requireAuth(s.rateLimitFinancial(s.handleAdminCreateInviteCode)))
-	s.mux.HandleFunc("GET /v1/admin/invite-codes", s.requireAuth(s.handleAdminListInviteCodes))
-	s.mux.HandleFunc("DELETE /v1/admin/invite-codes", s.requireAuth(s.handleAdminDeactivateInviteCode))
+	s.mux.HandleFunc("POST /v1/admin/invite-codes", s.requireAuth(s.rateLimitFinancial(accountHandlers.CreateInvite)))
+	s.mux.HandleFunc("GET /v1/admin/invite-codes", s.requireAuth(accountHandlers.ListInvites))
+	s.mux.HandleFunc("DELETE /v1/admin/invite-codes", s.requireAuth(accountHandlers.DeactivateInvite))
 
 	// Invite code redemption (user) — credits the redeemer's balance, so
 	// it's a financial-tier endpoint.
-	s.mux.HandleFunc("POST /v1/invite/redeem", s.requireAuth(s.rateLimitFinancial(s.handleRedeemInviteCode)))
+	s.mux.HandleFunc("POST /v1/invite/redeem", s.requireAuth(s.rateLimitFinancial(accountHandlers.RedeemInvite)))
 
 	// Admin credit & reward
 	s.mux.HandleFunc("POST /v1/admin/credit", s.requireAuth(s.handleAdminCredit))
@@ -1875,23 +1856,8 @@ func (s *Server) bodyLimitMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// decodeCappedJSON JSON-decodes the request body under a hard size cap, writing
-// a 413 (too large) or 400 (bad JSON) and returning false on failure. For small
-// unauthenticated control-plane endpoints that must not buffer an unbounded body.
 func decodeCappedJSON(w http.ResponseWriter, r *http.Request, maxBytes int64, dst any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
-	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			writeJSON(w, http.StatusRequestEntityTooLarge,
-				errorResponse("invalid_request_error", "request body too large"))
-			return false
-		}
-		writeJSON(w, http.StatusBadRequest,
-			errorResponse("invalid_request_error", "invalid JSON"))
-		return false
-	}
-	return true
+	return httprequest.DecodeJSON(w, r, maxBytes, dst)
 }
 
 // recoverMiddleware catches panics in any handler, emits a telemetry event
@@ -1931,220 +1897,6 @@ func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(w, r)
 	})
-}
-
-// lookupAPIKeyCache returns a cached ValidateKeyFull result if present and
-// not expired. Returns false on miss or expiry.
-func (s *Server) lookupAPIKeyCache(token string) (apiKeyCacheEntry, bool) {
-	s.apiKeyCacheMu.RLock()
-	entry, ok := s.apiKeyCache[token]
-	gen := s.apiKeyCacheGen
-	s.apiKeyCacheMu.RUnlock()
-	// Miss on absence, TTL expiry, or a stale generation (a key mutation has
-	// occurred since the entry was cached).
-	if !ok || entry.gen != gen || time.Since(entry.cachedAt) > apiKeyCacheTTL {
-		return apiKeyCacheEntry{}, false
-	}
-	return entry, true
-}
-
-// storeAPIKeyCache inserts an auth result into the cache, stamped with the
-// current generation. If the cache is at capacity, the oldest entry is evicted.
-func (s *Server) storeAPIKeyCache(token string, entry apiKeyCacheEntry) {
-	s.apiKeyCacheMu.Lock()
-	defer s.apiKeyCacheMu.Unlock()
-	entry.gen = s.apiKeyCacheGen
-	if len(s.apiKeyCache) >= apiKeyCacheMaxSize {
-		var oldest string
-		var oldestTime time.Time
-		for k, v := range s.apiKeyCache {
-			if oldest == "" || v.cachedAt.Before(oldestTime) {
-				oldest = k
-				oldestTime = v.cachedAt
-			}
-		}
-		delete(s.apiKeyCache, oldest)
-	}
-	s.apiKeyCache[token] = entry
-}
-
-// invalidateAPIKeyCache removes a single key from the API key cache. Called
-// when a key is revoked so stale positive results don't grant access.
-func (s *Server) invalidateAPIKeyCache(token string) {
-	s.apiKeyCacheMu.Lock()
-	delete(s.apiKeyCache, token)
-	s.apiKeyCacheMu.Unlock()
-}
-
-// invalidateAllAPIKeyCache atomically invalidates every cached auth result by
-// bumping the cache generation (entries cached under an older generation are
-// ignored). Called BEFORE and AFTER a by-ID key mutation (update/revoke/rotate)
-// where we don't hold the raw token: the pre-bump drops any pre-existing entry,
-// and the post-bump drops any entry a concurrent request re-cached from
-// pre-commit state during the mutation — closing the read-stale race.
-func (s *Server) invalidateAllAPIKeyCache() {
-	s.apiKeyCacheMu.Lock()
-	s.apiKeyCacheGen++
-	s.apiKeyCache = make(map[string]apiKeyCacheEntry)
-	s.apiKeyCacheMu.Unlock()
-}
-
-// requireAuth wraps a handler with authentication. It tries Privy JWT first
-// (if configured), then falls back to API key validation. The authenticated
-// identity is stored in the request context for downstream use.
-func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		setOutcomeStage(r, "auth")
-		token := extractBearerToken(r)
-		if token == "" {
-			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "missing credentials — use Authorization: Bearer <token>"))
-			return
-		}
-
-		// Try Privy JWT first (JWTs start with "eyJ").
-		if s.privyAuth != nil && strings.HasPrefix(token, "eyJ") {
-			privyUserID, err := s.privyAuth.VerifyToken(token)
-			if err != nil {
-				writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "invalid Privy token"))
-				return
-			}
-			user, err := s.privyAuth.GetOrCreateUser(privyUserID)
-			if err != nil {
-				s.logger.Error("privy: user resolution failed", "error", err)
-				writeJSON(w, http.StatusInternalServerError, errorResponse("auth_error", "failed to resolve user"))
-				return
-			}
-			ctx := requestcontext.WithAccountID(r.Context(), user.AccountID)
-			ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
-			stampAuth(r, "privy", true)
-			next(w, r.WithContext(ctx))
-			return
-		}
-
-		// Accept admin key (admin endpoints handle further authorization in-handler).
-		if s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1 {
-			ctx := requestcontext.WithAccountID(r.Context(), "admin")
-			stampAuth(r, "admin", false)
-			next(w, r.WithContext(ctx))
-			return
-		}
-
-		// Fall back to API key auth.
-		// Check cache first to skip DB on repeat requests with the same key.
-		var keyRec *store.APIKey
-		authKind := "apikey_cache"
-		if cached, ok := s.lookupAPIKeyCache(token); ok {
-			keyRec = cached.key
-		} else {
-			authKind = "apikey_db"
-			// Cache miss — resolve the key (with its per-key limits) in one
-			// query. A disabled/expired/unknown key returns an error and falls
-			// through to the provider-token path below.
-			if k, err := s.store.AuthenticateKey(token); err == nil {
-				keyRec = k
-				// Throttled last-used update: cache misses happen at most once
-				// per TTL per active key, so this naturally rate-limits writes.
-				if k.ID != "" {
-					id := k.ID
-					saferun.Go(s.logger, "touch_api_key", func() {
-						s.store.TouchAPIKey(id, time.Now())
-					})
-				}
-				// Unlinked legacy key: its identity used to be the raw bearer
-				// token; it is now LegacyAccountID(token). Carry any balance from
-				// the old raw-token identity to the new one so a pre-existing
-				// funded legacy key doesn't suddenly read a zero balance. One-time
-				// and a no-op once moved; runs only on a cache miss (≈ once per
-				// TTL). The raw token is never logged.
-				if k.OwnerAccountID == "" {
-					if _, err := s.store.MigrateAccountBalance(token, store.LegacyAccountID(token)); err != nil {
-						s.logger.Warn("legacy key balance migration failed", "error", err)
-					}
-				}
-				// Cache the API-key result (positive or negative). Provider-token
-				// fallbacks are deliberately NOT cached below.
-				s.storeAPIKeyCache(token, apiKeyCacheEntry{key: keyRec, cachedAt: time.Now()})
-			} else if pt, err := s.store.GetProviderToken(token); err == nil && pt != nil && pt.Active {
-				// Provider device-login tokens authenticate as an account-scoped
-				// identity with no per-key limits (ID left empty). These are NOT
-				// cached: provider-token revocation has no api-key-cache
-				// invalidation hook, so caching would let a revoked token live
-				// until TTL. GetProviderToken is cheap and provider-token traffic
-				// is low-volume.
-				keyRec = &store.APIKey{OwnerAccountID: pt.AccountID}
-			} else {
-				// Unknown token — negative-cache to avoid hammering the DB.
-				s.storeAPIKeyCache(token, apiKeyCacheEntry{key: nil, cachedAt: time.Now()})
-			}
-		}
-
-		// Re-check time-based expiry / disable on the cache-hit path: a key can
-		// expire while a positive entry is still within its TTL, and no mutation
-		// event clears the cache on a time-based expiry.
-		if keyRec != nil && (keyRec.Disabled || (keyRec.ExpiresAt != nil && time.Now().After(*keyRec.ExpiresAt))) {
-			keyRec = nil
-		}
-
-		if keyRec == nil {
-			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "invalid API key"))
-			return
-		}
-
-		// Resolve key → account. If the key is linked to a Privy account, use
-		// that account ID and load the user. Unlinked legacy keys derive a
-		// stable, non-secret identity (legacy:<sha256>) instead of using the raw
-		// bearer token, so the secret never reaches balances.account_id, ledger
-		// references, or logs.
-		accountID := keyRec.OwnerAccountID
-		ctx := r.Context()
-		authDBRead := authKind == "apikey_db"
-		if accountID != "" {
-			authDBRead = true
-			if user, err := s.store.GetUserByAccountID(accountID); err == nil {
-				ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
-			}
-		} else {
-			accountID = store.LegacyAccountID(token)
-		}
-
-		ctx = requestcontext.WithAccountID(ctx, accountID)
-		ctx = requestcontext.WithAPIKey(ctx, keyRec)
-		stampAuth(r, authKind, authDBRead)
-		next(w, r.WithContext(ctx))
-	}
-}
-
-// requirePrivyAuth wraps a handler requiring a Privy JWT session. Unlike
-// requireAuth, API keys are rejected. Use for sensitive account operations
-// (key creation, device approval) that must not be triggerable by a leaked
-// API key.
-func (s *Server) requirePrivyAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		token := extractBearerToken(r)
-		if token == "" {
-			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "missing credentials"))
-			return
-		}
-		if s.privyAuth == nil || !strings.HasPrefix(token, "eyJ") {
-			writeJSON(w, http.StatusForbidden, errorResponse("forbidden",
-				"this endpoint requires an interactive session — API keys are not accepted"))
-			return
-		}
-		privyUserID, err := s.privyAuth.VerifyToken(token)
-		if err != nil {
-			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "invalid Privy token"))
-			return
-		}
-		user, err := s.privyAuth.GetOrCreateUser(privyUserID)
-		if err != nil {
-			s.logger.Error("privy: user resolution failed", "error", err)
-			writeJSON(w, http.StatusInternalServerError, errorResponse("auth_error", "failed to resolve user"))
-			return
-		}
-		ctx := requestcontext.WithAccountID(r.Context(), user.AccountID)
-		ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
-		next(w, r.WithContext(ctx))
-	}
 }
 
 // rateLimitConsumer wraps a consumer-facing handler with per-account rate
@@ -2449,17 +2201,4 @@ func (sw *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // and websocket libraries to discover interfaces like http.Hijacker.
 func (sw *statusWriter) Unwrap() http.ResponseWriter {
 	return sw.ResponseWriter
-}
-
-// extractBearerToken extracts the token from "Authorization: Bearer <token>".
-func extractBearerToken(r *http.Request) string {
-	auth := r.Header.Get("Authorization")
-	if auth == "" {
-		return ""
-	}
-	parts := strings.SplitN(auth, " ", 2)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
-		return ""
-	}
-	return strings.TrimSpace(parts[1])
 }

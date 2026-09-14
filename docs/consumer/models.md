@@ -83,7 +83,7 @@ Handler `handleGetModel`. Returns one `ModelEntry` for a listed id, a hidden bui
 
 ### `model_not_allowed`
 
-A key created with `allowed_models` can only use those ids. Any other `model` fails in the prelude with 403 `model_not_allowed` (`keyModelAllowed`, `coordinator/api/apikey_handlers.go`) before resolution, so the allow-list should name the same ids `GET /v1/models` returns.
+A key created with `allowed_models` can only use those ids. Any other `model` fails in the prelude with 403 `model_not_allowed` (`accounts.KeyModelAllowed`, `coordinator/api/accounts/key_policy.go`) before resolution, so the allow-list should name the same ids `GET /v1/models` returns.
 
 ## Capability flags as the API exposes them
 

@@ -1,4 +1,4 @@
-package api
+package accounts
 
 import (
 	"context"
@@ -13,15 +13,13 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/auth"
-	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-func deviceTestServer() (*Server, store.Store) {
+func deviceTestController() (*Controller, store.Store) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := New(Dependencies{Store: func() Store { return st }, Logger: logger, ConsoleURL: func() string { return "" }})
 	return srv, st
 }
 
@@ -33,11 +31,11 @@ func withUser(ctx context.Context, accountID, email string) context.Context {
 }
 
 func TestDeviceCodeGeneration(t *testing.T) {
-	srv, _ := deviceTestServer()
+	srv, _ := deviceTestController()
 	req := httptest.NewRequest(http.MethodPost, "/v1/device/code", nil)
 	w := httptest.NewRecorder()
 
-	srv.handleDeviceCode(w, req)
+	srv.DeviceCode(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200, body: %s", w.Code, w.Body.String())
@@ -68,13 +66,13 @@ func TestDeviceCodeGeneration(t *testing.T) {
 }
 
 func TestDeviceCodeUniquePerCall(t *testing.T) {
-	srv, _ := deviceTestServer()
+	srv, _ := deviceTestController()
 	seen := make(map[string]bool)
 
 	for range 10 {
 		req := httptest.NewRequest(http.MethodPost, "/v1/device/code", nil)
 		w := httptest.NewRecorder()
-		srv.handleDeviceCode(w, req)
+		srv.DeviceCode(w, req)
 
 		var resp map[string]any
 		json.Unmarshal(w.Body.Bytes(), &resp)
@@ -87,11 +85,11 @@ func TestDeviceCodeUniquePerCall(t *testing.T) {
 }
 
 func TestDeviceTokenPending(t *testing.T) {
-	srv, _ := deviceTestServer()
+	srv, _ := deviceTestController()
 
 	codeReq := httptest.NewRequest(http.MethodPost, "/v1/device/code", nil)
 	codeW := httptest.NewRecorder()
-	srv.handleDeviceCode(codeW, codeReq)
+	srv.DeviceCode(codeW, codeReq)
 
 	var codeResp map[string]any
 	json.Unmarshal(codeW.Body.Bytes(), &codeResp)
@@ -99,7 +97,7 @@ func TestDeviceTokenPending(t *testing.T) {
 	body := fmt.Sprintf(`{"device_code":"%s"}`, codeResp["device_code"].(string))
 	tokenReq := httptest.NewRequest(http.MethodPost, "/v1/device/token", strings.NewReader(body))
 	tokenW := httptest.NewRecorder()
-	srv.handleDeviceToken(tokenW, tokenReq)
+	srv.DeviceToken(tokenW, tokenReq)
 
 	if tokenW.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", tokenW.Code)
@@ -112,32 +110,32 @@ func TestDeviceTokenPending(t *testing.T) {
 }
 
 func TestDeviceTokenNotFound(t *testing.T) {
-	srv, _ := deviceTestServer()
+	srv, _ := deviceTestController()
 	req := httptest.NewRequest(http.MethodPost, "/v1/device/token", strings.NewReader(`{"device_code":"nonexistent"}`))
 	w := httptest.NewRecorder()
-	srv.handleDeviceToken(w, req)
+	srv.DeviceToken(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)
 	}
 }
 
 func TestDeviceTokenMissingField(t *testing.T) {
-	srv, _ := deviceTestServer()
+	srv, _ := deviceTestController()
 	req := httptest.NewRequest(http.MethodPost, "/v1/device/token", strings.NewReader(`{}`))
 	w := httptest.NewRecorder()
-	srv.handleDeviceToken(w, req)
+	srv.DeviceToken(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
 	}
 }
 
 func TestDeviceApproveAndTokenAuthorized(t *testing.T) {
-	srv, _ := deviceTestServer()
+	srv, _ := deviceTestController()
 
 	// Create device code.
 	codeReq := httptest.NewRequest(http.MethodPost, "/v1/device/code", nil)
 	codeW := httptest.NewRecorder()
-	srv.handleDeviceCode(codeW, codeReq)
+	srv.DeviceCode(codeW, codeReq)
 	var codeResp map[string]any
 	json.Unmarshal(codeW.Body.Bytes(), &codeResp)
 	deviceCode := codeResp["device_code"].(string)
@@ -148,7 +146,7 @@ func TestDeviceApproveAndTokenAuthorized(t *testing.T) {
 	approveReq := httptest.NewRequest(http.MethodPost, "/v1/device/approve", strings.NewReader(approveBody))
 	approveReq = approveReq.WithContext(withUser(approveReq.Context(), "acct-1", "user@test.com"))
 	approveW := httptest.NewRecorder()
-	srv.handleDeviceApprove(approveW, approveReq)
+	srv.ApproveDevice(approveW, approveReq)
 
 	if approveW.Code != http.StatusOK {
 		t.Fatalf("approve status = %d, body: %s", approveW.Code, approveW.Body.String())
@@ -158,7 +156,7 @@ func TestDeviceApproveAndTokenAuthorized(t *testing.T) {
 	tokenBody := fmt.Sprintf(`{"device_code":"%s"}`, deviceCode)
 	tokenReq := httptest.NewRequest(http.MethodPost, "/v1/device/token", strings.NewReader(tokenBody))
 	tokenW := httptest.NewRecorder()
-	srv.handleDeviceToken(tokenW, tokenReq)
+	srv.DeviceToken(tokenW, tokenReq)
 
 	var tokenResp map[string]any
 	json.Unmarshal(tokenW.Body.Bytes(), &tokenResp)
@@ -175,32 +173,32 @@ func TestDeviceApproveAndTokenAuthorized(t *testing.T) {
 }
 
 func TestDeviceApproveRequiresAuth(t *testing.T) {
-	srv, _ := deviceTestServer()
+	srv, _ := deviceTestController()
 	req := httptest.NewRequest(http.MethodPost, "/v1/device/approve", strings.NewReader(`{"user_code":"ABCD-1234"}`))
 	w := httptest.NewRecorder()
-	srv.handleDeviceApprove(w, req)
+	srv.ApproveDevice(w, req)
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", w.Code)
 	}
 }
 
 func TestDeviceApproveNotFound(t *testing.T) {
-	srv, _ := deviceTestServer()
+	srv, _ := deviceTestController()
 	req := httptest.NewRequest(http.MethodPost, "/v1/device/approve", strings.NewReader(`{"user_code":"ZZZZ-9999"}`))
 	req = req.WithContext(withUser(req.Context(), "a1", ""))
 	w := httptest.NewRecorder()
-	srv.handleDeviceApprove(w, req)
+	srv.ApproveDevice(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)
 	}
 }
 
 func TestDeviceApproveAlreadyUsed(t *testing.T) {
-	srv, _ := deviceTestServer()
+	srv, _ := deviceTestController()
 
 	codeReq := httptest.NewRequest(http.MethodPost, "/v1/device/code", nil)
 	codeW := httptest.NewRecorder()
-	srv.handleDeviceCode(codeW, codeReq)
+	srv.DeviceCode(codeW, codeReq)
 	var codeResp map[string]any
 	json.Unmarshal(codeW.Body.Bytes(), &codeResp)
 	userCode := codeResp["user_code"].(string)
@@ -211,7 +209,7 @@ func TestDeviceApproveAlreadyUsed(t *testing.T) {
 	req1 := httptest.NewRequest(http.MethodPost, "/v1/device/approve", strings.NewReader(body))
 	req1 = req1.WithContext(withUser(req1.Context(), "a1", ""))
 	w1 := httptest.NewRecorder()
-	srv.handleDeviceApprove(w1, req1)
+	srv.ApproveDevice(w1, req1)
 	if w1.Code != http.StatusOK {
 		t.Fatalf("first approve: %d", w1.Code)
 	}
@@ -220,14 +218,14 @@ func TestDeviceApproveAlreadyUsed(t *testing.T) {
 	req2 := httptest.NewRequest(http.MethodPost, "/v1/device/approve", strings.NewReader(body))
 	req2 = req2.WithContext(withUser(req2.Context(), "a1", ""))
 	w2 := httptest.NewRecorder()
-	srv.handleDeviceApprove(w2, req2)
+	srv.ApproveDevice(w2, req2)
 	if w2.Code != http.StatusConflict {
 		t.Errorf("second approve status = %d, want 409", w2.Code)
 	}
 }
 
 func TestDeviceTokenExpired(t *testing.T) {
-	srv, st := deviceTestServer()
+	srv, st := deviceTestController()
 	st.CreateDeviceCode(&store.DeviceCode{
 		DeviceCode: "expired-code-123",
 		UserCode:   "EXPR-TEST",
@@ -237,14 +235,14 @@ func TestDeviceTokenExpired(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/device/token", strings.NewReader(`{"device_code":"expired-code-123"}`))
 	w := httptest.NewRecorder()
-	srv.handleDeviceToken(w, req)
+	srv.DeviceToken(w, req)
 	if w.Code != http.StatusGone {
 		t.Errorf("status = %d, want 410", w.Code)
 	}
 }
 
 func TestDeviceApproveExpiredCode(t *testing.T) {
-	srv, st := deviceTestServer()
+	srv, st := deviceTestController()
 	st.CreateDeviceCode(&store.DeviceCode{
 		DeviceCode: "expired-approve",
 		UserCode:   "EXPX-TEST",
@@ -255,18 +253,18 @@ func TestDeviceApproveExpiredCode(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/device/approve", strings.NewReader(`{"user_code":"EXPX-TEST"}`))
 	req = req.WithContext(withUser(req.Context(), "a1", ""))
 	w := httptest.NewRecorder()
-	srv.handleDeviceApprove(w, req)
+	srv.ApproveDevice(w, req)
 	if w.Code != http.StatusGone {
 		t.Errorf("status = %d, want 410", w.Code)
 	}
 }
 
 func TestDeviceApproveCaseInsensitive(t *testing.T) {
-	srv, _ := deviceTestServer()
+	srv, _ := deviceTestController()
 
 	codeReq := httptest.NewRequest(http.MethodPost, "/v1/device/code", nil)
 	codeW := httptest.NewRecorder()
-	srv.handleDeviceCode(codeW, codeReq)
+	srv.DeviceCode(codeW, codeReq)
 	var codeResp map[string]any
 	json.Unmarshal(codeW.Body.Bytes(), &codeResp)
 	userCode := codeResp["user_code"].(string)
@@ -276,7 +274,7 @@ func TestDeviceApproveCaseInsensitive(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/device/approve", strings.NewReader(body))
 	req = req.WithContext(withUser(req.Context(), "a1", ""))
 	w := httptest.NewRecorder()
-	srv.handleDeviceApprove(w, req)
+	srv.ApproveDevice(w, req)
 	if w.Code != http.StatusOK {
 		t.Errorf("lowercase approve status = %d, want 200", w.Code)
 	}

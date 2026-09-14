@@ -134,6 +134,12 @@ coordinator binary; no separate worker executable or build flag is required.
 The operator read/export controller in `coordinator/api/operations/` is also
 part of this binary, wired by `newOperations` in `coordinator/api/operations.go`.
 
+HTTP authentication and its key cache build as `coordinator/api/requestauth/`;
+account and device-login endpoints build as `coordinator/api/accounts/`.
+The shared bounded JSON decoder lives in `coordinator/api/httprequest/`.
+The API router imports these packages, so the coordinator build targets below
+include them automatically.
+
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
 its test binary after helper or lifecycle changes. The CPU-only
 `TestPrepareConnectedInputBindings` check uses the actual fixture input/report

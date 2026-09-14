@@ -8,7 +8,7 @@ import Jinja
 /// template render to prove (1) the un-normalized null-bearing value trees
 /// throw exactly as they did at request time, and (2) `sanitizeForJinja`
 /// makes them convert and render. Complements the builder-level coverage in
-/// `ProviderCoreTests/JinjaSanitizationTests.swift`.
+/// `ProviderCoreTests/Inference/Prompting/JinjaSanitizationTests.swift`.
 final class JinjaSanitizationRenderTests: XCTestCase {
 
     // MARK: - Direct bridge: throws before, converts after

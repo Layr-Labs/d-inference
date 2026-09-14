@@ -1,0 +1,30 @@
+{
+  "displayName": "Darkbloom persistent-disk snapshot failed",
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "Scheduled persistent-disk snapshot reported an error",
+      "conditionMatchedLog": {
+        "filter": "logName=\"projects/darkbloom-mainnet/logs/cloudaudit.googleapis.com%2Fsystem_event\" AND protoPayload.methodName=\"ScheduledSnapshots\" AND resource.type=\"gce_disk\" AND severity>=ERROR"
+      }
+    }
+  ],
+  "alertStrategy": {
+    "notificationRateLimit": {
+      "period": "3600s"
+    },
+    "autoClose": "604800s"
+  },
+  "documentation": {
+    "mimeType": "text/markdown",
+    "content": "A scheduled snapshot from resource policy `darkbloom-data-daily` failed. That policy is attached to both `darkbloom-coordinator` (boot) and `darkbloom-coordinator-data` in `us-east4-a`.\n\n**Impact.** `darkbloom-coordinator-data` is mounted at `/mnt/disks/userdata` and holds the MicroMDM BoltDB — the enrolled-device records the hardware-trust check reads against. That state is **not** covered by any Cloud SQL backup. Losing it while `MIN_TRUST=hardware` drops the entire provider fleet to `self_signed`, which is a full network outage until every provider re-enrolls. See the 2026-07-04 incident in docs/operations/coordinator-deploy.md.\n\n**Triage.**\n1. Identify the disk from the log entry's `resource.labels.disk_id`, then: `gcloud compute disks list --project=darkbloom-mainnet --format='table(name,id,zone.basename())'`\n2. Confirm recent snapshots exist: `gcloud compute snapshots list --project=darkbloom-mainnet --sort-by=~creationTimestamp --limit=5`\n3. Confirm the schedule is still attached: `gcloud compute disks describe darkbloom-coordinator-data --zone=us-east4-a --project=darkbloom-mainnet --format='value(resourcePolicies)'`\n4. Take a manual snapshot to close the gap: `gcloud compute disks snapshot darkbloom-coordinator-data --zone=us-east4-a --project=darkbloom-mainnet --snapshot-names=darkbloom-coordinator-data-manual-<YYYYMMDD> --storage-location=us`\n\n**Note.** This condition covers snapshots that run and fail. It does not cover the schedule being detached or deleted — that silence is not yet alerted. See the follow-up noted in this directory's README."
+  },
+  "enabled": true,
+  "notificationChannels": [
+    "projects/darkbloom-mainnet/notificationChannels/9823153599696034473"
+  ],
+  "userLabels": {
+    "project": "darkbloom",
+    "purpose": "backup_integrity"
+  }
+}

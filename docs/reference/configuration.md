@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-14 · commit `4482d5422`
+> Last updated: 2026-09-13 · commit `1853fc127`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -42,20 +42,20 @@ read once at process start and a restart applies a change.
 |---|---|---|---|---|
 | `EIGENINFERENCE_DATABASE_URL` | Postgres DSN (secret) | unset | `coordinator/store/config.go` (`ReadConfig`); `coordinator/cmd/coordinator/main.go` | Selects the Postgres store and runs migrations at boot; see [`../architecture/storage.md`](../architecture/storage.md). Required unless the memory store is allowed. |
 | `EIGENINFERENCE_ALLOW_MEMORY_STORE` | `true` | `false` | `coordinator/store/config.go` (`ReadConfig`, `Check`) | Permits the non-durable in-memory store when no DSN is set (tests and local dev only); startup refuses otherwise. |
-| `USER_PERSISTENT_DATA_PATH` | directory | `/mnt/disks/userdata` | `coordinator/deploy/start.sh`; `coordinator/providercontrol/trustreuse/journal_config.go` (`JournalPathFromEnv`); `coordinator/api/admin_state_export.go` (`resolveStateExportRoot`) | Persistent disk root, symlinked to `/data`; parent of the MicroMDM state, the trust-reuse journal and the state-export root. |
+| `USER_PERSISTENT_DATA_PATH` | directory | `/mnt/disks/userdata` | `coordinator/deploy/start.sh`; `coordinator/providercontrol/trustreuse/journal_config.go` (`JournalPathFromEnv`); `coordinator/api/statearchive/config.go` (`resolveStateExportRoot`) | Persistent disk root, symlinked to `/data`; parent of the MicroMDM state, the trust-reuse journal and the state-export root. |
 | `EIGENINFERENCE_TRUST_REUSE_REVOCATION_JOURNAL_PATH` | file path | `<persist>/coordinator/trust-reuse-hard-untrust.v1.jsonl` | `coordinator/providercontrol/trustreuse/journal_config.go` (`JournalPathFromEnv`) | Location of the hard-untrust revocation journal; startup refuses when the journal is unusable. |
-| `EIGENINFERENCE_STATE_EXPORT_ENABLED` | `true` | unset (route 404s) | `coordinator/api/admin_state_export.go` (`handleAdminStateExport`) | Master switch for `GET /v1/admin/state-export`; see [`../operations/state-export.md`](../operations/state-export.md). |
-| `EIGENINFERENCE_STATE_EXPORT_RECIPIENT` | `age1…` public recipient | unset | `coordinator/api/admin_state_export.go` (`handleAdminStateExport`) | Encrypts the export to this recipient; without it the route answers 412 unless plaintext is allowed. |
-| `EIGENINFERENCE_STATE_EXPORT_ALLOW_PLAINTEXT` | `true` | `false` | `coordinator/api/admin_state_export.go` (`handleAdminStateExport`) | Allows an unencrypted zip when no recipient is configured. |
-| `EIGENINFERENCE_STATE_EXPORT_ROOT` | directory | `USER_PERSISTENT_DATA_PATH`, else `/mnt/disks/userdata` | `coordinator/api/admin_state_export.go` (`resolveStateExportRoot`) | Overrides the directory that is archived (tests). |
+| `EIGENINFERENCE_STATE_EXPORT_ENABLED` | `true` | unset (route 404s) | `coordinator/api/statearchive/handler.go` (`Controller.Download`) | Master switch for `GET /v1/admin/state-export`; see [`../operations/state-export.md`](../operations/state-export.md). |
+| `EIGENINFERENCE_STATE_EXPORT_RECIPIENT` | `age1…` public recipient | unset | `coordinator/api/statearchive/handler.go` (`Controller.Download`) | Encrypts the export to this recipient; without it the route answers 412 unless plaintext is allowed. |
+| `EIGENINFERENCE_STATE_EXPORT_ALLOW_PLAINTEXT` | `true` | `false` | `coordinator/api/statearchive/handler.go` (`Controller.Download`) | Allows an unencrypted zip when no recipient is configured. |
+| `EIGENINFERENCE_STATE_EXPORT_ROOT` | directory | `USER_PERSISTENT_DATA_PATH`, else `/mnt/disks/userdata` | `coordinator/api/statearchive/config.go` (`resolveStateExportRoot`) | Overrides the directory that is archived (tests). |
 
 ### Auth: admin key, Privy, release key, sender encryption
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_ADMIN_KEY` | secret | unset (warning; no seeded key) | `coordinator/store/config.go` (`ReadConfig`); `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/cmd/coordinator/main.go` (`SeedKey`) | Bootstrap admin API key seeded into `api_keys`; bearer token for `/v1/admin/*`, release registration and state export. |
+| `EIGENINFERENCE_ADMIN_KEY` | secret | unset (warning; no seeded key) | `coordinator/store/config.go` (`ReadConfig`); `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/cmd/coordinator/main.go` (`SeedKey`) | Bootstrap admin API key seeded into `api_keys`; bearer token for `/v1/admin/*` and state export. Release registration requires `EIGENINFERENCE_RELEASE_KEY`. |
 | `EIGENINFERENCE_ADMIN_EMAILS` | comma-separated emails | unset | `coordinator/api/server_config.go` (`ReadServerConfig`, `ParseCommaList`) | Privy accounts with these emails get admin on console-facing admin routes. |
-| `EIGENINFERENCE_RELEASE_KEY` | secret | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/release_handlers.go` | Bearer token accepted (constant-time) for release registration in addition to the admin key. |
+| `EIGENINFERENCE_RELEASE_KEY` | secret | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/releases/registration.go` | Scoped bearer token accepted with constant-time comparison by `Controller.Register`; an admin key alone does not authorize release registration. |
 | `EIGENINFERENCE_PRIVY_APP_ID` | string | unset (Privy auth off) | `coordinator/auth/config.go` (`ReadConfig`) | Enables Privy JWT verification; also the expected JWT audience. |
 | `EIGENINFERENCE_PRIVY_APP_SECRET` | secret | unset | `coordinator/auth/config.go` (`ReadConfig`) | Basic-auth credential for Privy REST calls. |
 | `EIGENINFERENCE_PRIVY_VERIFICATION_KEY` | PEM ES256 public key | unset; required when the app id is set (`Check`) | `coordinator/auth/config.go` (`ReadConfig`) | Key that Privy access tokens are verified against. |
@@ -288,7 +288,7 @@ Prices, the platform fee and the referral share live in [`../architecture/billin
 |---|---|---|---|---|
 | `MODEL_REGISTRY_PUBLISHING_KEY` | secret | unset | `coordinator/api/model_registry_handlers.go` (`requirePublishingAPIKey`) | Bootstrap bearer token accepted (constant-time) for model-registry publishing in addition to admin keys; see [`../architecture/model-registry.md`](../architecture/model-registry.md). |
 | `MODEL_REGISTRY_CDN_BASE_URL` | URL | unset (registry entries carry no CDN base) | `coordinator/api/model_registry_handlers.go` (`registryCDNBaseURL`) | Base URL providers download published model weights from. |
-| `EIGENINFERENCE_R2_CDN_URL` | URL | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/release_handlers.go` (`trustedReleaseArtifactURL`) | Public R2 bucket URL release binaries are pulled from; release registration is refused (503) until it is set, and every registered artifact URL must live under it. See [`../operations/release-policy-rollout.md`](../operations/release-policy-rollout.md). |
+| `EIGENINFERENCE_R2_CDN_URL` | URL | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/releases/artifact_origin.go` (`trustedReleaseArtifactURL`) | Public R2 bucket URL release binaries are pulled from; release registration is refused (503) until it is set, and every registered artifact URL must live under it. See [`../operations/release-policy-rollout.md`](../operations/release-policy-rollout.md). |
 
 ### Prompt sidecar and media fetch
 

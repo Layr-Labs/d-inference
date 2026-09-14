@@ -1,6 +1,6 @@
 # State export
 
-> Last updated: 2026-09-14 · commit `4482d5422`
+> Last updated: 2026-09-13 · commit `1853fc127`
 
 How to pull the coordinator's sealed on-disk state — the MicroMDM enrollment
 database and everything else on the persistent disk that is not in Postgres —
@@ -32,8 +32,8 @@ environment file, the `MNEMONIC` (byte-identical) and the shared database
 
 ## How the endpoint works
 
-Code: `coordinator/api/admin_state_export.go` (`handleAdminStateExport`,
-`resolveStateExportRoot`), `coordinator/stateexport/archive.go`
+Code: `coordinator/api/statearchive/handler.go` (`Controller.Download`),
+`coordinator/api/statearchive/config.go` (`resolveStateExportRoot`), `coordinator/stateexport/archive.go`
 (`Archiver.Stage`, `Archiver.Write`), `coordinator/stateexport/snapshot.go`
 (`BoltSnapshotter`), `coordinator/stateexport/encrypt.go` (`EncryptWriter`).
 

@@ -14,7 +14,9 @@ coordinator/          Go control plane (packages live at top level, not internal
 │   ├── device_auth.go      device code flow for linking providers to user accounts
 │   ├── enroll.go           MDM enrollment profile generation
 │   ├── invite_handlers.go  invite code admin/user flows
-│   ├── release_handlers.go binary release registration (GitHub Actions integration)
+│   ├── releases/          release HTTP, artifact validation and discovery (Controller)
+│   ├── statearchive/      gated state archive download (Controller)
+│   ├── admin_auth.go       admin authorization and Privy OTP endpoints
 │   ├── chunk_key_cache.go  per-request X25519 shared-key memoization for chunk decrypt
 │   ├── stats.go            public network stats
 │   ├── types/              canonical JSON shapes for consumer-facing endpoints

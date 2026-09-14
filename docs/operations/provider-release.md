@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-13 · commit `f913aeaef9`
+> Last updated: 2026-09-13 · commit `38375bc12`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -21,8 +21,8 @@ A coordinator binary upgrade is not required solely to register 0.9.2. The
 0.9.1 coordinator already validates and stores the release, refreshes active
 binary/metallib trust, preserves other active releases and serves the new
 version through `GET /v1/releases/latest`. `LatestProviderVersion` is a display
-fallback, not an exact-version admission pin (`coordinator/api/release_handlers.go`,
-`handleRegisterRelease`; `coordinator/providercontrol/releasepolicy/inventory.go`, `SyncBinaryHashes`;
+fallback, not an exact-version admission pin (`coordinator/api/releases/registration.go`,
+`Controller.Register`; `coordinator/providercontrol/releasepolicy/inventory.go`, `SyncBinaryHashes`;
 `coordinator/providercontrol/releasepolicy/runtime_sync.go`, `SyncRuntimeManifest`).
 
 The 0.9.2 assistant transition uses existing slot state `reloading`, capacity
@@ -252,7 +252,7 @@ shown in the run):
 | 14 | Create GitHub Release | prod + tag only: `gh release create <tag> <tar.gz> --notes-file … --generate-notes`; notes list the three hashes, signer, "Notarized: yes", `Min macOS: 14.0`, and the `curl -fsSL <coordinator>/install.sh \| bash` install line |
 | 15 | Cleanup keychain | always |
 
-The registration payload (`coordinator/api/release_handlers.go`,
+The registration payload (`coordinator/api/releases/registration.go`,
 `registerReleaseRequest`; unknown fields are rejected):
 
 ```json
@@ -268,16 +268,18 @@ The registration payload (`coordinator/api/release_handlers.go`,
 }
 ```
 
-`handleRegisterRelease` requires `Authorization: Bearer <RELEASE_KEY>`,
+`Controller.Register` requires `Authorization: Bearer <RELEASE_KEY>`,
 validates semver/platform/hex, requires `metallib_hash` when `backend` is
 `mlx-swift`, requires `url` to equal exactly
 `<EIGENINFERENCE_R2_CDN_URL>/releases/v<version>/darkbloom-bundle-macos-arm64.tar.gz`
-(`trustedReleaseArtifactURL`), then **downloads the bundle** (2 GiB cap,
+(`coordinator/api/releases/artifact_origin.go`, `trustedReleaseArtifactURL`), then **downloads the bundle** (2 GiB cap,
 2-minute timeout), checks `bundle_hash`, extracts `bin/darkbloom` and checks
-`binary_hash` (`verifyReleaseArtifact`). Only then does it `SetRelease`,
+`binary_hash` (`coordinator/api/releases/bundle.go`, `verifyReleaseArtifact`). Only then does it `SetRelease`,
 resync the binary-hash and runtime policy (`coordinator/providercontrol/releasepolicy/inventory.go`,
 `SyncBinaryHashes`; `coordinator/providercontrol/releasepolicy/runtime_sync.go`, `SyncRuntimeManifest`), and
-invalidate the cached `/api/version` and `/v1/releases/latest` responses.
+invalidate the affected platform’s `/v1/releases/latest`, `/v1/runtime/manifest`
+and (for `macos-arm64`) `/api/version` caches
+(`coordinator/api/releases/cache.go`, `invalidateReleaseCaches`).
 Response: `{"status":"release_registered","release":{…}}`.
 
 Registration is safe against the live fleet: the rebuilt runtime manifest is
@@ -333,7 +335,7 @@ it** so the previous active version becomes "latest" again.
      -d '{"version":"0.9.2","platform":"macos-arm64"}'
    ```
 
-   `handleAdminDeleteRelease` answers `409 release_in_use` while connected
+   `Controller.Delete` answers `409 release_in_use` while connected
    providers still run that `binary_hash` (in-use protection is active when
    binary-hash enforcement is on **or** a release inventory has ever been
    published). Add `"force":true` only when the release must be pulled

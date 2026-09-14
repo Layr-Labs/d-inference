@@ -8,7 +8,9 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 - Worktree: `.worktrees/sandbox-completion-20260913`.
 - Branch: `codex/sandbox-completion-20260913`.
 - Starting sandbox tip0950ac41e; master93337ef05 integrated in453b37667.
-- Latest pushed commit:5c25e79a22da55443ccc639ba6c3e567d41eb280.
+- Latest pushed commit:0e10a23854f355f9a45bc7e27ecdf48e0d4cd7c9.
+- Local updates:738b594e1 receipt fix;5ec0cb78d merges mastere4df336bc;
+  cbd5687cb adds explicit base-only Apple restore provenance.
 - Earlier integration commits:1ad135ab7,cadaa7fdb,2ee8a4c87,41522b85b.
 - Draft PR: https://github.com/Layr-Labs/d-inference/pull/996.
 - Main checkout and unrelated providers/edits remain untouched.
@@ -50,12 +52,12 @@ This is volume protection, not per-VM cryptographic erasure or confidentiality
 from the running host administrator. Snapshot encryption code is a separate
 library; integrated restore, billing and public access are not shipped here.
 
-## Validation at the pushed source
+## Completed validation and its source boundaries
 
 - Swift wave8:400tests,7 physical opt-in skips,0failures,78.9seconds.
 - Coordinator:6005passing events (3527top-level,2478subtests),30packages,
   3opt-in skips,0failures. Focused race/vet and macOS/Linux builds pass.
-- Packaging26tests; live harness13 offline tests; CPU harness3tests;
+- Packaging/tooling47tests; live harness30 offline tests; CPU harness3tests;
   real Go CI harness12Python tests and its Go runner race suite pass.
 - Pinned Lume186tests plus6required checks; native stop9focused tests;
   fail-stop diagnostics3tests. Physical public-base create/boot/SSH/stop pass.
@@ -65,9 +67,15 @@ library; integrated restore, billing and public access are not shipped here.
   samples plus relocated source, four compiled artifact hashes identical.
   No guest performance or compatibility claim yet.
 - GitHub5c25: coordinator/sandbox/lint/docs/UI/release-integrity/CodeQL pass.
-  Provider/E2E integration were still running at the last snapshot; benchmark
-  gate waits. Threat Model Review returned external API401 invalid credential;
-  no review result exists and no secret/workflow was changed.
+  Full CI and integration subsequently passed on5c25. Its benchmark environment
+  still awaits human approval. Old Threat Model Review returned external API401;
+  mastere4df336bc independently removed that workflow. No review result exists.
+- Merge5ec0cb78d: docs288files, registry/API/protocol race tests, Rust cache
+  parity and9focused Swift cache/protocol tests pass.
+- Receipt writer738b594e1:13pass/1existingopt-in skip; actual zsh/plutil covered.
+- Apple restorecbd5687cb:19pass/1existingopt-in skip; legacy and accountless
+  source changes cannot be relabeled, raw tenant restore is rejected.
+  The CLI still uses legacy preparation until accountless orchestration is wired.
 
 The live-harness improvements add active-VM natural expiry, file
 resume/abort/version controls, idempotency replay/conflict, and accurate
@@ -86,7 +94,7 @@ allocations. Actual cross-account resource denial still awaits guest readiness.
 The user authorized SSH/sudo on nonproduction `gaj@100.104.151.128`.
 Credentials remain in the conversation and transient authentication only.
 ControlMaster: `/private/tmp/darkbloom-sandbox-test-remote-20260913/control`.
-Held SSH session49221. Never write the SSH/sudo password into files or logs.
+Authenticated master/reverse-tunnel session8472 replaced dropped session49221. Never write the SSH/sudo password into files or logs.
 
 M3 Max,14cores,36GiB,macOS26.4,Xcode26.5,Swift6.3.2,Go1.27.1,Python3.9.6.
 System Data UUID9325586E-9099-489B-9100-82CED3DFB185 remains FileVault=false.
@@ -113,10 +121,12 @@ Preserve that lock inode. No package/host service/credentials installed yet.
 Private evidence authority-root-readonly.json records the completed setup. Review
 found automatic macOS groups12(everyone),61(localaccounts),701(gaj Public
 Folder sharepoint nesting everyone),100(Print Operator nesting localaccounts).
-The script is being revised to verify this exact measured implicit graph and
-only the intended explicit memberships. InitGroups=false alone is not proof
-that opendirectoryd cannot resolve further memberships. Actual launchd
-credentials and group-file-access qualification remain separate.
+The installed-broker validator passes on the actual account. A root-launched
+credential probe verified UID430/GID431 with ambient groups430,431,12,61,100,701.
+Broker/runtime file controls passed; root/admin files denied; public-share and
+print-operator files remained readable. InitGroups=false does not strip macOS
+resolved ambient groups. Both probe labels are unloaded; evidence is retained.
+This is a trusted nonadmin broker, not a tenant host-file isolation boundary.
 
 The user suggested clearing 8-bit Gemma4. Only the exact verified
 `~/.cache/huggingface/hub/models--gemma-4-26b` was deleted after fresh ownership,
@@ -140,10 +150,10 @@ io.eigeninference.provider label also needs its exact restart state checked.
 ## Real isolated coordinator
 
 Dedicated PostgreSQL container122749d06998e9033bfc7a5b2327864708f333b005466d35787bd72be2267f71
-listens only127.0.0.1:60817. Its admin is sandbox_test. The dedicated database is
-darkbloom_sandbox_acceptance_02eeb9902f48, with restricted owner
-sandbox_acceptance_02eeb9902f48. The real fixture seeded one ordinary consumer
-with24hour API key and separate host credential. No production/admin key.
+listens only127.0.0.1:60817. Its admin is sandbox_test. The earlier one-account database
+darkbloom_sandbox_acceptance_02eeb9902f48 remains inactive. The active two-account
+database is identified below. Ordinary24hour keys and a separate host credential
+are used; no production/admin key.
 DSN/coordinator environment remain private on the primary Mac. No fixture
 credentials have yet been copied to the test Mac or broker.
 
@@ -167,7 +177,17 @@ The earlier linked-worktree Go build used correct source but Go1.25.4 stamped
 the outer checkout because .git is a file. Do not trust that old VCS stamp.
 Old binaries are preserved under private fixture/pre-provenance-bin.
 
-## Guest installation blocker and exact probes
+## Historical bootstrap-account investigation
+
+Final old-probe state: v8 policy allowed password change, but real UID501 self
+change failedOD4100 and the old credential remained valid. v9 created a partial
+UID2003 control record whose initial authentication failed5100 and deletion
+failed4001; no rotation ran. That record remains only in the quarantined probe
+VM. v9 signed executableSHA5281955483ef2f53a59fb22abfbf91e8716d2585380c949ac2b6dfbb28732f33.
+Driver45020 completed/stopped, and the inspection LaunchDaemon was removed.
+The old release6base's SecureToken marker differs from the later probe; do not
+conflate their identities. No further account-repair attempts are planned.
+The following earlier observations are retained as investigation history.
 
 Remote public base `darkbloom-sandbox-base-20260913` is stopped, partially
 installed with signed release6, and UNQUALIFIED. No template receipt. The
@@ -241,73 +261,78 @@ All are transferred and verified on the test Mac. Guest changes require a fresh
 signed package and complete base qualification; host-only changes may reuse
 exact four signed guest files. Older release1–5 packages are obsolete.
 
+## Current accountless installation evidence
+
+The account-bearing Lume bases remain quarantined and stopped. Password and
+account-retirement attempts did not establish a safe template. No protected
+account database, Setup Assistant marker, SIP or TCC changes were made.
+
+A cleaner Apple restore without --unattended now has physical positive proof:
+
+- Probe1 (session21973 restore) reached the root job but stopped at a diagnostic
+  JSON writer bug. Receipt was exactly{}. VM stopped; original image/evidence
+  preserved. The actual product receipt writer had the same bug and is fixed.
+- Probe2 restore68652 completed0 in166.540s; disk16777229:29299379,100GiB.
+  Staging12150 passed. Boot9938/PID38615 naturally exited0 in23.582s, no watchdog.
+  Read91550 verified root job, release6 signatures, validate-tenant-identity exit0,
+  absent setup-completion marker before/after, complete receipt. Fully detached;
+  unrelated Apple MetalToolchain image remained unchanged. This proved the
+  startup mechanism only, not full installation or template readiness.
+- Probe3 restore46562 completed0 in172.611s; disk16777229:29300414,100GiB.
+  Stage74860 passed; DataUUID A3B3C469-3618-441B-B64B-79E80D5E5921.
+  Boot15625/PID39032 naturally exited0 in24.864s, no watchdog, stopped verified.
+  Read94743 verified exact signed release6 installer --install exit0, installed
+  file hashes/signature/root ownership, synthetic workspace manifest and signed
+  tenant-identity helper exit0. Human-account counts0 before/after; one macOS
+  Setup Assistant system account before/after; completion marker absent.
+  All helper attachments detached and the pre-existing Apple image unchanged.
+  This is complete installation evidence; native_guest_qualified=false and
+  template_ready=false remain accurate.
+
+Probe3 name darkbloom-accountless-probe3-20260913; runUUID
+70755ec9-b185-4a4f-afb0-047199903776; payload planSHA
+ a05ca2190d2ce6fac8f820b5cb1b18ecf0fd1eb4711845bf1dad97f47be94d11.
+Root-private evidence is under test-Mac
+/private/tmp/darkbloom-accountless-operator3-20260913:
+restore-proof.json,stage-proof.json,boot-v3/boot-result.json,receipt-read-v3.json.
+Offline helper accountless-offline-v3.py SHA
+06cad8c354c2b57692c5176d2d211d50595f7c3cba8ccfa47f212a92b6462fc3.
+Payload17local tests; offlinehelper38remoteUID501tests; bootdriver11tests pass.
+
+All operator VMs are stopped. Probe3 temporary installer staging/job have NOT
+been removed yet. Prepared removal-only helper must preserve permanent guest
+installation and record original receipt/log evidence outside the guest before
+unlinking only this run's exact app directory and LaunchDaemon. A separate
+owned clone with real DBCONTROL/DBWORK must qualify the normal HMAC/vsock channel,
+workspace cold mount, tenant commands/files and teardown. The reusable original
+must never receive instance credentials or tenant work. Current probe disks are
+small empty public images with no instance.json or secrets.
+
+The broker authority inode remains16777229:29088927. Root operator holds its
+exclusive lease across each Lume child; child501:20 receives transient431 and
+inheritedFD4. No persistent gaj group membership was added. CI is not paused;
+last fresh inspection found no Runner.Worker. No host daemon is registered.
+
 ## Remaining gates
 
-1. Diagnose actual macOS retirement failure; implement modular supported
-   retirement and strict startup verification, focused tests and fresh signing.
-2. Complete fresh signed guest installation, clean shutdown and cold-boot
-   qualification. Never admit the partial base/probe as a tenant template.
-3. Review/execute test-host authority setup, safely reserve idle test machine,
-   install immutable signed package under broker identity and qualify doctor,
-   actual guest channel, encrypted disks and dedicated admission.
-4. Run real single/two-VM API/file/isolation/quota/cancellation/timeout/start,
-   natural expiry, idempotency and cleanup campaigns. Independent host inventory
-   must prove VM/material removal. Add actual broker crash/restart/reboot and
-   submitted-launchd-job respawn tests; API terminal state alone is insufficient.
+1. Remove exact temporary probe3 installer payload/job after durable evidence,
+   then qualify a separate clone using real authenticated vsock/control/workspace,
+   tenant commands/files and restart. Prove clone/material cleanup independently.
+2. Integrate accountless preparation and schema2 installed/qualified receipts in
+   the product. Preserve legacy provenance and normal template-ready gates; no
+   arbitrary raw VM adoption, fake retirement boolean or public readiness bypass.
+3. Build/sign fresh artifacts, prepare a product-owned qualified base, safely
+   reserve the idle test machine and install/enroll the actual broker host daemon.
+   Production profile/notarization remain explicit release gates.
+4. Run the real two-account/two-VM API/files/isolation/quota/cancel/timeout/start,
+   natural30minute expiry, idempotency and cleanup campaigns. Add actual broker
+   crash/restart/reboot and launchd respawn tests; API state alone is not proof.
 5. Run paired host/VM CPU and real offline Go CI build/test measurements under
-   the actual tenant UID; include contention and compatibility limits.
-6. Final modular refactor/review, relevant tests, docs/checkpoint/PR refresh and
-   latest CI. Production signing profile/notarization/external review, merge,
-   publication and adoption remain separate explicitly evidenced gates.
+   tenant UID2001, with contention and documented compatibility limits.
+6. Final modular refactor/review, appropriate tests/docs/PR/CI refresh. Keep PR996
+   draft until physical gates pass. Production merge/publication/deployment and
+   provider adoption remain separate, specifically authorized operations.
 
-## Latest September13 physical state
-
-- Local reviewed commits f097a7116 (expanded live acceptance) and54f1644cd
-  (two-account fixtures) are not yet pushed; remote PR head remains5c25e79a2.
-- Modular installed-broker account policy enforcement is now implemented;
-  root/hidden/nonlogin/disabled-auth/noadmin/nowheel/runtime membership and
-  canonical nonprivileged GID checks fail closed.47release/tool tests and
-  docs-check pass. Direct execution of the actual helper on the test Mac also
-  passed as root (broker-account-validator-live.json). This does not qualify a
-  complete signed/profiled host installation; no host daemon is started.
-- Broker credential probev2 ran after correcting capture-file ownership.
-  UID/EUID430,GID/EGID431; getgroups included431,430,12,61,701,100 even with
-  InitGroups=false. UID430/runtime431 positive controls pass; root/admin files
-  denyEACCES; PrintOperator100/PublicShare701 files remain readable. This is
-  measured ambient access of a trusted nonadmin broker, not tenant host access.
-  Exit78 appeared as `78: EX_CONFIG`; a parser bug produced a spurious wait
-  timeout. Original evidence is preserved; prepared parser corrected; no rerun.
-  Both temporary labels are unloaded, their fixtures/plists retained.
-- Retirementv8 policy passed as root and trueUID501; actual own password change
-  still failedOD4100. Oldpubliccredential unchanged. v9 created a unique
-  standard-API control record atUID2003, but initial authentication failed5100
-  and exact deletion failed4001. Rotation never ran. Attribute reads reported
-  unavailable for control credential fields; do not present those as absence.
-  The partial UID2003 record remains ONLY in the quarantined disposable probe
-  VM. Its current lume SecureToken-marker0 is distinct from release6base's1.
-  No more guessed retirement retries; never use this image for tenants.
-- Latest old-probe driver45020 completed/stopped. Signedv9 hash
-  5281955483ef2f53a59fb22abfbf91e8716d2585380c949ac2b6dfbb28732f33.
-  The inspection LaunchDaemon was removed and NOT restaged byv9.
-- Fresh `darkbloom-accountless-probe-20260913` Apple restore completed0 in
-  168.206seconds throughsession21973, WITHOUT --unattended. No Lume account
-  injection ran. Stopped; disk107374182400bytes, allocated22866976768bytes,
-  observed diskdevice16777229 inode29089587 (recheck before attesting).
-  This is an experiment; no guest payload has been staged or booted yet.
-- Candidate cleaner workflow: temporary first-boot root job runs existing guest
-  installer --install while no bootstrap account exists, then clean shutdown;
-  remove ONLY our temporary staging/job while stopped; qualify a separate
-  clone through real vsock/media before publishing a new explicit receipt.
-  Do not alter .AppleSetupDone/privateaccountrecords/loginwindow/preboot/SIP/TCC.
-  Keep normal template readiness gates; never fabricate bootstrapRetired.
-- First discriminator payload materialized at primary evidence/accountless-payload-v1,
-  run9e60e50a-28af-4910-8146-805ad7b3eb10. It only runs the signed release6
-  validate-tenant-identity helper under a temporary root job, records public
-  setup-marker observations and requests shutdown. It does NOT install or
-  qualify the guest. physical_inventory prepares exact offline Data staging/read
-  helper, requiring a new ROOT-owned restore completion proof and no openers.
-  control_audit prepares supervised180s bootdriver using pinned isolated-v1
-  profile and empty public APFS control/workspace disks (no instance secrets).
-  Root parent must hold existing machine EX authority; actual Lume child501:20
-  receives transient supplementary431 and inheritedFD4. No persistent gaj
-  membership or directory permission changes are authorized or needed.
+Only the user-selected8bit Gemma cache was deleted. Go cache and other models
+remain. Recover space from exact owned obsolete images/downloads after evidence;
+never weaken full disk-capacity reservations or delete unrelated user material.

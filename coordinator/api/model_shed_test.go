@@ -89,10 +89,10 @@ func TestModelShedPolicySelfRouteBypassesPreferOwnerSheds(t *testing.T) {
 	self := httptest.NewRecorder()
 	prefer := httptest.NewRecorder()
 
-	if srv.shedIfModelRejected(self, modelShedRequest(), nil, selfRoutePolicy{enabled: true}, "gemma-4-26b", "gemma-4-26b-qat-4bit", false, 100, 64, false, false) {
+	if srv.shedIfModelRejected(self, modelShedRequest(), nil, selfRoutePolicy{Enabled: true}, "gemma-4-26b", "gemma-4-26b-qat-4bit", false, 100, 64, false, false) {
 		t.Fatal("exclusive self-route should bypass model shed")
 	}
-	if !srv.shedIfModelRejected(prefer, modelShedRequest(), nil, selfRoutePolicy{prefer: true}, "gemma-4-26b", "gemma-4-26b-qat-4bit", false, 100, 64, false, false) {
+	if !srv.shedIfModelRejected(prefer, modelShedRequest(), nil, selfRoutePolicy{Prefer: true}, "gemma-4-26b", "gemma-4-26b-qat-4bit", false, 100, 64, false, false) {
 		t.Fatal("prefer-owner should be model-shed because it can fall back to public fleet")
 	}
 	waitForRejectionCount(t, srv, 1)

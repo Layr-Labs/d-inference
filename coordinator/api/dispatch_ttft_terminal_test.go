@@ -1,5 +1,21 @@
 package api
 
+import (
+	"context"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+)
+
 // Terminal TTFT-rejection regression tests.
 //
 // A reservation that fails because every candidate exceeds the TTFT ceiling
@@ -12,21 +28,6 @@ package api
 // rejected request (28% of the table), the whole futile ladder completing in
 // ~30ms. The fix terminates the ladder on the FIRST TTFT rejection at ANY
 // attempt, gated by EIGENINFERENCE_TTFT_TERMINAL_REJECT (default true).
-
-import (
-	"context"
-	"log/slog"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"strings"
-	"testing"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
-)
 
 // setupTTFTFailoverServer mirrors setupFailoverServer but returns the *Server
 // so the test can flip the hard TTFT gate (the failover harness hides it).
@@ -212,25 +213,21 @@ func TestDispatch_TTFTRejectAttempt0_SingleReservationAnd429(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
 	refunds := 0
 	deadline := srv.FirstContentDeadline(model, 6)
-	d := &dispatchState{
-		s:                     srv,
-		w:                     w,
-		r:                     r,
-		model:                 model,
-		publicModel:           model,
-		rawBody:               []byte(`{"model":"` + model + `"}`),
-		consumerKey:           "test-key",
-		estimatedPromptTokens: 6,
-		requestedMaxTokens:    64,
-		timing:                &registry.RequestTiming{ReceivedAt: time.Now()},
-		deadline:              deadline,
-		speculativeAt:         deadline / 2,
-		refundReservation:     func() { refunds++ },
-		excludeProviders:      make(map[string]struct{}),
+	request := dispatch.Request{
+		Model:                 model,
+		PublicModel:           model,
+		RawBody:               []byte(`{"model":"` + model + `"}`),
+		ConsumerKey:           "test-key",
+		EstimatedPromptTokens: 6,
+		RequestedMaxTokens:    64,
+		Timing:                &registry.RequestTiming{ReceivedAt: time.Now()},
+		Deadline:              deadline,
+		SpeculativeAt:         deadline / 2,
+		RefundReservation:     func() { refunds++ },
 	}
 
 	start := time.Now()
-	d.run()
+	srv.inferenceDispatch().Run(w, r, request)
 	elapsed := time.Since(start)
 
 	if w.Code != http.StatusTooManyRequests {
@@ -246,8 +243,8 @@ func TestDispatch_TTFTRejectAttempt0_SingleReservationAnd429(t *testing.T) {
 		MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: orClassRateLimited})]; got != 1 {
 		t.Errorf("attempt-zero OR-view rate_limited count = %d, want exactly 1", got)
 	}
-	if d.attempt != 0 {
-		t.Errorf("dispatch attempts = %d, want the loop to stop at attempt 0", d.attempt+1)
+	if got := settleTTFT429Routes(t, st); got != 1 {
+		t.Errorf("dispatch attempts = %d, want the loop to stop at attempt 0", got)
 	}
 	if refunds != 1 {
 		t.Errorf("reservation refunds = %d, want exactly 1", refunds)
@@ -257,23 +254,6 @@ func TestDispatch_TTFTRejectAttempt0_SingleReservationAnd429(t *testing.T) {
 	}
 	if got := settleTTFT429Routes(t, st); got != 1 {
 		t.Errorf("ttft_429 route rows = %d, want exactly 1 (exactly one reservation scan)", got)
-	}
-}
-
-// TestTTFTTerminalRejectKillSwitch pins the env wiring: default ON, only an
-// explicit falsey value restores the legacy attempt-0-only behavior.
-func TestTTFTTerminalRejectKillSwitch(t *testing.T) {
-	t.Setenv(envTTFTTerminalReject, "")
-	if !ttftTerminalRejectEnabled() {
-		t.Fatal("terminal TTFT rejection must default to enabled")
-	}
-	t.Setenv(envTTFTTerminalReject, "false")
-	if ttftTerminalRejectEnabled() {
-		t.Fatal("EIGENINFERENCE_TTFT_TERMINAL_REJECT=false must disable the terminal rejection")
-	}
-	t.Setenv(envTTFTTerminalReject, "true")
-	if !ttftTerminalRejectEnabled() {
-		t.Fatal("EIGENINFERENCE_TTFT_TERMINAL_REJECT=true must enable the terminal rejection")
 	}
 }
 

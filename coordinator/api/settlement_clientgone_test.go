@@ -1,5 +1,18 @@
 package api
 
+import (
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
+	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+)
+
 // Regression tests for the "client gone after commit, provider completed"
 // outcome.
 //
@@ -14,17 +27,6 @@ package api
 // pieces, but not the full money + reputation + outcome path together). They also
 // pin the exactly-once boundary from the other direction: once the settlement
 // grace has refunded, a late provider terminal is a no-op (no double pay/charge).
-
-import (
-	"reflect"
-	"testing"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/payments"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
-)
 
 // parkConsumerGone reproduces the post-commit-disconnect lifecycle: the request
 // was pending on the provider, the consumer-side handler parked it for settlement
@@ -294,12 +296,12 @@ func TestCompleteRouteOutcomeConsumerGoneClassification(t *testing.T) {
 	pr := &registry.PendingRequest{RequestID: "route-map"}
 	usage := protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 20, ReasoningTokens: 3}
 
-	clean := completeRouteOutcome(pr, usage, 1234, false)
+	clean := attempt.CompleteRouteOutcome(pr, usage, 1234, false)
 	if clean.FinalStatus != "success" || clean.ErrorClass != "" {
 		t.Fatalf("clean outcome = %q/%q, want success/empty", clean.FinalStatus, clean.ErrorClass)
 	}
 
-	gone := completeRouteOutcome(pr, usage, 1234, true)
+	gone := attempt.CompleteRouteOutcome(pr, usage, 1234, true)
 	if gone.FinalStatus != "partial_success" {
 		t.Errorf("gone final_status = %q, want partial_success", gone.FinalStatus)
 	}
@@ -322,8 +324,8 @@ func TestPartialSuccessMetricNamesAndTags(t *testing.T) {
 	if metricNoTerminalAfterCancel != "inference.no_terminal_after_cancel" {
 		t.Errorf("metricNoTerminalAfterCancel = %q", metricNoTerminalAfterCancel)
 	}
-	if errorClassClientGoneAfterCommitCompleted != "client_gone_after_commit_provider_completed" {
-		t.Errorf("errorClassClientGoneAfterCommitCompleted = %q", errorClassClientGoneAfterCommitCompleted)
+	if attempt.ErrorClassClientGoneAfterCommitCompleted != "client_gone_after_commit_provider_completed" {
+		t.Errorf("errorClassClientGoneAfterCommitCompleted = %q", attempt.ErrorClassClientGoneAfterCommitCompleted)
 	}
 
 	if got := partialSuccessTags("m", "c"); !reflect.DeepEqual(got, []string{"model:m", "error_class:c"}) {
@@ -332,7 +334,7 @@ func TestPartialSuccessMetricNamesAndTags(t *testing.T) {
 
 	// Nil-safety: no Datadog client configured in tests; helpers must not panic.
 	srv, _, _ := billingTestServer(t)
-	srv.recordPartialSuccessCompletion("m", errorClassClientGoneAfterCommitCompleted)
+	srv.recordPartialSuccessCompletion("m", attempt.ErrorClassClientGoneAfterCommitCompleted)
 	srv.recordNoTerminalAfterCancel("m")
 }
 
@@ -419,7 +421,7 @@ func TestHandleCompleteEmitsPartialSuccessMetric(t *testing.T) {
 	if !hasMetric(partial, "model:"+goneModel) {
 		t.Errorf("partial_success missing model tag; got %v", partial)
 	}
-	if !hasMetric(partial, "error_class:"+errorClassClientGoneAfterCommitCompleted) {
+	if !hasMetric(partial, "error_class:"+attempt.ErrorClassClientGoneAfterCommitCompleted) {
 		t.Errorf("partial_success missing error_class tag; got %v", partial)
 	}
 	if !hasMetric(gonePackets, "inference.completions") {
@@ -473,7 +475,7 @@ func TestHandleInferenceErrorEmitsAfterCommitClientGone(t *testing.T) {
 	if len(cg) == 0 {
 		t.Fatalf("provider error after commit must emit routing.client_gone; packets=%v", packets)
 	}
-	if !hasMetric(cg, "phase:"+phaseAfterCommit) {
+	if !hasMetric(cg, "phase:"+dispatch.PhaseAfterCommit) {
 		t.Errorf("routing.client_gone missing phase:after_commit; got %v", cg)
 	}
 	if !hasMetric(cg, "model:"+model) || !hasMetric(cg, "prompt_bucket:4-8k") {

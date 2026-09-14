@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
 	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -262,8 +263,8 @@ func TestDeadlineUnreachableFailoverCarriesDecreasingBudgets(t *testing.T) {
 			continue
 		}
 		deadlineRoutes++
-		if route.ErrorClass != errorClassDeadlineUnreachable {
-			t.Errorf("deadline route class = %q, want %q", route.ErrorClass, errorClassDeadlineUnreachable)
+		if route.ErrorClass != attempt.ErrorClassDeadlineUnreachable {
+			t.Errorf("deadline route class = %q, want %q", route.ErrorClass, attempt.ErrorClassDeadlineUnreachable)
 		}
 		if route.AdmittedButFailed {
 			t.Error("pre-content deadline refusal must not be admitted-but-failed")
@@ -369,43 +370,21 @@ func TestDispatchOneProviderUsesPinnedExpiredClockWithoutRecomputing(t *testing.
 		"/v1/chat/completions",
 		strings.NewReader(buildChatBody(t, model, false, nil)),
 	)
-	selected, pending, _, _, dispatchErr, dispatchErrCode := srv.dispatchOneProvider(
-		req,
-		model,
-		model,
-		[]byte(buildChatBody(t, model, false, nil)),
-		"test-key",
-		nil,
-		0,
-		8,
-		10*time.Millisecond,
-		64,
-		registry.TokenAdmission{},
-		false,
-		registry.RequestTraits{},
-		nil,
-		false,
-		selfRoutePolicy{},
-		// The pinned 10ms request clock is expired, while recomputing this
-		// ordinary model from the server's 5s default would still allow a send.
-		&registry.RequestTiming{ReceivedAt: time.Now().Add(-50 * time.Millisecond)},
-		false,
-		registry.CachePlan{},
-		map[string]struct{}{},
-		0,
-		nil,
-		"",
-		nil,
-		nil,
-	)
-	if selected != nil || pending != nil {
-		t.Fatalf("expired dispatch selected provider=%v pending=%v", selected, pending)
+	recorder := httptest.NewRecorder()
+	srv.inferenceDispatch().Run(recorder, req, dispatch.Request{
+		Model: model, PublicModel: model,
+		RawBody:     []byte(buildChatBody(t, model, false, nil)),
+		ConsumerKey: "test-key", EstimatedPromptTokens: 8, RequestedMaxTokens: 64,
+		Deadline: 10 * time.Millisecond,
+		// This pinned clock is expired; the ordinary 5s model default is not.
+		Timing:            &registry.RequestTiming{ReceivedAt: time.Now().Add(-50 * time.Millisecond)},
+		RefundReservation: func() {},
+	})
+	if recorder.Code != http.StatusTooManyRequests || !strings.Contains(recorder.Body.String(), "timeout waiting for first response") {
+		t.Fatalf("expired dispatch HTTP = %d %s, want deadline 429", recorder.Code, recorder.Body.String())
 	}
-	if dispatchErr != errFirstContentDeadlineExpired ||
-		dispatchErrCode != http.StatusGatewayTimeout {
-		t.Fatalf(
-			"expired dispatch = (%q,%d), want (%q,504)",
-			dispatchErr, dispatchErrCode, errFirstContentDeadlineExpired)
+	if p := reg.GetProvider(provider.registryID); p == nil || p.PendingCount() != 0 {
+		t.Fatalf("expired dispatch retained a provider reservation: %v", p)
 	}
 	time.Sleep(50 * time.Millisecond)
 	if got := provider.dispatchCount(); got != 0 {

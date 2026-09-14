@@ -1,5 +1,18 @@
 package api
 
+import (
+	"errors"
+	"fmt"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+)
+
 // Shared routing/capacity admission preflight for the consumer inference
 // handlers.
 //
@@ -17,17 +30,6 @@ package api
 // onModelFallback callback. Everything else is shared verbatim so the two
 // handlers can't drift.
 
-import (
-	"errors"
-	"fmt"
-	"net/http"
-	"strconv"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
-)
-
 // balanceReservationParams bundles the inputs to the shared pre-flight balance
 // reservation.
 type balanceReservationParams struct {
@@ -43,7 +45,7 @@ type balanceReservationParams struct {
 }
 
 // reserveInferenceBalance performs the shared pre-flight balance reservation +
-// per-key spend cap for both inference handlers. Self-route (policy.enabled) and
+// per-key spend cap for both inference handlers. Self-route (policy.Enabled) and
 // a nil billing backend skip it (the request is free). On a spend-cap or
 // insufficient-funds rejection it writes the exact terminal response and returns
 // handled=true; otherwise it returns the reserved amount and whether it was a
@@ -54,7 +56,7 @@ func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request,
 	// Self-route is free: skip the pre-flight balance reservation and the
 	// per-key spend cap entirely. A zero-balance owner must never be blocked
 	// from running on their own machine, and a self_route_only key never spends.
-	if s.billing == nil || p.policy.enabled {
+	if s.billing == nil || p.policy.Enabled {
 		return 0, false, false
 	}
 	consumerKey := consumerKeyFromContext(r.Context())
@@ -69,20 +71,20 @@ func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request,
 	// key never debits the account ledger.
 	if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
 		s.recordRejection(rejectionInfo{
-			r:                     r,
-			stage:                 "balance",
-			reasonCode:            "insufficient_quota",
-			httpStatus:            http.StatusPaymentRequired,
-			keyID:                 keyIDFromContext(r.Context()),
-			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-			requestedModel:        p.publicModel,
-			resolvedModel:         p.model,
-			stream:                p.stream,
-			estimatedPromptTokens: p.estimatedPromptTokens,
-			requestedMaxTokens:    p.requestedMaxTokens,
-			requiresVision:        p.requiresVision,
-			hasTools:              p.hasTools,
-			params:                rejectionSamplingParams(parsed),
+			Request:               r,
+			Stage:                 "balance",
+			ReasonCode:            "insufficient_quota",
+			HttpStatus:            http.StatusPaymentRequired,
+			KeyID:                 requestcontext.KeyID(r.Context()),
+			ConsumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+			RequestedModel:        p.publicModel,
+			ResolvedModel:         p.model,
+			Stream:                p.stream,
+			EstimatedPromptTokens: p.estimatedPromptTokens,
+			RequestedMaxTokens:    p.requestedMaxTokens,
+			RequiresVision:        p.requiresVision,
+			HasTools:              p.hasTools,
+			Params:                rejectionSamplingParams(parsed),
 		})
 		writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
 		return reservedMicroUSD, false, true
@@ -92,20 +94,20 @@ func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request,
 	if err != nil {
 		if errors.Is(err, store.ErrInsufficientBalance) {
 			s.recordRejection(rejectionInfo{
-				r:                     r,
-				stage:                 "balance",
-				reasonCode:            "insufficient_funds",
-				httpStatus:            http.StatusPaymentRequired,
-				keyID:                 keyIDFromContext(r.Context()),
-				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-				requestedModel:        p.publicModel,
-				resolvedModel:         p.model,
-				stream:                p.stream,
-				estimatedPromptTokens: p.estimatedPromptTokens,
-				requestedMaxTokens:    p.requestedMaxTokens,
-				requiresVision:        p.requiresVision,
-				hasTools:              p.hasTools,
-				params:                rejectionSamplingParams(parsed),
+				Request:               r,
+				Stage:                 "balance",
+				ReasonCode:            "insufficient_funds",
+				HttpStatus:            http.StatusPaymentRequired,
+				KeyID:                 requestcontext.KeyID(r.Context()),
+				ConsumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+				RequestedModel:        p.publicModel,
+				ResolvedModel:         p.model,
+				Stream:                p.stream,
+				EstimatedPromptTokens: p.estimatedPromptTokens,
+				RequestedMaxTokens:    p.requestedMaxTokens,
+				RequiresVision:        p.requiresVision,
+				HasTools:              p.hasTools,
+				Params:                rejectionSamplingParams(parsed),
 			})
 			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
 				"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
@@ -140,7 +142,7 @@ func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request,
 func (s *Server) topUpReservationForInlinedMedia(w http.ResponseWriter, r *http.Request, parsed map[string]any, p balanceReservationParams, currentMicroUSD int64) (reservedMicroUSD int64, handled bool) {
 	// Same skips as reserveInferenceBalance: self-route is free and a nil billing
 	// backend never reserved anything to top up.
-	if s.billing == nil || p.policy.enabled || currentMicroUSD <= 0 {
+	if s.billing == nil || p.policy.Enabled || currentMicroUSD <= 0 {
 		return currentMicroUSD, false
 	}
 	want := s.inferenceSettlement().Estimate(p.model, max(p.billingPromptTokens, p.estimatedPromptTokens), p.requestedMaxTokens)
@@ -149,20 +151,20 @@ func (s *Server) topUpReservationForInlinedMedia(w http.ResponseWriter, r *http.
 	}
 	reject := func(reasonCode, code, msg string) {
 		s.recordRejection(rejectionInfo{
-			r:                     r,
-			stage:                 "balance",
-			reasonCode:            reasonCode,
-			httpStatus:            http.StatusPaymentRequired,
-			keyID:                 keyIDFromContext(r.Context()),
-			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-			requestedModel:        p.publicModel,
-			resolvedModel:         p.model,
-			stream:                p.stream,
-			estimatedPromptTokens: p.estimatedPromptTokens,
-			requestedMaxTokens:    p.requestedMaxTokens,
-			requiresVision:        p.requiresVision,
-			hasTools:              p.hasTools,
-			params:                rejectionSamplingParams(parsed),
+			Request:               r,
+			Stage:                 "balance",
+			ReasonCode:            reasonCode,
+			HttpStatus:            http.StatusPaymentRequired,
+			KeyID:                 requestcontext.KeyID(r.Context()),
+			ConsumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+			RequestedModel:        p.publicModel,
+			ResolvedModel:         p.model,
+			Stream:                p.stream,
+			EstimatedPromptTokens: p.estimatedPromptTokens,
+			RequestedMaxTokens:    p.requestedMaxTokens,
+			RequiresVision:        p.requiresVision,
+			HasTools:              p.hasTools,
+			Params:                rejectionSamplingParams(parsed),
 		})
 		s.ddIncr("billing.media_reservation_topup", []string{"model:" + p.model, "outcome:rejected"})
 		writeJSON(w, http.StatusPaymentRequired, errorResponse(code, msg, withCode("insufficient_quota")))
@@ -264,27 +266,27 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		return modelTraits(currentModel)
 	}
 	rejectProviderBodyTooLarge := func(providerBodyErr error) bool {
-		if !errors.Is(providerBodyErr, errProviderBodyTooLarge) {
+		if !errors.Is(providerBodyErr, dispatch.ErrProviderBodyTooLarge) {
 			return false
 		}
 		refundReservation()
 		s.recordRejection(rejectionInfo{
-			r:                     r,
-			stage:                 "validation",
-			reasonCode:            "payload_too_large",
-			httpStatus:            http.StatusRequestEntityTooLarge,
-			keyID:                 keyIDFromContext(r.Context()),
-			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-			requestedModel:        publicModel,
-			resolvedModel:         model,
-			stream:                p.stream,
-			estimatedPromptTokens: p.estimatedPromptTokens,
-			requestedMaxTokens:    p.requestedMaxTokens,
-			requiresVision:        p.requiresVision,
-			hasTools:              p.hasTools,
-			requestBodyBytes:      oversizedProviderBodyBytes(providerBodyErr),
-			params:                rejectionSamplingParams(parsed),
-			servabilityComputed:   true,
+			Request:               r,
+			Stage:                 "validation",
+			ReasonCode:            "payload_too_large",
+			HttpStatus:            http.StatusRequestEntityTooLarge,
+			KeyID:                 requestcontext.KeyID(r.Context()),
+			ConsumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+			RequestedModel:        publicModel,
+			ResolvedModel:         model,
+			Stream:                p.stream,
+			EstimatedPromptTokens: p.estimatedPromptTokens,
+			RequestedMaxTokens:    p.requestedMaxTokens,
+			RequiresVision:        p.requiresVision,
+			HasTools:              p.hasTools,
+			RequestBodyBytes:      dispatch.OversizedProviderBodyBytes(providerBodyErr),
+			Params:                rejectionSamplingParams(parsed),
+			ServabilityComputed:   true,
 		})
 		writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse(
 			"invalid_request_error", providerBodyErr.Error(),
@@ -305,71 +307,71 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 	// acquisition). On timeout: the same capacity-shaped routing_saturated 429
 	// with the distress-scaled Retry-After, zero walks. On client-gone: refund
 	// and stop silently — never the 429 path or a rejection-ledger row.
-	switch s.acquireRoutingScanSlot(preflightScanWait(p.deadline), r.Context().Done()) {
-	case scanSlotClientGone:
+	switch s.inferenceDispatch().AcquireRoutingScanSlot(preflightScanWait(p.deadline), r.Context().Done()) {
+	case dispatch.ScanSlotClientGone:
 		refundReservation()
 		return model, true
-	case scanSlotTimeout:
+	case dispatch.ScanSlotTimeout:
 		refundReservation()
-		retryAfter := s.estimateRetryAfter(model)
+		retryAfter := s.inferenceDispatch().EstimateRetryAfter(model)
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		s.ddIncr("routing.scan_admission_timeout", []string{"model:" + model, "stage:preflight"})
 		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:routing_saturated"})
 		s.recordRejection(rejectionInfo{
-			r:                     r,
-			stage:                 "preflight_capacity",
-			reasonCode:            rejectionReasonRoutingSaturated,
-			httpStatus:            http.StatusTooManyRequests,
-			keyID:                 keyIDFromContext(r.Context()),
-			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-			requestedModel:        publicModel,
-			resolvedModel:         model,
-			stream:                p.stream,
-			estimatedPromptTokens: p.estimatedPromptTokens,
-			requestedMaxTokens:    p.requestedMaxTokens,
-			requiresVision:        p.requiresVision,
-			hasTools:              p.hasTools,
-			retryAfterMs:          retryAfter * 1000,
-			params:                rejectionSamplingParams(parsed),
+			Request:               r,
+			Stage:                 "preflight_capacity",
+			ReasonCode:            dispatch.RejectionReasonRoutingSaturated,
+			HttpStatus:            http.StatusTooManyRequests,
+			KeyID:                 requestcontext.KeyID(r.Context()),
+			ConsumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+			RequestedModel:        publicModel,
+			ResolvedModel:         model,
+			Stream:                p.stream,
+			EstimatedPromptTokens: p.estimatedPromptTokens,
+			RequestedMaxTokens:    p.requestedMaxTokens,
+			RequiresVision:        p.requiresVision,
+			HasTools:              p.hasTools,
+			RetryAfterMs:          retryAfter * 1000,
+			Params:                rejectionSamplingParams(parsed),
 			// Do not add another fleet scan while the scan semaphore is full.
 			// recordRejection persists could_have_served=null for this unknown.
-			skipServability: true,
+			SkipServability: true,
 		})
 		writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
 			"the coordinator is at routing capacity — please retry",
 			withCode("rate_limit_exceeded")))
 		return model, true
 	}
-	defer s.releaseRoutingScanSlot()
+	defer s.inferenceDispatch().ReleaseRoutingScanSlot()
 
 	// Self-route pre-flight: confirm the caller owns an online machine that can
 	// serve this model, with precise errors and no fallback to the paid fleet.
-	if p.policy.enabled {
+	if p.policy.Enabled {
 		traits := modelTraits(model)
 		if traits.MinPrefixCacheProtocol > 0 && p.providerBodyErrorForModel != nil {
 			_, servesWithFloor := s.registry.OwnedProviderSummary(
-				p.policy.ownerAccountID, model, traits, p.requiresVision)
+				p.policy.OwnerAccountID, model, traits, p.requiresVision)
 			withoutProtocolFloor := traits
 			withoutProtocolFloor.MinPrefixCacheProtocol = 0
 			_, servesWithoutFloor := s.registry.OwnedProviderSummary(
-				p.policy.ownerAccountID, model, withoutProtocolFloor, p.requiresVision)
+				p.policy.OwnerAccountID, model, withoutProtocolFloor, p.requiresVision)
 			if servesWithFloor == 0 &&
 				servesWithoutFloor > 0 &&
 				rejectProviderBodyTooLarge(p.providerBodyErrorForModel(model)) {
 				return model, true
 			}
 		}
-		if s.selfRouteUnavailable(w, r, p.policy.ownerAccountID, model, traits, p.requiresVision) {
+		if s.selfRouteUnavailable(w, r, p.policy.OwnerAccountID, model, traits, p.requiresVision) {
 			refundReservation()
 			return model, true
 		}
 		return model, false
 	}
-	if p.policy.prefer {
+	if p.policy.Prefer {
 		traits := modelTraits(model)
 		if traits.MinPrefixCacheProtocol > 0 && p.providerBodyErrorForModel != nil {
 			_, ownedWithFloor := s.registry.OwnedProviderSummary(
-				p.policy.ownerAccountID, model, traits, p.requiresVision)
+				p.policy.OwnerAccountID, model, traits, p.requiresVision)
 			publicWithFloor, publicCapacityWithFloor, _ :=
 				s.registry.QuickCapacityCheckForRequest(
 					model,
@@ -382,7 +384,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			withoutProtocolFloor := traits
 			withoutProtocolFloor.MinPrefixCacheProtocol = 0
 			_, ownedWithoutFloor := s.registry.OwnedProviderSummary(
-				p.policy.ownerAccountID, model, withoutProtocolFloor, p.requiresVision)
+				p.policy.OwnerAccountID, model, withoutProtocolFloor, p.requiresVision)
 			publicWithoutFloor, publicCapacityWithoutFloor, _ :=
 				s.registry.QuickCapacityCheckForRequest(
 					model,
@@ -448,25 +450,25 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		refundReservation()
 		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
 		s.recordRejection(rejectionInfo{
-			r:                       r,
-			stage:                   "preflight_capacity",
-			reasonCode:              "model_too_large",
-			httpStatus:              http.StatusServiceUnavailable,
-			keyID:                   keyIDFromContext(r.Context()),
-			consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
-			requestedModel:          publicModel,
-			resolvedModel:           model,
-			stream:                  p.stream,
-			estimatedPromptTokens:   p.estimatedPromptTokens,
-			requestedMaxTokens:      p.requestedMaxTokens,
-			requiresVision:          p.requiresVision,
-			hasTools:                p.hasTools,
-			params:                  rejectionSamplingParams(parsed),
-			servabilityComputed:     true,
-			candidateCount:          candidateCount,
-			capacityRejections:      capacityRejections,
-			modelTooLargeRejections: modelTooLarge,
-			bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+			Request:                 r,
+			Stage:                   "preflight_capacity",
+			ReasonCode:              "model_too_large",
+			HttpStatus:              http.StatusServiceUnavailable,
+			KeyID:                   requestcontext.KeyID(r.Context()),
+			ConsumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+			RequestedModel:          publicModel,
+			ResolvedModel:           model,
+			Stream:                  p.stream,
+			EstimatedPromptTokens:   p.estimatedPromptTokens,
+			RequestedMaxTokens:      p.requestedMaxTokens,
+			RequiresVision:          p.requiresVision,
+			HasTools:                p.hasTools,
+			Params:                  rejectionSamplingParams(parsed),
+			ServabilityComputed:     true,
+			CandidateCount:          candidateCount,
+			CapacityRejections:      capacityRejections,
+			ModelTooLargeRejections: modelTooLarge,
+			BestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
 		})
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 			fmt.Sprintf("model %q is too large for any currently available provider", publicModel),
@@ -478,7 +480,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		providerBodyErr = p.providerBodyErrorForModel(model)
 	}
 	bodyIncompatibilityCausedNoCandidates := false
-	if errors.Is(providerBodyErr, errProviderBodyTooLarge) {
+	if errors.Is(providerBodyErr, dispatch.ErrProviderBodyTooLarge) {
 		withoutProtocolFloor := modelTraits(model)
 		withoutProtocolFloor.MinPrefixCacheProtocol = 0
 		baselineCandidates, baselineCapacity, _ := s.registry.QuickCapacityCheckForRequest(
@@ -503,7 +505,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 	if candidateCount == 0 && capacityRejections > 0 {
 		// Routing v2 W3: feed the autoscaler the demand the preflight sees.
 		s.registry.RecordWarmPoolCapacityReject(model)
-		s.triggerWarmPool()
+		s.inferenceDispatch().TriggerWarmPool()
 		// Queue-before-shed (default on): providers exist for this model but
 		// all are at capacity right now. Rather than an immediate 429, let the
 		// request fall through to the normal dispatch+queue path so a slot
@@ -520,35 +522,35 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		// OpenRouter. The drain path (ReserveProviderEx) still applies the
 		// dedicated-box routing gate, so a queued request only ever lands on a
 		// dedicated provider.
-		if s.queueBeforeShedEnabled() {
+		if s.inferenceDispatch().QueueBeforeShedEnabled() {
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
 		} else {
 			// Fast-shed: immediate 429 when queue-before-shed is disabled.
-			retryAfter := s.estimateRetryAfter(model)
+			retryAfter := s.inferenceDispatch().EstimateRetryAfter(model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
 			s.recordRejection(rejectionInfo{
-				r:                       r,
-				stage:                   "preflight_capacity",
-				reasonCode:              "machine_busy",
-				httpStatus:              http.StatusTooManyRequests,
-				keyID:                   keyIDFromContext(r.Context()),
-				consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
-				requestedModel:          publicModel,
-				resolvedModel:           model,
-				stream:                  p.stream,
-				estimatedPromptTokens:   p.estimatedPromptTokens,
-				requestedMaxTokens:      p.requestedMaxTokens,
-				requiresVision:          p.requiresVision,
-				hasTools:                p.hasTools,
-				retryAfterMs:            retryAfter * 1000,
-				params:                  rejectionSamplingParams(parsed),
-				servabilityComputed:     true,
-				candidateCount:          candidateCount,
-				capacityRejections:      capacityRejections,
-				modelTooLargeRejections: modelTooLarge,
-				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+				Request:                 r,
+				Stage:                   "preflight_capacity",
+				ReasonCode:              "machine_busy",
+				HttpStatus:              http.StatusTooManyRequests,
+				KeyID:                   requestcontext.KeyID(r.Context()),
+				ConsumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+				RequestedModel:          publicModel,
+				ResolvedModel:           model,
+				Stream:                  p.stream,
+				EstimatedPromptTokens:   p.estimatedPromptTokens,
+				RequestedMaxTokens:      p.requestedMaxTokens,
+				RequiresVision:          p.requiresVision,
+				HasTools:                p.hasTools,
+				RetryAfterMs:            retryAfter * 1000,
+				Params:                  rejectionSamplingParams(parsed),
+				ServabilityComputed:     true,
+				CandidateCount:          candidateCount,
+				CapacityRejections:      capacityRejections,
+				ModelTooLargeRejections: modelTooLarge,
+				BestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
 			})
 			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
 				fmt.Sprintf("all providers for model %q are at capacity — retry after %ds", publicModel, retryAfter),
@@ -576,8 +578,8 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		//
 		// Feed the autoscaler the demand regardless of outcome.
 		s.registry.RecordWarmPoolCapacityReject(model)
-		s.triggerWarmPool()
-		if s.coldDispatchEnabled() && s.coldSpillAvailable(model, modelTraits(model), p.requiresVision, p.allowedProviderSerials) {
+		s.inferenceDispatch().TriggerWarmPool()
+		if s.inferenceDispatch().ColdDispatchEnabled() && s.inferenceDispatch().ColdSpillAvailable(model, modelTraits(model), p.requiresVision, p.allowedProviderSerials) {
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:cold_dispatch_spill"})
 			// Fall through to dispatch+queue; reservation kept.
 		} else if s.registry.IsDedicatedModel(model) && s.registry.HasProviderForModel(model, p.allowedProviderSerials...) {
@@ -588,31 +590,31 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			// so shed to OpenRouter as a 429 + Retry-After (clean failover)
 			// rather than a 503 (which can get the endpoint marked unhealthy /
 			// deranked). Mirrors the capacity_429 path above.
-			retryAfter := s.estimateRetryAfter(model)
+			retryAfter := s.inferenceDispatch().EstimateRetryAfter(model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:dedicated_capacity_429"})
 			s.recordRejection(rejectionInfo{
-				r:                       r,
-				stage:                   "preflight_capacity",
-				reasonCode:              "machine_busy",
-				httpStatus:              http.StatusTooManyRequests,
-				keyID:                   keyIDFromContext(r.Context()),
-				consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
-				requestedModel:          publicModel,
-				resolvedModel:           model,
-				stream:                  p.stream,
-				estimatedPromptTokens:   p.estimatedPromptTokens,
-				requestedMaxTokens:      p.requestedMaxTokens,
-				requiresVision:          p.requiresVision,
-				hasTools:                p.hasTools,
-				retryAfterMs:            retryAfter * 1000,
-				params:                  rejectionSamplingParams(parsed),
-				servabilityComputed:     true,
-				candidateCount:          candidateCount,
-				capacityRejections:      capacityRejections,
-				modelTooLargeRejections: modelTooLarge,
-				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+				Request:                 r,
+				Stage:                   "preflight_capacity",
+				ReasonCode:              "machine_busy",
+				HttpStatus:              http.StatusTooManyRequests,
+				KeyID:                   requestcontext.KeyID(r.Context()),
+				ConsumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+				RequestedModel:          publicModel,
+				ResolvedModel:           model,
+				Stream:                  p.stream,
+				EstimatedPromptTokens:   p.estimatedPromptTokens,
+				RequestedMaxTokens:      p.requestedMaxTokens,
+				RequiresVision:          p.requiresVision,
+				HasTools:                p.hasTools,
+				RetryAfterMs:            retryAfter * 1000,
+				Params:                  rejectionSamplingParams(parsed),
+				ServabilityComputed:     true,
+				CandidateCount:          candidateCount,
+				CapacityRejections:      capacityRejections,
+				ModelTooLargeRejections: modelTooLarge,
+				BestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
 			})
 			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
 				fmt.Sprintf("no provider dedicated to model %q is available right now — retry after %ds", publicModel, retryAfter),
@@ -627,31 +629,31 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			// counting the event as a provider outage. A 503 here caused the
 			// post-deploy OpenRouter uptime collapse while the in-memory
 			// provider registry repopulated.
-			retryAfter := s.estimateRetryAfter(model)
+			retryAfter := s.inferenceDispatch().EstimateRetryAfter(model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:no_eligible_provider"})
 			s.recordRejection(rejectionInfo{
-				r:                       r,
-				stage:                   "preflight_capacity",
-				reasonCode:              "no_provider",
-				httpStatus:              http.StatusTooManyRequests,
-				keyID:                   keyIDFromContext(r.Context()),
-				consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
-				requestedModel:          publicModel,
-				resolvedModel:           model,
-				stream:                  p.stream,
-				estimatedPromptTokens:   p.estimatedPromptTokens,
-				requestedMaxTokens:      p.requestedMaxTokens,
-				requiresVision:          p.requiresVision,
-				hasTools:                p.hasTools,
-				retryAfterMs:            retryAfter * 1000,
-				params:                  rejectionSamplingParams(parsed),
-				servabilityComputed:     true,
-				candidateCount:          candidateCount,
-				capacityRejections:      capacityRejections,
-				modelTooLargeRejections: modelTooLarge,
-				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
+				Request:                 r,
+				Stage:                   "preflight_capacity",
+				ReasonCode:              "no_provider",
+				HttpStatus:              http.StatusTooManyRequests,
+				KeyID:                   requestcontext.KeyID(r.Context()),
+				ConsumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+				RequestedModel:          publicModel,
+				ResolvedModel:           model,
+				Stream:                  p.stream,
+				EstimatedPromptTokens:   p.estimatedPromptTokens,
+				RequestedMaxTokens:      p.requestedMaxTokens,
+				RequiresVision:          p.requiresVision,
+				HasTools:                p.hasTools,
+				RetryAfterMs:            retryAfter * 1000,
+				Params:                  rejectionSamplingParams(parsed),
+				ServabilityComputed:     true,
+				CandidateCount:          candidateCount,
+				CapacityRejections:      capacityRejections,
+				ModelTooLargeRejections: modelTooLarge,
+				BestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
 			})
 			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
 				fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter),
@@ -660,7 +662,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		}
 	}
 	if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
-		if !s.hardTTFTGateApplies(p.requiresVision) {
+		if !s.inferenceDispatch().HardTTFTGateApplies(p.requiresVision) {
 			// Soft TTFT path: either global hard rejection is disabled (the
 			// default), or this is media whose decode+tower costs are absent
 			// from the token-prefill estimate. pr.MaxTTFTMs stays 0, so dispatch
@@ -671,7 +673,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			// pool from a media projection that omits decode and tower work.
 			if !p.requiresVision {
 				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
-				s.triggerWarmPool()
+				s.inferenceDispatch().TriggerWarmPool()
 			}
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
 		} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackTTFT, publicModel, model, p.estimatedPromptTokens, p.requestedMaxTokens, ttftThreshold, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials); switched {
@@ -683,31 +685,31 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			// Hard TTFT gate, no faster alias: shed with a 429 + Retry-After,
 			// and feed the autoscaler a TTFT-miss so warm capacity grows.
 			s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
-			s.triggerWarmPool()
+			s.inferenceDispatch().TriggerWarmPool()
 			retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
 			refundReservation()
 			s.recordRejection(rejectionInfo{
-				r:                       r,
-				stage:                   "routing_ttft",
-				reasonCode:              "ttft_too_slow",
-				httpStatus:              http.StatusTooManyRequests,
-				keyID:                   keyIDFromContext(r.Context()),
-				consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
-				requestedModel:          publicModel,
-				resolvedModel:           model,
-				stream:                  p.stream,
-				estimatedPromptTokens:   p.estimatedPromptTokens,
-				requestedMaxTokens:      p.requestedMaxTokens,
-				requiresVision:          p.requiresVision,
-				hasTools:                p.hasTools,
-				params:                  rejectionSamplingParams(parsed),
-				servabilityComputed:     true,
-				candidateCount:          candidateCount,
-				capacityRejections:      capacityRejections,
-				modelTooLargeRejections: modelTooLarge,
-				bestTTFTMs:              float64(retryTTFT.Milliseconds()),
+				Request:                 r,
+				Stage:                   "routing_ttft",
+				ReasonCode:              "ttft_too_slow",
+				HttpStatus:              http.StatusTooManyRequests,
+				KeyID:                   requestcontext.KeyID(r.Context()),
+				ConsumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
+				RequestedModel:          publicModel,
+				ResolvedModel:           model,
+				Stream:                  p.stream,
+				EstimatedPromptTokens:   p.estimatedPromptTokens,
+				RequestedMaxTokens:      p.requestedMaxTokens,
+				RequiresVision:          p.requiresVision,
+				HasTools:                p.hasTools,
+				Params:                  rejectionSamplingParams(parsed),
+				ServabilityComputed:     true,
+				CandidateCount:          candidateCount,
+				CapacityRejections:      capacityRejections,
+				ModelTooLargeRejections: modelTooLarge,
+				BestTTFTMs:              float64(retryTTFT.Milliseconds()),
 			})
-			s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT, ttftThreshold)
+			s.inferenceDispatch().WriteTTFTTooSlow(w, retryModel, publicModel, retryTTFT, ttftThreshold)
 			return model, true
 		}
 	}

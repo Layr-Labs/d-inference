@@ -36,13 +36,6 @@ const (
 	metricNoTerminalAfterCancel = "inference.no_terminal_after_cancel"
 )
 
-// errorClassClientGoneAfterCommitCompleted is the route-outcome error_class for a
-// request whose consumer disconnected after commit and whose provider then
-// completed (provider paid, consumer charged). It is shared by the route-outcome
-// writer (completeRouteOutcome) and the partial_success metric so the wire class
-// can never drift between the stored outcome and the dashboard counter.
-const errorClassClientGoneAfterCommitCompleted = "client_gone_after_commit_provider_completed"
-
 // partialSuccessTags builds the tag set for metricPartialSuccess.
 func partialSuccessTags(model, errorClass string) []string {
 	return []string{"model:" + model, "error_class:" + errorClass}

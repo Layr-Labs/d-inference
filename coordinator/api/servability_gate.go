@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -101,7 +102,7 @@ func (s *Server) shedIfUnservable(
 		return false
 	}
 
-	retryAfter := s.estimateRetryAfter(model)
+	retryAfter := s.inferenceDispatch().EstimateRetryAfter(model)
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 	refundReservation()
 
@@ -121,26 +122,26 @@ func (s *Server) shedIfUnservable(
 		"reason:" + verdict.Reason,
 	})
 	s.recordRejection(rejectionInfo{
-		r:                     r,
-		stage:                 "preflight_capacity",
-		reasonCode:            verdict.Reason, // "context_exceeded" | "prompt_too_long"
-		httpStatus:            http.StatusTooManyRequests,
-		keyID:                 keyIDFromContext(r.Context()),
-		consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-		requestedModel:        publicModel,
-		resolvedModel:         model,
-		stream:                stream,
-		estimatedPromptTokens: estimatedPromptTokens,
-		requestedMaxTokens:    requestedMaxTokens,
-		requiresVision:        requiresVision,
-		hasTools:              traits.HasTools,
-		retryAfterMs:          retryAfter * 1000,
-		params:                rejectionSamplingParams(parsed),
+		Request:               r,
+		Stage:                 "preflight_capacity",
+		ReasonCode:            verdict.Reason, // "context_exceeded" | "prompt_too_long"
+		HttpStatus:            http.StatusTooManyRequests,
+		KeyID:                 requestcontext.KeyID(r.Context()),
+		ConsumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+		RequestedModel:        publicModel,
+		ResolvedModel:         model,
+		Stream:                stream,
+		EstimatedPromptTokens: estimatedPromptTokens,
+		RequestedMaxTokens:    requestedMaxTokens,
+		RequiresVision:        requiresVision,
+		HasTools:              traits.HasTools,
+		RetryAfterMs:          retryAfter * 1000,
+		Params:                rejectionSamplingParams(parsed),
 		// Structurally unservable: no provider could have served it. Setting
 		// servabilityComputed avoids the off-path recompute, and candidateCount 0
 		// makes recordRejection mark CouldHaveServed=false.
-		servabilityComputed: true,
-		candidateCount:      0,
+		ServabilityComputed: true,
+		CandidateCount:      0,
 	})
 
 	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",

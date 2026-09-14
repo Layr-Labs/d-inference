@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
 	"github.com/eigeninference/d-inference/coordinator/providercontrol/challenge"
 	"github.com/eigeninference/d-inference/coordinator/providercontrol/codeidentity"
 	"github.com/eigeninference/d-inference/coordinator/providercontrol/mdmscheduler"
@@ -52,7 +53,7 @@ func (s *Server) providerSessionDependencies() session.Dependencies {
 				ProcessMemory: s.recordProcessMemoryTelemetry,
 			},
 			Cache: session.CacheTelemetry{
-				Tier:          lowCardinalityCacheTier,
+				Tier:          dispatch.LowCardinalityCacheTier,
 				SSDLookup:     s.emitExactCacheSSDLookup,
 				SSDDonation:   s.emitExactCacheSSDDonation,
 				Receipt:       s.emitCacheReceiptResult,

@@ -1,12 +1,14 @@
 package api
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/registry"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 // TestRoutingSaturatedShedRecordsNoServabilityWalk: a request shed because the
@@ -25,13 +27,13 @@ func TestRoutingSaturatedShedRecordsNoServabilityWalk(t *testing.T) {
 	// Saturate the semaphore from the test so the preflight sheds.
 	srv.SetRoutingConcurrency(2)
 	for i := 0; i < 2; i++ {
-		if got := srv.acquireRoutingScanSlot(0, nil); got != scanSlotAcquired {
+		if got := srv.inferenceDispatch().AcquireRoutingScanSlot(0, nil); got != dispatch.ScanSlotAcquired {
 			t.Fatalf("slot %d: %v", i, got)
 		}
 	}
 	defer func() {
-		srv.releaseRoutingScanSlot()
-		srv.releaseRoutingScanSlot()
+		srv.inferenceDispatch().ReleaseRoutingScanSlot()
+		srv.inferenceDispatch().ReleaseRoutingScanSlot()
 	}()
 
 	body := `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}],"max_tokens":64}`
@@ -51,7 +53,7 @@ func TestRoutingSaturatedShedRecordsNoServabilityWalk(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		for _, rec := range st.RejectionRecordsSince(time.Now().Add(-time.Minute)) {
-			if rec.ReasonCode != rejectionReasonRoutingSaturated {
+			if rec.ReasonCode != dispatch.RejectionReasonRoutingSaturated {
 				continue
 			}
 			if rec.CandidateCount != 0 || rec.CouldHaveServed != nil {

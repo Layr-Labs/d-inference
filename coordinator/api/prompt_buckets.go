@@ -1,6 +1,8 @@
 package api
 
-import "github.com/eigeninference/d-inference/coordinator/registry"
+import (
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
+)
 
 // Client-gone (cancellation) telemetry helpers.
 //
@@ -12,14 +14,6 @@ import "github.com/eigeninference/d-inference/coordinator/registry"
 // lifecycle PHASE at which the client went away (before the first content token vs
 // after the response committed). This file owns the small, pure bucket helper plus
 // the thin emit wrapper so the call sites stay one-liners.
-
-// client_gone phase tags. before_first_token is the prefill window (the request
-// was cancelled before any content token committed); after_commit is a disconnect
-// once streaming had already started (provider completed/errored with no reader).
-const (
-	phaseBeforeFirstToken = "before_first_token"
-	phaseAfterCommit      = "after_commit"
-)
 
 // promptBucket maps an estimated prompt-token count to a coarse, fixed-cardinality
 // bucket label for metrics. Boundaries: <1k, 1-4k, 4-8k, 8-16k, 16k+. Negative or
@@ -41,17 +35,6 @@ func promptBucket(tokens int) string {
 	}
 }
 
-// providerChipFamily reads a provider's hardware chip family under its lock,
-// returning "" for a nil provider. Best-effort: the value feeds a metric tag only.
-func providerChipFamily(p *registry.Provider) string {
-	if p == nil {
-		return ""
-	}
-	p.Mu().Lock()
-	defer p.Mu().Unlock()
-	return p.Hardware.ChipFamily
-}
-
 // emitClientGone records a client cancellation on the DogStatsD counter
 // d_inference.routing.client_gone, tagged by model, prompt-token bucket, provider
 // chip family, and lifecycle phase. It is a no-op when Datadog is not configured
@@ -61,7 +44,7 @@ func providerChipFamily(p *registry.Provider) string {
 func (s *Server) emitClientGone(model string, promptTokens int, chipFamily, phase string) {
 	// After-commit callers (provider terminals, settlement grace) have no
 	// first-content clock to bucket against: the budget was met before commit.
-	s.emitClientGoneBucketed(model, promptTokens, chipFamily, phase, deadlineBucketNotApplicable)
+	s.emitClientGoneBucketed(model, promptTokens, chipFamily, phase, dispatch.DeadlineBucketNotApplicable)
 }
 
 // emitClientGoneBucketed is emitClientGone with the deadline_bucket tag: for a
@@ -71,7 +54,7 @@ func (s *Server) emitClientGone(model string, promptTokens int, chipFamily, phas
 func (s *Server) emitClientGoneBucketed(model string, promptTokens int, chipFamily, phase, deadlineBucket string) {
 	chipFamily = sanitizeChipFamilyTag(chipFamily)
 	if deadlineBucket == "" {
-		deadlineBucket = deadlineBucketUnknown
+		deadlineBucket = dispatch.DeadlineBucketUnknown
 	}
 	s.ddIncr("routing.client_gone", []string{
 		"model:" + model,

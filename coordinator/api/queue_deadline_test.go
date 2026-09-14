@@ -1,11 +1,5 @@
 package api
 
-// queue_deadline (routing-v2 P4): a request whose request-absolute
-// first-content clock expires while it is still waiting in the coordinator
-// queue was reported as first_chunk_timeout — indistinguishable in the
-// rejection ledger from a dispatched provider that went silent. It now carries
-// its own reason code, with the same retryable 429 + Retry-After.
-
 import (
 	"context"
 	"io"
@@ -17,11 +11,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
+
+// queue_deadline (routing-v2 P4): a request whose request-absolute
+// first-content clock expires while it is still waiting in the coordinator
+// queue was reported as first_chunk_timeout — indistinguishable in the
+// rejection ledger from a dispatched provider that went silent. It now carries
+// its own reason code, with the same retryable 429 + Retry-After.
 
 // TestQueuedRequestExpiresAsQueueDeadlineLive drives the REAL HTTP path: the
 // single slot is saturated, the request queues, nothing drains it, and the
@@ -73,53 +74,14 @@ func TestQueuedRequestExpiresAsQueueDeadlineLive(t *testing.T) {
 	if rec == nil {
 		t.Fatalf("no dispatch-stage rejection recorded; records=%+v", st.RejectionRecordsSince(time.Time{}))
 	}
-	if rec.ReasonCode != rejectionReasonQueueDeadline {
-		t.Fatalf("rejection ReasonCode = %q, want %q", rec.ReasonCode, rejectionReasonQueueDeadline)
+	if rec.ReasonCode != dispatch.RejectionReasonQueueDeadline {
+		t.Fatalf("rejection ReasonCode = %q, want %q", rec.ReasonCode, dispatch.RejectionReasonQueueDeadline)
 	}
 	if rec.HTTPStatus != http.StatusTooManyRequests || rec.RetryAfterMs <= 0 {
 		t.Fatalf("rejection record = status %d retry_after_ms %d, want 429 with a positive Retry-After", rec.HTTPStatus, rec.RetryAfterMs)
 	}
 	if rec.ResolvedModel != model {
 		t.Fatalf("rejection ResolvedModel = %q, want %q", rec.ResolvedModel, model)
-	}
-}
-
-// TestResolveDominantExhaustedStatus_QueueDeadline pins the classification at
-// the unit level: the queue-wait synthetic 504 reclassifies to a 429 with
-// reason queue_deadline; the dispatched-provider synthetic 504 keeps
-// first_chunk_timeout; a sticky genuine provider fault is never overridden.
-func TestResolveDominantExhaustedStatus_QueueDeadline(t *testing.T) {
-	srv, _ := testServer(t)
-	newState := func() *dispatchState {
-		return &dispatchState{s: srv, model: "m", excludeProviders: map[string]struct{}{}}
-	}
-
-	d := newState()
-	d.setLastError(errQueueDeadlineExpired, http.StatusGatewayTimeout)
-	failure, sticky := d.terminalFailureForExhaustion()
-	code, reason, reclassified, dominance := d.resolveDominantExhaustedStatus(failure, sticky)
-	if code != http.StatusTooManyRequests || reason != rejectionReasonQueueDeadline || !reclassified || dominance != exhaustedUndecided {
-		t.Fatalf("queue deadline = (%d, %q, %v, %d), want (429, queue_deadline, true, undecided)", code, reason, reclassified, dominance)
-	}
-
-	d = newState()
-	d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
-	failure, sticky = d.terminalFailureForExhaustion()
-	code, reason, reclassified, _ = d.resolveDominantExhaustedStatus(failure, sticky)
-	if code != http.StatusTooManyRequests || reason != "first_chunk_timeout" || !reclassified {
-		t.Fatalf("dispatched timeout = (%d, %q, %v), want (429, first_chunk_timeout, true)", code, reason, reclassified)
-	}
-
-	// A sticky genuine fault from an earlier attempt outranks the queue's
-	// terminal: its own text, its own status.
-	d = newState()
-	fault := dispatchTerminalFailure{errText: "boom", statusCode: http.StatusBadGateway}
-	d.genuineFault = &fault
-	d.setLastError(errQueueDeadlineExpired, http.StatusGatewayTimeout)
-	failure, sticky = d.terminalFailureForExhaustion()
-	code, reason, reclassified, dominance = d.resolveDominantExhaustedStatus(failure, sticky)
-	if !sticky || code != http.StatusBadGateway || reason != "dispatch_exhausted" || reclassified || dominance != exhaustedGenuineFault {
-		t.Fatalf("sticky fault = (%d, %q, %v, %d), want (502, dispatch_exhausted, false, genuine fault)", code, reason, reclassified, dominance)
 	}
 }
 

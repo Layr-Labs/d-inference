@@ -1,17 +1,16 @@
 package api
 
 import (
-	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-func TestWaitFirstChunkDeferredRetryUsesCapturedCacheTerminal(t *testing.T) {
+func TestCapturedDispatchRetryClosesCacheTerminalOnce(t *testing.T) {
 	collector := newUDPCollector(t)
 	defer collector.Close()
 	ddClient := newTestDD(t, collector)
@@ -39,15 +38,9 @@ func TestWaitFirstChunkDeferredRetryUsesCapturedCacheTerminal(t *testing.T) {
 		Type: protocol.TypeInferenceError, RequestID: pr.RequestID,
 		Error: "provider disconnected", StatusCode: 502,
 	}
-	d := &dispatchState{
-		s: srv, r: httptest.NewRequest("POST", "/v1/chat/completions", nil),
-		model: pr.Model, provider: provider, pr: pr, requestID: pr.RequestID, attempt: pr.Attempt,
-		speculativeAt: time.Hour, deadline: time.Hour,
-		excludeProviders: make(map[string]struct{}),
-	}
-	if outcome := d.waitFirstChunk(); outcome != outcomeRetry || d.pr != nil || d.provider != nil {
-		t.Fatalf("waitFirstChunk outcome=%v pr=%v provider=%v, want retry with mutable state cleared", outcome, d.pr, d.provider)
-	}
+	// The dispatch owner separately proves the retry passes this exact pending
+	// identity after clearing mutable state. Exercise the real API publication.
+	dispatchObserver{server: srv}.PendingOutcome(pr, attempt.PendingRouteOutcome(pr, attempt.FinalStatusError, "provider_disconnect_pre_commit", 502))
 	// A duplicate provider terminal racing afterward must not emit again.
 	srv.emitCacheSelectionTerminal(pr, protocol.UsageInfo{
 		PromptTokens: 10, CacheOutcome: "hit", CacheTier: "memory",
@@ -63,17 +56,5 @@ func TestWaitFirstChunkDeferredRetryUsesCapturedCacheTerminal(t *testing.T) {
 	if strings.Contains(strings.Join(terminal, "\n"), pr.RequestID) ||
 		strings.Contains(strings.Join(terminal, "\n"), pr.CachePlan.ModelAggregateHash) {
 		t.Fatalf("synthetic disconnect metric leaked identifiers: %v", terminal)
-	}
-}
-
-func TestDispatchRoutingOutcomePreservesMismatchedPendingFallback(t *testing.T) {
-	pr := cacheTelemetryPending("other-request")
-	d := &dispatchState{
-		s: &Server{}, model: "model", pr: pr,
-		requestID: "current-request", attempt: pr.Attempt + 1,
-	}
-	d.updateRoutingOutcome(routeOutcome(finalStatusError, "provider_error", 502))
-	if !pr.MarkCacheTerminalTelemetryEmitted() {
-		t.Fatal("mismatched pending request incorrectly consumed cache terminal hook")
 	}
 }

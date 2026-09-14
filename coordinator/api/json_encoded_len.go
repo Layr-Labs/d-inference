@@ -1,5 +1,12 @@
 package api
 
+import (
+	"encoding/json"
+	"unicode/utf8"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
+)
+
 // json_encoded_len.go computes len(json.Marshal(v)) for the value universe the
 // inference request decoder produces — map[string]any, []any, string,
 // json.Number, bool, nil — WITHOUT building the encoding. The billing prompt
@@ -10,11 +17,6 @@ package api
 // (escaping rules from encoding/json/encode.go appendString and tables.go);
 // anything outside the modeled universe reports ok=false so the caller falls
 // back to the real encoder and the value can never drift.
-
-import (
-	"encoding/json"
-	"unicode/utf8"
-)
 
 // jsonEncodedLen returns the exact length json.Marshal(v) would produce for a
 // decoder-shaped value. ok=false means v contains a type (or an invalid
@@ -37,7 +39,7 @@ func jsonEncodedLen(v any) (int, bool) {
 		if s == "" {
 			return 1, true
 		}
-		if !jsonNumberLiteralValid(s) {
+		if !dispatch.JSONNumberLiteralValid(s) {
 			return 0, false
 		}
 		return len(s), true
@@ -115,48 +117,4 @@ func jsonStringEncodedLen(s string, escapeHTML bool) int {
 		i += size
 	}
 	return n
-}
-
-// jsonNumberLiteralValid reports whether s is a JSON number literal, matching
-// encoding/json's isValidNumber (RFC 8259 section 6 grammar).
-func jsonNumberLiteralValid(s string) bool {
-	if s == "" {
-		return false
-	}
-	if s[0] == '-' {
-		s = s[1:]
-		if s == "" {
-			return false
-		}
-	}
-	switch {
-	case s[0] == '0':
-		s = s[1:]
-	case '1' <= s[0] && s[0] <= '9':
-		s = s[1:]
-		for len(s) > 0 && '0' <= s[0] && s[0] <= '9' {
-			s = s[1:]
-		}
-	default:
-		return false
-	}
-	if len(s) >= 2 && s[0] == '.' && '0' <= s[1] && s[1] <= '9' {
-		s = s[2:]
-		for len(s) > 0 && '0' <= s[0] && s[0] <= '9' {
-			s = s[1:]
-		}
-	}
-	if len(s) >= 2 && (s[0] == 'e' || s[0] == 'E') {
-		s = s[1:]
-		if s[0] == '+' || s[0] == '-' {
-			s = s[1:]
-			if s == "" {
-				return false
-			}
-		}
-		for len(s) > 0 && '0' <= s[0] && s[0] <= '9' {
-			s = s[1:]
-		}
-	}
-	return s == ""
 }

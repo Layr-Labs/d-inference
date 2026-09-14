@@ -71,7 +71,7 @@ console-ui/           Next.js 16 / React 19 frontend
 ├── src/app/api/      chat, auth/keys, keys, payments/*, invite, models, health, pricing, stats,
 │                     telemetry, attestation, device, encryption-key, leaderboard, me, network, admin
 ├── src/components/   chat UI, sidebar, top bar, trust badge, verification panel, invite banner
-├── src/components/providers/
+├── src/components/app-providers/
 │   ├── PrivyClientProvider.tsx
 │   └── ThemeProvider.tsx
 ├── src/lib/          API client (src/lib/api/) + Zustand store (store.ts)

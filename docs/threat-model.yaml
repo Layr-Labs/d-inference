@@ -27,6 +27,8 @@ created: "2026-05-14"
 # Release selector coverage in T-024/T-025 re-verified 2026-09-14 against
 # commit 378e689c4: artifact validators and the latest-release cache reader
 # remain part of the focused review. No mitigation or trust policy changed.
+# T-025 runtime-manifest cache-reader coverage re-verified 2026-09-14 against
+# commit 9d9c688dc; its shared key and the platform discovery key remain invalidated.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
@@ -1552,6 +1554,7 @@ threats:
       - coordinator/api/releases.go
       - coordinator/api/releases/cache.go
       - coordinator/api/releases/latest.go
+      - coordinator/api/releases/runtime_manifest.go
       - coordinator/api/releases/registration.go
       - coordinator/api/releases/deactivation.go
     mitigations:
@@ -1561,7 +1564,9 @@ threats:
     severity: medium
     detection_hint: >
       Any change to release registration, deletion, or cache logic in
-      coordinator/api/releases/cache.go or coordinator/api/releases/latest.go must verify that platform-specific cache keys are
+      coordinator/api/releases/cache.go, coordinator/api/releases/latest.go or
+      coordinator/api/releases/runtime_manifest.go must verify that the
+      platform-specific discovery key and shared runtime-manifest key are
       invalidated on both register and delete operations.
 
   - id: T-026

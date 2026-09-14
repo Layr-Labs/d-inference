@@ -617,8 +617,13 @@ test('a foreign key is drawn between two tables the map has dots for', t => {
     assert.ok(touches(d, l.s) && touches(d, l.t),
       `the key ${l.fk.from} → ${l.fk.to} is not drawn between its two tables: ${d}`);
     // The head is on the referenced table: the arrow points the way the reference
-    // does, from the row that carries the column to the row it must exist in.
-    assert.equal(l.node.getAttribute('marker-end'), 'url(#a-fk)');
+    // does, from the row that carries the column to the row it must exist in. It is
+    // the foreign-key head or it is nothing — a key the layout drew too short to wear
+    // one is left bare rather than given a smaller or a borrowed head, which is
+    // `fkHeads` in page.js and `fk.test.mjs` states the rule.
+    const head = l.node.getAttribute('marker-end');
+    assert.ok(head === null || head === 'url(#a-fk)',
+      `the key ${l.fk.from} → ${l.fk.to} wears a head that is not the foreign-key head: ${head}`);
     assert.ok(p.$('#gdefs #a-fk'), 'the key points at a marker the page never defined');
     assert.equal(txt(l.node, 'title'), p.peek('fkSentence')(l.fk),
       'the key\'s tooltip is not its own sentence');

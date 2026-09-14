@@ -1419,7 +1419,7 @@ func TestFixtureArtifacts(t *testing.T) {
 	if !round.Generator.OverlayComplete {
 		t.Error("overlayComplete is false for a complete fixture overlay")
 	}
-	page, err := render.HTML(g, inventory)
+	page, err := render.HTML(g, inventory, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1681,7 +1681,7 @@ func renderFixturePage(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	page, err := render.HTML(g, inventory)
+	page, err := render.HTML(g, inventory, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

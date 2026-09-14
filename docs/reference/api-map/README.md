@@ -1,6 +1,6 @@
 # Darkbloom system map
 
-> Last updated: 2026-09-08 · commit `a34e8994c`
+> Last updated: 2026-09-10 · commit `f557e861e`
 
 A generated map of Darkbloom's entry points: what authorizes each one, what state
 its reachable code touches, and whether that access reads or writes. The
@@ -19,6 +19,7 @@ coordinator change costs no diff.
 | `system-map.html` | Self-contained explorer: full-screen clustered knowledge graph, routes, dependency nodes, associations with their wiring order and indirection, derived Postgres table definitions and the foreign keys between them. Open it in a browser; no server needed. | generated |
 | `inventory.json` | The same graph as data — the contract for any other consumer. | generated |
 | `report.md` | Drift report. Empty means source and overlay agree. | generated |
+| `history.json` | Optional: the same shape at every commit that touched the service, delta-encoded. Only built when asked for (see *Walking the history*). | generated |
 | [overlay.json](overlay.json) | The curated half of the map (see below). This is the only file to hand-edit. | **committed** |
 
 To read it locally, or after changing a mapped service's routes, state, queries or
@@ -27,8 +28,12 @@ outbound calls:
 ```bash
 make -C tools/systemmap          # write the three artifacts here (git-ignored)
 make -C tools/systemmap check    # render them, write nothing, fail on drift (what CI runs)
-make -C tools/systemmap test     # extractor tests
+make -C tools/systemmap test     # extractor tests, plus the DOM suite
+make -C tools/systemmap history  # the same map with a history slider (minutes, not seconds)
 ```
+
+The last one is a different artifact, and it is a separate command for that reason
+— see *Walking the history*.
 
 Published copy, once Pages is enabled: `https://layr-labs.github.io/d-inference/`
 — `index.html` is the explorer, with `inventory.json` and `report.md` beside it.
@@ -222,9 +227,9 @@ pointed, because SVG opacity applies to a path's markers too and a wire's restin
 a 9px glyph into a rumour.
 
 The unfiltered coordinator map is on the wrong side of that budget on purpose, and it is
-worth stating how far: at the fitted zoom, 846 of the 857 heads would have another head
-within their own width, 88 on average, and one 9-pixel square would hold 107 of them.
-Moving them to the wires' midpoints — five times less crowded — still leaves 844 touching.
+worth stating how far: at the fitted zoom, 971 of the 976 heads would have another head
+within their own width, 120 on average, and one 9-pixel square would hold 156 of them.
+Moving them to the wires' midpoints — five times less crowded — still leaves 971 touching.
 No arrangement points every wire in this system legibly, so the picture has to be narrowed
 first: hover a dot, click one, filter, or zoom past roughly twice the fitted scale, where
 you have stopped looking at the system and started reading a corner of it. The `↦` button's
@@ -293,8 +298,8 @@ same walk, so they are derived rather than described:
   handler and is shifted the same way, so the state a gate reads is numbered before
   the state it gates. A `defer` postpones the call and not its operands, so an
   argument that reads state is numbered where the statement is. The coordinator's
-  widest handler reaches **57** constructions this way; the whole map derives **857**
-  steps over 100 routes.
+  widest handler reaches **56** constructions this way; the whole map derives **976**
+  steps over 107 routes.
 - **Indirection.** Each step carries how it is reached, from a four-word vocabulary
   the artifact publishes with its own explanations (`stepKindLegend`): `direct`
   (every hop is a statically resolved call), `interface` (some hop dispatches
@@ -320,7 +325,7 @@ same walk, so they are derived rather than described:
   and the earliest path kept, so two routes reaching one construction through one
   frame are one path here, and the page prints it as "at least *n* paths". Up to
   three of those paths are published per step, from the entry point to the function
-  that does the touching, with the frames interned so 105 routes cost one symbol
+  that does the touching, with the frames interned so 108 routes cost one symbol
   table, alongside up to four citations.
 
 Two things this deliberately does **not** claim. It is a count of *sites*, not of
@@ -352,11 +357,29 @@ Only declared keys are drawn. A `JOIN` between two tables is *not* a relationshi
 the schema has — most of them target `pg_catalog` relations or CTEs — so joins are
 read for which tables a statement touches and never for edges between them.
 
+An arc is drawn to be *seen*, which for seven lines is a different problem than for a
+thousand. Both halves are screen-pixel quantities:
+
+| The arc | Because |
+|---|---|
+| Its **stroke and dashes** never scale (`vector-effect: non-scaling-stroke`) | A stroke inside the zoomed scene is scaled with it. At the zoom that fits the whole map a 1.1-unit stroke was 0.44px wide with dashes to match — the arcs were present, with correct geometry, and invisible. The 976 access wires scale on purpose: their collective mass carries them, and at close zoom screen-width lines would fill the picture |
+| Its **head** is dropped when the arc draws less than 1.6 heads of ink (`fkHeads`) | A head does not shrink either, so on a short arc it stops annotating the line and replaces it. The layout packs some pairs of tables adjacently — at the fit, five of the seven keys are bare: four draw between 2 and 5px of ink, and the fifth draws 13.4px, just under the 15px a 9.4px head asks for. Bare, a key still says *there is a key here*; the direction it stops claiming was never legible at that size, and the table below states it at every zoom |
+
+The measure is the ink `drawArc` actually drew, not the gap between two table centres —
+the end is pulled back out of the target's disc, which is up to a node radius. Zooming
+only ever adds heads back, and heads are re-decided when a **drag** moves a table, not
+only when the zoom changes.
+
+What does scale is how *long* an arc is, and must: that is a distance between two
+tables. The `postgres` cluster chip is the reader's shortcut to a zoom where most of
+them are comfortable — on the current map five of the seven — and the two shortest keys
+want a little more zoom than the chip gives.
+
 ## How much of it is opinion
 
-Everything countable is derived: **105 routes, 97 nodes, 20 groups, 265
-associations, 857 wiring steps, 41 table definitions (651 columns, 7 foreign keys),
-1,078 citations**. The opinions are a bounded, greppable set of
+Everything countable is derived: **108 routes, 101 nodes, 20 groups, 281
+associations, 976 wiring steps, 44 table definitions (674 columns, 7 foreign keys),
+1,183 citations**. The opinions are a bounded, greppable set of
 overlay tables:
 
 | Kind of opinion | Where | Size today |
@@ -451,8 +474,94 @@ a machine which has never been migrated — the coordinator's `users` table is s
 columns wider in production than its `CREATE` says. The `CREATE`, `ALTER` and
 `CREATE INDEX` statements are shown as written, each with its citation. The drawer
 also lists the table's foreign keys in both directions — the ones it declares and
-the ones pointing at it — each followable to the other table. **651 columns across
-41 tables** are derived this way; nothing about a table's shape is curated.
+the ones pointing at it — each followable to the other table. **674 columns across
+44 tables** are derived this way; nothing about a table's shape is curated.
+
+## Walking the history
+
+The map answers *what is this service*. The same extractor run at every commit that
+touched it answers *what did it become* — and that second question is what the
+timeline is: one snapshot per commit, from the first one that had a route table
+forward, with a slider under the graph that steps through them.
+
+```bash
+make -C tools/systemmap history                          # walk, then render the page with it
+make -C tools/systemmap timeline                         # the walk alone
+make -C tools/systemmap history HISTORY_ARGS="-every 25" # one commit in 25, for a quick look
+```
+
+It is opt-in, and that is a design decision rather than an oversight. The walk costs
+one full type-check per commit — minutes where the default map is seconds — and the
+two outputs are different things: a picture of one commit, and a picture you can walk.
+So `go run .` embeds a timeline only under `-history`, never because a `history.json`
+happens to be on disk; a walk somebody ran last week cannot quietly become part of
+every map they generate afterwards, and asking for history and getting a map with no
+slider is an error message rather than a silence.
+
+**Every point is re-derived, never recovered.** No map was ever committed, so there is
+no historical artifact to read back — and re-reading the source with one program is
+the only way two points are comparable at all: a difference between snapshots is a
+difference in the service, and never a difference in how it was measured.
+
+Three things make that work across a repository whose layout moved:
+
+- **One overlay, retargeted.** There is a single curated description, and each
+  snapshot borrows it with its package prefix translated to that commit's —
+  `coordinator/` → `internal/` and back. Each checkout's own `go.mod` says which of
+  the three module eras it is in (`github.com/dginf/coordinator`,
+  `github.com/eigeninference/coordinator`, `github.com/eigeninference/d-inference`),
+  so the layout is read out of the tree rather than kept in a table of commits.
+- **Fidelity travels with each point.** An early snapshot is honestly "what today's
+  overlay can still explain of it": struct fields no node covers and nodes it cannot
+  name or place are counted per point and said in the page. Without that, a deleted
+  subsystem — whose overlay entries left with it — would read as a service that simply
+  did less. A *partly* extracted point is not among the things that can go wrong:
+  `extract.Go` refuses to return a program some of whose packages failed to type-check,
+  so a commit either yields a whole shape or yields none and is listed in the
+  timeline's `failed` — and the page says how many of those the axis is missing,
+  because a dropped commit's changes are attributed to the next commit that did
+  extract.
+- **The prose pipeline is skipped.** A timeline is a question about structure, and
+  prose is generated against *today's* facts; running it per snapshot would make a
+  point's shape depend on how well it was written up.
+
+The artifact is delta-encoded: interned union tables of every route, node and wire
+that ever existed, plus per-point lists of what arrived and what left. So the page
+can replay it in both directions, which is what a slider being dragged backwards
+needs. A wire's identity includes its access mode, so an endpoint that starts writing
+what it only read encodes as one removal and one addition of the same pair —
+**removals are applied before additions in both directions**, or that wire vanishes.
+
+### What the page does with it
+
+The graph lays out the *union* of every revision, once, so nothing reshuffles as the
+slider moves and an endpoint the service has since deleted still has a dot to draw —
+inside the namespace it belonged to. Three states, and the middle one is the point of
+the feature:
+
+| State | Drawn as | Meaning |
+|---|---|---|
+| live | normally | the revision had it |
+| absent | not drawn at all | the revision did not have it |
+| **went** | amber, dashed | *this commit* removed it — the ghost of what the diff took away |
+
+Alongside, the readout names the commit (date, revision, subject, linked to the
+commit itself) and the diff names what changed at it, as chips that select what they
+name. A commit that touched the service without changing its shape says so, rather
+than being reported as churn.
+
+The slider is **inert until it is touched**: a page built with `-history` draws
+exactly the same topology as one built without it, and the drawn-topology fingerprint
+in the caption is identical. **Now** and **Reset** both return to the head revision,
+and the fingerprint there is the map's own — which is asserted three ways in
+`render/webtest/timeline.test.mjs` rather than eyeballed, because the failure mode is
+a slider that returns to a subtly different picture. That suite is where the
+timeline's behaviour is pinned: it builds a five-point fixture whose newest point is
+read out of the map's own inventory, and drives the real page in a DOM.
+
+The tables and panels below the graph always describe the **head** revision. They are
+the inventory of the code that exists, and a timeline is a claim about the picture,
+not a second source of truth about the service.
 
 ## Drift is a build failure
 

@@ -98,6 +98,19 @@ func Load(root, module string, patterns []string) (*Program, error) {
 	if len(p.pkgs) == 0 {
 		return nil, fmt.Errorf("no packages type-checked for %v: %s", patterns, strings.Join(errs, "; "))
 	}
+	// All or nothing, and that is what makes a Program trustworthy without carrying a
+	// count of what it lost. A package with errors contributes no syntax and no types,
+	// so every route through it silently drops the state it touched — a map that looks
+	// complete and undercounts. Rather than record which packages went and let callers
+	// decide how much of a map they will accept, none of it is returned.
+	//
+	// The history walk is the caller this matters to: an old commit is type-checked with
+	// today's toolchain and today's module cache, so a package failing to load is a
+	// realistic outcome there in a way it is not for HEAD, where CI would have caught
+	// it. It gets the wholesale failure, records the commit in the timeline's Failed
+	// list, and — because it does not advance the snapshot it diffs against — the next
+	// commit that does type-check is compared with the last one that did. So a partial
+	// extraction is never encoded as the service shrinking.
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("type errors prevent a trustworthy map: %s", strings.Join(errs, "; "))
 	}

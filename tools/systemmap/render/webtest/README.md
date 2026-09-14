@@ -1,8 +1,9 @@
 # Executing the generated explorer
 
-`render/page.js` is the user-facing half of the system map: ~1.6k lines of filters,
-layout, label placement and provenance views, all shipped inside one generated
-`system-map.html`. The Go tests in `../..` assert about the *text* of that artifact —
+`render/page.js`, `render/page.timeline.js` and `render/page.boot.js` are the
+user-facing half of the system map: ~3k lines of filters, layout, label placement,
+provenance views and the history control, concatenated in that order into the single
+`<script>` of one generated `system-map.html`. The Go tests in `../..` assert about the *text* of that artifact —
 that the control is in the markup, that the function the explorer needs was emitted.
 Those checks catch a template that stopped injecting the script. They cannot catch a
 script that throws on line one.

@@ -3,6 +3,9 @@
 :root {
   --bg: #0b0d10; --panel: #12161b; --panel2: #171c22; --line: #232b34;
   --fg: #e6edf3; --dim: #8b98a5; --accent: #6ea8fe; --r: #7ee2a8; --w: #ffb86b; --rw: #c4a6ff;
+  /* What this commit removed. Same hue as --w by choice, not by reuse of the write
+     mode's meaning — see the timeline states near the end of this file. */
+  --gone: #ffb86b;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   /* Provenance palette: blue is a curated structural decision, amber is prose.
      --barh is the height of whichever banner is showing; the graph is sized
@@ -133,7 +136,7 @@ svg.prov .hull-sub { fill: var(--pp); }
 .glink.k-async { opacity: .17; }
 /* The wires of a focused node: what the click asked about, so they are drawn to be read
    rather than to be seen. At the base opacity a wire is a hint of a line — enough to say
-   the association exists in a picture of 857 of them, and not enough to make out a dash
+   the association exists in a picture of 976 of them, and not enough to make out a dash
    pattern or an arrowhead, which are the two things a focus is for. The shadow around
    them is what the focus removes; this is what it promotes. Hover still wins. */
 .glink.pick { stroke-width: 1.5; opacity: .8; }
@@ -141,9 +144,29 @@ svg.prov .hull-sub { fill: var(--pp); }
 .glink.mute { opacity: .04; }
 .glink.shade { opacity: .015; }
 /* Declared foreign keys: a relationship among the tables themselves, so they carry no
-   access-mode colour and are drawn under everything an endpoint does. */
-.fklink { stroke: var(--dim); stroke-width: 1.1; stroke-dasharray: 1 3; opacity: .5; }
-.fklink.hi { stroke-width: 1.8; opacity: .95; }
+   access-mode colour and are drawn under everything an endpoint does.
+
+   non-scaling-stroke, for the same reason the arrowheads are sized in screen pixels: a
+   stroke inside the zoomed scene is scaled with it, and these seven lines are the part
+   of the picture that cannot survive that. At the zoom that fits the whole map — 0.404
+   on the map CI publishes — a 1.1-unit stroke was 0.44px wide with its dash period
+   scaled to 0.40px on and 1.21px off, a half-transparent quarter-duty hairline, which
+   is not a line anyone can see; while zooming to the postgres cluster inflated the same
+   dots past 2px with 6px gaps, a row of blobs. 976 access wires get away with scaling
+   because their collective mass carries them; seven do not. Pinning the stroke and the
+   dashes to screen pixels makes a key the same dotted line at every zoom, which is what
+   it is a fact about.
+
+   How *long* an arc is still scales, and must: it is a distance between two dots. Four
+   of the seven join tables the layout packs adjacently, so at the fitted zoom they draw
+   between 2 and 5px of ink no matter how they are stroked — the same "narrow the picture
+   first" story the arrowheads have, and the reason `fkHeads` exists. Zoom is the answer
+   and the postgres cluster chip is most of it; the two shortest keys need a little more
+   than the chip gives. The numbers above are the published map's; a `-history` build
+   lays out the union of every revision, so its zooms and distances are its own. */
+.fklink { stroke: var(--dim); stroke-width: 1.3; stroke-dasharray: 2 3; opacity: .6;
+  vector-effect: non-scaling-stroke; }
+.fklink.hi { stroke-width: 2.2; opacity: .95; }
 .fklink.mute { opacity: .05; }
 .fklink.shade { opacity: .03; }
 /* A focused endpoint's wire numbers, on the curve's own midpoint. Outlined like every
@@ -165,6 +188,37 @@ svg.prov .hull-sub { fill: var(--pp); }
 /* A click focuses one node: everything off its edges is shadowed, so the picture
    answers "what does this actually touch" instead of "what exists". */
 .gnode.shade { opacity: .07; }
+/* The timeline's two extra states. `absent` is a thing the revision being read does not
+   have: not drawn at all, and not hoverable, because a tooltip on an endpoint that does
+   not exist yet is a lie the picture would be telling. It stays in the document so the
+   layout is the union's, computed once — dragging the slider moves what is drawn, never
+   where anything is.
+
+   `went` is what *this* commit removed, and it is drawn: dashed, amber, at an opacity
+   that reads as a trace rather than as part of the system. It wins over mute and over
+   shade, since a reader who has just moved to this commit is looking for exactly this
+   and no filter it fails should take it away.
+
+   The amber is `--gone`, which is its own meaning and not the write mode's, even though
+   it is the same hue: a node has no access mode and is drawn in it, and so is a foreign
+   key, whose whole point is that it carries no mode. Aliased rather than a second colour
+   because the two never have to be told apart in one glance — a removed thing is dashed
+   and half-transparent, and everything drawn in `--w` because it writes is neither. What
+   distinguishes them from each other is the dash: 3 2 around a node, 3 3 along a wire,
+   and a key keeps its own 2 3 dotting, so a departed relationship still reads as a
+   relationship and not as an access somebody made. */
+.gnode.absent, .glink.absent, .fklink.absent, .hull.absent, .hull-g.absent { display: none; }
+.fklink.went { stroke: var(--gone); opacity: .5; stroke-width: 1.6; }
+.fklink.went.mute, .fklink.went.shade { opacity: .5; }
+.gnode.went { opacity: .5; }
+.gnode.went circle, .gnode.went rect { fill: transparent; stroke: var(--gone);
+  stroke-width: 1.4; stroke-dasharray: 3 2; }
+.glink.went { opacity: .5; stroke: var(--gone); stroke-width: 1.2; stroke-dasharray: 3 3; }
+.gnode.went.mute, .gnode.went.shade, .glink.went.mute, .glink.went.shade { opacity: .5; }
+/* Travelling: the reader is somewhere behind the head revision. The graph is the only
+   part of the page that moved, so it says so about itself rather than leaving the
+   tables below to be read as though they had moved too. */
+body.travelling .graph { box-shadow: inset 0 0 0 1px rgba(255,184,107,.35); }
 .glabel { font-size: 11px; fill: var(--fg); pointer-events: none; paint-order: stroke;
   stroke: #0b0d10; stroke-width: 3px; stroke-linejoin: round; }
 .glabel.ep { font-size: 10px; font-weight: 500; fill: #cfe0f5; }
@@ -259,6 +313,47 @@ body.focused .gfocus { display: flex; }
   border: 1px solid var(--line); border-radius: 6px; overflow: auto;
   font-family: var(--mono); font-size: 11px; line-height: 1.45; }
 .gs-reach { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+
+/* The timeline bar. It sits directly under the graph because the graph is the only
+   thing it moves, and it reads top to bottom as the question a reader is asking:
+   where am I, what was the service there, what did this commit do to it, and what
+   about the rest of the page still describes today. */
+.gtime { margin-top: 10px; padding: 9px 11px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; }
+body.travelling .gtime { border-color: rgba(255,184,107,.45); }
+.gtrow { display: flex; align-items: center; gap: 9px; }
+.gtrow button { min-width: 34px; }
+/* The slider takes every pixel the row does not need: its resolution is how many
+   commits a reader can land on by dragging, and on a four-hundred-commit history that
+   is the difference between stepping and scrubbing. */
+#gtrange { flex: 1; accent-color: var(--w); height: 20px; }
+.gtread { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px;
+  margin-top: 7px; font-size: 12.5px; color: var(--dim); }
+.gtwhen b { color: var(--fg); }
+.gtwhen a { color: var(--accent); }
+.gtcounts { color: var(--fg); }
+.gtdelta .up { color: var(--r); } .gtdelta .down { color: var(--w); }
+/* The commit subject, last and elided: it is the human name for the point, and it is
+   also the one field that can be a paragraph. */
+.gtsubject { flex: 1 1 240px; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-style: italic; }
+.gtdiff { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.gtdiff .chip { font-size: 11.5px; padding: 3px 8px; }
+.gtdiff .chip b { font-family: var(--mono); }
+.gtadd { border-color: rgba(126,226,168,.45); } .gtadd b { color: var(--r); }
+.gtdel { border-color: rgba(255,184,107,.45); } .gtdel b { color: var(--w); }
+/* A chip for something the head revision does not have. It is still worth naming —
+   it is what the commit did — but there is nothing below to open, and a chip that
+   looks clickable and is not is worse than one that says so. */
+.gtdiff .gtdead { opacity: .6; border-style: dashed; }
+.gtq { color: var(--dim); font-size: 11.5px; align-self: center; }
+.gtnote { margin-top: 7px; font-size: 11.5px; color: var(--dim); line-height: 1.5; }
+/* Docked inside the graph for full screen. It sits above the zoom bar and is capped in
+   height, because the picture is what the reader asked the whole screen for and the
+   control over it should cost a strip rather than a third of the window. */
+.gtime.gtover { position: absolute; left: 10px; right: 10px; bottom: 46px; z-index: 3;
+  margin: 0; background: rgba(11,13,16,.94); max-height: 40%; overflow: auto; }
+
 .gkey { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .gkey .ck { display: inline-flex; align-items: center; gap: 7px; background: var(--panel2);
   border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; }

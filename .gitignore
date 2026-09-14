@@ -98,6 +98,10 @@ docs/RUNBOOK.md
 docs/reference/api-map/system-map.html
 docs/reference/api-map/inventory.json
 docs/reference/api-map/report.md
+# The timeline the page's slider reads: one type-check per commit in the coordinator's
+# history, so it is built on demand rather than kept — and it is derived from the same
+# commits it would otherwise be committed alongside.
+docs/reference/api-map/history.json
 
 # Local performance binaries and raw diagnostic captures
 /artifacts/

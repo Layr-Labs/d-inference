@@ -19,6 +19,12 @@
 //
 //	make -C tools/systemmap            # generate into docs/reference/api-map (ignored)
 //	make -C tools/systemmap check      # fail if source has outgrown the overlay
+//	make -C tools/systemmap history    # the same map, with a slider over its history
+//
+// The default is the map of one commit. -history embeds the timeline ./cmd/history
+// builds, which turns the page into one a reader can walk the service's whole history
+// in; it is a flag rather than a file the generator picks up on sight, because which of
+// the two artifacts got built should be something the command line said.
 package main
 
 import (
@@ -33,6 +39,7 @@ import (
 	"github.com/eigeninference/d-inference/tools/systemmap/assemble"
 	"github.com/eigeninference/d-inference/tools/systemmap/config"
 	"github.com/eigeninference/d-inference/tools/systemmap/extract"
+	"github.com/eigeninference/d-inference/tools/systemmap/history"
 	"github.com/eigeninference/d-inference/tools/systemmap/prose"
 	"github.com/eigeninference/d-inference/tools/systemmap/render"
 	"github.com/eigeninference/d-inference/tools/systemmap/report"
@@ -44,6 +51,7 @@ const (
 	defaultModule  = "github.com/eigeninference/d-inference"
 	defaultOverlay = "docs/reference/api-map/overlay.json"
 	defaultProse   = "docs/reference/api-map/prose.json"
+	defaultHistory = "docs/reference/api-map/history.json"
 	defaultOut     = "docs/reference/api-map"
 )
 
@@ -51,15 +59,24 @@ const (
 // list because the enrichment paths added two more, and a run() with nine
 // positional arguments is a call nobody can read.
 type options struct {
-	Root     string
-	Module   string
-	Overlay  string
-	Prose    string
-	Out      string
-	Revision string
-	Manifest string
-	Check    bool
-	Quiet    bool
+	Root string
+	// History asks for the timeline to be embedded, and is off by default. It is a
+	// deliberate flag rather than "use the file if it happens to be there": the two
+	// artifacts are different things — a map of one commit, and a map you can walk
+	// the service's history in — and which one was built should be something the
+	// command line says, not something the state of a scratch file decides. A
+	// timeline someone built last week would otherwise quietly become part of every
+	// map they generated afterwards.
+	History     bool
+	HistoryFile string
+	Module      string
+	Overlay     string
+	Prose       string
+	Out         string
+	Revision    string
+	Manifest    string
+	Check       bool
+	Quiet       bool
 }
 
 func main() {
@@ -68,6 +85,8 @@ func main() {
 	flag.StringVar(&opt.Module, "module", defaultModule, "Go module path of the analyzed repository")
 	flag.StringVar(&opt.Overlay, "overlay", defaultOverlay, "curated overlay, relative to root")
 	flag.StringVar(&opt.Prose, "prose", defaultProse, "generated prose, relative to root")
+	flag.BoolVar(&opt.History, "history", false, "embed the timeline, giving the page its history slider (build it first with ./cmd/history)")
+	flag.StringVar(&opt.HistoryFile, "history-file", defaultHistory, "timeline to embed under -history, relative to root")
 	flag.StringVar(&opt.Out, "out", defaultOut, "output directory, relative to root")
 	flag.StringVar(&opt.Revision, "revision", "", "revision to stamp and link against (default: git HEAD)")
 	flag.StringVar(&opt.Manifest, "enrich-manifest", "", "write the prose CI must generate as JSON to this path, relative to root")
@@ -149,7 +168,19 @@ func run(opt options) error {
 	if err != nil {
 		return err
 	}
-	page, err := render.HTML(graph, inventory)
+	// The timeline is embedded only when it is asked for. It costs one full
+	// type-check per commit to build, so it is a separate command; this run either
+	// wanted its output or did not, and a map generated without -history is the map
+	// of one commit whatever is lying around in the output directory.
+	var timeline []byte
+	var points int
+	if opt.History {
+		timeline, points, err = readTimeline(root, opt.HistoryFile)
+		if err != nil {
+			return err
+		}
+	}
+	page, err := render.HTML(graph, inventory, timeline)
 	if err != nil {
 		return err
 	}
@@ -178,6 +209,9 @@ func run(opt options) error {
 	if !quiet {
 		fmt.Printf("systemmap: %d routes, %d nodes, %d associations at %s\n",
 			len(graph.Routes), len(graph.Nodes), len(graph.StateAccess), shortRev(revision))
+		if points > 0 {
+			fmt.Printf("systemmap: timeline embedded — %d snapshots from %s\n", points, opt.HistoryFile)
+		}
 		if !check {
 			fmt.Printf("systemmap: wrote %s\n", outDir)
 		}
@@ -193,6 +227,36 @@ func run(opt options) error {
 		return fmt.Errorf("drift detected: %s", rep.Counts())
 	}
 	return nil
+}
+
+// readTimeline loads the history artifact and reports how many points it holds. It is
+// only called when -history asked for one, so every way of not getting a timeline is
+// an error — a page that silently drew no slider after a twenty-minute history run
+// would be the worst of the outcomes here, and "you have not built one yet" is a
+// sentence worth printing.
+func readTimeline(root, rel string) ([]byte, int, error) {
+	if rel == "" {
+		return nil, 0, fmt.Errorf("-history needs a timeline; -history-file is empty")
+	}
+	raw, err := os.ReadFile(filepath.Join(root, rel))
+	if os.IsNotExist(err) {
+		return nil, 0, fmt.Errorf("no timeline at %s — build one with `make -C tools/systemmap history`, or drop -history for a map of this commit alone", rel)
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	var tl history.Timeline
+	if err := json.Unmarshal(raw, &tl); err != nil {
+		return nil, 0, fmt.Errorf("timeline %s: %w", rel, err)
+	}
+	// Two, not one: the page's slider needs something to move between, so it draws no
+	// control for a single point and would report a successful -history run that produced
+	// a map of one commit with no way to tell. That is exactly the quiet outcome the flag
+	// exists to rule out, so it is an error here rather than a silence there.
+	if len(tl.Snapshots) < 2 {
+		return nil, 0, fmt.Errorf("timeline %s holds %d snapshot(s); a slider needs at least 2 — widen the walk (drop -every, or lower it)", rel, len(tl.Snapshots))
+	}
+	return raw, len(tl.Snapshots), nil
 }
 
 // writeManifest records what enrichment has to do. It is written even when the

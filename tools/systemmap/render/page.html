@@ -121,6 +121,30 @@
       <button id="gfocusclear" title="Show the whole system again (Esc)">Clear focus</button>
     </div>
   </div>
+  <!-- The timeline. Hidden until the page finds an embedded history — the map is
+       whole without one, and a slider over a single point would be a control that
+       does nothing. The graph is what moves: the tables below always describe the
+       head revision, and the bar says so. -->
+  <div class="gtime" id="gtime" hidden>
+    <div class="gtrow">
+      <button id="gtplay" title="Play the history forward (Space)">▶</button>
+      <input type="range" id="gtrange" min="0" max="0" value="0" step="1"
+             aria-label="Commit on the timeline" title="Drag to move through the history (← → steps one commit)">
+      <button id="gtnow" title="Return to the head revision">Now</button>
+    </div>
+    <div class="gtread">
+      <span class="gtwhen"><b id="gtdate"></b> <span id="gtpos"></span>
+        <a id="gtrev" class="mono" target="_blank" rel="noopener"></a></span>
+      <span class="gtcounts" id="gtcounts"></span>
+      <span class="gtdelta" id="gtdelta"></span>
+      <span class="gtsubject" id="gtsubject"></span>
+    </div>
+    <!-- What this commit did to the picture. Chips, because the answer to "what
+         changed here" is a list of things a reader can then go and look at. -->
+    <div class="gtdiff" id="gtdiff"></div>
+    <div class="gtnote" id="gtnote"></div>
+  </div>
+
   <div class="gkey" id="gkey"></div>
   <div class="sub gnote">
     Squares are endpoints, circles are dependencies · inner boundaries are namespaces and
@@ -236,6 +260,7 @@
 </footer>
 
 <script type="application/json" id="inventory">{{.Inventory}}</script>
+{{if .Timeline}}<script type="application/json" id="timeline">{{.Timeline}}</script>{{end}}
 <script>{{.PageJS}}</script>
 </body>
 </html>

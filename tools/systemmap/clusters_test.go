@@ -115,7 +115,7 @@ func TestGraphRenders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	page, err := render.HTML(g, inventory)
+	page, err := render.HTML(g, inventory, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

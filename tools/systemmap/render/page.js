@@ -410,7 +410,82 @@ function groupOf(id) {
   return GROUPS[id];
 }
 
+// ---------------------------------------------------------------------------
+// The timeline, first half: the union graph.
+//
+// A history is a series of shapes derived from the same service at different
+// commits, and the picture has to be able to draw any of them. So the graph is laid
+// out over the *union* of everything the timeline ever contained — including the
+// endpoints and the state the service has since deleted, which the head revision
+// knows nothing about. Two things follow, and both are the point:
+//
+//   - A dot never moves as the slider does. Laying out each point separately would
+//     reshuffle the whole picture at every commit, and a reader watching a
+//     reshuffle cannot see a change.
+//   - April can be drawn as April was, not as the parts of April that survived.
+//
+// A historical entity exists only in the graph. It is deliberately not merged into
+// the inventory: the tables, the panels and the counts below describe the head
+// revision, and an endpoint the head does not have has no auth class to state, no
+// citation to link and no prose to show. What the timeline recorded of it — its
+// path, its namespace, its wires and their access modes — is exactly what the
+// picture uses, and no more.
+// ---------------------------------------------------------------------------
+const HISTORY = (() => {
+  const src = document.getElementById('timeline');
+  if (!src) return null;
+  let tl = null;
+  try {
+    tl = JSON.parse(src.textContent.replace(/<\\\//g, '</'));
+  } catch (e) {
+    return null;
+  }
+  // One point is a map, not a history: a slider with a single stop is a control
+  // that cannot answer the question it implies.
+  return tl && (tl.snapshots || []).length > 1 ? tl : null;
+})();
+// The commit a point can be read at, recovered from the same blob prefix the
+// citations use, so the overlay carries no second URL to keep fresh.
+const COMMIT = (() => {
+  const i = BLOB.indexOf('/blob/');
+  return i > 0 ? BLOB.slice(0, i) + '/commit/' : '';
+})();
+// Endpoints and dependencies that the timeline has and the head revision does not.
+const HROUTES = [], HNODES = {};
+if (HISTORY) {
+  const head = new Set(DATA.routes.map(epKey));
+  // Its wires are where a since-deleted endpoint's dependencies come from: the
+  // union link table is the only record that it touched anything.
+  const deps = {}, modes = {};
+  for (const w of HISTORY.links) {
+    const key = HISTORY.routes[w.r].key, id = HISTORY.nodes[w.n].id;
+    (deps[key] = deps[key] || []).push(id);
+    (modes[key] = modes[key] || {})[id] = w.m;
+  }
+  HISTORY.routes.forEach((r, i) => {
+    if (head.has(r.key)) return;
+    const cut = r.key.indexOf(' ');
+    HROUTES.push({ id: 'h' + i, hist: true,
+      method: r.key.slice(0, cut), path: r.key.slice(cut + 1),
+      namespace: r.ns, group: r.group, auth: r.auth,
+      // Shaped like an endpoint so the filters can act on it without knowing it is
+      // one. Every field the head inventory would carry and the timeline did not
+      // record is empty, which is the honest value for it.
+      handler: '', authDetail: '', description: '', middleware: [], gates: [],
+      callers: [], flow: [],
+      dependencies: uniq(deps[r.key] || []), depModes: modes[r.key] || {} });
+  });
+  for (const n of HISTORY.nodes) if (!DATA.nodes[n.id]) HNODES[n.id] = n;
+}
+// The head inventory plus the historical endpoints, for the two passes that decide
+// what the *picture* holds. Everything that fills a table below reads DATA.routes.
+const ALLROUTES = DATA.routes.concat(HROUTES);
+const histLabel = id => (HNODES[id] && HNODES[id].label) || id;
+
 const GNODES = [], GLINKS = [], gById = {};
+// Endpoint nodes by "METHOD path", which is how the timeline names a route: the
+// inventory's own numeric ids did not exist at the commits the history walks.
+const gByEp = {};
 function addGNode(n) {
   n.grp = groupOf(n.group);
   n.cluster = n.grp.cluster;
@@ -419,33 +494,65 @@ function addGNode(n) {
   GNODES.push(n);
   return n;
 }
-for (const ep of DATA.routes) {
-  addGNode({ id: 'ep:' + ep.id, kind: 'ep', ep, ns: ep.namespace, name: epKey(ep),
-    group: ep.group, links: [] });
+for (const ep of ALLROUTES) {
+  gByEp[epKey(ep)] = addGNode({ id: 'ep:' + ep.id, kind: 'ep', ep, ns: ep.namespace,
+    name: epKey(ep), group: ep.group, links: [], hist: !!ep.hist });
 }
 for (const dep of Object.keys(DATA.nodes).sort()) {
   const node = DATA.nodes[dep];
   addGNode({ id: 'dep:' + dep, kind: 'dep', dep, name: shortName(dep), cat: node.category,
     group: node.group, links: [] });
 }
+for (const dep of Object.keys(HNODES).sort()) {
+  const node = HNODES[dep];
+  addGNode({ id: 'dep:' + dep, kind: 'dep', dep, name: shortName(dep), cat: node.category,
+    group: node.group, links: [], hist: true });
+}
 // One link per (endpoint, dependency) pair, carrying that endpoint's own derived
 // access mode rather than its namespace's aggregate — and its own wiring step, which
 // is what lets the line say *how* the handler gets there and *when*, not only that it
 // does. `mode` is what the wire does to the state, `kind` is how it reaches it, `seq`
 // is where it falls in the order the request meets its constructions.
-for (const ep of DATA.routes) {
+const wireKey = (epk, dep) => epk + '\0' + dep;
+const drawnWire = new Set();
+for (const ep of ALLROUTES) {
   const s = gById['ep:' + ep.id];
   for (const dep of ep.dependencies) {
     const t = gById['dep:' + dep];
     if (!t) continue;
     const step = stepOf(ep, dep);
     const link = { s, t, dep, ep, mode: epMode(ep, dep), step,
-      kind: stepKind(step), seq: step ? step.seq : 0 };
+      kind: stepKind(step), seq: step ? step.seq : 0,
+      key: wireKey(epKey(ep), dep), hist: !!ep.hist };
+    GLINKS.push(link);
+    drawnWire.add(link.key);
+    s.links.push(link);
+    t.links.push(link);
+  }
+}
+// Wires an earlier commit had between two things that both still exist. They are
+// the association the head revision does not have — a dependency an endpoint used
+// to touch and no longer does — so they cannot be read off any route's current
+// dependency list, only off the union table.
+if (HISTORY) {
+  for (const w of HISTORY.links) {
+    const epk = HISTORY.routes[w.r].key, dep = HISTORY.nodes[w.n].id;
+    const key = wireKey(epk, dep);
+    if (drawnWire.has(key)) continue;
+    const s = gByEp[epk], t = gById['dep:' + dep];
+    if (!s || !t) continue;
+    drawnWire.add(key);
+    const link = { s, t, dep, ep: s.ep, mode: w.m, step: null, kind: 'direct', seq: 0,
+      key, hist: true };
     GLINKS.push(link);
     s.links.push(link);
     t.links.push(link);
   }
 }
+// Every wire remembers the mode the head revision derived for it, because the
+// slider recolours it to the mode the commit it is on derived, and returning to the
+// head has to return the picture to the map.
+for (const l of GLINKS) l.mode0 = l.mode;
 // Foreign keys between two drawn tables. They are relationships among the
 // dependencies themselves rather than anything an endpoint does, so they are drawn
 // but deliberately take no part in the layout, in a node's degree, in its label
@@ -494,9 +601,14 @@ function fnv(s) {
 }
 const nodeTopo = n => n.id + '@' + n.group + '@' + n.cluster;
 const linkTopo = l => l.s.id + '>' + l.t.id + ':' + l.mode;
+// Excluding `.absent` and `.went` is the timeline's only claim on the fingerprint:
+// what a revision does not contain is not part of its drawn topology. With no history
+// embedded neither class is ever set, so the selector reads exactly what it always
+// did — and with one embedded, the head revision's fingerprint is still the map's.
+const TOPO_HERE = '[data-topo]:not(.absent):not(.went)';
 function topoFingerprint() {
   const read = sel => [...gsvg.querySelectorAll(sel)].map(e => e.getAttribute('data-topo')).sort().join(';');
-  return fnv(read('#gnodes > g[data-topo]') + '|' + read('#glinks > path[data-topo]'));
+  return fnv(read('#gnodes > g' + TOPO_HERE) + '|' + read('#glinks > path' + TOPO_HERE));
 }
 
 // Group discs. A group's disc is sized from the area its own nodes need, then
@@ -824,13 +936,14 @@ function sizeMarkers() {
 // How many live wires the picture can carry a head on each and still be a picture, and
 // the zoom past which the count stops mattering because most of them are off-screen.
 //
-// The whole coordinator map fits at k ≈ 0.43 and has 857 wires, so the unfiltered view is
+// The whole coordinator map fits at k ≈ 0.40 and has 976 wires, so the unfiltered view is
 // deliberately on the wrong side of both numbers, and it is worth saying how far: at that
-// scale 846 of the 857 heads would have another head within their own width, 88 on
-// average, and one 9-pixel square would hold 107 of them. Moving them to the wires'
-// midpoints — five times less crowded — still leaves 844 of them touching. There is no
-// arrangement in which a picture of this system points every wire legibly, so the reader
-// has to narrow it first, and the toolbar says so rather than leaving them to wonder.
+// scale 971 of the 976 heads would have another head within their own width, 120 on
+// average, and one 9-pixel square would hold 156 of them. Moving them to the wires'
+// midpoints — five times less crowded, 24 on average — still leaves the same 971 touching.
+// There is no arrangement in which a picture of this system points every wire legibly, so
+// the reader has to narrow it first, and the toolbar says so rather than leaving them to
+// wonder.
 //
 // The zoom threshold is just over twice the fit scale — the point where a reader has
 // stopped looking at the system and started reading a corner of it — so heads arrive
@@ -839,7 +952,7 @@ const ARROW_ALL_MAX = 140;
 const ARROW_ALL_ZOOM = 0.9;
 
 // The toolbar control is also the answer to "why can I see no arrows": rather than leaving
-// a reader to discover that 857 wires is over a threshold they cannot see, the button says
+// a reader to discover that 976 wires is over a threshold they cannot see, the button says
 // what the rule decided and what would change it. Written on every styleGraph, because the
 // count it reports moves with every filter.
 function arrowsNote(live, all) {
@@ -857,7 +970,7 @@ function arrowsNote(live, all) {
 // syncArrows decides which wires carry an arrowhead.
 //
 // Every wire has a direction and a kind of indirection, and both are worth stating — but
-// 857 heads over the whole coordinator map is a smear rather than an answer, so the
+// 976 heads over the whole coordinator map is a smear rather than an answer, so the
 // picture earns them by being narrow enough to read: a filter, a focus, or a zoom close
 // enough that most wires are off the frame. Below that, a head is drawn where a line is
 // actually being read — lit by a hover, or on the focused node's own edges.
@@ -878,10 +991,15 @@ function syncArrows() {
     // focused node's own edges are pointed whether or not the budget would allow it —
     // the picture has already been narrowed to them.
     // The attribute is only touched when the answer changes: this runs on every hover.
+    // The cache is the marker's own id rather than a boolean, because the timeline can
+    // recolour a wire without changing whether it carries a head — and a head left at
+    // the previous commit's access mode would be the one part of the picture still
+    // describing a revision the reader has moved off.
     const on = !!l.live && !l.shaded && (all || l.lit || L.focused);
-    if (on === l.arrow) continue;
-    l.arrow = on;
-    if (on) l.node.setAttribute('marker-end', 'url(#' + markerID(l.kind, l.mode) + ')');
+    const want = on ? markerID(l.kind, l.mode) : '';
+    if (want === l.arrowKey) continue;
+    l.arrowKey = want;
+    if (on) l.node.setAttribute('marker-end', 'url(#' + want + ')');
     else l.node.removeAttribute('marker-end');
   }
 }
@@ -1017,6 +1135,13 @@ function drawArc(l, bend, maxBow, gap) {
     'Q' + cx.toFixed(1) + ' ' + cy.toFixed(1) + ' ' + ex.toFixed(1) + ' ' + ey.toFixed(1));
   l.cx = 0.25 * l.s.x + 0.5 * cx + 0.25 * ex;
   l.cy = 0.25 * l.s.y + 0.5 * cy + 0.25 * ey;
+  // How much line was actually drawn, which is not the distance between the two nodes:
+  // the end is pulled back out of the target's disc whenever there is room, and that
+  // trim is up to a node radius. `fkHeads` compares a head against this rather than
+  // against the chord, so "shorter than 1.6 heads" is about ink and not about centres.
+  // The bow makes the true curve about 2% longer than this and is left out: erring
+  // short means the rule is never satisfied by length the reader cannot see.
+  l.ink = Math.hypot(ex - l.s.x, ey - l.s.y);
 }
 
 function positionGraph() {
@@ -1026,6 +1151,11 @@ function positionGraph() {
   // Foreign keys bow the other way, so a key between two tables an endpoint also
   // reaches is never mistaken for one of that endpoint's own wires.
   for (const l of FKLINKS) drawArc(l, -0.16 * l.spread, 40 * l.spread, 1);
+  // The arcs just changed length, so which of them still has room for a head is a
+  // different answer. Forced, because the zoom did not move and fkHeads' own guard is
+  // about the zoom: a drag that shortens a key would otherwise keep a head wider than
+  // the line under it for as long as the reader stays at this scale.
+  fkHeads(true);
   for (const n of GNODES) {
     if (n.kind === 'ep') {
       n.shape.setAttribute('x', (n.x - n.r).toFixed(1));
@@ -1086,7 +1216,13 @@ const sx = x => x * view.k + view.x;
 const sy = y => y * view.k + view.y;
 // L is what styleGraph decided; placeLabels only lays it out, so a node drag can
 // reposition labels without recomputing the filter.
-const L = { shown: new Set(), near: new Set(), sel: new Set(), focus: new Set(), focused: false };
+// `hollow` is a boundary the revision being read has nothing inside: it exists in the
+// union layout because some other commit put nodes there, and drawing an empty ring
+// with "0 nodes" under it would be the timeline inventing a boundary the service did
+// not have. Only the timeline can produce one — without a history every boundary has
+// at least the member that created it.
+const L = { shown: new Set(), near: new Set(), sel: new Set(), focus: new Set(),
+  focused: false, hollow: new Set() };
 
 // Sequence badges: a focused endpoint numbers its own wires, which is the whole
 // answer to "in what order does this endpoint meet its constructions". The texts are
@@ -1217,6 +1353,9 @@ function placeLabels() {
   // which is the price of never dropping one.
   for (const id of clusterIds) {
     const t = hullLabels[id], sub = hullSubs[id];
+    // A boundary with nothing inside it at this revision is not drawn, so its name
+    // must not take a rung on the ladder either — it would push a real name aside.
+    if (L.hollow.has(id)) { hide(t); hide(sub); continue; }
     const cx = sx(center[id].x), cy = sy(center[id].y - radius[id]) - 2;
     const w = Math.max(textW(t.textContent, CLUSTER_LABEL_PX), textW(sub.textContent, CLUSTER_SUB_PX));
     let y = cy;
@@ -1233,7 +1372,7 @@ function placeLabels() {
   }
   for (const gid in groupLabels) {
     const grp = GROUPS[gid], t = groupLabels[gid];
-    if (grp.r * view.k < GROUP_LABEL_MIN) { hide(t); continue; }
+    if (L.hollow.has(gid) || grp.r * view.k < GROUP_LABEL_MIN) { hide(t); continue; }
     place(t, sx(grp.cx), sy(grp.cy - grp.r) - 1,
       textW(t.textContent, GROUP_LABEL_PX), GROUP_LABEL_H) || hide(t);
   }
@@ -1294,15 +1433,28 @@ function placeLabels() {
 
 function styleGraph() {
   const vis = { ep: new Set(), dep: new Set() };
-  for (const ep of DATA.routes) {
+  for (const ep of ALLROUTES) {
     if (!matches(ep)) continue;
     vis.ep.add(ep.id);
     ep.dependencies.forEach(d => vis.dep.add(d));
   }
+  // `tlWire`, not the raw union, for the same reason the wires themselves are drawn
+  // through it: `n.links` holds every revision's edges so that one layout can serve the
+  // whole walk. The halo and the shadow are claims about adjacency, and the adjacency
+  // they must claim is the one being drawn.
+  //
+  // It is not enough that a historical neighbour is usually `absent` and so undrawn. A
+  // wire can be historical while both of its ends survive — `mdm.commands` in the real
+  // map — and then the union spotlights a node the readout beside it simultaneously
+  // reports as not a neighbour. Untouched, `tlWire` is `!l.hist`, so a plain page is
+  // unaffected and a `-history` page at Now shades exactly what a plain one does.
   const near = new Set();
   if (hover) {
     near.add(hover.id);
-    for (const l of hover.links) { near.add(l.s.id); near.add(l.t.id); }
+    for (const l of hover.links) {
+      if (!tlWire(l)) continue;
+      near.add(l.s.id); near.add(l.t.id);
+    }
   }
   // The focused node and everything on its own edges. Nothing else is drawn at
   // more than a whisper, which is the difference between "here is the system" and
@@ -1311,36 +1463,73 @@ function styleGraph() {
   const fset = new Set();
   if (fnode) {
     fset.add(fnode.id);
-    for (const l of fnode.links) { fset.add(l.s.id); fset.add(l.t.id); }
+    for (const l of fnode.links) {
+      if (!tlWire(l)) continue;
+      fset.add(l.s.id); fset.add(l.t.id);
+    }
   }
   // With no filter applied, a declared node no endpoint reaches still belongs in
   // the picture — dashed rather than dimmed away, because it is a real boundary
   // driven by a background worker, not something the filter excluded.
   const narrowed = filtering();
-  const shown = n => n.kind === 'ep'
+  const head = n => n.kind === 'ep'
     ? vis.ep.has(n.ep.id)
     : (vis.dep.has(n.dep) || ontPicks(n.dep) || (!narrowed && !reached(n.dep))) && ontOK(n.dep);
+  // A node the head revision does not have is subject to the same filters, minus the
+  // two the head is the only authority on: it has no `namedBy` for the identity axis,
+  // and "declared but never reached" is a statement about the current overlay. It is
+  // also never drawn dashed-unreached — the reason it is unreached today is that it is
+  // gone, which the timeline says far better than a dashed ring would.
+  const histShown = n => n.kind === 'ep' ? vis.ep.has(n.ep.id) : (vis.dep.has(n.dep) && !state.ont);
+  const shown = n => tlLive(n) && (n.hist ? histShown(n) : head(n));
   const selected = n => (n.kind === 'ep' ? state.open === n.name : state.dep === n.dep);
   L.shown.clear(); L.near.clear(); L.sel.clear(); L.focus.clear();
   L.focused = !!fnode;
   for (const id of near) L.near.add(id);
   for (const id of fset) L.focus.add(id);
+  // Live membership, so a boundary's node count is the count at the reader's
+  // position rather than the union of everything the service ever had there. With no
+  // timeline engaged it is the head revision's count, which is what it has always been.
+  const liveIn = {}, liveGrp = {};
+  for (const n of GNODES) {
+    if (!tlLive(n)) continue;
+    liveIn[n.cluster] = (liveIn[n.cluster] || 0) + 1;
+    liveGrp[n.grp.id] = (liveGrp[n.grp.id] || 0) + 1;
+  }
   for (const n of GNODES) {
     const on = shown(n);
+    // Three states, not two. Something no part of the revision being read is either
+    // `absent` — not drawn, and not part of the drawn-topology fingerprint, which is
+    // why the page a reader lands on fingerprints the same with a history embedded as
+    // without one — or, if *this* commit is what removed it, `went`: ghosted rather
+    // than hidden, because "this endpoint is not here" and "this commit deleted this
+    // endpoint" are different facts and the second is the one a reader came for.
+    const here = tlLive(n);
+    const gone = !here && !!TL && TL.engaged && TL.goneRoute(n);
     if (on) L.shown.add(n.id);
     if (selected(n)) L.sel.add(n.id);
+    // Everything stays in the DOM whatever its state, so the layout never reshuffles
+    // as the slider moves: the positions are the union's, computed once.
+    n.g.classList.toggle('absent', !here && !gone);
+    n.g.classList.toggle('went', gone);
     n.g.classList.toggle('mute', !on);
     n.g.classList.toggle('hi', near.has(n.id));
     n.g.classList.toggle('sel', selected(n));
     n.g.classList.toggle('shade', !!fnode && !fset.has(n.id));
-    n.g.classList.toggle('unreached', n.kind === 'dep' && !reached(n.dep));
+    n.g.classList.toggle('unreached', n.kind === 'dep' && !n.hist && !reached(n.dep));
     n.text.textContent = n.kind === 'ep' ? n.name : shortName(n.dep);
+    const since = n.hist ? ' — not in the head revision, so the tables below do not carry it' : '';
     n.tip.textContent = n.kind === 'ep'
-      ? n.name + (showProse() && n.ep.description ? ' — ' + n.ep.description : '')
-      : n.dep + (showProse() ? ' — ' + label(n.dep) : '');
+      ? n.name + (showProse() && n.ep.description ? ' — ' + n.ep.description : '') + since
+      : n.dep + (showProse() ? ' — ' + (n.hist ? histLabel(n.dep) : label(n.dep)) : '') + since;
   }
+  if (TL) for (const l of GLINKS) tlMode(l);
   for (const l of GLINKS) {
-    const live = shown(l.s) && shown(l.t) &&
+    const here = tlWire(l);
+    const gone = !here && !!TL && TL.engaged && TL.goneWire(l);
+    l.node.classList.toggle('absent', !here && !gone);
+    l.node.classList.toggle('went', gone);
+    const live = here && shown(l.s) && shown(l.t) &&
       (!state.mode || l.mode === state.mode) &&
       (!state.dep || l.t.dep === state.dep) &&
       (!state.ns || l.s.ns === state.ns);
@@ -1365,7 +1554,19 @@ function styleGraph() {
   // schema, so no access-mode or namespace filter has an opinion about it, and the
   // node filters already decide whether the tables themselves are on the picture.
   for (const l of FKLINKS) {
-    const live = shown(l.s) && shown(l.t);
+    // A key is a fact about two tables, so it exists exactly when both of them do. The
+    // timeline has no delta of its own for foreign keys — they take no part in the drawn
+    // topology and so are not in the union's link table — but it does not need one: a
+    // key whose child or parent the revision being read does not have is `absent`, and
+    // a key one of whose tables *this* commit dropped is `went` with it. Without this
+    // the arcs were the one edge class the slider said nothing about, drawn as a 5%
+    // ghost at a revision where neither table existed.
+    const here = tlLive(l.s) && tlLive(l.t);
+    const gone = !here && !!TL && TL.engaged &&
+      (TL.goneRoute(l.s) || TL.goneRoute(l.t));
+    l.node.classList.toggle('absent', !here && !gone);
+    l.node.classList.toggle('went', gone);
+    const live = here && shown(l.s) && shown(l.t);
     const lit = hover && (l.s === hover || l.t === hover);
     l.node.classList.toggle('mute', !live);
     l.node.classList.toggle('hi', !!lit && live);
@@ -1376,20 +1577,34 @@ function styleGraph() {
   // cluster, a namespace joins its service's — so under the overlay view the
   // boundaries say so about themselves.
   gsvg.classList.toggle('prov', state.view === 'overlay');
+  L.hollow.clear();
   for (const id of clusterIds) {
+    const empty = !liveIn[id];
+    if (empty) L.hollow.add(id);
+    hullPaths[id].classList.toggle('absent', empty);
     hullLabels[id].textContent = clusterTitle(id);
     hullSubs[id].textContent = (CLUSTERS[id].kind || '') + ' · ' +
-      plural(members[id].length, 'node') + (state.view === 'overlay' ? ' · curated boundary' : '');
+      plural(liveIn[id] || 0, 'node') + (state.view === 'overlay' ? ' · curated boundary' : '');
   }
   for (const gid in groupLabels) {
-    groupLabels[gid].textContent = groupTitle(GROUPS[gid]) + ' · ' + GROUPS[gid].nodes.length;
+    const empty = !liveGrp[gid];
+    if (empty) L.hollow.add(gid);
+    groupPaths[gid].classList.toggle('absent', empty);
+    groupLabels[gid].textContent = groupTitle(GROUPS[gid]) + ' · ' + (liveGrp[gid] || 0);
   }
   document.body.classList.toggle('focused', !!fnode);
   if (fnode) {
     document.getElementById('gfocusname').textContent =
       fnode.kind === 'ep' ? fnode.name : shortName(fnode.dep);
+    // Head links, not all of them, and not `fset`'s either: see headLinks. The shadow
+    // above describes the picture at the reader's position, because that is what a reader
+    // is looking at; this count describes the head revision, because it sits with the
+    // tables and panels below, which never travel. The two agree wherever the slider has
+    // not been moved, which is every plain page.
+    const hl = headLinks(fnode), nb = new Set();
+    for (const l of hl) { nb.add(l.s.id); nb.add(l.t.id); }
     document.getElementById('gfocuscount').textContent =
-      '· ' + plural(fnode.links.length, 'edge') + ', ' + (fset.size - 1) + ' neighbours';
+      '· ' + plural(hl.length, 'edge') + ', ' + Math.max(0, nb.size - 1) + ' neighbours';
   }
   placeLabels();
   // A hover always wins the panel — it is a question being asked right now — but
@@ -1486,8 +1701,20 @@ function drawInfo(n, pinned) {
     }
     host.append(kinds);
     if (FKLINKS.length) {
+      // Why some arcs have no arrowhead, told rather than left to be discovered — the
+      // same debt `arrowsNote` pays for the access wires. At the fitted zoom most of
+      // these keys are shorter than the head they would wear, so a reader who has just
+      // been told the arcs are directed references would otherwise be looking at five
+      // undirected dotted lines. Deliberately not a count of how many are bare: this
+      // panel is redrawn on focus and filter changes, not on zoom, and `fkHeads`
+      // re-decides on every zoom — a number here would be wrong one button-press later.
+      // So it states the rule and both ways out of it, one of which does not involve
+      // the picture at all.
       host.append(el('div', 'k', 'The dotted arcs between tables are declared foreign keys: ' +
-        FKLINKS.length + ' of them, read out of the REFERENCES the service itself issues.'));
+        FKLINKS.length + ' of them, read out of the REFERENCES the service itself issues. ' +
+        'A key drawn shorter than an arrowhead is left without one, since a head that ' +
+        'covers its own line annotates nothing — zoom in, or read the direction off ' +
+        'Table relationships below, which states it at every zoom.'));
     }
     return;
   }
@@ -1653,13 +1880,14 @@ function drawDepInfo(host, n, meta, pinned) {
   }
 
   section(host, 'Derived');
-  host.append(el('div', null, n.links.length
-    ? plural(n.links.length, 'endpoint') + ' reach it, in ' +
-      plural(uniq(n.links.map(l => l.s.ns)).length, 'namespace')
+  const ls = headLinks(n);
+  host.append(el('div', null, ls.length
+    ? plural(ls.length, 'endpoint') + ' reach it, in ' +
+      plural(uniq(ls.map(l => l.s.ns)).length, 'namespace')
     : 'No endpoint reaches it — declared, and driven by a background worker.'));
   const ul = el('ul');
   const cap = pinned ? 16 : 8;
-  for (const l of n.links.slice(0, cap)) {
+  for (const l of ls.slice(0, cap)) {
     const li = el('li', 'mono');
     li.append(el('span', null, l.mode + ' · '));
     const link = el('span', 'lk', l.s.name);
@@ -1667,7 +1895,7 @@ function drawDepInfo(host, n, meta, pinned) {
     li.append(link);
     ul.append(li);
   }
-  if (n.links.length > cap) ul.append(el('li', null, '+' + (n.links.length - cap) + ' more'));
+  if (ls.length > cap) ul.append(el('li', null, '+' + (ls.length - cap) + ' more'));
   host.append(ul);
   if (!pinned) return;
 
@@ -1917,7 +2145,44 @@ function applyView() {
   // The heads are annotations on the scene rather than parts of it, so they are resized
   // against the new scale here, beside the transform that made them wrong.
   sizeMarkers();
+  fkHeads();
   placeLabels();
+}
+// fkHeads takes the head off a foreign key too short to wear one.
+//
+// A head is a screen-pixel quantity and an arc is a scene one, so the two do not shrink
+// together: the layout packs some pairs of tables adjacently, and at the zoom that fits
+// the whole map `referrals → referrers` draws 2px of ink under a 9.4px triangle. The head
+// does not annotate that line, it replaces it — a grey wedge sitting between two dots,
+// which reads as neither a line nor a direction. Below 1.6 heads of ink the arc is drawn
+// bare, so a short key is a faint dotted stub that says *there is a key here* and stops
+// claiming to say which way it points. Nothing is lost by dropping it: direction on a 3px
+// arc was never legible, and the *Table relationships* table spells out every one of them
+// at every zoom. Zooming brings each head back as its arc passes the threshold — on the
+// current map the `postgres` chip is enough for five of the seven, and the two shortest
+// need a little more than the chip gives.
+//
+// `force` is for the caller that moved the *tables* rather than the view: the guard below
+// is a scale guard, so a drag that shortens an arc at an unchanged zoom would otherwise
+// keep the head it no longer has room for, and no amount of panning would clear it.
+let headK = 0;
+function fkHeads(force) {
+  if (!FKLINKS.length || !FKLINKS[0].node) return;
+  if (!force && headK && Math.abs(view.k / headK - 1) < 0.01) return;
+  headK = force ? 0 : view.k;
+  // 1.6 of the marker *box*. The triangle inside it draws about 7.5px and overlays the
+  // last 6.94px of the curve, so the threshold is nearer 2.2 head-inks and a key that
+  // only just clears it still has the head over some 46% of what a reader can see. The
+  // box is the right thing to measure against anyway — it is what `sizeMarkers` sizes and
+  // what the arc has to make room for — but the ratio is deliberately generous for that
+  // reason, and lowering it towards 1 would mean an arc entirely under its own head.
+  const min = 1.6 * FK_ARROW_PX.w;
+  for (const l of FKLINKS) {
+    // l.ink is what drawArc drew, so this is the head against the line and not against
+    // the gap between two table centres, which is up to a node radius longer.
+    if ((l.ink || 0) * view.k >= min) l.node.setAttribute('marker-end', 'url(#a-fk)');
+    else l.node.removeAttribute('marker-end');
+  }
 }
 function bbox(nodes) {
   const pad = 70;
@@ -1996,6 +2261,7 @@ for (const ev of ['fullscreenchange', 'webkitfullscreenchange']) {
     // reader who never touched the fold should not find the page's own account of its
     // colours missing afterwards.
     state.key = !isFull();
+    if (TL) tlDock(isFull());
     // Entering or leaving full screen is a deliberate reframing, so refit rather
     // than preserving a zoom chosen for the other size.
     requestAnimationFrame(fit);
@@ -2391,53 +2657,3 @@ function sizeStage() {
     : state.view === 'overlay' ? document.getElementById('provbar') : null;
   document.documentElement.style.setProperty('--barh', bar ? bar.offsetHeight + 10 + 'px' : '0px');
 }
-
-function draw() {
-  styleGraph();
-  drawSchema();
-  drawBoundaries();
-  drawRoutes();
-  drawEdges();
-  drawFks();
-  document.getElementById('topo').textContent = topoFingerprint();
-}
-
-document.getElementById('q').oninput = e => { state.q = e.target.value.trim().toLowerCase(); draw(); };
-document.getElementById('ns').onchange = e => { state.ns = e.target.value; draw(); };
-document.getElementById('auth').onchange = e => { state.auth = e.target.value; draw(); };
-document.getElementById('dep').onchange = e => {
-  state.dep = e.target.value;
-  state.table = tableFor(state.dep) ? state.dep : null;
-  draw();
-};
-document.getElementById('mode').onchange = e => { state.mode = e.target.value; draw(); };
-document.getElementById('ont').onchange = e => { state.ont = e.target.value; draw(); };
-for (const b of document.querySelectorAll('.seg button')) {
-  b.onclick = () => setView(b.dataset.view);
-}
-// Reset clears what the reader chose to look at. It leaves the provenance view
-// alone: that is not a filter on the system, it is a statement about who wrote
-// the page, and it stays where it was put.
-document.getElementById('reset').onclick = () => {
-  Object.assign(state, { q: '', ns: '', auth: '', dep: '', mode: '', ont: '',
-    open: null, table: null, wide: false, focus: null });
-  for (const id of ['q', 'ns', 'auth', 'dep', 'mode', 'ont']) document.getElementById(id).value = '';
-  location.hash = '';
-  fit();
-  draw();
-};
-document.getElementById('gfocusclear').onclick = clearFocus;
-addEventListener('keydown', e => { if (e.key === 'Escape' && state.focus) clearFocus(); });
-addEventListener('resize', () => { sizeStage(); fit(); });
-
-document.getElementById('withheld').textContent =
-  WITHHELD.labels + ' node labels, ' + WITHHELD.descriptions + ' endpoint descriptions, ' +
-  WITHHELD.fields + ' node prose fields, ' + WITHHELD.roles + ' actors, ' + WITHHELD.creds +
-  ' credentials';
-
-if (location.hash.length > 1) state.open = decodeURIComponent(location.hash.slice(1));
-// Markers first: the legend below and the wires above both reference them by id.
-buildMarkers();
-drawLegend();
-buildGraph();
-setView('all');

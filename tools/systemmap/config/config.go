@@ -155,6 +155,16 @@ func Load(path, module string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	return Decode(raw, module, path)
+}
+
+// Decode validates an overlay already in memory. The history generator rewrites
+// the overlay's package prefixes per snapshot — an old commit kept the same
+// packages under a different path — and there is no file to point Load at, so
+// the validation has to be reachable without one. `name` is what errors call the
+// source, since a caller with bytes still owes the reader a location.
+func Decode(raw []byte, module, name string) (*Config, error) {
+	path := name
 	cfg := &Config{module: module}
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.DisallowUnknownFields()

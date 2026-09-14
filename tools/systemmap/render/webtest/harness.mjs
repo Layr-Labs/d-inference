@@ -1,9 +1,11 @@
 // Loads the generated system map into a DOM and runs its script.
 //
-// The page under test is the real artifact: `render.HTML` injects page.css,
-// page.js and the inventory into page.html, and this harness opens *that file*
-// rather than any of its parts. So a test here fails when the explorer breaks,
-// not when a string moves.
+// The page under test is the real artifact: `render.HTML` injects page.css, the
+// three script parts (page.js, page.timeline.js, page.boot.js) and the inventory
+// into page.html, and this harness opens *that file* rather than any of its parts.
+// So a test here fails when the explorer breaks, not when a string moves — and the
+// concatenation order the parts depend on is itself under test, since a boot part
+// running too early throws before the first assertion.
 //
 // What jsdom does prove: the script parses and executes to the end, every
 // handler the toolbar installs runs, the DOM those handlers build is the one the
@@ -106,13 +108,15 @@ function polyfill(win, viewport) {
 // `viewport` is how a test crowds the label pass on purpose: the same map in a
 // smaller frame is a harder packing problem, which is what puts the collision claim
 // within reach of the five-route fixture as well as the real map.
-export function load({ hash = '', t = null, viewport = VIEWPORT } = {}) {
+export function load({ hash = '', t = null, viewport = VIEWPORT, timeline = null } = {}) {
   const errors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', err => errors.push(err));
   virtualConsole.on('error', (...args) => errors.push(new Error(args.join(' '))));
 
-  const dom = new JSDOM(readFileSync(PAGE, 'utf8'), {
+  let html = readFileSync(PAGE, 'utf8');
+  if (timeline) html = withTimeline(html, timeline);
+  const dom = new JSDOM(html, {
     runScripts: 'dangerously',
     pretendToBeVisual: true,
     url: 'https://example.invalid/system-map.html' + hash,
@@ -182,6 +186,37 @@ export function load({ hash = '', t = null, viewport = VIEWPORT } = {}) {
     p.pick(n => n.kind === 'dep' && n.links.length > links,
       `dependency with more than ${links} endpoint${links === 1 ? '' : 's'} reaching it`);
   return p;
+}
+
+// The inventory, read straight out of the file. A test that has to build a fixture
+// from the map's own facts — a timeline whose endpoints and nodes are ones the head
+// revision really has — needs them before the page boots, and booting a throwaway page
+// to read a JSON block out of it costs a second per test for nothing.
+export function inventory() {
+  const html = readFileSync(PAGE, 'utf8');
+  const open = html.indexOf('id="inventory">');
+  assert.ok(open > 0, 'the page carries no inventory block');
+  const from = open + 'id="inventory">'.length;
+  return JSON.parse(html.slice(from, html.indexOf('</script>', from)).replace(/<\\\//g, '</'));
+}
+
+// The page reads its history out of an embedded JSON block, exactly the way it reads
+// its inventory, so a test supplies one by putting a block there. That is deliberate:
+// building a real timeline means one full type-check per commit and a checkout with the
+// right history in it, neither of which belongs in a DOM test — and the shapes worth
+// asserting about (an endpoint that appears, one that vanishes, a wire whose access
+// mode changes) are ones a fixture can state exactly and the real repository cannot be
+// relied on to contain.
+//
+// The generator escapes `</` on the way in and the page unescapes it on the way out, so
+// the fixture goes through the same encoding the real artifact does.
+function withTimeline(html, tl) {
+  const at = html.indexOf('</script>', html.indexOf('id="inventory"'));
+  assert.ok(at > 0, 'the page has no inventory block to insert a timeline after');
+  const json = JSON.stringify(tl).replace(/<\//g, '<\\/');
+  return html.slice(0, at + 9) +
+    '\n<script type="application/json" id="timeline">' + json + '</script>' +
+    html.slice(at + 9);
 }
 
 // drag is a press, a move and a release on one element. The page reads the same

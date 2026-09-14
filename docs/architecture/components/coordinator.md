@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-14 · commit `4482d5422`
+> Last updated: 2026-09-14 · commit `dedb0f894`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -57,6 +57,7 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/mdm` | MicroMDM client and verification scheduler. |
 | `coordinator/auth` | Privy JWT verification. |
 | `coordinator/providercontrol/trustreuse` | Durable device-evidence cache, trust-reuse admission, journal authority/replay and continuity tracking (`Manager`); API adapters supply verified release facts and keep the ordered shutdown boundary. |
+| `coordinator/providercontrol/codeidentity` | Per-device code-identity proof, APNs budget admission, encrypted resume, nonce verification and code continuity (`Manager`); the API supplies an immutable release-policy view and retains lifecycle ordering. |
 | `coordinator/profilesign` | CMS signing of the enrollment profile. |
 | `coordinator/billing` | Billing service, Stripe Checkout and Connect, referrals. |
 | `coordinator/payments` | Ledger and pricing. |

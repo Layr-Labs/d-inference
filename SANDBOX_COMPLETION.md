@@ -5,7 +5,8 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
-Newest source implements authorize-boot and boot, a protected one-use handoff,
+Pushed058cb555776ef9bad2565b9ae536eca1c8bf67f4 implements authorize-boot and boot,
+a protected one-use handoff,
 GUI-owned installer-v1 execution, consumed-claim recovery and cleanup-error
 preservation on session loss. Root staging cannot reopen after handoff, and a
 claimed image cannot be reserved/staged/started through legacy base paths.
@@ -1952,7 +1953,7 @@ restart native builds or the completed staging campaigns without a new reason.
 
 ## One-use installer handoff and GUI owner (2026-09-14)
 
-New code is implemented but not yet committed in this checkpoint:
+Code in058cb5557 implements:
 - AccountlessPrivateJournal extracts the existing staging lock/read/immutable
   publication IO. AccountlessInstallationStagingJournal retains its strict
   boot-marker refusal. A separate AccountlessStagingTransition shares staging.lock
@@ -2082,3 +2083,14 @@ boot claims, so collection needs its own exact-claim scope and distinct durable
 maintenance intent, not a bypass that reopens old staging. Full real Apple restore,
 GUI boot, first-boot receipt, two-VM consumer acceptance, build tools, performance,
 actual logout/login and final release qualification still remain.
+
+
+Handoff source058cb555776ef9bad2565b9ae536eca1c8bf67f4 is committed and pushed.
+All pre-push checks pass (installer-handoff-push.log). PR996 remains draft and
+its After diagram now includes root authorization, GUI permit validation,
+pre-spawn permanent claim, native installer and stop-only replay; collection is
+still explicitly pending. CI34844573163 and integration34844573303 are running
+this source; benchmark34844573610 awaits separate environment approval. No local
+build/test/SSH process remains live. This checkpoint-only commit follows the
+pushed implementation. Next is the separate post-boot root receipt-collection
+and temporary guest-payload removal transaction, not another staging/boot replay.

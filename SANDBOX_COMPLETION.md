@@ -5,18 +5,22 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
-Pushed3c34dbbdd adds the root-only base source/machine lock scope, private
+Current local changes add durable root maintenance to host-runtime and a separate
+native relay test-harness patch11. Pushed3c34dbbdd adds the root-only base source/machine lock scope, private
 source reader, shared raw ownership decoding and real process-lock tests.
 Pushed3ac8a7fb6 adds recoverable accountless payload staging and its durable
 journal. Pushedf235b8ad2 adds signal cancellation, actual GUI-session monitoring
 and cleanup covering all post-runtime startup/service exits. Source6cf8f3381 adds
 installed-checkpoint publication after qualification-clone consumerb48455139 and
 requested-resource configuration32be94642. Full sandbox suite passes548tests,
-7explicit skips,0failures (132.522s). Coordinator suite, Linux
+7explicit skips,0failures (128.289s); host-runtime18tests pass and the provider
+darkbloom target builds. A clean replay of11native patches passes196tests plus
+13required selectors. Coordinator suite, Linux
 build, docs lint, UI lint and Next.js build pass. CI34811478625 and integration
 34811478687 passed6cf8f3381. CI34813684236 and integration34813684227
-passed3ac8a7fb6. FreshCI34815356747 and integration34815356765 are running
-3c34dbbdd; benchmark
+passed3ac8a7fb6. Integration34815356765 passed3c34dbbdd, but CI34815356747
+failed the native relay fixture's large-frame test; other jobs passed. The
+test-harness correction needs fresh CI; benchmark
 environment approval is separate and has not been granted.
 
 Physical guest exercise14 and coldboot15 PASS on the test Mac. They prove
@@ -1160,3 +1164,94 @@ Go-cache question remains pending. Native source/pin were not edited; preserve
 existing9/10 work and prepare any new fence as a distinct patch11 after a clean
 base10 snapshot. Next required work is durable global maintenance admission plus
 per-source broker/native fencing BEFORE adding/using the root attach controller.
+
+## Durable global maintenance and native CI relay investigation
+
+host-runtime now has a root-only maintenance protocol, separate from the
+permanent ownership.lock inode. HostRuntimeLease.beginRootMaintenance publishes
+maintenance.json with schema1, operation UUID and protected-journal SHA256 under
+an existing EX lease. Ordinary SH/EX acquisition checks absence both before and
+after flock. Any present record, even malformed/special/linked, blocks new work.
+Scope destruction/crash never clears the record. Root recovery requires exact
+intent bytes; a live scope pins the record descriptor and rejects replacement,
+changed metadata or namespaces. Shared leases cannot begin maintenance. The
+package test policy can act only for its own Unix identity, not impersonate root.
+finishAfterVerifiedCleanup requires root, exact scope and valid EX; the OPERATOR
+must first observe cleanup and persist its evidence. The SDK does not infer
+physical detach from JSON. EX remains held until all lease references end.
+
+HostRuntimeAuthority, HostRuntimeLease, errors, intent, store and scope are split
+by responsibility. Test fixtures/probes were also extracted. The abrupt-exit
+probe holds EX through _exit(86); a direct kernel-lock positive control observes
+EX held before exit and free afterward, while ordinary SDK admission remains
+fenced. Exact recovery then works. Existing shared/exclusive/inherited-lock
+behavior remains covered. All participating runtime binaries need this library;
+old binaries do not gain maintenance admission from merely seeing a new file.
+
+Validation: host-runtime18tests/0failures in0.745s
+(maintenance-authority-crash-control-tests.log). Sandbox integration initially
+failed because SwiftPM's cached local-dependency source list omitted newly split
+files; touching Package.swift was insufficient. swift package clean on ONLY this
+worktree's sandbox build artifacts refreshed the graph. Clean548tests/7skips pass
+(maintenance-sandbox-clean-tests.log). After pin11, FINAL548tests/7skips/0failures
+pass128.289s in maintenance-sandbox-pin11-tests.log. Provider CLI target build
+passes19.57s (maintenance-provider-build.log). No test-Mac cache was cleared.
+
+CI34815356747 at3c34dbbdd failed ONLY the macOS Sandbox Tests step "Test and build
+the exact pinned Lume patch set". Native flushesLargeLastFrameBeforeFINAndKeepsReverseDirectionAlive
+threw generic EIO after5.946s. The helper discarded the actual errno and swallowed
+writer errors. Integration34815356765 and all other CI jobs passed. Full failed
+log: /private/tmp/darkbloom-sandbox-completion-evidence/ci-34815356747-failed.log.
+The CI failure has NOT been reproduced or diagnosed as a production relay defect.
+
+Investigation root: /private/tmp/darkbloom-native-relay-investigation-20260914.
+Baseline0 plus10repetitions all passed195native tests (full-baseline-0..10.log).
+The original runtime relay source SHA remains
+0b7f3a6aaea57d9decdf6f32b9af3f280b2557cbe32244dc551de6f9e1fd13ee.
+A base10 snapshot retains original relay source/test files. Native runtime code
+is unchanged. The new fixture executes the COMPLETE timed peer exchange on
+dedicated test threads, avoiding blocking the cooperative test executor or
+spending reverse-direction timeout on rescheduling its async continuation. It
+retains the5s socket/relay deadlines, exact512KiB/FIN/reverse-ACK checks, cancellation
+and descriptor-reuse tests. It retries EINTR, reports actual errno/byte counts,
+propagates writer failures, stops/joins workers on failure, and adds a real EPIPE
+writer-error control. Socket initialization transfers descriptor ownership only
+after checked options succeed, avoiding double-close on a throwing initializer.
+
+This is separate test-only patch11:
+ThirdParty/lume-patches/0011-await-relay-fixture-io-without-blocking-test-executors.patch
+SHA45f6324e1eac2adcc09e7462d14bf37d3ef216c74c109e369fc1c8b3c9fd009b.
+Pin JSON, Swift pin mirror and contract expectations include it. The native test
+script now requires13selectors, including the large-frame exchange and writer
+error control. Native editable files are tests/DarkbloomGuestRelayTests.swift and
+new tests/DarkbloomGuestRelayTestSupport.swift; earlier9/10 edits remain present.
+Do not reset the native worktree or include earlier patches again in a new diff.
+
+Clean replay was made from the actual pinned upstream object in this worktree's
+.external/cua-lume-737dc2a06952 (verified origin); the synthetic native editing
+repo does NOT contain upstream737dc2a... and cannot be used for git archive.
+Fresh replay root: /private/tmp/darkbloom-relay-patch-replay-jz0o4goc/libs/lume.
+All11patches apply with fuzz0; resulting relay/test files match the editable tree.
+run-pinned-lume-tests.sh passes196tests plus13exact selectors there, log
+/private/tmp/darkbloom-native-relay-investigation-20260914/clean-replay-tests.log.
+Full native196pass7.232s. This is fresh source/test proof, NOT a signed runtime11
+artifact or physical result. Latest signed artifact remains runtime10; last
+physical work remains guest244009eca/runtime8, exercise14/coldboot15.
+
+Also corrected stale RELEASE_VALIDATION.md text: final tenant-domain verification
+never prints user/2001 and has no empty-user-domain acceptance path; current code
+requires exact gui/2001 absence and zero live tenant processes after removal.
+
+NEXT: the per-image broker/native offline-operation fence is still NOT built;
+it is now patch12, since11 is the relay fixture. Then connect the global SDK
+maintenance APIs to the root base operator with typed begin/recover ownership.
+LumeRootBaseImageGuard currently acquires its own ordinary EX; avoid acquiring EX
+twice when recovering an existing maintenance scope. Bind the protected journal
+to the exact candidate/source, and distinguish original-snapshot checking from
+same-inode recovery after authorized partial offline writes. Never weaken normal
+source validation with a public bypass flag. Implement attach/mount/detach only
+after durable global AND per-image fencing are enforced. Then installer GUI boot,
+receipt capture/removal, installed checkpoint, clone qualification/cold boot,
+teardown and actual ready-template publication. No root marker, mount, VM run,
+service/group mutation, model/cache deletion or production action occurred here.
+Go-cache approval remains pending; elapsed time/goal continuation is not approval.

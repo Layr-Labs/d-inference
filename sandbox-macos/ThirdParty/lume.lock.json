@@ -43,6 +43,10 @@
     {
       "path": "ThirdParty/lume-patches/0010-unlink-owned-guest-endpoint-before-stop-returns.patch",
       "sha256": "6abb6aa1cb582fe0157fc147159a0168160d1e79f39d3df8d40b96bbbade07ca"
+    },
+    {
+      "path": "ThirdParty/lume-patches/0011-await-relay-fixture-io-without-blocking-test-executors.patch",
+      "sha256": "45f6324e1eac2adcc09e7462d14bf37d3ef216c74c109e369fc1c8b3c9fd009b"
     }
   ],
   "license": "MIT",

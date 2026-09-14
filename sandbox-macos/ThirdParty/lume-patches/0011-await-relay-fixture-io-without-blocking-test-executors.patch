@@ -1,0 +1,353 @@
+diff --git a/libs/lume/tests/DarkbloomGuestRelayTests.swift b/libs/lume/tests/DarkbloomGuestRelayTests.swift
+--- a/libs/lume/tests/DarkbloomGuestRelayTests.swift
++++ b/libs/lume/tests/DarkbloomGuestRelayTests.swift
+@@ -3,79 +3,34 @@
+ import Testing
+ @testable import lume
+ 
+-private final class RelaySocketPair: @unchecked Sendable {
+-    let first: Int32
+-    let second: Int32
+-    private let lock = NSLock()
+-    private var secondOpen = true
+-    init() throws {
+-        var descriptors: [Int32] = [-1, -1]
+-        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else { throw POSIXError(.EIO) }
+-        first = descriptors[0]; second = descriptors[1]
+-        for fd in descriptors {
+-            var timeout = timeval(tv_sec: 5, tv_usec: 0)
+-            var noSignal: Int32 = 1
+-            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+-            setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+-            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
+-        }
+-    }
+-    func closeSecond() { lock.withLock { if secondOpen { close(second); secondOpen = false } } }
+-    deinit { close(first); if secondOpen { close(second) } }
+-}
+-
+ @Suite("Darkbloom guest relay")
+ struct DarkbloomGuestRelayTests {
+-    @Test func flushesLargeLastFrameBeforeFINAndKeepsReverseDirectionAlive() throws {
+-        let client = try RelaySocketPair(), guest = try RelaySocketPair()
+-        let relay = DispatchGroup(), writer = DispatchGroup()
+-        relay.enter()
+-        DispatchQueue.global().async {
+-            DarkbloomGuestRelay.run(client: client.first, guest: guest.first, timeoutNanoseconds: 5_000_000_000)
+-            relay.leave()
+-        }
++    @Test func flushesLargeLastFrameBeforeFINAndKeepsReverseDirectionAlive() async throws {
+         let payload = Data(repeating: 0x81, count: 512 * 1024)
+-        writer.enter()
+-        DispatchQueue.global().async {
+-            try? Self.writeAll(guest.second, payload)
+-            shutdown(guest.second, SHUT_WR)
+-            writer.leave()
+-        }
+-        #expect(try Self.readToEOF(client.second) == payload)
+-        #expect(writer.wait(timeout: .now() + 5) == .success)
+         let acknowledgement = Data("last response received".utf8)
+-        try Self.writeAll(client.second, acknowledgement)
+-        shutdown(client.second, SHUT_WR)
+-        #expect(try Self.readToEOF(guest.second) == acknowledgement)
+-        #expect(relay.wait(timeout: .now() + 5) == .success)
++        let result = try await RelayTestSession.exchange(payload, acknowledgement: acknowledgement)
++        #expect(result.response == payload)
++        #expect(result.acknowledgement == acknowledgement)
+     }
+ 
+-    @Test func fullPeerHangupDoesNotDiscardTheLastBufferedResponse() throws {
+-        let client = try RelaySocketPair(), guest = try RelaySocketPair(), relay = DispatchGroup()
+-        relay.enter()
+-        DispatchQueue.global().async {
+-            DarkbloomGuestRelay.run(client: client.first, guest: guest.first, timeoutNanoseconds: 5_000_000_000)
+-            relay.leave()
+-        }
++    @Test func fullPeerHangupDoesNotDiscardTheLastBufferedResponse() async throws {
+         let payload = Data(repeating: 0x44, count: 16384)
+-        try Self.writeAll(guest.second, payload)
+-        guest.closeSecond()
+-        #expect(try Self.readToEOF(client.second) == payload)
+-        shutdown(client.second, SHUT_WR)
+-        #expect(relay.wait(timeout: .now() + 5) == .success)
++        #expect(try await RelayTestSession.fullHangup(payload) == payload)
+     }
+ 
+-    @Test func cancellationStopsRelayWithoutClosingCallerOwnedDescriptors() throws {
+-        let client = try RelaySocketPair(), guest = try RelaySocketPair(), signal = Flag()
+-        let complete = DispatchGroup()
+-        complete.enter()
+-        DispatchQueue.global().async {
+-            DarkbloomGuestRelay.run(client: client.first, guest: guest.first, shouldStop: { signal.value })
+-            complete.leave()
++    @Test func cancellationStopsRelayWithoutClosingCallerOwnedDescriptors() async throws {
++        #expect(try await RelayTestSession.cancelAndInspectDescriptors())
++    }
++
++    @Test func writerFailureReportsActualErrnoAndByteCount() async throws {
++        do {
++            try await RelayTestSession.observeWriterFailure()
++            Issue.record("fixture silently discarded a writer failure")
++        } catch {
++            let description = String(describing: error)
++            #expect(description.contains("guest payload: write errno=\(EPIPE)"))
++            #expect(description.contains("bytes=0/4096"))
+         }
+-        signal.set()
+-        #expect(complete.wait(timeout: .now() + 2) == .success)
+-        #expect(fcntl(client.first, F_GETFD) >= 0 && fcntl(guest.first, F_GETFD) >= 0)
+     }
+ 
+     @Test func lateConnectAfterStopCannotCloseReusedDescriptorOrFinishTwice() throws {
+@@ -106,33 +61,9 @@
+         Issue.record("fixture could not establish descriptor reuse")
+     }
+ 
+-    private final class Flag: @unchecked Sendable {
+-        private let lock = NSLock(); private var flag = false
+-        var value: Bool { lock.withLock { flag } }
+-        func set() { lock.withLock { flag = true } }
+-    }
+     private final class Counter: @unchecked Sendable {
+         private let lock = NSLock(); private var count = 0
+         var value: Int { lock.withLock { count } }
+         func increment() { lock.withLock { count += 1 } }
+     }
+-    private static func writeAll(_ fd: Int32, _ data: Data) throws {
+-        try data.withUnsafeBytes { raw in
+-            var offset = 0
+-            while offset < raw.count {
+-                let written = write(fd, raw.baseAddress!.advanced(by: offset), raw.count - offset)
+-                guard written > 0 else { throw POSIXError(.EIO) }
+-                offset += written
+-            }
+-        }
+-    }
+-    private static func readToEOF(_ fd: Int32) throws -> Data {
+-        var result = Data(), bytes = [UInt8](repeating: 0, count: 8192)
+-        while true {
+-            let count = read(fd, &bytes, bytes.count)
+-            if count == 0 { return result }
+-            guard count > 0 else { throw POSIXError(.EIO) }
+-            result.append(contentsOf: bytes.prefix(count))
+-        }
+-    }
+ }
+diff --git a/libs/lume/tests/DarkbloomGuestRelayTestSupport.swift b/libs/lume/tests/DarkbloomGuestRelayTestSupport.swift
+new file mode 100644
+--- /dev/null
++++ b/libs/lume/tests/DarkbloomGuestRelayTestSupport.swift
+@@ -0,0 +1,213 @@
++import Darwin
++import Foundation
++@testable import lume
++
++final class RelaySocketPair: @unchecked Sendable {
++    let first: Int32
++    let second: Int32
++    private let lock = NSLock()
++    private var secondOpen = true
++    init() throws {
++        var descriptors: [Int32] = [-1, -1]
++        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else { throw POSIXError(.EIO) }
++        var transferred = false
++        defer { if !transferred { close(descriptors[0]); close(descriptors[1]) } }
++        for fd in descriptors {
++            var timeout = timeval(tv_sec: 5, tv_usec: 0)
++            var noSignal: Int32 = 1
++            guard setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0,
++                  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0,
++                  setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
++                let code = errno
++                throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
++            }
++        }
++        first = descriptors[0]; second = descriptors[1]; transferred = true
++    }
++    func closeSecond() { lock.withLock { if secondOpen { close(second); secondOpen = false } } }
++    deinit { close(first); if secondOpen { close(second) } }
++}
++
++// Each blocking peer/relay operation runs on a dedicated test thread. Awaiting
++// its completion does not occupy Swift Testing's cooperative executor. Socket
++// timeouts and bounded joins remain failures, never successful truncation.
++private final class RelayTestWorker<Value: Sendable>: @unchecked Sendable {
++    private let group = DispatchGroup()
++    private let lock = NSLock()
++    private let label: String
++    private var result: Result<Value, Error>?
++
++    init(label: String, _ operation: @escaping @Sendable () throws -> Value) {
++        self.label = label
++        group.enter()
++        Thread.detachNewThread { [self] in
++            let outcome = Result(catching: operation)
++            lock.withLock { result = outcome }
++            group.leave()
++        }
++    }
++
++    func wait(timeout: TimeInterval = 8) throws -> Value {
++        guard group.wait(timeout: .now() + timeout) == .success else {
++            throw RelayTestFailure(detail: "\(label) worker did not finish within \(timeout)s")
++        }
++        return try lock.withLock { try result!.get() }
++    }
++
++    func value(timeout: TimeInterval = 8) async throws -> Value {
++        try await withCheckedThrowingContinuation { continuation in
++            Thread.detachNewThread { [self] in
++                continuation.resume(with: Result { try wait(timeout: timeout) })
++            }
++        }
++    }
++
++}
++
++private struct RelayTestFailure: Error, CustomStringConvertible {
++    let detail: String
++    var description: String { detail }
++}
++
++enum RelayTestIO {
++    static func writeAll(_ fd: Int32, _ data: Data, label: String) throws {
++        try data.withUnsafeBytes { raw in
++            var offset = 0
++            while offset < raw.count {
++                let written = write(fd, raw.baseAddress!.advanced(by: offset), raw.count - offset)
++                if written < 0, errno == EINTR { continue }
++                guard written > 0 else {
++                    let code = written == 0 ? EIO : errno
++                    throw RelayTestFailure(detail: "\(label): write errno=\(code), bytes=\(offset)/\(raw.count)")
++                }
++                offset += written
++            }
++        }
++    }
++
++    static func readToEOF(_ fd: Int32, label: String) throws -> Data {
++        var result = Data(), bytes = [UInt8](repeating: 0, count: 8192)
++        while true {
++            let count = read(fd, &bytes, bytes.count)
++            if count == 0 { return result }
++            if count < 0, errno == EINTR { continue }
++            guard count > 0 else {
++                throw RelayTestFailure(detail: "\(label): read errno=\(errno), bytes=\(result.count)")
++            }
++            result.append(contentsOf: bytes.prefix(count))
++        }
++    }
++}
++
++struct RelayTestExchange: Sendable {
++    let response: Data
++    let acknowledgement: Data
++}
++
++/// The entire timed exchange runs on its driver thread, so resuming an async
++/// test after receiving FIN cannot consume the relay's reverse-direction budget.
++final class RelayTestSession {
++    private let client: RelaySocketPair
++    private let guest: RelaySocketPair
++    private let stop: RelayTestStop
++    private let relay: RelayTestWorker<Void>
++    private var writer: RelayTestWorker<Void>?
++
++    private init() throws {
++        let client = try RelaySocketPair(), guest = try RelaySocketPair(), stop = RelayTestStop()
++        self.client = client; self.guest = guest; self.stop = stop
++        relay = RelayTestWorker(label: "relay") {
++            DarkbloomGuestRelay.run(client: client.first, guest: guest.first,
++                timeoutNanoseconds: 5_000_000_000, shouldStop: { stop.value })
++        }
++    }
++
++    static func exchange(_ payload: Data, acknowledgement: Data) async throws -> RelayTestExchange {
++        try await RelayTestWorker(label: "exchange driver") {
++            try exercise { session in
++                session.startWriter(payload)
++                let response = try RelayTestIO.readToEOF(session.client.second, label: "client response")
++                try session.writer?.wait()
++                try RelayTestIO.writeAll(session.client.second, acknowledgement, label: "client acknowledgement")
++                shutdown(session.client.second, SHUT_WR)
++                let reverse = try RelayTestIO.readToEOF(session.guest.second, label: "guest acknowledgement")
++                try session.relay.wait()
++                return RelayTestExchange(response: response, acknowledgement: reverse)
++            }
++        }.value(timeout: 15)
++    }
++
++    static func fullHangup(_ payload: Data) async throws -> Data {
++        try await RelayTestWorker(label: "hangup driver") {
++            try exercise { session in
++                session.startWriter(payload, fullHangup: true)
++                let response = try RelayTestIO.readToEOF(session.client.second, label: "client final response")
++                try session.writer?.wait()
++                shutdown(session.client.second, SHUT_WR)
++                try session.relay.wait()
++                return response
++            }
++        }.value(timeout: 15)
++    }
++
++    static func observeWriterFailure() async throws {
++        try await RelayTestWorker(label: "writer failure driver") {
++            try exercise { session in
++                shutdown(session.guest.second, SHUT_WR)
++                session.startWriter(Data(repeating: 1, count: 4096))
++                try session.writer?.wait()
++            }
++        }.value(timeout: 8)
++    }
++
++    static func cancelAndInspectDescriptors() async throws -> Bool {
++        try await RelayTestWorker(label: "cancellation driver") {
++            try exercise { session in
++                session.stop.set()
++                try session.relay.wait(timeout: 2)
++                return fcntl(session.client.first, F_GETFD) >= 0 && fcntl(session.guest.first, F_GETFD) >= 0
++            }
++        }.value(timeout: 5)
++    }
++
++    private func startWriter(_ payload: Data, fullHangup: Bool = false) {
++        precondition(writer == nil)
++        let peer = guest
++        writer = RelayTestWorker(label: "guest writer") {
++            defer { if fullHangup { peer.closeSecond() } else { shutdown(peer.second, SHUT_WR) } }
++            try RelayTestIO.writeAll(peer.second, payload, label: "guest payload")
++        }
++    }
++
++    private func cleanup() -> [String] {
++        stop.set()
++        // Wake failed IO without closing a descriptor still owned by a worker.
++        // Pair lifetimes extend through these bounded joins.
++        shutdown(client.first, SHUT_RDWR)
++        shutdown(guest.first, SHUT_RDWR)
++        var errors: [String] = []
++        do { try relay.wait(timeout: 2) } catch { errors.append(String(describing: error)) }
++        do { try writer?.wait(timeout: 2) } catch { errors.append(String(describing: error)) }
++        return errors
++    }
++
++    private static func exercise<Value>(_ body: (RelayTestSession) throws -> Value) throws -> Value {
++        let session = try RelayTestSession()
++        let result = Result { try body(session) }
++        let cleanup = session.cleanup()
++        switch result {
++        case .success(let value):
++            guard cleanup.isEmpty else { throw RelayTestFailure(detail: "relay cleanup: \(cleanup.joined(separator: "; "))") }
++            return value
++        case .failure(let error):
++            throw RelayTestFailure(detail: "\(error); worker outcomes: \(cleanup.joined(separator: "; "))")
++        }
++    }
++}
++
++private final class RelayTestStop: @unchecked Sendable {
++    private let lock = NSLock()
++    private var stopped = false
++    var value: Bool { lock.withLock { stopped } }
++    func set() { lock.withLock { stopped = true } }
++}

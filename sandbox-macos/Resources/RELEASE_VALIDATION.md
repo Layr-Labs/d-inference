@@ -33,6 +33,15 @@ under the descriptor-lifetime lock. It preserves a replacement inode and lets
 the accept loop finish closing its descriptors. The broker still allocates a
 fresh private endpoint directory on every stopped-to-running transition.
 
+The pinned native test runner executes the full suite plus thirteen required
+selectors, including the final-frame half-close exchange and a writer-error
+diagnostic control. The relay fixture runs its complete timed exchange on
+dedicated test threads, retries interrupted socket IO, preserves actual errno
+and byte counts, and joins owned workers during error cleanup. Production relay
+code and its timeout are unchanged by that test-only patch. The CI I/O failure
+that motivated it did not reproduce in eleven local full-suite baseline runs;
+the harness correction is not evidence of a diagnosed production relay defect.
+
 Managed raw Apple restore requires the current managed-installer patch and a new
 matching signed Lume artifact. `LumeManagedRestoreProcess` retains exclusive
 machine ownership in the installer child and sends broker-lifecycle EOF on
@@ -79,14 +88,13 @@ fail closed. The same check runs at agent startup, before every command and
 inside the privileged worker before it drops credentials. Apple's cron/at
 submission tools require a resolvable password-database identity; verify both
 list and actual submission denial, including forged `USER` and `LOGNAME`, on
-each supported guest OS. Tenant cleanup removes
-only `gui/2001` (the login-domain alias) and `user/2001`, then kills tenant UID
-processes and verifies quiescence. The GUI domain must be absent. macOS lazily
-recreates an empty user domain when queried: only after successful user-domain
-bootout and zero tenant processes, a strictly parsed `user/2001` domain with
-empty services, unmanaged-process and endpoint blocks is also accepted. Unknown,
-truncated, malformed or nonempty launchctl output fails closed;
-this output format and a submitted-job respawn probe require qualification on
+each supported guest OS. Tenant cleanup removes only `user/2001` and
+`gui/2001` (the login-domain alias), then kills tenant UID processes and verifies
+quiescence. The user domain is removed first. Verification requires exact GUI
+domain absence and zero live tenant processes; it never prints the user domain
+again after removal because that query can recreate the domain and load Apple
+services. Exit125 and unknown, truncated or malformed results remain failures.
+The output format and a submitted-job respawn probe require qualification on
 each supported guest OS. This does not establish cancellation of every possible
 system service or delegated queue; VM stop/delete remains the outer boundary.
 The cleanup worker itself drops to UID2001 and can cause its user domain to be
@@ -95,9 +103,7 @@ exits, then checks zero tenant processes and verifies domain quiescence. A
 missing successful removal, unrecognized domain output, and a non-absent login
 domain retain separate fixed diagnostic codes; no domain contents are logged.
 Removal and verification retry a bounded number of transient observations while
-launchd finishes teardown. A slain domain with pending requests is never accepted
-as empty; it must become absent or pass the same strict empty-domain parser.
-Prior successful user-domain removal remains required for empty-domain acceptance.
+launchd finishes teardown. There is no empty-user-domain acceptance path.
 No physical-host scheduler configuration is changed.
 There is no Python, package manager, or Xcode dependency inside the guest.
 The offline CPU profile intentionally has no tenant username. Account-dependent
@@ -285,6 +291,12 @@ join it through an explicit operator action. Never replace or truncate the inode
 Inference holds SH through engine cleanup; broker and actual VM owners retain
 EX through VM cleanup. Providers running before this coordination was installed
 need a separately authorized upgrade/restart before sandbox qualification.
+The shared library also refuses ordinary SH/EX admission while root-owned
+`maintenance.json` is present. Only root recovery with the exact operation and
+journal binding can resume maintenance; the operator must verify and record
+cleanup before clearing the fence. All participating binaries need this updated
+admission behavior. The base operator's use of it and the per-image native fence
+remain required before automatic offline disk attachment is enabled.
 
 Keep coordinator admission disabled and capacity draining during qualification.
 A job's launchctl exit is insufficient stop proof: independently verify the VM

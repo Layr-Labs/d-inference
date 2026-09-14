@@ -1,18 +1,89 @@
 # Changelog
 
-## Unreleased: prediction decisions and backup deadlines
+## Unreleased — prefix-cache reuse and routing
 
-- Record the coordinator's prediction policy, reservation ceiling and encoded deadline budget alongside each provider's returned prediction and decision. Distinguish refusals from acceptance followed by expiry without changing error codes or prediction policy.
-- Refresh remaining time after registry/provider lock waits before reserving a retained backup candidate. Skip expired reservations and shrink an enabled prediction ceiling.
+Provider changes require a new signed bundle; coordinator changes require a
+coordinator deployment.
 
-## Unreleased - pending-prompt admission estimates
+### Provider
 
-- Estimate unreflected pending prefill from each request's own prompt size, excluding requests that already produced content. Preserve the existing proxy for unknown cache work and reflected queues, so short and long arrivals no longer inherit each other's prompt lengths when the heartbeat is idle.
+- **Checkpoint write priority** — Limit first-seen checkpoint writes to a continuously refilling 90% share of the existing write budget, reserving capacity for prefixes observed again within the cache TTL. Every write still consumes the original total budget; authenticated durable duplicates consume no additional write budget. Novel-share exhaustion reports `write_priority_limited`, while total-budget exhaustion remains `write_rate_limited`. TTL, disk-space reserves and the overall write cap remain unchanged.
+- **Maintenance recovery** — Reconcile removed checkpoint index entries inside the destructive epoch barrier for whole-root external mutations so later reconciliation does not rotate the model epoch again solely for those removed entries. Single-entry eviction and corrupt-file removal update only their known index entries, avoiding a full filesystem scan after each victim during budget reduction. Surviving valid checkpoints remain reusable.
 
-## Unreleased: incoming request accounting
+### Coordinator
 
-- Add the unsampled request-outcome ledger and bounded admin inspection with explicit coverage and completion evidence.
-- Record recovered HTTP errors and parsed streaming mode accurately. Distinguish completed, incomplete and error response terminals after successful writes, preserving contradictory evidence and earlier content progress.
+- **Qwen prompt parity** — Match the provider's Qwen-family handling of required and named tool calls, including catalog aliases and Qwen3-VL, to avoid mismatched thinking controls in cache proofs.
+- **Repeated-prefix routing** — Prefer a stable cache-capable provider for repeated prefixes only among otherwise equivalent cost, queue and pending-work candidates. Exclude capabilities quarantined after a failed cache proof from this preference, even when heartbeats continue advertising them. Revalidate at reservation and rescan if affinity eligibility changed after selection. Preserve ordinary serving when no unfenced cache candidate is available, along with capacity, deadline, trust and proof gates. Profiler rows identify this preference as `prefix_affinity`.
+- **Cache opportunity diagnostics** — Report per-model reasons and numerical counts for repeated-prefix demand, usable holders and routing selection. These diagnostics distinguish routing opportunities from actual cache hits and measured latency savings. Add a [consumer guide](docs/consumer/prefix-cache.md) for preserving shared prompt prefixes.
+
+## Unreleased — doctor and attestation reliability
+
+- Prevent large process lists from blocking `doctor` and `verify`. Capture contention and sleep-probe output without pipe backpressure and apply an execution deadline; preserve diagnostic output and failure handling.
+- Match the coordinator's canonical status bytes for mixed-case model IDs and template names, including Unicode separators. Preserve signed fields, omission rules and signature verification.
+
+## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
+
+Source changes since `v0.9.1`. Provider changes require a new signed bundle.
+The provider wire protocol remains compatible with the 0.9.1 coordinator;
+coordinator and console changes below require their own deployments. The
+[rollout review](docs/reports/2026-09-10-provider-092-rollout-review.md) records
+compatibility checks and outstanding runtime qualification.
+
+### Provider
+
+- **Gemma QAT SSD prefix caching** — Enable authenticated complete paged checkpoints by default for exact `gemma-4-26b-qat-4bit`. Preserve tenant, model, prompt, binary, metallib and numerical-state identity checks, the global cache disable and cold fallback. Other Gemma artifacts remain opt-in. A new binary starts a new checkpoint identity; existing 0.9.1 checkpoints are not reused across the upgrade.
+- **GPT-OSS 20B SSD prefix caching** — Enable authenticated complete paged checkpoints by default for exact `gpt-oss-20b`. Restore native full-attention rows and sliding-window state under the existing tenant, model, prompt and runtime identity gates. Keep resident retention opt-in; global cache disable and contiguous fallback serve cold. Other GPT-OSS IDs remain opt-in.
+- **Adaptive Gemma MTP** — Automatically resolve the catalog assistant for that exact QAT target and select ordinary decode or one draft token from measured committed output and elapsed time. Include seed work, reset workload learning when requests finish or IDs are reused, and track compilation warmup by exact verification shape. Support target-prefix sampling for temperature/top-p/top-k/min-p, with ordinary decode for unsupported transforms and explicit diagnostic verification controls retained.
+- **Assistant activation while serving** — Download and verify the optional assistant while the current engine serves. Reserve staging memory and retain its target against eviction; publish reduced capacity immediately and restore survivor KV grants after discarded preparation. After network rollout jitter, close only that model's new admissions, advertise `reloading`, and finish accepted work before swapping. Racing requests receive transient 503 `slot_state` refusals. Timeout or cancellation discards the candidate and reopens the original engine without cancelling accepted requests. Standalone follows the same bounded drain without fleet jitter; insufficient memory preserves target-only serving.
+- **Assistant download sources** — Honor catalog-declared immutable Hugging Face assistant revisions with checksum-verified R2 fallback and jittered fetch retries. Existing R2-only metadata remains valid; shipping this binary does not apply the separate catalog patch. Standalone uses its configured coordinator catalog authority.
+- **Nemotron Lightning serving** — Admit the three explicitly qualified registry/Hugging Face IDs on the existing network and standalone paths; reject other `nemotron_h` artifacts. Enable native paged KV and complete encrypted prefix reuse with native activation/KV precision and FP32 persistent Mamba state. Declared embedded MTP uses request-owned assistant state, exact prefix checkpoints and adaptive depth up to seven; checkpoints include Nemotron numerical controls.
+- **Native reasoning and tools** — Separate Nemotron reasoning before tool parsing and validate required/named calls before publishing them through the existing encrypted response stream. Keep Gemma grammar enforcement and explicit per-model capability advertisement. Fix standalone Lightning admission to use the model's exact identity before the existing memory gate.
+- **Shared inference dependencies** — Pin the merged MLX core, C, Swift and SDK chain for explicit mutable Metal-kernel inputs, request-owned paged MTP, recurrent rollback, checkpoint ownership and typed native generation events. Release CI includes nonzero/no-skip synthetic SDK gates; real-model gates remain separately identified.
+
+### Companion coordinator and console changes
+
+- **Warm-pool headroom** — Grow warm replicas from measured headroom before a failed request, using measured occupancy growth, per-model headroom limits and bounded load bursts. Requires a coordinator deployment; the provider release does not activate this policy.
+- **Earnings navigation** — Keep earnings accessible after removing all linked Macs and display the supported payout-coverage notice. Requires a console deployment.
+
+### Qualification and rollout
+
+The reviewed source has passing component and integration evidence, but final
+combined-artifact model qualification remains incomplete. The amended Gemma
+admission-drain path still needs matched B1 on/off, B4 branched-prefix and real
+HTTP activation/download-failure checks. Earlier greedy MTP coding outputs
+show a repeated source-ID correctness defect absent from the ordinary-decode
+controls on that prompt; no general answer-quality equivalence or cache
+corruption conclusion is claimed. Published-chain Nemotron connected-serving
+and restart qualification also remain open. See the rollout review before
+fleet publication; source compatibility alone is not a release-ready verdict.
+
+## v0.9.1 — cache reliability and recovery (shipped; 2026-09-09)
+
+Source changes since `v0.9.0`. Provider changes require a new signed bundle;
+coordinator and console changes require their own deployments.
+
+### Provider
+
+- **Request completion during recovery** — Keep completion/error delivery working after cache shutdown or deallocation, deliver each terminal once, and drain accepted cache evidence before its terminal. Preserve secondary-tier terminal suppression.
+- **Duplicate checkpoint reuse** — Keep an existing complete checkpoint when another request reaches the same prefix with a different valid prefill chunk size. Reauthenticate its original bytes, metadata and complete encrypted payload; preserve identity, tenant, state-layout and corruption checks.
+- **Checkpoint write recovery** — Preserve unrelated valid checkpoints when atomic creation of a new checkpoint fails, allowing a later donation to retry without an unnecessary cache-epoch reset. Existing files that fail reauthentication still revoke their cache evidence.
+- **SSD disk budget** — Size the shared cache at half of currently available disk space without a fixed 100 GiB ceiling. Keep a fixed 20 GiB low-disk write reserve instead of 5% of the whole disk, and check the full pending donation against space above the reserve. Preserve encryption, eviction, daily write limits and ENOSPC handling.
+- **Cache failure attribution** — Distinguish complete-checkpoint host-memory, epoch, maintenance, disk-space, unsafe-path, I/O and eviction outcomes in bounded provider/coordinator telemetry.
+- **Telemetry shutdown** — Stop queued slot-posture callbacks after cancellation and wait for the sampler during shutdown, preventing telemetry after teardown returns.
+- **Deadline diagnostics** — Report the received prediction policy, reservation ceiling and encoded deadline budget alongside the provider's prediction and decision, distinguishing refusal from acceptance followed by expiry.
+
+### Companion coordinator and console changes
+
+- **Cache prompt parity** — Match provider JSON response-format instructions and Qwen/Harmony system-turn folding in cache planning so structured-output requests do not generate false prompt-anchor mismatches. Exercise the real service preparation path in shared tokenizer/hash parity tests.
+- **Per-model cache reporting** — Add internal breakdowns of provider-reported hits/misses, cached and avoided-prefill tokens, accepted V2 proofs, cache-selected terminals and timing samples. Measure saved-prefill percentages with matched prompt-token denominators for each population; retain invalid/missing usage separately from misses. Add bounded receipt rejection and prompt-length/hash mismatch diagnostics while preserving aggregate public status.
+- **Cache evidence continuity** — Preserve unchanged models' holders and receipts when another model loads or changes, retain proof-mismatch fences across unrelated capability updates, and distinguish proof mismatch from ordinary holder changes.
+- **APNs reconnect recovery** — Persist verified same-process continuity for bounded coordinator reconnects without refreshing the original Apple proof timestamp. Preserve encrypted resume challenges, token/process/binary binding, new-process freshness checks and Apple push budgets. Stamp final continuity after the socket is offline while keeping periodic updates online-only.
+- **Indexed startup recovery** — Recover history through indexed identity lookups instead of scanning every historical session before serving. Select the newest prior session, exclude live/incomplete records and late async writes, preserve live attestation requirements, and publish provider records and reputation atomically. Retry transient store failures within a shared deadline; pending recovery cannot route, and exhausted recovery closes the new registration before evicting an existing session. Preserve legacy missing-reputation behavior while refusing failed reads.
+- **Earnings-summary preparation** — Pin missing history before the durable attempt marker and resume per-key additions safely alongside live settlement. Keep base-reward money separate from inference counts/tokens and maintain summaries on record-only inserts as well as account settlement. Add a database-only migration command for approved pre-cutover preparation.
+- **Startup measurements** — Add startup phase timings and a read-only post-stop observer that separates candidate health/readiness and per-model routable capacity from optional disposable-test inference. Keep successful inference distinct from answer correctness and omit response text, usage and credentials from reports.
+- **Routing deadlines and admission** — Refresh remaining time after registry/provider lock waits before reserving a retained backup, skip expired reservations and shrink an enabled prediction ceiling. Estimate unreflected pending prefill from each request's own prompt size, excluding requests that already produced content, while preserving the proxy for unknown cache work and reflected queues.
+- **Incoming request accounting** — Add an unsampled request-outcome ledger and bounded admin inspection with explicit coverage and completion evidence. Record recovered HTTP errors and parsed streaming mode, and distinguish completed, incomplete and error response terminals after successful writes while preserving contradictory evidence and earlier content progress.
+- **Partial network geography** — Keep the stats overview available when request-location or route analytics time out. Refresh geography independently, expose unavailable sections, preserve valid empty maps and restore geography after recovery.
 
 ## Unreleased — stats request-flow refresh
 

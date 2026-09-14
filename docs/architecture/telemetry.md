@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-07 · commit `0b46b1618`
+> Last updated: 2026-09-13 · commit `d4bab49a9`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -86,6 +86,17 @@ are `other` (`coordinator/api/unknown_frame_metrics.go`). Arbitrary patch
 numbers and prerelease counters cannot create new series. Exact versions
 remain in provider metadata.
 
+### Slot posture sampler lifecycle
+
+`EngineV2Bridge.configureMTPStatus` in
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+MTP.swift` emits
+the opening slot-posture sample synchronously and starts a periodic task. Periodic delivery rechecks task
+cancellation inside the bridge actor, after the scheduling hop; cancellation
+while queued cannot emit a stale sample. `EngineV2Bridge.shutdown` cancels and
+joins the sampler before returning
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Lifecycle.swift`). This preserves the opening observation while
+preventing the periodic producer from emitting after teardown.
+
 ### Durable prefix-cache observations
 
 `startSSDPrefixCacheStatsLogger`
@@ -116,6 +127,27 @@ Complete-checkpoint donations now settle the existing bounded
 `prefix_cache_donation_outcomes` counter once per exported endpoint, including
 synchronous refusal, queue overflow, shutdown, write failure and already-durable
 success (`SSDHybridCheckpointStore+Write.swift`, `PrefixCacheDonationTelemetry.swift`).
+Complete-checkpoint outcomes distinguish host-memory refusal, stale epoch,
+maintenance contention, low disk space, unsafe root, fresh-write I/O error,
+unreadable existing file and post-write eviction. Error descriptions and paths
+never become metric labels. The legacy `write_failed` still covers unclassified
+producer errors and older providers, so it must not be interpreted as a count
+of physical disk errors.
+
+The complete-checkpoint writer also distinguishes novel-share exhaustion
+(`write_priority_limited`) from total-budget exhaustion (`write_rate_limited`)
+through `SSDWriteRateLimiter.decision`. Both settle the same typed heartbeat
+counter; neither creates a new event field. The [protocol reference](../reference/protocol-messages.md)
+owns the closed outcome vocabulary, and the [SSD reference](../reference/ssd-kv-cache.md#size-and-eviction-rules)
+defines the write policy.
+
+A failed atomic creation that never entered the index does not revoke unrelated
+checkpoints: the next donation can retry after the failure clears. Failure to
+reauthenticate an indexed file still removes that file under an epoch change
+before any ready receipt can be published. Cancellation and stale-epoch work
+publish no receipt and do not revoke a newer epoch's evidence
+(`SSDHybridCheckpointStore.performWrite`). There is no unbounded retry loop or
+retained failed tensor job.
 The complete-store `donation_drops_total` counter covers queued-write
 `writesDropped` only; prequeue refusals are counted by the donation outcome
 snapshot. Maintenance publishes its cumulative result under a separate short
@@ -149,7 +181,7 @@ gauge identifies bytes that cannot hold KV pages; usable slack excludes them.
 The optional last-allocation allowance gauge records conservative reservation
 bytes released after a successful preparation, rather than retained memory
 (`PagedStorageTelemetryCapture`,
-`provider-swift/Sources/ProviderCore/Inference/PagedStorageTelemetryAdapter.swift`).
+`provider-swift/Sources/ProviderCore/Inference/Memory/PagedStorageTelemetryAdapter.swift`).
 Ownership gauges overlap and must not be summed. Failure/refusal totals become
 positive deltas within one generation; the first sample and reload seed a
 baseline. Stale samples expose their age instead of new ownership measurements.
@@ -160,7 +192,7 @@ These fields are available in backend snapshots and Datadog; they are not new
 
 `ProcessMemoryTelemetrySampler` captures the process ledger's coherent
 ownership and allocator snapshot during the provider capacity refresh
-(`provider-swift/Sources/ProviderCore/Inference/ProcessMemoryTelemetrySampler.swift`).
+(`provider-swift/Sources/ProviderCore/Inference/Memory/ProcessMemoryTelemetrySampler.swift`).
 The [wire object](../reference/protocol-messages.md#backend_capacitytelemetryprocess_memory)
 reports outstanding promises as charged bytes minus covered materialized bytes.
 Operators can distinguish active allocations, reserved future memory, and debt
@@ -249,7 +281,7 @@ and the `inference.timing.*` histograms are built from the same
    from source and compared by `TestTelemetryAllowlistThreeWayParity`
    (`coordinator/api/telemetry_allowlist_parity_test.go`); the enums and JSON
    encoding by `coordinator/protocol/telemetry_symmetry_test.go` and
-   `provider-swift/Tests/ProviderCoreTests/TelemetrySymmetryTests.swift`. The
+   `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift`. The
    five shipped gaps are enumerated in `telemetryKnownMirrorGaps` and a stale
    entry fails the build.
 3. **Telemetry never changes control flow.** Nil emitter, nil Datadog client,
@@ -280,6 +312,23 @@ and the `inference.timing.*` histograms are built from the same
 | Allowlist edited in one mirror only | CI fails | `TestTelemetryAllowlistThreeWayParity` |
 | Expecting trace correlation | `dd.trace_id` never present (no spans) | use `request_id` |
 
+Cache receipt diagnostics use `exact_cache.receipt` (Datadog) and
+`exact_cache_receipt_total` (admin metrics), with bounded `type`, `outcome`,
+and `reason` labels from `coordinator/registry/cache_receipt_result.go`. They
+distinguish rejected evidence from provider-reported hits. APNs recovery emits
+`code_attest.resume_proof_sent{basis:recent_apns|process_continuity}`,
+`code_attest.proof_verified{kind:apns|resume}` and
+`code_attest.coverage_persist{outcome:success|error}`. These are aggregate
+operational metrics; they add no fields to the provider telemetry wire schema.
+
+Per-model cache reporting is a separate internal `routing.cache_model.*`
+family, mirrored by `cache_model_*` admin metrics. It distinguishes reported
+usage, accepted proofs and cache-selected terminals without altering the public
+aggregate cache response. Model IDs must be present in the active catalog;
+other IDs use `unknown`. Timing sums and sample counts work over HTTPS as well
+as DogStatsD. See the [metric inventory](../reference/telemetry-inventory.md#cache-results-by-model-internal)
+for populations, labels and reset semantics (`coordinator/api/cache_model_telemetry.go`).
+
 ## Code map
 
 | Concern | Path |
@@ -294,8 +343,8 @@ and the `inference.timing.*` histograms are built from the same
 | Event shape, allowlist, retired ingest | `coordinator/protocol/telemetry.go`, `coordinator/api/telemetry_handlers.go` |
 | Sinks | `coordinator/api/telemetry_sink.go`, `coordinator/api/profiler_sink.go`, `coordinator/api/profiler_fleet.go` |
 | Disconnect classification | `coordinator/registry/disconnect_classify.go` |
-| Provider side | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift` (`buildHeartbeatJSON`), `provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift`, `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Capacity.swift`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift` (no-op facade) |
-| Tests | `coordinator/api/telemetry_allowlist_parity_test.go`, `coordinator/api/telemetry_handlers_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/metrics_http_test.go`, `provider-swift/Tests/ProviderCoreTests/TelemetrySymmetryTests.swift` |
+| Provider side | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift` (`buildHeartbeatJSON`), `provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Capacity.swift`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift` (no-op facade) |
+| Tests | `coordinator/api/telemetry_allowlist_parity_test.go`, `coordinator/api/telemetry_handlers_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/metrics_http_test.go`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` |
 
 ## Related
 

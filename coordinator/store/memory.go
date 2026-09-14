@@ -3032,6 +3032,11 @@ func (s *MemoryStore) UpsertProvider(_ context.Context, p ProviderRecord) error 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.upsertProviderRecordLocked(p)
+	return nil
+}
+
+func (s *MemoryStore) upsertProviderRecordLocked(p ProviderRecord) {
 	// Update serial index
 	if p.SerialNumber != "" {
 		// Remove old serial mapping if exists
@@ -3047,7 +3052,6 @@ func (s *MemoryStore) UpsertProvider(_ context.Context, p ProviderRecord) error 
 		cp.Location = &loc
 	}
 	s.providerRecords[p.ID] = &cp
-	return nil
 }
 
 func (s *MemoryStore) GetProviderRecord(_ context.Context, id string) (*ProviderRecord, error) {
@@ -3259,7 +3263,7 @@ func (s *MemoryStore) GetReputation(_ context.Context, providerID string) (*Repu
 
 	rep, ok := s.reputationRecords[providerID]
 	if !ok {
-		return nil, fmt.Errorf("reputation for provider %q not found", providerID)
+		return nil, fmt.Errorf("reputation for provider %q: %w", providerID, ErrNotFound)
 	}
 	cp := *rep
 	return &cp, nil
@@ -3273,7 +3277,7 @@ func (s *MemoryStore) ListCodeAttestations(_ context.Context) ([]CodeAttestation
 
 	out := make([]CodeAttestation, 0, len(s.codeAttestations))
 	for _, rec := range s.codeAttestations {
-		out = append(out, rec)
+		out = append(out, cloneCodeAttestation(rec))
 	}
 	return out, nil
 }
@@ -3285,7 +3289,12 @@ func (s *MemoryStore) UpsertCodeAttestation(_ context.Context, rec CodeAttestati
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.codeAttestations[rec.SEPubKey] = rec
+	if old, ok := s.codeAttestations[rec.SEPubKey]; !ok || !rec.AttestedAt.Before(old.AttestedAt) {
+		if ok && sameCodeProof(old, rec) && old.ContinuousCoverageUntil != nil && (rec.ContinuousCoverageUntil == nil || old.ContinuousCoverageUntil.After(*rec.ContinuousCoverageUntil)) {
+			rec.ContinuousCoverageUntil = old.ContinuousCoverageUntil
+		}
+		s.codeAttestations[rec.SEPubKey] = cloneCodeAttestation(rec)
+	}
 	return nil
 }
 

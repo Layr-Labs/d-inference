@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-05 · commit `06b02df7a`
+> Last updated: 2026-09-13 · commit `d4bab49a9`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -24,7 +24,7 @@ defaults to `off` (`CacheRoutingOff`, `coordinator/registry/cache_routing.go`)
 and can select `on` (`CacheRoutingOn`); `off` prevents new cache participation.
 This coordinator switch is independent of the provider's default-enabled
 `DARKBLOOM_PREFIX_CACHE` gate (`PrefixCachePolicy.isEnabled`,
-`provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift`). Local
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift`). Local
 cache reuse and provider HTTP measurements do not imply that coordinator cache
 routing is enabled or deployed. The cross-machine routing scenarios have Go
 regression coverage; live two-machine cache-routing latency is unmeasured.
@@ -95,8 +95,8 @@ and the provider forwards `prefixCacheEnabled=false` to the engine. This gates
 network cache use without a second provider allowlist. Local HTTP/standalone
 policy remains independent, and a listed artifact must still satisfy the
 provider's intrinsic backend/codec/identity gates
-(`provider-swift/Sources/ProviderCore/Inference/PrefixCacheReceipts.swift`,
-`provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Translation.swift`).
+(`provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCacheReceipts.swift`,
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift`).
 
 Two operational controls sit between mode `on` and planning
 (`cacheActivationGate`, `coordinator/registry/cache_activation.go`): a
@@ -208,7 +208,7 @@ be reused only at actual bank checkpoint endpoints. For example, a 4,353-token
 input has a 4,352-token proof floor, while its reusable checkpoint may be 4,096.
 A resident or checkpoint-mode SSD receipt may publish that earlier boundary; it does not invent
 state at 4,352 (`ResidentPrefixCachePromptProof`,
-`provider-swift/Sources/ProviderCore/Inference/ResidentPrefixCacheEvidence.swift`).
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/ResidentPrefixCacheEvidence.swift`).
 
 These identities are prefix-based, not turn-based. If machine A publishes the
 original 4,096 checkpoint and machine B later publishes only a longer checkpoint,
@@ -246,15 +246,15 @@ Evidence is removed or made unreachable on:
 - holder expiry or deterministic cap eviction;
 - routing transition to `off`.
 
-A capability mode change invalidates existing holders even if its epoch string
-is unchanged (`UpdatePrefixCacheSnapshot`, `coordinator/registry/cache_snapshot.go`).
+A capability mode change invalidates that model's existing holders and attempts even if its epoch string
+is unchanged. Unchanged models retain their evidence and proof fences. Publication and invalidation hold the same registry/provider ownership, so an old heartbeat cannot erase a replacement connection's evidence (`UpdatePrefixCacheSnapshot`, `coordinator/registry/cache_snapshot.go`).
 The checkpoint routing milestone is covered by local Go protocol, registry,
 simulated multi-provider, and API wire tests; it is not a live two-machine
 measurement ([source and test evidence](../reports/evidence/2026-09-05-ssd-checkpoint-cache/coordinator-evidence-manifest.json)).
 
-Holder removals are counted under one of six reasons
+Holder removals are counted under one of seven reasons
 (`coordinator/registry/cache_routing.go`): `ttl`, `disconnect`,
-`epoch_change`, `capability_change`, `miss_invalidation`,
+`epoch_change`, `capability_change`, `proof_mismatch`, `miss_invalidation`,
 `capacity_eviction`. SSD capacity eviction rotates its durable epoch. Resident LRU eviction does not
 rotate the whole slot epoch: its remaining checkpoints stay useful, and stale
 advisory evidence expires or is removed by the next exact miss. Slot unload,
@@ -270,6 +270,26 @@ provider epochs ([`EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS`](../reference/confi
 heap-evicted. V1 receipt
 frames remain decodable for mixed-version safety but cannot mutate routing
 evidence (`coordinator/registry/cache_receipts.go`).
+
+### Prepared assistant replacement
+
+A prepared Gemma QAT assistant upgrade temporarily advertises only that model's
+slot as `reloading`. Normal eligibility gates exclude the slot even when it has
+valid cache-holder evidence; racing provider admissions receive a transient 503
+`rejection_reason: slot_state` refusal. Other model slots continue serving. Accepted work finishes
+on the original engine before publication. The network provider's configured
+rollout jitter occurs before admission closes and only spreads independent
+upgrades; it provides no fleet-wide availability guarantee
+(`provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift`,
+`updateAggregateCapacity`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`,
+`rejectIfDrainingForMTP`). The drain, timeout fallback and standalone
+behavior are defined in [inference → Multi-token prediction](inference.md#multi-token-prediction).
+
+Replacement keeps the complete checkpoint's assistant and runtime identity
+checks. A target-only checkpoint can miss after MTP activates; old holder evidence
+does not authorize reuse under the replacement's cache capability or epoch.
+Unchanged models retain their evidence under the normal
+[holder lifecycle](#holder-lifecycle).
 
 ### Scheduler
 
@@ -339,7 +359,7 @@ increases `ThisReqMs`; the provider still attempts its longest eligible SSD
 checkpoint and has no prefill-time comparison that bypasses an expensive hit
 (`SSDHybridCheckpointStore.stage`,
 `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Read.swift`;
-`provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Submission.swift`).
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift`).
 The priced component applies the existing long-prompt prefill multiplier to
 both savings and overhead, with stage cost counted once. Model load and its multiplier, decode, queue, pending, backlog,
 health and capacity penalties remain intact. The cold TTFT ceiling and full
@@ -415,7 +435,7 @@ reported/unreported loaded totals. The vocabularies
   `scan_failed`, `disk_unavailable`, or `cache_init_failed`.
   `paged_hybrid_unsupported` is still decoded for older providers; the current
   provider maps the engine's unsupported-reason enum in
-  `provider-swift/Sources/ProviderCore/Inference/PrefixCacheEligibilityStatus.swift`,
+  `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCacheEligibilityStatus.swift`,
   and the engine (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/PrefixReusePlan.swift`)
   no longer produces the dual-cursor case, so such slots report
   `unsupported_layout` instead;
@@ -435,8 +455,8 @@ fixed cap (`maxPrefixCacheStatuses = 16` statuses or
 `maxPrefixCacheDonationOutcomeEntries = 32` raw outcome entries), duplicate
 model/outcome keys, or a blank/non-canonical status model ID drops that whole
 optional snapshot (`sanitizePrefixCacheStatuses`). Donation aggregation has
-exactly 13 known buckets (`PrefixCacheDonationOutcomes`); the raw cap reserves
-19 entries for future outcomes, which are filtered individually.
+exactly 22 known buckets (`PrefixCacheDonationOutcomes`); the raw cap reserves
+10 entries for future outcomes, which are filtered individually.
 A dropped/present status snapshot becomes authoritative empty and clears stale
 status; a dropped donation snapshot preserves the prior monotonic counter
 baseline. Field omission preserves the prior mixed-version behavior.
@@ -472,6 +492,55 @@ identifier as a metric tag (`PendingRequest` in
 `coordinator/registry/pending_request.go`; `cacheSelectionTerminalTags` in
 `coordinator/api/provider.go`).
 
+### Observed demand and soft prefix affinity
+
+After a successful exact plan, `cache_demand.go` remembers keyed, tenant/build/
+contract-scoped demand at geometric block boundaries and the final boundary.
+The volatile index is capped at 10,000 entries with the routing TTL. It stores
+no prompt text or token IDs and grants no cache credit. `RepeatedPrefixTokens`
+means that an earlier plan shared a sampled boundary; it is not a hit, proof of
+ownership, or a complete census of repeated traffic. Expiry, sampling, planning
+limits, and bounded eviction can all hide repeats.
+
+When ordinary candidates tie within the existing service-cost window, queue
+and pending-work criteria, `selectRoutingCandidateWithAffinity` uses a stable
+keyed ranking to seed an observed repeated prefix on a cache-capable candidate.
+`cacheAffinityEligibleLocked` checks each matching SSD or resident capability
+against the tracker's proof quarantine while holding the current provider
+snapshot. Re-advertising the same rejected capability cannot restore its
+affinity preference; a changed capability is checked against its own identity.
+Reservation repeats the same check under the provider lock and rescans if
+affinity eligibility changed since selection, even when service cost is equal.
+If no candidate has an unfenced matching capability, ordinary routing continues.
+Busy or more expensive machines still lose. A real cache cost adjustment takes
+precedence over this tie breaker, and all admission/identity/proof checks are
+unchanged. No extra request or replica is generated. Providers may still miss;
+affinity alone never produces cached-token usage or a cache discount.
+
+The existing once-only cache terminal event now emits per-model
+`routing.cache_model.opportunity` counters. This is an attempt-terminal
+population, including parked completions, not a unique-client success rate.
+
+| Reason | Meaning |
+|---|---|
+| `no_repeat_observed` | No usable holder matched, and bounded demand history did not observe this sampled prefix previously. |
+| `repeat_without_holder` | Repeat demand was observed, but there is no current matching holder proof. This does not distinguish never-written from evicted data. |
+| `holder_evidence_unusable` | Matching records exist, but capability, epoch, connection, tier selection or quarantine prevents using them. |
+| `holder_unavailable` | Valid hints exist, but none survives the request's candidate gates/preferences with executable cache pricing. |
+| `holder_no_positive_credit` | Executable cache candidates exist, but none has positive allowed cache-cost credit. Staging may cost more than recomputing. |
+| `holder_not_selected` | At least one executable cache candidate survived; ordinary ranking or commit-time revalidation selected otherwise. |
+| `selected` | Reservation selected a provider with positive validated cache credit. Actual reuse is still reported independently. |
+
+Companion `opportunity_repeated_prefix_tokens`, `opportunity_matching_holders`,
+`opportunity_valid_holders`, `opportunity_usable_candidates`, and
+`opportunity_credited_candidates` counters sum
+numeric observations in the same population. `opportunity_affinity` counts
+terminals whose latest reservation scan used the soft affinity tie breaker.
+Combine these with existing receipt rejection, donation outcome, hit/miss,
+saved-token, and measured TTFT data. No scope, prefix digest, request identifier,
+or provider identifier is exported by these new metrics
+(`coordinator/api/cache_opportunity_telemetry.go`).
+
 ### Configuration and rollback
 
 All variables are read once at startup by `ReadConfig`
@@ -498,7 +567,7 @@ planning; ordinary inference continues cold.
 Provider caching has one global local kill switch,
 [`DARKBLOOM_PREFIX_CACHE`](../reference/configuration.md#ssd-prefix-cache)
 (`PrefixCachePolicy.environmentFlag`,
-`provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift`).
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift`).
 Resident payload retention additionally requires `DARKBLOOM_PREFIX_CACHE_MEMORY=1`;
 SSD caching defaults on for eligible slots, independently of the coordinator
 routing switch, whose default remains `off`.
@@ -514,7 +583,7 @@ bank with verified model identity and prompt contract; local paged L1 currently
 has no publication callback and does not advertise resident routing evidence.
 The two gates are independent: a resident-only slot can use protocol v2 without
 claiming SSD readiness (`EngineV2Bridge`,
-`provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift`;
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift`;
 `prefixCacheV2Advertisement`,
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientState.swift`).
 The provider correlates complete SSD and resident publication by a submission-unique
@@ -583,9 +652,25 @@ back are operator procedures, kept in the runbook
 | Media requests never earn a discount | `HasMedia` requests are excluded by design | No participating plan is produced |
 | A capability stops participating after a hit | Prompt-proof mismatch quarantined that exact capability | Request continues without preference; participation resumes only after a fresh valid proof |
 | One provider loses all holders for a model | Its SSD capacity eviction rotated the model's cache epoch | Invalidates that provider/model evidence; other machines holding the same prefix remain eligible |
-| Holders vanish for one provider | Disconnect or live-connection replacement, capability/contract/aggregate-hash change, verified miss or corruption, TTL, cap eviction | Removal counted under one of the six `CacheRoutingLifecycleStatus` reasons (`coordinator/registry/cache_routing.go`) |
+| Holders vanish for one provider | Disconnect or live-connection replacement, capability/contract/aggregate-hash change, verified miss or corruption, TTL, cap eviction | Removal counted under one of the seven `CacheRoutingLifecycleStatus` reasons (`coordinator/registry/cache_routing.go`) |
 | `/v1/cache/status` shows a provider's models as `unreported` | Status array beyond `maxPrefixCacheStatuses`, duplicate keys, a blank model ID, or a status contradicting the v2 capability | `sanitizePrefixCacheStatuses` drops the optional snapshot; routing capability is never weakened (`coordinator/registry/cache_snapshot.go`) |
 | A cached provider loses to a cold one | Residual prefill, full staging, age, queue or hardware costs outweigh its benefit; or an explicit limit clips it | Minimum adjusted service cost wins; there is no hard affinity |
+
+Receipt rejection telemetry distinguishes invalid shape, missing/expired attempt,
+request/connection/capability changes, prior rejection fencing, duplicate or stale
+sequence, missing accepted lookup, and identity/prompt/ready-anchor disagreement.
+The closed reasons come from `coordinator/registry/cache_receipt_result.go`;
+`exact_cache.receipt` and `exact_cache_receipt_total` label type, outcome and reason.
+Provider-reported usage remains separate from accepted proof-backed lookup hits.
+No nonce, scope, prompt or prefix hash is emitted by these counters.
+
+Per-model internal metrics use `routing.cache_model.*` / `cache_model_*`.
+They keep provider-reported reuse, accepted V2 proofs and cache-selected
+terminals separate. `selected=true` is an expected routing benefit, not proof
+of reuse; the terminal must also report `result=hit`. Missing/invalid usage is
+not a miss, and cache usage is not a consumer-success verdict. See the
+[metric inventory](../reference/telemetry-inventory.md#cache-results-by-model-internal)
+and `coordinator/api/cache_model_telemetry.go`.
 
 ## Code map
 
@@ -595,7 +680,7 @@ back are operator procedures, kept in the runbook
 | Configuration and validation | `coordinator/registry/config.go` — `CacheRoutingConfig`, `Check`; `coordinator/registry/cache_routing.go` — `ConfigureCacheRouting` |
 | Optional artifact membership | `coordinator/registry/cache_artifact_allowlist.go` — exact tuple parsing, validation and immutable membership; unset unrestricted, `[]` denied |
 | Activation cohort and plan QPS | `coordinator/registry/cache_activation.go` — `cacheActivationGate`, `CacheRoutingActivationStatus` |
-| Resident proof/publication and unique receipt correlation | `provider-swift/Sources/ProviderCore/Inference/ResidentPrefixCacheEvidence.swift` — `ResidentPrefixCacheEvidence`, `ResidentPrefixCachePromptProof`; `PrefixCacheEvidenceSequencer.swift` |
+| Resident proof/publication and unique receipt correlation | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/ResidentPrefixCacheEvidence.swift` — `ResidentPrefixCacheEvidence`, `ResidentPrefixCachePromptProof`; `PrefixCacheEvidenceSequencer.swift` |
 | Per-tier holders and bounded lifetime | `coordinator/registry/cache_tiers.go` — `cacheTierBoundaryKey`, `receiptTTL`; `cache_routing_hints.go` — `hints` |
 | Route keys and scopes | `coordinator/registry/cache_route_keys.go` |
 | Receipts, v2 proof acceptance and quarantine, legacy cache-bust key | `coordinator/registry/cache_receipts.go`, `coordinator/registry/cache_receipts_v2.go` — `ApplyPrefixCacheLookupV2`, `ApplyPrefixCacheReadyV2`, `rejectCapability` |
@@ -605,7 +690,7 @@ back are operator procedures, kept in the runbook
 | Status endpoint and gauges | `coordinator/api/exact_cache_status.go`, `coordinator/api/exact_cache_metrics.go` |
 | Terminal tags, calibration/reputation exclusion | `coordinator/api/provider.go` — `cacheSelectionTerminalTags`; `coordinator/api/settlement.go` — `observeTTFTCalibration`; `coordinator/api/dispatch.go` |
 | Sidecar | `coordinator/promptcontract/` — `provisioner.go` (`Counts`) |
-| Provider-side cache | `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` |
+| Provider-side cache | `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` |
 
 ## Related
 

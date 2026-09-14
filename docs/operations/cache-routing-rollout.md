@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-11 · commit `ef7b5a9aa`
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -28,7 +28,10 @@ for `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` and
 remain outside the initial SSD/cache-routing cohort. A successful paged-attention
 test alone does not qualify a tuple for cache routing. See the
 [five-model release decision](../design/release-090-paged-qwen-cache.md).
-Leave the provider's `DARKBLOOM_PREFIX_CACHE` unset to use its Qwen-only default.
+Leave the provider's `DARKBLOOM_PREFIX_CACHE` unset to use its
+[model defaults](../architecture/prefix-cache.md#kv-layouts). Default SSD eligibility
+for Gemma QAT or GPT-OSS does not change the deployed routing allowlist.
+Adding its exact model/weight/template tuple is a separate activation after validation.
 An explicit affirmative value opts other supported models into SSD caching;
 the coordinator allowlist restricts network participation but does not override
 that local provider setting.
@@ -219,6 +222,51 @@ Compare with the snapshot from step 1 when in doubt:
 diff <(jq -S . /tmp/darkbloom-cache-rollout.before.json) <(curl -fsS localhost:8080/v1/cache/status | jq -S \
   '{routing_mode, activation, sidecar: {enabled: .sidecar.enabled, ready: .sidecar.ready, restarts: .sidecar.restarts}, providers, holders, attempts}')
 ```
+
+### Per-model rollout evidence
+
+After deploying model metrics, query the same time window for each series:
+
+```text
+sum:d_inference.routing.cache_model.usage{env:production,outcome:hit} by {model}.as_count()
+sum:d_inference.routing.cache_model.usage{env:production,outcome:miss_absent} by {model}.as_count()
+sum:d_inference.routing.cache_model.usage{env:production,outcome:miss_corrupt} by {model}.as_count()
+sum:d_inference.routing.cache_model.prefill_tokens_saved{env:production} by {model}.as_count()
+sum:d_inference.routing.cache_model.lookup{env:production,outcome:hit} by {model}.as_count()
+sum:d_inference.routing.cache_model.selection{env:production,selected:true,result:hit} by {model}.as_count()
+```
+
+Reported hit rate is `hits / (hits + miss_absent + miss_corrupt)`. Track
+`invalid`, `unreported` and `skipped_*` usage separately; their presence is not
+proof of a lookup miss. Compare accepted `lookup` and `selection` evidence
+alongside reported reuse; do not add those populations together. Request success
+and first-content latency still come from the existing request-outcome/profile
+metrics. `selection.result=hit` does not itself prove a successful response.
+
+Token-weighted prompt coverage is `100 * usage_prefill_tokens_saved /
+usage_prompt_tokens` with identical model, outcome and tier filters over the
+same window. Add `outcome:hit` for the percentage of hit prompts that avoided
+prefill; include miss/skipped outcomes for all valid reported cache attempts.
+`lookup_prefill_tokens_saved / lookup_prompt_tokens` instead describes accepted
+proofs, with the coordinator plan as denominator. `selection_prefill_tokens_saved / selection_prompt_tokens`, filtered by `selected:true,result:hit`, describes
+cache-selected reported-hit terminals. Never divide across these populations.
+Zero/missing denominators mean unavailable coverage, not zero benefit.
+
+Inspect `receipt` by model/type/reason to locate evidence rejection. For
+`prompt_anchor_mismatch`, `prompt_mismatch.detail` distinguishes
+`same_length_hash`, `provider_shorter` and `provider_longer`; these categorical
+diagnostics contain no hashes or token sequences. They narrow investigation,
+but do not identify a production request shape or explain every mismatch.
+
+Mean stage milliseconds is `provider_stage_us / provider_stage_samples / 1000`
+with identical model/outcome/tier filters. Mean observed first-content milliseconds
+is `ttft_us / ttft_samples / 1000`, grouped by model and terminal cache outcome.
+Estimated savings in seconds is
+`estimated_ttft_saved_us / 1000000`; filter `selected:true,result:hit` for the
+cache-selected reported-hit subset. This remains a scheduler estimate, not a
+measured uncached comparison. Admin metrics expose the same counters and timing
+histograms. See the [metric inventory](../reference/telemetry-inventory.md#cache-results-by-model-internal).
+These breakdowns start at deployment and cannot reconstruct prior model counts.
 
 ## Rollback
 

@@ -110,10 +110,11 @@ func validCacheOutcome(outcome string) bool {
 	}
 }
 
-func (t *cacheRoutingTracker) disconnect(
-	providerID string,
-	reason cacheHolderRemovalReason,
-) {
+func (t *cacheRoutingTracker) disconnect(providerID string, reason cacheHolderRemovalReason) {
+	t.invalidateProviderEvidence(providerID, reason, false)
+}
+
+func (t *cacheRoutingTracker) invalidateProviderEvidence(providerID string, reason cacheHolderRemovalReason, preserveFences bool) {
 	if t == nil || providerID == "" {
 		return
 	}
@@ -135,33 +136,38 @@ func (t *cacheRoutingTracker) disconnect(
 		}
 	}
 	for key := range t.rejectedV2 {
-		if key.ProviderID == providerID {
+		if !preserveFences && key.ProviderID == providerID {
 			delete(t.rejectedV2, key)
 		}
 	}
 }
 
-func (t *cacheRoutingTracker) invalidateProviderModel(
-	providerID, modelID string,
-	reason cacheHolderRemovalReason,
-) {
-	if t == nil || providerID == "" || modelID == "" {
+func (t *cacheRoutingTracker) invalidateProviderModel(providerID, modelID string, reason cacheHolderRemovalReason) {
+	t.invalidateProviderModels(providerID, map[string]cacheHolderRemovalReason{modelID: reason})
+}
+
+// Scan each index once even when a heartbeat changes several models. Keep
+// exact-capability proof fences: an unrelated update cannot reset quarantine.
+func (t *cacheRoutingTracker) invalidateProviderModels(providerID string, models map[string]cacheHolderRemovalReason) {
+	if t == nil || providerID == "" || len(models) == 0 {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for key, holders := range t.holders {
-		if holder, exists := holders[providerID]; exists && holder.ModelID == modelID {
-			t.removeHolderLocked(key, providerID, reason)
+		if holder, ok := holders[providerID]; ok {
+			if reason, changed := models[holder.ModelID]; changed {
+				t.removeHolderLocked(key, providerID, reason)
+			}
 		}
 	}
 	for nonce, attempt := range t.attempts {
-		if attempt.ProviderID == providerID && attempt.Model == modelID {
+		if _, changed := models[attempt.Model]; attempt.ProviderID == providerID && changed {
 			t.removeAttemptLocked(nonce)
 		}
 	}
 	for key := range t.v2Sequences {
-		if key.ProviderID == providerID && key.ModelID == modelID {
+		if _, changed := models[key.ModelID]; key.ProviderID == providerID && changed {
 			delete(t.v2Sequences, key)
 		}
 	}

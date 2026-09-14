@@ -248,7 +248,7 @@ describe("GET /api/stats snapshot caching", () => {
 
   it("keeps mock geography out of the real snapshot and out of browser or edge caches", async () => {
     upstreamFetch.mockResolvedValueOnce(Response.json(stats(3)));
-    upstreamFetch.mockResolvedValueOnce(Response.json(stats(30)));
+    upstreamFetch.mockResolvedValueOnce(Response.json({ ...stats(30), request_locations_status: "unavailable", request_flows_status: "unavailable" }));
     upstreamFetch.mockResolvedValueOnce(Response.json(stats(31)));
     const { GET } = await import("@/app/api/stats/route");
     await GET(request());
@@ -257,7 +257,7 @@ describe("GET /api/stats snapshot caching", () => {
     expect(mocked.headers.get("Cache-Control")).toBe("no-store");
     expect(mocked.headers.get("X-Stats-Cache")).toBe("MOCK");
     expect(mocked.headers.has("X-Stats-Fetched-At")).toBe(false);
-    expect(await mocked.json()).toMatchObject({ active_providers: 30 });
+    expect(await mocked.json()).toMatchObject({ active_providers: 30, request_locations_status: "available", request_flows_status: "available" });
 
     const secondMock = await GET(request("?mock=geo"));
     expect(await secondMock.json()).toMatchObject({ active_providers: 31 });

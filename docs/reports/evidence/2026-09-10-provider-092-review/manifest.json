@@ -1,0 +1,27 @@
+{
+  "candidate_commit": "5f021ba4d4219b75f45de72af7c221395ec6594e",
+  "coordinator_test_commit": "73093957b8f2f7058f9eabab3ab004c3d758ec16",
+  "toolchain": "mise exec go@1.25.0",
+  "registry_filter": "TestNativeToolAdvertisementRouting|TestReserveProviderSkipsReloadingAndCrashedSlots|TestReserveProviderUsesModelSpecificSlotState|TestQueuedConstraintWaitsDuringCapableProviderReload|TestReleasePolicyGenerationCarriesForwardStillApprovedEvidence",
+  "api_filter": "TestEdge_Release|TestReleaseMutationsInvalidateImmediateReadsByPlatform|TestRuntimeManifest|TestSyncRuntimeManifest|TestRegisteringNewerReleaseKeepsPreviousReleaseFleetRuntimeVerified",
+  "test_command_form": "go test ./<registry or api> -run <filter> -count=1 -v",
+  "compatibility_fixture": "Candidate coordinator/registry/native_tool_advertisement_test.go copied into production-source checkout, with setProviderVersion changed from 0.9.0 to 0.9.2; no production implementation changes.",
+  "registry_top_level_passes": 5,
+  "api_top_level_passes": 30,
+  "skips": 0,
+  "sdk_commit": "ce446cc5f76e013855fe0bde9002b6db1ac091b7",
+  "sdk_reference_commit": "753f8a3f96cb216afc93f5f7e8561038a3ad9b7d",
+  "matching_sdk_tree": "6d03d43ee7aa108d4eb0d78ead5519b1448c56c6",
+  "live_allowlist_read_command": "gcloud compute ssh darkbloom-coordinator --project=darkbloom-mainnet --zone=us-east4-a --tunnel-through-iap --command=\"sudo docker exec coordinator printenv EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS\"",
+  "live_allowed_model_ids": [
+    "EigenLabs/Qwen3.8-27B-4bit-mtp",
+    "qwen3.5-35b-a3b",
+    "qwen3.6-35b-a3b-vl-mtp-mxfp8"
+  ],
+  "sha256": {
+    "release-compatibility.log.gz": "9c77f5705525f6654544cd615929a0e1b323214b73c1da886bcdd9b6d9ca4822",
+    "live-snapshot.json": "6e7c02dcc87b4fe89a29feb9a34399c86a0b3f66f4161b8538171138f8558783",
+    "coordinator-compatibility.log.gz": "7cacd818164c42a691d7f2fda62562f379dabfecb0db8a7cd5ba7fbb0426669a"
+  },
+  "compatibility_fixture_sha256": "c7ec8a9a4e8fdb60a1d7f9e0c5926d2c2619814aa9b22199bee026ce8516e608"
+}

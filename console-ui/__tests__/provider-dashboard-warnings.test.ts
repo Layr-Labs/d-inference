@@ -48,8 +48,6 @@ function baseProvider(overrides: Partial<MyProvider> = {}): MyProvider {
     },
     lifetime_requests_served: 0,
     lifetime_tokens_generated: 0,
-    earnings_total_micro_usd: 0,
-    earnings_count: 0,
     last_challenge_verified: new Date().toISOString(),
     version: "0.3.10",
     ...overrides,

@@ -66,6 +66,7 @@ import os
 
 enum SSDBlockStoreError: Error, CustomStringConvertible, Sendable {
     case ioFailure(String)
+    case posixFailure(String, code: Int32)
     case malformedHeader(String)
     case unsupportedVersion(UInt16)
     case authenticationFailed(String)
@@ -76,6 +77,7 @@ enum SSDBlockStoreError: Error, CustomStringConvertible, Sendable {
     var description: String {
         switch self {
         case .ioFailure(let m): return "I/O failure: \(m)"
+        case .posixFailure(let m, _): return "I/O failure: \(m)"
         case .malformedHeader(let m): return "malformed header: \(m)"
         case .unsupportedVersion(let v): return "unsupported format version \(v)"
         case .authenticationFailed(let m): return "authentication failed: \(m)"

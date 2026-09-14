@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-07 · commit `0b46b1618`
+> Last updated: 2026-09-13 · commit `f6b5e111c`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -83,7 +83,7 @@ flowchart TD
     C -->|ttft_ceiling| X5[tallyGate]
     C --> D[applyCacheRoutingCost]
     D --> P[pool narrowing: prefer owner, avoid version, min decode TPS]
-    P --> SEL[selectRoutingCandidate: unique_min / tie_queue / tie_pending / random]
+    P --> SEL[selectRoutingCandidateWithAffinity: unique_min / tie_queue / tie_pending / random / prefix_affinity]
     SEL --> PLAN[dispatch plan: winner + alternates]
     PLAN --> DISP[dispatch to winner]
     DISP -->|no first content by speculativeAt| H[runSpeculative: hedge governor + backup]
@@ -112,20 +112,21 @@ Gates run in the order below. The first failing gate names the rejection;
 | 9 | `GateEjection` | `ejection` | `providerRoutingGateReasonLockedEx` | Stable-identity health ejection open. |
 | 10 | `GateOffline` | `offline` | `providerLivenessGateReasonLocked` | `Status == StatusOffline` — set by the provider socket handler (`coordinator/api/provider.go`) the moment the WebSocket dies, before the deferred `Disconnect()` removes the record ([`scheduling.md`](scheduling.md#disconnect)). |
 | 11 | `GateUntrusted` | `untrusted` | `providerLivenessGateReasonLocked` | `Status == StatusUntrusted`. |
-| 12 | `GatePrivateOnly` | `private_only` | `providerLivenessGateReasonLocked` | Provider is `PrivateOnly` and the request is not from its owner. |
-| 13 | `GateTrustFloor` | `trust_floor` | `providerLivenessGateReasonLocked` | `TrustLevel` ranks below the floor ([below](#trust-floor-and-self-route-relaxation)). |
-| 14 | `GateRuntimeUnverified` | `runtime_unverified` | `providerLivenessGateReasonLocked` | `RuntimeVerified` is false. |
-| 15 | `GatePrivateText` | `private_text` | `providerLivenessGateReasonLocked` | `providerSupportsPrivateTextLocked` is false (code attestation not proven). |
-| 16 | `GateChallengeStale` | `challenge_stale` | `providerLivenessGateReasonLocked` | Last passed challenge is missing or older than `challengeFreshnessMaxAge` ([below](#challenge-freshness)). |
-| 17 | `GateTraitFloor` | `trait_floor` | `providerRoutingGateReasonLockedEx` | Provider cannot satisfy a request trait (for example inference-time tool constraints). |
-| 18 | `GateVision` | `vision` | `providerServesVisionModelLocked` | Request `RequiresVision` and the provider's build of the model does not serve vision. |
-| 19 | `GateSlotCrashed` | `slot_crashed` | `buildCandidateInto` / `slotStatePenalty` | Slot state `crashed`. |
-| 20 | `GateSlotReloading` | `slot_reloading` | `buildCandidateInto` / `slotStatePenalty` | Slot state `reloading`. |
-| 21 | `GateNoHeadroom` | `no_headroom` | `hasConcurrencyHeadroomForModelCapResolvedLocked` | Provider or slot is at its concurrency cap ([`scheduling.md`](scheduling.md#concurrency-caps)). |
-| 22 | `GateThermalCritical` | `thermal_critical` | `buildCandidateInto` | `SystemMetrics.ThermalState == "critical"`. |
-| 23 | `GateModelTooLarge` | `model_too_large` | `modelFitsHardware` | Model is not resident and cannot fit the node's total memory. Permanent, not capacity. |
-| 24 | `GateFreeMemory` | `free_memory` | `freeMemoryAdmits` | Token-budget or memory admission fails, or the pair is budget-clamped. |
-| 25 | `GateTTFTCeiling` | `ttft_ceiling` | `scanCandidatesLocked` | Estimated TTFT exceeds `pr.MaxTTFTMs` (public non-vision requests with a ceiling only). |
+| 12 | `GateStateRestoring` | `state_restoring` | `providerLivenessGateReasonLocked` | Verified SE identity is still awaiting durable account/counter/reputation restoration. Also excludes owner self-route, capacity and model loading. |
+| 13 | `GatePrivateOnly` | `private_only` | `providerLivenessGateReasonLocked` | Provider is `PrivateOnly` and the request is not from its owner. |
+| 14 | `GateTrustFloor` | `trust_floor` | `providerLivenessGateReasonLocked` | `TrustLevel` ranks below the floor ([below](#trust-floor-and-self-route-relaxation)). |
+| 15 | `GateRuntimeUnverified` | `runtime_unverified` | `providerLivenessGateReasonLocked` | `RuntimeVerified` is false. |
+| 16 | `GatePrivateText` | `private_text` | `providerLivenessGateReasonLocked` | `providerSupportsPrivateTextLocked` is false (code attestation not proven). |
+| 17 | `GateChallengeStale` | `challenge_stale` | `providerLivenessGateReasonLocked` | Last passed challenge is missing or older than `challengeFreshnessMaxAge` ([below](#challenge-freshness)). |
+| 18 | `GateTraitFloor` | `trait_floor` | `providerRoutingGateReasonLockedEx` | Provider cannot satisfy a request trait (for example inference-time tool constraints). |
+| 19 | `GateVision` | `vision` | `providerServesVisionModelLocked` | Request `RequiresVision` and the provider's build of the model does not serve vision. |
+| 20 | `GateSlotCrashed` | `slot_crashed` | `buildCandidateInto` / `slotStatePenalty` | Slot state `crashed`. |
+| 21 | `GateSlotReloading` | `slot_reloading` | `buildCandidateInto` / `slotStatePenalty` | Slot state `reloading`. |
+| 22 | `GateNoHeadroom` | `no_headroom` | `hasConcurrencyHeadroomForModelCapResolvedLocked` | Provider or slot is at its concurrency cap ([`scheduling.md`](scheduling.md#concurrency-caps)). |
+| 23 | `GateThermalCritical` | `thermal_critical` | `buildCandidateInto` | `SystemMetrics.ThermalState == "critical"`. |
+| 24 | `GateModelTooLarge` | `model_too_large` | `modelFitsHardware` | Model is not resident and cannot fit the node's total memory. Permanent, not capacity. |
+| 25 | `GateFreeMemory` | `free_memory` | `freeMemoryAdmits` | Token-budget or memory admission fails, or the pair is budget-clamped. |
+| 26 | `GateTTFTCeiling` | `ttft_ceiling` | `scanCandidatesLocked` | Estimated TTFT exceeds `pr.MaxTTFTMs` (public non-vision requests with a ceiling only). |
 
 Gates 5–9 are the coordinator's own fault memory and are evaluated *before*
 liveness so a breaker-open provider is counted as `breaker`, not as whatever
@@ -133,6 +134,14 @@ else may also be wrong with it. `scanCandidatesLocked` separately counts
 providers rejected by gates 8–9 (`breakerRejected`) and providers that would
 have been routable but for gate 7 (`capacityRejections`) because both feed the
 fail-open and 429 decisions described under [Failure modes](#failure-modes).
+
+Registration recovery (`coordinator/api/provider_restore.go`,
+`restorePersistedProviderState`) retries transient reads within one bounded
+deadline. Until it completes, `providerStateRestoreRequiredLocked` keeps the
+verified identity out of routing, public capacity and warm-pool candidates.
+A sustained failure closes the new connection for retry before evicting an
+existing session; it cannot serve with account history silently missing.
+Providers without verified SE evidence retain the existing Open Mode gates.
 
 ### Trust floor and self-route relaxation
 
@@ -283,7 +292,7 @@ leaves at least one candidate (`scanCandidatesLocked`):
    `0` disables it.
 
 `preferRoutingCandidates` compacts the request-local pool in place.
-`selectRoutingCandidate` ranks it without allocating intermediate lists
+`selectRoutingCandidateWithAffinity` ranks it without allocating intermediate candidate lists
 (`coordinator/registry/candidate_selection.go`):
 
 1. **Best cost.** The minimum `costMs`.
@@ -293,13 +302,17 @@ leaves at least one candidate (`scanCandidatesLocked`):
    spreading. Among the retained candidates choose the lowest `effectiveQueue`,
    then the lowest `totalPending`.
 3. **Equivalents.** More than one candidate sharing the retained cost range,
-   queue and pending count resolves uniformly by `random`.
+   queue and pending count normally resolves uniformly by `random`. With active
+   cache routing, observed repeat demand and no cache cost adjustment in the
+   pool, a stable keyed ranking prefers a matching, non-quarantined cache
+   capability (`prefix_affinity`). See [cache affinity](cache-aware-routing.md#observed-demand-and-soft-prefix-affinity).
 4. **Path label**: `unique_min` when only one candidate is retained;
    `tie_pending` when pending count decides between equal queue depths;
-   otherwise `tie_queue`. Exact equivalent choices use `random`.
+   otherwise `tie_queue`. Equivalent choices use `random` or `prefix_affinity`
+   under the conditions above; an empty pool uses `none`.
 
 `SelectionPath` values (`coordinator/registry/gate_reason.go`): `none`,
-`unique_min`, `tie_queue`, `tie_pending`, `random`. Historical profiler rows may
+`unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity`. Historical profiler rows may
 still contain the retired `cache_tiebreak` string. The
 runner-up (the lowest-cost candidate other than the winner) is recorded for telemetry
 and as the first alternate in the dispatch plan.
@@ -457,7 +470,7 @@ outcome exactly once at first content or completion.
 | Mechanism | File | Keyed by | Trips when | Holds for |
 |---|---|---|---|---|
 | Inference-error cooldown (`error_cooldown`) | `coordinator/registry/error_cooldown.go` | provider × model × error shape | `inferenceErrorThreshold = 2` strikes within `inferenceErrorWindow = 60 * time.Second` | `inferenceErrorCooldownTTL = 5 * time.Minute` |
-| Node-health breaker (`breaker`) | `coordinator/registry/provider_breaker.go` | stable provider identity | `providerBreakerConsecTrip = 5` consecutive genuine faults, or fail rate ≥ `providerBreakerFailRate = 0.80` over ≥ `providerBreakerMinVolume = 20` outcomes in `providerBreakerWindow = 120 * time.Second` (ring of `providerHealthRingSize = 20`) | `providerBreakerBaseCooldown = 60 * time.Second`, doubling to `providerBreakerMaxCooldown = 5 * time.Minute` |
+| Node-health breaker (`breaker`) | `coordinator/registry/provider_breaker.go` | stable provider identity | `providerBreakerConsecTrip = 5` consecutive genuine faults, or fail rate > `providerBreakerFailRate = 0.80` over ≥ `providerBreakerMinVolume = 20` outcomes in `providerBreakerWindow = 120 * time.Second` (ring of `providerHealthRingSize = 20`) | `providerBreakerBaseCooldown = 60 * time.Second`, doubling to `providerBreakerMaxCooldown = 5 * time.Minute` |
 | Health ejection (`ejection`) | `coordinator/registry/health_ejection.go` | stable provider identity | `healthEjectionConsecTrip = 8` consecutive failures, or success rate < `healthEjectionMinSuccessRate = 0.10` over ≥ `healthEjectionMinSample = 15` outcomes in `healthEjectionWindow = 10 * time.Minute`, or `healthEjectionCapacityConsecTrip = 10` consecutive capacity rejects | `healthEjectionBaseCooldown = 60 * time.Second`, doubling to `healthEjectionMaxCooldown = 10 * time.Minute` |
 | Dispatch-load cooldown (`dispatch_load_cooldown`) | `coordinator/registry/model_loading.go` | provider × model | a dispatch-time `load_model` fails | `dispatchLoadCooldownTTL = 2 * time.Minute` |
 
@@ -466,6 +479,12 @@ survives disconnect and reconnect (`Disconnect`, `coordinator/registry/provider_
 Every tracker in this table and in [gray-box capacity signals](#gray-box-capacity-signals)
 stores its state in one `gateState` per identity
 ([below](#concurrency-scan-commit-and-fault-state-gates)).
+
+The health rings share `providerHealthWindow.recordOutcome` for insertion and
+`rebuild` for identity merges and version-reset filtering. Rebuilds preserve
+each outcome's disconnect-flush marker and recompute the trailing fault streak
+from the retained chronological history (`coordinator/registry/provider_breaker.go`,
+`coordinator/registry/version_reset.go`).
 
 **Fail-open.** If the scan produced no winner, at least one provider was
 rejected only by the breaker or ejection, and there were no capacity or TTFT
@@ -631,6 +650,10 @@ traffic before deploy. It has no binary; it is driven from tests.
   (`FleetConfig`, `DefaultHardwareSpec`) into a fresh `Registry`.
 - `fleet_ndjson.go` — `LoadFleetNDJSON` reconstructs a fleet from exported
   fleet snapshots (`store.FleetSnapshotRow`) at the tick nearest a given time.
+  The loader validates every line while retaining only rows for the current
+  best tick; it accepts interleaved timestamps, chooses the earlier tick on a
+  distance tie and keeps duplicate-slot precedence in file order. A zero
+  requested time selects the latest tick.
 - `trace.go` / `trace_ndjson.go` — `GenerateTrace` and
   `CalibrationPromptMix` build synthetic prompt mixes;
   `LoadProfilesNDJSON` turns exported request profiles into arrivals.
@@ -708,6 +731,7 @@ must not run in parallel with other scheduler tests in the same process.
 | Concern | File / symbol |
 |---|---|
 | Dispatch-time selection, cost model, TTFT estimate | `coordinator/registry/scheduler.go` — `ReserveProviderWithPlan`, `scanCandidatesLocked`, `snapshotProviderIntoLockedEx`, `buildCandidateInto`, `slotStatePenalty`, `healthPenaltyMs`, `resolveEffectiveTPS`, `ttftMsFromSnapshot`, `longPromptPenalty` |
+| Provider-state projection for selection and capacity preflight | `coordinator/registry/routing_snapshot.go` — `fillRoutingSnapshotPLocked`; callers retain their own eligibility gates and hold both registry and provider locks |
 | Candidate preferences and ranking | `coordinator/registry/candidate_selection.go` — `preferRoutingCandidates`, `selectRoutingCandidate` |
 | Shared gate primitives | `coordinator/registry/routing_eligibility.go` — `providerLivenessGateReasonLocked`, `providerServesRoutableModelLocked` |
 | Closed vocabularies | `coordinator/registry/gate_reason.go` — `GateReason`, `SelectionPath`, `SlotState` |

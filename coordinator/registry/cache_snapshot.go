@@ -46,8 +46,8 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 		return false, nil
 	}
 	r.mu.RLock()
+	defer r.mu.RUnlock()
 	provider := r.providers[providerID]
-	r.mu.RUnlock()
 	if provider == nil {
 		return false, errInvalidPrefixCacheCapability
 	}
@@ -120,8 +120,9 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 	capabilitiesChanged := provider.PrefixCacheProtocol != resultVersion ||
 		!equalPrefixCacheCapabilities(provider.PrefixCacheV2Models, resultCapabilities) ||
 		!equalPrefixCacheCapabilities(provider.PrefixCacheMemoryModels, resultMemoryCapabilities)
-	removalReason := prefixCacheCapabilityRemovalReason(
-		provider.PrefixCacheV2Models, resultCapabilities)
+	protocolChanged := provider.PrefixCacheProtocol != resultVersion
+	changedModels := changedPrefixCacheModels(provider.PrefixCacheV2Models, resultCapabilities,
+		provider.PrefixCacheMemoryModels, resultMemoryCapabilities)
 	if capabilitiesChanged {
 		provider.PrefixCacheProtocol = resultVersion
 		provider.PrefixCacheV2Models = resultCapabilities
@@ -133,14 +134,18 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 	if outcomes != nil {
 		provider.PrefixCacheDonationOutcomes = nextOutcomes
 	}
-	provider.mu.Unlock()
-
-	r.mu.RLock()
+	// Keep connection/generation ownership and the provider lock until
+	// invalidation completes. A replacement connection or newly prepared
+	// receipt must not be erased by a delayed old-heartbeat cleanup.
 	tracker := r.cacheRouting
-	r.mu.RUnlock()
 	if capabilitiesChanged && tracker != nil {
-		tracker.disconnect(providerID, removalReason)
+		if protocolChanged {
+			tracker.invalidateProviderEvidence(providerID, cacheHolderRemovalCapabilityChange, true)
+		} else {
+			tracker.invalidateProviderModels(providerID, changedModels)
+		}
 	}
+	provider.mu.Unlock()
 	if tracker != nil {
 		tracker.recordDonationOutcomes(deltas)
 	}

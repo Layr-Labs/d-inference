@@ -1,6 +1,6 @@
 # Operations runbooks
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-08 · commit `ad9b7d2b1`
 
 Procedures for deploying, migrating, and operating Darkbloom production
 infrastructure. Every runbook has the same shape — when to use, prerequisites,
@@ -12,6 +12,7 @@ shapes under [`../reference/README.md`](../reference/README.md).
 | Runbook | Scope |
 |---|---|
 | [`coordinator-deploy.md`](coordinator-deploy.md) | Swap the production coordinator container to a reviewed build, verify, roll back |
+| [`coordinator-startup-measurement.md`](coordinator-startup-measurement.md) | Measure post-stop candidate readiness, per-model routable capacity and optional disposable-test inference separately |
 | [`global-payouts.md`](global-payouts.md) | Enable international bank payouts, verify bank arrival and reconcile uncertain transfers |
 | [`provider-release.md`](provider-release.md) | Ship a provider CLI release: version bump, tag, signed and notarized bundle to R2, registration with the coordinator, rollback by deactivation |
 | [`dev-environment.md`](dev-environment.md) | Stand up, operate, and tear down the GCP dev environment |

@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-07 · commit `0b46b1618`
+> Last updated: 2026-09-11 · commit `6938e8547`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -11,6 +11,8 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [GPT-OSS 20B default SSD prefix-cache qualification](2026-09-11-gptoss-default-prefix-cache.md) — authenticated reconstruction, mixed suffixes and B1/B2/B4 task checks pass; 86–91% median warm-hit TTFT reductions, with standalone transport and ephemeral-key limits retained.
+- [0.9.2 provider-only rollout review](2026-09-10-provider-092-rollout-review.md) — verified 0.9.1 coordinator compatibility, shared inference interactions and remaining fleet-release gates.
 - [Final cache routing checks](2026-09-07-final-cache-routing.md) — twenty cache-off/SSD cases pass with two isolated providers, including holder selection, tenant isolation, cancellation and cold fallback.
 - [0.9.0 implementation and validation readiness](2026-09-07-release090-readiness.md) — consolidated model, cache and routing evidence; code review readiness with signed production-key restart remaining.
 - [QAT sustained generation and matched prompt control](2026-09-07-qat-sustained-followup.md) — combined long-generation evidence satisfies sustained exposure, while original refusals, exact-cap failures and literary limits remain preserved.
@@ -214,3 +216,9 @@ Machine-generated; kept as evidence for the reports above.
 - [Actual forward-width runtime build and native validation](2026-09-06-forward-width-runtime.md) — source-bound M5 build, engine/compiler tests and retained setup failures; real-model batching remains separate.
 
 - [Representative quality cohort preparation](2026-09-06-representative-quality-cohort.md) — six-artifact prose/code/reasoning inputs with CPU checks; model execution and quality conclusions remain pending.
+
+- [Gemma QAT default cache and MTP validation](2026-09-08-gemma-qat-defaults.md) — measured decode gains, live assistant download/swap, cache isolation, capability checks and limitations.
+
+- [Gemma MTP review fixes](2026-09-08-gemma-mtp-review-fixes.md) — reproduced request-ID reuse and verification-shape findings, generation isolation fixes and regression evidence.
+
+- [Gemma QAT September 10 merge and validation](2026-09-10-gemma-qat-review-sync.md) — review fixes, merged-source tests, new artifact identity and model/HTTP revalidation status.

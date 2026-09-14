@@ -982,16 +982,18 @@ type ReputationRecord struct {
 //
 // SECURITY: the row is written ONLY after a full, verified code-identity
 // round-trip; it is never created from an unverified heartbeat token. On read,
-// the reuse decision still re-applies the version gate and freshness window, so a
-// persisted row can only ever let the coordinator skip a redundant push — never
-// extend or fabricate trust.
+// reuse still checks exact identity and either proof freshness or coordinator-
+// observed same-process continuity. Coverage never changes AttestedAt or grants
+// trust: a fresh encrypted process-possession challenge is always required.
 type CodeAttestation struct {
-	SEPubKey      string    `json:"se_pubkey"`       // base64 Secure Enclave P-256 public key (bound at registration)
-	Version       string    `json:"version"`         // provider binary version that attested
-	AttestedAt    time.Time `json:"attested_at"`     // instant of the successful round-trip
-	APNsToken     string    `json:"apns_token"`      // APNs token the proof was bound to; empty legacy rows require a fresh real push.
-	NodePublicKey string    `json:"node_public_key"` // registration X25519 process key; protected-capability reuse requires exact match
-	BinaryHash    string    `json:"binary_hash"`     // SE-attested binary identity (SHA-256 hex) the proof was earned under; empty legacy rows never authorize a release-transition resume
+	// Coordinator-observed continuity of this exact verified application process.
+	ContinuousCoverageUntil *time.Time `json:"continuous_coverage_until,omitempty"`
+	SEPubKey                string     `json:"se_pubkey"`       // base64 Secure Enclave P-256 public key (bound at registration)
+	Version                 string     `json:"version"`         // provider binary version that attested
+	AttestedAt              time.Time  `json:"attested_at"`     // instant of the successful round-trip
+	APNsToken               string     `json:"apns_token"`      // APNs token the proof was bound to; empty legacy rows require a fresh real push.
+	NodePublicKey           string     `json:"node_public_key"` // registration X25519 process key; protected-capability reuse requires exact match
+	BinaryHash              string     `json:"binary_hash"`     // SE-attested binary identity (SHA-256 hex) the proof was earned under; empty legacy rows never authorize a release-transition resume
 }
 
 // CodeAttestPushBudget is durable APNs admission metadata, not evidence. It

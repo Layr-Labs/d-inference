@@ -183,7 +183,8 @@ func equalPrefixCacheCapabilities(
 }
 
 // UpdatePrefixCacheCapabilities atomically replaces the live connection
-// capability set. Any change invalidates all connection-scoped cache evidence.
+// capability set. Changed models lose their evidence; other models retain it.
+// Protocol changes invalidate all connection-scoped evidence.
 func (r *Registry) UpdatePrefixCacheCapabilities(
 	providerID string,
 	version int,
@@ -199,30 +200,4 @@ func (r *Registry) UpdatePrefixCacheCapabilities(
 		nil,
 	)
 	return err
-}
-
-func prefixCacheCapabilityRemovalReason(
-	previous, current map[string]protocol.PrefixCacheV2Capability,
-) cacheHolderRemovalReason {
-	if len(previous) == 0 || len(previous) != len(current) {
-		return cacheHolderRemovalCapabilityChange
-	}
-	epochChanged := false
-	for modelID, before := range previous {
-		after, ok := current[modelID]
-		if !ok {
-			return cacheHolderRemovalCapabilityChange
-		}
-		if before.CacheEpoch != after.CacheEpoch {
-			epochChanged = true
-			before.CacheEpoch = after.CacheEpoch
-		}
-		if before != after {
-			return cacheHolderRemovalCapabilityChange
-		}
-	}
-	if epochChanged {
-		return cacheHolderRemovalEpochChange
-	}
-	return cacheHolderRemovalCapabilityChange
 }

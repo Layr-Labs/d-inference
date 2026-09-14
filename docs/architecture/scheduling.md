@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-10 · commit `213b8c2b6`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -182,6 +182,14 @@ The **absolute hardware-fit gate** (`modelFitsHardware`,
 `modelMemoryHeadroomFactor`) precedes both paths for non-resident models
 and is described with the other gates in [`routing.md`](routing.md#eligibility-gates-and-the-gatereason-vocabulary).
 
+Optional MTP preparation retains its target across asynchronous work, so the
+provider excludes that target from eviction feasibility and refreshes its
+capacity quote when staging ownership changes. A quote calculated before a
+staging change cannot overwrite the newer snapshot
+(`provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift`,
+`updateAggregateCapacity`). The retained-weight and survivor-grant lifecycle is
+specified in [Inference: multi-token prediction](inference.md#multi-token-prediction).
+
 ### Concurrency caps
 
 Admission also requires headroom
@@ -350,7 +358,7 @@ ranked by `warmPoolCandidateReasonLocked`; those disqualified are tallied by
 reason (`offline_untrusted_private`, `pending_load_or_cooldown`, `not_idle`,
 `thermal_critical`, `trust_or_runtime`, `stale_challenge`,
 `not_serving_catalog`, `dedicated_excluded`, `model_too_large`,
-`no_free_for_load`).
+`no_free_for_load`, `state_restoring`).
 
 **`WarmPoolSnapshot`.** Every tick produces one per model, logged as
 `warm_pool_tick` and retained as the controller's latest state

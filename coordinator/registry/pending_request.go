@@ -149,6 +149,7 @@ type PendingRequest struct {
 	// aggregate numeric telemetry only and contains no cache identity.
 	CacheSelectionEstimatedTTFTSavedMs float64
 	CacheSelectionSelected             bool
+	CacheOpportunity                   CacheOpportunity
 	cacheRoutingHints                  map[string]cacheRoutingHint
 	// TokenAdmission records the output-token charge admitted at request time so
 	// successful completion can reconcile any positive actual-output delta.

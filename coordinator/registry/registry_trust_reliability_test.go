@@ -25,8 +25,9 @@ func TestRestoreProviderStateDoesNotResurrectMDAWhenSelfSigned(t *testing.T) {
 		Attested:    true,
 		MDAVerified: true,
 	}
-
-	reg.RestoreProviderState(p, rec)
+	if err := reg.RestoreProviderState(p, rec); err != nil {
+		t.Fatal(err)
+	}
 
 	// Trust is capped to self_signed (hardware is never resurrected from store).
 	if p.GetTrustLevel() != TrustSelfSigned {
@@ -57,7 +58,9 @@ func TestRestoreProviderStateClearsProofsForSelfSignedRecord(t *testing.T) {
 		TrustLevel:  string(TrustSelfSigned),
 		MDAVerified: true,
 	}
-	reg.RestoreProviderState(p, rec)
+	if err := reg.RestoreProviderState(p, rec); err != nil {
+		t.Fatal(err)
+	}
 
 	if p.GetTrustLevel() != TrustSelfSigned {
 		t.Errorf("trust = %q, want %q", p.GetTrustLevel(), TrustSelfSigned)

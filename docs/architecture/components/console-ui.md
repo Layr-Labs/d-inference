@@ -1,6 +1,6 @@
 # Console UI (`console-ui/`)
 
-> Last updated: 2026-09-05 · commit `d70df51bc`
+> Last updated: 2026-09-13 · commit `f7a3ef1fd`
 
 The console at `console.darkbloom.dev` is a Next.js 16 App Router / React 19 application (`console-ui/package.json`) that gives consumers a chat client, model catalog, network stats, billing, API-key management, and provider linking. The browser never calls the coordinator for authenticated work: every page fetches same-origin `/api/*` route handlers, which resolve the coordinator URL server-side and forward the caller's own credential. This page explains how those pieces fit; the coordinator routes they call are specified in [`../../reference/api-contracts.md`](../../reference/api-contracts.md). The internal, read-only operator dashboard is a separate app — see [`admin-ui.md`](admin-ui.md).
 
@@ -138,6 +138,7 @@ The stats page renders a continuous overview without waiting for catalog or capa
 | Response timestamps | `X-Stats-Fetched-At` records the upstream fetch start; `X-Stats-Snapshot-At` exists only when upstream publishes a valid RFC 3339 `snapshot_at`; `X-Stats-Expires-At` records cache expiry; `X-Stats-Cache` is `HIT` or `MISS` | `console-ui/src/app/api/stats/snapshot-cache.ts` (`statsSnapshotHeaders`) |
 | Edge cache and errors | `Cache-Control: public, max-age=0, s-maxage=<remaining seconds>, must-revalidate`; no stale extension. `UPSTREAM_TIMEOUT_MS = 20_000` bounds upstream fetch and body reading; timeout returns `504`, other upstream errors retain their status, and network/JSON failures return `502`. Failures use `no-store` and release pending requests for retry | `console-ui/src/app/api/stats/snapshot-cache.ts` (`fetchSnapshot`), `console-ui/src/app/api/stats/route.ts` (`GET`) |
 | Browser refresh | `STATS_REFRESH_MS = 30_000`; polling pauses while hidden and refreshes on visibility return. Primary and auxiliary requests coalesce independently; primary failure retains the previous data and dates with an error, while unavailable auxiliary data becomes unknown | `console-ui/src/app/stats/useNetworkStats.ts` (`useNetworkStats`), `console-ui/src/hooks/useVisiblePolling.ts` (`useVisiblePolling`) |
+| Partial geography | Per-section unavailable statuses show a notice within Network geography while summary, activity, models, hardware, and provider geography remain rendered. Unavailable request locations hide map totals and privacy counts instead of displaying zeros; the next successful snapshot restores the map. Older coordinators without status fields retain their existing behavior | `console-ui/src/app/stats/geography/NetworkGeography.tsx` (`NetworkGeography`), `console-ui/src/app/stats/geography/GeographyNotice.tsx` (`GeographyNotice`) |
 | Traffic boundaries | Every range, including `30m`, fetches `/api/network/series?window=<range>`; the response's explicit `end_at` anchors completed buckets for both request and token charts | `console-ui/src/app/stats/traffic/useTrafficSeries.ts` (`useTrafficSeries`), `console-ui/src/app/stats/traffic/TrafficPanel.tsx` (`TrafficPanel`) |
 | Displayed age and mock mode | The header labels source time as “Snapshot” and marks source snapshots at least 30 seconds old as stale, or labels fetch time as “Fetched” when the source timestamp is absent. `?mock=geo` returns `X-Stats-Cache: MOCK`, uses `no-store`, and displays a simulation notice | `console-ui/src/app/stats/StatsHeader.tsx` (`StatsHeader`), `console-ui/src/app/stats/page.tsx` (`StatsPage`), `console-ui/src/app/api/stats/route.ts` (`GET`) |
 
@@ -156,7 +157,7 @@ The console key is provisioned by `provisionConsoleKey` (`console-ui/src/hooks/u
 
 ### Authentication (Privy)
 
-`PrivyClientProvider` (`console-ui/src/components/providers/PrivyClientProvider.tsx`) loads `PrivyRealProvider` as an on-demand chunk (`next/dynamic`, `ssr: false`) and exposes `useAuthContext()` → `{ready, authenticated, user, login, logout, getAccessToken}`. `PrivyRealProvider` (`console-ui/src/components/providers/PrivyRealProvider.tsx`) configures `loginMethods: ["email"]` — email OTP is the only sign-in method — with `embeddedWallets: { createOnLogin: "off" }`. Login is an in-page modal (`login()`), triggered from the shell and page CTAs; there is no login page (see `/login` above).
+`PrivyClientProvider` (`console-ui/src/components/app-providers/PrivyClientProvider.tsx`) loads `PrivyRealProvider` as an on-demand chunk (`next/dynamic`, `ssr: false`) and exposes `useAuthContext()` → `{ready, authenticated, user, login, logout, getAccessToken}`. `PrivyRealProvider` (`console-ui/src/components/app-providers/PrivyRealProvider.tsx`) configures `loginMethods: ["email"]` — email OTP is the only sign-in method — with `embeddedWallets: { createOnLogin: "off" }`. Login is an in-page modal (`login()`), triggered from the shell and page CTAs; there is no login page (see `/login` above).
 
 **Mock auth.** When `NEXT_PUBLIC_PRIVY_APP_ID` is unset or equals the literal `"placeholder"` (`IS_PRIVY_CONFIGURED`), the provider is replaced by `MOCK_AUTH`: `ready: true`, `authenticated: true`, `user: null`, `getAccessToken` resolving to `null`, and `login`/`logout` no-ops. Every visitor appears signed in, but no Privy token exists (consequences under [Failure modes](#failure-modes)). This is the local-preview mode; it must not ship.
 
@@ -186,12 +187,12 @@ sequenceDiagram
 |---|---|---|---|
 | `useStore` (Zustand) | `console-ui/src/lib/store.ts` | `chats`, `activeChatId`, `selectedModel`, `models`, `sidebarOpen`, `useMyMachine`; actions `createChat`, `deleteChat`, `addMessage`, `appendToMessage`, `appendToThinking`, `setUseMyMachine`, … | `persist` under `STORE_NAME` = `darkbloom-store`; `partialize` keeps chats (with `images` dropped and `streaming` cleared), `activeChatId`, `selectedModel`, `sidebarOpen`, `useMyMachine`; `skipHydration: true` — `AppShell` calls `useStore.persist.rehydrate()` after mount |
 | `useToastStore` | `console-ui/src/hooks/useToast.ts` | Toast queue | none |
-| `AuthContext` | `console-ui/src/components/providers/PrivyClientProvider.tsx` | `AuthState` | Privy SDK (`privy-token` cookie) |
+| `AuthContext` | `console-ui/src/components/app-providers/PrivyClientProvider.tsx` | `AuthState` | Privy SDK (`privy-token` cookie) |
 | `ConsoleExperienceProvider` | `console-ui/src/components/console-entry/ConsoleExperience.tsx` | Workspace preference and account discovery | Only workspace preference in `darkbloom_workspace`; provider records are never persisted |
-| `ThemeProvider` | `console-ui/src/components/providers/ThemeProvider.tsx` | Theme | localStorage `darkbloom-theme` |
-| `VerificationModeProvider` | `console-ui/src/components/providers/verification-mode.tsx` | `mode` ∈ `normal`, `technical` (verification-panel display mode; changes no request) | localStorage `darkbloom-verification-mode` (`STORAGE_KEYS.verificationMode`) |
+| `ThemeProvider` | `console-ui/src/components/app-providers/ThemeProvider.tsx` | Theme | localStorage `darkbloom-theme` |
+| `VerificationModeProvider` | `console-ui/src/components/app-providers/verification-mode.tsx` | `mode` ∈ `normal`, `technical` (verification-panel display mode; changes no request) | localStorage `darkbloom-verification-mode` (`STORAGE_KEYS.verificationMode`) |
 
-Other localStorage keys: `STORAGE_KEYS` (`console-ui/src/lib/constants.ts`) = `darkbloom_api_key`, `eigeninference_api_key` (legacy), `darkbloom_console_key_id`, `darkbloom_coordinator_url`; `darkbloom_encrypt_to_coordinator`; `darkbloom_coord_enc_key_v2`; `darkbloom_invite_dismissed` (`INVITE_DISMISSED_KEY`, `console-ui/src/components/InviteCodeBanner.tsx`); `darkbloom_ga_consent` (`GA_CONSENT_STORAGE_KEY`, also a cookie).
+Other localStorage keys: `STORAGE_KEYS` (`console-ui/src/lib/storage-keys.ts`) = `darkbloom_api_key`, `eigeninference_api_key` (legacy), `darkbloom_console_key_id`, `darkbloom_coordinator_url`; `darkbloom_encrypt_to_coordinator`; `darkbloom_coord_enc_key_v2`; `darkbloom_invite_dismissed` (`INVITE_DISMISSED_KEY`, `console-ui/src/components/InviteCodeBanner.tsx`); `darkbloom_ga_consent` (`GA_CONSENT_STORAGE_KEY`, also a cookie).
 
 ### Request interceptor (`console-ui/src/proxy.ts`)
 
@@ -215,7 +216,7 @@ Names and effect only; values, defaults, and where each is set are in [`../../re
 | Variable | Read in | Effect |
 |---|---|---|
 | `NEXT_PUBLIC_COORDINATOR_URL` | `console-ui/src/lib/server/coordinator.ts`, `console-ui/src/lib/coordinator-url.ts` | Upstream coordinator for every `/api/*` handler; displayed base URL |
-| `NEXT_PUBLIC_PRIVY_APP_ID` | `console-ui/src/components/providers/PrivyClientProvider.tsx` | Privy app; unset or `"placeholder"` selects mock auth |
+| `NEXT_PUBLIC_PRIVY_APP_ID` | `console-ui/src/components/app-providers/PrivyClientProvider.tsx` | Privy app; unset or `"placeholder"` selects mock auth |
 | `NEXT_PUBLIC_GA_MEASUREMENT_ID` | `console-ui/src/lib/google-analytics.ts` | GA property; empty string disables GA |
 | `NEXT_PUBLIC_DD_APPLICATION_ID`, `NEXT_PUBLIC_DD_CLIENT_TOKEN` | `console-ui/src/components/DatadogRUM.tsx` | Both required to initialise RUM |
 | `NEXT_PUBLIC_DD_SITE`, `NEXT_PUBLIC_DD_ENV`, `NEXT_PUBLIC_APP_VERSION` | `console-ui/src/components/DatadogRUM.tsx` | RUM site, env, and version tags |
@@ -241,7 +242,7 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 
 | Symptom | Cause | Where |
 |---|---|---|
-| Everyone appears signed in, yet key creation, fleet, and earnings return `401 {"error":"missing privy token"}` and chat never becomes sendable | Mock auth (`NEXT_PUBLIC_PRIVY_APP_ID` unset or `"placeholder"`): `getAccessToken()` is `null`, so `provisionConsoleKey` returns `null` and management calls carry no `Authorization` | `MOCK_AUTH` (`console-ui/src/components/providers/PrivyClientProvider.tsx`), `missingPrivyToken` |
+| Everyone appears signed in, yet key creation, fleet, and earnings return `401 {"error":"missing privy token"}` and chat never becomes sendable | Mock auth (`NEXT_PUBLIC_PRIVY_APP_ID` unset or `"placeholder"`): `getAccessToken()` is `null`, so `provisionConsoleKey` returns `null` and management calls carry no `Authorization` | `MOCK_AUTH` (`console-ui/src/components/app-providers/PrivyClientProvider.tsx`), `missingPrivyToken` |
 | 401 on a Privy-required route in a real deployment | No `Authorization` header and no `privy-token` cookie (logged out, or the SDK has not set the cookie yet) | `privyAuth` |
 | "Sender encryption is not configured on this coordinator" in Settings; every send fails with "Encryption setup failed" while the toggle is on | Coordinator returned 503 to `/api/encryption-key` → `encryption_unavailable`; the toggle stays on by design | `getCoordinatorKey`, `handleEncryptionToggle` (`console-ui/src/app/settings/useConsoleSettings.ts`) |
 | First sealed request after a coordinator key rotation fails with 400 | Cached key `kid` no longer matches; `streamChat` clears `darkbloom_coord_enc_key_v2` so the retry refetches | `clearCoordinatorKeyCache` |
@@ -264,7 +265,7 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 | Server helpers for `/api/*` | `console-ui/src/lib/server/coordinator.ts` (`coordinatorUrl`, `privyAuth`, `passthrough`, `missingPrivyToken`, `cacheControl`) |
 | Client header helpers | `console-ui/src/lib/http/proxy-client.ts` (`proxyHeaders`, `managementHeaders`, `apiError`) |
 | Client coordinator URL | `console-ui/src/lib/coordinator-url.ts` (`PUBLIC_COORDINATOR_URL`, `clientCoordinatorUrl`) |
-| Privy provider and mock auth | `console-ui/src/components/providers/PrivyClientProvider.tsx` (`MOCK_AUTH`, `IS_PRIVY_CONFIGURED`), `console-ui/src/components/providers/PrivyRealProvider.tsx` |
+| Privy provider and mock auth | `console-ui/src/components/app-providers/PrivyClientProvider.tsx` (`MOCK_AUTH`, `IS_PRIVY_CONFIGURED`), `console-ui/src/components/app-providers/PrivyRealProvider.tsx` |
 | Console key provisioning | `console-ui/src/hooks/useAuth.ts` (`provisionConsoleKey`, `useAuth`) |
 | Workspace discovery and navigation | `console-ui/src/components/console-entry/ConsoleExperience.tsx`, `console-ui/src/components/console-entry/useProviderAccount.ts`, `console-ui/src/components/navigation/items.ts` |
 | Provider onboarding | `console-ui/src/components/provider-onboarding/ProviderOnboarding.tsx`, `console-ui/src/components/provider-onboarding/content.ts` |
@@ -272,7 +273,7 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 | Chat proxy | `console-ui/src/app/api/chat/route.ts` (`POST`) |
 | Browser-side sealing | `console-ui/src/lib/encryption.ts` (`getCoordinatorKey`, `sealRawRequest`, `unsealSseEvent`, `ENCRYPTION_FLAG_KEY`) |
 | Persisted store | `console-ui/src/lib/store.ts` (`useStore`, `STORE_NAME`, `partialize`) |
-| localStorage key registry | `console-ui/src/lib/constants.ts` (`STORAGE_KEYS`) |
+| localStorage key registry | `console-ui/src/lib/storage-keys.ts` (`STORAGE_KEYS`) |
 | API clients (browser) | `console-ui/src/lib/api/` (`billing.ts`, `keys.ts`, `models.ts`, `providers.ts`, `invite.ts`, `health.ts`, `pricing.ts`) |
 | Fleet polling | `console-ui/src/app/providers/dashboard/useFleetData.ts` (`REFRESH_MS`) |
 | Public stats | `console-ui/src/app/stats/page.tsx` (`StatsPage`), `console-ui/src/app/stats/useNetworkStats.ts` (`useNetworkStats`), `console-ui/src/app/api/stats/snapshot-cache.ts` (`getStatsSnapshot`), `console-ui/src/hooks/useVisiblePolling.ts` (`useVisiblePolling`) |

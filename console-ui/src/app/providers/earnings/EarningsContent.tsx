@@ -5,7 +5,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { trackEvent } from "@/lib/google-analytics";
 import { useToastStore } from "@/hooks/useToast";
 import { useVisiblePolling } from "@/hooks/useVisiblePolling";
-import { STORAGE_KEYS } from "@/lib/constants";
+import { STORAGE_KEYS } from "@/lib/storage-keys";
 import {
   Loader2,
   DollarSign,
@@ -15,6 +15,7 @@ import {
   ArrowDownToLine,
 } from "lucide-react";
 import {
+  PayoutCoverageNotice,
   PayoutModal,
   StripePayoutsCard,
   StripeWithdrawModal,
@@ -54,7 +55,7 @@ export default function EarningsContent() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const getAuthHeaders = useCallback(async () => {
+  const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
     const accessToken = await getAccessToken().catch(() => null);
     if (accessToken) {
       return { Authorization: `Bearer ${accessToken}` };
@@ -152,7 +153,7 @@ export default function EarningsContent() {
       <div>
         <h2 className="text-lg font-semibold text-text-primary">Provider Earnings</h2>
         <p className="text-sm text-text-tertiary mt-0.5">
-          Across all linked provider nodes
+          Earnings stay available after you remove your Macs.
         </p>
       </div>
 
@@ -186,6 +187,9 @@ export default function EarningsContent() {
           </p>
         </div>
       </div>
+
+      {/* Payout coverage caveat — set expectations before bank linking */}
+      <PayoutCoverageNotice />
 
       {/* Withdraw Earnings (Stripe Connect) */}
       <StripePayoutsCard

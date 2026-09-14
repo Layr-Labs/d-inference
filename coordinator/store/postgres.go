@@ -85,7 +85,10 @@ func newPostgresWithPoolConfig(ctx context.Context, scfg Config, tune func(*pgxp
 	}
 
 	// Verify connectivity.
-	if err := pool.Ping(ctx); err != nil {
+	pingStarted := time.Now()
+	pingErr := pool.Ping(ctx)
+	logStartupMigration("connect", pingStarted, pingErr)
+	if err := pingErr; err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("store: ping postgres: %w", err)
 	}
@@ -673,23 +676,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			PRIMARY KEY (key, key_type)
 		)`,
 
-		// Backfill earnings_summary from existing provider_earnings rows.
-		// The INSERT ... ON CONFLICT DO NOTHING ensures this only runs once per key.
-		`INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-		 SELECT account_id, 'account', COUNT(*), COALESCE(SUM(amount_micro_usd), 0),
-		        COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), NOW()
-		 FROM provider_earnings
-		 WHERE account_id != ''
-		 GROUP BY account_id
-		 ON CONFLICT (key, key_type) DO NOTHING`,
-
-		`INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-		 SELECT provider_key, 'provider', COUNT(*), COALESCE(SUM(amount_micro_usd), 0),
-		        COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), NOW()
-		 FROM provider_earnings
-		 WHERE provider_key != ''
-		 GROUP BY provider_key
-		 ON CONFLICT (key, key_type) DO NOTHING`,
+		earningsSummaryBackfillPendingDDL,
 
 		// Provider payouts — wallet-based payout history for unlinked providers
 		`CREATE TABLE IF NOT EXISTS provider_payouts (
@@ -1010,6 +997,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// row's empty hash marks a legacy identity-less proof, which never
 		// authorizes a release-transition resume (real APNs challenge instead).
 		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS binary_hash TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS continuous_coverage_until TIMESTAMPTZ`,
 		// Durable APNs admission state is deliberately separate from successful
 		// attestation evidence. Spending a push budget never creates trust.
 		`CREATE TABLE IF NOT EXISTS code_attest_push_budgets (
@@ -1186,10 +1174,20 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		fleetSnapshotsProviderIndexDDL,
 	}
 
-	for _, m := range migrations {
-		if _, err := s.pool.Exec(ctx, m); err != nil {
-			return fmt.Errorf("migration failed: %w", err)
+	for i, m := range migrations {
+		started := time.Now()
+		_, err := s.pool.Exec(ctx, m)
+		logStartupMigration(fmt.Sprintf("schema_statement_%03d", i), started, err)
+		if err != nil {
+			return fmt.Errorf("migration statement %d failed: %w", i, err)
 		}
+	}
+
+	if err := s.migrateEarningsSummary(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureProviderRestoreIndexes(ctx); err != nil {
+		return err
 	}
 
 	if err := s.migrateUsageTotals(ctx); err != nil {
@@ -1289,11 +1287,6 @@ func HashKey(key string) string { return hashKey(key) }
 const apiKeyColumns = `id, owner_account_id, name, raw_prefix, key_hash, active,
 	limit_micro_usd, limit_reset, rpm_limit, itpm_limit, otpm_limit,
 	allowed_models, expires_at, created_at, last_used_at, self_route_only`
-
-// rowScanner is satisfied by both pgx.Row and pgx.Rows.
-type rowScanner interface {
-	Scan(dest ...any) error
-}
 
 // scanAPIKeyRow scans one api_keys row (selected via apiKeyColumns) into APIKey.
 func scanAPIKeyRow(row rowScanner) (*APIKey, error) {
@@ -2282,94 +2275,6 @@ func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, l
 	return out
 }
 
-// UsageRecords returns usage records from the database, ordered by creation time.
-// Limited to the most recent 10000 rows as a safety guard against unbounded reads.
-func (s *PostgresStore) UsageRecords() []UsageRecord {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT provider_id, consumer_key_hash, model, public_model, prompt_tokens, completion_tokens, created_at, request_id, cost_micro_usd, request_location
-			 FROM usage ORDER BY created_at DESC LIMIT 10000`,
-	)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-
-	var records []UsageRecord
-	for rows.Next() {
-		var r UsageRecord
-		var locationRaw []byte
-		if err := rows.Scan(
-			&r.ProviderID,
-			&r.ConsumerKey,
-			&r.Model,
-			&r.PublicModel,
-			&r.PromptTokens,
-			&r.CompletionTokens,
-			&r.Timestamp,
-			&r.RequestID,
-			&r.CostMicroUSD,
-			&locationRaw,
-		); err != nil {
-			continue
-		}
-		r.CreatedAt = r.Timestamp
-		r.RequestLocation = unmarshalProviderLocation(locationRaw)
-		records = append(records, r)
-	}
-	if records == nil {
-		records = make([]UsageRecord, 0)
-	}
-	return records
-}
-
-// UsageRecordsSince returns usage records created at or after the given time.
-func (s *PostgresStore) UsageRecordsSince(since time.Time) []UsageRecord {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT provider_id, consumer_key_hash, model, public_model, prompt_tokens, completion_tokens, created_at, request_id, cost_micro_usd, request_location
-		 FROM usage
-		 WHERE ($1::timestamptz IS NULL OR created_at >= $1)
-		 ORDER BY created_at ASC`,
-		nullSince(since),
-	)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-
-	var records []UsageRecord
-	for rows.Next() {
-		var r UsageRecord
-		var locationRaw []byte
-		if err := rows.Scan(
-			&r.ProviderID,
-			&r.ConsumerKey,
-			&r.Model,
-			&r.PublicModel,
-			&r.PromptTokens,
-			&r.CompletionTokens,
-			&r.Timestamp,
-			&r.RequestID,
-			&r.CostMicroUSD,
-			&locationRaw,
-		); err != nil {
-			continue
-		}
-		r.CreatedAt = r.Timestamp
-		r.RequestLocation = unmarshalProviderLocation(locationRaw)
-		records = append(records, r)
-	}
-	if records == nil {
-		return []UsageRecord{}
-	}
-	return records
-}
-
 // GetBalance returns the current balance in micro-USD for an account.
 func (s *PostgresStore) GetBalance(accountID string) int64 {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -3048,9 +2953,7 @@ const userSelectColumns = `account_id, privy_user_id, email, role, platform_fee_
 	stripe_account_id, stripe_account_status, stripe_account_country,
 	stripe_destination_type, stripe_destination_last4, stripe_instant_eligible, created_at`
 
-func scanUser(row interface {
-	Scan(...any) error
-}) (*User, error) {
+func scanUser(row rowScanner) (*User, error) {
 	var u User
 	if err := row.Scan(&u.AccountID, &u.PrivyUserID, &u.Email, &u.Role, &u.PlatformFeePercent,
 		&u.StripeAccountID, &u.StripeAccountStatus, &u.StripeAccountCountry,
@@ -3320,7 +3223,7 @@ const stripeWithdrawalSelectColumns = `id, account_id, stripe_account_id, transf
 	amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
 	failure_reason, refunded, fee_refunded, created_at, updated_at`
 
-func scanStripeWithdrawal(row interface{ Scan(...any) error }) (*StripeWithdrawal, error) {
+func scanStripeWithdrawal(row rowScanner) (*StripeWithdrawal, error) {
 	var w StripeWithdrawal
 	if err := row.Scan(&w.ID, &w.AccountID, &w.StripeAccountID, &w.TransferID, &w.PayoutID, &w.SweepPayoutID,
 		&w.AmountMicroUSD, &w.FeeMicroUSD, &w.NetMicroUSD, &w.Method, &w.Status,
@@ -3947,9 +3850,25 @@ func (s *PostgresStore) RecordProviderEarning(earning *ProviderEarning) error {
 	}
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_earnings (account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at)
+		`WITH earning AS (INSERT INTO provider_earnings (account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		 ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING`,
+		 ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
+		 RETURNING account_id, provider_key, model, amount_micro_usd, prompt_tokens, completion_tokens
+		), summaries AS (
+		 SELECT account_id AS key, 'account' AS key_type, model, amount_micro_usd, prompt_tokens, completion_tokens FROM earning WHERE account_id <> ''
+		 UNION ALL
+		 SELECT provider_key, 'provider', model, amount_micro_usd, prompt_tokens, completion_tokens FROM earning WHERE provider_key <> ''
+		)
+		INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
+		SELECT key, key_type, CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END, amount_micro_usd,
+		 CASE WHEN model = 'base_reward' THEN 0 ELSE prompt_tokens END,
+		 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END, NOW() FROM summaries
+		ON CONFLICT (key, key_type) DO UPDATE SET
+		 total_count = earnings_summary.total_count + EXCLUDED.total_count,
+		 total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
+		 total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
+		 total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
+		 updated_at = NOW()`,
 		earning.AccountID, earning.ProviderID, earning.ProviderKey, earning.JobID,
 		earning.Model, earning.AmountMicroUSD, earning.PromptTokens, earning.CompletionTokens,
 		createdAt,
@@ -4167,7 +4086,7 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 				account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
 			) VALUES ($1, $6, $7, $4, $8, $2, $9, $10, COALESCE($5::timestamptz, NOW()))
 			ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
-			RETURNING account_id, provider_key, amount_micro_usd, prompt_tokens, completion_tokens
+			RETURNING account_id, provider_key, model, amount_micro_usd, prompt_tokens, completion_tokens
 		), credit AS (
 			INSERT INTO balances (account_id, balance_micro_usd, withdrawable_micro_usd, updated_at)
 			SELECT account_id, amount_micro_usd, amount_micro_usd, NOW() FROM earning
@@ -4182,19 +4101,23 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 			FROM earning e CROSS JOIN credit c
 		), summary_account AS (
 			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-			SELECT account_id, 'account', 1, amount_micro_usd, prompt_tokens, completion_tokens, NOW() FROM earning
+			SELECT account_id, 'account', CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END, amount_micro_usd,
+			 CASE WHEN model = 'base_reward' THEN 0 ELSE prompt_tokens END,
+			 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END, NOW() FROM earning
 			ON CONFLICT (key, key_type) DO UPDATE SET
-			  total_count = earnings_summary.total_count + 1,
+			  total_count = earnings_summary.total_count + EXCLUDED.total_count,
 			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
 			  total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
 			  total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
 			  updated_at = NOW()
 		), summary_provider AS (
 			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-			SELECT provider_key, 'provider', 1, amount_micro_usd, prompt_tokens, completion_tokens, NOW() FROM earning
+			SELECT provider_key, 'provider', CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END, amount_micro_usd,
+			 CASE WHEN model = 'base_reward' THEN 0 ELSE prompt_tokens END,
+			 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END, NOW() FROM earning
 			WHERE provider_key <> ''
 			ON CONFLICT (key, key_type) DO UPDATE SET
-			  total_count = earnings_summary.total_count + 1,
+			  total_count = earnings_summary.total_count + EXCLUDED.total_count,
 			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
 			  total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
 			  total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
@@ -4293,7 +4216,11 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
+	return upsertProviderRecord(ctx, s.pool, p)
+}
+
+func upsertProviderRecord(ctx context.Context, db providerRecordDB, p ProviderRecord) error {
+	_, err := db.Exec(ctx,
 		`INSERT INTO providers (
 			id, hardware, models, backend, location, trust_level, attested,
 			attestation_result, se_public_key, serial_number,
@@ -4341,81 +4268,6 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 		return fmt.Errorf("store: upsert provider: %w", err)
 	}
 	return nil
-}
-
-func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*ProviderRecord, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	var p ProviderRecord
-	var locationRaw []byte
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, hardware, models, backend, location, trust_level, attested,
-			attestation_result, se_public_key, serial_number,
-			mda_verified, mda_cert_chain,
-			version, runtime_verified, python_hash, runtime_hash,
-			last_challenge_verified, failed_challenges, account_id,
-			lifetime_requests_served, lifetime_tokens_generated,
-			last_session_requests_served, last_session_tokens_generated,
-			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
-		 FROM providers WHERE id = $1`, id,
-	).Scan(
-		&p.ID, &p.Hardware, &p.Models, &p.Backend,
-		&locationRaw,
-		&p.TrustLevel, &p.Attested,
-		&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
-		&p.MDAVerified, &p.MDACertChain,
-		&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
-		&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
-		&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
-		&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
-		&p.LifetimeStats, &p.LastSessionStats,
-		&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: provider not found: %w", err)
-	}
-	p.Location = unmarshalProviderLocation(locationRaw)
-	return &p, nil
-}
-
-func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) (*ProviderRecord, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	var p ProviderRecord
-	var locationRaw []byte
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, hardware, models, backend, location, trust_level, attested,
-			attestation_result, se_public_key, serial_number,
-			mda_verified, mda_cert_chain,
-			version, runtime_verified, python_hash, runtime_hash,
-			last_challenge_verified, failed_challenges, account_id,
-			lifetime_requests_served, lifetime_tokens_generated,
-			last_session_requests_served, last_session_tokens_generated,
-			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
-		 FROM providers WHERE serial_number = $1 AND serial_number != ''
-		 ORDER BY last_seen DESC LIMIT 1`, serial,
-	).Scan(
-		&p.ID, &p.Hardware, &p.Models, &p.Backend,
-		&locationRaw,
-		&p.TrustLevel, &p.Attested,
-		&p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
-		&p.MDAVerified, &p.MDACertChain,
-		&p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
-		&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
-		&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
-		&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
-		&p.LifetimeStats, &p.LastSessionStats,
-		&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: provider with serial not found: %w", err)
-	}
-	p.Location = unmarshalProviderLocation(locationRaw)
-	return &p, nil
 }
 
 func (s *PostgresStore) GetMDAChainBySerial(ctx context.Context, serial string) (json.RawMessage, error) {
@@ -4480,10 +4332,13 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 			&p.LifetimeStats, &p.LastSessionStats,
 			&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
 		); err != nil {
-			continue
+			return nil, fmt.Errorf("store: scan provider: %w", err)
 		}
 		p.Location = unmarshalProviderLocation(locationRaw)
 		records = append(records, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate providers: %w", err)
 	}
 	if records == nil {
 		return []ProviderRecord{}, nil
@@ -4690,7 +4545,11 @@ func (s *PostgresStore) UpsertReputation(ctx context.Context, providerID string,
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
+	return upsertReputationRecord(ctx, s.pool, providerID, rep)
+}
+
+func upsertReputationRecord(ctx context.Context, db providerRecordDB, providerID string, rep ReputationRecord) error {
+	_, err := db.Exec(ctx,
 		`INSERT INTO provider_reputation (
 			provider_id, total_jobs, successful_jobs, failed_jobs,
 			total_uptime_seconds, avg_response_time_ms,
@@ -4726,8 +4585,11 @@ func (s *PostgresStore) GetReputation(ctx context.Context, providerID string) (*
 		&rep.TotalUptimeSeconds, &rep.AvgResponseTimeMs,
 		&rep.ChallengesPassed, &rep.ChallengesFailed,
 	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("store: reputation not found: %w", ErrNotFound)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("store: reputation not found: %w", err)
+		return nil, fmt.Errorf("store: read reputation: %w", err)
 	}
 	return &rep, nil
 }
@@ -4739,7 +4601,7 @@ func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttesta
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash FROM code_attestations`)
+		`SELECT se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash, continuous_coverage_until FROM code_attestations`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list code attestations: %w", err)
 	}
@@ -4750,7 +4612,7 @@ func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttesta
 		var rec CodeAttestation
 		if err := rows.Scan(
 			&rec.SEPubKey, &rec.Version, &rec.AttestedAt,
-			&rec.APNsToken, &rec.NodePublicKey, &rec.BinaryHash,
+			&rec.APNsToken, &rec.NodePublicKey, &rec.BinaryHash, &rec.ContinuousCoverageUntil,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan code attestation: %w", err)
 		}
@@ -4771,13 +4633,19 @@ func (s *PostgresStore) UpsertCodeAttestation(ctx context.Context, rec CodeAttes
 
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO code_attestations (
-			se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash
-		 ) VALUES ($1, $2, $3, $4, $5, $6)
+			se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash, continuous_coverage_until
+		 ) VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 ON CONFLICT (se_pubkey) DO UPDATE SET
 			version = $2, attested_at = $3,
-			apns_token = $4, node_public_key = $5, binary_hash = $6`,
+			apns_token = $4, node_public_key = $5, binary_hash = $6,
+			continuous_coverage_until = CASE WHEN code_attestations.attested_at = EXCLUDED.attested_at
+             AND code_attestations.version = EXCLUDED.version AND code_attestations.apns_token = EXCLUDED.apns_token
+             AND code_attestations.node_public_key = EXCLUDED.node_public_key AND code_attestations.binary_hash = EXCLUDED.binary_hash
+             THEN GREATEST(code_attestations.continuous_coverage_until,EXCLUDED.continuous_coverage_until)
+             ELSE EXCLUDED.continuous_coverage_until END
+		 WHERE code_attestations.attested_at <= EXCLUDED.attested_at`,
 		rec.SEPubKey, rec.Version, rec.AttestedAt,
-		rec.APNsToken, rec.NodePublicKey, rec.BinaryHash,
+		rec.APNsToken, rec.NodePublicKey, rec.BinaryHash, rec.ContinuousCoverageUntil,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert code attestation: %w", err)
@@ -5259,11 +5127,7 @@ const verificationJobColumns = `se_pubkey, serial, udid, task_kind, task_state,
 	priority, retry_stage, previous_delay_ns, next_attempt_at, last_outcome,
 	reopen_pending, updated_at, claim_owner, claim_expires_at`
 
-type verificationJobScanner interface {
-	Scan(dest ...any) error
-}
-
-func scanVerificationJob(row verificationJobScanner) (VerificationJob, error) {
+func scanVerificationJob(row rowScanner) (VerificationJob, error) {
 	var rec VerificationJob
 	var previousDelayNS int64
 	var nextAttemptAt *time.Time

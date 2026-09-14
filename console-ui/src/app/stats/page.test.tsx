@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import StatsPage from "./page";
 
@@ -20,6 +20,52 @@ beforeEach(() => {
 afterEach(()=>vi.unstubAllGlobals());
 
 describe("Continuous network overview",()=>{
+  it("loads the overview during a geography outage and restores the map after recovery",async()=>{
+    let unavailable = true;
+    vi.stubGlobal("fetch",vi.fn(async(input:RequestInfo|URL)=>{
+      if (!String(input).startsWith("/api/stats")) return new Response(null,{status:404});
+      return Response.json({
+        ...stats,
+        request_locations_status: unavailable ? "unavailable" : "available",
+        request_flows_status: unavailable ? "unavailable" : "available",
+        request_locations: unavailable ? null : [],
+        request_regions: unavailable ? null : [],
+        request_flows: unavailable ? null : [],
+        unknown_request_location_requests: unavailable ? null : 0,
+        suppressed_request_city_requests: unavailable ? null : 0,
+      });
+    }));
+    render(<StatsPage/>);
+    expect(await screen.findByText("Macs online")).toBeInTheDocument();
+    expect(screen.getByRole("status",{name:"Geography availability"})).toHaveTextContent("Request locations are temporarily unavailable");
+    for (const name of ["Activity over time","Model capacity","The silicon behind the network"]) {
+      expect(screen.getByRole("heading",{name})).toBeInTheDocument();
+    }
+    expect(screen.getByText("Connected now")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button",{name:"Requests"}));
+    expect(screen.getByText("Request map unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("No public locations yet")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Across 0 countries/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/0 requests without a resolved location/)).not.toBeInTheDocument();
+    unavailable = false;
+    fireEvent.click(screen.getByRole("button",{name:"Refresh network stats"}));
+    await waitFor(()=>expect(screen.queryByRole("status",{name:"Geography availability"})).not.toBeInTheDocument());
+    expect(screen.queryByText("Request map unavailable")).not.toBeInTheDocument();
+    expect(screen.getByText("No public locations yet")).toBeInTheDocument();
+  });
+
+  it("keeps request locations visible when only request routes fail",async()=>{
+    vi.stubGlobal("fetch",vi.fn(async(input:RequestInfo|URL)=>{
+      if (!String(input).startsWith("/api/stats")) return new Response(null,{status:404});
+      return Response.json({...stats,request_locations_status:"available",request_flows_status:"unavailable",request_flows:null});
+    }));
+    render(<StatsPage/>);
+    expect(await screen.findByRole("status",{name:"Geography availability"})).toHaveTextContent("Request routes are temporarily unavailable");
+    fireEvent.click(screen.getByRole("button",{name:"Requests"}));
+    expect(screen.queryByText("Request map unavailable")).not.toBeInTheDocument();
+    expect(screen.getByText("No public locations yet")).toBeInTheDocument();
+  });
+
   it("presents geography, activity, model capacity and silicon together without navigation tabs",async()=>{
     render(<StatsPage/>);
     expect(await screen.findByText("Macs online")).toBeInTheDocument();

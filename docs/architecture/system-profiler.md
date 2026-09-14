@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-07 · commit `5ce1d0cd0`
+> Last updated: 2026-09-13 · commit `d4bab49a9`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -217,11 +217,11 @@ JSON-encoded on the sink worker.
 |---|---|---|
 | `scanned` | providers the candidate loop visited. Since the per-model provider index (`coordinator/registry/model_index.go`) the loop visits only providers **advertising** the requested model, so `scanned` is the advertising count, not the fleet size, and `gate_rejections.not_serving_model` is 0 unless an advertiser still fails the catalog rule (off-catalog model on a public route); the `allowlist` / `excluded` tallies likewise count only advertisers. Records written before the index landed have `scanned == fleet size`; fleet size is available from `fleet_snapshots` | `ReserveProviderEx` |
 | `candidate_set_size` | `scanned − gate_rejections.not_serving_model` (unchanged in meaning by the index); exclude/allowlist drops happen before the catalog check and count as advertising | `scheduler.go` |
-| `gate_rejections` JSONB `{reason: count}` | per-`GateReason` tally, uint16-saturating; keys are `gateReasonNames` (`coordinator/registry/gate_reason.go`): `offline`, `untrusted`, `trust_floor`, `private_only`, `runtime_unverified`, `private_text`, `challenge_stale`, `trait_floor`, `dedicated`, `dispatch_load_cooldown`, `error_cooldown`, `capacity_cooldown`, `breaker`, `ejection`, `slot_crashed`, `slot_reloading`, `thermal_critical`, `no_headroom`, `model_too_large`, `free_memory`, `vision`, `ttft_ceiling`, `excluded`, `allowlist`, `not_serving_model`. `allowlist` absorbs exclusive self-route-not-owned and serial allowlist misses; `excluded` is the caller's exclude list. Meaning of each gate: [`routing.md`](routing.md) | `buildCandidateInto` |
+| `gate_rejections` JSONB `{reason: count}` | per-`GateReason` tally, uint16-saturating; keys are `gateReasonNames` (`coordinator/registry/gate_reason.go`): `offline`, `untrusted`, `trust_floor`, `private_only`, `runtime_unverified`, `private_text`, `challenge_stale`, `trait_floor`, `dedicated`, `dispatch_load_cooldown`, `error_cooldown`, `capacity_cooldown`, `breaker`, `ejection`, `slot_crashed`, `slot_reloading`, `thermal_critical`, `no_headroom`, `model_too_large`, `free_memory`, `vision`, `ttft_ceiling`, `excluded`, `allowlist`, `not_serving_model`, `state_restoring`. `allowlist` absorbs exclusive self-route-not-owned and serial allowlist misses; `excluded` is the caller's exclude list. Meaning of each gate: [`routing.md`](routing.md) | `buildCandidateInto` |
 | `candidates` JSONB (≤ 4 rows) | `Top[0]` is the winner, then the lowest-cost other candidates ascending; each row is a `CandidateSummary` (cost + terms, `ttft_ms`, `effective_tps`, `effective_queue`, `total_pending`, `backend_running/waiting`, `active_token_budget_used/max`, `queued_prefill_tokens`, folded `slot_state`, `hb_age_ms`) | `CandidateSummary` (`gate_reason.go`) |
 | `runner_up_provider_id`, `runner_up_cost_ms` | lowest-cost candidate of the narrowed pool other than the winner; absent with one candidate | `selectRoutingCandidate` (`coordinator/registry/candidate_selection.go`) |
 | `best_idle_provider_id`, `best_idle_ttft_ms` | lowest-TTFT candidate with the model resident and `backend_running + backend_waiting == 0`, computed over every gate-passing candidate before pool narrowing | `scheduler.go` |
-| `near_tie_pool_size`, `selection_path` | retained cost candidates: exact minima in positive-cache pools, otherwise within `nearTieCostWindowMs`; current branches `none`, `unique_min`, `tie_queue`, `tie_pending`, `random` (`selectionPathNames`). Historical rows may retain `cache_tiebreak` | `selectRoutingCandidate` |
+| `near_tie_pool_size`, `selection_path` | retained cost candidates: exact minima in cache-adjusted pools, otherwise within `nearTieCostWindowMs`; current branches `none`, `unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity` (`selectionPathNames`). `prefix_affinity` is a stable repeat-demand preference among equivalent, non-quarantined cache-capable candidates; it does not prove a cache hit. Historical rows may retain `cache_tiebreak` | `coordinator/registry/candidate_selection.go`, `selectRoutingCandidateWithAffinity`; `coordinator/registry/gate_reason.go`, `SelectionPath` |
 | `snapshot_age_ms`, per-candidate `hb_age_ms` | `now − LastHeartbeat` when the routing snapshot was taken; observability only | `heartbeatAgeMs` |
 | `predicted_ttft_ms`, `raw_ttft_ms`, `ttft_calibration_ratio`, `prefill_decode_ratio`, `predicted_decode_tps` | calibrated vs raw estimate, the (model, chip) ratio applied, the decode→prefill fallback multiplier, `projectedPerRequestDecodeTPS` | `scheduler.go` |
 | `pending_for_model`, `total_pending` | winner's coordinator-side pending counts before this reservation | `scheduler.go` |
@@ -451,7 +451,7 @@ ring or `DaemonState` mirror.
 | Wire types and fixture | `coordinator/protocol/profile.go`, `coordinator/protocol/testdata/profiler_wire_fixture.json` |
 | Store | `coordinator/store/profile_records.go`, `coordinator/store/postgres_profiles.go`, `coordinator/store/postgres.go`, `coordinator/store/migrations/request_waterfall.sql` |
 | Fleet replay | `coordinator/registry/routingsim/fleet_ndjson.go` |
-| Provider side | `provider-swift/Sources/ProviderCore/Telemetry/RequestProfileBuilder.swift`, `provider-swift/Sources/ProviderCore/Protocol/InferenceProfile.swift`, `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Profile.swift` |
+| Provider side | `provider-swift/Sources/ProviderCore/Telemetry/RequestProfileBuilder.swift`, `provider-swift/Sources/ProviderCore/Protocol/InferenceProfile.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Profile.swift` |
 | Engine side | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2RequestTiming+Stamps.swift` |
 
 ## Related

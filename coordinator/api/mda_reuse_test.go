@@ -104,12 +104,14 @@ func reconnectWithStagedChain(t *testing.T, serial, sePubKey string) (*Server, *
 	// Simulate reconnect: the store has a durable chain; RestoreProviderState stages
 	// it (capping trust to self_signed). Hardware is then re-earned live.
 	chainJSON, _ := json.Marshal(chain)
-	reg.RestoreProviderState(p, &store.ProviderRecord{
+	if err := reg.RestoreProviderState(p, &store.ProviderRecord{
 		ID:           "prov-mda",
 		TrustLevel:   string(registry.TrustHardware),
 		MDAVerified:  true,
 		MDACertChain: chainJSON,
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	p.SetAttested(true, registry.TrustHardware)
 	return srv, p, restore
 }

@@ -17,12 +17,18 @@ jobs:
           python3 scripts/test-provider-release-resolution.py
           ./scripts/sync-install-embed.sh check
           ./scripts/test-prod-env-refresh.sh
+      - name: Test startup observer against local stubs
+        run: python3 -m unittest discover -s scripts/startup_measurement -t scripts -p 'test_*.py'
 
   docs:
     name: Docs Lint
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0 # Frozen source links are checked at their stamped commits.
+      - name: Test historical source-link validation
+        run: python3 scripts/test-docs-check-historical-links.py
       - name: Check freshness stamps, links, cited paths, orphans
         run: ./scripts/docs-check.sh
 
@@ -376,6 +382,27 @@ jobs:
         # green under.
         timeout-minutes: 10
         run: ../../scripts/run-nested-suite.sh CBv2KVSharingParityTests
+      - name: Run Nemotron production SDK gates
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        timeout-minutes: 20
+        run: |
+          # Each filter has its own nonzero/no-skip tripwire. Continue after a
+          # failure so one broken suite cannot hide another unexecuted gate.
+          onboarding_failed=0
+          for suite in SSMDecodeBoundsTests NemotronHTests \
+                       NemotronH35BackendParityTests NemotronH35StorageParityTests \
+                       NemotronH35MTPTests NemotronH35MTPPrimingTests \
+                       MutableInputKernelTests MutableInputExportTests \
+                       CBv2QwenMTPIntegrationTests CBv2MTPDepthControllerTests \
+                       PagedMTPBatchedColumnsTests CBv2CompleteCheckpointEngineTests \
+                       NemotronH35ProductionDefaultsTests \
+                       OpenAIServiceTests ToolCallParserIntegrationTests; do
+            if ! ../../scripts/run-nested-suite.sh "$suite"; then
+              onboarding_failed=1
+            fi
+          done
+          exit "$onboarding_failed"
       - name: Run atomic installer artifact tests
         timeout-minutes: 2
         run: ./scripts/test-install-atomic.sh

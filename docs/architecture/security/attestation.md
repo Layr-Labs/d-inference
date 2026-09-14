@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-13 · commit `69454529a`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -121,6 +121,19 @@ The coordinator's Secure Boot signal is MDM `SecurityInfo.SecureBootLevel`
 | Freshness for routing | `now − LastChallengeVerified ≤ challengeFreshnessMaxAge` ([routing](../routing.md#challenge-freshness)), else the scheduler skips the provider (`GateChallengeStale`) | `coordinator/registry/scheduler.go` (`challengeFreshnessMaxAge`); `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`) |
 | Stop | `ChallengeShouldStop` when hard-untrusted or gone | `coordinator/registry/provider_evidence.go` (`ChallengeShouldStop`) |
 
+`provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift`
+(`StatusCanonical.build`) encodes a typed payload with `JSONEncoder.sortedKeys`,
+including keys inside `model_hashes` and `template_hashes`. The resulting UTF-8
+key order matches `BuildStatusCanonical`; Unicode U+2028 and U+2029 are escaped
+as `\u2028` and `\u2029` to match Go's JSON encoder. Literal backslash escape
+text remains distinct. Nil optional fields, empty hash strings and empty maps
+are omitted; explicit `false` values remain signed. Matching Swift and Go
+golden vectors cover these byte rules; signature verification still rejects
+changed fields (`provider-swift/Tests/ProviderCoreTests/Security/StatusCanonicalTests.swift`,
+`statusCanonicalMatchesCoordinatorNestedMapVectors`;
+`coordinator/attestation/status_canonical_mixed_case_test.go`,
+`TestBuildStatusCanonicalNestedMapVectors`, `TestVerifyStatusSignatureBindsMixedCaseNestedMaps`).
+
 ### Runtime manifest
 
 The coordinator-owned policy on which runtime a connected provider may run,
@@ -212,13 +225,34 @@ selected by `register.apns_environment`.
 |---|---|---|
 | 1 Register | `register.apns_device_token` and `register.apns_environment` are read from the registration; the push budget is keyed by SE key + token hash. A provider without a token cannot become `CodeAttested` | `coordinator/protocol/messages.go` (`RegisterMessage`); `coordinator/api/code_attest_throttle.go` (`codeAttestTokenHash`, `codeAttestPushBudgetKey`) |
 | 2 Loop start | `codeAttestLoop` waits for this connection's first signed challenge, then decides between resume and push | `coordinator/api/provider_codeattest.go` (`codeAttestLoopForGeneration`) |
-| 3 Resume | If a durable proof for (SE key, version, APNs token, process key `K`) is younger than `reuseWindow` = 30m, or a cross-version transition is approved by the release policy, the coordinator sends `code_attestation_resume_challenge{code_challenge}` over the WebSocket — a NaCl-Box-sealed nonce to `K` — and waits `resumeTimeout` = 30s. Cached evidence only *authorises* the challenge; the flag is set by the answer | `coordinator/api/provider_codeattest.go` (`sendCodeIdentityResumeChallenge`, `tryCrossVersionReuse`); `coordinator/api/code_attest_throttle.go` (`reuseAttestation`) |
+| 3 Resume | If a durable proof for (SE key, version, APNs token, process key `K`) is younger than `reuseWindow` = 30m, or the exact same process has coordinator-observed verified continuity within `codeAttestContinuityGap` = 120s, or a release-approved transition has a recent APNs proof, the coordinator sends `code_attestation_resume_challenge{code_challenge}` over the WebSocket — a NaCl-Box-sealed nonce to `K` — and waits `resumeTimeout` = 30s. Cached evidence only *authorises* the challenge; the flag is set by the answer | `coordinator/api/provider_codeattest.go` (`sendCodeIdentityResumeChallenge`, `tryCrossVersionReuse`); `coordinator/api/code_attest_throttle.go` (`reuseAttestation`); `coordinator/api/code_attest_coverage.go` |
 | 4 Push | Otherwise a 32-byte nonce is sealed to `K` with `e2e.Encrypt` and sent as APNs JSON `{aps: {"content-available": 1}, code_challenge: {ephemeral_public_key, ciphertext}}`; alert mode adds `aps.alert = {title: "Darkbloom", body: "attestation"}` (safe only because the provider never requests notification authorisation). Headers `apns-topic`, `apns-push-type: background|alert`, `apns-priority: 5|10`, `apns-expiration = now + challengeExpirySeconds` (300). Provider-token JWT (ES256) cached `jwtMaxAge` = 50m; HTTP timeout 15s | `coordinator/apns/attestor.go` (`BuildCodeChallengePayload`, `SendChallenge`) |
 | 5 Throttle | Per device: at most one push per `backgroundPushCooldown` = 20m (background) or `alertPushCooldown` = 75s (alert); `maxAttempts` = 3 per loop; retry delay `retrySpacing` = 15s + jitter in [0, `retryJitter` = 15s); a pushed nonce is accepted for `challengeValidity` = `CodeAttestResponseTimeout` = 300s; token-rotation budget resets at most once per `budgetClearCooldown` = 20m | `coordinator/api/code_attest_throttle.go` |
 | 6 Reply | `code_attestation_response{nonce, signature}`: the nonce must match the outstanding challenge recorded for **this** SE key + APNs token + `K` (`matchChallengeForIdentity` / `matchResumeChallenge`); `signature` = ECDSA over the nonce bytes, verified against the **registration** SE key; consumed atomically; `GrantProcessCodeAttested` refuses if the token or `K` rotated meanwhile | `coordinator/api/provider_codeattest.go` (`handleCodeAttestationResponse`); `coordinator/registry/provider_evidence.go` (`GrantProcessCodeAttested`) |
 | 7 Persist | An APNs-proven round-trip is upserted as `CodeAttestation{se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash}` so step 3 can authorise a resume on a later connection; the push budget (`CodeAttestPushBudget`) stores only the token hash | `coordinator/api/code_attest_throttle.go` (`persistCodeAttestation`); `coordinator/store/interface.go` (`CodeAttestation`, `CodeAttestPushBudget`) |
 | 8 Exhaustion | After `maxAttempts` unanswered pushes the loop stops and waits for a later reconnect; `CodeAttested` stays false. Token rotation or hard untrust clears an existing flag | `coordinator/api/provider_codeattest.go`; `coordinator/registry/attestation_policy.go` (`MarkUntrusted`) |
 | 9 Enforcement | `SetCodeAttestationConfigured(true)` when an attestor exists; `SetCodeAttestationDeadline` from `APNS_ENFORCE_AFTER`; `codeAttestationEnforcedLocked` = configured ∧ deadline non-zero ∧ now ≥ deadline. Before that the fleet is measured (`attestation.code_attested`, `attestation.code_enforced`) but routes un-attested providers | `coordinator/registry/attestation_policy.go` (`codeAttestationEnforcedLocked`); `coordinator/cmd/coordinator/main.go` (`parseAPNsEnforceAfter`) |
+
+Same-process continuity is separate from hardware continuity. The coordinator
+records it only while the exact SE key, version, APNs token, process key and
+binary binding remain code-attested, freshly process-proven, hardware-trusted
+and online. Coverage is batched on the existing 30-second loop and stamped
+at disconnect and graceful shutdown. Only the final disconnect stamp permits
+the just-offlined connection; periodic and shutdown sweeps remain online-only.
+The disconnect exception retains all code-proof, hardware-trust and identity
+checks, and never admits an untrusted provider. Store updates compare the original
+proof tuple and `attested_at`; they cannot insert a proof, resurrect a deleted
+row or cover a newer process. Neither coverage nor a resume changes the original
+APNs timestamp. An old proof with missing, expired or future coverage requires
+a push. A changed
+process key/version can use an approved release transition only with a proof
+still inside the original 30-minute window. See
+`coordinator/api/code_attest_coverage.go` and
+`coordinator/store/code_attest_coverage.go`.
+
+The first deployment from a coordinator that never recorded code continuity
+has no such evidence to reuse. Do not backfill it from hardware-only liveness
+or move proof timestamps forward administratively.
 
 APNs proves which *binary* is running; it proves nothing about SIP, Secure
 Boot, or hardware genuineness (Layers 3 and MDA). It binds App ID and Team ID,
@@ -321,6 +355,7 @@ received (`darkbloom status`, `Trust: <level> / <status>`).
 | MDA | `coordinator/attestation/mda.go` (`VerifyMDADeviceAttestation`); `coordinator/api/provider.go` (`verifyAppleDeviceAttestation`, `attachCachedMDAProof`); `coordinator/mdm/mdm.go` (`RequestDeviceAttestation`) |
 | Code identity | `coordinator/apns/attestor.go`; `coordinator/api/provider_codeattest.go`; `coordinator/api/code_attest_throttle.go`; `coordinator/cmd/coordinator/main.go` (`parseAPNsEnforceAfter`) |
 | Routing gate | `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`); `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`); `coordinator/registry/model_capacity.go` (`publiclyRoutableLocked`); `coordinator/registry/scheduler.go` (`challengeFreshnessMaxAge`) |
+| Release evidence publication | `coordinator/api/release_policy_publish.go` (`publishReleaseTrustPolicy`, `retainedReleaseTrustPolicy`, `addRelease`): successful sync and committed-mutation recovery publish the snapshot, revalidate the generation, then challenge invalidated providers; cold-start deny-all stays separate in `coordinator/api/server.go` |
 | Runtime manifest | `coordinator/api/server.go` (`SyncRuntimeManifest`, `RuntimeManifest`, `verifyRuntimeHashesForBackend`, `verifyRuntimeHashesAgainstManifest`, `runtimeManifestApprovesMetallib`, `revalidateConnectedProvidersAgainstRuntimePolicy`, `handleRuntimeManifest`); `coordinator/api/provider.go` (`applyChallengeRuntimePolicy`); `coordinator/api/release_handlers.go` |
 | Release-policy / evidence-mode gate | `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextModeLocked`, `releasePolicyEnforcedLocked`, `SetReleasePolicyGeneration`) |
 | Trust status messages to providers | `coordinator/api/provider.go` (`sendTrustStatus`); `coordinator/protocol/messages.go` (`TypeTrustStatus`) |

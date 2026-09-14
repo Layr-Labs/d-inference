@@ -29,12 +29,15 @@ const (
 )
 
 type CachePlan struct {
-	generation         *cacheRoutingGeneration
-	ModelAggregateHash string
-	PromptContractID   string
-	CacheScope         string
-	PromptTokenCount   int
-	Boundaries         []protocol.PrefixCacheAnchor
+	// Advisory only. Neither field supplies cache credit or bypasses proof.
+	RepeatedPrefixTokens int
+	affinityKey          string
+	generation           *cacheRoutingGeneration
+	ModelAggregateHash   string
+	PromptContractID     string
+	CacheScope           string
+	PromptTokenCount     int
+	Boundaries           []protocol.PrefixCacheAnchor
 }
 
 func (p CachePlan) present() bool {
@@ -146,6 +149,7 @@ const (
 	cacheHolderRemovalDisconnect       cacheHolderRemovalReason = "disconnect"
 	cacheHolderRemovalEpochChange      cacheHolderRemovalReason = "epoch_change"
 	cacheHolderRemovalCapabilityChange cacheHolderRemovalReason = "capability_change"
+	cacheHolderRemovalProofMismatch    cacheHolderRemovalReason = "proof_mismatch"
 	cacheHolderRemovalMissInvalidation cacheHolderRemovalReason = "miss_invalidation"
 	cacheHolderRemovalCapacityEviction cacheHolderRemovalReason = "capacity_eviction"
 )
@@ -156,6 +160,7 @@ func CacheHolderRemovalReasons() []string {
 		string(cacheHolderRemovalDisconnect),
 		string(cacheHolderRemovalEpochChange),
 		string(cacheHolderRemovalCapabilityChange),
+		string(cacheHolderRemovalProofMismatch),
 		string(cacheHolderRemovalMissInvalidation),
 		string(cacheHolderRemovalCapacityEviction),
 	}
@@ -248,6 +253,7 @@ func (h *cacheHolderOrderHeap) Pop() any {
 }
 
 type cacheRoutingTracker struct {
+	demand              *cacheDemandTracker
 	generation          *cacheRoutingGeneration
 	mu                  sync.Mutex
 	ttl                 time.Duration
@@ -282,6 +288,7 @@ func newCacheRoutingTracker(ttl time.Duration, maxHolders int) *cacheRoutingTrac
 	}
 	return &cacheRoutingTracker{
 		generation: &cacheRoutingGeneration{},
+		demand:     newCacheDemandTracker(cacheRoutingMaxEntries, ttl),
 		ttl:        ttl, maxHolders: maxHolders, maxEntries: cacheRoutingMaxEntries, maxAttempts: cacheRoutingMaxAttempts,
 		holders: make(map[string]map[string]cacheHolder), attempts: make(map[string]cacheAttempt),
 		holderOrderByRef: make(map[cacheHolderRef]*cacheHolderOrderEntry), attemptOrderByNonce: make(map[string]*cacheAttemptOrderEntry),

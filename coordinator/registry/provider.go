@@ -95,6 +95,12 @@ type Provider struct {
 	Stats            protocol.HeartbeatStats // lifetime counters shown to users
 	lastSessionStats protocol.HeartbeatStats // raw counters from the current provider process
 
+	// Until restore finishes, verified identities cannot route, and persisted
+	// records must not advertise a reusable serial/SE identity. Includes
+	// disconnected registrations whose IO finishes late.
+	stateRestorePending bool
+	persistMu           sync.Mutex // serialize snapshots/writes so an older partial snapshot cannot land last
+
 	// Account linkage (set when provider authenticates via device auth token)
 	AccountID string // internal account ID (from device auth flow)
 

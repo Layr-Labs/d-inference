@@ -70,6 +70,15 @@ func (r *Registry) IsModelInCatalog(model string) bool {
 	return ok
 }
 
+// CatalogModelID returns only an explicitly registered model ID. Unlike
+// IsModelInCatalog, a nil catalog never admits arbitrary telemetry labels.
+func (r *Registry) CatalogModelID(model string) (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	entry, ok := r.modelCatalog[model]
+	return entry.ID, ok
+}
+
 // CatalogWeightHash returns the expected weight hash for a model, or empty
 // string if not set or not in catalog.
 func (r *Registry) CatalogWeightHash(model string) string {

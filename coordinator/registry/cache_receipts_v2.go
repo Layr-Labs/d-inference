@@ -103,16 +103,20 @@ func (r *Registry) PreparePrefixCacheV2Attempt(
 	return nil
 }
 
-func (r *Registry) ApplyPrefixCacheLookupV2(
+func (r *Registry) ApplyPrefixCacheLookupV2(providerID string, msg *protocol.PrefixCacheLookupV2Message) bool {
+	return r.ApplyPrefixCacheLookupV2Result(providerID, msg).Accepted
+}
+
+func (r *Registry) ApplyPrefixCacheLookupV2Result(
 	providerID string,
 	msg *protocol.PrefixCacheLookupV2Message,
-) bool {
+) CacheReceiptResult {
 	if r == nil || msg == nil {
-		return false
+		return rejectCacheReceipt(CacheReceiptInvalid)
 	}
-	capability, ok := r.currentPrefixCacheV2Capability(providerID, msg.ModelID, msg.Tier)
-	if !ok {
-		return false
+	capability, reason := r.currentPrefixCacheV2CapabilityResult(providerID, msg.ModelID, msg.Tier)
+	if reason != CacheReceiptAccepted {
+		return rejectCacheReceipt(reason)
 	}
 	r.mu.RLock()
 	tracker := r.cacheRouting
@@ -121,26 +125,30 @@ func (r *Registry) ApplyPrefixCacheLookupV2(
 	provider := r.providers[providerID]
 	r.mu.RUnlock()
 	if mode != CacheRoutingOn || tracker == nil {
-		return false
+		return rejectCacheReceipt(CacheReceiptInactive)
 	}
-	accepted, mismatch := tracker.applyLookupV2Result(
+	decision := tracker.applyLookupV2Decision(
 		providerID, provider, capability, msg, routeKey, time.Now())
-	if mismatch {
+	if decision.mismatch {
 		r.disablePrefixCacheV2Model(providerID, msg.ModelID, msg.Tier, provider, tracker, capability)
 	}
-	return accepted
+	return decision
 }
 
-func (r *Registry) ApplyPrefixCacheReadyV2(
+func (r *Registry) ApplyPrefixCacheReadyV2(providerID string, msg *protocol.PrefixCacheReadyV2Message) bool {
+	return r.ApplyPrefixCacheReadyV2Result(providerID, msg).Accepted
+}
+
+func (r *Registry) ApplyPrefixCacheReadyV2Result(
 	providerID string,
 	msg *protocol.PrefixCacheReadyV2Message,
-) bool {
+) CacheReceiptResult {
 	if r == nil || msg == nil {
-		return false
+		return rejectCacheReceipt(CacheReceiptInvalid)
 	}
-	capability, ok := r.currentPrefixCacheV2Capability(providerID, msg.ModelID, msg.Tier)
-	if !ok {
-		return false
+	capability, reason := r.currentPrefixCacheV2CapabilityResult(providerID, msg.ModelID, msg.Tier)
+	if reason != CacheReceiptAccepted {
+		return rejectCacheReceipt(reason)
 	}
 	r.mu.RLock()
 	tracker := r.cacheRouting
@@ -149,38 +157,45 @@ func (r *Registry) ApplyPrefixCacheReadyV2(
 	provider := r.providers[providerID]
 	r.mu.RUnlock()
 	if mode != CacheRoutingOn || tracker == nil {
-		return false
+		return rejectCacheReceipt(CacheReceiptInactive)
 	}
-	accepted, mismatch := tracker.applyReadyV2Result(
+	decision := tracker.applyReadyV2Decision(
 		providerID, provider, capability, msg, routeKey, time.Now())
-	if mismatch {
+	if decision.mismatch {
 		r.disablePrefixCacheV2Model(providerID, msg.ModelID, msg.Tier, provider, tracker, capability)
 	}
-	return accepted
+	return decision
 }
 
-func (r *Registry) currentPrefixCacheV2Capability(
+func (r *Registry) currentPrefixCacheV2Capability(providerID, modelID, tier string) (protocol.PrefixCacheV2Capability, bool) {
+	c, reason := r.currentPrefixCacheV2CapabilityResult(providerID, modelID, tier)
+	return c, reason == CacheReceiptAccepted
+}
+
+func (r *Registry) currentPrefixCacheV2CapabilityResult(
 	providerID, modelID, tier string,
-) (protocol.PrefixCacheV2Capability, bool) {
+) (protocol.PrefixCacheV2Capability, CacheReceiptReason) {
 	r.mu.RLock()
 	provider := r.providers[providerID]
 	tracker := r.cacheRouting
 	r.mu.RUnlock()
 	if provider == nil {
-		return protocol.PrefixCacheV2Capability{}, false
+		return protocol.PrefixCacheV2Capability{}, CacheReceiptProviderMissing
 	}
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
 	if provider.PrefixCacheProtocol < 2 {
-		return protocol.PrefixCacheV2Capability{}, false
+		return protocol.PrefixCacheV2Capability{}, CacheReceiptProtocol
 	}
 	capability, ok := provider.prefixCacheCapabilityLocked(modelID, tier)
-	ok = ok && capability.Enabled && capability.Ready
-	if ok && tracker != nil &&
-		tracker.capabilityRejected(providerID, modelID, tier, capability) {
-		return protocol.PrefixCacheV2Capability{}, false
+	if !ok || !capability.Enabled || !capability.Ready {
+		return protocol.PrefixCacheV2Capability{}, CacheReceiptCapabilityUnavailable
 	}
-	return capability, ok
+	if tracker != nil &&
+		tracker.capabilityRejected(providerID, modelID, tier, capability) {
+		return protocol.PrefixCacheV2Capability{}, CacheReceiptCapabilityFenced
+	}
+	return capability, CacheReceiptAccepted
 }
 
 func (r *Registry) disablePrefixCacheV2Model(
@@ -200,7 +215,7 @@ func (r *Registry) disablePrefixCacheV2Model(
 	defer provider.mu.Unlock()
 	capability, ok := provider.prefixCacheCapabilityLocked(modelID, tier)
 	if ok && capability == expected && tracker.rejectCapability(providerID, modelID, tier, capability) {
-		tracker.invalidateProviderModel(providerID, modelID, cacheHolderRemovalCapabilityChange)
+		tracker.invalidateProviderModel(providerID, modelID, cacheHolderRemovalProofMismatch)
 		provider.prefixCacheRevision++
 	}
 }
@@ -248,123 +263,6 @@ func (t *cacheRoutingTracker) applyLookupV2(
 	return accepted
 }
 
-func (t *cacheRoutingTracker) applyLookupV2Result(
-	providerID string,
-	provider *Provider,
-	capability protocol.PrefixCacheV2Capability,
-	msg *protocol.PrefixCacheLookupV2Message,
-	routeKey []byte,
-	now time.Time,
-) (bool, bool) {
-	if t == nil ||
-		!validCacheOutcome(msg.Outcome) ||
-		!validCacheReceiptTier(msg.Tier) ||
-		!validV2Stage(msg.StageMs) ||
-		!validV2Anchor(msg.PromptAnchor, capability.BlockSize) {
-		return false, false
-	}
-	if msg.Outcome == "hit" {
-		if msg.Tier == "ssd" && usesExplicitCacheCheckpoints(msg.Tier, capability) &&
-			(msg.RequiredRecomputeTokens != 0 || msg.StageMs <= 0) {
-			return false, false
-		}
-		if msg.MatchedAnchor == nil ||
-			!validV2Anchor(*msg.MatchedAnchor, capability.BlockSize) ||
-			msg.MatchedAnchor.TokenCount > msg.PromptAnchor.TokenCount ||
-			msg.RequiredRecomputeTokens < 0 ||
-			msg.RequiredRecomputeTokens > msg.MatchedAnchor.TokenCount ||
-			msg.ExpectedPrefillTokensSaved !=
-				msg.MatchedAnchor.TokenCount-msg.RequiredRecomputeTokens {
-			return false, false
-		}
-	} else if msg.MatchedAnchor != nil ||
-		msg.RequiredRecomputeTokens != 0 ||
-		msg.ExpectedPrefillTokensSaved != 0 {
-		return false, false
-	}
-
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.sweepIfDueLocked(now)
-	attempt, ok := t.activeAttemptLocked(msg.CacheReceiptNonce, now)
-	if !ok || !attempt.V2 || attempt.lookupSeen(msg.Tier) ||
-		attempt.ProviderID != providerID ||
-		attempt.RequestID != msg.RequestID ||
-		attempt.Model != msg.ModelID ||
-		attempt.capability(msg.Tier) != capability {
-		return false, false
-	}
-	if provider != nil && attempt.Provider != provider {
-		return false, false
-	}
-	if !v2IdentityMatches(
-		msg.ModelID, msg.ModelAggregateHash, msg.PromptContractID, msg.CacheEpoch, capability,
-	) {
-		return false, true
-	}
-	if attempt.ExpectedPrompt != msg.PromptAnchor {
-		return false, true
-	}
-	if msg.MatchedAnchor != nil &&
-		attempt.ExpectedBoundaries[msg.MatchedAnchor.TokenCount] != msg.MatchedAnchor.ChainHash {
-		return false, true
-	}
-	if !t.acceptV2SequenceLocked(providerID, capability, msg.Tier, msg.CacheSeq) {
-		return false, false
-	}
-	if msg.Tier == "memory" {
-		attempt.MemoryLookupSeen = true
-	} else {
-		attempt.LookupSeen = true
-	}
-	t.attempts[msg.CacheReceiptNonce] = attempt
-	switch msg.Outcome {
-	case "hit":
-		anchor := *msg.MatchedAnchor
-		key := cacheTierBoundaryKey(routeKey, attempt.Plan, anchor, msg.Tier)
-		if key == "" {
-			return false, false
-		}
-		holder := cacheHolder{
-			ProviderID:              providerID,
-			Provider:                provider,
-			ModelID:                 msg.ModelID,
-			ModelAggregateHash:      msg.ModelAggregateHash,
-			PromptContractID:        msg.PromptContractID,
-			CacheEpoch:              msg.CacheEpoch,
-			Anchor:                  anchor,
-			RequiredRecomputeTokens: msg.RequiredRecomputeTokens,
-			StageMs:                 msg.StageMs,
-			UpdatedAt:               now,
-			ExpiresAt:               now.Add(t.receiptTTL(msg.Tier)),
-		}
-		if msg.Tier == "ssd" && msg.StageMs > 0 {
-			holder.stageMeasurement = &cacheStageMeasurement{
-				milliseconds: msg.StageMs, expiresAt: holder.ExpiresAt, capability: capability,
-			}
-		}
-		t.upsertHolderLocked(key, holder)
-	case "miss_absent", "miss_corrupt":
-		for _, anchor := range attempt.Plan.Boundaries {
-			t.removeHolderLocked(
-				cacheTierBoundaryKey(routeKey, attempt.Plan, anchor, msg.Tier),
-				providerID,
-				cacheHolderRemovalMissInvalidation,
-			)
-		}
-	}
-	if msg.Tier == "ssd" {
-		t.ssdLookups++
-		switch msg.Outcome {
-		case "hit":
-			t.ssdHits++
-		case "miss_absent", "miss_corrupt":
-			t.ssdMisses++
-		}
-	}
-	return true, false
-}
-
 func (t *cacheRoutingTracker) applyReadyV2(
 	providerID string,
 	capability protocol.PrefixCacheV2Capability,
@@ -374,107 +272,6 @@ func (t *cacheRoutingTracker) applyReadyV2(
 	accepted, _ := t.applyReadyV2Result(
 		providerID, nil, capability, msg, []byte("test-cache-route-key"), now)
 	return accepted
-}
-
-func (t *cacheRoutingTracker) applyReadyV2Result(
-	providerID string,
-	provider *Provider,
-	capability protocol.PrefixCacheV2Capability,
-	msg *protocol.PrefixCacheReadyV2Message,
-	routeKey []byte,
-	now time.Time,
-) (bool, bool) {
-	if t == nil ||
-		msg.Outcome != "ready" ||
-		!validCacheReceiptTier(msg.Tier) ||
-		!validV2Stage(msg.StageMs) ||
-		len(msg.ReadyAnchors) < 1 || len(msg.ReadyAnchors) > cacheReadyAnchorLimit(msg.Tier, capability) {
-		return false, false
-	}
-	for index, anchor := range msg.ReadyAnchors {
-		if !validV2Anchor(anchor, capability.BlockSize) ||
-			(index > 0 && anchor.TokenCount <= msg.ReadyAnchors[index-1].TokenCount) {
-			return false, false
-		}
-	}
-	final := msg.ReadyAnchors[len(msg.ReadyAnchors)-1]
-	if msg.RequiredRecomputeTokens < 0 ||
-		msg.RequiredRecomputeTokens > final.TokenCount ||
-		msg.ExpectedPrefillTokensSaved != final.TokenCount-msg.RequiredRecomputeTokens {
-		return false, false
-	}
-
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.sweepIfDueLocked(now)
-	attempt, ok := t.activeAttemptLocked(msg.CacheReceiptNonce, now)
-	if !ok || !attempt.V2 || !attempt.lookupSeen(msg.Tier) ||
-		attempt.ProviderID != providerID ||
-		attempt.RequestID != msg.RequestID ||
-		attempt.Model != msg.ModelID ||
-		attempt.capability(msg.Tier) != capability ||
-		final.TokenCount <= attempt.lastReadyAnchor(msg.Tier).TokenCount {
-		return false, false
-	}
-	if provider != nil && attempt.Provider != provider {
-		return false, false
-	}
-	if !v2IdentityMatches(
-		msg.ModelID, msg.ModelAggregateHash, msg.PromptContractID, msg.CacheEpoch, capability,
-	) {
-		return false, true
-	}
-	if usesExplicitCacheCheckpoints(msg.Tier, capability) {
-		// Explicit checkpoints prove only endpoints in the verified input.
-		// The last input block need not itself be reusable (e.g. Qwen at 4096).
-		if msg.Tier == "ssd" && (msg.RequiredRecomputeTokens != 0 || msg.StageMs <= 0) {
-			return false, false
-		}
-		for _, anchor := range msg.ReadyAnchors {
-			if attempt.ExpectedBoundaries[anchor.TokenCount] != anchor.ChainHash {
-				return false, true
-			}
-		}
-	} else if msg.ReadyAnchors[0] != attempt.ExpectedPrompt {
-		return false, true
-	}
-	if !t.acceptV2SequenceLocked(providerID, capability, msg.Tier, msg.CacheSeq) {
-		return false, false
-	}
-	if msg.Tier == "memory" {
-		attempt.MemoryLastReadyAnchor = final
-	} else {
-		attempt.LastReadyAnchor = final
-	}
-	t.attempts[msg.CacheReceiptNonce] = attempt
-	for _, anchor := range msg.ReadyAnchors {
-		recompute := min(msg.RequiredRecomputeTokens, anchor.TokenCount)
-		key := cacheTierBoundaryKey(routeKey, attempt.Plan, anchor, msg.Tier)
-		if key == "" {
-			return false, false
-		}
-		holder := cacheHolder{
-			ProviderID:              providerID,
-			Provider:                provider,
-			ModelID:                 msg.ModelID,
-			ModelAggregateHash:      msg.ModelAggregateHash,
-			PromptContractID:        msg.PromptContractID,
-			CacheEpoch:              msg.CacheEpoch,
-			Anchor:                  anchor,
-			RequiredRecomputeTokens: recompute,
-			StageMs:                 msg.StageMs,
-			UpdatedAt:               now,
-			ExpiresAt:               now.Add(t.receiptTTL(msg.Tier)),
-		}
-		if msg.Tier == "ssd" {
-			t.preserveStageMeasurementLocked(key, &holder, capability, now)
-		}
-		t.upsertHolderLocked(key, holder)
-	}
-	if msg.Tier == "ssd" {
-		t.ssdDonations++
-	}
-	return true, false
 }
 
 func (t *cacheRoutingTracker) acceptV2SequenceLocked(

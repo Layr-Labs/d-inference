@@ -158,7 +158,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // assistant support; model-aware MTP defaults remain provider-side policy.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.9.0"
+var LatestProviderVersion = "0.9.2"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -389,12 +389,6 @@ type Server struct {
 	// Set from CORS_ORIGIN env var. Empty defaults to the production console domain.
 	corsOrigin string
 
-	// storedProviders is a lookup table of persisted provider records, indexed
-	// by serial number and SE public key. When a provider reconnects after a
-	// coordinator restart, this table is checked to restore trust/reputation.
-	// Populated once at startup from the store.
-	storedProviders map[string]*store.ProviderRecord
-
 	// geoResolver resolves provider and consumer request locations from IP
 	// addresses or trusted reverse-proxy headers. Nil when GeoIP is not configured.
 	geoResolver providerGeoResolver
@@ -418,12 +412,14 @@ type Server struct {
 	// endpoints (stats, leaderboard, model catalog, etc.). TTLs are
 	// per-key. Never nil.
 	readCache *ttlCache
-	// statsRefresh owns the stats:v1 readCache entry (stats.go);
+	// statsRefresh owns stats:v1 (stats.go), statsGeographyRefresh owns
+	// stats:geography:v1 (stats_geography.go);
 	// networkTotalsRefresh owns one network_totals:<window> entry per window
-	// (network_totals.go). Both are driven by the refresher machinery in
+	// (network_totals.go). All are driven by the refresher machinery in
 	// cache_refresher.go.
 	summaryWindowsFlights singleflight.Group
 	statsRefresh          cacheRefresher
+	statsGeographyRefresh cacheRefresher
 	networkTotalsRefresh  struct {
 		queryMu sync.Mutex
 		mu      sync.Mutex
@@ -879,9 +875,6 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	s.registerDefaultGauges()
 	s.routes()
 
-	// Load stored provider records into a lookup table for matching
-	// reconnecting providers to their persisted state.
-	s.storedProviders = reg.LoadStoredProviders()
 	// Apply server configuration from ServerConfig.
 	// TODO(auth): storing admin emails in the server struct is an antipattern.
 	// Move admin verification to an external auth service (Privy or IDP) so that
@@ -950,6 +943,7 @@ func (s *Server) Close() {
 		s.trustCoverageCancel()
 	}
 	s.finalTrustCoverageSweep()
+	s.sweepCodeAttestCoverage()
 	if s.trustReplayCancel != nil {
 		s.trustReplayCancel()
 	}
@@ -1639,47 +1633,11 @@ func (s *Server) SyncBinaryHashes() error {
 			continue
 		}
 		hashes[normalized] = true
-		templates := make(map[string]string)
-		for _, pair := range strings.Split(r.TemplateHashes, ",") {
-			parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
-			if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
-				templates[parts[0]] = parts[1]
-			}
-		}
-		trustSnapshot.ByBinaryHash[normalized] = append(
-			trustSnapshot.ByBinaryHash[normalized],
-			approvedReleasePolicy{
-				Version: r.Version, Platform: r.Platform, Backend: r.Backend,
-				BinaryHash: normalized, MetallibHash: r.MetallibHash,
-				PythonHash: r.PythonHash, RuntimeHash: r.RuntimeHash,
-				TemplateHashes: templates,
-			})
+		trustSnapshot.addRelease(&r, normalized)
 	}
-	s.releaseTrustPolicy.Store(trustSnapshot)
-	if s.registry != nil {
-		// Evidence still approved under the NEW snapshot is carried forward at
-		// the new generation. For a REQUIRED policy the registry returns every
-		// provider NOT carried forward — including providers that held no
-		// evidence at all (first required activation over a cold fleet) — and
-		// each one is re-challenged immediately instead of waiting for the
-		// periodic ticker (whose interval outlives the request queue).
-		needChallenge := s.registry.SetReleasePolicyGeneration(
-			trustSnapshot.Generation, trustSnapshot.Required,
-			func(evidence registry.ApplicationEvidence) bool {
-				return releaseEvidenceStillApproved(trustSnapshot, evidence)
-			})
-		for _, providerID := range needChallenge {
-			if provider := s.registry.GetProvider(providerID); provider != nil {
-				provider.RequestImmediateChallenge()
-			}
-		}
-		if len(needChallenge) > 0 {
-			s.logger.Info("release policy refresh left providers without current evidence; re-challenging immediately",
-				"generation", trustSnapshot.Generation,
-				"providers", len(needChallenge),
-			)
-			s.ddIncr("release_policy.evidence_invalidated", []string{fmt.Sprintf("providers:%d", len(needChallenge))})
-		}
+	if n := s.publishReleaseTrustPolicy(trustSnapshot); n > 0 {
+		s.logger.Info("release policy refresh left providers without current evidence; re-challenging immediately",
+			"generation", trustSnapshot.Generation, "providers", n)
 	}
 
 	s.binaryHashPolicyMu.Lock()
@@ -1721,52 +1679,10 @@ func (s *Server) convergeReleasePolicyWithCommittedRelease(release *store.Releas
 
 	generation := s.releaseTrustPolicyGeneration.Add(1)
 	s.releaseInventoryEverConfigured.Store(true)
-	trustSnapshot := &releaseTrustPolicySnapshot{
-		Generation:   generation,
-		Required:     true,
-		ByBinaryHash: make(map[string][]approvedReleasePolicy),
-	}
-	if last := s.releaseTrustPolicy.Load(); last != nil {
-		for hash, policies := range last.ByBinaryHash {
-			for _, policy := range policies {
-				if policy.Version == release.Version && policy.Platform == release.Platform {
-					continue // replaced by this registration
-				}
-				trustSnapshot.ByBinaryHash[hash] = append(trustSnapshot.ByBinaryHash[hash], policy)
-			}
-		}
-	}
-	templates := make(map[string]string)
-	for _, pair := range strings.Split(release.TemplateHashes, ",") {
-		parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
-		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
-			templates[parts[0]] = parts[1]
-		}
-	}
-	trustSnapshot.ByBinaryHash[normalized] = append(
-		trustSnapshot.ByBinaryHash[normalized],
-		approvedReleasePolicy{
-			Version: release.Version, Platform: release.Platform, Backend: release.Backend,
-			BinaryHash: normalized, MetallibHash: release.MetallibHash,
-			PythonHash: release.PythonHash, RuntimeHash: release.RuntimeHash,
-			TemplateHashes: templates,
-		})
-	s.releaseTrustPolicy.Store(trustSnapshot)
-	if s.registry != nil {
-		needChallenge := s.registry.SetReleasePolicyGeneration(
-			trustSnapshot.Generation, trustSnapshot.Required,
-			func(evidence registry.ApplicationEvidence) bool {
-				return releaseEvidenceStillApproved(trustSnapshot, evidence)
-			})
-		for _, providerID := range needChallenge {
-			if provider := s.registry.GetProvider(providerID); provider != nil {
-				provider.RequestImmediateChallenge()
-			}
-		}
-		if len(needChallenge) > 0 {
-			s.ddIncr("release_policy.evidence_invalidated", []string{fmt.Sprintf("providers:%d", len(needChallenge))})
-		}
-	}
+	trustSnapshot := retainedReleaseTrustPolicy(s.releaseTrustPolicy.Load(), generation, true, release.Version, release.Platform)
+	trustSnapshot.addRelease(release, normalized)
+	s.publishReleaseTrustPolicy(trustSnapshot)
+
 	hashes := make(map[string]bool, len(trustSnapshot.ByBinaryHash))
 	for hash := range trustSnapshot.ByBinaryHash {
 		hashes[hash] = true
@@ -1812,37 +1728,9 @@ func (s *Server) convergeReleasePolicyWithCommittedDeactivation(version, platfor
 	if last != nil && last.Required {
 		required = true
 	}
-	trustSnapshot := &releaseTrustPolicySnapshot{
-		Generation:   generation,
-		Required:     required,
-		ByBinaryHash: make(map[string][]approvedReleasePolicy),
-	}
-	if last != nil {
-		for hash, policies := range last.ByBinaryHash {
-			for _, policy := range policies {
-				if policy.Version == version && policy.Platform == platform {
-					continue // removed by this deactivation
-				}
-				trustSnapshot.ByBinaryHash[hash] = append(trustSnapshot.ByBinaryHash[hash], policy)
-			}
-		}
-	}
-	s.releaseTrustPolicy.Store(trustSnapshot)
-	if s.registry != nil {
-		needChallenge := s.registry.SetReleasePolicyGeneration(
-			trustSnapshot.Generation, trustSnapshot.Required,
-			func(evidence registry.ApplicationEvidence) bool {
-				return releaseEvidenceStillApproved(trustSnapshot, evidence)
-			})
-		for _, providerID := range needChallenge {
-			if provider := s.registry.GetProvider(providerID); provider != nil {
-				provider.RequestImmediateChallenge()
-			}
-		}
-		if len(needChallenge) > 0 {
-			s.ddIncr("release_policy.evidence_invalidated", []string{fmt.Sprintf("providers:%d", len(needChallenge))})
-		}
-	}
+	trustSnapshot := retainedReleaseTrustPolicy(last, generation, required, version, platform)
+	s.publishReleaseTrustPolicy(trustSnapshot)
+
 	hashes := make(map[string]bool, len(trustSnapshot.ByBinaryHash))
 	for hash := range trustSnapshot.ByBinaryHash {
 		hashes[hash] = true

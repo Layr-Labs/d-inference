@@ -228,18 +228,17 @@ func (r *Registry) PlanCacheRouteWithResult(
 		}
 		boundaries = append(boundaries, anchor)
 	}
-	activation.recordPlan(CachePlanPlanned)
-	return CachePlanResult{
-		Plan: CachePlan{
-			generation:         tracker.generation,
-			ModelAggregateHash: aggregateHash,
-			PromptContractID:   input.PromptContractID,
-			CacheScope:         scope,
-			PromptTokenCount:   int(sidecarPlan.PromptTokenCount),
-			Boundaries:         boundaries,
-		},
-		Outcome: CachePlanPlanned, PlanLatency: latency, SidecarCalled: true,
+	plan := CachePlan{
+		generation:         tracker.generation,
+		ModelAggregateHash: aggregateHash,
+		PromptContractID:   input.PromptContractID,
+		CacheScope:         scope,
+		PromptTokenCount:   int(sidecarPlan.PromptTokenCount),
+		Boundaries:         boundaries,
 	}
+	tracker.observeCacheDemand(&plan, keys.route, time.Now())
+	activation.recordPlan(CachePlanPlanned)
+	return CachePlanResult{Plan: plan, Outcome: CachePlanPlanned, PlanLatency: latency, SidecarCalled: true}
 }
 
 // providerCacheScope is the only provider-visible routing value. It binds the

@@ -78,12 +78,23 @@ public enum PrefixCacheDonationOutcome: String, Codable, Sendable, Equatable, Ca
     case incompleteLayerState = "incomplete_layer_state"
     case stageSizeExceeded = "stage_size_exceeded"
     case writeRateLimited = "write_rate_limited"
+    case writePriorityLimited = "write_priority_limited"
     case writeQueueFull = "write_queue_full"
     case alreadyDurable = "already_durable"
     case alreadyQueued = "already_queued"
     case cacheClosed = "cache_closed"
     case diskUnavailable = "disk_unavailable"
     case writeFailed = "write_failed"
+    // Closed diagnostic reasons for complete-checkpoint donations. Older
+    // coordinators ignore unknown outcomes without changing cache admission.
+    case hostMemoryUnavailable = "host_memory_unavailable"
+    case cacheEpochChanged = "cache_epoch_changed"
+    case cacheMaintenanceBusy = "cache_maintenance_busy"
+    case diskSpaceInsufficient = "disk_space_insufficient"
+    case unsafeCacheRoot = "unsafe_cache_root"
+    case writeIOFailed = "write_io_failed"
+    case existingCacheUnreadable = "existing_cache_unreadable"
+    case cacheEntryEvicted = "cache_entry_evicted"
 }
 
 public struct PrefixCacheDonationOutcomeCount: Codable, Sendable, Equatable {

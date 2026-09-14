@@ -1,0 +1,26 @@
+{
+  "repo_id": "mlx-community/gemma-4-26B-A4B-it-qat-assistant-4bit",
+  "revision": "bb94eae1b70a80dac16cbf959bb4b7d56bd1fb8c",
+  "reference_manifest_url": "https://models.darkbloom.ai/v2/mlx-community-gemma-4-26B-A4B-it-qat-assistant-4bit--2acc3ce46483/bb94eae1b70a80dac16cbf959bb4b7d56bd1fb8c/manifest.json",
+  "reference_manifest_sha256": "8b7c00b7f131345156f5f20fa9c94a895c5340f16d9331bafb9e59628bf45bf2",
+  "files": [
+    {
+      "url": "https://huggingface.co/mlx-community/gemma-4-26B-A4B-it-qat-assistant-4bit/resolve/bb94eae1b70a80dac16cbf959bb4b7d56bd1fb8c/config.json",
+      "path": "config.json",
+      "size_bytes": 2961,
+      "sha256": "0cd54ff36e53a258532c5c1433bc44b88ba758cfe9b59bb4e6eecfd5453fabcf",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://huggingface.co/mlx-community/gemma-4-26B-A4B-it-qat-assistant-4bit/resolve/bb94eae1b70a80dac16cbf959bb4b7d56bd1fb8c/model.safetensors",
+      "path": "model.safetensors",
+      "size_bytes": 236124704,
+      "sha256": "3c4d43863abbbf455ec537c726eff7abeb88bb361e3ab23ff0d2d6006f620f74",
+      "matches_manifest": true
+    }
+  ],
+  "manifest_recheck": "200 with provider User-Agent and JSON Accept",
+  "manifest_sha256_actual": "8b7c00b7f131345156f5f20fa9c94a895c5340f16d9331bafb9e59628bf45bf2",
+  "manifest_matches_catalog": true,
+  "all_bytes_verified": true
+}

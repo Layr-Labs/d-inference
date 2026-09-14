@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-13 · commit `e4507f68c`
+> Last updated: 2026-09-13 · commit `01c6761cc`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -81,8 +81,9 @@ The registry imports `coordinator/registry/admission/` for capacity calculations
 `coordinator/registry/providerversion/` for version interpretation and
 `coordinator/registry/cacheattempt/` for request cache lifetime and
 `coordinator/registry/cachedirectory/` for receipt/holder transactions.
-`coordinator/registry/modelloads/` owns pending command clocks and heartbeat plan timing. These packages
-build through the standard coordinator targets below.
+`coordinator/registry/modelloads/` owns pending command clocks and heartbeat plan timing;
+`coordinator/registry/warmpool/` owns the controller loop, pressure and latest observations.
+These packages build through the standard coordinator targets below.
 
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
 its test binary after helper or lifecycle changes. The CPU-only

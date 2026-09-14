@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-13 · commit `e4507f68c`
+> Last updated: 2026-09-13 · commit `01c6761cc`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -48,7 +48,7 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/api` | The HTTP router (`routes` in `server.go`), middleware, consumer handlers (`consumer.go`), the provider WebSocket (`provider.go`), dispatch ladder (`dispatch.go`), sender encryption, admin, release, model-registry, device-auth and Stripe handlers, drain, profiler wiring. |
 | `coordinator/api/requestcontext` | Private context keys and typed account, API-key and request-ID access shared by middleware and endpoint packages (`WithAccountID`, `WithAPIKey`, `WithRequestID`). |
 | `coordinator/api/httpresponse` | JSON response writing and the common OpenAI-compatible error envelope (`WriteJSON`, `ErrorBody`); `WriteCachedJSON` and `EncodeCachedJSON` preserve pre-encoded response bytes. |
-| `coordinator/registry` | Live fleet identity, snapshots, routing and atomic reservation, queue policy and warm-pool orchestration. |
+| `coordinator/registry` | Live fleet identity, snapshots, routing and atomic reservation, queue policy and warm-pool fleet/command bindings. |
 | `coordinator/registry/requestqueue` | Per-model FIFO, expiration, reservation handoff acknowledgment and drain-pass coalescing (`Queue`, `Assignment`, `DrainCoalescer`). |
 | `coordinator/registry/admission` | Immutable capacity snapshots, pooled slot/KV accounting and measured cold-load budgets (`Policy`, `Snapshot`, `Pool`); live reservation locks stay in the registry. |
 | `coordinator/registry/cachedirectory` | One private receipt/holder transaction lock, connection identity, sequence/rejection fences, indexed eviction, stage provenance and copied lifecycle status (`Directory`); provider callbacks and live locks stay in the registry. |
@@ -56,7 +56,7 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/registry/providerversion` | Exact dotted-version interpretation and bounded memo state shared by capability, slot-layout and memory-floor gates (`Policy`). |
 | `coordinator/registry/throughput` | Observed throughput samples and medians, decode expectations and batch quality policy (`Observations`, `Policy`, `QualityConcurrency`). |
 | `coordinator/registry/modelloads` | Private session command deadlines/start times and fleet plan coalescing (`Commands`, `PlanGate`); live eligibility, provider publication and command I/O remain in the registry. |
-| `coordinator/registry/warmpool` | Demand/occupancy state and target arithmetic (`State`, `Target`, `ServiceTime`); fleet commands remain in the registry controller. |
+| `coordinator/registry/warmpool` | Controller runner, coalesced triggers, private queue/pressure/observation state and target arithmetic (`Controller`, `State`, `Snapshot`, `Target`, `ServiceTime`); live fleet and command bindings stay in the registry. |
 | `coordinator/store` | `Store` interface, Postgres and memory backends, schema migrations. |
 | `coordinator/protocol` | Wire types for the provider WebSocket: register, heartbeat, capacity, inference frames, telemetry, profiles. |
 | `coordinator/internal/e2e` | NaCl Box (X25519 + XSalsa20-Poly1305) for coordinator↔provider and sender↔coordinator sealing. |

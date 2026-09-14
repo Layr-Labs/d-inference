@@ -31,7 +31,8 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── protocol/         WebSocket message types shared with provider (type_scan.go: single-parse frame decode)
 ├── ratelimit/        rate limiting
 ├── registry/         provider registry, queueing, routing, reputation, token-budget admission,
-│                     warm-pool controller, two-lane provider WS writer (provider_writer.go),
+│                     warmpool/ (controller, pressure and target policy),
+│                     two-lane provider WS writer (provider_writer.go),
 │                     admission/ (immutable capacity math), providerversion/ (shared interpreter),
 │                     cacheattempt/ (request lifetime), cachedirectory/ (receipt/holder transactions),
 │                     modelloads/ (session command clocks and fleet plan gate),

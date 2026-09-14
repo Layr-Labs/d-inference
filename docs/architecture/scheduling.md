@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-13 · commit `e4507f68c`
+> Last updated: 2026-09-13 · commit `01c6761cc`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -323,10 +323,15 @@ rejection in `coordinator/registry/model_load_failures.go`
 
 ### Warm-pool controller
 
-`warmPoolController` (`coordinator/registry/warm_pool_controller.go`) runs
+`warmpool.Controller` (`coordinator/registry/warmpool/controller.go`) runs
 every `Interval` and, per model, decides how many providers *should* be warm
-and which cold providers to load. Configuration is read once in `ReadConfig`
-(`coordinator/registry/config.go`); the type and default of every knob is in
+and which cold providers to load. It owns tick serialization, the coalesced
+trigger channel, pressure state and latest snapshots. The registry binds live
+fleet reads, reservation, dedicated-model policy and command I/O in
+`coordinator/registry/warm_pool_controller.go` (`newWarmPoolController`).
+Configuration is read once from the environment in `ReadConfig`
+(`coordinator/registry/config.go`); `WarmPoolConfig` aliases the owner
+`Config` (`coordinator/registry/warmpool/config.go`). The type and default of every knob is in
 [configuration.md → Warm pool](../reference/configuration.md#warm-pool):
 
 | Field | Environment variable |
@@ -354,7 +359,8 @@ and which cold providers to load. Configuration is read once in `ReadConfig`
 | `RampGapFraction` | `EIGENINFERENCE_WARM_POOL_RAMP_GAP_FRACTION` |
 | `MaxGlobalPendingLoads` | `EIGENINFERENCE_WARM_POOL_MAX_GLOBAL_PENDING_LOADS` |
 
-**Demand pressure** (`hasDemandPressure`). A model is under pressure when,
+**Demand pressure** (`Controller.hasDemandPressure`,
+`coordinator/registry/warmpool/target_policy.go`). A model is under pressure when,
 within the current pressure window, capacity rejects, TTFT misses, cold
 dispatches, speculative starts or speculative wins reach their thresholds;
 or the queue is non-empty and its oldest entry is at least
@@ -378,7 +384,7 @@ target       = clamp(target, warm, warm + eligibleCold)
 
 `spillArrivalRate` is an EWMA of arrivals the warm set could not absorb,
 `ArrivalEWMAAlpha = 0.3` (`coordinator/registry/warmpool/state.go`).
-`targetWarm` then applies anti-flap and floors: a target lower than the last
+`Controller.TargetWarm` then applies anti-flap and floors: a target lower than the last
 one is held for `MinDwell`, and `MinWarmByModel` raises the target (both
 capped at `warm + eligibleCold`).
 
@@ -387,7 +393,8 @@ capped at `warm + eligibleCold`).
 RampGapFraction)` loads per tick — at least the base, scaled up to
 `ceil(gap × RampGapFraction)`, never above the ceiling or the gap — subject
 to `MaxGlobalPendingLoads` outstanding loads fleet-wide. Cold candidates are
-ranked by `warmPoolCandidateReasonLocked`; those disqualified are tallied by
+ranked by `warmPoolCandidateReasonLocked`
+(`coordinator/registry/warm_pool_eligibility.go`); those disqualified are tallied by
 reason (`offline_untrusted_private`, `pending_load_or_cooldown`, `not_idle`,
 `thermal_critical`, `trust_or_runtime`, `stale_challenge`,
 `not_serving_catalog`, `dedicated_excluded`, `model_too_large`,
@@ -395,7 +402,8 @@ reason (`offline_untrusted_private`, `pending_load_or_cooldown`, `not_idle`,
 
 **`WarmPoolSnapshot`.** Every tick produces one per model, logged as
 `warm_pool_tick` and retained as the controller's latest state
-(`storeSnapshots` / `latestSnapshots`):
+(`Controller.storeSnapshots` / `Controller.LatestSnapshots` in
+`coordinator/registry/warmpool/snapshots.go`):
 `Model`, `TargetWarm`, `WarmProviders`, `EligibleCold`, `QueueDepth`,
 `OldestQueueAge`, `CapacityRejects`, `TTFTMisses`, `SpeculativeStarted`,
 `SpeculativeWon`, `ColdDispatches`, `LoadDurationEWMA`, `ObserveOnly`,
@@ -403,7 +411,25 @@ reason (`offline_untrusted_private`, `pending_load_or_cooldown`, `not_idle`,
 `ServiceTime`, `QualityConcurrency`, `DemandConcurrency`, `ColdIneligible`,
 `ColdDisqualifiers`. With `ObserveOnly` the snapshot is produced but no
 `load_model` is sent; `MaxLoadsPerTick = 0` or `MaxGlobalPendingLoads = 0`
-has the same effect (`plan`).
+has the same effect (`Controller.Plan`, `coordinator/registry/warmpool/plan.go`).
+
+A tick retains its serialization lock across planning, snapshot publication,
+diagnostics and sends, in that order. Pressure, queue and snapshot locks are
+released before live registry callbacks. Fleet selection keeps `r.mu` then
+`p.mu` in `warmPoolFleetSnapshot` (`coordinator/registry/warm_pool_fleet.go`);
+reservations retain the model-load transaction locks described above.
+`Controller.Configure` publishes the configuration through a private atomic
+pointer without taking the tick lock, so registry-held configuration updates
+cannot invert the tick-to-registry callback order
+(`coordinator/registry/warmpool/owner.go`).
+
+Latest-snapshot readers receive a copy of the outer slice, preserving the
+existing nested action and diagnostic-map values. `WarmPoolSnapshot` aliases
+`warmpool.Snapshot[modelLoadAction]`: the action type keeps its two fields
+private, including when a snapshot is JSON-encoded. Publication happens before
+command callbacks, so reentrant observers see the tick that issued the command
+(`coordinator/registry/warm_pool_publication_test.go`,
+`TestWarmPoolPublishesSnapshotBeforeReentrantSend`).
 
 ### Heartbeat cadence and eviction
 
@@ -568,9 +594,11 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 | Pending command lifecycle | `coordinator/registry/modelloads/commands.go` — `Commands.Reserve`, `Disconnect`; `coordinator/registry/modelloads/deadlines.go` — `Expire`, `Count`, `Backoff`, `Complete`, `Observe`; `coordinator/registry/model_load_state.go` retains live registry/provider synchronization |
 | Model swap planning and publication | `coordinator/registry/model_loading.go` — `TriggerModelSwaps`; `coordinator/registry/model_load_plan.go` — `bestModelLoadProviderLocked`; `coordinator/registry/model_load_commands.go` — `reservePendingModelLoads`, `sendModelLoadActions`; `coordinator/registry/model_load_warm.go` — `MarkModelWarm`; `coordinator/registry/model_commands.go` — `SendLoadModel` |
 | Heartbeat plan coalescing | `coordinator/registry/modelloads/plan_gate.go` — `PlanGate.Claim`, `ArmTrailing`; `coordinator/registry/model_swap_coalesce.go` — `triggerModelSwapsFromHeartbeat`, `trailingModelSwapPlan`; `coordinator/registry/modelloads/limits.go` — `PlanInterval` |
-| Warm pool | `coordinator/registry/warm_pool_controller.go` — `tick`, `plan`, `hasDemandPressure`, `targetWarm`, `WarmPoolSnapshot`; `coordinator/registry/warmpool/target.go` — `Target`, `ServiceTime`, `LoadsThisTick`; `coordinator/registry/warmpool/state.go` — `State`, `ArrivalEWMAAlpha` |
+| Warm-pool controller | `coordinator/registry/warmpool/controller.go` — `Controller.Run`, `Tick`; `coordinator/registry/warmpool/plan.go` — `Plan`, `PlanObserveOnly`; `coordinator/registry/warmpool/target_policy.go` — `TargetWarm`, `hasDemandPressure`; `coordinator/registry/warmpool/queue_pressure.go` — `RecordQueuePressure`; `coordinator/registry/warmpool/snapshots.go` — `Snapshot`, `LatestSnapshots` |
+| Live warm-pool fleet and commands | `coordinator/registry/warm_pool_controller.go` — `newWarmPoolController`, `TriggerWarmPool`; `coordinator/registry/warm_pool_fleet.go` — `warmPoolFleetSnapshot`; `coordinator/registry/warm_pool_eligibility.go` — `warmPoolCandidateReasonLocked` |
+| Warm-pool demand and target math | `coordinator/registry/warmpool/target.go` — `Target`, `ServiceTime`, `LoadsThisTick`; `coordinator/registry/warmpool/state.go` — `State`, `ArrivalEWMAAlpha` |
 | Observed throughput and batch policy | `coordinator/registry/throughput/observations.go` — `Observations`; `coordinator/registry/throughput/batch.go` — `QualityConcurrency`; `coordinator/registry/throughput/anomaly.go` — `EvaluateAnomaly` |
-| Warm-pool and quality-cap configuration | `coordinator/registry/config.go` — `WarmPoolConfig`, `QualityCapConfig`, `ReadConfig` |
+| Warm-pool and quality-cap configuration | `coordinator/registry/warmpool/config.go` — `Config`, `Check`, `PerTickCeiling`; `coordinator/registry/config.go` — `WarmPoolConfig` alias, `QualityCapConfig`, `ReadConfig` |
 | Eviction | `coordinator/registry/provider_lifecycle.go` — `StartEvictionLoop`, `evictStale`, `disconnectProvider`, `evictStrikeThreshold`; wired in `coordinator/cmd/coordinator/main.go` |
 | Provider writer | `coordinator/registry/provider_writer.go` — `providerWriter`, `providerWriteTimeout`, `watchWrites` |
 | Teardown | `coordinator/registry/provider_lifecycle.go` — `Disconnect` |

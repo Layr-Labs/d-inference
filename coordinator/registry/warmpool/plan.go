@@ -7,22 +7,22 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/registry/throughput"
 )
 
-func (c *Controller[A]) Plan(now time.Time) []Snapshot[A] {
-	if c.configuration().MaxLoadsPerTick == 0 || c.configuration().MaxGlobalPendingLoads == 0 {
-		return c.PlanObserveOnly(now, nil)
+func (c planningPass[A]) plan(now time.Time) []Snapshot[A] {
+	if c.config.MaxLoadsPerTick == 0 || c.config.MaxGlobalPendingLoads == 0 {
+		return c.planObserveOnly(now, nil)
 	}
-	return c.PlanObserveOnly(now, c.reserveActions)
+	return c.planObserveOnly(now, c.reserveActions)
 }
 
-func (c *Controller[A]) PlanObserveOnly(now time.Time, reserve func([]A, time.Time) []A) []Snapshot[A] {
-	stateWindow := c.configuration().Interval * 4
+func (c planningPass[A]) planObserveOnly(now time.Time, reserve func([]A, time.Time) []A) []Snapshot[A] {
+	stateWindow := c.config.Interval * 4
 	if stateWindow < time.Minute {
 		stateWindow = time.Minute
 	}
 	// Fold accumulated spill arrivals into the per-model EWMA before snapshotting
 	// so the Little's Law target tracks demand. Gate folds at half the control
 	// interval so coalesced hot-path trigger ticks don't spike the rate.
-	c.state.FoldArrivalRates(now, c.configuration().Interval/2, ArrivalEWMAAlpha)
+	c.state.FoldArrivalRates(now, c.config.Interval/2, ArrivalEWMAAlpha)
 	pressure := c.state.Snapshot(now, stateWindow)
 	queue := c.queueSnapshot(now, stateWindow)
 	fleet := c.bindings.FleetSnapshot(now)
@@ -41,7 +41,7 @@ func (c *Controller[A]) PlanObserveOnly(now time.Time, reserve func([]A, time.Ti
 	for model, f := range fleet {
 		occupancy[model] = f.Running + f.Waiting + queue[model].Depth
 	}
-	c.state.FoldOccupancyRamp(occupancy, now, c.configuration().Interval, c.configuration().Interval/2, ArrivalEWMAAlpha)
+	c.state.FoldOccupancyRamp(occupancy, now, c.config.Interval, c.config.Interval/2, ArrivalEWMAAlpha)
 	pressure = c.state.Snapshot(now, stateWindow)
 
 	models := make(map[string]struct{})
@@ -69,9 +69,9 @@ func (c *Controller[A]) PlanObserveOnly(now time.Time, reserve func([]A, time.Ti
 		return left < right
 	})
 
-	perTickCeiling := c.configuration().PerTickCeiling()
+	perTickCeiling := c.config.PerTickCeiling()
 	loadsRemaining := perTickCeiling
-	globalPendingRemaining := c.configuration().MaxGlobalPendingLoads - c.bindings.PendingCount(now)
+	globalPendingRemaining := c.config.MaxGlobalPendingLoads - c.bindings.PendingCount(now)
 	if globalPendingRemaining < loadsRemaining {
 		loadsRemaining = globalPendingRemaining
 	}
@@ -79,7 +79,7 @@ func (c *Controller[A]) PlanObserveOnly(now time.Time, reserve func([]A, time.Ti
 		loadsRemaining = 0
 	}
 
-	params := c.TargetParams()
+	params := c.targetParams()
 	var out []Snapshot[A]
 	for _, model := range ordered {
 		p := pressure[model]
@@ -95,7 +95,7 @@ func (c *Controller[A]) PlanObserveOnly(now time.Time, reserve func([]A, time.Ti
 			serviceTPS = f.SoloDecodeTPS
 		}
 		svc := ServiceTime(f.PrefillTPS, serviceTPS, params)
-		target := c.TargetWarm(f, p, q, params, svc, now)
+		target := c.targetWarm(f, p, q, params, svc, now)
 
 		gap := target - f.Warm
 		if gap < 0 {
@@ -104,7 +104,7 @@ func (c *Controller[A]) PlanObserveOnly(now time.Time, reserve func([]A, time.Ti
 		// Demand-scaled, bounded per-tick ramp: close a fraction of the gap, at
 		// least MaxLoadsPerTick, capped by the per-tick ceiling, then by what we
 		// can actually warm (eligible cold) and the global pending budget.
-		need := LoadsThisTick(gap, c.configuration().MaxLoadsPerTick, perTickCeiling, c.configuration().RampGapFraction)
+		need := LoadsThisTick(gap, c.config.MaxLoadsPerTick, perTickCeiling, c.config.RampGapFraction)
 		if need > len(f.EligibleCold) {
 			need = len(f.EligibleCold)
 		}
@@ -118,7 +118,7 @@ func (c *Controller[A]) PlanObserveOnly(now time.Time, reserve func([]A, time.Ti
 		for i := 0; i < need; i++ {
 			actions = append(actions, c.bindings.Action(f.EligibleCold[i].ProviderID, model))
 		}
-		if reserve != nil && !c.configuration().ObserveOnly {
+		if reserve != nil && !c.config.ObserveOnly {
 			actions = reserve(actions, now)
 		}
 		loadsRemaining -= len(actions)
@@ -149,7 +149,7 @@ func (c *Controller[A]) PlanObserveOnly(now time.Time, reserve func([]A, time.Ti
 			SpeculativeWon:     p.SpeculativeWon,
 			ColdDispatches:     p.ColdDispatches,
 			LoadDurationEWMA:   p.LoadDurationEWMA,
-			ObserveOnly:        c.configuration().ObserveOnly,
+			ObserveOnly:        c.config.ObserveOnly,
 			Actions:            actions,
 			RunningRequests:    f.Running,
 			WaitingRequests:    f.Waiting,

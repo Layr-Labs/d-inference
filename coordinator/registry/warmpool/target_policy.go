@@ -8,18 +8,18 @@ import (
 
 // targetParams snapshots the controller config into the pure Params
 // consumed by the Little's Law math in target.go.
-func (c *Controller[A]) TargetParams() Params {
+func (c planningPass[A]) targetParams() Params {
 	return Params{
-		DecodeFloorTPS:             c.configuration().DecodeFloorTPS,
+		DecodeFloorTPS:             c.config.DecodeFloorTPS,
 		LoadFactorK:                throughput.LoadFactor,
-		BurstBuffer:                c.configuration().BurstBuffer,
-		HeadroomProviders:          c.configuration().HeadroomProviders,
-		HeadroomEnabledParams:      c.configuration().HeadroomEnabled,
-		HeadroomMaxProviders:       c.configuration().HeadroomMaxProviders,
-		HeadroomLoadWindows:        c.configuration().HeadroomLoadWindows,
-		FallbackQualityConcurrency: c.configuration().FallbackQualityConcurrency,
-		AssumedPromptTokens:        c.configuration().AssumedPromptTokens,
-		AssumedCompletionTokens:    c.configuration().AssumedCompletionTokens,
+		BurstBuffer:                c.config.BurstBuffer,
+		HeadroomProviders:          c.config.HeadroomProviders,
+		HeadroomEnabledParams:      c.config.HeadroomEnabled,
+		HeadroomMaxProviders:       c.config.HeadroomMaxProviders,
+		HeadroomLoadWindows:        c.config.HeadroomLoadWindows,
+		FallbackQualityConcurrency: c.config.FallbackQualityConcurrency,
+		AssumedPromptTokens:        c.config.AssumedPromptTokens,
+		AssumedCompletionTokens:    c.config.AssumedCompletionTokens,
 		MinServiceTime:             MinServiceTime,
 		MaxServiceTime:             MaxServiceTime,
 	}
@@ -27,7 +27,7 @@ func (c *Controller[A]) TargetParams() Params {
 
 // targetInputs assembles the measured per-model inputs for the Little's Law
 // target from the fleet, pressure, and queue snapshots.
-func (c *Controller[A]) targetInputs(fleet FleetModel, pressure Pressure, queue QueuePressure) Inputs {
+func (c planningPass[A]) targetInputs(fleet FleetModel, pressure Pressure, queue QueuePressure) Inputs {
 	return Inputs{
 		Model:              fleet.Model,
 		Warm:               fleet.Warm,
@@ -51,21 +51,21 @@ func (c *Controller[A]) targetInputs(fleet FleetModel, pressure Pressure, queue 
 // TTFT misses, cold dispatches, speculative starts/wins (now including the W3
 // preflight-fed near-misses), an aged coordinator queue, and a saturated warm set
 // under any external pressure. With no demand pressure the pool is left as-is.
-func (c *Controller[A]) hasDemandPressure(fleet FleetModel, pressure Pressure, queue QueuePressure) bool {
-	if pressure.CapacityRejects >= c.configuration().CapacityRejectThreshold ||
-		pressure.TTFTMisses >= c.configuration().TTFTMissThreshold ||
-		pressure.ColdDispatches >= c.configuration().ColdDispatchThreshold ||
-		pressure.SpeculativeStarted >= c.configuration().SpeculativeStartThreshold ||
-		pressure.SpeculativeWon >= c.configuration().SpeculativeWinThreshold {
+func (c planningPass[A]) hasDemandPressure(fleet FleetModel, pressure Pressure, queue QueuePressure) bool {
+	if pressure.CapacityRejects >= c.config.CapacityRejectThreshold ||
+		pressure.TTFTMisses >= c.config.TTFTMissThreshold ||
+		pressure.ColdDispatches >= c.config.ColdDispatchThreshold ||
+		pressure.SpeculativeStarted >= c.config.SpeculativeStartThreshold ||
+		pressure.SpeculativeWon >= c.config.SpeculativeWinThreshold {
 		return true
 	}
-	if queue.Depth > 0 && queue.OldestAge >= c.configuration().QueueAgeThreshold {
+	if queue.Depth > 0 && queue.OldestAge >= c.config.QueueAgeThreshold {
 		return true
 	}
 	externalPressure := queue.Depth > 0 || pressure.CapacityRejects > 0 || pressure.TTFTMisses > 0 ||
 		pressure.SpeculativeStarted > 0 || pressure.SpeculativeWon > 0 || pressure.ColdDispatches > 0
-	if fleet.Warm > 0 && externalPressure && c.configuration().WarmSaturationThreshold > 0 &&
-		float64(fleet.WarmSaturated)/float64(fleet.Warm) >= c.configuration().WarmSaturationThreshold {
+	if fleet.Warm > 0 && externalPressure && c.config.WarmSaturationThreshold > 0 &&
+		float64(fleet.WarmSaturated)/float64(fleet.Warm) >= c.config.WarmSaturationThreshold {
 		return true
 	}
 	return false
@@ -74,15 +74,15 @@ func (c *Controller[A]) hasDemandPressure(fleet FleetModel, pressure Pressure, q
 // targetWarm computes the Little's Law warm-provider target for a model, then
 // applies the dwell guard so a transient demand dip cannot shrink the pool before
 // MinDwell elapses (anti-flap).
-func (c *Controller[A]) TargetWarm(fleet FleetModel, pressure Pressure, queue QueuePressure, params Params, svc time.Duration, now time.Time) int {
+func (c planningPass[A]) targetWarm(fleet FleetModel, pressure Pressure, queue QueuePressure, params Params, svc time.Duration, now time.Time) int {
 	target := Target(c.targetInputs(fleet, pressure, queue), params, svc)
-	if c.configuration().MinDwell > 0 && pressure.LastTarget > target && now.Sub(pressure.LastTargetChangedAt) < c.configuration().MinDwell {
+	if c.config.MinDwell > 0 && pressure.LastTarget > target && now.Sub(pressure.LastTargetChangedAt) < c.config.MinDwell {
 		target = pressure.LastTarget
 		if maxReachable := fleet.Warm + len(fleet.EligibleCold); target > maxReachable {
 			target = maxReachable
 		}
 	}
-	if floor := c.configuration().MinWarmByModel[fleet.Model]; floor > target {
+	if floor := c.config.MinWarmByModel[fleet.Model]; floor > target {
 		target = floor
 		if maxReachable := fleet.Warm + len(fleet.EligibleCold); target > maxReachable {
 			target = maxReachable

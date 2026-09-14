@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-13 · commit `2ebb40c4f`
+> Last updated: 2026-09-13 · commit `8eba1c7f3`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -490,8 +490,9 @@ watchdog goroutine per connection (`Writer.watchWrites` in
 `coordinator/registry/providerwriter/watchdog.go`) polling every
 `watchdogInterval = 250 * time.Millisecond`; on a missed
 deadline it closes the socket and the writer surfaces a timeout rather than
-a generic closed-connection error. When the writer stops, queued frames fail
-with `drainErrorString = "provider websocket writer stopped"`.
+a generic closed-connection error. An explicit stop drains queued frames with
+`drainErrorString = "provider websocket writer stopped"`; a write failure drains
+them with that write's error (`Writer.serve`, `drainAll`).
 
 Deferred writes keep their handoff transaction in
 `coordinator/registry/providerwriter/handoff.go` (`Writer.writeRequest`) and

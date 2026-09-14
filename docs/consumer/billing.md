@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-14 · commit `b853c2417`
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -132,7 +132,7 @@ curl -X POST https://api.darkbloom.dev/v1/keys \
 `PATCH /v1/keys/{id}`. The cap is checked against the key's settled usage in
 the window before each request's reservation; it is a soft sub-cap under your
 account balance, so several in-flight requests can together overshoot it by up
-to their reservations (`coordinator/api/apikey_handlers.go` `checkKeySpendCap`).
+to their reservations (`coordinator/api/accounts/key_policy.go` `accounts.CheckKeySpendCap`).
 `GET /v1/keys` shows `usage_usd`, `limit_usd`, and `remaining_usd` per key.
 
 ### 6. Referral codes
@@ -170,7 +170,7 @@ curl -X POST https://api.darkbloom.dev/v1/invite/redeem \
 Invite codes are created by Darkbloom staff and carry a fixed amount. A
 successful redemption returns `credited_usd` and `balance_usd`; the credit is
 spendable but not withdrawable, and each account can redeem a given code once
-(`coordinator/api/invite_handlers.go` `handleRedeemInviteCode`).
+(`coordinator/api/accounts/invites.go` `Controller.RedeemInvite`).
 
 ### 8. High-volume integrations: service accounts
 

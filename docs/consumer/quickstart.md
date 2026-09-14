@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-14 · commit `14296eaf5`
+> Last updated: 2026-09-14 · commit `16a46c762`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -18,7 +18,7 @@ Open `https://console.darkbloom.dev` and sign in with your email address.
 
 ### 2. Create an API key
 
-Open the API console page (`/api-console`, `console-ui/src/app/api-console/page.tsx` — not Settings) and create a key. The console calls `POST /v1/keys` with your Privy session through its same-origin `/api/keys` relay (`console-ui/src/app/api/keys/route.ts`; `handleCreateAPIKey`, `coordinator/api/apikey_handlers.go`). The secret starts with `sk-db-` and is shown once — copy it now; its exact shape and how it is stored are in [`../reference/api-contracts.md#api-key-shapes`](../reference/api-contracts.md#api-key-shapes). If you lose it, rotate or create another ([`authentication.md`](authentication.md)).
+Open the API console page (`/api-console`, `console-ui/src/app/api-console/page.tsx` — not Settings) and create a key. The console calls `POST /v1/keys` with your Privy session through its same-origin `/api/keys` relay (`console-ui/src/app/api/keys/route.ts`; `Controller.CreateKey`, `coordinator/api/accounts/keys.go`). The secret starts with `sk-db-` and is shown once — copy it now; its exact shape and how it is stored are in [`../reference/api-contracts.md#api-key-shapes`](../reference/api-contracts.md#api-key-shapes). If you lose it, rotate or create another ([`authentication.md`](authentication.md)).
 
 Export it for the commands below:
 

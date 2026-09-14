@@ -36,6 +36,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/httprequest"
 	"github.com/eigeninference/d-inference/coordinator/api/requestauth"
 	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/apns"
@@ -2457,7 +2458,7 @@ const maxRequestBodyBytes = 64 << 20 // 64 MiB
 // maxControlPlaneBodyBytes is the tight cap for small unauthenticated
 // control-plane JSON (enroll, device token, admin auth) — far below the global
 // ceiling so these exposed endpoints buffer at most a few KiB.
-const maxControlPlaneBodyBytes = 64 << 10 // 64 KiB
+const maxControlPlaneBodyBytes = httprequest.ControlPlaneBodyLimit
 
 // HandleMDMWebhook processes a MicroMDM webhook callback.
 // Mount this on the webhook URL configured in MicroMDM.
@@ -2532,6 +2533,7 @@ func (s *Server) resolveBaseURL(r *http.Request) string {
 
 // routes mounts all HTTP and WebSocket handlers.
 func (s *Server) routes() {
+	accountHandlers := s.accountController()
 	// Install script — served from the generated embed with the coordinator URL
 	// substituted per environment.
 	s.mux.HandleFunc("GET /install.sh", func(w http.ResponseWriter, r *http.Request) {
@@ -2557,20 +2559,20 @@ func (s *Server) routes() {
 
 	// Key management — requires interactive Privy session (API keys rejected
 	// to prevent self-replication from a leaked key).
-	s.mux.HandleFunc("POST /v1/auth/keys", s.requirePrivyAuth(s.rateLimitFinancial(s.handleCreateKey)))
-	s.mux.HandleFunc("DELETE /v1/auth/keys", s.requirePrivyAuth(s.handleRevokeKey))
+	s.mux.HandleFunc("POST /v1/auth/keys", s.requirePrivyAuth(s.rateLimitFinancial(accountHandlers.CreateLegacyKey)))
+	s.mux.HandleFunc("DELETE /v1/auth/keys", s.requirePrivyAuth(accountHandlers.RevokeLegacyKey))
 
 	// Multi-key management (OpenRouter-shaped CRUD). One account may own many
 	// named, individually-limited keys. Management requires an interactive
 	// Privy session so a leaked inference key can't enumerate or mint keys.
-	s.mux.HandleFunc("GET /v1/keys", s.requirePrivyAuth(s.handleListAPIKeys))
-	s.mux.HandleFunc("POST /v1/keys", s.requirePrivyAuth(s.rateLimitFinancial(s.handleCreateAPIKey)))
-	s.mux.HandleFunc("GET /v1/keys/{id}", s.requirePrivyAuth(s.handleGetAPIKey))
-	s.mux.HandleFunc("PATCH /v1/keys/{id}", s.requirePrivyAuth(s.rateLimitFinancial(s.handleUpdateAPIKey)))
-	s.mux.HandleFunc("DELETE /v1/keys/{id}", s.requirePrivyAuth(s.rateLimitFinancial(s.handleDeleteAPIKey)))
-	s.mux.HandleFunc("POST /v1/keys/{id}/rotate", s.requirePrivyAuth(s.rateLimitFinancial(s.handleRotateAPIKey)))
+	s.mux.HandleFunc("GET /v1/keys", s.requirePrivyAuth(accountHandlers.ListKeys))
+	s.mux.HandleFunc("POST /v1/keys", s.requirePrivyAuth(s.rateLimitFinancial(accountHandlers.CreateKey)))
+	s.mux.HandleFunc("GET /v1/keys/{id}", s.requirePrivyAuth(accountHandlers.GetKey))
+	s.mux.HandleFunc("PATCH /v1/keys/{id}", s.requirePrivyAuth(s.rateLimitFinancial(accountHandlers.UpdateKey)))
+	s.mux.HandleFunc("DELETE /v1/keys/{id}", s.requirePrivyAuth(s.rateLimitFinancial(accountHandlers.DeleteKey)))
+	s.mux.HandleFunc("POST /v1/keys/{id}/rotate", s.requirePrivyAuth(s.rateLimitFinancial(accountHandlers.RotateKey)))
 	// Metadata for the calling key (OpenRouter parity) — API key auth.
-	s.mux.HandleFunc("GET /v1/key", s.requireAuth(s.handleGetCallingKey))
+	s.mux.HandleFunc("GET /v1/key", s.requireAuth(accountHandlers.GetCallingKey))
 
 	// Consumer endpoints — API key auth required + per-account rate limit.
 	// Inference endpoints are wrapped in sealedTransport so senders can opt into
@@ -2655,12 +2657,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/releases/latest", s.handleLatestRelease) // public (install.sh)
 
 	// Device authorization flow — providers link to user accounts.
-	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)   // no auth — provider not yet authenticated
-	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken) // no auth — polls with device_code secret
+	s.mux.HandleFunc("POST /v1/device/code", accountHandlers.DeviceCode)   // no auth — provider not yet authenticated
+	s.mux.HandleFunc("POST /v1/device/token", accountHandlers.DeviceToken) // no auth — polls with device_code secret
 	// Device approve issues a long-lived provider→account linking token —
 	// same risk class as /v1/auth/keys, so financial-tier limit applies.
 	// Uses requirePrivyAuth to reject API keys (interactive session only).
-	s.mux.HandleFunc("POST /v1/device/approve", s.requirePrivyAuth(s.rateLimitFinancial(s.handleDeviceApprove)))
+	s.mux.HandleFunc("POST /v1/device/approve", s.requirePrivyAuth(s.rateLimitFinancial(accountHandlers.ApproveDevice)))
 
 	// --- Billing endpoints (Stripe payments + referrals) ---
 
@@ -2757,13 +2759,13 @@ func (s *Server) routes() {
 	// code; redemption is already financial-tier so the issuance side must
 	// match (otherwise an admin-key holder could spam codes anyway, but
 	// keeping symmetry).
-	s.mux.HandleFunc("POST /v1/admin/invite-codes", s.requireAuth(s.rateLimitFinancial(s.handleAdminCreateInviteCode)))
-	s.mux.HandleFunc("GET /v1/admin/invite-codes", s.requireAuth(s.handleAdminListInviteCodes))
-	s.mux.HandleFunc("DELETE /v1/admin/invite-codes", s.requireAuth(s.handleAdminDeactivateInviteCode))
+	s.mux.HandleFunc("POST /v1/admin/invite-codes", s.requireAuth(s.rateLimitFinancial(accountHandlers.CreateInvite)))
+	s.mux.HandleFunc("GET /v1/admin/invite-codes", s.requireAuth(accountHandlers.ListInvites))
+	s.mux.HandleFunc("DELETE /v1/admin/invite-codes", s.requireAuth(accountHandlers.DeactivateInvite))
 
 	// Invite code redemption (user) — credits the redeemer's balance, so
 	// it's a financial-tier endpoint.
-	s.mux.HandleFunc("POST /v1/invite/redeem", s.requireAuth(s.rateLimitFinancial(s.handleRedeemInviteCode)))
+	s.mux.HandleFunc("POST /v1/invite/redeem", s.requireAuth(s.rateLimitFinancial(accountHandlers.RedeemInvite)))
 
 	// Admin credit & reward
 	s.mux.HandleFunc("POST /v1/admin/credit", s.requireAuth(s.handleAdminCredit))
@@ -2981,23 +2983,8 @@ func (s *Server) bodyLimitMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// decodeCappedJSON JSON-decodes the request body under a hard size cap, writing
-// a 413 (too large) or 400 (bad JSON) and returning false on failure. For small
-// unauthenticated control-plane endpoints that must not buffer an unbounded body.
 func decodeCappedJSON(w http.ResponseWriter, r *http.Request, maxBytes int64, dst any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
-	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			writeJSON(w, http.StatusRequestEntityTooLarge,
-				errorResponse("invalid_request_error", "request body too large"))
-			return false
-		}
-		writeJSON(w, http.StatusBadRequest,
-			errorResponse("invalid_request_error", "invalid JSON"))
-		return false
-	}
-	return true
+	return httprequest.DecodeJSON(w, r, maxBytes, dst)
 }
 
 // recoverMiddleware catches panics in any handler, emits a telemetry event

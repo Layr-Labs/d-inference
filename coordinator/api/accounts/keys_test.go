@@ -1,4 +1,4 @@
-package api
+package accounts
 
 import (
 	"context"
@@ -10,18 +10,18 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/api/requestauth"
 	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/auth"
-	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-func newKeyTestServer(t *testing.T) (*Server, *store.MemoryStore) {
+func newKeyTestController(t *testing.T) (*Controller, *store.MemoryStore) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{})
-	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+	srv := New(Dependencies{Store: func() Store { return st }, Logger: logger, ConsoleURL: func() string { return "" }, KeyCache: requestauth.New()})
 	return srv, st
 }
 
@@ -41,12 +41,12 @@ func reqWithUser(method, target, body, accountID string) *http.Request {
 }
 
 func TestHandleCreateAndListAPIKeys(t *testing.T) {
-	srv, _ := newKeyTestServer(t)
+	srv, _ := newKeyTestController(t)
 
 	// Create a key with a $10 monthly cap.
 	body := `{"name":"prod","limit_usd":10,"limit_reset":"monthly","rpm_limit":120}`
 	w := httptest.NewRecorder()
-	srv.handleCreateAPIKey(w, reqWithUser(http.MethodPost, "/v1/keys", body, "acct-1"))
+	srv.CreateKey(w, reqWithUser(http.MethodPost, "/v1/keys", body, "acct-1"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("create status = %d, body=%s", w.Code, w.Body.String())
 	}
@@ -72,7 +72,7 @@ func TestHandleCreateAndListAPIKeys(t *testing.T) {
 
 	// List shows exactly one key (masked, no secret).
 	w = httptest.NewRecorder()
-	srv.handleListAPIKeys(w, reqWithUser(http.MethodGet, "/v1/keys", "", "acct-1"))
+	srv.ListKeys(w, reqWithUser(http.MethodGet, "/v1/keys", "", "acct-1"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("list status = %d", w.Code)
 	}
@@ -89,10 +89,10 @@ func TestHandleCreateAndListAPIKeys(t *testing.T) {
 }
 
 func TestHandleUpdateAndDisableViaPatch(t *testing.T) {
-	srv, _ := newKeyTestServer(t)
+	srv, _ := newKeyTestController(t)
 
 	w := httptest.NewRecorder()
-	srv.handleCreateAPIKey(w, reqWithUser(http.MethodPost, "/v1/keys", `{"name":"a","limit_usd":5}`, "acct-1"))
+	srv.CreateKey(w, reqWithUser(http.MethodPost, "/v1/keys", `{"name":"a","limit_usd":5}`, "acct-1"))
 	var created types.CreateAPIKeyResponse
 	json.Unmarshal(w.Body.Bytes(), &created)
 	id := created.Data.ID
@@ -102,7 +102,7 @@ func TestHandleUpdateAndDisableViaPatch(t *testing.T) {
 	r := reqWithUser(http.MethodPatch, "/v1/keys/"+id, patch, "acct-1")
 	r.SetPathValue("id", id)
 	w = httptest.NewRecorder()
-	srv.handleUpdateAPIKey(w, r)
+	srv.UpdateKey(w, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("patch status = %d, body=%s", w.Code, w.Body.String())
 	}
@@ -120,10 +120,10 @@ func TestHandleUpdateAndDisableViaPatch(t *testing.T) {
 }
 
 func TestHandleRotateAPIKey(t *testing.T) {
-	srv, _ := newKeyTestServer(t)
+	srv, st := newKeyTestController(t)
 
 	w := httptest.NewRecorder()
-	srv.handleCreateAPIKey(w, reqWithUser(http.MethodPost, "/v1/keys", `{"name":"a","limit_usd":7,"limit_reset":"weekly"}`, "acct-1"))
+	srv.CreateKey(w, reqWithUser(http.MethodPost, "/v1/keys", `{"name":"a","limit_usd":7,"limit_reset":"weekly"}`, "acct-1"))
 	var created types.CreateAPIKeyResponse
 	json.Unmarshal(w.Body.Bytes(), &created)
 	oldID := created.Data.ID
@@ -132,7 +132,7 @@ func TestHandleRotateAPIKey(t *testing.T) {
 	r := reqWithUser(http.MethodPost, "/v1/keys/"+oldID+"/rotate", "", "acct-1")
 	r.SetPathValue("id", oldID)
 	w = httptest.NewRecorder()
-	srv.handleRotateAPIKey(w, r)
+	srv.RotateKey(w, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("rotate status = %d, body=%s", w.Code, w.Body.String())
 	}
@@ -149,20 +149,20 @@ func TestHandleRotateAPIKey(t *testing.T) {
 		t.Errorf("limits not carried over: %+v", rotated.Data)
 	}
 	// Old key gone.
-	if _, err := srv.store.AuthenticateKey(oldSecret); err == nil {
+	if _, err := st.AuthenticateKey(oldSecret); err == nil {
 		t.Error("old secret should be revoked after rotate")
 	}
 	// New key authenticates.
-	if _, err := srv.store.AuthenticateKey(rotated.Key); err != nil {
+	if _, err := st.AuthenticateKey(rotated.Key); err != nil {
 		t.Errorf("new secret should authenticate: %v", err)
 	}
 }
 
 func TestHandleDeleteAPIKeyScoping(t *testing.T) {
-	srv, _ := newKeyTestServer(t)
+	srv, _ := newKeyTestController(t)
 
 	w := httptest.NewRecorder()
-	srv.handleCreateAPIKey(w, reqWithUser(http.MethodPost, "/v1/keys", `{"name":"a"}`, "acct-1"))
+	srv.CreateKey(w, reqWithUser(http.MethodPost, "/v1/keys", `{"name":"a"}`, "acct-1"))
 	var created types.CreateAPIKeyResponse
 	json.Unmarshal(w.Body.Bytes(), &created)
 	id := created.Data.ID
@@ -171,7 +171,7 @@ func TestHandleDeleteAPIKeyScoping(t *testing.T) {
 	r := reqWithUser(http.MethodDelete, "/v1/keys/"+id, "", "acct-2")
 	r.SetPathValue("id", id)
 	w = httptest.NewRecorder()
-	srv.handleDeleteAPIKey(w, r)
+	srv.DeleteKey(w, r)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("cross-account delete status = %d, want 404", w.Code)
 	}
@@ -180,16 +180,16 @@ func TestHandleDeleteAPIKeyScoping(t *testing.T) {
 	r = reqWithUser(http.MethodDelete, "/v1/keys/"+id, "", "acct-1")
 	r.SetPathValue("id", id)
 	w = httptest.NewRecorder()
-	srv.handleDeleteAPIKey(w, r)
+	srv.DeleteKey(w, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("owner delete status = %d, want 200", w.Code)
 	}
 }
 
 func TestHandleCreateAPIKeyRejectsBadInput(t *testing.T) {
-	srv, _ := newKeyTestServer(t)
+	srv, _ := newKeyTestController(t)
 	w := httptest.NewRecorder()
-	srv.handleCreateAPIKey(w, reqWithUser(http.MethodPost, "/v1/keys", `{"limit_reset":"hourly"}`, "acct-1"))
+	srv.CreateKey(w, reqWithUser(http.MethodPost, "/v1/keys", `{"limit_reset":"hourly"}`, "acct-1"))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 for bad reset window", w.Code)
 	}

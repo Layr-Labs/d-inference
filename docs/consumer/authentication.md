@@ -1,6 +1,6 @@
 # Authentication
 
-> Last updated: 2026-09-14 · commit `14296eaf5`
+> Last updated: 2026-09-14 · commit `16a46c762`
 
 How to obtain and manage each credential the coordinator accepts, and which routes take it. Every request authenticates with one header, `Authorization: Bearer <token>` (`BearerToken`, `coordinator/api/requestauth/bearer.go`); the token is an API key, a Privy session JWT, a device-flow provider token, or the operator's admin key, and `RequireAuth` (`coordinator/api/requestauth/middleware.go`) checks configured Privy JWTs first, then the admin key, then API keys and active provider tokens. For API consumers and console users; the per-route auth column is in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -28,7 +28,7 @@ curl -s -X POST https://api.darkbloom.dev/v1/keys \
 
 The response is `{"key": "sk-db-...", "data": {...APIKeyResponse}}` (`CreateAPIKeyResponse`). The secret starts with `sk-db-` (`KeyPrefix`, `coordinator/store/apikey.go`); its exact shape, the `id` format used in `/v1/keys/{id}`, and every per-key setting — `name`, `limit_usd` + `limit_reset` (spend budget), `rpm_limit`, `itpm_limit`, `otpm_limit`, `allowed_models`, `expires_at`, `self_route_only`, `disabled` — are specified in [`../reference/api-contracts.md#api-key-shapes`](../reference/api-contracts.md#api-key-shapes). `label` in the response masks the secret to its prefix, first four and last four characters (`KeyLabel`). Keys minted before the rename start with `eigeninference-` and remain valid, because lookups are by hash, not by prefix (`coordinator/store/apikey.go`).
 
-The settings are enforced in the request prelude: `rpm_limit` → 429 before the account limiter (`applyKeyRPMLimit`, `coordinator/api/server.go`); `allowed_models` → 403 `model_not_allowed` (`keyModelAllowed`, `coordinator/api/apikey_handlers.go`); an exhausted `limit_usd` → 402 (`reserveInferenceBalance`, `coordinator/api/inference_admission.go`; the response taxonomy is in [`../architecture/billing.md#payment-required-responses`](../architecture/billing.md#payment-required-responses)).
+The settings are enforced in the request prelude: `rpm_limit` → 429 before the account limiter (`applyKeyRPMLimit`, `coordinator/api/server.go`); `allowed_models` → 403 `model_not_allowed` (`accounts.KeyModelAllowed`, `coordinator/api/accounts/key_policy.go`); an exhausted `limit_usd` → 402 (`reserveInferenceBalance`, `coordinator/api/inference_admission.go`; the response taxonomy is in [`../architecture/billing.md#payment-required-responses`](../architecture/billing.md#payment-required-responses)).
 
 ### 2. Use the key
 
@@ -49,9 +49,9 @@ All management routes require a Privy JWT (`requirePrivyAuth`); calling them wit
 | Change limits, name, models, expiry; disable | `PATCH /v1/keys/{id}` with any subset of the settings above |
 | Rotate secret, keep settings | `POST /v1/keys/{id}/rotate` → new `key` |
 | Revoke | `DELETE /v1/keys/{id}` |
-| Inspect the key you are calling with | `GET /v1/key` — this one accepts the API key itself (`handleGetCallingKey`) |
+| Inspect the key you are calling with | `GET /v1/key` — this one accepts the API key itself (`Controller.GetCallingKey`) |
 
-`POST /v1/auth/keys` and `DELETE /v1/auth/keys` are the older one-key-per-account endpoints (`handleCreateKey`, `handleRevokeKey`); they still work but the `/v1/keys` family is the managed surface. The coordinator caches key lookups in `coordinator/api/requestauth/key_cache.go`. Management routes invalidate the local cache when keys change; another coordinator instance can keep its own result until [`keyCacheTTL`](../reference/api-contracts.md#timeouts-and-constants) expires. Provider device tokens are checked in persistence on each request.
+`POST /v1/auth/keys` and `DELETE /v1/auth/keys` are the older one-key-per-account endpoints (`Controller.CreateLegacyKey`, `Controller.RevokeLegacyKey`); they still work but the `/v1/keys` family is the managed surface. The coordinator caches key lookups in `coordinator/api/requestauth/key_cache.go`. Management routes invalidate the local cache when keys change; another coordinator instance can keep its own result until [`keyCacheTTL`](../reference/api-contracts.md#timeouts-and-constants) expires. Provider device tokens are checked in persistence on each request.
 
 ### 4. Sign in with Privy and use the session JWT
 
@@ -70,15 +70,15 @@ A second group accepts `requireAuth` but then insists on a resolved account user
 
 `darkbloom login` links a machine to your account with an RFC 8628 device-code exchange ([`../provider/cli-reference.md`](../provider/cli-reference.md)). What the CLI does, so you can recognise it or drive it yourself:
 
-1. `POST /v1/device/code` (no auth) → `{device_code, user_code, verification_uri, expires_in, interval}` (`handleDeviceCode`, `coordinator/api/device_auth.go`); the code lifetime and poll interval are the constants `DeviceCodeExpiry` and `DeviceCodePollInterval` in [`../reference/api-contracts.md#device-code-flow-3`](../reference/api-contracts.md#device-code-flow-3). `verification_uri` is the console's `/link` page.
-2. You open `verification_uri` (`console-ui/src/app/link/page.tsx`), sign in with Privy, and enter `user_code`. The page posts to the console's same-origin `/api/device/approve` relay, which forwards `POST /v1/device/approve` with your JWT (`console-ui/src/app/link/DeviceLinkForm.tsx`, `console-ui/src/app/api/device/approve/route.ts`; `handleDeviceApprove`); the code is bound to your account. Errors: 404 `invalid_code`, 409 `already_used`, 410 `expired_code`.
-3. The CLI polls `POST /v1/device/token` with `{"device_code"}` every `interval` seconds (`handleDeviceToken`). While unapproved it gets 200 `{"status": "authorization_pending"}`; after approval 200 `{"status": "authorized", "token": "eigeninference-pt-...", "account_id": "..."}`; once `DeviceCodeExpiry` has passed, 410 `expired_token`; an unknown code is 404 `invalid_grant`.
+1. `POST /v1/device/code` (no auth) → `{device_code, user_code, verification_uri, expires_in, interval}` (`Controller.DeviceCode`, `coordinator/api/accounts/device_codes.go`); the code lifetime and poll interval are the constants `DeviceCodeExpiry` and `DeviceCodePollInterval` in [`../reference/api-contracts.md#device-code-flow-3`](../reference/api-contracts.md#device-code-flow-3). `verification_uri` is the console's `/link` page.
+2. You open `verification_uri` (`console-ui/src/app/link/page.tsx`), sign in with Privy, and enter `user_code`. The page posts to the console's same-origin `/api/device/approve` relay, which forwards `POST /v1/device/approve` with your JWT (`console-ui/src/app/link/DeviceLinkForm.tsx`, `console-ui/src/app/api/device/approve/route.ts`; `Controller.ApproveDevice`); the code is bound to your account. Errors: 404 `invalid_code`, 409 `already_used`, 410 `expired_code`.
+3. The CLI polls `POST /v1/device/token` with `{"device_code"}` every `interval` seconds (`Controller.DeviceToken`). While unapproved it gets 200 `{"status": "authorization_pending"}`; after approval 200 `{"status": "authorized", "token": "eigeninference-pt-...", "account_id": "..."}`; once `DeviceCodeExpiry` has passed, 410 `expired_token`; an unknown code is 404 `invalid_grant`.
 
 The `token` is a **provider token**, stored on the machine and labelled `device-<user_code>` in your account. It authorises that machine to earn for your account and to be targeted by self-route requests ([`../provider/self-route.md`](../provider/self-route.md)); it is not a consumer API key and does not authenticate inference requests. The bindings behind the flow are in [`../architecture/security/identity-binding.md#device-code-account-linking`](../architecture/security/identity-binding.md#device-code-account-linking).
 
 ## Verify
 
-- `GET /v1/key` with the new key returns its `APIKeyResponse` (`handleGetCallingKey`) — the one management read that accepts the API key itself.
+- `GET /v1/key` with the new key returns its `APIKeyResponse` (`Controller.GetCallingKey`) — the one management read that accepts the API key itself.
 - `GET /v1/keys` with the Privy JWT lists the key with `usage_usd`, `limit_usd` and `remaining_usd`.
 - After `darkbloom login`, `darkbloom doctor` shows `account link` ✓ on the Mac and the machine appears in `GET /v1/me/providers` (Privy).
 

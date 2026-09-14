@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `641bd53b0`
+> Last updated: 2026-09-14 · commit `0deac8b0a`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its

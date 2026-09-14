@@ -533,7 +533,7 @@ func TestCommitRejectsExpiredFirstContentDeadline(t *testing.T) {
 
 // TestHeartbeatResyncRestoresProviderReportedTruth: while a reservation is in
 // the heartbeat dark window, its coordinator-side debit gates admission; once
-// the provider's heartbeat reports the admitted work, committedTokenBudget
+// the provider's heartbeat reports the admitted work, admission.CommittedTokenBudget
 // covers the pending entry and coordinatorExtra drops to zero — the same
 // in-flight tokens are charged exactly once, per the provider's own report.
 func TestHeartbeatResyncRestoresProviderReportedTruth(t *testing.T) {
@@ -554,7 +554,7 @@ func TestHeartbeatResyncRestoresProviderReportedTruth(t *testing.T) {
 	}
 
 	// Heartbeat re-sync: the provider now reports A's 2,500 tokens as active.
-	// A is STILL coordinator-pending, but committedTokenBudget covers it, so a
+	// A is STILL coordinator-pending, but admission.CommittedTokenBudget covers it, so a
 	// 1,400-token request fits the remaining 3,900-2,500 exactly — the debit
 	// is not double-counted on top of the provider's report.
 	p.mu.Lock()

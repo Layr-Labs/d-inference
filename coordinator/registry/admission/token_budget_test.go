@@ -104,7 +104,7 @@ func TestProviderTokenBudget(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			used, total := legacyTokenBudget(tt.slots)
 			if used != tt.wantUsed || total != tt.wantTotal {
-				t.Fatalf("providerTokenBudget() = used %d, total %d; want used %d, total %d",
+				t.Fatalf("legacyTokenBudget() = used %d, total %d; want used %d, total %d",
 					used, total, tt.wantUsed, tt.wantTotal)
 			}
 			if used > total {

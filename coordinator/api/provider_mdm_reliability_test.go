@@ -444,7 +444,7 @@ func TestVerifyProviderViaMDM_SuccessGrantedWithoutBinaryHashOrApplicationEviden
 	if rows, _ := srv.store.ListProviderTrustReuse(context.Background()); len(rows) != 0 {
 		t.Fatalf("hashless grant must not persist reuse rows, got %d", len(rows))
 	}
-	if srv.trustReuseCache.hasFreshRecord("se-pub-key-bytes", "SERIAL-1") {
+	if srv.trustReuse.HasFreshRecord("se-pub-key-bytes", "SERIAL-1") {
 		t.Fatal("hashless grant must not cache an unbindable reuse record")
 	}
 }
@@ -494,12 +494,13 @@ func TestVerifyProviderViaMDM_HashlessRegistrationUsesBoundApplicationEvidence(t
 	if rows[0].ApplicationProofVerifiedAt == nil || !rows[0].ApplicationProofVerifiedAt.Equal(verifiedAt) {
 		t.Fatalf("ApplicationProofVerifiedAt = %v, want %v", rows[0].ApplicationProofVerifiedAt, verifiedAt)
 	}
-	cached, ok := srv.trustReuseCache.reuseTrust("se-pub-key-bytes", "SERIAL-1", binaryHash)
-	if !ok {
+	if !hasReusableTrust(srv, "se-pub-key-bytes", "SERIAL-1", binaryHash) {
 		t.Fatal("bound application hash did not cache reusable hardware proof")
 	}
-	if cached.lastVerifiedBinaryHash != binaryHash {
-		t.Fatalf("cached binary hash = %q, want %q", cached.lastVerifiedBinaryHash, binaryHash)
+	// A same-binary assessment requires the cached binary to equal this hash.
+	// A different hash without an approved transition must remain rejected.
+	if hasReusableTrust(srv, "se-pub-key-bytes", "SERIAL-1", trHashA) {
+		t.Fatal("cached binary accepted a different hash without an approved transition")
 	}
 }
 

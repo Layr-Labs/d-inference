@@ -1,6 +1,6 @@
 # State export
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-14 · commit `4482d5422`
 
 How to pull the coordinator's sealed on-disk state — the MicroMDM enrollment
 database and everything else on the persistent disk that is not in Postgres —
@@ -22,7 +22,7 @@ holds state that the database does not:
 | Path | What it is | Must it move? |
 |---|---|---|
 | `/data/micromdm/micromdm.db`, `push.crt`, `push.key`, `.push_imported` | The MicroMDM BoltDB — the enrolled-device records the hardware-trust check reads — plus the APNs push certificate and its import sentinel | **Yes.** Without it every provider drops to `self_signed` trust until it re-enrolls. |
-| `/data/coordinator/trust-reuse-hard-untrust.v1.jsonl` | The hard-untrust revocation journal (`coordinator/api/trust_reuse_journal.go`) | Yes, or revocations issued on the old host are forgotten. |
+| `/data/coordinator/trust-reuse-hard-untrust.v1.jsonl` | The hard-untrust revocation journal (`coordinator/providercontrol/trustreuse/journal_file.go`) | Yes, or revocations issued on the old host are forgotten. |
 | `/data/prompt-contracts/` | Downloaded prompt-contract artifacts (`DefaultArtifactRoot` in `coordinator/promptcontract/artifact_cache.go`) | No — re-provisioned from the CDN; it only makes the archive larger. |
 | `/data/step-ca/` | Legacy ACME `device-attest-01` CA keys; the leg was removed on 2026-07-03 | No. Destroy rather than carry forward. |
 

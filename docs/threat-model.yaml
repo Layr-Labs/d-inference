@@ -13,6 +13,9 @@ created: "2026-05-14"
 # Status-signature canonicalization in TB-009 re-verified 2026-09-13 against
 # commit 1f52a71fb: provider byte compatibility, with signature/trust policy
 # unchanged. This does not re-verify the remaining threat entries.
+# Trust-reuse ownership in T-036 re-verified against 2026-09-14, commit 4482d5422:
+# the state owner moved; admission, journal and shutdown-order policy are unchanged.
+# This is a scoped source-map review, not a fresh review of all threat entries.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
@@ -2096,6 +2099,7 @@ threats:
       - coordinator/mdm/mdm.go
       - coordinator/api/provider.go
       - coordinator/registry/registry.go
+      - coordinator/providercontrol/trustreuse/**
     mitigations:
       - description: >
           Hardware grant requires SE signature verification and then an MDM SecurityInfo
@@ -2112,7 +2116,7 @@ threats:
       - description: Attestation tests require AuthenticatedRootEnabled=true or earlier errors are overwritten.
         status: implemented
       - description: >
-          DAR-326 trust-reuse fast-skip (coordinator/api/trust_reuse.go tryTrustReuseFastSkip)
+          DAR-326 trust-reuse fast-skip (coordinator/providercontrol/trustreuse/reuse.go Manager.TryReuse)
           lets a reconnecting, recently-fully-verified provider regain hardware trust from a
           persisted record without re-running the live MDM SecurityInfo round-trip — avoiding a
           fleet-wide MDM/APNs re-verification herd on a planned coordinator restart/swap. ACCEPTED

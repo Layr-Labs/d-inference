@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-13 · commit `1f52a71fb`
+> Last updated: 2026-09-14 · commit `4482d5422`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -41,6 +41,11 @@ the `code_attested` flag.
 | `hardware` | Apple's MDM subsystem on that Mac confirmed SIP and full Secure Boot in agreement with the provider's Secure-Enclave-signed attestation. MDM `SecurityInfo` is the only path to this level; the MDA certificate chain is not required for it |
 | `self_signed` | The Secure-Enclave-signed attestation verified and the provider is passing the coordinator's periodic challenge, but there is no MDM confirmation yet |
 | `none` | No verified attestation |
+
+On reconnect, a hardware verdict may reuse prior device evidence after a
+fresh signed challenge. The coordinator owns this
+[evidence lifecycle](../architecture/security/attestation.md#device-evidence-ownership-and-shutdown);
+it does not add fields or a per-response attestation receipt.
 
 The grant and loss conditions for each level are tabulated in
 [`../architecture/security/attestation.md#trust-levels`](../architecture/security/attestation.md#trust-levels);

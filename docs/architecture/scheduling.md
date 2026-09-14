@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-10 · commit `213b8c2b6`
+> Last updated: 2026-09-13 · commit `d8647602b`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -557,5 +557,5 @@ slot waits at most `mdmSchedulerBusyRetryDelay = 250 * time.Millisecond`; an
 earlier future job retains its shorter timer (`nextDispatchDelay`). Worker
 completion signals the dispatcher immediately. Due-row pages start at
 `min(limit, verificationDuePageHint)` with `verificationDuePageHint = 256`
-and grow to the requested limit (`coordinator/store/postgres.go`,
+and grow to the requested limit (`coordinator/store/postgres/verification.go`,
 `ListDueVerificationJobsPage`); the initial allocation does not truncate a page.

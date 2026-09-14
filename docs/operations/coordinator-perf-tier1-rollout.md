@@ -1,6 +1,6 @@
 # Coordinator Performance Tier 1 Rollout
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-13 · commit `d8647602b`
 
 Operator companion to the `perf/coordinator-tier1-2026-09-03` branch (the
 code items 1.1, 1.3–1.8 of the 2026-09-03 coordinator performance proposal).
@@ -20,10 +20,10 @@ Canonical code (code wins over this doc; find declarations by symbol):
 | Bounded usage history with lazy allocation | `coordinator/payments/payments.go` (`Ledger.RecordUsage`, `usageHistoryGrowth`) |
 | Shared cache refresh and cold-miss coalescing | `coordinator/api/cache_refresher.go` (`StartCacheRefreshers`, `getCachedEntry`, `refreshCachedEntry`, `computeCachedEntry`) |
 | Stats / network totals computation | `coordinator/api/stats.go` (`computeStats`, `handleStats`); `coordinator/api/network_totals.go` (`computeNetworkTotals`, `handleNetworkTotals`) |
-| Analytics transaction and query errors | `coordinator/store/postgres_analytics.go` (`withAnalyticsTx`, `UsageLocationBuckets`, `UsageFlowBuckets`, `NetworkTotals`) |
+| Analytics transaction and query errors | `coordinator/store/postgres/analytics.go` (`withAnalyticsTx`, `NetworkTotals`); `coordinator/store/postgres/analytics_locations.go` (`UsageLocationBuckets`); `coordinator/store/postgres/analytics_flows.go` (`UsageFlowBuckets`) |
 | Verification poller cadence + busy floor | `coordinator/api/mdm_scheduler_exec.go` (`shouldLoadDueRows`, `nextDispatchDelay`) |
-| Dashboard rolling windows | `coordinator/store/postgres_dashboard.go` and `coordinator/store/memory_dashboard.go` (`AccountEarningsWindows`); `coordinator/api/me_summary_cache.go` (`accountEarningsWindows`) |
-| Batched reputation reads | `coordinator/store/postgres_dashboard.go` and `coordinator/store/memory_dashboard.go` (`GetReputations`); `coordinator/api/me_handlers.go` (`attachStoredReputations`) |
+| Dashboard rolling windows | `coordinator/store/postgres/dashboard.go` and `coordinator/store/memory/dashboard.go` (`AccountEarningsWindows`); `coordinator/api/me_summary_cache.go` (`accountEarningsWindows`) |
+| Batched reputation reads | `coordinator/store/postgres/dashboard.go` and `coordinator/store/memory/dashboard.go` (`GetReputations`); `coordinator/api/me_handlers.go` (`attachStoredReputations`) |
 | Capacity accept off the first-byte path | `coordinator/api/dispatch.go` (`commitFirstContent`); `coordinator/registry/capacity_cooldown.go` (`RecordCapacityAcceptObserved`) |
 | Throttled reputation persist | `coordinator/registry/reputation.go` (`RecordJobSuccess`); `coordinator/registry/provider_lifecycle.go` (`Disconnect`); `coordinator/registry/persistence.go` (`persistReputationThrottled`) |
 | Single provider-frame decode | `coordinator/api/provider.go` (`providerReadLoop`) |

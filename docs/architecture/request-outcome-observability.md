@@ -1,6 +1,6 @@
 # Request Outcome Observability
 
-> Last updated: 2026-09-13 · commit `c3b1e759c`
+> Last updated: 2026-09-13 · commit `d8647602b`
 
 Every provider dispatch attempt ends in one claimed terminal outcome, and that outcome is recorded three ways: a closed `final_status` / `error_class` / `error_reason` triple on the `inference_routes` row, a per-attempt `request_profiles` row with separate `client_outcome` and `provider_outcome` columns, and a small set of low-cardinality Datadog counters. Requests refused before dispatch land in the `request_rejections` ledger instead. This page explains the existing attempt taxonomy and protected counters. The unsampled incoming-request ledger, its coverage limits, and separate egress/completion evidence are defined in [incoming request accounting](request-accounting.md).
 
@@ -233,7 +233,7 @@ All admin reads require the admin key (`requireAdminKey`).
 | Timing histograms, KV-backend attribution | `coordinator/api/timing_metrics.go`, `coordinator/api/kv_backend_metrics.go`, `coordinator/registry/kv_backend.go` |
 | Rejection ledger and servability gate | `coordinator/api/rejection_telemetry.go`, `coordinator/api/inference_admission.go`, `coordinator/api/servability_gate.go` |
 | Per-attempt profile outcomes | `coordinator/api/profiler_dispatch.go`, `coordinator/registry/attempt_profile.go`, `coordinator/registry/attempt_profile_finalize.go` |
-| Storage types and admin reads | `coordinator/store/interface.go` (`InferenceRouteRecord`, `InferenceRouteOutcome`, `RejectionRecord`), `coordinator/api/admin_telemetry.go` |
+| Storage types and admin reads | `coordinator/store/contracts/telemetry.go` (`InferenceRouteRecord`, `InferenceRouteOutcome`, `RejectionRecord`), `coordinator/api/admin_telemetry.go` |
 | Regression pins | `coordinator/api/route_outcome_test.go`, `coordinator/api/settlement_clientgone_test.go`, `coordinator/api/nonfault_outcome_generic_test.go`, `coordinator/api/dispatch_speculative_outcome_test.go`, `coordinator/api/rejection_classify_test.go` |
 
 ## Related

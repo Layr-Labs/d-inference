@@ -1,6 +1,6 @@
 # Prediction decision telemetry
 
-> Last updated: 2026-09-07 · commit `53646bc9b`
+> Last updated: 2026-09-13 · commit `d8647602b`
 
 Optional attempt records compare what the coordinator selected with what the
 provider decided. They explain decisions; they do not establish whether a
@@ -75,7 +75,7 @@ fabricates projected work.
 
 ## Storage and rollout
 
-`coordinator/store/postgres.go` adds three columns idempotently. Historical
+`coordinator/store/postgres/schema/profiles.go` adds three columns idempotently. Historical
 budgets/ceilings stay NULL and historical bypass stays empty. Provider fields
 use existing `provider_profile` JSONB after the allowlist validation; no new
 telemetry service or table is introduced.
@@ -83,7 +83,7 @@ telemetry service or table is introduced.
 Deploying coordinator support first makes later provider observations readable.
 Both components must carry the change for paired evidence. A rollback leaves
 columns present and optional fields unknown; it does not reconstruct history.
-The manually applied `coordinator/store/migrations/request_waterfall.sql`
+The manually applied `coordinator/store/postgres/migrations/request_waterfall.sql`
 appends the three new outputs, preserving previous view-column positions. It
 is not executed at coordinator startup.
 

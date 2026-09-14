@@ -13,6 +13,9 @@ created: "2026-05-14"
 # Status-signature canonicalization in TB-009 re-verified 2026-09-13 against
 # commit 1f52a71fb: provider byte compatibility, with signature/trust policy
 # unchanged. This does not re-verify the remaining threat entries.
+# Persistence source paths updated 2026-09-13 against commit d8647602b.
+# This package reorganization preserves the existing contracts and does not
+# re-verify or change the threat assessments below.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
@@ -970,7 +973,7 @@ threats:
     affected_assets: [A-009]
     affected_files:
       - coordinator/api/consumer.go
-      - coordinator/store/postgres.go
+      - coordinator/store/postgres/usage.go
     mitigations:
       - description: Usage rows written per request to the ledger.
         status: implemented
@@ -1881,7 +1884,7 @@ threats:
     affected_assets: [A-009]
     affected_files:
       - coordinator/api/billing_handlers.go
-      - coordinator/store/postgres.go
+      - coordinator/store/postgres/ledger.go
     mitigations:
       - description: Completed-session check exists but is not atomic with credit insertion.
         status: open
@@ -2219,7 +2222,7 @@ threats:
     affected_assets: [A-008]
     affected_files:
       - coordinator/api/device_auth.go
-      - coordinator/store/postgres.go
+      - coordinator/store/postgres/device_auth.go
     mitigations:
       - description: Device codes have a validity window.
         status: implemented
@@ -2862,8 +2865,8 @@ threats:
       - coordinator/api/profiler*.go
       - coordinator/registry/request_profile.go
       - coordinator/registry/fleet_sample.go
-      - coordinator/store/profile_records.go
-      - coordinator/store/postgres_profiles.go
+      - coordinator/store/contracts/profiles.go
+      - coordinator/store/postgres/profiles.go
     mitigations:
       - description: Provider profile rides the terminal message as raw JSON, is length-capped before any byte is read, decoded only after the terminal is fully processed, and persisted from a separate typed struct whose enums are closed and folded (no free-form string can reach a row).
         status: implemented

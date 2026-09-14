@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-10 · commit `5f021ba4d`
+> Last updated: 2026-09-13 · commit `d8647602b`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -297,8 +297,8 @@ curl -fsS "$COORD/v1/admin/releases" -H "Authorization: Bearer $ADMIN_KEY" | jq 
 ```
 
 - `GET /v1/releases/latest` returns the **highest active semver** for the
-  platform (`GetLatestRelease` in `coordinator/store/postgres.go`, ordered by
-  `releaseVersionGreater` in `coordinator/store/release_version.go`), not the
+  platform (`GetLatestRelease` in `coordinator/store/postgres/releases.go`, ordered by
+  `Greater` in `coordinator/store/internal/releaseversion/version.go`), not the
   most recently registered row.
 - Install on a clean Mac: `curl -fsSL $COORD/install.sh | bash`;
   `scripts/install.sh` reads `/v1/releases/latest` and verifies the bundle

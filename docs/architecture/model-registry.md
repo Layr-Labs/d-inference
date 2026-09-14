@@ -1,6 +1,6 @@
 # Model registry
 
-> Last updated: 2026-09-14 · commit `5ac94bb27`
+> Last updated: 2026-09-14 · commit `ecebe0f01`
 
 How Darkbloom decides which model builds exist, which bytes are trusted, which
 providers may serve them, and what public name a consumer uses for them. The

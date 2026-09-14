@@ -13,6 +13,7 @@ struct LumeVirtualMachineDeletionIntent: Codable, Equatable, Sendable {
     let directoryDevice: Int64
     let directoryInode: UInt64
     let stoppedVerified: Bool
+    let unqualifiedBase: Bool?
 
     static func requireAbsent(workspace: LumeRuntimeWorkspace, name: String) throws {
         guard try load(workspace: workspace, name: name) == nil else {
@@ -21,7 +22,8 @@ struct LumeVirtualMachineDeletionIntent: Codable, Equatable, Sendable {
     }
 
     func requireMatching(name: String, scope: SandboxOperationScope?) throws {
-        guard schemaVersion == 1, stoppedVerified, self.name == name, directoryInode > 0 else {
+        guard schemaVersion == 1, stoppedVerified, self.name == name, directoryInode > 0,
+              unqualifiedBase == nil || (unqualifiedBase == true && self.scope == nil) else {
             throw Self.failure("invalid deletion intent")
         }
         switch (self.scope, scope) {
@@ -37,14 +39,16 @@ struct LumeVirtualMachineDeletionIntent: Codable, Equatable, Sendable {
     }
 
     static func persist(workspace: LumeRuntimeWorkspace, name: String,
-                        scope: SandboxOperationScope?, installationID: UUID) throws -> Self {
+                        scope: SandboxOperationScope?, installationID: UUID, unqualifiedBase: Bool? = nil) throws -> Self {
         try workspace.prepare()
         let owner = try SandboxAuthorityFileSystem.openPrivateDirectory(
             at: workspace.storageDirectory.appendingPathComponent(name), createIfMissing: false)
         defer { close(owner) }
         let metadata = try SandboxAuthorityFileSystem.fileMetadata(owner)
         let intent = Self(schemaVersion: 1, name: name, scope: scope, installationID: installationID,
-            directoryDevice: Int64(metadata.st_dev), directoryInode: UInt64(metadata.st_ino), stoppedVerified: true)
+            directoryDevice: Int64(metadata.st_dev), directoryInode: UInt64(metadata.st_ino), stoppedVerified: true,
+            unqualifiedBase: unqualifiedBase)
+        try intent.requireMatching(name: name, scope: scope)
         if let existing = try load(workspace: workspace, name: name) {
             guard existing == intent else { throw failure("deletion intent conflicts with the owned VM") }
             return existing

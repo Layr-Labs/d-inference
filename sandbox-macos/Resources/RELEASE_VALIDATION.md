@@ -392,7 +392,12 @@ to ordinary base start, reservation or pre-boot staging.
 
 The one-use boot path has automated subprocess tests; its real-Mac execution is
 still unverified. Receipt collection/removal and automatic qualification to
-readiness remain unfinished. The existing prepare-base command still follows
+readiness are implemented; the full fresh-VM campaign remains required.
+Use `discard-base` with the exact installation ID to remove a stopped failed
+raw base after root maintenance is settled. It preserves ready templates and
+uses durable stopped/directory identity for interrupted removal. The command
+and its recovery boundaries are documented in `ACCOUNTLESS_RECEIPTS.md`.
+The existing prepare-base command still follows
 its documented unattended path. A staging journal cannot be reused for post-boot
 collection.
 

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `cf4dad33a`
+> Last updated: 2026-09-14 · commit `4485bbbf1`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -88,6 +88,13 @@ exercise real capacity and ownership files, allocation-gap recovery, preservatio
 of unknown same-name data and read-only published replay. These fixtures do not
 run a VM or issue a native qualification result. Complete physical factory and
 two-VM acceptance remain separate [release gates](../../sandbox-macos/Resources/RELEASE_VALIDATION.md).
+
+`LumeUnqualifiedBaseDeletionTests` covers exact-installation discard, rejected
+ready/unknown/running sources, maintenance fences, operation ownership and
+recovery after partial native removal. Recreated names and replacement
+directories remain intact. `DiscardBaseOptionsTests` checks required identity
+and path validation before command IO. These are subprocess/filesystem tests;
+the signed command still requires real-Mac acceptance.
 
 `ManagedProcessOwnershipTests` in
 `sandbox-macos/Tests/SandboxRuntimeTests/ManagedProcessOwnershipTests.swift`

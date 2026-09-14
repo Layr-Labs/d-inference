@@ -5,94 +5,52 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
-Owner source f43af65d83df35a277a89cdc9fca2bc63f2fa48c is committed and pushed.
-A new Developer ID release7-owner package was built from that clean source and
-installed immutably on the test Mac at
+Goal remains active; PR996 is draft. No production deployment.
+Owner implementation f43af65d83df35a277a89cdc9fca2bc63f2fa48c is pushed; its CI
+34858536670 and integration34858537007 now pass. Benchmark34858536943 awaits
+its environment approval. Local checkpoint4485bbbf1 is one commit ahead.
+
+Signed release7-owner is installed immutably on the test Mac:
 /Library/Application Support/Darkbloom/qualification-release7-owner.
 Host/guest/manifest/Lume signatures and16-file inventory pass independently on
-both Macs; selected UID501 can run host help. No service/VM started. No sandbox
-provisioning profile or notarization; persistent-keychain/physical gates remain.
-Next: reclaim only verified obsolete task VM artifacts, then fresh real factory
-and two-VM acceptance; no user cache deletion is authorized beyond the old8bit
-Gemma deletion. The latest GUI diagnostic VM and restore IPSW must be retained.
+both Macs. No sandbox provisioning profile or notarization; persistent-keychain
+and fresh physical factory/qualification remain release gates. Runtime13 has
+not booted a VM. Last actual guest evidence remains exercise14/coldboot15 on the
+older diagnostic image: authenticated commands/files/isolation/cleanup and
+cold-boot workspace persistence. That source is unqualified and must be kept.
 
-The public qualify phase is now wired through a durable actor-owned journal:
-intent -> exact capacity reservation -> clone/start -> identity/native checks ->
-delete/release -> guarded publication/readback. Recovery cleans up and aborts,
-or verifies an already-published exact receipt without re-running native work.
-Full suite660tests/7skips/0failures,148.349s; focused19tests,3CLI smoke checks and
-286docs pass. Signed release packaging is next; the new full workflow has not
-run on a real restored VM. Older notes saying the owner is unwired are historical.
-Prior native sourcecf4dad33a passes CI34854400942 and integration34854400631.
+The complete public qualify command is implemented: durable intent, exact capacity
+reservation, native clone/isolation/cold-boot checks, deletion/release and guarded
+ready publication/readback. Recovery cleans up and aborts or verifies an existing
+exact publication; saved success flags cannot create readiness. Latest committed
+suite:660tests/7skips/0failures. Root APFS collection crash/recovery passes a
+synthetic nonbootable fixture; it is not a real installer/VM result.
 
-Newest work implements the signed guest qualify-tenant probe, one-use native
-qualification sequence and lock-retaining readiness-publication callback. Full
-suite651tests/7skips/0failures,156.059s; focused8tests and CLI host-denial smoke pass.
-The public durable qualification owner/CLI is STILL NOT WIRED. The new guest
-binary must be packaged/signed and physically tested; no real VM ran this probe.
-Prior cleanup source4863f1e9a passes CI34851620108 and integration34851620200.
+Six obsolete task VM fixtures were safely removed on2026-09-14. Native deletion
+returned0 for each and each directory is absent. This reclaimed124592623616bytes
+(116.04GiB). Latest GUI diagnostic VM, IPSW, unrelated sibling entries, permanent
+machine authority and Apple Metal attachment are unchanged. Root report exported
+to /private/tmp/darkbloom-sandbox-completion-evidence/retirement-result.json,
+SHAf1783266dbbaf75ddb58246f37e41a51efad6ac09d790f43f56cf5e5b1458efe.
+After deletion: ordinary177321922560bytes, important216986375717bytes (~202GiB),
+still below the300GiB admission floor. New approval question is pending for Go
+cache68.2GiB plus qwen3.5-27b-claude-opus-8bit26.6GiB, gemma-4-31b-4bit17.2GiB
+and gpt-oss-20b11.3GiB. Do not delete these without a reply. Old8bitGemma deletion
+was already completed earlier; no other user cache was removed by VM retirement.
 
-The newest SDK change binds qualification clone/material identity before teardown
-and verifies the exact durable deletion receipt after release. It does not yet
-run native checks or publish readiness. Full suite643tests/7skips/0failures,
-151.503s;16existing qualification tests and4new cleanup tests pass. Docs286pass.
-See the final dated section and git for the implementation commit/push state.
-Collection c58df40b6 now passes its complete CI34848597007 and integration34848597005.
+Current source work adds discard-base for an exact unqualified raw installation,
+using selected-user identity, machineEX and existing durable stopped deletion.
+It rejects ready/unknown/running sources and maintenance fences, and recovers only
+an intent marked for that exact unqualified discard. No guest package, GUI or
+free-space admission is required for cleanup. Focused initial22tests and full671tests/7skips/0failures passed (156.044s).
+Three actual CLI checks and docs-check286files pass. Source commit is next.
 
-This checkpoint accompanies the collection implementation following a6dc93cf6; inspect git for its commit/push state.
-It adds root collect/abort-collection and selected-GUI publish-installed commands,
-a separate exact-boot-claim maintenance scope, complete receipt/installed-signature
-verification, saved bounded logs, immutable temporary removal plans and final
-root collection handoff. An installed checkpoint remains unqualified.
-Recovery binds APFS volume UUID plus persistent file identity; attachment device
-renumbering is allowed while descriptor IO remains restricted to the verified
-current volume. Wrong volumes, changed files and replaced/linked directories are
-rejected before further removal. A repeated collection cannot restart a completed
-transaction; explicit abort settles attachments without installing or publishing.
-Focused collection/recovery/publication tests:27passed. Full suite:639tests,
-7skips,0failures,131.717s. Four actual CLI checks and docs-check286files pass.
-Collection source c58df40b67b4090de16e56ac2f6a8df216a418f0 is committed/pushed.
-Its physical APFS component campaign now PASSES: deliberately exit86 after
-removing the temporary job, observe both durable fences and rejected admission,
-recover via a new root process, finish removal/detach, replay twice unchanged.
-Independent read-only inspection verifies signed installed files and unrelated
-sentinel preserved, all temporary entries absent, source/journals unchanged,
-no image openers/authority holders and preserved Apple Metal attachment.
-This is a nonbootable sparse100GiB fixture (12,845,056allocated bytes), with a
-synthetic complete receipt and release6 guest bytes. No guest installer, VM boot,
-GUI installed publication or template qualification was executed.
-
-Pushed058cb555776ef9bad2565b9ae536eca1c8bf67f4 implements one-use root authorization
-and GUI-owned installer-v1 boot. Its full suite passes626tests/7skips/0failures.
-CI34844573163 and integration34844573303 now PASS. A real-root publication probe
-passes with synthetic metadata only; it boots no VM and confers no readiness.
-
-Pinned runtime13 (e518872e7954030e3e17d36de55dde4c11aefc6a) implements installer-v1:
-one private boot disk, macOS/BLC/machineEX, no extra media or host/guest devices.
-Its fresh Developer ID build passes205native tests plus19required selectors and
-2real signed-binary contracts. It is installed root-owned on the test Mac, with
-signatures/provenance reverified. It has not booted a VM.
-
-Guarded APFS staging and completed replay passed a real1GiB nonbootable fixture
-with deliberate process exit, exact attachment recovery, detach and restored
-SH/EX admission. This is filesystem-component evidence, not a guest install.
-Exercise14/coldboot15 remains the last actual guest proof (runtime8): authenticated
-commands/files/isolation/cleanup plus workspace persistence across cold boot.
-The diagnostic VM is unqualified and must not be promoted to a template.
-
-Test Mac live df remains50GiB free. Own obsolete VM fixtures report about91GiB
-allocated, possibly double-counting APFS clones; none has been deleted in this
-continuation. The own restore IPSW is still present (19772231540bytes). Preserve
-it for a fresh restore. Go-cache deletion remains unapproved. Do not change cache,
-model, permanent authority, services or temporary group membership while testing
-without the existing exact task authorization and cleanup procedure.
-
-Next: physical fresh restore/stage/authorize/GUIboot/collect/publish-installed,
-qualification clone/coldboot/teardown and readiness using released-lease cleanup.
-Then full two-VM coordinator acceptance, build tools, actual login/logout recovery,
-performance and final signed/notarized release validation. The legacy SSH-wrapper
-timeout failures under concurrent native compilation remain an open stress concern.
-Keep PR996 draft. No production deployment.
+Next: finish discard validation; obtain adequate test storage without reducing
+policy; fresh reserve/payload/stage/authorize/GUIboot/collect/qualify; actual GUI
+service login/logout/recovery; full two-VM coordinator/consumer acceptance;
+build-tool compatibility, performance/stress and final release validation.
+Keep current diagnostic VM, restore IPSW, encrypted volume/passphrase, authority,
+paused test CI and temporary selected-user membership until campaign cleanup.
 
 ## Source and ownership
 
@@ -2657,3 +2615,52 @@ benchmark34858536943 waits for separate environment approval. PR996 remains draf
 Physical fresh complete factory, explicit failed-base discard operation, actual
 GUI service recovery, full two-VM consumer campaign, build tools/performance and
 final release validation remain required. Keep goal active.
+
+## 2026-09-14 — Verified obsolete task VM retirement
+
+Read-only inventory fixed six stopped task identities. Signed runtime13 cleanup
+operator /private/tmp/darkbloom-sandbox-completion-evidence/retire-task-vms.py
+SHA999450955e28cdd1895c2cdf795588609901763a2bf50232326a15f4a0c5d8f7.
+Preflight and apply both completed0. Root evidence is retained on encrypted volume
+/Volumes/DarkbloomSandboxTest-20260913/retired-task-vms-20260914/{preflight,apply}.
+It contains bounded configs/ownership and metadata, never raw guest credentials.
+Deleted only old lab probe2/probe3/retirement-probe/sandbox-base and the old UID430
+qualification-import1/qualification1. Latest GUI501 diagnostic VM is preserved.
+Each fixed directory/disk/config/ownership identity was checked; no media openers
+or attachments; machineEX, configEX and run-owner POSIX lock retained during
+native delete. Every deletion independently checks absence and preserves latest
+GUI tree, IPSW, existing unrelated siblings and Apple attachment device identities.
+Authority dev16777229 inode29088927 root:431/660/size0/link1 unchanged.
+Free increased52729552896 ->177322176512bytes, delta124592623616bytes. Import1
+freed almost no bytes alone because its boot disk shared APFS extents; totals
+were measured after actual deletion, not inferred from du allocation.
+Primary result SHA f1783266dbbaf75ddb58246f37e41a51efad6ac09d790f43f56cf5e5b1458efe.
+Follow-up Foundation important capacity216986375717bytes still below322122547200.
+Asked permission for four exact user caches; no reply yet, no cache deletion.
+No new VM/service was started and no production action occurred.
+
+## 2026-09-14 — Exact failed-base discard command
+
+Added discard-base with protected selected-user identity, explicit installation
+UUID, permanent machineEX and production runtime configuration. Cleanup needs no
+GUI session, guest package or free-space admission; it creates/boots no VM.
+LumeUnqualifiedBaseDeletion checks exact raw Apple source under the ordinary
+operation lock and rejects ready receipt entries, guest materials, unknown or
+legacy ownership and running state. Root maintenance fences block fresh/recovery.
+The existing stopped deletion intent now optionally records unqualifiedBase:true;
+ordinary serialized intents omit this field. A discard retry requires that purpose
+and exact installation ID, then removes only the saved stopped directory inode.
+It can recover after config/ownership/native inventory disappearance, preserves
+replacements and recreated names, and clears the intent only after durable removal.
+Successful CLI output reports absent:true, including already-absent replay; it does
+not claim a new deletion or source qualification. Root evidence is retained.
+
+Implementation is split into options, command, SDK eligibility and existing durable
+removal. No new coordinator/provider wire field or capacity policy is introduced.
+Refactor pass kept the public entrypoint thin and corrected stale completion docs.
+Validation: discard-base-focused-tests.log22pass; discard-base-full-tests.log671
+with7explicit skips/0failures,156.044s; discard-base-cli-smoke.json3pass;
+discard-base-docs.log286filespass. Full suite contains an additional fresh/recovery
+root-fence case beyond the initial focused run. Test native processes are synthetic;
+the newly signed discard command still needs physical validation. No further user
+cache deletion, VM start, service mutation or production action occurred.

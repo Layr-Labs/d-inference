@@ -29,10 +29,11 @@ extension LumeVirtualMachineRuntime {
         )
     }
 
-    private func performDelete(
+    func performDelete(
         name: String,
         scope: SandboxOperationScope?,
-        releaseCapacity: Bool
+        releaseCapacity: Bool,
+        unqualifiedBaseInstallationID: UUID? = nil
     ) async throws {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else { throw SandboxRuntimeError.invalidName }
         var reservationAbsent = false
@@ -43,6 +44,10 @@ extension LumeVirtualMachineRuntime {
         try LumeOfflineOperationFence.requireAbsent(storage: configuration.storageDirectory, name: name)
         let pending = try LumeVirtualMachineDeletionIntent.load(workspace: workspace, name: name)
         try pending?.requireMatching(name: name, scope: scope)
+        if let expected = unqualifiedBaseInstallationID, let pending,
+           pending.installationID != expected || pending.unqualifiedBase != true {
+            throw SandboxRuntimeError.unsupported("pending deletion is not this unqualified base discard")
+        }
         if releaseCapacity, let capacityArbiter, let scope,
            try capacityArbiter.deletionConfirmed(scope: scope, virtualMachineName: name) {
             guard try await inspect(name: name) == nil else {
@@ -81,6 +86,9 @@ extension LumeVirtualMachineRuntime {
         }
         let commitment = try LumeVirtualMachineOwnership.requireResourceCommitment(
             name: name, owner: owner, in: configuration.storageDirectory)
+        if let expected = unqualifiedBaseInstallationID {
+            try LumeUnqualifiedBaseDeletion.require(name: name, installationID: expected, storage: configuration.storageDirectory)
+        }
         try LumeVirtualMachineResourceCommitment.requireMatch(observed: existing, ownership: commitment,
             lease: authorization?.lease)
         if releaseCapacity {
@@ -97,8 +105,12 @@ extension LumeVirtualMachineRuntime {
         }
         try LumeVirtualMachineResourceCommitment.requireMatch(observed: stopped, ownership: commitment,
             lease: authorization?.lease)
+        if let expected = unqualifiedBaseInstallationID {
+            try LumeUnqualifiedBaseDeletion.require(name: name, installationID: expected, storage: configuration.storageDirectory)
+        }
         let intent = try LumeVirtualMachineDeletionIntent.persist(workspace: workspace, name: name,
-            scope: scope, installationID: commitment.identity.installationID)
+            scope: scope, installationID: commitment.identity.installationID,
+            unqualifiedBase: unqualifiedBaseInstallationID == nil ? nil : true)
         _ = try await run(arguments: storageArguments(["delete", name, "--force"]),
             timeoutSeconds: configuration.commandTimeoutSeconds, operation: "delete")
         try intent.removeOwnedTree(workspace: workspace)

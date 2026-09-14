@@ -34,6 +34,10 @@ enum DarkbloomSandboxDaemon {
             try await SandboxSignalCancellation.run {
                 try await AccountlessBaseCommand.run(Array(arguments.dropFirst()))
             }
+        case "discard-base":
+            try await SandboxSignalCancellation.run {
+                try await DiscardBaseCommand.run(Array(arguments.dropFirst()))
+            }
         case "reconcile-expired":
             try await ReconcileExpiredCommand.run(
                 Array(arguments.dropFirst())
@@ -135,6 +139,10 @@ enum DarkbloomSandboxDaemon {
                 Reserve, boot, publish-installed and qualify run in the selected GUI session; other phases require root.
                 Qualify uses an existing dedicated-host capacity store and one private journal per attempt.
                 Repeating an incomplete qualification cleans up and aborts; use a new journal for a fresh attempt.
+              darkbloom-sandboxd discard-base --host-identity-file FILE --host-id UUID
+                --lume PATH --storage DIR --name NAME --installation-id UUID [--json]
+                Run as the selected host user after stopping the broker and settling root maintenance.
+                Refuses ready templates; retries complete only the exact installation's pending deletion.
               darkbloom-sandboxd reconcile-expired --lume PATH --storage DIR
                 --capacity-dir DIR --max-cpu N --max-memory-gib N
                 [--max-growth-gib N] [--storage-headroom-gib N] [--json]

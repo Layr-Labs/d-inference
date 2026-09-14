@@ -238,9 +238,9 @@ base start, new raw-candidate reservation and pre-boot root staging.
 `installerBootStopped` means the native owner exited successfully and the source
 is stopped. `installerAttemptRecovered` means a prior claim was found and stopped
 state was verified; its original native exit code is unavailable. Neither proves
-the guest installer succeeded. The collection and installed-publication commands
-are implemented; physical validation of this complete path and automatic native
-qualification remain required. The legacy `prepare-base` entrypoint retains its
+the guest installer succeeded. Collection, installed publication and native
+qualification are implemented; physical validation of this complete path remains
+required. The legacy `prepare-base` entrypoint retains its
 unattended path; these phases do not silently fall back to it.
 
 `collect` requires a root-private journal separate from the boot journal. It
@@ -309,6 +309,36 @@ record is independently verified against the root installation, boot claim,
 current guest release and unchanged stopped source. Recovery never creates a
 missing ready file from saved success flags. Otherwise it returns
 `qualificationAborted` with exit75; use a new directory for another attempt.
+
+## Discard a failed base
+
+`darkbloom-sandboxd discard-base` removes an unqualified raw Apple restore by
+exact installation identity. Run it as the selected host user with the broker
+stopped. It needs no graphical session, guest package or free-space admission.
+
+```sh
+"$SIGNED_DAEMON" discard-base --host-identity-file "$HOST_IDENTITY_FILE" \
+  --host-id "$HOST_ID" --lume "$PINNED_LUME" --storage "$VM_STORAGE" \
+  --name "$FAILED_BASE" --installation-id "$INSTALLATION_ID" --json
+```
+
+Use the installation ID in the base's `.darkbloom-ownership.json` or the saved
+candidate's `source.installationID`. The command does not infer it from the name.
+It verifies the protected selected-user binding and exclusive machine authority,
+then uses the existing runtime operation lock, native stopped observation and
+durable deletion intent. Any ready-receipt entry, guest material, legacy source,
+unknown ownership or running VM prevents a fresh discard. A pending root
+maintenance fence prevents both fresh deletion and recovery; settle that root
+transaction through its original journal first.
+
+The external deletion intent records the exact installation, directory inode
+and unqualified-discard purpose before removal begins. A retry can complete
+partial removal even after native inventory and the ownership marker are gone.
+It rejects another installation, a replacement directory and a generic deletion
+intent. A successful command reports `absent: true`; an already-absent name
+reports the same observation without claiming another deletion. Unowned partial
+restore files still require explicit inspection and are never adopted. Root
+payloads, permits and collection journals remain available as evidence.
 
 ## Installed-candidate validation
 
@@ -417,10 +447,9 @@ which still requires fresh real-VM acceptance. Existing
 guest bundles lack the new probe: rebuild/sign the guest release and prepare a
 matching base before running it.
 
-No template is published and no reservation is added or extended by this path.
-Ordinary `create` still requires `LumeGuestTemplate.requireReady`; there is no
-public bypass flag. Qualification clones use the existing encrypted-storage,
-guest-material and native-start gates when started. The enclosing base factory
-must still persist attempt/recovery state, run the actual native checks and
-complete cleanup before publishing readiness. Unit fixtures use real locks and
-APFS clones to exercise these transitions; they are not physical qualification.
+Ordinary `create` requires `LumeGuestTemplate.requireReady`; there is no public
+bypass flag. Qualification clones use the existing encrypted-storage,
+guest-material and native-start gates. The durable qualification owner allocates
+one lease, runs native checks, cleans up the clone and publishes readiness only
+inside the guarded callback. Unit fixtures exercise these transitions with real
+locks and APFS clones; they are not physical qualification.

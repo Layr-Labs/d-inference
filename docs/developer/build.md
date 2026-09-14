@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `cf4dad33a`
+> Last updated: 2026-09-14 · commit `4485bbbf1`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -75,6 +75,10 @@ includes the fixed `qualify-tenant` probe; the host's `prepare-accountless-base
 qualify` phase uses an existing dedicated capacity store and its own private
 attempt journal. Package/sign the new guest and prepare a matching base; an old
 guest binary cannot satisfy the new probe. See the [operator commands](../../sandbox-macos/Resources/ACCOUNTLESS_RECEIPTS.md#accountless-operator-commands).
+The host also supplies `discard-base` to remove an exact stopped, unqualified
+Apple restore after root maintenance has settled. It uses the pinned runtime
+and retained machine authority, without requiring a guest package or free-space
+admission; see [failed-base cleanup](../../sandbox-macos/Resources/ACCOUNTLESS_RECEIPTS.md#discard-a-failed-base).
 
 Provider tests are grouped by subsystem inside their existing SwiftPM targets.
 See [finding provider tests](test.md#finding-provider-tests) for the folder map;

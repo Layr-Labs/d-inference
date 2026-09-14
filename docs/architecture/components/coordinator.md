@@ -84,7 +84,7 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/internal/e2e` | NaCl Box (X25519 + XSalsa20-Poly1305) for coordinator↔provider and sender↔coordinator sealing. |
 | `coordinator/attestation` | Secure Enclave attestation verification and Apple MDA certificate chains. |
 | `coordinator/apns` | APNs push attestor for code identity. |
-| `coordinator/mdm` | MicroMDM transport, outstanding-command correlation and webhook dispatch; scheduler claim and worker state live in `coordinator/providercontrol/mdmscheduler/`. |
+| `coordinator/mdm/client.go` (`Client`) | MicroMDM transport and late-response hooks; `coordinator/mdm/security_info.go` (`VerifyProviderWithUDIDObserver`), `coordinator/mdm/device_attestation.go` (`RequestDeviceAttestation`) and `coordinator/mdm/webhook.go` (`HandleWebhook`) own the exchange. `coordinator/mdm/doc.go` maps commands, correlation, waiters and parsers. |
 | `coordinator/auth` | Privy JWT verification. |
 | `coordinator/providercontrol/trustreuse` | Durable device-evidence cache, trust-reuse admission, journal authority/replay and continuity tracking (`Manager`); API adapters supply verified release facts and keep the ordered shutdown boundary. |
 | `coordinator/providercontrol/challenge` | Per-connection nonce tracking, challenge transport, ordered signature/posture/integrity checks and success/failure transitions (`Session`, `Verifier`); API lifecycle and live policy/trust dependencies stay explicit. |

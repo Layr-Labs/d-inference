@@ -44,11 +44,12 @@ using selected-user identity, machineEX and existing durable stopped deletion.
 It rejects ready/unknown/running sources and maintenance fences, and recovers only
 an intent marked for that exact unqualified discard. No guest package, GUI or
 free-space admission is required for cleanup. Focused initial22tests and full671tests/7skips/0failures passed (156.044s).
-Three actual CLI checks and docs-check286files pass. Signed package is staged;
-real-Mac discard command acceptance remains to be run.
+Three actual CLI checks and docs-check286files pass. Signed release8 now passes
+11 public CLI/filesystem checks on the real test Mac, including actual native
+delete failure and durable retry. All3nonbootable fixture directories are gone.
+This is signed filesystem-command proof; it boots no VM and cannot qualify a base.
 
-Next: physically verify the signed discard command; obtain adequate test storage
-without reducing policy; fresh reserve/payload/stage/authorize/GUIboot/collect/qualify; actual GUI
+Next: obtain adequate test storage without reducing policy; fresh reserve/payload/stage/authorize/GUIboot/collect/qualify; actual GUI
 service login/logout/recovery; full two-VM coordinator/consumer acceptance;
 build-tool compatibility, performance/stress and final release validation.
 Keep current diagnostic VM, restore IPSW, encrypted volume/passphrase, authority,
@@ -2702,3 +2703,56 @@ available, independent next work can verify signed discard on an explicitly
 nonbootable owned filesystem fixture using real native inventory and exact host
 identity. This must not be represented as new VM/isolation/factory proof. Then
 continue full fresh factory and two-VM acceptance without lowering admission.
+
+## 2026-09-14 — Signed discard CLI real-Mac filesystem acceptance
+
+Unchanged release8/sourceb8917eda1 passed11checks through its actual public
+command, as selected UID501/GID20 with root-protected host identity and normal
+machine authority. Tests used zero-allocated sparse100GiB files plus synthetic
+native config/NVRAM with NO hardware model or machine identifier. These fixtures
+are deliberately nonbootable; no VM was started, no isolation/template evidence
+was created and none may be promoted to a base.
+
+Checks: wrong installation preserved with exact refusal; even malformed ready
+receipt preserved; root maintenance fence preserved; normal signed native delete;
+absence replay; recreated same-name installation preserved; new installation
+own delete; native FileManager deletion failure from an inaccessible root-created
+child retains the actual SDK's durable unqualified-discard intent; wrong recovery
+ID preserves that intent; after removing only the exact test obstacle a fresh
+public command recovers; subsequent absence replay succeeds. Target and intent
+are absent, permanent authority metadata, latest GUI diagnostic tree and Apple
+attachments remain unchanged. No source change or validator weakening needed.
+
+v1failed BEFORE runtime with root identity0400 from operator umask077, so its
+negative-result labels prove no intended gate. v2corrected444 but failed BEFORE
+runtime because Darwin child group provisioning with extra_groups=[431] did not
+provide effective lock access despite getgroups reporting the directory group.
+Read-only paired subprocess controls prove [431] openRW->EACCES versus [20,431]
+openRW->success on the same untouched authority. v3includes primary group slot20
+and431 and verifies each negative error reason; positive deletion/recovery pass.
+These are harness setup defects; no production group/identity rule was relaxed.
+
+Final operator primary:
+/private/tmp/darkbloom-sandbox-completion-evidence/discard-cli-physical-v3.py
+SHA81d006aa317c16b9c88b678d25c907ba6b08b73a191cd82bd4b71163dcfae386.
+Remote root report /private/tmp/darkbloom-discard-cli3-20260914/result.json.
+Protected public binding /Library/Application Support/Darkbloom/qualification-discard-cli3/host-identity.json,
+hostID0c12dc48-ce5b-47af-83cf-dc77585b0cfc.
+Fixture storage /Volumes/DarkbloomSandboxTest-20260913/discard-cli3-20260914/vms.
+Test VM name darkbloom-discard-cli-probe1 is absent. No services started.
+
+Exact cleanup/export operator:
+/private/tmp/darkbloom-sandbox-completion-evidence/discard-cli-export.py
+SHA7ead85805b84bde4f7d0f513a4cfea29e1dcdb17f20e5c077fadc2add482806e.
+It verified the two earlier fixtures were exact synthetic config/NVRAM, zero-
+allocated sparse disks and expected private entries, fixed ONLY its own root
+binding mode for v1, and deleted both via the signed public CLI with their own IDs.
+All three fixture VM directories absent. Original failed reports remain preserved.
+Small storage/runtime support directories and protected bindings remain as evidence.
+Primary combined export /private/tmp/darkbloom-sandbox-completion-evidence/discard-cli-evidence.json
+SHA1f79961bd556b975ce09f92d8af4efdeb2ba291da957ccf320874ca33cc122c1.
+
+Go/model cache permission remains pending. No new user cache or model removed.
+Full fresh restore/installer/qualification, actual GUI service recovery, two-VM
+consumer acceptance, workload/stress performance and final release gates remain.
+CI34862480863 and integration34862480870 were still in progress at last check.

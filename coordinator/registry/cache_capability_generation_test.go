@@ -11,7 +11,7 @@ func TestCacheRetiredTrackerCannotRepopulateOrQuarantineReplacement(t *testing.T
 	r, p, capability := exactTestRegistry(t)
 	pr, ready := checkpointTestAttempt(t, r, p, capability, "old", exactTestPlan(exactTestAnchor(16, "c")), 1)
 	old := r.cacheRouting
-	owner := pr.cacheAttempt.Load()
+	metadata, _ := pr.CacheAttemptSnapshot().Metadata()
 	if err := r.ConfigureCacheRouting(generationTestConfig(CacheRoutingOn)); err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestCacheRetiredTrackerCannotRepopulateOrQuarantineReplacement(t *testing.T
 	r.MarkCacheAttemptTerminal(pr)
 	r.ForgetCacheAttempt(pr)
 	old.mu.Lock()
-	_, retained := old.attempts[owner.nonce]
+	_, retained := old.attempts[metadata.Nonce]
 	old.mu.Unlock()
 	if retained {
 		t.Fatal("late cleanup retained old nonce")

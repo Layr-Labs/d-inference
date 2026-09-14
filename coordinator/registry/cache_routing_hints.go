@@ -30,7 +30,7 @@ func (r *Registry) cacheRoutingHintsWithObservation(
 	routeKey []byte, mode string, now time.Time,
 ) (map[string]cacheRoutingHint, CacheOpportunity) {
 	observation := CacheOpportunity{}
-	if tracker == nil || plan.generation != tracker.generation || tracker.generation.revoked.Load() || mode != CacheRoutingOn || !plan.present() {
+	if tracker == nil || plan.generation != tracker.generation || tracker.generation.Revoked() || mode != CacheRoutingOn || !plan.present() {
 		return nil, observation
 	}
 	observation.Evaluated = true
@@ -88,7 +88,7 @@ func (t *cacheRoutingTracker) matchingHolders(
 	plan CachePlan, routeKey []byte, mode string, now time.Time,
 ) []cacheRoutingMatch {
 	if t == nil || mode != CacheRoutingOn || !plan.present() || len(routeKey) == 0 ||
-		plan.generation != t.generation || t.generation.revoked.Load() {
+		plan.generation != t.generation || t.generation.Revoked() {
 		return nil
 	}
 	keys := make([]string, len(plan.Boundaries))
@@ -97,7 +97,7 @@ func (t *cacheRoutingTracker) matchingHolders(
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.generation.revoked.Load() {
+	if t.generation.Revoked() {
 		return nil
 	}
 	t.sweepIfDueLocked(now)
@@ -184,7 +184,7 @@ func cacheHintsForMatches(plan CachePlan, matches []cacheRoutingMatch,
 // unlocked holder query. Both scan and reservation hold provider.mu here.
 func (hint cacheRoutingHint) currentForProviderLocked(provider *Provider, model string) bool {
 	if provider == nil || hint.Provider != provider ||
-		hint.generation == nil || hint.generation.revoked.Load() {
+		hint.generation == nil || hint.generation.Revoked() {
 		return false
 	}
 	capability, ok := provider.prefixCacheCapabilityLocked(model, hint.Tier)

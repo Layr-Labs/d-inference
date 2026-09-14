@@ -46,11 +46,9 @@ func (r *Registry) PrepareCacheAttempt(pr *PendingRequest, provider *Provider) e
 		if err != nil {
 			return err
 		}
-		pr.cacheAttemptMu.Lock()
-		if pr.cachePreparationTicket == ticket && !pr.cachePreparationClosed {
+		pr.cacheAttempt.PublishLegacy(ticket, func() {
 			pr.LegacyCacheBustKey = legacyCacheBustPrefix + bust
-		}
-		pr.cacheAttemptMu.Unlock()
+		})
 		return nil
 	}
 	return nil
@@ -73,7 +71,7 @@ func (r *Registry) ApplyPrefixCacheReady(string, *protocol.PrefixCacheReadyMessa
 	return false
 }
 
-func (t *cacheRoutingTracker) forgetAttempt(nonce string) {
+func (t *cacheRoutingTracker) ForgetCacheAttempt(nonce string) {
 	if t == nil || nonce == "" {
 		return
 	}
@@ -82,7 +80,7 @@ func (t *cacheRoutingTracker) forgetAttempt(nonce string) {
 	t.mu.Unlock()
 }
 
-func (t *cacheRoutingTracker) markAttemptTerminal(nonce string, now time.Time) {
+func (t *cacheRoutingTracker) MarkCacheAttemptTerminal(nonce string, now time.Time) {
 	if t == nil || nonce == "" {
 		return
 	}
@@ -174,7 +172,7 @@ func (t *cacheRoutingTracker) invalidateProviderModels(providerID string, models
 }
 
 func (t *cacheRoutingTracker) storeAttemptLocked(nonce string, attempt cacheAttempt) {
-	if t.generation.revoked.Load() {
+	if t.generation.Revoked() {
 		return
 	}
 	t.attempts[nonce] = attempt
@@ -197,7 +195,7 @@ func (t *cacheRoutingTracker) removeAttemptLocked(nonce string) {
 }
 
 func (t *cacheRoutingTracker) upsertHolderLocked(key string, holder cacheHolder) {
-	if key == "" || holder.ProviderID == "" || t.generation.revoked.Load() {
+	if key == "" || holder.ProviderID == "" || t.generation.Revoked() {
 		return
 	}
 	holders := t.holders[key]
@@ -242,7 +240,7 @@ func (t *cacheRoutingTracker) activeHolderLocked(
 }
 
 func (t *cacheRoutingTracker) activeAttemptLocked(nonce string, now time.Time) (cacheAttempt, bool) {
-	if t.generation.revoked.Load() {
+	if t.generation.Revoked() {
 		return cacheAttempt{}, false
 	}
 	attempt, exists := t.attempts[nonce]

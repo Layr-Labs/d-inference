@@ -1,4 +1,4 @@
-package registry
+package cacheattempt
 
 import (
 	"testing"
@@ -9,12 +9,12 @@ import (
 func BenchmarkCacheAttemptDequeue(b *testing.B) {
 	for _, kind := range []string{"ordinary", "prepared", "revoked"} {
 		b.Run(kind, func(b *testing.B) {
-			snapshot := CacheAttemptSnapshot{}
+			snapshot := Snapshot{}
 			if kind != "ordinary" {
-				snapshot.owner = &cacheAttemptOwner{generation: &cacheRoutingGeneration{}, nonce: "nonce", scope: "scope"}
+				snapshot.owner = &Attempt{generation: &Generation{}, metadata: Metadata{Nonce: "nonce", Scope: "scope"}}
 			}
 			if kind == "revoked" {
-				snapshot.owner.generation.revoked.Store(true)
+				snapshot.owner.generation.Revoke()
 			}
 			var frame protocol.InferenceRequestMessage
 			b.ReportAllocs()

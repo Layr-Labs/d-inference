@@ -14,7 +14,7 @@ import (
 func (r *Registry) cacheAffinityEligibleLocked(p *Provider, model string, plan CachePlan) bool {
 	tracker := r.cacheRouting
 	if p.PrefixCacheProtocol < 2 || tracker == nil || plan.generation != tracker.generation ||
-		tracker.generation.revoked.Load() {
+		tracker.generation.Revoked() {
 		return false
 	}
 	for _, tier := range [...]string{"ssd", "memory"} {

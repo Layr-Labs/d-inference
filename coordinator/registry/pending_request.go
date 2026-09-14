@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/cacheattempt"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -131,11 +132,8 @@ type PendingRequest struct {
 	MinDecodeTPS float64
 	// CachePlan contains exact sidecar block boundaries and opaque build scope.
 	// It is never logged or persisted.
-	CachePlan              CachePlan
-	cacheAttempt           atomic.Pointer[cacheAttemptOwner]
-	cacheAttemptMu         sync.Mutex
-	cachePreparationTicket uint64
-	cachePreparationClosed bool
+	CachePlan    CachePlan
+	cacheAttempt cacheattempt.State
 	// LegacyCacheBustKey is injected only into the encrypted provider-bound
 	// request body for protocol-0 providers. It is never reflected to the caller.
 	LegacyCacheBustKey string

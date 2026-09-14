@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/cacheattempt"
 )
 
 // PreparePrefixCacheV2Attempt requests provider proof for an exact sidecar
@@ -85,11 +86,11 @@ func (r *Registry) PreparePrefixCacheV2Attempt(
 		ExpectedPrompt:     promptAnchor,
 		ExpectedBoundaries: boundaries,
 	}
-	owner := &cacheAttemptOwner{tracker: tracker, generation: plan.generation,
-		nonce: nonce, scope: plan.CacheScope}
+	metadata := cacheattempt.Metadata{Nonce: nonce, Scope: plan.CacheScope}
 	if capable {
-		owner.boundaryMode = capability.ReadyBoundaryMode
+		metadata.BoundaryMode = capability.ReadyBoundaryMode
 	}
+	owner := cacheattempt.New(plan.generation, tracker, metadata)
 	tracker.mu.Lock()
 	tracker.storeAttemptLocked(nonce, attempt)
 	if len(tracker.attempts) > tracker.maxAttempts {
@@ -97,7 +98,7 @@ func (r *Registry) PreparePrefixCacheV2Attempt(
 	}
 	tracker.mu.Unlock()
 
-	if r.publishCacheAttempt(pr, provider, revision, ticket, owner) {
+	if r.publishCacheAttempt(pr, provider, revision, ticket, tracker, owner) {
 		ttftCalibration.discardPrediction(pr.RequestID, pr.Attempt)
 	}
 	return nil
@@ -241,7 +242,7 @@ func (t *cacheRoutingTracker) rejectCapability(
 ) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.generation.revoked.Load() {
+	if t.generation.Revoked() {
 		return false
 	}
 	t.rejectedV2[cacheV2ProviderModelKey{
@@ -280,7 +281,7 @@ func (t *cacheRoutingTracker) acceptV2SequenceLocked(
 	tier string,
 	sequence uint64,
 ) bool {
-	if sequence == 0 || t.generation.revoked.Load() {
+	if sequence == 0 || t.generation.Revoked() {
 		return false
 	}
 	key := cacheV2SequenceKey{

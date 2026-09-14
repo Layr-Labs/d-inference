@@ -14,7 +14,7 @@ struct LumeGuestTemplateTestFixture {
     let receipt: URL
     let instanceID = UUID()
     let configuration: LumeGuestMaterialConfiguration
-    init(accountless: Bool = false) throws {
+    init(accountless: Bool = false, signManifest: Bool = true) throws {
         root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
             .appendingPathComponent("template-upgrade-\(UUID())")
         release = root.appendingPathComponent("release")
@@ -30,7 +30,7 @@ struct LumeGuestTemplateTestFixture {
         for name in ["prepare-sandbox-instance.py", "materialize-sandbox-instance.py", "sandbox_release_support.py"] {
             try Data(name.utf8).write(to: release.appendingPathComponent("tools/" + name))
         }
-        try writeManifest()
+        try writeManifest(sign: signManifest)
         var ownership: [String: Any] = ["schemaVersion": 2, "installationID": instanceID.uuidString,
             "name": "base", "ownerKind": "base_template", "cpuCount": 4,
             "memoryBytes": 8 * 1_073_741_824, "diskBytes": 100 * 1_073_741_824,

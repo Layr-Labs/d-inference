@@ -82,6 +82,48 @@ the unclaimed image for explicit operator inspection.
 This preparer does not mount the image, install the guest agent, start the
 restored guest, qualify a clone or publish readiness. A later orchestrator must
 persist a one-shot phase transition before offline writes, acquire the native
-image guards, and perform the installation/qualification protocol. No new CLI
-is exposed until raw-restore process ownership and crash lifetime are enforced;
-the legacy `prepare-base` entrypoint is unchanged.
+image guards, and perform the installation/qualification protocol. No accountless
+CLI is exposed; the legacy `prepare-base` entrypoint is unchanged. Managed raw
+restore now retains exclusive ownership in the native installer process; its
+signed-runtime requirements are in `RELEASE_VALIDATION.md`.
+
+## Installed-candidate validation
+
+`LumeInstalledCandidateCheckpoint` defines immutable host evidence for the next
+phase, `installedAwaitingQualification`. A future root-installation orchestrator
+must produce these private files in the already-owned source VM directory:
+
+| File | Binding |
+|---|---|
+| `.darkbloom-accountless-candidate.json` | Existing immutable raw reservation, including candidate/bootstrap-attempt IDs, source, payload, resources and original disk identity. |
+| `.darkbloom-accountless-installation.json` | Complete schema2 `SandboxAccountlessInstallationReceipt`; its `rootJobID` equals the reservation's bootstrap-attempt ID. |
+| `.darkbloom-accountless-cleanup.json` | Schema1 `LumeCandidateInstallationCleanup`; same source/attempt, exact installation-receipt digest, post-cleanup disk snapshot, temporary job/payload removed, detached and source stopped. |
+| `.darkbloom-accountless-installed.json` | Schema1 installed checkpoint; exact hashes of the three preceding files and the current post-installation, post-cleanup disk snapshot. |
+
+There is no production writer for these new files yet. Constructing or decoding
+their types does not observe installation or advance a candidate. The raw
+reservation remains immutable; its disk device/inode/size must match the final
+disk, while the installed checkpoint binds the later modification/change times.
+
+`LumeInstalledCandidateStore` reads at most 16 KiB per evidence file through
+private, stable, named descriptors. It rechecks storage/directory identity,
+all evidence digests, complete receipt semantics, exact source ownership,
+current disk identity and signed guest compatibility. A ready-template receipt
+or source `.darkbloom-guest` material is rejected. Partial, legacy, mixed,
+unknown-version, shared, linked or changed evidence cannot authorize a candidate.
+
+The package-only `qualificationCloneCapability` validator additionally requires
+exclusive machine authority, an isolated-guest runtime, the matching real capacity
+arbiter, an active dedicated-host lease, exact destination/resources/scope/expiry,
+stopped source observation and resource agreement with its ownership record. It
+retains the normal source operation lock and binds the capability to its issuing
+runtime. Revalidation rejects changed files, disk, runtime, lease or source.
+The capability has no public constructor or Codable conformance.
+
+This is only a source/allocation validator: no clone entrypoint consumes the
+capability, no template is published and no reservation is added or extended.
+Ordinary `create` still requires `LumeGuestTemplate.requireReady`. The future
+clone consumer must enforce encryption, supported host execution context and
+native start requirements, persist attempt/recovery state, run the actual native
+checks, and complete cleanup before publishing readiness. Unit fixtures exercise
+these validation boundaries without providing physical installation evidence.

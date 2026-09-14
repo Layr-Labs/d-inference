@@ -1,6 +1,6 @@
 # App Attest shadow protocol and observations
 
-> Last updated: 2026-09-12 · commit `7c394fa2b`
+> Last updated: 2026-09-14 · commit `82d2bbafd`
 
 Reference for the optional App Attest exchange alongside APNs and MDM. Shadow evidence is stored and measured independently; it never changes provider trust, routing, rewards, or the minimum supported macOS version. The rollout decision is in [the coexistence plan](../design/app-attest-migration.md).
 
@@ -20,7 +20,7 @@ Code: `coordinator/api/app_attest_shadow_config.go` (`readAppAttestShadowConfig`
 
 | Direction | `payload.action` | Fields and behavior |
 |---|---|---|
-| Coordinator → provider | `prepare` | Check OS/API support and signed environment; retrieve or generate a key identifier off the serving loop. |
+| Coordinator → provider | `prepare` | Check OS/API support, signed CDhash opt-in, and any explicit signed environment; retrieve or generate a key identifier off the serving loop. |
 | Provider → coordinator | `ready` | `result`; on success, `key_id`. These are provider reports, not proof. |
 | Coordinator → provider | `attest` | Unknown key only: `key_id`, one-time `challenge`. |
 | Provider → coordinator | `attestation` | `result`, `key_id`, `challenge`, base64 `proof`. Verify Apple chain, nonce, identity, environment, credential/public key, and exact Mac ACL before inserting the shadow key. |
@@ -69,12 +69,12 @@ Code: `coordinator/store/app_attest_shadow.go` (`AppAttestShadowStore`), `postgr
 
 ## Packaging and live acceptance
 
-`scripts/prepare-app-attest-entitlements.py` preserves APNs production signing and existing keychain grants. It adds the App Attest production environment only if the decoded distribution profile explicitly grants it, and copies the optional `CDhash` opt-in only when granted. Both provider release and signing-validation workflows use this helper and compare extracted signed entitlements against its result. A profile without the grant produces a legacy-compatible bundle; on a supported OS the client reports `not_configured`.
+`scripts/prepare-app-attest-entitlements.py` preserves APNs production signing and existing keychain grants. It prepares the `CDhash` opt-in independently from the environment entitlement, preserving a granted string or array type and requesting only `CDhash`. The regenerated macOS Developer ID profile inspected on 2026-09-14 grants `com.apple.developer.devicecheck.app-attest-opt-in = ["CDhash"]` and no `appattest-environment`; that is sufficient to configure the local shadow attempt. If the profile also explicitly grants the production environment entitlement, the helper includes it; otherwise it does not manufacture one. Both provider release and signing-validation workflows use this helper and compare extracted signed entitlements against its result. A profile without the grant produces a legacy-compatible bundle; on a supported OS the client reports `not_configured`.
 
-The real adapter checks macOS 27+, `DCAppAttestService.isSupported`, the app bundle, and the signed environment. Current SDK compilation and unit tests do not establish live Mac eligibility. Verify that the final additive signing/profile configuration still launches and completes APNs/MDM checks on existing supported macOS versions. The exact profile grants, launch mechanism, metadata extensions, and Apple acceptance require a physical macOS 27 Mac with the final signed app. No private daemon entitlement is manufactured. [Apple's macOS restrictions](https://developer.apple.com/forums/thread/836329) apply to shadow mode too.
+The real adapter checks macOS 27+, `DCAppAttestService.isSupported`, the app bundle, and the signed CDhash opt-in through `AppAttestEntitlementPolicy`. An explicit environment entitlement must match the requested environment; its absence does not determine the environment and does not block an attempt. The coordinator still verifies the environment from Apple-signed attestation evidence before recording success. Current SDK compilation and unit tests do not establish live Mac eligibility. Verify that the final additive signing/profile configuration still launches and completes APNs/MDM checks on existing supported macOS versions. The exact profile grants, launch mechanism, metadata extensions, and Apple acceptance require a physical macOS 27 Mac with the final signed app. No private daemon entitlement is manufactured. [Apple's macOS restrictions](https://developer.apple.com/forums/thread/836329) apply to shadow mode too.
 
 ## Validation
 
-Run `go test ./coordinator/appattest ./coordinator/protocol ./coordinator/store ./coordinator/api -run TestAppAttest`, and repeat with `-race`. PostgreSQL tests require a disposable `DATABASE_URL`; the store harness truncates test tables. In `provider-swift`, run `swift test --filter AppAttestShadowTests`. Run `python3 scripts/test-app-attest-entitlements.py` and `python3 scripts/test-provider-signing-validation.py` for packaging controls.
+Run `go test ./coordinator/appattest ./coordinator/protocol ./coordinator/store ./coordinator/api -run TestAppAttest`, and repeat with `-race`. PostgreSQL tests require a disposable `DATABASE_URL`; the store harness truncates test tables. In `provider-swift`, run `swift test --filter 'AppAttestShadowTests|AppAttestEntitlementPolicyTests'`. Run `python3 scripts/test-app-attest-entitlements.py` and `python3 scripts/test-provider-signing-validation.py` for packaging controls.
 
 The API coexistence test first proves a provider is eligible, processes failed and successful shadow evidence, checks authoritative state/capacity, and completes encrypted inference. Tests use private fixtures without allowing production root overrides. Live Mac, final signing/notarization, and production rollout remain separate acceptance results.

@@ -18,17 +18,21 @@ def prepare(base, profile):
         raise ValueError("APNs production entitlement must remain enabled")
     grants = profile.get("Entitlements", {})
     grant = grants.get(ENVIRONMENT)
-    authorized = grant in ("production", "*") if isinstance(grant, str) else (
+    environment_authorized = grant in ("production", "*") if isinstance(grant, str) else (
         isinstance(grant, list) and "production" in grant)
     result.pop(ENVIRONMENT, None)
     result.pop(OPT_IN, None)
-    if authorized:
+    if environment_authorized:
         result[ENVIRONMENT] = "production"
-        # Only copy an explicit profile grant. Never manufacture this restricted
-        # capability from a forum post or request a private daemon entitlement.
-        if grants.get(OPT_IN) == "CDhash":
-            result[OPT_IN] = "CDhash"
-    return result, authorized
+    # Mac Developer ID profiles can grant ONLY Opt-In, without the environment
+    # entitlement. Preserve the granted type and request only the mode we use.
+    opt_in = grants.get(OPT_IN)
+    if opt_in == "CDhash":
+        result[OPT_IN] = "CDhash"
+    elif (isinstance(opt_in, list) and all(isinstance(mode, str) for mode in opt_in)
+          and "CDhash" in opt_in):
+        result[OPT_IN] = ["CDhash"]
+    return result, OPT_IN in result
 
 
 def main():
@@ -52,7 +56,7 @@ def main():
     else:
         with args.output.open("wb") as output:
             plistlib.dump(result, output)
-    print("App Attest shadow signing: " + ("production grant configured" if authorized else "profile grant absent; existing APNs/MDM retained"))
+    print("App Attest shadow signing: " + ("macOS CDhash opt-in configured" if authorized else "macOS opt-in absent; existing APNs/MDM retained"))
 
 
 if __name__ == "__main__":

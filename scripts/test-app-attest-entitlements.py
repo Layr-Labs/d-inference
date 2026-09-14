@@ -37,6 +37,39 @@ class AppAttestSigningTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             MODULE.prepare({}, {"Entitlements": {MODULE.ENVIRONMENT: "production"}})
 
+    def test_macos_opt_in_array_does_not_require_environment_grant(self):
+        # Shape observed in the regenerated Developer ID profile. No profile
+        # certificate, UUID, or user-specific data is needed in this fixture.
+        base = {"com.apple.developer.aps-environment": "production",
+                "keychain-access-groups": ["TEAM.app"]}
+        profile = {"Entitlements": {MODULE.OPT_IN: ["CDhash"]}}
+        result, configured = MODULE.prepare(base, profile)
+        self.assertTrue(configured)
+        self.assertEqual(result[MODULE.OPT_IN], ["CDhash"])
+        self.assertNotIn(MODULE.ENVIRONMENT, result)
+        self.assertEqual({key: result[key] for key in base}, base)
+        # Re-running preparation must not mutate the profile's grant array.
+        result[MODULE.OPT_IN].append("changed")
+        self.assertEqual(profile["Entitlements"][MODULE.OPT_IN], ["CDhash"])
+
+    def test_opt_in_string_and_array_preserve_their_types(self):
+        for grant in ["CDhash", ["CDhash", "future-mode"]]:
+            with self.subTest(grant=grant):
+                result, configured = MODULE.prepare(
+                    {"com.apple.developer.aps-environment": "production"},
+                    {"Entitlements": {MODULE.OPT_IN: grant}})
+                self.assertTrue(configured)
+                self.assertEqual(result[MODULE.OPT_IN], "CDhash" if isinstance(grant, str) else ["CDhash"])
+
+    def test_unrecognized_opt_in_is_not_configured(self):
+        for grant in [None, True, "*", [], ["future-mode"], ["CDhash", True], {"CDhash": True}]:
+            with self.subTest(grant=grant):
+                result, configured = MODULE.prepare(
+                    {"com.apple.developer.aps-environment": "production"},
+                    {"Entitlements": {MODULE.OPT_IN: grant}})
+                self.assertFalse(configured)
+                self.assertNotIn(MODULE.OPT_IN, result)
+
 
 if __name__ == "__main__":
     unittest.main()

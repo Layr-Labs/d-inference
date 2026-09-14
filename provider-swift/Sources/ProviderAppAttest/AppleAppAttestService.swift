@@ -16,10 +16,9 @@ public actor AppleAppAttestService: AppAttestService {
               SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
               SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
               let values = info as? [String: Any],
-              let entitlements = values[kSecCodeInfoEntitlementsDict as String] as? [String: Any],
-              let configured = entitlements["com.apple.developer.devicecheck.appattest-environment"] as? String
+              let entitlements = values[kSecCodeInfoEntitlementsDict as String] as? [String: Any]
         else { throw ShadowFailure.notConfigured }
-        guard configured == environment else { throw ShadowFailure.environmentMismatch }
+        try AppAttestEntitlementPolicy.validate(entitlements, expectedEnvironment: environment)
         guard DCAppAttestService.shared.isSupported else { throw ShadowFailure.unsupported }
     }
 

@@ -33,7 +33,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/accountfleet"
 	"github.com/eigeninference/d-inference/coordinator/api/httprequest"
+	"github.com/eigeninference/d-inference/coordinator/api/network"
 	"github.com/eigeninference/d-inference/coordinator/api/readiness"
 	"github.com/eigeninference/d-inference/coordinator/api/requestauth"
 	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
@@ -58,7 +60,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
 	"github.com/google/uuid"
-	"golang.org/x/sync/singleflight"
 )
 
 // cryptoRand allows request ID generation to substitute its entropy source.
@@ -268,19 +269,10 @@ type Server struct {
 	// endpoints (stats, leaderboard, model catalog, etc.). TTLs are
 	// per-key. Never nil.
 	readCache *ttlCache
-	// statsRefresh owns stats:v1 (stats.go), statsGeographyRefresh owns
-	// stats:geography:v1 (stats_geography.go);
-	// networkTotalsRefresh owns one network_totals:<window> entry per window
-	// (network_totals.go). All are driven by the refresher machinery in
-	// cache_refresher.go.
-	summaryWindowsFlights singleflight.Group
-	statsRefresh          cacheRefresher
-	statsGeographyRefresh cacheRefresher
-	networkTotalsRefresh  struct {
-		queryMu sync.Mutex
-		mu      sync.Mutex
-		entries map[string]*cacheRefresher
-	}
+	// accountFleet owns the provider dashboard and account earnings flights.
+	accountFleet *accountfleet.Controller
+	// networkViews owns public aggregation and its background refresh state.
+	networkViews *network.Controller
 
 	// emitter writes coordinator-side telemetry events (panics, handler
 	// failures, attestation failures, etc.). Set via SetEmitter; nil before
@@ -704,6 +696,8 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	s.profiler = newProfilerFromEnv(s)
 	s.requestOutcomes = newRequestOutcomeSink(s, defaultTelemetrySinkCapacity)
 	s.registerDefaultGauges()
+	s.networkViews = s.newNetworkViews()
+	s.accountFleet = s.newAccountFleet()
 	s.routes()
 
 	// Apply server configuration from ServerConfig.
@@ -1509,12 +1503,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/provider/account-earnings", s.requireAuth(s.handleAccountEarnings))
 
 	// Account-scoped provider dashboard.
-	s.mux.HandleFunc("GET /v1/me/providers", s.requirePrivyAuth(s.handleMyProviders))
-	s.mux.HandleFunc("GET /v1/me/summary", s.requirePrivyAuth(s.handleMySummary))
+	s.mux.HandleFunc("GET /v1/me/providers", s.requirePrivyAuth(s.accountFleet.Providers))
+	s.mux.HandleFunc("GET /v1/me/summary", s.requirePrivyAuth(s.accountFleet.Summary))
 	// Alias-aware owned live-model ids for the console's self-route key picker.
 	s.mux.HandleFunc("GET /v1/me/self-route-models", s.requirePrivyAuth(s.handleMySelfRouteModels))
 	// Ownership-checked hard delete of a retired/offline machine's record(s).
-	s.mux.HandleFunc("DELETE /v1/me/providers/{id}", s.requirePrivyAuth(s.rateLimitFinancial(s.handleDeleteMyProvider)))
+	s.mux.HandleFunc("DELETE /v1/me/providers/{id}", s.requirePrivyAuth(s.rateLimitFinancial(s.accountFleet.DeleteProvider)))
 
 	// MDM enrollment — generates the per-device .mobileconfig (SCEP + MDM).
 	// No auth needed — trust comes from MDM SecurityInfo verification after
@@ -1529,13 +1523,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/models/capacity", s.handleModelsCapacity)
 
 	// Platform stats — no auth needed. Frontend dashboard uses this.
-	s.mux.HandleFunc("GET /v1/stats", s.handleStats)
+	s.mux.HandleFunc("GET /v1/stats", s.networkViews.Stats)
 
 	// Public leaderboard + network totals — no auth, pseudonymized,
 	// 5-min/1-min cache.
-	s.mux.HandleFunc("GET /v1/leaderboard", s.handleLeaderboard)
-	s.mux.HandleFunc("GET /v1/network/totals", s.handleNetworkTotals)
-	s.mux.HandleFunc("GET /v1/network/series", s.handleNetworkSeries)
+	s.mux.HandleFunc("GET /v1/leaderboard", s.networkViews.Leaderboard)
+	s.mux.HandleFunc("GET /v1/network/totals", s.networkViews.Totals)
+	s.mux.HandleFunc("GET /v1/network/series", s.networkViews.Series)
 
 	// Provider version check — no auth needed. Providers call this to check for updates.
 	s.mux.HandleFunc("GET /api/version", s.handleVersion)

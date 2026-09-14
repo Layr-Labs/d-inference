@@ -608,7 +608,7 @@ score = 0.4 × jobRate + 0.3 × uptimeRate + 0.2 × challengeRate + 0.1 × respo
   (`RecordLatency`).
 
 A provider with no history scores `0.5`. The score is exposed on the
-provider-facing `/me` endpoints (`coordinator/api/me_handlers.go`) and
+provider-facing `/me` endpoints (`coordinator/api/accountfleet/`) and
 persisted; **it is not a term in the routing cost** — `buildCandidateInto`
 never reads it. The header comment in `reputation.go` still says the score
 factors into routing; the code does not. Reputation inputs do reach routing

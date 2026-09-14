@@ -55,6 +55,7 @@ identifies each owner; changing this layout adds no migration or startup flag.
 |---|---|---|
 | `go.mod` (repo root) | Go | Single module `github.com/eigeninference/d-inference`; contains `coordinator/...` and `e2e/...`. There is no `go.work` and no nested `go.mod`. |
 | `coordinator/cmd/coordinator/` | Go | The coordinator binary; build the whole command package, including `main.go` and its subsystem setup files. |
+| `coordinator/api/accountfleet/`, `coordinator/api/network/` | Go | Dashboard and public network owners compiled into the coordinator through API wiring; no separate binary or build step. Tests live beside the owners and in the API boundary fixtures ([test.md](test.md)). |
 | `coordinator/promptsidecar/` | Rust | Crate `promptsidecar`, edition 2024, `Cargo.lock` committed; built with `--locked`. |
 | `provider-swift/` | SwiftPM | Products: `darkbloom` (CLI), `darkbloom-enclave`, `darkbloom-fan-helper`, `darkbloom-publish`; libraries `ProviderCore`, `ProviderCoreFoundation`, `DarkbloomFan*`. Platform `macOS 14+`. |
 | `console-ui/` | Next.js 16 / React 19 | `npm`; tests with Vitest. |

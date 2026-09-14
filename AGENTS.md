@@ -23,7 +23,8 @@ coordinator/          Go control plane (packages live at top level, not internal
 │   ├── statearchive/      gated state archive download (Controller)
 │   ├── admin_auth.go       admin authorization and Privy OTP endpoints
 │   ├── chunk_key_cache.go  per-request X25519 shared-key memoization for chunk decrypt
-│   ├── stats.go            public network stats
+│   ├── network/            public stats, geography, totals, series and leaderboard refresh state
+│   ├── accountfleet/       account provider views, earnings summaries and offline removal
 │   ├── operations/         operator telemetry reads, bounded queries, CSV/NDJSON exports
 │   ├── types/              canonical JSON shapes for consumer-facing endpoints
 │   └── server.go           route wiring, auth middleware, version gate

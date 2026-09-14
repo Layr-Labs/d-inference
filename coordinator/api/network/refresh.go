@@ -1,0 +1,79 @@
+package network
+
+import (
+	"context"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/api/readcache"
+	"github.com/eigeninference/d-inference/coordinator/saferun"
+)
+
+const (
+	cacheRefreshInterval = time.Minute
+	// Stats has a shorter freshness window than the network earnings totals.
+	statsRefreshInterval = 30 * time.Second
+	// Failed refreshes retain the previous success only until this safety TTL.
+	refreshedCacheTTL = 5 * time.Minute
+)
+
+// getCachedEntry fills a cold cache. It rechecks the cache under the flight
+// lock so a request delayed after its initial miss cannot start a second
+// expensive query after another request has already populated the entry.
+func (s *Controller) getCachedEntry(entry *readcache.Refresher, key string, compute func() ([]byte, error)) ([]byte, bool) {
+	return s.computeCachedEntry(entry, key, false, compute)
+}
+
+// refreshCachedEntry forces a periodic refresh, sharing any existing flight.
+func (s *Controller) refreshCachedEntry(entry *readcache.Refresher, key string, compute func() ([]byte, error)) ([]byte, bool) {
+	return s.computeCachedEntry(entry, key, true, compute)
+}
+
+func (s *Controller) computeCachedEntry(entry *readcache.Refresher, key string, refresh bool, compute func() ([]byte, error)) ([]byte, bool) {
+	computeWithDiagnostics := func() ([]byte, error) {
+		body, err := compute()
+		if err != nil {
+			s.logger.Warn("cache refresh failed; keeping previous value", "key", key, "error", err)
+			s.incr("cache.refresh_failed", []string{"key:" + key})
+		}
+		return body, err
+	}
+	if refresh {
+		return entry.Refresh(s.readCache(), key, refreshedCacheTTL, computeWithDiagnostics)
+	}
+	return entry.Get(s.readCache(), key, refreshedCacheTTL, computeWithDiagnostics)
+}
+
+// runCacheRefreshLoop computes once at start and then every interval until
+// ctx is cancelled.
+func (s *Controller) runCacheRefreshLoop(ctx context.Context, interval time.Duration, refresh func()) {
+	if s.readCache() == nil || ctx.Err() != nil {
+		return
+	}
+	refresh()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refresh()
+		}
+	}
+}
+
+// StartRefreshers starts the goroutines that own the refreshed read-cache
+// entries (stats:v1, stats:geography:v1 and network_totals:*). Independent
+// loops keep slow geography queries off the core stats path. Stops when ctx
+// is cancelled.
+func (s *Controller) StartRefreshers(ctx context.Context) {
+	saferun.Go(s.logger, "api.statsGeographyRefresher", func() {
+		s.runCacheRefreshLoop(ctx, statsRefreshInterval, func() { s.refreshStatsGeography() })
+	})
+	saferun.Go(s.logger, "api.statsRefresher", func() {
+		s.runStatsRefresher(ctx, statsRefreshInterval)
+	})
+	saferun.Go(s.logger, "api.networkTotalsRefresher", func() {
+		s.runNetworkTotalsRefresher(ctx, cacheRefreshInterval)
+	})
+}

@@ -247,7 +247,7 @@ two profiler tables: [`../architecture/system-profiler.md`](../architecture/syst
 | `GET /v1/admin/profiles`, `/export`; `GET /v1/admin/snapshots`, `/export` | `request_profiles`, `fleet_snapshots` (export is NDJSON only) | same (`coordinator/api/operations/profiles.go`, `Controller.Profiles`; `coordinator/api/operations/snapshots.go`, `Controller.Snapshots`) |
 | `GET /v1/admin/metrics` | in-process registry snapshot | `?format=prom` |
 | `GET /v1/admin/log-reports/{id}` | one log bundle | admin key |
-| `GET /v1/stats` | usage aggregates (`coordinator/api/stats.go`, `handleStats`) | Unauthenticated; source timestamp and cache interval: [public stats contract](api-contracts.md#public-stats-and-health-5) |
+| `GET /v1/stats` | usage aggregates (`coordinator/api/network/stats_snapshot.go`, `computeStats`) | Unauthenticated; source timestamp and cache interval: [public stats contract](api-contracts.md#public-stats-and-health-5) |
 
 ## Provider-local surfaces (never leave the machine)
 

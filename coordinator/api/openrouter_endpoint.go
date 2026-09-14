@@ -41,7 +41,7 @@ func (s *Server) handleListModelsOpenRouter(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode models"))
 		return
 	}
-	s.readCacheSetEntryIfCurrent(openRouterFeedCacheKey, ttlEntry{value: body}, openRouterFeedCacheTTL, generation)
+	s.readCacheSetIfCurrent(openRouterFeedCacheKey, body, openRouterFeedCacheTTL, generation)
 	writeCachedJSON(w, body)
 }
 

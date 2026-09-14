@@ -32,6 +32,9 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Active releases, binary allowlists, runtime verification and evidence generations | `coordinator/providercontrol/releasepolicy/` (`Manager`, `Snapshot`); `coordinator/api/release_policy.go` binds inventory and fleet |
 | HTTP credentials and API-key cache | `coordinator/api/requestauth/` (`Authenticator`); current Server bindings in `coordinator/api/authentication.go`; Privy cryptographic verification in `coordinator/auth/` |
 | Account keys, per-key policy, device login and invites | `coordinator/api/accounts/` (`Controller`); `account_controller.go` binds current store/configuration and the shared authenticator; `authorization.go` owns the in-handler admin check |
+| HTTP response caching and refresh coalescing | `coordinator/api/readcache/`; catalog fill fences in `generation.go` (`SetIfCurrent`, `SetValueIfCurrent`) |
+| Public stats, geography, earnings totals and leaderboards | `coordinator/api/network/`; `controller.go` (`Controller`) owns refresh state, `stats_snapshot.go` owns fleet aggregation, and `totals_refresh.go` bounds concurrent earnings queries |
+| Account provider dashboard and offline-machine removal | `coordinator/api/accountfleet/`; `merge.go` reconciles persisted and live machines, `summary_cache.go` coalesces account earnings, and `removal.go` preserves ownership checks |
 | Provider selection, admission, queueing | `coordinator/registry/`; request eligibility in `request_traits.go` (`providerEligibleForTraitsLocked`) |
 | Billing and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/contracts/`, `coordinator/store/postgres/`, `coordinator/store/memory/`, `coordinator/store/cache/` |
 | Provider inference, downloads, security, local serving | `provider-swift/Sources/ProviderCore/`; entrypoints in `provider-swift/Sources/darkbloom/` |

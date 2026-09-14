@@ -18,12 +18,12 @@ Canonical code (code wins over this doc; find declarations by symbol):
 | Behavior | Code |
 |---|---|
 | Bounded usage history with lazy allocation | `coordinator/payments/payments.go` (`Ledger.RecordUsage`, `usageHistoryGrowth`) |
-| Shared cache refresh and cold-miss coalescing | `coordinator/api/cache_refresher.go` (`StartCacheRefreshers`, `getCachedEntry`, `refreshCachedEntry`, `computeCachedEntry`) |
-| Stats / network totals computation | `coordinator/api/stats.go` (`computeStats`, `handleStats`); `coordinator/api/network_totals.go` (`computeNetworkTotals`, `handleNetworkTotals`) |
+| Shared cache refresh and cold-miss coalescing | `coordinator/api/network/refresh.go` (`Controller.StartRefreshers`, `getCachedEntry`, `refreshCachedEntry`, `computeCachedEntry`) |
+| Stats / network totals computation | `coordinator/api/network/stats_snapshot.go` (`computeStats`); `coordinator/api/network/stats.go` (`Controller.Stats`); `coordinator/api/network/totals.go` (`computeNetworkTotals`, `Controller.Totals`) |
 | Analytics transaction and query errors | `coordinator/store/postgres/analytics.go` (`withAnalyticsTx`, `NetworkTotals`); `coordinator/store/postgres/analytics_locations.go` (`UsageLocationBuckets`); `coordinator/store/postgres/analytics_flows.go` (`UsageFlowBuckets`) |
 | Verification poller cadence + busy floor | `coordinator/api/mdm_scheduler_exec.go` (`shouldLoadDueRows`, `nextDispatchDelay`) |
-| Dashboard rolling windows | `coordinator/store/postgres/dashboard.go` and `coordinator/store/memory/dashboard.go` (`AccountEarningsWindows`); `coordinator/api/me_summary_cache.go` (`accountEarningsWindows`) |
-| Batched reputation reads | `coordinator/store/postgres/dashboard.go` and `coordinator/store/memory/dashboard.go` (`GetReputations`); `coordinator/api/me_handlers.go` (`attachStoredReputations`) |
+| Dashboard rolling windows | `coordinator/store/postgres/dashboard.go` and `coordinator/store/memory/dashboard.go` (`AccountEarningsWindows`); `coordinator/api/accountfleet/summary_cache.go` (`accountEarningsWindows`) |
+| Batched reputation reads | `coordinator/store/postgres/dashboard.go` and `coordinator/store/memory/dashboard.go` (`GetReputations`); `coordinator/api/accountfleet/reputation.go` (`attachStoredReputations`) |
 | Capacity accept off the first-byte path | `coordinator/api/dispatch.go` (`commitFirstContent`); `coordinator/registry/capacity_cooldown.go` (`RecordCapacityAcceptObserved`) |
 | Throttled reputation persist | `coordinator/registry/reputation.go` (`RecordJobSuccess`); `coordinator/registry/provider_lifecycle.go` (`Disconnect`); `coordinator/registry/persistence.go` (`persistReputationThrottled`) |
 | Single provider-frame decode | `coordinator/api/provider.go` (`providerReadLoop`) |
@@ -277,14 +277,14 @@ flowchart LR
   end
   subgraph After
     direction TB
-    D1[StartCacheRefreshers] --> D2[refreshCachedEntry<br/>coalesced, errors keep last success] --> D3[withAnalyticsTx<br/>SET LOCAL work_mem 1GB] --> D4[Set 5 min]
-    D5[handleStats / handleNetworkTotals] --> D6[readCache.Get; cold miss -> D2]
+    D1[Server.StartCacheRefreshers<br/>network.Controller.StartRefreshers] --> D2[refreshCachedEntry<br/>coalesced, errors keep last success] --> D3[withAnalyticsTx<br/>SET LOCAL work_mem 1GB] --> D4[Set 5 min]
+    D5[network.Controller.Stats / network.Controller.Totals] --> D6[readCache.Get; cold miss -> D2]
     D7[commitFirstContent] --> D8[MarkRateOutcomeCounted<br/>saferun.Go RecordCapacityAccept] --> D9[writeCommittedResponse] --> D10[provider.RecordLatency<br/>p.mu only] --> D11[stream]
     D12[dispatcher loop] --> D13[shouldLoadDueRows: 1 s cadence or empty queue] --> D14[ListDueVerificationJobsPage<br/>make 0,min limit,256]
     D15[RecordJobSuccess] --> D16[persistReputationThrottled; Disconnect flushes]
     D17[providerReadLoop] --> D18[msg.UnmarshalJSON once]
-    D19[handleMySummary] --> D20[AccountEarningsWindows aggregate + 15 s cache]
-    D21[handleMyProviders] --> D22[GetReputations ANY]
+    D19[accountfleet.Controller.Summary] --> D20[AccountEarningsWindows aggregate + 15 s cache]
+    D21[accountfleet.Controller.Providers] --> D22[GetReputations ANY]
     D23[request-path recorders] --> D24[registry.lockWrite site<br/>registry.mu.write_wait_ms histogram]
     D25[reserveProvider] --> D26[RoutingDecision.ScanCount -> routing.scans]
   end

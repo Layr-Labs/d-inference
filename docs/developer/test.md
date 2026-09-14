@@ -106,7 +106,7 @@ go test -race ./coordinator/api/accounts ./coordinator/api \
 Run prediction telemetry checks from the repository root:
 
 ```bash
-go test -race ./coordinator/api/... ./coordinator/registry ./coordinator/protocol ./coordinator/store/... ./coordinator/telemetry/profiler
+go test -race ./coordinator/api/... ./coordinator/registry/... ./coordinator/protocol/... ./coordinator/store/... ./coordinator/telemetry/profiler
 ```
 
 Persistence tests follow the backend packages. Use `./coordinator/store/...` to
@@ -118,6 +118,12 @@ fixture database. Shared test-only builders live under `store/internal/testfixtu
 The PostgreSQL fixtures require the existing disposable `DATABASE_URL`; without it
 those fixtures explicitly skip. Startup SQL source guards inspect the actual
 `store/postgres/schema/` files and reject unconditional aggregation or dedupe.
+
+The recursive package paths include tests beside their subsystem owners.
+Account dashboard query bounds and concurrent misses live in
+`coordinator/api/accountfleet/dashboard_queries_test.go` and
+`coordinator/api/accountfleet/summary_concurrency_test.go`; the real route,
+heartbeat, privacy and removal cases remain in `coordinator/api/`.
 
 API fixtures use isolated encrypted WebSocket providers;
 Postgres tests require an explicitly disposable `DATABASE_URL` and include an

@@ -74,7 +74,7 @@ Where the gate lives: `coordinator/registry/attestation_policy.go`
 `SetReleasePolicyGeneration`, sweep that re-proves or clears evidence;
 `CountProvidersWithCurrentApplicationEvidence` and
 `ApplicationEvidenceModelCoverage`, the coverage counters served by
-`coordinator/api/stats.go` (`handleStats`)).
+`coordinator/api/network/stats_snapshot.go` (`computeStats`)).
 
 ## Steps
 

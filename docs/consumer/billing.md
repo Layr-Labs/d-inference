@@ -94,7 +94,7 @@ the process retains the newest entries up to the [usage history limit](../refere
 Dashboard earnings windows include every row in each window, without the old
 5,000-row truncation. Concurrent tabs share one aggregate per account and may
 lag by the per-account cache interval
-(`coordinator/api/me_summary_cache.go`, `mySummaryWindowsCacheTTL`).
+(`coordinator/api/accountfleet/summary_cache.go`, `mySummaryWindowsCacheTTL`).
 
 ### 4. Understand what a request costs you
 

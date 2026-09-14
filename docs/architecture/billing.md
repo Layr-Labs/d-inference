@@ -117,7 +117,7 @@ and which balance column moves:
 `RewardLedgerTypes = {referral_reward, admin_reward}` is the set the
 leaderboard and `GET /v1/me/summary` count as "reward" rather than "work"
 earnings (`coordinator/store/contracts/ledger.go` `IsRewardLedgerType`;
-`coordinator/api/me_handlers.go` `handleMySummary`).
+`coordinator/api/accountfleet/summary.go` `Controller.Summary`).
 
 Three credit primitives (`coordinator/store/postgres/ledger.go`):
 

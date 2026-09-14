@@ -1513,6 +1513,7 @@ threats:
     adversaries: [ADV-003]
     affected_assets: [A-005, A-011]
     affected_files:
+      - coordinator/api/releases.go
       - coordinator/api/admin_auth.go
       - coordinator/api/releases/registration.go
       - coordinator/api/releases/deactivation.go
@@ -1542,6 +1543,7 @@ threats:
     adversaries: [ADV-003]
     affected_assets: [A-011]
     affected_files:
+      - coordinator/api/releases.go
       - coordinator/api/releases/cache.go
       - coordinator/api/releases/registration.go
       - coordinator/api/releases/deactivation.go

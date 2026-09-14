@@ -5,6 +5,13 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
+The newest SDK change binds qualification clone/material identity before teardown
+and verifies the exact durable deletion receipt after release. It does not yet
+run native checks or publish readiness. Full suite643tests/7skips/0failures,
+151.503s;16existing qualification tests and4new cleanup tests pass. Docs286pass.
+See the final dated section and git for the implementation commit/push state.
+Collection c58df40b6 now passes its complete CI34848597007 and integration34848597005.
+
 This checkpoint accompanies the collection implementation following a6dc93cf6; inspect git for its commit/push state.
 It adds root collect/abort-collection and selected-GUI publish-installed commands,
 a separate exact-boot-claim maintenance scope, complete receipt/installed-signature
@@ -2249,3 +2256,101 @@ checks. HostCapacityArbiter.deletionConfirmed and releasedDeletionScope provide
 existing release receipts. Add no caller-supplied success bypass. Physical fresh
 Apple restore/GUI boot/collection, actual logout/login, full two-VM coordinator
 acceptance, build tools/performance and final packaging remain required.
+
+
+## 2026-09-14 — Qualification identity and released-lease cleanup verifier
+
+Previous goal turn: progress (physical APFS collection/crash/recovery evidence).
+This turn: progress (new tested SDK cleanup-verification gate). The full image
+factory/native qualification/consumer campaign is still incomplete; goal active.
+
+Implemented:
+-LumeVirtualMachineCreationExecutor records the actual fresh clone installation
+ UUID after native creation and ownership publication. The consumed capability
+ cannot create a second destination and retains its original source guard.
+-LumeQualificationSourceValidation factors stopped source/evidence/resource/
+ signed-release checks away from active lease authorization. Existing clone
+ admission retains the same active lease check after source verification.
+-LumeQualificationCleanup.observeQualificationClone requires the issuing runtime,
+ consumed successfully created capability, active lease, running native clone,
+ matching current ownership and private material instance. It returns an opaque,
+ non-Codable/non-caller-constructible LumeQualificationCloneObservation carrying
+ only clone/material IDs and retaining the original capability. No secret or
+ native-check success claim is exposed. Material signatures/control-file hashes
+ and private metadata use the existing loader.
+-verifyQualificationCleanup is read-only. It requires the matching durable
+ released deletion scope (same sandbox generation and name, released token at
+ least the original), deletionConfirmed's durable recheck, no native VM, strict
+ absence of the clone directory (including unexpected file/symlink), no pending
+ deletion intent, and unchanged stopped source/evidence/release before and after
+ async observations. It returns complete matching cleanup flags only after all
+ proofs. It never writes template readiness or changes capacity.
+-The lease-fenced wrapper exposes the two package-only operations. Capability
+ internals are module-visible for the separated helpers, but mutable state is
+ still accessed only after issuing-actor identity checks. No new unchecked
+ Sendable conformance or public bypass was added.
+
+Validation in /private/tmp/darkbloom-sandbox-completion-evidence:
+-qualification-source-refactor-tests.log:16existing source/capability/clone tests
+ pass, including concurrent consume, cancellation, changed source and expiry.
+-qualification-cleanup-tests.log:initial test-fixture Sendable compilation error;
+ no runtime tests in that attempt. Fixture has only immutable Sendable fields,
+ so ordinary Sendable conformance fixes it; no unchecked shortcut.
+-qualification-cleanup-v2-tests.log:4tests/0failures,11.920s. They use real source
+ locks, capacity/deletion records and private sparse control/workspace files,
+ with a bounded native subprocess fixture. They do not boot a VM.
+-Positive: native create, observed running clone and exact material identity,
+ actual delete/release, durable deletion proof, repeat cleanup verification,
+ source lock retained and no readiness receipt.
+-Negative: unconsumed/no-create capability, missing/wrong-instance/changed-control
+ materials, stopped clone, active lease, missing VM alone, generic capacity
+ removal without deletion proof, reappeared file/symlink, changed/running base,
+ or another runtime. Rejections do not release outstanding capacity.
+-qualification-cleanup-full-tests.log:643tests,7skips,0failures,151.503s; process0.
+-qualification-cleanup-docs.log:286filespass. git diff --check clean.
+-No native patch, guest binary/protocol, release package, test-host disk, group,
+ service, cache/model or production mutation occurred in this SDK segment.
+
+Read-only test-Mac Foundation observation on encrypted test volume:
+ volumeAvailableCapacityForImportantUsage=92,469,192,229bytes;
+ volumeAvailableCapacity=52,805,296,128bytes. The default host proof floor is
+300GiB (322,122,547,200bytes), so plain df is not its actual denominator and even
+important capacity remains below the floor. Do not lower it simply to fit the
+machine. Go-cache approval remains pending; no cache or old fixture was deleted.
+
+Next integration work:
+1. Add the selected-GUI qualification command and private durable attempt journal
+   using the already-installed checkpoint, exact permit/runtime and existing
+   capacity store. Hold machineEX and source guard through clone/checks/cleanup.
+2. Native checks must come from actual authenticated runtime operations, not
+   caller-supplied booleans. Existing root guest paths are
+   /private/var/db/darkbloom-sandbox/instance.json and control/instance.json;
+   the bootstrap script lives in sandbox-macos/Resources/darkbloom-sandbox-bootstrap.sh.
+   The proven public tenant fixture in the earlier physical campaign is
+   /private/tmp/darkbloom-sandbox-completion-evidence/vsock-qualification-v1/tenant_fixture.c:
+   it checks virtualized UID/GID2001, only2001supplementary groups, absent user/
+   group records, inability to restore UID0, explicit EACCES/EPERM on root config,
+   raw disks and guest-executable writes, at least6disk/rdisk nodes, and no
+   non-loopback IP interface. Missing paths are NOT permission-denial proof.
+   Consider moving its small read-only identity probe into the signed guest CLI,
+   so qualification needs no external unsigned fixture or guest compiler.
+3. Host workspace upload/download must compare bytes/hash/version, then stop/start
+   the clone and require a DIFFERENT kern.bootsessionuuid plus the exact persisted
+   marker. Use distinct durable command IDs before/after reboot, otherwise the
+   host command journal could replay an old boot-ID response. Earlier tested
+   session/parser code is in evidence/vsock-coldboot-diagnostic-v2/Sources/QualificationCore/.
+4. Observe clone/material identity while it exists; run normal release; call
+   verifyQualificationCleanup only after exact deletion. Publish ready evidence
+   while the retained source lock and machine authority remain valid. Do not reuse
+   active create-lease authorization after release.
+5. The observation cannot be decoded/reissued after process loss. Durable recovery
+   should settle and abort an incomplete attempt rather than manufacture a proof
+   from saved booleans; then start a fresh separately identified attempt. A journal
+   must distinguish attempt intent, reservation, clone identity, checks, cleanup,
+   and final source publication. Resolve the exact existing reservation/clone on
+   recovery; never adopt an unrelated same-name directory.
+6. Final source read after ready publication needs its matching-ready validator:
+   LumeInstalledCandidateStore deliberately rejects a ready-template receipt, so
+   do not call the installed-only reader after successfully publishing readiness.
+Physical fresh restore/GUIboot/real receipt collection, login/logout recovery,
+build tools/performance, two-VM coordinator acceptance and packaging remain open.

@@ -57,6 +57,7 @@ extension LumeVirtualMachineRuntime {
                 sourceInstallationID: sourceInstallationID,
                 to: creationWorkspace.destination
             )
+            if let qualification { try recordCreatedQualificationClone(qualification) }
         } catch {
             do {
                 try await cleanupFailedCreationIgnoringCancellation(

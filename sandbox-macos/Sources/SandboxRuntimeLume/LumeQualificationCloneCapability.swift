@@ -11,13 +11,14 @@ package final class LumeQualificationCloneCapability: @unchecked Sendable {
     package let lease: SandboxCapacityLease
     package let checkpoint: LumeInstalledCandidateCheckpoint
     // Retention prevents a later actor from reusing a deallocated actor's address.
-    fileprivate let issuingRuntime: LumeVirtualMachineRuntime
-    fileprivate let sourceGuard: LumeBaseCandidateOperationGuard
-    fileprivate let store: LumeInstalledCandidateStore
-    fileprivate let snapshot: LumeInstalledCandidateStore.Snapshot
+    let issuingRuntime: LumeVirtualMachineRuntime
+    let sourceGuard: LumeBaseCandidateOperationGuard
+    let store: LumeInstalledCandidateStore
+    let snapshot: LumeInstalledCandidateStore.Snapshot
     // Accessed only by issuingRuntime. The retained actor identity prevents a
     // different actor from reading or consuming this mutable state.
-    fileprivate var consumed = false
+    var consumed = false
+    var createdInstallationID: UUID?
 
     private init(qualificationID: UUID, specification: SandboxVirtualMachineSpecification,
                  lease: SandboxCapacityLease, issuingRuntime: LumeVirtualMachineRuntime,
@@ -114,42 +115,28 @@ extension LumeVirtualMachineRuntime {
     private func validateQualificationSource(sourceGuard: LumeBaseCandidateOperationGuard,
         store: LumeInstalledCandidateStore, candidateID: UUID, qualificationID: UUID,
         specification: SandboxVirtualMachineSpecification, lease: SandboxCapacityLease) async throws -> LumeInstalledCandidateStore.Snapshot {
-        guard let authority = configuration.hostRuntimeLease, let release = configuration.isolatedGuest,
-              let capacityArbiter, case .localTemplate(let sourceName) = specification.imageSource,
-              sourceGuard.source.name == sourceName else { throw qualificationFailure() }
-        try authority.validateExclusive()
-        _ = try await validateRuntime()
-        try Task.checkCancellation()
-        let files = try release.validatedReleaseFiles()
-        let source = try LumeGuestTemplateSource.load(name: sourceName,
-            installationID: sourceGuard.source.installationID, storage: configuration.storageDirectory)
-        guard source == sourceGuard.source else { throw qualificationFailure() }
-        try LumeVirtualMachineStartIntent.requireAbsent(name: sourceName,
-            ownership: .init(installationID: source.installationID), owner: .baseTemplate,
-            in: configuration.storageDirectory)
-        try LumeVirtualMachineDeletionIntent.requireAbsent(workspace: workspace, name: sourceName)
-        let snapshot = try store.read(source: source, guestFiles: files)
-        let checkpoint = snapshot.checkpoint
-        guard checkpoint.candidateID == candidateID,
-              ![candidateID, checkpoint.bootstrapAttemptID, source.installationID].contains(qualificationID),
-              checkpoint.resources == specification.resources, checkpoint.disk.size == specification.diskBytes,
-              let observed = try await inspect(name: sourceName), observed.state == .stopped,
-              observed.cpuCount == checkpoint.resources.cpuCount,
-              observed.memoryBytes == checkpoint.resources.memoryBytes, observed.diskBytes == checkpoint.disk.size
-        else { throw qualificationFailure() }
-        let sourceCommitment = try LumeVirtualMachineOwnership.requireResourceCommitment(
-            name: sourceName, owner: .baseTemplate, in: configuration.storageDirectory)
-        try LumeVirtualMachineResourceCommitment.requireMatch(observed: observed,
-            ownership: sourceCommitment, lease: nil)
-        try Task.checkCancellation()
-        try authority.validateExclusive()
-        guard try capacityArbiter.authorize(scope: lease.scope, virtualMachineName: specification.name,
-                operation: .create, resources: specification.resources, bootDiskBytes: specification.diskBytes) == lease,
-              try release.validatedReleaseFiles() == files,
-              try LumeGuestTemplateSource.load(name: sourceName, installationID: source.installationID,
-                storage: configuration.storageDirectory) == source,
-              try store.read(source: source, guestFiles: files) == snapshot else { throw qualificationFailure() }
+        let snapshot = try await qualificationSourceSnapshot(sourceGuard: sourceGuard, store: store,
+            candidateID: candidateID, qualificationID: qualificationID, specification: specification)
+        guard let capacityArbiter,
+              try capacityArbiter.authorize(scope: lease.scope, virtualMachineName: specification.name,
+                operation: .create, resources: specification.resources, bootDiskBytes: specification.diskBytes) == lease else {
+            throw qualificationFailure()
+        }
         return snapshot
+    }
+
+    func recordCreatedQualificationClone(_ capability: LumeQualificationCloneCapability) throws {
+        guard capability.issuingRuntime === self, capability.consumed, capability.createdInstallationID == nil else {
+            throw qualificationFailure()
+        }
+        let identity = try LumeVirtualMachineOwnership.requireOwned(name: capability.specification.name,
+            owner: .init(operationScope: capability.lease.scope), in: configuration.storageDirectory)
+        guard identity.installationID != capability.checkpoint.source.installationID,
+              LumeVirtualMachineOwnership.matches(specification: capability.specification,
+                owner: .init(operationScope: capability.lease.scope), in: configuration.storageDirectory) else {
+            throw qualificationFailure()
+        }
+        capability.createdInstallationID = identity.installationID
     }
 
     private func qualificationFailure() -> SandboxRuntimeError {

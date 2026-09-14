@@ -330,6 +330,29 @@ failure, cancellation or a failed postcondition uses the shared creation cleanup
 the source and capacity reservation remain intact. A consumed capability cannot
 recreate a subsequently removed destination.
 
+After successful native creation and ownership publication, the capability binds
+the new clone installation UUID. `observeQualificationClone` requires that exact
+created clone, a running native observation, the unchanged source, active lease
+and matching private guest materials. It returns an opaque
+`LumeQualificationCloneObservation` containing the observed clone/material IDs.
+Callers cannot construct or decode that object. It contains no guest credential
+and does not assert that native guest qualification checks passed.
+
+`verifyQualificationCleanup` uses that observation after teardown. It requires a
+durable deletion receipt for the exact lease generation and clone name, an equal
+or newer released fencing token, no native VM, no remaining clone directory or
+material tree, and no pending deletion intent. It independently rechecks the
+stopped source, installed evidence, resource commitments and signed release while
+retaining the source lock. Source integrity validation is separate from active
+lease admission so a valid deletion can be verified after release. Generic lease
+removal, expiration or VM absence alone cannot prove cleanup. This read-only
+operation returns matching cleanup evidence and never publishes readiness.
+
+The observation belongs to its issuing runtime and cannot be recovered by
+decoding a journal. A future durable qualification owner must define interrupted
+attempt recovery and preserve original clone identity; it must not manufacture
+an observation or promote saved success booleans after a process restart.
+
 No template is published and no reservation is added or extended by this path.
 Ordinary `create` still requires `LumeGuestTemplate.requireReady`; there is no
 public bypass flag. Qualification clones use the existing encrypted-storage,

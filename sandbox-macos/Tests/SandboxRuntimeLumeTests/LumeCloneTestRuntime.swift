@@ -32,6 +32,7 @@ enum LumeCloneTestRuntime {
             observed_state="$state"
             if [ "$name" = qualification-clone ]; then
               observed_state=stopped
+              if [ -f "$root/vms/$name/fixture-state" ]; then observed_state="$(cat "$root/vms/$name/fixture-state")"; fi
               if [ -f "$root/vms/$name/fixture-cpu" ]; then observed_cpu="$(cat "$root/vms/$name/fixture-cpu")"; fi
               if [ -f "$root/vms/$name/fixture-memory" ]; then memory="$(cat "$root/vms/$name/fixture-memory")"; fi
               if [ "$behavior" = clone-resource-mismatch ]; then observed_cpu=5; fi
@@ -73,6 +74,11 @@ enum LumeCloneTestRuntime {
           printf '%s\n' "$4" > "$root/vms/qualification-clone/fixture-cpu"
           printf '%s\n' "${6%B}" > "$root/vms/qualification-clone/fixture-memory"
         fi
+        ;;
+      delete)
+        [ "$#" = 5 ] && [ "$2" = qualification-clone ] && [ "$3" = --force ]
+        [ "$4" = --storage ] && [ "$5" = "$root/vms" ]
+        /bin/rm -rf "$root/vms/qualification-clone"
         ;;
       *) exit 64 ;;
     esac

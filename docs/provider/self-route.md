@@ -1,6 +1,6 @@
 # Self-route: use your own machine through the coordinator
 
-> Last updated: 2026-09-14 · commit `bf2678202`
+> Last updated: 2026-09-14 · commit `93daffe4b`
 
 Send your normal Darkbloom API requests to the provider your account owns —
 free, end-to-end, through the same `api.darkbloom.dev` endpoint and SDK

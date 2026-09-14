@@ -2160,7 +2160,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 					"status_code": errMsg.StatusCode,
 				})
 			if s.metrics != nil {
-				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
+				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{Name: "result", Value: "retry"})
 			}
 			d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks, errMsg.CoordinatorCause)
 			d.provider = nil
@@ -2244,7 +2244,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 					"reason":      "first_chunk_timeout",
 				})
 			if s.metrics != nil {
-				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{Name: "result", Value: "timeout"})
 			}
 			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			d.provider = nil
@@ -2476,7 +2476,7 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 			d.setLastInferenceError(provider, errMsg)
 			d.lastFailedVersion = failedProviderVersion(provider)
 			if s.metrics != nil {
-				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
+				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{Name: "result", Value: "retry"})
 			}
 			d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks, errMsg.CoordinatorCause)
 			d.provider = nil
@@ -2520,7 +2520,7 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 					"reason":      "first_chunk_timeout",
 				})
 			if s.metrics != nil {
-				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{Name: "result", Value: "timeout"})
 			}
 			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			d.provider = nil
@@ -2913,7 +2913,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			d.excludeProviders[backupProvider.ID] = struct{}{}
 			d.setLastError("timeout waiting for first response (both providers)", http.StatusGatewayTimeout)
 			if s.metrics != nil {
-				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{Name: "result", Value: "timeout"})
 			}
 			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			d.provider = nil
@@ -3017,7 +3017,7 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 			d.updateSpeculativeTimeout(pr, "first_chunk_timeout")
 			d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
 			if s.metrics != nil {
-				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{Name: "result", Value: "timeout"})
 			}
 			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			d.provider = nil
@@ -3150,7 +3150,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 			d.updateSpeculativeTimeout(backupPR, "first_chunk_timeout")
 			d.setLastError("timeout waiting for first response (backup)", http.StatusGatewayTimeout)
 			if s.metrics != nil {
-				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{Name: "result", Value: "timeout"})
 			}
 			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			d.provider = nil
@@ -3242,7 +3242,7 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 			d.updateSpeculativeTimeout(pr, "first_chunk_timeout")
 			d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
 			if s.metrics != nil {
-				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{Name: "result", Value: "timeout"})
 			}
 			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			d.provider = nil
@@ -3341,7 +3341,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 							"status_code": errMsg.StatusCode,
 						})
 					if s.metrics != nil {
-						s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
+						s.metrics.IncCounter("inference_dispatches_total", MetricLabel{Name: "result", Value: "retry"})
 					}
 					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks, errMsg.CoordinatorCause)
 					d.provider = nil
@@ -3376,7 +3376,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 					"status_code": errMsg.StatusCode,
 				})
 			if s.metrics != nil {
-				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
+				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{Name: "result", Value: "retry"})
 			}
 			d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks, errMsg.CoordinatorCause)
 			d.provider = nil
@@ -3423,7 +3423,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 					"reason":      "accepted_timeout",
 				})
 			if s.metrics != nil {
-				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{Name: "result", Value: "timeout"})
 			}
 			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			d.provider = nil
@@ -3636,7 +3636,7 @@ exhausted:
 				"kv_backend":  kvBackend.Backend,
 			})
 		if s.metrics != nil {
-			s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "failure"})
+			s.metrics.IncCounter("inference_dispatches_total", MetricLabel{Name: "result", Value: "failure"})
 		}
 		s.ddIncr("inference.dispatches", []string{"status:failure"})
 		// OR-uptime outcome for a dispatched-but-failed request (exactly once;
@@ -3709,7 +3709,7 @@ exhausted:
 		return
 	}
 	if s.metrics != nil {
-		s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "success"})
+		s.metrics.IncCounter("inference_dispatches_total", MetricLabel{Name: "result", Value: "success"})
 	}
 	s.ddIncr("inference.dispatches", []string{"status:success"})
 	// OR-uptime outcome. For STREAMING this is a commit-time approximation (the

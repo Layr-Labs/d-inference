@@ -22,14 +22,14 @@ func TestCacheOpportunityTelemetryIsTerminalOnceAndContainsNoPrivateIdentity(t *
 	srv.emitCacheSelectionTerminal(pr, usage, true, true)
 	srv.emitCacheSelectionTerminal(pr, usage, true, true)
 	snap := srv.metrics.Snapshot()
-	labels := []MetricLabel{{"model", pr.Model}, {"reason", "repeat_without_holder"}}
+	labels := []MetricLabel{{Name: "model", Value: pr.Model}, {Name: "reason", Value: "repeat_without_holder"}}
 	if snap.Counters[metricKey("cache_model_opportunity_total", labels)] != 1 {
 		t.Fatal("duplicate terminal counted or opportunity missing")
 	}
 	if snap.Counters[metricKey("cache_model_opportunity_repeated_prefix_tokens_total", labels)] != 1024 {
 		t.Fatal("repeat demand denominator missing")
 	}
-	if snap.Counters[metricKey("cache_model_prefill_tokens_saved_total", []MetricLabel{{"model", pr.Model}, {"tier", "ssd"}})] != 0 {
+	if snap.Counters[metricKey("cache_model_prefill_tokens_saved_total", []MetricLabel{{Name: "model", Value: pr.Model}, {Name: "tier", Value: "ssd"}})] != 0 {
 		t.Fatal("demand was counted as saved work")
 	}
 	raw, _ := json.Marshal(snap)

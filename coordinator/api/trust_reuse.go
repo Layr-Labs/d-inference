@@ -1081,8 +1081,8 @@ func (s *Server) trustReuseMetric(decision trustReuseDecision, reason trustReuse
 	})
 	if s.metrics != nil {
 		s.metrics.IncCounter("trust_reuse_decisions_total",
-			MetricLabel{"decision", decisionLabel},
-			MetricLabel{"reason", string(reason)})
+			MetricLabel{Name: "decision", Value: decisionLabel},
+			MetricLabel{Name: "reason", Value: string(reason)})
 	}
 }
 

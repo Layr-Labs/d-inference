@@ -54,8 +54,14 @@ let package = Package(
             linkerSettings: [.linkedFramework("Security")]
         ),
         .target(
+            name: "SandboxHostContextSupport",
+            path: "Sources/SandboxHostContextSupport",
+            publicHeadersPath: "include",
+            linkerSettings: [.linkedLibrary("bsm")]
+        ),
+        .target(
             name: "SandboxRuntimeVZ",
-            dependencies: ["SandboxCore", "SandboxRuntime", "SandboxSecurity"],
+            dependencies: ["SandboxCore", "SandboxRuntime", "SandboxSecurity", "SandboxHostContextSupport"],
             path: "Sources/SandboxRuntimeVZ",
             linkerSettings: [
                 .linkedFramework("Security"),

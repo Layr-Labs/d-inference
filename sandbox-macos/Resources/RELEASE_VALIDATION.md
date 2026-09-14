@@ -149,6 +149,22 @@ this preparation path; the manifest records those boundaries separately.
 
 ## Prepare a dedicated host
 
+The system-daemon plan below remains unqualified. A physical nonlogin service
+launch failed Virtualization security-key creation, while an otherwise matching
+Aqua LaunchAgent started and stopped the VM successfully. Guest readiness is a
+separate gate and has not passed for that candidate. Apple DTS states that
+Virtualization is not daemon-safe and recommends a GUI-user agent for independent
+operation ([daemon context](https://developer.apple.com/forums/thread/841688),
+[launch context](https://developer.apple.com/forums/thread/786363)). Supported
+GUI deployment/account policy must replace the daemon plan before activation.
+
+Host inspection checks the calling process's Security session and audit user:
+an authenticated graphical session, matching nonroot real/effective/audit UID,
+and neither root nor remote session attributes. Console-user presence is only
+informational. Switching BSD credentials or finding an active console user does
+not establish the caller's GUI context. This check does not prove VZ boot,
+guest readiness, persistent key storage, or post-logout/reboot recovery.
+
 `prepare-sandbox-host.py` consumes a signed, provisioned package, explicit
 installation destination and non-secret configuration. It writes launchd
 configuration and an installation plan; it creates no account or service.

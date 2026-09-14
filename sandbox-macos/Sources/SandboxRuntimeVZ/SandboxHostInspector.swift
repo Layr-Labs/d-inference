@@ -120,14 +120,7 @@ public struct SandboxHostInspector: Sendable {
         ))
         checks.append(Self.diskCapacityCheck(availableBytes: availableDiskBytes, policy: policy))
 
-        let hasAquaSession = consoleUser != nil && consoleUser != "loginwindow"
-        checks.append(Self.requirementCheck(
-            id: "aqua_session",
-            condition: hasAquaSession,
-            required: policy.requireAquaSession,
-            success: "Aqua console session is active for \(consoleUser ?? "unknown")",
-            failure: "no logged-in Aqua console session is active"
-        ))
+        checks.append(Self.aquaSessionCheck(context: .capture(), required: policy.requireAquaSession))
 
         let enclaveResult = Self.secureEnclaveSelfTest()
         checks.append(Self.requirementCheck(
@@ -184,6 +177,12 @@ public struct SandboxHostInspector: Sendable {
             required: policy.requireAvailableDiskCapacity,
             success: "\(availableBytes) available disk bytes satisfy the proof floor",
             failure: "\(availableBytes) available disk bytes are below the \(policy.minimumAvailableDiskBytes)-byte proof floor")
+    }
+
+    static func aquaSessionCheck(context: SandboxProcessSecurityContextSnapshot, required: Bool) -> SandboxHostCheck {
+        requirementCheck(id: "aqua_session", condition: context.isUsableGUISession, required: required,
+            success: "host process has an authenticated graphical login session for UID \(context.effectiveUID)",
+            failure: "host process must run in its own authenticated graphical login session")
     }
 
     private static func availableDiskBytes(at directory: URL) -> Int64 {

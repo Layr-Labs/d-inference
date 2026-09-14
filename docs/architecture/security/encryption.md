@@ -1,6 +1,6 @@
 # Encryption and privacy model
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-13 · commit `d8647602b`
 
 An inference request crosses three NaCl Box hops: consumer → coordinator
 (optional), coordinator → provider (mandatory), provider → coordinator
@@ -113,9 +113,9 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 |---|---|
 | Access log, one `request` line per HTTP request: `request_id`, `method`, `path`, `route`, `status`, `duration_ms`, `remote` (the connection's remote address), `user_id` (account, when authenticated) | `coordinator/api/server.go` (`loggingMiddleware`) |
 | `inference request dispatched`: `trace_id`, `request_id`, `model`, `provider_id`, `stream`, `attempt` | `coordinator/api/dispatch.go` |
-| Request / route records: token counts, timing, non-content params (`temperature`, `top_p`); the record types document that they contain no prompt or response content | `coordinator/store/interface.go` |
+| Request / route records: token counts, timing, non-content params (`temperature`, `top_p`); the record types document that they contain no prompt or response content | `coordinator/store/contracts/telemetry.go` |
 | Cache-affinity keys: keyed digests of identity / prefix bytes; raw bytes are never stored, logged, or returned | `coordinator/registry/cache_route_keys.go` |
-| Provider identity rows: SE public key, serial, MDA UDID and chain, posture bits (`ProviderTrustReuse`); code-identity proofs `CodeAttestation{se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash}`; push budgets keyed by SE key + APNs token hash | `coordinator/store/interface.go` (`ProviderTrustReuse`, `CodeAttestation`, `CodeAttestPushBudget`); `coordinator/api/trust_reuse.go`; `coordinator/api/code_attest_throttle.go` |
+| Provider identity rows: SE public key, serial, MDA UDID and chain, posture bits (`ProviderTrustReuse`); code-identity proofs `CodeAttestation{se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash}`; push budgets keyed by SE key + APNs token hash | `coordinator/store/contracts/trust_reuse.go`, `coordinator/store/contracts/code_attestation.go` (`ProviderTrustReuse`, `CodeAttestation`, `CodeAttestPushBudget`); `coordinator/api/trust_reuse.go`; `coordinator/api/code_attest_throttle.go` |
 | MDM webhook body: `body_size` and a 500-byte `body_preview` at `Debug` level (MDM plist, never inference data) | `coordinator/api/server.go` (`HandleMDMWebhook`) |
 | Device-code lifecycle: `user_code`, `account_id` at `Info` level | `coordinator/api/device_auth.go` |
 
@@ -136,7 +136,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 5. A sealed request that fails to open is rejected (`decryption_failed`) and never falls through to plaintext handling; a sealed request is recognised by `Content-Type` alone — `coordinator/api/sender_encryption.go` (`sealedTransport`, `isSealedContentType`).
 6. A sealed request never causes the coordinator to fetch remote media — `coordinator/api/media_resolve.go` (`gateRemoteMediaPreDispatch`), `coordinator/api/sender_encryption.go` (`isSealedRequest`).
 7. The hop-2 session private key and the memoized hop-3 shared key exist only in the in-flight request state and are forgotten when the request completes, errors, or the provider disconnects — `coordinator/api/chunk_key_cache.go` (`forget`).
-8. No request body, prompt, or completion text reaches structured logs or the store; the only content-derived artifacts are keyed digests for cache routing — `coordinator/api/dispatch.go`, `coordinator/store/interface.go`, `coordinator/registry/cache_route_keys.go`.
+8. No request body, prompt, or completion text reaches structured logs or the store; the only content-derived artifacts are keyed digests for cache routing — `coordinator/api/dispatch.go`, `coordinator/store/contracts/telemetry.go`, `coordinator/registry/cache_route_keys.go`.
 9. Client telemetry ingest is disabled (`telemetry_ingest_disabled`, [api-contracts](../../reference/api-contracts.md#telemetry-1)) and its body is never read — `coordinator/api/telemetry_handlers.go` (`handleTelemetryIngest`).
 
 ## Failure modes

@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-08 · commit `efb5517fc`
+> Last updated: 2026-09-13 · commit `d8647602b`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -13,7 +13,7 @@ the operator procedure is [`../operations/model-migration.md`](../operations/mod
 
 Produced by `darkbloom-publish hash` (`provider-swift/Sources/darkbloom-publish/HashCommand.swift`
 → `ManifestBuilder.build` in `provider-swift/Sources/ProviderCoreFoundation/ManifestBuilder.swift`);
-decoded on the coordinator as `store.ModelManifest` (`coordinator/store/interface.go`)
+decoded on the coordinator as `store.ModelManifest` (`coordinator/store/contracts/models.go`)
 and validated by `validateModelManifest` (`coordinator/api/model_registry_handlers.go`).
 
 | Field | Type | Constraint (coordinator) | Notes |
@@ -127,7 +127,7 @@ Response `200`:
 
 ## Stored rows
 
-DDL in `coordinator/store/postgres.go`; Go types in `coordinator/store/interface.go`.
+DDL in `coordinator/store/postgres/schema/model_registry.go`; Go types in `coordinator/store/contracts/models.go`.
 
 ### `model_registry` ↔ `ModelRegistryEntry`
 
@@ -169,7 +169,7 @@ DDL in `coordinator/store/postgres.go`; Go types in `coordinator/store/interface
 `activated_at`. A model is **routable** when
 `model_registry.status IN ('active','beta')` and the active version has
 `status = 'ready'` (`activeModelRegistryQuery` in
-`coordinator/store/postgres_model_registry.go`).
+`coordinator/store/postgres/model_registry.go`).
 
 ### Metadata keys
 
@@ -188,7 +188,7 @@ Keys in `model_registry.metadata` the coordinator reads
 `model_versions.hugging_face_artifact` (nullable JSONB) and emitted on each
 public catalog model by `catalogModelFromRegistryRecord`. Its fields are
 validated by `HuggingFaceArtifact.Validate` in
-`coordinator/store/hugging_face_artifact.go`:
+`coordinator/store/contracts/artifact.go`:
 
 | Field | Rule |
 |---|---|
@@ -301,7 +301,7 @@ Unknown action → `404 model action not found`.
 A standard alias is a stable public name that resolves to one `desired_build`,
 with an optional still-acceptable `previous_build` during a rollout. Handlers in
 `coordinator/api/model_alias_handlers.go`; stored as `ModelAlias`
-(`coordinator/store/interface.go`) in `model_aliases`.
+(`coordinator/store/contracts/models.go`) in `model_aliases`.
 
 ### `POST /v1/admin/models/aliases` (`handleModelAliasUpsert`)
 

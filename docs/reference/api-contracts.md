@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-11 · commit `e3993c611`
+> Last updated: 2026-09-13 · commit `d8647602b`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -526,7 +526,7 @@ Sealed mode hides request and response bodies from TLS-terminating intermediarie
 
 ### API key shapes
 
-`APIKeyResponse` (`coordinator/api/types/types.go`): `id` (`key_<hex>`, `GenerateKeyID`), `name`, `label`, `disabled`, `limit_usd`, `limit_reset`, `usage_usd`, `remaining_usd`, `rpm_limit`, `itpm_limit`, `otpm_limit`, `allowed_models`, `self_route_only`, `expires_at`, `created_at`, `last_used_at`. The secret is `KeyPrefix` (`sk-db-`) + 64 hex characters (`GenerateRawKey`, `coordinator/store/apikey.go`), is returned only by create and rotate, and is stored only as its SHA-256 hash (`hashKey`, `coordinator/store/postgres.go`). `POST /v1/keys` and `PATCH /v1/keys/{id}` accept `name`, `limit_usd`, `limit_reset`, `rpm_limit`, `itpm_limit`, `otpm_limit`, `allowed_models`, `expires_at`, `self_route_only`; PATCH also accepts `disabled` (`coordinator/api/apikey_handlers.go`).
+`APIKeyResponse` (`coordinator/api/types/types.go`): `id` (`key_<hex>`, `GenerateKeyID`), `name`, `label`, `disabled`, `limit_usd`, `limit_reset`, `usage_usd`, `remaining_usd`, `rpm_limit`, `itpm_limit`, `otpm_limit`, `allowed_models`, `self_route_only`, `expires_at`, `created_at`, `last_used_at`. The secret is `KeyPrefix` (`sk-db-`) + 64 hex characters (`GenerateRawKey`, `coordinator/store/contracts/keys.go`), is returned only by create and rotate, and is stored only as its SHA-256 hash (`hashKey`, `coordinator/store/contracts/keys.go`). `POST /v1/keys` and `PATCH /v1/keys/{id}` accept `name`, `limit_usd`, `limit_reset`, `rpm_limit`, `itpm_limit`, `otpm_limit`, `allowed_models`, `expires_at`, `self_route_only`; PATCH also accepts `disabled` (`coordinator/api/apikey_handlers.go`).
 
 ### Device code shapes
 
@@ -540,7 +540,7 @@ For `payout_rail=global`, submit `{amount_usd, method:"standard", quote_id}` to 
 
 An unsubmitted confirmation invalidated by paused admissions returns 409 `quote_paused`; changed payout settings return 409 `payout_changed`. The browser releases that saved confirmation. Invalidation is atomic with `BeginGlobalPayout`; if another confirmation has already debited, the endpoint returns/reconciles the existing withdrawal instead. A recipient minimum/maximum violation returns 400 `recipient_amount_limit` with the threshold in local currency (`coordinator/api/global_payouts_withdraw.go`, `maybeGlobalWithdraw`, `handleGlobalPayoutQuote`).
 
-An unknown payout outcome held for manual reconciliation remains `status=pending` and exposes `failure_reason=manual_reconciliation_required`. History displays **Needs review**; the debit remains reserved, and automatic scans and repeated confirmations do not resubmit or refund it (`coordinator/store/global_payouts.go`, `GlobalPayout.RequiresManualReconciliation`; `coordinator/api/global_payouts_history.go`, `globalWithdrawalView`).
+An unknown payout outcome held for manual reconciliation remains `status=pending` and exposes `failure_reason=manual_reconciliation_required`. History displays **Needs review**; the debit remains reserved, and automatic scans and repeated confirmations do not resubmit or refund it (`coordinator/store/contracts/global_payouts.go`, `GlobalPayout.RequiresManualReconciliation`; `coordinator/api/global_payouts_history.go`, `globalWithdrawalView`).
 
 ## Code map
 
@@ -553,7 +553,7 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Tools, media, constraints | `coordinator/api/toolschema.go`, `coordinator/api/tool_constraints.go`, `coordinator/api/media_resolve.go` |
 | Sealed transport | `coordinator/api/sender_encryption.go` |
 | Models and catalog | `coordinator/api/models_endpoints.go`, `coordinator/api/concrete_model_entries.go`, `coordinator/api/openrouter_endpoint.go`, `coordinator/api/model_registry_handlers.go`, `coordinator/api/model_alias_handlers.go`, `coordinator/api/openrouter_alias_handlers.go`, `coordinator/api/capacity.go`, `coordinator/api/exact_cache_status.go` |
-| Keys, device code, accounts | `coordinator/api/apikey_handlers.go`, `coordinator/store/apikey.go`, `coordinator/api/device_auth.go`, `coordinator/api/me_handlers.go` |
+| Keys, device code, accounts | `coordinator/api/apikey_handlers.go`, `coordinator/store/contracts/keys.go`, `coordinator/api/device_auth.go`, `coordinator/api/me_handlers.go` |
 | Billing, Stripe, referral, invites | `coordinator/api/billing_handlers.go`, `coordinator/api/stripe_payouts.go`, `coordinator/api/stripe_withdraw.go`, `coordinator/api/stripe_payouts_webhooks.go`, `coordinator/api/invite_handlers.go`, `coordinator/api/base_rewards_handlers.go` |
 | Stats | `coordinator/api/stats.go`, `coordinator/api/cache_refresher.go`, `coordinator/api/network_totals.go`, `coordinator/api/leaderboard.go`, `coordinator/api/network_series.go` |
 | Release, enrollment, provider WS, log reports | `coordinator/api/release_handlers.go`, `coordinator/api/enroll.go`, `coordinator/api/provider.go`, `coordinator/api/log_report_handlers.go` |

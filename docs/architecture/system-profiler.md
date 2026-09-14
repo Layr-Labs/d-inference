@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-14 · commit `ea497705a`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -29,7 +29,7 @@ per-token cost, or a free-form provider string to storage.
 | Artefact | Grain | Producer | Sink | Retention |
 |---|---|---|---|---|
 | `request_profiles` row | dispatched attempt (pre-dispatch rejections never produce one) | stamps on `registry.RequestProfile` / `AttemptProfile`, flattened by `buildProfileRecord` (`coordinator/api/profiler_record.go`) | `profileSink` (`coordinator/api/profiler_sink.go`) → multi-row INSERT | `profileRetainProfiles` — value in [`../reference/telemetry-inventory.md#coordinator-per-request-records-postgres`](../reference/telemetry-inventory.md#coordinator-per-request-records-postgres) |
-| `fleet_snapshots` row | (provider session, slot) per 60 s + one `provider_id = 'coordinator'` row | `registry.FleetSample`, `CoordinatorSample` (`coordinator/registry/fleet_sample.go`) | sampler goroutine, `pgx.CopyFrom` (`coordinator/store/postgres_profiles.go`) | `profileRetainFleet` — same page |
+| `fleet_snapshots` row | (provider session, slot) per 60 s + one `provider_id = 'coordinator'` row | `registry.FleetSample`, `CoordinatorSample` (`coordinator/registry/fleet_sample.go`) | sampler goroutine, `pgx.CopyFrom` (`coordinator/store/postgres/profiles.go`) | `profileRetainFleet` — same page |
 | `X-Timing` additive keys | committed response | `writeTimingHeaderWithProfile` (`coordinator/api/profiler_dispatch.go`) | response header ([`../reference/api-contracts.md#headers`](../reference/api-contracts.md#headers)) | n/a |
 | Datadog counters | process | [Operations](#operations) | DogStatsD / HTTPS series | n/a |
 
@@ -233,8 +233,8 @@ JSON-encoded on the sink worker.
 
 ### Tables
 
-`request_profiles` (DDL `requestProfilesTableDDL`, `coordinator/store/postgres.go`;
-column order pinned by `requestProfileColumns`, `coordinator/store/profile_records.go`):
+`request_profiles` (DDL `RequestProfilesTableDDL`, `coordinator/store/postgres/schema/profile_tables.go`;
+column order pinned by `requestProfileColumns`, `coordinator/store/postgres/profile_rows.go`):
 
 | Group | Columns |
 |---|---|
@@ -254,7 +254,7 @@ nullable, everything else `NOT NULL DEFAULT` zero. `id BIGSERIAL PRIMARY KEY`,
 `idx_request_profiles_provider (provider_id, created_at DESC)`. Both tables use
 `autovacuum_vacuum_scale_factor = 0.02`, `autovacuum_analyze_scale_factor = 0.01`.
 
-`fleet_snapshots` (`fleetSnapshotsTableDDL`; `fleetSnapshotColumns`):
+`fleet_snapshots` (`FleetSnapshotsTableDDL`; `fleetSnapshotColumns`):
 
 | Group | Columns |
 |---|---|
@@ -302,11 +302,11 @@ producer status.
 | `timing_anomaly` | any decreasing pair along `handler_entry_us, parsed_us, reserved_us, attempt_start_us, reserve_done_us, encrypted_us, write_submitted_us, write_dequeued_us, write_done_us, first_chunk_ingress_us, first_content_us, complete_ingress_us` (`profileTimingAnomaly`); never rejects the row |
 | finalize | two halves (handler, terminal) under `sync.Once`; a fallback timer `profileFallbackGrace = defaultTerminalSettleGrace + 1 s` = 31 s arms when the handler half completes first and on expiry sets `provider_outcome = no_terminal`; a provider frame that owns the terminal claim completes the terminal half itself, the route-outcome funnel completes it only when no frame owns it (`CompleteTerminalUnlessClaimed`) |
 | sink | own channel of `defaultTelemetrySinkCapacity = 4096`, one worker, non-blocking submit; drop ⇒ `telemetry.sink_dropped{sink:profile}` and a warning at powers of ten; batches of `profileBatchMax = 64` or `profileBatchWait = 250 ms` |
-| store write | multi-row INSERT padded to `profileInsertShapes = {1, 8, 64}`, `ON CONFLICT (request_id, attempt) DO NOTHING`, 5 s context (`RecordRequestProfiles`, `coordinator/store/postgres_profiles.go`) |
+| store write | multi-row INSERT padded to `profileInsertShapes = {1, 8, 64}`, `ON CONFLICT (request_id, attempt) DO NOTHING`, 5 s context (`RecordRequestProfiles`, `coordinator/store/postgres/profiles.go`) |
 | fleet write | never on the sink: one `CopyFrom` per 60 s tick, 10 s context; row-count mismatch is an error |
 | retention | `PruneTelemetry`: per table, `cutoff = MAX(id) WHERE time < before` via the time index, then `DELETE … WHERE id >= lo AND id < hi` in `profilePruneBatch = 5000` windows, each its own transaction with `SET LOCAL lock_timeout = '2s'`; hourly (`profilePruneInterval`), 10 min context; **runs even when the profiler is off** so old rows stay bounded |
-| memory store | implements the same `TelemetryStore` methods and prunes its slices (`coordinator/store/interface_domains.go`; `TestMemoryPruneCapsProfilerSlices`) |
-| `request_waterfall` view | not in the boot migrations; apply by hand with `psql "$EIGENINFERENCE_DATABASE_URL" -f coordinator/store/migrations/request_waterfall.sql`; explicit column list, `LEFT JOIN inference_routes ON (request_id, attempt)`; re-run after adding a column (`TestRequestWaterfallViewListsEveryProfileColumn`) |
+| memory store | implements the same `TelemetryStore` methods and prunes its slices (`coordinator/store/contracts/telemetry.go`; `TestMemoryPruneCapsProfilerSlices`) |
+| `request_waterfall` view | not in the boot migrations; apply by hand with `psql "$EIGENINFERENCE_DATABASE_URL" -f coordinator/store/postgres/migrations/request_waterfall.sql`; explicit column list, `LEFT JOIN inference_routes ON (request_id, attempt)`; re-run after adding a column (`TestRequestWaterfallViewListsEveryProfileColumn`) |
 
 ### Operations
 
@@ -360,7 +360,7 @@ to the replication set, and accepts the hourly retention DELETE volume.
    `foldThermalState`, `foldProviderVersion`, `SlotStateFold`,
    `ThermalStateFold`); unknown enum values fold to `other`; invalid outcomes
    are a bounded reason set. `TestRequestProfileRecordHasNoFreeFormProviderBytes`
-   (`coordinator/store/profile_records_test.go`) checks the record type
+   (`coordinator/store/postgres/profile_records_test.go`) checks the record type
    reflectively.
 3. **Clock domains never mix.** Coordinator µs from `t0` (monotonic), provider
    µs from `t0p` (`SuspendingClock`), engine ns from enqueue (`DispatchTime`).
@@ -429,7 +429,7 @@ ring or `DaemonState` mirror.
 | Add the field to both mirrors (`coordinator/protocol/profile.go`, `provider-swift/Sources/ProviderCore/Protocol/InferenceProfile.swift`) and the shared fixture, with the round-trip / omitted / explicit-zero test triplet | `coordinator/protocol/testdata/profiler_wire_fixture.json` |
 | New `GateReason` / `SelectionPath` / `DrainTrigger` values go before the `*Count` sentinel or into the fold; never reorder persisted enums | `TestGateReasonNamesComplete` (`coordinator/registry/routing_context_test.go`) |
 | New column: append at the end of the Go struct, the DDL and `requestProfileColumns` / `fleetSnapshotColumns` in one change | `TestRequestProfileColumnsStayAligned` |
-| Never `ALTER` a hot table in the boot loop; new indexes are built `CONCURRENTLY` outside it | `coordinator/store/postgres.go` migration slice |
+| Never `ALTER` a hot table in the boot loop; new indexes are built `CONCURRENTLY` outside it | `coordinator/store/postgres/schema/statements.go` migration slice |
 | Anything read under `r.mu` is a fixed-size value copy — no maps, slices, pointers or JSON | `BenchmarkReserveProviderEx_350x2` shows 0 added allocs |
 | Nothing on the WS read loop beyond a length check and atomic adds | `SetProviderProfileRaw`; decode in `profiler_provider.go` |
 | Tags: only `stage`, `model`, `status`, `valid`, `reason`, `sink`, `kind`; never an id | [Operations](#operations) |
@@ -449,7 +449,7 @@ ring or `DaemonState` mirror.
 | Profiles and attempts | `coordinator/registry/request_profile.go`, `coordinator/registry/attempt_profile.go`, `coordinator/registry/attempt_profile_finalize.go` |
 | Routing context and folds | `coordinator/registry/scheduler.go`, `coordinator/registry/gate_reason.go`, `coordinator/registry/queue.go` |
 | Wire types and fixture | `coordinator/protocol/profile.go`, `coordinator/protocol/testdata/profiler_wire_fixture.json` |
-| Store | `coordinator/store/profile_records.go`, `coordinator/store/postgres_profiles.go`, `coordinator/store/postgres.go`, `coordinator/store/migrations/request_waterfall.sql` |
+| Store | `coordinator/store/contracts/profiles.go`, `coordinator/store/postgres/profiles.go`, `coordinator/store/postgres/schema/profile_tables.go`, `coordinator/store/postgres/migrations/request_waterfall.sql` |
 | Fleet replay | `coordinator/registry/routingsim/fleet_ndjson.go` |
 | Provider side | `provider-swift/Sources/ProviderCore/Telemetry/RequestProfileBuilder.swift`, `provider-swift/Sources/ProviderCore/Protocol/InferenceProfile.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Profile.swift` |
 | Engine side | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2RequestTiming+Stamps.swift` |

@@ -1,6 +1,6 @@
 # Enable and operate international bank withdrawals
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-14 · commit `f8a00f83d`
 
 This runbook enables Stripe Global Payouts alongside existing Connect withdrawals. Providers use one bank setup and withdrawal flow. Country selection chooses the payout product; international withdrawals include a local-currency estimate before confirmation.
 
@@ -46,7 +46,7 @@ Before activation, review the cost of covering these fees. Before confirming the
 
 ## Verification
 
-The source-of-truth payout row is `global_payout_withdrawals` and its `data` object. Quote state is `quoted`; a confirmed withdrawal atomically debits both balance columns and moves to `pending`. Stripe then supplies `processing`, `posted`, `failed`, `canceled`, or `returned`. Refunds are atomic with the state update and applied once. State cannot regress from posted to processing or reopen after a refund (`coordinator/store/global_payouts.go`, `applyGlobalResult`).
+The source-of-truth payout row is `global_payout_withdrawals` and its `data` object. Quote state is `quoted`; a confirmed withdrawal atomically debits both balance columns and moves to `pending`. Stripe then supplies `processing`, `posted`, `failed`, `canceled`, or `returned`. Refunds are atomic with the state update and applied once. State cannot regress from posted to processing or reopen after a refund (`coordinator/store/internal/payoutstate/state.go`, `ApplyGlobalResult`).
 
 Expired unconfirmed quotes are pruned according to the [retention policy](../reference/pricing-model.md#global-payouts-withdrawals); confirmed payout records are preserved.
 

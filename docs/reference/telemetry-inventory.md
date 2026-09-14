@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-13 · commit `de4e28825`
+> Last updated: 2026-09-13 · commit `d8647602b`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -233,7 +233,7 @@ Datadog's; nothing is stored locally.
 | `request_profiles` | one row per `(request_id, attempt)`, sampled | profile sink (`coordinator/api/profiler_sink.go`), batches of 64 or 250 ms | 14 d, hourly sweep, 5000-id windows |
 | `fleet_snapshots` | one row per provider slot plus one `provider_id = "coordinator"` row | fleet sampler (`coordinator/api/profiler_fleet.go`) every 60 s | 30 d, same sweep |
 
-The retention sweep (`PruneTelemetry`, `coordinator/store/postgres_profiles.go`)
+The retention sweep (`PruneTelemetry`, `coordinator/store/postgres/profiles.go`)
 runs even when the profiler is off. Every other table grows without bound;
 `DeleteExpiredDeviceCodes` exists but has no production caller. Details of the
 two profiler tables: [`../architecture/system-profiler.md`](../architecture/system-profiler.md).
@@ -267,7 +267,7 @@ two profiler tables: [`../architecture/system-profiler.md`](../architecture/syst
 | `TelemetryOverflowQueue` (`provider-swift/Sources/ProviderCore/Telemetry/TelemetryOverflowQueue.swift`) | `push` discards, `drain` returns `[]`, `purge` deletes the legacy `telemetry-queue.jsonl` |
 | Console `emit`, `installGlobalHandlers` (`console-ui/src/lib/telemetry.ts`) | no-ops |
 | `POST /v1/telemetry/events` (`handleTelemetryIngest`) and console `POST /api/telemetry` (`console-ui/src/app/api/telemetry/route.ts`) | `telemetry_ingest_disabled` ([`api-contracts.md#telemetry-1`](api-contracts.md#telemetry-1)); body never read |
-| `telemetry_events` table | dropped; the migration slice in `coordinator/store/postgres.go` keeps only a "Telemetry events table + indices removed" comment, and `TelemetryStore` (`coordinator/store/interface_domains.go`) has no method that writes an event |
+| `telemetry_events` table | dropped; the migration slice in `coordinator/store/postgres/schema/usage_counters.go` keeps only a "Telemetry events table + indices removed" comment, and `TelemetryStore` (`coordinator/store/contracts/telemetry.go`) has no method that writes an event |
 
 ## Related
 

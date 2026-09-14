@@ -11,7 +11,7 @@ import (
 // Gate G5: "the coordinator can segment TTFT / decode-TPS / error-rate by KV
 // backend").
 //
-// `BackendSlotCapacity.KVBackend` (protocol/messages.go:303) has ridden every
+// `BackendSlotCapacity.KVBackend` (protocol/backend_capacity.go) has ridden every
 // heartbeat since the wire change landed, but nothing on the coordinator read
 // it — the field arrived and was dropped, so no downstream consumer could group
 // by it. This file is that reader. It keeps the last backend each SLOT reported

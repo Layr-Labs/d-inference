@@ -45,7 +45,7 @@ Stages in the order `handleChatCompletions` runs them. Each stage either advance
 
 Non-streaming raw responses and reconstructed deltas both wait for terminal usage through `awaitNonStreamUsage` in `coordinator/inference/response/nonstream.go`. A closed completion channel refunds and returns 502; expiry refunds and returns 504; client cancellation refunds without writing a replacement response. Buffered provider errors keep their existing precedence before that wait.
 
-Provider-side execution between stages 13 and 14 — the WebSocket `inference_request` → `inference_response_chunk` → `inference_complete` exchange (`coordinator/protocol/messages.go`) and the engine behind it — is described in [`../inference.md`](../inference.md) and [`provider.md`](provider.md). The whole journey as a sequence diagram is in [`../data-flow.md`](../data-flow.md).
+Provider-side execution between stages 13 and 14 — the WebSocket `inference_request` → `inference_response_chunk` → `inference_complete` exchange (`coordinator/protocol/inference.go`) and the engine behind it — is described in [`../inference.md`](../inference.md) and [`provider.md`](provider.md). The whole journey as a sequence diagram is in [`../data-flow.md`](../data-flow.md).
 
 ## Invariants
 
@@ -93,7 +93,7 @@ Provider-side execution between stages 13 and 14 — the WebSocket `inference_re
 | Tools and media | `coordinator/inference/toolpolicy/`, `coordinator/api/tool_constraints.go`, `coordinator/api/media_resolve.go` |
 | Self-route policy | `coordinator/api/self_route.go` |
 | Sealed client transport | `coordinator/api/sender_encryption.go` |
-| Provider WebSocket, completion and settlement | `coordinator/api/provider.go`, `coordinator/protocol/messages.go` |
+| Provider WebSocket, completion and settlement | `coordinator/api/provider.go`, `coordinator/protocol/inference.go` |
 | Wire types | `coordinator/api/types/types.go` |
 
 ## Related

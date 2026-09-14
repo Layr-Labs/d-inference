@@ -185,6 +185,12 @@ profile wins. Everything else runs on the profile-sink worker
 `Builder.applyProviderProfile`, `coordinator/telemetry/profiler/provider_record.go`)
 after the terminal has been fully processed.
 
+The stored projection owns its optional scalar values. `cloneProfileValue`
+preserves `nil`, `false` and zero while copying each scalar; `profileBounds`
+performs the separate range checks
+(`coordinator/telemetry/profiler/provider_bounds.go`). The wire struct, stored
+profile and queryable columns keep their existing field mappings and nullability.
+
 | Step | Rule | Outcome (`provider_profile_invalid_reason`) |
 |---|---|---|
 | 1 | no object on the terminal | `absent` (`providerProfileAbsent`, `coordinator/telemetry/profiler/record.go`) |

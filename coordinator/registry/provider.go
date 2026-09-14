@@ -179,7 +179,7 @@ type Provider struct {
 	// capacitySeq is the highest BackendCapacity.CapacitySeq applied on THIS
 	// connection; capacityQuoteCapable latches true the first time a heartbeat
 	// carries seq > 0 (routing v2 W2: seq-stamping providers also answer
-	// capacity probes — see protocol/messages.go CapacitySeq).
+	// capacity probes — see protocol/backend_capacity.go BackendCapacity.CapacitySeq).
 	//
 	// Per-connection on purpose: the provider process restarts its counter on
 	// every reconnect, and Register creates a fresh *Provider per connection

@@ -3000,6 +3000,9 @@ threats:
     affected_assets: [A-007, A-009]
     affected_files:
       - coordinator/api/profiler*.go
+      - coordinator/telemetry/profiler/**
+      - coordinator/api/operations/**
+      - coordinator/protocol/profile*.go
       - coordinator/registry/request_profile.go
       - coordinator/registry/fleet_sample.go
       - coordinator/store/contracts/profiles.go

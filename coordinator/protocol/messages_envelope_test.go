@@ -3,6 +3,7 @@ package protocol
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -143,6 +144,46 @@ func TestProviderMessageUnmarshalInvalidJSON(t *testing.T) {
 	err := json.Unmarshal([]byte(raw), &pm)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestDecodeProviderMessageFailedDecodePreservesPayload(t *testing.T) {
+	for _, tc := range []struct {
+		name, frame, wantType, wantError string
+	}{
+		{
+			name:      "invalid envelope type",
+			frame:     `{"type":true}`,
+			wantType:  TypeInferenceAccepted,
+			wantError: "protocol: failed to read message type: ",
+		},
+		{
+			name:      "invalid concrete payload",
+			frame:     `{"type":"heartbeat","status":7}`,
+			wantType:  TypeHeartbeat,
+			wantError: "protocol: failed to unmarshal heartbeat: ",
+		},
+		{
+			name:      "unknown message type",
+			frame:     `{"type":"future_message"}`,
+			wantType:  "future_message",
+			wantError: `protocol: unknown message type "future_message"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var pm ProviderMessage
+			if err := DecodeProviderMessage([]byte(`{"type":"inference_accepted","request_id":"previous"}`), &pm); err != nil {
+				t.Fatal(err)
+			}
+			previous := pm.Payload
+			err := DecodeProviderMessage([]byte(tc.frame), &pm)
+			if err == nil || !strings.HasPrefix(err.Error(), tc.wantError) {
+				t.Fatalf("decode error = %v, want prefix %q", err, tc.wantError)
+			}
+			if pm.Type != tc.wantType || pm.Payload != previous {
+				t.Fatalf("failed decode changed receiver: type=%q payload=%+v; want type=%q and previous payload", pm.Type, pm.Payload, tc.wantType)
+			}
+		})
 	}
 }
 

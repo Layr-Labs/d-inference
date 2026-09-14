@@ -66,6 +66,19 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 
 ### 2. Coordinator (Go)
 
+`coordinator/protocol/messages_envelope_test.go`
+(`TestDecodeProviderMessageFailedDecodePreservesPayload`) checks receiver state
+after invalid envelope, invalid concrete payload and unknown-type frames.
+`coordinator/protocol/chunk_scan_test.go` (`FuzzChunkFrameDecode`) compares the
+chunk scanner and direct frame decoder with `encoding/json`. Run the protocol
+checks with `GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/protocol`.
+
+Wire-contract tests remain in `coordinator/protocol/` beside the message families.
+`GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/protocol/...` checks the existing
+JSON round trips, omitted-versus-empty fields, Swift telemetry symmetry and
+provider-envelope/scanner equivalence cases. [The protocol source map](../reference/protocol-messages.md#source-files)
+locates each record and its decoder.
+
 The command's process fixture lives in
 `coordinator/cmd/coordinator/startup_process_test.go`
 (`TestCoordinatorStartupAndDrainProcess`). It launches the actual `main` in a

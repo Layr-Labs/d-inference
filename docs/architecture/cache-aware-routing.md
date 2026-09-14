@@ -203,7 +203,8 @@ requires the coordinator's `cache_receipt_boundary_mode=checkpoint` request echo
 before emitting those receipts. Old coordinators ignore the optional capability
 field and omit the echo: registration continues, local reuse can work, and this
 format teaches no coordinator holder. Neither field changes the signed
-attestation or status canonical payload (`coordinator/protocol/messages.go`,
+attestation or status canonical payload (`coordinator/protocol/attestation.go`,
+`AttestationResponseMessage`;
 `coordinator/inference/dispatch/provider_wire.go`; `coordinator/attestation/attestation.go`,
 `StatusCanonicalInput`).
 

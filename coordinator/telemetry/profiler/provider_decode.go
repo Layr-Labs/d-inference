@@ -48,8 +48,8 @@ func decodeInferenceProfile(raw []byte, receivedAt time.Time) (stored *StoredInf
 
 	var b profileBounds
 	stored = &StoredInferenceProfile{
-		Schema: cloneIntPtr(w.Schema),
-		WallMS: cloneInt64Ptr(w.WallMS),
+		Schema: cloneProfileValue(w.Schema),
+		WallMS: cloneProfileValue(w.WallMS),
 
 		DequeuedUS:        b.us(w.DequeuedUS),
 		DecryptedUS:       b.us(w.DecryptedUS),
@@ -100,11 +100,11 @@ func decodeInferenceProfile(raw []byte, receivedAt time.Time) (stored *StoredInf
 		MLXActiveBytesAtFinish: b.bytes(w.MLXActiveBytesAtFinish),
 		MLXPeakBytes:           b.bytes(w.MLXPeakBytes),
 
-		UsageRecovered: cloneBoolPtr(w.UsageRecovered),
-		LoadCold:       cloneBoolPtr(w.LoadCold),
-		LoadParked:     cloneBoolPtr(w.LoadParked),
-		MTPActive:      cloneBoolPtr(w.MTPActive),
-		LowPowerMode:   cloneBoolPtr(w.LowPowerMode),
+		UsageRecovered: cloneProfileValue(w.UsageRecovered),
+		LoadCold:       cloneProfileValue(w.LoadCold),
+		LoadParked:     cloneProfileValue(w.LoadParked),
+		MTPActive:      cloneProfileValue(w.MTPActive),
+		LowPowerMode:   cloneProfileValue(w.LowPowerMode),
 
 		DeadlineMode: w.DeadlineMode.Fold(),
 		ThermalState: w.ThermalState.Fold(),

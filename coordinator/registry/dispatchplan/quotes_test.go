@@ -2,9 +2,10 @@ package dispatchplan
 
 import (
 	"fmt"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 func testQuote(quoteID string, admissible bool, p90ms float64) *protocol.CapacityQuoteMessage {

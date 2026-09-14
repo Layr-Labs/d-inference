@@ -51,6 +51,10 @@
     {
       "path": "ThirdParty/lume-patches/0012-fence-images-during-offline-maintenance.patch",
       "sha256": "4dfd68d6c6c739ca412c3e62e24b5611ca20e1b4618891d794406bb6fb831369"
+    },
+    {
+      "path": "ThirdParty/lume-patches/0013-add-managed-offline-installer-profile.patch",
+      "sha256": "25d839d4c6b94e9c3e22a3526d65acada10939a4822dedc2fd04287004a27ee8"
     }
   ],
   "license": "MIT",

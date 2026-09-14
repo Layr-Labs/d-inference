@@ -33,7 +33,7 @@ under the descriptor-lifetime lock. It preserves a replacement inode and lets
 the accept loop finish closing its descriptors. The broker still allocates a
 fresh private endpoint directory on every stopped-to-running transition.
 
-The pinned native test runner executes the full suite plus sixteen required
+The pinned native test runner executes the full suite plus nineteen required
 selectors, including the final-frame half-close exchange and a writer-error
 diagnostic control. The relay fixture runs its complete timed exchange on
 dedicated test threads, retries interrupted socket IO, preserves actual errno
@@ -56,6 +56,24 @@ files. An unproven stop retains the native owner and files until process exit.
 Legacy unattended preparation is a separate path. Unit tests establish process
 and cancellation contracts; they do not qualify a real restored base or replace
 the accountless installation and disposable-clone checks.
+
+The native `installer-v1` profile is a separate managed offline boot mode for
+the accountless first-boot job. It requires macOS, broker lifecycle control,
+disabled display/VNC and inherited exclusive machine ownership in the actual VM
+process. It accepts only the private owned `disk.img`; control/workspace disks,
+storage/NVRAM overrides, recovery, host shares, USB, clipboard and network
+overrides are rejected. The resulting configuration has one writable boot block
+device and no IP network, audio, serial/console, host-directory, input, USB or
+Virtio socket devices. The serial-log environment path is not opened in either
+managed offline profile. The existing `isolated-v1` tenant profile retains its
+three disks and authenticated Virtio bridge.
+
+This profile establishes device and owner-lifetime constraints only. It does not
+grant permission to retry an installer, prove that the root job completed, or
+publish a ready template. The selected-GUI boot owner must first consume a durable
+one-use boot intent and, after guest shutdown or cancellation, independently
+prove stopped state. Root receipt collection/removal uses a separate maintenance
+transaction. These orchestration and physical profile checks remain open.
 
 For a host, Lume, or tooling update that retains an already qualified guest,
 add `--guest-release /absolute/existing/signed-release`. Packaging verifies that

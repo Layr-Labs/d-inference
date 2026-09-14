@@ -59,6 +59,9 @@ public struct LumeRuntimeConfiguration: Sendable {
     public static let pinnedOfflineFencePatchPath = "ThirdParty/lume-patches/0012-fence-images-during-offline-maintenance.patch"
     public static let pinnedOfflineFencePatchSHA256 = "4dfd68d6c6c739ca412c3e62e24b5611ca20e1b4618891d794406bb6fb831369"
 
+    public static let pinnedInstallerProfilePatchPath = "ThirdParty/lume-patches/0013-add-managed-offline-installer-profile.patch"
+    public static let pinnedInstallerProfilePatchSHA256 = "25d839d4c6b94e9c3e22a3526d65acada10939a4822dedc2fd04287004a27ee8"
+
     public static let pinnedPatches = [
         pinnedPatchPath: pinnedPatchSHA256,
         pinnedLivenessPatchPath: pinnedLivenessPatchSHA256,
@@ -72,6 +75,7 @@ public struct LumeRuntimeConfiguration: Sendable {
         pinnedGuestEndpointCleanupPatchPath: pinnedGuestEndpointCleanupPatchSHA256,
         pinnedRelayFixturePatchPath: pinnedRelayFixturePatchSHA256,
         pinnedOfflineFencePatchPath: pinnedOfflineFencePatchSHA256,
+        pinnedInstallerProfilePatchPath: pinnedInstallerProfilePatchSHA256,
     ]
 
     public let executable: URL

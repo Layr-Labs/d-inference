@@ -5,13 +5,21 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
+The native installer-v1 profile is now implemented as pinned patch13. It accepts
+one private boot disk, requires macOS/BLC/EX and disabled display/VNC, rejects
+extra devices/storage overrides and removes all host/guest bridge devices.
+Fresh signed build:205native tests plus19required selectors pass. Sandbox610tests/
+7skips/0failures pass with the new pin;2real signed-binary contracts pass. Runtime13
+is installed root-owned on the test Mac with executable/provenance signatures
+reverified. It has NOT booted a VM; one-use GUI boot/journal/collection remains next.
+
 The public prepare-accountless-base reserve|payload|stage commands are now
 implemented, with strict selected-GUI versus root execution and explicit phase
 results. The guarded accountless offline staging operation is implemented and
 locally validated: native stopped inspection, root system-command worker, attach/mount
 journals, exact-image recovery, Data mount policy, signed payload staging and
-verified detach. Final sandbox suite:610tests/7skips/0failures,128.390s, including the
-worker-install preflight before maintenance publication. Host-runtime:
+verified detach. Final sandbox suite with patch13:610tests/7skips/0failures,128.057s.
+The worker-install preflight remains before maintenance publication. Host-runtime:
 21tests/0failures. Provider target builds; docs-check286files passes.
 
 A fresh1GiB nonbootable APFS fixture passed actual attach/crash/recovery/stage/
@@ -24,9 +32,8 @@ still need VM testing. Exercise14/coldboot15 remains the last actual guest proof
 
 Guarded staging is pushed as ce33b36ea0db927881be82acc9475c9cc8fb6a4c.
 Operator commands are pushed as bb58af5ecb106c5f1cfa845788001fc2d87c4398.
-CI34838853984 and integration34838853908 are running that source. The preceding
-staging source ce33b36ea has a passing macOS sandbox job; its overall CI/provider
-and integration runs were still in progress at the last observation. Benchmark environment approval remains separate.
+CI34838853984 and integration34838853908 are running that source. CI34837780288
+and integration34837780295 PASSED preceding staging sourcece33b36ea. Benchmark environment approval remains separate.
 Legacy SSH-wrapper timing failures under concurrent release compilation remain
 an open stress concern, despite the idle full-suite passes.
 
@@ -1837,3 +1844,85 @@ Existing patches1..12 and their pins are unchanged. A new profile must become a
 new pinned patch and signed native build with its own tests; no unknown-profile
 fallback or legacy networking shortcut. Then implement the GUI one-use boot
 permit/journal, lifecycle and separate root collection transaction described above.
+
+
+## Managed offline installer profile (2026-09-14)
+
+Native prerequisite is implemented in patch13:
+ ThirdParty/lume-patches/0013-add-managed-offline-installer-profile.patch
+ SHA25d839d4c6b94e9c3e22a3526d65acada10939a4822dedc2fd04287004a27ee8.
+The JSON lock, Swift constants, contract test and required native selectors move
+together. Existing patches1..12 are byte-unchanged. Delta generation uses the
+already-patched12 files in an isolated small git repository at
+/private/tmp/darkbloom-installer-profile-20260914/patch-source, so prior native
+uncommitted patches9..12 were not reset, re-synthesized or accidentally folded in.
+The normal production builder replays all13 patches from upstream737dc2a069528abadee67526d138a907e1c52061.
+
+DarkbloomDevicePolicy now selects known isolated-v1 or installer-v1 profiles;
+unknown profiles still fail. Both require broker lifecycle, foreground ownership,
+no display/VNC, no clipboard/recovery/shared directories/USB/network override.
+Installer mode permits no control/workspace disk and rejects disk/NVRAM overrides
+in both Run and LumeController. Storage must be the owned private0600 single-link
+regular disk.img under a private source directory, with positive512-aligned size.
+Only macOS is accepted. Device application verifies the one writable block
+attachment and removes IP network, audio, console, serial, directory shares,
+keyboards, pointing devices, USB controllers and Virtio sockets. Existing tenant
+mode retains exactly three disks and its guest bridge. Serial-log path creation
+is disabled for both managed profiles. VM.run now retains machine EX for either
+managed profile; actual-owner lifetime retention/BLC shutdown are unchanged.
+
+Focused native20tests pass. Fresh normal signed builder passes205tests plus19
+mandatory selectors, including three new installer selectors. Five new native
+tests cover exact devices,12 invocation violations and valid invocation controls,
+read-only/missing/extra block devices, unsafe modes/hardlinks/extra media, macOS,
+profile/authority selection, no guest bridge and legacy/tenant preservation.
+No physical VM boot, root-job result or qualification is inferred from these tests.
+
+Final artifacts:
+- Primary work/evidence:/private/tmp/darkbloom-installer-profile-20260914
+- Signed runtime:/private/tmp/darkbloom-sandbox-lab-20260913/runtime/lume-installer-profile-13
+- executableSHA53ec2a7073c67c5f0bc712ba1a3d59e0205edfd5c91fb8e156208c430e0389e4
+- provenanceSHA7a67269640df0daa6643e016584ccad721556b319ddfcfab3d29192165958f03
+- runtime13.zip SHA84c32d06212c82482f7ad8b54e686bc799e3788a9b91c105aa02d40b5f8c5441
+- install-runtime13.py SHA532bcfc72dc8b3be7729e580610702987fb89eabb2292686bd0c1a5a486e3300
+- native-focused-tests.log:20pass
+- signed-runtime-build.log:205pass,19required; normal release compile69.30s;
+  exact Developer ID executable and provenance verified independently afterward.
+- sandbox-full-tests.log:610tests/7skips/0failures,128.057s. Ran after native build
+  completed to avoid the earlier concurrent-compilation timing interference.
+- real-binary-contract.log:2pass against this exact signed binary, empty-storage
+  capabilities/list plus clean JSON under legacy-inconclusive session.
+- docs-check.log:286files pass.
+
+Runtime13 was transferred via ditto ZIP preserving signature xattrs, installed
+with RENAME_EXCL beneath the existing root-owned application directory, and
+rechecked against the signed full file/directory inventory. Root owns all entries;
+folders/executable0555 and data0444. Developer ID executable/provenance requirements
+and version0.5.3 pass independently on the test Mac.
+Installed:/Library/Application Support/Darkbloom/qualification-runtime13
+Root proof/archive:/private/tmp/darkbloom-runtime13-root-20260914/installed.json
+Incoming:/private/tmp/darkbloom-runtime13-incoming-20260914
+Primary captured result:runtime13-installed.json in the profile evidence directory.
+No prior runtime was removed, no service/config/group/cache change occurred, and
+no VM was started. Last actual guest execution remains exercise14/coldboot15 with
+runtime8; native status/APFS staging/completion proof used runtime12. Runtime13
+physical installer-profile boot is still a required gate.
+
+CI34837780288 and integration34837780295 now passce33b36ea. Operator-source
+CI34838853984/integration34838853908 are still running at the last observation.
+The new profile needs its own commit/push/CI. PR996 remains draft.
+
+NEXT: implement the one-use boot permit/journal and GUI owner against installer-v1,
+then a distinct root post-boot collection/removal transaction. Do not route through
+legacy runtime.start (it waits for SSH) or attach tenant control/workspace disks.
+Guest first-boot.zsh already uses exclusive result-directory creation to refuse
+installer reruns and shuts down after a complete receipt. A guest-side refusal
+alone is not a host boot-intent journal: persist the attempt before VM spawn and
+never silently rerun it after uncertain startup. Root-private staging intent
+must close before the GUI owner can run; recovery after that boundary must read
+its own boot journal rather than reopen AccountlessInstallationStagingJournal.
+The selected GUI process must verify the root-owned permit and exact staged
+snapshot under machine EX, bind real/effective/audit/session identity, preserve
+native/BLC stop cleanup, and retain capacity on uncertain outcomes. Final root
+collection must validate exact guest receipts before installed-checkpoint output;
+qualification still requires released-lease cleanup before ready publication.

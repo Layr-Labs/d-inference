@@ -47,6 +47,9 @@ REQUIRED_RUNTIME_TESTS=(
     everyEntryKindBlocksBothNativeGuardModesAndDelete
     nativeFenceSurvivesOrdinaryStatusInspectionAndBlocksCommands
     storageOverridesAndAliasesCannotUseAFencedImage
+    installerHasOnlyItsBootDiskAndNoHostOrGuestBridgeDevices
+    installerRequiresBrokerAndRejectsEveryExtraDeviceOrStorageOverride
+    installerRequiresMacOSAndManagedAuthorityButNeverGuestBridge
 )
 for test_name in "${REQUIRED_RUNTIME_TESTS[@]}"; do
     (

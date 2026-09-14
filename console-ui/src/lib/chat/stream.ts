@@ -13,7 +13,7 @@ import {
   unsealResponse,
   unsealSseEvent,
 } from "../encryption";
-import { STORAGE_KEYS } from "../constants";
+import { STORAGE_KEYS } from "../storage-keys";
 import { proxyHeaders } from "../http/proxy-client";
 import type {
   ChatMessage,

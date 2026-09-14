@@ -1,6 +1,6 @@
 # Prediction decision telemetry
 
-> Last updated: 2026-09-07 · commit `53646bc9b`
+> Last updated: 2026-09-14 · commit `a16c87ff2`
 
 Optional attempt records compare what the coordinator selected with what the
 provider decided. They explain decisions; they do not establish whether a
@@ -47,7 +47,7 @@ terminal messages. Sources: `coordinator/protocol/profile_deadline.go`
 | `projected_prefill_tokens`, `projected_decode_tokens` | Engine-projected scheduled work through the target's first-token step, including work ahead of the target; not just the target request's tokens. |
 | `prefill_tps`, `decode_tps` | Effective conservative rates passed to the engine after the existing policy adjustment. Missing/unusable rates remain absent. |
 
-`provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+DeadlineDecision.swift`
+`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+DeadlineDecision.swift`
 records returned evidence before post-submit expiry/cancellation checks can
 throw. Existing accepted-only stamps and projection fields keep their meaning;
 `accepted` with `continuation=expired` can therefore coexist with a missing

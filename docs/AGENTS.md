@@ -142,6 +142,14 @@ missing file; an inline-code citation of a repo path that does not exist
 doc links to. Run it before opening a PR that touches `docs/`. It checks only
 git-tracked files by default; `--all` includes untracked drafts.
 
+For a missing relative source link in a frozen report, release note, or design
+record, the checker can verify the source at that document's exact stamped
+commit. The commit and target must exist in local Git history; current docs
+and relative documentation links still require an existing working-tree
+target. Keep frozen records unchanged and use the
+[historical source procedure](developer/historical-references.md) to navigate
+their original source. Docs Lint checks out full history for this validation.
+
 ## 7. When you change code, change these docs
 
 | Code change | Doc(s) that must move in the same PR |

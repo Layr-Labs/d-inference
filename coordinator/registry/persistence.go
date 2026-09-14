@@ -64,7 +64,7 @@ func (r *Registry) RestoreProviderStateContext(ctx context.Context, p *Provider,
 	} else {
 		p.TrustLevel = TrustLevel(rec.TrustLevel)
 	}
-	// Do NOT clobber a fresh live attestation: verifyProviderAttestation runs
+	// Do NOT clobber a fresh live attestation: verification.Verifier.VerifyRegistration runs
 	// just before this and may have already set Attested=true (self_signed) from
 	// a passing SE attestation. Only fall back to the stored flag when we don't
 	// already have a fresh one — otherwise consumers/stats would see
@@ -78,13 +78,13 @@ func (r *Registry) RestoreProviderStateContext(ctx context.Context, p *Provider,
 	// connection that earned it live. Restoring MDAVerified=true here produced the
 	// misleading "mda_verified=true while self_signed" drift on
 	// /v1/providers/attestation. The flag is re-set by the live MDA leg
-	// (verifyAppleDeviceAttestation) once hardware is re-earned this connection.
+	// (verification.Verifier.VerifyMDA) once hardware is re-earned this connection.
 	p.MDAVerified = false
 
 	// Stage the durable Apple-signed MDA cert chain (if the store has one) for
 	// local re-verification at this connection's hardware-grant. We deliberately
 	// do NOT set MDAVerified/MDACertChain here — the proof is surfaced only after
-	// attachCachedMDAProof re-verifies it against Apple's pinned root AND re-binds
+	// verification.Verifier.AttachCachedMDA re-verifies it against Apple's pinned root AND re-binds
 	// it to this connection's SE key. This lets a reconnect/restart reuse a
 	// still-valid attestation instead of forcing a fresh, Apple-rate-limited
 	// (≈1/device/7d) DevicePropertiesAttestation round-trip over the throttled

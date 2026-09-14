@@ -34,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/eigeninference/d-inference/coordinator/inference/response"
+	"github.com/eigeninference/d-inference/coordinator/inference/settlement"
 	"net/http"
 	"strconv"
 	"strings"
@@ -1592,7 +1593,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			d.provider.Mu().Unlock()
 		}
 
-		if s.billing != nil && !queuedSettlesFree && !providerHasPayoutDestination(d.provider) {
+		if s.billing != nil && !queuedSettlesFree && !settlement.HasPayoutDestination(d.provider) {
 			s.logger.Warn("queued provider missing payout destination, crediting to internal ledger",
 				"request_id", d.requestID,
 				"provider_id", d.provider.ID,
@@ -1603,7 +1604,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// platform rate. Reserve the additional amount now. Skipped for
 		// free self-route, which settles at zero cost.
 		if s.billing != nil && !queuedSettlesFree {
-			if _, err := s.reserveAdditionalForProvider(d.pr, d.provider); err != nil {
+			if _, err := s.inferenceSettlement().ReserveForProvider(d.pr, d.provider); err != nil {
 				d.provider.RemovePending(d.requestID)
 				s.registry.SetProviderIdle(d.provider.ID)
 				d.excludeProviders[d.provider.ID] = struct{}{}
@@ -1631,7 +1632,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		if d.provider.PublicKey == "" {
 			d.provider.RemovePending(d.requestID)
 			s.registry.SetProviderIdle(d.provider.ID)
-			s.refundProviderExtra(d.pr)
+			s.inferenceSettlement().RefundProviderExtra(d.pr)
 			d.excludeProviders[d.provider.ID] = struct{}{}
 			d.setLastError("no provider with E2E encryption", 0)
 			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "encryption_missing", 0))
@@ -1641,7 +1642,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		if err != nil {
 			d.provider.RemovePending(d.requestID)
 			s.registry.SetProviderIdle(d.provider.ID)
-			s.refundProviderExtra(d.pr)
+			s.inferenceSettlement().RefundProviderExtra(d.pr)
 			d.excludeProviders[d.provider.ID] = struct{}{}
 			d.setLastError("provider public key invalid", 0)
 			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "provider_error", 0))
@@ -1651,7 +1652,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		if err != nil {
 			d.provider.RemovePending(d.requestID)
 			s.registry.SetProviderIdle(d.provider.ID)
-			s.refundProviderExtra(d.pr)
+			s.inferenceSettlement().RefundProviderExtra(d.pr)
 			d.setLastError("failed to generate session keys", 0)
 			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "provider_error", 0))
 			return outcomeRetry
@@ -1660,7 +1661,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			s.registry.ForgetCacheAttempt(d.pr)
 			d.provider.RemovePending(d.requestID)
 			s.registry.SetProviderIdle(d.provider.ID)
-			s.refundProviderExtra(d.pr)
+			s.inferenceSettlement().RefundProviderExtra(d.pr)
 			d.setLastError("failed to prepare cache-safe request", http.StatusInternalServerError)
 			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "provider_error", http.StatusInternalServerError))
 			return outcomeRetry
@@ -1672,7 +1673,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			s.registry.ForgetCacheAttempt(d.pr)
 			d.provider.RemovePending(d.requestID)
 			s.registry.SetProviderIdle(d.provider.ID)
-			s.refundProviderExtra(d.pr)
+			s.inferenceSettlement().RefundProviderExtra(d.pr)
 			if errors.Is(err, errProviderBodyTooLarge) {
 				d.excludeProviders[d.provider.ID] = struct{}{}
 				d.noteProviderBodyTooLarge(err.Error(), oversizedProviderBodyBytes(err))
@@ -1690,7 +1691,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			s.registry.ForgetCacheAttempt(d.pr)
 			d.provider.RemovePending(d.requestID)
 			s.registry.SetProviderIdle(d.provider.ID)
-			s.refundProviderExtra(d.pr)
+			s.inferenceSettlement().RefundProviderExtra(d.pr)
 			d.setLastError("failed to encrypt request", 0)
 			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "encryption_missing", 0))
 			return outcomeRetry
@@ -1725,7 +1726,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			s.registry.ForgetCacheAttempt(d.pr)
 			d.provider.RemovePending(d.requestID)
 			s.registry.SetProviderIdle(d.provider.ID)
-			s.refundProviderExtra(d.pr)
+			s.inferenceSettlement().RefundProviderExtra(d.pr)
 			d.excludeProviders[d.provider.ID] = struct{}{}
 			if errors.Is(writeErr, context.DeadlineExceeded) ||
 				errors.Is(writeErr, errFirstContentDeadlineAtWriter) {
@@ -3848,7 +3849,7 @@ func (d *dispatchState) writeCommittedResponse() {
 			// the dispatch loop still needs for a retry attempt.
 			refundPr := pr
 			saferun.Go(s.logger, "api.postTerminalSweep", func() {
-				s.refundReservedBalance(refundPr, "post_terminal_sweep:"+requestID)
+				s.inferenceSettlement().Refund(refundPr, "post_terminal_sweep:"+requestID)
 			})
 		}
 		removed := provider.RemovePending(requestID) // then remove so SetProviderIdle frees the slot

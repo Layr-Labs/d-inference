@@ -502,7 +502,7 @@ func TestHoldForSettlementSkipsAlreadyFinalizedReservation(t *testing.T) {
 
 	// Simulate the provider-timeout relay branch that already refunded the
 	// reservation (finalizes it, but leaves it in the deferred cleanup path).
-	if !srv.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID) {
+	if !srv.inferenceSettlement().Refund(pr, "provider_timeout:"+pr.RequestID) {
 		t.Fatalf("precondition: refundReservedBalance should finalize the reservation")
 	}
 	if !pr.IsReservationFinalized() {

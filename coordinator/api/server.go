@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/eigeninference/d-inference/coordinator/inference/response"
+	"github.com/eigeninference/d-inference/coordinator/inference/settlement"
 	"io"
 	"log/slog"
 	"net"
@@ -283,7 +284,7 @@ type Server struct {
 	// settlements parks billing records for requests whose consumer disconnected
 	// mid-stream, so a late provider terminal can settle them (or the reservation
 	// is refunded on grace expiry). See settlement.go.
-	settlements *settlementHolder
+	settlements *settlement.Holder
 	// settleGrace overrides defaultTerminalSettleGrace (tests set it small).
 	settleGrace time.Duration
 	// zombieCanceller throttles cancels for chunks on abandoned streams. See zombie_stream.go.
@@ -401,7 +402,7 @@ type Server struct {
 
 	// serviceReservations avoids hot-row pre-router ledger debits for trusted
 	// service accounts when enabled. Normal consumers still use ledger debits.
-	serviceReservations *serviceReservationManager
+	serviceReservations *settlement.ServiceHolds
 
 	// consumerTokenLimiter / serviceTokenLimiter enforce per-account input
 	// (ITPM) and output (OTPM) token-per-minute limits on inference endpoints,
@@ -761,10 +762,10 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		codeAttestThrottle:       newCodeAttestThrottle(),
 		trustReuseCache:          newTrustReuseCache(),
 		mdmSchedulerConfig:       cfg.MDMScheduler,
-		settlements:              newSettlementHolder(),
+		settlements:              settlement.NewHolder(),
 		zombieCanceller:          newZombieStreamCanceller(),
 		hedgeGov:                 newHedgeGovernor(),
-		serviceReservations:      newServiceReservationManager(st, cfg.ServiceReservations),
+		serviceReservations:      settlement.NewServiceHolds(st, cfg.ServiceReservations),
 		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
 		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
 		firstContentDeadlineBase: firstContentDeadlineBase,

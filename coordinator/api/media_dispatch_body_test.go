@@ -155,7 +155,7 @@ func TestChatCompletionsRemoteMediaTopsUpReservationAfterInlining(t *testing.T) 
 
 	// Fund exactly the pre-fetch reservation: enough to clear the balance gate
 	// and drive the fetch, nowhere near the inlined body's byte bound.
-	preFetch := srv.reservationCost("test", max(estimateBillingPromptTokens(parsed), estimatePromptTokens(parsed)), 1)
+	preFetch := srv.inferenceSettlement().Estimate("test", max(estimateBillingPromptTokens(parsed), estimatePromptTokens(parsed)), 1)
 	if err := st.Credit(testConsumerID, preFetch, store.LedgerDeposit, "media-topup-floor"); err != nil {
 		t.Fatal(err)
 	}

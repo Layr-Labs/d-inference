@@ -43,7 +43,12 @@ coordinator/          Go control plane (packages live at top level, not internal
 │                     routingsim/ (trace-driven routing simulation harness)
 ├── saferun/          panic-safe goroutine runners
 ├── stateexport/      consistent encrypted archive of MicroMDM (+ legacy step-ca) state (migration)
-├── store/            in-memory or Postgres persistence
+├── store/            compatibility facade for persistence
+│   ├── contracts/    domain records and small persistence interfaces
+│   ├── memory/       one-lock development/test backend
+│   ├── postgres/     durable domain operations, pool and gated backfills
+│   │   └── schema/   ordered startup DDL
+│   └── cache/        bounded user/model lookup decorator
 ├── telemetry/        event emitter, metrics/, profiler/, routequeue/, profilequeue/, outcomequeue/
 ├── datadog/          Datadog APM / DogStatsD / Logs API client
 ├── deploy/           container entrypoint (start.sh)
@@ -256,7 +261,7 @@ When adding code that mutates provider state or sends commands (`load_model`, et
 3. Check concurrent access — heartbeats arrive per-provider on separate goroutines; `TriggerModelSwaps` can race with `drainQueuedRequestsForModels`.
 4. Check the cleanup path — `Disconnect()` must clear any per-provider state you add.
 5. Verify pre-existing invariants: `maxModelSlots`, heartbeat field omission semantics (`nil` vs empty), and the `UnifiedMemoryCap` load gate on the provider side.
-6. **Store read-through cache** (`store/cached.go`): `CachedStore` serves `GetUserByAccountID`/`GetUserByPrivyID` and `GetModelRegistryRecord`/`GetModelManifest` from memory and invalidates on the store mutators it overrides. Any NEW `store.Store` method that writes the `users` table or the model-registry tables must be overridden in `CachedStore` to invalidate its domain, or callers read stale data for up to the TTL. Backend-only capabilities discovered by type assertion must go through `store.As` (the decorator implements `Unwrap`).
+6. **Store read-through cache** (`store/cache/store.go`): `CachedStore` serves `GetUserByAccountID`/`GetUserByPrivyID` and `GetModelRegistryRecord`/`GetModelManifest` from memory and invalidates on the store mutators it overrides. Any NEW `store.Store` method that writes the `users` table or the model-registry tables must be overridden in `CachedStore` to invalidate its domain, or callers read stale data for up to the TTL. Backend-only capabilities discovered by type assertion must go through `store.As` (the decorator implements `Unwrap`).
 
 ## Code Structure & Modularity
 

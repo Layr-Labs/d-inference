@@ -557,5 +557,5 @@ slot waits at most `mdmSchedulerBusyRetryDelay = 250 * time.Millisecond`; an
 earlier future job retains its shorter timer (`nextDispatchDelay`). Worker
 completion signals the dispatcher immediately. Due-row pages start at
 `min(limit, verificationDuePageHint)` with `verificationDuePageHint = 256`
-and grow to the requested limit (`coordinator/store/postgres.go`,
+and grow to the requested limit (`coordinator/store/postgres/verification.go`,
 `ListDueVerificationJobsPage`); the initial allocation does not truncate a page.

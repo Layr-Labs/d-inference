@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-13 · commit `d8647602b`
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -128,7 +128,7 @@ curl -X POST https://api.darkbloom.dev/v1/keys \
 
 `limit_usd` is a USD number `>= 0`; `limit_reset` is `none` (lifetime cap),
 `daily`, `weekly`, or `monthly`, aligned to UTC midnight, Monday, and the 1st
-(`coordinator/store/apikey.go` `KeySpendWindowStart`). Change either later with
+(`coordinator/store/contracts/keys.go` `KeySpendWindowStart`). Change either later with
 `PATCH /v1/keys/{id}`. The cap is checked against the key's settled usage in
 the window before each request's reservation; it is a soft sub-cap under your
 account balance, so several in-flight requests can together overshoot it by up

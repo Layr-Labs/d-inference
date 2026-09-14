@@ -28,7 +28,7 @@ and teardown; `CBv2QwenMTPIntegrationTests` independently covers allocation-refu
 ownership in the shared engine. Loaded-artifact tests remain an additional gate,
 not evidence supplied by tiny fixtures. `scripts/test-publish-model.sh`
 checks the artifact workflow payload. `TestHuggingFaceArtifactPostgresAndCache`
-in `coordinator/store/hugging_face_artifact_test.go` uses a disposable
+in `coordinator/store/postgres/hugging_face_artifact_test.go` uses a disposable
 `DATABASE_URL` to check storage and cache invalidation.
 
 `ProductionPromptParityTests` drives the real model-free `MLXOpenAIService`
@@ -88,8 +88,18 @@ database; it is skipped when its database environment is absent.
 Run prediction telemetry checks from the repository root:
 
 ```bash
-go test -race ./coordinator/api ./coordinator/registry ./coordinator/protocol ./coordinator/store ./coordinator/telemetry/profiler
+go test -race ./coordinator/api ./coordinator/registry ./coordinator/protocol ./coordinator/store/... ./coordinator/telemetry/profiler
 ```
+
+Persistence tests follow the backend packages. Use `./coordinator/store/...` to
+include all of them; the facade package alone checks import compatibility.
+`store/cache` owns private cache tests, `store/memory` owns tests that inspect its
+mutex-protected state, and `store/postgres` keeps the existing PostgreSQL and
+cross-backend fixtures together. This avoids parallel packages truncating the same
+fixture database. Shared test-only builders live under `store/internal/testfixture`.
+The PostgreSQL fixtures require the existing disposable `DATABASE_URL`; without it
+those fixtures explicitly skip. Startup SQL source guards inspect the actual
+`store/postgres/schema/` files and reject unconditional aggregation or dedupe.
 
 API fixtures use isolated encrypted WebSocket providers;
 Postgres tests require an explicitly disposable `DATABASE_URL` and include an
@@ -266,7 +276,7 @@ positive, negative and missing operands in
 `coordinator/telemetry/profiler/provider_test.go`.
 
 Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
-(`coordinator/store/harness_test.go`, `testPostgresStore`); CI provides a
+(`coordinator/store/postgres/harness_test.go`, `testPostgresStore`); CI provides a
 `postgres:16` service with user/password/db `testbed`. The pre-push hook runs
 `go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
 the slow WebSocket integration tests; run the full set before merging.
@@ -306,7 +316,7 @@ tests truncate tables and create/drop isolated databases; never point
 ```bash
 cd coordinator
 # DATABASE_URL must name a throwaway local database.
-go test -p 1 ./store ./cmd/coordinator -run 'Test(EarningsSummary|LegacyFloor|RecordProviderEarningMaintains|ProviderRestore|PostgresRestore|Maintenance)' -count=1
+go test -p 1 ./store/... ./cmd/coordinator -run 'Test(EarningsSummary|LegacyFloor|RecordProviderEarningMaintains|ProviderRestore|PostgresRestore|Maintenance)' -count=1
 go test -race ./api ./registry -run 'Test(ProviderRestore|ProviderPendingRestore|RestoreProviderState|AttachCachedMDAProof|StageDurableMDAChain)' -count=1
 ```
 

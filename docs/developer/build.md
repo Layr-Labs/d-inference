@@ -19,6 +19,12 @@ Profiler wire changes require both coordinator and provider builds; the shared
 Go/Swift fixture and focused checks are described in [test.md](test.md) and
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
 
+The coordinator's persistence packages compile through the normal Go build.
+`coordinator/store` retains existing caller imports; backend code lives under
+`store/memory`, `store/postgres` and `store/cache`, with shared records in
+`store/contracts`. The [storage code map](../architecture/storage.md#code-map)
+identifies each owner; changing this layout adds no migration or startup flag.
+
 ## Prerequisites
 
 - **Toolchain via [`mise`](https://mise.jdx.dev/).** Every version is pinned in

@@ -61,7 +61,7 @@ observations add no event fields or allowlist entries.
 | Go (canon) | `coordinator/protocol/telemetry.go` | `TelemetryEvent`, `TelemetryBatch`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind` | shape and enums |
 | Go allowlist | `coordinator/api/telemetry_handlers.go` | `telemetryFieldAllowlist`, `sanitizeTelemetryEvent`, `handleTelemetryIngest` | allowlist of record; the sanitizer is retained but no route reaches it |
 | Go emitter | `coordinator/telemetry/emitter.go` | `Emitter.Emit`, `Event` | the only live producer; source forced to `coordinator` |
-| Go store mirror | `coordinator/store/interface.go` | `TelemetryEventRecord` | `TelemetryEvent` + `received_at`; nothing persists it — Datadog is the sole sink |
+| Go store mirror | `coordinator/store/contracts/telemetry.go` | `TelemetryEventRecord` | `TelemetryEvent` + `received_at`; nothing persists it — Datadog is the sole sink |
 | Swift | `provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift` | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind`, `TelemetryFieldFilter` | client-side pre-filter; `TelemetryClient.swift` is a no-op facade (`emit` discards, `configure`/`shutdown` do nothing) |
 | TypeScript | `console-ui/src/lib/telemetry-types.ts` | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind`, `TELEMETRY_ALLOWED_FIELDS` | console filter types |
 

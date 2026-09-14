@@ -25,7 +25,7 @@ database and one hash:
 
 | Question | Answer | Where |
 |---|---|---|
-| Is this build real? | A `model_registry` row with an `active`/`beta` status **and** a `ready` version pointed to by `model_active_versions` | `coordinator/store/postgres_model_registry.go` (`activeModelRegistryQuery`) |
+| Is this build real? | A `model_registry` row with an `active`/`beta` status **and** a `ready` version pointed to by `model_active_versions` | `coordinator/store/postgres/model_registry.go` (`activeModelRegistryQuery`) |
 | Are these the right bytes? | The version's `aggregate_sha256` — a SHA-256 over the sorted per-file digests — must match what the provider computed after download | `coordinator/api/model_registry_handlers.go` (`aggregateManifestFileHashes`); `provider-swift/Sources/ProviderCoreFoundation/ManifestBuilder.swift` |
 | What does `gemma-4-26b` mean today? | A `model_aliases` row: `desired_build`, optional `previous_build`, lineage in `retired_builds` | `coordinator/registry/model_aliases.go` (`ResolveModel`) |
 
@@ -252,8 +252,8 @@ the budget.
 
 | Concern | Code |
 |---|---|
-| Tables (`model_registry`, `model_versions`, `model_version_files`, `model_active_versions`, `model_aliases`, `publishing_api_keys`) | `coordinator/store/postgres.go` (DDL); `coordinator/store/postgres_model_registry.go` (queries) |
-| Store types (`ModelRegistryEntry`, `ModelVersion`, `ModelVersionFile`, `ModelManifest`, `ManifestFile`, `ModelAlias`, `PublishingAPIKey`, `SupportedModel`) | `coordinator/store/interface.go` |
+| Tables (`model_registry`, `model_versions`, `model_version_files`, `model_active_versions`, `model_aliases`, `publishing_api_keys`) | `coordinator/store/postgres/schema/model_registry.go` (DDL); `coordinator/store/postgres/model_registry.go` (queries) |
+| Store types (`ModelRegistryEntry`, `ModelVersion`, `ModelVersionFile`, `ModelManifest`, `ManifestFile`, `ModelAlias`, `PublishingAPIKey`, `SupportedModel`) | `coordinator/store/contracts/models.go` |
 | Registration, admin actions, publishing-key auth, manifest validation, R2 prefix | `coordinator/api/model_registry_handlers.go` |
 | Alias upsert/list/delete, lineage, `desired_models` fan-out | `coordinator/api/model_alias_handlers.go` |
 | OpenRouter-only aliases | `coordinator/api/openrouter_alias_handlers.go`, `coordinator/api/openrouter_alias_invariants.go` |

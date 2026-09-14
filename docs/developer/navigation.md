@@ -30,7 +30,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Release HTTP, artifact validation, discovery and deactivation | `coordinator/api/releases/` (`Controller`); `coordinator/api/releases.go` binds current inventory, cache and policy dependencies; `coordinator/api/admin_auth.go` retains admin authorization and OTP |
 | Active releases, binary allowlists, runtime verification and evidence generations | `coordinator/providercontrol/releasepolicy/` (`Manager`, `Snapshot`); `coordinator/api/release_policy.go` binds inventory and fleet |
 | Provider selection, admission, queueing | `coordinator/registry/`; request eligibility in `request_traits.go` (`providerEligibleForTraitsLocked`) |
-| Billing and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/` |
+| Billing and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/contracts/`, `coordinator/store/postgres/`, `coordinator/store/memory/`, `coordinator/store/cache/` |
 | Provider inference, downloads, security, local serving | `provider-swift/Sources/ProviderCore/`; entrypoints in `provider-swift/Sources/darkbloom/` |
 | Portable model manifests and hashing | `provider-swift/Sources/ProviderCoreFoundation/`; target defined in `provider-swift/Package.swift` (`package`) |
 | Console, operations dashboard, landing page | `console-ui/src/`, `admin-ui/src/`, `landing/` |

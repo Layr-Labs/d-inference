@@ -64,7 +64,7 @@ Settlement: `coordinator/api/provider.go` (`handleCompleteAt`). Reservation:
 
 Storage: `model_prices(account_id, model, input_price, output_price,
 updated_at)`, primary key `(account_id, model)`
-(`coordinator/store/postgres.go`).
+(`coordinator/store/postgres/schema/billing.go`).
 
 ## Formulas
 
@@ -86,11 +86,11 @@ updated_at)`, primary key `(account_id, model)`
 | Provider payout | `totalCost − platformFee` | `coordinator/payments/pricing.go` (`ProviderPayoutWithPercent`) |
 | Withdrawal fee | `0` (standard); `max(gross × InstantFeeBps / 10_000, InstantFeeMinMicroUSD)` (instant) | `coordinator/billing/stripe_connect.go` (`FeeForMethodMicroUSD`) |
 | Withdrawal net | `gross − fee`, transferred as `microUSDToCents(net)`; must be ≥ 1 cent | `coordinator/api/stripe_withdraw.go` (`handleStripeWithdraw`) |
-| Key spend | `Σ usage.cost_micro_usd` for the key since `KeySpendWindowStart(limit_reset, now)`; request rejected when `spend + additional > LimitMicroUSD` | `coordinator/store/postgres.go` (`KeySpendSince`); `coordinator/api/apikey_handlers.go` (`checkKeySpendCap`) |
+| Key spend | `Σ usage.cost_micro_usd` for the key since `KeySpendWindowStart(limit_reset, now)`; request rejected when `spend + additional > LimitMicroUSD` | `coordinator/store/postgres/keys.go` (`KeySpendSince`); `coordinator/api/apikey_handlers.go` (`checkKeySpendCap`) |
 
 ## Ledger entry types
 
-`LedgerEntryType` (`coordinator/store/interface.go`). "Withdrawable" says
+`LedgerEntryType` (`coordinator/store/contracts/ledger.go`). "Withdrawable" says
 whether the credit raises `withdrawable_micro_usd`; which function writes each
 type is in [billing.md](../architecture/billing.md#ledger).
 
@@ -113,33 +113,33 @@ type is in [billing.md](../architecture/billing.md#ledger).
 
 `RewardLedgerTypes = [referral_reward, admin_reward]` — counted as "reward"
 rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
-(`coordinator/store/interface.go` `IsRewardLedgerType`).
+(`coordinator/store/contracts/ledger.go` `IsRewardLedgerType`).
 
 ## Balance primitives
 
 | Store method | `balance_micro_usd` | `withdrawable_micro_usd` | Idempotent | Citation |
 |---|---|---|---|---|
-| `Credit` | + | — | no | `coordinator/store/postgres.go` (`creditTx`) |
+| `Credit` | + | — | no | `coordinator/store/postgres/ledger.go` (`creditTx`) |
 | `CreditWithdrawable` | + | + | no | `creditWithdrawableTx` |
 | `CreditWithdrawableOnce` | + | + | on `(account_id, entry_type, reference)` under `pg_advisory_xact_lock` | `CreditWithdrawableOnce` |
 | `Debit` | − (fails with `ErrInsufficientBalance` if `balance < amount`) | `LEAST(withdrawable, balance − amount)` | no | `Debit` |
 | `CreateStripeWithdrawalWithDebit` | − | − (fails unless `withdrawable >= amount`) | row insert in the same transaction | `CreateStripeWithdrawalWithDebit` |
 | `CreditProviderAccount` | + | + | on `provider_earnings.job_id` | `CreditProviderAccount`; index `idx_provider_earnings_job` |
-| `SettleProviderFloorDraw` | + | + | on `(provider_key, epoch_id)` | `coordinator/store/postgres_base_rewards.go` |
+| `SettleProviderFloorDraw` | + | + | on `(provider_key, epoch_id)` | `coordinator/store/postgres/base_rewards.go` |
 
 ## Per-key spend caps
 
 | Field | Where | Values | Citation |
 |---|---|---|---|
 | `limit_usd` | `POST /v1/keys`, `PATCH /v1/keys/{id}` body | `>= 0`; stored as `APIKey.LimitMicroUSD` | `coordinator/api/apikey_handlers.go` (`validateKeyLimitInputs`, `handleCreateAPIKey`) |
-| `limit_reset` | same | `none`, `daily`, `weekly`, `monthly` (`KeyResetNone` …); unknown values normalise to `none` | `coordinator/store/apikey.go` (`NormalizeResetWindow`, `KeySpendWindowStart`) |
+| `limit_reset` | same | `none`, `daily`, `weekly`, `monthly` (`KeyResetNone` …); unknown values normalise to `none` | `coordinator/store/contracts/keys.go` (`NormalizeResetWindow`, `KeySpendWindowStart`) |
 | enforcement points | `reserveInferenceBalance`, `topUpReservationForInlinedMedia`, `reserveAdditionalForProvider` | soft cap on settled usage | `coordinator/api/inference_admission.go`; `coordinator/api/consumer.go` |
 
 ## Service accounts
 
 | Property | Value | Citation |
 |---|---|---|
-| Role value | `users.role = "service"` (`RoleService`); `PUT /v1/admin/users/role` accepts `"service"` or `""` | `coordinator/store/interface.go`; `coordinator/api/billing_handlers.go` (`handleAdminSetUserRole`) |
+| Role value | `users.role = "service"` (`RoleService`); `PUT /v1/admin/users/role` accepts `"service"` or `""` | `coordinator/store/contracts/users.go`; `coordinator/api/billing_handlers.go` (`handleAdminSetUserRole`) |
 | Cost function | `CalculateCostWithOverridesNoMinimum` | `coordinator/api/provider.go` (`handleCompleteAt`) |
 | Price | platform price; provider custom prices and the provider top-up are skipped | `handleCompleteAt`; `coordinator/api/consumer.go` (`isServiceConsumer`, `reserveAdditionalForProvider`) |
 | Reservation mode | ledger debit, or in-memory hold when `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED=true` | `coordinator/api/reservations.go` (`useServiceReservation`) |
@@ -191,7 +191,7 @@ Formulas: `Avail(u) = clamp((u − 0.90) / 0.10, 0, 1)`;
 `Draw = max(0, floor − int64(k × earned))` (`floor.go`). Settlement row:
 `provider_floor_draws` with `UNIQUE (provider_key, epoch_id)`; mirrored
 `provider_earnings` row has `model = 'base_reward'` and
-`job_id = floor:<epoch_id>:<provider_key>` (`coordinator/store/postgres_base_rewards.go`
+`job_id = floor:<epoch_id>:<provider_key>` (`coordinator/store/postgres/base_rewards.go`
 `SettleProviderFloorDraw`).
 
 ## Routes
@@ -292,8 +292,8 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | USD input | Decimal with at most two fractional digits; $1 to $1,000,000, further constrained by balance and published recipient limits in local currency | `coordinator/api/global_payouts_withdraw.go` (`payoutUSDCents`) |
 | Local amount | Stripe quote, in destination minor units with explicit currency exponent | `coordinator/api/global_payouts_withdraw.go` (`payoutCurrencyExponent`) |
 | Quote validity | At most two minutes, shortened to the Stripe FX lock expiry | `coordinator/api/global_payouts_withdraw.go` (`handleGlobalPayoutQuote`) |
-| Quote cleanup | Up to 1,000 expired, never-confirmed quotes per minute; confirmed withdrawals are retained | `coordinator/store/global_payouts_maintenance.go` (`PruneExpiredGlobalPayoutQuotes`); `coordinator/api/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`) |
+| Quote cleanup | Up to 1,000 expired, never-confirmed quotes per minute; confirmed withdrawals are retained | `coordinator/store/postgres/global_payouts_maintenance.go` (`PruneExpiredGlobalPayoutQuotes`); `coordinator/api/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`) |
 | Retry window without remote ID | Twelve hours, then `manual_reconciliation_required`: excluded from automatic scans and claims, without refund | `coordinator/api/global_payouts_reconcile.go` (`syncGlobalPayout`) |
-| Reconciliation | One-minute loop, up to 200 records per scan; posted records polled for 90 days and later returns handled by events | `coordinator/api/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`); `coordinator/store/global_payouts_postgres.go` (`ListGlobalPayoutsToReconcile`) |
+| Reconciliation | One-minute loop, up to 200 records per scan; posted records polled for 90 days and later returns handled by events | `coordinator/api/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`); `coordinator/store/postgres/global_payouts.go` (`ListGlobalPayoutsToReconcile`) |
 
 Published recipient bounds are stored in `coordinator/billing/globalpayouts/recipient_limits.go` (`Country.Limits`) from [Stripe's recipient minimums and maximums](https://docs.stripe.com/global-payouts/send-money#recipient-minimums). The API reports the local-currency threshold and validates the credited amount; direct pre-quote comparison is possible for USD destinations. The private payout row retains Stripe's `estimated_fees` as `estimated_stripe_fees` for operator cost review (`coordinator/api/global_payouts_withdraw.go`, `handleGlobalPayoutQuote`).

@@ -40,8 +40,8 @@ read once at process start and a restart applies a change.
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_DATABASE_URL` | Postgres DSN (secret) | unset | `coordinator/store/config.go` (`ReadConfig`); `coordinator/cmd/coordinator/main.go` | Selects the Postgres store and runs migrations at boot; see [`../architecture/storage.md`](../architecture/storage.md). Required unless the memory store is allowed. |
-| `EIGENINFERENCE_ALLOW_MEMORY_STORE` | `true` | `false` | `coordinator/store/config.go` (`ReadConfig`, `Check`) | Permits the non-durable in-memory store when no DSN is set (tests and local dev only); startup refuses otherwise. |
+| `EIGENINFERENCE_DATABASE_URL` | Postgres DSN (secret) | unset | `coordinator/store/contracts/config.go` (`ReadConfig`); `coordinator/cmd/coordinator/main.go` | Selects the Postgres store and runs migrations at boot; see [`../architecture/storage.md`](../architecture/storage.md). Required unless the memory store is allowed. |
+| `EIGENINFERENCE_ALLOW_MEMORY_STORE` | `true` | `false` | `coordinator/store/contracts/config.go` (`ReadConfig`, `Check`) | Permits the non-durable in-memory store when no DSN is set (tests and local dev only); startup refuses otherwise. |
 | `USER_PERSISTENT_DATA_PATH` | directory | `/mnt/disks/userdata` | `coordinator/deploy/start.sh`; `coordinator/providercontrol/trustreuse/journal_config.go` (`JournalPathFromEnv`); `coordinator/api/statearchive/config.go` (`resolveStateExportRoot`) | Persistent disk root, symlinked to `/data`; parent of the MicroMDM state, the trust-reuse journal and the state-export root. |
 | `EIGENINFERENCE_TRUST_REUSE_REVOCATION_JOURNAL_PATH` | file path | `<persist>/coordinator/trust-reuse-hard-untrust.v1.jsonl` | `coordinator/providercontrol/trustreuse/journal_config.go` (`JournalPathFromEnv`) | Location of the hard-untrust revocation journal; startup refuses when the journal is unusable. |
 | `EIGENINFERENCE_STATE_EXPORT_ENABLED` | `true` | unset (route 404s) | `coordinator/api/statearchive/handler.go` (`Controller.Download`) | Master switch for `GET /v1/admin/state-export`; see [`../operations/state-export.md`](../operations/state-export.md). |
@@ -53,7 +53,7 @@ read once at process start and a restart applies a change.
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_ADMIN_KEY` | secret | unset (warning; no seeded key) | `coordinator/store/config.go` (`ReadConfig`); `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/cmd/coordinator/main.go` (`SeedKey`) | Bootstrap admin API key seeded into `api_keys`; bearer token for `/v1/admin/*` and state export. Release registration requires `EIGENINFERENCE_RELEASE_KEY`. |
+| `EIGENINFERENCE_ADMIN_KEY` | secret | unset (warning; no seeded key) | `coordinator/store/contracts/config.go` (`ReadConfig`); `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/cmd/coordinator/main.go` (`SeedKey`) | Bootstrap admin API key seeded into `api_keys`; bearer token for `/v1/admin/*` and state export. Release registration requires `EIGENINFERENCE_RELEASE_KEY`. |
 | `EIGENINFERENCE_ADMIN_EMAILS` | comma-separated emails | unset | `coordinator/api/server_config.go` (`ReadServerConfig`, `ParseCommaList`) | Privy accounts with these emails get admin on console-facing admin routes. |
 | `EIGENINFERENCE_RELEASE_KEY` | secret | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/releases/registration.go` | Scoped bearer token accepted with constant-time comparison by `Controller.Register`; an admin key alone does not authorize release registration. |
 | `EIGENINFERENCE_PRIVY_APP_ID` | string | unset (Privy auth off) | `coordinator/auth/config.go` (`ReadConfig`) | Enables Privy JWT verification; also the expected JWT audience. |

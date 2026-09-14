@@ -17,8 +17,8 @@ this page only runs the queries.
   logical request, keyed `(request_id, attempt)`) and `fleet_snapshots` (one
   row per provider × model per sampler tick, plus a `provider_id =
   'coordinator'` row). Both are created by the boot migrations in
-  `coordinator/store/postgres.go`; the optional `request_waterfall` view is
-  applied by hand from `coordinator/store/migrations/request_waterfall.sql`.
+  `coordinator/store/postgres/schema/profile_tables.go`; the optional `request_waterfall` view is
+  applied by hand from `coordinator/store/postgres/migrations/request_waterfall.sql`.
 - Rows exist only while retention keeps them
   ([`../reference/telemetry-inventory.md#coordinator-per-request-records-postgres`](../reference/telemetry-inventory.md#coordinator-per-request-records-postgres))
   and, for `request_profiles`, only for sampled or always-recorded attempts
@@ -252,7 +252,7 @@ is being routed on nearly-expired state.
 |---|---|---|
 | Step 1 returns nothing for a known request | The attempt was sampled out and hit no always-record predicate, or it is older than retention | Look the request up in `inference_routes` instead; raise `EIGENINFERENCE_PROFILE_SAMPLE_RATE` ([`../reference/configuration.md`](../reference/configuration.md)) if the miss rate is a problem |
 | `prov_*`, `eng_*`, `transport_est_us`, `slept_us` all `NULL` | Provider older than the profiler build; step 3 already excludes these rows via `provider_profile_valid` | Expected for a mixed fleet ([`../architecture/system-profiler.md#invariants`](../architecture/system-profiler.md#invariants)) |
-| `relation "request_waterfall" does not exist` | The view is not part of the boot migrations | `psql "$EIGENINFERENCE_DATABASE_URL" -f coordinator/store/migrations/request_waterfall.sql` |
+| `relation "request_waterfall" does not exist` | The view is not part of the boot migrations | `psql "$EIGENINFERENCE_DATABASE_URL" -f coordinator/store/postgres/migrations/request_waterfall.sql` |
 | Queries are slow or time out on the primary | Percentile scans over 24 h of rows are heavy and compete with the hourly retention DELETE | Run on the read replica; narrow the `created_at` window |
 
 ## Related

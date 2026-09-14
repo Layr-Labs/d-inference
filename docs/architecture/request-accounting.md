@@ -49,7 +49,7 @@ The request sink (`coordinator/telemetry/outcomequeue/queue.go`, `Sink`) has 4,0
 
 ## Evidence and precedence
 
-`coordinator/store/request_outcomes.go` defines schema version 1. Evidence booleans mean an observation exists; false does not prove that nothing happened remotely. No token count, preamble, acknowledgment, successful reservation, committed HTTP 200, or profile `client_outcome=completed` establishes completed response delivery.
+`coordinator/store/contracts/request_outcomes.go` defines schema version 1. Evidence booleans mean an observation exists; false does not prove that nothing happened remotely. No token count, preamble, acknowledgment, successful reservation, committed HTTP 200, or profile `client_outcome=completed` establishes completed response delivery.
 
 | Field | Meaning |
 |---|---|
@@ -104,9 +104,9 @@ A raw historical `dispatch_exhausted` can represent a retained real provider err
 | Content and write evidence | `coordinator/api/request_outcome_egress.go`, `coordinator/api/sender_encryption.go` |
 | Bounded persistence | `coordinator/telemetry/outcomequeue/` (`Sink`, `Submit`, `Close`, `Stats`); `coordinator/api/request_outcome_sink.go` (`newRequestOutcomeSink`) injects the active-store writer and metrics |
 | Health endpoint | `coordinator/api/request_outcome_admin.go` (`handleAdminRequestOutcomes`) reads independent process counters through `Stats` |
-| Schema, revision merge and reads | `coordinator/store/request_outcomes.go`, `coordinator/store/postgres_request_outcomes.go`, `coordinator/store/memory_request_outcomes.go` |
+| Schema, revision merge and reads | `coordinator/store/contracts/request_outcomes.go`, `coordinator/store/postgres/request_outcomes.go`, `coordinator/store/memory/request_outcomes.go` |
 | Live isolated endpoint regressions | `coordinator/api/request_outcome_integration_test.go`, `coordinator/api/request_outcome_test.go`, `coordinator/api/deadline_unreachable_integration_test.go` |
-| Memory/Postgres parity and retention | `coordinator/store/request_outcomes_test.go` |
+| Memory/Postgres parity and retention | `coordinator/store/postgres/request_outcomes_test.go` |
 
 ## Related
 

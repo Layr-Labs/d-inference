@@ -51,7 +51,10 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/api/releases` | Release registration, metadata/origin/bundle verification, deactivation and cached discovery (`Controller`). `api/releases.go` binds current store/cache/policy and existing authorization; `api/admin_auth.go` owns admin authorization and OTP. |
 | `coordinator/api/httpresponse` | JSON response writing and the common OpenAI-compatible error envelope (`WriteJSON`, `ErrorBody`); `WriteCachedJSON` and `EncodeCachedJSON` preserve pre-encoded response bytes. |
 | `coordinator/registry` | In-memory fleet view, scheduler and cost model, queue, warm pool, capacity breakers, health ejection, cache routing, TTFT calibration and shadow admission. |
-| `coordinator/store` | `Store` interface, Postgres and memory backends, schema migrations. |
+| `coordinator/store` | Compatible constructors and type aliases; [persistence code map](../storage.md#code-map). |
+| `coordinator/store/contracts` | Domain records and interfaces (`Store`, composed `BillingStore` and `ProviderStore`). |
+| `coordinator/store/memory`, `coordinator/store/postgres` | Backend-owned locks, pool, transactions and domain operations; `postgres/schema` assembles ordered startup DDL. |
+| `coordinator/store/cache` | Bounded user/model caches (`Store`, `Unwrap`) with domain invalidation and generation fences. |
 | `coordinator/protocol` | Wire types for the provider WebSocket: register, heartbeat, capacity, inference frames, telemetry, profiles. |
 | `coordinator/internal/e2e` | NaCl Box (X25519 + XSalsa20-Poly1305) for coordinator↔provider and sender↔coordinator sealing. |
 | `coordinator/attestation` | Secure Enclave attestation verification and Apple MDA certificate chains. |

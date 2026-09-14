@@ -8,6 +8,7 @@ struct PagedFootprintTelemetryTests {
         let fixture = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
             .appendingPathComponent("coordinator/protocol/testdata/paged_footprint_wire.json")
         let data = try Data(contentsOf: fixture)
         var sample = try JSONDecoder().decode(PagedStorageTelemetry.self, from: data)

@@ -1,7 +1,6 @@
 package registry
 
 import (
-	"fmt"
 	"testing"
 	"time"
 )
@@ -64,27 +63,6 @@ func TestDispatchPlanProbeRejectsWrongProviderBeforeBoundReply(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("collector did not close after bound reply")
-	}
-}
-
-var dispatchPlanBenchmarkResult *DispatchPlan
-
-// Keep construction's allocation behavior visible across the owner boundary.
-// Every input is already a scan candidate; benchmark setup does no timed work.
-func BenchmarkDispatchPlanRetention(b *testing.B) {
-	for _, size := range []int{8, 64, 256} {
-		b.Run(fmt.Sprint(size), func(b *testing.B) {
-			scan := candidateScan{candidateCount: size}
-			for i := 0; i < size; i++ {
-				scan.pool = append(scan.pool, &routingCandidate{provider: &Provider{ID: fmt.Sprint(i)}, costMs: float64(size - i)})
-			}
-			winner := scan.pool[size-1]
-			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				dispatchPlanBenchmarkResult = newDispatchPlan("model", scan, winner)
-			}
-		})
 	}
 }
 

@@ -17,37 +17,45 @@ export function Hero() {
       <div className="hero-copy">
         <a className="alpha-badge" href={`${CONSOLE_URL}/earn`}>
           <span className="status-dot" />
-          THE NETWORK IS IN PUBLIC ALPHA <Arrow />
+          Public alpha is open <Arrow />
         </a>
         <h1>
-          Intelligence,
+          Private inference.
           <br />
-          <em>in good hands.</em>
+          <em>Open possibilities.</em>
         </h1>
         <p className="hero-description">
-          Private AI inference. Powered by the Macs
-          <br className="desktop-break" /> around us.
-        </p>
-        <p className="hero-support">
-          Build with open models on a network of verified Apple Silicon.
-          Familiar APIs. Transparent pricing. Privacy built into the hardware.
+          Open models. Verified Apple Silicon. Your familiar API.{" "}
+          <br className="desktop-break" />A private inference network, powered
+          by the Macs around us.
         </p>
         <div className="hero-actions">
           <a href={CONSOLE_URL} className="button">
             Start building <Arrow diagonal />
           </a>
           <a href="#nodes" className="button button-outline">
-            Put your Mac to work <Arrow />
+            Earn with your Mac <Arrow />
           </a>
         </div>
-        <a className="paper-link" href={PAPER_URL}>
-          A closer look at the technology{" "}
-          <span>
-            Read the paper <Arrow diagonal />
-          </span>
-        </a>
       </div>
-      <NetworkArt />
+      <div className="network-showcase">
+        <div className="showcase-copy">
+          <span className="eyebrow">A NETWORK WITH A DIFFERENT FOUNDATION</span>
+          <h2>
+            Extraordinary compute.
+            <br />
+            Already on your desk.
+          </h2>
+          <a href={PAPER_URL} className="text-link">
+            Meet Darkbloom <Arrow diagonal />
+          </a>
+        </div>
+        <NetworkArt />
+        <div className="showcase-footer">
+          <span>Built by Eigen Labs</span>
+          <span>Distributed by design.</span>
+        </div>
+      </div>
     </section>
   );
 }
@@ -56,72 +64,48 @@ export function NetworkSection() {
   const features = [
     {
       type: "chip" as const,
-      title: "Extraordinary hardware.\nAlready everywhere.",
+      title: "Everyday hardware.\nExtraordinary potential.",
       body: "Apple Silicon pairs unified memory with efficient compute. Darkbloom connects that untapped capacity into a shared inference network.",
-      detail: "POWERED BY APPLE SILICON",
     },
     {
       type: "lock" as const,
-      title: "Privacy that goes\nbeneath the surface.",
+      title: "Private by design.",
       body: "Encrypted requests, verified hardware, and a hardened runtime work together to protect inference from node operators.",
-      detail: "VERIFIED AT THE HARDWARE LEVEL",
     },
     {
       type: "code" as const,
-      title: "A familiar way\nto build something new.",
+      title: "An API you already know.",
       body: "Use your existing OpenAI SDK with a new base URL. Access open models and streaming responses without rebuilding your application.",
-      detail: "OPENAI-COMPATIBLE API",
     },
   ];
   return (
-    <>
-      <div className="trust-strip container">
-        <span>
-          AN OPEN NETWORK.
-          <br />A STRONG FOUNDATION.
-        </span>
-        <span>
-          <FeatureIcon type="chip" />
-          Apple Silicon
-        </span>
-        <span>
-          <FeatureIcon type="code" />
-          OpenAI compatible
-        </span>
-        <span className="eigen-wordmark">
-          <span className="eigen-symbol">▰</span>EigenCloud
-        </span>
+    <section id="why" className="section container" data-section="why">
+      <div className="section-heading">
+        <div>
+          <SectionLabel>THE NETWORK</SectionLabel>
+          <h2>
+            Less infrastructure.
+            <br />
+            <em>More possibility.</em>
+          </h2>
+        </div>
+        <p>
+          The next chapter of AI doesn’t have to start with another data center.
+          It can start with the Mac on your desk.
+        </p>
       </div>
-      <section id="why" className="section container" data-section="why">
-        <div className="section-heading">
-          <div>
-            <SectionLabel>01 / A DIFFERENT KIND OF CLOUD</SectionLabel>
-            <h2>
-              Great compute is already here.
-              <br />
-              <em>Let’s put it to work.</em>
-            </h2>
-          </div>
-          <p>
-            The next chapter of AI doesn’t have to start with another data
-            center. It can start with the Mac on your desk.
-          </p>
-        </div>
-        <div className="feature-grid">
-          {features.map((feature, index) => (
-            <article className="feature-card" key={feature.type}>
-              <div className="feature-top">
-                <FeatureIcon type={feature.type} />
-                <span>0{index + 1}</span>
-              </div>
-              <h3>{feature.title}</h3>
-              <p>{feature.body}</p>
-              <span className="feature-detail">{feature.detail}</span>
-            </article>
-          ))}
-        </div>
-      </section>
-    </>
+      <div className="feature-grid">
+        {features.map((feature) => (
+          <article className="feature-card" key={feature.type}>
+            <div className="feature-top">
+              <FeatureIcon type={feature.type} />
+            </div>
+            <h3>{feature.title}</h3>
+            <p>{feature.body}</p>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -131,11 +115,11 @@ export function PrivacySection() {
       <div className="container">
         <div className="section-heading">
           <div>
-            <SectionLabel>02 / PRIVACY, BY DESIGN</SectionLabel>
+            <SectionLabel>PRIVACY, BUILT IN</SectionLabel>
             <h2>
-              Your ideas stay yours.
+              Your next big idea.
               <br />
-              <em>At every layer.</em>
+              <em>Kept close.</em>
             </h2>
           </div>
           <p>
@@ -242,11 +226,11 @@ export function DeveloperSection() {
       data-section="api"
     >
       <div className="developer-copy">
-        <SectionLabel>03 / BUILT FOR BUILDERS</SectionLabel>
+        <SectionLabel>MADE FOR DEVELOPERS</SectionLabel>
         <h2>
-          Change the URL.
+          Familiar tools.
           <br />
-          <em>Keep the flow.</em>
+          <em>A different cloud.</em>
         </h2>
         <p className="section-description">
           Your tools, your SDKs, your workflow. Connect to Darkbloom with the
@@ -287,11 +271,11 @@ export function PricingSection() {
     >
       <div className="section-heading">
         <div>
-          <SectionLabel>04 / SIMPLE, TRANSPARENT PRICING</SectionLabel>
+          <SectionLabel>PAY PER TOKEN</SectionLabel>
           <h2>
-            Powerful models.
+            Open models.
             <br />
-            <em>Down-to-earth pricing.</em>
+            <em>Clear pricing.</em>
           </h2>
         </div>
         <p>
@@ -315,11 +299,11 @@ export function EarnSection() {
     <section id="nodes" className="earn-section" data-section="earn">
       <div className="container earn-grid">
         <div className="earn-copy">
-          <SectionLabel>05 / YOUR MAC HAS MORE TO GIVE</SectionLabel>
+          <SectionLabel>FOR MAC OWNERS</SectionLabel>
           <h2>
-            Idle Mac.
+            Your Mac can
             <br />
-            <em>Active income.</em>
+            <em>do more.</em>
           </h2>
           <p className="section-description">
             Turn spare Apple Silicon capacity into useful work. Join the
@@ -416,12 +400,8 @@ export function FAQSection() {
   return (
     <section className="section container faq-section" data-section="faq">
       <div>
-        <SectionLabel>A FEW THINGS WORTH KNOWING</SectionLabel>
-        <h2>
-          Good questions.
-          <br />
-          <em>Clear answers.</em>
-        </h2>
+        <SectionLabel>FAQ</SectionLabel>
+        <h2>Good to know.</h2>
         <a className="text-link" href={`${REPO_URL}/tree/master/docs`}>
           Explore the documentation <Arrow diagonal />
         </a>
@@ -446,11 +426,11 @@ export function FAQSection() {
 export function FinalCTA() {
   return (
     <section className="final-cta container" data-section="get-started">
-      <SectionLabel>THE FUTURE IS A SHARED EFFORT</SectionLabel>
+      <SectionLabel>BUILD WITH DARKBLOOM</SectionLabel>
       <h2>
-        Let’s build something
+        Your next idea
         <br />
-        <em>worth protecting.</em>
+        <em>starts here.</em>
       </h2>
       <div>
         <a href={CONSOLE_URL} className="button">
@@ -460,8 +440,6 @@ export function FinalCTA() {
           Join the network <Arrow />
         </a>
       </div>
-      <span className="cta-orbit orbit-one" aria-hidden="true" />
-      <span className="cta-orbit orbit-two" aria-hidden="true" />
     </section>
   );
 }

@@ -4,11 +4,11 @@
   gap: 80px;
 }
 .faq-section h2 {
-  font-size: 54px;
+  font-size: 48px;
 }
 .faq-section .text-link {
   margin-top: 27px;
-  font-size: 11px;
+  font-size: 13px;
 }
 .faq-list details {
   border-bottom: 1px solid #d5d0df;
@@ -24,7 +24,7 @@
   gap: 20px;
   list-style: none;
   padding: 23px 0;
-  font-size: 14px;
+  font-size: 16px;
 }
 .faq-list summary::-webkit-details-marker {
   display: none;
@@ -39,8 +39,8 @@
   transform: rotate(45deg);
 }
 .faq-list details > p {
-  font-size: 12px;
-  line-height: 1.9;
+  font-size: 14px;
+  line-height: 1.75;
   color: #756a80;
   padding: 0 34px 24px 0;
 }
@@ -48,10 +48,9 @@
   text-align: center;
   position: relative;
   overflow: hidden;
-  background: #dce6f5;
-  border: 1px solid #d3ddeb;
-  border-radius: 10px;
-  padding: 67px 30px 70px;
+  background: #dce8fa;
+  border-radius: 20px;
+  padding: 80px 30px;
   isolation: isolate;
 }
 .final-cta .eyebrow {
@@ -59,29 +58,13 @@
   margin-bottom: 22px;
 }
 .final-cta h2 {
-  font-size: clamp(48px, 5.5vw, 76px);
+  font-size: clamp(42px, 5vw, 64px);
 }
 .final-cta > div {
   display: flex;
   justify-content: center;
   gap: 12px;
   margin-top: 30px;
-}
-.cta-orbit {
-  position: absolute;
-  border: 1px solid #1a0c6d13;
-  border-radius: 50%;
-  width: 520px;
-  height: 520px;
-  z-index: -1;
-  top: -150px;
-}
-.orbit-one {
-  left: -320px;
-}
-.orbit-two {
-  right: -320px;
-  top: 40px;
 }
 .footer {
   padding-top: 67px;
@@ -93,13 +76,13 @@
   padding-bottom: 52px;
 }
 .footer-main > div > p {
-  font-size: 12px;
+  font-size: 14px;
   color: #7b7188;
   margin-top: 14px;
 }
 .footer-byline {
   display: block;
-  font-size: 8px;
+  font-size: 10px;
   color: #8d8298;
   margin-top: 29px;
 }
@@ -110,7 +93,7 @@
   gap: 16px;
 }
 .footer nav > span {
-  font: 9px var(--mono);
+  font: 11px var(--mono);
   letter-spacing: 0.07em;
   color: #8b8199;
   margin-bottom: 5px;
@@ -119,7 +102,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  font-size: 12px;
+  font-size: 14px;
 }
 .footer nav a:hover {
   text-decoration: underline;
@@ -135,7 +118,7 @@
   justify-content: space-between;
   align-items: center;
   gap: 20px;
-  font-size: 9px;
+  font-size: 12px;
   color: #8a8294;
 }
 .footer-bottom > div {

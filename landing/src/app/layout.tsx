@@ -8,12 +8,12 @@ const description =
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://darkbloom.dev"),
-  title: "Darkbloom — Intelligence, in good hands",
+  title: "Darkbloom — Private inference. Open possibilities.",
   description,
   alternates: { canonical: "/" },
   icons: { icon: "/icon.svg" },
   openGraph: {
-    title: "Darkbloom — Intelligence, in good hands",
+    title: "Darkbloom — Private inference. Open possibilities.",
     description,
     url: "/",
     siteName: "Darkbloom",

@@ -45,8 +45,8 @@ export function EarningsCalculator() {
   return (
     <div className="calculator">
       <div className="calculator-heading">
-        <span className="eyebrow">THE EARNINGS ESTIMATOR</span>
-        <span className="small-label">01 / CONFIGURE</span>
+        <span className="eyebrow">Estimate your earnings</span>
+        <span className="small-label">USD / MONTH</span>
       </div>
       <div className="calculator-fields">
         <label>

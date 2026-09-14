@@ -1,13 +1,13 @@
 .developer-section {
   display: grid;
-  grid-template-columns: 0.8fr 1.2fr;
-  gap: 80px;
+  grid-template-columns: 0.85fr 1.15fr;
+  gap: 64px;
   align-items: center;
 }
 .section-description {
-  color: #6b6577;
-  line-height: 1.85;
-  font-size: 14px;
+  color: var(--muted);
+  line-height: 1.7;
+  font-size: 16px;
   margin-top: 24px;
   max-width: 380px;
 }
@@ -16,7 +16,7 @@
   flex-direction: column;
   gap: 14px;
   margin-block: 26px 34px;
-  font-size: 12px;
+  font-size: 14px;
 }
 .developer-features > span {
   display: flex;
@@ -30,7 +30,7 @@
 .docs-link {
   display: table;
   margin-top: 21px;
-  font-size: 11px;
+  font-size: 13px;
 }
 .docs-link svg {
   vertical-align: middle;
@@ -38,10 +38,9 @@
   margin-left: 12px;
 }
 .code-window {
-  border-radius: 10px;
-  background: #181329;
+  border-radius: 16px;
+  background: #1b1730;
   overflow: hidden;
-  box-shadow: 0 22px 45px #2111440e;
   color: #e0dbeb;
   min-width: 0;
 }
@@ -65,7 +64,7 @@
   border: 0;
   border-bottom: 2px solid transparent;
   padding: 0 0 0;
-  font: 11px var(--mono);
+  font: 12px var(--mono);
 }
 .code-tabs button[aria-pressed="true"] {
   color: #e9e4f2;
@@ -75,19 +74,19 @@
   display: flex;
   gap: 7px;
   align-items: center;
-  font-size: 10px;
+  font-size: 12px;
   background: none;
   color: inherit;
   border: 1px solid #ffffff2e;
   border-radius: 4px;
   padding: 7px 9px;
-  min-height: 32px;
+  min-height: 36px;
 }
 .copy-button:hover {
   background: #95bfff15;
 }
 .code-window pre {
-  font: 11px/1.9 var(--mono);
+  font: 12px/1.9 var(--mono);
   overflow: auto;
   margin: 0;
   padding: 27px 24px 31px;
@@ -106,18 +105,18 @@
   display: flex;
   gap: 9px;
   align-items: center;
-  font: 8px var(--mono);
-  color: #9c91af;
+  font: 10px var(--mono);
+  color: #b7adc9;
   letter-spacing: 0.05em;
 }
 .pricing-section {
-  padding-top: 0;
+  border-top: 1px solid var(--line);
 }
 .pricing-panel {
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 16px;
   overflow: hidden;
-  background: #fafafa;
+  background: var(--white);
 }
 .pricing-toolbar {
   display: flex;
@@ -130,7 +129,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 10px;
+  font-size: 12px;
   color: #716b7c;
 }
 .table-scroll {
@@ -144,27 +143,27 @@
   min-width: 520px;
 }
 .pricing-table thead th {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 400;
   color: #797385;
-  background: #edecf1;
+  background: #f7f7f9;
   padding: 17px 29px;
 }
 .pricing-table tbody th {
   font-weight: 500;
-  font-size: 17px;
+  font-size: 18px;
   letter-spacing: -0.02em;
   padding: 28px 29px;
 }
 .pricing-table tbody th span {
   display: block;
-  font: 9px var(--mono);
+  font: 11px var(--mono);
   letter-spacing: 0;
   color: #837b90;
   margin-top: 8px;
 }
 .pricing-table td {
-  font-size: 19px;
+  font-size: 24px;
   letter-spacing: -0.03em;
   padding: 20px 29px;
 }
@@ -182,8 +181,8 @@
   align-items: center;
   justify-content: center;
   border: 1px solid var(--line);
-  width: 34px;
-  height: 34px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
 }
 .pricing-table td a:hover {
@@ -191,7 +190,7 @@
 }
 .pricing-note {
   padding: 15px 29px;
-  font-size: 10px;
+  font-size: 12px;
   color: #7b7388;
   border-top: 1px solid var(--line);
   line-height: 1.7;
@@ -204,9 +203,9 @@
   gap: 20px;
 }
 .pricing-bottom > span {
-  font-size: 10px;
+  font-size: 12px;
   color: #807789;
 }
 .pricing-bottom .text-link {
-  font-size: 11px;
+  font-size: 13px;
 }

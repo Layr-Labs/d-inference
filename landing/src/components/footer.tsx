@@ -10,7 +10,7 @@ export function Footer() {
             <Mark />
             <span>darkbloom</span>
           </a>
-          <p>Intelligence, in good hands.</p>
+          <p>Private inference. Open possibilities.</p>
           <span className="footer-byline">BUILT BY EIGEN LABS</span>
         </div>
         <nav aria-label="Product links">

@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-14 · commit `1470332c8`
+> Last updated: 2026-09-14 · commit `6b49c898c`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -47,8 +47,7 @@ fresh signed challenge. The coordinator owns this
 [evidence lifecycle](../architecture/security/attestation.md#device-evidence-ownership-and-shutdown);
 it does not add fields or a per-response attestation receipt.
 
-The coordinator [connection owner](../architecture/components/coordinator.md#provider-connection-lifecycle)
-keeps registration and teardown on the same provider session. Its
+The coordinator
 [verification owner](../architecture/security/attestation.md#registration-and-device-verification-ownership)
 checks registration and device evidence before the existing grants. This source
 organization adds no public evidence fields or consumer verification step.

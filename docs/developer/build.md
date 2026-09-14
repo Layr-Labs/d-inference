@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-13 · commit `8670b2a08`
+> Last updated: 2026-09-14 · commit `3545e26fc`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -99,79 +99,11 @@ Build the command package with the targets below.
 `coordinator/cmd/coordinator/main.go` (`main`) composes setup functions from
 the other files in that package; a single-file invocation omits those functions.
 
-The same binary includes `coordinator/api/readiness/`, the shared HTTP ingress
-and drain owner; it adds no worker or build step.
-
-The state archive route compiles through `coordinator/api/statearchive/`;
-`coordinator/stateexport/` remains the existing snapshot/ZIP/age backend.
-
-Release endpoints compile into this binary through `coordinator/api/releases/`
-(`Controller`). Artifact verification uses the existing Go dependencies and
-needs no separate service or build step.
-
-The normal build also includes `coordinator/providercontrol/releasepolicy/`: release inventory,
-policy generations, runtime hashes and live fleet revalidation. It uses the
-existing Go module and needs no additional service or build step.
-
-The normal Go build includes `coordinator/providercontrol/verification/` through
-`coordinator/api/provider_verification.go` (`newProviderVerifier`). The verifier
-uses the existing registry, store and MDM client; it starts no worker.
-
-The normal Go build includes `coordinator/providercontrol/challenge/`. The API
-creates its connection sessions through `coordinator/api/provider_challenge.go`;
-there is no additional executable, worker service or build target.
-
-The normal Go build includes the device-evidence owner at
-`coordinator/providercontrol/trustreuse/` (`Manager`) through the API adapters; it has no
-separate binary or configuration surface.
-
-The code-identity owner at `coordinator/providercontrol/codeidentity/` (`Manager`)
-also links through the API adapters into this binary. It uses the existing APNs
-configuration and store; no additional service or build step is needed.
-
-Billing HTTP controllers build as `coordinator/api/billing/` within the same Go
-module; the shared identity helper is `coordinator/api/requestauth/`. The
-coordinator binary imports both through `api`, so the build commands below
-include them without additional targets. See [billing ownership](../architecture/billing.md#http-controller-ownership).
-
-Model publishing and discovery build as `coordinator/api/catalog/` in the same
-module. The API binds that owner through `catalog_controller.go`; no additional
-binary, service or build target is required. See [catalog ownership](../architecture/model-registry.md#http-controller-ownership).
-
-Inference response formatting and relays build as `coordinator/inference/response/`,
-with lifecycle services supplied by `coordinator/api/response_writer.go`. It is
-part of the same coordinator binary and needs no additional build target.
-
-Attempt cancellation and provider feedback build as
-`coordinator/inference/attempt/`, bound by `coordinator/api/inference_attempt.go`.
-It shares the coordinator binary and existing registry/accounting services.
-
-Inference accounting builds as `coordinator/inference/settlement/`, bound by
-`coordinator/api/inference_settlement.go` to the existing ledger and hold map.
-It uses the same module and coordinator build targets; see
-[billing ownership](../architecture/billing.md#inference-accounting-ownership).
-
-The normal Go build includes the profiler owner and telemetry queue packages
-under `coordinator/telemetry/`. Their API adapters link them into the same
-coordinator binary; no separate worker executable or build flag is required.
-The operator read/export controller in `coordinator/api/operations/` is also
-part of this binary, wired by `newOperations` in `coordinator/api/operations.go`.
-
-HTTP authentication and its key cache build as `coordinator/api/requestauth/`;
-account and device-login endpoints build as `coordinator/api/accounts/`.
-The shared bounded JSON decoder lives in `coordinator/api/httprequest/`.
-The API router imports these packages, so the coordinator build targets below
-include them automatically.
-
-The registry imports `coordinator/registry/admission/` for capacity calculations,
-`coordinator/registry/providerversion/` for version interpretation and
-`coordinator/registry/cacheattempt/` for request cache lifetime and
-`coordinator/registry/cachedirectory/` for receipt/holder transactions.
-`coordinator/registry/modelloads/` owns pending command clocks and heartbeat plan timing;
-`coordinator/registry/warmpool/` owns the controller loop, pressure and latest observations.
-`coordinator/registry/providerwriter/` owns provider WebSocket transport and its
-handoff/watchdog lifecycle. These packages build through the standard coordinator
-targets below.
+HTTP controllers, provider-control owners, inference services, registry owners
+and telemetry queues link into this command through their API and registry
+bindings. They share the Go module and build targets below. Use the
+[repository source map](navigation.md) to find each subsystem and
+[the test guide](test.md#2-coordinator-go) for its focused checks.
 
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
 its test binary after helper or lifecycle changes. The CPU-only

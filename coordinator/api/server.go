@@ -3435,14 +3435,14 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 
 		if s.metrics != nil {
 			s.metrics.IncCounter("http_requests_total",
-				MetricLabel{"method", r.Method},
-				MetricLabel{"path", pathLabel},
-				MetricLabel{"status", statusStr},
+				MetricLabel{Name: "method", Value: r.Method},
+				MetricLabel{Name: "path", Value: pathLabel},
+				MetricLabel{Name: "status", Value: statusStr},
 			)
 			s.metrics.ObserveHistogram("http_request_duration_ms",
 				float64(dur.Milliseconds()),
-				MetricLabel{"method", r.Method},
-				MetricLabel{"path", pathLabel},
+				MetricLabel{Name: "method", Value: r.Method},
+				MetricLabel{Name: "path", Value: pathLabel},
 			)
 		}
 

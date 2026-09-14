@@ -1,9 +1,9 @@
 package api
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/telemetry"
-	"github.com/eigeninference/d-inference/coordinator/telemetry/routequeue"
 	"log/slog"
+
+	"github.com/eigeninference/d-inference/coordinator/telemetry/routequeue"
 )
 
 type telemetrySink = routequeue.Sink
@@ -17,5 +17,3 @@ const (
 func newTelemetrySink(logger *slog.Logger, capacity, workers int) *telemetrySink {
 	return routequeue.New(logger, capacity, workers)
 }
-
-func crossesPowerOfTen(before, after int64) bool { return telemetry.CrossesPowerOfTen(before, after) }

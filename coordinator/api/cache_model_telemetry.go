@@ -52,20 +52,20 @@ func (s *Server) emitModelCacheUsage(pr *registry.PendingRequest, usage protocol
 	if pr == nil {
 		return
 	}
-	model := MetricLabel{"model", s.cacheModelLabel(pr.Model)}
+	model := MetricLabel{Name: "model", Value: s.cacheModelLabel(pr.Model)}
 	outcome, tier := "unreported", "none"
 	if present && !valid {
 		outcome = "invalid"
 	} else if valid {
 		outcome, tier = usage.CacheOutcome, lowCardinalityCacheTier(usage.CacheTier)
 	}
-	labels := []MetricLabel{model, {"outcome", outcome}, {"tier", tier}}
+	labels := []MetricLabel{model, {Name: "outcome", Value: outcome}, {Name: "tier", Value: tier}}
 	s.cacheModelCount("usage", 1, labels...)
 	if !valid {
 		return
 	}
-	s.cacheModelCount("cached_tokens", int64(usage.CachedTokens), model, MetricLabel{"tier", tier})
-	s.cacheModelCount("prefill_tokens_saved", int64(usage.PrefillTokensSaved), model, MetricLabel{"tier", tier})
+	s.cacheModelCount("cached_tokens", int64(usage.CachedTokens), model, MetricLabel{Name: "tier", Value: tier})
+	s.cacheModelCount("prefill_tokens_saved", int64(usage.PrefillTokensSaved), model, MetricLabel{Name: "tier", Value: tier})
 	s.cacheModelTiming("provider_stage", usage.CacheStageMs, labels...)
 	s.emitModelCacheCoverage("usage", usage, labels)
 }
@@ -76,7 +76,7 @@ func (s *Server) emitModelCacheLookup(msg *protocol.PrefixCacheLookupV2Message, 
 	if msg == nil || !receipt.Accepted {
 		return
 	}
-	labels := []MetricLabel{{"model", s.cacheModelLabel(msg.ModelID)}, {"outcome", msg.Outcome}, {"tier", lowCardinalityCacheTier(msg.Tier)}}
+	labels := []MetricLabel{{Name: "model", Value: s.cacheModelLabel(msg.ModelID)}, {Name: "outcome", Value: msg.Outcome}, {Name: "tier", Value: lowCardinalityCacheTier(msg.Tier)}}
 	s.cacheModelCount("lookup", 1, labels...)
 	// The denominator is the coordinator's exact plan, never a provider value.
 	if receipt.PromptTokens > 0 {
@@ -90,8 +90,8 @@ func (s *Server) emitModelCacheDonation(msg *protocol.PrefixCacheReadyV2Message,
 		return
 	}
 	s.cacheModelCount("donation", 1,
-		MetricLabel{"model", s.cacheModelLabel(msg.ModelID)},
-		MetricLabel{"tier", lowCardinalityCacheTier(msg.Tier)})
+		MetricLabel{Name: "model", Value: s.cacheModelLabel(msg.ModelID)},
+		MetricLabel{Name: "tier", Value: lowCardinalityCacheTier(msg.Tier)})
 }
 
 // Runs inside the existing exactly-once cache terminal claim. "result" is the
@@ -110,10 +110,10 @@ func (s *Server) emitModelCacheSelection(pr *registry.PendingRequest, tags []str
 }
 
 func (s *Server) cacheModelSelectionLabels(model string, tags []string) []MetricLabel {
-	labels := []MetricLabel{{"model", s.cacheModelLabel(model)}}
+	labels := []MetricLabel{{Name: "model", Value: s.cacheModelLabel(model)}}
 	for _, tag := range tags {
 		name, value, _ := strings.Cut(tag, ":")
-		labels = append(labels, MetricLabel{name, value})
+		labels = append(labels, MetricLabel{Name: name, Value: value})
 	}
 	return labels
 }
@@ -139,10 +139,10 @@ func (s *Server) emitModelCacheReceipt(model, tier, kind string, receipt registr
 		outcome = "accepted"
 	}
 	s.cacheModelCount("receipt", 1,
-		MetricLabel{"model", s.cacheModelLabel(model)}, MetricLabel{"tier", lowCardinalityCacheTier(tier)},
-		MetricLabel{"type", kind}, MetricLabel{"outcome", outcome}, MetricLabel{"reason", string(receipt.Reason)})
+		MetricLabel{Name: "model", Value: s.cacheModelLabel(model)}, MetricLabel{Name: "tier", Value: lowCardinalityCacheTier(tier)},
+		MetricLabel{Name: "type", Value: kind}, MetricLabel{Name: "outcome", Value: outcome}, MetricLabel{Name: "reason", Value: string(receipt.Reason)})
 	if receipt.PromptMismatch != "" {
-		s.cacheModelCount("prompt_mismatch", 1, MetricLabel{"model", s.cacheModelLabel(model)},
-			MetricLabel{"tier", lowCardinalityCacheTier(tier)}, MetricLabel{"detail", string(receipt.PromptMismatch)})
+		s.cacheModelCount("prompt_mismatch", 1, MetricLabel{Name: "model", Value: s.cacheModelLabel(model)},
+			MetricLabel{Name: "tier", Value: lowCardinalityCacheTier(tier)}, MetricLabel{Name: "detail", Value: string(receipt.PromptMismatch)})
 	}
 }

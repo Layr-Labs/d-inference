@@ -429,7 +429,7 @@ type providerReservationScan struct {
 // fillSnapshotPendingAndPool and freeMemoryAdmits (including the reconstructed
 // whole-box pool) before it can reserve. Concurrent scans therefore do not
 // double-spend reported headroom across models. Heartbeat re-sync remains safe:
-// coordinatorExtra subtracts committedTokenBudget, so the coordinator-side
+// coordinatorExtra subtracts admission.CommittedTokenBudget, so the coordinator-side
 // charge shrinks as the provider begins reporting the admitted work. Completion
 // and cancel credit through RemovePending; disconnect drops the whole pending
 // set; the budget clamp remains the stale-optimistic backstop.

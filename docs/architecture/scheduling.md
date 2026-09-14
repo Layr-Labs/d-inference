@@ -170,9 +170,10 @@ ActiveTokenBudgetUsed + QueuedTokenBudget + coordinatorExtra + requestTokens ≤
 
 where `coordinatorExtra` is the coordinator's own in-flight `max_tokens` for
 the slot that the provider has not yet reflected (`pendingMaxTokens −
-committedTokenBudget`, floored at 0). A budget-clamped pair
+admission.CommittedTokenBudget`, floored at 0; implementation in
+`coordinator/registry/admission/memory.go`). A budget-clamped pair
 ([`routing.md`](routing.md#gray-box-capacity-signals)) and a slot that reports
-`KVBytesPerToken` with a zero budget (`knownZeroTokenBudget`) are refused
+`KVBytesPerToken` with a zero budget (`admission.KnownZeroTokenBudget`) are refused
 outright. `PoolAdmits` (`coordinator/registry/admission/pool_accounting.go`) then checks the provider-wide pool that all
 slots share, in bytes when the provider reports byte-mode budgets.
 

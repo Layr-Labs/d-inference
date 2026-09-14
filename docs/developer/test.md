@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `d69fa7e04`
+> Last updated: 2026-09-14 · commit `56abd289e`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -69,7 +69,7 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 Run prediction telemetry checks from the repository root:
 
 ```bash
-go test -race ./coordinator/api ./coordinator/registry ./coordinator/protocol ./coordinator/store ./coordinator/telemetry/profiler
+go test -race ./coordinator/api/... ./coordinator/registry ./coordinator/protocol ./coordinator/store ./coordinator/telemetry/profiler
 ```
 
 API fixtures use isolated encrypted WebSocket providers;
@@ -95,6 +95,19 @@ The API keeps the live store-binding and full HTTP/accounting fixtures:
 
 ```bash
 go test -race ./coordinator/telemetry/profiler ./coordinator/telemetry/profilequeue ./coordinator/telemetry/outcomequeue ./coordinator/api -run 'Profile|RequestOutcome|PersistenceSinks|FleetSample'
+```
+
+Operator export tests live beside the read controller in
+`coordinator/api/operations/`: `route_csv_test.go` checks outcome columns and
+filtering, `rejection_csv_test.go` preserves unknown servability, and
+`csv_test.go` guards spreadsheet formulas. `TestOperationsRoutesUseCurrentBindings`
+in `coordinator/api/operations_binding_test.go` exercises the registered routes
+with current authorization, stores, fleet/metrics snapshots and nullable outcome
+counters. Full profiler persistence and HTTP/accounting cases remain in the API.
+Use recursive API package selection so the export tests run:
+
+```bash
+go test -race ./coordinator/api/... -run 'OperationsRoutes|RouteCSV|FilterRouteRecords|RejectionExports|CSVCell|ProfileSink|RequestOutcomeAdmin|TelemetryE2E'
 ```
 
 The CI formatting step checks tracked Go files with `gofmt`. It excludes

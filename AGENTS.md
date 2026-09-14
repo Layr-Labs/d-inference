@@ -58,6 +58,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 │                     admission/ (immutable capacity math), providerversion/ (shared interpreter),
 │                     cacheattempt/ (request lifetime), cachedirectory/ (receipt/holder transactions),
 │                     modelloads/ (session command clocks and fleet plan gate),
+│                     routingcost/ (shared latency tuning, calibration and snapshot calculations),
 │                     routingsim/ (trace-driven routing simulation harness)
 ├── saferun/          panic-safe goroutine runners
 ├── stateexport/      consistent encrypted archive of MicroMDM (+ legacy step-ca) state (migration)

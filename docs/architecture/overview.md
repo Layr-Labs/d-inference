@@ -93,7 +93,7 @@ sequenceDiagram
    the floor, runtime-verified, private-text capable, challenge verified within
    [`challengeFreshnessMaxAge`](routing.md#challenge-freshness) — then scores survivors with an
    estimated-completion-time cost model and reserves the cheapest
-   (`coordinator/registry/scheduler.go`). Every rejection has a name from a
+   (`coordinator/registry/reservation.go`, `ReserveProviderEx`). Every rejection has a name from a
    closed vocabulary (`coordinator/registry/gate_reason.go`).
    [`routing.md`](routing.md), [`scheduling.md`](scheduling.md).
 5. **Dispatch.** The request body is sealed with a per-request NaCl Box to the
@@ -201,7 +201,7 @@ consumer routing to a provider it owns (self-route) pays nothing.
 | Provider WebSocket, registration, challenges | `coordinator/api/provider.go` |
 | Attestation verification | `coordinator/attestation/attestation.go` |
 | Eligibility gate | `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`) |
-| Cost model and reservation | `coordinator/registry/scheduler.go` |
+| Cost model and reservation | `coordinator/registry/candidate_cost.go` (`buildCandidateInto`), `coordinator/registry/routingcost/` (`Policy`), `coordinator/registry/reservation.go` (`ReserveProviderEx`) |
 | Per-request encryption | `coordinator/internal/e2e/e2e.go`; optional sender sealing `coordinator/api/sender_encryption.go` |
 | Pricing and ledger | `coordinator/payments/pricing.go`, `coordinator/billing/` |
 | Provider main loop | `provider-swift/Sources/ProviderCore/ProviderLoop.swift` |

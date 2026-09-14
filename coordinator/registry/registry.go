@@ -52,7 +52,7 @@ type Registry struct {
 	// SetDedicatedModels and dedicated_models.go. Guarded by r.mu.
 	dedicatedModels []string
 
-	// Quality-concurrency admission cap (see concurrency_cap.go). When enabled,
+	// Quality-concurrency admission cap (see quality_cap_admission.go). When enabled,
 	// the per-provider concurrency cap for a model is tightened from the flat
 	// fallback to quality_concurrency × overcommit, computed from the provider's
 	// STATIC single-stream decode rate so slow/saturated models stop

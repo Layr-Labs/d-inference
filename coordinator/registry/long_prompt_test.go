@@ -3,113 +3,9 @@ package registry
 import (
 	"math"
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/registry/routingcost"
 )
-
-// TestLongPromptPrefillPenalty exercises the pure penalty helper across every
-// behavior-preserving guard and the active amplification case. The helper now
-// amplifies a supplied first-token-blocking time (ttftBlockMs) rather than a raw
-// prefill rate, so the caller can fold in cold-load latency for unloaded boxes.
-func TestLongPromptPrefillPenalty(t *testing.T) {
-	origThreshold, origWeight := longPromptThresholdTokens, longPromptPrefillWeight
-	defer func() { longPromptThresholdTokens, longPromptPrefillWeight = origThreshold, origWeight }()
-
-	// Disabled (threshold 0): always 0, even for an enormous prompt / blocking time.
-	longPromptThresholdTokens = 0
-	longPromptPrefillWeight = 2.0
-	if got := longPromptPenalty(100_000, 24_000); got != 0 {
-		t.Fatalf("disabled penalty = %v, want 0", got)
-	}
-
-	// Enabled but prompt below the threshold: 0 (short prompts unaffected).
-	longPromptThresholdTokens = 8_000
-	if got := longPromptPenalty(4_000, 24_000); got != 0 {
-		t.Fatalf("below-threshold penalty = %v, want 0", got)
-	}
-
-	// At/above the threshold: extra = (weight-1) * ttftBlockMs.
-	// (2-1)*24000 = 24000ms.
-	if got, want := longPromptPenalty(8_000, 24_000), 24_000.0; got != want {
-		t.Fatalf("at-threshold penalty = %v, want %v", got, want)
-	}
-
-	// The amplified quantity is the FULL first-token-blocking time, so a candidate
-	// with a larger ttftBlockMs gets a proportionally LARGER penalty. A cold box
-	// (fast prefill but a ~30s load) therefore carries MORE penalty than the same
-	// prefill alone — the cold-load latency is no longer amplified away. The delta
-	// is exactly the amplified statePenalty.
-	prefillOnly := longPromptPenalty(12_000, 6_000)                          // warm-style: prefill only
-	withColdLoad := longPromptPenalty(12_000, 6_000+slotStatePenaltyUnknown) // cold: prefill + load
-	if !(withColdLoad > prefillOnly) {
-		t.Fatalf("cold-load ttft penalty %v should exceed prefill-only penalty %v", withColdLoad, prefillOnly)
-	}
-	if diff, want := withColdLoad-prefillOnly, (2.0-1.0)*slotStatePenaltyUnknown; diff != want {
-		t.Fatalf("cold-load penalty delta = %v, want %v (the amplified statePenalty)", diff, want)
-	}
-
-	// Neutral weight (<=1) disables amplification even when the threshold is met.
-	longPromptPrefillWeight = 1.0
-	if got := longPromptPenalty(12_000, 24_000); got != 0 {
-		t.Fatalf("neutral-weight penalty = %v, want 0", got)
-	}
-
-	// Non-positive blocking time: 0 (no penalty; guards the zero/garbage TTFT case).
-	longPromptPrefillWeight = 2.0
-	if got := longPromptPenalty(12_000, 0); got != 0 {
-		t.Fatalf("zero-ttft penalty = %v, want 0", got)
-	}
-	if got := longPromptPenalty(12_000, -5); got != 0 {
-		t.Fatalf("negative-ttft penalty = %v, want 0", got)
-	}
-}
-
-// TestLongPromptSettersClampAndDefaults pins the default-off contract and the
-// setter clamps so a misconfigured env var can never destabilize routing.
-func TestLongPromptSettersClampAndDefaults(t *testing.T) {
-	origThreshold, origWeight := longPromptThresholdTokens, longPromptPrefillWeight
-	defer func() { longPromptThresholdTokens, longPromptPrefillWeight = origThreshold, origWeight }()
-
-	if defaultLongPromptThresholdTokens != 0 {
-		t.Fatalf("default threshold = %d, want 0 (preference off by default)", defaultLongPromptThresholdTokens)
-	}
-
-	SetLongPromptThreshold(8_000)
-	if LongPromptThreshold() != 8_000 {
-		t.Fatalf("threshold = %d, want 8000", LongPromptThreshold())
-	}
-	SetLongPromptThreshold(-5) // negative clamps to 0 (disabled)
-	if LongPromptThreshold() != 0 {
-		t.Fatalf("threshold = %d, want 0 after negative clamp", LongPromptThreshold())
-	}
-
-	SetLongPromptPrefillWeight(3.5)
-	if LongPromptPrefillWeight() != 3.5 {
-		t.Fatalf("weight = %v, want 3.5", LongPromptPrefillWeight())
-	}
-	SetLongPromptPrefillWeight(0.5) // sub-1 clamps to 1.0 (neutral)
-	if LongPromptPrefillWeight() != 1.0 {
-		t.Fatalf("weight = %v, want 1.0 after sub-1 clamp", LongPromptPrefillWeight())
-	}
-
-	// Non-finite weights (NaN/±Inf — e.g. EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT
-	// =NaN/Inf) MUST NOT slip through the `< 1` clamp: NaN/Inf comparisons are
-	// always false, so a stored NaN/Inf would yield a NaN/Inf penalty that poisons
-	// every candidate cost and breaks the scheduler's `<`/near-tie comparisons.
-	// They reset to the finite default so the weight is always well-defined.
-	for _, bad := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
-		SetLongPromptPrefillWeight(bad)
-		w := LongPromptPrefillWeight()
-		if math.IsNaN(w) || math.IsInf(w, 0) {
-			t.Fatalf("weight = %v after Set(%v), want a FINITE value", w, bad)
-		}
-		if w != defaultLongPromptPrefillWeight {
-			t.Fatalf("weight = %v after Set(%v), want default %v", w, bad, defaultLongPromptPrefillWeight)
-		}
-	}
-	// The default the non-finite guard restores must itself be the finite 2.0.
-	if defaultLongPromptPrefillWeight != 2.0 {
-		t.Fatalf("defaultLongPromptPrefillWeight = %v, want 2.0", defaultLongPromptPrefillWeight)
-	}
-}
 
 // longPromptScenarioRegistry builds two providers that differ only in prefill
 // rate plus a token-budget backlog handicap on the faster-prefill box:
@@ -147,8 +43,8 @@ func longPromptScenarioRegistry(t *testing.T) (reg *Registry, model, fastID, slo
 //  2. with the preference OFF a long prompt keeps the baseline winner, and
 //  3. with the preference ON the same long prompt flips to the fastest-prefill box.
 func TestReserveProviderLongPromptPrefersFasterPrefill(t *testing.T) {
-	origThreshold, origWeight := longPromptThresholdTokens, longPromptPrefillWeight
-	defer func() { longPromptThresholdTokens, longPromptPrefillWeight = origThreshold, origWeight }()
+	origThreshold, origWeight := LongPromptThreshold(), LongPromptPrefillWeight()
+	defer func() { SetLongPromptThreshold(origThreshold); SetLongPromptPrefillWeight(origWeight) }()
 
 	// 1) Short prompt, preference ENABLED → short prompts unaffected: the idle
 	//    slow-prefill provider (far lower total cost) still wins.
@@ -212,8 +108,8 @@ func TestReserveProviderLongPromptPrefersFasterPrefill(t *testing.T) {
 // a long prompt to a box with a slower static rate but faster measured prefill —
 // exactly the misroute the static version would cause.
 func TestLongPromptPrefersObservedOverStaticPrefill(t *testing.T) {
-	origThreshold, origWeight := longPromptThresholdTokens, longPromptPrefillWeight
-	defer func() { longPromptThresholdTokens, longPromptPrefillWeight = origThreshold, origWeight }()
+	origThreshold, origWeight := LongPromptThreshold(), LongPromptPrefillWeight()
+	defer func() { SetLongPromptThreshold(origThreshold); SetLongPromptPrefillWeight(origWeight) }()
 	SetLongPromptThreshold(8_000)
 	SetLongPromptPrefillWeight(2.0)
 
@@ -263,8 +159,8 @@ func TestLongPromptPrefersObservedOverStaticPrefill(t *testing.T) {
 // Before the fix the cold penalty was only (2-1)*6000 and its 30000 load sat
 // UN-amplified, so cold cost was 45110 < warm 51110 and the cold box wrongly won.
 func TestReserveProviderLongPromptColdLoadNotAmplifiedAway(t *testing.T) {
-	origThreshold, origWeight := longPromptThresholdTokens, longPromptPrefillWeight
-	defer func() { longPromptThresholdTokens, longPromptPrefillWeight = origThreshold, origWeight }()
+	origThreshold, origWeight := LongPromptThreshold(), LongPromptPrefillWeight()
+	defer func() { SetLongPromptThreshold(origThreshold); SetLongPromptPrefillWeight(origWeight) }()
 	SetLongPromptThreshold(8_000)
 	SetLongPromptPrefillWeight(2.0)
 
@@ -325,19 +221,19 @@ func TestReserveProviderLongPromptColdLoadNotAmplifiedAway(t *testing.T) {
 	if coldSel == nil {
 		t.Fatalf("cold-only route returned nil; decision=%+v", coldDec)
 	}
-	if coldDec.StateMs != slotStatePenaltyUnknown {
-		t.Fatalf("cold StateMs=%v, want %v (unknown-slot cold-load penalty)", coldDec.StateMs, slotStatePenaltyUnknown)
+	if coldDec.StateMs != routingcost.SlotStatePenaltyUnknown {
+		t.Fatalf("cold StateMs=%v, want %v (unknown-slot cold-load penalty)", coldDec.StateMs, routingcost.SlotStatePenaltyUnknown)
 	}
 	coldPrefillMs := float64(reqPrompt) / coldPrefillTPS * 1000.0
 	coldDecodeMs := float64(reqMax) / decodeTPS * 1000.0
 	// With the fix the penalty amplifies prefill + cold load; pre-fix it amplified
 	// prefill only (the 30000 load sat un-amplified in StateMs).
-	wantColdThisReq := coldPrefillMs + coldDecodeMs + (2.0-1.0)*(coldPrefillMs+slotStatePenaltyUnknown)
+	wantColdThisReq := coldPrefillMs + coldDecodeMs + (2.0-1.0)*(coldPrefillMs+routingcost.SlotStatePenaltyUnknown)
 	buggyColdThisReq := coldPrefillMs + coldDecodeMs + (2.0-1.0)*coldPrefillMs
 	if math.Abs(coldDec.ThisReqMs-wantColdThisReq) > 0.001 {
 		t.Fatalf("cold ThisReqMs=%v, want %v (prefill + decode + amplified full TTFT incl. cold load)", coldDec.ThisReqMs, wantColdThisReq)
 	}
-	if got, want := coldDec.ThisReqMs-buggyColdThisReq, (2.0-1.0)*slotStatePenaltyUnknown; math.Abs(got-want) > 0.001 {
+	if got, want := coldDec.ThisReqMs-buggyColdThisReq, (2.0-1.0)*routingcost.SlotStatePenaltyUnknown; math.Abs(got-want) > 0.001 {
 		t.Fatalf("cold-load contribution to ThisReqMs = %v, want %v (the amplified statePenalty); pre-fix this was 0 and the cold box won", got, want)
 	}
 	// Cost-breakdown invariant still holds with the penalty folded into ThisReqMs.
@@ -360,8 +256,8 @@ func TestReserveProviderLongPromptColdLoadNotAmplifiedAway(t *testing.T) {
 // Same fixture shape as the long-prompt test, with the threshold pinned OFF and a
 // prompt well below any bias.
 func TestRoutingCostPrefersObservedOverStaticPrefill(t *testing.T) {
-	origThreshold, origWeight := longPromptThresholdTokens, longPromptPrefillWeight
-	defer func() { longPromptThresholdTokens, longPromptPrefillWeight = origThreshold, origWeight }()
+	origThreshold, origWeight := LongPromptThreshold(), LongPromptPrefillWeight()
+	defer func() { SetLongPromptThreshold(origThreshold); SetLongPromptPrefillWeight(origWeight) }()
 	// Pin the documented default: the long-prompt bias contributes nothing, so
 	// only the base cost term can express the prefill difference.
 	SetLongPromptThreshold(0)

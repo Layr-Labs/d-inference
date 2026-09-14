@@ -79,7 +79,7 @@ fleet traffic whose scheduler is told which machine may serve it.
 ## What the coordinator relaxes — and what it does not
 
 Self-route to an owned machine relaxes exactly two gates in the scheduler
-(`coordinator/registry/scheduler.go`, `providerPassesRoutingGatesLocked`;
+(`coordinator/registry/routing_gates.go`, `providerPassesRoutingGatesLocked`;
 `relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)`):
 
 - the hardware-trust floor (`Registry.MinTrustLevel`, set by

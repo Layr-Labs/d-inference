@@ -33,27 +33,6 @@ func TestLegacyProviderFallsBackToOldRouting(t *testing.T) {
 	}
 }
 
-func TestResolveEffectiveTPSFallback(t *testing.T) {
-	// When observedDecodeTPS is 0, should fall back to formula-based TPS.
-	snap := routingSnapshot{
-		decodeTPS:         100,
-		backendRunning:    2,
-		observedDecodeTPS: 0,
-	}
-	got := resolveEffectiveTPS(snapPtr(snap))
-	want := effectiveDecodeTPS(100, 2)
-	if got != want {
-		t.Fatalf("resolveEffectiveTPS()=%f, want %f (formula fallback)", got, want)
-	}
-
-	// When observedDecodeTPS is set, should use it directly.
-	snap.observedDecodeTPS = 55.5
-	got = resolveEffectiveTPS(snapPtr(snap))
-	if got != 55.5 {
-		t.Fatalf("resolveEffectiveTPS()=%f, want 55.5 (observed)", got)
-	}
-}
-
 func TestResolvedModelTPSLockedUsesMatchingObservedSlot(t *testing.T) {
 	reg := New(testLogger())
 	model := "observed-model-tps"

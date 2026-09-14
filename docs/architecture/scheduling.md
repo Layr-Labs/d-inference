@@ -64,9 +64,9 @@ anything else to `unknown`):
 | `load` | A provider reported a model load complete (`coordinator/api/provider.go`). |
 | `disconnect` | A provider left; queued requests it alone could have served fail fast (`Disconnect`). |
 | `kick` | Cold-dispatch kick from the API layer when a request is enqueued (`coordinator/api/cold_dispatch.go`). |
-| `unknown` | Any other caller of the public drain helpers (`coordinator/registry/scheduler.go`). |
+| `unknown` | Any other caller of the public drain helpers (`coordinator/registry/queue_drain.go`). |
 
-`drainModelQueue` (`coordinator/registry/scheduler.go`) serializes passes per
+`drainModelQueue` (`coordinator/registry/queue_drain.go`) serializes passes per
 model through `requestqueue.DrainCoalescer` (`coordinator/registry/requestqueue/drain.go`).
 A trigger arriving during a pass requests another pass after held waiters are
 requeued. Within a pass, `drainDominated` skips a scan only for a request with
@@ -112,19 +112,19 @@ engine state for (`coordinator/protocol/messages.go`). The coordinator's
 closed `SlotState` vocabulary (`coordinator/registry/gate_reason.go`) folds
 the wire string:
 
-| `SlotState` | Wire `state` | Weights resident | Routable | Cost effect (`slotStatePenalty`) |
+| `SlotState` | Wire `state` | Weights resident | Routable | Cost effect (`SlotStatePenalty`) |
 |---|---|---|---|---|
-| `running` | `running` | yes — actively serving | yes | `slotStatePenaltyRunning` |
-| `idle` | `idle` | yes — loaded, nothing in flight | yes | `slotStatePenaltyRunning` |
-| `idle_shutdown` | `idle_shutdown` | no — evicted after idle, engine warm | yes | `slotStatePenaltyIdleShutdown` |
+| `running` | `running` | yes — actively serving | yes | `SlotStatePenaltyRunning` |
+| `idle` | `idle` | yes — loaded, nothing in flight | yes | `SlotStatePenaltyRunning` |
+| `idle_shutdown` | `idle_shutdown` | no — evicted after idle, engine warm | yes | `SlotStatePenaltyIdleShutdown` |
 | `crashed` | `crashed` | no | **no** (`slot_crashed`) | ineligible |
 | `reloading` | `reloading` | no — load in progress | **no** (`slot_reloading`) | ineligible |
-| `other` | anything else, or no slot | no | yes | `slotStatePenaltyUnknown` |
+| `other` | anything else, or no slot | no | yes | `SlotStatePenaltyUnknown` |
 
 The penalty values are part of the cost model, stated once in
 [`routing.md` → Cost model](routing.md#cost-model).
 
-`slotStateModelLoaded` (`coordinator/registry/scheduler.go`) treats
+`SlotStateModelLoaded` (`coordinator/registry/routingcost/penalties.go`) treats
 `running` and `idle` as *resident*; that is the definition of **warm** used
 by the warm pool (`providerHasWarmModelLocked`) and by the hardware-fit
 exemption in routing. A provider with no `BackendCapacity` at all falls back
@@ -202,7 +202,7 @@ specified in [Inference: multi-token prediction](inference.md#multi-token-predic
 
 Admission also requires headroom
 (`hasConcurrencyHeadroomForModelCapResolvedLocked`,
-`coordinator/registry/concurrency_cap.go`): the provider's in-flight count for
+`coordinator/registry/quality_cap_admission.go`): the provider's in-flight count for
 the model must be below its *effective per-model cap*, **and** its in-flight
 count across all models must be below its *provider cap*.
 
@@ -581,7 +581,7 @@ gate. The existing eviction-loop gate sweep handles this cleanup
    `PoolAdmits` (`coordinator/registry/admission/pool_accounting.go`).
 4. **In-flight requests never exceed the effective per-model cap or the
    provider cap** — `hasConcurrencyHeadroomForModelCapResolvedLocked`
-   (`coordinator/registry/concurrency_cap.go`).
+   (`coordinator/registry/quality_cap_admission.go`).
 5. **A `load_model` is not re-sent to a pair while its pending entry is
    live** — `Commands.Reserve` in `coordinator/registry/modelloads/commands.go`;
    unswept entries continue to block another model on that session.
@@ -620,12 +620,12 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 |---|---|
 | Per-model FIFO, stale sweep and drain coalescing | `coordinator/registry/requestqueue/queue.go` — `Queue`, `Enqueue`, `PopNextFresh`, `cleanStaleLocked`; `coordinator/registry/requestqueue/drain.go` — `DrainCoalescer` |
 | Provider handoff, deadlines and queue policy | `coordinator/registry/queue_waiter.go` — `QueuedRequest`, `WaitForProviderContext`; `coordinator/registry/requestqueue/assignment.go` — `Assignment`; `coordinator/registry/queue_policy.go` — `DrainTrigger*` |
-| Drain orchestration | `coordinator/registry/scheduler.go` — `drainQueuedRequestsForModelsWithReason`; `coordinator/registry/provider_lifecycle.go` — `SetProviderIdle`; `coordinator/registry/heartbeat.go` — `Heartbeat` |
-| Slot vocabulary | `coordinator/registry/gate_reason.go` — `SlotState`; `coordinator/registry/scheduler.go` — `slotStatePenalty`, `slotStateModelLoaded` |
+| Drain orchestration | `coordinator/registry/queue_drain.go` — `drainQueuedRequestsForModelsWithReason`; `coordinator/registry/provider_lifecycle.go` — `SetProviderIdle`; `coordinator/registry/heartbeat.go` — `Heartbeat` |
+| Slot vocabulary | `coordinator/registry/gate_reason.go` — `SlotState`; `coordinator/registry/routingcost/penalties.go` — `SlotStatePenalty`, `SlotStateModelLoaded` |
 | Heartbeat payload | `coordinator/protocol/messages.go` — `BackendCapacity`, `BackendSlotCapacity` |
 | Token-budget and memory admission | `coordinator/registry/admission/` — `Policy.FreeMemoryAdmits`, `PoolAdmits`, `KnownZeroTokenBudget`, `CommittedTokenBudget`; `coordinator/registry/admission_policy.go` maps the immutable routing snapshot |
 | Provider-version interpretation | `coordinator/registry/providerversion/` — `Policy.Compare`, `Policy.SlotBudgetLayout`; one shared interpreter in `coordinator/registry/provider_version.go` |
-| Concurrency caps | `coordinator/registry/provider.go` — `maxConcurrency`, `maxConcurrencyForModelLocked`; `coordinator/registry/config.go` — `DefaultMaxConcurrent`; `coordinator/registry/concurrency_cap.go` — `SetQualityConcurrencyCap`, `effectiveMaxConcurrencyForModelRateLocked`, `hasConcurrencyHeadroomForModelCapResolvedLocked` |
+| Concurrency caps | `coordinator/registry/provider.go` — `maxConcurrency`, `maxConcurrencyForModelLocked`; `coordinator/registry/config.go` — `DefaultMaxConcurrent`; `coordinator/registry/quality_cap_config.go` — `SetQualityConcurrencyCap`; `coordinator/registry/quality_cap_admission.go` — `effectiveMaxConcurrencyForModelRateLocked`, `hasConcurrencyHeadroomForModelCapResolvedLocked`; `coordinator/registry/quality_cap_solo.go` — `resolvedSoloModelTPSLocked`; `coordinator/registry/quality_cap_seed.go` — `soloTPSSeedForClass` |
 | Pending command lifecycle | `coordinator/registry/modelloads/commands.go` — `Commands.Reserve`, `Disconnect`; `coordinator/registry/modelloads/deadlines.go` — `Expire`, `Count`, `Backoff`, `Complete`, `Observe`; `coordinator/registry/model_load_state.go` retains live registry/provider synchronization |
 | Model swap planning and publication | `coordinator/registry/model_loading.go` — `TriggerModelSwaps`; `coordinator/registry/model_load_plan.go` — `bestModelLoadProviderLocked`; `coordinator/registry/model_load_commands.go` — `reservePendingModelLoads`, `sendModelLoadActions`; `coordinator/registry/model_load_warm.go` — `MarkModelWarm`; `coordinator/registry/model_commands.go` — `SendLoadModel` |
 | Heartbeat plan coalescing | `coordinator/registry/modelloads/plan_gate.go` — `PlanGate.Claim`, `ArmTrailing`; `coordinator/registry/model_swap_coalesce.go` — `triggerModelSwapsFromHeartbeat`, `trailingModelSwapPlan`; `coordinator/registry/modelloads/limits.go` — `PlanInterval` |

@@ -2,6 +2,8 @@ package registry
 
 import (
 	"math"
+
+	"github.com/eigeninference/d-inference/coordinator/registry/routingcost"
 )
 
 // cacheServiceCost replaces the matched prompt's weighted prefill with its
@@ -11,7 +13,7 @@ import (
 // once in full. Load, decode, queue, pending, backlog and health remain intact.
 // Physical admission never uses this adjustment.
 func cacheServiceCost(hint cacheRoutingHint, candidate *routingCandidate) (delta, ttftSaved float64) {
-	rate := resolvePrefillTPS(&candidate.snapshot)
+	rate := routingcost.ResolvePrefillTPS(&candidate.snapshot)
 	if !validCacheReceiptTier(hint.Tier) || !finitePositive(rate) || candidate.pricedPromptTokens <= 0 ||
 		!finitePositive(candidate.prefillCostMs) || !finitePositive(candidate.costMs) ||
 		candidate.prefillCostMs > candidate.costMs || !finitePositive(hint.EvidenceWeight) ||

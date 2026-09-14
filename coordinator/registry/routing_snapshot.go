@@ -1,6 +1,10 @@
 package registry
 
-import "time"
+import (
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/registry/routingcost"
+)
 
 // fillRoutingSnapshotPLocked projects provider state for routing and public
 // capacity preflight. Caller holds r.mu (either mode) and p.mu and has already
@@ -9,57 +13,57 @@ import "time"
 // Selection-only headroom and heartbeat-age fields are filled by its caller.
 func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider, model string, now time.Time) {
 	*snap = routingSnapshot{}
-	snap.provider = p
-	snap.model = model
-	snap.chipFamily = p.Hardware.ChipFamily
-	snap.binaryVersion = p.Version
-	snap.slotState = "unknown"
-	snap.totalPending = p.pendingCount()
-	snap.systemMetrics = p.SystemMetrics
-	snap.decodeTPS = resolvedDecodeTPS(p)
-	snap.prefillTPS = resolvedPrefillTPS(p)
-	snap.totalMemoryGB = float64(p.Hardware.MemoryGB)
-	snap.modelSizeGB = r.modelSizeGBForFitLocked(p, model)
-	snap.minRAMGb = r.catalogMinRAMGbLocked(model)
+	snap.Provider = p
+	snap.Model = model
+	snap.ChipFamily = p.Hardware.ChipFamily
+	snap.BinaryVersion = p.Version
+	snap.SlotState = "unknown"
+	snap.TotalPending = p.pendingCount()
+	snap.SystemMetrics = p.SystemMetrics
+	snap.DecodeTPS = resolvedDecodeTPS(p)
+	snap.PrefillTPS = resolvedPrefillTPS(p)
+	snap.TotalMemoryGB = float64(p.Hardware.MemoryGB)
+	snap.ModelSizeGB = r.modelSizeGBForFitLocked(p, model)
+	snap.MinRAMGB = r.catalogMinRAMGbLocked(model)
 
 	fillSnapshotPendingAndPool(snap, p, model)
 
-	snap.hasBackendCapacity = p.BackendCapacity != nil
+	snap.HasBackendCapacity = p.BackendCapacity != nil
 
 	if p.BackendCapacity != nil {
-		snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
-		snap.freeForLoadGB = p.BackendCapacity.FreeForLoadGB
+		snap.GPUMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
+		snap.FreeForLoadGB = p.BackendCapacity.FreeForLoadGB
 		if p.BackendCapacity.TotalMemoryGB > 0 {
-			snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
+			snap.TotalMemoryGB = p.BackendCapacity.TotalMemoryGB
 		}
 		for _, slot := range p.BackendCapacity.Slots {
 			if slot.Model != model {
 				continue
 			}
-			snap.slotState = slot.State
-			snap.backendRunning = int(slot.NumRunning)
-			snap.backendWaiting = int(slot.NumWaiting)
-			snap.maxTokensPotential = slot.MaxTokensPotential
-			snap.observedDecodeTPS = slot.ObservedDecodeTPS
-			snap.observedPrefillTPS = slot.ObservedPrefillTPS
-			snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
-			snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
-			snap.queuedTokenBudget = slot.QueuedTokenBudget
-			snap.kvBytesPerToken = clampKVBytesPerToken(slot.KVBytesPerToken)
-			snap.stepsExecuted = slot.StepsExecuted
-			snap.admits = slot.Admits
-			snap.firstTokensEmitted = slot.FirstTokensEmitted
-			snap.secondsSinceLastStep = slot.SecondsSinceLastStep
-			snap.secondsSinceLastFirstToken = slot.SecondsSinceLastFirstToken
-			snap.wedgeSuspected = slot.WedgeSuspected
-			snap.evalInFlightMs = slot.EvalInFlightMs
-			snap.idleClearInFlightMs = slot.IdleClearInFlightMs
+			snap.SlotState = slot.State
+			snap.BackendRunning = int(slot.NumRunning)
+			snap.BackendWaiting = int(slot.NumWaiting)
+			snap.MaxTokensPotential = slot.MaxTokensPotential
+			snap.ObservedDecodeTPS = slot.ObservedDecodeTPS
+			snap.ObservedPrefillTPS = slot.ObservedPrefillTPS
+			snap.ActiveTokenBudgetUsed = slot.ActiveTokenBudgetUsed
+			snap.ActiveTokenBudgetMax = slot.ActiveTokenBudgetMax
+			snap.QueuedTokenBudget = slot.QueuedTokenBudget
+			snap.KVBytesPerToken = clampKVBytesPerToken(slot.KVBytesPerToken)
+			snap.StepsExecuted = slot.StepsExecuted
+			snap.Admits = slot.Admits
+			snap.FirstTokensEmitted = slot.FirstTokensEmitted
+			snap.SecondsSinceLastStep = slot.SecondsSinceLastStep
+			snap.SecondsSinceLastFirstToken = slot.SecondsSinceLastFirstToken
+			snap.WedgeSuspected = slot.WedgeSuspected
+			snap.EvalInFlightMs = slot.EvalInFlightMs
+			snap.IdleClearInFlightMs = slot.IdleClearInFlightMs
 			break
 		}
 	}
-	snap.modelLoaded = slotStateModelLoaded(snap.slotState)
-	snap.availableOnDisk = !snap.modelLoaded
-	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
+	snap.ModelLoaded = routingcost.SlotStateModelLoaded(snap.SlotState)
+	snap.AvailableOnDisk = !snap.ModelLoaded
+	snap.FleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
 
 	// Gray-box budget clamp (faultstate/budget_clamp.go): when a capacity-503 has proven
 	// the pair's live gate is rejecting, admission must not believe the
@@ -74,6 +78,6 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 	// are both held here (see lock discipline above); the clamp read is one
 	// lock-free flag load unless the identity actually carries a clamp, and is
 	// confirmed against p.faultSession like the gates above (gateView).
-	rawRemaining := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
-	snap.budgetClamped = r.budgetClampedFor(p, model, p.LastHeartbeat, rawRemaining, snap.activeTokenBudgetMax > 0, now)
+	rawRemaining := snap.ActiveTokenBudgetMax - snap.ActiveTokenBudgetUsed - snap.QueuedTokenBudget
+	snap.BudgetClamped = r.budgetClampedFor(p, model, p.LastHeartbeat, rawRemaining, snap.ActiveTokenBudgetMax > 0, now)
 }

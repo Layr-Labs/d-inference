@@ -470,7 +470,7 @@ All variables are inlined at build time.
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `NEXT_PUBLIC_COORDINATOR_URL` | URL | `https://api.darkbloom.dev` | `console-ui/src/lib/server/coordinator.ts` (`coordinatorUrl`); `console-ui/src/lib/coordinator-url.ts` (`PUBLIC_COORDINATOR_URL`) | Upstream coordinator for every proxy route and for client-side display; a browser can override it via the `darkbloom_coordinator_url` localStorage key. |
-| `NEXT_PUBLIC_PRIVY_APP_ID` | Privy app id | `""` | `console-ui/src/components/providers/PrivyClientProvider.tsx` | Unset or the literal `placeholder` selects mock auth (always authenticated, no token); otherwise the real Privy provider. |
+| `NEXT_PUBLIC_PRIVY_APP_ID` | Privy app id | `""` | `console-ui/src/components/app-providers/PrivyClientProvider.tsx` | Unset or the literal `placeholder` selects mock auth (always authenticated, no token); otherwise the real Privy provider. |
 | `NEXT_PUBLIC_GA_MEASUREMENT_ID` | `G-…` | `G-M65PNVW5TE` (only `undefined` falls back; set `""` to disable) | `console-ui/src/lib/google-analytics.ts` | Google Analytics page-view tracking after consent. |
 | `NEXT_PUBLIC_DD_APPLICATION_ID`, `NEXT_PUBLIC_DD_CLIENT_TOKEN` | Datadog RUM credentials | unset (RUM off) | `console-ui/src/components/DatadogRUM.tsx` | Both must be set for RUM to initialise. |
 | `NEXT_PUBLIC_DD_SITE`, `NEXT_PUBLIC_DD_ENV`, `NEXT_PUBLIC_APP_VERSION` | strings | `datadoghq.com`, `production`, `dev` | `console-ui/src/components/DatadogRUM.tsx` | RUM site, env and version tags. |

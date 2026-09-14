@@ -1381,7 +1381,7 @@ threats:
     adversaries: [ADV-003]
     affected_assets: [A-007]
     affected_files:
-      - console-ui/src/components/providers/PrivyClientProvider.tsx
+      - console-ui/src/components/app-providers/PrivyClientProvider.tsx
     mitigations:
       - description: Mock auth only intended for local development.
         status: open

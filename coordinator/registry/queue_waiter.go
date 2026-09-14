@@ -104,11 +104,7 @@ func (r *QueuedRequest) rejectAssignment() { r.assignment.Reject() }
 func (r *QueuedRequest) failWithReason(reason error) {
 	r.init()
 	r.FailureReason = reason
-	r.markDone()
-	select {
-	case r.ResponseCh <- nil:
-	default:
-	}
+	r.expireFromQueue()
 }
 
 // WaitForProviderContext blocks until a provider is assigned, the timeout

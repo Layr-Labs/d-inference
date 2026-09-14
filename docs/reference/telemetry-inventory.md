@@ -31,7 +31,7 @@ Producer: the Swift provider over the `GET /ws/provider` WebSocket. Consumer:
 | `status`, `active_model`, `warm_models` | `heartbeat` | baseline every `heartbeat_interval_secs` ([`../provider/cli-reference.md`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)); event heartbeats when capacity changes materially (slot roster/state/`num_running`/`num_waiting`, or token shift ≥ 1024 or ≥ 10 %), coalesced to one per 500 ms (`CapacityHeartbeatThrottle`, `provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift`) | registry `Provider` (memory) | until disconnect |
 | `stats.*` (cumulative counters) | `heartbeat` | same | `Registry.Heartbeat` delta-merges into `Provider.Stats`; `provider_reputation` via `UpsertReputation` | persisted at most every 30 s per provider (`PersistProviderThrottled`, `coordinator/registry/persistence.go`); unbounded |
 | `system_metrics` (`memory_pressure`, `cpu_usage`, `thermal_state`) | `heartbeat` | same; collected at send time by `SystemMetricsCollector` (`provider-swift/Sources/ProviderCore/Hardware/SystemMetrics.swift`) | registry, clamped to `[0, 1]`; `thermal_state` folded by `ThermalStateFold` for gates and `fleet_snapshots` | memory; `fleet_snapshots` retention ([below](#coordinator-per-request-records-postgres)) |
-| `backend_capacity` (`slots[]`, GPU memory, `free_for_load_gb`, `capacity_seq`, `mlx_cache_reclaimer`) | `heartbeat` | same; the provider recomputes capacity every `max(1, heartbeat_interval_secs / 2)` s, integer division (`capacityRefreshTick`, `provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift`) | `canonicalHeartbeatModelState` clones then `clampBackendCapacity` (`coordinator/registry/heartbeat.go`); stale `capacity_seq` frames update only `LastHeartbeat` | memory; sampled into `fleet_snapshots` |
+| `backend_capacity` (`slots[]`, GPU memory, `free_for_load_gb`, `capacity_seq`, `mlx_cache_reclaimer`) | `heartbeat` | same; the provider recomputes capacity every `max(1, heartbeat_interval_secs / 2)` s, integer division (`capacityRefreshTick`, `provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift`) | `canonicalHeartbeatModelState` (`coordinator/registry/heartbeat_snapshot.go`) clones then `clampBackendCapacity` (`coordinator/registry/capacity_report.go`); stale `capacity_seq` frames update only `LastHeartbeat` | memory; sampled into `fleet_snapshots` |
 | `slots[].telemetry`, `backend_capacity.telemetry` | `heartbeat` | same | clamped by `clampBackendCapacity`; sampled into `fleet_snapshots` | `fleet_snapshots` retention ([below](#coordinator-per-request-records-postgres)) |
 | `slots[]` engine-health fields (`steps_executed`, `admits`, `wedge_suspected`, `eval_in_flight_ms`, …) | `heartbeat` | same | `recordBackendWedgeTelemetry` (`coordinator/api/provider_wedge_telemetry.go`) → Datadog counters; measurement only, never a gate | Datadog |
 | `slots[].prefix_cache`, `prefix_cache_maintenance` | `heartbeat` | Cached per-store observation at the configured stats interval; age and process maintenance counters refreshed with capacity | `recordPrefixCacheTelemetry` (`coordinator/api/provider_prefix_cache_telemetry.go`), after registry clone/clamp and capacity-sequence acceptance | live registry baseline and Datadog; no prompt/cache identities |
@@ -96,6 +96,15 @@ lists every name).
 | `provider_version_below_minimum` (no `provider.` prefix) | count | `gate:registration`, `challenge_revalidation`, `manifest_sync`; `version` | provider below `EIGENINFERENCE_MIN_PROVIDER_VERSION` at one of the three gates |
 | `provider.load_model_status_rejected` | count | `reason:invalid_status`, `no_pending_command` | `load_model_status` frame that did not match an outstanding `load_model` |
 | `attestation.challenges_sent`, `attestation.challenges` (`outcome:passed`, `failed`, `status_sig_missing`, `status_sig_failed`), `attestation.failures{reason}`, `attestation.force_reconnect{reason}` | count | as listed | SE challenge lifecycle per provider session |
+
+The throughput anomaly evaluator (`Policy.EvaluateAnomaly`,
+`coordinator/registry/throughput/anomaly.go`) ignores non-finite or non-positive
+observed rates and unusable expected rates. Invalid configured ratios and
+efficiencies retain their defaults. Invalid advertised bandwidth falls back
+to the chip-class table; a bucket without usable bandwidth is skipped. The API
+sweep emits `routing.throughput_anomaly` only for a completed evaluation whose
+observed/expected ratio is below the threshold
+(`coordinator/api/throughput_anomaly.go`, `sweepThroughputAnomalies`).
 
 ### From request outcomes
 
@@ -184,6 +193,13 @@ have different populations and must not be summed together.
 | `profiler.pruned_rows` | count | — | each hourly retention sweep |
 | `providers.online`, `providers.per_model{model}`, `providers.per_version{version}`, `providers.by_trust_status{…}`, `providers.by_mdm_failure{reason}`, `attestation.code_attested`, `attestation.code_enforced`, `coordinator.min_provider_version_set{min_version}`, `request_queue.depth`, `utilization.network`, `utilization.warm`, `utilization.token_budget`, `utilization.bottleneck`, `utilization.model{model}`, `capacity.tps`, `capacity.demand_concurrency`, `capacity.serving_capacity`, `capacity.spill_arrival_rate` | gauge | as listed | every 15 s from `StartDDGaugeLoop` (`coordinator/api/fleet_gauges.go`), which also pushes the `exact_cache.*` gauges (`emitExactCacheDDGauges`, `coordinator/api/exact_cache_metrics.go`); the loop returns immediately when no Datadog client is configured |
 | `request_queue.depth_by_model`, `request_queue.oldest_age_ms` | gauge | `model` | every gauge-loop tick for served or queued models; a disappearing model gets one final zero for both series and is then forgotten (`coordinator/api/fleet_gauges.go`, `emitPerModelQueueGauges`) |
+
+`providers.per_version` uses `Registry.ProviderCountByVersion`
+(`coordinator/registry/fleet_views.go`): each connected provider's status and
+version are read together under its mutex, excluding offline and untrusted
+providers and grouping an empty version as `unknown`. A concurrent
+`Provider.SetVersion` therefore cannot race with the gauge snapshot. The fleet
+is not frozen across the complete walk; these remain observational counts.
 
 ### In-process registry (not Datadog)
 

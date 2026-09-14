@@ -319,7 +319,7 @@ trust_boundaries:
       remains in the registry. If no policy is configured, any binary passes. Weight
       hash enforcement is fail-open: omitting weight_hash never fails admission.
 
-      The private-text routing gate (registry.go providerSupportsPrivateTextLocked)
+      The private-text routing gate (coordinator/registry/attestation_policy.go providerSupportsPrivateTextLocked)
       requires all of: PublicKey present, backend mlx-swift, EncryptedResponseChunks,
       RuntimeManifestChecked, ChallengeVerifiedSIP, current application evidence when
       a release policy is enforced, CodeAttested once code-attestation enforcement is
@@ -1070,6 +1070,14 @@ threats:
       - coordinator/providercontrol/mdmscheduler/bindings.go
       - coordinator/providercontrol/mdmscheduler/config.go
       - coordinator/api/provider_scheduler.go
+      - coordinator/registry/provider_registration.go
+      - coordinator/registry/provider_removal.go
+      - coordinator/registry/provider_disconnect.go
+      - coordinator/registry/provider_eviction.go
+      - coordinator/registry/provider_challenges.go
+      - coordinator/registry/provider_registration_test.go
+      - coordinator/registry/provider_disconnect_test.go
+      - coordinator/registry/provider_eviction_test.go
     mitigations:
       - description: Binary hash verified at registration against known blessed hashes.
         status: implemented
@@ -1097,6 +1105,14 @@ threats:
       - provider-swift/Sources/ProviderCore/Inference/**
       - provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift
       - provider-swift/Tests/ProviderCoreFoundationTests/WeightHasherMemoryTests.swift
+      - coordinator/registry/provider_registration.go
+      - coordinator/registry/heartbeat.go
+      - coordinator/registry/provider_attestation.go
+      - coordinator/registry/provider_challenges.go
+      - coordinator/registry/provider_trust.go
+      - coordinator/registry/attestation_policy.go
+      - coordinator/registry/provider_registration_test.go
+      - coordinator/registry/attestation_policy_test.go
     mitigations:
       - description: Weight hash advertised by provider at registration and in heartbeats.
         status: implemented
@@ -1153,6 +1169,9 @@ threats:
     affected_files:
       - provider-swift/Sources/ProviderCore/ProviderLoop.swift
       - coordinator/registry/registry.go
+      - coordinator/registry/provider.go
+      - coordinator/registry/attestation_policy.go
+      - coordinator/registry/attestation_policy_test.go
     mitigations:
       - description: Routing gate exists and enforces the five backend-neutral privacy flags.
         status: implemented
@@ -1162,7 +1181,7 @@ threats:
     resolved_findings:
       - id: SEC-017
         resolution: >
-          Closed: registry.go providerSupportsPrivateTextLocked no longer reads
+          Closed: coordinator/registry/attestation_policy.go providerSupportsPrivateTextLocked no longer reads
           PythonRuntimeLocked / DangerousModulesBlocked; Swift providers pass the gate
           with the five required capabilities.
     severity: medium
@@ -1244,6 +1263,13 @@ threats:
       - coordinator/api/provider.go
       - provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift
       - provider-swift/Tests/ProviderCoreFoundationTests/WeightHasherMemoryTests.swift
+      - coordinator/registry/provider_registration.go
+      - coordinator/registry/heartbeat.go
+      - coordinator/registry/provider_attestation.go
+      - coordinator/registry/provider_challenges.go
+      - coordinator/registry/attestation_policy.go
+      - coordinator/registry/provider_registration_test.go
+      - coordinator/registry/attestation_policy_test.go
     mitigations:
       - description: Provider computes and advertises weight hash at registration.
         status: implemented
@@ -1339,6 +1365,14 @@ threats:
       - coordinator/providercontrol/mdmscheduler/executor.go
       - coordinator/providercontrol/mdmscheduler/late_security_info.go
       - coordinator/api/provider_late_verification.go
+      - coordinator/registry/device_evidence.go
+      - coordinator/registry/provider_attestation.go
+      - coordinator/registry/provider_challenges.go
+      - coordinator/registry/provider_trust.go
+      - coordinator/registry/attestation_policy.go
+      - coordinator/registry/provider_untrust_test.go
+      - coordinator/registry/provider_recovery_test.go
+      - coordinator/registry/provider_challenges_test.go
     mitigations:
       - description: darkbloom checks SIP at startup and refuses to serve if disabled.
         status: implemented
@@ -1683,6 +1717,11 @@ threats:
       - provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift
       - provider-swift/Tests/ProviderCoreFoundationTests/WeightHasherMemoryTests.swift
       - coordinator/registry/registry.go
+      - coordinator/registry/provider_registration.go
+      - coordinator/registry/provider_attestation.go
+      - coordinator/registry/provider_challenges.go
+      - coordinator/registry/attestation_policy.go
+      - coordinator/registry/attestation_policy_test.go
     mitigations:
       - description: Weight hash computed by WeightHasher and advertised in registration.
         status: implemented
@@ -2116,6 +2155,19 @@ threats:
       - coordinator/providercontrol/verification/restore.go
       - coordinator/providercontrol/verification/dependencies.go
       - coordinator/api/provider_verification.go
+      - coordinator/registry/code_evidence.go
+      - coordinator/registry/application_evidence.go
+      - coordinator/registry/application_policy.go
+      - coordinator/registry/provider_attestation.go
+      - coordinator/registry/provider_restore.go
+      - coordinator/registry/provider_trust.go
+      - coordinator/registry/provider_challenges.go
+      - coordinator/registry/provider_capabilities.go
+      - coordinator/registry/attestation_policy.go
+      - coordinator/registry/provider_restore_test.go
+      - coordinator/registry/provider_untrust_test.go
+      - coordinator/registry/provider_recovery_test.go
+      - coordinator/registry/fleet_evidence_test.go
     mitigations:
       - description: >
           Same-process code continuity is observed only on online hardware-trusted
@@ -2225,6 +2277,16 @@ threats:
       - coordinator/providercontrol/mdmscheduler/**
       - coordinator/api/provider_scheduler.go
       - coordinator/api/provider_late_verification.go
+      - coordinator/registry/device_evidence.go
+      - coordinator/registry/provider_attestation.go
+      - coordinator/registry/provider_restore.go
+      - coordinator/registry/provider_trust.go
+      - coordinator/registry/provider_challenges.go
+      - coordinator/registry/attestation_policy.go
+      - coordinator/registry/device_evidence_test.go
+      - coordinator/registry/provider_restore_test.go
+      - coordinator/registry/provider_untrust_test.go
+      - coordinator/registry/provider_recovery_test.go
     mitigations:
       - description: >
           Hardware grant requires SE signature verification and then an MDM SecurityInfo
@@ -3007,6 +3069,9 @@ threats:
       - coordinator/registry/fleet_sample.go
       - coordinator/store/contracts/profiles.go
       - coordinator/store/postgres/profiles.go
+      - coordinator/registry/heartbeat_snapshot.go
+      - coordinator/registry/capacity_report.go
+      - coordinator/registry/heartbeat_snapshot_test.go
     mitigations:
       - description: Provider profile rides the terminal message as raw JSON, is length-capped before any byte is read, decoded only after the terminal is fully processed, and persisted from a separate typed struct whose enums are closed and folded (no free-form string can reach a row).
         status: implemented

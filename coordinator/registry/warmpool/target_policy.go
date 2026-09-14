@@ -50,7 +50,8 @@ func (c planningPass[A]) targetInputs(fleet FleetModel, pressure Pressure, queue
 // this window. It consumes ALL signals fed to the controller — capacity rejects,
 // TTFT misses, cold dispatches, speculative starts/wins (now including the W3
 // preflight-fed near-misses), an aged coordinator queue, and a saturated warm set
-// under any external pressure. With no demand pressure the pool is left as-is.
+// under any external pressure. Proactive headroom and configured minimums can
+// still grow the pool without a pressure event.
 func (c planningPass[A]) hasDemandPressure(fleet FleetModel, pressure Pressure, queue QueuePressure) bool {
 	if pressure.CapacityRejects >= c.config.CapacityRejectThreshold ||
 		pressure.TTFTMisses >= c.config.TTFTMissThreshold ||

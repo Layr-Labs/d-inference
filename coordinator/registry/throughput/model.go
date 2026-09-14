@@ -1,6 +1,9 @@
 package throughput
 
-import "strings"
+import (
+	"math"
+	"strings"
+)
 
 // Bytes-per-parameter for common quantizations. Decode reads each touched weight
 // once per token, so this converts an active-param count into bytes/token.
@@ -47,16 +50,20 @@ var modelDecodeClasses = map[string]ModelDecodeClass{
 //
 //	expected ≈ bandwidth_GBps × efficiency / (active_params × bytes_per_param)
 //
-// Returns 0 if any input is non-positive.
+// Returns 0 if an input or the derived expectation is non-finite or non-positive.
 func ExpectedDecodeTPS(activeParams, bytesPerParam, bandwidthGBps, efficiency float64) float64 {
-	if activeParams <= 0 || bytesPerParam <= 0 || bandwidthGBps <= 0 || efficiency <= 0 {
+	if !finitePositive(activeParams) || !finitePositive(bytesPerParam) || !finitePositive(bandwidthGBps) || !finitePositive(efficiency) {
 		return 0
 	}
 	readGBPerToken := activeParams * bytesPerParam / 1e9 // bytes → GB
 	if readGBPerToken <= 0 {
 		return 0
 	}
-	return bandwidthGBps * efficiency / readGBPerToken
+	expected := bandwidthGBps * efficiency / readGBPerToken
+	if !finitePositive(expected) {
+		return 0
+	}
+	return expected
 }
 
 // LookupModelDecodeClass resolves a model id to its decode class. It tries an
@@ -104,4 +111,8 @@ func containsAny(s string, subs ...string) bool {
 		}
 	}
 	return false
+}
+
+func finitePositive(value float64) bool {
+	return value > 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }

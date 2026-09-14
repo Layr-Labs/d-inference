@@ -68,13 +68,14 @@ platform, backend), and that row's `metallib_hash` matches the provider's
 reported metallib. Nothing else — per-model template hashes were removed after
 the incident.
 
-Where the gate lives: `coordinator/registry/attestation_policy.go`
-(`providerSupportsPrivateTextModeLocked`, the single routing chokepoint;
-`releasePolicyEnforcedLocked`, mode + enforce-after predicate;
-`SetReleasePolicyGeneration`, sweep that re-proves or clears evidence;
-`CountProvidersWithCurrentApplicationEvidence` and
-`ApplicationEvidenceModelCoverage`, the coverage counters served by
-`coordinator/api/network/stats_snapshot.go` (`computeStats`)).
+The routing chokepoint is `coordinator/registry/attestation_policy.go`
+(`providerSupportsPrivateTextModeLocked`).
+`coordinator/registry/application_policy.go` owns the mode and enforce-after
+predicate (`releasePolicyEnforcedLocked`) and the generation sweep that re-proves
+or clears evidence (`SetReleasePolicyGeneration`). Coverage comes from
+`coordinator/registry/fleet_views.go` (`CountProvidersWithCurrentApplicationEvidence`
+and `ApplicationEvidenceModelCoverage`),
+served by `coordinator/api/network/stats_snapshot.go` (`computeStats`).
 
 ## Steps
 

@@ -39,13 +39,13 @@ func DefaultAnomalyConfig() AnomalyConfig {
 	}
 }
 
-// withDefaults fills any zero/negative field with its default, so a partially
+// withDefaults replaces invalid fields with their defaults, so a partially
 // populated config (or the zero value) still behaves sensibly.
 func (c AnomalyConfig) withDefaults() AnomalyConfig {
-	if c.Efficiency <= 0 {
+	if !finitePositive(c.Efficiency) {
 		c.Efficiency = DefaultDecodeEfficiency
 	}
-	if c.RatioThreshold <= 0 {
+	if !finitePositive(c.RatioThreshold) {
 		c.RatioThreshold = DefaultAnomalyRatioThreshold
 	}
 	if c.MinSamples <= 0 {
@@ -106,15 +106,15 @@ func (p Policy) EvaluateAnomaly(in AnomalyInput, cfg AnomalyConfig) AnomalyResul
 	res.BytesPerParam = class.BytesPerParam
 
 	bw := in.BandwidthGBps
-	if bw <= 0 {
+	if !finitePositive(bw) {
 		bw = p.ChipBandwidthForClass(in.ChipClass)
 	}
 	res.BandwidthGBps = bw
-	if bw <= 0 {
+	if !finitePositive(bw) {
 		res.SkipReason = "unknown_chip"
 		return res
 	}
-	if in.ObservedTPS <= 0 {
+	if !finitePositive(in.ObservedTPS) {
 		res.SkipReason = "no_observation"
 		return res
 	}

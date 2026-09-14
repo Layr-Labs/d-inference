@@ -264,7 +264,7 @@ its pure calculations use `routingcost` over the same snapshot.
 | `effectiveTPSLoadFactor` | `0.39` | Per-concurrent-decode TPS derating (`EffectiveDecodeTPS`). | `coordinator/registry/routing_constants.go` |
 | `kvCacheBytesPerToken` | `400_000` | Fallback KV bytes per token when the slot does not report `KVBytesPerToken`. | `coordinator/registry/routing_constants.go` |
 | `modelMemoryHeadroomFactor` | `2.0` | `ModelFitsHardware`: model GB × 2 must fit total memory when the manifest gives no `minRAMGb`. | `coordinator/registry/admission/memory.go` |
-| `maxPrefillTPS` | `5000.0` | Cap on any prefill rate used for pricing (`maxPrefillTPS`, `coordinator/registry/heartbeat.go`; `ResolvePrefillTPS`, `coordinator/registry/routingcost/throughput.go`). | `coordinator/registry/heartbeat.go` |
+| `maxPrefillTPS` | `5000.0` | Cap on any prefill rate used for pricing (`maxPrefillTPS`, `coordinator/registry/capacity_report.go`; `ResolvePrefillTPS`, `coordinator/registry/routingcost/throughput.go`). | `coordinator/registry/capacity_report.go` |
 | `DefaultPrefillToDecodeRatio` | `12.0` | Static prefill TPS = decode TPS × ratio when the provider reports no prefill rate. | `coordinator/registry/routingcost/config.go` |
 | `DefaultLongPromptThresholdTokens` | `0` | Long-prompt bias is off until a threshold is set. | `coordinator/registry/routingcost/config.go` |
 | `DefaultLongPromptPrefillWeight` | `2.0` | Multiplier on first-token-blocking time for long prompts. | `coordinator/registry/routingcost/config.go` |
@@ -336,6 +336,22 @@ and their flag are the subject of
 
 ### Selection paths
 
+The public capacity snapshot (`coordinator/registry/model_capacity.go`,
+`ModelCapacitySnapshot`) applies the model routing gates before counting a
+provider as ready, together with the existing concurrency and token headroom
+checks. A broken template, mixed dedicated-family catalog or active routing
+cooldown therefore cannot advertise immediate readiness. Warm/cold inventory
+counts still describe the advertised models independently of readiness.
+
+Capacity readiness preserves the fleet-wide health-breaker fallback. If a
+model has an observed breaker/ejection rejection,
+`modelCapacityBreakerFallbackLocked` in `coordinator/registry/model_capacity.go`
+uses `scanCandidatesLocked` and `shouldBypassBreakerFailOpen` before admitting
+last-resort providers. A healthy but busy peer suppresses that fallback. The
+read-only probe represents the smallest positive text reservation (one output
+token, no TTFT ceiling); it does not commit a reservation. Structural, thermal,
+memory and cooldown gates remain in force.
+
 Before selection the candidate pool may be narrowed, each step only when it
 leaves at least one candidate (`scanCandidatesLocked`):
 
@@ -383,7 +399,10 @@ uses the original scan pool: `newDispatchPlan`
 (`coordinator/registry/dispatch_plan_build.go`) offers costs to `Builder.Offer`,
 which projects values only for candidates retained by the bounded insertion.
 `ReserveNextFromPlan` checks the retained provider pointer against the current
-registry and performs the live deadline, gate and debit transaction. A reconnect
+registry and delegates the live deadline, gate and debit transaction to
+`commitPlanEntry` (`coordinator/registry/plan_reservation.go`). The helper
+acquires and releases `p.mu` on every path; the caller publishes successful
+cold-dispatch/calibration telemetry after that lock is released. A reconnect
 cannot reuse an old plan identity.
 
 `Probes` (`coordinator/registry/dispatchplan/quotes.go`) owns the outstanding
@@ -396,7 +415,14 @@ first, then unprobed entries, then demoted entries, with scan cost ordering with
 each tier. Consumed entries stay consumed. Wrong-provider and expired replies
 leave the pending entry for its bound reply or collector expiry. Disconnect
 settlement stays after registry/provider unlock and queue/cache cleanup in
-`coordinator/registry/provider_lifecycle.go` (`disconnectProvider`).
+`coordinator/registry/provider_disconnect.go` (`disconnectProvider`).
+
+Opportunistic expiry sweeps in `Probes.add`
+(`coordinator/registry/dispatchplan/quotes.go`) deliver a timeout to the owning
+collector as well as removing the entry. Otherwise a collector could wait for
+a delivery that no longer has an owner. `applyQuoteDelivery`
+(`coordinator/registry/dispatchplan/quote_delivery.go`) demotes an expired
+alternate before the collector publishes its timeout outcome.
 
 `RefreshDispatchPlan` (`coordinator/registry/plan_refresh.go`) claims the one
 refresh and copies attempted IDs through `Plan.ClaimRefresh`, releases that
@@ -467,6 +493,13 @@ reasons:
   budget and `estimatedPromptTokens + max_tokens` exceeds the largest
   (`FleetMaxBudget`). If any eligible provider's budget is unknown the
   verdict stays servable.
+
+`admission.RequestTokens` (`coordinator/registry/admission/request_budget.go`)
+shares negative-prompt normalization and the default output allowance with the
+live provider-fit check. It adds the two counts in `uint64`, so a request larger
+than the signed integer range still exceeds known context or budget limits.
+Only the displayed `ServabilityVerdict.RequestTokens` is capped to the largest
+`int`; unknown budgets retain their fail-open policy.
 
 A provider's structural budget (`Policy.StructuralBudget`, `coordinator/registry/admission/request_budget.go`) is its reported
 `ActiveTokenBudgetMax` when the slot reports one; for a provider that is not
@@ -593,7 +626,7 @@ the API keeps provider-frame handling, parking and durable observation
 | Dispatch-load cooldown (`dispatch_load_cooldown`) | `coordinator/registry/faultstate/dispatch_load_cooldown.go` | provider × model | a dispatch-time `load_model` fails | `dispatchLoadCooldownTTL = 2 * time.Minute` |
 
 Fault state keys by the provider's stable identity when one is bound, so it
-survives disconnect and reconnect (`Disconnect`, `coordinator/registry/provider_lifecycle.go`).
+survives disconnect and reconnect (`Disconnect`, `coordinator/registry/provider_disconnect.go`).
 Every tracker in this table and in [gray-box capacity signals](#gray-box-capacity-signals)
 stores its state in one `gateState` per identity
 ([below](#concurrency-scan-commit-and-fault-state-gates)).
@@ -640,8 +673,9 @@ onto the formerly cheapest provider), the admit re-check
 (`providerCanAdmitLockedEx`), the half-open capacity-probe claim
 (`tryClaimCapacityProbe`, check-and-claim under `gate.mu`) and the pending
 debit (`addPendingLocked`). `ReserveNextFromPlan`
-(`coordinator/registry/plan_reservation.go`) commits each plan entry the same
-way. `commitLock` (`coordinator/registry/gate_commit_mode.go`) selects the
+(`coordinator/registry/plan_reservation.go`) delegates that provider transaction
+to `commitPlanEntry`; common rejection handling and post-unlock telemetry stay
+with the caller. `commitLock` (`coordinator/registry/gate_commit_mode.go`) selects the
 mode: `reserveCommitShared` as described, or `reserveCommitGlobal`, which
 takes `r.mu.Lock()` for the commit — the previous fleet-wide serialization,
 kept as the kill switch behind
@@ -855,9 +889,9 @@ must not run in parallel with other scheduler tests in the same process.
 | Candidate preferences and ranking | `coordinator/registry/candidate_selection.go` — `preferRoutingCandidates`, `selectRoutingCandidate` |
 | Shared gate primitives | `coordinator/registry/routing_eligibility.go` — `providerLivenessGateReasonLocked`, `providerServesRoutableModelLocked` |
 | Closed vocabularies | `coordinator/registry/gate_reason.go` — `GateReason`, `SelectionPath`, `SlotState` |
-| Trust floor and challenge failures | `coordinator/registry/registry.go` — `MinTrustLevel`; `coordinator/registry/provider.go` — `MaxFailedChallenges`; `coordinator/registry/attestation_policy.go` — `RecordChallengeFailure` |
-| Dispatch-load cooldown and disconnect | `coordinator/registry/faultstate/dispatch_load_cooldown.go` — `dispatchLoadCooldownTTL`; `coordinator/registry/provider_lifecycle.go` — `Disconnect` |
-| Two-phase reservation (scan, commit, plan consumption) | `coordinator/registry/reservation.go` — `scanProviderReservation`; `coordinator/registry/reservation_commit.go` — `commitProviderReservation`, `providerCanAdmitLockedEx`; `coordinator/registry/plan_reservation.go` — `ReserveNextFromPlan` |
+| Trust floor and challenge failures | `coordinator/registry/registry.go` — `MinTrustLevel`; `coordinator/registry/provider.go` — `MaxFailedChallenges`; `coordinator/registry/provider_challenges.go` — `RecordChallengeFailure` |
+| Dispatch-load cooldown and disconnect | `coordinator/registry/faultstate/dispatch_load_cooldown.go` — `dispatchLoadCooldownTTL`; `coordinator/registry/provider_disconnect.go` — `Disconnect` |
+| Two-phase reservation (scan, commit, plan consumption) | `coordinator/registry/reservation.go` — `scanProviderReservation`; `coordinator/registry/reservation_commit.go` — `commitProviderReservation`, `providerCanAdmitLockedEx`; `coordinator/registry/plan_reservation.go` — `ReserveNextFromPlan`, `commitPlanEntry` |
 | Fault-state transaction owner | `coordinator/registry/faultstate/manager.go` — `Manager`, `Session`; `coordinator/registry/faultstate/state.go` — private `gateState`, `publishLocked`; `coordinator/registry/faultstate/migration.go` — `Bind`, `migrateGateLocked`, `mergeLocked`; `coordinator/registry/faultstate/reference.go` — `lockGate`, `gateRef`; `coordinator/registry/faultstate/sweep.go` — `Sweep`, `gateIdleGrace` |
 | Fault-state registry bindings and reads | `coordinator/registry/fault_binding.go` — `bindStableFaultKey`, `SetVersion`, `SetGateWaitObserver`; `coordinator/registry/fault_reads.go` — `gateOf`, `gateView`; `coordinator/registry/faultstate/view_binding.go` — `View.Moved`; `coordinator/registry/gate_commit_mode.go` — `reserveCommitMode`, `commitLock` |
 | Capacity outcome transactions | `coordinator/registry/fault_capacity.go` — `RecordCapacityAcceptObserved`; `coordinator/registry/faultstate/capacity_accept.go` — `PrepareCapacityAccept`, `CapacityAccept.Apply`; `coordinator/registry/faultstate/capacity_reject.go` — `RecordCapacityReject`; `coordinator/registry/faultstate/capacity_probe.go` — `CapacityProbe.Claim` |

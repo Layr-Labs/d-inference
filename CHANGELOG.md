@@ -12,6 +12,9 @@ coordinator deployment.
 
 ### Coordinator
 
+- **Capacity and admission** — Model readiness honors public routing gates while retaining inventory and the fleet-wide health-breaker fallback. Expired capacity probes settle as timeouts; oversized prompt/output sums are rejected without integer wrapping.
+- **Throughput and fleet observations** — Reject overflowing occupancy reports from the solo-rate sample pool, read fleet version gauges under the provider lock, and ignore unusable throughput anomaly measurements. Non-finite anomaly overrides retain their defaults.
+
 - **Qwen prompt parity** — Match the provider's Qwen-family handling of required and named tool calls, including catalog aliases and Qwen3-VL, to avoid mismatched thinking controls in cache proofs.
 - **Repeated-prefix routing** — Prefer a stable cache-capable provider for repeated prefixes only among otherwise equivalent cost, queue and pending-work candidates. Exclude capabilities quarantined after a failed cache proof from this preference, even when heartbeats continue advertising them. Revalidate at reservation and rescan if affinity eligibility changed after selection. Preserve ordinary serving when no unfenced cache candidate is available, along with capacity, deadline, trust and proof gates. Profiler rows identify this preference as `prefix_affinity`.
 - **Cache opportunity diagnostics** — Report per-model reasons and numerical counts for repeated-prefix demand, usable holders and routing selection. These diagnostics distinguish routing opportunities from actual cache hits and measured latency savings. Add a [consumer guide](docs/consumer/prefix-cache.md) for preserving shared prompt prefixes.

@@ -25,7 +25,7 @@ Canonical code (code wins over this doc; find declarations by symbol):
 | Dashboard rolling windows | `coordinator/store/postgres/dashboard.go` and `coordinator/store/memory/dashboard.go` (`AccountEarningsWindows`); `coordinator/api/accountfleet/summary_cache.go` (`accountEarningsWindows`) |
 | Batched reputation reads | `coordinator/store/postgres/dashboard.go` and `coordinator/store/memory/dashboard.go` (`GetReputations`); `coordinator/api/accountfleet/reputation.go` (`attachStoredReputations`) |
 | Capacity accept off the first-byte path | `coordinator/inference/dispatch/commit.go` (`commitFirstContent`); `coordinator/registry/fault_capacity.go` (`RecordCapacityAcceptObserved`); `coordinator/registry/faultstate/capacity_accept.go` (`CapacityAccept.Apply`) |
-| Throttled reputation persist | `coordinator/registry/reputation.go` (`RecordJobSuccess`); `coordinator/registry/provider_lifecycle.go` (`Disconnect`); `coordinator/registry/persistence.go` (`persistReputationThrottled`) |
+| Throttled reputation persist | `coordinator/registry/reputation.go` (`RecordJobSuccess`); `coordinator/registry/provider_disconnect.go` (`Disconnect`); `coordinator/registry/reputation_persistence.go` (`persistReputationThrottled`) |
 | Single provider-frame decode | `coordinator/api/provider.go` (`providerReadLoop`) |
 | Cancel only when generation still needs stopping | `coordinator/inference/dispatch/commit.go` (`writeCommittedResponse`); `coordinator/api/provider.go` (`handleChunk`, synthesized-error cancellation) |
 | No shed-path fleet walk | `coordinator/api/inference_admission.go` (`runInferenceAdmission`, `skipServability`) |

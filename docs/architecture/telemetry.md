@@ -340,7 +340,7 @@ for populations, labels and reset semantics (`coordinator/api/cache_model_teleme
 | Concern | Path |
 |---|---|
 | Heartbeat ingest and metric emission | `coordinator/api/provider.go` (`providerReadLoop`), `coordinator/api/provider_wedge_telemetry.go`, `coordinator/api/provider_mlx_cache_telemetry.go` |
-| Clamping and canonical snapshot | `coordinator/registry/heartbeat.go` (`Registry.Heartbeat`, `clampBackendCapacity`), `coordinator/registry/heartbeat.go` |
+| Clamping and canonical snapshot | `coordinator/registry/heartbeat.go` (`Registry.Heartbeat`); `coordinator/registry/heartbeat_snapshot.go` (`canonicalHeartbeatModelState`, `Provider.BackendCapacitySnapshot`); `coordinator/registry/capacity_report.go` (`clampBackendCapacity`) |
 | Persistence throttle | `coordinator/registry/persistence.go` |
 | Datadog client, HTTPS series, trace-aware slog | `coordinator/datadog/datadog.go`, `coordinator/datadog/metrics_http.go`, `coordinator/datadog/slog.go` |
 | Wiring and env | `coordinator/cmd/coordinator/main.go` |

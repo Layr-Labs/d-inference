@@ -160,11 +160,11 @@ func (r *Registry) ProviderCountByVersion() map[string]int {
 	for _, p := range r.providers {
 		p.mu.Lock()
 		online := p.Status != StatusOffline && p.Status != StatusUntrusted
+		ver := p.Version
 		p.mu.Unlock()
 		if !online {
 			continue
 		}
-		ver := p.Version
 		if ver == "" {
 			ver = "unknown"
 		}
@@ -235,9 +235,9 @@ func (r *Registry) ProviderCountByMDMFailure() map[string]int {
 	return counts
 }
 
-// FleetSnapshot is the read-only summary used by metrics polling. We
-// don't lock individual providers — counts may be off-by-one under
-// heavy churn — that's acceptable for gauges.
+// FleetSnapshot is the read-only summary used by metrics polling. Each
+// provider contributes one locked observation; the fleet is not frozen as a
+// whole, so gauges can span concurrent status changes.
 type FleetSnapshot struct {
 	Connected  int
 	Idle       int

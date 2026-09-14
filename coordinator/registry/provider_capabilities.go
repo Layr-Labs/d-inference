@@ -8,6 +8,23 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
+// SetRuntimeCapabilitiesPromotedHook registers the API-layer fanout invoked
+// after a connection first gains a non-empty effective capability set.
+func (r *Registry) SetRuntimeCapabilitiesPromotedHook(fn func(providerID string)) {
+	r.mu.Lock()
+	r.onRuntimeCapabilitiesPromoted = fn
+	r.mu.Unlock()
+}
+
+func (r *Registry) notifyRuntimeCapabilitiesPromoted(providerID string) {
+	r.mu.RLock()
+	hook := r.onRuntimeCapabilitiesPromoted
+	r.mu.RUnlock()
+	if hook != nil {
+		hook(providerID)
+	}
+}
+
 const (
 	ProviderCapabilityAppleM5 = "apple_m5"
 	ProviderCapabilityMLXNAX  = "mlx_nax"
@@ -285,4 +302,13 @@ func (r *Registry) providerServesAnyCatalogModelLocked(p *Provider) bool {
 		}
 	}
 	return false
+}
+
+func (p *Provider) reconcileRuntimeCapabilities() {
+	if p.registry == nil {
+		return
+	}
+	if err := p.registry.ReconcileAttestedRuntimeCapabilities(p.ID); err != nil {
+		p.registry.MarkUntrusted(p.ID)
+	}
 }

@@ -53,6 +53,7 @@ struct AccountlessInstallationPayload: Sendable {
             guestStagePath: "/" + guestStage, guestLaunchDaemonPath: "/" + guestJob,
             guestReceiptPath: "/" + guestStage + "/result/receipt.json", maximumBootSeconds: 300,
             files: try output.inventory())
+        try plan.validate(candidate: candidate)
         try output.write(encoder.encode(plan), to: destination.appendingPathComponent("plan.json"), mode: 0o400)
         try output.synchronize()
         return plan

@@ -18,6 +18,33 @@ a successful installation or template-readiness receipt. Root staging, boot,
 receipt collection, installed-checkpoint publication and native qualification
 still require their separate orchestration and physical evidence.
 
+`AccountlessInstallationStagingJournal` and `AccountlessOfflineOverlay` implement
+the recoverable file-copy phase for the privileged operator. The journal lives
+in an operator-owned private directory and retains a stable exclusive lock.
+Its immutable `staging-intent.json` binds the entire raw candidate and generated
+payload plan before any guest-file writes. `staged.json` references that intent;
+neither file means installed, detached, stopped or qualified. An existing
+`boot-intent.json`, installation result or cleanup state closes staging, even
+when incomplete. Conflicting, orphaned, linked or shared records are rejected.
+
+The overlay accepts only the producer's ten fixed files and fixed attempt paths.
+It walks descriptors without following links or crossing a filesystem, rejects
+unexpected partial contents, preserves matching files and signing xattrs, and
+publishes each missing file without overwrite. It checks the copied signed
+release before publishing the temporary LaunchDaemon last. A matching interrupted
+copy can resume before any boot attempt; staging is never an installer retry.
+Once `staged.json` exists, missing files are a conflict and are never recreated.
+Unrelated guest paths and existing parent permissions are preserved.
+
+These helpers do not acquire machine/native image authority, choose a device,
+attach or mount an image, prove the Data-volume UUID, or boot the guest. The
+enclosing privileged operator must perform those checks and retain their guards
+around the whole operation. It must generate the payload from the protected
+signed package, use a protected journal, and capture stopped/detached disk
+identity before handing control to the GUI installer job. A staged record alone
+does not grant boot authority. Tests use private directory fixtures, including
+real ad-hoc signature preservation; production still requires Developer ID.
+
 Existing schema1 installation and template records retain their legacy
 `bootstrapRetired` field and encoding. They are never converted into native
 qualification. Normal clone validation rejects a schema1 template when its

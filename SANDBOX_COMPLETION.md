@@ -5,13 +5,14 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
-Current local changes add signal cancellation, actual GUI-session monitoring and
-cleanup covering all post-runtime startup/service exits. Source6cf8f3381 adds
+Current changes add recoverable accountless payload staging and its durable
+journal. Localf235b8ad2 adds signal cancellation, actual GUI-session monitoring
+and cleanup covering all post-runtime startup/service exits. Source6cf8f3381 adds
 installed-checkpoint publication after qualification-clone consumerb48455139 and
-requested-resource configuration32be94642. Full sandbox suite passes524tests,
-7explicit skips,0failures (126.512s). Coordinator suite, Linux
-build, docs lint, UI lint and Next.js build pass. CI34809434499 and integration
-34809434503 passed244009eca. The latest code requires fresh CI; benchmark
+requested-resource configuration32be94642. Full sandbox suite passes539tests,
+7explicit skips,0failures (130.665s). Coordinator suite, Linux
+build, docs lint, UI lint and Next.js build pass. CI34811478625 passed6cf8f3381;
+integration34811478687 is still running. The latest local code requires fresh CI; benchmark
 environment approval is separate and has not been granted.
 
 Physical guest exercise14 and coldboot15 PASS on the test Mac. They prove
@@ -33,7 +34,8 @@ explicit temporary runtime-group membership until the machine campaign finishes.
 - Worktree: `.worktrees/sandbox-completion-20260913`.
 - Branch: `codex/sandbox-completion-20260913`.
 - Starting sandbox tip0950ac41e; master93337ef05 integrated in453b37667.
-- Latest code commit:6cf8f3381 (push validation in progress; verify remote ref).
+- Latest pushed code:6cf8f3381; local lifecycle commitf235b8ad2 plus current
+  accountless staging changes. Verify git HEAD and remote before resuming.
 - Local GUI plan commit3abe05f712de1d2dcc6958315c1fbf56b4b693ff follows
   host context50145d4b4 and qualification validator4cab8f470.
 - Managed restore lifetime commitb5680748bd9d4670f3ee4c02ea2ffc38810c981d
@@ -980,3 +982,74 @@ Resume next with privileged base preparation orchestration and a protected
 selected-GUI-user installer job. Preserve all accountless receipts, source/lease
 binding, machine/source/native locks and root attachment cleanup described above.
 Physical evidence remains exercise14/coldboot15 on guest244009eca/runtime8.
+
+## Recoverable offline accountless payload staging
+
+AccountlessInstallationStagingJournal now persists the exact candidate/plan
+intent under a stable exclusive lock before guest-file changes. Matching intent
+reopens; conflicting/orphaned staged evidence, FIFO/shared/hardlinked records,
+changed lock/directory identities and any boot/result/cleanup marker fail closed.
+The immutable staged receipt hashes the intent and makes no installation,
+attachment, stopped-state or qualification claim.
+
+AccountlessOfflineOverlay copies exactly the ten generated/signed payload files
+into an ALREADY-AUTHORIZED Data directory. It performs descriptor-relative,
+no-follow, same-filesystem checks, preflights existing content, retains matching
+file inodes, copies signature xattrs to unlinked temporary files, then uses
+no-overwrite APFS publication. The copied release is signature-validated before
+the temporary LaunchDaemon is published LAST. Partial staging can resume only
+before a boot intent. Once staged.json exists, missing files are a conflict,
+not permission to reconstruct the payload. Replaced Data-directory paths cannot
+publish the boot job or success. Existing macOS parents and unrelated files are
+preserved. AccountlessInstallationPayloadPlan validates the fixed paths, complete
+inventory, candidate/payload binding and maximum boot duration; the producer also
+calls that validator before publishing its plan.
+
+The production authority/mount wrapper is STILL REQUIRED: these focused helpers
+are internal and do not acquire machine/native locks, authorize a source, attach
+or select a Data volume, start a VM, or publish installed/qualified readiness.
+They must only receive the protected root-generated payload/journal and a Data
+mount already bound to the exact owned raw source. Do not expose a CLI accepting
+an arbitrary mounted path as installation authority.
+
+Tests: initial19 focused tests pass (offline-staging-targeted-tests.log). The
+first full run538tests/7skips passed (offline-staging-full-tests.log). Review then
+added the completed-stage missing-file rejection and its regression; FINAL full
+suite539tests/7skips/0failures passes130.665s in
+/private/tmp/darkbloom-sandbox-completion-evidence/offline-staging-final-full-tests.log.
+These are real filesystem/signature/cancellation fixtures, not physical staging
+or a new root/GUI installation run. Signature tests relax Developer ID to their
+real ad-hoc identities through a test-only dependency; production stays strict.
+
+Fresh read-only test-Mac storage evidence:
+- df available59215896KiB, about56.47GiB, on encrypted volume and Data pool.
+- Go cache /Users/gaj/Library/Caches/go-build is68.24GiB (grown from27.8).
+- HuggingFace cache126.53GiB; selected original8bitGemma remains removed.
+- Own lab VM directories total91.24GiB reported by du: legacybase24.17,
+  retirementprobe23.78, accountlessprobe3 21.65, accountlessprobe2 21.64.
+  APFS sharing means du totals do not prove bytes reclaimed. Root quiescence,
+  exact owned-image checks and retained evidence must precede any cleanup.
+- Read-only inventory logs: test-mac-storage-inventory.log and
+  test-mac-build-cache-inventory.log. Permission-denied hidden/encrypted430 paths
+  were not inspected; this is not a complete disk inventory. Existing source,
+  model and build caches were not deleted.
+
+PENDING USER QUESTION: approval to clear ONLY the test Mac's68.2GiB Go build cache.
+The earlier selection authorized the specific8bitGemma cache, not this cache.
+Do not treat elapsed time or a goal continuation as approval. Continue independent
+code work. Cleanup of our own obsolete VM fixtures is already within test scope,
+but requires fresh root stop/native-lock/no-openers proof before deletion. Preserve
+probe3/diagnostic evidence until the product replacement has passed relevant gates.
+No mount, root mutation, service/group change, VM run or cache deletion occurred.
+
+NEXT: implement the privileged source/native authority and Data attach/mount/
+detach wrapper, connect this staging operation, then the selected-GUI installer
+boot job and receipt collection/removal. Root must not run VZ by changing UID.
+Root-to-GUI phases need durable intents and a clean ownership handoff: a launchd
+job cannot inherit the root orchestrator's EX file descriptor, so the GUI phase
+must acquire its own machine authority after the root offline phase is proven
+quiescent. Preserve source identity and journals across that boundary. Then wire
+installed checkpoint -> qualification clone -> checks/cold boot -> teardown ->
+source revalidation and genuine ready-template publication. The final source
+check must bind the durable released-lease cleanup proof, not the existing
+active-lease-only capability revalidator.

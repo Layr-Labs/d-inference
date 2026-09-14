@@ -29,6 +29,7 @@ struct AccountlessInstallationBinding: Codable, Equatable, Sendable {
 
 enum AccountlessInstallationError: Error {
     case invalidBinding, invalidReceipt, incompleteInstallation, unsafeDestination, releaseChanged, copyFailed
+    case stagingInProgress, stagingClosed
 }
 
 struct AccountlessInstallationPayloadPlan: Codable, Equatable, Sendable {

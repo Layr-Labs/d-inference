@@ -1,6 +1,6 @@
 # Data flow: one request end to end
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-14 · commit `83a88a577`
 
 A consumer request travels consumer → coordinator → provider → coordinator → consumer. This page shows that journey once — as a sequence diagram and a stage table naming the code that owns each step — for anyone tracing a request through the coordinator.
 
@@ -54,7 +54,7 @@ Two things the diagram makes visible. First, the consumer receives no bytes unti
 | 3 | Authenticate | Bearer resolved to an API key, Privy user, or admin; key lookups cached for [`apiKeyCacheTTL`](../reference/api-contracts.md#timeouts-and-constants) | `requireAuth`, `extractBearerToken` (`coordinator/api/server.go`) |
 | 4 | Rate limit | Per-key `rpm_limit`, then the account limiter; 429 with `Retry-After` | `rateLimitConsumer`, `applyKeyRPMLimit` (`coordinator/api/server.go`) |
 | 5 | Unseal (optional) | `application/eigeninference-sealed+json` bodies are decrypted; the response will be sealed per event | `sealedTransport` (`coordinator/api/sender_encryption.go`); [`security/encryption.md`](security/encryption.md) |
-| 6 | Parse and validate | Inference body cap [`maxInferenceBodyBytes`](../reference/api-contracts.md#limits-and-validation), tool-schema normalisation, `model` required, key allow-list, `n == 1`, tool-choice and vision rules | `parseInferencePrelude` (`coordinator/api/inference_preprocess.go`), `validateToolConstraintPolicy` (`coordinator/api/tool_constraints.go`), `visionToolsFailFast` |
+| 6 | Parse and validate | Inference body cap [`maxInferenceBodyBytes`](../reference/api-contracts.md#limits-and-validation), tool-schema normalisation, `model` required, key allow-list, `n == 1`, tool-choice and vision rules | `parseInferencePrelude` (`coordinator/api/inference_preprocess.go`), `toolpolicy.ValidateParsed` / `toolpolicy.ValidateBytes` (`coordinator/inference/toolpolicy/validate.go`), `visionToolsFailFast` |
 | 7 | Resolve model | Alias → concrete build; the response will still echo the alias | `resolveRequestedModel` (`coordinator/api/consumer.go`); [`model-registry.md`](model-registry.md) |
 | 8 | Deadline and shedding | First-content deadline computed from the prompt size; rejecting models shed with 429 | `FirstContentDeadline`, `shedIfModelRejected` (`coordinator/api/consumer.go`) |
 | 9 | Token-rate admission | Input/output tokens per minute | `applyTokenRateLimitWithAdmission` (`coordinator/api/server.go`) |
@@ -111,7 +111,7 @@ Each row is the stage at which a request can end early and what the consumer see
 | Middleware chain, authentication, rate limits, token-rate admission | `coordinator/api/server.go` — `loggingMiddleware`, `bodyLimitMiddleware`, `requireAuth`, `rateLimitConsumer`, `applyTokenRateLimitWithAdmission` |
 | Drain gate | `coordinator/api/drain.go` — `drainGate` |
 | Sealed client transport | `coordinator/api/sender_encryption.go` — `sealedTransport` |
-| Prelude parsing and validation | `coordinator/api/inference_preprocess.go` — `parseInferencePrelude`; `coordinator/api/tool_constraints.go` — `validateToolConstraintPolicy` |
+| Prelude parsing and validation | `coordinator/api/inference_preprocess.go` — `parseInferencePrelude`; `coordinator/inference/toolpolicy/validate.go` — `toolpolicy.ValidateParsed` / `toolpolicy.ValidateBytes` |
 | Model resolution, first-content deadline, cancel | `coordinator/api/consumer.go` — `resolveRequestedModel`, `FirstContentDeadline`, `shedIfModelRejected`, `sendProviderCancel` |
 | Response relay and SSE | `coordinator/api/consumer_stream.go` — `handleStreamingResponseWithFirstChunkAndError`; `coordinator/api/sse_normalize.go` — `normalizeSSEChunk`; `coordinator/api/sse_events.go` — `stripSSEDoneEvents` |
 | Reservation and capacity admission | `coordinator/api/inference_admission.go` — `reserveInferenceBalance`, `runInferenceAdmission` |

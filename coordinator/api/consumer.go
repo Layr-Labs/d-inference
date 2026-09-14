@@ -27,6 +27,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/auth"
+	"github.com/eigeninference/d-inference/coordinator/inference/toolpolicy"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/payments"
@@ -1874,7 +1875,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// that is the parsed map with the caller's original tools restored; the
 	// Responses surface needs the input→chat lowering, which works on bytes, so
 	// the untouched input is lowered and parsed once.
-	var validatedPolicy validatedToolConstraintPolicy
+	var validatedPolicy toolpolicy.Policy
 	var validationErr error
 	if isResponsesAPI {
 		loweredConstraintBody, err := promptcontract.LowerProviderBody(
@@ -1884,13 +1885,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				"invalid_request_error", err.Error()))
 			return
 		}
-		validatedPolicy, validationErr = validateToolConstraintPolicy(loweredConstraintBody)
+		validatedPolicy, validationErr = toolpolicy.ValidateBytes(loweredConstraintBody)
 	} else {
-		validatedPolicy, validationErr = validateParsedToolConstraintPolicy(
-			constraintView(parsed, prelude.originalTools))
+		validatedPolicy, validationErr = toolpolicy.ValidateParsed(parsed, prelude.originalTools)
 	}
 	if validationErr != nil {
-		s.recordToolConstraintMetric(validatedPolicy.mode, "compile_rejection")
+		s.recordToolConstraintMetric(validatedPolicy.Mode, "compile_rejection")
 		writeToolConstraintValidationError(w, validationErr)
 		return
 	}
@@ -1904,11 +1904,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	shape := introspectRequest(parsed)
 	requiresVision := shape.requiresVision()
 	hasTools := shape.hasTools
-	validatedMode := validatedPolicy.mode
-	toolChoiceName := validatedPolicy.name
-	parallelToolCalls := validatedPolicy.parallel
+	validatedMode := validatedPolicy.Mode
+	toolChoiceName := validatedPolicy.Name
+	parallelToolCalls := validatedPolicy.Parallel
 	s.recordToolConstraintMetric(validatedMode, "requested")
-	requiresToolConstraint := validatedMode.requiresInferenceConstraint()
+	requiresToolConstraint := validatedMode.RequiresInferenceConstraint()
 	if requiresToolConstraint && requiresVision {
 		writeJSON(w, http.StatusBadRequest, errorResponse(
 			"invalid_request_error",
@@ -2682,30 +2682,30 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// for requests that actually carry tool policy to validate; tool-less
 	// unsupported shapes keep the pre-existing native-forward behavior with
 	// the neutral auto defaults.
-	validatedPolicy := validatedToolConstraintPolicy{
-		mode: toolChoiceAuto, parallel: true,
+	validatedPolicy := toolpolicy.Policy{
+		Mode: toolpolicy.Auto, Parallel: true,
 	}
 	constraintBody, constraintLowerErr := promptcontract.LowerProviderBody(
 		endpointKind, originalRawBody)
 	if constraintLowerErr == nil {
 		var validationErr error
-		validatedPolicy, validationErr = validateToolConstraintPolicy(constraintBody)
+		validatedPolicy, validationErr = toolpolicy.ValidateBytes(constraintBody)
 		if validationErr != nil {
-			s.recordToolConstraintMetric(validatedPolicy.mode, "compile_rejection")
+			s.recordToolConstraintMetric(validatedPolicy.Mode, "compile_rejection")
 			writeToolConstraintValidationError(w, validationErr)
 			return
 		}
 	} else if _, hasToolChoice := parsed["tool_choice"]; hasToolChoice || requestHasTools(parsed) {
-		s.recordToolConstraintMetric(validatedPolicy.mode, "compile_rejection")
+		s.recordToolConstraintMetric(validatedPolicy.Mode, "compile_rejection")
 		writeJSON(w, http.StatusBadRequest, errorResponse(
 			"invalid_request_error", constraintLowerErr.Error()))
 		return
 	}
-	validatedMode := validatedPolicy.mode
-	toolChoiceName := validatedPolicy.name
-	parallelToolCalls := validatedPolicy.parallel
+	validatedMode := validatedPolicy.Mode
+	toolChoiceName := validatedPolicy.Name
+	parallelToolCalls := validatedPolicy.Parallel
 	s.recordToolConstraintMetric(validatedMode, "requested")
-	requiresToolConstraint := validatedMode.requiresInferenceConstraint()
+	requiresToolConstraint := validatedMode.RequiresInferenceConstraint()
 	requiresVision := detectMediaRequirement(parsed)
 	hasTools := requestHasTools(parsed)
 	aliasTraits := registry.RequestTraits{

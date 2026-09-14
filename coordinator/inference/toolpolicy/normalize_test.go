@@ -1,4 +1,4 @@
-package api
+package toolpolicy
 
 import (
 	"bytes"
@@ -15,7 +15,7 @@ func TestNormalizeToolSchemas_InjectsTypeIntoTypelessParameterPropertyAndObject(
 	 "tools":[{"type":"function","function":{"name":"get_weather",
 	   "parameters":{"properties":{"unit":{"enum":["c","f"],"description":"unit"}}}}}]}`)
 
-	out := NormalizeToolSchemas(body)
+	out := NormalizeBytes(body)
 	params := tsnParams(t, out)
 	if got := tsnType(t, params, "parameters"); got != "object" {
 		t.Errorf("parameters type = %q, want object", got)
@@ -41,7 +41,7 @@ func TestNormalizeToolSchemas_PreservesExistingTypesAndNestedArrays(t *testing.T
 	    "tags":{"type":"array","items":{"description":"a tag"}},
 	    "q":{"type":"string"}}}}}]}`)
 
-	props := tsnProps(t, NormalizeToolSchemas(body))
+	props := tsnProps(t, NormalizeBytes(body))
 	// Existing types untouched.
 	if got := tsnType(t, tsnMap(t, props["q"], "q"), "q"); got != "string" {
 		t.Errorf("q type = %q, want string", got)
@@ -63,7 +63,7 @@ func TestNormalizeToolSchemas_PreservesExistingTypesAndNestedArrays(t *testing.T
 // Swift: nonToolBodyReturnedUnchanged
 func TestNormalizeToolSchemas_NonToolBodyReturnedUnchanged(t *testing.T) {
 	noTools := []byte(`{"model":"m","messages":[]}`)
-	if out := NormalizeToolSchemas(noTools); !bytes.Equal(out, noTools) {
+	if out := NormalizeBytes(noTools); !bytes.Equal(out, noTools) {
 		t.Errorf("no-tools body changed: %s", out)
 	}
 }
@@ -74,7 +74,7 @@ func TestNormalizeToolSchemas_RecursesIntoAdditionalProperties(t *testing.T) {
 	  "parameters":{"type":"object","properties":{
 	    "meta":{"additionalProperties":{"description":"a value"}}}}}}]}`)
 
-	meta := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["meta"], "meta")
+	meta := tsnMap(t, tsnProps(t, NormalizeBytes(body))["meta"], "meta")
 	// The map-shaped param node is typed "object"...
 	if got := tsnType(t, meta, "meta"); got != "object" {
 		t.Errorf("meta type = %q, want object", got)
@@ -95,7 +95,7 @@ func TestNormalizeToolSchemas_DerivesUnionTypeInsteadOfBlanketString(t *testing.
 	  "parameters":{"type":"object","properties":{
 	    "n":{"anyOf":[{"type":"number"},{"type":"null"}]}}}}}]}`)
 
-	n := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["n"], "n")
+	n := tsnMap(t, tsnProps(t, NormalizeBytes(body))["n"], "n")
 	// A nullable-number union borrows "number", not a mislabelling "string".
 	if got := tsnType(t, n, "n"); got != "number" {
 		t.Errorf("n type = %q, want number", got)
@@ -111,12 +111,12 @@ func TestNormalizeToolSchemas_SkipsNormalizationForOversizedBodies(t *testing.T)
 	// it contains "tools" and a schema that WOULD be repaired — bounding the
 	// JSON round-trip cost (DoS amplification).
 	over := tsnPadBody(t, maxToolNormalizationBytes+1)
-	if out := NormalizeToolSchemas(over); !bytes.Equal(out, over) {
+	if out := NormalizeBytes(over); !bytes.Equal(out, over) {
 		t.Error("oversized body was modified")
 	}
 	// At exactly the cap the body is still normalized (the gate is strictly >).
 	at := tsnPadBody(t, maxToolNormalizationBytes)
-	out := NormalizeToolSchemas(at)
+	out := NormalizeBytes(at)
 	if bytes.Equal(out, at) {
 		t.Fatal("at-cap body was not normalized")
 	}
@@ -131,7 +131,7 @@ func TestNormalizeToolSchemas_EnumOnlyPropertyGainsStringType(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
 	  "parameters":{"type":"object","properties":{"e":{"enum":["a","b"]}}}}}]}`)
 
-	e := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["e"], "e")
+	e := tsnMap(t, tsnProps(t, NormalizeBytes(body))["e"], "e")
 	if got := tsnType(t, e, "e"); got != "string" {
 		t.Errorf("e type = %q, want string", got)
 	}
@@ -149,7 +149,7 @@ func TestNormalizeToolSchemas_BareAdditionalPropertiesBoolUntouched(t *testing.T
 	    "open":{"type":"object","additionalProperties":true},
 	    "closed":{"additionalProperties":false}}}}}]}`)
 
-	props := tsnProps(t, NormalizeToolSchemas(body))
+	props := tsnProps(t, NormalizeBytes(body))
 	open := tsnMap(t, props["open"], "open")
 	if open["additionalProperties"] != true {
 		t.Errorf("open additionalProperties = %v (%T), want bare true", open["additionalProperties"], open["additionalProperties"])
@@ -169,7 +169,7 @@ func TestNormalizeToolSchemas_DeeplyNestedItemsProperties(t *testing.T) {
 	  "parameters":{"type":"object","properties":{
 	    "grid":{"type":"array","items":{"items":{"properties":{"name":{"description":"n"}}}}}}}}}]}`)
 
-	grid := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["grid"], "grid")
+	grid := tsnMap(t, tsnProps(t, NormalizeBytes(body))["grid"], "grid")
 	l1 := tsnMap(t, grid["items"], "grid.items")
 	if got := tsnType(t, l1, "grid.items"); got != "array" {
 		t.Errorf("grid.items type = %q, want array (inferred from items)", got)
@@ -203,7 +203,7 @@ func TestNormalizeToolSchemas_ToolsBytesWithoutToolsArrayNoOp(t *testing.T) {
 		if !bytes.Contains(body, []byte(`"tools"`)) {
 			t.Fatalf("%s: test body must pass the byte gate to exercise the JSON gate", name)
 		}
-		if out := NormalizeToolSchemas(body); !bytes.Equal(out, body) {
+		if out := NormalizeBytes(body); !bytes.Equal(out, body) {
 			t.Errorf("%s: body changed:\n in: %s\nout: %s", name, body, out)
 		}
 	}
@@ -220,7 +220,7 @@ func TestNormalizeToolSchemas_NonObjectOrMalformedBodyUnchanged(t *testing.T) {
 		"empty body":       {},
 	}
 	for name, body := range bodies {
-		if out := NormalizeToolSchemas(body); !bytes.Equal(out, body) {
+		if out := NormalizeBytes(body); !bytes.Equal(out, body) {
 			t.Errorf("%s: body changed:\n in: %s\nout: %s", name, body, out)
 		}
 	}
@@ -239,7 +239,7 @@ func TestNormalizeToolSchemas_NumbersAndSiblingsSurviveExactly(t *testing.T) {
 		`"tools":[{"type":"function","function":{"name":"f","parameters":` +
 		`{"type":"object","properties":{"limit":{"description":"l","default":9007199254740993}}}}}]}`)
 
-	out := NormalizeToolSchemas(body)
+	out := NormalizeBytes(body)
 	if bytes.Equal(out, body) {
 		t.Fatal("body was not normalized (limit should gain a type)")
 	}
@@ -287,11 +287,11 @@ func TestNormalizeToolSchemas_Idempotent(t *testing.T) {
 		`"e":{"enum":["a"]},` +
 		`"n":{"anyOf":[{"type":["integer","null"]},{"type":"null"}]}}}}}]}`)
 
-	once := NormalizeToolSchemas(body)
+	once := NormalizeBytes(body)
 	if bytes.Equal(once, body) {
 		t.Fatal("first pass did not normalize")
 	}
-	twice := NormalizeToolSchemas(once)
+	twice := NormalizeBytes(once)
 	if !bytes.Equal(once, twice) {
 		t.Errorf("not idempotent:\n once: %s\ntwice: %s", once, twice)
 	}
@@ -306,7 +306,7 @@ func TestNormalizeToolSchemas_RealWorldIncidentShape(t *testing.T) {
 		`"unit":{"type":["string","null"],"description":"optional unit"}},` +
 		`"required":["location"]}}}]}`)
 
-	props := tsnProps(t, NormalizeToolSchemas(body))
+	props := tsnProps(t, NormalizeBytes(body))
 	unit := tsnMap(t, props["unit"], "unit")
 	if got := tsnType(t, unit, "unit"); got != "string" {
 		t.Errorf("unit type = %q, want string", got)
@@ -338,7 +338,7 @@ func TestNormalizeToolSchemas_MalformedToolEntriesPassedThrough(t *testing.T) {
 		`{"function":{"name":"g","parameters":null}},` +
 		`{"function":{"name":"h","parameters":{"properties":{"q":{"description":"q"}}}}}]}`)
 
-	out := NormalizeToolSchemas(body)
+	out := NormalizeBytes(body)
 	tools, ok := tsnDecode(t, out)["tools"].([]any)
 	if !ok || len(tools) != 7 {
 		t.Fatalf("tools = %v, want 7 entries", tools)
@@ -371,7 +371,7 @@ func TestNormalizeToolSchemas_MalformedToolEntriesPassedThrough(t *testing.T) {
 }
 
 // (b) A tools body whose every schema node already carries a string `type`
-// needs NO repair, so NormalizeToolSchemas must return the caller's ORIGINAL
+// needs NO repair, so NormalizeBytes must return the caller's ORIGINAL
 // bytes verbatim — skipping the JSON re-encode entirely. The input is
 // deliberately written with key order and whitespace the Go encoder would
 // rewrite (keys not alphabetized, a space after a colon), so byte-equality
@@ -388,7 +388,7 @@ func TestNormalizeToolSchemas_NoRepairReturnsInputBytesIdentical(t *testing.T) {
 		`"tags":{"type":"array","items":{"type":"string"}}},` +
 		`"required":["city"]}}}],"model":"gemma-4-26b"}`)
 
-	out := NormalizeToolSchemas(body)
+	out := NormalizeBytes(body)
 	if !bytes.Equal(out, body) {
 		t.Fatalf("fully-typed body was re-encoded; want byte-identical input.\n in: %s\nout: %s", body, out)
 	}
@@ -410,7 +410,7 @@ func TestNormalizeToolSchemas_RepairNeededStillCorrected(t *testing.T) {
 		`"city":{"type":"string"},` +
 		`"unit":{"enum":["c","f"]}}}}}]}`)
 
-	out := NormalizeToolSchemas(body)
+	out := NormalizeBytes(body)
 	if bytes.Equal(out, body) {
 		t.Fatal("body needing a repair was returned unchanged")
 	}

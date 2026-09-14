@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/toolpolicy"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -66,7 +67,7 @@ const maxInferenceBodyBytes = 16 << 20 // 16 MiB
 // — e.g. a prompt containing a long run of '<' — past the provider's
 // single-frame WebSocket limit, tearing down its session. Disabling escaping
 // keeps the re-marshaled body within a small constant of the (already
-// size-capped) input. Mirrors NormalizeToolSchemas's own non-escaping round-trip.
+// size-capped) input. Mirrors toolpolicy.NormalizeBytes's own non-escaping round-trip.
 func marshalForwardBody(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -180,7 +181,7 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 	// coordinator deploys, instead of waiting out provider update lag. The
 	// repair runs on the decoded map (one parse per request); the caller's
 	// original tools are kept for constraint validation.
-	originalTools, _ := normalizeParsedToolSchemas(parsed, rawBody)
+	originalTools, _ := toolpolicy.NormalizeParsed(parsed, rawBody)
 	if stop, ok := parsed["stop"].(string); ok {
 		parsed["stop"] = []any{stop}
 	}

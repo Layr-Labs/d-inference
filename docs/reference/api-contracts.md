@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-11 · commit `e3993c611`
+> Last updated: 2026-09-14 · commit `83a88a577`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -391,7 +391,7 @@ Requests are decoded into a generic JSON object with `json.Number` preserved (`p
 | `n` | Values above 1 → 400 `invalid_request_error` |
 | `max_tokens`, `max_completion_tokens` | `max_completion_tokens` is mapped to `max_tokens`. An explicit value is passed through unchanged (not clamped); when none is set the coordinator fills in the output bound from [pricing-model.md → Formulas](pricing-model.md#formulas) (`ensureMaxTokensBound`, `coordinator/api/consumer.go`) |
 | `stop` | A single string is normalised to a one-element array in `parseInferencePrelude` |
-| `tools`, `tool_choice`, `parallel_tool_calls` | Schemas normalised by `NormalizeToolSchemas` (`coordinator/api/toolschema.go`); constraints validated by `validateToolConstraintPolicy` (`coordinator/api/tool_constraints.go`) |
+| `tools`, `tool_choice`, `parallel_tool_calls` | Schemas normalised by `toolpolicy.NormalizeParsed` (`coordinator/inference/toolpolicy/normalize.go`); native Chat constraints validated by `toolpolicy.ValidateParsed`, with lowered Responses, Messages and Completions bodies validated by `toolpolicy.ValidateBytes` (`coordinator/inference/toolpolicy/validate.go`) |
 | `response_format` | Passed through to the provider without coordinator validation |
 | `reasoning`, `reasoning_effort` | Applied per model policy by `applyResolvedModelReasoningPolicy` (`coordinator/api/reasoning_request_policy.go`) |
 | `provider` and other routing hints | Removed by `stripProviderRoutingFields` (`coordinator/api/request_introspection.go`) |
@@ -471,8 +471,8 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 | Prompt size at admission | 413 `payload_too_large` when the estimated prompt exceeds what the model's providers can accept | `runInferenceAdmission` (`coordinator/api/inference_admission.go`) |
 | Catalog membership | Model resolved but absent from the routable catalog → 404 `model_not_found`, after the balance reservation is released | `handleChatCompletions` |
 | Key allow-list | `model` not in the key's `allowed_models` → 403 `model_not_allowed` | `keyModelAllowed` |
-| `tool_choice` | `"none"`, `"auto"`, `"required"`, or `{"type": "function", "function": {"name": …}}`; a named function must exist in `tools`; `required` or a named choice with no tools → 400 | `validateToolConstraintPolicy` |
-| Tool schemas | Normalised to strict JSON Schema before dispatch; schemas the constraint parser cannot compile → 422 | `NormalizeToolSchemas`, `validateResolvedToolConstraintParser` |
+| `tool_choice` | `"none"`, `"auto"`, `"required"`, or `{"type": "function", "function": {"name": …}}`; a named function must exist in `tools`; `required` or a named choice with no tools → 400 | `toolpolicy.ValidateParsed` / `toolpolicy.ValidateBytes` |
+| Tool schemas | Normalised to strict JSON Schema before dispatch; schemas the constraint parser cannot compile → 422 | `toolpolicy.NormalizeParsed`, `validateResolvedToolConstraintParser` |
 | Vision | Image parts require a vision-capable model, otherwise 400; a vision model with no vision-capable provider online → 503 `model_unavailable` | `detectMediaRequirement` (`coordinator/api/request_introspection.go`), `visionToolsFailFast` (`coordinator/api/inference_preprocess.go`) |
 | Remote images | `http(s)` `image_url` parts are gated before dispatch and fetched by the coordinator; the fetch is billed as media | `gateRemoteMediaPreDispatch`, `resolveRemoteMedia` (`coordinator/api/media_resolve.go`) |
 | Inference-enforced `tool_choice` + images | `required` or a named `tool_choice` (modes that need provider-side constraint enforcement) together with image content → 400, `param: tool_choice`. `response_format` is not validated by the coordinator | `handleChatCompletions` |
@@ -550,7 +550,7 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Inference pipeline | `coordinator/api/consumer.go`, `coordinator/api/inference_preprocess.go`, `coordinator/api/inference_admission.go`, `coordinator/api/request_introspection.go`, `coordinator/api/reasoning_request_policy.go`, `coordinator/api/dispatch.go`, `coordinator/api/dispatch_terminal_write.go`, `coordinator/api/inference_failure_class.go` |
 | Endpoint lowering (Responses, Completions, Messages) | `coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_responses.go`, `coordinator/promptcontract/endpoint_lower_messages.go`, `coordinator/api/generic_endpoint_response.go`, `coordinator/api/generic_endpoint_stream.go`, `coordinator/api/responses_stream.go` |
 | SSE, timing and provider metadata | `coordinator/api/sse_response.go`, `coordinator/api/chat_metadata_stream.go`, `coordinator/api/response_metadata.go`, `coordinator/api/profiler_dispatch.go` |
-| Tools, media, constraints | `coordinator/api/toolschema.go`, `coordinator/api/tool_constraints.go`, `coordinator/api/media_resolve.go` |
+| Tools, media, constraints | `coordinator/inference/toolpolicy/`, `coordinator/api/tool_constraints.go`, `coordinator/api/media_resolve.go` |
 | Sealed transport | `coordinator/api/sender_encryption.go` |
 | Models and catalog | `coordinator/api/models_endpoints.go`, `coordinator/api/concrete_model_entries.go`, `coordinator/api/openrouter_endpoint.go`, `coordinator/api/model_registry_handlers.go`, `coordinator/api/model_alias_handlers.go`, `coordinator/api/openrouter_alias_handlers.go`, `coordinator/api/capacity.go`, `coordinator/api/exact_cache_status.go` |
 | Keys, device code, accounts | `coordinator/api/apikey_handlers.go`, `coordinator/store/apikey.go`, `coordinator/api/device_auth.go`, `coordinator/api/me_handlers.go` |

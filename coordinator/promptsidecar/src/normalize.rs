@@ -1,3 +1,4 @@
+use crate::render_values::{sanitize_array, scalar_string};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use thiserror::Error;
@@ -60,15 +61,11 @@ pub fn normalize(
         tools = tools.map(crate::gemma4::normalize_tools);
     }
 
-    let forced_qwen_tool = requires_tool_call
-        && (model_id == "EigenLabs/Qwen3.8-27B-4bit"
-            || model_type.is_some_and(|value| {
-                value
-                    .trim()
-                    .to_ascii_lowercase()
-                    .replace('-', "_")
-                    .starts_with("qwen3_5")
-            }));
+    // Use the same family predicate as the provider's
+    // templateAdditionalContext. Catalog IDs and qwen3_vl_moe aliases must
+    // force the identical tool-only prompt, even without model metadata.
+    let forced_qwen_tool =
+        requires_tool_call && crate::leading_system::qwen_applies(&model_id, model_type);
     let mut additional_context = template_additional_context(&body, forced_qwen_tool)?;
     // Match the provider's existing GPTOSSHarmonyTemplateFix serving policy.
     if harmony
@@ -956,24 +953,6 @@ fn tool_name(tool: &Value) -> Option<&str> {
         .as_str()
 }
 
-fn sanitize_array(values: Vec<Value>) -> Vec<Value> {
-    values.into_iter().filter_map(sanitize).collect()
-}
-
-fn sanitize(value: Value) -> Option<Value> {
-    match value {
-        Value::Null => None,
-        Value::Array(values) => Some(Value::Array(sanitize_array(values))),
-        Value::Object(values) => Some(Value::Object(
-            values
-                .into_iter()
-                .filter_map(|(key, value)| sanitize(value).map(|value| (key, value)))
-                .collect(),
-        )),
-        value => Some(value),
-    }
-}
-
 fn validate_tool_history(messages: &[Value]) -> Result<(), NormalizeError> {
     let mut allowed = false;
     for message in messages {
@@ -1212,15 +1191,6 @@ fn normalize_harmony_schema(value: &mut Value) {
     {
         let rendered = scalar_string(object.get("default").unwrap());
         object.insert("default".into(), Value::String(rendered));
-    }
-}
-
-fn scalar_string(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        Value::Bool(value) => value.to_string(),
-        Value::Number(value) => value.to_string(),
-        _ => String::new(),
     }
 }
 

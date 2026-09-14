@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-10 · commit `5a3ffc27f`
+> Last updated: 2026-09-13 · commit `a1f3c09c8`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -230,7 +230,7 @@ environment variable does not reset MLX's cached value, and `.serialized`
 does not isolate other suites. See `StartCommandTests.defaultApplyProjectsSettings`
 in `provider-swift/Tests/DarkbloomCLITests/StartCommandTests.swift` and
 `GPUEnforcementTests.requireMetalPinsGPU` in
-`provider-swift/Tests/ProviderCoreTests/GPUEnforcementTests.swift`.
+`provider-swift/Tests/ProviderCoreTests/Inference/Engine/GPUEnforcementTests.swift`.
 
 The standalone resource-release test and the two periodic MTP sampler tests
 also use child processes, giving their real listener/timer tasks an executor
@@ -238,9 +238,9 @@ separate from concurrent MLX tests. Their original deadlines, recurring-sample
 requirements and shutdown/resource assertions remain active. Each helper
 requires `ExitTest.current` so it cannot accidentally run in the parent process.
 See `standaloneServerStopAndWaitReleaseResidentBridgeAndSSDResources` in
-`provider-swift/Tests/ProviderCoreTests/StandaloneServerTests.swift` and
+`provider-swift/Tests/ProviderCoreTests/Server/StandaloneServerTests.swift` and
 `periodicSamplerEmitsForEverySlot` / `shutdownStopsSampler` in
-`provider-swift/Tests/ProviderCoreTests/MTPPostureTelemetryTests.swift`.
+`provider-swift/Tests/ProviderCoreTests/Telemetry/MTPPostureTelemetryTests.swift`.
 
 **Nested `libs/mlx-swift-lm` suites.** The paged-KV correctness gates live in
 the submodule, not in `provider-swift/`. Build them once, stage the metallib,
@@ -260,6 +260,88 @@ for suite in CBv2PagedSafetyTests CBv2PrefixCacheHasherTests CBv2PagedEligibilit
   ../../scripts/run-nested-suite.sh "$suite"
 done
 ```
+
+#### Finding provider tests
+
+Start from the production owner, then look in the matching folder under
+`provider-swift/Tests/ProviderCoreTests/`. These folders remain one SwiftPM
+target (`provider-swift/Package.swift`, `package`), so existing suite/function
+filters still select the same tests. The [inference source map](../architecture/inference.md#code-map)
+locates those owners under `provider-swift/Sources/ProviderCore/Inference/`;
+tests group engine, bridge, factory and scheduler responsibilities together in
+`Inference/Engine`.
+
+| Folder below `ProviderCoreTests` | Responsibility |
+|---|---|
+| `Inference/Engine` | Assembly, admission, cancellation, health, device gates and timing |
+| `Inference/Memory` | Load budgets, KV grants, allocation ownership and memory telemetry |
+| `Inference/PrefixCache` | Reuse eligibility, cache identity, receipts and routing evidence |
+| `KVCacheSSD` | Encrypted SSD storage, checkpoint coordination and persistence |
+| `Inference/MTP` | Assistant activation and inference capacity accounting |
+| `Inference/Prompting`, `Inference/Tools`, `Inference/Streaming`, `Inference/Vision` | Request preparation, tool contracts, streamed output and media handling |
+| `Inference/Kernels` | Synthetic Metal arithmetic and accuracy contracts |
+| `Inference/Live` | Opt-in inference and parity tests using actual local models, with `Gemma`, `GPTOSS` and `Qwen` subfolders |
+
+Other folders follow provider responsibilities: `ProviderLoop`, `Server`,
+`Models`, `SpecDec`, `Auth`, `Security`, `Diagnostics`, `Protocol`, `Coordinator`,
+`Telemetry`, `Update`, and the smaller source subsystems. `Benchmark` tests
+the `ProviderBenchmark` module and its production-engine integration.
+Drain/swap orchestration stays with `ProviderLoop` and `Server`.
+
+Keep model fixtures in `Inference/Live/Fixtures`, synthetic engine support in
+`Inference/Fixtures`, checkpoint support in `KVCacheSSD/Fixtures`, and shared
+HTTP/coordinator fixtures in `Helpers`. Shared input files under `fixtures/`
+and `coordinator/protocol/testdata/` remain canonical; moving a test deeper
+requires checking any lookup based on `#filePath`.
+
+Check each suite's annotations and prerequisites before running it. Tests
+that need no model weights can still execute Metal. The startup decode live
+test stays with its `ProviderLoop` owner, and `LiveInferenceMetallibSourceTests`
+tests the fixture resolver without loading a model. Use the preparation and
+isolated filters above; folder names do not change execution requirements.
+
+#### Doctor capture and attestation canonical bytes
+
+After building the provider test targets, run these focused regressions:
+
+```bash
+(cd provider-swift && swift test --filter 'DoctorCaptureTests|statusCanonical')
+(cd coordinator && go test -race ./attestation -count=1)
+```
+
+`provider-swift/Tests/DarkbloomCLITests/DoctorCaptureTests.swift`
+(`DoctorCaptureTests`) uses real subprocesses with output beyond pipe capacity,
+excluded stderr, nonzero exits, deadline escalation and an inherited stdout
+descriptor. Each child has an independent expiry and fixture-owned cleanup.
+`provider-swift/Tests/ProviderCoreTests/Security/StatusCanonicalTests.swift`
+(`statusCanonicalMatchesCoordinatorNestedMapVectors`) and
+`coordinator/attestation/status_canonical_mixed_case_test.go`
+(`TestBuildStatusCanonicalNestedMapVectors`) retain identical
+golden bytes for nested-map ordering, escaping and optional fields. These cases
+need no model weights, active provider or Secure Enclave key.
+
+#### Strict FP32 unit controls
+
+Run the strict tiny-model projection and scheduled-prefill comparisons in fresh
+processes with TF32 disabled, matching MLX's own unit-test runner:
+
+```bash
+cd libs/mlx-swift-lm
+for suite in GPTOSSPrefillOutputTests CBv2Gemma4ScheduledPrefillTests; do
+  MLX_ENABLE_TF32=0 ../../scripts/run-nested-suite.sh "$suite" -c release --no-parallel
+done
+```
+
+Build and stage the optimized test product and its matching metallib first.
+`libs/mlx-swift/Source/Cmlx/mlx/python/tests/run.py` disables TF32 for regular
+FP32 test precision. `libs/mlx-swift/Source/Cmlx/mlx/mlx/utils.h`
+(`env::enable_tf32`) otherwise defaults it on and caches the value per process;
+Metal matmul and attention consult that gate. On M5, the default TF32 paths can
+change these strict unit comparisons without a cache implementation change.
+Keep the original assertions and tolerances. This command qualifies only the
+selected controls, not the full test suite. Leave `MLX_ENABLE_TF32` unset for
+production-default live cache tests and model benchmarks; record any explicit
+numerical override as a separate experiment.
 
 #### Ordinary teacher-forced score diagnostics
 
@@ -352,7 +434,7 @@ Explicit Gemma verification, projection, logits and attention diagnostics requir
 untransformed greedy input. Historical baseline binaries retain their greedy
 sampling path; they are not sampled-throughput controls.
 Sampling wiring lives in
-`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkPrompt.swift`
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkPrompt.swift`
 and `scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkSampling.swift`.
 
 Run the CPU wrapper tests first:
@@ -977,6 +1059,17 @@ This prevents task scheduling from silently changing admission order. Sources: `
 
 ### 7. Docs lint
 
+The historical-link regression checks run in isolated temporary Git repositories:
+
+```bash
+python3 scripts/test-docs-check-historical-links.py
+```
+
+Docs Lint also runs these checks before validating the documentation tree.
+Frozen source references resolve against the exact stamped commit when the
+file has moved; current missing links still fail. See
+[historical source references](historical-references.md).
+
 ```bash
 make docs-check          # scripts/docs-check.sh — stamps, relative links, cited paths, orphans
 make docs-stamp FILES="docs/developer/test.md"   # refresh a stamp after editing
@@ -1139,7 +1232,7 @@ token IDs are accepted.
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |
 | [`.github/workflows/provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml) | manual only | Build an exact signed source revision, validate Developer ID signing/provisioning/notarization in a separate job, and retain an Actions artifact; no GitHub environment, deployment, release registration or model execution |
 | [`.github/workflows/register-model.yml`](../../.github/workflows/register-model.yml) | manual | `POST /v1/admin/models/register`; see [`../operations/model-migration.md`](../operations/model-migration.md) |
-| `.github/workflows/threat-model-review.yml`, `.github/workflows/claude.yml`, `.github/workflows/codex.yml` | PR / comment | Review automation; not test gates |
+| `.github/workflows/claude.yml`, `.github/workflows/codex.yml` | PR / comment | Review automation; not test gates |
 
 ## Verify
 
@@ -1167,6 +1260,77 @@ token IDs are accepted.
 - [`../architecture/components/provider.md`](../architecture/components/provider.md) — what the provider does at runtime.
 - [`../architecture/prompt-contract-sidecar.md`](../architecture/prompt-contract-sidecar.md) — what prompt parity protects.
 
+## GPT-OSS complete-checkpoint reconstruction
+
+On an owned idle Apple Silicon host, build the optimized provider tests with the
+pinned dependencies and source-matched metallib described in [build.md](build.md).
+Point the fixture at the verified exact `gpt-oss-20b` catalog snapshot; the helper
+hashes it before and after loading and rejects any other aggregate. Run only this
+fixture, with MTP and resident caching left at their production defaults:
+
+```bash
+cd provider-swift
+DARKBLOOM_LIVE_MLX_TESTS=1 \
+DARKBLOOM_LIVE_MLX_GPTOSS_CHECKPOINT_RESTART=1 \
+DARKBLOOM_LIVE_MLX_GPTOSS_MODEL_DIRECTORY=/absolute/verified-gpt-oss-20b \
+  swift test -c release --force-resolved-versions -Xswiftc -enable-testing \
+    --no-parallel --filter GPTOSSCheckpointRestartLiveTests
+```
+
+`provider-swift/Tests/ProviderCoreTests/Inference/Live/GPTOSS/GPTOSSCheckpointRestartLiveTests.swift`
+(`sameKeyNewEngineRestoresBranchedPrompt`) donates a complete encrypted historical
+checkpoint, shuts down the engine/store, reconstructs both and requests a branched
+prompt first. It requires disk reads, exact checkpoint-boundary hit accounting,
+expected answer markers, tenant and changed-prefix misses, cache-off controls,
+and retired staging/write reservations. TTFT and exact-text equality are recorded;
+one run is not a general performance or answer-quality claim. The fixture uses
+an isolated temporary root, one ephemeral key retained across reconstruction,
+and test runtime identity. It does not prove provider-process restart, production
+keychain recovery or cross-binary reuse.
+
+For concurrent requests with different suffixes, run the separate mixed-prefix
+gate on the same owned host, with production TF32 defaults:
+
+```bash
+cd provider-swift
+env -u MLX_ENABLE_TF32 \
+  DARKBLOOM_LIVE_MLX_TESTS=1 \
+  DARKBLOOM_LIVE_MLX_GPTOSS_MIXED_PREFIX=1 \
+  DARKBLOOM_LIVE_MLX_GPTOSS_MODEL_DIRECTORY=/absolute/verified-gpt-oss-20b \
+  swift test -c release --force-resolved-versions -Xswiftc -enable-testing \
+    --no-parallel --filter GPTOSSMixedPrefixCacheLiveTests
+```
+
+The model-directory variable is optional when the exact verified snapshot is
+already discoverable in the local cache.
+`provider-swift/Tests/ProviderCoreTests/Inference/Live/GPTOSS/GPTOSSMixedPrefixCacheLiveTests.swift`
+(`concurrentSuffixesRemainIsolated`) compares cache-off controls with restored
+branches in B2/B4 cohorts, reverses the B2 request order, and submits a four-request
+mixture of matching prefixes, a changed early fact and another tenant.
+`provider-swift/Tests/ProviderCoreTests/Inference/Live/Fixtures/GPTOSSMixedPrefixCohort.swift` (`run`)
+submits through the real bridge and requires completed native target-decode
+observations at widths two and four for the restored B2/B4 cohorts. The cold
+`off-four-submitted` control and mixed four-request cohorts require at least
+width two: full prefills can stagger short natural answers, so four admissions
+do not establish cold decode width four. All observed widths remain in the
+retained deltas. This semantic/isolation gate does not establish matched
+full-width-four cache-on/cache-off parity or performance; paired performance
+benchmarks retain their own actual-width requirements. Each warm cohort must
+restore both distinct suffixes; extra duplicate rows may safely miss. Store
+consumptions must reconcile with observed hits. Every request must return its
+own answer and hit/miss accounting, finish naturally and retire admission/KV
+reservations. The same ephemeral-key limits
+apply. First-observed chunk times can include buffered output and are not
+benchmark TTFT; exact-text comparisons are diagnostic. This invocation describes
+the gate and does not assert that it passed.
+
+The focused construction and load-policy suites are `GPTOSSDefaultPrefixCacheWiringTests`,
+`PrefixCachePolicyTests` and `PrefixCacheLoadHashTests` in
+`provider-swift/Tests/ProviderCoreTests/Inference/PrefixCache/`. They cover exact-ID activation, disabled
+and unsupported backends, fresh load hashes and identity rejection. A passing
+construction suite does not replace the real-checkpoint fixture above. Live test
+skips must be reported as unrun qualification.
+
 ## Connected coordinator/provider HTTP cache gate
 
 For a focused release-default check, use
@@ -1183,8 +1347,10 @@ DARKBLOOM_RELEASE_DEFAULT_OUTPUT=/absolute/new-defaults-output \
 
 The two B1 requests check actual paged activation, automatic MTP selection,
 complete cold/repeat output and token accounting, and model-scoped cache
-capability. Qwen requires an exact ready SSD capability and an accepted repeat
-hit; GPT-OSS and Gemma QAT require cache inactivity. The report retains the actual
+capability. Qwen and exact `gpt-oss-20b` require a ready SSD capability and an
+accepted repeat hit; GPT-OSS still requires MTP inactivity under automatic
+selection. The older Gemma QAT helper retains its cache-inactive expectation and
+does not qualify the current Gemma default. The report retains the actual
 generated provider configuration. This smoke does not establish raw token-ID
 parity, concurrent widths, cancellation, restart, or selection between providers;
 run the corresponding native and connected gates separately. CPU helper checks:

@@ -9,13 +9,14 @@ extension SSDHybridCheckpointStore {
         private let stats: SSDHybridCheckpointStatsBox
         let tag: Data
         let epoch: String?
+        let repeated: Bool
         let authenticatedFile: SSDAuthenticatedFileIdentity?
         private let settlement: PrefixCacheDonationSettlement
         private let lock = NSLock()
         private var completion: (@Sendable ([Int]) -> Void)?
 
         init(source: CBv2CompleteCheckpointExport, envelope: SSDHybridCheckpointEnvelope,
-             tag: Data, epoch: String?, authenticatedFile: SSDAuthenticatedFileIdentity?,
+             tag: Data, epoch: String?, repeated: Bool, authenticatedFile: SSDAuthenticatedFileIdentity?,
              settlement: PrefixCacheDonationSettlement,
              hostReservation: ProcessHostBufferReservation?, stats: SSDHybridCheckpointStatsBox,
              completion: @escaping @Sendable ([Int]) -> Void) {
@@ -25,6 +26,7 @@ extension SSDHybridCheckpointStore {
             self.stats = stats
             self.tag = tag
             self.epoch = epoch
+            self.repeated = repeated
             self.authenticatedFile = authenticatedFile
             self.completion = completion
             self.settlement = settlement
@@ -134,6 +136,14 @@ extension SSDHybridCheckpointStore {
         guard chain.indices.contains(offset) else { return .refused(.noCompleteBlock) }
         let tag = lookupKeys.checkpointTag(chainHash: chain[offset], cacheSalt: cacheSalt ?? "")
         let short = Data(tag.prefix(16))
+        let repeated = writeDemand.observe(short, now: config.nowSeconds())
+        // Novel writes use a 90% sub-budget, leaving capacity for known
+        // repeat demand. Durable duplicates consume no write budget. The writer
+        // rechecks after queueing, since this admission is advisory.
+        if !index.contains(tag16: short),
+            let refusal = Self.writeRefusal(rateLimiter.admission(bytes: envelope.plaintextBytes, repeated: repeated)) {
+            return .refused(refusal)
+        }
         let refusal: PrefixCacheDonationOutcome? = lock.withLock {
             guard !closed else { return .cacheClosed }
             guard !destructiveChange else { return .cacheMaintenanceBusy }
@@ -149,9 +159,17 @@ extension SSDHybridCheckpointStore {
             return proof.files[short]
         }
         return .ready(WriteJob(
-            source: source, envelope: envelope, tag: tag, epoch: epoch,
+            source: source, envelope: envelope, tag: tag, epoch: epoch, repeated: repeated,
             authenticatedFile: alreadyAuthenticated, settlement: settlement,
             hostReservation: hostReservation, stats: statsBox, completion: completion))
+    }
+
+    private static func writeRefusal(_ decision: SSDWriteRateLimiter.Decision) -> PrefixCacheDonationOutcome? {
+        switch decision {
+        case .accepted: nil
+        case .rateLimited: .writeRateLimited
+        case .priorityLimited: .writePriorityLimited
+        }
     }
 
     private struct WriteResult {
@@ -191,14 +209,14 @@ extension SSDHybridCheckpointStore {
                 // hit may have updated sliding recency since this stage.
                 try validateDurableCheckpoint(job, at: url)
             } else {
-                guard rateLimiter.tryConsume(bytes: envelope.plaintextBytes) else {
-                    result.outcome = .writeRateLimited; return
-                }
                 if let space = SSDPrefixCache.volumeSpace(at: config.root) {
                     let floor = SSDPrefixCachePolicy.lowDiskFloorBytes(volumeCapacityBytes: space.capacity)
                     guard space.free >= floor, space.free - floor >= envelope.plaintextBytes else {
                         result.outcome = .diskSpaceInsufficient; return
                     }
+                }
+                if let refusal = Self.writeRefusal(rateLimiter.consume(bytes: envelope.plaintextBytes, repeated: job.repeated)) {
+                    result.outcome = refusal; return
                 }
                 let written = try SSDBlockStore.writeStreaming(
                     to: url, metadata: metadata, kekKey: kekKey,

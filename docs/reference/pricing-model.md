@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-11 · commit `e3993c611`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -238,7 +238,7 @@ the financial rate limiter ([Constants](#constants)).
 | `GET /v1/admin/invite-codes` | requireAuth; admin | `handleAdminListInviteCodes` |
 | `DELETE /v1/admin/invite-codes` | requireAuth; admin | `handleAdminDeactivateInviteCode` |
 | `POST /v1/invite/redeem` | requireAuth + financial | `handleRedeemInviteCode` |
-| `POST /v1/admin/credit` | requireAuth; admin | `coordinator/api/billing_handlers.go` (`handleAdminCredit`) |
+| `POST /v1/admin/credit` | requireAuth; admin | `coordinator/api/admin_balance_adjustment.go` (`handleAdminCredit`) |
 | `POST /v1/admin/reward` | requireAuth; admin | `handleAdminReward` |
 | `GET /v1/admin/base-rewards` | admin (in handler) | `coordinator/api/base_rewards_handlers.go` (`handleAdminBaseRewards`) |
 

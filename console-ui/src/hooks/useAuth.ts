@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useAuthContext } from "@/components/providers/PrivyClientProvider";
+import { useAuthContext } from "@/components/app-providers/PrivyClientProvider";
 import { trackEvent } from "@/lib/google-analytics";
-import { STORAGE_KEYS } from "@/lib/constants";
+import { STORAGE_KEYS } from "@/lib/storage-keys";
 
 const API_KEY_STORAGE = STORAGE_KEYS.apiKey;
 const OLD_API_KEY_STORAGE = STORAGE_KEYS.legacyApiKey;
@@ -87,7 +87,7 @@ export function useAuth() {
   const [apiKeyReady, setApiKeyReady] = useState(false);
 
   // Derive useful fields from the Privy user
-  const email = (user as { email?: { address?: string } } | null)?.email?.address || null;
+  const email = user?.email?.address || null;
 
   const displayName = email || null;
 

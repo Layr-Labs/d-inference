@@ -55,19 +55,20 @@ func TestGateReasonNamesComplete(t *testing.T) {
 	if GateReasonCount.String() != "unknown" {
 		t.Fatalf("GateReasonCount.String() = %q, want unknown", GateReasonCount.String())
 	}
+	want := map[SelectionPath]string{
+		SelectionNone: "none", SelectionUniqueMin: "unique_min", SelectionTieQueue: "tie_queue",
+		SelectionTiePending: "tie_pending", SelectionRandom: "random", SelectionPrefixAffinity: "prefix_affinity",
+	}
+	if len(want) != int(selectionPathCount) {
+		t.Fatalf("SelectionPath vocabulary has %d names, want %d", len(want), selectionPathCount)
+	}
 	for s := SelectionPath(0); s < selectionPathCount; s++ {
-		if s.String() == "" || s.String() == "unknown" {
-			t.Fatalf("SelectionPath %d has no name", s)
+		if name, ok := want[s]; !ok || s.String() != name {
+			t.Fatalf("SelectionPath %d name=%q, want %q", s, s.String(), name)
 		}
 	}
-	want := map[string]string{
-		"none": "none", "unique_min": "unique_min", "tie_queue": "tie_queue",
-		"tie_pending": "tie_pending", "random": "random",
-	}
-	for _, s := range []SelectionPath{SelectionNone, SelectionUniqueMin, SelectionTieQueue, SelectionTiePending, SelectionRandom} {
-		if _, ok := want[s.String()]; !ok {
-			t.Fatalf("unexpected SelectionPath name %q", s.String())
-		}
+	if selectionPathCount.String() != "unknown" {
+		t.Fatal("out-of-range SelectionPath must be unknown")
 	}
 }
 

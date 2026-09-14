@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-09-06 · commit `615d96328`
+> Last updated: 2026-09-13 · commit `d4bab49a9`
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -77,6 +77,16 @@ attestation readiness, trust, model fit, runtime, billing, version;
 
 `darkbloom verify` runs the same set and exits 1 on any ⚠.
 
+The process-table, local-port and sleep probes have a five-second execution
+deadline, followed by bounded child termination. Large output is captured in
+a temporary file, which is removed after the probe. A failed contention probe
+adds no hints; a failed sleep probe reports unavailable. These bounds apply
+to `LocalContentionSnapshot.runCapture` and `DoctorRunner.systemSleepPrevented`
+in `provider-swift/Sources/darkbloom/Diagnostics/CompetingInferenceDiagnostics.swift`
+and `provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swift`, using
+`provider-swift/Sources/ProviderCore/Process/BoundedProcess.swift`
+(`runCapturingStandardOutput`).
+
 ## `darkbloom start` fails
 
 | Message | Cause | Fix |
@@ -138,7 +148,7 @@ are tabulated in [`cli-reference.md`](./cli-reference.md#runtime-constants).
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `model fit` ✗ / `recent model load` shows admission refused | `ModelLoadAdmission` (`provider-swift/Sources/ProviderCore/Inference/ModelLoadAdmission.swift`) found less free-for-load memory than the model's padded weights plus headroom ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)) | Close other apps; lower `max_model_slots`; pick a smaller quantisation ([hardware requirements](./hardware-requirements.md)) |
+| `model fit` ✗ / `recent model load` shows admission refused | `ModelLoadAdmission` (`provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift`) found less free-for-load memory than the model's padded weights plus headroom ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)) | Close other apps; lower `max_model_slots`; pick a smaller quantisation ([hardware requirements](./hardware-requirements.md)) |
 | Model missing from `darkbloom models list` | Not in `~/.cache/huggingface/hub`, or filtered by `enabled_models` | `darkbloom models download <id>`; `darkbloom models list --all` |
 | Load fails after a catalog update | New build published for the alias | `darkbloom models remove <id>` then `darkbloom models download <id>` |
 | `Skipping <id>: model_type … has no engine-v2 adapter` | Family not served by CBv2 | Use a supported family; the model is never advertised |
@@ -177,7 +187,7 @@ produce a contiguous slot. Read the reported reason. Set `"contiguous"` to pin
 that backend, or `"auto"` to allow model-aware selection and fallback; `"auto"`
 is not a contiguous pin for the cohort. Explicit `"paged"` bypasses the
 automatic crash-loop guard, not the kill switch or capability vetoes
-(`provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift`,
+(`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift`,
 `degradesPagedFailure`; `EngineV2Factory+BackendPreparation.swift`,
 `prepareProductionBackend`).
 

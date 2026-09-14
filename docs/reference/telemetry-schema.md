@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-13 · commit `ec73023e4`
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, the field allowlist, and the tests
@@ -28,6 +28,10 @@ Cache donation outcomes also use the separate typed heartbeat protocol:
 reason and a cumulative count. Complete-checkpoint providers distinguish host
 memory refusal, epoch invalidation, maintenance contention, insufficient disk
 space, unsafe roots, write I/O failure, unreadable existing files and eviction.
+`write_priority_limited` identifies exhaustion of the novel-checkpoint write
+share; `write_rate_limited` identifies exhaustion of the total write budget.
+See the [SSD write policy](ssd-kv-cache.md#size-and-eviction-rules) for admission
+semantics (`SSDWriteRateLimiter.decision`).
 The legacy `write_failed` remains the fallback for unclassified producer errors
 and older providers; it is not an I/O-error total. These are not event `fields`
 and do not add fields to the TypeScript event mirror.
@@ -188,10 +192,10 @@ and their fields are enumerated in
 | Test | File | Pins |
 |---|---|---|
 | `TestTelemetryJSONSymmetry`, `TestTelemetryKindsMatch` | `coordinator/protocol/telemetry_symmetry_test.go` | canonical event encodes to the exact JSON string; the kind set |
-| `telemetryEventJSONSymmetry`, `telemetryKindsMatch`, `sourceAndSeverityRawValues` | `provider-swift/Tests/ProviderCoreTests/TelemetrySymmetryTests.swift` | the Swift mirror of the two Go tests plus the source/severity raw values |
+| `telemetryEventJSONSymmetry`, `telemetryKindsMatch`, `sourceAndSeverityRawValues` | `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` | the Swift mirror of the two Go tests plus the source/severity raw values |
 | `TestTelemetryAllowlistThreeWayParity`, `TestTelemetryAllowlistKnownGapsAreStillReal`, `TestTelemetryAllowlistDiffDetectsNewDrift` | `coordinator/api/telemetry_allowlist_parity_test.go` | Go ↔ Swift ↔ TS allowlist sets, parsed from source; known gaps stay real |
 | `TestTelemetryIngestIsGoneWithoutReadingOrForwardingBody`, `TestTelemetryFieldAllowlistHasKnownKeys`, `TestSanitizeTruncatesLongMessage` | `coordinator/api/telemetry_handlers_test.go` | the `telemetry_ingest_disabled` response, allowlist membership, message truncation |
-| `TelemetryClientTests.swift`, `TelemetryOverflowQueueTests.swift` | `provider-swift/Tests/ProviderCoreTests/` | the facade stays inert |
+| `TelemetryClientTests.swift`, `TelemetryOverflowQueueTests.swift` | `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetryClientTests.swift`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetryOverflowQueueTests.swift` | the facade stays inert |
 
 ## Related
 

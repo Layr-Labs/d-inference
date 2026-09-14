@@ -127,7 +127,7 @@ func TestRequestOutcomeCompactEmptyLoserKeepsReceivedEvidence(t *testing.T) {
 					close(done)
 				}()
 				<-pr.CompletionIngressSignal()
-				funnel := func() { (&dispatchState{s: srv}).markSpeculativeLoser(pr); ap.CompleteHandler() }
+				funnel := func() { publishSpeculativeLoserForFrameTest(srv, pr); ap.CompleteHandler() }
 				release := func() {
 					pr.ResolveSpeculativeEmptyCompletion(false)
 					provider.RemovePending(pr.RequestID)

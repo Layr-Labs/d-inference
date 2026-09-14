@@ -178,6 +178,30 @@ completion. The unchanged fixture also passes against the original API owner.
 `cancel_lifecycle_test.go` checks cancellation through real provider writers and
 consumes the same terminal receipts as ingress; tracker internals stay private.
 
+Dispatch policy, clock, body, queue and speculative-race tests live beside
+`coordinator/inference/dispatch/`. HTTP envelopes, real provider-frame handling,
+UDP metric serialization and durable request-outcome sink tests remain in the
+API. Run the owner and these API boundaries from the repository root:
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/inference/dispatch ./coordinator/inference/attempt ./coordinator/api/httpresponse
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api -run 'Dispatch|RequestOutcome|RoutingScan|CapturedDispatch|SpeculativeLoser'
+```
+
+`TestQueuedDispatchProfileDoesNotInheritPriorError`
+(`coordinator/inference/dispatch/queued_history_test.go`) uses a real registry,
+heartbeat and WebSocket writer to verify queue handoff and clean attempt
+evidence after an earlier error. Its API counterpart in
+`coordinator/api/request_outcome_queue_test.go` feeds the known producer facts
+through the real outcome sink and receives completion over a registered
+socket. The pending-publication tests in
+`coordinator/inference/attempt/pending_outcome_test.go` check claim/profile/cache/
+route order, callback reentry, lost claims and provider-owned completion.
+`coordinator/api/httpresponse/status_writer_test.go` checks implicit writes,
+repeated explicit headers, flush, hijack and unwrap delegation.
+
 Capacity arithmetic and version-interpretation tests live beside their owners
 in `coordinator/registry/admission/` and `coordinator/registry/providerversion/`.
 Concurrent reservation, fleet preflight and routing simulations remain in the
@@ -265,7 +289,7 @@ GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/... -run 'TestProvider
 Run prediction telemetry checks from the repository root:
 
 ```bash
-go test -race ./coordinator/api/... ./coordinator/registry/... ./coordinator/protocol/... ./coordinator/store/... ./coordinator/telemetry/profiler
+go test -race ./coordinator/api/... ./coordinator/inference/dispatch ./coordinator/registry/... ./coordinator/protocol/... ./coordinator/store/... ./coordinator/telemetry/profiler
 ```
 
 Persistence tests follow the backend packages. Use `./coordinator/store/...` to
@@ -288,6 +312,12 @@ API fixtures use isolated encrypted WebSocket providers;
 Postgres tests require an explicitly disposable `DATABASE_URL` and include an
 upgrade from the old profile schema. See
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
+
+Provider-deletion fixtures in `coordinator/api/account_fleet_removal_test.go` cover ownership,
+offline removal and refusal while a reconnect with the same serial remains live.
+The reconnect uses its own session ID so asynchronous registration cannot replace
+the historical record being deleted. Run them with
+`GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run '^TestDeleteMyProvider_'`.
 
 The [admission calibration baseline](../reports/2026-09-06-admission-calibration-baseline.md)
 gives the focused `TestTTFTPendingPrompt` comparison command. Its registry

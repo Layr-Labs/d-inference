@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-14 · commit `bf2678202`
+> Last updated: 2026-09-14 · commit `cdef55575`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -30,7 +30,7 @@ per-token cost, or a free-form provider string to storage.
 |---|---|---|---|---|
 | `request_profiles` row | dispatched attempt (pre-dispatch rejections never produce one) | stamps on `registry.RequestProfile` / `AttemptProfile`, flattened by `Builder.Build` (`coordinator/telemetry/profiler/record.go`) | `profilequeue.Sink` (`coordinator/telemetry/profilequeue/queue.go`) → multi-row INSERT | `profileRetainProfiles` — value in [`../reference/telemetry-inventory.md#coordinator-per-request-records-postgres`](../reference/telemetry-inventory.md#coordinator-per-request-records-postgres) |
 | `fleet_snapshots` row | (provider session, slot) per 60 s + one `provider_id = 'coordinator'` row | `registry.FleetSample`, `CoordinatorSample` (`coordinator/registry/fleet_sample.go`) | sampler goroutine, `pgx.CopyFrom` (`coordinator/store/postgres/profiles.go`) | `profileRetainFleet` — same page |
-| `X-Timing` additive keys | committed response | `writeTimingHeaderWithProfile` (`coordinator/api/profiler_dispatch.go`) | response header ([`../reference/api-contracts.md#headers`](../reference/api-contracts.md#headers)) | n/a |
+| `X-Timing` additive keys | committed response | `writeTimingHeaderWithProfile` (`coordinator/inference/dispatch/profile.go`) | response header ([`../reference/api-contracts.md#headers`](../reference/api-contracts.md#headers)) | n/a |
 | Datadog counters | process | [Operations](#operations) | DogStatsD / HTTPS series | n/a |
 
 ## Mechanism
@@ -56,7 +56,7 @@ attempt stamps.
 | `preflight_done_us`, `preflight_us`, `preflight_outcome` ∈ {`passed`, `handled`} | handler | admission preflight |
 | `plan_done_us`, `first_content_budget_ms` | handler | second registry read + cache-route plan |
 | `media_fetched_us` | handler, only when media was inlined | remote media fetch |
-| `attempt_start_us` | direct path (`consumer.go`) / queued path (`coordinator/api/dispatch.go`) | retry/backup loop overhead before this attempt |
+| `attempt_start_us` | `dispatchWithReserver` (`coordinator/inference/dispatch/prepare.go`) / queued path (`coordinator/inference/dispatch/primary.go`) | retry/backup loop overhead before this attempt |
 | `reserve_lock_acquired_us` | derived: `attempt_start_us + LockWaitUS` (`AttemptProfile.SetDecision`) | wait for `r.mu`, measured from `ReserveProviderEx` entry (`coordinator/registry/reservation.go`) |
 | `reserve_done_us` | after `ReserveProviderEx` returns; the `RoutingDecision` is copied by value here | candidate scan + selection + admit re-check (`scan_us`, `admit_us`) |
 | `queued_us`, `dequeued_us` | queued path | enqueue; pure queue wait (= `X-Timing.queue_pure_us`) |
@@ -66,7 +66,7 @@ attempt stamps.
 | `accepted_us` | `handleInferenceAccepted` (`coordinator/api/provider.go`) | provider ack round trip (= `provider_ack_us`) |
 | `first_chunk_ingress_us`, `chunks_in`, `decrypt_us_total` | chunk ingress on the WS read loop (one clock read + two atomic adds per chunk) | provider dequeue → prefill → first frame → transport |
 | `first_content_ingress_us` | read loop | preamble frames before the first content-bearing chunk |
-| `first_chunk_dequeued_us`, `first_content_us`, `held_preamble_chunks` | dispatch goroutine (`profiler_dispatch.go`) | channel hand-off + commit decision |
+| `first_chunk_dequeued_us`, `first_content_us`, `held_preamble_chunks` | dispatch goroutine (`coordinator/inference/dispatch/profile.go`) | channel hand-off + commit decision |
 | `headers_written_us` | `stampCommitted` for streams; `Writer.Body` (`coordinator/inference/response/egress_profile.go`) for JSON bodies | `X-Timing` computed, headers written |
 | `first_flush_us`, `last_flush_us`, `done_flushed_us`, `chunks_out`, `bytes_out`, `max_chunk_gap_us`, `client_write_err` | `relayStamps` (`coordinator/inference/response/egress_profile.go`) from the chat, Responses and generic SSE relays; `Writer.Body` stamps the same fields once for non-stream bodies | relay to the client; a failed or short write sets `client_write_err` and leaves `done_flushed_us` absent |
 | `client_gone_us`, `client_gone_phase` ∈ {`before_first_token`, `after_commit`} | dispatch / consumer / `finalizeProfile` | client disconnect |
@@ -470,7 +470,7 @@ ring or `DaemonState` mirror.
 | Profile queue | `coordinator/telemetry/profilequeue/` (`Sink`, `Submit`, `Close`) |
 | Routing queue | `coordinator/telemetry/routequeue/` (`Sink`, `CloseAndWait`) |
 | Fleet sampler, retention loop, metrics | `coordinator/api/profiler_fleet.go`, `coordinator/registry/fleet_sample.go` |
-| Dispatch hooks and `X-Timing` | `coordinator/api/profiler_dispatch.go`; timing projection in `coordinator/inference/response/timing.go` |
+| Dispatch hooks and `X-Timing` | `coordinator/inference/dispatch/profile.go`; timing projection in `coordinator/inference/response/timing.go` |
 | Settlement timing | `coordinator/inference/settlement/completion.go` (`Service.Complete`) stamps `SettleDBUS` after referral and credit operations; provider-terminal/profile lifecycle remains in `coordinator/api/provider.go` |
 | Response egress stamps | `coordinator/inference/response/egress_profile.go` (`relayStamps`, `Writer.Body`); actual writer results are supplied to the API through `WriteObserver` |
 | Operator read/export policy | `coordinator/api/operations/controller.go` (`Controller`), `coordinator/api/operations/profiles.go`, `coordinator/api/operations/snapshots.go`, `coordinator/api/operations/routes.go`, `coordinator/api/operations/rejections.go` |

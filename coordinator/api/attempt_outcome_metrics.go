@@ -1,11 +1,10 @@
 package api
 
 import (
-	"math"
 	"strings"
-	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -78,29 +77,11 @@ const (
 // persist. A fixed vocabulary: anything else lands in `other`.
 const (
 	queueClassClientGone            = "client_gone"
-	queueClassQueueDeadline         = rejectionReasonQueueDeadline
+	queueClassQueueDeadline         = dispatch.RejectionReasonQueueDeadline
 	queueClassQueueTimeout          = "queue_timeout"
 	queueClassTTFTTooSlow           = "ttft_too_slow"
 	queueClassCapabilityUnsupported = "model_capability_unsupported"
 	queueClassOther                 = "other"
-)
-
-// orClassClientGone is the OR-view class for a client that left before the
-// first token well inside the upstream budget (an application abort, not our
-// slowness) and for post-commit client disconnects. EXCLUDED from the uptime
-// formula, like rate_limited / client_error.
-const orClassClientGone = "client_gone"
-
-// deadline_bucket tag values on routing.client_gone: elapsed time at the
-// cancel relative to the request's first-content budget (d.deadline, the
-// coordinator-side mirror of the upstream first-content deadline).
-const (
-	deadlineBucketUnderHalf     = "under_half"     // < 0.5 x budget: application abort
-	deadlineBucketMid           = "mid"            // 0.5 .. 0.8 x budget
-	deadlineBucketNearDeadline  = "near_deadline"  // >= 0.8 x budget: upstream was about to time out
-	deadlineBucketOver          = "over"           // >= budget: upstream already timed out (its 504)
-	deadlineBucketUnknown       = "unknown"        // no request clock on this dispatch
-	deadlineBucketNotApplicable = "not_applicable" // after-commit phase: the budget was met
 )
 
 // isCapacityClassErrorReason reports whether a persisted error_reason names a
@@ -135,14 +116,14 @@ func attemptOutcomeClass(outcome *store.InferenceRouteOutcome) string {
 	switch status {
 	case "":
 		return ""
-	case finalStatusSuccess, finalStatusPartialSuccess:
+	case attempt.FinalStatusSuccess, attempt.FinalStatusPartialSuccess:
 		return attemptClassSuccess
-	case finalStatusCancelled:
+	case attempt.FinalStatusCancelled:
 		if class == "speculative_loser" {
 			return attemptClassSpeculativeLoser
 		}
 		return attemptClassClientGone
-	case finalStatusTimeout:
+	case attempt.FinalStatusTimeout:
 		// Queue expiries never dispatched to a provider: they are fleet
 		// capacity, not a first-content kill, and must not inflate the
 		// per-model kill rate the alert sketch keys on.
@@ -150,7 +131,7 @@ func attemptOutcomeClass(outcome *store.InferenceRouteOutcome) string {
 			return attemptClassCapacity
 		}
 		return attemptClassFirstChunkTimeout
-	case finalStatusError:
+	case attempt.FinalStatusError:
 		return attemptErrorOutcomeClass(class, outcome)
 	default:
 		return attemptClassOther
@@ -161,9 +142,9 @@ func attemptErrorOutcomeClass(class string, outcome *store.InferenceRouteOutcome
 	switch class {
 	case "first_chunk_timeout":
 		return attemptClassFirstChunkTimeout
-	case errorClassDeadlineUnreachable:
+	case attempt.ErrorClassDeadlineUnreachable:
 		return attemptClassDeadlineUnreachable
-	case errorClassClientError:
+	case attempt.ErrorClassClientError:
 		return attemptClassClientError
 	case "provider_disconnect_pre_commit", "provider_disconnect_before_response":
 		return attemptClassDisconnect
@@ -263,17 +244,17 @@ func orViewClassForCommittedOutcome(outcome *store.InferenceRouteOutcome) (class
 		return "", false
 	}
 	switch strings.ToLower(strings.TrimSpace(outcome.FinalStatus)) {
-	case finalStatusSuccess:
-		return orClassSuccess, true
-	case finalStatusPartialSuccess:
+	case attempt.FinalStatusSuccess:
+		return dispatch.OrClassSuccess, true
+	case attempt.FinalStatusPartialSuccess:
 		errClass := strings.ToLower(strings.TrimSpace(outcome.ErrorClass))
 		if strings.HasPrefix(errClass, "client_gone_after_commit") || errClass == "no_terminal_after_cancel" {
 			// The consumer left after content had flowed: the upstream is the
 			// one that hung up, so it is not graded against us.
-			return orClassClientGone, true
+			return dispatch.OrClassClientGone, true
 		}
 		// provider_error/disconnect/incomplete_after_commit, stream_timeout_after_commit.
-		return orClassMidStream, true
+		return dispatch.OrClassMidStream, true
 	default:
 		return "", false
 	}
@@ -309,85 +290,4 @@ func (s *Server) recordRequestOutcomeORView(model, class string) {
 		return
 	}
 	s.ddIncr(metricRequestOutcomeORView, []string{"model:" + model, "class:" + class})
-}
-
-// deadlineBucket buckets a pre-content client cancel by how much of the
-// first-content budget had elapsed when the client left.
-func deadlineBucket(elapsed, budget time.Duration) string {
-	if budget <= 0 || elapsed < 0 {
-		return deadlineBucketUnknown
-	}
-	ratio := float64(elapsed) / float64(budget)
-	switch {
-	case ratio < 0.5:
-		return deadlineBucketUnderHalf
-	case ratio < 0.8:
-		return deadlineBucketMid
-	case ratio < 1.0:
-		return deadlineBucketNearDeadline
-	default:
-		return deadlineBucketOver
-	}
-}
-
-// orViewClassForClientGone maps a pre-content client-gone deadline bucket to
-// the OR-view class: at or past ~the upstream budget the upstream timed out on
-// us (its 504 → timeout); earlier is an application abort (excluded).
-func orViewClassForClientGone(bucket string) string {
-	switch bucket {
-	case deadlineBucketNearDeadline, deadlineBucketOver:
-		return orClassTimeout
-	default:
-		return orClassClientGone
-	}
-}
-
-// clientGoneDeadlineBucket is the deadline bucket for a pre-content cancel on
-// this dispatch, measured on the request clock (ReceivedAt + deadline).
-func (d *dispatchState) clientGoneDeadlineBucket() string {
-	if d == nil || d.timing == nil || d.timing.ReceivedAt.IsZero() || d.deadline <= 0 {
-		return deadlineBucketUnknown
-	}
-	return deadlineBucket(time.Since(d.timing.ReceivedAt), d.deadline)
-}
-
-func (d *dispatchState) recordRequestOutcomeORView(class string) {
-	if d == nil {
-		return
-	}
-	d.s.recordRequestOutcomeORView(d.model, class)
-}
-
-// metricRouteLatency is the per-request scheduler selection latency
-// (reserve → routed) sampled at attempt-0 selection time, so routing distress
-// is visible while requests are still in flight rather than only at their
-// terminal (inference.timing.route_ms). Queued requests are skipped: their
-// RoutedAt includes the queue wait, which the request_queue gauges cover.
-const metricRouteLatency = "routing.route_latency_ms"
-
-// emitRouteLatency records the attempt-0 route segment. Called once the
-// primary attempt's provider is selected (RoutedAt stamped).
-func (d *dispatchState) emitRouteLatency() {
-	if d == nil || d.s == nil || d.s.dd == nil || d.attempt != 0 || d.timing == nil {
-		return
-	}
-	t := d.timing
-	if !t.QueuedAt.IsZero() || t.RoutedAt.IsZero() {
-		return
-	}
-	anchor := t.ReservedAt
-	if !t.MediaFetchedAt.IsZero() {
-		anchor = t.MediaFetchedAt
-	}
-	if anchor.IsZero() || t.RoutedAt.Before(anchor) {
-		return
-	}
-	// Fractional milliseconds: a healthy scan takes well under 1ms, and the
-	// signal this series exists for is that floor rising toward seconds, so
-	// sub-millisecond samples must not be truncated to 0 and dropped.
-	ms := float64(t.RoutedAt.Sub(anchor)) / float64(time.Millisecond)
-	if ms < 0 || math.IsNaN(ms) || math.IsInf(ms, 0) {
-		return
-	}
-	d.s.ddHistogram(metricRouteLatency, ms, []string{"model:" + d.model})
 }

@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-14 · commit `cdef55575`
+> Last updated: 2026-09-14 · commit `42e32adf3`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -48,6 +48,10 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Pending model commands and heartbeat plan timing | `coordinator/registry/modelloads/` (`Commands`, `PlanGate`); live selection in `coordinator/registry/model_load_plan.go`, command adapters in `coordinator/registry/model_load_state.go` |
 | Warm-pool control loop, pressure and latest observations | `coordinator/registry/warmpool/` (`Controller`, `State`, `Snapshot`); live fleet/eligibility adapters in `coordinator/registry/warm_pool_fleet.go` and `coordinator/registry/warm_pool_eligibility.go` |
 | Provider socket writes, cancellation and watchdog | `coordinator/registry/providerwriter/` (`Writer`); current provider binding in `coordinator/registry/provider_writer.go`; handoff transaction in `handoff.go`, priority/serve in `run.go`, socket fragments in `frames.go` |
+| Registry connection lifecycle | `coordinator/registry/provider_registration.go` (`Register`), `coordinator/registry/provider_disconnect.go` (`disconnectProvider`), `coordinator/registry/provider_eviction.go` (`evictStale`); shared record in `coordinator/registry/provider.go` (`Provider`) |
+| Heartbeat state and snapshots | `coordinator/registry/heartbeat.go` (`Heartbeat`); `coordinator/registry/heartbeat_snapshot.go` (`canonicalHeartbeatModelState`, `BackendCapacitySnapshot`), `coordinator/registry/capacity_report.go` (`clampBackendCapacity`) and `coordinator/registry/heartbeat_stats.go` (`applyHeartbeatStatsDelta`) |
+| Live evidence and trust transitions | `coordinator/registry/device_evidence.go` (`GrantHardwareEvidenceAtEpochIfNotUntrusted`), `coordinator/registry/application_evidence.go` (`GrantApplicationEvidenceIfNotUntrusted`), `coordinator/registry/code_evidence.go` (`GrantProcessCodeAttested`), `coordinator/registry/provider_trust.go` (`markUntrusted`) and `coordinator/registry/provider_challenges.go` (`RecordChallengeSuccess`) |
+| Reconnect restoration and persistence | `coordinator/registry/provider_restore.go` (`RestoreProviderStateContext`), `coordinator/registry/persistence.go` (`persistProviderNow`) and `coordinator/registry/reputation_persistence.go` (`persistReputationNow`) |
 | Identity fault histories and session migration | `coordinator/registry/faultstate/`; registry bindings in `coordinator/registry/fault_binding.go` and `coordinator/registry/fault_capacity.go` |
 | Routing latency and reservation | `coordinator/registry/routingcost/` owns shared calibration and startup tuning; `coordinator/registry/reservation.go`, `coordinator/registry/reservation_commit.go`, `coordinator/registry/routing_scan.go` retain live registry transactions; `coordinator/registry/candidate_cost.go` composes cost over the same snapshot. |
 | Retained dispatch plans and capacity probes | `coordinator/registry/dispatchplan/plan.go` (`Plan`), `coordinator/registry/dispatchplan/quotes.go` (`Probes`); private wrapper in `coordinator/registry/dispatch_plan.go`; live identity/admission in `coordinator/registry/plan_reservation.go`, refresh in `coordinator/registry/plan_refresh.go` and transport in `coordinator/registry/capacity_quotes.go` |

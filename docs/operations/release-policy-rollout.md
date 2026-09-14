@@ -1,6 +1,6 @@
 # Roll out the release-policy routing gate (shadow → enforce)
 
-> Last updated: 2026-09-13 · commit `8670b2a08`
+> Last updated: 2026-09-14 · commit `78526e60f`
 
 Runbook for the two production changes that involve the coordinator's
 release-policy routing gate: (1) deploying a coordinator that contains the gate
@@ -68,13 +68,14 @@ platform, backend), and that row's `metallib_hash` matches the provider's
 reported metallib. Nothing else — per-model template hashes were removed after
 the incident.
 
-Where the gate lives: `coordinator/registry/attestation_policy.go`
-(`providerSupportsPrivateTextModeLocked`, the single routing chokepoint;
-`releasePolicyEnforcedLocked`, mode + enforce-after predicate;
-`SetReleasePolicyGeneration`, sweep that re-proves or clears evidence;
-`CountProvidersWithCurrentApplicationEvidence` and
-`ApplicationEvidenceModelCoverage`, the coverage counters served by
-`coordinator/api/network/stats_snapshot.go` (`computeStats`)).
+The routing chokepoint is `coordinator/registry/attestation_policy.go`
+(`providerSupportsPrivateTextModeLocked`).
+`coordinator/registry/application_policy.go` owns the mode and enforce-after
+predicate (`releasePolicyEnforcedLocked`) and the generation sweep that re-proves
+or clears evidence (`SetReleasePolicyGeneration`). Coverage comes from
+`coordinator/registry/fleet_views.go` (`CountProvidersWithCurrentApplicationEvidence`
+and `ApplicationEvidenceModelCoverage`),
+served by `coordinator/api/network/stats_snapshot.go` (`computeStats`).
 
 ## Steps
 

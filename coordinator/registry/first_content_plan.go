@@ -10,12 +10,86 @@ type firstContentPlanPreference struct {
 	decodeFloorOnly bool
 }
 
-func firstContentPlanRetentionLess(candidate *routingCandidate, entry planEntry, prefer bool) bool {
-	feasible := candidate.firstContent.Status == "feasible"
-	if prefer && feasible != entry.firstContentFeasible {
-		return feasible
+type firstContentPlanTier struct {
+	feasible, diverse, decodeFloor bool
+}
+
+func firstContentPlanTierOf(entry planEntry, avoidVersion string, minDecodeTPS float64) firstContentPlanTier {
+	return firstContentPlanTier{
+		feasible:    entry.firstContentFeasible,
+		diverse:     avoidVersion == "" || entry.binaryVersion != avoidVersion,
+		decodeFloor: minDecodeTPS <= 0 || entry.projectedDecodeTPS >= minDecodeTPS,
 	}
-	return candidate.costMs < entry.view.CostMs
+}
+
+func (tier firstContentPlanTier) before(other firstContentPlanTier) bool {
+	if tier.feasible != other.feasible {
+		return tier.feasible
+	}
+	if tier.diverse != other.diverse {
+		return tier.diverse
+	}
+	return tier.decodeFloor && !other.decodeFloor
+}
+
+func retainFirstContentPlanEntries(pool []*routingCandidate, winner *routingCandidate, prefer bool, avoidVersion string, minDecodeTPS float64) []planEntry {
+	entries := make([]planEntry, 0, dispatchPlanMaxAlternates)
+	for _, candidate := range pool {
+		if candidate == winner {
+			continue
+		}
+		entry := planEntry{
+			provider:             candidate.provider,
+			firstContentFeasible: candidate.firstContent.Status == "feasible",
+			binaryVersion:        candidate.snapshot.binaryVersion,
+			projectedDecodeTPS:   projectedPerRequestDecodeTPS(&candidate.snapshot),
+			view: PlanEntry{
+				ProviderID:  candidate.provider.ID,
+				CostMs:      candidate.costMs,
+				TTFTMs:      candidate.breakdown.TTFTMs,
+				RawTTFTMs:   candidate.breakdown.RawTTFTMs,
+				StateMs:     candidate.breakdown.StateMs,
+				ModelLoaded: candidate.snapshot.modelLoaded,
+				SlotState:   candidate.snapshot.slotState,
+				ChipFamily:  candidate.snapshot.chipFamily,
+			},
+		}
+		pos := len(entries)
+		tier := firstContentPlanTierOf(entry, avoidVersion, minDecodeTPS)
+		for pos > 0 {
+			previous := entries[pos-1]
+			previousTier := firstContentPlanTierOf(previous, avoidVersion, minDecodeTPS)
+			before := entry.view.CostMs < previous.view.CostMs
+			if prefer && tier != previousTier {
+				before = tier.before(previousTier)
+			}
+			if !before {
+				break
+			}
+			pos--
+		}
+		if pos == dispatchPlanMaxAlternates {
+			continue
+		}
+		if len(entries) < dispatchPlanMaxAlternates {
+			entries = append(entries, planEntry{})
+		}
+		copy(entries[pos+1:], entries[pos:])
+		entries[pos] = entry
+	}
+	return entries
+}
+
+// Retry policies can change after the primary fails. Re-rank quote evidence
+// using the latest request policy while keeping the provider measurements
+// explicitly scan-time; reservation still rechecks live versions and rates.
+func (dp *DispatchPlan) updateFirstContentRequest(pr *PendingRequest) {
+	dp.mu.Lock()
+	defer dp.mu.Unlock()
+	if dp.avoidVersion != pr.Traits.AvoidVersion || dp.minDecodeTPS != pr.MinDecodeTPS {
+		dp.avoidVersion, dp.minDecodeTPS = pr.Traits.AvoidVersion, pr.MinDecodeTPS
+		dp.resortTailLocked()
+	}
 }
 
 // remainingEntries takes a bounded value snapshot in current quote order.
@@ -26,13 +100,70 @@ func (dp *DispatchPlan) remainingEntries() []planEntry {
 	return append([]planEntry(nil), dp.entries[dp.cursor:]...)
 }
 
-func (dp *DispatchPlan) restoreOrdinaryOrder() {
+// View APIs are called without a registry lock. Observe the current mode
+// before reading the shortlist, preserving registry→plan lock order. Reserve
+// paths already hold r.mu and call useFirstContentMode directly instead.
+func (dp *DispatchPlan) syncFirstContentMode() {
+	if dp.registry == nil {
+		return
+	}
+	dp.registry.mu.RLock()
+	defer dp.registry.mu.RUnlock()
+	dp.useFirstContentMode(dp.registry.firstContentRoutingMode == FirstContentRoutingPrefer)
+}
+
+// useFirstContentMode swaps bounded shortlists on a mode transition. Sorting
+// the preferred list alone cannot recover cheap ordinary candidates it never
+// retained. Preserve attempt history and copy fresh quotes across overlapping
+// identities, then leave the inactive tail available for a later transition.
+func (dp *DispatchPlan) useFirstContentMode(prefer bool) {
 	dp.mu.Lock()
 	defer dp.mu.Unlock()
-	if dp.firstContentPreferred {
-		dp.resortTailLocked()
-		dp.firstContentPreferred = false
+	dp.firstContentQuoteUnavailable = prefer && !dp.hasFirstContentPools
+	if !dp.hasFirstContentPools || dp.firstContentPreferred == prefer {
+		return
 	}
+	oldTail := append([]planEntry(nil), dp.entries[dp.cursor:]...)
+	nextTail := make([]planEntry, 0, len(dp.alternateEntries))
+	for _, entry := range dp.alternateEntries {
+		if _, attempted := dp.attempted[entry.view.ProviderID]; attempted {
+			continue
+		}
+		for _, current := range oldTail {
+			if current.provider == entry.provider && current.view.ProviderID == entry.view.ProviderID {
+				copyFirstContentPlanQuote(&entry.view, current.view)
+				break
+			}
+		}
+		nextTail = append(nextTail, entry)
+	}
+	dp.entries = append(dp.entries[:dp.cursor:dp.cursor], nextTail...)
+	dp.alternateEntries = oldTail
+	dp.firstContentPreferred = prefer
+	dp.resortTailLocked()
+}
+
+func copyFirstContentPlanQuote(dst *PlanEntry, src PlanEntry) {
+	dst.Confirmed, dst.Demoted = src.Confirmed, src.Demoted
+	dst.QuoteTTFTP50, dst.QuoteTTFTP90 = src.QuoteTTFTP50, src.QuoteTTFTP90
+	dst.QuoteAvailableTokens, dst.QuoteConfidence = src.QuoteAvailableTokens, src.QuoteConfidence
+}
+
+// A quote may arrive after its provider's shortlist became inactive. Keep it
+// on both retained copies so a later mode switch neither drops the result nor
+// resurrects an older confirmation after demotion. Caller holds plan.mu.
+func (dp *DispatchPlan) updateFirstContentPlanQuoteLocked(providerID string, update func(*PlanEntry)) {
+	for i := dp.cursor; i < len(dp.entries); i++ {
+		if dp.entries[i].view.ProviderID == providerID {
+			update(&dp.entries[i].view)
+		}
+	}
+	for i := range dp.alternateEntries {
+		if dp.alternateEntries[i].view.ProviderID == providerID {
+			update(&dp.alternateEntries[i].view)
+		}
+	}
+	dp.resortTailLocked()
 }
 
 // consumeEntry atomically claims an arbitrary retained identity while keeping

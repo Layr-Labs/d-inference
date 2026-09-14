@@ -10,6 +10,14 @@ import (
 // score prefers slow isolated prefill on half the fleet, so prefer mode must
 // exercise actual selection, not merely compute estimates for the same winner.
 func BenchmarkFirstContentRouting(b *testing.B) {
+	benchmarkFirstContentRouting(b, false)
+}
+
+func BenchmarkFirstContentRoutingWithPlan(b *testing.B) {
+	benchmarkFirstContentRouting(b, true)
+}
+
+func benchmarkFirstContentRouting(b *testing.B, withPlan bool) {
 	for _, count := range []int{100, 500} {
 		for _, mode := range []string{FirstContentRoutingOff, FirstContentRoutingShadow, FirstContentRoutingPrefer} {
 			b.Run(fmt.Sprintf("providers=%d/%s", count, mode), func(b *testing.B) {
@@ -37,12 +45,22 @@ func BenchmarkFirstContentRouting(b *testing.B) {
 						for _, p := range providers {
 							p.mu.Lock()
 							p.LastHeartbeat = now
+							p.capacitySamplesAt = now
 							p.mu.Unlock()
 						}
 						b.StartTimer()
 					}
 					pr := firstContentTestRequest()
-					p, _ := reg.ReserveProviderEx(firstContentTestModel, pr)
+					var p *Provider
+					if withPlan {
+						var plan *DispatchPlan
+						p, _, plan = reg.ReserveProviderWithPlan(firstContentTestModel, pr)
+						if plan == nil || plan.Remaining() > dispatchPlanMaxAlternates {
+							b.Fatal("benchmark lost bounded dispatch plan")
+						}
+					} else {
+						p, _ = reg.ReserveProviderEx(firstContentTestModel, pr)
+					}
 					if p == nil {
 						b.Fatal("reservation failed")
 					}

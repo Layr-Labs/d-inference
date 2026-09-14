@@ -112,16 +112,19 @@ type PlanEntry struct {
 type planEntry struct {
 	provider *Provider
 	view     PlanEntry
-	// Retention-only tier. Consumption always recomputes feasibility from live
-	// state; quote sorting continues to order the unconsumed tail normally.
+	// Advisory scan-time tier for retention and quote-based hedge timing.
+	// Reservation recomputes feasibility from live state before dispatch.
 	firstContentFeasible bool
+	binaryVersion        string
+	projectedDecodeTPS   float64
 }
 
 // DispatchPlan is the request-local shortlist produced by
 // ReserveProviderWithPlan. Entries are born ordered by ascending scan-time
-// cost (feasible tier first in prefer mode) and consumed once each; quote outcomes re-rank the UNCONSUMED
-// tail into confirmed → unprobed/legacy → demoted tiers (cost order preserved
-// within each tier — see resortTailLocked); one full re-scan refresh is
+// cost (feasible tier first in prefer mode) and consumed once each. Quote
+// outcomes re-rank the UNCONSUMED tail into confirmed → unprobed/legacy →
+// demoted tiers within feasibility/version/decode preferences (cost preserved
+// within each quote tier — see resortTailLocked); one full re-scan refresh is
 // available for the plan's whole lifetime (RefreshDispatchPlan).
 //
 // Concurrency: a plan belongs to one request, but that request's retry loop,
@@ -132,10 +135,13 @@ type planEntry struct {
 // acquires it strictly after r.mu, and no code path takes r.mu or p.mu while
 // holding it.
 type DispatchPlan struct {
-	mu      sync.Mutex
-	model   string
-	entries []planEntry
-	cursor  int
+	mu sync.Mutex
+	// Bound before publication. View/probe readers use it to observe a mode
+	// rollback before any subsequent reservation; lock order is registry→plan.
+	registry *Registry
+	model    string
+	entries  []planEntry
+	cursor   int
 	// attempted holds every provider this request has been bound to or has
 	// passed over through this plan: the primary winner plus every entry the
 	// cursor has visited, regardless of outcome. A refresh excludes them all —
@@ -149,24 +155,32 @@ type DispatchPlan struct {
 	eligible         int
 	admissible       int
 	deadlineFeasible int
-	// Set only when retention was ordered by first-content feasibility. A
-	// rollback restores normal quote/cost order for the unconsumed tail.
+	// Plans born in prefer mode retain a separate ordinary shortlist so a
+	// rollback can recover cheaper identities displaced by feasible retention.
+	// Each pool has at most eight unconsumed entries; only entries is probed.
+	alternateEntries      []planEntry
+	hasFirstContentPools  bool
 	firstContentPreferred bool
+	// An ordinary plan has no preference-qualified hedge ordering if prefer
+	// was enabled after it was built. Keep the existing hedge clock then.
+	firstContentQuoteUnavailable bool
+	avoidVersion                 string
+	minDecodeTPS                 float64
 }
 
-// newDispatchPlan builds the plan from the scan that selected winner. One
-// bounded pass over the already-built pool keeps at most
-// dispatchPlanMaxAlternates non-winners, prioritizing feasible alternates in
-// prefer mode and then cost. Remaining positions retain fallback candidates.
+// newDispatchPlan builds the plan from the scan that selected winner. A
+// bounded pass over each already-built pool keeps at most
+// dispatchPlanMaxAlternates non-winners, prioritizing feasibility, version
+// diversity and decode floor in prefer mode, then cost. Remaining positions
+// retain fallback candidates.
 // Insertion remains bounded
 // into a fixed-capacity slice (O(n·8) comparisons, no full-pool sort, no
-// full-pool copy — only the ≤8 retained entries copy their ranking terms).
+// full-pool copy — only the ≤8 retained entries per pool copy ranking terms).
 // The scan pool is immutable; live provider identity/state is revalidated when
 // an entry is consumed.
-func newDispatchPlan(model string, scan candidateScan, winner *routingCandidate) *DispatchPlan {
+func newDispatchPlan(model string, scan candidateScan, winner *routingCandidate, requests ...*PendingRequest) *DispatchPlan {
 	plan := &DispatchPlan{
 		model:     model,
-		entries:   make([]planEntry, 0, dispatchPlanMaxAlternates),
 		attempted: make(map[string]struct{}, dispatchPlanMaxAlternates+1),
 		// Aggregate derivation from the scan tallies: capacity- and
 		// TTFT-rejected providers cleared every structural gate first (the scan
@@ -181,42 +195,20 @@ func newDispatchPlan(model string, scan candidateScan, winner *routingCandidate)
 	if winner != nil {
 		plan.attempted[winner.provider.ID] = struct{}{}
 	}
+	if len(requests) > 0 && requests[0] != nil {
+		plan.avoidVersion = requests[0].Traits.AvoidVersion
+		plan.minDecodeTPS = requests[0].MinDecodeTPS
+	}
 	pool := scan.pool
 	preferFirstContent := scan.planPool != nil
 	plan.firstContentPreferred = preferFirstContent
 	if preferFirstContent {
 		pool = scan.planPool
 	}
-	for _, c := range pool {
-		if c == winner {
-			continue
-		}
-		// Retain feasible alternates before fallback cost in prefer mode.
-		pos := len(plan.entries)
-		for pos > 0 && firstContentPlanRetentionLess(c, plan.entries[pos-1], preferFirstContent) {
-			pos--
-		}
-		if pos == dispatchPlanMaxAlternates {
-			continue // costlier than every retained entry, list full
-		}
-		if len(plan.entries) < dispatchPlanMaxAlternates {
-			plan.entries = append(plan.entries, planEntry{})
-		}
-		copy(plan.entries[pos+1:], plan.entries[pos:])
-		plan.entries[pos] = planEntry{
-			provider:             c.provider,
-			firstContentFeasible: c.firstContent.Status == "feasible",
-			view: PlanEntry{
-				ProviderID:  c.provider.ID,
-				CostMs:      c.costMs,
-				TTFTMs:      c.breakdown.TTFTMs,
-				RawTTFTMs:   c.breakdown.RawTTFTMs,
-				StateMs:     c.breakdown.StateMs,
-				ModelLoaded: c.snapshot.modelLoaded,
-				SlotState:   c.snapshot.slotState,
-				ChipFamily:  c.snapshot.chipFamily,
-			},
-		}
+	plan.entries = retainFirstContentPlanEntries(pool, winner, preferFirstContent, plan.avoidVersion, plan.minDecodeTPS)
+	if preferFirstContent {
+		plan.hasFirstContentPools = true
+		plan.alternateEntries = retainFirstContentPlanEntries(scan.ordinaryPlanPool, winner, false, plan.avoidVersion, plan.minDecodeTPS)
 	}
 	return plan
 }
@@ -229,11 +221,15 @@ func (dp *DispatchPlan) Model() string {
 	return dp.model
 }
 
-// Len returns the number of retained alternates (consumed or not).
+// Len returns the active list including consumed history. A mode switch can
+// retain history from both shortlists (at most sixteen total identities), but
+// Remaining and the probe fanout are always bounded by eight.
 func (dp *DispatchPlan) Len() int {
 	if dp == nil {
 		return 0
 	}
+	dp.mu.Lock()
+	defer dp.mu.Unlock()
 	return len(dp.entries)
 }
 
@@ -417,9 +413,8 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 	lock := r.commitLock("commit_plan")
 	lock.lock()
 	defer lock.unlock()
-	if r.firstContentRoutingMode != FirstContentRoutingPrefer {
-		plan.restoreOrdinaryOrder()
-	}
+	plan.useFirstContentMode(r.firstContentRoutingMode == FirstContentRoutingPrefer)
+	plan.updateFirstContentRequest(pr)
 	if r.cacheRoutingMode != CacheRoutingOn || r.cacheRoutingMode != cacheMode || r.cacheRouting != cacheTracker {
 		pr.cacheRoutingHints = nil
 		if r.firstContentRoutingMode == FirstContentRoutingPrefer {
@@ -667,7 +662,8 @@ func planEntryRank(v PlanEntry) int {
 }
 
 // resortTailLocked re-ranks the unconsumed entries after a quote outcome:
-// tier first, ascending scan-time cost within the tier. Cost must be an
+// feasibility/version/decode first when preferred, then quote tier and scan
+// cost. Cost must be an
 // explicit secondary key (not left to sort stability): entries change tier in
 // quote-arrival order, so by the time a cheap entry is confirmed a costlier
 // one may already sit in the confirmed tier ahead of it — a stability-only
@@ -677,6 +673,13 @@ func planEntryRank(v PlanEntry) int {
 func (dp *DispatchPlan) resortTailLocked() {
 	tail := dp.entries[dp.cursor:]
 	sort.SliceStable(tail, func(i, j int) bool {
+		if dp.firstContentPreferred {
+			ti := firstContentPlanTierOf(tail[i], dp.avoidVersion, dp.minDecodeTPS)
+			tj := firstContentPlanTierOf(tail[j], dp.avoidVersion, dp.minDecodeTPS)
+			if ti != tj {
+				return ti.before(tj)
+			}
+		}
 		ri, rj := planEntryRank(tail[i].view), planEntryRank(tail[j].view)
 		if ri != rj {
 			return ri < rj
@@ -697,20 +700,18 @@ func (dp *DispatchPlan) ConfirmEntry(providerID string, quote *protocol.Capacity
 	}
 	dp.mu.Lock()
 	defer dp.mu.Unlock()
-	for i := dp.cursor; i < len(dp.entries); i++ {
-		v := &dp.entries[i].view
-		if v.ProviderID != providerID {
-			continue
-		}
+	if _, attempted := dp.attempted[providerID]; attempted {
+		return
+	}
+	update := func(v *PlanEntry) {
 		v.Confirmed = true
 		v.Demoted = false
 		v.QuoteTTFTP50 = time.Duration(quote.TTFTP50MS * float64(time.Millisecond))
 		v.QuoteTTFTP90 = time.Duration(quote.TTFTP90MS * float64(time.Millisecond))
 		v.QuoteAvailableTokens = quote.AvailableTokenBudget
 		v.QuoteConfidence = quote.Confidence
-		dp.resortTailLocked()
-		return
 	}
+	dp.updateFirstContentPlanQuoteLocked(providerID, update)
 }
 
 // DemoteEntry pushes the named unconsumed entry into the last-resort tier —
@@ -724,31 +725,48 @@ func (dp *DispatchPlan) DemoteEntry(providerID string) {
 	}
 	dp.mu.Lock()
 	defer dp.mu.Unlock()
-	for i := dp.cursor; i < len(dp.entries); i++ {
-		v := &dp.entries[i].view
-		if v.ProviderID != providerID {
-			continue
-		}
-		v.Demoted = true
-		v.Confirmed = false
-		dp.resortTailLocked()
+	if _, attempted := dp.attempted[providerID]; attempted {
 		return
 	}
+	dp.updateFirstContentPlanQuoteLocked(providerID, func(v *PlanEntry) {
+		v.Demoted = true
+		v.Confirmed = false
+	})
 }
 
-// BestConfirmedBackup returns the lowest-scan-cost unconsumed entry whose
-// quote confirmed admissibility, plus its quoted TTFT p90 — the hedge
-// scheduler's backup_ttft_q90 input (hedge_schedule.go). ok=false when no
-// confirmed entry remains; callers then fall back to the coordinator floor.
-// The tail is tier-sorted with cost order preserved inside the confirmed
-// tier, so the first confirmed entry IS the lowest-cost one.
+// BestConfirmedBackup returns the first confirmed entry in the highest
+// available feasibility/version/decode tier, plus its quoted TTFT p90 — the
+// hedge scheduler's backup_ttft_q90 input (hedge_schedule.go). An unconfirmed
+// preferred tier never borrows a fallback provider's q90. Measurements remain
+// scan-time advisory evidence; ReserveNextFromPlan revalidates live state.
 func (dp *DispatchPlan) BestConfirmedBackup() (providerID string, ttftP90 time.Duration, ok bool) {
 	if dp == nil {
 		return "", 0, false
 	}
+	dp.syncFirstContentMode()
 	dp.mu.Lock()
 	defer dp.mu.Unlock()
+	if dp.firstContentQuoteUnavailable {
+		return "", 0, false
+	}
+	if dp.cursor >= len(dp.entries) {
+		return "", 0, false
+	}
+	preferredTier := firstContentPlanTierOf(dp.entries[dp.cursor], dp.avoidVersion, dp.minDecodeTPS)
+	if dp.firstContentPreferred {
+		// Scan all entries so an unconfirmed preferred provider prevents a
+		// lower-tier confirmation from supplying the wrong hedge timing.
+		for _, entry := range dp.entries[dp.cursor:] {
+			tier := firstContentPlanTierOf(entry, dp.avoidVersion, dp.minDecodeTPS)
+			if tier.before(preferredTier) {
+				preferredTier = tier
+			}
+		}
+	}
 	for i := dp.cursor; i < len(dp.entries); i++ {
+		if dp.firstContentPreferred && firstContentPlanTierOf(dp.entries[i], dp.avoidVersion, dp.minDecodeTPS) != preferredTier {
+			continue
+		}
 		if v := dp.entries[i].view; v.Confirmed {
 			return v.ProviderID, v.QuoteTTFTP90, true
 		}
@@ -764,6 +782,7 @@ func (dp *DispatchPlan) probeTargets() []planEntry {
 	if dp == nil {
 		return nil
 	}
+	dp.syncFirstContentMode()
 	dp.mu.Lock()
 	defer dp.mu.Unlock()
 	targets := make([]planEntry, 0, len(dp.entries)-dp.cursor)

@@ -45,6 +45,7 @@ func firstContentTestProvider(tb testing.TB, reg *Registry, id string, observedP
 	p.ChallengeVerifiedSIP = true
 	p.LastChallengeVerified = time.Now()
 	p.LastHeartbeat = time.Now()
+	p.capacitySamplesAt = p.LastHeartbeat
 	p.SystemMetrics = protocol.SystemMetrics{MemoryPressure: 0.1, CPUUsage: 0.1, ThermalState: "nominal"}
 	p.BackendCapacity = &protocol.BackendCapacity{
 		TotalMemoryGB: 64,
@@ -221,7 +222,7 @@ func TestFirstContentRoutingNoFeasibleEvidencePreservesFallback(t *testing.T) {
 		{"infeasible", func(p *Provider) { *p.BackendCapacity.Slots[0].Telemetry.IsolatedPrefillTPS = 50 }},
 		{"missing telemetry", func(p *Provider) { p.BackendCapacity.Slots[0].Telemetry = nil }},
 		{"uninitialized", func(p *Provider) { *p.BackendCapacity.Slots[0].Telemetry.EWMAInitialized = false }},
-		{"stale heartbeat", func(p *Provider) { p.LastHeartbeat = time.Now().Add(-6 * time.Second) }},
+		{"stale capacity", func(p *Provider) { p.capacitySamplesAt = time.Now().Add(-6 * time.Second) }},
 		{"missing queue evidence", func(p *Provider) { p.BackendCapacity.Slots[0].Telemetry.QueuedPrefillTokens = nil }},
 		{"partial prefill", func(p *Provider) { *p.BackendCapacity.Slots[0].Telemetry.PartialPrefillRows = 1 }},
 		{"queued prefill", func(p *Provider) { *p.BackendCapacity.Slots[0].Telemetry.QueuedPrefillTokens = 100 }},
@@ -271,6 +272,40 @@ func TestFirstContentRoutingRetainsOwnerPreference(t *testing.T) {
 		t.Fatalf("deadline preference escaped the owner pool: selected=%v", got)
 	}
 	got.RemovePending(pr.RequestID)
+}
+
+func TestFirstContentRoutingRollbackPreservesOrdinaryVersionPreference(t *testing.T) {
+	r := New(testLogger())
+	if err := r.ConfigureFirstContentRouting(FirstContentRoutingPrefer); err != nil {
+		t.Fatal(err)
+	}
+	cheapAvoided := firstContentTestProvider(t, r, "cheap-avoided", 4_000, 100)
+	ordinary := firstContentTestProvider(t, r, "ordinary-diverse", 3_000, 100)
+	feasibleAvoided := firstContentTestProvider(t, r, "feasible-avoided", 500, 1_800)
+	for _, provider := range []*Provider{cheapAvoided, feasibleAvoided} {
+		provider.mu.Lock()
+		provider.Version = "0.9.1"
+		provider.mu.Unlock()
+	}
+	ordinary.mu.Lock()
+	ordinary.Version = "0.9.2"
+	ordinary.mu.Unlock()
+	request := firstContentTestRequest()
+	request.Traits.AvoidVersion = "0.9.1"
+	winner, _, plan := r.ReserveProviderWithPlan(request.Model, request)
+	if winner != feasibleAvoided || plan == nil {
+		t.Fatalf("feasibility did not precede soft version preference: %v", winner)
+	}
+	if err := r.ConfigureFirstContentRouting(FirstContentRoutingOff); err != nil {
+		t.Fatal(err)
+	}
+	retry := firstContentTestRequest()
+	retry.RequestID = "rollback-retry"
+	retry.Traits.AvoidVersion = request.Traits.AvoidVersion
+	winner, _, _ = r.ReserveNextFromPlan(retry, plan)
+	if winner != ordinary {
+		t.Fatalf("ordinary rollback pool lost version narrowing: got %v", winner)
+	}
 }
 
 func TestFirstContentRoutingReconsidersRateChangeAtCommit(t *testing.T) {
@@ -363,7 +398,7 @@ func TestFirstContentEstimateUnknownForUnsupportedEvidence(t *testing.T) {
 		{"no absolute deadline", func(_ *routingCandidate, p *PendingRequest) { p.FirstContentDeadline = time.Time{} }},
 		{"vision", func(_ *routingCandidate, p *PendingRequest) { p.RequiresVision = true }},
 		{"cold", func(c *routingCandidate, _ *PendingRequest) { c.snapshot.modelLoaded = false }},
-		{"stale", func(c *routingCandidate, _ *PendingRequest) { c.snapshot.hbAgeMs = 5_001 }},
+		{"stale", func(c *routingCandidate, _ *PendingRequest) { c.snapshot.capacityAgeMs = 5_001 }},
 		{"busy box", func(c *routingCandidate, _ *PendingRequest) { c.snapshot.firstContentIdle = false }},
 		{"uninitialized rate", func(c *routingCandidate, _ *PendingRequest) { c.snapshot.isolatedPrefillInitialized = false }},
 		{"zero prefill rate", func(c *routingCandidate, _ *PendingRequest) { c.snapshot.isolatedPrefillTPS = 0 }},

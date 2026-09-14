@@ -14,6 +14,7 @@ func setFirstContentPlanMeasurements(p *Provider, isolatedTPS float64) {
 	defer p.mu.Unlock()
 	zero, initialized := int64(0), true
 	p.LastHeartbeat = time.Now()
+	p.capacitySamplesAt = p.LastHeartbeat
 	slot := &p.BackendCapacity.Slots[0]
 	slot.State = "idle"
 	slot.ObservedDecodeTPS = 100
@@ -213,7 +214,7 @@ func TestFirstContentPlanReevaluatesChangedMeasurements(t *testing.T) {
 			case "rate":
 				*a.BackendCapacity.Slots[0].Telemetry.IsolatedPrefillTPS = 400
 			case "stale":
-				a.LastHeartbeat = time.Now().Add(-time.Minute)
+				a.capacitySamplesAt = time.Now().Add(-time.Minute)
 			case "busy":
 				*a.BackendCapacity.Slots[0].Telemetry.PartialPrefillRows = 1
 			}
@@ -239,7 +240,7 @@ func TestFirstContentPlanRollbackRestoresOrdinaryOrder(t *testing.T) {
 	slowCandidate := &routingCandidate{provider: slow, costMs: 1, firstContent: FirstContentEstimate{Status: "infeasible"}}
 	fastCandidate := &routingCandidate{provider: fast, costMs: 2, firstContent: FirstContentEstimate{Status: "feasible"}}
 	pool := []*routingCandidate{slowCandidate, fastCandidate}
-	plan := newDispatchPlan(model, candidateScan{pool: pool, planPool: pool}, nil)
+	plan := newDispatchPlan(model, candidateScan{pool: pool, planPool: pool, ordinaryPlanPool: pool}, nil)
 	if plan.entries[0].provider != fast {
 		t.Fatal("fixture did not retain preferred order")
 	}

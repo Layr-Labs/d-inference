@@ -24,13 +24,14 @@ const (
 // the estimate fits this attempt's remaining clock, never guaranteed admission
 // or completion. Unknown candidates remain available as fallbacks.
 type FirstContentEstimate struct {
-	Status       string  `json:"status"`
-	Reason       string  `json:"reason,omitempty"`
-	PredictedMs  float64 `json:"predicted_ms,omitempty"`
-	BudgetMs     float64 `json:"budget_ms,omitempty"`
-	PromptTokens int     `json:"prompt_tokens,omitempty"`
-	CachedTokens float64 `json:"cached_tokens,omitempty"`
-	RestoreMs    float64 `json:"restore_ms,omitempty"`
+	Status        string  `json:"status"`
+	CapacityAgeMs int32   `json:"capacity_age_ms"`
+	Reason        string  `json:"reason,omitempty"`
+	PredictedMs   float64 `json:"predicted_ms,omitempty"`
+	BudgetMs      float64 `json:"budget_ms,omitempty"`
+	PromptTokens  int     `json:"prompt_tokens,omitempty"`
+	CachedTokens  float64 `json:"cached_tokens,omitempty"`
+	RestoreMs     float64 `json:"restore_ms,omitempty"`
 }
 
 func normalizeFirstContentRoutingMode(mode string) (string, error) {
@@ -77,7 +78,7 @@ func (r *Registry) estimateFirstContent(c *routingCandidate, pr *PendingRequest,
 	if r.firstContentRoutingMode == "" || r.firstContentRoutingMode == FirstContentRoutingOff {
 		return
 	}
-	e := FirstContentEstimate{Status: "unknown"}
+	e := FirstContentEstimate{Status: "unknown", CapacityAgeMs: c.snapshot.capacityAgeMs}
 	defer func() { c.firstContent = e }()
 	if pr.FirstContentDeadline.IsZero() {
 		e.Reason = "no_deadline"
@@ -93,7 +94,7 @@ func (r *Registry) estimateFirstContent(c *routingCandidate, pr *PendingRequest,
 		e.Reason = "cold"
 		return
 	}
-	if s.hbAgeMs < 0 || time.Duration(s.hbAgeMs)*time.Millisecond > firstContentFreshness {
+	if s.capacityAgeMs < 0 || time.Duration(s.capacityAgeMs)*time.Millisecond > firstContentFreshness {
 		e.Reason = "stale"
 		return
 	}
@@ -160,11 +161,24 @@ func applyFirstContentDecision(d *RoutingDecision, c *routingCandidate, mode str
 
 // preferFirstContentPool preserves owner scope, fallback identities and scan diagnostics.
 // Caller holds r.mu.
-func (r *Registry) preferFirstContentPool(scan *candidateScan, pool []*routingCandidate) []*routingCandidate {
+func (r *Registry) preferFirstContentPool(scan *candidateScan, pool []*routingCandidate, pr *PendingRequest) []*routingCandidate {
 	// Retain fallback identities for retries before advisory/soft preferences.
 	// No candidate becomes a rejection solely because this estimate misses.
 	if r.firstContentRoutingMode == FirstContentRoutingPrefer {
 		scan.planPool = append([]*routingCandidate(nil), pool...)
+		// Preserve the ordinary soft-preference pool independently: feasibility
+		// can otherwise evict every ordinary alternative from the bounded plan.
+		scan.ordinaryPlanPool = append([]*routingCandidate(nil), pool...)
+		if pr.Traits.AvoidVersion != "" {
+			scan.ordinaryPlanPool = preferRoutingCandidates(scan.ordinaryPlanPool, func(c *routingCandidate) bool {
+				return providerVersion(c.provider) != pr.Traits.AvoidVersion
+			})
+		}
+		if pr.MinDecodeTPS > 0 {
+			scan.ordinaryPlanPool = preferRoutingCandidates(scan.ordinaryPlanPool, func(c *routingCandidate) bool {
+				return projectedPerRequestDecodeTPS(&c.snapshot) >= pr.MinDecodeTPS
+			})
+		}
 	}
 	for _, c := range pool {
 		if c.firstContent.Status == "feasible" {

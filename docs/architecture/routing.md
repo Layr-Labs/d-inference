@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-13 · commit `e4df336bc`
+> Last updated: 2026-09-13 · commit `117c15a08`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -54,11 +54,16 @@ If none qualify, all existing fallbacks remain usable. `off` disables this work.
 This policy introduces no new rejection, retry limit or deadline extension.
 
 The initial estimator deliberately covers a narrow, measurable case: a resident
-text model, a heartbeat no older than five seconds, no coordinator reservations,
+text model, an accepted capacity snapshot no older than five seconds, no coordinator reservations,
 and every reported slot explicitly idle with zero queued/partial-prefill rows
 and no in-flight evaluation/clear. Missing counters, cold/loading models,
 other-model work, vision or uninitialized/non-finite throughput produce
 `unknown`. It does not reconstruct a busy provider's engine queue from counts.
+Freshness uses `Provider.capacitySamplesAt`, maintained by
+`reconcileCapacitySamplesLocked` in `coordinator/registry/capacity_sample_freshness.go`.
+Rejected/duplicate `capacity_seq` frames advance connection liveness but cannot
+renew this accepted-snapshot clock. Nil/empty slot reports clear it, and a new
+provider connection starts without a snapshot.
 
 `estimateFirstContent` in `coordinator/registry/first_content_routing.go` computes:
 
@@ -86,14 +91,23 @@ and quarantine invalidate credit at reservation.
 
 The primary reservation recomputes the estimate under the existing provider
 lock; a changed feasibility class forces a rescan. Dispatch plans retain up to
-eight alternates, prioritizing feasible identities for retention and preserving
-fallbacks. `reserveFirstContentPlan` in
+eight active alternates, prioritizing feasible identities for retention. Prefer
+plans also retain a separate ordinary shortlist of at most eight alternatives,
+using the original owner/version/decode preferences. Rolling back to off or
+shadow restores that shortlist, including cheap candidates displaced by
+feasibility-first retention, without retrying consumed identities. The active
+probe fanout remains bounded to eight. `reserveFirstContentPlan` in
 `coordinator/registry/first_content_plan.go` re-evaluates retained providers on
 retry/hedge, using the current deadline and quote order within each preference
-tier. Deferred entries remain available. Queue drain uses the common selector.
+tier. Quote sorting and hedge q90 selection use the same feasibility, version
+and decode-floor tiers; a confirmed fallback cannot supply hedge timing while
+a preferred alternate remains. Quote/probe views observe mode changes before
+reservation, and quote results are retained across shortlist switches. Deferred entries remain available. Queue drain uses the common selector.
 No tokenizer, RPC or database read is added to the per-candidate calculation.
 
-Profiler `candidates` JSON stores `first_content` separately from `ttft_ms`, plus
+Profiler `candidates` JSON stores `first_content` (including the accepted
+`capacity_age_ms`, separate from the liveness `hb_age_ms`) independently of
+`ttft_ms`, plus
 the winner's mode, feasible candidate count and lowest-cost feasible alternative.
 The count/alternative describe the owner-eligible scan, before version/decode
 preferences; plan reservations omit scan counts. Metrics

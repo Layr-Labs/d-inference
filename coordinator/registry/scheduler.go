@@ -203,9 +203,11 @@ type routingSnapshot struct {
 	// clamped to int32), computed from the `now` the snapshot already reads — no
 	// extra clock read. It is the "how stale were the routing inputs" signal of
 	// the system-profiler routing record (RoutingDecision.SnapshotAgeMs for the
-	// winner, CandidateSummary.HBAgeMs for the top candidates). The optional
-	// first-content preference also uses it to mark stale estimates unknown.
+	// winner, CandidateSummary.HBAgeMs for the top candidates). This is a
+	// liveness clock: rejected capacity sequences still advance it.
 	hbAgeMs int32
+	// Age of the accepted slot snapshot; never refreshed by a rejected frame.
+	capacityAgeMs int32
 	// queuedPrefillTokens is the slot's provider-reported Σ prompt tokens of
 	// requests whose engine submit has not returned. The legacy cost path
 	// still uses its local pending-work fallback. First-content preference
@@ -588,7 +590,8 @@ func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bo
 			if wantPlan {
 				// The scan pool is immutable value snapshots plus provider
 				// identities. Plan consumption revalidates both before use.
-				plan = newDispatchPlan(model, last.candidates, last.selected)
+				plan = newDispatchPlan(model, last.candidates, last.selected, pr)
+				plan.registry = r
 			}
 			return provider, decision, plan
 		}
@@ -992,6 +995,7 @@ func shouldBypassBreakerFailOpen(winner *routingCandidate, breakerRejected, capa
 // idle-spread shadow scan (loadedIdleAlternativeExistsLocked) so the two can
 // never drift on which providers are routable.
 type candidateScan struct {
+	ordinaryPlanPool          []*routingCandidate
 	planPool                  []*routingCandidate
 	firstContentMode          string
 	firstContentFeasibleCount int
@@ -1279,7 +1283,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 		})
 	}
 
-	pool = r.preferFirstContentPool(&scan, pool)
+	pool = r.preferFirstContentPool(&scan, pool, pr)
 
 	// Version-diverse retry (SOFT): when a previous attempt failed on a given
 	// binary version, prefer candidates running any OTHER version so a
@@ -1703,6 +1707,7 @@ func (r *Registry) snapshotProviderIntoPLockedEx(dst *routingSnapshot, p *Provid
 	// Heartbeat age from the scan clock (system-profiler record); a zero
 	// LastHeartbeat saturates rather than reading as "fresh".
 	snap.hbAgeMs = heartbeatAgeMs(now, p.LastHeartbeat)
+	snap.capacityAgeMs = heartbeatAgeMs(now, p.capacitySamplesAt)
 
 	fillSnapshotPendingAndPool(snap, p, model)
 	// Concurrency headroom with the quality-concurrency cap: a slow model whose

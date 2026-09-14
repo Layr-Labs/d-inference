@@ -36,6 +36,11 @@ class GUIHostPlanTests(unittest.TestCase):
             self.assertNotIn("GroupName", value)
             self.assertEqual(manifest["launchd_domain"], "gui/501")
             self.assertEqual(manifest["host_user"], selected_user())
+            identity = output / "host-user.json"
+            self.assertEqual(identity.stat().st_mode & 0o777, 0o444)
+            self.assertEqual(json.loads(identity.read_text()), {
+                "schema_version": 1, "host_id": config["hostID"], "host_user": selected_user()})
+            self.assertEqual(manifest["host_identity_file"], str(plan.installed_identity_path(config)))
             self.assertFalse(manifest["automatic_login_startup"])
             self.assertFalse(manifest["production_ready"])
             self.assertFalse(manifest["activation_script_generated"])
@@ -87,6 +92,25 @@ class GUIInstalledLayoutTests(unittest.TestCase):
                     patch.object(installed.os, "fstat", return_value=metadata), \
                     patch.object(Path, "lstat", return_value=other), self.assertRaisesRegex(ValueError, "changed"):
                 installed.validate_installed_job(path, expected)
+
+    def test_identity_file_requires_exact_readonly_mode_and_host_binding(self):
+        expected = {"schema_version": 1, "host_id": "60f6a1b2-77db-40d2-bf27-98fce61c8b0d", "host_user": selected_user()}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "host-user.json"
+            for mode, replacement in ((0o444, expected), (0o644, expected),
+                                      (0o444, dict(expected, host_id="different")),
+                                      (0o444, dict(expected, schema_version=True))):
+                path.chmod(0o644) if path.exists() else None
+                path.write_text(json.dumps(replacement)); path.chmod(mode)
+                metadata = self.root_metadata(path.stat())
+                with patch.object(installed, "validate_install_ancestors"), \
+                        patch.object(installed, "require_no_extended_acl"), \
+                        patch.object(installed.os, "fstat", return_value=metadata):
+                    if mode == 0o444 and type(replacement["schema_version"]) is int and replacement == expected:
+                        installed.validate_installed_identity(path, expected)
+                    else:
+                        with self.assertRaises(ValueError):
+                            installed.validate_installed_identity(path, expected)
 
     def test_selected_user_private_paths_accept_exact_owner_and_reject_links_or_mode_changes(self):
         with tempfile.TemporaryDirectory(dir=Path.home()) as temporary:

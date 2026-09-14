@@ -6,4 +6,7 @@
 // Public libbsm query for the current process only. No session is changed.
 int darkbloom_current_audit_user(uint32_t *output);
 
+// Public membership identity query. Callers must reject synthesized UUIDs.
+int darkbloom_user_generated_uuid(uint32_t uid, uint8_t output[16]);
+
 #endif

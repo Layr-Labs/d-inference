@@ -85,6 +85,7 @@ let package = Package(
                 "SandboxSecurity",
                 "SandboxStorage",
                 "SandboxHostControl",
+                "SandboxHostContextSupport",
             ],
             path: "Sources/DarkbloomSandboxDaemon"
         ),

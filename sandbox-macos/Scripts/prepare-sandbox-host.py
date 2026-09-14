@@ -16,7 +16,7 @@ import uuid
 from sandbox_release_support import (
     HOST_ID, file_inventory, validate_lume, verify_signature,
 )
-from sandbox_gui_host_plan import generate_gui_plan
+from sandbox_gui_host_plan import generate_gui_plan, installed_identity_path
 from sandbox_gui_install_validation import validate_gui_installation
 from sandbox_gui_user_identity import validate_gui_user
 
@@ -94,7 +94,7 @@ def host_arguments(configuration: dict, install_root: Path):
     ):
         raise ValueError("baseImageIDs must be a nonempty list of image identifiers")
     return [str(install_root / "DarkbloomSandbox.app/Contents/MacOS/darkbloom-sandboxd"),
-            "serve", "--coordinator", configuration["coordinatorURL"], "--host-id", host_id,
+            "serve", "--host-identity-file", str(installed_identity_path(configuration)), "--coordinator", configuration["coordinatorURL"], "--host-id", host_id,
             "--guest-release", str(install_root),
             "--token-file", paths["tokenFile"], "--lume", str(install_root / "lume/lume"),
             "--storage", paths["storageDirectory"], "--capacity-dir", paths["capacityDirectory"],

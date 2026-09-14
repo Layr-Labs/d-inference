@@ -48,7 +48,8 @@ def configured_user(value):
         identifier = uuid.UUID(encoded) if isinstance(encoded, str) else None
     except ValueError:
         identifier = None
-    if identifier is None or identifier.int == 0 or str(identifier).upper() != encoded:
+    if (identifier is None or identifier.int == 0 or str(identifier).upper() != encoded
+            or encoded.startswith(("FFFFEEEE-DDDD-CCCC-BBBB-AAAA", "AAAABBBB-CCCC-DDDD-EEEE-FFFF"))):
         raise ValueError("hostUser.generatedUID must be a canonical uppercase nonzero UUID")
     home = value["homeDirectory"]
     if (not isinstance(home, str) or not home.startswith("/") or str(Path(home)) != home

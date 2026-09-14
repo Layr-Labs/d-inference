@@ -7,6 +7,7 @@ final class ServeCommandTests: XCTestCase {
         let options = try ServeCommand.Options([
             "--coordinator", "wss://api.example.test/ws/sandbox-host",
             "--host-id", "aaaaaaaa-0000-0000-0000-000000000001",
+            "--host-identity-file", "/Library/Darkbloom/host-user.json",
             "--token-file", "/var/db/darkbloom/token",
             "--lume", "/opt/darkbloom/lume",
             "--storage", "/var/lib/darkbloom/vms",
@@ -32,6 +33,7 @@ final class ServeCommandTests: XCTestCase {
             options.baseImageIDs,
             ["macos-tahoe-v1", "macos-sequoia-v1"]
         )
+        XCTAssertEqual(options.hostIdentityFile.path, "/Library/Darkbloom/host-user.json")
         XCTAssertFalse(options.developmentAdHocLume)
         XCTAssertFalse(options.allowInsecureLoopback)
     }
@@ -40,6 +42,7 @@ final class ServeCommandTests: XCTestCase {
         XCTAssertThrowsError(try ServeCommand.Options([
             "--coordinator", "wss://api.example.test/ws/sandbox-host",
             "--host-id", UUID().uuidString,
+            "--host-identity-file", "/Library/Darkbloom/host-user.json",
             "--token-file", "relative-token",
             "--lume", "/lume",
             "--storage", "/storage",
@@ -51,6 +54,7 @@ final class ServeCommandTests: XCTestCase {
         XCTAssertThrowsError(try ServeCommand.Options([
             "--coordinator", "wss://api.example.test/ws/sandbox-host",
             "--host-id", UUID().uuidString,
+            "--host-identity-file", "/Library/Darkbloom/host-user.json",
             "--token-file", "/token",
             "--lume", "/lume",
             "--lume", "/other",
@@ -63,6 +67,7 @@ final class ServeCommandTests: XCTestCase {
         XCTAssertThrowsError(try ServeCommand.Options([
             "--coordinator", "wss://api.example.test/ws/sandbox-host",
             "--host-id", UUID().uuidString,
+            "--host-identity-file", "/Library/Darkbloom/host-user.json",
             "--token-file", "/token",
             "--lume", "/lume",
             "--storage", "/storage",

@@ -108,6 +108,7 @@ class GUIUserIdentityTests(unittest.TestCase):
         for key, value in (("uid", 0), ("uid", 430), ("uid", 2001), ("uid", True), ("primaryGID", 0),
                            ("generatedUID", "9819f283-43e0-49e9-8bb3-fd44cd75b963"),
                            ("generatedUID", "00000000-0000-0000-0000-000000000000"),
+                           ("generatedUID", "FFFFEEEE-DDDD-CCCC-BBBB-AAAA000001F5"),
                            ("recordName", "../operator"), ("homeDirectory", "/Users/../var/empty"),
                            ("homeDirectory", "/var/empty")):
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):

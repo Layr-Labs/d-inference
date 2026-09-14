@@ -186,6 +186,8 @@ class HostConfigurationTests(unittest.TestCase):
     def test_token_is_path_only_and_development_flags_absent(self):
         args = prepare_host.host_arguments(self.settings(), Path("/Library/Sandbox"))
         self.assertEqual(args[args.index("--token-file") + 1], "/var/db/dbsandbox/host.token")
+        self.assertEqual(args[args.index("--host-identity-file") + 1],
+                         "/Library/Application Support/Darkbloom/host-plans/60f6a1b2-77db-40d2-bf27-98fce61c8b0d/host-user.json")
         self.assertNotIn("--allow-insecure-loopback", args)
         self.assertNotIn("--development-ad-hoc-lume", args)
 
@@ -234,7 +236,7 @@ class HostConfigurationTests(unittest.TestCase):
             self.assertFalse(value["activation_script_generated"])
             self.assertEqual(value["host_user"], selected_user())
             self.assertEqual(sorted(path.name for path in (root / "plan").iterdir()),
-                             ["INSTALLATION_PLAN.md", "io.darkbloom.sandbox.plist", "plan.json"])
+                             ["INSTALLATION_PLAN.md", "host-user.json", "io.darkbloom.sandbox.plist", "plan.json"])
 
     def test_gui_installed_release_must_match_the_selected_signed_package(self):
         with tempfile.TemporaryDirectory() as temporary:

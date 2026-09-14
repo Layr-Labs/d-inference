@@ -109,7 +109,7 @@ enum DarkbloomSandboxDaemon {
               darkbloom-sandboxd reconcile-expired --lume PATH --storage DIR
                 --capacity-dir DIR --max-cpu N --max-memory-gib N
                 [--max-growth-gib N] [--storage-headroom-gib N] [--json]
-              darkbloom-sandboxd serve --coordinator WSS_URL --host-id UUID
+              darkbloom-sandboxd serve --host-identity-file <root-owned.json> --coordinator WSS_URL --host-id UUID
                 --token-file FILE --lume PATH --storage DIR --capacity-dir DIR
                 --base-images ID[,ID...] --max-cpu N --max-memory-gib N
                 [--max-growth-gib N]

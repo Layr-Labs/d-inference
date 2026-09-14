@@ -205,27 +205,38 @@ python3 sandbox-macos/Scripts/prepare-sandbox-host.py --gui-user-plan \
   --output /absolute/new/install-plan
 ```
 
-This creates a qualification plan, a plist and typed `plan.json`, with
+This creates a qualification plan, a plist, `host-user.json` and typed `plan.json`, with
 `production_ready=false`. It creates no service or activation script. The
 root-owned plist destination is outside global `/Library/LaunchAgents`, under
 `/Library/Application Support/Darkbloom/host-plans/<host UUID>/`; the reviewed
 command loads only `gui/<selected UID>`. It specifies Aqua, no UserName/GroupName,
 no shell or credential switching, no HOME override, and KeepAlive=false. It does
 not install recurring login startup. Logout makes this host unavailable; login
-alone does not restore it. Runtime enforcement of the selected identity and
-actual logout/relogin recovery remain explicit qualification gates.
+alone does not restore it. Actual logout/relogin recovery remains a separate
+qualification gate.
+
+The job passes `--host-identity-file` for its protected `host-user.json` sibling.
+Every serve mode requires it, including development modes. Before acquiring
+machine EX ownership or admitting work, the process validates the file's host
+UUID and exact user fields against real/effective UID and GID, reentrant account
+name/home lookup, and the public membership API's assigned GeneratedUID. Missing,
+reused, synthesized or mismatched identities fail closed. This identity check
+does not substitute for the separate actual Security/audit session check.
 
 The release tree stays immutable to the selected user: root-owned code, public
 0755 directories/executables and 0644 data, preserving pinned Lume's exact
 0555/0444 modes, signatures and xattrs. The job definition is root-owned 0644
-under root-owned 0755 parents. No shared writes, symlinks, hard-linked files or
+under root-owned 0755 parents; its identity JSON is root-owned 0444, single-link
+and bounded to 8 KiB. Runtime reads walk nofollow directory descriptors, verify
+every root-owned ancestor, and check file/path identity before and after reading.
+No shared writes, symlinks, hard-linked files or
 extended ACLs are accepted. The selected user owns storage/capacity directories
 at 0700 and the token at 0600 in a private 0700 parent. All three must reside on
 verified encrypted APFS; token contents never enter the plan or argv. Ancestors
 must be trusted root/selected-user directories without shared writes or ACLs.
 
 Run `--verify-installed` as root after a separately authorized installation. It
-rechecks the explicit identity, signed release, exact plist, protected code,
+rechecks the explicit identity, signed release, exact plist and identity JSON, protected code,
 private token/state, encrypted backing and runtime authority metadata. It
 continues to report `production_ready=false`; installed validation is not proof
 of actual agent session eligibility, VZ boot, guest readiness or cleanup.

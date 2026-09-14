@@ -8,7 +8,7 @@ import uuid
 from sandbox_release_support import HOST_ID, new_directory, write_json
 
 
-UNVERIFIED = ["runtime selected-identity binding", "actual agent GUI/audit context",
+UNVERIFIED = ["installed identity enforcement in the actual agent", "actual agent GUI/audit context",
               "actual agent runtime authority access", "guest readiness and isolation",
               "provisioned key persistence", "logout cleanup and login recovery",
               "coordinator admission and reconnect", "notarization"]
@@ -17,6 +17,14 @@ UNVERIFIED = ["runtime selected-identity binding", "actual agent GUI/audit conte
 def installed_job_path(configuration):
     host_id = str(uuid.UUID(configuration["hostID"]))
     return Path("/Library/Application Support/Darkbloom/host-plans") / host_id / (HOST_ID + ".plist")
+
+
+def installed_identity_path(configuration):
+    return installed_job_path(configuration).with_name("host-user.json")
+
+
+def identity_document(configuration, user):
+    return {"schema_version": 1, "host_id": str(uuid.UUID(configuration["hostID"])), "host_user": user.record()}
 
 
 def launch_agent(arguments):
@@ -34,6 +42,8 @@ def generate_gui_plan(configuration, arguments, user, observations, manifest, pa
     filename = HOST_ID + ".plist"
     (target / filename).write_bytes(plistlib.dumps(launch_agent(arguments)))
     job = installed_job_path(configuration)
+    write_json(target / "host-user.json", identity_document(configuration, user))
+    (target / "host-user.json").chmod(0o444)
     domain = f"gui/{user.uid}"
     # Reviewable qualification commands, not an executable activation script.
     # Only a later explicitly authorized operator may run them after the gates.
@@ -43,6 +53,7 @@ def generate_gui_plan(configuration, arguments, user, observations, manifest, pa
         "schema_version": 2, "deployment": "selected_gui_user", "installed": False,
         "host_user": user.record(), "identity_observations": observations,
         "install_root": str(install_root), "installed_job_path": str(job),
+        "host_identity_file": str(installed_identity_path(configuration)),
         "launchd_domain": domain, "program_arguments": arguments,
         "qualification_commands": commands, "production_ready": False,
         "automatic_login_startup": False, "activation_script_generated": False,
@@ -64,7 +75,7 @@ The prior hidden nonlogin LaunchDaemon deployment is unsupported: matching BSD
 credentials do not establish a Virtualization-compatible graphical session.
 This plan is for qualification, not production activation. No activation script
 is generated. It does not establish recurring login startup, runtime identity
-binding, actual GUI/audit context, guest readiness, or logout cleanup.
+enforcement in the installed agent, actual GUI/audit context, guest readiness, or logout cleanup.
 
 1. Review this selected user on the target Mac. Generation and installed
    validation compare its exact local DirectoryService identity with Unix
@@ -96,7 +107,11 @@ binding, actual GUI/audit context, guest readiness, or logout cleanup.
    through VM cleanup. Existing uncoordinated providers require an explicit
    upgrade/restart before qualification.
 5. Place the generated {filename} at {quote(job)} as root:wheel 0644 under
-   root-owned 0755 parents, without ACLs or writable ancestors. This path is
+   root-owned 0755 parents, without ACLs or writable ancestors. Install its
+   generated host-user.json sibling as root:wheel 0444, preserving the exact
+   JSON. The process requires this host-ID/user binding before machine EX;
+   every serve mode enforces it. No runtime flag relaxes this ownership rule.
+   This path is
    deliberately outside global `/Library/LaunchAgents`: the definition must not
    autoload into every logged-in user's session. Run this tool with the same
    configuration, `--gui-user-plan --verify-installed`, before an operator starts

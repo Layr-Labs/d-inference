@@ -243,7 +243,7 @@ func TestDispatch_TTFTRejectAttempt0_SingleReservationAnd429(t *testing.T) {
 		t.Error("Retry-After header missing")
 	}
 	if got := srv.metrics.Snapshot().Counters[counterKey(metricRequestOutcomeORViewCounter,
-		MetricLabel{"model", model}, MetricLabel{"class", orClassRateLimited})]; got != 1 {
+		MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: orClassRateLimited})]; got != 1 {
 		t.Errorf("attempt-zero OR-view rate_limited count = %d, want exactly 1", got)
 	}
 	if d.attempt != 0 {

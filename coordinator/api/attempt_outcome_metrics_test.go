@@ -267,7 +267,7 @@ func TestAttemptOutcome_SilentProviderLadder(t *testing.T) {
 		var total int64
 		for _, class := range classes {
 			total += snap.Counters[counterKey(metricAttemptOutcomeCounter,
-				MetricLabel{"model", model}, MetricLabel{"class", class})]
+				MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: class})]
 		}
 		return total
 	}
@@ -279,12 +279,12 @@ func TestAttemptOutcome_SilentProviderLadder(t *testing.T) {
 			got, dispatched, snap.Counters)
 	}
 	kills := snap.Counters[counterKey(metricAttemptOutcomeCounter,
-		MetricLabel{"model", model}, MetricLabel{"class", attemptClassFirstChunkTimeout})]
+		MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: attemptClassFirstChunkTimeout})]
 	if kills < 1 {
 		t.Fatalf("attempt_outcome{first_chunk_timeout} = %d, want >= 1; counters=%v", kills, snap.Counters)
 	}
 	if got := snap.Counters[counterKey(metricRequestOutcomeORViewCounter,
-		MetricLabel{"model", model}, MetricLabel{"class", orClassRateLimited})]; got != 1 {
+		MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: orClassRateLimited})]; got != 1 {
 		t.Fatalf("request_outcome_or_view{rate_limited} = %d, want 1; counters=%v", got, snap.Counters)
 	}
 
@@ -371,11 +371,11 @@ func TestDispatch_ClientGoneBetweenAttempts_RecordsClientGone(t *testing.T) {
 
 	snap := srv.metrics.Snapshot()
 	if got := snap.Counters[counterKey(metricRequestOutcomeORViewCounter,
-		MetricLabel{"model", model}, MetricLabel{"class", orClassClientGone})]; got != 1 {
+		MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: orClassClientGone})]; got != 1 {
 		t.Errorf("request_outcome_or_view{client_gone} = %d, want 1; counters=%v", got, snap.Counters)
 	}
 	if got := snap.Counters[counterKey(metricAttemptOutcomeCounter,
-		MetricLabel{"model", model}, MetricLabel{"class", attemptClassSendFailed})]; got != 1 {
+		MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: attemptClassSendFailed})]; got != 1 {
 		t.Errorf("attempt_outcome{send_failed} = %d, want 1 (attempt 0's socketless write); counters=%v", got, snap.Counters)
 	}
 
@@ -473,7 +473,7 @@ func TestUnknownFrames_CountedByKindAndVersion(t *testing.T) {
 
 	key := func(kind string) string {
 		return counterKey(metricUnknownFramesCounter,
-			MetricLabel{"kind", kind}, MetricLabel{"provider_version", "0.6.x"})
+			MetricLabel{Name: "kind", Value: kind}, MetricLabel{Name: "provider_version", Value: "0.6.x"})
 	}
 	snap := waitForCounters(t, srv, 3*time.Second, func(s MetricsSnapshot) bool {
 		return s.Counters[key(unknownFrameKindChunk)] == 1 &&
@@ -596,7 +596,7 @@ func TestEmitAttemptOutcomeMetric_QueueExitIsNotAnAttempt(t *testing.T) {
 		t.Fatalf("attempt_outcome after a queue exit = %d, want 0; counters=%v", got, snap.Counters)
 	}
 	if got := snap.Counters[counterKey(metricQueueOutcomeCounter,
-		MetricLabel{"model", model}, MetricLabel{"class", queueClassQueueDeadline})]; got != 1 {
+		MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: queueClassQueueDeadline})]; got != 1 {
 		t.Fatalf("queue_outcome{queue_deadline} = %d, want 1; counters=%v", got, snap.Counters)
 	}
 
@@ -611,7 +611,7 @@ func TestEmitAttemptOutcomeMetric_QueueExitIsNotAnAttempt(t *testing.T) {
 		t.Fatalf("attempt_outcome after a dispatched terminal = %d, want 1; counters=%v", got, snap.Counters)
 	}
 	if got := snap.Counters[counterKey(metricAttemptOutcomeCounter,
-		MetricLabel{"model", model}, MetricLabel{"class", attemptClassCapacity})]; got != 1 {
+		MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: attemptClassCapacity})]; got != 1 {
 		t.Fatalf("attempt_outcome{capacity} = %d, want 1; counters=%v", got, snap.Counters)
 	}
 	var queueTotal int64
@@ -662,7 +662,7 @@ func TestQueuedExit_LiveQueueDeadline_CountsOnQueueOutcome(t *testing.T) {
 		t.Fatalf("status = %d, want 429; body=%s", res.status, res.body)
 	}
 
-	queueKey := counterKey(metricQueueOutcomeCounter, MetricLabel{"model", model}, MetricLabel{"class", queueClassQueueDeadline})
+	queueKey := counterKey(metricQueueOutcomeCounter, MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: queueClassQueueDeadline})
 	snap := waitForCounters(t, srv, 3*time.Second, func(s MetricsSnapshot) bool {
 		return s.Counters[queueKey] >= 1
 	})

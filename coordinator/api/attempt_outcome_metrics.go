@@ -225,7 +225,7 @@ func (s *Server) emitAttemptOutcomeMetric(model string, outcome *store.Inference
 	}
 	if s.metrics != nil {
 		s.metrics.IncCounter(metricAttemptOutcomeCounter,
-			MetricLabel{"model", model}, MetricLabel{"class", class})
+			MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: class})
 	}
 	if s.dd == nil {
 		return
@@ -245,7 +245,7 @@ func (s *Server) emitQueueOutcomeMetric(model string, outcome *store.InferenceRo
 	}
 	if s.metrics != nil {
 		s.metrics.IncCounter(metricQueueOutcomeCounter,
-			MetricLabel{"model", model}, MetricLabel{"class", class})
+			MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: class})
 	}
 	if s.dd == nil {
 		return
@@ -302,7 +302,7 @@ func (s *Server) recordRequestOutcomeORView(model, class string) {
 	}
 	if s.metrics != nil {
 		s.metrics.IncCounter(metricRequestOutcomeORViewCounter,
-			MetricLabel{"model", model}, MetricLabel{"class", class})
+			MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: class})
 	}
 	if s.dd == nil {
 		return

@@ -6,7 +6,7 @@ func (s *Server) emitCacheOpportunity(pr *registry.PendingRequest) {
 	if pr == nil || !pr.CacheOpportunity.Evaluated {
 		return
 	}
-	labels := []MetricLabel{{"model", s.cacheModelLabel(pr.Model)}, {"reason", pr.CacheOpportunityReason()}}
+	labels := []MetricLabel{{Name: "model", Value: s.cacheModelLabel(pr.Model)}, {Name: "reason", Value: pr.CacheOpportunityReason()}}
 	s.cacheModelCount("opportunity", 1, labels...)
 	if pr.CacheOpportunity.AffinityApplied {
 		s.cacheModelCount("opportunity_affinity", 1, labels...)

@@ -1,12 +1,12 @@
 # Authentication
 
-> Last updated: 2026-09-14 · commit `c8a3f45d0`
+> Last updated: 2026-09-14 · commit `42d0741b1`
 
 How to obtain and manage each credential the coordinator accepts, and which routes take it. Every request authenticates with one header, `Authorization: Bearer <token>` (`extractBearerToken`, `coordinator/api/server.go`); the token is an API key, a Privy session JWT, a device-flow provider token, or the operator's admin key, and `requireAuth` decides which by shape — JWTs (starting `eyJ`) are verified with Privy, the admin key is compared in constant time, everything else is looked up as an API key. For API consumers and console users; the per-route auth column is in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
 ## Prerequisites
 
-- An email address. Email is the only Privy login method the console enables (`loginMethods: ["email"]`, `console-ui/src/components/providers/PrivyRealProvider.tsx`).
+- An email address. Email is the only Privy login method the console enables (`loginMethods: ["email"]`, `console-ui/src/components/app-providers/PrivyRealProvider.tsx`).
 - For step 5, a Mac with the provider CLI installed ([`../provider/installation.md`](../provider/installation.md)).
 
 ## Steps

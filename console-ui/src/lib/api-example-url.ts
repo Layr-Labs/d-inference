@@ -1,4 +1,4 @@
-import { STORAGE_KEYS } from "./constants";
+import { STORAGE_KEYS } from "./storage-keys";
 import { PUBLIC_COORDINATOR_URL } from "./coordinator-url";
 
 /** Example code preference only; never used for console routing or encryption. */

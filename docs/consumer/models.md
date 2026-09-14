@@ -1,6 +1,6 @@
 # Models reference
 
-> Last updated: 2026-09-14 · commit `ea5ce6b16`
+> Last updated: 2026-09-14 · commit `42d0741b1`
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/catalog/aliases.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
@@ -113,9 +113,9 @@ a model or enable coordinator cache routing.
 
 | Behavior | Default and limits | Source |
 |---|---|---|
-| Prefix reuse | Requires the loaded historical-attention capability, segmented paged storage, verified model/runtime identity and the same request isolation scope. A miss or refused checkpoint computes the prompt normally | `provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+CompletePrefixCache.swift` (`prepareCompletePrefixCache`); [cache capability](../reference/ssd-kv-cache.md#per-family-reuse-capability) |
-| Operator control | `DARKBLOOM_PREFIX_CACHE=0` disables reuse; a contiguous fallback also serves cold. Resident retention remains opt-in. API aliases follow their resolved build's default, including `gpt-oss-20b`; other provider artifact IDs remain opt-in | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Activation.swift` (`isEnabled`, `isMemoryEnabled`); `coordinator/api/consumer.go` (`resolveRequestedModel`); [cache controls](../reference/configuration.md#ssd-prefix-cache) |
-| Usage | Successful reuse contributes to `usage.prompt_tokens_details.cached_tokens`; a family name or previous request alone does not guarantee a hit | `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift`; [cache usage](../architecture/prefix-cache.md) |
+| Prefix reuse | Requires the loaded historical-attention capability, segmented paged storage, verified model/runtime identity and the same request isolation scope. A miss or refused checkpoint computes the prompt normally | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+CompletePrefixCache.swift` (`prepareCompletePrefixCache`); [cache capability](../reference/ssd-kv-cache.md#per-family-reuse-capability) |
+| Operator control | `DARKBLOOM_PREFIX_CACHE=0` disables reuse; a contiguous fallback also serves cold. Resident retention remains opt-in. API aliases follow their resolved build's default, including `gpt-oss-20b`; other provider artifact IDs remain opt-in | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isEnabled`, `isMemoryEnabled`); `coordinator/api/consumer.go` (`resolveRequestedModel`); [cache controls](../reference/configuration.md#ssd-prefix-cache) |
+| Usage | Successful reuse contributes to `usage.prompt_tokens_details.cached_tokens`; a family name or previous request alone does not guarantee a hit | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefixCache.swift`; [cache usage](../architecture/prefix-cache.md) |
 
 ## Gemma 4 26B QAT runtime defaults
 
@@ -126,9 +126,9 @@ these defaults.
 
 | Behavior | Default and limits | Source |
 |---|---|---|
-| Prefix caching | Encrypted complete paged SSD checkpoints enabled, subject to loaded capability, verified identity, cache key and tenant scope. A cache hit is not guaranteed; explicit cache disable wins | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Activation.swift` (`isEnabled`); [cache defaults](../architecture/prefix-cache.md#kv-layouts) |
+| Prefix caching | Encrypted complete paged SSD checkpoints enabled, subject to loaded capability, verified identity, cache key and tenant scope. A cache hit is not guaranteed; explicit cache disable wins | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isEnabled`); [cache defaults](../architecture/prefix-cache.md#kv-layouts) |
 | Multi-token prediction (MTP) | `mtp_mode = "auto"` resolves the catalog-declared assistant; adaptive decoding chooses ordinary decode or one draft token. Missing, invalid or memory-ineligible assistants retain target-only serving; explicit `off` and the process kill switch win | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); [MTP policy and controls](../architecture/inference.md#multi-token-prediction) |
-| Assistant activation | Requests continue during download and preparation. Network providers also serve during rollout jitter, then temporarily close admissions only for this model while accepted requests finish and the prepared engine swaps in. Racing/new acquisitions can receive transient 503; timeout or cancellation reopens the original engine without force-cancelling accepted work. Random jitter provides no fleet availability guarantee | `provider-swift/Sources/ProviderCore/Inference/MTPIdleUpgrade.swift` (`run`); [provider memory and availability](../provider/hardware-requirements.md#gemma-qat-assistant-footprint-and-availability) |
+| Assistant activation | Requests continue during download and preparation. Network providers also serve during rollout jitter, then temporarily close admissions only for this model while accepted requests finish and the prepared engine swaps in. Racing/new acquisitions can receive transient 503; timeout or cancellation reopens the original engine without force-cancelling accepted work. Random jitter provides no fleet availability guarantee | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPIdleUpgrade.swift` (`run`); [provider memory and availability](../provider/hardware-requirements.md#gemma-qat-assistant-footprint-and-availability) |
 
 ## Related
 

@@ -5,7 +5,7 @@
 // the header construction and error-unwrapping that lib/api.ts previously
 // repeated ~20 times with three inconsistent error styles (proposal F1).
 
-import { STORAGE_KEYS } from "@/lib/constants";
+import { STORAGE_KEYS } from "@/lib/storage-keys";
 
 /** The active inference API key from localStorage ("" on the server). */
 export function getApiKey(): string {

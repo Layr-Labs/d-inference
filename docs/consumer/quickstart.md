@@ -6,7 +6,7 @@ Get an API key from the console, list the models your key can use, and make your
 
 ## Prerequisites
 
-- An email address. Email is the only console login method (`loginMethods: ["email"]`, `console-ui/src/components/providers/PrivyRealProvider.tsx`); there is no wallet or social login. The Privy account it creates is what your API keys, balance and usage attach to.
+- An email address. Email is the only console login method (`loginMethods: ["email"]`, `console-ui/src/components/app-providers/PrivyRealProvider.tsx`); there is no wallet or social login. The Privy account it creates is what your API keys, balance and usage attach to.
 - Credit on the account. A chat completion reserves its worst-case cost before dispatch and is refused with a 402 when the balance cannot cover it; deposit first with [`billing.md`](billing.md).
 - `curl` and `jq` for the shell steps; Python with the `openai` or `anthropic` package for the SDK steps.
 

@@ -43,8 +43,8 @@ vi.mock("@/hooks/useAuth", () => ({
   }),
 }));
 
-// Mock @/components/providers/PrivyClientProvider
-vi.mock("@/components/providers/PrivyClientProvider", () => ({
+// Mock @/components/app-providers/PrivyClientProvider
+vi.mock("@/components/app-providers/PrivyClientProvider", () => ({
   useAuthContext: () => ({
     ready: true,
     authenticated: true,

@@ -98,7 +98,8 @@ func (s *Session) register(regMsg *protocol.RegisterMessage) bool {
 	// Store provider version. SetVersion also runs the version-changed
 	// reconnect reset for the session's stable identity, which the
 	// attestation bind above could not (the version was not stored
-	// yet) — see registry/version_reset.go.
+	// yet) — see registry/fault_binding.go (Provider.SetVersion) and
+	// registry/faultstate/version_reset.go.
 	if regMsg.Version != "" {
 		s.provider.SetVersion(regMsg.Version)
 	}

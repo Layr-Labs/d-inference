@@ -365,7 +365,7 @@ func (s *mdmVerificationScheduler) finishAttempt(work mdmSchedulerWork, result m
 	if s.server.metrics != nil {
 		s.server.metrics.ObserveHistogram(
 			"mdm_scheduler_retry_delay_seconds", delay.Seconds(),
-			MetricLabel{"stage", schedulerRetryStageLabel(stage)},
+			MetricLabel{Name: "stage", Value: schedulerRetryStageLabel(stage)},
 		)
 	}
 	s.server.ddHistogram("mdm.scheduler.retry_delay_seconds", delay.Seconds(), []string{"stage:" + schedulerRetryStageLabel(stage)})

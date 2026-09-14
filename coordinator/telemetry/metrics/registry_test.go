@@ -1,4 +1,4 @@
-package api
+package metrics
 
 import (
 	"fmt"
@@ -8,7 +8,7 @@ import (
 )
 
 func TestCounterIncrements(t *testing.T) {
-	m := NewMetrics()
+	m := New()
 	m.IncCounter("foo")
 	m.IncCounter("foo")
 	m.AddCounter("foo", 3)
@@ -19,9 +19,9 @@ func TestCounterIncrements(t *testing.T) {
 }
 
 func TestCounterLabelsStableRegardlessOfOrder(t *testing.T) {
-	m := NewMetrics()
-	m.IncCounter("x", MetricLabel{"a", "1"}, MetricLabel{"b", "2"})
-	m.IncCounter("x", MetricLabel{"b", "2"}, MetricLabel{"a", "1"})
+	m := New()
+	m.IncCounter("x", Label{"a", "1"}, Label{"b", "2"})
+	m.IncCounter("x", Label{"b", "2"}, Label{"a", "1"})
 	snap := m.Snapshot()
 	// Should hit the same key.
 	if len(snap.Counters) != 1 {
@@ -54,7 +54,7 @@ func TestHistogramBucketing(t *testing.T) {
 }
 
 func TestGaugeReadsEachCall(t *testing.T) {
-	m := NewMetrics()
+	m := New()
 	var n float64 = 1
 	m.RegisterGauge("dyn", func() float64 {
 		n *= 2
@@ -71,7 +71,7 @@ func TestGaugeReadsEachCall(t *testing.T) {
 }
 
 func TestMetricsSnapshotHookRunsOnceForSharedGauges(t *testing.T) {
-	m := NewMetrics()
+	m := New()
 	var refreshes atomic.Int64
 	var cached atomic.Int64
 	m.RegisterSnapshotHook(func() {
@@ -99,9 +99,9 @@ func TestMetricsSnapshotHookRunsOnceForSharedGauges(t *testing.T) {
 }
 
 func TestRenderProm(t *testing.T) {
-	m := NewMetrics()
-	m.IncCounter("c", MetricLabel{"k", "v"})
-	m.ObserveHistogram("h", 3, MetricLabel{"k", "v"})
+	m := New()
+	m.IncCounter("c", Label{"k", "v"})
+	m.ObserveHistogram("h", 3, Label{"k", "v"})
 	m.RegisterGauge("g", func() float64 { return 7 })
 	text := m.Snapshot().RenderProm()
 	for _, want := range []string{"# TYPE c counter", "# TYPE g gauge", "# TYPE h histogram", "h_count"} {

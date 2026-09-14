@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-14 · commit `1edce05ca`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -442,7 +442,7 @@ ring or `DaemonState` mirror.
 | Knobs, constants, sampling, middleware stamps | `coordinator/api/profiler.go` |
 | Row builder, folds, always-record, anomaly | `coordinator/api/profiler_record.go` |
 | Provider profile decode and validation | `coordinator/api/profiler_provider.go` |
-| Sink | `coordinator/api/profiler_sink.go`, `coordinator/api/telemetry_sink.go` |
+| Sink | `coordinator/api/profiler_sink.go`, `coordinator/telemetry/routequeue/` |
 | Fleet sampler, retention loop, metrics | `coordinator/api/profiler_fleet.go`, `coordinator/registry/fleet_sample.go` |
 | Dispatch hooks, `X-Timing`, relay stamps | `coordinator/api/profiler_dispatch.go` |
 | Admin endpoints | `coordinator/api/profiler_admin.go`, `coordinator/api/admin_telemetry.go` |

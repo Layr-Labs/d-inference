@@ -6,7 +6,7 @@ package api
 // (e.g. &Server{} in tests, which never runs NewServer) keeps working.
 
 import (
-	"log/slog"
+	"github.com/eigeninference/d-inference/coordinator/telemetry/routequeue"
 
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -21,12 +21,12 @@ func (s *Server) submitRouteRecord(record *store.InferenceRouteRecord) {
 		return
 	}
 	if t := s.routeTelemetry; t != nil {
-		t.bind(s.store)
-		t.submitRoute(record)
+		t.Bind(s.store)
+		t.SubmitRoute(record)
 		return
 	}
 	saferun.Go(s.logger, "recordInferenceRoute", func() {
-		logRouteRecordWriteError(s.logger, record, s.store.RecordInferenceRoute(record))
+		routequeue.LogRecordWriteError(s.logger, record, s.store.RecordInferenceRoute(record))
 	})
 }
 
@@ -40,44 +40,12 @@ func (s *Server) submitRouteOutcome(requestID string, attempt int, model string,
 		return
 	}
 	if t := s.routeTelemetry; t != nil {
-		t.bind(s.store)
-		t.submitOutcome(requestID, attempt, model, outcome)
+		t.Bind(s.store)
+		t.SubmitOutcome(requestID, attempt, model, outcome)
 		return
 	}
 	saferun.Go(s.logger, "updateInferenceRoute", func() {
-		logRouteOutcomeWriteError(s.logger, requestID, attempt, model, outcome,
+		routequeue.LogOutcomeWriteError(s.logger, requestID, attempt, model, outcome,
 			s.store.UpdateInferenceRouteOutcome(requestID, attempt, outcome))
 	})
-}
-
-// logRouteRecordWriteError is the single diagnostic line for a failed route
-// snapshot write; a nil err is a no-op.
-func logRouteRecordWriteError(logger *slog.Logger, record *store.InferenceRouteRecord, err error) {
-	if err == nil || logger == nil || record == nil {
-		return
-	}
-	logger.Error("inference_routes record write failed",
-		"request_id", record.RequestID,
-		"attempt", record.Attempt,
-		"provider_id", record.ProviderID,
-		"model", record.Model,
-		"error", err,
-	)
-}
-
-// logRouteOutcomeWriteError is the single diagnostic line for a failed
-// outcome update; a nil err is a no-op.
-func logRouteOutcomeWriteError(logger *slog.Logger, requestID string, attempt int, model string, outcome *store.InferenceRouteOutcome, err error) {
-	if err == nil || logger == nil || outcome == nil {
-		return
-	}
-	logger.Error("inference_routes outcome update failed",
-		"request_id", requestID,
-		"attempt", attempt,
-		"model", model,
-		"final_status", outcome.FinalStatus,
-		"error_class", outcome.ErrorClass,
-		"error_reason", outcome.ErrorReason,
-		"error", err,
-	)
 }

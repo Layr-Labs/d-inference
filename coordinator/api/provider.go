@@ -278,7 +278,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				// could not split graceful closes (update/shutdown) from drops.
 				if s.metrics != nil {
 					s.metrics.IncCounter("ws_disconnects_total",
-						MetricLabel{"reason", "peer_close"},
+						MetricLabel{Name: "reason", Value: "peer_close"},
 					)
 				}
 				s.ddIncr("ws.disconnects", []string{
@@ -299,7 +299,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					})
 				if s.metrics != nil {
 					s.metrics.IncCounter("ws_disconnects_total",
-						MetricLabel{"reason", readReason},
+						MetricLabel{Name: "reason", Value: readReason},
 					)
 				}
 				s.ddIncr("ws.disconnects", []string{"reason:" + readReason})
@@ -415,7 +415,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// Record registration outcome metrics + telemetry.
 			if s.metrics != nil {
 				s.metrics.IncCounter("provider_registrations_total",
-					MetricLabel{"trust_level", string(provider.TrustLevel)},
+					MetricLabel{Name: "trust_level", Value: string(provider.TrustLevel)},
 				)
 			}
 			s.ddIncr("providers.registrations", []string{"trust_level:" + string(provider.TrustLevel)})
@@ -1783,7 +1783,7 @@ func (s *Server) handleTransientChallengeFailure(conn *websocket.Conn, providerI
 	)
 	s.ddIncr("attestation.force_reconnect", []string{"reason:" + reason})
 	if s.metrics != nil {
-		s.metrics.IncCounter("attestation_force_reconnect_total", MetricLabel{"reason", reason})
+		s.metrics.IncCounter("attestation_force_reconnect_total", MetricLabel{Name: "reason", Value: reason})
 	}
 	// Closing the conn unblocks providerReadLoop's conn.Read, which cancels the
 	// loop context (stopping this challenge loop) and runs registry.Disconnect.
@@ -1827,7 +1827,7 @@ func (s *Server) handleChallengeFailure(providerID string, reason string) int {
 		})
 	if s.metrics != nil {
 		s.metrics.IncCounter("attestation_failures_total",
-			MetricLabel{"reason", reason},
+			MetricLabel{Name: "reason", Value: reason},
 		)
 	}
 	s.ddIncr("attestation.failures", []string{"reason:" + reason})

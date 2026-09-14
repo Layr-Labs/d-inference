@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-14 · commit `1edce05ca`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -252,7 +252,7 @@ appear; request correlation uses `request_id` (`X-Request-ID`) instead.
 
 ### Request-level sinks
 
-Two bounded, non-blocking sinks (`telemetrySink`, `coordinator/api/telemetry_sink.go`;
+Two bounded, non-blocking sinks (`routequeue.Sink`, `coordinator/telemetry/routequeue/queue.go`;
 `profileSink`, `coordinator/api/profiler_sink.go`) carry `inference_routes`
 outcome writes and `request_profiles` rows off the request path. Each has a
 4096-slot channel and a single worker; a full channel drops the write and
@@ -339,9 +339,9 @@ for populations, labels and reset semantics (`coordinator/api/cache_model_teleme
 | Datadog client, HTTPS series, trace-aware slog | `coordinator/datadog/datadog.go`, `coordinator/datadog/metrics_http.go`, `coordinator/datadog/slog.go` |
 | Wiring and env | `coordinator/cmd/coordinator/main.go` |
 | Coordinator event emitter | `coordinator/telemetry/emitter.go`; helpers and gauge loop in `coordinator/api/server.go` |
-| In-process metrics registry | `coordinator/api/metrics.go`; `handleAdminMetrics` in `coordinator/api/server.go` |
+| In-process metrics registry | `coordinator/telemetry/metrics/registry.go`; `handleAdminMetrics` in `coordinator/api/server.go` |
 | Event shape, allowlist, retired ingest | `coordinator/protocol/telemetry.go`, `coordinator/api/telemetry_handlers.go` |
-| Sinks | `coordinator/api/telemetry_sink.go`, `coordinator/api/profiler_sink.go`, `coordinator/api/profiler_fleet.go` |
+| Sinks | `coordinator/telemetry/routequeue/`, `coordinator/api/profiler_sink.go`, `coordinator/api/profiler_fleet.go` |
 | Disconnect classification | `coordinator/registry/disconnect_classify.go` |
 | Provider side | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift` (`buildHeartbeatJSON`), `provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Capacity.swift`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift` (no-op facade) |
 | Tests | `coordinator/api/telemetry_allowlist_parity_test.go`, `coordinator/api/telemetry_handlers_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/metrics_http_test.go`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` |

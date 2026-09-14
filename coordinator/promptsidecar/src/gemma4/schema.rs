@@ -1,3 +1,4 @@
+use crate::render_values::scalar_string;
 use serde_json::{Map, Value};
 
 pub(super) fn normalize(tools: Vec<Value>) -> Vec<Value> {
@@ -116,12 +117,7 @@ fn required_member(value: Value) -> Option<Value> {
 
 fn normalize_string_field(object: &mut Map<String, Value>, key: &str) {
     let value = object.remove(key);
-    let normalized = match value {
-        Some(Value::String(value)) => value,
-        Some(Value::Bool(value)) => value.to_string(),
-        Some(Value::Number(value)) => value.to_string(),
-        _ => String::new(),
-    };
+    let normalized = value.as_ref().map(scalar_string).unwrap_or_default();
     object.insert(key.into(), Value::String(normalized));
 }
 

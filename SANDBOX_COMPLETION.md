@@ -749,3 +749,50 @@ then prove different guest boot UUID and retained workspace marker. No guest
 probe jobs remain. The unused native diagnostic probe binary inode29116 can be
 removed in a later exact guarded cleanup. Full base factory, actual host service,
 2VM coordinator campaign, build tools and performance/release gates remain.
+
+## Restart qualification failure and master integration
+
+Attempt12 used a new fixed cold-boot GUI supervisor, exact binary
+cfc873e4344c86bdc674aaf6dfee05667cf33c1dbf1686d60e83ecbcc17c2515,
+root-staged inode30326756. Readiness and authentication controls passed after
+restart, but the cold-boot workspace test failed. VM owner0, root quiescence true;
+watchdog12 SHA66732e49f3fbac0a33a01231133ab8a5ddbed3c14f6d30c6c6a19d05697ff011.
+No claim of workspace persistence. A metadata-only diagnostic then ran as
+attempt13 with the same instance/runID and unchanged guest/runtime.
+
+Attempt13 also passed readiness/authentication and clean tenant execution.
+The fixed stat probe reports ENOENT for the ENTIRE original qualification
+workspace directory, marker, first-boot UUID and fixture. Download rejects with
+invalid_workspace_path. This is not an ownership-only mismatch; cause remains
+unproven. Native stop currently calls VZVirtualMachine.stop (immediate power-off),
+and guest file publication fsyncs its source and parent but has no explicit
+pre-stop filesystem flush. These are hypotheses to test, not a proven cause.
+The current raw workspace image must remain preserved for diagnosis.
+
+Attempt13 rootwatchdog SHA
+8f3a8ab124b558579f239df14178ff628f0401e6a40eeb4f05901793a05b10b5.
+Control gui-discriminator13, config SHA
+da04d7d678f2366173a832940fd2e5380f179eb7d75854efa50f04d82a1c06c0.
+Client/owner exits1/0; root quiescence true, all test VMs now stopped.
+New exact protected diagnostic tools:
+SandboxGUIColdBootDiagnosticAgent inode30340320,
+SHA4a3f09a762cfc8b6c48b053fbc054a890ff0d517dc4cb09e34209fa4f47f8ef2;
+qualify-guest-vsock-diagnostic inode30340322,
+SHA98b6408d75c613008d2c9a3c376ba6f3449b6a15c702125c7b0d7ebcfd0ca5b8.
+Sources: primary evidence/gui-vsock-coldboot-diagnostic-v3 and
+vsock-coldboot-diagnostic-v2;4GUI and9qualification unit tests pass.
+No source/production template was modified or marked ready.
+
+Master advanced to5dcb43e69 (PR909 coordinator refactor and997/998/999 source/test
+organization), preventing PR CI. Integration preserves its refactored config
+validation table AND this branch's ServerConfig.Check immediately after Store.
+Seven docs freshness conflicts and one additive build-doc section were resolved
+without discarding either feature. Full coordinator suite passes30testedpackages
+(API194.821s); DATABASE_URL and EIGENINFERENCE_DATABASE_URL were unset, so this
+run is not a fresh live-Postgres validation. Docs lint passes286files. Logs:
+master-5dcb-coordinator-full-tests.log and master-5dcb-docs-check.log.
+
+The first merge commit attempt stopped in the pre-commit hook because this
+worktree had no console-ui/node_modules (ESLint package resolution failed;
+not a diagnosed lint violation). npm ci completed from the lockfile. Re-running
+UI lint before retrying the merge commit; no hook bypass is used.

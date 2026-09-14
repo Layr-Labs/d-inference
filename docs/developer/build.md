@@ -1,11 +1,15 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `4245ae67a`
+> Last updated: 2026-09-13 · commit `642cf31a6`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
 source-matched `mlx.metallib`), and the two Next.js UIs. `make build` does all
 of it; the per-component steps below explain what each target runs.
+
+Docs Lint needs Git history to validate moved source links in frozen records;
+its checkout uses `fetch-depth: 0` (`.github/workflows/ci.yml`, `docs` job).
+See [historical source references](historical-references.md) for local setup.
 
 Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 `scripts/publish-model.sh` to registration. See the
@@ -65,6 +69,13 @@ through `LumeRuntimeConfiguration.pinnedManagedRestorePatchPath` in
 `sandbox-macos/Sources/SandboxRuntimeLume/LumeRuntimeConfiguration.swift`.
 The `SandboxProcessLifecycleProbe` executable is a test fixture and is not part
 of the signed host or guest package.
+
+Provider tests are grouped by subsystem inside their existing SwiftPM targets.
+See [finding provider tests](test.md#finding-provider-tests) for the folder map;
+`provider-swift/Package.swift` (`package`) retains recursive source discovery.
+The [inference source map](../architecture/inference.md#code-map) locates engine,
+memory, caching and request-processing code within the same `ProviderCore`
+target; building these folders requires no separate products or commands.
 
 ## Steps
 
@@ -325,7 +336,7 @@ an XCTest runner may report zero tests before Swift Testing executes its suite.
 It retains the separate post-build live OS/activation headroom gate.
 The mode requires the candidate SSD serving path; it cannot be combined with
 resident reproduction, native-probe-only mode or an explicit grant
-(`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkGrant.swift`,
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkGrant.swift`,
 `benchmarkProductionGrant`; `BenchmarkOptions.swift`).
 
 For explicit envelope controls, use `--kv-budget-gib N`. Without either flag,

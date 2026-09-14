@@ -42,13 +42,8 @@ func LoadProfilesNDJSON(r io.Reader) ([]Arrival, error) {
 	// always-recorded and dominate exactly the incident windows a replay is
 	// meant to study. Representative = the primary (empty backup_of) with the
 	// lowest attempt; a backup row only stands in when no primary row exists.
-	type pick struct {
-		rec   store.RequestProfileRecord
-		order int
-	}
-	byRequest := map[string]pick{}
+	byRequest := map[string]store.RequestProfileRecord{}
 	var keys []string
-	order := 0
 	err := forEachNDJSONLine(r, func(lineNo int, line []byte) error {
 		var rec store.RequestProfileRecord
 		if err := json.Unmarshal(line, &rec); err != nil {
@@ -63,13 +58,12 @@ func LoadProfilesNDJSON(r io.Reader) ([]Arrival, error) {
 		}
 		cur, seen := byRequest[key]
 		if !seen {
-			byRequest[key] = pick{rec: rec, order: order}
+			byRequest[key] = rec
 			keys = append(keys, key)
-			order++
 			return nil
 		}
-		if betterArrivalRow(&rec, &cur.rec) {
-			byRequest[key] = pick{rec: rec, order: cur.order}
+		if betterArrivalRow(&rec, &cur) {
+			byRequest[key] = rec
 		}
 		return nil
 	})
@@ -78,7 +72,7 @@ func LoadProfilesNDJSON(r io.Reader) ([]Arrival, error) {
 	}
 	arrivals := make([]Arrival, 0, len(keys))
 	for _, key := range keys {
-		rec := byRequest[key].rec
+		rec := byRequest[key]
 		arrivals = append(arrivals, arrivalFromProfile(&rec))
 	}
 	sort.SliceStable(arrivals, func(i, j int) bool {

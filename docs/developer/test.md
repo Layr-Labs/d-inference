@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `dedb0f894`
+> Last updated: 2026-09-13 · commit `7945db8d4`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -132,6 +132,25 @@ heartbeat entry points on a directly constructed server with no attestor.
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/providercontrol/codeidentity
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'CodeIdentity|CodeCoverage|CodeContinuity|CrossVersionReuse|Restart.*Transition|Seeded|HashlessRegistration|PersistOnAttest|TrustReuseShutdown|ApprovedTransitionGrants|MDMSchedulerFleet1500'
 ```
+
+Provider challenge fixtures stay in `coordinator/api/` so they keep real
+WebSocket, signature, registry and routing boundaries. The production owner is
+`coordinator/providercontrol/challenge/`; `provider_challenge_compat_test.go`
+passes expected nonce/timestamp values to its actual verifier for existing direct
+fixtures, with no second nonce tracker.
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api ./coordinator/providercontrol/challenge -run 'Challenge|ModelHash|RuntimeManifest|TrustReuse' -count=1
+```
+
+`TestProviderChallengeNoncesStayWithTheirConnection`
+(`coordinator/api/provider_challenge_ownership_test.go`) uses two real WebSockets
+and P-256 signatures. One connection cannot consume another's nonce; replaying
+a completed nonce does not add a challenge success. Heartbeat barriers establish
+frame processing order and final per-model hashes identify the accepted reply.
+The fixture passes against the original implementation and rejects a shared
+tracker mutation. It uses no provider executable, Apple service or model.
 
 The CI formatting step checks tracked Go files with `gofmt`. It excludes
 `docs/reports/evidence/`, whose captured source bytes are immutable and bound

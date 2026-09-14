@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-14 · commit `dedb0f894`
+> Last updated: 2026-09-13 · commit `7945db8d4`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -112,8 +112,8 @@ darkbloom status
   `keychain-access-groups` entitlement — `ProviderLoop.swift` falls back to an
   ephemeral key with a warning, you appear as a brand-new identity, and you
   re-earn every flag from scratch.
-- **Run a released build.** Binary, metallib and model-hash drift against
-  registration untrusts you; `darkbloom update` returns you to a build in the
+- **Run a released build.** Runtime and model-hash mismatches can exclude
+  your provider from routing; `darkbloom update` returns you to a build in the
   release record ([`cli-reference.md`](./cli-reference.md#darkbloom-update)).
 
 ## Verify
@@ -128,7 +128,11 @@ darkbloom status
 | `self_signed / online`, reason `SE attestation verified, awaiting MDM verification` | Enrolment not complete or the report has not arrived yet — see Troubleshooting |
 | any level `/ untrusted` with a failure reason | The coordinator stopped routing to you — see Troubleshooting |
 
-The coordinator evaluates reuse after the fresh signed challenge; its
+The coordinator matches each challenge reply to the current connection; an old
+reply cannot satisfy a new challenge after reconnect. The
+[challenge owner](../architecture/security/attestation.md#layer-2--periodic-challenge)
+keeps those nonces separate. The coordinator evaluates reuse after the fresh
+signed challenge; its
 [evidence lifecycle](../architecture/security/attestation.md#device-evidence-ownership-and-shutdown)
 also retains revocations across coordinator restarts. The reason strings are listed in
 [trust status messages](../architecture/security/attestation.md#trust-status-messages-to-providers).
@@ -146,9 +150,10 @@ What `hardware` does not prove: it says nothing about *which* binary holds your
 key (that is `code_attested`) or *which* Apple device (that is `mda_verified`;
 Apple issues a fresh attestation only about once per device per week, so the
 flag can lag the level — [Flag — Apple Managed Device Attestation](../architecture/security/attestation.md#flag--apple-managed-device-attestation)).
-Neither flag changes the level. Single-node inference is the supported security
-boundary: multi-node RDMA over Thunderbolt bypasses the in-process memory
-protections and is not trusted. The process defences behind the privacy
+Neither flag changes the level. Reporting RDMA status is required; RDMA
+enablement alone does not fail a challenge
+([Layer 2](../architecture/security/attestation.md#layer-2--periodic-challenge)).
+The process defences behind the privacy
 capabilities the routing gate requires, and their known limits, are recorded in
 [`../threat-model.yaml`](../threat-model.yaml) and summarised in
 [`../architecture/components/provider.md#process-boundaries`](../architecture/components/provider.md#process-boundaries);

@@ -1,6 +1,11 @@
+# MDM scheduler ownership re-verified 2026-09-14 against commit 391e1ebd4:
+# providercontrol/mdmscheduler owns queue/claims/worker and exact late-command state;
+# API keeps the existing trust-grant policy. TB-005 source references and relevant
+# T-006/T-015/T-021/T-033/T-036/T-037 selectors follow these moves. Other threat
+# claims are not re-verified by this ownership update.
 # Registration/device verification ownership re-verified 2026-09-13 against commit 3957e1d82:
 # providercontrol/verification keeps the existing signature, restore, grant and MDA
-# checks; API retains scheduler claims and late-command authorization. This does
+# checks; the scheduler retains claims and late-command authorization. This does
 # not re-verify unrelated threat entries or change the public evidence contract.
 # Challenge ownership in TB-009 re-verified against commit 7945db8d4:
 # per-connection Session nonce state and the existing Verifier gate order.
@@ -513,14 +518,19 @@ trust_boundaries:
       SecurityInfo MDM command to the enrolled device (mdm.go
       VerifyProviderWithUDIDObserver), then waits up to 90 seconds for the webhook
       response; a late SecurityInfo for the same CommandUUID is still applied
-      (provider.go ApplyLateSecurityInfo). The webhook parses
+      (coordinator/api/provider_late_verification.go ApplyLateSecurityInfo, after the exact current
+      generation/command lookup in coordinator/providercontrol/mdmscheduler/late_security_info.go). The webhook parses
       SecurityInfo fields from the plist response: SIPEnabled, SecureBootLevel,
       AuthenticatedRootVolumeEnabled, IsRecoveryLockEnabled, FirewaultEnabled.
       These are cross-checked against the provider's self-reported attestation values.
-      A match on SIPEnabled and SecureBoot triggers async promotion to TrustHardware
-      (provider.go).
+      A matching received report reaches the existing hardware-grant policy
+      (coordinator/providercontrol/verification/security_info.go Verifier.VerifySecurityInfo, or
+      coordinator/api/provider_late_verification.go ApplyLateSecurityInfo for the owned late path).
 
-      MDA verification (provider.go): the coordinator computes
+      Fresh MDA verification runs in coordinator/providercontrol/verification/mda.go
+      (Verifier.VerifyMDA); late proof attachment runs in
+      coordinator/providercontrol/mdmscheduler/late_mda.go (ApplyLateMDA). For fresh requests,
+      the coordinator computes
       sha256(SE_public_key_bytes) and sends this as a nonce to Apple via
       mdm.Client.RequestDeviceAttestation(), which binds an exclusive waiter before
       sendDeviceAttestationWithNonce queues the raw MDM command. Apple returns a plist
@@ -1019,6 +1029,10 @@ threats:
       - coordinator/registry/registry.go
       - coordinator/providercontrol/verification/registration.go
       - coordinator/api/provider_verification.go
+      - coordinator/providercontrol/mdmscheduler/scheduler.go
+      - coordinator/providercontrol/mdmscheduler/bindings.go
+      - coordinator/providercontrol/mdmscheduler/config.go
+      - coordinator/api/provider_scheduler.go
     mitigations:
       - description: Binary hash verified at registration against known blessed hashes.
         status: implemented
@@ -1285,6 +1299,9 @@ threats:
       - coordinator/providercontrol/verification/security_info.go
       - coordinator/providercontrol/verification/dependencies.go
       - coordinator/api/provider_verification.go
+      - coordinator/providercontrol/mdmscheduler/executor.go
+      - coordinator/providercontrol/mdmscheduler/late_security_info.go
+      - coordinator/api/provider_late_verification.go
     mitigations:
       - description: darkbloom checks SIP at startup and refuses to serve if disabled.
         status: implemented
@@ -1441,6 +1458,9 @@ threats:
       - coordinator/providercontrol/verification/attempt.go
       - coordinator/providercontrol/verification/dependencies.go
       - coordinator/api/provider_verification.go
+      - coordinator/providercontrol/mdmscheduler/**
+      - coordinator/api/provider_scheduler.go
+      - coordinator/api/provider_late_verification.go
     mitigations:
       - description: Coordinator verifies MDA cert chain against Apple Enterprise Attestation Root CA.
         status: implemented
@@ -1991,6 +2011,11 @@ threats:
       - coordinator/providercontrol/verification/config.go
       - coordinator/providercontrol/verification/dependencies.go
       - coordinator/api/provider_verification.go
+      - coordinator/providercontrol/mdmscheduler/bindings.go
+      - coordinator/providercontrol/mdmscheduler/observations.go
+      - coordinator/providercontrol/mdmscheduler/late_security_info.go
+      - coordinator/providercontrol/mdmscheduler/late_mda.go
+      - coordinator/api/provider_late_verification.go
     mitigations:
       - description: Attestation blob includes ISO 8601 timestamp; coordinator checks freshness.
         status: implemented
@@ -2145,6 +2170,9 @@ threats:
       - coordinator/providercontrol/trustreuse/**
       - coordinator/providercontrol/verification/**
       - coordinator/api/provider_verification.go
+      - coordinator/providercontrol/mdmscheduler/**
+      - coordinator/api/provider_scheduler.go
+      - coordinator/api/provider_late_verification.go
     mitigations:
       - description: >
           Hardware grant requires SE signature verification and then an MDM SecurityInfo
@@ -2218,6 +2246,9 @@ threats:
       - coordinator/providercontrol/verification/security_info.go
       - coordinator/providercontrol/verification/dependencies.go
       - coordinator/api/provider_verification.go
+      - coordinator/providercontrol/mdmscheduler/executor.go
+      - coordinator/providercontrol/mdmscheduler/late_security_info.go
+      - coordinator/api/provider_late_verification.go
     mitigations:
       - description: SIP checked at startup, before every request, and in every 5-minute challenge.
         status: implemented

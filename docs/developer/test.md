@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `66fb704f2`
+> Last updated: 2026-09-14 · commit `391e1ebd4`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -157,6 +157,25 @@ a completed nonce does not add a challenge success. Heartbeat barriers establish
 frame processing order and final per-model hashes identify the accepted reply.
 The fixture passes against the original implementation and rejects a shared
 tracker mutation. It uses no provider executable, Apple service or model.
+
+Durable MDM queue, worker-budget, retry, claim, polling and late-command fixtures
+live with `coordinator/providercontrol/mdmscheduler/`. Their existing test names
+and private-state assertions stay in that package. The API keeps the real fleet,
+restart, trust-reuse and local MicroMDM/webhook fixtures; it observes existing
+metric snapshots instead of accessing the owner's maps.
+
+`coordinator/api/provider_scheduler_ownership_test.go`
+(`TestMDMSchedulerKeepsClaimsAndCurrentLateBindings`) checks that claims stay on
+the construction-time store while late MDA proof persistence and metrics use
+current API bindings. It replaces those bindings before the dispatcher starts,
+then holds the real worker at its exact command. Adapted API fixtures also run
+against the original implementation; authored MDA certificates remain local
+fixtures, not Apple-issued production evidence.
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/providercontrol/mdmscheduler ./coordinator/api -run 'MDMScheduler|ContinuityMiss|FailedFastSkip|UpgradeStorm|ScheduledSecurityInfo|ApplyLateSecurityInfo|ExecuteScheduledMDA|CoordinatorRestart' -count=1
+```
 
 Registration, reconnect recovery and SecurityInfo/MDA fixtures remain in
 `coordinator/api/` and call the production owner through

@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-13 · commit `3957e1d82`
+> Last updated: 2026-09-14 · commit `391e1ebd4`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -51,6 +51,9 @@ The coordinator
 [verification owner](../architecture/security/attestation.md#registration-and-device-verification-ownership)
 checks registration and device evidence before the existing grants. This source
 organization adds no public evidence fields or consumer verification step.
+The [MDM scheduler](../architecture/security/attestation.md#mdm-scheduler-ownership)
+keeps delayed replies bound to the current provider generation and exact command
+before the existing trust-grant and MDA attachment paths.
 
 The grant and loss conditions for each level are tabulated in
 [`../architecture/security/attestation.md#trust-levels`](../architecture/security/attestation.md#trust-levels);

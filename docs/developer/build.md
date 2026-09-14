@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-13 · commit `3957e1d82`
+> Last updated: 2026-09-14 · commit `391e1ebd4`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -76,6 +76,13 @@ Continue with the per-component steps when you need one piece or want to
 understand what `make` runs.
 
 ### 3. Coordinator (Go)
+
+The MDM queue and workers compile into the coordinator through
+`coordinator/providercontrol/mdmscheduler/scheduler.go` (`Scheduler`) and
+`coordinator/api/provider_scheduler.go` (`mdmSchedulerDependencies`).
+`api.MDMSchedulerConfig` aliases the owner's `Config`; existing environment
+settings are read by `ConfigFromEnv` in
+`coordinator/providercontrol/mdmscheduler/config.go`.
 
 The normal Go build includes `coordinator/providercontrol/verification/` through
 `coordinator/api/provider_verification.go` (`newProviderVerifier`). The verifier

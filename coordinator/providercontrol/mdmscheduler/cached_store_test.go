@@ -1,4 +1,4 @@
-package api
+package mdmscheduler
 
 import (
 	"context"
@@ -27,12 +27,12 @@ func TestMDMSchedulerDuePagingThroughCachedStore(t *testing.T) {
 	if _, direct := any(cached).(verificationDuePageStore); direct {
 		t.Fatal("direct assertion on CachedStore succeeded; this test no longer exercises the wrapped path")
 	}
-	srv, sch := newSchedulerTestServerWithStore(t, cached, MDMSchedulerConfig{
+	srv, sch := newSchedulerHarnessWithStore(t, cached, Config{
 		Workers: 1, QueueCapacity: 2,
 		InitialSpreadMin: time.Hour, InitialSpreadMax: time.Hour,
-	}, mdmSchedulerDeps{
-		now: nowFn,
-		jitter: func(time.Duration, time.Duration) time.Duration {
+	}, Dependencies{
+		Now: nowFn,
+		Jitter: func(time.Duration, time.Duration) time.Duration {
 			return time.Hour
 		},
 	})
@@ -55,15 +55,15 @@ func TestMDMSchedulerDuePagingThroughCachedStore(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	first := schedulerTestProvider(t, srv, "paging-filler-1", "se-paging-filler-1")
-	second := schedulerTestProvider(t, srv, "paging-filler-2", "se-paging-filler-2")
+	first := schedulerProvider(t, srv, "paging-filler-1", "se-paging-filler-1")
+	second := schedulerProvider(t, srv, "paging-filler-2", "se-paging-filler-2")
 	firstGeneration := sch.Submit(
 		context.Background(), first.ID, first, store.VerificationPriorityRefresh,
 	)
 	secondGeneration := sch.Submit(
 		context.Background(), second.ID, second, store.VerificationPriorityRefresh,
 	)
-	live := schedulerTestProvider(t, srv, "paging-live", "z-se-paging-live")
+	live := schedulerProvider(t, srv, "paging-live", "z-se-paging-live")
 	sch.Submit(
 		context.Background(), live.ID, live, store.VerificationPriorityRefresh,
 	)

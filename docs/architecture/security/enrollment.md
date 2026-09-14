@@ -1,6 +1,6 @@
 # MDM enrollment
 
-> Last updated: 2026-09-13 · commit `8670b2a08`
+> Last updated: 2026-09-14 · commit `6b49c898c`
 
 How a provider Mac joins Darkbloom's MDM so the coordinator can ask Apple's
 management subsystem, rather than the provider binary, whether SIP and Secure
@@ -119,7 +119,7 @@ MicroMDM is started with `command-webhook-url` pointing at the coordinator.
 | Logging | `Debug` level: `body_size` and a 500-byte `body_preview` (MDM plist, never inference data) | `coordinator/api/server.go` (`HandleMDMWebhook`) |
 | Parsing | JSON `{topic, acknowledge_event: {status, raw_payload}}`; only `status == "Acknowledged"` with a non-empty base64 plist is processed | `coordinator/mdm/mdm.go` (`HandleWebhook`) |
 | Solicited-response gate | `parseCommandUUID(plist)` must match an outstanding command; otherwise the payload is dropped — a forged SecurityInfo can never drive a grant | `coordinator/mdm/mdm.go` (`HandleWebhook`) |
-| Dispatch | `SecurityInfo` → the waiting `VerifyProviderWithUDIDObserver` or the late path `ApplyLateSecurityInfo`; `DevicePropertiesAttestation` → `ApplyLateMDA` | `coordinator/mdm/mdm.go` (`SetOnLateSecurityInfo`, `SetOnMDA`); `coordinator/api/provider.go` (`ApplyLateSecurityInfo`); `coordinator/api/mdm_scheduler_callbacks.go` (`ApplyLateMDA`) |
+| Dispatch | `SecurityInfo` → the waiting `VerifyProviderWithUDIDObserver` or the late path `ApplyLateSecurityInfo`; `DevicePropertiesAttestation` → `ApplyLateMDA` | `coordinator/mdm/mdm.go` (`SetOnLateSecurityInfo`, `SetOnMDA`); `coordinator/api/provider_late_verification.go` (`ApplyLateSecurityInfo`); `coordinator/providercontrol/mdmscheduler/late_mda.go` (`ApplyLateMDA`) |
 | Response | `200` once the body is read, even for payloads the gate drops; `400 bad request` only when the body cannot be read (for example over the cap) | `coordinator/api/server.go` (`HandleMDMWebhook`) |
 
 What the coordinator reads from `SecurityInfo`: `SystemIntegrityProtectionEnabled`,
@@ -145,7 +145,7 @@ anything under the unrequested `AccessRights` bits.
 |---|---|---|
 | Mac already managed by another MDM | `darkbloom enroll` refuses (`managedByOtherMDM`); doctor reports "enrolled in another MDM … hardware trust unavailable on this Mac" | `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`; `provider-swift/Sources/darkbloom/DoctorCommand.swift` |
 | Profile downloaded but never installed | MDM lookup returns `device-not-found`; provider stays `self_signed` and the scheduler retries | `coordinator/providercontrol/verification/security_info.go` (`Verifier.VerifySecurityInfo`) |
-| Enrolled but SecurityInfo never arrives (asleep, APNs delivery, Apple throttling) | `securityinfo-timeout`; retried on the MDM scheduler cadence ([attestation, Layer 3](./attestation.md#layer-3--mdm-securityinfo-the-hardware-grant)); a late webhook still grants | `coordinator/api/mdm_scheduler.go`; `coordinator/api/provider.go` (`ApplyLateSecurityInfo`) |
+| Enrolled but SecurityInfo never arrives (asleep, APNs delivery, Apple throttling) | `securityinfo-timeout`; retried on the MDM scheduler cadence ([attestation, Layer 3](./attestation.md#layer-3--mdm-securityinfo-the-hardware-grant)); an exactly owned late webhook can still grant | `coordinator/providercontrol/mdmscheduler/late_security_info.go` (`ApplyLateSecurityInfo`); `coordinator/api/provider_late_verification.go` (`ApplyLateSecurityInfo`) |
 | `EIGENINFERENCE_MDM_URL` unset | No MDM client, no scheduler; no provider can reach `hardware` | `coordinator/cmd/coordinator/provider_trust.go` (`configureProviderTrust`) |
 | Webhook secret mismatch | `403`; SecurityInfo responses are lost until MicroMDM's `command-webhook-url` token matches | `coordinator/api/server.go` (`mdmWebhookTokenValid`) |
 | Webhook body over `maxMDMWebhookBodyBytes` | `400 bad request`; payload ignored | `coordinator/api/server.go` (`HandleMDMWebhook`) |

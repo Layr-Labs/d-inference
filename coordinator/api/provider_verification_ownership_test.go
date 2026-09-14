@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/mdm"
+	"github.com/eigeninference/d-inference/coordinator/providercontrol/mdmscheduler"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -25,60 +26,35 @@ func TestScheduledSecurityInfoKeepsItsAttemptObservations(t *testing.T) {
 	if err := srv.SeedTrustReuseCache(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	sch := srv.mdmScheduler
+	srv.mdmScheduler.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ar := attestResultOf(provider)
-	now := time.Now()
-	pending, err := srv.store.UpsertVerificationJob(ctx, store.VerificationJob{
-		SEPubKey: ar.PublicKey, Serial: ar.SerialNumber,
-		Kind: store.VerificationTaskSecurityInfo, State: store.VerificationStatePending,
-		Priority: store.VerificationPriorityRecovery, NextAttemptAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	claimed, ok, err := srv.store.ClaimVerificationJob(
-		ctx, pending.SEPubKey, pending.Kind, sch.owner, now, now.Add(time.Minute),
-	)
-	if err != nil || !ok {
-		t.Fatalf("claim attempt: ok=%v err=%v", ok, err)
-	}
-	generation := sch.generation.Add(1)
-	binding := mdmLiveBinding{
-		providerID: provider.ID, provider: provider, attestation: ar,
-		generation: generation, ctx: ctx, challengeSettled: true,
-	}
-	key := verificationSchedulerKey(claimed.SEPubKey, claimed.Kind)
-	sch.mu.Lock()
-	sch.bindings[ar.PublicKey] = &binding
-	sch.jobs[key] = &mdmScheduledJob{record: claimed, bindingGen: generation, running: true}
-	sch.mu.Unlock()
-
 	resultCh := make(chan mdmSchedulerAttemptResult, 1)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		resultCh <- srv.executeScheduledVerification(ctx, binding, store.VerificationTaskSecurityInfo, "")
-	}()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(time.Second):
-			t.Error("scheduled verification did not stop after cancellation")
-		}
-	})
+	deps := srv.mdmSchedulerDependencies()
+	executor := mdmscheduler.NewExecutor(deps)
+	deps.Jitter = func(time.Duration, time.Duration) time.Duration { return 0 }
+	deps.Execute = func(ctx context.Context, target mdmscheduler.Target, kind store.VerificationTaskKind, attemptUDID string) mdmscheduler.AttemptResult {
+		result := executor.Execute(ctx, target, kind, attemptUDID)
+		resultCh <- result
+		// Hold the worker until the test inspects the SecurityInfo result. Fresh
+		// MDA can only be scheduled after this attempt returns to the shared pool.
+		<-ctx.Done()
+		return result
+	}
+	sch := mdmscheduler.New(MDMSchedulerConfig{Workers: 1, QueueCapacity: 8, InitialSpreadMax: time.Nanosecond}, deps)
+	srv.mdmScheduler = sch
+	generation := sch.Submit(ctx, provider.ID, provider, store.VerificationPriorityRecovery)
+	if generation == 0 {
+		t.Fatal("scheduler binding was not created")
+	}
+	sch.ChallengeSettled(provider, false)
+	t.Cleanup(func() { cancel(); sch.Close() })
 
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for {
-		sch.mu.Lock()
-		job := sch.jobs[key]
-		owned := job != nil && job.record.UDID == udid &&
-			job.callbackGen == generation && job.callbackUUID == command &&
-			sch.byUDID[udid] == key
-		sch.mu.Unlock()
+		binding := sch.ApplyLateSecurityInfo(udid, command, true)
+		owned := binding != nil && binding.Target().Provider == provider
 		if owned {
 			break
 		}
@@ -91,8 +67,8 @@ func TestScheduledSecurityInfoKeepsItsAttemptObservations(t *testing.T) {
 	srv.mdmClient.HandleWebhook(securityInfoWebhook(udid, command, true, true))
 	select {
 	case result := <-resultCh:
-		if ctx.Err() != nil || result.outcome != store.VerificationOutcomeSuccess ||
-			!result.granted || result.terminal || result.udid != udid {
+		if ctx.Err() != nil || result.Outcome != store.VerificationOutcomeSuccess ||
+			!result.Granted || result.Terminal || result.UDID != udid {
 			t.Fatalf("scheduled attempt lost its observation or result: %+v ctx=%v", result, ctx.Err())
 		}
 	case <-ctx.Done():

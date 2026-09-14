@@ -1,9 +1,8 @@
 package registry
 
 import (
-	"nhooyr.io/websocket"
-
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"nhooyr.io/websocket"
 )
 
 // Disconnect-reason plumbing (R1: restart/graceful disconnects are not provider
@@ -28,7 +27,7 @@ import (
 // NOTE: the Swift provider's auto-update restart (ProcessLifecycle.
 // restartAfterUpdate → launchctl kickstart -k → exit) sends NO close frame
 // today, so it reaches the coordinator as read_error and is NOT covered by
-// this path; the version-changed reconnect reset (version_reset.go) is what
+// this path; the version-changed reconnect reset (faultstate/version_reset.go) is what
 // covers that wave. Graceful closes come from the run() cancellation shutdown
 // (CoordinatorClient.shutdown → goingAway) and any future SIGTERM trap.
 

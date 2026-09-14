@@ -73,7 +73,7 @@ func (p Policy) FreeMemoryAdmits(snap *Snapshot, reqPromptTokens, reqMaxTokens i
 	// budget branch: a clamped budget-reporting pair whose current session
 	// has no budget snapshot yet (reconnect before the first heartbeat) must
 	// reject here, not fall through to the legacy memory path below. See
-	// budget_clamp.go.
+	// faultstate/budget_clamp.go.
 	if snap.BudgetClamped {
 		return false
 	}

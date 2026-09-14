@@ -550,7 +550,7 @@ func (r *Registry) evictStale(timeout time.Duration) {
 		}
 	}
 
-	// Bound the per-identity gate index on the same cadence (gate_state.go):
+	// Bound the per-identity gate index on the same cadence (faultstate/state.go):
 	// prunes dead per-model entries and drops gates no live session references
 	// once idle. Off the request path and outside r.mu.
 	r.sweepGates(now)

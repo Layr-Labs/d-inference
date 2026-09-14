@@ -11,24 +11,41 @@ func TestRejectedProviderClassificationFollowsSharedRebind(t *testing.T) {
 	setHealthEjectionEnabledForTest(t, true)
 	for _, tc := range []struct {
 		name              string
-		set               func(*gateState, time.Time)
+		set               func(*Registry, string, time.Time)
 		breaker, capacity bool
 	}{
-		{"breaker", func(g *gateState, until time.Time) { g.breakerUntil = until }, true, false},
-		{"ejection", func(g *gateState, until time.Time) { g.ejectionUntil = until }, true, false},
-		{"capacity", func(g *gateState, until time.Time) {
-			g.capacityCooldowns["m"] = &capacityCooldownEntry{expiry: until}
+		{"breaker", func(r *Registry, id string, until time.Time) {
+			withFaultFixtureTime(r, until.Add(-providerBreakerBaseCooldown), func() {
+				for range providerBreakerConsecTrip {
+					r.RecordProviderOutcome(id, false, 500, "internal error")
+				}
+			})
+		}, true, false},
+		{"ejection", func(r *Registry, id string, until time.Time) {
+			withFaultFixtureTime(r, until.Add(-healthEjectionBaseCooldown), func() {
+				for range healthEjectionConsecTrip {
+					r.RecordProviderSessionServeOutcome(id, false, 500, "internal error")
+				}
+			})
+		}, true, false},
+		{"capacity", func(r *Registry, id string, until time.Time) {
+			cfg := r.faults.Policy().CapacityCooldown
+			withFaultFixtureTime(r, until.Add(-cfg.BaseTTL), func() {
+				for range cfg.Threshold {
+					r.RecordCapacityRejectLifecycle(id, "m")
+				}
+			})
 		}, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reg := New(testLogger())
+			reg := newClockedFaultRegistry(t)
 			p1 := makeSchedulerProvider(t, reg, "classify-rebind-1", "m", 100)
 			p2 := makeSchedulerProvider(t, reg, "classify-rebind-2", "m", 100)
 			identity := &attestation.VerificationResult{Valid: true, PublicKey: "PK-CLASSIFY"}
 			p1.SetAttestationResult(identity)
 			p2.SetAttestationResult(identity)
 			now := time.Now()
-			withGateForSession(reg, p1.ID, func(g *gateState) { tc.set(g, now.Add(time.Minute)) })
+			tc.set(reg, p1.ID, now.Add(time.Minute))
 			// The snapshot rejected p1, then classification loaded its shared
 			// gate. Enrichment occurs before classification reads that gate.
 			reg.mu.RLock()
@@ -42,8 +59,8 @@ func TestRejectedProviderClassificationFollowsSharedRebind(t *testing.T) {
 			p1.SetAttestationResult(&attestation.VerificationResult{
 				Valid: true, PublicKey: identity.PublicKey, SerialNumber: "SER-CLASSIFY",
 			})
-			if view.g == p1.gate.Load() || view.g != p2.gate.Load() ||
-				view.g.breakerOpenAt(now.UnixNano()) || view.g.ejectedAt(now.UnixNano()) || view.g.capacityCooled("m", now) {
+			if view.g.SameGate(reg.gateOf(p1)) || !view.g.SameGate(reg.gateOf(p2)) ||
+				view.g.BreakerOpenAt(now.UnixNano()) || view.g.EjectedAt(now.UnixNano()) || view.g.CapacityCooled("m", now) {
 				t.Fatal("precondition: the loaded source must be the sibling's emptied gate")
 			}
 			reg.mu.RLock()

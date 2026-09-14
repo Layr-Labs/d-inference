@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-13 · commit `e4507f68c`
+> Last updated: 2026-09-13 · commit `8bba9916a`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -422,27 +422,34 @@ of queueing; the coordinator binary enables this by default and
 Three mechanisms handle providers that reject with capacity-shaped 503s while
 their heartbeat still advertises room.
 
-**Budget clamp** (`coordinator/registry/budget_clamp.go`). The first
+`faultstate.Manager[*Provider]` owns their shared identity index and every
+tracker mutation. Registry keeps the actual Provider locks, current budget
+snapshots, stable-identity derivation and routing reason precedence. The
+accept transaction retains its original gate reference across the optional
+budget snapshot and revalidates it before applying the observed outcome
+(`coordinator/registry/faultstate/capacity_accept.go`).
+
+**Budget clamp** (`coordinator/registry/faultstate/budget_clamp.go`). The first
 capacity/token-budget rejection for a (provider, model) pair
 (`recordBudgetClampLocked`, fed by `RecordCapacityReject`) makes admission
 stop believing that pair's heartbeat budget: `freeMemoryAdmits` rejects it as
 `free_memory` and `providerBudgetFits` reports zero live headroom. Release
 requires both a heartbeat delivered after the clamp showing at least
 `budgetClampReleaseMinHeadroomTokens = 1024` tokens of headroom
-(`releaseBudgetClampsOnHeartbeat`) and an accept for the pair after the clamp
-(`noteBudgetClampAcceptLocked`). A clamp fails open after
+(`ReleaseBudgetClampsOnHeartbeat`) and an accept for the pair after the clamp
+(`CapacityAccept.Apply`, `coordinator/registry/faultstate/capacity_accept.go`). A clamp fails open after
 `defaultBudgetClampTTL = 5 * time.Minute`. Kill switch
 [`EIGENINFERENCE_BUDGET_CLAMP`](../reference/configuration.md#routing-admission-and-ttft);
 TTL override `EIGENINFERENCE_BUDGET_CLAMP_TTL_SECONDS`.
 
-**Capacity-rate penalty** (`coordinator/registry/capacity_rate.go`). A pair
+**Capacity-rate penalty** (`coordinator/registry/faultstate/capacity_rate.go`). A pair
 whose capacity-503 rate over `capacityRateWindow = 5 * time.Minute` exceeds
 `capacityRateThreshold = 0.25` with at least `capacityRateMinSample = 8`
 outcomes pays `rate × defaultCapacityRatePenaltyMs` ([cost model](#cost-model);
 override `EIGENINFERENCE_CAPACITY_RATE_PENALTY_MS`) in the cost model. A soft
 derater: the candidate stays in the pool.
 
-**Capacity cooldown** (`coordinator/registry/capacity_cooldown.go`). A pair
+**Capacity cooldown** (`coordinator/registry/faultstate/capacity_policy.go`). A pair
 that accumulates `defaultCapacityCooldownThreshold = 5` capacity rejects
 within `defaultCapacityCooldownWindow = 60 * time.Second` with no interleaved
 accept is gated (`capacity_cooldown`) for `defaultCapacityCooldownTTL =
@@ -456,7 +463,9 @@ accept is gated (`capacity_cooldown`) for `defaultCapacityCooldownTTL =
 
 First-content accepts carry their observation time from
 `coordinator/api/dispatch.go` (`commitFirstContent`) to
-`coordinator/registry/capacity_cooldown.go` (`RecordCapacityAcceptObserved`).
+`coordinator/registry/fault_capacity.go` (`RecordCapacityAcceptObserved`), which
+applies the transaction in `coordinator/registry/faultstate/capacity_accept.go`
+(`CapacityAccept.Apply`).
 The recorder runs asynchronously so the first client byte does not wait for
 `registry.mu`. Reject strikes after the observation survive a delayed accept;
 a cooldown is rebuilt from fresh backoff when those surviving strikes
@@ -469,10 +478,10 @@ outcome exactly once at first content or completion.
 
 | Mechanism | File | Keyed by | Trips when | Holds for |
 |---|---|---|---|---|
-| Inference-error cooldown (`error_cooldown`) | `coordinator/registry/error_cooldown.go` | provider × model × error shape | `inferenceErrorThreshold = 2` strikes within `inferenceErrorWindow = 60 * time.Second` | `inferenceErrorCooldownTTL = 5 * time.Minute` |
-| Node-health breaker (`breaker`) | `coordinator/registry/provider_breaker.go` | stable provider identity | `providerBreakerConsecTrip = 5` consecutive genuine faults, or fail rate > `providerBreakerFailRate = 0.80` over ≥ `providerBreakerMinVolume = 20` outcomes in `providerBreakerWindow = 120 * time.Second` (ring of `providerHealthRingSize = 20`) | `providerBreakerBaseCooldown = 60 * time.Second`, doubling to `providerBreakerMaxCooldown = 5 * time.Minute` |
-| Health ejection (`ejection`) | `coordinator/registry/health_ejection.go` | stable provider identity | `healthEjectionConsecTrip = 8` consecutive failures, or success rate < `healthEjectionMinSuccessRate = 0.10` over ≥ `healthEjectionMinSample = 15` outcomes in `healthEjectionWindow = 10 * time.Minute`, or `healthEjectionCapacityConsecTrip = 10` consecutive capacity rejects | `healthEjectionBaseCooldown = 60 * time.Second`, doubling to `healthEjectionMaxCooldown = 10 * time.Minute` |
-| Dispatch-load cooldown (`dispatch_load_cooldown`) | `coordinator/registry/dispatch_load_cooldown.go` | provider × model | a dispatch-time `load_model` fails | `dispatchLoadCooldownTTL = 2 * time.Minute` |
+| Inference-error cooldown (`error_cooldown`) | `coordinator/registry/faultstate/error_cooldown.go` | provider × model × error shape | `inferenceErrorThreshold = 2` strikes within `inferenceErrorWindow = 60 * time.Second` | `inferenceErrorCooldownTTL = 5 * time.Minute` |
+| Node-health breaker (`breaker`) | `coordinator/registry/faultstate/breaker.go` | stable provider identity | `providerBreakerConsecTrip = 5` consecutive genuine faults, or fail rate > `providerBreakerFailRate = 0.80` over ≥ `providerBreakerMinVolume = 20` outcomes in `providerBreakerWindow = 120 * time.Second` (ring of `providerHealthRingSize = 20`) | `providerBreakerBaseCooldown = 60 * time.Second`, doubling to `providerBreakerMaxCooldown = 5 * time.Minute` |
+| Health ejection (`ejection`) | `coordinator/registry/faultstate/ejection.go` | stable provider identity | `healthEjectionConsecTrip = 8` consecutive failures, or success rate < `healthEjectionMinSuccessRate = 0.10` over ≥ `healthEjectionMinSample = 15` outcomes in `healthEjectionWindow = 10 * time.Minute`, or `healthEjectionCapacityConsecTrip = 10` consecutive capacity rejects | `healthEjectionBaseCooldown = 60 * time.Second`, doubling to `healthEjectionMaxCooldown = 10 * time.Minute` |
+| Dispatch-load cooldown (`dispatch_load_cooldown`) | `coordinator/registry/faultstate/dispatch_load_cooldown.go` | provider × model | a dispatch-time `load_model` fails | `dispatchLoadCooldownTTL = 2 * time.Minute` |
 
 Fault state keys by the provider's stable identity when one is bound, so it
 survives disconnect and reconnect (`Disconnect`, `coordinator/registry/provider_lifecycle.go`).
@@ -483,8 +492,8 @@ stores its state in one `gateState` per identity
 The health rings share `providerHealthWindow.recordOutcome` for insertion and
 `rebuild` for identity merges and version-reset filtering. Rebuilds preserve
 each outcome's disconnect-flush marker and recompute the trailing fault streak
-from the retained chronological history (`coordinator/registry/provider_breaker.go`,
-`coordinator/registry/version_reset.go`).
+from the retained chronological history (`coordinator/registry/faultstate/health_window.go`,
+`coordinator/registry/faultstate/version_reset.go`).
 
 **Fail-open.** If the scan produced no winner, at least one provider was
 rejected only by the breaker or ejection, and there were no capacity or TTFT
@@ -501,9 +510,9 @@ the request path takes it for writing.
 | Lock | Guards | Request-path holders |
 |---|---|---|
 | `Registry.mu` (`sync.RWMutex`, `coordinator/registry/registry.go`) | The provider map, catalog, aliases and routing configuration. | The scan and the commit, for READING (`scanProviderReservation`, `commitLock`). Writers are `Register`, `Disconnect`, `evictStale`, the swap planner and the config setters. |
-| `Provider.mu` | One provider's heartbeat state, pending set, attestation and cached gate pointer (`Provider.gate`). | The scan per provider (`snapshotProviderIntoLockedEx`); the commit's whole decide-and-debit section; the identity bind (`bindStableFaultKey`). |
-| `Registry.gatesMu` (`sync.RWMutex`) | The gate index: fault key → `gateState`, session → `Provider` (`coordinator/registry/gate_index.go`). | Recorders for READING (session → gate resolution), first insertion (`ensureGateLocked`), and the rare validated retry fallback (`lockGateWithIndex`). Also written by `attachSessionGate`, `detachSessionGate`, `bindStableFaultKey` and `sweepGates`. |
-| `gateState.mu` | One identity's fault trackers (`coordinator/registry/gate_state.go`). | Recorders (`lockGate`), the commit's probe claim (`tryClaimCapacityProbe`), the per-model gate reads. Microseconds, per identity. |
+| `Provider.mu` | One provider's heartbeat state, pending set, attestation and opaque binding (`Provider.faultSession`). | The scan per provider (`snapshotProviderIntoLockedEx`); the commit's whole decide-and-debit section; the identity bind (`bindStableFaultKey`). |
+| `faultstate.Manager.gatesMu` (`sync.RWMutex`) | The gate index: fault key → `gateState`, session → `Session[*Provider]` (`coordinator/registry/faultstate/index.go`). | Recorders for READING (session → gate resolution), first insertion (`ensureGateLocked`), and the rare validated retry fallback (`lockGateWithIndex`). Also written by `Manager.Attach`, `Manager.Detach`, `Manager.Bind` and `Manager.Sweep`, through the registry lifecycle bindings. |
+| `gateState.mu` | One identity's fault trackers (`coordinator/registry/faultstate/state.go`). | Recorders (`lockGate`), the commit's probe claim (`tryClaimCapacityProbe`), the per-model gate reads. Microseconds, per identity. |
 
 Lock order: `r.mu → p.mu → gatesMu → gate.mu`. `r.mu` or `p.mu` is never
 acquired while `gatesMu` or a `gate.mu` is held, and there is no walk-wide
@@ -530,13 +539,13 @@ kept as the kill switch behind
 
 **Per-identity gates.** Each fault tracker's state lives in a `gateState`
 keyed by fault key (serial → SE key → account → session id) with its own
-mutex; a connected provider caches its gate in `Provider.gate` (an atomic
-pointer). Recorders (`RecordProviderOutcome`, `RecordProviderServeOutcome`,
+mutex; the provider’s opaque `faultSession` caches a private atomic gate
+pointer inside the owner. Recorders (`RecordProviderOutcome`, `RecordProviderServeOutcome`,
 `RecordProviderSessionServeOutcome`, `RecordInferenceError`,
 `RecordInferenceSuccess`, `RecordCapacityReject`, `RecordCapacityAcceptObserved`,
 `RecordCapacityAcceptOutcome`, `RecordDispatchLoadFailure`,
 `ClearDispatchLoadCooldown`) resolve the gate and take `gate.mu` through
-`lockGate` (`coordinator/registry/gate_lock.go`), never `r.mu`; `lockGate`
+`lockGate` (`coordinator/registry/faultstate/reference.go`), never `r.mu`; `lockGate`
 re-validates under the lock that the gate is still the session's current one
 and not retired, and re-resolves otherwise. A missing identity makes a
 clear operation a no-op. After `gateRelockMaxRetries` optimistic retries,
@@ -547,7 +556,7 @@ ejection verdicts from atomics (`breakerOpenAt`, `ejectedAt`) and takes
 per-model state, so a provider with no fault state costs a few atomic loads.
 
 Version-reset history and disconnect-flush tags live under the same identity
-mutex (`coordinator/registry/version_reset.go`). `disconnectSource` captures
+mutex (`coordinator/registry/faultstate/version_reset.go`). `disconnectSource` captures
 the session before acquiring the gate and compares its disconnect timestamp
 with `gateState.versionResetAt` while the mutation lock is held. This preserves
 the [restart behavior](scheduling.md#disconnect) without returning terminal
@@ -555,7 +564,7 @@ recorders to the fleet lock. `RecordCapacityAcceptObserved` likewise replays
 only rejection strikes newer than the accepted observation, retaining a newer
 cooldown or clamp even when accept bookkeeping arrives late.
 
-**Identity rebinds** (`coordinator/registry/gate_migrate.go`). `bindStableFaultKey`
+**Identity rebinds** (`coordinator/registry/faultstate/migration.go`, `Manager.Bind`). The registry adapter `bindStableFaultKey`
 runs at every (re-)attestation and at account linkage, under the session's
 `p.mu` and `gatesMu`. When the key changes it MOVES the identity's accumulated
 state to the refined identity (`migrateGateLocked`; merge policy
@@ -565,25 +574,25 @@ chronologically) and empties the source: an orphaned source is forwarded
 to a sibling session is reset and republished. Cached disconnected identities
 follow the refined identity without changing their disconnect timestamps.
 Their recorder references carry a `disconnectedGateBinding`
-(`coordinator/registry/gate_disconnected_binding.go`), updated under the source
+(`coordinator/registry/faultstate/disconnected_binding.go`), updated under the source
 gate's mutex and validated on acquisition, so an in-flight late flush cannot
 recreate or write into the former identity after a shared-source migration.
 Because the bind holds
-`p.mu`, a section that reads `p.gate` under `p.mu` — the scan's gate chain,
+`p.mu`, a section that reads the cached session binding under `p.mu` — the scan's gate chain,
 the commit through its debit, the alias resolver's `providerCanRouteBuildLocked`
 — never sees the identity change underneath it. The one dispatch-deciding
 read made without `p.mu`, the candidate's capacity-rate penalty
-(`capacityRatePenaltyFor`), confirms its verdict against `p.gate` afterwards
-and re-reads on a move (`gateView`, `coordinator/registry/gate_index.go`); the
+(`capacityRatePenaltyFor`), confirms its verdict against the owner’s cached session binding afterwards
+and re-reads on a move (`gateView`, `coordinator/registry/fault_reads.go`; `View.Moved`, `coordinator/registry/faultstate/view_binding.go`); the
 other gate reads confirm the same way as defence in depth.
 
-**Sweep** (`coordinator/registry/gate_sweep.go`). `sweepGates` runs from the
+**Sweep** (`coordinator/registry/faultstate/sweep.go`). `Manager.Sweep` runs from the
 eviction loop: it prunes per-model entries that can no longer gate routing
 and drops a gate with no live session once it has been idle for
 `gateIdleGrace = 10 * time.Minute`, marking it `retired` under `gate.mu`
 before the index delete so a recorder holding a stale pointer re-resolves.
 Version metadata additionally keeps its gate for `identityVersionRetention`
-after activity, disconnect or reset (`coordinator/registry/version_reset.go`);
+after activity, disconnect or reset (`coordinator/registry/faultstate/version_reset.go`);
 see [disconnect and reconnect](scheduling.md#disconnect). Half-open trip memory
 of a live gate is never pruned.
 
@@ -695,7 +704,7 @@ must not run in parallel with other scheduler tests in the same process.
    `runRace` calls `cancelDispatch` on the loser before committing.
 10. **Fault memory survives reconnects** — `Disconnect` preserves breaker,
     cooldown and ejection state keyed by stable identity
-    (`detachSessionGate`, `coordinator/registry/gate_index.go`).
+    (`Manager.Detach`, `coordinator/registry/faultstate/session_lifecycle.go`; `detachSessionGate`, `coordinator/registry/fault_binding.go`).
 11. **The admit re-check and the pending debit are atomic per provider, and
     no request-path commit takes `r.mu` for writing** —
     `commitProviderReservation` and `ReserveNextFromPlan` snapshot, compare,
@@ -704,8 +713,8 @@ must not run in parallel with other scheduler tests in the same process.
     hold; `commitLock` takes `r.mu` for reading unless the kill switch is set.
 12. **A dispatch decision never straddles an identity rebind** —
     `bindStableFaultKey` runs under the session's `p.mu`, so a section that
-    read `p.gate` under `p.mu` acts on that same identity; a read made without
-    `p.mu` confirms against `p.gate` (`gateView.moved`).
+    read the cached session binding under `p.mu` acts on that same identity; a read made without
+    `p.mu` confirms against the cached session binding (`gateView.moved`).
 13. **Fault state moves with the identity and is never double-counted** —
     `migrateGateLocked` merges the source into the destination (`mergeLocked`)
     and empties the source; the state is not copied.
@@ -736,16 +745,18 @@ must not run in parallel with other scheduler tests in the same process.
 | Shared gate primitives | `coordinator/registry/routing_eligibility.go` — `providerLivenessGateReasonLocked`, `providerServesRoutableModelLocked` |
 | Closed vocabularies | `coordinator/registry/gate_reason.go` — `GateReason`, `SelectionPath`, `SlotState` |
 | Trust floor and challenge failures | `coordinator/registry/registry.go` — `MinTrustLevel`; `coordinator/registry/provider.go` — `MaxFailedChallenges`; `coordinator/registry/attestation_policy.go` — `RecordChallengeFailure` |
-| Dispatch-load cooldown and disconnect | `coordinator/registry/dispatch_load_cooldown.go` — `dispatchLoadCooldownTTL`; `coordinator/registry/provider_lifecycle.go` — `Disconnect` |
+| Dispatch-load cooldown and disconnect | `coordinator/registry/faultstate/dispatch_load_cooldown.go` — `dispatchLoadCooldownTTL`; `coordinator/registry/provider_lifecycle.go` — `Disconnect` |
 | Two-phase reservation (scan, commit, plan consumption) | `coordinator/registry/scheduler.go` — `scanProviderReservation`, `commitProviderReservation`, `providerCanAdmitLockedEx`; `coordinator/registry/dispatch_plan.go` — `ReserveNextFromPlan` |
-| Per-identity fault-state gates | `coordinator/registry/gate_state.go` — `gateState`, `publishLocked`, `breakerOpenAt`, `ejectedAt`; `coordinator/registry/gate_index.go` — `gateOf`, `gateView`, `attachSessionGate`, `detachSessionGate`; `coordinator/registry/gate_migrate.go` — `bindStableFaultKey`, `migrateGateLocked`, `mergeLocked`; `coordinator/registry/gate_lock.go` — `lockGate`, `gateRef`, `SetGateWaitObserver`; `coordinator/registry/gate_sweep.go` — `sweepGates`, `gateIdleGrace`; `coordinator/registry/gate_commit_mode.go` — `reserveCommitMode`, `commitLock` |
+| Fault-state transaction owner | `coordinator/registry/faultstate/manager.go` — `Manager`, `Session`; `coordinator/registry/faultstate/state.go` — private `gateState`, `publishLocked`; `coordinator/registry/faultstate/migration.go` — `Bind`, `migrateGateLocked`, `mergeLocked`; `coordinator/registry/faultstate/reference.go` — `lockGate`, `gateRef`; `coordinator/registry/faultstate/sweep.go` — `Sweep`, `gateIdleGrace` |
+| Fault-state registry bindings and reads | `coordinator/registry/fault_binding.go` — `bindStableFaultKey`, `SetVersion`, `SetGateWaitObserver`; `coordinator/registry/fault_reads.go` — `gateOf`, `gateView`; `coordinator/registry/faultstate/view_binding.go` — `View.Moved`; `coordinator/registry/gate_commit_mode.go` — `reserveCommitMode`, `commitLock` |
+| Capacity outcome transactions | `coordinator/registry/fault_capacity.go` — `RecordCapacityAcceptObserved`; `coordinator/registry/faultstate/capacity_accept.go` — `PrepareCapacityAccept`, `CapacityAccept.Apply`; `coordinator/registry/faultstate/capacity_reject.go` — `RecordCapacityReject`; `coordinator/registry/faultstate/capacity_probe.go` — `CapacityProbe.Claim` |
 | Bounded dispatch plan | `coordinator/registry/dispatch_plan.go` — `dispatchPlanMaxAlternates`, `PlanEntry` |
 | Fleet servability predictor | `coordinator/registry/servability.go` — `PredictServable`; fleet iteration and verdict remain in the registry |
 | Capacity and cold-load arithmetic | `coordinator/registry/admission/request_budget.go` — `Policy.ColdTokenBudgetEstimate`, `Policy.StructuralBudget`; `coordinator/registry/admission/model_memory.go` — `Policy.ActivationFloor`, `Policy.ColdWeightsGiB` |
 | Provider-version interpretation | `coordinator/registry/providerversion/` — `Policy.Compare`, `Policy.SlotBudgetLayout`; shared instance in `coordinator/registry/provider_version.go` |
-| Budget clamp | `coordinator/registry/budget_clamp.go` — `recordBudgetClampLocked`, `releaseBudgetClampsOnHeartbeat` |
-| Capacity-rate penalty and cooldown | `coordinator/registry/capacity_rate.go`, `coordinator/registry/capacity_cooldown.go` |
-| Breakers and ejection | `coordinator/registry/error_cooldown.go`, `coordinator/registry/provider_breaker.go`, `coordinator/registry/health_ejection.go` |
+| Budget clamp | `coordinator/registry/faultstate/budget_clamp.go` — `recordBudgetClampLocked`, `ReleaseBudgetClampsOnHeartbeat` |
+| Capacity-rate penalty and cooldown | `coordinator/registry/faultstate/capacity_rate.go`, `coordinator/registry/faultstate/capacity_policy.go` |
+| Breakers and ejection | `coordinator/registry/faultstate/error_cooldown.go`, `coordinator/registry/faultstate/breaker.go`, `coordinator/registry/faultstate/ejection.go` |
 | Reputation | `coordinator/registry/reputation.go` — `Score`, `RecordLatency` |
 | TTFT calibration | `coordinator/registry/ttft_calibration.go`; fed by `observeTTFTCalibration` in `coordinator/api/settlement.go` |
 | Hedge timing, governor, race | `coordinator/api/hedge_schedule.go`, `coordinator/api/hedge_governor.go`, `coordinator/api/dispatch.go` (`runSpeculative`, `runRace`), `coordinator/api/first_token_clock.go` |

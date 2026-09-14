@@ -113,7 +113,7 @@ func (p Policy) StructuralBudget(snap *Snapshot) (budget int64, known bool) {
 // a merely-busy fleet ahead of the queue.
 func (p Policy) LiveRemainingBudget(snap *Snapshot) (budget int64, known bool) {
 	if snap.ActiveTokenBudgetMax > 0 {
-		// Gray-box budget clamp (budget_clamp.go): a capacity-503 proved the
+		// Gray-box budget clamp (faultstate/budget_clamp.go): a capacity-503 proved the
 		// live gate rejects, so the pair's LIVE headroom is zero regardless of
 		// the stale-optimistic heartbeat budget. Live-semantics readers only —
 		// the STRUCTURAL ceiling (StructuralBudget → PredictServable)

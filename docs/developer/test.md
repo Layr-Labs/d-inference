@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `68822e9a7`
+> Last updated: 2026-09-14 · commit `78526e60f`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -190,6 +190,18 @@ preflight/reservation and cross-registry policy-binding fixtures retained at
 registry; `TestRoutingPolicySharedAcrossRegistryBindings` in
 `coordinator/registry/routing_policy_binding_test.go` verifies shared calibration
 and startup tuning through those public operations.
+
+Registry lifecycle fixtures sit beside the corresponding transactions:
+`coordinator/registry/provider_registration_test.go`,
+`coordinator/registry/provider_disconnect_test.go`,
+`coordinator/registry/provider_eviction_test.go`,
+`coordinator/registry/provider_recovery_test.go` and
+`coordinator/registry/provider_restore_test.go`. Heartbeat counter and
+copy/privacy checks are in `coordinator/registry/heartbeat_stats_test.go` and
+`coordinator/registry/heartbeat_snapshot_test.go`; the real concurrent routing
+fixture remains `TestConcurrentFindProviderAndHeartbeat` in
+`coordinator/registry/heartbeat_routing_race_test.go`. Run the full registry
+subtree with `GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/... -count=1`.
 
 Private quote correlation and sweep tests live in
 `coordinator/registry/dispatchplan/`. Real reservation, reconnect identity,

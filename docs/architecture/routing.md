@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-14 · commit `68822e9a7`
+> Last updated: 2026-09-14 · commit `78526e60f`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -227,7 +227,7 @@ its pure calculations use `routingcost` over the same snapshot.
 | `effectiveTPSLoadFactor` | `0.39` | Per-concurrent-decode TPS derating (`EffectiveDecodeTPS`). | `coordinator/registry/routing_constants.go` |
 | `kvCacheBytesPerToken` | `400_000` | Fallback KV bytes per token when the slot does not report `KVBytesPerToken`. | `coordinator/registry/routing_constants.go` |
 | `modelMemoryHeadroomFactor` | `2.0` | `ModelFitsHardware`: model GB × 2 must fit total memory when the manifest gives no `minRAMGb`. | `coordinator/registry/admission/memory.go` |
-| `maxPrefillTPS` | `5000.0` | Cap on any prefill rate used for pricing (`maxPrefillTPS`, `coordinator/registry/heartbeat.go`; `ResolvePrefillTPS`, `coordinator/registry/routingcost/throughput.go`). | `coordinator/registry/heartbeat.go` |
+| `maxPrefillTPS` | `5000.0` | Cap on any prefill rate used for pricing (`maxPrefillTPS`, `coordinator/registry/capacity_report.go`; `ResolvePrefillTPS`, `coordinator/registry/routingcost/throughput.go`). | `coordinator/registry/capacity_report.go` |
 | `DefaultPrefillToDecodeRatio` | `12.0` | Static prefill TPS = decode TPS × ratio when the provider reports no prefill rate. | `coordinator/registry/routingcost/config.go` |
 | `DefaultLongPromptThresholdTokens` | `0` | Long-prompt bias is off until a threshold is set. | `coordinator/registry/routingcost/config.go` |
 | `DefaultLongPromptPrefillWeight` | `2.0` | Multiplier on first-token-blocking time for long prompts. | `coordinator/registry/routingcost/config.go` |
@@ -359,7 +359,7 @@ first, then unprobed entries, then demoted entries, with scan cost ordering with
 each tier. Consumed entries stay consumed. Wrong-provider and expired replies
 leave the pending entry for its bound reply or collector expiry. Disconnect
 settlement stays after registry/provider unlock and queue/cache cleanup in
-`coordinator/registry/provider_lifecycle.go` (`disconnectProvider`).
+`coordinator/registry/provider_disconnect.go` (`disconnectProvider`).
 
 `RefreshDispatchPlan` (`coordinator/registry/plan_refresh.go`) claims the one
 refresh and copies attempted IDs through `Plan.ClaimRefresh`, releases that
@@ -554,7 +554,7 @@ operation. The API keeps terminal claiming, parking and route-outcome ownership
 | Dispatch-load cooldown (`dispatch_load_cooldown`) | `coordinator/registry/faultstate/dispatch_load_cooldown.go` | provider × model | a dispatch-time `load_model` fails | `dispatchLoadCooldownTTL = 2 * time.Minute` |
 
 Fault state keys by the provider's stable identity when one is bound, so it
-survives disconnect and reconnect (`Disconnect`, `coordinator/registry/provider_lifecycle.go`).
+survives disconnect and reconnect (`Disconnect`, `coordinator/registry/provider_disconnect.go`).
 Every tracker in this table and in [gray-box capacity signals](#gray-box-capacity-signals)
 stores its state in one `gateState` per identity
 ([below](#concurrency-scan-commit-and-fault-state-gates)).
@@ -816,8 +816,8 @@ must not run in parallel with other scheduler tests in the same process.
 | Candidate preferences and ranking | `coordinator/registry/candidate_selection.go` — `preferRoutingCandidates`, `selectRoutingCandidate` |
 | Shared gate primitives | `coordinator/registry/routing_eligibility.go` — `providerLivenessGateReasonLocked`, `providerServesRoutableModelLocked` |
 | Closed vocabularies | `coordinator/registry/gate_reason.go` — `GateReason`, `SelectionPath`, `SlotState` |
-| Trust floor and challenge failures | `coordinator/registry/registry.go` — `MinTrustLevel`; `coordinator/registry/provider.go` — `MaxFailedChallenges`; `coordinator/registry/attestation_policy.go` — `RecordChallengeFailure` |
-| Dispatch-load cooldown and disconnect | `coordinator/registry/faultstate/dispatch_load_cooldown.go` — `dispatchLoadCooldownTTL`; `coordinator/registry/provider_lifecycle.go` — `Disconnect` |
+| Trust floor and challenge failures | `coordinator/registry/registry.go` — `MinTrustLevel`; `coordinator/registry/provider.go` — `MaxFailedChallenges`; `coordinator/registry/provider_challenges.go` — `RecordChallengeFailure` |
+| Dispatch-load cooldown and disconnect | `coordinator/registry/faultstate/dispatch_load_cooldown.go` — `dispatchLoadCooldownTTL`; `coordinator/registry/provider_disconnect.go` — `Disconnect` |
 | Two-phase reservation (scan, commit, plan consumption) | `coordinator/registry/reservation.go` — `scanProviderReservation`; `coordinator/registry/reservation_commit.go` — `commitProviderReservation`, `providerCanAdmitLockedEx`; `coordinator/registry/plan_reservation.go` — `ReserveNextFromPlan` |
 | Fault-state transaction owner | `coordinator/registry/faultstate/manager.go` — `Manager`, `Session`; `coordinator/registry/faultstate/state.go` — private `gateState`, `publishLocked`; `coordinator/registry/faultstate/migration.go` — `Bind`, `migrateGateLocked`, `mergeLocked`; `coordinator/registry/faultstate/reference.go` — `lockGate`, `gateRef`; `coordinator/registry/faultstate/sweep.go` — `Sweep`, `gateIdleGrace` |
 | Fault-state registry bindings and reads | `coordinator/registry/fault_binding.go` — `bindStableFaultKey`, `SetVersion`, `SetGateWaitObserver`; `coordinator/registry/fault_reads.go` — `gateOf`, `gateView`; `coordinator/registry/faultstate/view_binding.go` — `View.Moved`; `coordinator/registry/gate_commit_mode.go` — `reserveCommitMode`, `commitLock` |

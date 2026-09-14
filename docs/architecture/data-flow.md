@@ -1,6 +1,6 @@
 # Data flow: one request end to end
 
-> Last updated: 2026-09-13 · commit `c3ff0df7e`
+> Last updated: 2026-09-14 · commit `e500afd8c`
 
 A consumer request travels consumer → coordinator → provider → coordinator → consumer. This page shows that journey once — as a sequence diagram and a stage table naming the code that owns each step — for anyone tracing a request through the coordinator.
 
@@ -64,7 +64,7 @@ Two things the diagram makes visible. First, the consumer receives no bytes unti
 | 13 | Plan | Cache-aware route plan for the prompt prefix | `planCacheRoute` (`coordinator/api/prompt_artifacts.go`); [`cache-aware-routing.md`](cache-aware-routing.md) |
 | 14 | **Select provider** | Lowest-estimated-cost candidate from the request-local plan, with bounded alternatives for failover | `dispatchPrimary` → `registry.Queue` (`coordinator/api/dispatch.go`); scoring in [`routing.md`](routing.md) |
 | 15 | Encrypt | Fresh session keys; the job body is sealed to the provider's public key | `e2e.GenerateSessionKeys`, `e2e.Encrypt` (`coordinator/internal/e2e/e2e.go`), called from `dispatchPrimary` |
-| 16 | Send | `inference_request` over the provider WebSocket | `coordinator/api/dispatch.go`, message types in `coordinator/protocol/messages.go` |
+| 16 | Send | `inference_request` over the provider WebSocket | `coordinator/api/dispatch.go`, `InferenceRequestMessage` in `coordinator/protocol/inference.go` |
 | 17 | **Provider executes** | Decrypts, loads or reuses the model, streams `inference_response_chunk`, ends with `inference_complete` or `inference_error` | [`inference.md`](inference.md), [`components/provider.md`](components/provider.md) |
 | 18 | Wait for first content | Chunks buffered ([`chunkBufferSize`](../reference/api-contracts.md#timeouts-and-constants)); a speculative backup may race; failover on error or deadline | `waitFirstChunk`, `runSpeculative`, `runRace`, `shouldStopFailover` (`coordinator/api/dispatch.go`) |
 | 19 | Commit | Status, headers and the first frame are written; from here the status cannot change | `commitFirstContent`, `writeCommittedResponse` (`coordinator/api/dispatch.go`), `writeSSEResponseHeader` (`coordinator/inference/response/sse_response.go`), `WriteCommittedProviderHeaders` (`coordinator/inference/response/provider_snapshot.go`) |
@@ -128,7 +128,7 @@ Each row is the stage at which a request can end early and what the consumer see
 | Cache route plan | `coordinator/api/prompt_artifacts.go` — `planCacheRoute` |
 | Dispatch, speculative backup, commit, client-gone | `coordinator/api/dispatch.go` — `dispatchState.run`, `dispatchPrimary`, `waitFirstChunk`, `runSpeculative`, `runRace`, `commitFirstContent`, `writeCommittedResponse`, `emitClientGone`; `coordinator/inference/response/sse_response.go` — `writeSSEResponseHeader`; `coordinator/inference/response/provider_snapshot.go` — `WriteCommittedProviderHeaders`; `coordinator/inference/response/timing.go` — `RequestTimingDetails` |
 | Per-request encryption | `coordinator/internal/e2e/e2e.go` — `GenerateSessionKeys`, `Encrypt` |
-| Wire messages | `coordinator/protocol/messages.go` |
+| Wire messages | `coordinator/protocol/inference.go` (`InferenceRequestMessage`, `InferenceCompleteMessage`, `InferenceErrorMessage`); `coordinator/protocol/messages.go` (`DecodeProviderMessage`) |
 | Settlement | `coordinator/api/provider.go` — `handleCompleteAt`; `coordinator/api/settlement.go` — `claimSettlement`; `coordinator/inference/settlement/completion.go` — `Service.Complete` |
 
 ## Related

@@ -1,6 +1,6 @@
 # Model registry
 
-> Last updated: 2026-09-13 · commit `8670b2a08`
+> Last updated: 2026-09-14 · commit `e500afd8c`
 
 How Darkbloom decides which model builds exist, which bytes are trusted, which
 providers may serve them, and what public name a consumer uses for them. The
@@ -285,7 +285,7 @@ the budget.
 | Provider notification and version gate | `coordinator/api/desired_models.go` (`fanOutDesiredModels`, `providerSupportsDesiredModels`) |
 | In-memory catalog, alias resolution, `desired_models` computation, models_update merge | `coordinator/registry/model_catalog.go` (`SetModelCatalog`, `modelAllowedByCatalogLocked`); `coordinator/registry/model_aliases.go` (`SetModelAliases`, `ResolveModel`, `ResolveModelConstrainedWithTraits`, `PublicNameForBuild`); `coordinator/registry/model_commands.go` (`DesiredModelsForProvider`, `SendDesiredModels`); `coordinator/registry/provider_models.go` (`mergeProviderModels`) |
 | Capability requirements per model | `coordinator/registry/provider_capabilities.go` (`providerCanAcquireCatalogModelLocked`, `ProviderCapabilityAppleM5`, `ProviderCapabilityMLXNAX`) |
-| Wire messages | `coordinator/protocol/messages.go` (`DesiredModelsMessage`, `DesiredModelEntry`, `ModelsUpdateMessage`, `PrefetchModelStatusMessage`) |
+| Wire messages | `coordinator/protocol/models.go` (`DesiredModelsMessage`, `DesiredModelEntry`, `ModelsUpdateMessage`, `PrefetchModelStatusMessage`) |
 | Manifest schema and builder (publisher side) | `provider-swift/Sources/ProviderCoreFoundation/Manifest.swift`, `provider-swift/Sources/ProviderCoreFoundation/ManifestBuilder.swift`, `provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift` |
 | Publish CLI and script | `provider-swift/Sources/darkbloom-publish/`, `scripts/publish-model.sh`, `.github/workflows/register-model.yml` |
 | Provider catalog client and downloads | `provider-swift/Sources/ProviderCore/Models/ModelCatalogClient.swift`, `provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`, `provider-swift/Sources/ProviderCore/Models/ModelDownloader+Download.swift`, `provider-swift/Sources/ProviderCore/Models/ModelDownloader+Prefetch.swift`, `provider-swift/Sources/ProviderCore/Models/ModelRuntimeRequirements.swift` |

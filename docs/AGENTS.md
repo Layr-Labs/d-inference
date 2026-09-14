@@ -1,6 +1,6 @@
 # Darkbloom docs — how this documentation is organised and maintained
 
-> Last updated: 2026-09-13 · commit `285f7c9f8`
+> Last updated: 2026-09-14 · commit `e500afd8c`
 
 Rules for anyone — human or agent — who reads, writes, or checks a file under
 `docs/`. The code is the source of truth; a doc that disagrees with the code is
@@ -122,7 +122,7 @@ sentence lede (principle 3). Then, by type:
 Line 3 of every doc:
 
 ```
-> Last updated: YYYY-MM-DD · commit `<short sha>`
+> Last updated: 2026-09-14 · commit `e500afd8c`
 ```
 
 - *Last updated* is the day the content was last written or re-verified
@@ -158,7 +158,7 @@ for navigating these original source snapshots.
 | Code change | Doc(s) that must move in the same PR |
 |---|---|
 | HTTP route, header, status code, JSON shape (`coordinator/api/`) | `reference/api-contracts.md`; the relevant `consumer/` how-to |
-| WebSocket message or field (`coordinator/protocol/messages.go` ↔ `provider-swift/Sources/ProviderCore/Protocol/`) | `reference/protocol-messages.md` |
+| WebSocket message or field (`coordinator/protocol/` ↔ `provider-swift/Sources/ProviderCore/Protocol/`) | `reference/protocol-messages.md` |
 | Telemetry wire type or allowlist (Go / Swift / TS mirrors) | `reference/telemetry-schema.md`, `architecture/telemetry.md` |
 | Coordinator env var or config default | `reference/configuration.md`; `operations/coordinator-deploy.md` if prod sets it |
 | Provider CLI command, flag, env var | `provider/cli-reference.md`; `reference/configuration.md` |

@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-13 · commit `8670b2a08`
+> Last updated: 2026-09-14 · commit `e500afd8c`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -48,6 +48,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Warm-pool control loop, pressure and latest observations | `coordinator/registry/warmpool/` (`Controller`, `State`, `Snapshot`); live fleet/eligibility adapters in `coordinator/registry/warm_pool_fleet.go` and `coordinator/registry/warm_pool_eligibility.go` |
 | Provider socket writes, cancellation and watchdog | `coordinator/registry/providerwriter/` (`Writer`); current provider binding in `coordinator/registry/provider_writer.go`; handoff transaction in `handoff.go`, priority/serve in `run.go`, socket fragments in `frames.go` |
 | Identity fault histories and session migration | `coordinator/registry/faultstate/`; registry bindings in `coordinator/registry/fault_binding.go` and `coordinator/registry/fault_capacity.go` |
+| Provider wire records and decoding | `coordinator/protocol/doc.go` maps message families; `coordinator/protocol/messages.go` (`DecodeProviderMessage`) owns dispatch by `type`; [protocol reference](../reference/protocol-messages.md#source-files) maps records to files. |
 | Queue storage and throughput | `coordinator/registry/requestqueue/`, `coordinator/registry/throughput/`; live provider state and reservation orchestration stay in `coordinator/registry/` |
 | Billing, pricing, referrals and payout endpoints | `coordinator/api/billing/` (`Controller`); route and shared-dependency binding in `coordinator/api/billing_controller.go` |
 | Model publishing, discovery and aliases | `coordinator/api/catalog/` (`Controller`); shared bindings in `coordinator/api/catalog_controller.go`; runtime publication stays in `server.go` (`SyncModelCatalog`) |

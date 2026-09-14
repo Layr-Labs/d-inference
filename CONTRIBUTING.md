@@ -109,7 +109,7 @@ Comments: explain *why*, not *what*. Don't add comments that just restate what t
 
 Several surfaces have to stay in sync. If you touch one, check the others:
 
-- **WebSocket protocol**: `provider-swift/Sources/ProviderCore/Protocol/Messages.swift` (Swift) ↔ `coordinator/protocol/messages.go` (Go) ↔ [`docs/reference/protocol-messages.md`](docs/reference/protocol-messages.md).
+- **WebSocket protocol**: `provider-swift/Sources/ProviderCore/Protocol/Messages.swift` (Swift) ↔ `coordinator/protocol/` (Go) ↔ [`docs/reference/protocol-messages.md`](docs/reference/protocol-messages.md).
 - **Provider bundle**: `.github/workflows/release-swift.yml`, canonical
   `scripts/install.sh`, its generated embed at `coordinator/api/install.sh`
   (kept identical by `scripts/sync-install-embed.sh`), and the version pair

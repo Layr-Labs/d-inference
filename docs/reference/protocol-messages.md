@@ -1,10 +1,10 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-13 · commit `3957e1d82`
+> Last updated: 2026-09-14 · commit `e500afd8c`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
-(`coordinator/protocol/messages.go`, `capacity.go`, `profile.go`); Swift mirrors
+(`coordinator/protocol/`; source map below); Swift mirrors
 it (`provider-swift/Sources/ProviderCore/Protocol/Messages.swift`, `Types.swift`,
 `InferenceProfile.swift`). There are 16 provider→coordinator and 10
 coordinator→provider message types; nothing else is accepted.
@@ -18,6 +18,24 @@ JSON keys are snake_case and identical in the Go tags and the Swift
 Terminal `profile` objects can include optional schema-1
 [`deadline_decision`](prediction-decision-telemetry.md#provider-fields).
 This does not add a message type or change the public error code.
+
+## Source files
+
+Message records share the `protocol` package and retain their JSON field order,
+optional-field rules and raw signed/profile bytes. Their files follow the
+operation that sends or receives them.
+
+| Concern | Source and symbols |
+|---|---|
+| Envelope and type vocabulary | `coordinator/protocol/messages.go` (`ProviderMessage`, `DecodeProviderMessage`, `TypeRegister`); fast scanners in `coordinator/protocol/type_scan.go` (`scanTopLevelString`) and `coordinator/protocol/chunk_scan.go` (`scanChunkFrame`) |
+| Registration and machine descriptors | `coordinator/protocol/registration.go` (`RegisterMessage`, `Hardware`, `PrivacyCapabilities`) |
+| Heartbeats and live capacity | `coordinator/protocol/heartbeat.go` (`HeartbeatMessage`, `HeartbeatStats`); `coordinator/protocol/backend_capacity.go` (`BackendCapacity`, `BackendSlotCapacity`) |
+| Inference and encryption | `coordinator/protocol/inference.go` (`InferenceRequestMessage`, `EncryptedPayload`, `InferenceResponseChunkMessage`, `InferenceCompleteMessage`, `InferenceErrorMessage`, `UsageInfo`) |
+| Model inventory and commands | `coordinator/protocol/models.go` (`ModelInfo`, `LoadModelMessage`, `PrefetchModelMessage`, `DesiredModelsMessage`, `ModelsUpdateMessage`) |
+| Prefix-cache evidence | `coordinator/protocol/prefix_cache.go` (`PrefixCacheV2Capability`, `PrefixCacheLookupV2Message`, `PrefixCacheReadyV2Message`) |
+| Attestation and trust feedback | `coordinator/protocol/attestation.go` (`AttestationResponseMessage`, `CodeAttestationResponseMessage`); `coordinator/protocol/runtime_status.go` (`RuntimeStatusMessage`, `TrustStatusMessage`) |
+| Capacity probes and quotes | `coordinator/protocol/capacity.go` (`CapacityProbeMessage`, `CapacityQuoteMessage`) |
+| Request profiles | `coordinator/protocol/profile.go` (`InferenceProfile`, `SlotTelemetry`, `CapacityTelemetry`); field contracts in [system profiler](../architecture/system-profiler.md) |
 
 ## Envelope and the single-parse rule
 

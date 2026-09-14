@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-13 · commit `8670b2a08`
+> Last updated: 2026-09-14 · commit `e500afd8c`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -203,7 +203,8 @@ requires the coordinator's `cache_receipt_boundary_mode=checkpoint` request echo
 before emitting those receipts. Old coordinators ignore the optional capability
 field and omit the echo: registration continues, local reuse can work, and this
 format teaches no coordinator holder. Neither field changes the signed
-attestation or status canonical payload (`coordinator/protocol/messages.go`,
+attestation or status canonical payload (`coordinator/protocol/attestation.go`,
+`AttestationResponseMessage`;
 `coordinator/api/provider_wire.go`; `coordinator/attestation/attestation.go`,
 `StatusCanonicalInput`).
 

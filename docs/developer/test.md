@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `e79e77553`
+> Last updated: 2026-09-14 · commit `e500afd8c`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -65,6 +65,12 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 ```
 
 ### 2. Coordinator (Go)
+
+Wire-contract tests remain in `coordinator/protocol/` beside the message families.
+`GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/protocol/...` checks the existing
+JSON round trips, omitted-versus-empty fields, Swift telemetry symmetry and
+provider-envelope/scanner equivalence cases. [The protocol source map](../reference/protocol-messages.md#source-files)
+locates each record and its decoder.
 
 The command's process fixture lives in
 `coordinator/cmd/coordinator/startup_process_test.go`

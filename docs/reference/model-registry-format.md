@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-13 · commit `d8647602b`
+> Last updated: 2026-09-14 · commit `e500afd8c`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -396,7 +396,7 @@ a build's canonical public name (`registry.AliasTarget.OpenRouterOnly`).
 
 ## Provider-facing messages
 
-Defined in `coordinator/protocol/messages.go`; full field tables in
+Defined in `coordinator/protocol/models.go`; full field tables in
 [`protocol-messages.md`](protocol-messages.md).
 
 | `type` | Direction | Shape |

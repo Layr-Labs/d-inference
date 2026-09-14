@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-13 · commit `8670b2a08`
+> Last updated: 2026-09-14 · commit `5ac94bb27`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -18,7 +18,10 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Behavior | Start here |
 |---|---|
 | Process startup, configuration binding and shutdown | `coordinator/cmd/coordinator/main.go` (`main`); follow each named setup function to its subsystem file in the same command package. [Startup source map](../architecture/components/coordinator.md#startup-sequence) |
-| API request handling, auth, attestation, dispatch | `coordinator/api/`; server construction in `server.go` (`NewServer`) |
+| Server construction and HTTP route registration | `coordinator/api/server.go` (`NewServer`); `coordinator/api/routes.go` (`routes`) |
+| HTTP body caps, CORS, panic recovery and request logging | `coordinator/api/http_middleware.go` (`Handler`); `coordinator/api/http_logging.go` (`loggingMiddleware`) |
+| Per-account/per-key rate limits and token admission | `coordinator/api/request_rate_limits.go` (`rateLimitWithTier`); `coordinator/api/token_admission.go` (`applyTokenRateLimitWithAdmission`) |
+| Installer URL rendering | `coordinator/api/installer.go` (`resolveBaseURL`, `installScript`) |
 | HTTP response caching and refresh coalescing | `coordinator/api/readcache/`; catalog fill fences in `generation.go` (`SetIfCurrent`, `SetValueIfCurrent`) |
 | Chat/Responses/Completions/Messages formatting and relays | `coordinator/inference/response/` (`Writer`, `ChatSink`, `EndpointSink`); lifecycle and accepted-write binding in `coordinator/api/response_writer.go` |
 | Attempt cancellation, terminal correlation and provider feedback | `coordinator/inference/attempt/` (`Service`, private `Tracker` state); `coordinator/api/inference_attempt.go` binds current services and the shared tracker |
@@ -50,7 +53,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Identity fault histories and session migration | `coordinator/registry/faultstate/`; registry bindings in `coordinator/registry/fault_binding.go` and `coordinator/registry/fault_capacity.go` |
 | Queue storage and throughput | `coordinator/registry/requestqueue/`, `coordinator/registry/throughput/`; live provider state and reservation orchestration stay in `coordinator/registry/` |
 | Billing, pricing, referrals and payout endpoints | `coordinator/api/billing/` (`Controller`); route and shared-dependency binding in `coordinator/api/billing_controller.go` |
-| Model publishing, discovery and aliases | `coordinator/api/catalog/` (`Controller`); shared bindings in `coordinator/api/catalog_controller.go`; runtime publication stays in `server.go` (`SyncModelCatalog`) |
+| Model publishing, discovery and aliases | `coordinator/api/catalog/` (`Controller`); shared bindings in `coordinator/api/catalog_controller.go`; runtime publication stays in `catalog_controller.go` (`SyncModelCatalog`) |
 | Financial services and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/contracts/`, `coordinator/store/postgres/`, `coordinator/store/memory/`, `coordinator/store/cache/` |
 | Provider inference, downloads, security, local serving | `provider-swift/Sources/ProviderCore/`; entrypoints in `provider-swift/Sources/darkbloom/` |
 | Portable model manifests and hashing | `provider-swift/Sources/ProviderCoreFoundation/`; target defined in `provider-swift/Package.swift` (`package`) |

@@ -1,6 +1,6 @@
 # Data flow: one request end to end
 
-> Last updated: 2026-09-13 · commit `c3ff0df7e`
+> Last updated: 2026-09-14 · commit `5ac94bb27`
 
 A consumer request travels consumer → coordinator → provider → coordinator → consumer. This page shows that journey once — as a sequence diagram and a stage table naming the code that owns each step — for anyone tracing a request through the coordinator.
 
@@ -49,15 +49,15 @@ Two things the diagram makes visible. First, the consumer receives no bytes unti
 
 | # | Stage | What happens | Owning symbol |
 |---|---|---|---|
-| 1 | Ingress | HTTP request hits the mux; `X-Request-ID` is honoured or minted; global body ceiling [`maxRequestBodyBytes`](../reference/api-contracts.md#limits-and-validation) | `loggingMiddleware`, `bodyLimitMiddleware` (`coordinator/api/server.go`) |
+| 1 | Ingress | HTTP request hits the mux; `X-Request-ID` is honoured or minted; global body ceiling [`maxRequestBodyBytes`](../reference/api-contracts.md#limits-and-validation) | `loggingMiddleware` (`coordinator/api/http_logging.go`), `bodyLimitMiddleware` (`coordinator/api/http_middleware.go`) |
 | 2 | Drain gate | While draining, new inference is refused with 429 `rate_limit_exceeded` and a fixed [`Retry-After`](../reference/api-contracts.md#timeouts-and-constants) (`coordinatorDrainRetryAfter`) | `Controller.Gate` (`coordinator/api/readiness/gate.go`) |
 | 3 | Authenticate | Bearer resolved to an API key, Privy user, active provider device token, or admin; API-key lookups cached for [`keyCacheTTL`](../reference/api-contracts.md#timeouts-and-constants) | `RequireAuth` (`coordinator/api/requestauth/middleware.go`), `BearerToken` (`coordinator/api/requestauth/bearer.go`) |
-| 4 | Rate limit | Per-key `rpm_limit`, then the account limiter; 429 with `Retry-After` | `rateLimitConsumer`, `applyKeyRPMLimit` (`coordinator/api/server.go`) |
+| 4 | Rate limit | Per-key `rpm_limit`, then the account limiter; 429 with `Retry-After` | `rateLimitConsumer`, `applyKeyRPMLimit` (`coordinator/api/request_rate_limits.go`) |
 | 5 | Unseal (optional) | `application/eigeninference-sealed+json` bodies are decrypted; the response will be sealed per event | `sealedTransport` (`coordinator/api/sender_encryption.go`); [`security/encryption.md`](security/encryption.md) |
 | 6 | Parse and validate | Inference body cap [`maxInferenceBodyBytes`](../reference/api-contracts.md#limits-and-validation), tool-schema normalisation, `model` required, key allow-list, `n == 1`, tool-choice and vision rules | `parseInferencePrelude` (`coordinator/api/inference_preprocess.go`), `toolpolicy.ValidateParsed` (`coordinator/inference/toolpolicy/validate.go`), `visionToolsFailFast` |
 | 7 | Resolve model | Alias → concrete build; the response will still echo the alias | `resolveRequestedModel` (`coordinator/api/consumer.go`); [`model-registry.md`](model-registry.md) |
 | 8 | Deadline and shedding | First-content deadline computed from the prompt size; rejecting models shed with 429 | `FirstContentDeadline`, `shedIfModelRejected` (`coordinator/api/consumer.go`) |
-| 9 | Token-rate admission | Input/output tokens per minute | `applyTokenRateLimitWithAdmission` (`coordinator/api/server.go`) |
+| 9 | Token-rate admission | Input/output tokens per minute | `applyTokenRateLimitWithAdmission` (`coordinator/api/token_admission.go`) |
 | 10 | Reserve funds | Worst-case cost held on the account ledger; 402 when it cannot be | `reserveInferenceBalance` (`coordinator/api/inference_admission.go`); [`billing.md`](billing.md) |
 | 11 | Fetch media | Remote `image_url` parts fetched and inlined; billed as media | `resolveRemoteMedia` (`coordinator/api/media_resolve.go`) |
 | 12 | Capacity admission | Is there an eligible provider that can accept this prompt now? 429/503/413 otherwise | `runInferenceAdmission` (`coordinator/api/inference_admission.go`) |
@@ -114,7 +114,7 @@ Each row is the stage at which a request can end early and what the consumer see
 
 | Concern | File / symbol |
 |---|---|
-| Middleware chain, rate limits, token-rate admission | `coordinator/api/server.go` — `loggingMiddleware`, `bodyLimitMiddleware`, `rateLimitConsumer`, `applyTokenRateLimitWithAdmission` |
+| Middleware chain, rate limits, token-rate admission | `coordinator/api/http_middleware.go` (`bodyLimitMiddleware`); `coordinator/api/http_logging.go` (`loggingMiddleware`); `coordinator/api/request_rate_limits.go` (`rateLimitConsumer`); `coordinator/api/token_admission.go` (`applyTokenRateLimitWithAdmission`) |
 | Credential authentication and key-cache state | `coordinator/api/requestauth/` — `Authenticator`, `RequireAuth`, `RequirePrivyAuth`; `coordinator/api/authentication.go` binds current Server configuration |
 | Drain gate | `coordinator/api/readiness/gate.go` — `Controller.Gate` |
 | Sealed client transport | `coordinator/api/sender_encryption.go` — `sealedTransport` |

@@ -1,6 +1,6 @@
 # Consumer surface
 
-> Last updated: 2026-09-13 · commit `c3ff0df7e`
+> Last updated: 2026-09-14 · commit `5ac94bb27`
 
 The consumer surface is the coordinator's OpenAI- and Anthropic-compatible request pipeline: it speaks OpenAI Chat Completions, OpenAI Responses, Anthropic Messages and legacy Completions to clients and turns each request into one provider job through a single pipeline in `handleChatCompletions` (`coordinator/api/consumer.go`), with an endpoint-specific lowering step before it and a re-shaping step after it. This page is for engineers changing or debugging that pipeline: it explains what "compatible" means concretely, walks the stages, and lists the invariants and failure modes that follow. The exact routes, headers, and JSON shapes are in [`../../reference/api-contracts.md`](../../reference/api-contracts.md).
 
@@ -19,7 +19,7 @@ Compatibility is a contract about *shapes*, not a promise to forward arbitrary f
 
 **Translated on the way out.** The response `model` is the string the client sent, alias included; provider chunks are normalised (`normalizeSSEChunk`) and any provider `[DONE]` is stripped so a successful chat stream ends with exactly one; the usage and finish chunks are held to the end of the stream; `metadata`, `X-Provider-*`, `X-Timing` and `X-Inference-Job-ID` are added at commit (`WriteCommittedProviderHeaders`, `coordinator/inference/response/provider_snapshot.go`; `writeTimingHeaderWithProfile`, `coordinator/api/profiler_dispatch.go`).
 
-**Rejected.** `n > 1` (400); a `tool_choice` that names a function absent from `tools`, or `required`/named choice with no tools (400, `toolpolicy.ValidateParsed`, `coordinator/inference/toolpolicy/validate.go`); tool schemas the constraint parser cannot compile (422, `validateResolvedToolConstraintParser`); image content on a model without vision (400, `visionToolsFailFast`); an inference-enforced `tool_choice` (`required` or a named function) combined with images (400, `param: tool_choice`); a `model` outside the key's `allowed_models` (403 `model_not_allowed`, `accounts.KeyModelAllowed`, `coordinator/api/accounts/key_policy.go`); any other `/v1/*` endpoint (404 from `handleUnimplementedEndpoint`, `coordinator/api/server.go`). `x-api-key` is not a credential here; only `Authorization: Bearer` is read (`extractBearerToken`). `response_format` is neither rejected nor validated: it is forwarded to the provider as sent.
+**Rejected.** `n > 1` (400); a `tool_choice` that names a function absent from `tools`, or `required`/named choice with no tools (400, `toolpolicy.ValidateParsed`, `coordinator/inference/toolpolicy/validate.go`); tool schemas the constraint parser cannot compile (422, `validateResolvedToolConstraintParser`); image content on a model without vision (400, `visionToolsFailFast`); an inference-enforced `tool_choice` (`required` or a named function) combined with images (400, `param: tool_choice`); a `model` outside the key's `allowed_models` (403 `model_not_allowed`, `accounts.KeyModelAllowed`, `coordinator/api/accounts/key_policy.go`); any other `/v1/*` endpoint (404 from `handleUnimplementedEndpoint`, `coordinator/api/routes.go`). `x-api-key` is not a credential here; only `Authorization: Bearer` is read (`extractBearerToken`). `response_format` is neither rejected nor validated: it is forwarded to the provider as sent.
 
 ## The request pipeline
 
@@ -27,14 +27,14 @@ Stages in the order `handleChatCompletions` runs them. Each stage either advance
 
 | # | Stage | Owning symbol | Ends the request with |
 |---|---|---|---|
-| 1 | Middleware: drain, auth, rate limit, sealed transport | `Controller.Gate` (`coordinator/api/readiness/gate.go`), `requireAuth` (`coordinator/api/authentication.go`), `rateLimitConsumer` (`coordinator/api/server.go`), `sealedTransport` (`coordinator/api/sender_encryption.go`) | 429 (drain, key or account rate limit), 401, 400 sealed-envelope errors |
+| 1 | Middleware: drain, auth, rate limit, sealed transport | `Controller.Gate` (`coordinator/api/readiness/gate.go`), `requireAuth` (`coordinator/api/authentication.go`), `rateLimitConsumer` (`coordinator/api/request_rate_limits.go`), `sealedTransport` (`coordinator/api/sender_encryption.go`) | 429 (drain, key or account rate limit), 401, 400 sealed-envelope errors |
 | 2 | Parse prelude: body cap [`maxInferenceBodyBytes`](../../reference/api-contracts.md#limits-and-validation), tool-schema normalisation, JSON decode, `model` required, key allow-list | `parseInferencePrelude`, `accounts.KeyModelAllowed` | 400, 403 `model_not_allowed` |
 | 3 | Shape checks: `messages`/`input` present, `n == 1`; strip routing fields; read metadata-details and self-route opt-ins | `stripProviderRoutingFields` (`coordinator/api/request_introspection.go`), `ApplyMetadataDetailsRequest` (`coordinator/inference/response/metadata_optin.go`), `resolveSelfRoutePolicy` (`coordinator/api/self_route.go`) | 400 |
 | 4 | Traits and tool preflight: media requirement, tools present, Responses lowering for validation, tool-choice policy | `detectMediaRequirement`, `requestHasTools`, `promptcontract.LowerProviderBody`, `toolpolicy.ValidateParsed` | 400, 422 |
 | 5 | Model resolve: alias → build under the request's constraints; unresolvable → unavailable | `resolveRequestedModel` → `registry.ResolveModelConstrainedWithTraits` | 503 `model_unavailable` |
 | 6 | Vision/tool fail-fast and remote-media gate | `visionToolsFailFast`, `gateRemoteMediaPreDispatch` | 400, 503 `model_unavailable` |
 | 7 | Bounds and deadline: clamp `max_tokens`, compute the first-content deadline, shed if the model is rejecting | `ensureMaxTokensBound`, `FirstContentDeadline`, `shedIfModelRejected` | 429 with `Retry-After` |
-| 8 | Token-rate admission (input/output tokens per minute) | `applyTokenRateLimitWithAdmission` (`coordinator/api/server.go`) | 429 with `Retry-After` |
+| 8 | Token-rate admission (input/output tokens per minute) | `applyTokenRateLimitWithAdmission` (`coordinator/api/token_admission.go`) | 429 with `Retry-After` |
 | 9 | Reserve balance for the worst-case cost | `reserveInferenceBalance` (`coordinator/api/inference_admission.go`) | 402 (`error.type` and `code` per [`billing.md`](../billing.md#payment-required-responses)) |
 | 10 | Fetch remote media (billed as media, after the reservation) | `resolveRemoteMedia` | 400 |
 | 11 | Capacity admission: can any eligible provider take this prompt now? | `runInferenceAdmission` | 429, 503, 413 `payload_too_large` |

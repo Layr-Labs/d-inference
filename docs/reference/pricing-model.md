@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-13 · commit `38375bc12`
+> Last updated: 2026-09-14 · commit `5ac94bb27`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -196,7 +196,7 @@ Formulas: `Avail(u) = clamp((u − 0.90) / 0.10, 0, 1)`;
 
 ## Routes
 
-Registered in `coordinator/api/server.go`. "Auth" is the middleware plus any
+Registered in `coordinator/api/routes.go` (`routes`). "Auth" is the middleware plus any
 check inside the handler: `requireAuth` accepts an API key, a Privy JWT, the
 admin key, or an active provider device token. `requirePrivyAuth` requires a Privy JWT. "Linked user" is the
 in-handler `RequirePrivyUser` check (`coordinator/api/requestauth/identity.go`),

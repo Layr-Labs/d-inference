@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-13 · commit `b258e17596`
+> Last updated: 2026-09-14 · commit `5ac94bb27`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -48,7 +48,7 @@ attempt stamps.
 | Column | Taken at | Segment since the previous stamp |
 |---|---|---|
 | `auth_done_us`, `auth_kind`, `auth_db_read` | `stampAuth` (`coordinator/api/profiler.go`) from the auth middleware | header read + API-key or Privy auth; `auth_db_read` = a key lookup hit the store |
-| `ratelimit_done_us` | rate-limit middleware (`coordinator/api/server.go`) | rate limiter |
+| `ratelimit_done_us` | rate-limit middleware (`coordinator/api/request_rate_limits.go`, `rateLimitWithTier`) | rate limiter |
 | `sealed_open_us`, `sealed_body_bytes` | `sealedTransport` (`coordinator/api/sender_encryption.go`) | sealed-transport body decrypt; absent for plain HTTPS |
 | `handler_entry_us` | inference handler entry (`coordinator/api/consumer.go`) | remaining middleware + mux (= `X-Timing.pre_handler_us`) |
 | `parsed_us`, `db_us`, `db_calls` | handler; DB accumulator `profileDBCall` | body read, JSON decode, model resolve, registry read |

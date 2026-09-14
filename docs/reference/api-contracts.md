@@ -1,10 +1,10 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-13 · commit `c3ff0df7e`
+> Last updated: 2026-09-14 · commit `5ac94bb27`
 
-The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
+The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/routes.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
-Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`. Billing endpoint methods belong to `billing.Controller` in `coordinator/api/billing/`; `routes` retains their authentication and financial-limiter chain. The binding in `coordinator/api/billing_controller.go` reads the current shared billing and base-rewards services after configuration changes.
+Production base URL: `https://api.darkbloom.dev`. Route registration lives in `coordinator/api/routes.go` (`routes`); endpoint rows identify their handler or owning controller. Billing endpoint methods belong to `billing.Controller` in `coordinator/api/billing/`; `routes` retains their authentication and financial-limiter chain. The binding in `coordinator/api/billing_controller.go` reads the current shared billing and base-rewards services after configuration changes.
 
 The public model catalog optionally includes `hugging_face_artifact` for direct
 provider downloads; the admin registration accepts the same object. See the
@@ -468,9 +468,9 @@ Built by `Writer.Stream` (`coordinator/inference/response/stream.go`), `coordina
 
 | Rule | Value / behaviour | Symbol |
 |---|---|---|
-| Global request body | 64 MiB ceiling on every request (`maxRequestBodyBytes`, `bodyLimitMiddleware`) | `coordinator/api/server.go` |
+| Global request body | 64 MiB ceiling on every request (`maxRequestBodyBytes`, `bodyLimitMiddleware`) | `coordinator/api/http_middleware.go` |
 | Inference body | 16 MiB (`maxInferenceBodyBytes`) → 413 `invalid_request_error`; sealed bodies are read with the same cap (400 `invalid_request_error` when exceeded) | `parseInferencePrelude` (`coordinator/api/inference_preprocess.go`), `sealedTransport` (`coordinator/api/sender_encryption.go`) |
-| Control-plane bodies | 64 KiB (`maxControlPlaneBodyBytes`) for enroll, device token, admin auth | `coordinator/api/server.go` |
+| Control-plane bodies | 64 KiB (`maxControlPlaneBodyBytes`) for enroll, device token, admin auth | `coordinator/api/http_middleware.go` |
 | MDM webhook body | 1 MiB (`maxMDMWebhookBodyBytes`) | `HandleMDMWebhook` (`coordinator/api/server.go`) |
 | `n` | Must be 1 | `handleChatCompletions` |
 | `max_tokens` | `max_completion_tokens` → `max_tokens`; an explicit value is not clamped, a missing one is filled from the [output bound](pricing-model.md#formulas) | `ensureMaxTokensBound` |
@@ -506,7 +506,7 @@ Built by `Writer.Stream` (`coordinator/inference/response/stream.go`), `coordina
 
 Three distinct version values govern providers:
 
-- `LatestProviderVersion = "0.8.16"` (`coordinator/api/server.go`) is the newest provider build the coordinator knows about. `handleVersion` (`/api/version`) and `/v1/me/summary` report the highest active release in the store and fall back to this constant when none is registered.
+- `LatestProviderVersion = "0.9.2"` (`coordinator/api/server.go`) is the version-display fallback when no active release is stored. `handleVersion` (`/api/version`) and `/v1/me/summary` report the highest active release in the store and fall back to this constant when none is registered.
 - `minProviderVersionForDesiredModels = "0.5.17"` (`coordinator/api/server.go`) is a **feature floor for the WebSocket `desired_models` message**: only Swift-runtime providers at or above it receive the message (`providerSupportsDesiredModels`, `fanOutDesiredModels` in `coordinator/api/desired_models.go`), because older decoders disconnect on unknown message types. It does not affect HTTP routes.
 - `EIGENINFERENCE_MIN_PROVIDER_VERSION` (`MinProviderVersion`, `coordinator/api/server_config.go`; `SetMinProviderVersion`) is the **routing floor**: a provider that registers or re-attests below it stays connected but is marked not runtime-verified and excluded from routing (`coordinator/api/provider.go`, registration and `applyChallengeMinVersionPolicy`), and its log uploads get 426 `upgrade_required`.
 - **Feature floors** exclude too-old providers from serving specific request traits rather than the whole model: tools require providers ≥ `0.6.3` (`capabilityVersionFloors`, `coordinator/registry/request_traits.go`); vision requests strip repetition-penalty fields for providers below `penaltySafeProviderVersion` = `0.6.7` (`coordinator/api/consumer.go`); reconnect attestation needs `minProviderVersionForReconnectAttestation` = `0.8.15` (`coordinator/api/provider.go`); servability gating uses `servabilityActivationFloorMinVersion` = `0.8.0` and `servabilityPerModelFloorMinVersion` = `0.8.16` (`coordinator/registry/admission/model_memory.go`); private slot grants need `privateSlotGrantsMinVersion` = `0.7.5` (`coordinator/registry/providerversion/layout.go`). When no provider clears the floor for a request, the client sees 503 `model_unavailable` (or 400 `param: tool_choice` when the fleet serves the model but no provider advertises the tool-constraint protocol).
@@ -552,7 +552,10 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 
 | Concern | Files |
 |---|---|
-| Route registration, middleware, request-id, CORS, admin/version constants | `coordinator/api/server.go`, `coordinator/api/server_config.go` |
+| Route registration | `coordinator/api/routes.go` (`routes`) |
+| Global middleware and request logging | `coordinator/api/http_middleware.go` (`Handler`, `bodyLimitMiddleware`, `recoverMiddleware`, `corsMiddleware`); `coordinator/api/http_logging.go` (`loggingMiddleware`, `newRequestID`) |
+| Rate limits and token admission | `coordinator/api/request_rate_limits.go` (`rateLimitWithTier`, `applyKeyRPMLimit`); `coordinator/api/token_admission.go` (`applyTokenRateLimitWithAdmission`) |
+| Server construction and configuration | `coordinator/api/server.go` (`NewServer`), `coordinator/api/server_config.go` (`ReadServerConfig`) |
 | Inference pipeline | `coordinator/api/consumer.go`, `coordinator/api/inference_preprocess.go`, `coordinator/api/inference_admission.go`, `coordinator/api/request_introspection.go`, `coordinator/api/reasoning_request_policy.go`, `coordinator/api/dispatch.go`, `coordinator/api/dispatch_terminal_write.go`, `coordinator/inference/attempt/rejection.go` |
 | Endpoint lowering and response formatting (Responses, Completions, Messages) | `coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_responses.go`, `coordinator/promptcontract/endpoint_lower_messages.go`, `coordinator/inference/response/generic_endpoint_response.go`, `coordinator/inference/response/generic_stream.go`, `coordinator/inference/response/responses_stream.go` |
 | Response lifecycle binding | `coordinator/api/response_writer.go` (`responseWriter`, `responseServices`, `responseWriteObserver`) binds shared settlement, feedback, route outcomes and accepted-write evidence to `coordinator/inference/response/writer.go` (`Dependencies`, `Writer`) |

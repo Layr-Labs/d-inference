@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-13 · commit `b258e17596`
+> Last updated: 2026-09-14 · commit `5ac94bb27`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -129,7 +129,7 @@ lists every name).
 | `routing.provider_breaker_open` / `_closed`, `routing.provider_ejected` / `routing.provider_ejection_recovered`, `routing.cooldown_entered`, `routing.capacity_cooldown_tripped`, `routing.load_failure_cooldowns` | count | `model` (+ `provider_id` for capacity cooldown) | fault-tracker transitions (`coordinator/inference/attempt/feedback.go`, `coordinator/api/provider.go`) |
 | `routing.ttft_calibration_ratio` | gauge | `model` | each TTFT observation (`coordinator/api/ttft_calibration.go`) |
 | `routing.unservable_reclassified`, `routing.first_chunk_timeout_reclassified`, `routing.client_error_passthrough`, `routing.oversized_request_rejected`, `routing.deadline_unreachable_rejected`, `routing.invalid_ttft`, `routing.dispatch_client_error_stop`, `routing.first_chunk_timeout_ladder_capped`, `routing.hedge_governor_suppressed`, `routing.pending_load_backoff`, `routing.scan_admission_timeout`, `routing.ttft_admission`, `routing.ttft_spread`, `routing.provider_selected`, `routing.load_model_rejects` | count | mostly `model` | routing edge cases |
-| `http.requests` (count), `http.latency_ms` (histogram) | — | `method`, `path`, `status_code` | every HTTP request (`loggingMiddleware`, `coordinator/api/server.go`) |
+| `http.requests` (count), `http.latency_ms` (histogram) | — | `method`, `path`, `status_code` | every HTTP request (`loggingMiddleware`, `coordinator/api/http_logging.go`) |
 
 ### Cache results by model (internal)
 
@@ -182,7 +182,7 @@ have different populations and must not be summed together.
 | `profiler.provider_profile` | count | `valid`, `reason` (`none`, `size`, `decode`, `schema`, `range`, `order`, `enum`, `duplicate`, `late`) | each provider `profile` |
 | `profiler.fleet_snapshot` | count | `status:written`, `write_failed` | each fleet sample |
 | `profiler.pruned_rows` | count | — | each hourly retention sweep |
-| `providers.online`, `providers.per_model{model}`, `providers.per_version{version}`, `providers.by_trust_status{…}`, `providers.by_mdm_failure{reason}`, `attestation.code_attested`, `attestation.code_enforced`, `coordinator.min_provider_version_set{min_version}`, `request_queue.depth`, `utilization.network`, `utilization.warm`, `utilization.token_budget`, `utilization.bottleneck`, `utilization.model{model}`, `capacity.tps`, `capacity.demand_concurrency`, `capacity.serving_capacity`, `capacity.spill_arrival_rate` | gauge | as listed | every 15 s from `StartDDGaugeLoop` (`coordinator/api/server.go`), which also pushes the `exact_cache.*` gauges (`emitExactCacheDDGauges`, `coordinator/api/exact_cache_metrics.go`); the loop returns immediately when no Datadog client is configured |
+| `providers.online`, `providers.per_model{model}`, `providers.per_version{version}`, `providers.by_trust_status{…}`, `providers.by_mdm_failure{reason}`, `attestation.code_attested`, `attestation.code_enforced`, `coordinator.min_provider_version_set{min_version}`, `request_queue.depth`, `utilization.network`, `utilization.warm`, `utilization.token_budget`, `utilization.bottleneck`, `utilization.model{model}`, `capacity.tps`, `capacity.demand_concurrency`, `capacity.serving_capacity`, `capacity.spill_arrival_rate` | gauge | as listed | every 15 s from `StartDDGaugeLoop` (`coordinator/api/fleet_gauges.go`), which also pushes the `exact_cache.*` gauges (`emitExactCacheDDGauges`, `coordinator/api/exact_cache_metrics.go`); the loop returns immediately when no Datadog client is configured |
 | `request_queue.depth_by_model`, `request_queue.oldest_age_ms` | gauge | `model` | every gauge-loop tick for served or queued models; a disappearing model gets one final zero for both series and is then forgotten (`coordinator/api/fleet_gauges.go`, `emitPerModelQueueGauges`) |
 
 ### In-process registry (not Datadog)
@@ -204,7 +204,7 @@ Prometheus text (`?format=prom`). Reset on restart.
 ## Coordinator-emitted events
 
 Producer: `Emitter.Emit` (`coordinator/telemetry/emitter.go`) via `s.emit`,
-`s.emitRequest`, `s.emitPanic` (`coordinator/api/server.go`). Sinks, in order:
+`s.emitRequest`, `s.emitPanic` (`coordinator/api/telemetry_bindings.go`). Sinks, in order:
 `slog` line `telemetry: <message>`, `telemetry_events_total`, Datadog Logs API
 (`ForwardLog`, batched 100 or every 5 s, only with `DD_API_KEY`). Retention is
 Datadog's; nothing is stored locally.
@@ -218,7 +218,7 @@ Datadog's; nothing is stored locally.
 | `provider failed, retrying` / `provider failed after accepting request, retrying` | warn · `inference_error` | `provider_id`, `attempt`, `reason:provider_error`, `status_code` (+ `request_id`) | `coordinator/api/dispatch.go` |
 | `provider first-chunk timeout` / `provider accepted timeout` | warn · `inference_error` | `provider_id`, `attempt`, `reason:first_chunk_timeout` / `accepted_timeout` | `dispatch.go` |
 | `inference failed after N attempt(s)` | error · `inference_error` | `reason:dispatch_exhausted`, `attempt`, `status_code`, `last_error` (the sanitized closed message) | `dispatch.go` |
-| `panic in handler <method> <path>: <value>` | fatal · `panic` | `handler`, `endpoint`, plus `stack` | `coordinator/api/server.go` recovery middleware |
+| `panic in handler <method> <path>: <value>` | fatal · `panic` | `handler`, `endpoint`, plus `stack` | `coordinator/api/http_middleware.go` (`recoverMiddleware`) |
 
 ## Coordinator per-request records (Postgres)
 

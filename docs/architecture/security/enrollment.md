@@ -1,6 +1,6 @@
 # MDM enrollment
 
-> Last updated: 2026-09-13 · commit `8670b2a08`
+> Last updated: 2026-09-14 · commit `5ac94bb27`
 
 How a provider Mac joins Darkbloom's MDM so the coordinator can ask Apple's
 management subsystem, rather than the provider binary, whether SIP and Secure
@@ -55,9 +55,9 @@ re-rendered).
 
 | Property | Value | Code |
 |---|---|---|
-| Endpoint | `POST /v1/enroll`, no authentication, JSON body decoded into an empty struct, capped at [`maxControlPlaneBodyBytes`](../../reference/api-contracts.md#limits-and-validation); a legacy `serial_number` field is ignored, never stored or logged | `coordinator/api/server.go` (route), `coordinator/api/enroll.go` (`handleEnroll`) |
+| Endpoint | `POST /v1/enroll`, no authentication, JSON body decoded into an empty struct, capped at [`maxControlPlaneBodyBytes`](../../reference/api-contracts.md#limits-and-validation); a legacy `serial_number` field is ignored, never stored or logged | `coordinator/api/routes.go` (`routes`), `coordinator/api/enroll.go` (`handleEnroll`) |
 | Response | `200`, `Content-Type: application/x-apple-aspen-config`, `Content-Disposition: attachment; filename="Darkbloom-Enroll.mobileconfig"` | `coordinator/api/enroll.go` (`handleEnroll`) |
-| Base URL | `EIGENINFERENCE_BASE_URL` when set; only in local/dev does it fall back to `X-Forwarded-Proto` + request `Host`, because a signed profile pointing at an attacker host would launder a malicious enrollment | `coordinator/api/server.go` (`resolveBaseURL`); `coordinator/api/server_config.go` |
+| Base URL | `EIGENINFERENCE_BASE_URL` when set; only in local/dev does it fall back to `X-Forwarded-Proto` + request `Host`, because a signed profile pointing at an attacker host would launder a malicious enrollment | `coordinator/api/installer.go` (`resolveBaseURL`); `coordinator/api/server_config.go` |
 | Top-level payload | `PayloadType Configuration`, `PayloadIdentifier io.darkbloom.enroll`, `PayloadDisplayName "Darkbloom Provider Enrollment"`, `PayloadOrganization Darkbloom`, fresh `PayloadUUID` per download | `coordinator/api/enroll.go` (`generateCombinedProfile`) |
 | Payload 1 — SCEP | `PayloadType com.apple.security.scep`, `PayloadIdentifier io.darkbloom.enroll.scep`, `PayloadUUID D01D95F9-762E-4538-A9B3-4D949D55577C`; `URL <base>/scep`, `Challenge micromdm`, RSA 2048, `Key Usage 5`, Subject `O=Darkbloom`, `CN=Darkbloom Identity` | `coordinator/api/enroll.go` (`generateCombinedProfile`) |
 | Payload 2 — MDM | `PayloadType com.apple.mdm`, `PayloadIdentifier io.darkbloom.enroll.mdm`, `PayloadUUID 4DF05DBF-6D20-41A4-8072-A51D327258E7`; `IdentityCertificateUUID` = SCEP UUID; `CheckInURL <base>/mdm/checkin`; `ServerURL <base>/mdm/connect`; `Topic com.apple.mgmt.External.10520cbe-9635-453d-ac4e-c79aab56f8ce`; `SignMessage true`; `CheckOutWhenRemoved true`; `ServerCapabilities [com.apple.mdm.per-user-connections, com.apple.mdm.bootstraptoken]` | `coordinator/api/enroll.go` (`generateCombinedProfile`) |
@@ -113,7 +113,7 @@ MicroMDM is started with `command-webhook-url` pointing at the coordinator.
 
 | Property | Value | Code |
 |---|---|---|
-| Route | `POST /v1/mdm/webhook` | `coordinator/api/server.go` |
+| Route | `POST /v1/mdm/webhook` | `coordinator/api/routes.go` (`routes`) |
 | Authentication | When `EIGENINFERENCE_MDM_WEBHOOK_SECRET` is set: `X-Webhook-Token: <secret>` header **or** `?token=<secret>` query (MicroMDM cannot add headers), constant-time compare; failure → `403 forbidden` before the body is read. Unset → startup warning; the CommandUUID gate alone protects the webhook | `coordinator/api/server.go` (`HandleMDMWebhook`, `mdmWebhookTokenValid`); `coordinator/cmd/coordinator/provider_trust.go` (`configureProviderTrust`) |
 | Body cap | [`maxMDMWebhookBodyBytes`](../../reference/api-contracts.md#limits-and-validation) | `coordinator/api/server.go` |
 | Logging | `Debug` level: `body_size` and a 500-byte `body_preview` (MDM plist, never inference data) | `coordinator/api/server.go` (`HandleMDMWebhook`) |
@@ -132,7 +132,7 @@ anything under the unrequested `AccessRights` bits.
 
 1. The enrollment profile contains no device identity and grants only read-only rights (`AccessRights` 1041) — `coordinator/api/enroll.go` (`generateCombinedProfile`).
 2. `POST /v1/enroll` never reads, stores, or logs a serial number; enrollment identity comes from the authenticated MDM check-in — `coordinator/api/enroll.go` (`handleEnroll`).
-3. SCEP/MDM URLs in a signed profile come from `EIGENINFERENCE_BASE_URL`, not from the request `Host` — `coordinator/api/server.go` (`resolveBaseURL`).
+3. SCEP/MDM URLs in a signed profile come from `EIGENINFERENCE_BASE_URL`, not from the request `Host` — `coordinator/api/installer.go` (`resolveBaseURL`).
 4. Signing failures degrade to an unsigned profile with an error log and metric; they never block enrollment — `coordinator/api/enroll.go` (`handleEnroll`).
 5. The coordinator issues only `SecurityInfo` and `DeviceInformation` commands — `coordinator/mdm/mdm.go` (`assertReadOnlyCommand`).
 6. A webhook payload is acted on only if it is `Acknowledged` and its `CommandUUID` matches a command the coordinator issued within `outstandingCommandTTL` ([Coordinator ↔ MicroMDM](#coordinator--micromdm)) — `coordinator/mdm/mdm.go` (`HandleWebhook`).
@@ -158,7 +158,7 @@ anything under the unrequested `AccessRights` bits.
 |---|---|
 | Profile generation and serving | `coordinator/api/enroll.go` (`handleEnroll`, `generateCombinedProfile`) |
 | Profile signing | `coordinator/profilesign/signer.go` (`LoadFromEnv`, `Sign`) |
-| Base URL pinning | `coordinator/api/server.go` (`resolveBaseURL`); `coordinator/api/server_config.go` |
+| Base URL pinning | `coordinator/api/installer.go` (`resolveBaseURL`); `coordinator/api/server_config.go` |
 | Webhook | `coordinator/api/server.go` (`HandleMDMWebhook`, `mdmWebhookTokenValid`, `maxMDMWebhookBodyBytes`) |
 | MicroMDM client | `coordinator/mdm/mdm.go` (`NewClient`, `LookupDevice`, `VerifyProviderWithUDIDObserver`, `RequestDeviceAttestation`, `HandleWebhook`, `assertReadOnlyCommand`, `parseSecurityInfoPlist`); `coordinator/mdm/config.go` |
 | Wiring and env | `coordinator/cmd/coordinator/provider_trust.go` (`configureProviderTrust`) |

@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-13 · commit `8670b2a08`
+> Last updated: 2026-09-14 · commit `5ac94bb27`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -45,7 +45,7 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/cmd/coordinator` | `main.go` (`main`): configuration, resource lifetimes and shutdown; named setup functions in subsystem files bind the owners before serving. |
 | `coordinator/config` | `AppConfig` — composes every package's `ReadConfig` and runs their `Check` methods. |
 | `coordinator/env` | `EnvPrefix` (`EIGENINFERENCE`) and the `EnvOr`/`EnvInt`/`EnvFloat`/`EnvBool` helpers. |
-| `coordinator/api` | The HTTP router (`routes` in `server.go`), middleware, consumer handlers (`consumer.go`), the provider WebSocket (`provider.go`), dispatch ladder (`dispatch.go`), sender encryption, account, admin, release, billing and catalog dependency wiring, runtime catalog publication, drain, profiler wiring. |
+| `coordinator/api` | The HTTP router (`routes.go`, `routes`), global middleware (`http_middleware.go`, `Handler`), request logging (`http_logging.go`, `loggingMiddleware`), account/key rate limits (`request_rate_limits.go`, `rateLimitWithTier`), token admission (`token_admission.go`, `applyTokenRateLimitWithAdmission`), consumer handlers (`consumer.go`), the provider WebSocket (`provider.go`), dispatch ladder (`dispatch.go`), sender encryption, account, admin, release, billing and catalog dependency wiring, runtime catalog publication, drain, profiler wiring. |
 | `coordinator/api/billing` | Billing, pricing, referrals, earnings, Stripe Connect and Global Payouts HTTP controllers and payout reconciliation (`Controller`); `billing_controller.go` in the parent API package binds shared services, store, cache, metrics and authorization. |
 | `coordinator/api/catalog` | Model publishing, manifests, aliases, consumer/marketplace/install projections and cache invalidation (`Controller`); `catalog_controller.go` in the parent API package binds current store and credentials, fleet views, the shared cache and runtime publication callback. |
 | `coordinator/api/accounts` | `Controller`: legacy/named API keys, key policy, device code/approval/token exchange and invites. Store operations remain behind narrow key/device/invite interfaces; the router supplies the existing auth cache and live store/console/admin bindings through `account_controller.go`. |

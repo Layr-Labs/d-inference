@@ -30,7 +30,11 @@ coordinator/          Go control plane (packages live at top level, not internal
 │   ├── accountfleet/       account provider views, earnings summaries and offline removal
 │   ├── operations/         operator telemetry reads, bounded queries, CSV/NDJSON exports
 │   ├── types/              canonical JSON shapes for consumer-facing endpoints
-│   └── server.go           route wiring, auth middleware, version gate
+│   ├── routes.go           HTTP/WS route registration and controller middleware chains
+│   ├── http_middleware.go  global body caps, CORS and panic recovery
+│   ├── http_logging.go     request IDs, access logs and bounded HTTP metric labels
+│   ├── request_rate_limits.go account/key RPM; token_admission.go owns token admission
+│   └── server.go           shared server state, construction and lifecycle
 ├── apns/             APNs-push code-identity attestation
 ├── attestation/      Secure Enclave + MDA verification
 ├── auth/             Privy JWT integration

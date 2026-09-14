@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-13 · commit `8670b2a08`
+> Last updated: 2026-09-14 · commit `5ac94bb27`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -29,9 +29,9 @@ read once at process start and a restart applies a change.
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `EIGENINFERENCE_PORT` | TCP port | `8080` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Listen port for the HTTP API and the provider WebSocket. |
-| `EIGENINFERENCE_BASE_URL` | URL | unset — derived per request from `Host` and `X-Forwarded-Proto` | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/server.go` (`resolveBaseURL`) | Public origin templated into the served `/install.sh` and other self-referencing URLs. |
+| `EIGENINFERENCE_BASE_URL` | URL | unset — derived per request from `Host` and `X-Forwarded-Proto` | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/installer.go` (`resolveBaseURL`) | Public origin templated into the served `/install.sh` and other self-referencing URLs. |
 | `EIGENINFERENCE_CONSOLE_URL` | URL | unset — `<scheme>://<Host>/link` is derived per request | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/accounts/device_codes.go` | Console origin used to build the device-code `verification_uri` (`<console>/link`). |
-| `CORS_ORIGIN` | origin | `https://console.darkbloom.dev` (applied in `corsMiddleware`) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/server.go` (`corsMiddleware`) | The single origin allowed for credentialed CORS; public read-only GETs stay wildcard. |
+| `CORS_ORIGIN` | origin | `https://console.darkbloom.dev` (applied in `corsMiddleware`) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/http_middleware.go` (`corsMiddleware`) | The single origin allowed for credentialed CORS; public read-only GETs stay wildcard. |
 | `EIGENINFERENCE_DRAIN_GRACE` | Go duration | `10m` (`DefaultDrainGrace`) | `coordinator/api/readiness/shutdown.go` (`DrainGraceFromEnv`; API compatibility wrapper in `coordinator/api/drain.go`) | How long shutdown waits for in-flight requests after SIGTERM before `http.Server.Shutdown`; `0` skips the wait. |
 | `EIGENINFERENCE_ROUTING_CONCURRENCY` | integer ≥ 2 | `runtime.NumCPU()` (min 2) | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`); `coordinator/api/server.go` (`DefaultRoutingConcurrency`) | Cap on concurrent routing scans. |
 | `EIGENINFERENCE_PPROF_ADDR` | `host:port` | unset (off) | `coordinator/cmd/coordinator/profiling.go` (`startPprofListener`) | Serves `net/http/pprof` on a separate listener; bind loopback or firewall it. A successful listener enables mutex sampling at fraction `100` and block sampling at rate `1_000_000` ns (`enableContentionProfiling`). |

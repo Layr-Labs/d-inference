@@ -1,6 +1,6 @@
 # Roll out the release-policy routing gate (shadow → enforce)
 
-> Last updated: 2026-09-13 · commit `8670b2a08`
+> Last updated: 2026-09-14 · commit `5ac94bb27`
 
 Runbook for the two production changes that involve the coordinator's
 release-policy routing gate: (1) deploying a coordinator that contains the gate
@@ -34,7 +34,7 @@ side ([`provider-release.md`](provider-release.md)).
 - Baseline captured before the swap: `/v1/models/capacity` (models and
   `routable_providers` per model) and `/v1/stats` `active_providers`.
 - Datadog access to the `release_evidence.outcome` counter (emitted by
-  `coordinator/api/server.go` (`recordReleaseEvidenceOutcome`); no-op without
+  `coordinator/api/release_policy.go` (`recordReleaseEvidenceOutcome`); no-op without
   DogStatsD).
 - Read [Background](#background) once; the 2026-08-31 postmortem
   ([`../reports/2026-08-31-coordinator-agent-deployment-failure-postmortem.md`](../reports/2026-08-31-coordinator-agent-deployment-failure-postmortem.md))
@@ -143,8 +143,8 @@ Poll `/v1/stats` no faster than its [documented cache interval](../reference/api
 | Datadog `release_evidence.outcome` | `outcome:granted` dominates; every other tag explained (table below) |
 | Real inference | succeeds on every model family |
 
-Closed outcome set (`coordinator/api/server.go`, constants next to
-`recordReleaseEvidenceOutcome`):
+Closed outcome set (`coordinator/providercontrol/releasepolicy/evidence.go`;
+`coordinator/api/release_policy.go`, `recordReleaseEvidenceOutcome`):
 
 | `outcome:` tag | Means |
 |---|---|

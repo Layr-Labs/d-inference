@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-13 · commit `b258e17596`
+> Last updated: 2026-09-14 · commit `5ac94bb27`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -213,7 +213,7 @@ evidence and service cost.
 `datadog.Client` (`coordinator/datadog/datadog.go`) is constructed in
 `coordinator/cmd/coordinator/main.go` only when `DD_API_KEY` or `DD_AGENT_HOST`
 is set; otherwise `s.dd` is nil and every `ddIncr`/`ddGauge`/`ddHistogram`
-(`coordinator/api/server.go`) is a no-op. Configuration is environment only —
+(`coordinator/api/telemetry_bindings.go`) is a no-op. Configuration is environment only —
 `DD_API_KEY`, `DD_AGENT_HOST`, `DD_DOGSTATSD_URL`, `DD_SITE`, `DD_ENV`, `DD_SERVICE`,
 `DD_HOSTNAME` — with defaults under [configuration](../reference/configuration.md#telemetry-datadog-and-profiling).
 `DD_API_KEY` enables the HTTPS paths (series, logs, events); `DD_AGENT_HOST` alone still
@@ -344,7 +344,7 @@ for populations, labels and reset semantics (`coordinator/api/cache_model_teleme
 | Persistence throttle | `coordinator/registry/persistence.go` |
 | Datadog client, HTTPS series, trace-aware slog | `coordinator/datadog/datadog.go`, `coordinator/datadog/metrics_http.go`, `coordinator/datadog/slog.go` |
 | Wiring and env | `coordinator/cmd/coordinator/main.go` |
-| Coordinator event emitter | `coordinator/telemetry/emitter.go`; helpers and gauge loop in `coordinator/api/server.go` |
+| Coordinator event emitter | `coordinator/telemetry/emitter.go`; helpers in `coordinator/api/telemetry_bindings.go` (`emit`, `emitRequest`, `emitPanic`) and gauge loop in `coordinator/api/fleet_gauges.go` (`StartDDGaugeLoop`) |
 | In-process metrics registry | `coordinator/telemetry/metrics/registry.go`; `Controller.Metrics` in `coordinator/api/operations/metrics.go` |
 | Event shape, allowlist, retired ingest | `coordinator/protocol/telemetry.go`, `coordinator/api/telemetry_handlers.go` |
 | Persistence queues | `coordinator/telemetry/routequeue/`, `coordinator/telemetry/profilequeue/`, `coordinator/telemetry/outcomequeue/` (`Sink`) |

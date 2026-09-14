@@ -1,6 +1,6 @@
 # Model registry
 
-> Last updated: 2026-09-13 · commit `8670b2a08`
+> Last updated: 2026-09-14 · commit `5ac94bb27`
 
 How Darkbloom decides which model builds exist, which bytes are trusted, which
 providers may serve them, and what public name a consumer uses for them. The
@@ -65,7 +65,7 @@ alias mutations, and the consumer, marketplace and provider-install views.
 `catalogController` (`coordinator/api/catalog_controller.go`) creates one
 `Controller` per API server and binds the existing store, read cache, fleet
 views, publishing credential and `SyncModelCatalog` callback. Route middleware
-stays in `coordinator/api/server.go`; exclusive self-route policy stays in
+stays in `coordinator/api/routes.go`; exclusive self-route policy stays in
 `coordinator/api/self_route.go`.
 
 The store and admin credential are read through getters so configuration applied
@@ -113,7 +113,7 @@ and compares `Content-Length` to the manifest. Only after all of that does
 Every admin mutation (register, promote, status, capabilities,
 runtime-parameters, alias upsert/delete) and coordinator boot
 (`coordinator/cmd/coordinator/release_policy.go` (`configureReleasePolicy`)) ends by calling
-`coordinator/api/server.go` (`SyncModelCatalog`). It re-reads the active rows
+`coordinator/api/catalog_controller.go` (`SyncModelCatalog`). It re-reads the active rows
 and installs two in-memory structures in the registry:
 
 - the **catalog**: `registry.CatalogEntry{ID, WeightHash, SizeGB, MinRAMGB,
@@ -281,7 +281,7 @@ the budget.
 | Public catalog endpoints | `coordinator/api/catalog/install_list.go` (`ListInstallCatalog`); `coordinator/api/catalog/install_get.go` (`GetInstallModel`, `GetInstallManifest`) |
 | Consumer and marketplace projections | `coordinator/api/catalog/consumer_list.go`; `coordinator/api/catalog/consumer_get.go`; `coordinator/api/catalog/owned_models.go`; `coordinator/api/catalog/marketplace_feed.go` |
 | Cached responses and fill generations | `coordinator/api/catalog/consumer_cache.go` (`Entries`); `coordinator/api/catalog/invalidate.go` (`Invalidate`); `coordinator/api/readcache/generation.go` |
-| Catalog → registry handoff | `coordinator/api/server.go` (`SyncModelCatalog`, `syncModelAliases`) |
+| Catalog → registry handoff | `coordinator/api/catalog_controller.go` (`SyncModelCatalog`, `syncModelAliases`) |
 | Provider notification and version gate | `coordinator/api/desired_models.go` (`fanOutDesiredModels`, `providerSupportsDesiredModels`) |
 | In-memory catalog, alias resolution, `desired_models` computation, models_update merge | `coordinator/registry/model_catalog.go` (`SetModelCatalog`, `modelAllowedByCatalogLocked`); `coordinator/registry/model_aliases.go` (`SetModelAliases`, `ResolveModel`, `ResolveModelConstrainedWithTraits`, `PublicNameForBuild`); `coordinator/registry/model_commands.go` (`DesiredModelsForProvider`, `SendDesiredModels`); `coordinator/registry/provider_models.go` (`mergeProviderModels`) |
 | Capability requirements per model | `coordinator/registry/provider_capabilities.go` (`providerCanAcquireCatalogModelLocked`, `ProviderCapabilityAppleM5`, `ProviderCapabilityMLXNAX`) |

@@ -1,6 +1,6 @@
 # Incoming request accounting
 
-> Last updated: 2026-09-13 · commit `b258e17596`
+> Last updated: 2026-09-14 · commit `5ac94bb27`
 
 `request_outcomes` records unsampled observations of incoming inference requests, including early rejections, independently of sampled attempt profiles. Operators use this source to distinguish final request outcomes from internal retries. The dashboard aggregation and presentation work in issue #845 remains open.
 
@@ -38,7 +38,7 @@ The request sink (`coordinator/telemetry/outcomequeue/queue.go`, `Sink`) has 4,0
 
 | Contract | Definition and code |
 |---|---|
-| Covered requests | Matched `POST /v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`, streaming and non-streaming. The root observer filters the four exact POST paths in `coordinator/api/server.go` (`Handler`). |
+| Covered requests | Matched `POST /v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`, streaming and non-streaming. The root observer filters the four exact POST paths in `coordinator/api/http_middleware.go` (`Handler`). |
 | Early exits | Drain, auth, account/key rate limits, sealed-envelope/decryption, validation, model resolution, balance, preflight, queue and dispatch exits are included. Streaming mode remains unknown before valid JSON parsing. `parseInferencePrelude` records the handler's parsed true/false mode before model lookup, including catalog rejections. Existing explicit rejection stages/reasons are copied; uncovered reason details remain `ext_unknown` with the last known pipeline stage. |
 | Exclusions | OPTIONS, other methods, unmatched paths, and connections that never enter these HTTP routes. A recovered panic records `handler_panic` and the actual final HTTP status after recovery writes. A panic after headers preserves the committed status and response format. Raw recovery JSON written into an already committed SSE stream is not counted as a valid streaming terminal. An unrecovered abort records `handler_aborted`; no replacement status is invented. |
 | Request identity | `coord_request_id`, a coordinator-minted UUID. Repeated client `X-Request-ID` values do not merge requests. Empty identities are rejected by both stores. Count HTTP requests, never `n` or attempt rows. |

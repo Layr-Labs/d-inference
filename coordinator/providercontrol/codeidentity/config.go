@@ -27,7 +27,7 @@ func newConfiguredState(cfg Config) *deviceState {
 		reservationLocks:       make(map[string]*reservationLock),
 		reuseWindow:            cfg.ReuseWindow,
 		backgroundPushCooldown: cfg.BackgroundPushCooldown, // <= 3 pushes/hour/device (APNs background budget)
-		alertPushCooldown:      cfg.AlertPushCooldown,      // alert is not background-throttled (Fix 3)
+		alertPushCooldown:      cfg.AlertPushCooldown,      // alert is not background-throttled
 		budgetClearCooldown:    cfg.BudgetClearCooldown,    // a token rotation can reset the budget at most ~3x/hour/device
 		retrySpacing:           cfg.RetrySpacing,           // poll/backoff cadence, separate from the budget
 		retryJitter:            cfg.RetryJitter,            // de-sync fleet retries -> retryDelay in [15s, 30s)

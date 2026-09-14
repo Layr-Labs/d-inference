@@ -8,16 +8,15 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 )
 
-// maybeRearmCodeAttest re-arms an APNs code-identity challenge when a provider's
-// HEARTBEAT carries a device token the coordinator has not yet acted on (W5 Fix
-// 2, 2a): a headless/late-token Mac that only obtained its APNs token AFTER
+// Rearm re-arms an APNs code-identity challenge when a provider's
+// HEARTBEAT carries a device token the coordinator has not yet acted on: a headless/late-token Mac that only obtained its APNs token AFTER
 // registration, or a token that ROTATED mid-connection. The original token
 // arrives only in RegisterMessage, so without a heartbeat re-arm such providers
 // would never be challenged again short of a full reconnect.
 //
 // SECURITY — the heartbeat token NEVER grants attestation. It only updates the
 // push target so the coordinator can SEND a challenge; CodeAttested is still set
-// exclusively by handleCodeAttestationResponse after the full E_K(nonce)
+// exclusively by HandleResponse after the full E_K(nonce)
 // round-trip is verified against the SE key bound at REGISTRATION. Two cases:
 //   - First token on a previously token-less provider: record the token and arm
 //     the normal loop. A genuine, same-version recent attestation may still be
@@ -37,7 +36,7 @@ import (
 //     application evidence, the connection's ORDINARY attestation challenge loop
 //     is kicked immediately (RequestImmediateChallenge) so the evidence half
 //     regenerates well inside the 120s request-queue window instead of waiting
-//     out the 5-minute periodic ticker (Codex 05:33Z #2).
+//     out the 5-minute periodic ticker.
 //
 // A token-less heartbeat is ignored (it never clears an existing token), and an
 // unchanged token is a no-op, so the steady state adds no churn or pushes.

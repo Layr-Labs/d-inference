@@ -29,12 +29,12 @@ func (t *deviceState) rotateLoopAndClearPushBudget(
 // token, but Apple's push budget is per-token, so the freshly registered token has
 // its own untouched budget. Without this, the rearm loop sets CodeAttested=false
 // yet cannot challenge the new token until the old token's (up to 20-minute)
-// background cooldown expires — derouting the provider for no reason (Codex #9).
+// background cooldown expires — derouting the provider for no reason.
 //
 // Anti-DoS: the reset is itself throttled to at most once per budgetClearCooldown
 // per device, so a provider that floods token changes in heartbeats cannot reset
 // the budget every time and spam APNs beyond the per-device budget. The cooldown
-// is DURABLE (Codex 06:36Z P1): with a budget store wired, the clear is
+// is DURABLE: with a budget store wired, the clear is
 // compare-and-set on the sentinel's persisted last-clear instant, so a
 // coordinator restart (empty lastBudgetClear map) or a blue-green peer cannot
 // grant one extra floor clear per deploy. Returns whether the budget was
@@ -97,7 +97,7 @@ func (t *deviceState) clearPushBudgetReservationHeld(
 	t.lastBudgetClear[seKey] = now
 	delete(t.novelTokenBlockedUntil, seKey)
 	// An honored rotation lifts the novel-token admission floor: the freshly
-	// registered token must be challengeable immediately (Codex #9). The reset
+	// registered token must be challengeable immediately. The reset
 	// itself is budgetClearCooldown-throttled — durably when a store is wired —
 	// so floor lifting cannot be flooded into unbounded novel-token admissions.
 	delete(t.novelPushFloor, seKey)

@@ -41,12 +41,18 @@ func (s *Server) SeedCodeAttestCache(ctx context.Context) {
 }
 
 func (s *Server) codeAttestLoop(ctx context.Context, id string, p *registry.Provider) {
+	if s.codeIdentity == nil {
+		return
+	}
 	s.codeIdentity.Loop(ctx, id, p)
 }
 func (s *Server) tryCrossVersionReuse(ctx context.Context, id string, p *registry.Provider) bool {
 	return s.codeIdentity.TryResumeApproved(ctx, id, p)
 }
 func (s *Server) maybeRearmCodeAttest(ctx context.Context, id string, p *registry.Provider, hb *protocol.HeartbeatMessage) {
+	if s.codeIdentity == nil {
+		return
+	}
 	s.codeIdentity.Rearm(ctx, id, p, hb)
 }
 func (s *Server) handleCodeAttestationResponse(id string, p *registry.Provider, message *protocol.CodeAttestationResponseMessage) {

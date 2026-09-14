@@ -8,9 +8,9 @@ import (
 )
 
 // persistCodeAttestation best-effort writes a successful code-identity round-trip
-// to the store so it survives a coordinator restart/deploy (W5 Fix 2). It mirrors
+// to the store so it survives a coordinator restart/deploy. It mirrors
 // the in-memory recordAttested and is called from the same event
-// (handleCodeAttestationResponse). Behind the store seam (no-op until
+// (HandleResponse). Behind the store seam (no-op until
 // Seed wires a store): prod runs the Postgres store, so this makes
 // reuse durable across blue-green deploys (avoiding a fleet-wide re-push storm).
 // Runs off the read loop (saferun.Go) so the DB write never stalls WebSocket
@@ -45,7 +45,7 @@ func (s *Manager) persistCodeAttestation(seKey, version, token, nodeKey, binaryH
 // invalidatePersistedCodeAttestation deletes a device's PERSISTED reuse row off
 // the read loop. Called alongside the in-memory invalidateReuse when a provider's
 // APNs token CHANGES, so a coordinator restart before the forced re-challenge
-// completes cannot reseed and reuse the pre-rotation proof (Codex #6). No-op when
+// completes cannot reseed and reuse the pre-rotation proof. No-op when
 // no store is wired. The persisted row is only a re-push optimization — never a
 // grant of CodeAttested — so deleting it can never weaken fail-closed identity.
 func (s *Manager) invalidatePersistedCodeAttestation(seKey string) {

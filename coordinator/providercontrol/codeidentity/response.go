@@ -7,9 +7,9 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 )
 
-// handleCodeAttestationResponse verifies a provider's code_attestation_response in
+// HandleResponse verifies a provider's code_attestation_response in
 // the WebSocket read-loop delivery path and marks the connection CodeAttested on
-// success (Fix 1). This is the SINGLE fail-closed code-identity chokepoint moved
+// success. This is the SINGLE fail-closed code-identity chokepoint moved
 // off the blocking push goroutine: it attests whatever live connection the reply
 // lands on, so a late reply or a reply after a mid-flight reconnect still attests
 // (within the pushed nonce's validity window), while every security check is

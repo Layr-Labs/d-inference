@@ -31,7 +31,7 @@ func (t *deviceState) allowPush(seKey string, alert bool) bool {
 }
 
 // retryDelay is the loop's wait between wake-ups: a base spacing plus jitter.
-// Decoupled from the push budget so attestation is noticed promptly (Fix 3).
+// Decoupled from the push budget so attestation is noticed promptly.
 func (t *deviceState) retryDelay() time.Duration {
 	return t.retrySpacing + t.jitter(t.retryJitter)
 }
@@ -98,7 +98,7 @@ func (t *deviceState) reservePush(
 	// Per-SE-key admission floor: a token this device never budgeted may only
 	// push once the floor from the LAST push (to any token) has elapsed. The
 	// first-ever token has no floor and admits immediately; a reconnect churn
-	// of fabricated fresh tokens is paced like a single token (Codex P1).
+	// of fabricated fresh tokens is paced like a single token.
 	if floor, ok := t.novelPushFloor[seKey]; ok && novelToken {
 		if floor.After(now) {
 			t.mu.Unlock()

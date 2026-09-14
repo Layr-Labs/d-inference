@@ -15,12 +15,12 @@ import (
 // have been EARNED by the same binary this process now runs, or by an APPROVED
 // active predecessor of the current release (the exact approved-transition
 // derivation) — a proof earned by a since-deactivated or unknown release falls
-// through to a real APNs challenge under the durable floor (Codex 05:55Z P1).
+// through to a real APNs challenge under the durable floor.
 // Decrypting that challenge is the sole possession proof for the new key; the
 // persisted proof never grants code trust by itself. This is what lets a
 // routine upgrade/restart re-attest over the live WebSocket instead of falling
 // to a fresh APNs push behind the durable per-device floor while queued
-// requests expire (Codex 05:33Z #1).
+// requests expire.
 func (s *Manager) TryResumeApproved(
 	ctx context.Context,
 	providerID string,

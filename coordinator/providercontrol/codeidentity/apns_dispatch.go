@@ -10,7 +10,7 @@ import (
 )
 
 // sendCodeIdentityChallenge pushes one APNs code-identity challenge (v0.6.0) and
-// returns WITHOUT waiting for the reply (Fix 1). It generates a fresh nonce,
+// returns WITHOUT waiting for the reply. It generates a fresh nonce,
 // records it per-device (keyed by the registration-bound SE key) so the read-loop
 // delivery path can match the provider's code_attestation_response — even one that
 // arrives on a later (reconnected) WebSocket — then pushes E_K(nonce) to the
@@ -20,7 +20,7 @@ import (
 // Fail-closed: a failed push clears the outstanding challenge so a stale reply for
 // it can never attest. Returns true iff the push was accepted by APNs (so the loop
 // can tell a delivered-but-unanswered push apart from a send failure). See
-// docs/apns-code-attestation-design.md.
+// docs/design/apns-code-attestation.md.
 func (s *Manager) sendCodeIdentityChallenge(
 	ctx context.Context,
 	_ string,
@@ -104,7 +104,7 @@ func (s *Manager) sendCodeIdentityChallengeForReservation(
 		return false
 	}
 	s.deps.Metric("push_sent")
-	// No blocking wait: the reply is verified in handleCodeAttestationResponse on
+	// No blocking wait: the reply is verified in HandleResponse on
 	// whichever live connection it lands.
 	return true
 }

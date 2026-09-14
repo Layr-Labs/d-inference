@@ -9,7 +9,7 @@ import (
 // deviceState keeps APNs code-identity pushes within Apple's background-
 // push budget, reuses a recent attestation across reconnects, and tracks the
 // per-device outstanding challenge so the WebSocket read-loop delivery path can
-// verify a reply that lands on ANY connection (W5b Fix 1, reconnect-safe).
+// verify a reply that lands on ANY connection.
 //
 // Apple throttles silent/background notifications to roughly 2-3 per device per
 // hour and drops the rest. Background pushes therefore use a long budget; alert
@@ -32,7 +32,7 @@ import (
 //     delivery mode. Background stays <= 3 pushes/hour/device; alert can be much
 //     shorter because it is not background-throttled.
 //   - retrySpacing (+jitter): the loop's poll/backoff cadence. SEPARATE from the
-//     push budget (W5b Fix 3) so a missed push is noticed and re-pushed promptly
+//     push budget so a missed push is noticed and re-pushed promptly
 //     (within budget) instead of being pinned to the 20-minute background budget,
 //     and jitter de-synchronises fleet-wide reconnects (e.g. post-deploy).
 type deviceState struct {
@@ -50,7 +50,7 @@ type deviceState struct {
 	// novelPushFloor is the per-SE-key admission floor for NOVEL tokens: every
 	// admitted push raises it, so a device's first token pushes immediately but
 	// a reconnect churn of fabricated fresh tokens is paced at the same
-	// per-device budget as one token (Codex P1). Cleared only by an honored
+	// per-device budget as one token. Cleared only by an honored
 	// (budgetClearCooldown-throttled) genuine rotation. Mirrors the durable
 	// TokenHash=="" sentinel row so the floor survives restarts.
 	novelPushFloor map[string]time.Time
@@ -82,8 +82,7 @@ type deviceState struct {
 	retryJitter  time.Duration
 
 	// challengeValidity bounds how long a pushed nonce is accepted by the read-loop
-	// delivery path. Kept consistent with the APNs apns-expiration window (W5b
-	// Fix 5): a reply is accepted for as long as the push could still have been
+	// delivery path. Kept consistent with the APNs apns-expiration window: a reply is accepted for as long as the push could still have been
 	// delivered.
 	challengeValidity time.Duration
 	resumeTimeout     time.Duration
@@ -92,8 +91,8 @@ type deviceState struct {
 	now         func() time.Time
 	jitter      func(max time.Duration) time.Duration
 
-	// store persists the reuse cache across restarts/deploys (W5 Fix 2). nil
-	// until wired by Server.Seed at startup (and nil in unit tests
+	// store persists the reuse cache across restarts/deploys. nil
+	// until wired by Manager.Seed at startup (and nil in unit tests
 	// that construct a bare throttle), so every persistence path is nil-safe — the
 	// in-memory reuse cache works identically with or without a store.
 	store Store
@@ -113,9 +112,9 @@ type proofRecord struct {
 	binaryHash   string // SE-attested binary identity the proof was earned under ("" = legacy row; never authorizes a transition resume)
 }
 
-// codeAttestChallenge is a pushed-but-not-yet-verified code-identity challenge.
+// pushChallenge is a pushed-but-not-yet-verified code-identity challenge.
 // Keyed by SE key (not connection) so a reply that arrives on a reconnected
-// WebSocket still matches the nonce the coordinator pushed (W5b Fix 1).
+// WebSocket still matches the nonce the coordinator pushed.
 type pushChallenge struct {
 	nonce   string
 	token   string

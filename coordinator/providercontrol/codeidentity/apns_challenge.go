@@ -2,7 +2,7 @@ package codeidentity
 
 // recordChallenge stores the nonce just pushed to a device so the read-loop
 // delivery path can match the provider's reply — even one that lands on a
-// different (re)connection from the same device (Fix 1). Overwrites any prior
+// different (re)connection from the same device. Overwrites any prior
 // outstanding challenge for the device (only the latest push is honored).
 func (t *deviceState) recordChallenge(seKey, nonce string) {
 	if seKey == "" {
@@ -15,7 +15,7 @@ func (t *deviceState) recordChallenge(seKey, nonce string) {
 	// so a second challenge can be pushed while the first is still deliverable. If we
 	// kept only the newest nonce, a delayed delivery of the first alert would make the
 	// device reply with a nonce we had already discarded, we'd reject a valid proof,
-	// and repeated delayed deliveries could strand attestation (Codex #8). Prune
+	// and repeated delayed deliveries could strand attestation. Prune
 	// expired entries on the way in so the slice stays bounded by validity/cooldown.
 	old := t.outstanding[seKey]
 	kept := make([]pushChallenge, 0, len(old)+1)
@@ -113,7 +113,7 @@ func (t *deviceState) outstandingChallenge(seKey string) (pushChallenge, bool) {
 
 // matchChallenge reports whether nonce equals ANY still-unexpired challenge pushed
 // to this device. Accepting a reply to any in-flight challenge (not only the latest)
-// is what prevents a delayed alert delivery from being rejected (Codex #8).
+// is what prevents a delayed alert delivery from being rejected.
 func (t *deviceState) matchChallenge(seKey, nonce string) bool {
 	if seKey == "" || nonce == "" {
 		return false

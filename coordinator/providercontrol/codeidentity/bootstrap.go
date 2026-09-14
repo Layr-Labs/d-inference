@@ -7,7 +7,7 @@ import (
 )
 
 // Seed wires the store into the code-identity reuse cache and
-// seeds it from persisted records at startup (W5 Fix 2). This is what makes the
+// seeds it from persisted records at startup. This is what makes the
 // reuse cache survive a coordinator restart / blue-green deploy, so a fresh
 // instance does not re-push the entire fleet (against Apple's ~3/hour/device push
 // budget). Safe to call once during server setup, AFTER the store is set and the
@@ -45,7 +45,7 @@ func (s *Manager) Seed(ctx context.Context, st Store) {
 					// per-SE budget means exactly this). Codex P1. Its
 					// LastClearAt seeds the rotation-clear cooldown, so a
 					// restart cannot re-grant a floor clear the previous
-					// instance already spent (Codex 06:36Z P1) — even when the
+					// instance already spent — even when the
 					// floor itself has already elapsed.
 					if budget.LastClearAt.After(th.lastBudgetClear[budget.SEPubKey]) {
 						th.lastBudgetClear[budget.SEPubKey] = budget.LastClearAt

@@ -71,10 +71,10 @@ func (t *deviceState) reuseAttestationBasis(seKey, version, token, nodeKey strin
 // same SE identity and exact current non-empty token, must itself carry a
 // process-key binding, and must record WHICH binary earned it (a legacy
 // unbound or identity-less row never authorizes a transition). The CALLER
-// (tryCrossVersionReuse) then decides whether that recorded identity — same
+// (TryResumeApproved) then decides whether that recorded identity — same
 // binary, or an APPROVED active predecessor of the current release — may
 // transition; a proof earned by a deactivated/unknown release falls through to
-// a real APNs challenge (Codex 05:55Z P1).
+// a real APNs challenge.
 // SECURITY: this only authorizes SENDING a live encrypted resume challenge to
 // the CURRENT registration process key; possession of that new key is proven
 // solely by decrypting E_K(nonce), and the SE signature over the recovered
@@ -124,11 +124,11 @@ func (t *deviceState) recordAttestedForProcess(
 // invalidateReuse drops any cached reuse record for a device so the NEXT
 // code-identity attempt cannot be short-circuited by reuseAttestation and must
 // run a real challenge round-trip. Used when a provider's APNs device token
-// CHANGES mid-connection (W5 Fix 2): a changed token forces a re-challenge with
+// CHANGES mid-connection: a changed token forces a re-challenge with
 // no bypass. This drops only the IN-MEMORY record; the caller also deletes the
 // PERSISTED row (Server.invalidatePersistedCodeAttestation) so a coordinator
 // restart before the fresh challenge completes cannot reseed and reuse the
-// pre-rotation proof (Codex #6).
+// pre-rotation proof.
 func (t *deviceState) invalidateReuse(seKey string) {
 	if seKey == "" {
 		return
@@ -139,7 +139,7 @@ func (t *deviceState) invalidateReuse(seKey string) {
 }
 
 // seed loads persisted attestation records into the in-memory reuse cache at
-// startup (W5 Fix 2). It applies the SAME freshness window used on read, so only
+// startup. It applies the SAME freshness window used on read, so only
 // rows that could still be reused are kept (an expired row would be ignored by
 // reuseAttestation anyway). It never overwrites a fresher in-memory record (a
 // device that reconnected and re-attested before seeding finished). Returns the

@@ -22,11 +22,11 @@ import (
 // (HandleResponse), which flips CodeAttested. So:
 //   - Reuse: if this device attested recently with the same binary version,
 //     APNs token, and exact registration process key, it reuses with NO APNs push.
-//   - Reconnect-safe (Fix 1): the pushed nonce is tracked per-device, so a reply
+//   - Reconnect-safe: the pushed nonce is tracked per-device, so a reply
 //     that lands on a DIFFERENT (re)connection still attests; this loop just polls
 //     GetCodeAttested and exits. A push budget held over from the prior connection
 //     means this loop simply waits for that reply instead of burning a new push.
-//   - Bounded, jittered retry (Fix 3): if no reply lands within the budget cooldown
+//   - Bounded, jittered retry: if no reply lands within the budget cooldown
 //     the loop re-pushes, capped at maxAttempts. The poll/backoff cadence
 //     (retryDelay) is decoupled from the push budget; alert delivery uses a far
 //     shorter budget than background.
@@ -133,7 +133,7 @@ func (s *Manager) codeAttestLoopForGeneration(
 	}
 
 	// Alert delivery is not background-throttled, so it may retry on a far shorter
-	// push budget than background (Fix 3). Detected via the attestor seam.
+	// push budget than background. Detected via the attestor seam.
 	alertMode := false
 	if m, ok := s.attestor.(interface{ Mode() apns.Mode }); ok {
 		alertMode = m.Mode() == apns.ModeAlert

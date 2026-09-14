@@ -12,7 +12,7 @@ type CoverageStore interface {
 }
 
 // Store is the minimal slice of store.Store the code-identity reuse
-// cache needs to survive coordinator restarts/blue-green deploys (W5 Fix 2).
+// cache needs to survive coordinator restarts/blue-green deploys.
 // store.Store satisfies it; tests can inject a fake. SECURITY: persistence is a
 // performance optimization (avoid re-pushing within the reuse window), not an
 // unconditional grant. reuseAttestation re-applies version, freshness, current

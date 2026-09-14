@@ -27,6 +27,8 @@ type ReleasePolicy interface {
 type ResumeSender func(string, protocol.CodeAttestationResumeChallenge) error
 
 // Dependencies separate startup proof persistence from live coverage discovery.
+// Registry and Logger are bound at construction; the API has no setters for them.
+// ReleasePolicy and CoverageStore are evaluated at their existing read boundaries.
 // ResumeSender defaults to the real provider WebSocket; other callbacks bind
 // the caller's current metrics, measured identity and immutable release policy.
 type Dependencies struct {

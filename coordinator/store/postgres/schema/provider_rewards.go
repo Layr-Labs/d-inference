@@ -11,7 +11,7 @@ func providerRewards() []string {
 		// hot table (~900k rows / ~443MB) for ~15m on deploy, blocking the
 		// coordinator from binding :8080 and causing a production outage, while
 		// doing no useful work (prod duplicate count is 0). Offline dedupe, if it
-		// is ever needed, lives in coordinator/store/migrations/dedupe_provider_earnings.sql.
+		// is ever needed, lives in coordinator/store/postgres/migrations/dedupe_provider_earnings.sql.
 
 		// Base-rewards: unify sessions↔earnings identity (design §8).
 		`DO $$ BEGIN ALTER TABLE provider_sessions ADD COLUMN IF NOT EXISTS provider_key TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,

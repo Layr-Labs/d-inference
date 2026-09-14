@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-13 · commit `1853fc127`
+> Last updated: 2026-09-13 · commit `c3ff0df7e`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -120,9 +120,9 @@ failure in any step marked *fatal* exits the process before it listens.
 9. **Listen.** `http.Server` on `:EIGENINFERENCE_PORT` with a 5 s header
    timeout, 10 s read timeout, no write timeout (SSE), 120 s idle timeout and
    a 64 KiB header cap; an optional private pprof listener.
-10. **Shutdown.** On SIGINT/SIGTERM: mark draining (`/readyz` turns 503 and
-    providers are told to reconnect elsewhere), cancel the loops, stop the
-    sidecar, wait up to `EIGENINFERENCE_DRAIN_GRACE` for in-flight requests,
+10. **Shutdown.** On SIGINT/SIGTERM: mark draining (`/readyz` turns 503),
+    cancel eviction, stop the sidecar, then wait up to
+    `EIGENINFERENCE_DRAIN_GRACE` for in-flight requests,
     then `Shutdown` with a 15 s backstop; deferred closes stop Datadog and the
     Postgres pool.
 
@@ -137,6 +137,12 @@ flowchart TD
   G --> H[ListenAndServe]
   H --> I[SIGTERM: drain → cancel → wait → Shutdown]
 ```
+
+The routes and public API shutdown methods share one `readiness.Controller`
+(`coordinator/api/drain.go`, `readinessController`). It increments before checking
+the drain flag or trust-safety latch, backs out rejected requests, and decrements
+admitted requests when their handlers return. `/health` remains a liveness probe
+while `/readyz` reports drain and trust-safety readiness.
 
 ## Invariants
 
@@ -158,7 +164,8 @@ flowchart TD
    `providerSupportsPrivateTextLocked`).
 5. **Shutdown drains before it disconnects.** New requests get 429 with
    `Retry-After` while in-flight streams finish, bounded by the drain grace
-   (`coordinator/api/drain.go`).
+   (`coordinator/api/readiness/gate.go`, `Controller.Gate`;
+   `coordinator/api/readiness/shutdown.go`, `Controller.WaitForInflightZero`).
 
 ## Failure modes
 

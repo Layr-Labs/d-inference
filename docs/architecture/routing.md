@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-14 · commit `3b4c75127`
+> Last updated: 2026-09-14 · commit `2d7c7c221`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -44,19 +44,20 @@ content beyond that. See [`data-flow.md`](data-flow.md) and
 
 ### Entry points
 
-`ReserveProviderWithPlan` (`coordinator/registry/dispatch_plan.go`) is the
+`ReserveProviderWithPlan` (`coordinator/registry/plan_reservation.go`) is the
 dispatch-time entry point. It scans the fleet
 (`scanCandidatesLocked`), gates each provider
 (`snapshotProviderIntoLockedEx`), prices it (`buildCandidateInto`), selects a
 winner (`selectRoutingCandidate`) and
 returns a bounded **dispatch plan** (`coordinator/registry/dispatch_plan.go`)
-holding the winner plus up to `dispatchPlanMaxAlternates = 8` retained
-alternates. The API layer (`coordinator/api/dispatch.go`) consumes the plan:
+recording the winner as attempted and retaining up to
+`dispatchplan.MaxAlternates = 8` alternate entries
+(`coordinator/registry/dispatchplan/build.go`). The API layer (`coordinator/api/dispatch.go`) consumes the plan:
 it dispatches to the winner, may probe alternates for capacity quotes
 (`capacityProbeWindow = 250 * time.Millisecond`,
 `dispatchPlanProbeFanout = 8`, `coordinator/api/dispatch_plan_wiring.go`) and
 falls through the plan on retry or hedge. `ReserveNextFromPlan`
-(`coordinator/registry/dispatch_plan.go`) refreshes remaining time after both
+(`coordinator/registry/plan_reservation.go`) refreshes remaining time after both
 registry and provider locks are acquired, before evaluating and debiting an
 alternate. An expired request does not reserve a candidate; an enabled
 prediction ceiling shrinks with remaining time, while a disabled ceiling stays
@@ -336,6 +337,36 @@ still contain the retired `cache_tiebreak` string. The
 runner-up (the lowest-cost candidate other than the winner) is recorded for telemetry
 and as the first alternate in the dispatch plan.
 
+### Retained alternates and capacity quotes
+
+`DispatchPlan` wraps a private `dispatchplan.Plan[*Provider]`
+(`coordinator/registry/dispatch_plan.go`). Its owner keeps the bounded entries,
+cursor, attempted IDs and single-refresh flag under one mutex. Construction
+uses the original scan pool: `newDispatchPlan`
+(`coordinator/registry/dispatch_plan_build.go`) offers costs to `Builder.Offer`,
+which projects values only for candidates retained by the bounded insertion.
+`ReserveNextFromPlan` checks the retained provider pointer against the current
+registry and performs the live deadline, gate and debit transaction. A reconnect
+cannot reuse an old plan identity.
+
+`Probes` (`coordinator/registry/dispatchplan/quotes.go`) owns the outstanding
+quote map. Its leaf mutex claims each reply, write failure, disconnect or expiry
+once. `Probes.Probe` snapshots unquoted entries, skips connections that have not
+proven quote capability, and uses the existing data writer through the binding in
+`coordinator/registry/capacity_quotes.go`. A collector confirms or demotes its
+plan entry before publishing the buffered `QuoteOutcome`; confirmed entries rank
+first, then unprobed entries, then demoted entries, with scan cost ordering within
+each tier. Consumed entries stay consumed. Wrong-provider and expired replies
+leave the pending entry for its bound reply or collector expiry. Disconnect
+settlement stays after registry/provider unlock and queue/cache cleanup in
+`coordinator/registry/provider_lifecycle.go` (`disconnectProvider`).
+
+`RefreshDispatchPlan` (`coordinator/registry/plan_refresh.go`) claims the one
+refresh and copies attempted IDs through `Plan.ClaimRefresh`, releases that
+leaf lock, then invokes the original live scan. The fresh plan is marked used
+before it is returned. No owner callback acquires registry or provider locks
+while either owner mutex is held.
+
 ### Hedged (speculative) dispatch
 
 A request that has not produced first content by its **speculative point**
@@ -550,7 +581,7 @@ onto the formerly cheapest provider), the admit re-check
 (`providerCanAdmitLockedEx`), the half-open capacity-probe claim
 (`tryClaimCapacityProbe`, check-and-claim under `gate.mu`) and the pending
 debit (`addPendingLocked`). `ReserveNextFromPlan`
-(`coordinator/registry/dispatch_plan.go`) commits each plan entry the same
+(`coordinator/registry/plan_reservation.go`) commits each plan entry the same
 way. `commitLock` (`coordinator/registry/gate_commit_mode.go`) selects the
 mode: `reserveCommitShared` as described, or `reserveCommitGlobal`, which
 takes `r.mu.Lock()` for the commit — the previous fleet-wide serialization,
@@ -759,7 +790,7 @@ must not run in parallel with other scheduler tests in the same process.
 
 | Concern | File / symbol |
 |---|---|
-| Dispatch-time selection | `coordinator/registry/dispatch_plan.go` — `ReserveProviderWithPlan`; `coordinator/registry/routing_scan.go` — `scanCandidatesLocked`; `coordinator/registry/routing_snapshot_gates.go` — `snapshotProviderIntoLockedEx` |
+| Dispatch-time selection | `coordinator/registry/plan_reservation.go` — `ReserveProviderWithPlan`; `coordinator/registry/routing_scan.go` — `scanCandidatesLocked`; `coordinator/registry/routing_snapshot_gates.go` — `snapshotProviderIntoLockedEx` |
 | Cost construction and latency math | `coordinator/registry/candidate_cost.go` — `buildCandidateInto`; `coordinator/registry/routingcost/penalties.go` — `SlotStatePenalty`, `HealthPenaltyMs`; `coordinator/registry/routingcost/throughput.go` — `ResolveEffectiveTPS`; `coordinator/registry/routingcost/latency.go` — `RawTTFTMs`; `coordinator/registry/routingcost/config.go` — `Policy.LongPromptPenalty` |
 | Provider-state projection for selection and capacity preflight | `coordinator/registry/routing_snapshot.go` — `fillRoutingSnapshotPLocked`; callers retain their own eligibility gates and hold both registry and provider locks |
 | Candidate preferences and ranking | `coordinator/registry/candidate_selection.go` — `preferRoutingCandidates`, `selectRoutingCandidate` |
@@ -767,11 +798,13 @@ must not run in parallel with other scheduler tests in the same process.
 | Closed vocabularies | `coordinator/registry/gate_reason.go` — `GateReason`, `SelectionPath`, `SlotState` |
 | Trust floor and challenge failures | `coordinator/registry/registry.go` — `MinTrustLevel`; `coordinator/registry/provider.go` — `MaxFailedChallenges`; `coordinator/registry/attestation_policy.go` — `RecordChallengeFailure` |
 | Dispatch-load cooldown and disconnect | `coordinator/registry/faultstate/dispatch_load_cooldown.go` — `dispatchLoadCooldownTTL`; `coordinator/registry/provider_lifecycle.go` — `Disconnect` |
-| Two-phase reservation (scan, commit, plan consumption) | `coordinator/registry/reservation.go` — `scanProviderReservation`; `coordinator/registry/reservation_commit.go` — `commitProviderReservation`, `providerCanAdmitLockedEx`; `coordinator/registry/dispatch_plan.go` — `ReserveNextFromPlan` |
+| Two-phase reservation (scan, commit, plan consumption) | `coordinator/registry/reservation.go` — `scanProviderReservation`; `coordinator/registry/reservation_commit.go` — `commitProviderReservation`, `providerCanAdmitLockedEx`; `coordinator/registry/plan_reservation.go` — `ReserveNextFromPlan` |
 | Fault-state transaction owner | `coordinator/registry/faultstate/manager.go` — `Manager`, `Session`; `coordinator/registry/faultstate/state.go` — private `gateState`, `publishLocked`; `coordinator/registry/faultstate/migration.go` — `Bind`, `migrateGateLocked`, `mergeLocked`; `coordinator/registry/faultstate/reference.go` — `lockGate`, `gateRef`; `coordinator/registry/faultstate/sweep.go` — `Sweep`, `gateIdleGrace` |
 | Fault-state registry bindings and reads | `coordinator/registry/fault_binding.go` — `bindStableFaultKey`, `SetVersion`, `SetGateWaitObserver`; `coordinator/registry/fault_reads.go` — `gateOf`, `gateView`; `coordinator/registry/faultstate/view_binding.go` — `View.Moved`; `coordinator/registry/gate_commit_mode.go` — `reserveCommitMode`, `commitLock` |
 | Capacity outcome transactions | `coordinator/registry/fault_capacity.go` — `RecordCapacityAcceptObserved`; `coordinator/registry/faultstate/capacity_accept.go` — `PrepareCapacityAccept`, `CapacityAccept.Apply`; `coordinator/registry/faultstate/capacity_reject.go` — `RecordCapacityReject`; `coordinator/registry/faultstate/capacity_probe.go` — `CapacityProbe.Claim` |
-| Bounded dispatch plan | `coordinator/registry/dispatch_plan.go` — `dispatchPlanMaxAlternates`, `PlanEntry` |
+| Bounded plan and quote ranking | `coordinator/registry/dispatchplan/plan.go` — `Plan`; `coordinator/registry/dispatchplan/build.go` — `Builder.Offer`, `MaxAlternates`; `coordinator/registry/dispatchplan/ranking.go` — `ConfirmEntry`, `DemoteEntry`, `BestConfirmedBackup`; private wrapper in `coordinator/registry/dispatch_plan.go` — `DispatchPlan`, `PlanEntry` |
+| Plan refresh and capacity probes | `coordinator/registry/plan_refresh.go` — `RefreshDispatchPlan`; `coordinator/registry/dispatchplan/refresh.go` — `ClaimRefresh`; `coordinator/registry/dispatchplan/probe.go` — `Probes.Probe`; `coordinator/registry/dispatchplan/quote_reply.go` — `Probes.Handle`; current transport bindings in `coordinator/registry/capacity_quotes.go` |
+| Registry hedge capacity observations | `coordinator/registry/hedge_capacity_snapshot.go` — `HedgeGovernorSnapshot` |
 | Fleet servability predictor | `coordinator/registry/servability.go` — `PredictServable`; fleet iteration and verdict remain in the registry |
 | Capacity and cold-load arithmetic | `coordinator/registry/admission/request_budget.go` — `Policy.ColdTokenBudgetEstimate`, `Policy.StructuralBudget`; `coordinator/registry/admission/model_memory.go` — `Policy.ActivationFloor`, `Policy.ColdWeightsGiB` |
 | Provider-version interpretation | `coordinator/registry/providerversion/` — `Policy.Compare`, `Policy.SlotBudgetLayout`; shared instance in `coordinator/registry/provider_version.go` |

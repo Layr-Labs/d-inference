@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-13 · commit `de4e28825`
+> Last updated: 2026-09-13 · commit `2b6a10301`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -187,7 +187,7 @@ have different populations and must not be summed together.
 
 ### In-process registry (not Datadog)
 
-`Metrics` (`coordinator/api/metrics.go`) keeps `http_requests_total`,
+`metrics.Registry` (`coordinator/telemetry/metrics/registry.go`) keeps `http_requests_total`,
 `telemetry_events_total{source, severity, kind}`, `routing.throughput_anomaly`
 and computed gauges in memory; `GET /v1/admin/metrics` returns them as JSON or
 Prometheus text (`?format=prom`). Reset on restart.

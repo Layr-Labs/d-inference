@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-13 · commit `4e2bf3500`
+> Last updated: 2026-09-13 · commit `2b6a10301`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -67,6 +67,8 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/stateexport` | Snapshot, zip and age encryption for the admin state export. |
 | `coordinator/datadog` | Metrics (HTTP API and DogStatsD), Logs API forwarding, trace handler. |
 | `coordinator/telemetry` | Structured telemetry emitter. |
+| `coordinator/telemetry/metrics` | In-process counters, histograms, computed gauges and JSON/Prometheus snapshots (`Registry`, `Histogram`, `Snapshot`). |
+| `coordinator/telemetry/routequeue` | Bounded FIFO routing-telemetry persistence, grouping, failure handling and shutdown (`Sink`, `SubmitRoute`, `SubmitOutcome`, `CloseAndWait`). |
 | `coordinator/saferun` | Panic-safe goroutine launcher used by every background loop. |
 | `coordinator/deploy` | `start.sh` container entrypoint (persistent disk, MicroMDM). |
 

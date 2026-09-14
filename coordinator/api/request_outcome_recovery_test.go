@@ -95,7 +95,7 @@ func TestRequestOutcomePopulationUsesMatchedEscapedRoute(t *testing.T) {
 	for _, path := range []string{"/v1%2Fmessages", "/v1/messages/missing"} {
 		w := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(w, httptest.NewRequest("POST", path, nil))
-		if w.Code != 404 || srv.requestOutcomes.received.Load() != 0 {
+		if w.Code != 404 || srv.requestOutcomes.ReceivedTotal() != 0 {
 			t.Fatalf("unmatched path counted: %s status=%d", path, w.Code)
 		}
 	}

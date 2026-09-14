@@ -202,7 +202,7 @@ func TestProfileSinkBatchesIntoStoreAndAdminEndpointsServeThem(t *testing.T) {
 		ap.ProviderID = "prov"
 		ap.Mark(registry.StampWriteSubmitted)
 		ap.SetOutcome("error", "provider_error", "", "error", "")
-		if !srv.profiler.sink.submit(rp, ap) {
+		if !srv.profiler.sink.Submit(rp, ap) {
 			t.Fatal("submit dropped with an empty buffer")
 		}
 	}

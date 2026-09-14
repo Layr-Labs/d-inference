@@ -47,7 +47,7 @@ func terminalOutcomeServer(t *testing.T) (*Server, *store.MemoryStore) {
 	st := store.NewMemory(store.Config{})
 	srv := &Server{store: st, logger: quietLogger()}
 	srv.requestOutcomes = newRequestOutcomeSink(srv, 16)
-	t.Cleanup(srv.requestOutcomes.close)
+	t.Cleanup(srv.requestOutcomes.Close)
 	return srv, st
 }
 

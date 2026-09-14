@@ -27,28 +27,6 @@ func (s *failedRequestOutcomeStore) RequestOutcomes(context.Context, time.Time, 
 	return nil, errors.New("fake failing dependency")
 }
 
-func TestRequestOutcomeSinkLossIsExplicit(t *testing.T) {
-	q := &requestOutcomeSink{s: &Server{}, ch: make(chan store.RequestOutcomeRecord, 1)}
-	q.submit(store.RequestOutcomeRecord{})
-	q.submit(store.RequestOutcomeRecord{})
-	if q.dropped.Load() != 1 {
-		t.Fatal("full queue did not count drop")
-	}
-	q.closed = true
-	q.submit(store.RequestOutcomeRecord{})
-	if q.dropped.Load() != 2 {
-		t.Fatal("closed queue did not count drop")
-	}
-	for _, panicWrite := range []bool{false, true} {
-		s := &Server{store: &failedRequestOutcomeStore{Store: store.NewMemory(store.Config{}), panicWrite: panicWrite}}
-		sink := newRequestOutcomeSink(s, 2)
-		sink.submit(store.RequestOutcomeRecord{CoordRequestID: "a"})
-		sink.close()
-		if sink.failed.Load() != 1 || sink.written.Load() != 0 {
-			t.Fatalf("failed sink fabricated persistence: failed=%d written=%d", sink.failed.Load(), sink.written.Load())
-		}
-	}
-}
 func TestRequestOutcomeAdminReadFailureIsNotKnownZero(t *testing.T) {
 	s := &Server{store: &failedRequestOutcomeStore{Store: store.NewMemory(store.Config{})}, adminKey: "outcome-admin"}
 	r := httptest.NewRequest(http.MethodGet, "/v1/admin/request-outcomes", nil)

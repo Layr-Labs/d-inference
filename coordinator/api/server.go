@@ -907,7 +907,7 @@ func (s *Server) Close() {
 	}
 	s.trustAuthorityMu.Unlock()
 	if s.requestOutcomes != nil {
-		s.requestOutcomes.close()
+		s.requestOutcomes.Close()
 	}
 	if s.profiler != nil {
 		s.profiler.close()

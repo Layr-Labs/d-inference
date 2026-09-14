@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-12 · commit `52ba357f6`
+> Last updated: 2026-09-13 · commit `38375bc12`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -232,7 +232,7 @@ email. These, plus free self-route, are the only free-credit paths — there is
 no sign-up credit or trial in code. Admin authorization for these routes is
 `isAdminAuthorized` / `requireAdminKey`: an `EIGENINFERENCE_ADMIN_KEY` bearer
 token or a Privy user whose email is in `EIGENINFERENCE_ADMIN_EMAILS`
-(`coordinator/api/release_handlers.go`, `coordinator/api/invite_handlers.go`).
+(`coordinator/api/admin_auth.go`, `coordinator/api/invite_handlers.go`).
 
 ### Per-key spend caps
 
@@ -493,7 +493,7 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 | Roles and fee overrides | `coordinator/api/billing_handlers.go` (`handleAdminSetUserRole`, `handleAdminSetUserPlatformFee`); `coordinator/store/postgres.go` (`SetUserRole`, `SetUserPlatformFeePercent`) | `PUT /v1/admin/users/role`, `PUT /v1/admin/users/platform-fee` |
 | Per-key spend caps | `coordinator/api/apikey_handlers.go` (`validateKeyLimitInputs`, `checkKeySpendCap`, `apiKeyToResponse`); `coordinator/store/apikey.go` (`KeySpendWindowStart`, `NormalizeResetWindow`); `coordinator/store/postgres.go` (`KeySpendSince`) | `POST /v1/keys`, `PATCH /v1/keys/{id}`, `GET /v1/keys` |
 | Base rewards | `coordinator/payments/baserewards/` (`floor.go`, `alloc.go`, `epoch.go`, `engine.go`); `coordinator/store/postgres_base_rewards.go` (`SettleProviderFloorDraw`, `SumProviderEarningsByKey`); `coordinator/api/base_rewards_handlers.go` (`handleAdminBaseRewards`); `coordinator/api/server_config.go` (`BaseRewards`) | `GET /v1/admin/base-rewards` |
-| Admin auth | `coordinator/api/release_handlers.go` (`isAdminAuthorized`); `coordinator/api/invite_handlers.go` (`requireAdminKey`); `coordinator/api/model_registry_handlers.go` (`requirePublishingAPIKey`) | — |
+| Admin auth | `coordinator/api/admin_auth.go` (`isAdminAuthorized`); `coordinator/api/invite_handlers.go` (`requireAdminKey`); `coordinator/api/model_registry_handlers.go` (`requirePublishingAPIKey`) | — |
 | Rate limits | `coordinator/ratelimit/config.go` (`Financial`, `Service`) | — |
 
 ## Related

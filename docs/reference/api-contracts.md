@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-13 · commit `f913aeaef9`
+> Last updated: 2026-09-13 · commit `38375bc12`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -24,9 +24,9 @@ responses and error codes are unchanged.
 | `key` | Bearer is an API key ([shape](#api-key-shapes); legacy `eigeninference-…` keys are also accepted), a Privy JWT, or the admin key. Missing or invalid → 401 `authentication_error` | `requireAuth` |
 | `privy` | Bearer must be a Privy JWT. API keys → 403 `forbidden` | `requirePrivyAuth` |
 | `user` | `key` or `privy` plus an in-handler check that a resolved account user is in the context (Privy JWT, or an API key linked to a Privy account). Admin key and unlinked legacy keys → 401 `auth_error` | `requirePrivyUser` (`coordinator/api/billing_handlers.go`) |
-| `admin` | In-handler check: Bearer equals the admin key (`EIGENINFERENCE_ADMIN_KEY`), or the context holds a Privy user whose email is in the admin list. Otherwise 403 `forbidden`. When the route is registered *without* `requireAuth` no user is ever placed in the context, so only the admin key can pass; those rows say `admin-key` | `isAdminAuthorized` (`coordinator/api/release_handlers.go`), `requireAdminKey` (`coordinator/api/invite_handlers.go`), `isAdmin` (`coordinator/api/billing_handlers.go`) |
+| `admin` | In-handler check: Bearer equals the admin key (`EIGENINFERENCE_ADMIN_KEY`), or the context holds a Privy user whose email is in the admin list. Otherwise 403 `forbidden`. When the route is registered *without* `requireAuth` no user is ever placed in the context, so only the admin key can pass; those rows say `admin-key` | `isAdminAuthorized` (`coordinator/api/admin_auth.go`), `requireAdminKey` (`coordinator/api/invite_handlers.go`), `isAdmin` (`coordinator/api/billing_handlers.go`) |
 | `publishing` | `X-Darkbloom-Publishing-Key` header or Bearer equal to the bootstrap `MODEL_REGISTRY_PUBLISHING_KEY`, the admin key, or a publishing key stored in the DB | `requirePublishingAPIKey` (`coordinator/api/model_registry_handlers.go`) |
-| `release` | Bearer equal to `EIGENINFERENCE_RELEASE_KEY`; otherwise 401 `unauthorized` | `handleRegisterRelease` (`coordinator/api/release_handlers.go`) |
+| `release` | Bearer equal to `EIGENINFERENCE_RELEASE_KEY`; otherwise 401 `unauthorized` | `Controller.Register` (`coordinator/api/releases/registration.go`) |
 | `stripe-sig` | Stripe webhook signature | `handleStripeWebhook` (`coordinator/api/billing_handlers.go`), `handleStripeConnectWebhook` (`coordinator/api/stripe_payouts_webhooks.go`) |
 | `mdm-secret` | Webhook secret via `X-Webhook-Token` header or `?token=`; body capped at [`maxMDMWebhookBodyBytes`](#limits-and-validation) | `HandleMDMWebhook` |
 | `ws` | Provider WebSocket handshake (enrollment credentials + attestation); see [`protocol-messages.md`](protocol-messages.md) | `handleProviderWS` (`coordinator/api/provider.go`) |
@@ -65,7 +65,7 @@ All four share the chain `drainGate → requireAuth → rateLimitConsumer → se
 | GET | `/v1/models/catalog` | `handleModelCatalog` (`coordinator/api/billing_handlers.go`) | `—` | — | Registry catalog; `?type=` selects the catalog kind, unknown → 400 |
 | GET | `/v1/models/catalog/manifest/` | `handleModelCatalogManifest` (`coordinator/api/model_registry_handlers.go`) | `—` | — | Per-model manifest by path suffix |
 | GET | `/v1/models/catalog/` | `handleModelCatalogItem` (`coordinator/api/model_registry_handlers.go`) | `—` | — | Single catalog item by path suffix |
-| GET | `/v1/runtime/manifest` | `handleRuntimeManifest` (`coordinator/api/server.go`), reading `releasepolicy.Manager.RuntimeManifest` (`coordinator/providercontrol/releasepolicy/manager.go`) | `—` | — | Hashes the coordinator accepts from provider runtimes: `{"configured":false}` or `{"configured":true,"python_hashes":{…},"runtime_hashes":{…},"template_hashes":{"<name>":[<sorted hashes accepted across active releases>]}}`; cached 1 min ([runtime manifest](../architecture/security/attestation.md#runtime-manifest)) |
+| GET | `/v1/runtime/manifest` | `Controller.RuntimeManifest` (`coordinator/api/releases/runtime_manifest.go`), reading `releasepolicy.Manager.RuntimeManifest` (`coordinator/providercontrol/releasepolicy/manager.go`) | `—` | — | Hashes the coordinator accepts from provider runtimes: `{"configured":false}` or `{"configured":true,"python_hashes":{…},"runtime_hashes":{…},"template_hashes":{"<name>":[<sorted hashes accepted across active releases>]}}`; cached 1 min ([runtime manifest](../architecture/security/attestation.md#runtime-manifest)) |
 | GET | `/v1/cache/status` | `handleExactCacheStatus` (`coordinator/api/exact_cache_status.go`) | `—` | — | Exact-cache status, cached for [`exactCacheStatusCacheTTL`](#timeouts-and-constants) |
 
 ### Authentication and API keys (10)
@@ -183,8 +183,8 @@ envelope when their required data is unavailable.
 |---|---|---|---|---|
 | GET | `/install.sh` | inline closure in `routes()` rendering `installScript` with the coordinator URL from `resolveBaseURL` | `—` | Provider install script, `text/plain` |
 | GET | `/api/version` | `handleVersion` (`coordinator/api/consumer.go`) | `—` | `VersionResponse` `{version, platform, backend, download_url, binary_hash, bundle_hash, metallib_hash, changelog}`; uses the newest active release in the store, else `LatestProviderVersion` |
-| POST | `/v1/releases` | `handleRegisterRelease` (`coordinator/api/release_handlers.go`) | `release` | Register a release |
-| GET | `/v1/releases/latest` | `handleLatestRelease` (`coordinator/api/release_handlers.go`) | `—` | Latest release record |
+| POST | `/v1/releases` | `Controller.Register` (`coordinator/api/releases/registration.go`) | `release` | Register a release |
+| GET | `/v1/releases/latest` | `Controller.Latest` (`coordinator/api/releases/latest.go`) | `—` | Latest release record |
 | GET | `/readyz` | `handleReadyz` (`coordinator/api/drain.go`) | `—` | 200 normally; 503 while draining |
 
 Release publishing: [`../operations/provider-release.md`](../operations/provider-release.md).
@@ -216,10 +216,10 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | DELETE | `/v1/admin/models/aliases/{aliasID}` | `handleModelAliasDelete` (`coordinator/api/model_alias_handlers.go`) | `publishing` | |
 | GET / POST | `/v1/admin/models/openrouter-aliases` | `handleOpenRouterAliasList`, `handleOpenRouterAliasUpsert` (`coordinator/api/openrouter_alias_handlers.go`) | `publishing` | Two registrations |
 | DELETE | `/v1/admin/models/openrouter-aliases/{aliasID}` | `handleOpenRouterAliasDelete` (`coordinator/api/openrouter_alias_handlers.go`) | `publishing` | |
-| GET / DELETE | `/v1/admin/releases` | `handleAdminListReleases`, `handleAdminDeleteRelease` (`coordinator/api/release_handlers.go`) | `admin-key` | Two registrations |
+| GET / DELETE | `/v1/admin/releases` | `Controller.List` (`coordinator/api/releases/inventory.go`), `Controller.Delete` (`coordinator/api/releases/deactivation.go`) | `admin-key` | Two registrations |
 | GET | `/v1/admin/state-export` | `handleAdminStateExport` (`coordinator/api/admin_state_export.go`) | `admin-key` | 404 unless `EIGENINFERENCE_STATE_EXPORT_ENABLED=true`; 412 `precondition_failed` without an encryption recipient. See [`../operations/state-export.md`](../operations/state-export.md) |
-| POST | `/v1/admin/auth/init` | `handleAdminAuthInit` (`coordinator/api/release_handlers.go`) | `—` | Body `{"email"}`; starts a Privy email OTP for an admin email. 503 `not_configured` when Privy is not configured; 500 `otp_error` when sending fails |
-| POST | `/v1/admin/auth/verify` | `handleAdminAuthVerify` (`coordinator/api/release_handlers.go`) | `—` | Verifies the OTP and returns a session token for the admin console |
+| POST | `/v1/admin/auth/init` | `handleAdminAuthInit` (`coordinator/api/admin_auth.go`) | `—` | Body `{"email"}`; starts a Privy email OTP for an admin email. 503 `not_configured` when Privy is not configured; 500 `otp_error` when sending fails |
+| POST | `/v1/admin/auth/verify` | `handleAdminAuthVerify` (`coordinator/api/admin_auth.go`) | `—` | Verifies the OTP and returns a session token for the admin console |
 | POST | `/v1/admin/invite-codes` | `handleAdminCreateInviteCode` (`coordinator/api/invite_handlers.go`) | `admin` (`fin`) | 409 `conflict` on code collision |
 | GET / DELETE | `/v1/admin/invite-codes` | `handleAdminListInviteCodes`, `handleAdminDeactivateInviteCode` (`coordinator/api/invite_handlers.go`) | `admin` | Two registrations |
 | POST | `/v1/admin/credit` | `handleAdminCredit` (`coordinator/api/admin_balance_adjustment.go`) | `admin` | Manual ledger credit |
@@ -556,7 +556,7 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Keys, device code, accounts | `coordinator/api/apikey_handlers.go`, `coordinator/store/apikey.go`, `coordinator/api/device_auth.go`, `coordinator/api/me_handlers.go` |
 | Billing, Stripe, referral, invites | `coordinator/api/billing_handlers.go`, `coordinator/api/stripe_payouts.go`, `coordinator/api/stripe_withdraw.go`, `coordinator/api/stripe_payouts_webhooks.go`, `coordinator/api/invite_handlers.go`, `coordinator/api/base_rewards_handlers.go` |
 | Stats | `coordinator/api/stats.go`, `coordinator/api/cache_refresher.go`, `coordinator/api/network_totals.go`, `coordinator/api/leaderboard.go`, `coordinator/api/network_series.go` |
-| Release, enrollment, provider WS, log reports | `coordinator/api/release_handlers.go`, `coordinator/api/enroll.go`, `coordinator/api/provider.go`, `coordinator/api/log_report_handlers.go` |
+| Release, enrollment, provider WS, log reports | `coordinator/api/releases/`, `coordinator/api/enroll.go`, `coordinator/api/provider.go`, `coordinator/api/log_report_handlers.go` |
 | Drain, admin telemetry, profiler, state export, telemetry stub | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/admin_state_export.go`, `coordinator/api/telemetry_handlers.go` |
 | Rate-limit bucket consumption | `coordinator/ratelimit/ratelimit.go` (`allowBucket`, `debitBucket`): fixed and per-key rate paths share token consumption and retry calculation while keeping their own admission and clamp rules |
 | Shared types and helpers | `coordinator/api/types/types.go`, `coordinator/api/httputil.go`, `coordinator/ratelimit/ratelimit.go`, `coordinator/modelpolicy/first_content_deadline.go` |

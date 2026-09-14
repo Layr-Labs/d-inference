@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-11 · commit `e3993c611`
+> Last updated: 2026-09-13 · commit `38375bc12`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -280,7 +280,7 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED` | in-memory reservation holds for `RoleService` accounts | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
 | `EIGENINFERENCE_BASE_REWARDS`, `EIGENINFERENCE_BASE_REWARDS_K`, `EIGENINFERENCE_BASE_REWARDS_POOL_MICRO`, `EIGENINFERENCE_BASE_REWARDS_MIN_UPTIME`, `EIGENINFERENCE_BASE_REWARDS_ACCOUNT_CAP` | base-rewards engine switch, reduction factor `k`, monthly pool (µUSD), eligibility uptime fraction, per-account cap fraction | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
 | `MNEMONIC`, `EIGENINFERENCE_MNEMONIC` | read by billing config but used for the coordinator's X25519 request-encryption key, not for money | [Auth: admin key, Privy, release key, sender encryption](configuration.md#auth-admin-key-privy-release-key-sender-encryption) |
-| `EIGENINFERENCE_ADMIN_KEY`, `EIGENINFERENCE_ADMIN_EMAILS` | admin authorization for admin billing routes (`isAdminAuthorized`, `coordinator/api/release_handlers.go`) | [Auth: admin key, Privy, release key, sender encryption](configuration.md#auth-admin-key-privy-release-key-sender-encryption) |
+| `EIGENINFERENCE_ADMIN_KEY`, `EIGENINFERENCE_ADMIN_EMAILS` | admin authorization for admin billing routes (`isAdminAuthorized`, `coordinator/api/admin_auth.go`) | [Auth: admin key, Privy, release key, sender encryption](configuration.md#auth-admin-key-privy-release-key-sender-encryption) |
 | `MODEL_REGISTRY_PUBLISHING_KEY` | bootstrap publishing key accepted by `POST /v1/admin/models/register` (`requirePublishingAPIKey`) | [Model registry, releases and R2/CDN](configuration.md#model-registry-releases-and-r2cdn) |
 | `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_RPS`, `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_BURST`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_RPS`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_BURST` | financial and service limiters; compiled defaults under [Constants](#constants) | [Routing, admission and TTFT](configuration.md#routing-admission-and-ttft) |
 

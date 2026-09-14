@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-14 · commit `cf3427a1e`
+> Last updated: 2026-09-14 · commit `60b20b73d`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process in v0.9.1: one in-process engine (`mlx-swift-lm`

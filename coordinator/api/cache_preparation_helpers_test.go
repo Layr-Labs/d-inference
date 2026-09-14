@@ -70,26 +70,3 @@ func cachePreparationPlanForTest(t testing.TB, reg *registry.Registry, capabilit
 	}
 	return result.Plan
 }
-
-func preparedCacheAttemptForTest(t testing.TB) (*registry.Registry, *registry.Provider, *registry.PendingRequest) {
-	t.Helper()
-	reg := registry.New(quietLogger())
-	configureCachePreparationTest(t, reg)
-	capability := cacheEligibilityV2Capability("model")
-	capability.ReadyBoundaryMode = protocol.PrefixCacheReadyBoundaryCheckpoint
-	provider := reg.Register("provider", nil, &protocol.RegisterMessage{
-		Type: protocol.TypeRegister, PrefixCacheProtocol: 2,
-		Models:              []protocol.ModelInfo{{ID: capability.ModelID, WeightHash: capability.ModelAggregateHash}},
-		PrefixCacheV2Models: []protocol.PrefixCacheV2Capability{capability},
-	})
-	pending := &registry.PendingRequest{RequestID: "request", Model: "model",
-		CachePlan: cachePreparationPlanForTest(t, reg, capability)}
-	if err := reg.PrepareCacheAttempt(pending, provider); err != nil {
-		t.Fatal(err)
-	}
-	if !pending.CacheRoutingParticipates() {
-		t.Fatal("valid registered provider and sidecar plan did not prepare")
-	}
-	t.Cleanup(func() { reg.ForgetCacheAttempt(pending) })
-	return reg, provider, pending
-}

@@ -1,6 +1,10 @@
 package api
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
+)
 
 func TestPromptBucket(t *testing.T) {
 	cases := []struct {
@@ -67,5 +71,5 @@ func TestEmitClientGoneNilDatadogNoPanic(t *testing.T) {
 	// must not panic and is normalized to "unknown" inside the helper.
 	s := &Server{}
 	s.emitClientGone("gpt-oss-20b", 12_000, "", phaseBeforeFirstToken)
-	s.emitClientGone("gpt-oss-20b", 500, "M3", phaseAfterCommit)
+	s.emitClientGone("gpt-oss-20b", 500, "M3", dispatch.PhaseAfterCommit)
 }

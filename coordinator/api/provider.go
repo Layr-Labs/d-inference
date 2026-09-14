@@ -37,6 +37,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
 	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
@@ -691,7 +692,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		case protocol.TypePrefixCacheLookup:
 			lookupMsg := msg.Payload.(*protocol.PrefixCacheLookupMessage)
 			if s.registry.ApplyPrefixCacheLookup(providerID, lookupMsg) {
-				s.ddIncr("routing.cache_lookup_receipt", []string{"outcome:" + lookupMsg.Outcome, "tier:" + lowCardinalityCacheTier(lookupMsg.Tier)})
+				s.ddIncr("routing.cache_lookup_receipt", []string{"outcome:" + lookupMsg.Outcome, "tier:" + dispatch.LowCardinalityCacheTier(lookupMsg.Tier)})
 				s.emitExactCacheSSDLookup("v1", lookupMsg.Outcome, lookupMsg.StageMs)
 			} else {
 				s.ddIncr("routing.cache_receipt_rejected", []string{"type:lookup"})
@@ -700,7 +701,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		case protocol.TypePrefixCacheReady:
 			readyMsg := msg.Payload.(*protocol.PrefixCacheReadyMessage)
 			if s.registry.ApplyPrefixCacheReady(providerID, readyMsg) {
-				s.ddIncr("routing.cache_ready_receipt", []string{"tier:" + lowCardinalityCacheTier(readyMsg.Tier)})
+				s.ddIncr("routing.cache_ready_receipt", []string{"tier:" + dispatch.LowCardinalityCacheTier(readyMsg.Tier)})
 				s.emitExactCacheSSDDonation("v1", readyMsg.StageMs, readyMsg.ReadyTokens)
 			} else {
 				s.ddIncr("routing.cache_receipt_rejected", []string{"type:ready"})
@@ -716,7 +717,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				s.ddIncr("routing.cache_lookup_receipt", []string{
 					"protocol:v2",
 					"outcome:" + lookupMsg.Outcome,
-					"tier:" + lowCardinalityCacheTier(lookupMsg.Tier),
+					"tier:" + dispatch.LowCardinalityCacheTier(lookupMsg.Tier),
 				})
 				if lookupMsg.Tier == "ssd" {
 					s.emitExactCacheSSDLookup("v2", lookupMsg.Outcome, lookupMsg.StageMs)
@@ -734,7 +735,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				s.emitModelCacheDonation(readyMsg, receipt)
 				s.ddIncr("routing.cache_ready_receipt", []string{
 					"protocol:v2",
-					"tier:" + lowCardinalityCacheTier(readyMsg.Tier),
+					"tier:" + dispatch.LowCardinalityCacheTier(readyMsg.Tier),
 				})
 				if readyMsg.Tier == "ssd" {
 					donatedTokens := 0
@@ -885,7 +886,7 @@ func cacheSelectionTerminalTags(pr *registry.PendingRequest, usage protocol.Usag
 	tier := "none"
 	selected := false
 	if pr != nil {
-		tier = lowCardinalityCacheTier(pr.CacheSelectionTier)
+		tier = dispatch.LowCardinalityCacheTier(pr.CacheSelectionTier)
 		selected = pr.CacheSelectionSelected
 	}
 	return []string{
@@ -2260,7 +2261,7 @@ func (s *Server) handleCompleteAt(
 	// client_gone_after_commit). Metric-emit only — billing/settlement below is
 	// unchanged.
 	if consumerGone {
-		s.emitClientGone(pr.Model, pr.EstimatedPromptTokens, providerChipFamily(provider), phaseAfterCommit)
+		s.emitClientGone(pr.Model, pr.EstimatedPromptTokens, dispatch.ProviderChipFamily(provider), dispatch.PhaseAfterCommit)
 		// A parked (after-commit client-gone) completion is still a SERVED
 		// provider dispatch, so it owes its one capacity-503 rate-window outcome
 		// (capacity_rate.go denominator). On the clean-completion path
@@ -2307,12 +2308,12 @@ func (s *Server) handleCompleteAt(
 		clearCacheUsage(&msg.Usage)
 	}
 	if cacheUsageValid {
-		tags := []string{"outcome:" + msg.Usage.CacheOutcome, "tier:" + lowCardinalityCacheTier(msg.Usage.CacheTier)}
+		tags := []string{"outcome:" + msg.Usage.CacheOutcome, "tier:" + dispatch.LowCardinalityCacheTier(msg.Usage.CacheTier)}
 		s.ddIncr("routing.cache_usage", tags)
 		s.ddCount("routing.cache_tokens", int64(msg.Usage.CachedTokens), tags)
 		s.ddCount("routing.cache_prefill_tokens_saved", int64(msg.Usage.PrefillTokensSaved), tags)
 		s.ddHistogram("routing.cache_stage_ms", msg.Usage.CacheStageMs, tags)
-		s.emitExactCacheUsage(msg.Usage.CacheOutcome, lowCardinalityCacheTier(msg.Usage.CacheTier),
+		s.emitExactCacheUsage(msg.Usage.CacheOutcome, dispatch.LowCardinalityCacheTier(msg.Usage.CacheTier),
 			msg.Usage.CachedTokens, msg.Usage.PrefillTokensSaved, msg.Usage.CacheStageMs)
 	}
 	s.emitModelCacheUsage(pr, msg.Usage, cacheUsageValid, cacheUsagePresent)
@@ -2354,7 +2355,7 @@ func (s *Server) handleCompleteAt(
 		// when the consumer already disconnected this is a partial success because
 		// the provider completed and billing settled, but the client did not receive
 		// the full response.
-		outcome := completeRouteOutcome(pr, msg.Usage, totalCost, consumerGone)
+		outcome := attempt.CompleteRouteOutcome(pr, msg.Usage, totalCost, consumerGone)
 		// Join only after both inputs are authoritative: cacheUsageValid was
 		// established from the terminal usage above, and completeRouteOutcome read
 		// the committed attempt's mutex-guarded first-content timestamp after the
@@ -2393,7 +2394,7 @@ func (s *Server) handleCompleteAt(
 		s.updateInferenceRouteOutcomeWithModel(msg.RequestID, pr.Attempt, pr.Model, outcome)
 		// Outcome only: the terminal half completes on return (deferred at the
 		// claim site), after the settlement stamps below.
-		pr.Profile.SetOutcome(outcome.FinalStatus, profileErrorReason(outcome), "", "completed", "")
+		pr.Profile.SetOutcome(outcome.FinalStatus, attempt.ProfileErrorReason(outcome), "", "completed", "")
 
 		s.ddIncr("inference.completions", []string{"model:" + pr.Model})
 		// Split the partial case out of the (intentionally unchanged) completions
@@ -2402,7 +2403,7 @@ func (s *Server) handleCompleteAt(
 		// it is NOT a provider failure — but operationally distinct, and invisible on
 		// dashboards without its own counter.
 		if consumerGone {
-			s.recordPartialSuccessCompletion(pr.Model, errorClassClientGoneAfterCommitCompleted)
+			s.recordPartialSuccessCompletion(pr.Model, attempt.ErrorClassClientGoneAfterCommitCompleted)
 		}
 		s.ddCount("inference.prompt_tokens_total", int64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
 		s.ddHistogram("inference.prompt_tokens", float64(msg.Usage.PromptTokens), []string{"model:" + pr.Model})
@@ -2422,7 +2423,7 @@ func (s *Server) handleCompleteAt(
 		// reconnected between dispatch and completion, the registry now holds
 		// a DIFFERENT *Provider for the same id, and the slot that served is
 		// this one.
-		s.emitRequestBackendLatency(pr.Model, s.providerKVBackendAttribution(provider, pr.Model),
+		s.emitRequestBackendLatency(pr.Model, s.inferenceDispatch().ProviderKVBackendAttribution(provider, pr.Model),
 			outcome.ActualTTFTMs, outcome.ActualDecodeTPS)
 	})
 	totalCost, providerPayout := result.CostMicroUSD, result.ProviderPayoutMicroUSD
@@ -2468,7 +2469,7 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 		s.logger.Warn("error from unregistered provider", "provider_id", providerID)
 		return
 	}
-	safeMsg, invalidFailureCode, invalidTerminalCause := sanitizeProviderInferenceError(msg)
+	safeMsg, invalidFailureCode, invalidTerminalCause := attempt.SanitizeProviderInferenceError(msg)
 	msg = &safeMsg
 	if invalidFailureCode {
 		s.ddIncr("inference.invalid_failure_code", nil)
@@ -2673,12 +2674,12 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 		// routing.client_gone so the after_commit phase reflects ALL post-commit
 		// disconnects, not just provider-completed ones (handleComplete). A
 		// no-terminal disconnect is counted by the settlement grace path.
-		s.emitClientGone(pr.Model, pr.EstimatedPromptTokens, providerChipFamily(provider), phaseAfterCommit)
-		outcome := pendingRouteOutcomeWithReason(pr, status, errorClass, msg.StatusCode, msg.ErrorReason, msg.Error)
+		s.emitClientGone(pr.Model, pr.EstimatedPromptTokens, dispatch.ProviderChipFamily(provider), dispatch.PhaseAfterCommit)
+		outcome := attempt.PendingRouteOutcomeWithReason(pr, status, errorClass, msg.StatusCode, msg.ErrorReason, msg.Error)
 		if !cancelTerminal {
 			outcome.AdmittedButFailed = true
 		}
-		applyAttemptUsage(outcome, msg.AttemptUsage)
+		attempt.ApplyAttemptUsage(outcome, msg.AttemptUsage)
 		s.updateInferenceRouteOutcomeForPending(pr, outcome)
 		// Consumer disconnected — no reader for the channels; settle by
 		// refunding, OFF the read loop (a store Credit can block for seconds

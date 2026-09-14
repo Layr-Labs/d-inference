@@ -4,6 +4,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -57,7 +58,7 @@ func (s *Server) emitModelCacheUsage(pr *registry.PendingRequest, usage protocol
 	if present && !valid {
 		outcome = "invalid"
 	} else if valid {
-		outcome, tier = usage.CacheOutcome, lowCardinalityCacheTier(usage.CacheTier)
+		outcome, tier = usage.CacheOutcome, dispatch.LowCardinalityCacheTier(usage.CacheTier)
 	}
 	labels := []MetricLabel{model, {Name: "outcome", Value: outcome}, {Name: "tier", Value: tier}}
 	s.cacheModelCount("usage", 1, labels...)
@@ -76,7 +77,7 @@ func (s *Server) emitModelCacheLookup(msg *protocol.PrefixCacheLookupV2Message, 
 	if msg == nil || !receipt.Accepted {
 		return
 	}
-	labels := []MetricLabel{{Name: "model", Value: s.cacheModelLabel(msg.ModelID)}, {Name: "outcome", Value: msg.Outcome}, {Name: "tier", Value: lowCardinalityCacheTier(msg.Tier)}}
+	labels := []MetricLabel{{Name: "model", Value: s.cacheModelLabel(msg.ModelID)}, {Name: "outcome", Value: msg.Outcome}, {Name: "tier", Value: dispatch.LowCardinalityCacheTier(msg.Tier)}}
 	s.cacheModelCount("lookup", 1, labels...)
 	// The denominator is the coordinator's exact plan, never a provider value.
 	if receipt.PromptTokens > 0 {
@@ -91,7 +92,7 @@ func (s *Server) emitModelCacheDonation(msg *protocol.PrefixCacheReadyV2Message,
 	}
 	s.cacheModelCount("donation", 1,
 		MetricLabel{Name: "model", Value: s.cacheModelLabel(msg.ModelID)},
-		MetricLabel{Name: "tier", Value: lowCardinalityCacheTier(msg.Tier)})
+		MetricLabel{Name: "tier", Value: dispatch.LowCardinalityCacheTier(msg.Tier)})
 }
 
 // Runs inside the existing exactly-once cache terminal claim. "result" is the
@@ -139,10 +140,10 @@ func (s *Server) emitModelCacheReceipt(model, tier, kind string, receipt registr
 		outcome = "accepted"
 	}
 	s.cacheModelCount("receipt", 1,
-		MetricLabel{Name: "model", Value: s.cacheModelLabel(model)}, MetricLabel{Name: "tier", Value: lowCardinalityCacheTier(tier)},
+		MetricLabel{Name: "model", Value: s.cacheModelLabel(model)}, MetricLabel{Name: "tier", Value: dispatch.LowCardinalityCacheTier(tier)},
 		MetricLabel{Name: "type", Value: kind}, MetricLabel{Name: "outcome", Value: outcome}, MetricLabel{Name: "reason", Value: string(receipt.Reason)})
 	if receipt.PromptMismatch != "" {
 		s.cacheModelCount("prompt_mismatch", 1, MetricLabel{Name: "model", Value: s.cacheModelLabel(model)},
-			MetricLabel{Name: "tier", Value: lowCardinalityCacheTier(tier)}, MetricLabel{Name: "detail", Value: string(receipt.PromptMismatch)})
+			MetricLabel{Name: "tier", Value: dispatch.LowCardinalityCacheTier(tier)}, MetricLabel{Name: "detail", Value: string(receipt.PromptMismatch)})
 	}
 }

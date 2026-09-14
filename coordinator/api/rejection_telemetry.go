@@ -1,64 +1,13 @@
 package api
 
 import (
-	"encoding/json"
-	"net/http"
 	"strings"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
-
-// rejectionInfo carries everything known about a rejected inbound inference
-// request at a 4xx/5xx exit point. Callers populate what they have; zero values
-// are fine. It is the single contract the consumer/handler code uses to feed the
-// rejection ledger (see docs/design/routing-telemetry-and-calibration.md §4.9).
-type rejectionInfo struct {
-	r          *http.Request
-	stage      string // auth, validation, model_resolution, balance, rate_limit, preflight_capacity, routing_ttft
-	reasonCode string // e.g. model_not_found, machine_busy, insufficient_funds
-	httpStatus int
-
-	keyID           string
-	consumerKeyHash string
-
-	requestedModel string // raw, as the client sent it
-	resolvedModel  string // after alias resolution, when known
-
-	stream                bool
-	n                     int
-	estimatedPromptTokens int
-	requestedMaxTokens    int
-	requiresVision        bool
-	hasImage              bool
-	hasAudio              bool
-	hasTools              bool
-	toolCount             int
-	responseFormat        string
-	selfRouteOnly         bool
-	preferOwner           bool
-	params                json.RawMessage // non-content knobs (temperature, top_p, …)
-	requestBodyBytes      int
-	retryAfterMs          int
-
-	// 402 / 429 extras.
-	shortfallMicroUSD int64
-	limitKind         string
-	overBy            int64
-
-	// Counterfactual. When servabilityComputed is true the caller already ran the
-	// capacity check (e.g. the pre-flight) and the candidate*/bestTTFTMs fields
-	// below are authoritative — recordRejection will NOT recompute. Otherwise, when
-	// a resolvedModel is set, recordRejection computes servability itself.
-	servabilityComputed     bool
-	skipServability         bool // shedding under saturation must not start another fleet scan
-	candidateCount          int
-	capacityRejections      int
-	modelTooLargeRejections int
-	visionRejections        int
-	bestTTFTMs              float64
-}
 
 // recordRejection persists a rejected-request record asynchronously, computing
 // the counterfactual servability ("could the fleet have served it?") off the
@@ -71,39 +20,39 @@ func (s *Server) recordRejection(info rejectionInfo) {
 	}
 
 	rec := &store.RejectionRecord{
-		Stage:                 info.stage,
-		ReasonCode:            info.reasonCode,
-		HTTPStatus:            info.httpStatus,
-		KeyID:                 info.keyID,
-		ConsumerKeyHash:       info.consumerKeyHash,
-		RequestedModel:        info.requestedModel,
-		ResolvedModel:         info.resolvedModel,
-		Stream:                info.stream,
-		N:                     info.n,
-		EstimatedPromptTokens: info.estimatedPromptTokens,
-		RequestedMaxTokens:    info.requestedMaxTokens,
-		RequiresVision:        info.requiresVision,
-		HasImage:              info.hasImage,
-		HasAudio:              info.hasAudio,
-		HasTools:              info.hasTools,
-		ToolCount:             info.toolCount,
-		ResponseFormat:        info.responseFormat,
-		SelfRouteOnly:         info.selfRouteOnly,
-		PreferOwner:           info.preferOwner,
-		Params:                info.params,
-		RequestBodyBytes:      info.requestBodyBytes,
-		RetryAfterMs:          info.retryAfterMs,
-		ShortfallMicroUSD:     info.shortfallMicroUSD,
-		LimitKind:             info.limitKind,
-		OverBy:                info.overBy,
+		Stage:                 info.Stage,
+		ReasonCode:            info.ReasonCode,
+		HTTPStatus:            info.HttpStatus,
+		KeyID:                 info.KeyID,
+		ConsumerKeyHash:       info.ConsumerKeyHash,
+		RequestedModel:        info.RequestedModel,
+		ResolvedModel:         info.ResolvedModel,
+		Stream:                info.Stream,
+		N:                     info.N,
+		EstimatedPromptTokens: info.EstimatedPromptTokens,
+		RequestedMaxTokens:    info.RequestedMaxTokens,
+		RequiresVision:        info.RequiresVision,
+		HasImage:              info.HasImage,
+		HasAudio:              info.HasAudio,
+		HasTools:              info.HasTools,
+		ToolCount:             info.ToolCount,
+		ResponseFormat:        info.ResponseFormat,
+		SelfRouteOnly:         info.SelfRouteOnly,
+		PreferOwner:           info.PreferOwner,
+		Params:                info.Params,
+		RequestBodyBytes:      info.RequestBodyBytes,
+		RetryAfterMs:          info.RetryAfterMs,
+		ShortfallMicroUSD:     info.ShortfallMicroUSD,
+		LimitKind:             info.LimitKind,
+		OverBy:                info.OverBy,
 		CreatedAt:             time.Now(),
 	}
-	if info.r != nil {
-		rec.RequestID = coordRequestIDFromContext(info.r.Context())
-		rec.Endpoint = info.r.URL.Path
-		rec.ClientClass = clientClassFromUserAgent(info.r.UserAgent())
-		if rec.RequestBodyBytes == 0 && info.r.ContentLength > 0 {
-			rec.RequestBodyBytes = int(info.r.ContentLength)
+	if info.Request != nil {
+		rec.RequestID = coordRequestIDFromContext(info.Request.Context())
+		rec.Endpoint = info.Request.URL.Path
+		rec.ClientClass = clientClassFromUserAgent(info.Request.UserAgent())
+		if rec.RequestBodyBytes == 0 && info.Request.ContentLength > 0 {
+			rec.RequestBodyBytes = int(info.Request.ContentLength)
 		}
 	}
 
@@ -116,33 +65,33 @@ func (s *Server) recordRejection(info rejectionInfo) {
 	// nothing to attribute it to. The zero attribution normalizes to
 	// kv_backend:unknown / kv_backend_fallback:unknown — booking it to a real
 	// backend, or to "did not degrade", would invent a data point.
-	if info.stage != "dispatch" {
-		model := info.resolvedModel
+	if info.Stage != "dispatch" {
+		model := info.ResolvedModel
 		if model == "" {
-			model = info.requestedModel
+			model = info.RequestedModel
 		}
-		s.recordRequestOutcome(model, newUnknownKVBackendAttribution(), orUptimeClassForRejection(info.httpStatus))
+		s.recordRequestOutcome(model, dispatch.NewUnknownKVBackendAttribution(), orUptimeClassForRejection(info.HttpStatus))
 		// OR-view mirror of the pre-dispatch arm (the dispatch-stage exhausted
 		// rejection is counted by run()'s tail). Resolved model only: the raw
 		// requested name is client-controlled and must not mint tag values.
-		s.recordRequestOutcomeORView(info.resolvedModel, orUptimeClassForRejection(info.httpStatus))
+		s.recordRequestOutcomeORView(info.ResolvedModel, orUptimeClassForRejection(info.HttpStatus))
 	}
 
 	// Seed the counterfactual from whatever the caller already computed.
-	rec.CandidateCount = info.candidateCount
-	rec.CapacityRejections = info.capacityRejections
-	rec.ModelTooLargeRejections = info.modelTooLargeRejections
-	rec.VisionRejections = info.visionRejections
-	rec.BestTTFTMs = info.bestTTFTMs
+	rec.CandidateCount = info.CandidateCount
+	rec.CapacityRejections = info.CapacityRejections
+	rec.ModelTooLargeRejections = info.ModelTooLargeRejections
+	rec.VisionRejections = info.VisionRejections
+	rec.BestTTFTMs = info.BestTTFTMs
 
 	// Decide whether we still need to compute servability inside the goroutine.
-	computeServability := !info.skipServability && !info.servabilityComputed && info.resolvedModel != "" && s.registry != nil
+	computeServability := !info.SkipServability && !info.ServabilityComputed && info.ResolvedModel != "" && s.registry != nil
 	reg := s.registry
-	resolvedModel := info.resolvedModel
-	estPrompt := info.estimatedPromptTokens
-	reqMax := info.requestedMaxTokens
-	requiresVision := info.requiresVision
-	hasTools := info.hasTools
+	resolvedModel := info.ResolvedModel
+	estPrompt := info.EstimatedPromptTokens
+	reqMax := info.RequestedMaxTokens
+	requiresVision := info.RequiresVision
+	hasTools := info.HasTools
 
 	s.submitTelemetry("recordRejection", func() {
 		if computeServability {
@@ -159,7 +108,7 @@ func (s *Server) recordRejection(info rejectionInfo) {
 		}
 		// A request could have produced output iff at least one provider could
 		// serve it right now. This is the headline "was the 'no' necessary?" flag.
-		if info.servabilityComputed || computeServability {
+		if info.ServabilityComputed || computeServability {
 			couldHaveServed := rec.CandidateCount > 0
 			rec.CouldHaveServed = &couldHaveServed
 		}

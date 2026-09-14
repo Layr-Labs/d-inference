@@ -1,5 +1,19 @@
 package api
 
+import (
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/api/httpresponse"
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
+	"github.com/eigeninference/d-inference/coordinator/inference/toolpolicy"
+	"github.com/eigeninference/d-inference/coordinator/promptcontract"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+)
+
 // Shared request preprocessing for the consumer inference handlers.
 //
 // handleChatCompletions and handleGenericInference (completions + Anthropic
@@ -17,48 +31,7 @@ package api
 // dirty; the bytes are serialized once, lazily, when the first consumer of
 // the provider-bound body asks for them.
 
-import (
-	"bytes"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"github.com/eigeninference/d-inference/coordinator/api/httpresponse"
-	"io"
-	"net/http"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/inference/toolpolicy"
-	"github.com/eigeninference/d-inference/coordinator/promptcontract"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-)
-
-// maxInferenceBodyBytes caps the plaintext inference request body. Without it
-// the common (non-sealed) path does io.ReadAll(r.Body) with no limit, so any
-// API-key holder could POST a multi-GB body and OOM the coordinator (the trusted
-// TEE component).
-//
-// Sized to the PROVIDER WebSocket frame budget, not just OOM-safety: the
-// coordinator encrypts rawBody and sends the base64 NaCl-box as ONE WS frame
-// (consumer.go), and the Swift provider rejects frames over 32 MiB by tearing
-// down the whole session + cancelling every unrelated in-flight request
-// (CoordinatorClient.maxInboundMessageBytes). base64 adds ×4/3, so a 16 MiB body
-// → ~21.3 MiB frame, comfortably under 32 MiB — the budget that provider cap was
-// sized against, and identical to the sealed path (sender_encryption.go). A
-// larger cap would let a request pass here only to disconnect the provider
-// instead of returning a clean 413.
-//
-// The console already trims image history to the newest image turn
-// (chat-messages.ts), but a single 4×10 MB turn (~53 MiB) still exceeds this and
-// is undeliverable to any provider — aligning the per-turn UI image budget with
-// the frame cap is tracked separately.
-//
-// This caps the body we READ. The body we actually SEAL can differ: the handlers
-// re-marshal the parsed request after mutating it (max_tokens injection, tool
-// normalization). The cap is therefore re-checked on that final body before
-// encryption (see handleChatCompletions / handleGenericInference) using
-// marshalForwardBody, which also disables HTML escaping so the re-marshal can't
-// silently inflate a benign body past this limit.
-const maxInferenceBodyBytes = 16 << 20 // 16 MiB
+const maxInferenceBodyBytes = dispatch.MaxInferenceBodyBytes // 16 MiB
 
 // marshalForwardBody serializes a parsed request body for forwarding to a
 // provider WITHOUT HTML escaping. encoding/json's default Marshal escapes the
@@ -217,25 +190,8 @@ func parseJSONBody(w http.ResponseWriter, rawBody []byte) (map[string]any, bool)
 	return parsed, true
 }
 
-// decodeInferenceJSONObject preserves every JSON number as json.Number. The
-// handlers re-marshal requests when they resolve aliases, lower endpoints,
-// normalize stop sequences, or strip legacy-only fields. Decoding through
-// float64 first would silently change precision-sensitive tool-schema values
-// before the provider compiles them (for example, 2^53+1 becomes 2^53).
 func decodeInferenceJSONObject(rawBody []byte) (map[string]any, error) {
-	decoder := json.NewDecoder(bytes.NewReader(rawBody))
-	decoder.UseNumber()
-	var parsed map[string]any
-	if err := decoder.Decode(&parsed); err != nil {
-		return nil, err
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return nil, errors.New("multiple JSON values")
-		}
-		return nil, err
-	}
-	return parsed, nil
+	return dispatch.DecodeJSONObject(rawBody)
 }
 
 // resolveRequestedBuild maps the consumer-requested model — which may be a
@@ -256,8 +212,8 @@ func (s *Server) resolveRequestedBuild(
 	traits registry.RequestTraits,
 ) (buildModel, publicModel string, rewrote, ok bool) {
 	buildID, isAlias, resolved := s.registry.ResolveModelConstrainedWithTraits(
-		requested, allowedProviderSerials, policy.ownerAccountID,
-		policy.enabled, policy.prefer, traits)
+		requested, allowedProviderSerials, policy.OwnerAccountID,
+		policy.Enabled, policy.Prefer, traits)
 	if !resolved {
 		return "", requested, false, false
 	}
@@ -346,7 +302,7 @@ func (s *Server) visionToolsFailFast(
 		// sets are matched by ownerAccountID (not expressible as serials here),
 		// so the fail-fast is skipped for them — those paths enforce their own
 		// availability and we must never wrongly block them.
-		if !policy.enabled && !policy.prefer && !s.registry.HasVisionProviderForModel(model, allowedProviderSerials...) {
+		if !policy.Enabled && !policy.Prefer && !s.registry.HasVisionProviderForModel(model, allowedProviderSerials...) {
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 				fmt.Sprintf("model %q has no vision-capable provider available for image/video input right now", publicModel),
 				withParam("model")))
@@ -365,7 +321,7 @@ func (s *Server) visionToolsFailFast(
 	// can't satisfy an allowlist-pinned request. The inference-time constraint
 	// gate below is owner-aware so self-route checks only owned machines while
 	// prefer-owner checks both the owned pool and its public fallback.
-	if hasTools && !policy.enabled && !policy.prefer &&
+	if hasTools && !policy.Enabled && !policy.Prefer &&
 		!s.registry.HasToolCapableProviderForTraits(
 			model,
 			registry.RequestTraits{HasTools: true, ToolChoiceMode: toolChoiceMode},
@@ -379,9 +335,9 @@ func (s *Server) visionToolsFailFast(
 	if requiresToolConstraint &&
 		!s.registry.HasToolConstraintProviderForRouting(
 			model,
-			policy.ownerAccountID,
-			policy.enabled,
-			policy.prefer,
+			policy.OwnerAccountID,
+			policy.Enabled,
+			policy.Prefer,
 			allowedProviderSerials...,
 		) {
 		// Distinguish "nobody can enforce this right now" (retryable, 503) from
@@ -396,7 +352,7 @@ func (s *Server) visionToolsFailFast(
 		// retry loop that can never succeed. Owner-scoped routing (self-route /
 		// prefer) is not expressible as a serial set here, so those paths keep
 		// the conservative 503.
-		if !policy.enabled && !policy.prefer &&
+		if !policy.Enabled && !policy.Prefer &&
 			s.registry.HasProviderForModel(model, allowedProviderSerials...) &&
 			!s.registry.HasProviderAdvertisingToolConstraint(model, allowedProviderSerials...) {
 			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",

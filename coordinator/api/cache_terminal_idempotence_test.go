@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -28,15 +29,15 @@ func TestCacheTerminalTelemetryIsIdempotentAcrossTerminalSeams(t *testing.T) {
 	// Models a synthetic WebSocket disconnect consumed through ErrorCh: the
 	// consumer's final route outcome is the only terminal seam.
 	disconnected := cacheTelemetryPending("disconnect-secret")
-	srv.updateInferenceRouteOutcomeForPending(disconnected, pendingRouteOutcome(disconnected, finalStatusError, "provider_disconnect_pre_commit", 502))
+	srv.updateInferenceRouteOutcomeForPending(disconnected, attempt.PendingRouteOutcome(disconnected, attempt.FinalStatusError, "provider_disconnect_pre_commit", 502))
 	// A racing provider error or late duplicate consumer update must not count it again.
 	srv.emitCacheSelectionTerminal(disconnected, protocol.UsageInfo{}, false, false)
-	srv.updateInferenceRouteOutcomeForPending(disconnected, pendingRouteOutcome(disconnected, finalStatusError, "provider_disconnect_pre_commit", 502))
+	srv.updateInferenceRouteOutcomeForPending(disconnected, attempt.PendingRouteOutcome(disconnected, attempt.FinalStatusError, "provider_disconnect_pre_commit", 502))
 
 	// A post-commit parked request has no final consumer outcome before its
 	// provider completion. The validated completion must therefore still count.
 	parked := cacheTelemetryPending("parked-secret")
-	srv.updateInferenceRouteOutcomeForPending(parked, committedRouteOutcome(parked))
+	srv.updateInferenceRouteOutcomeForPending(parked, attempt.CommittedRouteOutcome(parked))
 	validHit := protocol.UsageInfo{
 		PromptTokens: 10, CacheOutcome: "hit", CacheTier: "ssd",
 		CachedTokens: 4, PrefillTokensSaved: 3,

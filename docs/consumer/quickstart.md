@@ -1,12 +1,12 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-14 · commit `83c465555`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
 ## Prerequisites
 
-- An email address. Email is the only console login method (`loginMethods: ["email"]`, `console-ui/src/components/providers/PrivyRealProvider.tsx`); there is no wallet or social login. The Privy account it creates is what your API keys, balance and usage attach to.
+- An email address. Email is the only console login method (`loginMethods: ["email"]`, `console-ui/src/components/app-providers/PrivyRealProvider.tsx`); there is no wallet or social login. The Privy account it creates is what your API keys, balance and usage attach to.
 - Credit on the account. A chat completion reserves its worst-case cost before dispatch and is refused with a 402 when the balance cannot cover it; deposit first with [`billing.md`](billing.md).
 - `curl` and `jq` for the shell steps; Python with the `openai` or `anthropic` package for the SDK steps.
 

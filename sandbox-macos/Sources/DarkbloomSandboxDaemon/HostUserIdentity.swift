@@ -17,7 +17,7 @@ enum HostUserIdentityError: Error, Equatable, CustomStringConvertible {
     }
 }
 
-struct HostUserIdentity: Decodable, Equatable, Sendable {
+struct HostUserIdentity: Codable, Equatable, Sendable {
     let recordName: String
     let uid: UInt32
     let primaryGID: UInt32

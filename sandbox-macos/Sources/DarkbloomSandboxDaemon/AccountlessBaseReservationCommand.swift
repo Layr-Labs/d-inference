@@ -19,19 +19,10 @@ enum AccountlessBaseReservationCommand {
         let runtime = LumeVirtualMachineRuntime(configuration: try .init(executable: options.path("--lume"),
             storageDirectory: options.storage, commandTimeoutSeconds: 120, createTimeoutSeconds: 7_200,
             trustPolicy: .production, hostRuntimeLease: lease))
-        return try await withThrowingTaskGroup(of: AccountlessBasePhaseReport.self) { group in
-            group.addTask {
-                let created = try await AccountlessBaseCandidatePreparer(runtime: runtime).prepare(
-                    specification: specification, storage: options.storage, release: release)
-                return .init(phase: .awaitingRootInstallation, candidate: created.candidate, replayed: created.replayed)
-            }
-            group.addTask {
-                try await monitor.run()
-                throw SandboxGUISessionError.changed
-            }
-            defer { group.cancelAll() }
-            guard let result = try await group.next() else { throw SandboxGUISessionError.changed }
-            return result
-        }
+        return try await AccountlessGUISession.run(operation: {
+            let created = try await AccountlessBaseCandidatePreparer(runtime: runtime).prepare(
+                specification: specification, storage: options.storage, release: release)
+            return .init(phase: .awaitingRootInstallation, candidate: created.candidate, replayed: created.replayed)
+        }, monitor: { try await monitor.run() })
     }
 }

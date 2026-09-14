@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import SandboxCore
 import SandboxRuntime
+import SandboxRuntimeLume
 
 /// An exclusive, descriptor-bound snapshot. Failure retains the VM and any
 /// record already published; this store never repairs or starts an installer.
@@ -19,7 +20,7 @@ final class AccountlessBaseCandidateStore {
 
     func requireNoPreparedArtifacts() throws {
         try requireBoundDirectory()
-        for name in [SandboxGuestTemplateReceipt.fileName, ".darkbloom-guest"] {
+        for name in [SandboxGuestTemplateReceipt.fileName, ".darkbloom-guest", LumeInstalledCandidateCheckpoint.bootClaimFileName] {
             var metadata = stat()
             if fstatat(descriptor, name, &metadata, AT_SYMLINK_NOFOLLOW) == 0 {
                 throw AccountlessBaseCandidateError.preparedArtifactsPresent

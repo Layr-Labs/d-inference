@@ -40,6 +40,9 @@ extension LumeVirtualMachineRuntime {
                 "cannot start missing VM \(name)"
             )
         }
+        if scope == nil {
+            try LumeInstallerBootClaim.requireAbsent(name: name, storage: configuration.storageDirectory)
+        }
         let ownershipCommitment =
             try LumeVirtualMachineOwnership.requireResourceCommitment(
                 name: name,

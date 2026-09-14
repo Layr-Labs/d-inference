@@ -171,17 +171,20 @@ requirements are in `RELEASE_VALIDATION.md`.
 
 ## Accountless operator commands
 
-`darkbloom-sandboxd prepare-accountless-base` exposes three explicit phases. Every
+`darkbloom-sandboxd prepare-accountless-base` exposes five explicit phases. Every
 phase requires `--storage DIR --name NAME --host-id UUID --host-identity-file FILE`.
 The identity file is the protected selected-user binding from host preparation.
-`--json` returns the observed phase and candidate/attempt IDs. All three phases
-report `installed: false` and `qualified: false`; staging is not guest execution.
+`--json` returns the observed phase and candidate/attempt IDs. These phases do not
+publish installation or qualification evidence: their `installed` and `qualified`
+flags remain false until a separate receipt-collection/qualification path exists.
 
 | Phase | Execution context | Additional options | Completed result |
 |---|---|---|---|
 | `reserve` | Selected user's actual GUI/audit session | `--lume PATH --ipsw FILE --guest-release DIR`, optional `--cpu N --memory-gib N` | Raw Apple restore and immutable `awaitingRootInstallation` candidate; 100 GiB boot disk |
 | `payload` | Root | `--guest-release DIR --output NEW_DIR` | Verified signed overlay and `plan.json`; no disk attachment |
 | `stage` | Root | `--lume PATH --payload DIR --journal-dir DIR` | Guarded mount/stage/detach and `payloadStaged` observation |
+| `authorize-boot` | Root | `--lume PATH --payload DIR --journal-dir DIR --boot-journal-dir DIR --permit-file FILE` | Private boot intent, permanently closed staging, then immutable root boot permit |
+| `boot` | Selected user's actual GUI/audit session | `--permit-file FILE` | One installer attempt stopped, or an existing consumed attempt recovered; no installation-success claim |
 
 `reserve` verifies the selected identity, actual GUI session, eligible host,
 encrypted APFS storage and exclusive machine ownership. It uses raw Apple restore
@@ -205,9 +208,37 @@ If fence removal itself was interrupted, it completes the original transaction
 before performing this independent verification. A later boot closes the staging
 journal permanently and requires a separate result-collection journal.
 
-Installer boot, receipt collection/removal and automatic qualification are still
-under construction. The legacy `prepare-base` entrypoint retains its unattended
-path; these phases do not silently fall back to it.
+`authorize-boot` requires a different private boot-journal directory. The permit
+file's parent must already exist, with root-owned ancestors that allow traversal
+but no group/world writes or ACLs. The permit is root-owned mode0444, bounded and
+contains no credential. It binds the selected host/user, exact raw reservation,
+staged disk snapshot, staging evidence digest, native executable hash and300s
+boot bound. Publication order is private boot intent, staging handoff record,
+then public permit. Matching interruption prefixes can complete; conflicting
+records cannot overwrite earlier intent. An already published permit is replayed
+without claiming that the source still has its pre-boot contents.
+
+`boot` validates the root permit, selected real/effective user and GUI/audit
+session, encrypted storage, host eligibility, machine EX and exact production
+runtime. It rechecks source ownership/resources and the staged snapshot, then
+publishes `.darkbloom-installer-boot.json` in the VM directory before native spawn.
+That claim is never removed or reused. Native runs `installer-v1` with BLC and
+inherited EX; no SSH readiness, control/workspace disks or network are involved.
+The owner waits for native exit within300s and independently proves stopped state.
+Cancellation/session loss still awaits stop cleanup. The session supervisor drains
+both tasks and propagates an operation/cleanup failure even when session loss
+arrived first; a logout error cannot hide unproven cleanup. A replay only stops/observes
+the same claimed attempt; even a crash before spawn does not authorize another
+boot. A different permit cannot replace it. Claimed sources also reject ordinary
+base start, new raw-candidate reservation and pre-boot root staging.
+
+`installerBootStopped` means the native owner exited successfully and the source
+is stopped. `installerAttemptRecovered` means a prior claim was found and stopped
+state was verified; its original native exit code is unavailable. Neither proves
+the guest installer succeeded. Root receipt collection/removal and automatic
+qualification remain under construction, and real-machine qualification of the
+new boot path is still required. The legacy `prepare-base` entrypoint retains its
+unattended path; these phases do not silently fall back to it.
 
 ## Installed-candidate validation
 
@@ -231,8 +262,8 @@ Matching partial files can be completed after interruption; conflicting, linked,
 shared or special files are rejected without overwrite. The installed checkpoint
 is published last, then all records and the stopped source are checked again.
 
-The privileged staging, boot, collection and cleanup orchestration remains to be
-wired into this entrypoint. Constructing or decoding input records does not
+The privileged staging and one-use boot phases are implemented. Receipt collection
+and cleanup still need to be wired into this entrypoint. Decoding input records does not
 observe those actions. The raw reservation remains immutable; its original disk
 device/inode/size must match the final disk, while the installed checkpoint binds
 the later modification/change times. Neither publication nor replay starts a VM

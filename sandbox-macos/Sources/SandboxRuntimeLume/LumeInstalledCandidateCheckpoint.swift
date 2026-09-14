@@ -31,6 +31,7 @@ package struct LumeCandidateDiskIdentity: Codable, Equatable, Sendable {
 package struct LumeInstalledCandidateCheckpoint: Codable, Equatable, Sendable {
     package static let fileName = ".darkbloom-accountless-installed.json"
     package static let reservationFileName = ".darkbloom-accountless-candidate.json"
+    package static let bootClaimFileName = ".darkbloom-installer-boot.json"
     package static let installationFileName = ".darkbloom-accountless-installation.json"
     package static let cleanupFileName = ".darkbloom-accountless-cleanup.json"
     package enum Phase: String, Codable, Sendable { case installedAwaitingQualification }

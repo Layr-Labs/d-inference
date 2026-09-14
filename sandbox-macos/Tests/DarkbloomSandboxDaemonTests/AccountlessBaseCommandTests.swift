@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import SandboxCore
 import SandboxRuntime
+import SandboxRuntimeLume
 @testable import DarkbloomSandboxDaemon
 import XCTest
 
@@ -30,11 +31,15 @@ final class AccountlessBaseCommandTests: XCTestCase {
     func testPhaseOptionsCannotCrossPrivilegeOrOperationBoundaries() throws {
         XCTAssertEqual(try AccountlessBaseOptions(["payload"] + common + payload).phase, .payload)
         XCTAssertEqual(try AccountlessBaseOptions(["stage"] + common + stage).phase, .stage)
+        XCTAssertEqual(try AccountlessBaseOptions(["boot"] + common + ["--permit-file", "/root-plan/permit.json"]).phase, .boot)
+        XCTAssertEqual(try AccountlessBaseOptions(["authorize-boot"] + common + stage
+            + ["--boot-journal-dir", "/operator/boot", "--permit-file", "/root-plan/permit.json"]).phase, .authorizeBoot)
         for args in [["reserve"] + common + reserve + ["--journal-dir", "/operator/journal"],
                      ["stage"] + common + stage + ["--ipsw", "/image"],
                      ["payload"] + common + payload + ["--lume", "/runtime/lume"],
                      ["stage"] + common + stage + ["--json", "--json"],
                      ["stage"] + common + stage + ["--name", "other"],
+                     ["boot"] + common + ["--permit-file", "/root-plan/permit.json", "--lume", "/other-runtime"],
                      ["boot"] + common, ["stage"] + common] {
             XCTAssertThrowsError(try AccountlessBaseOptions(args), args.joined(separator: " "))
         }
@@ -58,7 +63,8 @@ final class AccountlessBaseCommandTests: XCTestCase {
 
     func testPhaseReportsNeverClaimInstallationOrQualification() throws {
         let fixture = try AccountlessInstallationTestFixture(); defer { fixture.remove() }
-        for phase in [AccountlessBasePhaseReport.Phase.awaitingRootInstallation, .payloadPrepared, .payloadStaged] {
+        for phase in [AccountlessBasePhaseReport.Phase.awaitingRootInstallation, .payloadPrepared, .payloadStaged,
+                      .installerBootAuthorized, .installerBootStopped, .installerAttemptRecovered] {
             let report = AccountlessBasePhaseReport(phase: phase, candidate: fixture.candidate, replayed: true)
             let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(report)) as? [String: Any])
             XCTAssertEqual(json["installed"] as? Bool, false)
@@ -66,5 +72,16 @@ final class AccountlessBaseCommandTests: XCTestCase {
             XCTAssertEqual(json["phase"] as? String, phase.rawValue)
             XCTAssertEqual(json["replayed"] as? Bool, true)
         }
+    }
+
+    func testAClaimedInstallerCannotBeReservedAsANewRawCandidate() throws {
+        let fixture = try AccountlessInstallationTestFixture(); defer { fixture.remove() }
+        let directory = fixture.base.storage.appendingPathComponent("base")
+        let store = try AccountlessBaseCandidateStore(directory: directory)
+        try store.requireNoPreparedArtifacts()
+        let claim = directory.appendingPathComponent(LumeInstalledCandidateCheckpoint.bootClaimFileName)
+        try Data().write(to: claim)
+        XCTAssertEqual(chmod(claim.path, 0o600), 0)
+        XCTAssertThrowsError(try store.requireNoPreparedArtifacts())
     }
 }

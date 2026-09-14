@@ -376,15 +376,21 @@ normalization and readable-versus-GUID hdiutil content hints. This fixture emula
 the filesystem contract below the normal 100 GiB VM policy and supplies no guest
 boot, actual Apple restore or template qualification evidence.
 
-The `prepare-accountless-base reserve|payload|stage` operator commands now expose
+The `prepare-accountless-base reserve|payload|stage|authorize-boot|boot` commands expose
 raw creation in the selected GUI session, root payload materialization and guarded
 staging. They require production signatures and report only their completed phase.
 Repeated staging verifies the protected final snapshot under fresh ordinary EX
 after both fences are removed; it never authorizes another write. CLI options and
-context requirements are in `ACCOUNTLESS_RECEIPTS.md`.
+context requirements are in `ACCOUNTLESS_RECEIPTS.md`. Root publishes a protected
+boot permit only after durably closing staging. The selected GUI owner claims
+the attempt before native spawn, uses `installer-v1`, and waits for native exit
+and stopped proof. Cancellation cleanup is independent of caller cancellation;
+replay can only stop/observe the consumed attempt. Claimed sources cannot return
+to ordinary base start, reservation or pre-boot staging.
 
-Selected GUI installer boot, receipt collection/removal and automatic qualification
-to readiness remain unfinished. The existing prepare-base command still follows
+The one-use boot path has automated subprocess tests; its real-Mac execution is
+still unverified. Receipt collection/removal and automatic qualification to
+readiness remain unfinished. The existing prepare-base command still follows
 its documented unattended path. A staging journal cannot be reused for post-boot
 collection.
 

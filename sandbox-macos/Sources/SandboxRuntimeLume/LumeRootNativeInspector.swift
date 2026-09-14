@@ -11,6 +11,7 @@ package struct LumeRootNativeInspector {
     private let ownerUID: uid_t
     private let ownerGID: gid_t
     private let runtime: ValidatedLumeRuntime
+    package var executableSHA256: String { runtime.files["lume"]!.sha256 }
 
     package init(configuration: LumeRuntimeConfiguration, ownerUID: uid_t, ownerGID: gid_t) throws {
         guard getuid() == 0, geteuid() == 0, getegid() == 0, ownerUID > 0, ownerUID != .max,

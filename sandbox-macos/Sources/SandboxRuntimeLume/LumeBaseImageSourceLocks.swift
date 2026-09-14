@@ -79,7 +79,8 @@ final class LumeBaseImageSourceLocks {
             guard info.st_mode & 0o600 == 0o600 else { throw failure() }
         }
         for name in [".provisioning", "resize.lock.json", "disk.img.pre-resize", "config.json.pre-resize",
-                     SandboxGuestTemplateReceipt.fileName, ".darkbloom-guest", LumeInstalledCandidateCheckpoint.fileName] {
+                     SandboxGuestTemplateReceipt.fileName, ".darkbloom-guest", LumeInstalledCandidateCheckpoint.fileName,
+                     LumeInstallerBootClaim.fileName] {
             try directory.requireAbsent(name)
         }
         guard try directory.readRecord(LumeInstalledCandidateCheckpoint.reservationFileName) == reservationData else { throw failure() }

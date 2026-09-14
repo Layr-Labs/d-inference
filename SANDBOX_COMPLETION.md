@@ -5,6 +5,16 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
+Newest source implements authorize-boot and boot, a protected one-use handoff,
+GUI-owned installer-v1 execution, consumed-claim recovery and cleanup-error
+preservation on session loss. Root staging cannot reopen after handoff, and a
+claimed image cannot be reserved/staged/started through legacy base paths.
+Final full validation passes626tests/7skips/0failures,128.707s, including the
+GUI-session error preservation and both root-publication fixes.
+A real-root permit publication test passes on the test Mac, but uses explicitly
+synthetic metadata and boots no VM. Actual fresh-image boot/receipt collection
+and final qualification remain open. See the newest detailed section below.
+
 The native installer-v1 profile is pushed in e518872e7954030e3e17d36de55dde4c11aefc6a
 as pinned patch13. It accepts
 one private boot disk, requires macOS/BLC/EX and disabled display/VNC, rejects
@@ -1938,3 +1948,137 @@ CI34838853984/integration34838853908 were still running at the last observation.
 No local build/test/SSH session remains live. This checkpoint-only commit follows
 the pushed code. Continue implementation of the boot journal/GUI owner; do not
 restart native builds or the completed staging campaigns without a new reason.
+
+
+## One-use installer handoff and GUI owner (2026-09-14)
+
+New code is implemented but not yet committed in this checkpoint:
+- AccountlessPrivateJournal extracts the existing staging lock/read/immutable
+  publication IO. AccountlessInstallationStagingJournal retains its strict
+  boot-marker refusal. A separate AccountlessStagingTransition shares staging.lock
+  but exposes only completed snapshot reads and irreversible handoff publication;
+  it cannot grant or reopen image IO. AccountlessStagingSnapshot binds canonical
+  original intent/staged receipt, plan/candidate, maintenance and detached snapshot.
+- AccountlessBootJournal persists separate root-private intent. AccountlessBootPermit
+  binds selected host/user/identity file, raw reservation bytes, storage/native
+  paths, exact native binary digest, final staged disk, snapshot digest and300s.
+  Root publishes private boot intent, closes staging with the permit hash, then
+  publishes the GUI-readable root-owned0444 permit. Matching interruptions can
+  finish; conflicting records cannot overwrite. Existing permits replay without
+  falsely rechecking the original pre-boot disk as though it were still current.
+- AccountlessAuthorizeBootCommand is exposed as prepare-accountless-base
+  authorize-boot with existing common identity/storage/name flags plus --lume,
+  --payload, --journal-dir, --boot-journal-dir and --permit-file. Boot journal must
+  differ from staging; the public permit's parent must already be root-protected
+  and traversable. Native production pin/signature and source cleanup are checked
+  before first public permission. Publishing data never claims a VM boot.
+- AccountlessBootCommand is the selected-GUI boot phase with --permit-file and
+  the same common identity/storage/name flags. It binds real/effective identity,
+  actual GUI/audit context, encrypted storage, eligibility, system EX and the
+  production native artifact named by the root permit.
+- LumeVirtualMachineRuntime.runInstaller uses dedicated base runtime ownership,
+  exact native SHA, template-then-broker locks, raw ownership/resources/reservation,
+  and final staged snapshot before spawn. It publishes the immutable
+  .darkbloom-installer-boot.json claim first, then launches installer-v1 with BLC
+  and inherited EX, without SSH readiness or tenant/control/workspace media.
+  Native exit is bounded by300s. Cancellation/failure waits for stop cleanup in a
+  detached task; final source stopped proof is required. A fresh runtime replay
+  can only stop/observe the matching claim, including a claim left before spawn.
+  No error clears it. Different permits cannot reuse it.
+- AccountlessBaseCandidateStore rejects any boot claim; ordinary base start
+  (scope=nil) rejects it; pre-boot LumeBaseImageSourceLocks reject it. Do NOT add
+  this refusal indiscriminately to LumeBaseCandidateOperationGuard: installed
+  publication and qualification also use that guard and need the consumed source.
+- AccountlessGUISession now drains both operation and monitor results, preserving
+  an operation/cleanup error even when session loss arrived first. A simple
+  throwing task group could hide that later cleanup error. Both reserve and boot
+  use the shared supervisor. No unchecked Sendable shortcut was added; the native
+  observation closure captures the immutable name instead of the source lock object.
+
+Phase reports remain unqualified/unpublished. installerBootStopped proves native
+exit0 and source stopped; installerAttemptRecovered proves stop for a previous
+claim and has no original exit code. Neither proves guest installation success.
+Root post-boot collection/removal is still required for installed publication.
+No new Native patch:13 remains exact and unchanged.
+
+Validation/evidence in /private/tmp/darkbloom-sandbox-completion-evidence:
+- boot-journal-refactor-final-tests.log:21 affected tests pass after the actual
+  refactor. An earlier Python edit used the wrong relative cwd and did not edit
+  the file; boot-journal-refactor-tests.log predates the real refactor and is not
+  its evidence. The correct edit used an absolute path.
+- installer-boot-tests.log:5 subprocess lifecycle tests pass. They prove the
+  claim exists before child execution, exact installer-v1/fd4/fd3/no-extra-media
+  invocation, normal exit and fresh-runtime replay with one spawn, no SSH,
+  pre-spawn consumed claim, cancellation stop, native failure, changed permit,
+  changed disk/runtime denial, and legacy start/new staging refusal.
+- installer-handoff-final-tests.log:44 affected tests pass, including transition
+  closure, replay/conflict, interrupted private boot intent, incomplete/corrupt
+  staging, bounded/canonical permit fields and ordinary-user denial. Initial
+  test-only missing try annotations were fixed before this passing run.
+- installer-handoff-full-tests.log:622tests/7skips/0failures,123.304s, before the
+  real-root publication path fixes below.
+- installer-handoff-final-full-tests.log:623tests/7skips/0failures,132.467s, after
+  new-path validation. The publication-helper rebuild was queued behind this
+  running SwiftPM session; this run does not cover the later helper change.
+- installer-handoff-release-tests.log:623tests/7skips/0failures,129.802s after both
+  publication fixes. installer-gui-session-final-tests.log:15pass including three
+  new session/cleanup/error-ordering controls. The first helper compilation used
+  a throwing body with nonthrowing withTaskGroup; it now returns Result and throws
+  only after draining both tasks.
+- installer-permit-path-final-test.log:the new-destination regression passes.
+  The first regression compared /var and /private/var URLs literally; the corrected
+  test compares actual parent device/inode and checks traversal/symlink denial.
+- installer-handoff-final-validation.log:626tests/7skips/0failures,128.707s after
+  GUI-session supervisor; all local test/build processes completed successfully.
+- installer-handoff-cli-smoke.json:3 actual executable checks pass: five-phase
+  help, nonroot authorization refusal and denial of a boot runtime override.
+- installer-handoff-docs.log and installer-handoff-final-docs.log:286files pass.
+
+Actual root filesystem proof found TWO real publication defects and fixed them:
+1. canonicalPath(destination) uses realpath and requires existence. A new public
+   permit therefore failed unsafeDestination before creating a file. creationPath
+   now validates lexical components and canonicalizes the existing parent.
+2. The general createUnlinkedPrivateFile helper requires a0700 parent. Public
+   permits need a root-controlled, GUI-traversable directory. The publisher now
+   creates an empty0600 O_EXCL/O_NOFOLLOW temp in that protected directory, checks
+   it, unlinks it BEFORE writing bytes, then atomically publishes a0444 clone.
+   The general journal helper and its private-parent invariant remain unchanged.
+   Interrupted empty temp files are retained rather than treated as a permit.
+
+The final root probe uses synthetic source/image metadata (device1/inode2, no
+real source or host identity). It exercises publication/reader permissions only;
+its permit cannot boot a real VM and is not production authorization/evidence.
+It verifies root publication, exact0444/one-link metadata, matching replay's inode,
+conflicting-data denial, hardlink denial and wrong-mode denial, with independent
+Python root metadata/hash readback. NO VM boot or template qualification occurred.
+
+Primary artifact directory:boot-permit-root-proof in the evidence root.
+- BootPermitRootProbe.swift SHA9e385fc22ca57170caf90f04b5a8a3f4dad9a8f7a410b750cbe12157ded783ae
+- Final probe SHA d445a46018955c44c89011f76b79d092cf3e700155e648bfdc6262d5e213c96b
+- run-v3.py SHA c86090d3ffcb065659cf27696b7247144090054563565ab0624cd62082be4c9e
+- verified.json SHA cc8fb6d70621b01385af6f0b1018810058267bee1f26f0cd09ce2bf031d2e13f
+- permit data SHA06d6a0ed3874bbaebda49a2aed33c813c17b4cdb0082a064a55b0157cb47e7fd
+- Initial probeSHA00739b7249034bbdb71941c7555861992dc6999a48f226b3b50251bbc5ca9285
+  retained as BootPermitRootProbe.initial; parent-only probeSHA330370eb54edc4a900f73fbf16bbba160799d876a8024f9978ea209bbb558b17
+  retained as BootPermitRootProbe.parent-only. All failed logs/artifacts retained.
+- Final probe links actual debug objects for publication. The subsequent
+  GUI-session supervisor change is not in that probe and does not change the
+  exercised publication methods. Physical GUI/boot behavior is unverified.
+Remote incoming:/private/tmp/darkbloom-boot-permit-incoming-20260914
+Remote original/v2/v3 operator folders:/private/tmp/darkbloom-boot-permit-root-20260914[-v2|-v3]
+Final root verified.json is in the -v3 folder. Public synthetic fixture:
+ /Library/Application Support/Darkbloom/qualification-boot-permit-io1
+It contains permit.json and intentionally wrong-mode.json; its temporary hardlink
+was removed by the probe. Existing VM/APFS fixtures were untouched. No VM, cache,
+model, service, group or production change occurred. Go-cache approval remains
+unanswered; available test-Mac storage was last50GiB.
+
+Current preceding e518872e7 has CI34839970219 and integration34839970313 PASS.
+After final verification, commit/push this handoff implementation, update PR996
+with the real-root limits and keep draft. Then implement separate post-boot root
+collection/removal and connect installed checkpoint/qualification/released-lease
+cleanup/readiness. The source lock for pre-boot staging now deliberately refuses
+boot claims, so collection needs its own exact-claim scope and distinct durable
+maintenance intent, not a bypass that reopens old staging. Full real Apple restore,
+GUI boot, first-boot receipt, two-VM consumer acceptance, build tools, performance,
+actual logout/login and final release qualification still remain.

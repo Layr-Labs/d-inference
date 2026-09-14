@@ -11,8 +11,8 @@ struct LumeRootSourceTestFixture {
     var image: URL { vm.virtualMachineDirectory.appendingPathComponent("disk.img") }
     var ownerLock: URL { vm.virtualMachineDirectory.appendingPathComponent(".run-owner.lock") }
 
-    init() throws {
-        vm = try FakeLumeFixture()
+    init(scriptOverride: String? = nil, behavior: String = "normal") throws {
+        vm = try FakeLumeFixture(behavior: behavior, scriptOverride: scriptOverride)
         let specification = try SandboxVirtualMachineSpecification(name: vm.virtualMachineName,
             resources: .macOSSmall(), imageSource: .appleRestore(url: vm.restoreImage),
             diskBytes: 100 * SandboxResourcePolicy.gibibyte)

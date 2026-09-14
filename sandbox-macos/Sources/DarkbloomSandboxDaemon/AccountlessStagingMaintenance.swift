@@ -88,13 +88,25 @@ final class AccountlessStagingMaintenance {
                                 ownerUID: uid_t, ownerGID: gid_t, reservationData: Data,
                                 nativeInspector: LumeRootNativeInspector) async throws {
         guard let cleanup = try journal.detachedCleanup() else { throw AccountlessInstallationError.invalidBinding }
+        let snapshot = try AccountlessStagingSnapshot(candidate: journal.candidate, plan: journal.plan,
+            maintenance: journal.maintenanceIntent(), cleanup: cleanup)
+        try await verifyCompleted(snapshot: snapshot, storage: storage, ownerUID: ownerUID, ownerGID: ownerGID,
+            reservationData: reservationData, nativeInspector: nativeInspector)
+    }
+
+    static func verifyCompleted(snapshot: AccountlessStagingSnapshot, storage: URL,
+                                ownerUID: uid_t, ownerGID: gid_t, reservationData: Data,
+                                nativeInspector: LumeRootNativeInspector) async throws {
+        try snapshot.validate()
         try nativeInspector.requireSourceNamespace(storage: storage, ownerUID: ownerUID, ownerGID: ownerGID)
-        try await nativeInspector.requireStopped(name: journal.candidate.source.name,
-            resources: journal.candidate.resources, diskBytes: journal.candidate.disk.size)
-        let binding = try binding(journal)
-        try await LumeRootBaseImageGuard.verifyCompletedMaintenance(storage: storage, name: journal.candidate.source.name,
-            ownerUID: ownerUID, ownerGID: ownerGID, reservationData: reservationData, expectedDisk: binding.disk,
-            intent: journal.maintenanceIntent(), encodedCandidate: binding.candidate, cleanup: cleanup) { image, descriptor in
+        try await nativeInspector.requireStopped(name: snapshot.candidate.source.name,
+            resources: snapshot.candidate.resources, diskBytes: snapshot.candidate.disk.size)
+        let encodedCandidate = try AccountlessJournalJSON.encode(snapshot.candidate)
+        let disk = try AccountlessJournalJSON.decode(LumeCandidateDiskIdentity.self,
+            AccountlessJournalJSON.encode(snapshot.candidate.disk))
+        try await LumeRootBaseImageGuard.verifyCompletedMaintenance(storage: storage, name: snapshot.candidate.source.name,
+            ownerUID: ownerUID, ownerGID: ownerGID, reservationData: reservationData, expectedDisk: disk,
+            intent: snapshot.maintenance, encodedCandidate: encodedCandidate, cleanup: snapshot.cleanup) { image, descriptor in
             let runner = SandboxProcessRunner()
             let result = try await runner.run(executable: URL(fileURLWithPath: "/usr/bin/hdiutil"),
                 arguments: ["info", "-plist"], timeoutSeconds: 30, maximumOutputBytes: 4 * 1_048_576)

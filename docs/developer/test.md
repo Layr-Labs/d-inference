@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `6ad3d5605`
+> Last updated: 2026-09-14 · commit `2d7cc572f`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -300,6 +300,12 @@ API fixtures use isolated encrypted WebSocket providers;
 Postgres tests require an explicitly disposable `DATABASE_URL` and include an
 upgrade from the old profile schema. See
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
+
+Provider-deletion fixtures in `coordinator/api/account_fleet_removal_test.go` cover ownership,
+offline removal and refusal while a reconnect with the same serial remains live.
+The reconnect uses its own session ID so asynchronous registration cannot replace
+the historical record being deleted. Run them with
+`GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run '^TestDeleteMyProvider_'`.
 
 The [admission calibration baseline](../reports/2026-09-06-admission-calibration-baseline.md)
 gives the focused `TestTTFTPendingPrompt` comparison command. Its registry

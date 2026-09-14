@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-14 · commit `03ee21c83`
+> Last updated: 2026-09-14 · commit `4482d5422`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,

@@ -13,7 +13,7 @@ created: "2026-05-14"
 # Status-signature canonicalization in TB-009 re-verified 2026-09-13 against
 # commit 1f52a71fb: provider byte compatibility, with signature/trust policy
 # unchanged. This does not re-verify the remaining threat entries.
-# Trust-reuse ownership in T-036 re-verified against 2026-09-14, commit 03ee21c83:
+# Trust-reuse ownership in T-036 re-verified against 2026-09-14, commit 4482d5422:
 # the state owner moved; admission, journal and shutdown-order policy are unchanged.
 # This is a scoped source-map review, not a fresh review of all threat entries.
 methodology: STRIDE

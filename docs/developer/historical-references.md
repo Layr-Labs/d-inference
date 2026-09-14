@@ -1,6 +1,6 @@
 # Open historical source references
 
-> Last updated: 2026-09-14 · commit `f37d74777`
+> Last updated: 2026-09-14 · commit `42d0741b1`
 
 Use this procedure to read the original source behind a frozen report when a
 file has moved or disappeared from the current tree. Reports keep their

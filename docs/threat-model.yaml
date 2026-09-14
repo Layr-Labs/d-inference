@@ -250,11 +250,12 @@ trust_boundaries:
       - "Consumer rate limiter defaults to nil (unlimited) unless explicitly configured
         at deploy time. No IP-level rate limiting exists."
       - "POST /v1/device/code and POST /v1/device/token have no rate limits, enabling
-        device code enumeration and provider token brute force (device_auth.go)."
+        device code enumeration and provider token brute force
+        (api/accounts/device_codes.go and api/accounts/device_tokens.go)."
       - "Device codes are not consumed atomically on first token exchange; the approved
-        code can be polled multiple times to mint multiple provider tokens (device_auth.go)."
+        code can be polled multiple times to mint multiple provider tokens (api/accounts/device_tokens.go)."
       - "Error responses distinguish 'not found' (404) from 'expired' (410) on device
-        token polling, leaking information about code lifecycle (device_auth.go)."
+        token polling, leaking information about code lifecycle (api/accounts/device_tokens.go)."
 
   - id: TB-002
     name: coordinator_to_provider_websocket
@@ -587,7 +588,7 @@ trust_boundaries:
       auto-updaters may continue receiving stale release metadata from the per-platform
       cache after a new release is registered or an old one is deactivated.
 
-      The device auth flow (device_auth.go) has no rate limits on POST /v1/device/code
+      The device auth flow (api/accounts/device_codes.go and device_tokens.go) has no rate limits on POST /v1/device/code
       (generates device codes) or POST /v1/device/token (polls for tokens). Approved
       device codes are not atomically consumed on first token exchange; any holder of
       the device code can continue polling and minting provider tokens during the 15-minute
@@ -613,7 +614,7 @@ trust_boundaries:
         admin trust-level overrides. Malicious registration would be silent."
       - "Admin OTP endpoints are unauthenticated and unrate-limited (SEC-028)."
       - "Device codes are not atomically consumed on first token exchange, allowing
-        multiple provider tokens to be minted from one approved code (device_auth.go,
+        multiple provider tokens to be minted from one approved code (api/accounts/device_tokens.go,
         SEC-011)."
 
   - id: TB-007
@@ -2226,7 +2227,7 @@ threats:
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-008]
     affected_files:
-      - coordinator/api/device_auth.go
+      - coordinator/api/accounts/device_tokens.go
       - coordinator/store/postgres.go
     mitigations:
       - description: Device codes have a validity window.
@@ -2236,7 +2237,7 @@ threats:
     open_findings: [SEC-011]
     severity: medium
     detection_hint: >
-      Changes to device_auth.go token exchange logic must verify the code is
+      Changes to accounts/device_tokens.go token exchange logic must verify the code is
       marked consumed in the same transaction as token issuance.
 
   - id: T-040

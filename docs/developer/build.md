@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `ded9dbe71`
+> Last updated: 2026-09-14 · commit `b853c2417`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -77,9 +77,11 @@ understand what `make` runs.
 
 ### 3. Coordinator (Go)
 
-HTTP authentication and its key cache build as `coordinator/api/requestauth/`.
-The API router imports that package, so the coordinator build targets below
-include it automatically.
+HTTP authentication and its key cache build as `coordinator/api/requestauth/`;
+account and device-login endpoints build as `coordinator/api/accounts/`.
+The shared bounded JSON decoder lives in `coordinator/api/httprequest/`.
+The API router imports these packages, so the coordinator build targets below
+include them automatically.
 
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
 its test binary after helper or lifecycle changes. The CPU-only

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `ded9dbe71`
+> Last updated: 2026-09-14 · commit `b853c2417`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -72,6 +72,17 @@ Authentication boundary tests use the real registered routes in
 root to check credential replacement after route registration, key-cache
 invalidation through management routes, and provider-token revocation. These
 checks use an in-memory store and locally signed JWTs.
+
+Account key and device-flow unit tests live beside their controller in
+`coordinator/api/accounts/`. Keep actual route/auth/rate-limit integration tests
+in `coordinator/api/`; `TestAccountControllerUsesCurrentBindings` checks that
+routes use the current store, console URL and admin policy after registration.
+Run these boundary checks from the repository root:
+
+```bash
+go test -race ./coordinator/api/accounts ./coordinator/api \
+  -run 'Test(AccountController|Authentication|Handle.*APIKey|Device|Key|Security)'
+```
 
 Run prediction telemetry checks from the repository root:
 

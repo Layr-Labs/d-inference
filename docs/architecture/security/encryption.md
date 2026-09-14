@@ -1,6 +1,6 @@
 # Encryption and privacy model
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-14 · commit `b853c2417`
 
 An inference request crosses three NaCl Box hops: consumer → coordinator
 (optional), coordinator → provider (mandatory), provider → coordinator
@@ -117,7 +117,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | Cache-affinity keys: keyed digests of identity / prefix bytes; raw bytes are never stored, logged, or returned | `coordinator/registry/cache_route_keys.go` |
 | Provider identity rows: SE public key, serial, MDA UDID and chain, posture bits (`ProviderTrustReuse`); code-identity proofs `CodeAttestation{se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash}`; push budgets keyed by SE key + APNs token hash | `coordinator/store/interface.go` (`ProviderTrustReuse`, `CodeAttestation`, `CodeAttestPushBudget`); `coordinator/api/trust_reuse.go`; `coordinator/api/code_attest_throttle.go` |
 | MDM webhook body: `body_size` and a 500-byte `body_preview` at `Debug` level (MDM plist, never inference data) | `coordinator/api/server.go` (`HandleMDMWebhook`) |
-| Device-code lifecycle: `user_code`, `account_id` at `Info` level | `coordinator/api/device_auth.go` |
+| Device-code lifecycle: `user_code`, `account_id` at `Info` level | `coordinator/api/accounts/device_codes.go`, `coordinator/api/accounts/device_approval.go`, `coordinator/api/accounts/device_tokens.go` |
 
 | Explicitly avoided | Code |
 |---|---|

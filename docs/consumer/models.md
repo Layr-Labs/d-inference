@@ -1,6 +1,6 @@
 # Models reference
 
-> Last updated: 2026-09-11 · commit `49b62bfe6`
+> Last updated: 2026-09-14 · commit `b853c2417`
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
@@ -83,7 +83,7 @@ Handler `handleGetModel`. Returns one `ModelEntry` for a listed id, a hidden bui
 
 ### `model_not_allowed`
 
-A key created with `allowed_models` can only use those ids. Any other `model` fails in the prelude with 403 `model_not_allowed` (`keyModelAllowed`, `coordinator/api/apikey_handlers.go`) before resolution, so the allow-list should name the same ids `GET /v1/models` returns.
+A key created with `allowed_models` can only use those ids. Any other `model` fails in the prelude with 403 `model_not_allowed` (`accounts.KeyModelAllowed`, `coordinator/api/accounts/key_policy.go`) before resolution, so the allow-list should name the same ids `GET /v1/models` returns.
 
 ## Capability flags as the API exposes them
 

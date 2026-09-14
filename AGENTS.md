@@ -13,9 +13,11 @@ coordinator/          Go control plane (packages live at top level, not internal
 │   ├── requestauth/      HTTP credential middleware and shared API-key cache
 │   ├── authentication.go current credential/store bindings for the router
 │   ├── billing_handlers.go Stripe/referral/pricing endpoints
-│   ├── device_auth.go      device code flow for linking providers to user accounts
+│   ├── accounts/           key management/policy, provider device login and invites
+│   ├── account_controller.go current account-store/config/auth-cache bindings
+│   ├── authorization.go    shared in-handler admin authorization
+│   ├── httprequest/        bounded JSON decoding shared by controllers
 │   ├── enroll.go           MDM enrollment profile generation
-│   ├── invite_handlers.go  invite code admin/user flows
 │   ├── release_handlers.go binary release registration (GitHub Actions integration)
 │   ├── chunk_key_cache.go  per-request X25519 shared-key memoization for chunk decrypt
 │   ├── stats.go            public network stats

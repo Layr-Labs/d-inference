@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-14 · commit `ded9dbe71`
+> Last updated: 2026-09-14 · commit `b853c2417`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -45,7 +45,9 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/cmd/coordinator` | `main`: configuration load, store selection, wiring, background loops, HTTP server, graceful shutdown. |
 | `coordinator/config` | `AppConfig` — composes every package's `ReadConfig` and runs their `Check` methods. |
 | `coordinator/env` | `EnvPrefix` (`EIGENINFERENCE`) and the `EnvOr`/`EnvInt`/`EnvFloat`/`EnvBool` helpers. |
-| `coordinator/api` | The HTTP router (`routes` in `server.go`), middleware, consumer handlers (`consumer.go`), the provider WebSocket (`provider.go`), dispatch ladder (`dispatch.go`), sender encryption, admin, release, model-registry, device-auth and Stripe handlers, drain, profiler wiring. |
+| `coordinator/api` | The HTTP router (`routes` in `server.go`), middleware, consumer handlers (`consumer.go`), the provider WebSocket (`provider.go`), dispatch ladder (`dispatch.go`), sender encryption, admin, release, model-registry and Stripe handlers, drain, profiler wiring. |
+| `coordinator/api/accounts` | `Controller`: legacy/named API keys, key policy, device code/approval/token exchange and invites. Store operations remain behind narrow key/device/invite interfaces; the router supplies the existing auth cache and live store/console/admin bindings through `account_controller.go`. |
+| `coordinator/api/httprequest` | `DecodeJSON` enforces the supplied request-body cap and preserves the common 400/413 envelope; `ControlPlaneBodyLimit` is 64 KiB. |
 | `coordinator/api/requestauth` | Credential middleware and shared API-key cache (`Authenticator`); current configuration and accounting hooks bind through `coordinator/api/authentication.go`. |
 | `coordinator/api/requestcontext` | Private context keys and typed account, API-key and request-ID access shared by middleware and endpoint packages (`WithAccountID`, `WithAPIKey`, `WithRequestID`). |
 | `coordinator/api/httpresponse` | JSON response writing and the common OpenAI-compatible error envelope (`WriteJSON`, `ErrorBody`); `WriteCachedJSON` and `EncodeCachedJSON` preserve pre-encoded response bytes. |

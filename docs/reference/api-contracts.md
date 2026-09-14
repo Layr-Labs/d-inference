@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-14 · commit `ded9dbe71`
+> Last updated: 2026-09-14 · commit `b853c2417`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -24,7 +24,7 @@ responses and error codes are unchanged.
 | `key` | Bearer is an API key ([shape](#api-key-shapes); legacy `eigeninference-…` keys are also accepted), a Privy JWT, an active provider device token, or the admin key. Missing or invalid → 401 `authentication_error` | `RequireAuth` (`coordinator/api/requestauth/middleware.go`) |
 | `privy` | Bearer must be a Privy JWT. API keys → 403 `forbidden` | `RequirePrivyAuth` (`coordinator/api/requestauth/privy_session.go`) |
 | `user` | `key` or `privy` plus an in-handler check that a resolved account user is in the context (Privy JWT, or an API key linked to a Privy account). Admin key and unlinked legacy keys → 401 `auth_error` | `requirePrivyUser` (`coordinator/api/billing_handlers.go`) |
-| `admin` | In-handler check: Bearer equals the admin key (`EIGENINFERENCE_ADMIN_KEY`), or the context holds a Privy user whose email is in the admin list. Otherwise 403 `forbidden`. When the route is registered *without* `requireAuth` no user is ever placed in the context, so only the admin key can pass; those rows say `admin-key` | `isAdminAuthorized` (`coordinator/api/release_handlers.go`), `requireAdminKey` (`coordinator/api/invite_handlers.go`), `isAdmin` (`coordinator/api/billing_handlers.go`) |
+| `admin` | In-handler check: Bearer equals the admin key (`EIGENINFERENCE_ADMIN_KEY`), or the context holds a Privy user whose email is in the admin list. Otherwise 403 `forbidden`. When the route is registered *without* `requireAuth` no user is ever placed in the context, so only the admin key can pass; those rows say `admin-key` | `isAdminAuthorized` (`coordinator/api/release_handlers.go`), `requireAdminKey` (`coordinator/api/authorization.go`), `isAdmin` (`coordinator/api/billing_handlers.go`) |
 | `publishing` | `X-Darkbloom-Publishing-Key` header or Bearer equal to the bootstrap `MODEL_REGISTRY_PUBLISHING_KEY`, the admin key, or a publishing key stored in the DB | `requirePublishingAPIKey` (`coordinator/api/model_registry_handlers.go`) |
 | `release` | Bearer equal to `EIGENINFERENCE_RELEASE_KEY`; otherwise 401 `unauthorized` | `handleRegisterRelease` (`coordinator/api/release_handlers.go`) |
 | `stripe-sig` | Stripe webhook signature | `handleStripeWebhook` (`coordinator/api/billing_handlers.go`), `handleStripeConnectWebhook` (`coordinator/api/stripe_payouts_webhooks.go`) |
@@ -72,15 +72,15 @@ All four share the chain `drainGate → requireAuth → rateLimitConsumer → se
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
-| POST | `/v1/auth/keys` | `handleCreateKey` (`coordinator/api/apikey_handlers.go`) | `privy` | `fin` | Legacy mint: `CreateKeyResponse` `{api_key, account_id}` |
-| DELETE | `/v1/auth/keys` | `handleRevokeKey` (`coordinator/api/apikey_handlers.go`) | `privy` | — | Body `{"key": "<api key>"}`; 400 `bad_request` otherwise; `RevokeKeyResponse` `{status}` |
-| GET | `/v1/keys` | `handleListAPIKeys` (`coordinator/api/apikey_handlers.go`) | `privy` | — | `APIKeyListResponse` `{object: "list", data: [APIKeyResponse]}` |
-| POST | `/v1/keys` | `handleCreateAPIKey` (`coordinator/api/apikey_handlers.go`) | `privy` | `fin` | `CreateAPIKeyResponse` `{key, data}`; `key` is the plaintext secret ([API key shapes](#api-key-shapes)) |
-| GET | `/v1/keys/{id}` | `handleGetAPIKey` (`coordinator/api/apikey_handlers.go`) | `privy` | — | `APIKeyResponse` |
-| PATCH | `/v1/keys/{id}` | `handleUpdateAPIKey` (`coordinator/api/apikey_handlers.go`) | `privy` | `fin` | Partial update, fields under [API key shapes](#api-key-shapes) |
-| DELETE | `/v1/keys/{id}` | `handleDeleteAPIKey` (`coordinator/api/apikey_handlers.go`) | `privy` | `fin` | Revoke |
-| POST | `/v1/keys/{id}/rotate` | `handleRotateAPIKey` (`coordinator/api/apikey_handlers.go`) | `privy` | `fin` | New secret, same settings |
-| GET | `/v1/key` | `handleGetCallingKey` (`coordinator/api/apikey_handlers.go`) | `key` | — | The calling key's own `APIKeyResponse` |
+| POST | `/v1/auth/keys` | `Controller.CreateLegacyKey` (`coordinator/api/accounts/keys_legacy.go`) | `privy` | `fin` | Legacy mint: `CreateKeyResponse` `{api_key, account_id}` |
+| DELETE | `/v1/auth/keys` | `Controller.RevokeLegacyKey` (`coordinator/api/accounts/keys_legacy.go`) | `privy` | — | Body `{"key": "<api key>"}`; 400 `bad_request` otherwise; `RevokeKeyResponse` `{status}` |
+| GET | `/v1/keys` | `Controller.ListKeys` (`coordinator/api/accounts/keys.go`) | `privy` | — | `APIKeyListResponse` `{object: "list", data: [APIKeyResponse]}` |
+| POST | `/v1/keys` | `Controller.CreateKey` (`coordinator/api/accounts/keys.go`) | `privy` | `fin` | `CreateAPIKeyResponse` `{key, data}`; `key` is the plaintext secret ([API key shapes](#api-key-shapes)) |
+| GET | `/v1/keys/{id}` | `Controller.GetKey` (`coordinator/api/accounts/keys.go`) | `privy` | — | `APIKeyResponse` |
+| PATCH | `/v1/keys/{id}` | `Controller.UpdateKey` (`coordinator/api/accounts/keys.go`) | `privy` | `fin` | Partial update, fields under [API key shapes](#api-key-shapes) |
+| DELETE | `/v1/keys/{id}` | `Controller.DeleteKey` (`coordinator/api/accounts/keys.go`) | `privy` | `fin` | Revoke |
+| POST | `/v1/keys/{id}/rotate` | `Controller.RotateKey` (`coordinator/api/accounts/keys.go`) | `privy` | `fin` | New secret, same settings |
+| GET | `/v1/key` | `Controller.GetCallingKey` (`coordinator/api/accounts/keys.go`) | `key` | — | The calling key's own `APIKeyResponse` |
 | GET | `/v1/encryption-key` | `handleEncryptionKey` (`coordinator/api/sender_encryption.go`) | `—` | — | `{kid, public_key, algorithm: "x25519-nacl-box"}`, `Cache-Control: public, max-age=300`; 503 `encryption_unavailable` when sealing is not configured |
 
 Lifecycle semantics: [`../consumer/authentication.md`](../consumer/authentication.md).
@@ -89,9 +89,9 @@ Lifecycle semantics: [`../consumer/authentication.md`](../consumer/authenticatio
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
-| POST | `/v1/device/code` | `handleDeviceCode` (`coordinator/api/device_auth.go`) | `—` | — | 200 `{device_code, user_code, verification_uri, expires_in, interval}` |
-| POST | `/v1/device/token` | `handleDeviceToken` (`coordinator/api/device_auth.go`) | `—` | — | Body `{"device_code"}` (400 `invalid_request` if missing). 200 `{status: "authorization_pending"}` until approved; 200 `{status: "authorized", token, account_id}` once approved; 404 `invalid_grant`; 410 `expired_token` |
-| POST | `/v1/device/approve` | `handleDeviceApprove` (`coordinator/api/device_auth.go`) | `privy` | `fin` | Body `{"user_code"}`. 404 `invalid_code`, 409 `already_used`, 410 `expired_code` |
+| POST | `/v1/device/code` | `Controller.DeviceCode` (`coordinator/api/accounts/device_codes.go`) | `—` | — | 200 `{device_code, user_code, verification_uri, expires_in, interval}` |
+| POST | `/v1/device/token` | `Controller.DeviceToken` (`coordinator/api/accounts/device_tokens.go`) | `—` | — | Body `{"device_code"}` (400 `invalid_request` if missing). 200 `{status: "authorization_pending"}` until approved; 200 `{status: "authorized", token, account_id}` once approved; 404 `invalid_grant`; 410 `expired_token` |
+| POST | `/v1/device/approve` | `Controller.ApproveDevice` (`coordinator/api/accounts/device_approval.go`) | `privy` | `fin` | Body `{"user_code"}`. 404 `invalid_code`, 409 `already_used`, 410 `expired_code` |
 
 Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInterval` = 5 (`interval`). The `token` is a **provider token** (`eigeninference-pt-` + 64 hex characters, labelled `device-<user_code>`; only its SHA-256 hash is stored) used by the provider CLI to link a machine to the account; it is not a consumer API key. The small-body cap [`maxControlPlaneBodyBytes`](#limits-and-validation) applies to these unauthenticated endpoints.
 
@@ -143,7 +143,7 @@ Ledger semantics, reservations and payouts: [`../architecture/billing.md`](../ar
 | POST | `/v1/referral/apply` | `handleReferralApply` (`coordinator/api/billing_handlers.go`) | `user` | `fin` | 400 `referral_error` |
 | GET | `/v1/referral/stats` | `handleReferralStats` (`coordinator/api/billing_handlers.go`) | `key` | — | 404 `referral_error` when no referral record exists |
 | GET | `/v1/referral/info` | `handleReferralInfo` (`coordinator/api/billing_handlers.go`) | `key` | — | 404 `referral_error` when no referral record exists |
-| POST | `/v1/invite/redeem` | `handleRedeemInviteCode` (`coordinator/api/invite_handlers.go`) | `key` | `fin` | Redeem an invite code |
+| POST | `/v1/invite/redeem` | `Controller.RedeemInvite` (`coordinator/api/accounts/invites.go`) | `key` | `fin` | Redeem an invite code |
 | GET | `/v1/providers/attestation` | `handleProviderAttestation` (`coordinator/api/provider.go`) | `—` | — | Public attestation roster; see [`../architecture/security/attestation.md`](../architecture/security/attestation.md) |
 
 ### Public stats and health (5)
@@ -220,8 +220,8 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | GET | `/v1/admin/state-export` | `handleAdminStateExport` (`coordinator/api/admin_state_export.go`) | `admin-key` | 404 unless `EIGENINFERENCE_STATE_EXPORT_ENABLED=true`; 412 `precondition_failed` without an encryption recipient. See [`../operations/state-export.md`](../operations/state-export.md) |
 | POST | `/v1/admin/auth/init` | `handleAdminAuthInit` (`coordinator/api/release_handlers.go`) | `—` | Body `{"email"}`; starts a Privy email OTP for an admin email. 503 `not_configured` when Privy is not configured; 500 `otp_error` when sending fails |
 | POST | `/v1/admin/auth/verify` | `handleAdminAuthVerify` (`coordinator/api/release_handlers.go`) | `—` | Verifies the OTP and returns a session token for the admin console |
-| POST | `/v1/admin/invite-codes` | `handleAdminCreateInviteCode` (`coordinator/api/invite_handlers.go`) | `admin` (`fin`) | 409 `conflict` on code collision |
-| GET / DELETE | `/v1/admin/invite-codes` | `handleAdminListInviteCodes`, `handleAdminDeactivateInviteCode` (`coordinator/api/invite_handlers.go`) | `admin` | Two registrations |
+| POST | `/v1/admin/invite-codes` | `Controller.CreateInvite` (`coordinator/api/accounts/invites.go`) | `admin` (`fin`) | 409 `conflict` on code collision |
+| GET / DELETE | `/v1/admin/invite-codes` | `Controller.ListInvites`, `Controller.DeactivateInvite` (`coordinator/api/accounts/invites.go`) | `admin` | Two registrations |
 | POST | `/v1/admin/credit` | `handleAdminCredit` (`coordinator/api/admin_balance_adjustment.go`) | `admin` | Manual ledger credit |
 | POST | `/v1/admin/reward` | `handleAdminReward` (`coordinator/api/admin_balance_adjustment.go`) | `admin` | Manual provider reward |
 | GET | `/v1/admin/log-reports/{id}` | `handleGetLogReport` (`coordinator/api/log_report_handlers.go`) | `admin` | Fetch an uploaded provider log bundle |
@@ -359,7 +359,7 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `withCode` in `coo
 | 400 | `invalid_request_error`, `invalid_sealed_envelope`, `kid_mismatch`, `decryption_failed`, `invalid_request`, `bad_request`, `referral_error` | Body/JSON validation, `n > 1`, tool-choice and vision rules, inference-enforced `tool_choice` combined with images (`param: tool_choice`), sealed-envelope faults, device-code and key-management input, unknown catalog `?type=` |
 | 401 | `authentication_error`, `auth_error`, `unauthorized` | Missing/invalid bearer (`requireAuth`, `requirePrivyAuth`), no account user (`requirePrivyUser`), release key |
 | 402 | `insufficient_funds` (balance below the reservation), `insufficient_quota` (per-key spend cap); `code` is `insufficient_quota` for both | `reserveInferenceBalance` (`coordinator/api/inference_admission.go`); the per-cause table, including the provider-price 402, is [Payment-required responses](../architecture/billing.md#payment-required-responses) |
-| 403 | `forbidden`, `model_not_allowed` | API key on a `privy` route; non-admin on an `admin` route; model outside the key's `allowed_models` (`keyModelAllowed`, `coordinator/api/apikey_handlers.go`) |
+| 403 | `forbidden`, `model_not_allowed` | API key on a `privy` route; non-admin on an `admin` route; model outside the key's `allowed_models` (`accounts.KeyModelAllowed`, `coordinator/api/accounts/key_policy.go`) |
 | 404 | `model_not_found`, `not_found`, `invalid_grant`, `invalid_code`, `referral_error`, `invalid_request_error` | Model or alias not in the catalog; unknown key id; device codes; `/v1/` catch-all; state export when disabled |
 | 409 | `no_linked_machine`, `already_used`, `conflict`, `stripe_account_gone`, `stripe_account_recreate_required` | Self-route without a linked machine; device-approve replay; invite-code collision; Stripe Connect state |
 | 410 | `telemetry_ingest_disabled`, `expired_token`, `expired_code` | [Telemetry endpoint](#telemetry-1); expired [device codes](#device-code-flow-3) |
@@ -470,7 +470,7 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 | `max_tokens` | `max_completion_tokens` → `max_tokens`; an explicit value is not clamped, a missing one is filled from the [output bound](pricing-model.md#formulas) | `ensureMaxTokensBound` |
 | Prompt size at admission | 413 `payload_too_large` when the estimated prompt exceeds what the model's providers can accept | `runInferenceAdmission` (`coordinator/api/inference_admission.go`) |
 | Catalog membership | Model resolved but absent from the routable catalog → 404 `model_not_found`, after the balance reservation is released | `handleChatCompletions` |
-| Key allow-list | `model` not in the key's `allowed_models` → 403 `model_not_allowed` | `keyModelAllowed` |
+| Key allow-list | `model` not in the key's `allowed_models` → 403 `model_not_allowed` | `accounts.KeyModelAllowed` |
 | `tool_choice` | `"none"`, `"auto"`, `"required"`, or `{"type": "function", "function": {"name": …}}`; a named function must exist in `tools`; `required` or a named choice with no tools → 400 | `validateToolConstraintPolicy` |
 | Tool schemas | Normalised to strict JSON Schema before dispatch; schemas the constraint parser cannot compile → 422 | `NormalizeToolSchemas`, `validateResolvedToolConstraintParser` |
 | Vision | Image parts require a vision-capable model, otherwise 400; a vision model with no vision-capable provider online → 503 `model_unavailable` | `detectMediaRequirement` (`coordinator/api/request_introspection.go`), `visionToolsFailFast` (`coordinator/api/inference_preprocess.go`) |
@@ -490,7 +490,7 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 | `chunkBufferSize` | 256 | `coordinator/api/consumer.go` | Pre-commit chunk buffer per attempt |
 | `keyCacheTTL` / `keyCacheMaxSize` | 60 s / 1,000 entries | `coordinator/api/requestauth/key_cache.go` | Positive and negative API-key lookups are cached. Management mutations invalidate the local cache; other coordinator instances expire their own cached entries. Provider device tokens are not cached. |
 | `coordinatorDrainRetryAfter` / `DefaultDrainGrace` | 3 s / 600 s | `coordinator/api/drain.go` | `Retry-After` on the drain 429; default drain window |
-| `DeviceCodeExpiry` / `DeviceCodePollInterval` | see [Device-code flow](#device-code-flow-3) | `coordinator/api/device_auth.go` | Device-code lifetime and poll interval |
+| `DeviceCodeExpiry` / `DeviceCodePollInterval` | see [Device-code flow](#device-code-flow-3) | `coordinator/api/accounts/device_codes.go` | Device-code lifetime and poll interval |
 | `maxLogReportBodySize` | 10 MB | `coordinator/api/log_report_handlers.go` | Provider log upload cap |
 | `degradedRouteEWMAThresholdMs` / `maxDistressRetryAfter` | 1000 ms / 60 s | `coordinator/api/consumer.go` | Input threshold and cap for `estimateRetryAfter` |
 | `DefaultRetryAfter` / `maxRetryAfter` | 1 s / 60 s | `coordinator/ratelimit/ratelimit.go` | Clamp for limiter `Retry-After` |
@@ -526,11 +526,11 @@ Sealed mode hides request and response bodies from TLS-terminating intermediarie
 
 ### API key shapes
 
-`APIKeyResponse` (`coordinator/api/types/types.go`): `id` (`key_<hex>`, `GenerateKeyID`), `name`, `label`, `disabled`, `limit_usd`, `limit_reset`, `usage_usd`, `remaining_usd`, `rpm_limit`, `itpm_limit`, `otpm_limit`, `allowed_models`, `self_route_only`, `expires_at`, `created_at`, `last_used_at`. The secret is `KeyPrefix` (`sk-db-`) + 64 hex characters (`GenerateRawKey`, `coordinator/store/apikey.go`), is returned only by create and rotate, and is stored only as its SHA-256 hash (`hashKey`, `coordinator/store/postgres.go`). `POST /v1/keys` and `PATCH /v1/keys/{id}` accept `name`, `limit_usd`, `limit_reset`, `rpm_limit`, `itpm_limit`, `otpm_limit`, `allowed_models`, `expires_at`, `self_route_only`; PATCH also accepts `disabled` (`coordinator/api/apikey_handlers.go`).
+`APIKeyResponse` (`coordinator/api/types/types.go`): `id` (`key_<hex>`, `GenerateKeyID`), `name`, `label`, `disabled`, `limit_usd`, `limit_reset`, `usage_usd`, `remaining_usd`, `rpm_limit`, `itpm_limit`, `otpm_limit`, `allowed_models`, `self_route_only`, `expires_at`, `created_at`, `last_used_at`. The secret is `KeyPrefix` (`sk-db-`) + 64 hex characters (`GenerateRawKey`, `coordinator/store/apikey.go`), is returned only by create and rotate, and is stored only as its SHA-256 hash (`hashKey`, `coordinator/store/postgres.go`). `POST /v1/keys` and `PATCH /v1/keys/{id}` accept `name`, `limit_usd`, `limit_reset`, `rpm_limit`, `itpm_limit`, `otpm_limit`, `allowed_models`, `expires_at`, `self_route_only`; PATCH also accepts `disabled` (`coordinator/api/accounts/keys.go`).
 
 ### Device code shapes
 
-See the [Device-code flow](#device-code-flow-3) table for the three bodies. `verification_uri` is `<console>/link` when `EIGENINFERENCE_CONSOLE_URL` is set, else `<scheme>://<request host>/link` (`handleDeviceCode`).
+See the [Device-code flow](#device-code-flow-3) table for the three bodies. `verification_uri` is `<console>/link` when `EIGENINFERENCE_CONSOLE_URL` is set, else `<scheme>://<request host>/link` (`Controller.DeviceCode`).
 
 ### International withdrawal confirmation
 
@@ -553,8 +553,8 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Tools, media, constraints | `coordinator/api/toolschema.go`, `coordinator/api/tool_constraints.go`, `coordinator/api/media_resolve.go` |
 | Sealed transport | `coordinator/api/sender_encryption.go` |
 | Models and catalog | `coordinator/api/models_endpoints.go`, `coordinator/api/concrete_model_entries.go`, `coordinator/api/openrouter_endpoint.go`, `coordinator/api/model_registry_handlers.go`, `coordinator/api/model_alias_handlers.go`, `coordinator/api/openrouter_alias_handlers.go`, `coordinator/api/capacity.go`, `coordinator/api/exact_cache_status.go` |
-| Keys, device code, accounts | `coordinator/api/apikey_handlers.go`, `coordinator/store/apikey.go`, `coordinator/api/device_auth.go`, `coordinator/api/me_handlers.go` |
-| Billing, Stripe, referral, invites | `coordinator/api/billing_handlers.go`, `coordinator/api/stripe_payouts.go`, `coordinator/api/stripe_withdraw.go`, `coordinator/api/stripe_payouts_webhooks.go`, `coordinator/api/invite_handlers.go`, `coordinator/api/base_rewards_handlers.go` |
+| Keys, device code, accounts | `coordinator/api/accounts/keys.go`, `coordinator/store/apikey.go`, `coordinator/api/accounts/device_codes.go`, `coordinator/api/accounts/device_approval.go`, `coordinator/api/accounts/device_tokens.go`, `coordinator/api/me_handlers.go` |
+| Billing, Stripe, referral, invites | `coordinator/api/billing_handlers.go`, `coordinator/api/stripe_payouts.go`, `coordinator/api/stripe_withdraw.go`, `coordinator/api/stripe_payouts_webhooks.go`, `coordinator/api/accounts/invites.go`, `coordinator/api/base_rewards_handlers.go` |
 | Stats | `coordinator/api/stats.go`, `coordinator/api/cache_refresher.go`, `coordinator/api/network_totals.go`, `coordinator/api/leaderboard.go`, `coordinator/api/network_series.go` |
 | Release, enrollment, provider WS, log reports | `coordinator/api/release_handlers.go`, `coordinator/api/enroll.go`, `coordinator/api/provider.go`, `coordinator/api/log_report_handlers.go` |
 | Drain, admin telemetry, profiler, state export, telemetry stub | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/admin_state_export.go`, `coordinator/api/telemetry_handlers.go` |

@@ -6,13 +6,15 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 ## Current verified state
 
 Goal remains active; PR996 is draft. No production deployment.
-Discard implementation b8917eda1e75efc7c0695cc477306600d07da4e5 is committed/pushed.
-Current CI34862480863 and integration34862480870 run; benchmark34862480928 waits
-for environment approval. Predecessor owner f43 passes CI/integration.
+Doctor --storage implementation ed05d0b8497e9e312708906ef485d61091476e7a is committed;
+its source is queued for push with physical checkpoint commits. Discard b891 CI
+34862480863 now passes fully. Integration34862480870 reached released-coordinator
+compatibility and remains running at last check; benchmark34862480928 waits.
+Predecessor owner f43 passes CI/integration.
 
-Signed release8-discard is installed immutably on the test Mac:
-/Library/Application Support/Darkbloom/qualification-release8-discard.
-Use its matching newly rebuilt guest for the next factory; release7 is retained.
+Signed release9-doctor is installed immutably on the test Mac:
+/Library/Application Support/Darkbloom/qualification-release9-doctor.
+It reuses all4exact guest artifacts from release8; release7/8 remain retained.
 Host/guest/manifest/Lume signatures and16-file inventory pass independently on
 both Macs. No sandbox provisioning profile or notarization; persistent-keychain
 and fresh physical factory/qualification remain release gates. Runtime13 has
@@ -33,8 +35,11 @@ returned0 for each and each directory is absent. This reclaimed124592623616bytes
 machine authority and Apple Metal attachment are unchanged. Root report exported
 to /private/tmp/darkbloom-sandbox-completion-evidence/retirement-result.json,
 SHAf1783266dbbaf75ddb58246f37e41a51efad6ac09d790f43f56cf5e5b1458efe.
-After deletion: ordinary177321922560bytes, important216986375717bytes (~202GiB),
-still below the300GiB admission floor. New approval question is pending for Go
+Actual signed doctor --storage in gui/501 reports216892593701important bytes
+(~202GiB), below the300GiB admission floor. Its ONLY failed check is disk_capacity;
+actual Aqua identity, transient Secure Enclave, virtualization entitlement and
+all hardware checks pass. The one-shot job is terminal78 and unloaded. This is
+host preflight, not a fresh VM or persistent-keychain result. New approval question is pending for Go
 cache68.2GiB plus qwen3.5-27b-claude-opus-8bit26.6GiB, gemma-4-31b-4bit17.2GiB
 and gpt-oss-20b11.3GiB. Do not delete these without a reply. Old8bitGemma deletion
 was already completed earlier; no other user cache was removed by VM retirement.
@@ -2773,3 +2778,51 @@ No full671suite rerun for this isolated diagnostic CLI change; it does not alter
 runtime/admission policy. Prior full671/7skip/0failure evidence remains b891.
 CIb891 sandbox/coordinator/UI/release/docs/sidecar pass; provider and integration
 remain running at last poll. No cache permission reply.
+
+## 2026-09-14 — Signed storage doctor in the actual GUI session
+
+Clean sourceed05d0b8497e9e312708906ef485d61091476e7a packaged as release-9-doctor,
+--sign --jobs4 with unchanged runtime13 and --guest-release release-8-discard.
+Only host rebuilt (11.41s); all4signed guest artifacts byte-match release8, without
+re-signing.16manifest files and all Developer ID signatures verify; host help
+advertises doctor --storage. Root immutable installation completed0:
+/Library/Application Support/Darkbloom/qualification-release9-doctor.
+No service/VM started by installation; no profile/notarization/persistent-keychain
+qualification. Host SHAd73a28994e7e33809e5f492e01a8ce121d9b1e2b5179cf742c1fdb4e115e97ff
+GuestSHA6a7f3a9d800666936ae8c63b740560511d4c275fae00a1f27ed76ee74ea8fc00
+ManifestSHA2c728a3c80d1a9cd2646752dc4190e6b8f80d5b1d9d238191d044c0b5ae2b5b7
+ZIPSHA3af6c20d86a7be32affa9e400d4fddca982948bb35a77557f8f085c08c16dab5
+InstallerSHA75c0f86f2f488a7cf8cd3dcd298f01062d1c990e376f4a891768f1fc6fe66b14
+Primary installed export release9-doctor-installed-evidence.json
+SHA8aa274495a6e431f06924b16dd23687802eece19a6340c76e0f44e8e78c28114.
+All primary paths under /private/tmp/darkbloom-sandbox-completion-evidence.
+
+Actual Aqua command: signed host doctor --storage
+/Volumes/DarkbloomSandboxTest-20260913/gui501/vms --json, in one root-defined job
+loaded only into gui/501, labelio.darkbloom.sandbox.doctor.storage1, KeepAlivefalse,
+no UID/GID switching, no HOME/environment override, no recurring startup. Output
+lives on encrypted volume /Volumes/DarkbloomSandboxTest-20260913/doctor9-gui501-20260914.
+Protected plist /Library/Application Support/Darkbloom/qualification-doctor9.
+Operator /private/tmp/darkbloom-gui-doctor9-20260914.
+Exactly1run, terminal78:EX_CONFIG, noPID. Host report2026-09-14T15:47:29Z:
+-disk_capacity FAIL:216892593701available vs322122547200required.
+-apple_silicon, hardware_virtualization, virtualization_framework, cpu_capacity
+ (14), memory_capacity(38654705664), aqua_session(actualUID501), secure_enclave
+ (transient ECIES roundtrip), virtualization_entitlement allPASS.
+No --development-unsigned flag. No persistent enclave key or VM was created.
+
+Initial observer failed parsing launchctl's '78: EX_CONFIG' as an integer after
+it had already persisted the terminal observation. Collection recovered that
+same completed job without rerunning it, parsed only the numeric prefix, read
+the existing bounded report, booted out only the exact job and verified it absent.
+The authority keeps its original inode/owner/group/mode/size and noopeners remain.
+No pre/post full VM-tree preservation claim is taken from the interrupted observer;
+its full in-memory baseline was not persisted. Doctor's code path starts no VM.
+
+Primary gui-doctor9.py SHA936ff78ca2ab0327032555e7e61fbd7e3525f3b9cb065dc1031be46b8e8cc929;
+gui-doctor9-collect.py SHA8180911ec6167411c2240e14dccf6ea228115117eb7acbf943ec8299b27372be.
+Primary gui-doctor-evidence.json
+SHA78dce612265e507a3848d3e62eed9d5295c3741b0891d048cb121e4f8fa4a615.
+This provides current signed host/GUI/storage preflight. Actual GUI machineEX
+can still be checked through reserve preflight before any new restore; doctor
+does not acquire machine authority. No user cache permission reply has arrived.

@@ -4,15 +4,6 @@ import (
 	"strconv"
 )
 
-func contains(s []string, v string) bool {
-	for _, x := range s {
-		if x == v {
-			return true
-		}
-	}
-	return false
-}
-
 func modelEntriesCacheKey(includeBuilds bool) string {
 	return "models:entries:v1:include_builds=" + strconv.FormatBool(includeBuilds)
 }

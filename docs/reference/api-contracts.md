@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-13 · commit `0994dbf77`
+> Last updated: 2026-09-14 · commit `53480ffbd`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -391,7 +391,7 @@ Requests are decoded into a generic JSON object with `json.Number` preserved (`p
 | `n` | Values above 1 → 400 `invalid_request_error` |
 | `max_tokens`, `max_completion_tokens` | `max_completion_tokens` is mapped to `max_tokens`. An explicit value is passed through unchanged (not clamped); when none is set the coordinator fills in the output bound from [pricing-model.md → Formulas](pricing-model.md#formulas) (`ensureMaxTokensBound`, `coordinator/api/consumer.go`) |
 | `stop` | A single string is normalised to a one-element array in `parseInferencePrelude` |
-| `tools`, `tool_choice`, `parallel_tool_calls` | Schemas normalised by `toolpolicy.NormalizeParsed` (`coordinator/inference/toolpolicy/normalize.go`); constraints validated by `toolpolicy.ValidateParsed` (`coordinator/inference/toolpolicy/validate.go`) |
+| `tools`, `tool_choice`, `parallel_tool_calls` | Schemas normalised by `toolpolicy.NormalizeParsed` (`coordinator/inference/toolpolicy/normalize.go`); native Chat constraints validated by `toolpolicy.ValidateParsed`, with lowered Responses, Messages and Completions bodies validated by `toolpolicy.ValidateBytes` (`coordinator/inference/toolpolicy/validate.go`) |
 | `response_format` | Passed through to the provider without coordinator validation |
 | `reasoning`, `reasoning_effort` | Applied per model policy by `applyResolvedModelReasoningPolicy` (`coordinator/api/reasoning_request_policy.go`) |
 | `provider` and other routing hints | Removed by `stripProviderRoutingFields` (`coordinator/api/request_introspection.go`) |
@@ -471,7 +471,7 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 | Prompt size at admission | 413 `payload_too_large` when the estimated prompt exceeds what the model's providers can accept | `runInferenceAdmission` (`coordinator/api/inference_admission.go`) |
 | Catalog membership | Model resolved but absent from the routable catalog → 404 `model_not_found`, after the balance reservation is released | `handleChatCompletions` |
 | Key allow-list | `model` not in the key's `allowed_models` → 403 `model_not_allowed` | `keyModelAllowed` |
-| `tool_choice` | `"none"`, `"auto"`, `"required"`, or `{"type": "function", "function": {"name": …}}`; a named function must exist in `tools`; `required` or a named choice with no tools → 400 | `toolpolicy.ValidateParsed` |
+| `tool_choice` | `"none"`, `"auto"`, `"required"`, or `{"type": "function", "function": {"name": …}}`; a named function must exist in `tools`; `required` or a named choice with no tools → 400 | `toolpolicy.ValidateParsed` / `toolpolicy.ValidateBytes` |
 | Tool schemas | Normalised to strict JSON Schema before dispatch; schemas the constraint parser cannot compile → 422 | `toolpolicy.NormalizeParsed`, `validateResolvedToolConstraintParser` |
 | Vision | Image parts require a vision-capable model, otherwise 400; a vision model with no vision-capable provider online → 503 `model_unavailable` | `detectMediaRequirement` (`coordinator/api/request_introspection.go`), `visionToolsFailFast` (`coordinator/api/inference_preprocess.go`) |
 | Remote images | `http(s)` `image_url` parts are gated before dispatch and fetched by the coordinator; the fetch is billed as media | `gateRemoteMediaPreDispatch`, `resolveRemoteMedia` (`coordinator/api/media_resolve.go`) |

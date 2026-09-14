@@ -1,4 +1,4 @@
-package api
+package catalog
 
 import (
 	"bytes"
@@ -20,7 +20,7 @@ func TestAdminUpdateModelCapabilities(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := newTestController(reg, st, logger)
 
 	const modelID = "mlx-community/gpt-oss-20b"
 	entry := &store.ModelRegistryEntry{
@@ -29,7 +29,7 @@ func TestAdminUpdateModelCapabilities(t *testing.T) {
 		Capabilities: []string{"chat"}, Status: "active",
 	}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
-	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: modelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
+	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: ModelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.PromoteModelVersion(modelID, "v1"); err != nil {
@@ -41,7 +41,7 @@ func TestAdminUpdateModelCapabilities(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/"+modelID+"/capabilities", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer publish-secret")
 	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
+	srv.AdminModelAction(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("update status = %d body = %s", rec.Code, rec.Body.String())
 	}
@@ -65,7 +65,7 @@ func TestAdminUpdateModelCapabilities(t *testing.T) {
 	bad := httptest.NewRequest(http.MethodPost, "/v1/admin/models/"+modelID+"/capabilities", bytes.NewReader([]byte(`{}`)))
 	bad.Header.Set("Authorization", "Bearer publish-secret")
 	badRec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(badRec, bad)
+	srv.AdminModelAction(badRec, bad)
 	if badRec.Code != http.StatusBadRequest {
 		t.Errorf("missing capabilities status = %d, want 400", badRec.Code)
 	}
@@ -76,7 +76,7 @@ func TestAdminKeyAuthorizesCapabilitiesUpdate(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := newTestController(reg, st, logger)
 	srv.SetAdminKey("admin-key")
 
 	const modelID = "mlx-community/gemma-4-26b"
@@ -86,7 +86,7 @@ func TestAdminKeyAuthorizesCapabilitiesUpdate(t *testing.T) {
 		Capabilities: []string{"chat"}, Status: "active",
 	}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
-	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: modelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
+	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: ModelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.PromoteModelVersion(modelID, "v1"); err != nil {
@@ -97,7 +97,7 @@ func TestAdminKeyAuthorizesCapabilitiesUpdate(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/"+modelID+"/capabilities", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer admin-key")
 	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
+	srv.AdminModelAction(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("admin-key update status = %d body = %s", rec.Code, rec.Body.String())
 	}
@@ -110,7 +110,7 @@ func TestAdminKeyAuthorizesCapabilitiesUpdate(t *testing.T) {
 	bad := httptest.NewRequest(http.MethodPost, "/v1/admin/models/"+modelID+"/capabilities", bytes.NewReader(body))
 	bad.Header.Set("Authorization", "Bearer wrong-key")
 	badRec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(badRec, bad)
+	srv.AdminModelAction(badRec, bad)
 	if badRec.Code != http.StatusUnauthorized {
 		t.Errorf("wrong key status = %d, want 401", badRec.Code)
 	}

@@ -1,6 +1,8 @@
-package api
+package catalog
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestOpenRouterSlug(t *testing.T) {
 	const id = "mlx-community/Qwen3.5-9B-MLX-4bit"

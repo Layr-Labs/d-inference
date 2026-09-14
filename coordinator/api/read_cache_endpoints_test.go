@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/catalog"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -97,7 +98,7 @@ func (h *cachedEndpointHarness) seedCatalogModel(t *testing.T, modelID string) {
 		Status:           "active",
 		CreatedAt:        time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
-	version := &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: modelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}
+	version := &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: catalog.ModelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
 	if err := h.mem.SetModelVersion(entry, version, files); err != nil {
 		t.Fatal(err)

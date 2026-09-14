@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/catalog"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -32,7 +33,7 @@ func registerModelContext(t *testing.T, st *store.MemoryStore, modelID string, c
 	}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
 	if err := st.SetModelVersion(entry, &store.ModelVersion{
-		ModelID: modelID, Version: "v1", R2Prefix: modelR2Prefix(modelID, "v1"),
+		ModelID: modelID, Version: "v1", R2Prefix: catalog.ModelR2Prefix(modelID, "v1"),
 		AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready",
 	}, files); err != nil {
 		t.Fatalf("SetModelVersion: %v", err)

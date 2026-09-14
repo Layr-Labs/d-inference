@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/catalog"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -55,7 +56,7 @@ func TestListModelsOpenRouterFields(t *testing.T) {
 		},
 		CreatedAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
-	version := &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: modelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 9_000_000_000, FileCount: 1, Status: "ready"}
+	version := &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: catalog.ModelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 9_000_000_000, FileCount: 1, Status: "ready"}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
 	if err := st.SetModelVersion(entry, version, files); err != nil {
 		t.Fatal(err)
@@ -77,7 +78,7 @@ func TestListModelsOpenRouterFields(t *testing.T) {
 
 	// Call the handler directly (bypasses requireAuth, like the existing test).
 	rec := httptest.NewRecorder()
-	srv.handleListModels(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	srv.catalogController().ListModels(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}

@@ -1,11 +1,13 @@
-package api
+package catalog
 
-import "github.com/eigeninference/d-inference/coordinator/store"
+import (
+	"github.com/eigeninference/d-inference/coordinator/store"
+)
 
-// openRouterAliasUsesConcreteSource preserves the legacy meaning of an empty
+// AliasUsesConcreteSource preserves the legacy meaning of an empty
 // source_kind: OpenRouter aliases created before source kinds were persisted
 // always cloned a standard alias.
-func openRouterAliasUsesConcreteSource(alias store.ModelAlias) bool {
+func AliasUsesConcreteSource(alias store.ModelAlias) bool {
 	return alias.SourceKind == store.ModelAliasSourceConcrete
 }
 
@@ -35,7 +37,7 @@ func standardAliasCoveringBuild(aliases []store.ModelAlias, buildID string) (str
 
 func concreteOpenRouterAliasUsingBuild(aliases []store.ModelAlias, builds map[string]struct{}) (store.ModelAlias, bool) {
 	for _, alias := range aliases {
-		if !alias.Active || !alias.OpenRouterOnly || !openRouterAliasUsesConcreteSource(alias) {
+		if !alias.Active || !alias.OpenRouterOnly || !AliasUsesConcreteSource(alias) {
 			continue
 		}
 		if _, covered := builds[alias.SourceModel]; covered {

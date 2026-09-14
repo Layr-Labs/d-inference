@@ -1,4 +1,4 @@
-package api
+package catalog
 
 import (
 	"bytes"
@@ -16,7 +16,7 @@ func TestAdminSetAndClearDeprecationDate(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := newTestController(reg, st, logger)
 	srv.SetAdminKey("admin-key")
 
 	const modelID = "mlx-community/dep-model"
@@ -26,7 +26,7 @@ func TestAdminSetAndClearDeprecationDate(t *testing.T) {
 		Metadata: map[string]any{"tier": "test"},
 	}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
-	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: modelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
+	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: ModelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.PromoteModelVersion(modelID, "v1"); err != nil {
@@ -42,7 +42,7 @@ func TestAdminSetAndClearDeprecationDate(t *testing.T) {
 		}
 		r.Header.Set("Authorization", "Bearer admin-key")
 		rec := httptest.NewRecorder()
-		srv.Handler().ServeHTTP(rec, r)
+		srv.AdminModelAction(rec, r)
 		return rec
 	}
 
@@ -90,7 +90,7 @@ func TestAdminSetAndClearOpenRouterSlug(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := newTestController(reg, st, logger)
 	srv.SetAdminKey("admin-key")
 
 	const modelID = "mlx-community/slug-model"
@@ -100,7 +100,7 @@ func TestAdminSetAndClearOpenRouterSlug(t *testing.T) {
 		Metadata: map[string]any{"tier": "test"},
 	}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
-	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: modelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
+	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: ModelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.PromoteModelVersion(modelID, "v1"); err != nil {
@@ -116,7 +116,7 @@ func TestAdminSetAndClearOpenRouterSlug(t *testing.T) {
 		}
 		r.Header.Set("Authorization", "Bearer admin-key")
 		rec := httptest.NewRecorder()
-		srv.Handler().ServeHTTP(rec, r)
+		srv.AdminModelAction(rec, r)
 		return rec
 	}
 
@@ -152,7 +152,7 @@ func TestAdminSetAndClearHuggingFaceID(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := newTestController(reg, st, logger)
 	srv.SetAdminKey("admin-key")
 
 	const (
@@ -165,7 +165,7 @@ func TestAdminSetAndClearHuggingFaceID(t *testing.T) {
 		Metadata: map[string]any{"tier": "test"},
 	}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
-	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: modelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
+	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: ModelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.PromoteModelVersion(modelID, "v1"); err != nil {
@@ -181,7 +181,7 @@ func TestAdminSetAndClearHuggingFaceID(t *testing.T) {
 		}
 		r.Header.Set("Authorization", "Bearer admin-key")
 		rec := httptest.NewRecorder()
-		srv.Handler().ServeHTTP(rec, r)
+		srv.AdminModelAction(rec, r)
 		return rec
 	}
 

@@ -1,4 +1,4 @@
-package api
+package catalog
 
 import (
 	"reflect"

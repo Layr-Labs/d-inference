@@ -1,4 +1,4 @@
-package api
+package catalog
 
 import (
 	"github.com/eigeninference/d-inference/coordinator/api/types"
@@ -9,7 +9,7 @@ import (
 // modelEntryForConcrete builds the consumer catalog representation of one
 // provider-advertised concrete model. Callers decide whether the entry is hidden
 // behind a standard rollout alias; OpenRouter-only aliases never hide it.
-func (s *Server) modelEntryForConcrete(
+func (s *Controller) modelEntryForConcrete(
 	model registry.AggregateModel,
 	capacity *registry.ModelCapacity,
 	catalogModel store.SupportedModel,
@@ -61,7 +61,7 @@ func (s *Server) modelEntryForConcrete(
 // modelEntryForCatalogConcrete builds exact-retrieval metadata for an active
 // concrete model even when no provider is connected. Live counts remain zero;
 // the durable registry supplies identity, limits, pricing, and capabilities.
-func (s *Server) modelEntryForCatalogConcrete(
+func (s *Controller) modelEntryForCatalogConcrete(
 	modelID string,
 	catalogByID map[string]store.SupportedModel,
 	registryByID map[string]store.ModelRegistryEntry,
@@ -86,7 +86,7 @@ func (s *Server) modelEntryForCatalogConcrete(
 	return entry, true
 }
 
-func (s *Server) openRouterAggregateTypeByID() map[string]string {
+func (s *Controller) openRouterAggregateTypeByID() map[string]string {
 	typesByID := make(map[string]string)
 	for _, model := range s.registry.ListModels() {
 		if model.ModelType != "" {
@@ -115,7 +115,7 @@ func concreteModelEligibleForOpenRouterFeed(
 // openRouterEntryForConcrete builds the dedicated provider-feed representation
 // of one active concrete catalog model. It remains independently listed when an
 // OpenRouter-only alias clones it.
-func (s *Server) openRouterEntryForConcrete(
+func (s *Controller) openRouterEntryForConcrete(
 	modelID string,
 	catalogByID map[string]store.SupportedModel,
 	registryByID map[string]store.ModelRegistryEntry,

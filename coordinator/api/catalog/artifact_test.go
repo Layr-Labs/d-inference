@@ -1,9 +1,10 @@
-package api
+package catalog
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"strings"
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 func TestRegisterModelRejectsMutableHuggingFaceRevision(t *testing.T) {

@@ -1,16 +1,10 @@
-package api
-
-// Read-cache wiring for the consumer model catalog endpoints (GET /v1/models,
-// GET /v1/models/{id}). The shared, caller-independent computation —
-// listModelEntries: the registry snapshot plus the alias/registry DB lookups —
-// is memoized for a short TTL. Anything per-caller (self-route owned-model
-// views, key allow-lists) is applied by the handlers after the shared step and
-// is never cached.
+package catalog
 
 import (
 	"strconv"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/httpresponse"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 )
 
@@ -28,10 +22,10 @@ func modelListBodyCacheKey(includeBuilds bool) string {
 	return "models:list:v1:include_builds=" + strconv.FormatBool(includeBuilds)
 }
 
-// cachedModelEntries returns the public catalog's consumer-facing entries,
+// Entries returns the public catalog's consumer-facing entries,
 // memoized for modelListCacheTTL. The slice is shared between callers and
 // must not be mutated (handlers copy the entry they return).
-func (s *Server) cachedModelEntries(includeBuilds bool) ([]types.ModelEntry, error) {
+func (s *Controller) Entries(includeBuilds bool) ([]types.ModelEntry, error) {
 	key := modelEntriesCacheKey(includeBuilds)
 	if v, ok := s.readCacheGetValue(key); ok {
 		if entries, ok := v.([]types.ModelEntry); ok {
@@ -52,7 +46,7 @@ func (s *Server) cachedModelEntries(includeBuilds bool) ([]types.ModelEntry, err
 // miss recomputes the entries (refreshing the entries memo alongside) rather
 // than reusing an almost-expired memo, so the body is never older than
 // modelListCacheTTL.
-func (s *Server) cachedModelListBody(includeBuilds bool) ([]byte, error) {
+func (s *Controller) cachedModelListBody(includeBuilds bool) ([]byte, error) {
 	key := modelListBodyCacheKey(includeBuilds)
 	if body, ok := s.readCacheGet(key); ok {
 		return body, nil
@@ -62,7 +56,7 @@ func (s *Server) cachedModelListBody(includeBuilds bool) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	body, err := encodeCachedJSON(types.ModelListResponse{Object: "list", Data: entries})
+	body, err := httpresponse.EncodeCachedJSON(types.ModelListResponse{Object: "list", Data: entries})
 	if err != nil {
 		return nil, err
 	}

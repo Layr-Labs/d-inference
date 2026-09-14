@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/catalog"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -49,7 +50,7 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 		},
 	}
 	if err := st.SetModelVersion(entry, &store.ModelVersion{
-		ModelID: model, Version: "v1", R2Prefix: modelR2Prefix(model, "v1"),
+		ModelID: model, Version: "v1", R2Prefix: catalog.ModelR2Prefix(model, "v1"),
 		AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready",
 	}, []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}); err != nil {
 		t.Fatal(err)

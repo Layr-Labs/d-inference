@@ -1,6 +1,6 @@
 # Routing flags: kill switches and flag flips
 
-> Last updated: 2026-09-13 · commit `01c6761cc`
+> Last updated: 2026-09-13 · commit `e98d46fbd`
 
 The routing-v2 rollout is complete: every behaviour it introduced ships in the
 coordinator binary and is **on by default**. This runbook is what remains
@@ -76,7 +76,7 @@ The environment reads remain in `coordinator/registry/config.go` (`ReadConfig`);
 `WarmPoolConfig` aliases `warmpool.Config` in
 `coordinator/registry/warmpool/config.go`. The runner and planning policy are
 `Controller.Run` and `Controller.Plan` in `coordinator/registry/warmpool/controller.go`
-and `coordinator/registry/warmpool/plan.go`. The full configuration table, including
+and `coordinator/registry/warmpool/planning_pass.go`. The full configuration table, including
 thresholds and Little's-Law parameters, is in [`scheduling.md`](../architecture/scheduling.md#warm-pool-controller).
 
 ### Capacity fault handling

@@ -1,4 +1,4 @@
-package registry
+package providerversion
 
 import (
 	"strings"
@@ -6,11 +6,11 @@ import (
 	"sync/atomic"
 )
 
-// version_memo.go — memoized parsing of provider binary versions.
+// memo.go — memoized parsing of provider binary versions.
 //
 // The routing scan compares every provider's reported version against the
 // capability floors (providerMeetsTraitFloorsLocked) and the pooled-budget
-// layout floor (slotBudgetLayoutForVersion → CompareVersions) on every
+// layout floor (Policy.SlotBudgetLayout → Policy.Compare) on every
 // request. Parsing a dotted version allocates (strings.Split + a segment
 // slice) — ~4% of the fleet-scale scan's allocation volume for what is, in
 // practice, a handful of distinct strings across the whole fleet. Each memo
@@ -35,7 +35,7 @@ import (
 //
 // The layout memo additionally keys on the NORMALIZED numeric core
 // ("1.0.0" for "v1.0.0-rc1+meta"), so suffix variants of one version share an
-// entry (pooled_admission.go).
+// entry (layout.go).
 
 const (
 	// versionMemoCap bounds each memo's entry count.
@@ -101,15 +101,7 @@ func (m *cowMemo[V]) getBounded(key string, compute func(string) V, keep func(V)
 	return v
 }
 
-// size reports the current entry count (tests).
-func (m *cowMemo[V]) size() int {
-	if cur := m.entries.Load(); cur != nil {
-		return len(*cur)
-	}
-	return 0
-}
-
-// has reports whether key is currently memoized (tests).
+// has reports whether the exact key is currently memoized without inserting.
 func (m *cowMemo[V]) has(key string) bool {
 	if cur := m.entries.Load(); cur != nil {
 		_, ok := (*cur)[key]
@@ -117,30 +109,3 @@ func (m *cowMemo[V]) has(key string) bool {
 	}
 	return false
 }
-
-// maxKeyLen returns the longest memoized key in bytes (tests).
-func (m *cowMemo[V]) maxKeyLen() int {
-	longest := 0
-	if cur := m.entries.Load(); cur != nil {
-		for k := range *cur {
-			if len(k) > longest {
-				longest = len(k)
-			}
-		}
-	}
-	return longest
-}
-
-// reset drops every entry (tests).
-func (m *cowMemo[V]) reset() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.entries.Store(nil)
-}
-
-var (
-	// versionSegmentsMemo backs versionSegments (request_traits.go).
-	versionSegmentsMemo cowMemo[[]int]
-	// slotBudgetLayoutMemo backs slotBudgetLayoutForVersion (pooled_admission.go).
-	slotBudgetLayoutMemo cowMemo[slotBudgetLayout]
-)

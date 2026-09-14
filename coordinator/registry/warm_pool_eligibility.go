@@ -30,7 +30,7 @@ func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now 
 	if providerStateRestoreRequiredLocked(p) {
 		return warmPoolCandidate{}, warmColdStateRestoring
 	}
-	if r.providerHasPendingLoad(p.ID) || r.gateOf(p).dispatchLoadCooled(model, now) {
+	if r.providerHasPendingLoad(p.ID) || r.gateOf(p).DispatchLoadCooled(model, now) {
 		return warmPoolCandidate{}, warmColdPendingLoad
 	}
 	if p.pendingCount() != 0 || warmPoolBackendSlotBusyLocked(p) {

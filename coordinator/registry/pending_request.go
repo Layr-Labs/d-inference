@@ -235,7 +235,7 @@ type PendingRequest struct {
 	emptyCompletionAccepted   bool
 	emptyCompletionDecision   chan struct{}
 	// rateOutcomeCounted marks that this request's ONE capacity-503 rate
-	// outcome (capacity_rate.go denominator) was recorded by the commit-time
+	// outcome (faultstate/capacity_rate.go denominator) was recorded by the commit-time
 	// accept — RecordCapacityAccept returned rateOutcomeRecorded=true. The
 	// completion-time accept (noteInferenceSuccess) re-offers the outcome only
 	// when this is false, covering requests that never commit content while a

@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"os/exec"
 	"reflect"
 	"runtime"
@@ -10,8 +11,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/attestation"
 )
 
 // Tests for the reservation commit without the global write lock (shared
@@ -285,12 +284,12 @@ func TestReserveNextFromPlanAdmitsExactlyTheSerialCapacityUnderConcurrency(t *te
 // do not share p.mu; only the check-and-claim under gate.mu makes this exact.
 func TestCommitProbeClaimAdmitsExactlyOneAcrossSessions(t *testing.T) {
 	forEachCommitMode(t, func(t *testing.T, mode reserveCommitMode) {
-		reg := New(testLogger())
+		reg := newClockedFaultRegistry(t)
 		setReserveCommitModeForTest(reg, mode)
 		const model = "probe-race-model"
 		p1 := attestSchedulerProvider(t, reg, "probe-sess-1", model, "SER-PROBE-RACE", 100)
 		p2 := attestSchedulerProvider(t, reg, "probe-sess-2", model, "SER-PROBE-RACE", 100)
-		for i := 0; i < reg.capacityCooldownCfg.Threshold; i++ {
+		for i := 0; i < reg.faults.Policy().CapacityCooldown.Threshold; i++ {
 			reg.RecordCapacityReject(p1.ID, model)
 		}
 		if !reg.CapacityCooldownActive(p2.ID, model) {
@@ -386,7 +385,7 @@ func commitModeFleets(t *testing.T, model string) (map[reserveCommitMode]*benchF
 		for i := 0; i < healthEjectionConsecTrip+1; i++ {
 			r.RecordProviderServeOutcome("serial:SER-MODE-EJECT", false, 500, "boom")
 		}
-		for i := 0; i < r.capacityCooldownCfg.Threshold+1; i++ {
+		for i := 0; i < r.faults.Policy().CapacityCooldown.Threshold+1; i++ {
 			r.RecordCapacityReject(faulted["capacity_cooldown"], model)
 		}
 		r.RecordDispatchLoadFailure(faulted["dispatch_load"], model)

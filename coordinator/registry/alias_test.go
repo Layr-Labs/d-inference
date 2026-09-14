@@ -1,13 +1,12 @@
 package registry
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/attestation"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 func registerProviderWithModel(reg *Registry, id, modelID string) *Provider {
@@ -571,7 +570,7 @@ func TestMergeProviderModelsRejectsNonCatalogBuild(t *testing.T) {
 // shared identity and its own serial carrying a cooldown that travels with it,
 // every resolution must pick Previous.
 func TestResolveModelReadsTheSessionsCurrentGateAcrossRebinds(t *testing.T) {
-	reg := New(testLogger())
+	reg := newClockedFaultRegistry(t)
 	desired := makeSchedulerProvider(t, reg, "alias-desired", aliasQAT, 100)
 	// The sibling keeps the shared gate live (so a rebind resets it instead of
 	// orphaning it) and serves neither build, so its clean gate cannot make
@@ -592,9 +591,7 @@ func TestResolveModelReadsTheSessionsCurrentGateAcrossRebinds(t *testing.T) {
 	// The Desired provider's pair is cooled for longer than the test runs; the
 	// cooldown follows the session through every rebind (mergeLocked keeps the
 	// later expiry both ways).
-	withGateForSession(reg, desired.ID, func(g *gateState) {
-		g.dispatchLoadCooldowns[aliasQAT] = time.Now().Add(time.Hour)
-	})
+	withFaultFixtureTime(reg, time.Now().Add(time.Hour-dispatchLoadCooldownTTL), func() { reg.RecordDispatchLoadFailure(desired.ID, aliasQAT) })
 	if build, _, _ := reg.ResolveModel("gemma-4-26b"); build != aliasFP8 {
 		t.Fatalf("precondition: with Desired cooled the alias must fall back to Previous, got %q", build)
 	}
@@ -628,7 +625,7 @@ func TestResolveModelReadsTheSessionsCurrentGateAcrossRebinds(t *testing.T) {
 	if len(wrong) > 0 {
 		t.Fatalf("%d resolutions picked %q while its only provider was cooled (first: %q)", len(wrong), aliasQAT, wrong[0])
 	}
-	if !reg.dispatchLoadCooled(desired.ID, aliasQAT, time.Now()) || sibling.gate.Load() != desired.gate.Load() {
+	if !reg.dispatchLoadCooled(desired.ID, aliasQAT, time.Now()) || !reg.gateOf(sibling).SameGate(reg.gateOf(desired)) {
 		t.Fatal("postcondition: the cooldown must still follow the Desired session, back on the shared gate")
 	}
 }

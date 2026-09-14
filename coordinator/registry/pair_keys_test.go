@@ -45,10 +45,10 @@ func TestDispatchLoadCooldownGateAllocatesNothing(t *testing.T) {
 	defer r.mu.RUnlock()
 	hits := 0
 	allocs := testing.AllocsPerRun(200, func() {
-		if r.gateOf(p1).dispatchLoadCooled("m", now) {
+		if r.gateOf(p1).DispatchLoadCooled("m", now) {
 			hits++
 		}
-		if r.gateOf(p2).dispatchLoadCooled("m", now) {
+		if r.gateOf(p2).DispatchLoadCooled("m", now) {
 			hits++
 		}
 		if r.dispatchLoadCooled("p1", "m", now) {

@@ -1,12 +1,11 @@
 package registry
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"reflect"
 	"sort"
 	"testing"
-
-	"github.com/eigeninference/d-inference/coordinator/attestation"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 func modelIndexRegister(t *testing.T, r *Registry, id string, models ...string) *Provider {
@@ -249,7 +248,7 @@ func TestRoutingWalksIdenticalWithFaultStateWithAndWithoutIndex(t *testing.T) {
 	if !f.reg.HealthEjectionOpen(sid) {
 		t.Fatal("precondition: identity ejected")
 	}
-	for i := 0; i < f.reg.capacityCooldownCfg.Threshold+1; i++ {
+	for i := 0; i < f.reg.faults.Policy().CapacityCooldown.Threshold+1; i++ {
 		f.reg.RecordCapacityReject(cooledID, model)
 	}
 	if !f.reg.capacityCooled(cooledID, model, benchPendingRequest(model, 0).FirstContentDeadline) {

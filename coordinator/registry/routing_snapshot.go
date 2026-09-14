@@ -61,7 +61,7 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 	snap.availableOnDisk = !snap.modelLoaded
 	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
 
-	// Gray-box budget clamp (budget_clamp.go): when a capacity-503 has proven
+	// Gray-box budget clamp (faultstate/budget_clamp.go): when a capacity-503 has proven
 	// the pair's live gate is rejecting, admission must not believe the
 	// stale-optimistic heartbeat budget. Evaluated for budgetless snapshots
 	// too — a reconnected session has no BackendCapacity until its first
@@ -73,7 +73,7 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 	// release-freshness check compares against the clamp time. p.mu and r.mu
 	// are both held here (see lock discipline above); the clamp read is one
 	// lock-free flag load unless the identity actually carries a clamp, and is
-	// confirmed against p.gate like the gates above (gateView).
+	// confirmed against p.faultSession like the gates above (gateView).
 	rawRemaining := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
 	snap.budgetClamped = r.budgetClampedFor(p, model, p.LastHeartbeat, rawRemaining, snap.activeTokenBudgetMax > 0, now)
 }

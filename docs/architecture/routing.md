@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-13 · commit `3a18afabc`
+> Last updated: 2026-09-13 · commit `8bba9916a`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -437,7 +437,7 @@ stop believing that pair's heartbeat budget: `freeMemoryAdmits` rejects it as
 requires both a heartbeat delivered after the clamp showing at least
 `budgetClampReleaseMinHeadroomTokens = 1024` tokens of headroom
 (`ReleaseBudgetClampsOnHeartbeat`) and an accept for the pair after the clamp
-(`noteBudgetClampAcceptLocked`). A clamp fails open after
+(`CapacityAccept.Apply`, `coordinator/registry/faultstate/capacity_accept.go`). A clamp fails open after
 `defaultBudgetClampTTL = 5 * time.Minute`. Kill switch
 [`EIGENINFERENCE_BUDGET_CLAMP`](../reference/configuration.md#routing-admission-and-ttft);
 TTL override `EIGENINFERENCE_BUDGET_CLAMP_TTL_SECONDS`.
@@ -463,7 +463,9 @@ accept is gated (`capacity_cooldown`) for `defaultCapacityCooldownTTL =
 
 First-content accepts carry their observation time from
 `coordinator/api/dispatch.go` (`commitFirstContent`) to
-`coordinator/registry/fault_capacity.go` (`RecordCapacityAcceptObserved` → `CapacityAccept.Apply`).
+`coordinator/registry/fault_capacity.go` (`RecordCapacityAcceptObserved`), which
+applies the transaction in `coordinator/registry/faultstate/capacity_accept.go`
+(`CapacityAccept.Apply`).
 The recorder runs asynchronously so the first client byte does not wait for
 `registry.mu`. Reject strikes after the observation survive a delayed accept;
 a cooldown is rebuilt from fresh backoff when those surviving strikes

@@ -90,10 +90,10 @@ func (r *Registry) buildCandidateInto(c *routingCandidate, pr *PendingRequest, n
 	// demonstrably fit, so the heuristic must never reject it. The provider
 	// reports "running" while actively serving and "idle" when loaded with no
 	// in-flight requests (BatchScheduler+Telemetry: activeRequests>0 ? running :
-	// idle); BOTH mean the weights are in GPU memory. `snap.modelLoaded` only
-	// tracks "running", so we check the slot state directly here — otherwise an
-	// idle-but-loaded provider would be wrongly excluded. Reported as
-	// rejectModelTooLarge (permanent, not capacity).
+	// idle); BOTH mean the weights are in GPU memory. SlotStateModelLoaded uses
+	// that same resident vocabulary here and when fillSnapshotSlotState sets
+	// snap.ModelLoaded. An idle-but-loaded provider therefore skips this gate.
+	// Reported as rejectModelTooLarge (permanent, not capacity).
 	if !routingcost.SlotStateModelLoaded(snap.SlotState) && !modelFitsHardware(snap.MinRAMGB, snap.ModelSizeGB, snap.TotalMemoryGB) {
 		return rejectModelTooLarge, GateModelTooLarge, false
 	}
@@ -124,10 +124,10 @@ func (r *Registry) buildCandidateInto(c *routingCandidate, pr *PendingRequest, n
 	} else {
 		backlogMs = routingcost.BacklogTokenMs(snap.MaxTokensPotential, waitingBacklogTokens, unaccountedPendingTokens, effectiveTPS)
 	}
-	// Prefill resolves through resolvePrefillTPS for BOTH the base cost term and
+	// Prefill resolves through routingcost.ResolvePrefillTPS for BOTH the base cost term and
 	// the long-prompt bias below, so provider ranking follows the live measured
 	// prefill EWMA when a slot reports one and only falls back to the static
-	// registration/x12 chain when it does not. Reading snap.prefillTPS directly
+	// registration/x12 chain when it does not. Reading snap.PrefillTPS directly
 	// here pinned the dominant prefill term to the static rate, which left a box
 	// whose measured prefill had degraded looking as cheap as its benchmark.
 	prefillTPS := routingcost.ResolvePrefillTPS(snap)
@@ -137,7 +137,7 @@ func (r *Registry) buildCandidateInto(c *routingCandidate, pr *PendingRequest, n
 	// strongly preferred, reducing pre-first-token client_gone. The amplified
 	// quantity is the FULL time-to-first-token (TTFT): prefill PLUS, for a COLD
 	// provider, the model-load latency (statePenalty, ~30s). Prefill uses
-	// resolvePrefillTPS (the live, observed-preferred prefill signal) — not the
+	// routingcost.ResolvePrefillTPS (the live, observed-preferred prefill signal) — not the
 	// static rate — so the bias follows real measured prefill and does not favor a
 	// box whose static rate looks good but whose measured prefill is degraded.
 	// Amplifying the full cold-load+prefill TTFT — not just prefill — prevents the

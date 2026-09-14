@@ -128,7 +128,7 @@ Each row is the stage at which a request can end early and what the consumer see
 | Cache route plan | `coordinator/api/prompt_artifacts.go` — `planCacheRoute` |
 | Dispatch, speculative backup, commit, client-gone | `coordinator/inference/dispatch/request.go` — `Controller.Run`; `coordinator/inference/dispatch/run.go` — `execution.run`; detailed [dispatch code map](routing.md#code-map). API observation bindings live in `coordinator/api/inference_dispatch.go` (`dispatchObserver`) |
 | Per-request encryption | `coordinator/internal/e2e/e2e.go` — `GenerateSessionKeys`, `Encrypt` |
-| Wire messages | `coordinator/protocol/inference.go` (`InferenceRequestMessage`, `InferenceCompleteMessage`, `InferenceErrorMessage`); `coordinator/protocol/messages.go` (`DecodeProviderMessage`) |
+| Wire messages | `coordinator/protocol/inference.go` (`InferenceRequestMessage`, `InferenceCompleteMessage`, `InferenceErrorMessage`); `coordinator/protocol/provider_message.go` (`DecodeProviderMessage`) |
 | Settlement | `coordinator/inference/providerframe/complete.go` — `Service.CompleteAt`; `coordinator/api/settlement.go` — `claimSettlement`; `coordinator/inference/settlement/completion.go` — `Service.Complete` |
 
 ## Related

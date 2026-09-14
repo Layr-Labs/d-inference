@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `f913aeaef9`
+> Last updated: 2026-09-13 · commit `38375bc12`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -131,6 +131,17 @@ heartbeat entry points on a directly constructed server with no attestor.
 ```bash
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/providercontrol/codeidentity
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'CodeIdentity|CodeCoverage|CodeContinuity|CrossVersionReuse|Restart.*Transition|Seeded|HashlessRegistration|PersistOnAttest|TrustReuseShutdown|ApprovedTransitionGrants|MDMSchedulerFleet1500'
+```
+
+Release HTTP and artifact regressions stay in `coordinator/api/` and reach
+`coordinator/api/releases/` through the registered routes. The current store,
+cache and admin credential test is `release_endpoints_owner_test.go`; release
+inventory failures, forced deactivation, artifact limits and mixed-fleet policy
+regressions retain their existing API fixtures. The two direct deactivation
+calls in `provider_registration_test.go` invoke the real release controller.
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api/...
 ```
 
 Release-policy HTTP, fleet, signed-challenge and inventory-failure regressions

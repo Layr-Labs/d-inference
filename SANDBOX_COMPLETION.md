@@ -5,7 +5,7 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
-The newest local work adds asynchronous root image use, an overlap/completion
+Pushed653074530 adds asynchronous root image use, an overlap/completion
 gate, inherited machine EX for owned system children, and typed APFS Data-volume
 inspection. Full sandbox576tests/7skips/0failures and focused20tests pass. A new
 real-root experiment proves the child retains EX after parent exit and blocks
@@ -66,7 +66,7 @@ explicit temporary runtime-group membership until the machine campaign finishes.
 - Worktree: `.worktrees/sandbox-completion-20260913`.
 - Branch: `codex/sandbox-completion-20260913`.
 - Starting sandbox tip0950ac41e; master93337ef05 integrated in453b37667.
-- Latest pushed code:b1743dd53; typed root recovery, per-image fence, maintenancef12f72810, root source guard, lifecycle commitf235b8ad2 and accountless staging
+- Latest pushed code:653074530; typed root recovery, per-image fence, maintenancef12f72810, root source guard, lifecycle commitf235b8ad2 and accountless staging
   are included. Verify git HEAD and remote before resuming.
 - Local GUI plan commit3abe05f712de1d2dcc6958315c1fbf56b4b693ff follows
   host context50145d4b4 and qualification validator4cab8f470.
@@ -1586,3 +1586,15 @@ be deliberately integrated; final qualification still needs fresh native stopped
 proof. Lsof exclusion must be only our exact PID+retained image fd, not all root
 processes or all fds in the current process. The completed staging phase, post-boot
 collection phase and final released-lease qualification need distinct journals.
+
+
+Async ownership/APFS source653074530af527b11f4c3637b83ad016b3beb0a3 is committed
+and pushed; all pre-push checks pass (disk-binding-push.log). PR996 remains draft
+and documents both the new owned-child proof and the still-unbuilt attachment
+workflow. CI34825232114 and integration34825232144 both passedb1743dd53.
+FreshCI34827518025 is queued, integration34827517978 is running653074530;
+benchmark34827518043 waits for separate approval, not granted. This checkpoint
+update is local-only. No live root probe, sleep child, new VM or image attachment
+remains; maintenance markers were removed only by exact recovery. Continue with
+actual attach/mount/detach and its durable intent/recovery path. The existing
+Go-cache approval question remains unanswered; no cache deletion occurred.

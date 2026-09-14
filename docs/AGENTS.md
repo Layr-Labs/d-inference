@@ -1,6 +1,6 @@
 # Darkbloom docs — how this documentation is organised and maintained
 
-> Last updated: 2026-09-13 · commit `285f7c9f8`
+> Last updated: 2026-09-14 · commit `0deac8b0a`
 
 Rules for anyone — human or agent — who reads, writes, or checks a file under
 `docs/`. The code is the source of truth; a doc that disagrees with the code is
@@ -150,6 +150,8 @@ and rejects paths above the repository root, invalid stamps and unavailable
 Git objects. Docs Lint uses a full-history checkout; fetch complete history
 locally if the checker reports an unavailable commit. To browse a moved source
 link, open the record at its stamped commit in the repository host.
+See the [historical source procedure](developer/historical-references.md)
+for navigating these original source snapshots.
 
 ## 7. When you change code, change these docs
 

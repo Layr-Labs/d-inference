@@ -1,6 +1,6 @@
 # Provider quickstart
 
-> Last updated: 2026-09-06 · commit `615d96328`
+> Last updated: 2026-09-14 · commit `0deac8b0a`
 
 From a fresh Apple Silicon Mac to a provider that is registered with the
 coordinator, linked to your account and serving. For operators; install, check,
@@ -199,7 +199,7 @@ private_only = false         # true = serve only your own self-route traffic
   Use `"contiguous"` to pin that backend, or `"paged"` to require paged
   construction. Per-model `engine_v2_kv_backend_by_model` entries override
   the global setting (`EngineV2KVBackendPolicy.parseSelection`,
-  `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift`).
+  `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift`).
   Under `"auto"`, paged preflight/construction failures fall back to
   contiguous; the version-bound crash-loop guard also forces automatic
   selections contiguous. Explicit `"paged"` construction failures instead

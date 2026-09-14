@@ -8,6 +8,7 @@ struct CachePromptParityTests {
     func forcedToolThinkingVectors() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
         let url = root.appendingPathComponent("fixtures/prompt-contract/v1/forced_tool_thinking_vectors.json")
         let cases = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
         #expect(cases.count == 18)

@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-13 · commit `ec73023e4`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -29,7 +29,7 @@
 - [`architecture/data-flow.md`](architecture/data-flow.md): one request from consumer HTTP through routing, encryption, the provider WebSocket, and back as SSE.
 - [`architecture/components/coordinator.md`](architecture/components/coordinator.md): the Go control plane — process layout, HTTP/WebSocket servers, store, background jobs.
 - [`architecture/components/provider.md`](architecture/components/provider.md): the Swift provider process — binaries, `ProviderCore` components, process boundaries, what stays in-process.
-- [`architecture/components/consumer.md`](architecture/components/consumer.md): the coordinator's OpenAI/Anthropic-compatible request pipeline, stage by stage — parsing, admission, routing, sealing, streaming, settlement.
+- [`architecture/components/consumer.md`](architecture/components/consumer.md): the coordinator's OpenAI/Anthropic-compatible request pipeline and ingress owner — parsing, admission, routing, sealing, streaming, settlement.
 - [`architecture/components/console-ui.md`](architecture/components/console-ui.md): the Next.js console — pages, `/api/*` relay handlers, Privy auth, SSE chat.
 - [`architecture/components/admin-ui.md`](architecture/components/admin-ui.md): the internal read-only operator dashboard.
 - [`architecture/components/mlx-swift.md`](architecture/components/mlx-swift.md): the three pinned submodules (`mlx`, `mlx-swift`, `mlx-swift-lm`), what `MLXLMServer` is actually used for, and the source-matched `mlx.metallib`.

@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-14 · commit `6ad3d5605`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -72,7 +72,7 @@ The coordinator calls the local prompt-contract sidecar
 [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md)) only after alias
 resolution, tool normalization, endpoint lowering, output-bound injection, and
 construction of the final provider-bound body (`planCacheRoute`,
-`coordinator/api/prompt_artifacts.go`). The sidecar returns the prompt contract
+`coordinator/inference/ingress/cache_plan.go`). The sidecar returns the prompt contract
 identity, exact token count, and complete block-chain boundaries. It never
 returns or logs the normalized prompt, tokens, or hashes outside the local
 response contract.
@@ -647,7 +647,7 @@ back are operator procedures, kept in the runbook
    participation (`cacheActivationGate`,
    `coordinator/registry/cache_activation.go`); a sidecar failure or a media
    request yields a non-participating plan and the request still dispatches
-   (`planCacheRoute`, `coordinator/api/prompt_artifacts.go`).
+   (`planCacheRoute`, `coordinator/inference/ingress/cache_plan.go`).
 3. **Only exact text-token prefix proofs from protocol-v2 providers affect
    selection**; V1 receipt frames stay decodable but cannot mutate routing
    evidence (`coordinator/registry/cache_receipts.go`).
@@ -723,7 +723,7 @@ and `coordinator/api/cache_model_telemetry.go`.
 | Live receipt prerequisites, quarantine and legacy cache-bust key | `coordinator/registry/cache_receipts.go`, `coordinator/registry/cache_receipts_v2.go` — `ApplyPrefixCacheLookupV2`, `ApplyPrefixCacheReadyV2`, `disablePrefixCacheV2Model` |
 | Status vocabularies and sanitization | `coordinator/registry/cache_eligibility.go`, `coordinator/registry/cache_status.go`, `coordinator/registry/cache_snapshot.go` |
 | Discount in the cost model | `coordinator/registry/candidate_cost.go` — `applyCacheRoutingCost`; `coordinator/registry/candidate_selection.go` — `selectRoutingCandidateWithAffinity`; `coordinator/registry/gate_reason.go` — `SelectionCacheTiebreak` (historical vocabulary) |
-| Plan construction and sealed body | `coordinator/api/prompt_artifacts.go` — `planCacheRoute`; `coordinator/inference/dispatch/provider_body.go` — `bodyForCacheAttempt` |
+| Plan construction and sealed body | `coordinator/inference/ingress/cache_plan.go` — `planCacheRoute`; `coordinator/inference/dispatch/provider_body.go` — `bodyForCacheAttempt` |
 | Status endpoint and gauges | `coordinator/api/exact_cache_status.go`, `coordinator/api/exact_cache_metrics.go` |
 | Terminal tags, calibration/reputation exclusion | `coordinator/api/provider.go` — `cacheSelectionTerminalTags`; `coordinator/inference/dispatch/calibration.go` — `observeTTFTCalibration`; `coordinator/inference/dispatch/commit.go` |
 | Sidecar | `coordinator/promptcontract/` — `provisioner.go` (`Counts`) |

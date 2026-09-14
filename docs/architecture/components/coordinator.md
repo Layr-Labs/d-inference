@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-14 · commit `6ad3d5605`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -45,7 +45,7 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/cmd/coordinator` | `main.go` (`main`): configuration, resource lifetimes and shutdown; named setup functions in subsystem files bind the owners before serving. |
 | `coordinator/config` | `AppConfig` — composes every package's `ReadConfig` and runs their `Check` methods. |
 | `coordinator/env` | `EnvPrefix` (`EIGENINFERENCE`) and the `EnvOr`/`EnvInt`/`EnvFloat`/`EnvBool` helpers. |
-| `coordinator/api` | The HTTP router (`routes.go`, `routes`), global middleware (`http_middleware.go`, `Handler`), request logging (`http_logging.go`, `loggingMiddleware`), account/key rate limits (`request_rate_limits.go`, `rateLimitWithTier`), token admission (`token_admission.go`, `applyTokenRateLimitWithAdmission`), consumer handlers (`consumer.go`), the provider WebSocket (`provider.go`), dispatch bindings (`inference_dispatch.go`), sender encryption, account, admin, release, billing and catalog dependency wiring, runtime catalog publication, drain, profiler wiring. |
+| `coordinator/api` | The HTTP router (`routes.go`, `routes`), global middleware (`http_middleware.go`, `Handler`), request logging (`http_logging.go`, `loggingMiddleware`), account/key rate limits (`request_rate_limits.go`, `rateLimitWithTier`), token limiter configuration (`token_admission.go`, `SetTokenLimiters`), consumer owner bindings (`inference_ingress.go`, `inferenceIngress`), the provider WebSocket (`provider.go`), dispatch bindings (`inference_dispatch.go`), sender encryption, account, admin, release, billing and catalog dependency wiring, runtime catalog publication, drain, profiler wiring. |
 | `coordinator/api/billing` | Billing, pricing, referrals, earnings, Stripe Connect and Global Payouts HTTP controllers and payout reconciliation (`Controller`); `billing_controller.go` in the parent API package binds shared services, store, cache, metrics and authorization. |
 | `coordinator/api/catalog` | Model publishing, manifests, aliases, consumer/marketplace/install projections and cache invalidation (`Controller`); `catalog_controller.go` in the parent API package binds current store and credentials, fleet views, the shared cache and runtime publication callback. |
 | `coordinator/api/accounts` | `Controller`: legacy/named API keys, key policy, device code/approval/token exchange and invites. Store operations remain behind narrow key/device/invite interfaces; the router supplies the existing auth cache and live store/console/admin bindings through `account_controller.go`. |
@@ -59,11 +59,12 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/api/readcache` | Cached response bytes and immutable values, expiry, generation-fenced catalog fills and per-entry refresh coalescing (`Cache`, `Refresher`). Endpoint packages retain cache keys, TTLs and schedules. |
 | `coordinator/api/network` | Public stats, independent request geography, bounded traffic series, earnings totals and pseudonymous leaderboards (`Controller`). Owns refresh flights and the shared totals query mutex; uses the router’s current store, fleet view and response cache through narrow dependencies. |
 | `coordinator/api/accountfleet` | Account provider dashboard (`Controller`): live/persisted identity reconciliation, reputation batching, earnings summaries and offline-machine removal. Owns account earnings flights; the API supplies current store, fleet, cache, authenticated user and version policy. |
+| `coordinator/inference/ingress` | Consumer request preparation, media, token quotas, balance and capacity admission (`Controller.ChatCompletions`, `Controller.Completions`, `Controller.Messages`); `coordinator/api/inference_ingress.go` (`inferenceIngress`) supplies current dependencies and shared lifecycle services. [Request stages and code map](consumer.md#the-request-pipeline) |
 | `coordinator/inference/response` | Endpoint response formatting, provider-output relays, SSE batching and egress profile stamps (`Writer`, `ChatSink`, `EndpointSink`). `coordinator/api/response_writer.go` binds the existing settlement, feedback, metrics and accepted-write owners. |
 | `coordinator/inference/dispatch/request.go` (`Controller.Run`) | Provider preparation/encryption, plan consumption, queue handoff, first-content/hedge/failover and commit (`Controller.Run`); private per-request execution and per-controller scan/governor/EWMA state. API binds current services and observation sinks; see [dispatch ownership](../routing.md#dispatch-controller). |
 | `coordinator/inference/attempt` | Cancellation tracking and delivery, terminal/rejection policy and provider-health feedback (`Tracker`, `Service`); API binds current services in `inference_attempt.go`, and response relays use the same feedback owner. |
 | `coordinator/inference/settlement` | Reservation pricing, service holds, refunds, parked billing records and completion accounting (`Service`, `ServiceHolds`, `Holder`); API retains terminal ownership, outcome observations and consumer-channel signaling. |
-| `coordinator/inference/toolpolicy` | Tool-schema normalization, tool-choice and history validation (`NormalizeParsed`, `ValidateParsed`); HTTP error mapping and resolved-model compatibility remain in `coordinator/api/tool_constraints.go`. |
+| `coordinator/inference/toolpolicy` | Tool-schema normalization, tool-choice and history validation (`NormalizeParsed`, `ValidateParsed`); HTTP error mapping and resolved-model compatibility remain in `coordinator/inference/ingress/tools.go`. |
 | `coordinator/registry` | Live fleet identity, snapshots, routing and atomic reservation, queue policy and warm-pool fleet/command bindings. |
 | `coordinator/registry/requestqueue` | Per-model FIFO, expiration, reservation handoff acknowledgment and drain-pass coalescing (`Queue`, `Assignment`, `DrainCoalescer`). |
 | `coordinator/registry/admission` | Immutable capacity snapshots, pooled slot/KV accounting and measured cold-load budgets (`Policy`, `Snapshot`, `Pool`); live reservation locks stay in the registry. |
@@ -206,7 +207,7 @@ while `/readyz` reports drain and trust-safety readiness.
    decrypted inside the CVM, re-sealed per request to the provider's attested
    key, and never written to the store or logs; provider error strings are
    reduced to a closed vocabulary before logging
-   (`coordinator/api/consumer.go`, `coordinator/inference/attempt/error_sanitize.go`,
+   (`coordinator/inference/ingress/chat.go`, `coordinator/inference/attempt/error_sanitize.go`,
    `coordinator/internal/e2e/e2e.go`).
 2. **A misconfigured coordinator does not serve.** `AppConfig.Check` and the
    fatal startup steps above exit 1 before the public HTTP listener opens

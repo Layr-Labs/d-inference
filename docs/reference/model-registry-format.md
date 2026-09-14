@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-13 · commit `d8647602b`
+> Last updated: 2026-09-14 · commit `d1a831900`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -360,7 +360,7 @@ fans out `desired_models`), and returns `{"status":"ok","alias": <ModelAlias>}`.
 ### Resolution precedence
 
 `ResolveModelConstrainedWithTraits` (`coordinator/registry/model_aliases.go`),
-called from `resolveRequestedModel` (`coordinator/api/consumer.go`):
+called from `resolveRequestedModel` (`coordinator/inference/ingress/aliases.go`):
 
 1. Not an alias → the id is used as a concrete build.
 2. Alias → `desired_build` if an eligible provider can route it; else

@@ -1,5 +1,13 @@
 package api
 
+import (
+	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+)
+
 // Regression tests for the PR review findings on typed-terminal handling in
 // the dispatch ladder: the typed fields must survive setLastInferenceError so
 // (1) a typed admission_timeout is classified as transient capacity by
@@ -8,13 +16,6 @@ package api
 // attempt's route row on the ordinary (waitFirstChunk/waitAccepted) path,
 // which builds its outcome from dispatch state rather than the standalone
 // constructors.
-
-import (
-	"testing"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-)
 
 // typedAdmissionTimeoutMsg is shaped exactly like the Swift provider's typed
 // admission-timeout terminal: 503, cause-prefixed human text that matches NO
@@ -25,7 +26,7 @@ func typedAdmissionTimeoutMsg() protocol.InferenceErrorMessage {
 		Error:         "admission_timeout: admission lease expired before engine work began",
 		StatusCode:    503,
 		FailureCode:   protocol.FailureCodeCapacity,
-		TerminalCause: terminalCauseAdmissionTimeout,
+		TerminalCause: attempt.TerminalCauseAdmissionTimeout,
 	}
 }
 
@@ -38,7 +39,7 @@ func TestShouldStopFailover_TypedAdmissionTimeoutIsTransientCapacity(t *testing.
 
 	// The sanitizer derives a bounded capacity reason. Raw provider prose is
 	// discarded and cannot participate in classification.
-	if kind := classifyRejection(d.lastErrReason, d.lastErr, 0, 0, ""); kind != rejectionTransientCapacity {
+	if kind := attempt.ClassifyRejection(d.lastErrReason, d.lastErr, 0, 0, ""); kind != attempt.RejectionTransientCapacity {
 		t.Fatalf("typed admission timeout classified %v, want transient capacity", kind)
 	}
 
@@ -65,7 +66,7 @@ func TestShouldStopFailover_TypedAdmissionTimeoutIsTransientCapacity(t *testing.
 
 func TestShouldStopFailover_DeadlineReasonOverridesAdmissionTimeoutCause(t *testing.T) {
 	msg := typedAdmissionTimeoutMsg()
-	msg.ErrorReason = errorReasonDeadlineUnreachable
+	msg.ErrorReason = attempt.ErrorReasonDeadlineUnreachable
 	d := &dispatchState{s: newTestServerForDispatch(t), model: "m"}
 	d.setLastInferenceError(nil, msg)
 
@@ -112,7 +113,7 @@ func TestProviderFailedRoutingOutcomeCarriesTypedAttemptUsage(t *testing.T) {
 	usage := &protocol.UsageInfo{PromptTokens: 123, CompletionTokens: 456, ReasoningTokens: 7}
 	msg := protocol.InferenceErrorMessage{
 		RequestID: "req-usage", Error: "safety_deadline: safety ceiling expired",
-		StatusCode: 504, TerminalCause: terminalCauseSafetyDeadline, AttemptUsage: usage,
+		StatusCode: 504, TerminalCause: attempt.TerminalCauseSafetyDeadline, AttemptUsage: usage,
 	}
 	d.setLastInferenceError(nil, msg)
 
@@ -193,11 +194,11 @@ func TestTypedProvider504KeepsProviderErrorRouteClass(t *testing.T) {
 
 	d.setLastInferenceError(nil, protocol.InferenceErrorMessage{
 		RequestID: "req-504", Error: "safety_deadline: safety ceiling expired",
-		StatusCode: 504, TerminalCause: terminalCauseSafetyDeadline,
+		StatusCode: 504, TerminalCause: attempt.TerminalCauseSafetyDeadline,
 		AttemptUsage: &protocol.UsageInfo{PromptTokens: 11, CompletionTokens: 2},
 	})
 	// The exact discriminator the wait-loop defers use:
-	if d.lastErrCode == 504 && !isTypedTimeout504Cause(d.lastErrTerminalCause) {
+	if d.lastErrCode == 504 && !attempt.IsTypedTimeout504Cause(d.lastErrTerminalCause) {
 		t.Fatal("typed 504 must NOT satisfy the synthetic-timeout discriminator")
 	}
 	out := d.providerFailedRoutingOutcomeFor(pr)
@@ -210,7 +211,7 @@ func TestTypedProvider504KeepsProviderErrorRouteClass(t *testing.T) {
 
 	// Untyped (synthetic) 504 still satisfies the timeout discriminator.
 	d.setLastError("timeout waiting for first response", 504)
-	if !(d.lastErrCode == 504 && !isTypedTimeout504Cause(d.lastErrTerminalCause)) {
+	if !(d.lastErrCode == 504 && !attempt.IsTypedTimeout504Cause(d.lastErrTerminalCause)) {
 		t.Fatal("synthetic 504 must satisfy the synthetic-timeout discriminator")
 	}
 
@@ -226,11 +227,11 @@ func TestTypedProvider504KeepsProviderErrorRouteClass(t *testing.T) {
 			d.lastErrCode, d.lastErrTerminalCause)
 	}
 	// And the two known typed 504 causes are exactly the exception set.
-	if !isTypedTimeout504Cause(terminalCauseSafetyDeadline) ||
-		!isTypedTimeout504Cause(terminalCauseBackpressureTimeout) {
+	if !attempt.IsTypedTimeout504Cause(attempt.TerminalCauseSafetyDeadline) ||
+		!attempt.IsTypedTimeout504Cause(attempt.TerminalCauseBackpressureTimeout) {
 		t.Fatal("safety_deadline and backpressure_timeout must be the typed 504 exceptions")
 	}
-	if isTypedTimeout504Cause(terminalCauseAdmissionTimeout) || isTypedTimeout504Cause("") {
+	if attempt.IsTypedTimeout504Cause(attempt.TerminalCauseAdmissionTimeout) || attempt.IsTypedTimeout504Cause("") {
 		t.Fatal("only the two known 504 causes may bypass the timeout classification")
 	}
 }

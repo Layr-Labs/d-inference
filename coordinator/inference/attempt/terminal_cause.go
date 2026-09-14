@@ -1,4 +1,4 @@
-package api
+package attempt
 
 // Typed provider terminal causes (InferenceErrorMessage.TerminalCause).
 //
@@ -29,95 +29,95 @@ package api
 // "Neutral" means NEUTRAL, not positive: neutral terminals never strike a
 // breaker AND never clear one or count as an accept/success.
 const (
-	terminalCauseAdmissionTimeout    = "admission_timeout"
-	terminalCausePrefillStall        = "prefill_stall"
-	terminalCauseDecodeStall         = "decode_stall"
-	terminalCauseSafetyDeadline      = "safety_deadline"
-	terminalCauseBackpressureTimeout = "backpressure_timeout"
-	terminalCauseWatchdog            = "watchdog"
-	terminalCauseCancelled           = "cancelled"
-	terminalCauseEngineError         = "engine_error"
+	TerminalCauseAdmissionTimeout    = "admission_timeout"
+	TerminalCausePrefillStall        = "prefill_stall"
+	TerminalCauseDecodeStall         = "decode_stall"
+	TerminalCauseSafetyDeadline      = "safety_deadline"
+	TerminalCauseBackpressureTimeout = "backpressure_timeout"
+	TerminalCauseWatchdog            = "watchdog"
+	TerminalCauseCancelled           = "cancelled"
+	TerminalCauseEngineError         = "engine_error"
 )
 
-// terminalCauseClass is the coordinator-side health classification of a typed
+// TerminalCauseClass is the coordinator-side health classification of a typed
 // terminal cause.
-type terminalCauseClass int
+type TerminalCauseClass int
 
 const (
-	// causeClassLegacy: absent cause, engine_error, or an unknown value — the
+	// CauseClassLegacy: absent cause, engine_error, or an unknown value — the
 	// historical string/status heuristics apply unchanged (legacy providers
 	// must see zero behavior change).
-	causeClassLegacy terminalCauseClass = iota
-	// causeClassFault: real provider sickness — full legacy fault behavior
+	CauseClassLegacy TerminalCauseClass = iota
+	// CauseClassFault: real provider sickness — full legacy fault behavior
 	// (RecordJobFailure + every breaker funnel) applies.
-	causeClassFault
-	// causeClassNeutral: platform policy / client behavior — no fault
+	CauseClassFault
+	// CauseClassNeutral: platform policy / client behavior — no fault
 	// recorder, no breaker strike, no capacity outcome, and no clears either.
-	causeClassNeutral
-	// causeClassCapacity: the provider was healthy but busy — neutral for all
+	CauseClassNeutral
+	// CauseClassCapacity: the provider was healthy but busy — neutral for all
 	// health breakers, recorded as a capacity-reject signal only.
-	causeClassCapacity
+	CauseClassCapacity
 )
 
-// classifyTerminalCause maps a wire terminal_cause to its health class.
+// ClassifyTerminalCause maps a wire terminal_cause to its health class.
 // known is false ONLY for a non-empty value outside the closed vocabulary
-// (vocabulary drift — callers emit metricUnknownTerminalCause); the class is
-// then causeClassLegacy so drift can never change behavior.
-func classifyTerminalCause(cause string) (class terminalCauseClass, known bool) {
+// (vocabulary drift — callers emit MetricUnknownTerminalCause); the class is
+// then CauseClassLegacy so drift can never change behavior.
+func ClassifyTerminalCause(cause string) (class TerminalCauseClass, known bool) {
 	switch cause {
 	case "":
-		return causeClassLegacy, true
-	case terminalCauseAdmissionTimeout:
-		return causeClassCapacity, true
-	case terminalCauseSafetyDeadline, terminalCauseBackpressureTimeout, terminalCauseCancelled:
-		return causeClassNeutral, true
-	case terminalCausePrefillStall, terminalCauseDecodeStall, terminalCauseWatchdog:
-		return causeClassFault, true
-	case terminalCauseEngineError:
-		return causeClassLegacy, true
+		return CauseClassLegacy, true
+	case TerminalCauseAdmissionTimeout:
+		return CauseClassCapacity, true
+	case TerminalCauseSafetyDeadline, TerminalCauseBackpressureTimeout, TerminalCauseCancelled:
+		return CauseClassNeutral, true
+	case TerminalCausePrefillStall, TerminalCauseDecodeStall, TerminalCauseWatchdog:
+		return CauseClassFault, true
+	case TerminalCauseEngineError:
+		return CauseClassLegacy, true
 	default:
-		return causeClassLegacy, false
+		return CauseClassLegacy, false
 	}
 }
 
-// isTypedTimeout504Cause reports whether cause is one of the KNOWN typed
+// IsTypedTimeout504Cause reports whether cause is one of the KNOWN typed
 // causes the provider maps to a 504 status (safety_deadline,
 // backpressure_timeout). The dispatch wait loops use it to tell a typed
 // provider 504 from a coordinator-synthesized timeout 504. An UNKNOWN
 // future cause value deliberately does NOT count: consistent with
-// classifyTerminalCause's unknown→legacy rule, an off-vocabulary 504 keeps
+// ClassifyTerminalCause's unknown→legacy rule, an off-vocabulary 504 keeps
 // the legacy synthetic-timeout route classification during mixed-version
 // rollouts instead of being guessed into provider_error/admitted_but_failed.
-func isTypedTimeout504Cause(cause string) bool {
-	return cause == terminalCauseSafetyDeadline || cause == terminalCauseBackpressureTimeout
+func IsTypedTimeout504Cause(cause string) bool {
+	return cause == TerminalCauseSafetyDeadline || cause == TerminalCauseBackpressureTimeout
 }
 
-// metricTypedTerminal counts every provider inference_error terminal that
+// MetricTypedTerminal counts every provider inference_error terminal that
 // carried a typed terminal_cause, tagged with the cause only (low
 // cardinality: the 8 closed-vocabulary values plus "unknown"). Never tagged
 // with request or provider IDs.
-const metricTypedTerminal = "inference.typed_terminal"
+const MetricTypedTerminal = "inference.typed_terminal"
 
-// metricUnknownTerminalCause counts non-empty terminal_cause values outside
+// MetricUnknownTerminalCause counts non-empty terminal_cause values outside
 // the closed vocabulary — the vocabulary-drift alarm. Behavior for such
 // terminals stays exactly legacy; this counter is how we notice a provider
 // shipped a cause the coordinator does not understand yet.
-const metricUnknownTerminalCause = "inference.typed_terminal_unknown_cause"
+const MetricUnknownTerminalCause = "inference.typed_terminal_unknown_cause"
 
-// noteTypedTerminalCause classifies a wire terminal_cause and emits the typed
+// TypedTerminal classifies a wire terminal_cause and emits the typed
 // terminal metrics exactly once per provider error terminal (call it only
 // from handleInferenceError, the single provider-frame ingress). An empty
 // cause is a legacy terminal: no metric, legacy class.
-func (s *Server) noteTypedTerminalCause(cause string) terminalCauseClass {
+func (s Service) TypedTerminal(cause string) TerminalCauseClass {
 	if cause == "" {
-		return causeClassLegacy
+		return CauseClassLegacy
 	}
-	class, known := classifyTerminalCause(cause)
+	class, known := ClassifyTerminalCause(cause)
 	tag := "cause:" + cause
 	if !known {
 		tag = "cause:unknown"
-		s.ddIncr(metricUnknownTerminalCause, nil)
+		s.deps.Metrics.Incr(MetricUnknownTerminalCause, nil)
 	}
-	s.ddIncr(metricTypedTerminal, []string{tag})
+	s.deps.Metrics.Incr(MetricTypedTerminal, []string{tag})
 	return class
 }

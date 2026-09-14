@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -161,8 +162,8 @@ func TestJinjaRouteOutcome_ClientErrorClassPreservesReason(t *testing.T) {
 	if out.AdmittedButFailed {
 		t.Fatal("a jinja render failure must NOT set AdmittedButFailed")
 	}
-	if out.ErrorReason != errorReasonJinjaTemplate {
-		t.Fatalf("reason = %q, want %q preserved on the row", out.ErrorReason, errorReasonJinjaTemplate)
+	if out.ErrorReason != attempt.ErrorReasonJinjaTemplate {
+		t.Fatalf("reason = %q, want %q preserved on the row", out.ErrorReason, attempt.ErrorReasonJinjaTemplate)
 	}
 
 	d := &dispatchState{
@@ -173,8 +174,8 @@ func TestJinjaRouteOutcome_ClientErrorClassPreservesReason(t *testing.T) {
 	if dout.ErrorClass != errorClassClientError || dout.AdmittedButFailed {
 		t.Fatalf("providerFailedRoutingOutcome for jinja: class=%q admitted=%v, want client_error + not admitted", dout.ErrorClass, dout.AdmittedButFailed)
 	}
-	if dout.ErrorReason != errorReasonJinjaTemplate {
-		t.Fatalf("providerFailedRoutingOutcome reason = %q, want %q", dout.ErrorReason, errorReasonJinjaTemplate)
+	if dout.ErrorReason != attempt.ErrorReasonJinjaTemplate {
+		t.Fatalf("providerFailedRoutingOutcome reason = %q, want %q", dout.ErrorReason, attempt.ErrorReasonJinjaTemplate)
 	}
 }
 
@@ -193,7 +194,7 @@ func TestIsJinjaTemplateErrorReason(t *testing.T) {
 		"tool_noncompliance": false,
 		"jinja":              false,
 	} {
-		if got := isJinjaTemplateErrorReason(reason); got != want {
+		if got := attempt.IsJinjaTemplateErrorReason(reason); got != want {
 			t.Errorf("isJinjaTemplateErrorReason(%q) = %v, want %v", reason, got, want)
 		}
 	}

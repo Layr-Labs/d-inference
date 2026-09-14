@@ -2,9 +2,10 @@ package api
 
 import (
 	"encoding/json"
-	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"net/http"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -25,7 +26,7 @@ func sanitizeProviderInferenceError(msg *protocol.InferenceErrorMessage) (safe p
 			FailureCode: protocol.FailureCodeGenerationFailure,
 			Error:       response.SafeInferenceFailureMessage(protocol.FailureCodeGenerationFailure),
 			StatusCode:  http.StatusInternalServerError,
-			ErrorReason: errorReasonProviderError,
+			ErrorReason: attempt.ErrorReasonProviderError,
 		}, true, false
 	}
 
@@ -87,7 +88,7 @@ func sanitizeProviderInferenceError(msg *protocol.InferenceErrorMessage) (safe p
 		msg.StatusCode == http.StatusTooManyRequests &&
 		suppliedReason == "" &&
 		msg.TerminalCause == "" {
-		suppliedReason = errorReasonQueueFull
+		suppliedReason = attempt.ErrorReasonQueueFull
 	}
 	safe.ErrorReason = safeInferenceErrorReason(safe.FailureCode, suppliedReason)
 	safe.StatusCode = safeInferenceFailureStatus(safe.FailureCode, safe.ErrorReason, safe.TerminalCause, msg.StatusCode)
@@ -99,18 +100,18 @@ func sanitizeProviderInferenceError(msg *protocol.InferenceErrorMessage) (safe p
 // consulting legacy Error prose. Only bounded status/reason/cause values may
 // refine the fail-closed generation_failure default.
 func legacyInferenceFailureCode(status int, reason, terminalCause string) protocol.InferenceFailureCode {
-	normalizedReason := normalizeInferenceErrorReason(reason)
+	normalizedReason := attempt.NormalizeInferenceErrorReason(reason)
 	switch terminalCause {
-	case terminalCauseAdmissionTimeout:
+	case attempt.TerminalCauseAdmissionTimeout:
 		return protocol.FailureCodeCapacity
-	case terminalCauseCancelled:
+	case attempt.TerminalCauseCancelled:
 		return protocol.FailureCodeCancelled
 	}
-	if isJinjaTemplateErrorReason(normalizedReason) {
+	if attempt.IsJinjaTemplateErrorReason(normalizedReason) {
 		return protocol.FailureCodeTemplateRender
 	}
 	switch normalizedReason {
-	case errorReasonModelLoad:
+	case attempt.ErrorReasonModelLoad:
 		switch status {
 		case http.StatusNotFound:
 			return protocol.FailureCodeModelUnavailable
@@ -119,22 +120,22 @@ func legacyInferenceFailureCode(status int, reason, terminalCause string) protoc
 		default:
 			return protocol.FailureCodeInternalFailure
 		}
-	case errorReasonCapacityTimeout,
-		errorReasonQueueFull,
-		errorReasonTokenBudgetExhaust,
-		errorReasonRequestExceedsContext,
-		errorReasonRequestExceedsNode,
-		errorReasonRequestExceedsNodeBudget,
-		errorReasonRequestExceedsBatchBudget,
-		errorReasonCapacityBusy,
-		errorReasonDeadlineUnreachable,
-		errorReasonDraining:
+	case attempt.ErrorReasonCapacityTimeout,
+		attempt.ErrorReasonQueueFull,
+		attempt.ErrorReasonTokenBudgetExhaust,
+		attempt.ErrorReasonRequestExceedsContext,
+		attempt.ErrorReasonRequestExceedsNode,
+		attempt.ErrorReasonRequestExceedsNodeBudget,
+		attempt.ErrorReasonRequestExceedsBatchBudget,
+		attempt.ErrorReasonCapacityBusy,
+		attempt.ErrorReasonDeadlineUnreachable,
+		attempt.ErrorReasonDraining:
 		return protocol.FailureCodeCapacity
-	case errorReasonCancelled:
+	case attempt.ErrorReasonCancelled:
 		return protocol.FailureCodeCancelled
-	case errorReasonClientError:
+	case attempt.ErrorReasonClientError:
 		return protocol.FailureCodeInvalidRequest
-	case errorReasonToolNoncompliance:
+	case attempt.ErrorReasonToolNoncompliance:
 		return protocol.FailureCodeGenerationFailure
 	}
 	switch status {
@@ -165,16 +166,16 @@ func legacyInferenceFailureCode(status int, reason, terminalCause string) protoc
 // 503; all other combinations remain code-derived.
 func safeInferenceFailureStatus(code protocol.InferenceFailureCode, errorReason, terminalCause string, suppliedStatus int) int {
 	switch terminalCause {
-	case terminalCauseAdmissionTimeout:
+	case attempt.TerminalCauseAdmissionTimeout:
 		return http.StatusServiceUnavailable
-	case terminalCauseSafetyDeadline, terminalCauseBackpressureTimeout:
+	case attempt.TerminalCauseSafetyDeadline, attempt.TerminalCauseBackpressureTimeout:
 		return http.StatusGatewayTimeout
-	case terminalCauseCancelled:
+	case attempt.TerminalCauseCancelled:
 		return 499
 	}
 	switch code {
 	case protocol.FailureCodeInvalidRequest:
-		if errorReason == errorReasonToolNoncompliance {
+		if errorReason == attempt.ErrorReasonToolNoncompliance {
 			return http.StatusUnprocessableEntity
 		}
 		return http.StatusBadRequest
@@ -187,7 +188,7 @@ func safeInferenceFailureStatus(code protocol.InferenceFailureCode, errorReason,
 	case protocol.FailureCodeTemplateRender:
 		return http.StatusUnprocessableEntity
 	case protocol.FailureCodeCapacity:
-		if errorReason == errorReasonQueueFull {
+		if errorReason == attempt.ErrorReasonQueueFull {
 			return http.StatusTooManyRequests
 		}
 		return http.StatusServiceUnavailable
@@ -201,7 +202,7 @@ func safeInferenceFailureStatus(code protocol.InferenceFailureCode, errorReason,
 	case protocol.FailureCodeEncryptionFailure:
 		return http.StatusBadGateway
 	case protocol.FailureCodeGenerationFailure:
-		if errorReason == errorReasonToolNoncompliance {
+		if errorReason == attempt.ErrorReasonToolNoncompliance {
 			return http.StatusUnprocessableEntity
 		}
 		return http.StatusInternalServerError
@@ -213,63 +214,63 @@ func safeInferenceFailureStatus(code protocol.InferenceFailureCode, errorReason,
 }
 
 func sanitizeProviderTerminalCause(cause string) (string, bool) {
-	if _, known := classifyTerminalCause(cause); known {
+	if _, known := attempt.ClassifyTerminalCause(cause); known {
 		return cause, false
 	}
 	return "", true
 }
 
 func safeInferenceErrorReason(code protocol.InferenceFailureCode, supplied string) string {
-	reason := normalizeInferenceErrorReason(supplied)
+	reason := attempt.NormalizeInferenceErrorReason(supplied)
 	switch code {
 	case protocol.FailureCodeInvalidRequest:
-		if reason == errorReasonToolNoncompliance {
+		if reason == attempt.ErrorReasonToolNoncompliance {
 			return reason
 		}
-		return errorReasonClientError
+		return attempt.ErrorReasonClientError
 	case protocol.FailureCodeInvalidMedia,
 		protocol.FailureCodeMediaTooLarge,
 		protocol.FailureCodeUnsupportedMedia:
-		return errorReasonClientError
+		return attempt.ErrorReasonClientError
 	case protocol.FailureCodeTemplateRender:
-		if isJinjaTemplateErrorReason(reason) {
+		if attempt.IsJinjaTemplateErrorReason(reason) {
 			return reason
 		}
-		return errorReasonJinjaTemplate
+		return attempt.ErrorReasonJinjaTemplate
 	case protocol.FailureCodeModelUnavailable:
-		return errorReasonModelLoad
+		return attempt.ErrorReasonModelLoad
 	case protocol.FailureCodeCapacity:
 		switch reason {
-		case errorReasonModelLoad:
+		case attempt.ErrorReasonModelLoad:
 			return reason
-		case errorReasonCapacityTimeout,
-			errorReasonQueueFull,
-			errorReasonTokenBudgetExhaust,
-			errorReasonRequestExceedsContext,
-			errorReasonRequestExceedsNode,
-			errorReasonRequestExceedsNodeBudget,
-			errorReasonRequestExceedsBatchBudget,
-			errorReasonCapacityBusy,
-			errorReasonDeadlineUnreachable,
-			errorReasonDraining:
+		case attempt.ErrorReasonCapacityTimeout,
+			attempt.ErrorReasonQueueFull,
+			attempt.ErrorReasonTokenBudgetExhaust,
+			attempt.ErrorReasonRequestExceedsContext,
+			attempt.ErrorReasonRequestExceedsNode,
+			attempt.ErrorReasonRequestExceedsNodeBudget,
+			attempt.ErrorReasonRequestExceedsBatchBudget,
+			attempt.ErrorReasonCapacityBusy,
+			attempt.ErrorReasonDeadlineUnreachable,
+			attempt.ErrorReasonDraining:
 			return reason
 		default:
-			return errorReasonCapacityTimeout
+			return attempt.ErrorReasonCapacityTimeout
 		}
 	case protocol.FailureCodeCancelled:
-		return errorReasonCancelled
+		return attempt.ErrorReasonCancelled
 	case protocol.FailureCodeGenerationFailure:
-		if reason == errorReasonToolNoncompliance {
+		if reason == attempt.ErrorReasonToolNoncompliance {
 			return reason
 		}
-		return errorReasonProviderError
+		return attempt.ErrorReasonProviderError
 	case protocol.FailureCodeInternalFailure:
-		if reason == errorReasonModelLoad {
+		if reason == attempt.ErrorReasonModelLoad {
 			return reason
 		}
-		return errorReasonProviderError
+		return attempt.ErrorReasonProviderError
 	default:
-		return errorReasonProviderError
+		return attempt.ErrorReasonProviderError
 	}
 }
 
@@ -282,9 +283,9 @@ func normalizeInferenceErrorForInternalUse(msg protocol.InferenceErrorMessage) p
 		// The abrupt flush carries no reason and stays provider_error; the
 		// graceful restart flush keeps its coordinator-internal
 		// provider_restart marker (health-neutral through the reason funnel).
-		reason := errorReasonProviderError
+		reason := attempt.ErrorReasonProviderError
 		if msg.CoordinatorCause == protocol.CoordinatorCauseProviderRestart {
-			reason = errorReasonProviderRestart
+			reason = attempt.ErrorReasonProviderRestart
 		}
 		return protocol.InferenceErrorMessage{
 			Type:             protocol.TypeInferenceError,
@@ -317,13 +318,13 @@ func normalizeInferenceErrorForInternalUse(msg protocol.InferenceErrorMessage) p
 func capacityRejectionErrorReason(r protocol.CapacityRejectionReason) string {
 	switch r {
 	case protocol.RejectionReasonTokenBudget:
-		return errorReasonRequestExceedsNodeBudget
+		return attempt.ErrorReasonRequestExceedsNodeBudget
 	case protocol.RejectionReasonKVHeadroom, protocol.RejectionReasonMemoryCap:
-		return errorReasonRequestExceedsNode
+		return attempt.ErrorReasonRequestExceedsNode
 	case protocol.RejectionReasonSlotState:
-		return errorReasonCapacityBusy
+		return attempt.ErrorReasonCapacityBusy
 	case protocol.RejectionReasonDeadline:
-		return errorReasonDeadlineUnreachable
+		return attempt.ErrorReasonDeadlineUnreachable
 	}
 	return ""
 }

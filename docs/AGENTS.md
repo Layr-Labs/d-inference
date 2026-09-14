@@ -1,6 +1,6 @@
 # Darkbloom docs — how this documentation is organised and maintained
 
-> Last updated: 2026-09-14 · commit `0deac8b0a`
+> Last updated: 2026-09-14 · commit `4f6d1c551`
 
 Rules for anyone — human or agent — who reads, writes, or checks a file under
 `docs/`. The code is the source of truth; a doc that disagrees with the code is

@@ -15,18 +15,8 @@ func (s *Server) inferenceSettlement() settlement.Service {
 			}
 			return s.billing.Referral()
 		},
-		Metrics:      settlementMetrics{server: s},
+		Metrics:      inferenceMetrics{server: s},
 		Logger:       s.logger,
 		ServiceHolds: s.serviceReservations,
 	})
-}
-
-type settlementMetrics struct{ server *Server }
-
-func (m settlementMetrics) Incr(name string, tags []string) { m.server.ddIncr(name, tags) }
-func (m settlementMetrics) Count(name string, value int64, tags []string) {
-	m.server.ddCount(name, value, tags)
-}
-func (m settlementMetrics) Histogram(name string, value float64, tags []string) {
-	m.server.ddHistogram(name, value, tags)
 }

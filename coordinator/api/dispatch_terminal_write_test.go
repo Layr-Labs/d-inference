@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 )
 
 func TestPreContentTerminalRetainsHTTPStatus(t *testing.T) {
@@ -53,7 +55,7 @@ func TestClassifyExhaustedStatus_ReclassifiesSyntheticTimeout(t *testing.T) {
 }
 
 func TestClassifyExhaustedStatus_PreservesTypedProviderTimeouts(t *testing.T) {
-	for _, cause := range []string{terminalCauseSafetyDeadline, terminalCauseBackpressureTimeout} {
+	for _, cause := range []string{attempt.TerminalCauseSafetyDeadline, attempt.TerminalCauseBackpressureTimeout} {
 		code, reason, reclassified := classifyExhaustedStatus(http.StatusGatewayTimeout, cause)
 		if code != http.StatusGatewayTimeout || reason != "dispatch_exhausted" || reclassified {
 			t.Fatalf("typed timeout %q = (%d, %q, %v), want (504, dispatch_exhausted, false)",

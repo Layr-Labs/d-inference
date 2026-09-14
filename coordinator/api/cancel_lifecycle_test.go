@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -10,29 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
-
-func TestCancelSendFailureReason(t *testing.T) {
-	cases := []struct {
-		err  error
-		want string
-	}{
-		{registry.ErrProviderWriterQueueFull, "queue_full"},
-		{registry.ErrProviderWriterStopped, "writer_stopped"},
-		{context.DeadlineExceeded, "ctx"},
-		{context.Canceled, "ctx"},
-		{errors.New("boom"), "other"},
-	}
-	for _, c := range cases {
-		if got := cancelSendFailureReason(c.err); got != c.want {
-			t.Errorf("cancelSendFailureReason(%v) = %q, want %q", c.err, got, c.want)
-		}
-	}
-}
 
 // TestSendProviderCancelMetersDeliveryFailure: a cancel that cannot be handed
 // to the provider writer is no longer Debug-only — it is counted on
@@ -51,12 +33,12 @@ func TestSendProviderCancelMetersDeliveryFailure(t *testing.T) {
 	// Connected as far as the Server can tell (Conn set) but its writer has
 	// been torn down: EnqueueText fails with the writer-stopped sentinel.
 	p := &registry.Provider{ID: "p-dead", Conn: &websocket.Conn{}}
-	if srv.sendProviderCancel(p, "req-1") {
+	if srv.inferenceAttempts().SendCancel(p, "req-1") {
 		t.Fatal("sendProviderCancel must report failure when the writer is gone")
 	}
 	_ = dd.Statsd.Flush()
 	packets := collector.drain()
-	got := findMetrics(packets, metricCancelSendFailed)
+	got := findMetrics(packets, attempt.MetricCancelSendFailed)
 	if len(got) != 1 || !strings.Contains(got[0], "reason:writer_stopped") {
 		t.Fatalf("cancel_send_failed packets = %v, want one with reason:writer_stopped", got)
 	}
@@ -67,11 +49,11 @@ func TestSendProviderCancelMetersDeliveryFailure(t *testing.T) {
 	}
 
 	// No socket at all is a test fixture, not a delivery failure: no metric.
-	if srv.sendProviderCancel(&registry.Provider{ID: "p-nosock"}, "req-2") {
+	if srv.inferenceAttempts().SendCancel(&registry.Provider{ID: "p-nosock"}, "req-2") {
 		t.Fatal("provider without a socket cannot succeed")
 	}
 	_ = dd.Statsd.Flush()
-	if extra := findMetrics(collector.drain(), metricCancelSendFailed); len(extra) != 0 {
+	if extra := findMetrics(collector.drain(), attempt.MetricCancelSendFailed); len(extra) != 0 {
 		t.Fatalf("nil Conn must not be metered as a delivery failure: %v", extra)
 	}
 }
@@ -109,25 +91,25 @@ func TestCancelDispatchSkipsCancelAfterCompletionIngress(t *testing.T) {
 
 	finished := newPending("req-finished-empty")
 	finished.MarkCompletionIngress(time.Now())
-	srv.cancelDispatch(provider, finished, cancelCauseHedgeLoser)
+	srv.inferenceAttempts().Cancel(provider, finished, attempt.CancelCauseHedgeLoser)
 	if provider.GetPending(finished.RequestID) != nil {
 		t.Fatal("cancelDispatch must still remove the pending record")
 	}
-	if n := srv.zombieCanceller.size(); n != 0 {
-		t.Fatalf("a racer that already completed must not be tracked as a zombie (size=%d)", n)
+	if e, ok := srv.inferenceAttempts().ResolveCancelledTerminal(finished.RequestID, attempt.CancelTerminalComplete, attempt.CancelledOutcomeCompletePartial, time.Now()); ok {
+		t.Fatalf("a racer that already completed must not be tracked as a zombie: %+v", e)
 	}
 	_ = dd.Statsd.Flush()
-	if got := findMetrics(collector.drain(), metricCancelSent); len(got) != 0 {
+	if got := findMetrics(collector.drain(), attempt.MetricCancelSent); len(got) != 0 {
 		t.Fatalf("cancel_sent must not fire for a racer whose completion was ingressed: %v", got)
 	}
 
 	running := newPending("req-still-running")
-	srv.cancelDispatch(provider, running, cancelCauseHedgeLoser)
-	if n := srv.zombieCanceller.size(); n != 1 {
-		t.Fatalf("a still-running racer must be tracked for terminal correlation (size=%d)", n)
+	srv.inferenceAttempts().Cancel(provider, running, attempt.CancelCauseHedgeLoser)
+	if _, ok := srv.inferenceAttempts().ResolveCancelledTerminal(running.RequestID, attempt.CancelTerminalComplete, attempt.CancelledOutcomeCompletePartial, time.Now()); !ok {
+		t.Fatal("a still-running racer must be tracked for terminal correlation")
 	}
 	_ = dd.Statsd.Flush()
-	if got := findMetrics(collector.drain(), metricCancelSent); len(got) != 0 {
+	if got := findMetrics(collector.drain(), attempt.MetricCancelSent); len(got) != 0 {
 		t.Fatalf("no socket, no frame handed over: cancel_sent must not fire, got %v", got)
 	}
 }
@@ -160,15 +142,6 @@ func TestCancelSendCountsOnlyDeliveredFrames(t *testing.T) {
 	}
 	live := reg.GetProvider(ids[0])
 	dead := &registry.Provider{ID: "p-dead", Conn: &websocket.Conn{}}
-	entry := func(id string) zombieEntry {
-		srv.zombieCanceller.mu.Lock()
-		defer srv.zombieCanceller.mu.Unlock()
-		e := srv.zombieCanceller.entries[id]
-		if e == nil {
-			t.Fatalf("no zombie entry for %s", id)
-		}
-		return *e
-	}
 	drain := func() []string {
 		_ = dd.Statsd.Flush()
 		return collector.drain()
@@ -176,68 +149,70 @@ func TestCancelSendCountsOnlyDeliveredFrames(t *testing.T) {
 
 	// Enqueue fails: recorded, unsent, not counted.
 	t0 := time.Now()
-	srv.sendAbandonCancel(dead, "req-fail", model, cancelCauseClientGonePost)
+	srv.inferenceAttempts().SendAbandonCancel(dead, "req-fail", model, attempt.CancelCauseClientGonePost)
 	packets := drain()
-	if got := findMetrics(packets, metricCancelSent); len(got) != 0 {
+	if got := findMetrics(packets, attempt.MetricCancelSent); len(got) != 0 {
 		t.Fatalf("a failed enqueue must not count as sent: %v", got)
 	}
-	requireMetricWithTags(t, packets, metricCancelSendFailed, "reason:writer_stopped")
-	if e := entry("req-fail"); e.sent != 0 || e.cause != cancelCauseClientGonePost {
-		t.Fatalf("entry after failed send = %+v, want sent=0 with the abandon cause", e)
-	}
-
+	requireMetricWithTags(t, packets, attempt.MetricCancelSendFailed, "reason:writer_stopped")
 	// The provider finishes on its own: correlated, but no cancel was delivered.
-	e, ok := srv.resolveCancelledTerminal("req-fail", cancelTerminalComplete, cancelledOutcomeCompletePartial, t0.Add(time.Second))
-	if !ok || e.sent != 0 {
+	e, ok := srv.inferenceAttempts().ResolveCancelledTerminal("req-fail", attempt.CancelTerminalComplete, attempt.CancelledOutcomeCompletePartial, t0.Add(time.Second))
+	if !ok || e.Deliveries() != 0 {
 		t.Fatalf("terminal correlation = (%+v, %v), want the unsent entry", e, ok)
 	}
+	if e.Deliveries() != 0 || e.Cause() != attempt.CancelCauseClientGonePost {
+		t.Fatalf("entry after failed send = %+v, want sent=0 with the abandon cause", e)
+	}
 	packets = drain()
-	if got := findMetrics(packets, metricCancelToTerminalMs); len(got) != 0 {
+	if got := findMetrics(packets, attempt.MetricCancelToTerminalMs); len(got) != 0 {
 		t.Fatalf("no cancel reached the provider, so no cancel→terminal latency: %v", got)
 	}
-	requireMetricWithTags(t, packets, metricCancelledTerminal,
-		"outcome:"+cancelledOutcomeCompletePartial, "cause:"+cancelCauseClientGonePost, "delivered:false")
+	requireMetricWithTags(t, packets, attempt.MetricCancelledTerminal,
+		"outcome:"+attempt.CancelledOutcomeCompletePartial, "cause:"+attempt.CancelCauseClientGonePost, "delivered:false")
 
 	// Enqueue fails, then a stray chunk retries on a writer that accepts: the
 	// first DELIVERED cancel counts cancel_sent once under the abandon cause.
-	srv.sendAbandonCancel(dead, "req-retry", model, cancelCauseFirstChunkTimeout)
+	srv.inferenceAttempts().SendAbandonCancel(dead, "req-retry", model, attempt.CancelCauseFirstChunkTimeout)
 	packets = drain()
-	if got := findMetrics(packets, metricCancelSent); len(got) != 0 {
+	if got := findMetrics(packets, attempt.MetricCancelSent); len(got) != 0 {
 		t.Fatalf("a failed enqueue must not count as sent: %v", got)
 	}
-	srv.noteStrayChunk(live, live.ID, "req-retry", time.Now().Add(zombieResendRetry))
+	// Exercise the existing 250 ms retry policy through the stray-frame path.
+	srv.inferenceAttempts().StrayChunk(live, live.ID, "req-retry", time.Now().Add(250*time.Millisecond))
 	packets = drain()
-	requireMetricWithTags(t, packets, metricCancelSent, "cause:"+cancelCauseFirstChunkTimeout, "model:"+model)
-	requireMetricWithTags(t, packets, metricZombieStreamCancel, "resend_index:0")
-	if e := entry("req-retry"); e.sent != 1 {
-		t.Fatalf("entry after the delivered retry = %+v, want sent=1", e)
-	}
-	if _, ok := srv.resolveCancelledTerminal("req-retry", cancelTerminalError, cancelledOutcomeErrorCancelled, time.Now()); !ok {
+	requireMetricWithTags(t, packets, attempt.MetricCancelSent, "cause:"+attempt.CancelCauseFirstChunkTimeout, "model:"+model)
+	requireMetricWithTags(t, packets, attempt.MetricZombieStreamCancel, "resend_index:0")
+	e, ok = srv.inferenceAttempts().ResolveCancelledTerminal("req-retry", attempt.CancelTerminalError, attempt.CancelledOutcomeErrorCancelled, time.Now())
+	if !ok {
 		t.Fatal("delivered retry must still correlate its terminal")
 	}
+	if e.Deliveries() != 1 {
+		t.Fatalf("entry after the delivered retry = %+v, want sent=1", e)
+	}
 	packets = drain()
-	requireMetricWithTags(t, packets, metricCancelToTerminalMs, "terminal:"+cancelTerminalError, "cause:"+cancelCauseFirstChunkTimeout)
-	requireMetricWithTags(t, packets, metricCancelledTerminal,
-		"outcome:"+cancelledOutcomeErrorCancelled, "cause:"+cancelCauseFirstChunkTimeout, "delivered:true")
+	requireMetricWithTags(t, packets, attempt.MetricCancelToTerminalMs, "terminal:"+attempt.CancelTerminalError, "cause:"+attempt.CancelCauseFirstChunkTimeout)
+	requireMetricWithTags(t, packets, attempt.MetricCancelledTerminal,
+		"outcome:"+attempt.CancelledOutcomeErrorCancelled, "cause:"+attempt.CancelCauseFirstChunkTimeout, "delivered:true")
 
 	// A stray chunk can win the initial enqueue while the abandon path is
 	// releasing registry capacity. Its later send is a resend, not another
 	// first cancel for this request.
-	srv.zombieCanceller.record("req-stray-first", model, cancelCauseClientGonePre, time.Now())
-	srv.noteStrayChunk(live, live.ID, "req-stray-first", time.Now())
-	srv.sendRecordedCancel(live, "req-stray-first", model, cancelCauseClientGonePre)
+	srv.inferenceAttempts().RecordAbandon("req-stray-first", model, attempt.CancelCauseClientGonePre, time.Now())
+	srv.inferenceAttempts().StrayChunk(live, live.ID, "req-stray-first", time.Now())
+	srv.inferenceAttempts().SendRecordedCancel(live, "req-stray-first", model, attempt.CancelCauseClientGonePre)
 	packets = drain()
-	if got := sumMetric(t, packets, metricCancelSent, "cause:"+cancelCauseClientGonePre, "model:"+model); got != 1 {
+	if got := sumMetric(t, packets, attempt.MetricCancelSent, "cause:"+attempt.CancelCauseClientGonePre, "model:"+model); got != 1 {
 		t.Fatalf("a stray-first race must count one initial cancel, got %v: %v", got, packets)
 	}
 
 	// A live writer: counted on the first send, exactly once.
-	srv.sendAbandonCancel(live, "req-live", model, cancelCauseHedgeLoser)
+	srv.inferenceAttempts().SendAbandonCancel(live, "req-live", model, attempt.CancelCauseHedgeLoser)
 	packets = drain()
-	if got := requireMetricWithTags(t, packets, metricCancelSent, "cause:"+cancelCauseHedgeLoser, "model:"+model); len(got) != 1 {
+	if got := requireMetricWithTags(t, packets, attempt.MetricCancelSent, "cause:"+attempt.CancelCauseHedgeLoser, "model:"+model); len(got) != 1 {
 		t.Fatalf("cancel_sent for a delivered first send = %v, want exactly one", got)
 	}
-	if e := entry("req-live"); e.sent != 1 {
+	e, ok = srv.inferenceAttempts().ResolveCancelledTerminal("req-live", attempt.CancelTerminalComplete, attempt.CancelledOutcomeCompletePartial, time.Now())
+	if !ok || e.Deliveries() != 1 {
 		t.Fatalf("entry after a delivered first send = %+v, want sent=1", e)
 	}
 }
@@ -252,7 +227,7 @@ func TestUnknownTerminalPathsOnBareServer(t *testing.T) {
 	reg := registry.New(logger)
 	for name, srv := range map[string]*Server{
 		"nil canceller":     {registry: reg, logger: logger},
-		"literal canceller": {registry: reg, logger: logger, zombieCanceller: &zombieStreamCanceller{}},
+		"literal canceller": {registry: reg, logger: logger, attemptTracker: &attempt.Tracker{}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			provider := &registry.Provider{ID: "p-bare"}
@@ -273,56 +248,4 @@ func TestUnknownTerminalPathsOnBareServer(t *testing.T) {
 			})
 		})
 	}
-}
-
-func TestCancelLatencyUsesFirstSuccessfulSend(t *testing.T) {
-	collector := newUDPCollector(t)
-	defer collector.Close()
-	dd := newTestDD(t, collector)
-	defer dd.Close()
-	srv := &Server{dd: dd, zombieCanceller: newZombieStreamCanceller()}
-	t0 := time.Now()
-	for _, terminal := range []string{cancelTerminalComplete, cancelTerminalStrayChunk} {
-		id := "delayed-" + terminal
-		srv.zombieCanceller.record(id, "m", cancelCauseClientGonePost, t0)
-		srv.zombieCanceller.noteSendFailed(id, t0)
-		srv.zombieCanceller.markSent(id, t0.Add(10*time.Second))
-		// A later resend must not move the latency anchor.
-		srv.zombieCanceller.markSent(id, t0.Add(11*time.Second))
-		if terminal == cancelTerminalComplete {
-			srv.resolveCancelledTerminal(id, terminal, cancelledOutcomeCompletePartial, t0.Add(12*time.Second))
-		} else {
-			srv.zombieCanceller.strayChunk(id, t0.Add(12*time.Second))
-			e, _ := srv.zombieCanceller.terminal(id)
-			srv.emitExpiredCancelEntries([]zombieEntry{e})
-		}
-		_ = dd.Statsd.Flush()
-		packets := collector.drain()
-		got := requireMetricWithTags(t, packets, metricCancelToTerminalMs, "terminal:"+terminal)
-		if len(got) != 1 || !strings.Contains(got[0], metricCancelToTerminalMs+":2000|h") {
-			t.Fatalf("latency must exclude the failed-send delay: %v", got)
-		}
-	}
-}
-
-func TestExpiredUndeliveredCancelIsUnresolved(t *testing.T) {
-	collector := newUDPCollector(t)
-	defer collector.Close()
-	dd := newTestDD(t, collector)
-	defer dd.Close()
-	srv := &Server{dd: dd, zombieCanceller: newZombieStreamCanceller()}
-	t0 := time.Now()
-	// The failed retry sees a stray chunk, but still delivers no cancel.
-	srv.zombieCanceller.record("unsent", "m", cancelCauseClientGonePre, t0)
-	srv.zombieCanceller.noteSendFailed("unsent", t0)
-	srv.zombieCanceller.strayChunk("unsent", t0.Add(time.Second))
-	srv.zombieCanceller.noteSendFailed("unsent", t0.Add(time.Second))
-	e, _ := srv.zombieCanceller.terminal("unsent")
-	srv.emitExpiredCancelEntries([]zombieEntry{e})
-	_ = dd.Statsd.Flush()
-	packets := collector.drain()
-	if got := findMetrics(packets, metricCancelToTerminalMs); len(got) != 0 {
-		t.Fatalf("undelivered cancel must not contribute latency: %v", got)
-	}
-	requireMetricWithTags(t, packets, metricCancelUnresolved, "cause:"+cancelCauseClientGonePre)
 }

@@ -1,6 +1,6 @@
 # Data flow: one request end to end
 
-> Last updated: 2026-09-14 · commit `641bd53b0`
+> Last updated: 2026-09-13 · commit `89a671179`
 
 A consumer request travels consumer → coordinator → provider → coordinator → consumer. This page shows that journey once — as a sequence diagram and a stage table naming the code that owns each step — for anyone tracing a request through the coordinator.
 
@@ -70,7 +70,7 @@ Two things the diagram makes visible. First, the consumer receives no bytes unti
 | 19 | Commit | Status, headers and the first frame are written; from here the status cannot change | `commitFirstContent`, `writeCommittedResponse` (`coordinator/api/dispatch.go`), `writeSSEResponseHeader` (`coordinator/inference/response/sse_response.go`), `WriteCommittedProviderHeaders` (`coordinator/inference/response/provider_snapshot.go`) |
 | 20 | Relay | Chat events normalised; usage/finish frames held to successful termination, then a single `[DONE]` | `Writer.Stream` (`coordinator/inference/response/stream.go`); `normalizeSSEChunk` (`coordinator/inference/response/sse_normalize.go`); `stripSSEDoneEvents` (`coordinator/inference/response/sse_events.go`) |
 | 21 | Settle | Charge the account from provider-reported usage, record usage against the alias, credit the provider | `handleCompleteAt` (`coordinator/api/provider.go`) → `Service.Complete` (`coordinator/inference/settlement/completion.go`); usage and credits are owned by `completion_usage.go` / `completion_credit.go`; [`billing.md`](billing.md) |
-| 22 | Client gone | Disconnect before commit records 499 and sends `cancel` to the provider | `emitClientGone` (`coordinator/api/dispatch.go`), `sendProviderCancel` (`coordinator/api/consumer.go`) |
+| 22 | Client gone | Disconnect before commit records 499 and sends `cancel` to the provider | `emitClientGone` (`coordinator/api/dispatch.go`), `attempt.Service.SendCancel` (`coordinator/inference/attempt/cancel.go`) |
 
 The platform fee applied at stage 21 is stated once, in [`billing.md#invariants`](billing.md#invariants).
 
@@ -94,7 +94,7 @@ Accepted-write evidence crosses `WriteObserver` after the actual write result. T
 4. **Every job body is sealed with fresh session keys to the provider's public key** — `e2e.GenerateSessionKeys`, `e2e.Encrypt` (`coordinator/internal/e2e/e2e.go`).
 5. **The response echoes the alias the client sent** even though the provider ran the concrete build — `resolveRequestedModel` (`coordinator/api/consumer.go`).
 6. **Once committed the status cannot change**; successful chat streams finish with the held usage/finish frames and exactly one `[DONE]`. In-band errors terminate without a success marker — `Writer.Stream` (`coordinator/inference/response/stream.go`), `stripSSEDoneEvents` (`coordinator/inference/response/sse_events.go`).
-7. **A client that leaves before commit cancels the job**: 499 is recorded and the provider receives `cancel` — `emitClientGone` (`coordinator/api/dispatch.go`), `sendProviderCancel` (`coordinator/api/consumer.go`).
+7. **A client that leaves before commit cancels the job**: 499 is recorded and the provider receives `cancel` — `emitClientGone` (`coordinator/api/dispatch.go`), `attempt.Service.SendCancel` (`coordinator/inference/attempt/cancel.go`).
 
 ## Failure modes
 
@@ -108,7 +108,7 @@ Each row is the stage at which a request can end early and what the consumer see
 | 12 | 429 / 503 / 413 when no eligible provider can accept the prompt now | `runInferenceAdmission` |
 | 18 | First-content deadline missed on every attempt → 429 with `Retry-After`; provider faults fail over to the next candidate, a speculative backup may win the race | `waitFirstChunk`, `runSpeculative`, `runRace`, `shouldStopFailover` (`coordinator/api/dispatch.go`) |
 | 20 | Provider fails after commit → in-band `error` event, status already 200 | `Writer.Stream` (`coordinator/inference/response/stream.go`) |
-| 22 | Client disconnects before commit → 499 in logs, `cancel` to the provider | `emitClientGone`, `sendProviderCancel` |
+| 22 | Client disconnects before commit → 499 in logs, `cancel` to the provider | `emitClientGone`, `attempt.Service.SendCancel` |
 
 ## Code map
 
@@ -118,7 +118,8 @@ Each row is the stage at which a request can end early and what the consumer see
 | Drain gate | `coordinator/api/drain.go` — `drainGate` |
 | Sealed client transport | `coordinator/api/sender_encryption.go` — `sealedTransport` |
 | Prelude parsing and validation | `coordinator/api/inference_preprocess.go` — `parseInferencePrelude`; `coordinator/inference/toolpolicy/validate.go` — `toolpolicy.ValidateParsed` |
-| Model resolution, first-content deadline, cancel | `coordinator/api/consumer.go` — `resolveRequestedModel`, `FirstContentDeadline`, `shedIfModelRejected`, `sendProviderCancel` |
+| Model resolution and first-content deadline | `coordinator/api/consumer.go` — `resolveRequestedModel`, `FirstContentDeadline`, `shedIfModelRejected` |
+| Attempt cancellation | `coordinator/inference/attempt/cancel.go` — `Service.Cancel`, `Service.SendCancel` |
 | Response services and accepted-write binding | `coordinator/api/response_writer.go` — `responseWriter`, `responseServices`, `responseWriteObserver` |
 | Response relay and SSE | `coordinator/inference/response/stream.go` — `Writer.Stream`; `coordinator/inference/response/sse_normalize.go` — `normalizeSSEChunk`; `coordinator/inference/response/sse_events.go` — `stripSSEDoneEvents` |
 | Reservation and capacity admission | `coordinator/api/inference_admission.go` — `reserveInferenceBalance`, `runInferenceAdmission` |

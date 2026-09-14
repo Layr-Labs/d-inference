@@ -3,6 +3,7 @@ package api
 import (
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -111,8 +112,8 @@ func TestClientErrorRouteOutcome_NotAdmittedButFailed(t *testing.T) {
 	if out.AdmittedButFailed {
 		t.Fatal("a client-shape 4xx must NOT set AdmittedButFailed")
 	}
-	if out.ErrorReason != errorReasonClientError {
-		t.Fatalf("400 outcome reason = %q, want %q", out.ErrorReason, errorReasonClientError)
+	if out.ErrorReason != attempt.ErrorReasonClientError {
+		t.Fatalf("400 outcome reason = %q, want %q", out.ErrorReason, attempt.ErrorReasonClientError)
 	}
 
 	d := &dispatchState{s: newTestServerForDispatch(t), model: "m", lastErrCode: 400, lastErr: "invalid tool payload"}

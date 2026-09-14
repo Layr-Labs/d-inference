@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"nhooyr.io/websocket"
@@ -718,10 +719,10 @@ func TestIntegration_NoCancelAfterCleanCompletion(t *testing.T) {
 		t.Fatalf("provider received %d Cancel frame(s) after a clean inference_complete, want 0", n)
 	}
 	packets := dd.packets(collector)
-	if got := findMetrics(packets, metricCancelSent); len(got) != 0 {
+	if got := findMetrics(packets, attempt.MetricCancelSent); len(got) != 0 {
 		t.Fatalf("cancel_sent must not fire for a clean completion: %v", got)
 	}
-	if got := findMetrics(packets, metricCancelToTerminalMs); len(got) != 0 {
+	if got := findMetrics(packets, attempt.MetricCancelToTerminalMs); len(got) != 0 {
 		t.Fatalf("cancel_to_terminal_ms must not fire for a clean completion: %v", got)
 	}
 }
@@ -769,7 +770,7 @@ func TestIntegration_NoCancelAfterProviderErrorTerminal(t *testing.T) {
 	if n := len(cancels.times()); n != 0 {
 		t.Fatalf("provider received %d Cancel frame(s) after its own inference_error, want 0", n)
 	}
-	if got := findMetrics(dd.packets(collector), metricCancelSent); len(got) != 0 {
+	if got := findMetrics(dd.packets(collector), attempt.MetricCancelSent); len(got) != 0 {
 		t.Fatalf("cancel_sent must not fire after a provider error terminal: %v", got)
 	}
 }
@@ -836,7 +837,7 @@ func runZombieStreamScenario(t *testing.T, terminal string, zombieFor time.Durat
 			Error:         "request cancelled",
 			StatusCode:    499,
 			FailureCode:   protocol.FailureCodeCancelled,
-			TerminalCause: terminalCauseCancelled,
+			TerminalCause: attempt.TerminalCauseCancelled,
 		})
 	default:
 		t.Fatalf("unknown terminal %q", terminal)
@@ -879,16 +880,16 @@ func TestIntegration_ZombieStreamRecancelScheduleAndCompleteTerminal(t *testing.
 		t.Fatalf("second re-send at +%v after the first cancel, want ~+3 s", gap2)
 	}
 
-	hist := requireMetricWithTags(t, packets, metricCancelToTerminalMs,
-		"terminal:complete", "model:"+model, "cause:"+cancelCauseClientGonePost)
+	hist := requireMetricWithTags(t, packets, attempt.MetricCancelToTerminalMs,
+		"terminal:complete", "model:"+model, "cause:"+attempt.CancelCauseClientGonePost)
 	if v := metricValue(t, hist[0]); v < 0.8*float64(zombieFor/time.Millisecond) {
 		t.Fatalf("cancel_to_terminal_ms = %v, want >= ~%v (the zombie phase)", v, zombieFor)
 	}
-	requireMetricWithTags(t, packets, metricCancelSent, "cause:"+cancelCauseClientGonePost, "model:"+model)
-	requireMetricWithTags(t, packets, metricZombieStreamCancel, "resend_index:1")
-	requireMetricWithTags(t, packets, metricZombieStreamCancel, "resend_index:2")
-	requireMetricWithTags(t, packets, metricCancelledTerminal, "outcome:"+cancelledOutcomeCompletePartial, "delivered:true")
-	if got := findMetrics(packets, metricCancelUnresolved); len(got) != 0 {
+	requireMetricWithTags(t, packets, attempt.MetricCancelSent, "cause:"+attempt.CancelCauseClientGonePost, "model:"+model)
+	requireMetricWithTags(t, packets, attempt.MetricZombieStreamCancel, "resend_index:1")
+	requireMetricWithTags(t, packets, attempt.MetricZombieStreamCancel, "resend_index:2")
+	requireMetricWithTags(t, packets, attempt.MetricCancelledTerminal, "outcome:"+attempt.CancelledOutcomeCompletePartial, "delivered:true")
+	if got := findMetrics(packets, attempt.MetricCancelUnresolved); len(got) != 0 {
 		t.Fatalf("a correlated terminal must not also count as unresolved: %v", got)
 	}
 	requireNoIdentityInPackets(t, packets, requestID)
@@ -904,12 +905,12 @@ func TestIntegration_CancelToTerminalOnLateErrorTerminal(t *testing.T) {
 	if len(cancels) < 2 || len(cancels) > 3 {
 		t.Fatalf("Cancel frames over %v of zombie chunks = %d (%v), want 2: first, +1 s", zombieFor, len(cancels), cancels)
 	}
-	hist := requireMetricWithTags(t, packets, metricCancelToTerminalMs,
-		"terminal:error", "model:"+model, "cause:"+cancelCauseClientGonePost)
+	hist := requireMetricWithTags(t, packets, attempt.MetricCancelToTerminalMs,
+		"terminal:error", "model:"+model, "cause:"+attempt.CancelCauseClientGonePost)
 	if v := metricValue(t, hist[0]); v < 0.8*float64(zombieFor/time.Millisecond) {
 		t.Fatalf("cancel_to_terminal_ms = %v, want >= ~%v", v, zombieFor)
 	}
-	requireMetricWithTags(t, packets, metricCancelledTerminal, "outcome:"+cancelledOutcomeErrorCancelled, "delivered:true")
-	requireMetricWithTags(t, packets, metricZombieStreamCancel, "resend_index:1")
+	requireMetricWithTags(t, packets, attempt.MetricCancelledTerminal, "outcome:"+attempt.CancelledOutcomeErrorCancelled, "delivered:true")
+	requireMetricWithTags(t, packets, attempt.MetricZombieStreamCancel, "resend_index:1")
 	requireNoIdentityInPackets(t, packets, requestID)
 }

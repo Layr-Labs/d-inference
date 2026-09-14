@@ -1,5 +1,25 @@
 package api
 
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
+	"github.com/eigeninference/d-inference/coordinator/inference/settlement"
+	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/saferun"
+	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/google/uuid"
+)
+
 // Per-request dispatch state machine for the consumer inference path.
 //
 // This file holds the speculative TTFT-aware dispatch loop that handleChatCompletions
@@ -28,25 +48,6 @@ package api
 // outcomeAccepted, `return` (client gone, after refund) → outcomeClientGone, and the
 // queue-rejection `writeJSON; return` paths → outcomeResponseWritten. The orchestrator
 // switches on the outcome, exactly reproducing the original flow.
-
-import (
-	"context"
-	"errors"
-	"fmt"
-	"github.com/eigeninference/d-inference/coordinator/inference/response"
-	"github.com/eigeninference/d-inference/coordinator/inference/settlement"
-	"net/http"
-	"strconv"
-	"strings"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/saferun"
-	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/google/uuid"
-)
 
 // dispatchOutcome is the result of a per-attempt dispatch phase (provider
 // selection, first-chunk wait, accepted wait). The orchestrator (dispatchState.run)
@@ -658,7 +659,7 @@ func (d *dispatchState) errorRoutingOutcomeFor(pr *registry.PendingRequest, stat
 
 func routeOutcomeUsesProviderErrorText(class string) bool {
 	class = strings.ToLower(strings.TrimSpace(class))
-	return class == errorReasonProviderError ||
+	return class == attempt.ErrorReasonProviderError ||
 		class == errorClassDeadlineUnreachable ||
 		// client_error rows keep the provider-supplied reason too: a jinja_*
 		// template-render failure is recorded as class client_error (not a
@@ -702,7 +703,7 @@ func isGenuinePreContentFault(
 	if msg.StatusCode < http.StatusInternalServerError {
 		return false
 	}
-	if isProviderHealthNeutralErrorReason(msg.ErrorReason) {
+	if attempt.IsProviderHealthNeutralErrorReason(msg.ErrorReason) {
 		return false
 	}
 	switch msg.FailureCode {
@@ -716,16 +717,16 @@ func isGenuinePreContentFault(
 		protocol.FailureCodeCancelled:
 		return false
 	}
-	switch class, _ := classifyTerminalCause(msg.TerminalCause); class {
-	case causeClassNeutral, causeClassCapacity:
+	switch class, _ := attempt.ClassifyTerminalCause(msg.TerminalCause); class {
+	case attempt.CauseClassNeutral, attempt.CauseClassCapacity:
 		return false
-	case causeClassFault:
+	case attempt.CauseClassFault:
 		return true
 	}
-	return classifyRejection(
+	return attempt.ClassifyRejection(
 		msg.ErrorReason, msg.Error, providerBudget, modelContext,
 		msg.RejectionReason,
-	) == rejectionNotCapacity
+	) == attempt.RejectionNotCapacity
 }
 
 func terminalFailureFromMessage(msg protocol.InferenceErrorMessage) dispatchTerminalFailure {
@@ -733,7 +734,7 @@ func terminalFailureFromMessage(msg protocol.InferenceErrorMessage) dispatchTerm
 		errText:       msg.Error,
 		statusCode:    msg.StatusCode,
 		terminalCause: msg.TerminalCause,
-		deadline:      isDeadlineUnreachableErrorReason(msg.ErrorReason),
+		deadline:      attempt.IsDeadlineUnreachableErrorReason(msg.ErrorReason),
 	}
 }
 
@@ -775,7 +776,7 @@ func (d *dispatchState) terminalFailureForExhaustion() (
 // real provider terminal and must remain 504; an untyped 504 is the dispatch
 // loop's existing discriminator for its own first-content timeout.
 func classifyExhaustedStatus(statusCode int, terminalCause string) (code int, reason string, reclassified bool) {
-	if statusCode == http.StatusGatewayTimeout && !isTypedTimeout504Cause(terminalCause) {
+	if statusCode == http.StatusGatewayTimeout && !attempt.IsTypedTimeout504Cause(terminalCause) {
 		return http.StatusTooManyRequests, "first_chunk_timeout", true
 	}
 	return statusCode, "dispatch_exhausted", false
@@ -885,7 +886,7 @@ func (d *dispatchState) setLastInferenceError(provider *registry.Provider, msg p
 	d.lastErr = msg.Error
 	d.lastErrCode = msg.StatusCode
 	d.lastErrReason = msg.ErrorReason
-	d.lastFailureDeadline = isDeadlineUnreachableErrorReason(msg.ErrorReason)
+	d.lastFailureDeadline = attempt.IsDeadlineUnreachableErrorReason(msg.ErrorReason)
 	d.lastErrProviderBudget = providerBudget
 	d.lastErrRejectionReason = msg.RejectionReason
 	d.lastErrTerminalCause = msg.TerminalCause
@@ -918,7 +919,7 @@ func (d *dispatchState) providerFailedRoutingOutcome() *store.InferenceRouteOutc
 }
 
 func (d *dispatchState) providerFailedRoutingOutcomeFor(pr *registry.PendingRequest) *store.InferenceRouteOutcome {
-	if isDeadlineUnreachableErrorReason(d.lastErrReason) {
+	if attempt.IsDeadlineUnreachableErrorReason(d.lastErrReason) {
 		// The provider declined work before execution because the coordinator's
 		// remaining absolute budget could not be met. Preserve the typed reason
 		// without marking the provider as admitted-but-failed.
@@ -927,7 +928,7 @@ func (d *dispatchState) providerFailedRoutingOutcomeFor(pr *registry.PendingRequ
 		applyAttemptUsage(out, d.lastErrAttemptUsage)
 		return out
 	}
-	if isTerminalClientErrorCode(d.lastErrCode) || isNonProviderFaultErrorReason(d.lastErrReason) {
+	if isTerminalClientErrorCode(d.lastErrCode) || attempt.IsNonProviderFaultErrorReason(d.lastErrReason) {
 		// Deterministic non-provider fault: a 4xx status the provider maps for
 		// malformed bodies, OR a structured non-provider-fault reason (jinja_*
 		// template-render failures, tool_noncompliance model-output 422s).
@@ -1731,7 +1732,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			if errors.Is(writeErr, context.DeadlineExceeded) ||
 				errors.Is(writeErr, errFirstContentDeadlineAtWriter) {
 				d.pr.Profile.Mark(registry.StampCancelSent)
-				s.sendProviderCancel(d.provider, d.requestID)
+				s.inferenceAttempts().SendCancel(d.provider, d.requestID)
 				d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
 				d.updateRoutingOutcome(d.errorRoutingOutcome(
 					"timeout", "first_chunk_timeout", http.StatusGatewayTimeout))
@@ -1788,10 +1789,10 @@ func (d *dispatchState) noteDispatchRetry(provider *registry.Provider, pr *regis
 // noteDispatchProviderError only feeds noteInferenceError for a non-nil
 // provider, while the refund + held handling are unconditional.
 func (d *dispatchState) noteProviderError(provider *registry.Provider, pr *registry.PendingRequest, statusCode int, errStr, errReason, terminalCause string, held *[]string, causes ...protocol.CoordinatorInferenceErrorCause) (discardedHeld bool) {
-	if isProviderHealthNeutralErrorReason(errReason) {
+	if attempt.IsProviderHealthNeutralErrorReason(errReason) {
 		provider = nil
 	}
-	return d.s.noteDispatchProviderError(provider, pr, statusCode, errStr, errReason, terminalCause, held, causes...)
+	return d.s.inferenceAttempts().DispatchError(provider, pr, statusCode, errStr, errReason, terminalCause, held, causes...)
 }
 
 // rejectionReasonOversized is the rejection-ledger reason_code for a request the
@@ -1823,7 +1824,7 @@ const rejectionReasonRoutingSaturated = "routing_saturated"
 // rejectionReasonDeadlineUnreachable is the rejection-ledger reason for a
 // request whose remaining absolute first-content budget was refused by one or
 // more providers and whose untried candidates were then exhausted.
-const rejectionReasonDeadlineUnreachable = errorReasonDeadlineUnreachable
+const rejectionReasonDeadlineUnreachable = attempt.ErrorReasonDeadlineUnreachable
 
 // rejectionReasonTemplateRenderFailed is the rejection-ledger reason_code for
 // a request the dispatch loop stopped because the model's chat template
@@ -1902,7 +1903,7 @@ func (d *dispatchState) shouldStopFailover() bool {
 	// as anything else. Behavior below the cap is unchanged: classifyRejection
 	// already returns rejectionNotCapacity for the synthetic timeout string
 	// (see rejection_classify_test.go), i.e. "keep failing over".
-	if d.lastErrCode == http.StatusGatewayTimeout && !isTypedTimeout504Cause(d.lastErrTerminalCause) {
+	if d.lastErrCode == http.StatusGatewayTimeout && !attempt.IsTypedTimeout504Cause(d.lastErrTerminalCause) {
 		d.firstChunkTimeoutRetries++
 		if d.firstChunkTimeoutRetries >= maxFirstChunkTimeoutRetries {
 			d.s.ddIncr("routing.first_chunk_timeout_ladder_capped", []string{"model:" + d.model})
@@ -1918,25 +1919,25 @@ func (d *dispatchState) shouldStopFailover() bool {
 	// through the legacy capacity substrings, gets classified as a generic
 	// fault, and walks the unbounded fault-failover ladder to a final 503
 	// instead of the bounded capacity retries and uptime-neutral 429.
-	kind := classifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext, d.lastErrRejectionReason)
-	if kind != rejectionDeadlineUnreachable &&
-		d.lastErrTerminalCause == terminalCauseAdmissionTimeout {
-		kind = rejectionTransientCapacity
+	kind := attempt.ClassifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext, d.lastErrRejectionReason)
+	if kind != attempt.RejectionDeadlineUnreachable &&
+		d.lastErrTerminalCause == attempt.TerminalCauseAdmissionTimeout {
+		kind = attempt.RejectionTransientCapacity
 	}
 	switch kind {
-	case rejectionDeterministicUnservable:
+	case attempt.RejectionDeterministicUnservable:
 		d.s.ddIncr("routing.dispatch_to_capacity_503", []string{"model:" + d.model, "reason:deterministic"})
 		d.unservable = true
 		d.unservableReason = rejectionReasonOversized
 		return true
-	case rejectionDeadlineUnreachable:
+	case attempt.RejectionDeadlineUnreachable:
 		// This provider declined only the remaining request-absolute SLA.
 		// Another untried provider may still land, so keep failing over without
 		// consuming the generic transient-capacity retry allowance.
 		d.lastFailureDeadline = true
 		return false
-	case rejectionTransientCapacity:
-		if isDrainingErrorReason(d.lastErrReason) {
+	case attempt.RejectionTransientCapacity:
+		if attempt.IsDrainingErrorReason(d.lastErrReason) {
 			// Typed drain refusal (R2): the provider is restarting, not the
 			// fleet full. Keep failing over (the provider is now marked
 			// draining and excluded) WITHOUT charging the request's bounded
@@ -1969,10 +1970,10 @@ func (d *dispatchState) shouldStopFailover() bool {
 // provider's raw 500. src tags the metric emission site ("" = the
 // shouldStopFailover survivor path, "race_loser" = latchDeterministicLoser).
 func (d *dispatchState) latchJinjaTerminalReject(reason, src string) (latched bool) {
-	if !jinjaTerminalRejectEnabled() || !isJinjaTemplateErrorReason(reason) {
+	if !jinjaTerminalRejectEnabled() || !attempt.IsJinjaTemplateErrorReason(reason) {
 		return false
 	}
-	tags := []string{"model:" + d.model, "code:422", "reason:" + normalizeInferenceErrorReason(reason)}
+	tags := []string{"model:" + d.model, "code:422", "reason:" + attempt.NormalizeInferenceErrorReason(reason)}
 	if src != "" {
 		tags = append(tags, "src:"+src)
 	}
@@ -2028,12 +2029,12 @@ func (d *dispatchState) latchDeterministicLoser(provider *registry.Provider, msg
 		d.latchTerminalAttribution(provider)
 		return
 	}
-	switch classifyRejection(msg.ErrorReason, msg.Error, budget, d.modelMaxContext, msg.RejectionReason) {
-	case rejectionDeadlineUnreachable:
+	switch attempt.ClassifyRejection(msg.ErrorReason, msg.Error, budget, d.modelMaxContext, msg.RejectionReason) {
+	case attempt.RejectionDeadlineUnreachable:
 		// A race loser that could not meet the remaining absolute deadline is
 		// health-neutral and non-deterministic across providers. It must not
 		// become sticky: the surviving attempt owns the eventual terminal.
-	case rejectionDeterministicUnservable:
+	case attempt.RejectionDeterministicUnservable:
 		d.s.ddIncr("routing.dispatch_to_capacity_503", []string{"model:" + d.model, "reason:deterministic"})
 		d.unservable = true
 		d.unservableReason = rejectionReasonOversized
@@ -2070,7 +2071,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 			// stays on this legacy timeout path, mirroring
 			// classifyTerminalCause's unknown→legacy rule for mixed-version
 			// rollouts.
-			if d.lastErrCode == http.StatusGatewayTimeout && !isTypedTimeout504Cause(d.lastErrTerminalCause) {
+			if d.lastErrCode == http.StatusGatewayTimeout && !attempt.IsTypedTimeout504Cause(d.lastErrTerminalCause) {
 				d.updateRoutingOutcomeForAttempt(target, d.errorRoutingOutcomeFor(target.pending, "timeout", "first_chunk_timeout", d.lastErrCode))
 			} else {
 				// Post-dispatch provider failure (incl. OOM/model-load): admitted but failed.
@@ -2116,7 +2117,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 				select {
 				case errMsg := <-pr.ErrorCh:
 					d.excludeProviders[provider.ID] = struct{}{}
-					s.cancelDispatchAfterTerminal(provider, pr)
+					s.inferenceAttempts().CancelAfterTerminal(provider, pr)
 					d.setLastInferenceError(provider, errMsg)
 					d.lastFailedVersion = failedProviderVersion(provider)
 					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks, errMsg.CoordinatorCause)
@@ -2143,7 +2144,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 				return outcomeCommitted
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
-			s.cancelDispatchAfterTerminal(provider, pr)
+			s.inferenceAttempts().CancelAfterTerminal(provider, pr)
 			d.setLastInferenceError(provider, errMsg)
 			d.lastFailedVersion = failedProviderVersion(provider)
 			s.logger.Warn("provider failed, retrying",
@@ -2223,13 +2224,13 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 				d.preambleLiveness = true
 				return outcomeAccepted
 			}
-			if !s.cancelDispatchForFirstContentTimeout(provider, pr) {
+			if !s.inferenceAttempts().CancelForFirstContentTimeout(provider, pr) {
 				continue
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
 			if providerAttemptAttributableStall(pr, d.deadline) {
-				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
+				s.inferenceAttempts().Error(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			}
 			d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
 			s.logger.Warn("provider timeout (full deadline), retrying",
@@ -2255,7 +2256,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 		case <-r.Context().Done():
 			speculativeTimer.Stop()
 			deadlineTimer.Stop()
-			s.cancelDispatch(provider, pr, cancelCauseClientGonePre)
+			s.inferenceAttempts().Cancel(provider, pr, attempt.CancelCauseClientGonePre)
 			d.refundReservation()
 			return outcomeClientGone
 		}
@@ -2453,7 +2454,7 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 				select {
 				case errMsg := <-pr.ErrorCh:
 					d.excludeProviders[provider.ID] = struct{}{}
-					s.cancelDispatchAfterTerminal(provider, pr)
+					s.inferenceAttempts().CancelAfterTerminal(provider, pr)
 					d.setLastInferenceError(provider, errMsg)
 					d.lastFailedVersion = failedProviderVersion(provider)
 					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks, errMsg.CoordinatorCause)
@@ -2473,7 +2474,7 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 				return outcomeCommitted
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
-			s.cancelDispatchAfterTerminal(provider, pr)
+			s.inferenceAttempts().CancelAfterTerminal(provider, pr)
 			d.setLastInferenceError(provider, errMsg)
 			d.lastFailedVersion = failedProviderVersion(provider)
 			if s.metrics != nil {
@@ -2499,13 +2500,13 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 				d.preambleLiveness = true
 				return outcomeAccepted
 			}
-			if !s.cancelDispatchForFirstContentTimeout(provider, pr) {
+			if !s.inferenceAttempts().CancelForFirstContentTimeout(provider, pr) {
 				continue
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
 			if providerAttemptAttributableStall(pr, d.deadline) {
-				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
+				s.inferenceAttempts().Error(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			}
 			d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
 			s.logger.Warn("provider timeout (no backup), retrying",
@@ -2529,7 +2530,7 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 			return outcomeRetry
 		case <-r.Context().Done():
 			remainingDeadline.Stop()
-			s.cancelDispatch(provider, pr, cancelCauseClientGonePre)
+			s.inferenceAttempts().Cancel(provider, pr, attempt.CancelCauseClientGonePre)
 			d.refundReservation()
 			return outcomeClientGone
 		}
@@ -2551,7 +2552,7 @@ func (d *dispatchState) awaitPrimaryEmptyCompletion(
 	backupPR *registry.PendingRequest,
 ) dispatchOutcome {
 	d.pr.ResolveSpeculativeEmptyCompletion(true)
-	d.s.cancelDispatch(backupProvider, backupPR, cancelCauseHedgeLoser)
+	d.s.inferenceAttempts().Cancel(backupProvider, backupPR, attempt.CancelCauseHedgeLoser)
 	d.markSpeculativeLoser(backupPR)
 	return d.waitAccepted()
 }
@@ -2564,7 +2565,7 @@ func (d *dispatchState) awaitBackupEmptyCompletion(
 	backupHeld []string,
 ) dispatchOutcome {
 	backupPR.ResolveSpeculativeEmptyCompletion(true)
-	d.s.cancelDispatch(primaryProvider, primaryPR, cancelCauseHedgeLoser)
+	d.s.inferenceAttempts().Cancel(primaryProvider, primaryPR, attempt.CancelCauseHedgeLoser)
 	d.s.ddIncr("inference.speculative_win", []string{"model:" + d.model})
 	d.s.registry.RecordWarmPoolSpeculativeWon(d.model)
 	d.markSpeculativeLoser(primaryPR)
@@ -2634,7 +2635,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			}
 			// Primary wins!
 			raceDeadline.Stop()
-			s.cancelDispatch(backupProvider, backupPR, cancelCauseHedgeLoser)
+			s.inferenceAttempts().Cancel(backupProvider, backupPR, attempt.CancelCauseHedgeLoser)
 			if ok {
 				d.markSpeculativeLoser(backupPR)
 				d.commitFirstContent(pr, chunk.Data)
@@ -2645,7 +2646,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 					// Primary failed but we already cancelled backup.
 					d.markSpeculativeLoser(backupPR)
 					d.excludeProviders[provider.ID] = struct{}{}
-					s.cancelDispatchAfterTerminal(provider, pr)
+					s.inferenceAttempts().CancelAfterTerminal(provider, pr)
 					d.setLastInferenceError(provider, errMsg)
 					d.lastFailedVersion = failedProviderVersion(provider)
 					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks, errMsg.CoordinatorCause)
@@ -2683,7 +2684,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			}
 			// Backup wins!
 			raceDeadline.Stop()
-			s.cancelDispatch(provider, pr, cancelCauseHedgeLoser)
+			s.inferenceAttempts().Cancel(provider, pr, attempt.CancelCauseHedgeLoser)
 			s.ddIncr("inference.speculative_win", []string{"model:" + d.model})
 			s.registry.RecordWarmPoolSpeculativeWon(d.model)
 			if ok {
@@ -2714,7 +2715,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 					return d.raceBackupChunkClosedWaitPrimary(provider, pr)
 				default:
 					// Backup channel closed with no error — treat as committed.
-					s.cancelDispatch(provider, pr, cancelCauseHedgeLoser)
+					s.inferenceAttempts().Cancel(provider, pr, attempt.CancelCauseHedgeLoser)
 					d.markSpeculativeLoser(pr)
 					backupPR.BackupWon.Store(true)
 					d.provider = backupProvider
@@ -2771,7 +2772,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 					return d.awaitBackupEmptyCompletion(
 						provider, pr, backupProvider, backupPR, backupHeld)
 				}
-				s.cancelDispatch(backupProvider, backupPR, cancelCauseHedgeLoser)
+				s.inferenceAttempts().Cancel(backupProvider, backupPR, attempt.CancelCauseHedgeLoser)
 				d.markSpeculativeLoser(backupPR)
 				d.commitFirstContent(pr, chunk.Data)
 				d.committed = true
@@ -2779,7 +2780,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				return outcomeCommitted
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
-			s.cancelDispatchAfterTerminal(provider, pr)
+			s.inferenceAttempts().CancelAfterTerminal(provider, pr)
 			d.lastFailedVersion = failedProviderVersion(provider)
 			d.updateSpeculativeFailure(pr, errMsg)
 			d.noteProviderError(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks, errMsg.CoordinatorCause)
@@ -2799,7 +2800,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				if emptyCompletionPrecedesChunk(pr, chunk) {
 					return d.awaitPrimaryEmptyCompletion(backupProvider, backupPR)
 				}
-				s.cancelDispatch(provider, pr, cancelCauseHedgeLoser)
+				s.inferenceAttempts().Cancel(provider, pr, attempt.CancelCauseHedgeLoser)
 				d.markSpeculativeLoser(pr)
 				backupPR.BackupWon.Store(true)
 				d.provider = backupProvider
@@ -2813,7 +2814,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				return outcomeCommitted
 			}
 			d.excludeProviders[backupProvider.ID] = struct{}{}
-			s.cancelDispatchAfterTerminal(backupProvider, backupPR)
+			s.inferenceAttempts().CancelAfterTerminal(backupProvider, backupPR)
 			d.lastFailedVersion = failedProviderVersion(backupProvider)
 			d.updateSpeculativeFailure(backupPR, errMsg)
 			d.noteProviderError(backupProvider, backupPR, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &backupHeld, errMsg.CoordinatorCause)
@@ -2832,7 +2833,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 					return d.awaitBackupEmptyCompletion(
 						provider, pr, backupProvider, backupPR, backupHeld)
 				}
-				s.cancelDispatch(backupProvider, backupPR, cancelCauseHedgeLoser)
+				s.inferenceAttempts().Cancel(backupProvider, backupPR, attempt.CancelCauseHedgeLoser)
 				d.markSpeculativeLoser(backupPR)
 				d.commitFirstContent(pr, chunk.Data)
 				d.committed = true
@@ -2842,7 +2843,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				if emptyCompletionPrecedesChunk(pr, chunk) {
 					return d.awaitPrimaryEmptyCompletion(backupProvider, backupPR)
 				}
-				s.cancelDispatch(provider, pr, cancelCauseHedgeLoser)
+				s.inferenceAttempts().Cancel(provider, pr, attempt.CancelCauseHedgeLoser)
 				s.ddIncr("inference.speculative_win", []string{"model:" + d.model})
 				s.registry.RecordWarmPoolSpeculativeWon(d.model)
 				d.markSpeculativeLoser(pr)
@@ -2877,10 +2878,10 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 					continue
 				}
 			}
-			if !s.cancelDispatchForFirstContentTimeout(provider, pr) {
+			if !s.inferenceAttempts().CancelForFirstContentTimeout(provider, pr) {
 				continue
 			}
-			if !s.cancelDispatchForFirstContentTimeout(backupProvider, backupPR) {
+			if !s.inferenceAttempts().CancelForFirstContentTimeout(backupProvider, backupPR) {
 				// The primary was cancelled for the timeout but the backup
 				// won its ingress race: record the primary's timeout (route
 				// outcome + attempt profile) before its identity is cleared.
@@ -2902,11 +2903,11 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			// Attribute each provider's complete initial+racing interval. The
 			// prior extension-only check missed stalls split across phases.
 			if providerAttemptAttributableStall(pr, d.deadline) {
-				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
+				s.inferenceAttempts().Error(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			}
 			if providerAttemptAttributableStall(
 				backupPR, d.deadline-d.speculativeAt) {
-				s.noteInferenceError(backupProvider.ID, backupPR, http.StatusGatewayTimeout, "", "", "")
+				s.inferenceAttempts().Error(backupProvider.ID, backupPR, http.StatusGatewayTimeout, "", "", "")
 			}
 			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
 			d.updateSpeculativeTimeout(backupPR, "first_chunk_timeout")
@@ -2924,8 +2925,8 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 		case <-r.Context().Done():
 			raceDeadline.Stop()
 			d.updateSpeculativeClientGone(backupPR)
-			s.cancelDispatch(provider, pr, cancelCauseClientGonePre)
-			s.cancelDispatch(backupProvider, backupPR, cancelCauseClientGonePre)
+			s.inferenceAttempts().Cancel(provider, pr, attempt.CancelCauseClientGonePre)
+			s.inferenceAttempts().Cancel(backupProvider, backupPR, attempt.CancelCauseClientGonePre)
 			d.refundReservation()
 			return outcomeClientGone
 		}
@@ -2954,7 +2955,7 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 				select {
 				case errMsg2 := <-pr.ErrorCh:
 					d.excludeProviders[provider.ID] = struct{}{}
-					s.cancelDispatchAfterTerminal(provider, pr)
+					s.inferenceAttempts().CancelAfterTerminal(provider, pr)
 					d.setLastInferenceError(provider, errMsg2)
 					d.lastFailedVersion = failedProviderVersion(provider)
 					d.updateSpeculativeFailure(pr, errMsg2)
@@ -2980,7 +2981,7 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 				return outcomeCommitted
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
-			s.cancelDispatchAfterTerminal(provider, pr)
+			s.inferenceAttempts().CancelAfterTerminal(provider, pr)
 			d.setLastInferenceError(provider, errMsg2)
 			d.lastFailedVersion = failedProviderVersion(provider)
 			d.updateSpeculativeFailure(pr, errMsg2)
@@ -3004,7 +3005,7 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 				d.preambleLiveness = true
 				return outcomeAccepted
 			}
-			if !s.cancelDispatchForFirstContentTimeout(provider, pr) {
+			if !s.inferenceAttempts().CancelForFirstContentTimeout(provider, pr) {
 				continue
 			}
 			// The PRIMARY timed out here (the backup's earlier error
@@ -3013,7 +3014,7 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
 			if providerAttemptAttributableStall(pr, d.deadline) {
-				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
+				s.inferenceAttempts().Error(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			}
 			d.updateSpeculativeTimeout(pr, "first_chunk_timeout")
 			d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
@@ -3028,7 +3029,7 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 		case <-r.Context().Done():
 			remainingPrimary.Stop()
 			d.updateSpeculativeClientGone(pr)
-			s.cancelDispatch(provider, pr, cancelCauseClientGonePre)
+			s.inferenceAttempts().Cancel(provider, pr, attempt.CancelCauseClientGonePre)
 			d.refundReservation()
 			return outcomeClientGone
 		}
@@ -3071,7 +3072,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 				select {
 				case errMsg2 := <-backupPR.ErrorCh:
 					d.excludeProviders[backupProvider.ID] = struct{}{}
-					s.cancelDispatchAfterTerminal(backupProvider, backupPR)
+					s.inferenceAttempts().CancelAfterTerminal(backupProvider, backupPR)
 					d.setLastInferenceError(backupProvider, errMsg2)
 					d.lastFailedVersion = failedProviderVersion(backupProvider)
 					d.updateSpeculativeFailure(backupPR, errMsg2)
@@ -3106,7 +3107,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 				return outcomeCommitted
 			}
 			d.excludeProviders[backupProvider.ID] = struct{}{}
-			s.cancelDispatchAfterTerminal(backupProvider, backupPR)
+			s.inferenceAttempts().CancelAfterTerminal(backupProvider, backupPR)
 			d.setLastInferenceError(backupProvider, errMsg2)
 			d.lastFailedVersion = failedProviderVersion(backupProvider)
 			d.updateSpeculativeFailure(backupPR, errMsg2)
@@ -3139,14 +3140,14 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 				d.preambleLiveness = true
 				return outcomeAccepted
 			}
-			if !s.cancelDispatchForFirstContentTimeout(backupProvider, backupPR) {
+			if !s.inferenceAttempts().CancelForFirstContentTimeout(backupProvider, backupPR) {
 				continue
 			}
 			d.excludeProviders[backupProvider.ID] = struct{}{}
 			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
 			if providerAttemptAttributableStall(
 				backupPR, d.deadline-d.speculativeAt) {
-				s.noteInferenceError(backupProvider.ID, backupPR, http.StatusGatewayTimeout, "", "", "")
+				s.inferenceAttempts().Error(backupProvider.ID, backupPR, http.StatusGatewayTimeout, "", "", "")
 			}
 			d.updateSpeculativeTimeout(backupPR, "first_chunk_timeout")
 			d.setLastError("timeout waiting for first response (backup)", http.StatusGatewayTimeout)
@@ -3160,7 +3161,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 		case <-r.Context().Done():
 			backupDeadline.Stop()
 			d.updateSpeculativeClientGone(backupPR)
-			s.cancelDispatch(backupProvider, backupPR, cancelCauseClientGonePre)
+			s.inferenceAttempts().Cancel(backupProvider, backupPR, attempt.CancelCauseClientGonePre)
 			d.refundReservation()
 			return outcomeClientGone
 		}
@@ -3188,7 +3189,7 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 				select {
 				case errMsg2 := <-pr.ErrorCh:
 					d.excludeProviders[provider.ID] = struct{}{}
-					s.cancelDispatchAfterTerminal(provider, pr)
+					s.inferenceAttempts().CancelAfterTerminal(provider, pr)
 					d.setLastInferenceError(provider, errMsg2)
 					d.lastFailedVersion = failedProviderVersion(provider)
 					d.noteDispatchRetry(provider, pr, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, errMsg2.TerminalCause, &d.heldChunks, errMsg2.CoordinatorCause)
@@ -3208,7 +3209,7 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 				return outcomeCommitted
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
-			s.cancelDispatchAfterTerminal(provider, pr)
+			s.inferenceAttempts().CancelAfterTerminal(provider, pr)
 			d.setLastInferenceError(provider, errMsg2)
 			d.lastFailedVersion = failedProviderVersion(provider)
 			d.updateSpeculativeFailure(pr, errMsg2)
@@ -3232,13 +3233,13 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 				d.preambleLiveness = true
 				return outcomeAccepted
 			}
-			if !s.cancelDispatchForFirstContentTimeout(provider, pr) {
+			if !s.inferenceAttempts().CancelForFirstContentTimeout(provider, pr) {
 				continue
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
 			if providerAttemptAttributableStall(pr, d.deadline) {
-				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
+				s.inferenceAttempts().Error(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			}
 			d.updateSpeculativeTimeout(pr, "first_chunk_timeout")
 			d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
@@ -3253,7 +3254,7 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 		case <-r.Context().Done():
 			primaryDeadline.Stop()
 			d.updateSpeculativeClientGone(pr)
-			s.cancelDispatch(provider, pr, cancelCauseClientGonePre)
+			s.inferenceAttempts().Cancel(provider, pr, attempt.CancelCauseClientGonePre)
 			d.refundReservation()
 			return outcomeClientGone
 		}
@@ -3281,7 +3282,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 			// Synthetic-timeout 504s unless a KNOWN typed 504 cause — a typed
 			// provider 504 keeps its provider-error class + usage; unknown
 			// causes stay legacy (see waitFirstChunk).
-			if d.lastErrCode == http.StatusGatewayTimeout && !isTypedTimeout504Cause(d.lastErrTerminalCause) {
+			if d.lastErrCode == http.StatusGatewayTimeout && !attempt.IsTypedTimeout504Cause(d.lastErrTerminalCause) {
 				if d.preambleLiveness {
 					d.updateRoutingOutcomeForAttempt(target, d.errorRoutingOutcomeFor(target.pending, "timeout", "preamble_liveness_timeout", d.lastErrCode))
 				} else {
@@ -3324,7 +3325,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 				select {
 				case errMsg := <-pr.ErrorCh:
 					d.excludeProviders[provider.ID] = struct{}{}
-					s.cancelDispatchAfterTerminal(provider, pr)
+					s.inferenceAttempts().CancelAfterTerminal(provider, pr)
 					d.setLastInferenceError(provider, errMsg)
 					d.lastFailedVersion = failedProviderVersion(provider)
 					s.logger.Warn("provider failed after accepting request, retrying",
@@ -3359,7 +3360,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 				return outcomeCommitted
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
-			s.cancelDispatchAfterTerminal(provider, pr)
+			s.inferenceAttempts().CancelAfterTerminal(provider, pr)
 			d.setLastInferenceError(provider, errMsg)
 			d.lastFailedVersion = failedProviderVersion(provider)
 			s.logger.Warn("provider failed after accepting request, retrying",
@@ -3392,7 +3393,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 			if pr.FirstContentIngressArrivedByDeadline() {
 				continue
 			}
-			if !s.cancelDispatchForFirstContentTimeout(provider, pr) {
+			if !s.inferenceAttempts().CancelForFirstContentTimeout(provider, pr) {
 				continue
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
@@ -3404,7 +3405,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 			// request-absolute first-token clock is OUR deadline (queueing,
 			// admission), not provider sickness.
 			if providerAttemptAttributableStall(pr, firstContentBudget) {
-				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
+				s.inferenceAttempts().Error(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			}
 			d.setLastError("provider accepted but timed out before first chunk", http.StatusGatewayTimeout)
 			if d.preambleLiveness {
@@ -3431,7 +3432,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 			d.pr = nil
 			return outcomeRetry
 		case <-r.Context().Done():
-			s.cancelDispatch(provider, pr, cancelCauseClientGonePre)
+			s.inferenceAttempts().Cancel(provider, pr, attempt.CancelCauseClientGonePre)
 			d.refundReservation()
 			return outcomeClientGone
 		}
@@ -3606,7 +3607,7 @@ exhausted:
 				} else {
 					statusCode = http.StatusServiceUnavailable
 				}
-			} else if statusCode >= 500 && isCapacityClassProviderError(failure.errText) {
+			} else if statusCode >= 500 && attempt.IsCapacityClassProviderError(failure.errText) {
 				// Backstop (always on): the provider admitted the request then
 				// rejected it because (prompt+max_tokens) overflowed its token budget /
 				// KV / context — a capacity condition, not a server fault. Return an
@@ -3827,15 +3828,14 @@ func (d *dispatchState) writeCommittedResponse() {
 	// frame per request (~one per dispatch fleet-wide before this rule).
 	defer func() {
 		abandoned := false
-		cause := cancelCauseStreamTimeout
+		cause := attempt.CancelCauseStreamTimeout
 		if r.Context().Err() != nil {
-			cause = cancelCauseClientGonePost
+			cause = attempt.CancelCauseClientGonePost
 		}
 		if stale := provider.GetPending(requestID); stale != nil {
 			// Record the abandon BEFORE parking so a terminal racing this
 			// defer is correlated with the cancel rather than logged as unknown.
-			_, expired := s.zombieCanceller.record(requestID, pr.Model, cause, time.Now())
-			s.emitExpiredCancelEntries(expired)
+			s.inferenceAttempts().RecordAbandon(requestID, pr.Model, cause, time.Now())
 			s.holdForSettlement(stale)
 			abandoned = true
 		} else {
@@ -3861,13 +3861,13 @@ func (d *dispatchState) writeCommittedResponse() {
 			// A terminal claimed the record between GetPending and
 			// RemovePending: it settles via the parked copy and nothing is
 			// running provider-side.
-			s.zombieCanceller.forget(requestID)
+			s.inferenceAttempts().ForgetCancel(requestID)
 			return
 		}
 		// The provider is still generating for a client that is gone: this
 		// cancel is the one that stops real work, so stamp it.
 		pr.Profile.Mark(registry.StampCancelSent)
-		s.sendRecordedCancel(provider, requestID, pr.Model, cause)
+		s.inferenceAttempts().SendRecordedCancel(provider, requestID, pr.Model, cause)
 	}()
 
 	// The committed provider's held preamble chunks stream out first, in

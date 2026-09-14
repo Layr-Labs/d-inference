@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `0deac8b0a`
+> Last updated: 2026-09-14 · commit `4f6d1c551`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -121,6 +121,25 @@ completion. It also passes against the pre-extraction API implementation.
 usage alias, late referral binding, exact credit amounts and reservation
 finalization using real memory-store/ledger operations and an explicit account
 fee. These checks require no payment credentials or model runtime.
+
+Cancellation-history and pure rejection/terminal-policy tests live beside
+`coordinator/inference/attempt/`. Real provider WebSocket, refund and response
+boundary tests remain in `coordinator/api/`. From the repository root:
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/inference/attempt
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api -run 'Cancel|TerminalCause|TypedTerminal|Capacity|ResponseFeedbackUsesCurrentAttemptBindings'
+```
+
+`TestResponseFeedbackUsesCurrentAttemptBindings`
+(`coordinator/api/inference_attempt_binding_test.go`) constructs the response
+writer before replacing its registry/model store and configuring metrics, then
+checks actual error responses, capacity classification and recovery on a clean
+completion. The unchanged fixture also passes against the original API owner.
+`cancel_lifecycle_test.go` checks cancellation through real provider writers and
+consumes the same terminal receipts as ingress; tracker internals stay private.
 
 Run prediction telemetry checks from the repository root:
 

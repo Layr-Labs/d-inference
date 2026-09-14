@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -275,7 +276,7 @@ func TestAbandonInflightDefersToPublishedIngress(t *testing.T) {
 	}
 
 	pr.FinishProviderChunkIngress(receivedAt, true)
-	d.s.cancelDispatch(provider, pr, cancelCauseFirstChunkTimeout)
+	d.s.inferenceAttempts().Cancel(provider, pr, attempt.CancelCauseFirstChunkTimeout)
 }
 
 func TestProviderAttributableStall(t *testing.T) {

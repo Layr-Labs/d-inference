@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -127,8 +128,8 @@ func TestHandleChunkRejectsFirstContentReceivedAfterDeadline(t *testing.T) {
 	if errMsg.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status code = %d, want %d", errMsg.StatusCode, http.StatusServiceUnavailable)
 	}
-	if errMsg.ErrorReason != errorReasonDeadlineUnreachable {
-		t.Fatalf("error reason = %q, want %q", errMsg.ErrorReason, errorReasonDeadlineUnreachable)
+	if errMsg.ErrorReason != attempt.ErrorReasonDeadlineUnreachable {
+		t.Fatalf("error reason = %q, want %q", errMsg.ErrorReason, attempt.ErrorReasonDeadlineUnreachable)
 	}
 	if _, ok := <-pr.ChunkCh; ok {
 		t.Fatal("late first content was delivered")
@@ -167,8 +168,8 @@ func TestHandleCompleteRejectsNoContentAfterDeadline(t *testing.T) {
 	if !ok {
 		t.Fatal("error channel closed before completion deadline error was delivered")
 	}
-	if errMsg.ErrorReason != errorReasonDeadlineUnreachable {
-		t.Fatalf("error reason = %q, want %q", errMsg.ErrorReason, errorReasonDeadlineUnreachable)
+	if errMsg.ErrorReason != attempt.ErrorReasonDeadlineUnreachable {
+		t.Fatalf("error reason = %q, want %q", errMsg.ErrorReason, attempt.ErrorReasonDeadlineUnreachable)
 	}
 	if _, ok := <-pr.ChunkCh; ok {
 		t.Fatal("late no-content completion opened the response")

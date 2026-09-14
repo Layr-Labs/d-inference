@@ -1,5 +1,15 @@
 package api
 
+import (
+	"context"
+	"net/http"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+)
+
 // The request-absolute first-token clock.
 //
 // OpenRouter (and OpenRouter-shaped aggregators) cancel a request when no REAL
@@ -30,16 +40,6 @@ package api
 //     drain ChunkCh because a zero-duration timer and ready chunk race in select.
 //  5. When ReceivedAt was never stamped (unit tests), every helper falls back
 //     to the historical relative timers.
-
-import (
-	"context"
-	"github.com/eigeninference/d-inference/coordinator/inference/response"
-	"net/http"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-)
 
 // firstTokenRemainingSince is the leftover request-absolute first-CONTENT
 // budget. A zero receivedAt falls back to the full deadline so callers that
@@ -273,7 +273,7 @@ func (d *dispatchState) abandonInflightForFirstTokenTimeout() bool {
 		return true
 	}
 	provider, pr := d.provider, d.pr
-	if !d.s.cancelDispatchForFirstContentTimeout(provider, pr) {
+	if !d.s.inferenceAttempts().CancelForFirstContentTimeout(provider, pr) {
 		return false
 	}
 	d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)

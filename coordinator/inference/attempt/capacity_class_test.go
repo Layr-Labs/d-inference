@@ -1,6 +1,8 @@
-package api
+package attempt
 
-import "testing"
+import (
+	"testing"
+)
 
 // TestIsCapacityClassProviderError pins the capacity-vs-fault split.
 //
@@ -69,7 +71,7 @@ func TestIsCapacityClassProviderError(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isCapacityClassProviderError(tt.in); got != tt.want {
+			if got := IsCapacityClassProviderError(tt.in); got != tt.want {
 				t.Errorf("isCapacityClassProviderError(%q) = %v, want %v", tt.in, got, tt.want)
 			}
 		})

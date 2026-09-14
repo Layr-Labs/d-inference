@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -23,7 +24,7 @@ func deadlineUnreachableMessage() protocol.InferenceErrorMessage {
 		Error:       "remaining deadline cannot be met",
 		StatusCode:  http.StatusServiceUnavailable,
 		FailureCode: protocol.FailureCodeCapacity,
-		ErrorReason: errorReasonDeadlineUnreachable,
+		ErrorReason: attempt.ErrorReasonDeadlineUnreachable,
 	}
 }
 
@@ -146,23 +147,23 @@ func TestGenuineFaultClassificationExcludesNeutralAndDeterministicFailures(t *te
 		{"tool noncompliance", protocol.InferenceErrorMessage{
 			StatusCode:  http.StatusInternalServerError,
 			FailureCode: protocol.FailureCodeGenerationFailure,
-			ErrorReason: errorReasonToolNoncompliance,
+			ErrorReason: attempt.ErrorReasonToolNoncompliance,
 		}, false},
 		{"deadline unreachable", deadlineUnreachableMessage(), false},
 		{"admission timeout", protocol.InferenceErrorMessage{
 			StatusCode:    http.StatusServiceUnavailable,
 			FailureCode:   protocol.FailureCodeCapacity,
-			TerminalCause: terminalCauseAdmissionTimeout,
+			TerminalCause: attempt.TerminalCauseAdmissionTimeout,
 		}, false},
 		{"neutral safety deadline", protocol.InferenceErrorMessage{
 			StatusCode:    http.StatusGatewayTimeout,
 			FailureCode:   protocol.FailureCodeGenerationFailure,
-			TerminalCause: terminalCauseSafetyDeadline,
+			TerminalCause: attempt.TerminalCauseSafetyDeadline,
 		}, false},
 		{"typed watchdog fault", protocol.InferenceErrorMessage{
 			StatusCode:    http.StatusInternalServerError,
 			FailureCode:   protocol.FailureCodeGenerationFailure,
-			TerminalCause: terminalCauseWatchdog,
+			TerminalCause: attempt.TerminalCauseWatchdog,
 		}, true},
 	}
 

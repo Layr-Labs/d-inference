@@ -1,56 +1,18 @@
 package api
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 const metricInferenceError = "inference.error"
-
-const (
-	errorReasonJinjaChannelTags          = "jinja_channel_tags"
-	errorReasonJinjaNullBridge           = "jinja_null_bridge"
-	errorReasonJinjaTemplate             = "jinja_template"
-	errorReasonModelLoad                 = "model_load"
-	errorReasonCapacityTimeout           = "capacity_timeout"
-	errorReasonQueueFull                 = "queue_full"
-	errorReasonTokenBudgetExhaust        = "token_budget_exhausted"
-	errorReasonRequestExceedsContext     = "request_exceeds_context"
-	errorReasonRequestExceedsNode        = "request_exceeds_node"
-	errorReasonRequestExceedsNodeBudget  = "request_exceeds_node_budget"
-	errorReasonRequestExceedsBatchBudget = "request_exceeds_batch_token_budget"
-	errorReasonCapacityBusy              = "capacity_busy"
-	errorReasonDeadlineUnreachable       = "deadline_unreachable"
-	errorReasonCancelled                 = "cancelled"
-	errorReasonProviderError             = "provider_error"
-	errorReasonClientError               = "client_error"
-	// errorReasonToolNoncompliance (E5): the provider's typed 422 for a model
-	// that failed a forced tool_choice contract (did not emit the required
-	// call / emitted one outside the allowed set / exceeded the deferred
-	// content limit). Output-dependent — a re-sample can comply — so 422 stays
-	// on the normal bounded-failover path, NEVER in the terminal client-error
-	// stop set (see isTerminalClientErrorCode).
-	errorReasonToolNoncompliance = "tool_noncompliance"
-	// errorReasonDraining (R2): the provider's typed refusal because it is
-	// draining ahead of a restart/update. Transient capacity for failover
-	// (another provider serves) that consumes NO transient-capacity retry,
-	// derates NO gray-box state, and marks the provider draining
-	// (registry.MarkDraining) so the next scan skips it.
-	errorReasonDraining = protocol.InferenceErrorReasonDraining
-	// errorReasonProviderRestart (R1): coordinator-internal marker stamped by
-	// the registry on the pending-request flush of a GRACEFUL peer close
-	// (restart/stop/update). Health-neutral through
-	// isProviderHealthNeutralErrorReason; never accepted from the wire
-	// (safeInferenceErrorReason does not emit it).
-	errorReasonProviderRestart = protocol.InferenceErrorReasonProviderRestart
-	errorReasonUnknown         = "unknown"
-)
 
 // errorClassClientError is the route-outcome error_class for a DETERMINISTIC
 // provider-returned client-shape 4xx (invalid tool payload / role / response
@@ -61,78 +23,7 @@ const errorClassClientError = "client_error"
 // errorClassDeadlineUnreachable keeps provider pre-content deadline refusals
 // distinct from generic provider faults and generic transient capacity in route
 // telemetry. The provider is healthy; only this attempt's remaining SLA failed.
-const errorClassDeadlineUnreachable = errorReasonDeadlineUnreachable
-
-// isJinjaTemplateErrorReason reports whether a provider-supplied error_reason
-// identifies a DETERMINISTIC chat-template render failure (the DAR-329/341
-// provider vocabulary). The template renders the request's tool schemas and
-// message history the same way on every provider, so these are request-shape /
-// model-capability faults: the dispatch ladder stops on the first occurrence
-// (E4, see dispatch.go), the provider takes no reputation hit
-// (handleInferenceError), and route rows record class client_error — while the
-// jinja_* reason itself is PRESERVED on the row, so the
-// inference.error{reason:jinja_template} series keeps measuring real render
-// failures rather than being silenced by reclassification.
-func isJinjaTemplateErrorReason(reason string) bool {
-	switch normalizeInferenceErrorReason(reason) {
-	case errorReasonJinjaChannelTags, errorReasonJinjaNullBridge, errorReasonJinjaTemplate:
-		return true
-	default:
-		return false
-	}
-}
-
-// isNonProviderFaultErrorReason reports whether a provider-supplied
-// error_reason identifies a failure that is NOT the provider's fault:
-//
-//   - jinja_* template-render failures (isJinjaTemplateErrorReason, E4): the
-//     REQUEST's tool schemas or message history cannot be rendered by the
-//     model's chat template — deterministic for the request and identical on
-//     every provider;
-//   - tool_noncompliance (E5): the MODEL's sampled output broke a forced
-//     tool_choice contract (did not emit the required call / emitted one
-//     outside the allowed set / exceeded the deferred content limit) —
-//     output-dependent, a re-sample can comply.
-//
-// This is the request/model-fault subset of the structured reasons exempted
-// from reputation and provider-health tracking. The complete health-neutral
-// vocabulary is isProviderHealthNeutralErrorReason, which also includes the
-// request-clock-specific deadline_unreachable reason.
-func isNonProviderFaultErrorReason(reason string) bool {
-	return isJinjaTemplateErrorReason(reason) ||
-		normalizeInferenceErrorReason(reason) == errorReasonToolNoncompliance
-}
-
-func isDeadlineUnreachableErrorReason(reason string) bool {
-	return normalizeInferenceErrorReason(reason) == errorReasonDeadlineUnreachable
-}
-
-// isProviderHealthNeutralErrorReason is the shared gate for reputation and all
-// provider-health/capacity trackers. Request/model faults remain neutral as
-// before; deadline_unreachable joins them because it describes the coordinator
-// supplied remaining SLA, not provider sickness or capacity dishonesty.
-func isProviderHealthNeutralErrorReason(reason string) bool {
-	return isNonProviderFaultErrorReason(reason) ||
-		isDeadlineUnreachableErrorReason(reason) ||
-		isProviderRestartErrorReason(reason)
-}
-
-// isProviderRestartErrorReason reports whether reason is the coordinator-
-// internal provider_restart marker the registry stamps on the flushed
-// terminals of a GRACEFUL peer close (registry.DisconnectWithReason). The
-// requests fail over like any disconnect, but the terminal is health-neutral:
-// no breaker/cooldown/ejection strike, no clear. An abrupt drop's flush
-// carries no reason and keeps striking (the zombie discriminator).
-func isProviderRestartErrorReason(reason string) bool {
-	return normalizeInferenceErrorReason(reason) == errorReasonProviderRestart
-}
-
-// isDrainingErrorReason reports whether reason is the provider's typed
-// draining refusal (R2): transient capacity that consumes no capacity retry
-// and derates nothing; the provider is marked draining instead.
-func isDrainingErrorReason(reason string) bool {
-	return normalizeInferenceErrorReason(reason) == errorReasonDraining
-}
+const errorClassDeadlineUnreachable = attempt.ErrorReasonDeadlineUnreachable
 
 // Final-status values persisted on inference_routes (store.InferenceRouteOutcome
 // .FinalStatus). Centralized so status comparisons/constructions don't drift on a
@@ -144,29 +35,6 @@ const (
 	finalStatusCancelled      = "cancelled"
 	finalStatusTimeout        = "timeout"
 )
-
-var validInferenceErrorReasons = map[string]struct{}{
-	errorReasonJinjaChannelTags:          {},
-	errorReasonJinjaNullBridge:           {},
-	errorReasonJinjaTemplate:             {},
-	errorReasonModelLoad:                 {},
-	errorReasonCapacityTimeout:           {},
-	errorReasonQueueFull:                 {},
-	errorReasonTokenBudgetExhaust:        {},
-	errorReasonRequestExceedsContext:     {},
-	errorReasonRequestExceedsNode:        {},
-	errorReasonRequestExceedsNodeBudget:  {},
-	errorReasonRequestExceedsBatchBudget: {},
-	errorReasonCapacityBusy:              {},
-	errorReasonDeadlineUnreachable:       {},
-	errorReasonCancelled:                 {},
-	errorReasonProviderError:             {},
-	errorReasonClientError:               {},
-	errorReasonToolNoncompliance:         {},
-	errorReasonDraining:                  {},
-	errorReasonProviderRestart:           {},
-	errorReasonUnknown:                   {},
-}
 
 func (s *Server) updateInferenceRouteOutcomeWithModel(requestID string, attempt int, model string, outcome *store.InferenceRouteOutcome) {
 	if s == nil || outcome == nil {
@@ -357,14 +225,14 @@ func preResponseProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.I
 
 func preCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
 	msg = normalizeInferenceErrorForInternalUse(msg)
-	if isDeadlineUnreachableErrorReason(msg.ErrorReason) {
+	if attempt.IsDeadlineUnreachableErrorReason(msg.ErrorReason) {
 		out := pendingRouteOutcomeWithReason(
 			pr, finalStatusError, errorClassDeadlineUnreachable,
 			msg.StatusCode, msg.ErrorReason, response.ClientSafeInferenceErrorMessage(msg))
 		applyAttemptUsage(out, msg.AttemptUsage)
 		return out
 	}
-	if isTerminalClientErrorCode(msg.StatusCode) || isNonProviderFaultErrorReason(msg.ErrorReason) {
+	if isTerminalClientErrorCode(msg.StatusCode) || attempt.IsNonProviderFaultErrorReason(msg.ErrorReason) {
 		// Deterministic non-provider fault: a 4xx status the provider maps for
 		// malformed bodies, OR a structured non-provider-fault reason — jinja_*
 		// template-render failures (arrive as provider 500s but are
@@ -446,7 +314,7 @@ func completeRouteOutcome(pr *registry.PendingRequest, usage protocol.UsageInfo,
 // take precedence, but are still whitelisted so raw provider text cannot leak
 // into telemetry storage.
 func inferenceErrorReason(providerReason, status, class string, code int, message string) string {
-	if reason := normalizeInferenceErrorReason(providerReason); reason != "" {
+	if reason := attempt.NormalizeInferenceErrorReason(providerReason); reason != "" {
 		return reason
 	}
 	if status == "" && class == "" && code == 0 && message == "" {
@@ -461,33 +329,21 @@ func inferenceErrorReason(providerReason, status, class string, code int, messag
 	lowerMessage := strings.ToLower(strings.TrimSpace(message))
 
 	switch {
-	case strings.Contains(lowerMessage, errorReasonTokenBudgetExhaust) || strings.Contains(lowerClass, errorReasonTokenBudgetExhaust):
-		return errorReasonTokenBudgetExhaust
-	case lowerClass == errorReasonQueueFull || strings.Contains(lowerMessage, "queue full"):
-		return errorReasonQueueFull
-	case lowerClass == "queue_timeout" || lowerClass == errorReasonCapacityTimeout || strings.Contains(lowerMessage, "queue timeout") || strings.Contains(lowerMessage, "timed out waiting for a free slot"):
-		return errorReasonCapacityTimeout
-	case lowerStatus == errorReasonCancelled || code == 499 || strings.Contains(lowerClass, "client_gone") || strings.Contains(lowerClass, "cancel") || strings.Contains(lowerMessage, "request cancelled"):
-		return errorReasonCancelled
-	case lowerClass == errorReasonClientError || strings.HasPrefix(lowerClass, errorReasonClientError):
-		return errorReasonClientError
-	case lowerClass == errorReasonProviderError || strings.HasPrefix(lowerClass, "provider_error") || strings.HasPrefix(lowerClass, "provider_disconnect") || strings.Contains(lowerClass, "provider_incomplete") || strings.Contains(lowerClass, "stream_timeout") || strings.Contains(lowerClass, "first_chunk_timeout") || strings.Contains(lowerClass, "accepted_timeout") || strings.Contains(lowerClass, "preamble_liveness_timeout") || strings.Contains(lowerMessage, "provider disconnected") || code >= http.StatusInternalServerError:
-		return errorReasonProviderError
+	case strings.Contains(lowerMessage, attempt.ErrorReasonTokenBudgetExhaust) || strings.Contains(lowerClass, attempt.ErrorReasonTokenBudgetExhaust):
+		return attempt.ErrorReasonTokenBudgetExhaust
+	case lowerClass == attempt.ErrorReasonQueueFull || strings.Contains(lowerMessage, "queue full"):
+		return attempt.ErrorReasonQueueFull
+	case lowerClass == "queue_timeout" || lowerClass == attempt.ErrorReasonCapacityTimeout || strings.Contains(lowerMessage, "queue timeout") || strings.Contains(lowerMessage, "timed out waiting for a free slot"):
+		return attempt.ErrorReasonCapacityTimeout
+	case lowerStatus == attempt.ErrorReasonCancelled || code == 499 || strings.Contains(lowerClass, "client_gone") || strings.Contains(lowerClass, "cancel") || strings.Contains(lowerMessage, "request cancelled"):
+		return attempt.ErrorReasonCancelled
+	case lowerClass == attempt.ErrorReasonClientError || strings.HasPrefix(lowerClass, attempt.ErrorReasonClientError):
+		return attempt.ErrorReasonClientError
+	case lowerClass == attempt.ErrorReasonProviderError || strings.HasPrefix(lowerClass, "provider_error") || strings.HasPrefix(lowerClass, "provider_disconnect") || strings.Contains(lowerClass, "provider_incomplete") || strings.Contains(lowerClass, "stream_timeout") || strings.Contains(lowerClass, "first_chunk_timeout") || strings.Contains(lowerClass, "accepted_timeout") || strings.Contains(lowerClass, "preamble_liveness_timeout") || strings.Contains(lowerMessage, "provider disconnected") || code >= http.StatusInternalServerError:
+		return attempt.ErrorReasonProviderError
 	default:
-		return errorReasonUnknown
+		return attempt.ErrorReasonUnknown
 	}
-}
-
-func normalizeInferenceErrorReason(reason string) string {
-	reason = strings.ToLower(strings.TrimSpace(reason))
-	reason = strings.ReplaceAll(reason, "-", "_")
-	if reason == "" {
-		return ""
-	}
-	if _, ok := validInferenceErrorReasons[reason]; ok {
-		return reason
-	}
-	return errorReasonUnknown
 }
 
 func applyPendingRouteTelemetry(out *store.InferenceRouteOutcome, pr *registry.PendingRequest) {

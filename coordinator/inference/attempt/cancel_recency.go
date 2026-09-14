@@ -1,10 +1,12 @@
-package api
+package attempt
 
-import "container/list"
+import (
+	"container/list"
+)
 
 // Recency operations are constant-time under z.mu. The list stores only IDs;
 // expired snapshots never retain links into the rest of the tracker.
-func (z *zombieStreamCanceller) touchLocked(id string) {
+func (z *Tracker) touchLocked(id string) {
 	if z.positions == nil {
 		z.positions = make(map[string]*list.Element)
 	}
@@ -15,7 +17,7 @@ func (z *zombieStreamCanceller) touchLocked(id string) {
 	}
 }
 
-func (z *zombieStreamCanceller) removeLocked(id string) {
+func (z *Tracker) removeLocked(id string) {
 	delete(z.entries, id)
 	if node := z.positions[id]; node != nil {
 		z.recency.Remove(node)
@@ -26,12 +28,12 @@ func (z *zombieStreamCanceller) removeLocked(id string) {
 // Capped insertion evicts one least-recently-active entry without scanning.
 // record/strayChunk already run the rate-limited TTL sweep; reaching the cap
 // must not force an extra map walk on every unseen request or stray token.
-func (z *zombieStreamCanceller) makeRoomLocked() []zombieEntry {
+func (z *Tracker) makeRoomLocked() []Cancellation {
 	if len(z.entries) < zombieCancelMaxEntries {
 		return nil
 	}
 	id := z.recency.Front().Value.(string)
 	expired := *z.entries[id]
 	z.removeLocked(id)
-	return []zombieEntry{expired}
+	return []Cancellation{expired}
 }

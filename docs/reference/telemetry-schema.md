@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-09-13 · commit `3cf03209a`
+> Last updated: 2026-09-13 · commit `2b6a10301`
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, the field allowlist, and the tests
@@ -180,7 +180,7 @@ allowlisted keys by construction. Each event goes to three places in order:
 | Sink | What |
 |---|---|
 | `slog` | `telemetry: <message>` at the mapped level, with `kind`, `request_id` (when set) and every field as attributes |
-| in-process registry | `telemetry_events_total{source, severity, kind}` via `Metrics.IncCounterEvent` (`coordinator/api/metrics.go`), readable at `GET /v1/admin/metrics` |
+| in-process registry | `telemetry_events_total{source, severity, kind}` via `metrics.Registry.IncCounterEvent` (`coordinator/telemetry/metrics/registry.go`), readable at `GET /v1/admin/metrics` |
 | Datadog Logs API | `datadog.Client.ForwardLog` (`coordinator/datadog/datadog.go`) → `https://http-intake.logs.<site>/api/v2/logs`, only when `DD_API_KEY` is set |
 
 Call sites (`s.emit`, `s.emitRequest`, `s.emitPanic` in `coordinator/api/server.go`)

@@ -1,6 +1,6 @@
 # Darkbloom docs — how this documentation is organised and maintained
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-13 · commit `285f7c9f8`
 
 Rules for anyone — human or agent — who reads, writes, or checks a file under
 `docs/`. The code is the source of truth; a doc that disagrees with the code is
@@ -141,6 +141,15 @@ missing file; an inline-code citation of a repo path that does not exist
 (exempt: `reports/`, `releases/`, `design/`); and an orphan page that no other
 doc links to. Run it before opening a PR that touches `docs/`. It checks only
 git-tracked files by default; `--all` includes untracked drafts.
+
+Frozen `reports/`, `releases/` and `design/` records keep their original bytes.
+If a relative source link no longer exists, the checker requires that exact
+repository-normalized source path at the record's freshness-stamp commit.
+It does not extend this fallback to Markdown or other documentation targets,
+and rejects paths above the repository root, invalid stamps and unavailable
+Git objects. Docs Lint uses a full-history checkout; fetch complete history
+locally if the checker reports an unavailable commit. To browse a moved source
+link, open the record at its stamped commit in the repository host.
 
 ## 7. When you change code, change these docs
 

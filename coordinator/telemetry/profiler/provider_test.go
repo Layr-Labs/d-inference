@@ -1,4 +1,4 @@
-package api
+package profiler
 
 import (
 	"bytes"
@@ -24,7 +24,7 @@ var fixtureReceivedAt = time.UnixMilli(1788307200123)
 // fixtureProfile returns the compact `profile` bytes of one fixture frame.
 func fixtureProfile(t *testing.T, frame string) []byte {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "protocol", "testdata", "profiler_wire_fixture.json"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "protocol", "testdata", "profiler_wire_fixture.json"))
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
@@ -67,11 +67,14 @@ func profileKeySet(t *testing.T, raw []byte) map[string]bool {
 	return keys
 }
 
-func newProviderProfileTestServer(logs io.Writer) *Server {
+func newProviderProfileTestBuilder(logs io.Writer) *Builder {
 	if logs == nil {
-		logs = io.Discard
+		return &Builder{}
 	}
-	return &Server{logger: slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	// Capture the builder's only output channel as well as the returned row.
+	// Provider bytes must never appear even when metrics are observed.
+	return &Builder{Incr: func(name string, tags []string) { logger.Debug(name, "tags", tags) }}
 }
 
 func TestDecodeInferenceProfileFixtureIsValidAndLossless(t *testing.T) {
@@ -311,7 +314,7 @@ func TestApplyProviderProfileMaxClampedFillsHotColumns(t *testing.T) {
 		"batch_rows_min":1000000000,"batch_rows_max":1000000000,"step_latency_ns_sum":3600000000000,"step_latency_ns_max":3600000000000,
 		"finish_reason":"length"}}`)
 	rec := &store.RequestProfileRecord{ReceivedAt: fixtureReceivedAt, ChunksIn: count}
-	newProviderProfileTestServer(nil).applyProviderProfile(rec, nil, raw)
+	newProviderProfileTestBuilder(nil).applyProviderProfile(rec, nil, raw)
 
 	if !rec.ProviderProfileValid || rec.ProviderProfileInvalidReason != "" {
 		t.Fatalf("max-clamped profile rejected: valid=%v reason=%q", rec.ProviderProfileValid, rec.ProviderProfileInvalidReason)
@@ -368,7 +371,7 @@ func TestApplyProviderProfileFixtureHotColumns(t *testing.T) {
 		ReceivedAt: fixtureReceivedAt, ChunksIn: 147,
 		WriteDoneUS: &writeDone, CompleteIngressUS: &completeIngress,
 	}
-	newProviderProfileTestServer(nil).applyProviderProfile(rec, nil, raw)
+	newProviderProfileTestBuilder(nil).applyProviderProfile(rec, nil, raw)
 
 	if !rec.ProviderProfileValid || rec.ProviderProfileInvalidReason != "" {
 		t.Fatalf("fixture rejected: reason=%q", rec.ProviderProfileInvalidReason)
@@ -415,14 +418,14 @@ func TestApplyProviderProfileFixtureHotColumns(t *testing.T) {
 
 	// Mismatched chunk count flags inconsistency but never invalidates.
 	rec2 := &store.RequestProfileRecord{ReceivedAt: fixtureReceivedAt, ChunksIn: 140}
-	newProviderProfileTestServer(nil).applyProviderProfile(rec2, nil, raw)
+	newProviderProfileTestBuilder(nil).applyProviderProfile(rec2, nil, raw)
 	if !rec2.ProviderProfileValid || rec2.ProviderProfileConsistent == nil || *rec2.ProviderProfileConsistent {
 		t.Fatalf("valid=%v consistent=%v", rec2.ProviderProfileValid, rec2.ProviderProfileConsistent)
 	}
 
 	// The minimal error profile has no frames_emitted → flag stays NULL.
 	rec3 := &store.RequestProfileRecord{ReceivedAt: fixtureReceivedAt}
-	newProviderProfileTestServer(nil).applyProviderProfile(rec3, nil, fixtureProfile(t, "inference_error_minimal"))
+	newProviderProfileTestBuilder(nil).applyProviderProfile(rec3, nil, fixtureProfile(t, "inference_error_minimal"))
 	if !rec3.ProviderProfileValid || rec3.ProviderProfileConsistent != nil || rec3.ProvPromptPrepUS != nil || rec3.EngQueueWaitNS != nil {
 		t.Fatalf("minimal profile: valid=%v consistent=%v prep=%v eng=%v",
 			rec3.ProviderProfileValid, rec3.ProviderProfileConsistent, rec3.ProvPromptPrepUS, rec3.EngQueueWaitNS)
@@ -437,7 +440,7 @@ func TestApplyProviderProfileTransportEstimateArithmetic(t *testing.T) {
 	mk := func(writeDone, completeIngress *int64) *store.RequestProfileRecord {
 		return &store.RequestProfileRecord{ReceivedAt: fixtureReceivedAt, WriteDoneUS: writeDone, CompleteIngressUS: completeIngress}
 	}
-	srv := newProviderProfileTestServer(nil)
+	srv := newProviderProfileTestBuilder(nil)
 	wd, ci := int64(1_000), int64(5_000_000)
 
 	rec := mk(&wd, &ci)
@@ -504,7 +507,7 @@ func TestApplyProviderProfileInvalidNeverLeaksOrFillsColumns(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			var logs bytes.Buffer
-			srv := newProviderProfileTestServer(&logs)
+			srv := newProviderProfileTestBuilder(&logs)
 			rec := &store.RequestProfileRecord{ReceivedAt: fixtureReceivedAt, WriteDoneUS: &wd, CompleteIngressUS: &ci, ChunksIn: 3}
 			srv.applyProviderProfile(rec, nil, []byte(tc.raw))
 
@@ -608,7 +611,7 @@ func TestStoredInferenceProfileHasNoFreeStrings(t *testing.T) {
 // The profile's only telemetry is bounded: valid + reason tags. A malformed
 // profile on a Server without DD must not panic either.
 func TestApplyProviderProfileNilRecordAndNoDDAreSafe(t *testing.T) {
-	srv := newProviderProfileTestServer(nil)
+	srv := newProviderProfileTestBuilder(nil)
 	srv.applyProviderProfile(nil, nil, []byte(`{"schema":1}`))
 	rec := &store.RequestProfileRecord{}
 	srv.applyProviderProfile(rec, nil, []byte(`{"schema":1,"deadline_mode":"x"}`))
@@ -653,7 +656,7 @@ func TestApplyProviderProfileConsistencyChecksAreIndependent(t *testing.T) {
 	}
 	for _, tc := range cases {
 		rec := &store.RequestProfileRecord{ReceivedAt: fixtureReceivedAt, ChunksIn: tc.chunks}
-		newProviderProfileTestServer(nil).applyProviderProfile(rec, tc.ap, []byte(tc.raw))
+		newProviderProfileTestBuilder(nil).applyProviderProfile(rec, tc.ap, []byte(tc.raw))
 		if !rec.ProviderProfileValid {
 			t.Fatalf("%s: profile rejected: %q", tc.name, rec.ProviderProfileInvalidReason)
 		}

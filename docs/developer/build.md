@@ -86,6 +86,10 @@ Model publishing and discovery build as `coordinator/api/catalog/` in the same
 module. The API binds that owner through `catalog_controller.go`; no additional
 binary, service or build target is required. See [catalog ownership](../architecture/model-registry.md#http-controller-ownership).
 
+The normal Go build includes the profiler owner and telemetry queue packages
+under `coordinator/telemetry/`. Their API adapters link them into the same
+coordinator binary; no separate worker executable or build flag is required.
+
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
 its test binary after helper or lifecycle changes. The CPU-only
 `TestPrepareConnectedInputBindings` check uses the actual fixture input/report
@@ -451,7 +455,7 @@ local stub servers; its default observation mode sends only public GETs.
 | `e2e-integration` | `go test ./e2e/... -run TestIntegration -v` |
 | `e2e-benchmark` | `go test ./e2e/... -run TestBenchmark -v` |
 | `e2e` | `e2e-integration` |
-| `docs-check` | `scripts/docs-check.sh` (stamps, links, cited paths, orphans) |
+| `docs-check` | `scripts/docs-check.sh` (stamps, links, cited paths, orphans; frozen source links require their stamped Git objects when the current path is absent) |
 | `docs-stamp` | `scripts/docs-stamp.sh $(FILES)` — refresh freshness stamps |
 | `test` | `coordinator-test prompt-sidecar-test provider-test ui-test benchmark-wrapper-test docs-check` |
 | `build` | `coordinator-build prompt-sidecar-build provider-build ui-build` |

@@ -72,6 +72,11 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/stateexport` | Snapshot, zip and age encryption for the admin state export. |
 | `coordinator/datadog` | Metrics (HTTP API and DogStatsD), Logs API forwarding, trace handler. |
 | `coordinator/telemetry` | Structured telemetry emitter. |
+| `coordinator/telemetry/metrics` | In-process counters, histograms, computed gauges and JSON/Prometheus snapshots (`Registry`, `Histogram`, `Snapshot`). |
+| `coordinator/telemetry/routequeue` | Bounded FIFO routing-telemetry persistence, grouping, failure handling and shutdown (`Sink`, `SubmitRoute`, `SubmitOutcome`, `CloseAndWait`). |
+| `coordinator/telemetry/profiler` | Profiler configuration, allowlisted row construction and deterministic sampling; composes the profile queue (`ConfigFromEnv`, `Builder.Build`, `Profiler`). |
+| `coordinator/telemetry/profilequeue` | Worker-side profile construction and batched persistence, private buffer/drop counters and signal-only close (`Sink`, `Submit`, `Close`). |
+| `coordinator/telemetry/outcomequeue` | Independent unsampled outcome snapshot buffer, process counters and bounded close-time drain (`Sink`, `Submit`, `Stats`, `Close`). |
 | `coordinator/saferun` | Panic-safe goroutine launcher used by every background loop. |
 | `coordinator/deploy` | `start.sh` container entrypoint (persistent disk, MicroMDM). |
 

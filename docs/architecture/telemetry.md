@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-13 · commit `3cf03209a`
+> Last updated: 2026-09-13 · commit `285f7c9f8`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -252,8 +252,8 @@ appear; request correlation uses `request_id` (`X-Request-ID`) instead.
 
 ### Request-level sinks
 
-Two bounded, non-blocking sinks (`telemetrySink`, `coordinator/api/telemetry_sink.go`;
-`profileSink`, `coordinator/api/profiler_sink.go`) carry `inference_routes`
+Two bounded, non-blocking sinks (`routequeue.Sink`, `coordinator/telemetry/routequeue/queue.go`;
+`profilequeue.Sink`, `coordinator/telemetry/profilequeue/queue.go`) carry `inference_routes`
 outcome writes and `request_profiles` rows off the request path. Each has a
 4096-slot channel and a single worker; a full channel drops the write and
 counts it (`telemetry.sink_dropped{sink:profile}`, or the route sink's atomic
@@ -264,6 +264,12 @@ and the `inference.timing.*` histograms are built from the same
 [`system-profiler.md`](system-profiler.md); the outcome vocabularies behind
 `inference.request_outcome` and `inference.error` in
 [`request-outcome-observability.md`](request-outcome-observability.md).
+
+Compact unsampled request observations use a third independent owner,
+`coordinator/telemetry/outcomequeue/` (`Sink`). Its receipt counters, batching
+and bounded shutdown drain are described in
+[request-accounting.md](request-accounting.md). API adapters inject the store
+and diagnostics; none of these queue packages depends on the HTTP server.
 
 ## Invariants
 
@@ -339,9 +345,11 @@ for populations, labels and reset semantics (`coordinator/api/cache_model_teleme
 | Datadog client, HTTPS series, trace-aware slog | `coordinator/datadog/datadog.go`, `coordinator/datadog/metrics_http.go`, `coordinator/datadog/slog.go` |
 | Wiring and env | `coordinator/cmd/coordinator/main.go` |
 | Coordinator event emitter | `coordinator/telemetry/emitter.go`; helpers and gauge loop in `coordinator/api/server.go` |
-| In-process metrics registry | `coordinator/api/metrics.go`; `handleAdminMetrics` in `coordinator/api/server.go` |
+| In-process metrics registry | `coordinator/telemetry/metrics/registry.go`; `handleAdminMetrics` in `coordinator/api/server.go` |
 | Event shape, allowlist, retired ingest | `coordinator/protocol/telemetry.go`, `coordinator/api/telemetry_handlers.go` |
-| Sinks | `coordinator/api/telemetry_sink.go`, `coordinator/api/profiler_sink.go`, `coordinator/api/profiler_fleet.go` |
+| Persistence queues | `coordinator/telemetry/routequeue/`, `coordinator/telemetry/profilequeue/`, `coordinator/telemetry/outcomequeue/` (`Sink`) |
+| Profile construction and sampling | `coordinator/telemetry/profiler/` (`ConfigFromEnv`, `Builder.Build`, `Profiler`) |
+| Profile/fleet API wiring | `coordinator/api/profiler.go` (`newProfiler`), `coordinator/api/profiler_fleet.go` (`sampleFleetOnce`) |
 | Disconnect classification | `coordinator/registry/disconnect_classify.go` |
 | Provider side | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift` (`buildHeartbeatJSON`), `provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift`, `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Capacity.swift`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift` (no-op facade) |
 | Tests | `coordinator/api/telemetry_allowlist_parity_test.go`, `coordinator/api/telemetry_handlers_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/metrics_http_test.go`, `provider-swift/Tests/ProviderCoreTests/TelemetrySymmetryTests.swift` |

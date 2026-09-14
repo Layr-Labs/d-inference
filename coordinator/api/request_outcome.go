@@ -175,23 +175,23 @@ func (o *requestOutcome) refreshLocked() {
 // annotateOutcomeRejection only consumes coordinator-owned enum values. The
 // rejected response's bytes are never treated as generated content.
 func annotateOutcomeRejection(info rejectionInfo) {
-	if info.r == nil {
+	if info.Request == nil {
 		return
 	}
-	o := requestOutcomeFromContext(info.r.Context())
+	o := requestOutcomeFromContext(info.Request.Context())
 	if o == nil {
 		return
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.record.RawReason != "" && (o.record.RawReason != info.reasonCode || o.record.RawStage != info.stage) {
+	if o.record.RawReason != "" && (o.record.RawReason != info.ReasonCode || o.record.RawStage != info.Stage) {
 		o.record.EvidenceConflict = true
 		return
 	}
-	o.record.RawStage = info.stage
-	o.record.RawReason = info.reasonCode
-	if info.resolvedModel != "" && len(info.resolvedModel) <= 256 {
-		o.record.Model = info.resolvedModel
+	o.record.RawStage = info.Stage
+	o.record.RawReason = info.ReasonCode
+	if info.ResolvedModel != "" && len(info.ResolvedModel) <= 256 {
+		o.record.Model = info.ResolvedModel
 	}
 }
 

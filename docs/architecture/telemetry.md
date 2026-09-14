@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-13 · commit `b258e17596`
+> Last updated: 2026-09-14 · commit `cdef55575`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -277,8 +277,8 @@ and diagnostics; none of these queue packages depends on the HTTP server.
    (`telemetryFieldAllowlist`, `coordinator/api/telemetry_handlers.go`) admits
    only bounded enums, counters, byte counts and durations; media, prompt,
    token and cache-key content are excluded by construction and the comments
-   at each group say so. `sanitizeProviderInferenceError`
-   (`coordinator/api/inference_error_sanitize.go`) never reads the provider's
+   at each group say so. `SanitizeProviderInferenceError`
+   (`coordinator/inference/attempt/error_sanitize.go`) never reads the provider's
    `error` string. The `profile` object is length-checked opaque bytes on the
    read loop and decoded only on the sink worker. Swift free-form log strings
    are `privacy: .private`.

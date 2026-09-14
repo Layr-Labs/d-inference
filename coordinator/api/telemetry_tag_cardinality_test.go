@@ -3,6 +3,8 @@ package api
 import (
 	"fmt"
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
 )
 
 func TestTelemetryTagsCollapseRotatingRegistrationValues(t *testing.T) {
@@ -29,7 +31,7 @@ func TestClientGoneChipTagsUseSameVocabularyAsMLX(t *testing.T) {
 	defer dd.Close()
 	srv := &Server{dd: dd}
 	for _, chip := range []string{"build1", "build2", "M4 Pro", ""} {
-		srv.emitClientGoneBucketed("m", 100, chip, phaseBeforeFirstToken, deadlineBucketUnknown)
+		srv.emitClientGoneBucketed("m", 100, chip, phaseBeforeFirstToken, dispatch.DeadlineBucketUnknown)
 	}
 	_ = dd.Statsd.Flush()
 	packets := collector.drain()

@@ -4,6 +4,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -88,7 +89,7 @@ func (s *Server) emitExactCacheEstimatedTTFTSaved(pr *registry.PendingRequest, t
 	value := pr.CacheSelectionEstimatedTTFTSavedMs
 	if s.metrics != nil {
 		s.metrics.ObserveHistogram("exact_cache_estimated_ttft_saved_ms", value,
-			MetricLabel{Name: "tier", Value: lowCardinalityCacheTier(pr.CacheSelectionTier)})
+			MetricLabel{Name: "tier", Value: dispatch.LowCardinalityCacheTier(pr.CacheSelectionTier)})
 	}
 	s.ddHistogram("exact_cache.estimated_ttft_saved_ms", value, tags)
 }

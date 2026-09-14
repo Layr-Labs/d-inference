@@ -14,8 +14,12 @@ func (s *Manager) RevalidateConnectedProviders() {
 	// A nil manifest here means releases exist but none carry runtime hashes,
 	// i.e. an intentional manifest withdrawal. Providers must be derouted.
 
-	for _, providerID := range s.deps.Registry().ProviderIDs() {
-		provider := s.deps.Registry().GetProvider(providerID)
+	fleet := s.deps.Registry()
+	if fleet == nil {
+		return
+	}
+	for _, providerID := range fleet.ProviderIDs() {
+		provider := fleet.GetProvider(providerID)
 		if provider == nil {
 			continue
 		}
@@ -58,11 +62,11 @@ func (s *Manager) RevalidateConnectedProviders() {
 					s.knownRuntimeManifest, templateHashes)
 		}
 		provider.Mu().Unlock()
-		if err := s.deps.Registry().ReconcileAttestedRuntimeCapabilities(providerID); err != nil {
+		if err := fleet.ReconcileAttestedRuntimeCapabilities(providerID); err != nil {
 			s.deps.Logger().Warn("runtime policy capability reconciliation failed",
 				"provider_id", providerID, "error", err)
 		}
-		if cleared := s.deps.Registry().ClearIneligiblePendingModelLoads(providerID); cleared > 0 {
+		if cleared := fleet.ClearIneligiblePendingModelLoads(providerID); cleared > 0 {
 			s.deps.Logger().Info("cleared pending model loads after runtime policy revocation",
 				"provider_id", providerID, "count", cleared)
 		}

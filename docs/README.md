@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-14 · commit `b7d0735e4`
+> Last updated: 2026-09-14 · commit `4676eedbe`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -17,6 +17,7 @@
 ## Start here, by task
 
 - [`consumer/quickstart.md`](consumer/quickstart.md): make your first chat completion with an API key, curl, or an OpenAI/Anthropic SDK by changing the base URL.
+- [`consumer/prefix-cache.md`](consumer/prefix-cache.md): structure repeated text requests for prefix reuse and verify reported cached tokens.
 - [`provider/installation.md`](provider/installation.md) then [`provider/quickstart.md`](provider/quickstart.md): turn a Mac into a paid provider node.
 - [`developer/build.md`](developer/build.md) then [`developer/test.md`](developer/test.md): build and test every component locally.
 - [`operations/README.md`](operations/README.md): deploy or change production (human approval required for every mutation).
@@ -58,7 +59,7 @@
 - [`consumer/privacy-expectations.md`](consumer/privacy-expectations.md): what a consumer can and cannot assume, in plain terms.
 - [`consumer/verification.md`](consumer/verification.md): how to check a provider's attestation from the API.
 - [`provider/attestation.md`](provider/attestation.md): reach and keep `hardware` trust — enrol, approve the MDM profile, confirm posture; what `darkbloom status` shows.
-- [`threat-model.yaml`](threat-model.yaml): machine-readable threat model reviewed by CI on security-relevant PRs.
+- [`threat-model.yaml`](threat-model.yaml): machine-readable threat model.
 
 ## Reference (look up, do not read)
 
@@ -98,6 +99,8 @@
 
 ## Developer how-tos
 
+- [`developer/historical-references.md`](developer/historical-references.md): open the original source behind a frozen report after files move.
+- [`developer/navigation.md`](developer/navigation.md): find implementation and tests, choose descriptive filenames, and check path dependencies when moving files.
 - [`developer/build.md`](developer/build.md): build the coordinator, sidecar, provider, and UIs; toolchain pins.
 - [`developer/test.md`](developer/test.md): every test suite, what CI runs, how to run the e2e suite.
 

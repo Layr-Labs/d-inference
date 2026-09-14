@@ -79,6 +79,7 @@ public enum PrefixCacheDonationOutcome: String, Codable, Sendable, Equatable, Ca
     case incompleteLayerState = "incomplete_layer_state"
     case stageSizeExceeded = "stage_size_exceeded"
     case writeRateLimited = "write_rate_limited"
+    case writePriorityLimited = "write_priority_limited"
     case writeQueueFull = "write_queue_full"
     case alreadyDurable = "already_durable"
     case alreadyQueued = "already_queued"

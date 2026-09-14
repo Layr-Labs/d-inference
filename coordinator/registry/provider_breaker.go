@@ -79,8 +79,7 @@ type providerHealthOutcome struct {
 // recordFault appends one FAULT outcome, tagging it as a disconnect flush
 // when it came from the registry's pending-request flush (status 502).
 func (w *providerHealthWindow) recordFault(now time.Time, flush bool) {
-	w.record(false, now)
-	w.outcomes[(w.head+providerHealthRingSize-1)%providerHealthRingSize].flush = flush
+	w.recordOutcome(providerHealthOutcome{ts: now, flush: flush})
 }
 
 // providerHealthWindow is a fixed-size ring of the most recent
@@ -98,15 +97,28 @@ type providerHealthWindow struct {
 // counter. Only faults and successes are recorded (callers filter healthy sheds
 // out first).
 func (w *providerHealthWindow) record(ok bool, now time.Time) {
-	w.outcomes[w.head] = providerHealthOutcome{ts: now, ok: ok}
+	w.recordOutcome(providerHealthOutcome{ts: now, ok: ok})
+}
+
+func (w *providerHealthWindow) recordOutcome(outcome providerHealthOutcome) {
+	w.outcomes[w.head] = outcome
 	w.head = (w.head + 1) % providerHealthRingSize
 	if w.size < providerHealthRingSize {
 		w.size++
 	}
-	if ok {
+	if outcome.ok {
 		w.consecFail = 0
 	} else {
 		w.consecFail++
+	}
+}
+
+// rebuild replaces the ring with an already bounded chronological history,
+// retaining flush provenance and deriving the trailing fault streak anew.
+func (w *providerHealthWindow) rebuild(outcomes []providerHealthOutcome) {
+	*w = providerHealthWindow{}
+	for _, outcome := range outcomes {
+		w.recordOutcome(outcome)
 	}
 }
 
@@ -154,16 +166,7 @@ func (w *providerHealthWindow) merge(src *providerHealthWindow) {
 	if len(merged) > providerHealthRingSize {
 		merged = merged[len(merged)-providerHealthRingSize:]
 	}
-	var out providerHealthWindow
-	for _, o := range merged {
-		out.outcomes[out.size] = o
-		out.size++
-	}
-	out.head = out.size % providerHealthRingSize
-	for k := len(merged) - 1; k >= 0 && !merged[k].ok; k-- {
-		out.consecFail++
-	}
-	*w = out
+	w.rebuild(merged)
 }
 
 // windowStats returns the number of outcomes recorded within [now-window, now]

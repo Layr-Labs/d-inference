@@ -65,25 +65,8 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 						// Complete responses have object=chat.completion or
 						// object=response. Delta chunks have object=chat.completion.chunk.
 						if objType == "chat.completion" || objType == "response" {
-							var completeUsage protocol.UsageInfo
-							select {
-							case u, ok := <-pr.CompleteCh:
-								if !ok {
-									s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
-									s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderIncompleteOutcome(pr))
-									writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "provider ended without completion"))
-									return
-								}
-								completeUsage = u
-							case <-ctx.Done():
-								if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-									s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
-									s.updateInferenceRouteOutcomeForPending(pr, preResponseTimeoutOutcome(pr, "usage_timeout_before_response"))
-									writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
-								} else {
-									s.refundReservedBalance(pr, "client_gone:"+pr.RequestID)
-									s.updateInferenceRouteOutcomeForPending(pr, clientGoneBeforeResponseOutcome(pr))
-								}
+							completeUsage, ok := s.awaitNonStreamUsage(ctx, w, pr)
+							if !ok {
 								return
 							}
 							if objType == "chat.completion" {
@@ -161,40 +144,26 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 					pr.ConsumerEndpoint != completionsEndpoint &&
 					pr.ConsumerEndpoint != messagesEndpoint
 				msg := extractMessageWithReasoningPolicy(chunks, preferReasoningContent)
-				select {
-				case usage, ok := <-pr.CompleteCh:
-					if !ok {
-						s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
-						s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderIncompleteOutcome(pr))
-						writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "provider ended without completion"))
-						return
-					}
-					var resp any
-					if pr.IsResponsesAPI {
-						resp = buildResponsesResponse(
-							pr.RequestID, consumerModel(pr), msg, usage,
-							pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash,
-							pr.Traits)
-					} else if pr.ConsumerEndpoint == completionsEndpoint ||
-						pr.ConsumerEndpoint == messagesEndpoint {
-						resp = buildGenericEndpointResponse(pr, msg, usage)
-					} else {
-						chatResp := buildNonStreamingResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash)
-						applyChatCompletionMetadataToResponse(&chatResp, pr)
-						resp = chatResp
-					}
-					s.noteInferenceSuccess(pr)
-					writeNonStreamBody(w, pr.Profile.Parent(), resp)
-				case <-ctx.Done():
-					if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-						s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
-						s.updateInferenceRouteOutcomeForPending(pr, preResponseTimeoutOutcome(pr, "usage_timeout_before_response"))
-						writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
-					} else {
-						s.refundReservedBalance(pr, "client_gone:"+pr.RequestID)
-						s.updateInferenceRouteOutcomeForPending(pr, clientGoneBeforeResponseOutcome(pr))
-					}
+				usage, ok := s.awaitNonStreamUsage(ctx, w, pr)
+				if !ok {
+					return
 				}
+				var resp any
+				if pr.IsResponsesAPI {
+					resp = buildResponsesResponse(
+						pr.RequestID, consumerModel(pr), msg, usage,
+						pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash,
+						pr.Traits)
+				} else if pr.ConsumerEndpoint == completionsEndpoint ||
+					pr.ConsumerEndpoint == messagesEndpoint {
+					resp = buildGenericEndpointResponse(pr, msg, usage)
+				} else {
+					chatResp := buildNonStreamingResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash)
+					applyChatCompletionMetadataToResponse(&chatResp, pr)
+					resp = chatResp
+				}
+				s.noteInferenceSuccess(pr)
+				writeNonStreamBody(w, pr.Profile.Parent(), resp)
 				return
 			}
 			chunk := providerChunk.Data
@@ -222,4 +191,28 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 			return
 		}
 	}
+}
+
+// awaitNonStreamUsage applies the shared completion contract after raw-body
+// detection or delta reconstruction. A body alone cannot establish completion.
+func (s *Server) awaitNonStreamUsage(ctx context.Context, w http.ResponseWriter, pr *registry.PendingRequest) (protocol.UsageInfo, bool) {
+	select {
+	case usage, ok := <-pr.CompleteCh:
+		if ok {
+			return usage, true
+		}
+		s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
+		s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderIncompleteOutcome(pr))
+		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "provider ended without completion"))
+	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
+			s.updateInferenceRouteOutcomeForPending(pr, preResponseTimeoutOutcome(pr, "usage_timeout_before_response"))
+			writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
+		} else {
+			s.refundReservedBalance(pr, "client_gone:"+pr.RequestID)
+			s.updateInferenceRouteOutcomeForPending(pr, clientGoneBeforeResponseOutcome(pr))
+		}
+	}
+	return protocol.UsageInfo{}, false
 }

@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useAuthContext } from "@/components/providers/PrivyClientProvider";
+import { useAuthContext } from "@/components/app-providers/PrivyClientProvider";
 import { trackEvent } from "@/lib/google-analytics";
-import { STORAGE_KEYS } from "@/lib/constants";
+import { STORAGE_KEYS } from "@/lib/storage-keys";
 
 const API_KEY_STORAGE = STORAGE_KEYS.apiKey;
 const OLD_API_KEY_STORAGE = STORAGE_KEYS.legacyApiKey;

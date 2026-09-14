@@ -910,7 +910,7 @@ func (s *Server) Close() {
 		s.requestOutcomes.Close()
 	}
 	if s.profiler != nil {
-		s.profiler.close()
+		s.profiler.Close()
 	}
 }
 

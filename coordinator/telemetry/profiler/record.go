@@ -1,19 +1,26 @@
-package api
+package profiler
 
-// Builds the persisted store.RequestProfileRecord from an in-memory
-// registry.RequestProfile / AttemptProfile. Runs on whichever goroutine
-// finalized the attempt (never under any registry lock) and only enqueues onto
-// the profile sink; all JSON encoding of the decision context happens here,
-// off the reserve path.
+// Record construction runs on the profile worker after attempt finalization.
+// It observes lifecycle state without changing routing, settlement or output.
 
 import (
-	"encoding/json"
 	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
+
+// Builder flattens finalized attempts and validates provider diagnostics.
+// Incr is the only output besides the returned record: bounded metric names
+// and tags. It may be nil. The builder never logs or persists raw provider bytes.
+type Builder struct{ Incr func(string, []string) }
+
+func (b Builder) incr(name string, tags []string) {
+	if b.Incr != nil {
+		b.Incr(name, tags)
+	}
+}
 
 // Closed vocabularies persisted by the profiler. Provider-authored strings are
 // folded onto these before they reach a row; unknown values become "other".
@@ -23,7 +30,7 @@ const (
 	providerProfileAbsent = "absent"
 )
 
-// foldChipFamily maps a provider-reported chip family to {m1,m2,m3,m4,m5,other}.
+// foldChipFamily maps a provider-reported chip family to m1 through m9 or other.
 func foldChipFamily(raw string) string {
 	v := strings.ToLower(strings.TrimSpace(raw))
 	switch v {
@@ -52,72 +59,8 @@ func usPtr(v int64) *int64 {
 
 func boolPtr(b bool) *bool { return &b }
 
-// candidateJSON is the persisted shape of one candidate summary.
-type candidateJSON struct {
-	ProviderID            string  `json:"provider_id"`
-	CostMs                float64 `json:"cost_ms"`
-	StateMs               float64 `json:"state_ms"`
-	QueueMs               float64 `json:"queue_ms"`
-	PendingMs             float64 `json:"pending_ms"`
-	BacklogMs             float64 `json:"backlog_ms"`
-	ThisReqMs             float64 `json:"this_req_ms"`
-	HealthMs              float64 `json:"health_ms"`
-	CapacityRateMs        float64 `json:"capacity_rate_ms"`
-	CacheDiscountMs       float64 `json:"cache_discount_ms"`
-	TTFTMs                float64 `json:"ttft_ms"`
-	EffectiveTPS          float64 `json:"effective_tps"`
-	EffectiveQueue        int32   `json:"effective_queue"`
-	TotalPending          int32   `json:"total_pending"`
-	BackendRunning        int32   `json:"backend_running"`
-	BackendWaiting        int32   `json:"backend_waiting"`
-	ActiveTokenBudgetUsed int64   `json:"active_token_budget_used"`
-	ActiveTokenBudgetMax  int64   `json:"active_token_budget_max"`
-	QueuedPrefillTokens   int64   `json:"queued_prefill_tokens"`
-	SlotState             string  `json:"slot_state"`
-	HBAgeMs               int32   `json:"hb_age_ms"`
-}
-
-func candidateFromSummary(c registry.CandidateSummary) candidateJSON {
-	return candidateJSON{
-		ProviderID: c.ProviderID, CostMs: c.CostMs, StateMs: c.StateMs, QueueMs: c.QueueMs,
-		PendingMs: c.PendingMs, BacklogMs: c.BacklogMs, ThisReqMs: c.ThisReqMs, HealthMs: c.HealthMs,
-		CapacityRateMs: c.CapacityRateMs, CacheDiscountMs: c.CacheDiscountMs, TTFTMs: c.TTFTMs,
-		EffectiveTPS: c.EffectiveTPS, EffectiveQueue: c.EffectiveQueue, TotalPending: c.TotalPending,
-		BackendRunning: c.BackendRunning, BackendWaiting: c.BackendWaiting,
-		ActiveTokenBudgetUsed: c.ActiveTokenBudgetUsed, ActiveTokenBudgetMax: c.ActiveTokenBudgetMax,
-		QueuedPrefillTokens: c.QueuedPrefillTokens, SlotState: string(c.SlotState), HBAgeMs: c.HBAgeMs,
-	}
-}
-
-// decisionJSON encodes the routing context fields that are not flat columns.
-func decisionJSON(d registry.RoutingDecision) (candidates, gateRejections json.RawMessage) {
-	top := make([]candidateJSON, 0, len(d.Top))
-	for _, c := range d.Top {
-		if c.Present {
-			top = append(top, candidateFromSummary(c))
-		}
-	}
-	if len(top) > 0 {
-		if b, err := json.Marshal(top); err == nil {
-			candidates = b
-		}
-	}
-	rejections := make(map[string]uint16, 8)
-	for i, n := range d.GateRejections {
-		if n > 0 {
-			rejections[registry.GateReason(i).String()] = n
-		}
-	}
-	if len(rejections) > 0 {
-		if b, err := json.Marshal(rejections); err == nil {
-			gateRejections = b
-		}
-	}
-	return candidates, gateRejections
-}
-
-// buildProfileRecord flattens one attempt into a store row.
-func (s *Server) buildProfileRecord(rp *registry.RequestProfile, ap *registry.AttemptProfile) *store.RequestProfileRecord {
+// Build flattens one attempt into a store row.
+func (b Builder) Build(rp *registry.RequestProfile, ap *registry.AttemptProfile) *store.RequestProfileRecord {
 	if rp == nil || ap == nil {
 		return nil
 	}
@@ -271,7 +214,7 @@ func (s *Server) buildProfileRecord(rp *registry.RequestProfile, ap *registry.At
 	raw, late := ap.ProviderProfileRaw()
 	switch {
 	case len(raw) > 0:
-		s.applyProviderProfile(rec, ap, raw)
+		b.applyProviderProfile(rec, ap, raw)
 	case late:
 		rec.ProviderProfileValid = false
 		rec.ProviderProfileInvalidReason = "late"
@@ -288,60 +231,4 @@ func (s *Server) buildProfileRecord(rp *registry.RequestProfile, ap *registry.At
 	}
 	rec.TimingAnomaly = profileTimingAnomaly(rec)
 	return rec
-}
-
-// profileTimingAnomaly flags non-monotonic coordinator stamps (a retried
-// attempt that re-stamped, a clock issue, or a bug). Never rejects the row.
-func profileTimingAnomaly(rec *store.RequestProfileRecord) bool {
-	order := []*int64{
-		rec.HandlerEntryUS, rec.ParsedUS, rec.ReservedUS, rec.AttemptStartUS, rec.ReserveDoneUS,
-		rec.EncryptedUS, rec.WriteSubmittedUS, rec.WriteDequeuedUS, rec.WriteDoneUS,
-		rec.FirstChunkIngressUS, rec.FirstContentUS, rec.CompleteIngressUS,
-	}
-	var last int64
-	for _, p := range order {
-		if p == nil {
-			continue
-		}
-		if *p < last {
-			return true
-		}
-		last = *p
-	}
-	return false
-}
-
-// alwaysRecord reports whether a record bypasses sampling.
-func (p *profiler) alwaysRecord(rec *store.RequestProfileRecord) bool {
-	if rec == nil {
-		return false
-	}
-	if rec.FinalStatus != finalStatusSuccess {
-		return true
-	}
-	if rec.FirstContentUS != nil && *rec.FirstContentUS > profileSlowFirstContent.Microseconds() {
-		return true
-	}
-	if rec.FinalizedUS != nil && *rec.FinalizedUS > profileSlowTotal.Microseconds() {
-		return true
-	}
-	if rec.AttemptsTotal > 1 || rec.BackupLaunched || rec.TimingAnomaly || rec.ClientGonePhase != "" {
-		return true
-	}
-	if !rec.ProviderProfileValid && rec.ProviderProfileInvalidReason != providerProfileAbsent {
-		return true
-	}
-	return false
-}
-
-// finalizeAttemptProfile is the ProfileFinalizeFn installed on every request
-// profile: build the row, apply sampling, enqueue.
-func (s *Server) finalizeAttemptProfile(rp *registry.RequestProfile, ap *registry.AttemptProfile) {
-	if s == nil || s.profiler == nil || !s.profiler.enabled || s.profiler.sink == nil {
-		return
-	}
-	// Flattening and sampling happen on the sink worker (profileSink.build), so
-	// the finalizing goroutine — possibly the provider WS read loop — only
-	// performs one non-blocking channel send here.
-	s.profiler.sink.Submit(rp, ap)
 }

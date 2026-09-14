@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared Go/Swift wire fixture for the system profiler (slice 2). Each top-level key (except this one) is one complete provider->coordinator frame. Offsets are microseconds from the provider's frame-receipt anchor and are monotonic; engine values are nanoseconds from engine enqueue. wall_ms is 2026-09-02T00:00:00.123Z. Go: coordinator/protocol/messages_inference_test.go, coordinator/api/profiler_provider_test.go. Swift: provider-swift/Tests/ProviderCoreTests via a relative path to this file.",
+  "_comment": "Shared Go/Swift wire fixture for the system profiler (slice 2). Each top-level key (except this one) is one complete provider->coordinator frame. Offsets are microseconds from the provider's frame-receipt anchor and are monotonic; engine values are nanoseconds from engine enqueue. wall_ms is 2026-09-02T00:00:00.123Z. Go: coordinator/protocol/messages_inference_test.go, coordinator/telemetry/profiler/provider_test.go. Swift: provider-swift/Tests/ProviderCoreTests via a relative path to this file.",
   "inference_complete_full": {
     "type": "inference_complete",
     "request_id": "0f3c2b8e-6b1a-4c8f-9d2e-7a5b3c1d9e0f",

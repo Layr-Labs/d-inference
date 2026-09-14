@@ -7,6 +7,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	profiling "github.com/eigeninference/d-inference/coordinator/telemetry/profiler"
 )
 
 // Queue ownership must not capture an obsolete store at construction. The
@@ -17,18 +18,17 @@ func TestPersistenceSinksUseCurrentStore(t *testing.T) {
 			initial := store.NewMemory(store.Config{})
 			current := store.NewMemory(store.Config{})
 			s := &Server{store: initial, logger: quietLogger()}
-			s.profiler = &profiler{enabled: true, sampleRate: 1}
 			var submit func()
 			var count func(*store.MemoryStore) int
 			switch kind {
 			case "profile":
-				s.profiler.sink = newProfileSink(s, 4)
-				t.Cleanup(s.profiler.close)
+				s.profiler = newProfiler(s, profiling.Config{Enabled: true, SampleRate: 1}, 4)
+				t.Cleanup(s.profiler.Close)
 				rp := registry.NewRequestProfile(time.Now(), "current-store", nil, 0)
 				ap := rp.NewAttempt("attempt", 0, "")
 				ap.SetOutcome("error", "provider_error", "", "error", "")
 				submit = func() {
-					if !s.profiler.sink.Submit(rp, ap) {
+					if !s.profiler.Submit(rp, ap) {
 						t.Fatal("empty profile queue rejected the record")
 					}
 				}

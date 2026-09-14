@@ -1,4 +1,4 @@
-package api
+package profiler
 
 import (
 	"bytes"
@@ -159,7 +159,7 @@ func TestDeadlineDecisionRateBoundsAndDetachedStorage(t *testing.T) {
 }
 
 func TestDeadlineDecisionStaysWithItsAttemptAcrossRetryAndBackup(t *testing.T) {
-	srv := newProviderProfileTestServer(nil)
+	srv := newProviderProfileTestBuilder(nil)
 	rp := registry.NewRequestProfile(fixtureReceivedAt, "logical-request", nil, 0)
 	primary := rp.NewAttempt("primary", 0, "")
 	retry := rp.NewAttempt("retry", 1, "")
@@ -175,7 +175,7 @@ func TestDeadlineDecisionStaysWithItsAttemptAcrossRetryAndBackup(t *testing.T) {
 	}
 	backup.Winning.Store(true)
 	for i, ap := range attempts {
-		rec := srv.buildProfileRecord(rp, ap)
+		rec := srv.Build(rp, ap)
 		if rec.CoordRequestID != "logical-request" || rec.RequestID != ap.RequestID || rec.Attempt != ap.Attempt ||
 			rec.BackupOf != ap.BackupOf || rec.ProviderID != ap.ProviderID || rec.Winning != (i == 2) || !rec.ProviderProfileValid {
 			t.Fatalf("attempt identity or validity lost: %+v", rec)

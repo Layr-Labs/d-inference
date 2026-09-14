@@ -1,6 +1,6 @@
 # Roll out the release-policy routing gate (shadow → enforce)
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-13 · commit `7945db8d4`
 
 Runbook for the two production changes that involve the coordinator's
 release-policy routing gate: (1) deploying a coordinator that contains the gate
@@ -56,7 +56,8 @@ The boot grace defaults to `minEnforceGrace = 20 * time.Minute` and is
 clamp up, invalid values keep 20m. It exists because a restarted coordinator has
 an empty provider registry (zero evidence) and would otherwise 429 the whole
 fleet until reconnected providers complete their first challenge cycle
-(`DefaultChallengeInterval = 5 * time.Minute` in `coordinator/api/provider.go`).
+(`DefaultChallengeInterval` aliases `challenge.DefaultInterval = 5 * time.Minute`
+in `coordinator/providercontrol/challenge/config.go`; API alias in `coordinator/api/provider.go`).
 
 Application evidence proves exactly two facts, checked identically at grant
 (`coordinator/api/server.go` (`deriveApprovedReleaseTransition`,

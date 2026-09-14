@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-14 · commit `dedb0f894`
+> Last updated: 2026-09-13 · commit `7945db8d4`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -52,6 +52,10 @@ The grant and loss conditions for each level are tabulated in
 the challenge cadence is in [Layer 2](../architecture/security/attestation.md#layer-2--periodic-challenge)
 and the routing freshness window is
 [`challengeFreshnessMaxAge`](../architecture/routing.md#challenge-freshness).
+
+Challenge replies are correlated with pending nonces on the same provider
+connection (`coordinator/providercontrol/challenge/transport.go`, `Session.Deliver`).
+This is a coordinator liveness check; it adds no consumer receipt or public field.
 
 The coordinator verifies `status_signature` by reconstructing the exact signed
 bytes (`coordinator/attestation/attestation.go`, `VerifyStatusSignature`). The

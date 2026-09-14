@@ -1,6 +1,6 @@
 # Identity binding
 
-> Last updated: 2026-09-14 · commit `dedb0f894`
+> Last updated: 2026-09-13 · commit `7945db8d4`
 
 A provider connection carries five identities — a Secure Enclave P-256 key, an
 X25519 process key `K`, an APNs device token, an Apple device identity
@@ -33,7 +33,7 @@ flowchart LR
     DID["Consumer Privy DID"]
 
     SE -->|"B1 blob.encryptionPublicKey == register.public_key<br/>verifyProviderAttestation"| K
-    SE -->|"B2 challenge signature every 5m<br/>verifyChallengeResponse"| SE
+    SE -->|"B2 challenge signature every 5m<br/>verifySignatures"| SE
     K -->|"B3 nonce sealed to K, delivered by APNs to the entitled bundle,<br/>signed by the SE key · handleCodeAttestationResponse"| BIN
     TOK -->|"B3 same token as at challenge time<br/>GrantProcessCodeAttested"| BIN
     SE -->|"B4 MDA FreshnessCode == SHA-256(SE pubkey) or leaf serial == blob serial<br/>SetMDAProofIfHardwareBound"| DEV
@@ -58,7 +58,7 @@ flowchart LR
 | # | Binding | Proof | Enforced by |
 |---|---|---|---|
 | B1 | `K` ↔ SE key | The registration blob, signed by the SE key, carries `encryptionPublicKey`; it must equal `register.public_key`. A mismatch invalidates the attestation (and untrusts under a binary-hash policy) | `coordinator/api/provider.go` (`verifyProviderAttestation`) |
-| B2 | SE key ↔ live process | Every `DefaultChallengeInterval` = 5m the process signs `nonce + timestamp` and the canonical status payload with the SE key; verified against the **registration** key, never one in the reply | `coordinator/api/provider.go` (`verifyChallengeResponse`); `coordinator/attestation/attestation.go` (`VerifyChallengeSignature`, `VerifyStatusSignature`) |
+| B2 | SE key ↔ live process | Every `DefaultChallengeInterval` = 5m the process signs `nonce + timestamp` and the canonical status payload with the SE key; verified against the **registration** key, never one in the reply | `coordinator/providercontrol/challenge/signature.go` (`verifySignatures`); `coordinator/attestation/attestation.go` (`VerifyChallengeSignature`, `VerifyStatusSignature`) |
 | B3 | `K` ↔ SE key ↔ signed binary ↔ APNs token | The code-identity nonce is NaCl-Box-sealed to `K` (only the `K` holder opens it), delivered through APNs to the bundle with App ID `io.darkbloom.provider` and Team ID (only that binary receives it), and returned signed by the SE key. The grant is refused if `K` or the token changed since the challenge; persisted proofs record `(se_pubkey, apns_token, node_public_key, binary_hash)` and authorise only a resume challenge, never a grant; old same-process proofs additionally require code-verified continuity, not hardware-only liveness | `coordinator/providercontrol/codeidentity/response.go` (`HandleResponse`); `coordinator/registry/provider_evidence.go` (`GrantProcessCodeAttested`); `coordinator/providercontrol/codeidentity/reuse.go` (`reuseAttestation`) |
 | B4 | SE key ↔ Apple device | `DeviceAttestationNonce` = SHA-256 of the SE public key string; Apple echoes it as `FreshnessCode` in the leaf. A chain is attached only if the connection is `hardware` and (`FreshnessCode` matches this SE key **or** the leaf serial equals the blob `serialNumber`); a cached chain is reused only when the nonce binds this SE key | `coordinator/mdm/mdm.go` (`RequestDeviceAttestation`); `coordinator/attestation/mda.go` (`VerifyMDADeviceAttestation`); `coordinator/registry/provider_evidence.go` (`SetMDAProofIfHardwareBound`); `coordinator/api/provider.go` (`attachCachedMDAProof`) |
 | B5 | blob serial ↔ MDM device ↔ posture | The blob's `serialNumber` selects the MicroMDM device (`LookupDevice` → UDID); the device's own `SecurityInfo` must report SIP on and `SecureBootLevel == "full"`, and both must equal the blob's `sipEnabled` / `secureBootEnabled` | `coordinator/mdm/mdm.go` (`VerifyProviderWithUDIDObserver`); `coordinator/api/provider.go` (`verifyProviderViaMDM`) |
@@ -104,7 +104,7 @@ RFC 8628-style flow implemented in `coordinator/api/device_auth.go` and
 ## Invariants
 
 1. The provider's X25519 key is accepted only if the SE-signed blob names it as `encryptionPublicKey` — `coordinator/api/provider.go` (`verifyProviderAttestation`).
-2. All challenge and code-identity signatures are checked against the registration-time SE key — `coordinator/api/provider.go` (`verifyChallengeResponse`), `coordinator/providercontrol/codeidentity/response.go` (`HandleResponse`).
+2. All challenge and code-identity signatures are checked against the registration-time SE key — `coordinator/providercontrol/challenge/signature.go` (`verifySignatures`), `coordinator/providercontrol/codeidentity/response.go` (`HandleResponse`).
 3. Code identity is granted only if `K` and the APNs token are unchanged since the challenge was issued — `coordinator/registry/provider_evidence.go` (`GrantProcessCodeAttested`).
 4. An MDA chain is attached only when it binds this SE key or the blob's serial, and only on a `hardware` connection — `coordinator/registry/provider_evidence.go` (`SetMDAProofIfHardwareBound`).
 5. Hardware posture is taken from the device selected by the blob's serial and must agree with the blob — `coordinator/api/provider.go` (`verifyProviderViaMDM`).

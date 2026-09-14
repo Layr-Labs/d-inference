@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-14 · commit `7466e7fa5`
+> Last updated: 2026-09-14 · commit `d7c108ef8`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -431,7 +431,12 @@ these fields: [`../architecture/request-outcome-observability.md`](../architectu
 ### `attestation_response`
 
 Go `AttestationResponseMessage` · Swift `AttestationResponse`. Reply to
-[`attestation_challenge`](#attestation_challenge).
+[`attestation_challenge`](#attestation_challenge). The coordinator accepts delivery
+only when `nonce` matches a pending challenge on this connection
+(`coordinator/providercontrol/challenge/transport.go`, `Session.Deliver`);
+`Verifier.VerifyResponse` then checks the original expected nonce/timestamp and
+registration identity (`coordinator/providercontrol/challenge/verify.go`,
+`signature.go`).
 
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|

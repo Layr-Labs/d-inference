@@ -196,6 +196,11 @@ package actor LumeVirtualMachineRuntime: SandboxVirtualMachineRuntime {
             environment: environment ?? workspace.environment,
             timeoutSeconds: timeoutSeconds
         )
+        try validateCommandResult(result, operation: operation)
+        return result
+    }
+
+    func validateCommandResult(_ result: SandboxProcessResult, operation: String) throws {
         guard result.exitCode == 0 else {
             let standardError = LumeControlDiagnostic.failure(result)
             throw SandboxRuntimeError.commandFailed(
@@ -211,7 +216,6 @@ package actor LumeVirtualMachineRuntime: SandboxVirtualMachineRuntime {
                 "Lume \(operation) output exceeded the capture limit"
             )
         }
-        return result
     }
 
     private func runJSON<T: Decodable>(

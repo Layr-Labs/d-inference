@@ -223,13 +223,18 @@ public final class HostRuntimeLease: @unchecked Sendable {
                                lockIdentity: lockIdentity, groupID: groupID)
     }
 
+    /// Require machine-exclusive ownership before beginning VM installation.
+    public func validateExclusive() throws {
+        guard exclusive else { throw HostRuntimeOwnershipError.insecureAuthority }
+        try validate()
+    }
+
     /// The descriptor is valid only inside `spawn`. Add a child-only dup2 spawn
     /// action; never clear CLOEXEC in the parent. The duplicate shares this
     /// lease's open file description, so closing the parent does not release
     /// exclusive ownership while the actual VM process still holds its copy.
     public func withInheritedDescriptor<T>(_ spawn: (Int32) throws -> T) throws -> T {
-        guard exclusive else { throw HostRuntimeOwnershipError.insecureAuthority }
-        try validate()
+        try validateExclusive()
         let duplicate = fcntl(descriptor, F_DUPFD_CLOEXEC, 64)
         guard duplicate >= 0 else { throw HostRuntimeOwnershipError.systemError(errno) }
         defer { close(duplicate) }

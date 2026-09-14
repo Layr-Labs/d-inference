@@ -37,6 +37,9 @@ REQUIRED_BROKER_LIFECYCLE_TESTS=(
     brokerWatchdogFiresWhileVirtualizationStartupHangs
     brokerWatchdogFiresWhileVirtualizationStopHangs
     brokerEOFCancelsWatchdogAfterTerminalCleanup
+    restoreCancelBeforeInstallation
+    restoreCancellationWaitsForInstallerCompletion
+    managedRestoreRequiresStoppedProofBeforeCleanup
 )
 for test_name in "${REQUIRED_BROKER_LIFECYCLE_TESTS[@]}"; do
     (

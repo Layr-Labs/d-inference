@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-13 · commit `f097a7116`
+> Last updated: 2026-09-14 · commit `4245ae67a`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -57,6 +57,14 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 | `admin-ui/` | Next.js 16 / React 19 | `npm`; dev/start on port `4001`. |
 | `landing/` | static HTML/JS | No build step; `earn-calculator-core.test.js` runs with `node --test`. |
 | `Makefile` | — | Every target below; `make help` lists them. |
+
+Rebuild and sign the pinned Lume tree when its patch set changes. Managed raw
+Apple restores require the installer ownership patch in
+`sandbox-macos/ThirdParty/lume.lock.json`; the wrapper verifies that provenance
+through `LumeRuntimeConfiguration.pinnedManagedRestorePatchPath` in
+`sandbox-macos/Sources/SandboxRuntimeLume/LumeRuntimeConfiguration.swift`.
+The `SandboxProcessLifecycleProbe` executable is a test fixture and is not part
+of the signed host or guest package.
 
 ## Steps
 

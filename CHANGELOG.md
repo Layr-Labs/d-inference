@@ -23,6 +23,7 @@ coordinator deployment.
 
 ## Unreleased — sandbox private-alpha control
 
+- Require exclusive host ownership for managed raw Apple restores, retain it in the installer process through cancellation or broker death, and preserve files when native VM stop is unproven. This requires a matching rebuilt and signed Lume runtime.
 - Resume stopped workspaces with durable start operations and CLI support; rotate fencing authority without changing capacity, lease expiry or prior command idempotency. Cancel blocked host writes on disconnect and require consistent proof before clearing pending command cleanup.
 
 - Default the sandbox service and admission off; require explicit account enrollment for new work. Keep owner status, cancellation, stop and delete available while admission drains.

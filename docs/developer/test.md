@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `f097a7116`
+> Last updated: 2026-09-14 · commit `4245ae67a`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -81,6 +81,16 @@ establish physical isolation. The `macOS Sandbox Tests` CI job separately builds
 and tests the exact pinned Lume patches and builds release host/guest products.
 See the [sandbox CLI workflow](../consumer/sandbox-cli.md) and
 [sandbox API contract](../reference/sandbox-api.md).
+
+`ManagedProcessOwnershipTests` in
+`sandbox-macos/Tests/SandboxRuntimeTests/ManagedProcessOwnershipTests.swift`
+uses real child processes and kernel file locks to check cancellation, timeout
+and broker death. It does not run a VM. Raw restore tests require an exclusive
+fixture lease and reject missing/shared authority before creation.
+`sandbox-macos/Scripts/run-pinned-lume-tests.sh` runs the full native suite and
+nine required tests individually, including installer cancellation before start,
+completion ordering and stopped-proof cleanup. Native restore tests use fake
+installers; physical installation and cancellation remain separate checks.
 
 `python3 -B sandbox-macos/Scripts/test-sandbox-live-tools.py` tests the live
 consumer harness with fake CLI/REST transports and simulated time. It checks

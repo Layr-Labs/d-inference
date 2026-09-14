@@ -28,6 +28,16 @@ preserve signing extended attributes and does not re-sign any Lume artifact.
 Distribute with a format preserving those attributes, such as a `ditto` archive.
 The release manifest is separately signed and covers the guest bootstrap files.
 
+Managed raw Apple restore requires the current managed-installer patch and a new
+matching signed Lume artifact. `LumeManagedRestoreProcess` retains exclusive
+machine ownership in the installer child and sends broker-lifecycle EOF on
+cancellation. The native installer cancels `Progress` after installation starts,
+waits for its completion, and proves the VM stopped before deleting temporary
+files. An unproven stop retains the native owner and files until process exit.
+Legacy unattended preparation is a separate path. Unit tests establish process
+and cancellation contracts; they do not qualify a real restored base or replace
+the accountless installation and disposable-clone checks.
+
 For a host, Lume, or tooling update that retains an already qualified guest,
 add `--guest-release /absolute/existing/signed-release`. Packaging verifies that
 release's signed manifest, complete file inventory, guest code identity and safe

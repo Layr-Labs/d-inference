@@ -123,6 +123,16 @@ final class HostRuntimeCoordinationTests: XCTestCase {
         try inference.validate()
     }
 
+    func testSharedInferenceLeaseCannotAuthorizeVMInstallation() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let shared = try XCTUnwrap(fixture.authority.acquireInferenceIfInstalled())
+        XCTAssertNoThrow(try shared.validate())
+        XCTAssertThrowsError(try shared.validateExclusive()) {
+            XCTAssertEqual($0 as? HostRuntimeOwnershipError, .insecureAuthority)
+        }
+    }
+
     private struct Fixture {
         let root: URL
         let directory: URL

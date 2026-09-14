@@ -23,6 +23,8 @@ let package = Package(
         .target(name: "SandboxGuestProtocol"),
         .target(name: "SandboxGuestRuntime", dependencies: ["SandboxGuestProtocol", "SandboxRuntime"], linkerSettings: [.linkedFramework("Security")]),
         .executableTarget(name: "DarkbloomSandboxGuest", dependencies: ["SandboxGuestRuntime"]),
+        // Test-process fixture only; never included in signed sandbox packages.
+        .executableTarget(name: "SandboxProcessLifecycleProbe", dependencies: ["SandboxRuntime"]),
         .testTarget(name: "SandboxGuestProtocolTests", dependencies: ["SandboxGuestProtocol"]),
         .testTarget(name: "SandboxGuestRuntimeTests", dependencies: ["SandboxGuestRuntime", "SandboxGuestProtocol"]),
         .target(

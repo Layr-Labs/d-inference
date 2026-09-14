@@ -8,7 +8,7 @@ final class LumeBaseCandidateGuardTests: XCTestCase {
     func testGuardSerializesCandidatePublicationWithNormalBrokerOperations() async throws {
         let fixture = try FakeLumeFixture(initialState: nil)
         defer { try? fixture.remove() }
-        let runtime = try fixture.makeRuntime()
+        let runtime = try fixture.makeRuntime(hostRuntimeLease: fixture.makeTestHostRuntimeAuthority().acquireSandbox())
         let specification = try SandboxVirtualMachineSpecification(name: fixture.virtualMachineName,
             resources: .macOSSmall(), imageSource: .appleRestore(url: fixture.restoreImage),
             diskBytes: 100 * SandboxResourcePolicy.gibibyte)

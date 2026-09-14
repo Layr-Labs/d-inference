@@ -47,6 +47,9 @@ public struct LumeRuntimeConfiguration: Sendable {
     public static let pinnedStopCoalescingPatchPath = "ThirdParty/lume-patches/0008-coalesce-native-virtual-machine-stop.patch"
     public static let pinnedStopCoalescingPatchSHA256 = "28896292d17137e6e20d17f0d86413dcd31c2b93365042af09be4d3a45887096"
 
+    public static let pinnedManagedRestorePatchPath = "ThirdParty/lume-patches/0009-bound-managed-apple-restores.patch"
+    public static let pinnedManagedRestorePatchSHA256 = "d8b710292632def0c987ca7a70b7e53c0f8452f17250823963f133e1525aa861"
+
     public static let pinnedPatches = [
         pinnedPatchPath: pinnedPatchSHA256,
         pinnedLivenessPatchPath: pinnedLivenessPatchSHA256,
@@ -56,6 +59,7 @@ public struct LumeRuntimeConfiguration: Sendable {
         pinnedRuntimeOwnershipPatchPath: pinnedRuntimeOwnershipPatchSHA256,
         pinnedFailureDiagnosticPatchPath: pinnedFailureDiagnosticPatchSHA256,
         pinnedStopCoalescingPatchPath: pinnedStopCoalescingPatchSHA256,
+        pinnedManagedRestorePatchPath: pinnedManagedRestorePatchSHA256,
     ]
 
     public let executable: URL

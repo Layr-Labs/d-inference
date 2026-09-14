@@ -16,8 +16,14 @@ extension LumeVirtualMachineRuntime {
         guard SandboxVirtualMachineNamePolicy.isValid(specification.name) else {
             throw SandboxRuntimeError.invalidName
         }
-        if case .appleRestore = specification.imageSource, scope != nil {
-            throw SandboxRuntimeError.unsupported("raw Apple restore is restricted to base preparation")
+        if case .appleRestore = specification.imageSource {
+            guard scope == nil else {
+                throw SandboxRuntimeError.unsupported("raw Apple restore is restricted to base preparation")
+            }
+            guard let lease = configuration.hostRuntimeLease else {
+                throw SandboxRuntimeError.unsupported("raw Apple restore requires exclusive host ownership")
+            }
+            try lease.validateExclusive()
         }
         try preauthorize(
             scope: scope,
@@ -167,12 +173,13 @@ extension LumeVirtualMachineRuntime {
             if let capacityArbiter {
                 _ = try capacityArbiter.validateStorageHeadroom()
             }
-            _ = try await run(
-                arguments: arguments,
-                timeoutSeconds: configuration.createTimeoutSeconds,
-                operation: "create",
-                environment: creationWorkspace.environment
-            )
+            if case .appleRestore = specification.imageSource {
+                let result = try await runManagedAppleRestore(arguments: arguments, environment: creationWorkspace.environment)
+                try validateCommandResult(result, operation: "create")
+            } else {
+                _ = try await run(arguments: arguments, timeoutSeconds: configuration.createTimeoutSeconds,
+                                  operation: "create", environment: creationWorkspace.environment)
+            }
             guard let created = try await inspect(name: specification.name),
                   created.state == .stopped,
                   Self.matches(created, specification: specification)

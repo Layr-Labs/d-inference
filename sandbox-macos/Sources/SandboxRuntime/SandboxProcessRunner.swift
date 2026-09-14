@@ -66,6 +66,17 @@ public final class SandboxManagedProcess: @unchecked Sendable {
         return execution.result()
     }
 
+    /// Await an already-spawned owner. Timeout or cancellation stops it and
+    /// retains its execution state until the actual child exit is observed.
+    /// Descriptor borrowing therefore ends synchronously at spawn, not after an
+    /// async call which might begin after the borrowed descriptor has closed.
+    public func wait(timeoutSeconds: UInt32,
+                     cooperativeGracePeriod: Duration = .seconds(30),
+                     signalGracePeriod: Duration = .seconds(2)) async throws -> SandboxProcessResult {
+        try await SandboxManagedProcessWait.run(execution: execution, timeoutSeconds: timeoutSeconds,
+            cooperativeGracePeriod: cooperativeGracePeriod, signalGracePeriod: signalGracePeriod)
+    }
+
     public func stop(
         cooperativeGracePeriod: Duration = .seconds(30),
         signalGracePeriod: Duration = .seconds(2)

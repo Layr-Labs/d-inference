@@ -3,6 +3,7 @@ import Darwin
 import Foundation
 import SandboxCore
 import SandboxRuntime
+import HostRuntimeCoordination
 @testable import SandboxRuntimeLume
 import XCTest
 
@@ -147,7 +148,8 @@ struct FakeLumeFixture {
 
     func makeRuntime(
         commandTimeoutSeconds: UInt32 = 1,
-        guestReadinessPolicy: LumeGuestReadinessPolicy = .standard
+        guestReadinessPolicy: LumeGuestReadinessPolicy = .standard,
+        hostRuntimeLease: HostRuntimeLease? = nil
     ) throws -> LumeVirtualMachineRuntime {
         LumeVirtualMachineRuntime(
             configuration: try LumeRuntimeConfiguration(
@@ -156,7 +158,8 @@ struct FakeLumeFixture {
                 commandTimeoutSeconds: commandTimeoutSeconds,
                 createTimeoutSeconds: commandTimeoutSeconds,
                 trustPolicy: .developmentAdHoc,
-                guestCommandPolicy: .baseImagePreparationAndDevelopment
+                guestCommandPolicy: .baseImagePreparationAndDevelopment,
+                hostRuntimeLease: hostRuntimeLease
             ),
             guestReadinessPolicy: guestReadinessPolicy
         )
@@ -1053,6 +1056,10 @@ struct FakeLumeFixture {
         fi
         ;;
       create)
+        printf '%s\\n' "${DARKBLOOM_RESTORE_PROFILE-}" "${DARKBLOOM_HOST_RUNTIME_FD-}" "${DARKBLOOM_LUME_LIFECYCLE_FD-}" > "$root/create-capabilities"
+        if [ "${DARKBLOOM_RESTORE_PROFILE-}" = "apple-v1" ]; then
+          test -e /dev/fd/4 && test -e /dev/fd/3 || exit 71
+        fi
         printf '%s\\n' "$@" > "$root/create-arguments"
         name="$2"
         shift 2

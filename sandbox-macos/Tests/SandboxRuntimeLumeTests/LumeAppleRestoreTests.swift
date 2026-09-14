@@ -1,7 +1,7 @@
-import Darwin
 import Foundation
 import SandboxCore
 import SandboxRuntime
+import HostRuntimeCoordination
 @testable import SandboxRuntimeLume
 import XCTest
 
@@ -9,7 +9,7 @@ final class LumeAppleRestoreTests: XCTestCase {
     func testRawRestoreRunsWithoutAccountProvisioningAndKeepsIdentityOnReplay() async throws {
         let fixture = try FakeLumeFixture(initialState: nil)
         defer { try? fixture.remove() }
-        let runtime = try fixture.makeRuntime()
+        let runtime = try authorizedRuntime(fixture)
         let specification = try specification(fixture)
         try await runtime.create(specification)
         let identity = try LumeVirtualMachineOwnership.requireOwned(
@@ -17,6 +17,8 @@ final class LumeAppleRestoreTests: XCTestCase {
         let arguments = try String(contentsOf: fixture.directory.appendingPathComponent("create-arguments"),
                                    encoding: .utf8).split(separator: "\n").map(String.init)
         XCTAssertEqual(arguments.prefix(2), ["create", fixture.virtualMachineName])
+        let capabilities = try String(contentsOf: fixture.directory.appendingPathComponent("create-capabilities"), encoding: .utf8)
+        XCTAssertEqual(capabilities, "apple-v1\n4\n3\n")
         XCTAssertTrue(arguments.contains(fixture.restoreImage.path))
         for forbidden in ["--unattended", "tahoe", "--no-display", "--vnc-port", "--network"] {
             XCTAssertFalse(arguments.contains(forbidden), forbidden)
@@ -34,7 +36,7 @@ final class LumeAppleRestoreTests: XCTestCase {
     func testExistingRawRestoreCannotBecomeAnUnattendedRestore() async throws {
         let fixture = try FakeLumeFixture(initialState: nil)
         defer { try? fixture.remove() }
-        let runtime = try fixture.makeRuntime()
+        let runtime = try authorizedRuntime(fixture)
         try await runtime.create(specification(fixture))
         let legacy = try specification(fixture, source: .restoreImage(url: fixture.restoreImage, unattendedPreset: "tahoe"))
         do {
@@ -48,7 +50,7 @@ final class LumeAppleRestoreTests: XCTestCase {
     func testRawRestoreRejectsPresetInStoredOwnership() async throws {
         let fixture = try FakeLumeFixture(initialState: nil)
         defer { try? fixture.remove() }
-        try await fixture.makeRuntime().create(specification(fixture))
+        try await authorizedRuntime(fixture).create(specification(fixture))
         var marker = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixture.ownershipMarker)) as? [String: Any])
         marker["unattendedPreset"] = "tahoe"
         try JSONSerialization.data(withJSONObject: marker).write(to: fixture.ownershipMarker)
@@ -59,7 +61,7 @@ final class LumeAppleRestoreTests: XCTestCase {
     func testLegacyRestoreKeepsPresetAndCannotBeRelabeledAccountless() async throws {
         let fixture = try FakeLumeFixture(initialState: nil)
         defer { try? fixture.remove() }
-        let runtime = try fixture.makeRuntime()
+        let runtime = try authorizedRuntime(fixture)
         let legacy = try specification(fixture, source: .restoreImage(url: fixture.restoreImage, unattendedPreset: "tahoe"))
         try await runtime.create(legacy)
         try await runtime.create(legacy)
@@ -92,6 +94,31 @@ final class LumeAppleRestoreTests: XCTestCase {
             XCTAssertEqual(error, .unsupported("raw Apple restore is restricted to base preparation"))
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.createStarted.path))
+    }
+
+    func testRawRestoreRequiresExclusiveAuthorityBeforeAnyProcessOrVMCreation() async throws {
+        let fixture = try FakeLumeFixture(initialState: nil)
+        defer { try? fixture.remove() }
+        do {
+            try await fixture.makeRuntime().create(specification(fixture))
+            XCTFail("missing ownership must fail before restore")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(error, .unsupported("raw Apple restore requires exclusive host ownership"))
+        }
+        let authority = try fixture.makeTestHostRuntimeAuthority()
+        let shared = try XCTUnwrap(authority.acquireInferenceIfInstalled())
+        do {
+            try await fixture.makeRuntime(hostRuntimeLease: shared).create(specification(fixture))
+            XCTFail("shared inference authority must not install a VM")
+        } catch let error as HostRuntimeOwnershipError {
+            XCTAssertEqual(error, .insecureAuthority)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.createStarted.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.virtualMachineDirectory.path))
+    }
+
+    private func authorizedRuntime(_ fixture: FakeLumeFixture) throws -> LumeVirtualMachineRuntime {
+        try fixture.makeRuntime(hostRuntimeLease: fixture.makeTestHostRuntimeAuthority().acquireSandbox())
     }
 
     private func specification(_ fixture: FakeLumeFixture,

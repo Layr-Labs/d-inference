@@ -402,7 +402,7 @@ func TestFreeMemoryAdmitsColdModelChargesPool(t *testing.T) {
 
 // TestPooledByteTotalFromLiveUsedNotCommitted is the double-count regression
 // (Finding 3): the byte pool total must be built from LIVE used bytes plus the
-// shared free headroom — mirroring the token path (providerTokenBudget uses
+// shared free headroom — mirroring the token path (TokenBudget uses
 // used+sharedFree) — NOT from committedBytes, which carries MaxTokensPotential
 // as the pending de-dup baseline. A co-resident slot whose potential (0.4 GB)
 // far exceeds its used (0) would otherwise inflate the 1 GB physical pool to

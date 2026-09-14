@@ -142,10 +142,12 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 
 /// `defaultActivationReserveBytes` is not a local tuning knob. The coordinator
 /// hard-codes the same figure (`servabilityActivationFloorGB = 5.5`, in
-/// `coordinator/registry/servability.go`) and subtracts it in
-/// `coldTokenBudgetEstimate` to predict what THIS gate will leave a freshly
-/// loaded slot. A cold slot sends no heartbeat, so the coordinator has no way
-/// to observe a provider that quietly retuned the reserve — the two figures
+/// `coordinator/registry/admission/model_memory.go`) and subtracts it in
+/// `Policy.ColdTokenBudgetEstimate`
+/// (`coordinator/registry/admission/request_budget.go`) to predict what THIS gate
+/// will leave a freshly loaded slot. A cold slot sends no heartbeat, so the
+/// coordinator has no way to observe a provider that quietly retuned the reserve
+/// — the two figures
 /// stay equal only because someone moves both.
 ///
 /// FLATNESS is the other half of that contract. A per-model reserve scaled by

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -14,7 +15,7 @@ import (
 )
 
 func tokenReq(accountID string, role string) *http.Request {
-	ctx := context.WithValue(context.Background(), ctxKeyConsumer, accountID)
+	ctx := requestcontext.WithAccountID(context.Background(), accountID)
 	if role != "" {
 		ctx = context.WithValue(ctx, auth.CtxKeyUser, &store.User{AccountID: accountID, Role: role})
 	}
@@ -23,7 +24,7 @@ func tokenReq(accountID string, role string) *http.Request {
 
 func tokenReqWithKey(accountID string, role string, key *store.APIKey) *http.Request {
 	req := tokenReq(accountID, role)
-	ctx := context.WithValue(req.Context(), ctxKeyAPIKey, key)
+	ctx := requestcontext.WithAPIKey(req.Context(), key)
 	return req.WithContext(ctx)
 }
 

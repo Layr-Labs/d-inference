@@ -18,6 +18,7 @@ import (
 
 	"nhooyr.io/websocket"
 
+	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -709,7 +710,7 @@ func TestHandleUsageUsesRecordedPublicModelOnly(t *testing.T) {
 	st.RecordUsageFull("p2", "acct-1", "", aliasQAT, "req-raw", 3, 2, 50, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/payments/usage", nil)
-	req = req.WithContext(context.WithValue(req.Context(), ctxKeyConsumer, "acct-1"))
+	req = req.WithContext(requestcontext.WithAccountID(req.Context(), "acct-1"))
 	rec := httptest.NewRecorder()
 	srv.handleUsage(rec, req)
 

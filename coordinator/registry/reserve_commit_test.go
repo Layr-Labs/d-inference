@@ -201,7 +201,7 @@ func TestReserveNextFromPlanAdmitsExactlyTheSerialCapacityUnderConcurrency(t *te
 			// The alternate is the plan's only entry while it has headroom and
 			// drops out of the scan pool (hence the plan) once it is full.
 			plan := newDispatchPlan(model, scan, w)
-			if plan.Len() > 1 || (plan.Len() == 1 && plan.entries[0].provider != alt) {
+			if plan.Len() > 1 || (plan.Len() == 1 && plan.state.Entries()[0].Connection != alt) {
 				t.Fatalf("plan must hold at most the alternate, got %d entries", plan.Len())
 			}
 			return plan

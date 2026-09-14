@@ -331,7 +331,7 @@ func mkCandidate(id string, cost float64, queue, pending int, discount float64) 
 		provider:       &Provider{ID: id},
 		costMs:         cost,
 		effectiveQueue: queue,
-		snapshot:       routingSnapshot{totalPending: pending},
+		snapshot:       routingSnapshot{TotalPending: pending},
 		breakdown:      costBreakdown{CacheDiscountMs: discount, Total: cost},
 	}
 }
@@ -755,7 +755,7 @@ func TestCandidateSummaryIsFixedSize(t *testing.T) {
 	c := &routingCandidate{
 		provider: &Provider{ID: "x"},
 		costMs:   1234,
-		snapshot: routingSnapshot{slotState: "running", hbAgeMs: 42, totalPending: 3},
+		snapshot: routingSnapshot{SlotState: "running", HBAgeMs: 42, TotalPending: 3},
 	}
 	s := candidateSummaryOf(c)
 	if !s.Present || s.ProviderID != "x" || s.CostMs != 1234 || s.SlotState != SlotStateRunning || s.HBAgeMs != 42 || s.TotalPending != 3 {

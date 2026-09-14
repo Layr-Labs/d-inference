@@ -14,15 +14,15 @@ func TestCandidateArenaPointersStayValidAcrossChunks(t *testing.T) {
 	kept := make([]*routingCandidate, 0, n)
 	for i := 0; i < n; i++ {
 		c := arena.next()
-		if c.costMs != 0 || c.provider != nil || c.snapshot.model != "" {
+		if c.costMs != 0 || c.provider != nil || c.snapshot.Model != "" {
 			t.Fatalf("slot %d not zeroed: %+v", i, c)
 		}
 		c.costMs = float64(i)
-		c.snapshot.model = fmt.Sprintf("m-%d", i)
+		c.snapshot.Model = fmt.Sprintf("m-%d", i)
 		kept = append(kept, c)
 	}
 	for i, c := range kept {
-		if c.costMs != float64(i) || c.snapshot.model != fmt.Sprintf("m-%d", i) {
+		if c.costMs != float64(i) || c.snapshot.Model != fmt.Sprintf("m-%d", i) {
 			t.Fatalf("slot %d was overwritten or moved: %+v", i, c)
 		}
 	}
@@ -87,7 +87,7 @@ func TestScanPoolCandidatesAreIndependentValues(t *testing.T) {
 			t.Fatal("pool entries alias the same arena slot")
 		}
 		seen[c] = struct{}{}
-		if c.provider == nil || c.snapshot.provider != c.provider || c.snapshot.model != model {
+		if c.provider == nil || c.snapshot.Provider != c.provider || c.snapshot.Model != model {
 			t.Fatalf("candidate/snapshot mismatch: %+v", c)
 		}
 		if _, dup := providers[c.provider.ID]; dup {

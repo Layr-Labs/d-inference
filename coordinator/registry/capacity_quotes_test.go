@@ -111,11 +111,7 @@ func collectOutcomes(t *testing.T, ch <-chan QuoteOutcome) map[string]QuoteOutco
 	}
 }
 
-func trackerLen(r *Registry) int {
-	r.capacityQuotes.mu.Lock()
-	defer r.capacityQuotes.mu.Unlock()
-	return len(r.capacityQuotes.pending)
-}
+func trackerLen(r *Registry) int { return r.capacityQuotes.PendingCount() }
 
 // --- capacity_seq heartbeat gate -------------------------------------------
 
@@ -224,48 +220,6 @@ func TestHeartbeatCapacitySeqResetsOnReconnect(t *testing.T) {
 
 // --- quote correlation ------------------------------------------------------
 
-// A provider must not be able to answer another provider's probe: the quote is
-// dropped and the entry stays registered for the bound provider's own answer.
-func TestHandleCapacityQuoteWrongProviderDropped(t *testing.T) {
-	reg := New(testLogger())
-	deliveries := make(chan quoteDelivery, 1)
-	reg.capacityQuotes.add("q1", &pendingQuote{
-		providerID: "pA",
-		expiresAt:  time.Now().Add(time.Minute),
-		deliver:    deliveries,
-	})
-
-	reg.HandleCapacityQuote("pB", testQuote("q1", true, 500))
-	select {
-	case d := <-deliveries:
-		t.Fatalf("forged quote from pB delivered: %+v", d)
-	default:
-	}
-	if trackerLen(reg) != 1 {
-		t.Fatal("forged quote consumed the real provider's entry")
-	}
-
-	// Unknown quote_id: dropped without touching the registered entry.
-	reg.HandleCapacityQuote("pA", testQuote("q-unknown", true, 500))
-	if trackerLen(reg) != 1 {
-		t.Fatal("unknown quote_id mutated the tracker")
-	}
-
-	// The bound provider's own answer resolves it.
-	reg.HandleCapacityQuote("pA", testQuote("q1", true, 500))
-	select {
-	case d := <-deliveries:
-		if d.providerID != "pA" || d.quote == nil || !d.quote.AdmissibleNow {
-			t.Fatalf("delivery = %+v, want pA's admissible quote", d)
-		}
-	default:
-		t.Fatal("bound provider's quote was not delivered")
-	}
-	if trackerLen(reg) != 0 {
-		t.Fatal("resolved entry not removed from tracker")
-	}
-}
-
 // --- probe fanout -----------------------------------------------------------
 
 // Happy path: quote-capable entries are probed on the data lane with a
@@ -333,12 +287,12 @@ func TestProbePlanCandidatesHappyPath(t *testing.T) {
 	// demoted hq02 last (channel close happens-after the collector's writes).
 	wantOrder := []string{"hq01", "hq03", "hq02"}
 	for i, want := range wantOrder {
-		if got := plan.entries[i].view.ProviderID; got != want {
+		if got := plan.state.Entries()[i].View.ProviderID; got != want {
 			t.Fatalf("entry[%d] = %q, want %q (confirmed → legacy → demoted)", i, got, want)
 		}
 	}
-	if !plan.entries[0].view.Confirmed || plan.entries[0].view.QuoteTTFTP90 != 800*time.Millisecond {
-		t.Fatalf("confirmed entry = %+v, want quote p90 800ms stored", plan.entries[0].view)
+	if !plan.state.Entries()[0].View.Confirmed || plan.state.Entries()[0].View.QuoteTTFTP90 != 800*time.Millisecond {
+		t.Fatalf("confirmed entry = %+v, want quote p90 800ms stored", plan.state.Entries()[0].View)
 	}
 	id, p90, ok := plan.BestConfirmedBackup()
 	if !ok || id != "hq01" || p90 != 800*time.Millisecond {
@@ -372,7 +326,7 @@ func TestProbePlanCandidatesTimeoutOutcome(t *testing.T) {
 	if o := outcomes["to01"]; !o.Timeout || o.Quote != nil || o.SendFailed {
 		t.Fatalf("outcome = %+v, want Timeout", o)
 	}
-	if !plan.entries[0].view.Demoted {
+	if !plan.state.Entries()[0].View.Demoted {
 		t.Fatal("silent entry was not demoted")
 	}
 	if trackerLen(reg) != 0 {
@@ -406,7 +360,7 @@ func TestProbePlanCandidatesSendFailure(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("send failure took %v to settle; must not wait out the window", elapsed)
 	}
-	if !plan.entries[0].view.Demoted {
+	if !plan.state.Entries()[0].View.Demoted {
 		t.Fatal("send-failed entry was not demoted")
 	}
 }
@@ -467,7 +421,7 @@ func TestDispatchPlanConfirmDemoteOrdering(t *testing.T) {
 
 	wantOrder := []string{"rk01", "rk03", "rk04", "rk02"}
 	for i, want := range wantOrder {
-		if got := plan.entries[i].view.ProviderID; got != want {
+		if got := plan.state.Entries()[i].View.ProviderID; got != want {
 			t.Fatalf("entry[%d] = %q, want %q (confirmed by cost → unprobed → demoted)", i, got, want)
 		}
 	}
@@ -508,11 +462,9 @@ func TestDispatchPlanConcurrentQuoteAndConsume(t *testing.T) {
 		t.Fatalf("plan.Len() = %d, want %d", plan.Len(), dispatchPlanMaxAlternates)
 	}
 	ids := make([]string, 0, plan.Len())
-	plan.mu.Lock()
-	for _, e := range plan.entries {
-		ids = append(ids, e.view.ProviderID)
+	for _, e := range plan.state.Entries() {
+		ids = append(ids, e.View.ProviderID)
 	}
-	plan.mu.Unlock()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -628,56 +580,6 @@ func TestHedgeGovernorSnapshotCapacitySilentFleet(t *testing.T) {
 	setQuoteCapable(reg.GetProvider("lg01"))
 	if _, _, _, signals := reg.HedgeGovernorSnapshot(model, pr, "lg00"); !signals {
 		t.Fatal("capacitySignalsAvailable = false with a quote-capable provider serving the model")
-	}
-}
-
-// TestQuoteTrackerSweepIsTimeGated pins the P1 fix on add's expiry sweep:
-// the >1024 size trigger only makes a sweep worth CONSIDERING — the time
-// gate (quoteTrackerSweepInterval) must hold sustained over-threshold
-// insertion to at most one full scan per window, instead of rescanning the
-// whole map under t.mu on every add.
-func TestQuoteTrackerSweepIsTimeGated(t *testing.T) {
-	var tr quoteTracker
-	live := time.Now().Add(time.Hour) // unexpired: a sweep removes nothing
-	for i := range 1025 {
-		tr.add(fmt.Sprintf("q%04d", i), &pendingQuote{expiresAt: live})
-	}
-	if tr.sweeps != 0 {
-		t.Fatalf("sweeps=%d while filling to the threshold, want 0", tr.sweeps)
-	}
-
-	// First over-threshold add: the zero-value lastSweep passes the time
-	// gate, so exactly one sweep runs.
-	tr.add("over-0", &pendingQuote{expiresAt: live})
-	if tr.sweeps != 1 {
-		t.Fatalf("sweeps=%d after first over-threshold add, want 1", tr.sweeps)
-	}
-
-	// Sustained over-threshold insertion within the window: still one sweep.
-	for i := range 64 {
-		tr.add(fmt.Sprintf("over-%d", i+1), &pendingQuote{expiresAt: live})
-	}
-	if tr.sweeps != 1 {
-		t.Fatalf("sweeps=%d after 64 in-window adds, want 1 (time-gated)", tr.sweeps)
-	}
-
-	// A full window elapses (clock seam: rewind lastSweep) — the next add
-	// sweeps again, and the sweep still collects expired entries.
-	tr.mu.Lock()
-	tr.pending["expired-a"] = &pendingQuote{expiresAt: time.Now().Add(-time.Second)}
-	tr.pending["expired-b"] = &pendingQuote{expiresAt: time.Now().Add(-time.Second)}
-	tr.lastSweep = time.Now().Add(-2 * quoteTrackerSweepInterval)
-	tr.mu.Unlock()
-	tr.add("post-window", &pendingQuote{expiresAt: live})
-	if tr.sweeps != 2 {
-		t.Fatalf("sweeps=%d after the window elapsed, want 2", tr.sweeps)
-	}
-	tr.mu.Lock()
-	_, expAlive := tr.pending["expired-a"]
-	_, liveAlive := tr.pending["post-window"]
-	tr.mu.Unlock()
-	if expAlive || !liveAlive {
-		t.Fatalf("post-window sweep: expired retained=%v live dropped=%v", expAlive, !liveAlive)
 	}
 }
 

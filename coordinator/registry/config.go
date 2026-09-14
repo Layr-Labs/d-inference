@@ -37,7 +37,7 @@ type CacheRoutingConfig struct {
 // from each model's quality_concurrency (the largest batch that keeps every
 // request at/above the decode floor), replacing the flat-24 fallback. Universal:
 // it caps slow/saturated models tightly while leaving fast, over-provisioned
-// models effectively unchanged. See concurrency_cap.go.
+// models effectively unchanged. See quality_cap_admission.go.
 type QualityCapConfig struct {
 	// Enabled turns the cap on. When false the legacy flat per-provider cap
 	// (maxConcurrencyForModelLocked) applies unchanged.

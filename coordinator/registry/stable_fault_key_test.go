@@ -2,9 +2,10 @@ package registry
 
 import (
 	"fmt"
-	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 )
 
 // Tests for the stable fault-key infrastructure: ALL fault-tracking state

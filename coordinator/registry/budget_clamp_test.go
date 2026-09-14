@@ -2,11 +2,12 @@ package registry
 
 import (
 	"fmt"
-	"github.com/eigeninference/d-inference/coordinator/attestation"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // Tests for the gray-box budget clamp (budget_clamp.go): after ONE

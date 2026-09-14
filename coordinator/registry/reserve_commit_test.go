@@ -2,7 +2,6 @@ package registry
 
 import (
 	"fmt"
-	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"os/exec"
 	"reflect"
 	"runtime"
@@ -11,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 )
 
 // Tests for the reservation commit without the global write lock (shared

@@ -1,11 +1,12 @@
 package registry
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/attestation"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"reflect"
 	"sort"
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 func modelIndexRegister(t *testing.T, r *Registry, id string, models ...string) *Provider {

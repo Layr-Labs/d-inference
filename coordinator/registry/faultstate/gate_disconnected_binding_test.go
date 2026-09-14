@@ -1,10 +1,11 @@
 package faultstate
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/attestation"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 func TestDisconnectedGateRefFollowsSharedIdentityEnrichment(t *testing.T) {

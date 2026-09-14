@@ -2,10 +2,11 @@ package registry
 
 import (
 	"fmt"
-	"github.com/eigeninference/d-inference/coordinator/attestation"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // Version-changed reconnect reset (version_reset.go), live-isolated on a real

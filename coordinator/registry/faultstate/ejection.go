@@ -6,7 +6,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
-// Stable-identity health ejection + the stable fault-key infrastructure.
+// Stable-identity health ejection.
 //
 // SEPARATE from the node-health breaker (breaker.go): this breaker
 // keys on a STABLE identity (hardware serial → SE public key → account) that
@@ -18,13 +18,13 @@ import (
 // to them) — is ejected from routing, re-probed after an exponential cooldown
 // (half-open), and auto-re-admitted on the first success.
 //
-// The session→identity fault-key binding (bindStableFaultKey /
-// faultKeyForSession, state.go) that EVERY fault tracker keys by lives
+// The session→identity fault-key binding (Manager.Bind in migration.go and
+// Manager.FaultKeyForSession in index.go) that EVERY fault tracker keys by lives
 // with the per-identity gate index, so ALL fault state re-attaches when a
 // machine reconnects with a fresh session UUID instead of being wiped (the
 // prod zombie exploit: median 18 sessions/machine/week reset every
-// session-keyed breaker before it could trip). This file derives the stable
-// identity and owns the ejection breaker itself.
+// session-keyed breaker before it could trip). Registry derives the attested
+// stable identity in fault_identity.go; this owner maintains ejection history.
 //
 // FAIL OPEN, like breaker.go: occasional capacity/client sheds never
 // count (only an unbroken zero-success capacity streak does), an un-attestable

@@ -1,9 +1,10 @@
 package faultstate
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // Both keys holding a reset timestamp merge to the LATER one, whichever side

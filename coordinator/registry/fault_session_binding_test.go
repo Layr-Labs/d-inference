@@ -1,9 +1,10 @@
 package registry
 
 import (
+	"testing"
+
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"testing"
 )
 
 // A retained Provider pointer may finish attestation or version handling after

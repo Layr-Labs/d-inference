@@ -1,11 +1,12 @@
 package registry
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 )
 
 // Tests for the recorders' validated gate lock (gate_lock.go): the probe

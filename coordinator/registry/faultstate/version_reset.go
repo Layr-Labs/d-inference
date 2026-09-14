@@ -1,8 +1,9 @@
 package faultstate
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // Version changes clear only disconnect-flush faults, at most once per

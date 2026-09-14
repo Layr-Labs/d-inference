@@ -1,9 +1,10 @@
 package registry
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 )
 
 func TestRejectedProviderClassificationFollowsSharedRebind(t *testing.T) {

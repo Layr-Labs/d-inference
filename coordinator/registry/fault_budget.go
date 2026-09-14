@@ -6,7 +6,7 @@ import (
 
 // BudgetClampActive reports whether the (provider, model) pair's token budget
 // is currently clamped for admission. Exposed for tests and observability; the
-// routing hot path reads the cached p.faultSession directly.
+// routing hot path reads the cached binding through faultstate.View.
 func (r *Registry) BudgetClampActive(providerID, modelID string) bool {
 	p := r.sessionProvider(providerID)
 	if p == nil {

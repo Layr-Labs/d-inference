@@ -1,11 +1,12 @@
 package registry
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/registry/faultstate"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/registry/faultstate"
 )
 
 var faultFixtureClocks sync.Map

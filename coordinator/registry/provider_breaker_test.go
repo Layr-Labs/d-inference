@@ -2,10 +2,11 @@ package registry
 
 import (
 	"fmt"
-	"github.com/eigeninference/d-inference/coordinator/registry/faultstate"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/registry/faultstate"
 )
 
 // --- test helpers (poke internal maps / call *Locked helpers, mirroring

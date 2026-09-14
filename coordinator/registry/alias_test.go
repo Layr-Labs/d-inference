@@ -1,12 +1,13 @@
 package registry
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/attestation"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 func registerProviderWithModel(reg *Registry, id, modelID string) *Provider {

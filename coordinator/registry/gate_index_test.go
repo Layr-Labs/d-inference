@@ -1,10 +1,11 @@
 package registry
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/attestation"
-	"github.com/eigeninference/d-inference/coordinator/registry/faultstate"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/registry/faultstate"
 )
 
 // Tests for the gate index (gate_index.go): session → gate resolution through

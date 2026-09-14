@@ -1,11 +1,12 @@
 package registry
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 )
 
 // Recorders and routing reads racing identity rebinds (shared ↔ enriched) and

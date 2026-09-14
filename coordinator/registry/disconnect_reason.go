@@ -1,9 +1,8 @@
 package registry
 
 import (
-	"nhooyr.io/websocket"
-
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"nhooyr.io/websocket"
 )
 
 // Disconnect-reason plumbing (R1: restart/graceful disconnects are not provider

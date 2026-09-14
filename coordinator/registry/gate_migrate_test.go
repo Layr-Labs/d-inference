@@ -1,12 +1,13 @@
 package registry
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 )
 
 // Tests for the identity migration (gate_migrate.go): stale cached pointers

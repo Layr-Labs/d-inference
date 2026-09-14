@@ -5,10 +5,9 @@ import (
 )
 
 // providerOutcomeIsFault classifies a FAILED provider terminal (ok==false) for
-// the node-health breaker. It is intentionally implemented LOCALLY in the
-// registry package: the api package owns the request-time failure classifier,
-// and importing it here would create an import cycle (api already imports
-// registry).
+// the node-health breaker. The fault owner keeps terminal-history classification
+// independent of the API request-time classifier; registry binds already
+// classified capacity signals without importing the API.
 //
 // Healthy sheds (returns false — never counted):
 //   - client-shape failures: 429 and any 4xx (400-499, incl. 499 cancel)
@@ -98,8 +97,7 @@ func isCapacityShedError(errStr string) bool {
 // containsWord reports whether word appears in s delimited by non-word
 // boundaries, so a short token like "oom" matches "gpu oom" but not "boom" or
 // "room". word is assumed lowercase/alphanumeric; s is already lowercased.
-// (Local to the registry package; mirrors the api package's helper of the same
-// name — the two live in different packages.)
+// This private faultstate helper mirrors the API request classifier's word match.
 func containsWord(s, word string) bool {
 	for from := 0; from+len(word) <= len(s); {
 		i := strings.Index(s[from:], word)

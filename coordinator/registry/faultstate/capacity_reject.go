@@ -1,15 +1,24 @@
 package faultstate
 
-// recordCapacityReject is the shared implementation. deratePair gates the
-// gray-box capacity-503 rate window (true only for genuine capacity rejects);
-// armClamp gates the budget clamp (false only for request-deterministic
-// rejects, which indict the request rather than the provider). The cooldown
-// strike is fed on all paths.
+// RecordCapacityReject updates the coupled pair trackers under one validated
+// identity gate. A genuine capacity/token-budget rejection sets deratePair and
+// armClamp, feeding rate history and a budget clamp as well as cooldown strikes.
+// The caller reads budgetReported under its Provider lock before this call;
+// this transaction never acquires that lock.
 //
-// The pair's budget snapshot (does the provider currently report a token
-// budget for the model?) is read under p.mu BEFORE the gate is taken — the
-// lock order is p.mu → gate.mu, never the reverse. Only gate.mu is then held;
-// never r.mu.
+// Lifecycle misses, request-deterministic rejections and typed admission timeouts
+// leave both flags false. A cold miss after idle unload does not indict a stale
+// heartbeat's budget, and arming a clamp would block the accepts needed to release
+// it. Ordinary busy or reload outcomes must not accumulate a rate penalty that
+// accepts do not reset. Request-shape rejects still count cooldown strikes:
+// an incorrectly advertised large budget can make every normal prompt look
+// request-deterministic.
+// Zero interleaved accepts distinguish that case from a healthy serving pair.
+//
+// A fresh pair needs Threshold strikes within Window. A previously tripped pair
+// without an intervening accept re-arms on its first post-expiry reject, with
+// exponential backoff. Stragglers during an active cooldown add strikes without
+// extending or re-arming it. The return value reports only a new cooldown.
 func (r *Manager[C]) RecordCapacityReject(providerID, modelID string, deratePair, armClamp, budgetReported bool) (tripped bool) {
 	if providerID == "" || modelID == "" {
 		return false

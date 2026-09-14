@@ -31,6 +31,19 @@ func (r *Manager[C]) PrepareCapacityAccept(providerID, modelID string, observedA
 
 func (a CapacityAccept[C]) NeedsBudgetSnapshot() bool { return a.hasClamp }
 
+// Apply revalidates the prepared gate reference and records the accept under its
+// lock. It retains rejection strikes newer than observedAt and rebuilds their
+// cooldown from fresh backoff. Zero or future observation times become now.
+// An accept after clamp arming supplies one half of the release proof; a fresher
+// heartbeat with meaningful headroom supplies the other half. Snapshot races can
+// delay release until another heartbeat or accept, but cannot release early.
+//
+// An accept clears the node's zero-success capacity streak and capacity-shaped
+// half-open trip memory: served content disproves that black-hole signature.
+// Fault-shaped trip memory and an active ejection deadline remain; only clean
+// completion proves fault recovery. The optional rate offer records apply time,
+// including accepts before any reject, and the return value tells the caller
+// whether it recorded the request's one rate outcome.
 func (a CapacityAccept[C]) Apply(heartbeatAt time.Time, rawRemaining int64, budgetReported bool) (rateOutcomeRecorded bool) {
 	r, ref, modelID, observedAt, countRateOutcome := a.owner, a.ref, a.model, a.observedAt, a.countRateOutcome
 

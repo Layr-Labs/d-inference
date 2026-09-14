@@ -2,10 +2,11 @@ package faultstate
 
 import (
 	"fmt"
-	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"math"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 )
 
 // Recent accepts must already be in the denominator when a pair records its

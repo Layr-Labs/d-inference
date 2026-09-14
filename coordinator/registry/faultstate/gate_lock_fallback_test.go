@@ -1,9 +1,10 @@
 package faultstate
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 )
 
 func TestGateRetryExhaustionRecreatesRetiredIdentity(t *testing.T) {

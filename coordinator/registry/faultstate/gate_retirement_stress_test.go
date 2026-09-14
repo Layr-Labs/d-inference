@@ -1,23 +1,18 @@
 package faultstate
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 )
 
-// Recorders and routing reads racing identity rebinds (shared ↔ enriched) and
-// sweeps that keep retiring idle gates: interleaving coverage under -race for
-// lockGate's re-validation and gateView's confirmation. The deterministic
-// tests (gate_lock_test.go, gate_index_test.go) carry the outcome assertions;
-// here the invariants are "no retired gate is ever in the index", "the other
-// session's binding is never disturbed", a quiescent record lands on the
-// session's current gate — and, for a session that flaps between a shared
-// and an enriched identity while carrying a dispatch-load cooldown, the
-// routing read NEVER admits it: the cooldown follows the session through
-// every rebind (mergeLocked keeps the max expiry both ways), so a "not
-// gated" verdict could only come from trusting the emptied shared source.
+// TestGateRecordersRaceOwnerRetirement races owner recorders and identity rebinds
+// with forced idle-gate retirement/recreation. It checks that retired gates leave
+// the index, sibling bindings stay filed, and quiescent records and cooldowns
+// follow the current identity. The real Provider/attestation/routing-read race is
+// TestGateRecordersRaceRebindsAndSweeps in registry/gate_stress_test.go.
 func TestGateRecordersRaceOwnerRetirement(t *testing.T) {
 	reg := newTestManager(testLogger())
 	const model = "m"
@@ -36,8 +31,8 @@ func TestGateRecordersRaceOwnerRetirement(t *testing.T) {
 	detachTestSession(reg, quiet.id)
 	// A second shared identity whose dispatch-load cooldown is armed once and
 	// never cleared (nothing in the mix below touches it): cooled flaps between
-	// the shared gate and its own serial while readers evaluate its routing
-	// gate. Its sibling keeps the shared gate live.
+	// the shared gate and its own serial. The final owner checks verify that
+	// the cooldown follows it; its sibling keeps the shared gate live.
 	cooled := attachTestSession(reg, "sess-stress-cooled")
 	sibling := attachTestSession(reg, "sess-stress-cooled-sibling")
 	cooledPK := &attestation.VerificationResult{Valid: true, PublicKey: "PK-COOLED"}

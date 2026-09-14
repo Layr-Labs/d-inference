@@ -1,9 +1,10 @@
 package faultstate
 
 import (
+	"time"
+
 	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"time"
 )
 
 // Budget clamp on capacity-shaped provider 503s — the fast, surgical half of

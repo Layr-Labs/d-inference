@@ -1,9 +1,10 @@
 package registry
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 )
 
 // expireHealthEjection rewinds the identity's ejection expiry into the past,

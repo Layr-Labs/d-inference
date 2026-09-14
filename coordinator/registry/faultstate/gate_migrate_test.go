@@ -1,9 +1,10 @@
 package faultstate
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 )
 
 // A recorder that resolved the session's gate just before attestation bound

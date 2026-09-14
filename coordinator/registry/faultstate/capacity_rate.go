@@ -1,9 +1,10 @@
 package faultstate
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/env"
 	"sort"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/env"
 )
 
 // Capacity-503 rate penalty — the gray-box derater, the slow half of the

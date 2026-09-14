@@ -1,8 +1,9 @@
 package faultstate
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // Inference-error circuit breaker.

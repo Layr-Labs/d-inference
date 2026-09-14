@@ -1,4 +1,4 @@
-package api
+package providerframe
 
 import (
 	"sync"

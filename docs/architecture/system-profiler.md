@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-14 · commit `33fc15a6b`
+> Last updated: 2026-09-14 · commit `359c62293`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -63,7 +63,7 @@ attempt stamps.
 | `topup_done_us` | handler | provider-specific surcharge reservation |
 | `encrypted_us` | handler / dispatch | session key + body encryption |
 | `write_submitted_us`, `write_dequeued_us`, `write_done_us` | dispatch, from the provider writer's `DequeuedAt` | frame build + submit; writer queue wait (= `writer_us`); socket write (= `socket_us`) |
-| `accepted_us` | `handleInferenceAccepted` (`coordinator/api/provider.go`) | provider ack round trip (= `provider_ack_us`) |
+| `accepted_us` | `Service.Accepted` (`coordinator/inference/providerframe/accepted.go`) | provider ack round trip (= `provider_ack_us`) |
 | `first_chunk_ingress_us`, `chunks_in`, `decrypt_us_total` | chunk ingress on the WS read loop (one clock read + two atomic adds per chunk) | provider dequeue → prefill → first frame → transport |
 | `first_content_ingress_us` | read loop | preamble frames before the first content-bearing chunk |
 | `first_chunk_dequeued_us`, `first_content_us`, `held_preamble_chunks` | dispatch goroutine (`coordinator/inference/dispatch/profile.go`) | channel hand-off + commit decision |
@@ -71,12 +71,12 @@ attempt stamps.
 | `first_flush_us`, `last_flush_us`, `done_flushed_us`, `chunks_out`, `bytes_out`, `max_chunk_gap_us`, `client_write_err` | `relayStamps` (`coordinator/inference/response/egress_profile.go`) from the chat, Responses and generic SSE relays; `Writer.Body` stamps the same fields once for non-stream bodies | relay to the client; a failed or short write sets `client_write_err` and leaves `done_flushed_us` absent |
 | `client_gone_us`, `client_gone_phase` ∈ {`before_first_token`, `after_commit`} | dispatch / consumer / `finalizeProfile` | client disconnect |
 | `cancel_sent_us` | dispatch, after the relay returns | cancel frame to the provider |
-| `complete_ingress_us` | terminal frame ingress (`coordinator/providercontrol/session/read.go`, `Session.Run`; parked and error sites remain in `coordinator/api/provider.go`) | provider terminal received |
+| `complete_ingress_us` | terminal frame ingress (`coordinator/providercontrol/session/read.go`, `Session.Run`; parked and error sites are in `coordinator/inference/providerframe/complete.go` / `coordinator/inference/providerframe/error.go`) | provider terminal received |
 | `finalized_us` | `AttemptProfile.runFinalize` (`coordinator/registry/attempt_profile_finalize.go`) | both halves done → finalization callback; `Builder.Build` copies this stamp |
 
 Outcome columns are written first-wins by `AttemptProfile.SetOutcome`: provider
-complete (`handleComplete`), provider error with `terminal_cause`
-(`handleInferenceError`), consumer-side synthetic terminals
+complete (`Service.CompleteAt`), provider error with `terminal_cause`
+(`Service.Error`), consumer-side synthetic terminals
 (`coordinator/api/route_outcome.go`), never-dispatched attempts
 (`closeUndispatchedAttempt`, class from `dispatchErrorClass`), and grace expiry
 → `provider_outcome = 'no_terminal'` (`armFallback`,
@@ -471,7 +471,7 @@ ring or `DaemonState` mirror.
 | Routing queue | `coordinator/telemetry/routequeue/` (`Sink`, `CloseAndWait`) |
 | Fleet sampler, retention loop, metrics | `coordinator/api/profiler_fleet.go`, `coordinator/registry/fleet_sample.go` |
 | Dispatch hooks and `X-Timing` | `coordinator/inference/dispatch/profile.go`; timing projection in `coordinator/inference/response/timing.go` |
-| Settlement timing | `coordinator/inference/settlement/completion.go` (`Service.Complete`) stamps `SettleDBUS` after referral and credit operations; provider-terminal/profile lifecycle remains in `coordinator/api/provider.go` |
+| Settlement timing | `coordinator/inference/settlement/completion.go` (`Service.Complete`) stamps `SettleDBUS` after referral and credit operations; provider-terminal/profile lifecycle belongs to `coordinator/inference/providerframe/complete.go` (`Service.CompleteAt`) |
 | Response egress stamps | `coordinator/inference/response/egress_profile.go` (`relayStamps`, `Writer.Body`); actual writer results are supplied to the API through `WriteObserver` |
 | Operator read/export policy | `coordinator/api/operations/controller.go` (`Controller`), `coordinator/api/operations/profiles.go`, `coordinator/api/operations/snapshots.go`, `coordinator/api/operations/routes.go`, `coordinator/api/operations/rejections.go` |
 | Profiles and attempts | `coordinator/registry/request_profile.go`, `coordinator/registry/attempt_profile.go`, `coordinator/registry/attempt_profile_finalize.go` |

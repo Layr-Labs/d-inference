@@ -1,3 +1,10 @@
+# Provider inference-frame ownership re-verified 2026-09-14 against commit 359c62293:
+# inference/providerframe keeps the existing encryption, cancellation, terminal,
+# accounting observation and profile operations; api/provider_frames.go binds
+# the shared services. Relevant affected_files selectors follow those producers.
+# Cache eviction and bounded abandoned-entry retention are unchanged. This source
+# map check does not re-verify other threat claims or change trust/privacy policy.
+
 # Provider connection ownership re-verified 2026-09-14 against commit 1470332c8:
 # providercontrol/session owns frame dispatch, registration publication, heartbeat
 # and teardown; API bindings retain existing verification and inference owners.
@@ -976,6 +983,12 @@ threats:
     adversaries: [ADV-003]
     affected_assets: [A-001]
     affected_files:
+      - coordinator/inference/providerframe/chunk.go
+      - coordinator/inference/providerframe/encryption.go
+      - coordinator/inference/providerframe/chunk_keys.go
+      - coordinator/api/provider_frames.go
+      - coordinator/inference/providerframe/dependencies.go
+      - coordinator/inference/providerframe/service.go
       - coordinator/api/sender_encryption.go
       - console-ui/src/lib/encryption.ts
       - console-ui/src/lib/chat/stream.ts
@@ -1034,6 +1047,11 @@ threats:
     adversaries: [ADV-002]
     affected_assets: [A-009]
     affected_files:
+      - coordinator/inference/providerframe/complete.go
+      - coordinator/inference/providerframe/error.go
+      - coordinator/api/provider_frames.go
+      - coordinator/inference/providerframe/dependencies.go
+      - coordinator/inference/providerframe/service.go
       - coordinator/api/consumer.go
       - coordinator/store/postgres/usage.go
       - coordinator/inference/dispatch/prepare.go
@@ -1102,6 +1120,12 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-001, A-004]
     affected_files:
+      - coordinator/inference/providerframe/chunk.go
+      - coordinator/inference/providerframe/complete.go
+      - coordinator/inference/providerframe/error.go
+      - coordinator/api/provider_frames.go
+      - coordinator/inference/providerframe/dependencies.go
+      - coordinator/inference/providerframe/service.go
       - coordinator/providercontrol/session/read.go
       - coordinator/providercontrol/session/registration.go
       - coordinator/providercontrol/session/model_status.go
@@ -1136,6 +1160,14 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-001]
     affected_files:
+      - coordinator/inference/providerframe/chunk.go
+      - coordinator/inference/providerframe/encryption.go
+      - coordinator/inference/providerframe/chunk_keys.go
+      - coordinator/inference/providerframe/chunk_buffer.go
+      - coordinator/inference/providerframe/error.go
+      - coordinator/api/provider_frames.go
+      - coordinator/inference/providerframe/dependencies.go
+      - coordinator/inference/providerframe/service.go
       - coordinator/providercontrol/session/read.go
       - coordinator/providercontrol/session/dependencies.go
       - coordinator/api/provider_session.go
@@ -1204,6 +1236,11 @@ threats:
     adversaries: [ADV-002]
     affected_assets: [A-009]
     affected_files:
+      - coordinator/inference/providerframe/chunk.go
+      - coordinator/inference/providerframe/error.go
+      - coordinator/api/provider_frames.go
+      - coordinator/inference/providerframe/dependencies.go
+      - coordinator/inference/providerframe/service.go
       - provider-swift/Sources/ProviderCore/ProviderLoop.swift
     mitigations:
       - description: Swift provider wires InferenceCancellation into the generation loop.
@@ -1717,6 +1754,10 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-004, A-001]
     affected_files:
+      - coordinator/inference/providerframe/complete.go
+      - coordinator/api/provider_frames.go
+      - coordinator/inference/providerframe/dependencies.go
+      - coordinator/inference/providerframe/service.go
       - coordinator/providercontrol/session/read.go
       - coordinator/providercontrol/session/registration.go
       - coordinator/providercontrol/session/model_status.go
@@ -1895,6 +1936,12 @@ threats:
     adversaries: [ADV-002]
     affected_assets: [A-001]
     affected_files:
+      - coordinator/inference/providerframe/complete.go
+      - coordinator/inference/providerframe/cache_usage.go
+      - coordinator/api/cache_selection_telemetry.go
+      - coordinator/api/provider_frames.go
+      - coordinator/inference/providerframe/dependencies.go
+      - coordinator/inference/providerframe/service.go
       - coordinator/providercontrol/session/read.go
       - coordinator/providercontrol/session/registration.go
       - coordinator/providercontrol/session/heartbeat.go
@@ -3074,6 +3121,14 @@ threats:
     adversaries: [ADV-002, ADV-004]
     affected_assets: [A-007, A-009]
     affected_files:
+      - coordinator/inference/providerframe/accepted.go
+      - coordinator/inference/providerframe/chunk.go
+      - coordinator/inference/providerframe/complete.go
+      - coordinator/inference/providerframe/error.go
+      - coordinator/inference/providerframe/terminal.go
+      - coordinator/api/provider_frames.go
+      - coordinator/inference/providerframe/dependencies.go
+      - coordinator/inference/providerframe/service.go
       - coordinator/api/profiler*.go
       - coordinator/registry/request_profile.go
       - coordinator/registry/fleet_sample.go

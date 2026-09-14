@@ -269,8 +269,3 @@ func setOutcomeStage(r *http.Request, stage string) {
 		o.mu.Unlock()
 	}
 }
-
-// Compact observers never change the profiler-off terminal arbitration policy.
-func compactOnlyAttempt(ap *registry.AttemptProfile) bool {
-	return ap != nil && ap.Parent() != nil && ap.Parent().CompactOnly
-}

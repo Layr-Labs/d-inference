@@ -1,6 +1,6 @@
 # Consumer surface
 
-> Last updated: 2026-09-14 · commit `cdef55575`
+> Last updated: 2026-09-14 · commit `359c62293`
 
 The consumer surface is the coordinator's OpenAI- and Anthropic-compatible request pipeline: it speaks OpenAI Chat Completions, OpenAI Responses, Anthropic Messages and legacy Completions to clients and turns each request into one provider job through a single pipeline in `handleChatCompletions` (`coordinator/api/consumer.go`), with an endpoint-specific lowering step before it and a re-shaping step after it. This page is for engineers changing or debugging that pipeline: it explains what "compatible" means concretely, walks the stages, and lists the invariants and failure modes that follow. The exact routes, headers, and JSON shapes are in [`../../reference/api-contracts.md`](../../reference/api-contracts.md).
 
@@ -41,7 +41,7 @@ Stages in the order `handleChatCompletions` runs them. Each stage either advance
 | 12 | Plan: cache-aware route plan for the prompt | `planCacheRoute` (`coordinator/api/prompt_artifacts.go`); see [`../cache-aware-routing.md`](../cache-aware-routing.md) | — |
 | 13 | Dispatch: select a provider from the scheduler plan, encrypt, send, wait for first content, race a speculative backup, fail over, commit | `Controller.Run` (`coordinator/inference/dispatch/request.go`) enters `execution.run` (`coordinator/inference/dispatch/run.go`); [dispatch ownership and code map](../routing.md#dispatch-controller) describe the queue, hedge and failover operations. Payload encryption uses `e2e.GenerateSessionKeys` / `e2e.Encrypt` (`coordinator/internal/e2e/e2e.go`); see the [encryption model](../security/encryption.md) | 429 on capacity or first-content deadline, 502/503/504 `provider_error`, 503 `model_unavailable` (`preContentTerminal`, `coordinator/inference/dispatch/terminal_write.go`; exhausted branch of `execution.run`) |
 | 14 | Relay: stream or assemble the provider's chunks | `Writer.Stream` (`coordinator/inference/response/stream.go`, `coordinator/inference/response/responses_relay.go`); `Writer.NonStream` (`coordinator/inference/response/nonstream.go`) | Terminal SSE `error` event (status already 200) |
-| 15 | Settle: charge the account from provider-reported usage, record usage, credit the provider | `handleCompleteAt` (`coordinator/api/provider.go`) claims the terminal and calls `Service.Complete` (`coordinator/inference/settlement/completion.go`) before signaling consumer channels; rules in [`../billing.md`](../billing.md) | — |
+| 15 | Settle: charge the account from provider-reported usage, record usage, credit the provider | `Service.CompleteAt` (`coordinator/inference/providerframe/complete.go`) claims the terminal and calls `Service.Complete` (`coordinator/inference/settlement/completion.go`) before signaling consumer channels; rules in [`../billing.md`](../billing.md) | — |
 
 Non-streaming raw responses and reconstructed deltas both wait for terminal usage through `awaitNonStreamUsage` in `coordinator/inference/response/nonstream.go`. A closed completion channel refunds and returns 502; expiry refunds and returns 504; client cancellation refunds without writing a replacement response. Buffered provider errors keep their existing precedence before that wait.
 
@@ -50,7 +50,7 @@ Provider-side execution between stages 13 and 14 — the WebSocket `inference_re
 ## Invariants
 
 1. **Nothing is written before first content.** Status code, headers and body are all deferred until a provider produces a content chunk (`commitFirstContent`). Failover and every pre-commit error therefore keep a real HTTP status. Corollary: a request that fails before producing content never sees a 200; only failures after first content arrive in-band.
-2. **Money is reserved before dispatch and settled from usage.** `reserveInferenceBalance` holds the worst case; pre-commit failures release it; `handleCompleteAt` charges the provider-reported tokens. A catalog miss after reservation (404 `model_not_found`) also releases it.
+2. **Money is reserved before dispatch and settled from usage.** `reserveInferenceBalance` holds the worst case; pre-commit failures release it; `providerframe.Service.CompleteAt` settles the provider-reported tokens. A catalog miss after reservation (404 `model_not_found`) also releases it.
 3. **The client's model string is preserved.** The forwarded body carries the build id; every response, chunk and usage record echoes the requested alias (`publicModel` in `resolveRequestedModel`).
 4. **Successful chat streams have exactly one `data: [DONE]`**, written after the held usage/finish frame. Successful Responses streams end with `response.completed` / `response.incomplete`; Messages ends with `message_stop`. Error termination keeps its endpoint-specific form and does not synthesize a chat success marker.
 5. **No keepalives.** Silence on a stream means no token has been produced; the first-content deadline bounds it before commit (a miss is a 429 with `Retry-After`) and [`inferenceTimeout`](../../reference/api-contracts.md#timeouts-and-constants) between chunks after (a terminal `error` event).
@@ -93,7 +93,7 @@ Provider-side execution between stages 13 and 14 — the WebSocket `inference_re
 | Tools and media | `coordinator/inference/toolpolicy/`, `coordinator/api/tool_constraints.go`, `coordinator/api/media_resolve.go` |
 | Self-route policy | `coordinator/api/self_route.go` |
 | Sealed client transport | `coordinator/api/sender_encryption.go` |
-| Provider WebSocket, completion and settlement | `coordinator/api/provider.go`, `coordinator/protocol/messages.go` |
+| Provider WebSocket, completion and settlement | `coordinator/api/provider.go` (`handleProviderWS`); `coordinator/inference/providerframe/complete.go` (`Service.CompleteAt`); `coordinator/protocol/messages.go` |
 | Wire types | `coordinator/api/types/types.go` |
 
 ## Related

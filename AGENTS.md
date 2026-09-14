@@ -9,7 +9,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── cmd/coordinator/  startup composition and shutdown (main.go); subsystem setup beside it
 ├── api/              HTTP + WebSocket handlers
 │   ├── consumer.go         OpenAI-compatible chat/completions/responses + Anthropic messages
-│   ├── provider.go         provider WS upgrade, inference frames and attestation roster
+│   ├── provider.go         provider WS upgrade and attestation roster
 │   ├── requestauth/      credential middleware, shared API-key cache and linked-user identity
 │   ├── authentication.go current credential/store bindings for the router
 │   ├── billing/          billing/referral/pricing/payout HTTP controllers and tests
@@ -26,7 +26,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 │   ├── readiness/         shared ingress count, drain control and readiness (Controller)
 │   ├── statearchive/      gated state archive download (Controller)
 │   ├── admin_auth.go       admin authorization and Privy OTP endpoints
-│   ├── chunk_key_cache.go  per-request X25519 shared-key memoization for chunk decrypt
+│   ├── provider_frames.go shared inference-frame service and live observation bindings
 │   ├── network/            public stats, geography, totals, series and leaderboard refresh state
 │   ├── accountfleet/       account provider views, earnings summaries and offline removal
 │   ├── operations/         operator telemetry reads, bounded queries, CSV/NDJSON exports
@@ -41,7 +41,8 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── inference/        toolpolicy/ (request policy), response/ (endpoint formatting and relays),
 │                     settlement/ (reservation, refunds and completion accounting),
 │                     attempt/ (cancellation, terminal policy and provider feedback),
-│                     dispatch/ (provider preparation, queue/hedge/failover and commit)
+│                     dispatch/ (provider preparation, queue/hedge/failover and commit),
+│                     providerframe/ (accepted/chunk/terminal handling and shared-key cache)
 ├── mdm/              MicroMDM client + webhook handling
 ├── payments/         ledger + pricing (+ baserewards/)
 ├── providercontrol/session/ per-connection frame dispatch, registration, heartbeat and ordered teardown (Session)
@@ -147,7 +148,7 @@ Coordinator startup: `coordinator/cmd/coordinator/main.go` (`main`) keeps resour
 - Billing logic is split between `coordinator/payments` (ledger + pricing) and `coordinator/billing` (Stripe, referrals).
 - Providers serve text inference through the Swift `darkbloom` CLI with continuous batching via MLX-Swift.
 - Model registry data is DB-backed in the coordinator and points to R2 manifests under `https://models.darkbloom.ai`; model bytes are not hardcoded in the provider or UI.
-- Streaming hot path: provider frames are decoded in a single parse (`coordinator/protocol/type_scan.go` scans the `type` key; malformed input falls back to a full envelope decode); per-request X25519 shared keys are memoized for chunk decryption and forgotten on request terminal (`coordinator/api/chunk_key_cache.go`); all writes to a provider WebSocket go through a two-lane owner (`coordinator/registry/providerwriter/`, bound by `coordinator/registry/provider_writer.go`) with a per-connection write watchdog — control frames (challenges, cancels, trust status) take strict (non-preemptive) priority over data frames, FIFO holds only within a lane, and `WriteText` blocks until the frame is on the wire.
+- Streaming hot path: provider frames are decoded in a single parse (`coordinator/protocol/type_scan.go` scans the `type` key; malformed input falls back to a full envelope decode); per-request X25519 shared keys are memoized for chunk decryption and forgotten on request terminal (`coordinator/inference/providerframe/chunk_keys.go`); all writes to a provider WebSocket go through a two-lane owner (`coordinator/registry/providerwriter/`, bound by `coordinator/registry/provider_writer.go`) with a per-connection write watchdog — control frames (challenges, cancels, trust status) take strict (non-preemptive) priority over data frames, FIFO holds only within a lane, and `WriteText` blocks until the frame is on the wire.
 - Observability: Datadog metrics (DogStatsD) for attestation, routing, billing, fleet version, and provider capacity. X-Timing header decomposes per-request latency.
 
 ## Building And Testing
@@ -259,7 +260,7 @@ Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
 - Store selection (`cmd/coordinator/main.go`): the coordinator uses the **Postgres** store whenever `EIGENINFERENCE_DATABASE_URL` is set (prod does — durable across restarts/deploys), and refuses to start without it unless `EIGENINFERENCE_ALLOW_MEMORY_STORE=true`. The in-memory store is the dev/test fallback only (state lost on restart). Note: the live provider *registry* (WebSocket connections/attestation) is always in-process and is rebuilt on reconnect regardless of store.
 - Request queue timeout is 120 seconds. Initial attestation challenge is sent immediately on registration, then every 5 minutes.
 - Backend idle timeout is 1 hour (not 10 minutes as some comments may say).
-- `handleChunk` never silently drops streamed chunks: when a consumer's chunk buffer is full it gets one 250ms grace window (`chunkOverflowGrace`), then the request is failed with 499 and the provider's generation is cancelled.
+- `Service.Chunk` (`coordinator/inference/providerframe/chunk.go`) never silently drops streamed chunks: when a consumer's chunk buffer is full it gets one 250ms grace window (`chunkOverflowGrace`), then the request is failed with 499 and the provider's generation is cancelled.
 - `hypervisor_active` is retired (#492): current providers no longer send it, but `AttestationResponseMessage.HypervisorActive` and the canonical-status support must keep decoding so signed payloads from older (< v0.6.31) providers still verify. Remove only once the fleet version floor passes v0.6.31.
 
 ### Coordinator State Model — Multiple Overlapping Views

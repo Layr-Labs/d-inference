@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-14 · commit `33fc15a6b`
+> Last updated: 2026-09-14 · commit `359c62293`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -45,7 +45,7 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/cmd/coordinator` | `main.go` (`main`): configuration, resource lifetimes and shutdown; named setup functions in subsystem files bind the owners before serving. |
 | `coordinator/config` | `AppConfig` — composes every package's `ReadConfig` and runs their `Check` methods. |
 | `coordinator/env` | `EnvPrefix` (`EIGENINFERENCE`) and the `EnvOr`/`EnvInt`/`EnvFloat`/`EnvBool` helpers. |
-| `coordinator/api` | The HTTP router (`routes` in `server.go`), middleware, consumer handlers (`consumer.go`), the provider WebSocket upgrade and inference frames (`provider.go`), dispatch bindings (`inference_dispatch.go`), sender encryption, account, admin, release, billing and catalog dependency wiring, runtime catalog publication, drain, profiler wiring. |
+| `coordinator/api` | The HTTP router (`routes` in `server.go`), middleware, consumer handlers (`consumer.go`), the provider WebSocket upgrade (`provider.go`), inference-frame bindings (`provider_frames.go`), dispatch bindings (`inference_dispatch.go`), sender encryption, account, admin, release, billing and catalog dependency wiring, runtime catalog publication, drain, profiler wiring. |
 | `coordinator/api/billing` | Billing, pricing, referrals, earnings, Stripe Connect and Global Payouts HTTP controllers and payout reconciliation (`Controller`); `billing_controller.go` in the parent API package binds shared services, store, cache, metrics and authorization. |
 | `coordinator/api/catalog` | Model publishing, manifests, aliases, consumer/marketplace/install projections and cache invalidation (`Controller`); `catalog_controller.go` in the parent API package binds current store and credentials, fleet views, the shared cache and runtime publication callback. |
 | `coordinator/api/accounts` | `Controller`: legacy/named API keys, key policy, device code/approval/token exchange and invites. Store operations remain behind narrow key/device/invite interfaces; the router supplies the existing auth cache and live store/console/admin bindings through `account_controller.go`. |
@@ -62,7 +62,8 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/inference/response` | Endpoint response formatting, provider-output relays, SSE batching and egress profile stamps (`Writer`, `ChatSink`, `EndpointSink`). `coordinator/api/response_writer.go` binds the existing settlement, feedback, metrics and accepted-write owners. |
 | `coordinator/inference/dispatch/request.go` (`Controller.Run`) | Provider preparation/encryption, plan consumption, queue handoff, first-content/hedge/failover and commit (`Controller.Run`); private per-request execution and per-controller scan/governor/EWMA state. API binds current services and observation sinks; see [dispatch ownership](../routing.md#dispatch-controller). |
 | `coordinator/inference/attempt` | Cancellation tracking and delivery, terminal/rejection policy and provider-health feedback (`Tracker`, `Service`); API binds current services in `inference_attempt.go`, and response relays use the same feedback owner. |
-| `coordinator/inference/settlement` | Reservation pricing, service holds, refunds, parked billing records and completion accounting (`Service`, `ServiceHolds`, `Holder`); API retains terminal ownership, outcome observations and consumer-channel signaling. |
+| `coordinator/inference/settlement` | Reservation pricing, service holds, refunds, parked billing records and completion accounting (`Service`, `ServiceHolds`, `Holder`); `providerframe.Service` retains provider-terminal ownership and consumer-channel signaling; API binds the shared outcome observations. |
+| `coordinator/inference/providerframe` | Accepted/chunk/complete/error handling (`Service`), private per-request shared-key memoization and the cumulative unknown-frame counter; calls the shared attempt and settlement owners. `coordinator/api/provider_frames.go` (`inferenceFrames`) binds current resources and observation callbacks. |
 | `coordinator/inference/toolpolicy` | Tool-schema normalization, tool-choice and history validation (`NormalizeParsed`, `ValidateParsed`); HTTP error mapping and resolved-model compatibility remain in `coordinator/api/tool_constraints.go`. |
 | `coordinator/registry` | Live fleet identity, snapshots, routing and atomic reservation, queue policy and warm-pool fleet/command bindings. |
 | `coordinator/registry/requestqueue` | Per-model FIFO, expiration, reservation handoff acknowledgment and drain-pass coalescing (`Queue`, `Assignment`, `DrainCoalescer`). |
@@ -132,11 +133,11 @@ teardown; the registry and shared verification owners retain their own state.
 | Current resources and typed inference callbacks | `coordinator/providercontrol/session/dependencies.go` (`Dependencies`, `InferenceFrames`); `coordinator/api/provider_session.go` (`providerSessionDependencies`) |
 
 Accepted, chunk and error callbacks run in the read loop. Completion records its
-ingress timestamp first, then invokes the existing API completion callback in a
-panic-safe goroutine. The inference-frame handlers and terminal lifecycle remain
-in `coordinator/api/provider.go`, calling the existing inference services for
-settlement and response. This owner introduces no second pending-request,
-accounting or cancellation state.
+ingress timestamp first, then invokes `providerframe.Service.CompleteAt` in a
+panic-safe goroutine. `coordinator/api/provider_session.go` binds the four methods
+of the shared frame service through `InferenceFrames`; see
+[provider inference frames](#provider-inference-frames). The session retains no
+second pending-request, accounting or cancellation state.
 
 Teardown cancels the connection context, unbinds its exact scheduler key and
 generation, clears code-resume state, stops device then code coverage, calls
@@ -152,6 +153,30 @@ The MDM scheduler keeps its separately configured startup claim store; Session
 calls the existing release-policy manager instead of copying its inventory or
 runtime manifest. Trust and routing gates are unchanged; see
 [attestation](../security/attestation.md) and [scheduling](../scheduling.md).
+
+## Provider inference frames
+
+`coordinator/inference/providerframe/service.go` (`Service`, `New`) owns the
+accepted/chunk/complete/error operations and their private chunk-key cache and
+unknown-frame counter. `coordinator/api/provider_frames.go` (`inferenceFrames`)
+binds one service to the Server. Registry, logger, cancellation, settlement,
+profile and output-admission dependencies retain their current-resource reads;
+request and provider pointers, reservation ownership and shared observation
+sinks remain the same.
+
+| Operation | Owner and ordering |
+|---|---|
+| Acceptance | `coordinator/inference/providerframe/accepted.go` (`Service.Accepted`): find the pending request, stamp acceptance, then notify its accepted channel without blocking. |
+| Chunk ingress | `coordinator/inference/providerframe/chunk.go` (`Service.Chunk`), `coordinator/inference/providerframe/encryption.go` (`decryptTextResponseChunk`), `coordinator/inference/providerframe/chunk_buffer.go` (`sendChunkWithGrace`): validate and decrypt, apply first-content arbitration, then deliver through the existing bounded channel and overflow grace. |
+| Successful terminal | `coordinator/inference/providerframe/complete.go` (`Service.CompleteAt`): claim the terminal and retain pending usage/profile evidence before deadline or race decisions; remove pending/parked ownership, validate cache usage and reconcile output admission, then call `settlement.Service.Complete`. Outcome observations remain between usage and waited credit operations; consumer channels are signaled after settlement returns. |
+| Error terminal | `coordinator/inference/providerframe/error.go` (`Service.Error`, `errorOwned`): sanitize and classify, claim the terminal, apply the existing drain transition before releasing pending capacity, then refund, observe and signal according to the existing ownership gates. |
+| Shared observations | `coordinator/api/cache_selection_telemetry.go` (`emitCacheSelectionTerminal`, `emitCacheSelectionTTFT`) and `coordinator/api/route_outcome.go` keep the same terminal arbitration and sinks for frame and consumer paths. |
+
+The frame owner starts no workers and creates no second registry, cancellation
+tracker, ledger or parked-record map. Its terminal profile completion stays
+after the financial and consumer-channel operations. Accounting details are in
+[billing](../billing.md#inference-accounting-ownership); key eviction and the
+abandoned-request fallback are in [encryption](../security/encryption.md).
 
 ## Startup sequence
 

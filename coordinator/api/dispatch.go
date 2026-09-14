@@ -444,6 +444,8 @@ func (d *dispatchState) recordRoutingDecisionFor(provider *registry.Provider, pr
 		keyID = pr.KeyID
 	}
 
+	s.emitFirstContentRouting(d.model, decision)
+
 	// Scans per attempt (rescans included). Plan-based retries reuse the
 	// previous scan and report zero, which is not emitted.
 	if decision.ScanCount > 0 {
@@ -1381,32 +1383,33 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// No idle provider — try queueing.
 		d.requestID = uuid.New().String()
 		queuePR := &registry.PendingRequest{
-			RequestID:              d.requestID,
-			Attempt:                d.attempt,
-			Model:                  d.model,
-			PublicModel:            d.publicModel,
-			ConsumerKey:            d.consumerKey,
-			KeyID:                  keyIDFromContext(r.Context()),
-			KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
-			KeyLimitReset:          keyLimitResetFromContext(r.Context()),
-			ConsumerLocation:       d.consumerLocation,
-			IsResponsesAPI:         d.isResponsesAPI,
-			EstimatedPromptTokens:  d.estimatedPromptTokens,
-			RequiresVision:         d.requiresVision,
-			Traits:                 d.traits(),
-			RequestedMaxTokens:     d.requestedMaxTokens,
-			TokenAdmission:         d.tokenAdmission,
-			ReservedMicroUSD:       d.reservedMicroUSD,
-			BaseReservedMicroUSD:   d.reservedMicroUSD,
-			ServiceReservation:     d.serviceReservation,
-			AllowedProviderSerials: d.allowedProviderSerials,
-			ExcludedProviderIDs:    d.excludedProviderIDs(),
-			CachePlan:              d.cachePlan,
-			SelfRouteOnly:          d.policy.enabled,
-			PreferOwner:            d.policy.prefer,
-			OwnerAccountID:         d.policy.ownerAccountID,
-			FreeSelfRoute:          d.policy.enabled,
-			MetadataDetails:        d.metadataDetails,
+			RequestID:                d.requestID,
+			Attempt:                  d.attempt,
+			Model:                    d.model,
+			PublicModel:              d.publicModel,
+			ConsumerKey:              d.consumerKey,
+			KeyID:                    keyIDFromContext(r.Context()),
+			KeyLimitMicroUSD:         keyLimitMicroFromContext(r.Context()),
+			KeyLimitReset:            keyLimitResetFromContext(r.Context()),
+			ConsumerLocation:         d.consumerLocation,
+			IsResponsesAPI:           d.isResponsesAPI,
+			FirstContentPromptTokens: calibratedContextPromptTokens(d.model, d.estimatedPromptTokens),
+			EstimatedPromptTokens:    d.estimatedPromptTokens,
+			RequiresVision:           d.requiresVision,
+			Traits:                   d.traits(),
+			RequestedMaxTokens:       d.requestedMaxTokens,
+			TokenAdmission:           d.tokenAdmission,
+			ReservedMicroUSD:         d.reservedMicroUSD,
+			BaseReservedMicroUSD:     d.reservedMicroUSD,
+			ServiceReservation:       d.serviceReservation,
+			AllowedProviderSerials:   d.allowedProviderSerials,
+			ExcludedProviderIDs:      d.excludedProviderIDs(),
+			CachePlan:                d.cachePlan,
+			SelfRouteOnly:            d.policy.enabled,
+			PreferOwner:              d.policy.prefer,
+			OwnerAccountID:           d.policy.ownerAccountID,
+			FreeSelfRoute:            d.policy.enabled,
+			MetadataDetails:          d.metadataDetails,
 			MaxTTFTMs: queueMaxTTFTMs(
 				d.policy, d.deadline, d.s.hardTTFTGateApplies(d.requiresVision)),
 			MinDecodeTPS: d.s.minDecodeTPS,

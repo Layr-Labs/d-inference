@@ -219,6 +219,12 @@ func main() {
 		"decode_floor_tps", cfg.RegistryCfg.WarmPool.DecodeFloorTPS,
 	)
 
+	if err := reg.ConfigureFirstContentRouting(cfg.RegistryCfg.FirstContentRoutingMode); err != nil {
+		logger.Error("first content routing configuration rejected", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("first content routing configured", "mode", cfg.RegistryCfg.FirstContentRoutingMode)
+
 	if err := reg.ConfigureCacheRouting(cfg.RegistryCfg.CacheRouting); err != nil {
 		logger.Error("cache routing configuration rejected", "error", err)
 		os.Exit(1)

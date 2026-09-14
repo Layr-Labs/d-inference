@@ -13,10 +13,11 @@ import (
 
 // Config holds registry-level configuration.
 type Config struct {
-	MinTrustLevel string
-	WarmPool      WarmPoolConfig
-	CacheRouting  CacheRoutingConfig
-	QualityCap    QualityCapConfig
+	FirstContentRoutingMode string
+	MinTrustLevel           string
+	WarmPool                WarmPoolConfig
+	CacheRouting            CacheRoutingConfig
+	QualityCap              QualityCapConfig
 }
 
 type CacheRoutingConfig struct {
@@ -145,7 +146,8 @@ func (c WarmPoolConfig) perTickCeiling() int {
 func ReadConfig() Config {
 	artifacts, artifactsErr := readCacheRoutingArtifacts()
 	return Config{
-		MinTrustLevel: os.Getenv(env.EnvPrefix + "_MIN_TRUST"),
+		FirstContentRoutingMode: env.EnvOr(env.EnvPrefix+"_FIRST_CONTENT_ROUTING_MODE", FirstContentRoutingShadow),
+		MinTrustLevel:           os.Getenv(env.EnvPrefix + "_MIN_TRUST"),
 		WarmPool: WarmPoolConfig{
 			Enabled:                   env.EnvBool(env.EnvPrefix+"_WARM_POOL_ENABLED", true),
 			ObserveOnly:               env.EnvBool(env.EnvPrefix+"_WARM_POOL_OBSERVE_ONLY", false),
@@ -222,6 +224,9 @@ func envStrictFloat(key string, fallback float64) float64 {
 // Check validates the configuration.
 // An empty MinTrustLevel is valid and means "use the default".
 func (c Config) Check() error {
+	if _, err := normalizeFirstContentRoutingMode(c.FirstContentRoutingMode); err != nil {
+		return err
+	}
 	// An empty MinTrustLevel is valid ("use the default"); a non-empty one must be
 	// a recognized level (trustRank returns -1 otherwise). Either way, all
 	// sub-configs are validated on every path.

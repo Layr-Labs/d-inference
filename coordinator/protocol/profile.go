@@ -277,9 +277,10 @@ type EngineProfile struct {
 }
 
 // SlotTelemetry is the optional per-slot sub-object on BackendSlotCapacity.
-// Presence is the "new provider" sentinel; inside it an absent numeric reads
-// as 0. MEASUREMENT ONLY: decoded, clamped (registry.clampBackendCapacity)
-// and retained for fleet_snapshots; routing is not gated on any field.
+// Decoded, clamped and retained for fleet snapshots. Optional first-content
+// routing uses initialized isolated throughput and explicit idle counters as
+// advisory preference inputs. Missing values are unknown for that preference;
+// no field alone introduces an admission rejection.
 type SlotTelemetry struct {
 	QueuedPrefillTokens *int64   `json:"queued_prefill_tokens,omitempty"` // Σ prompt tokens of requests whose engine submit has not returned
 	PartialPrefillRows  *int64   `json:"partial_prefill_rows,omitempty"`  // admitted rows with no first token yet

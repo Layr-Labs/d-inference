@@ -153,11 +153,14 @@ type routingSnapshot struct {
 	modelLoaded     bool    // true when the requested model is resident (running or idle)
 	availableOnDisk bool    // model is in provider's Models list but not currently loaded
 
-	observedDecodeTPS     float64
-	observedPrefillTPS    float64 // measured per-slot prefill EWMA; 0 = unreported (fall back to prefillTPS chain)
-	activeTokenBudgetUsed int64
-	activeTokenBudgetMax  int64
-	queuedTokenBudget     int64
+	isolatedPrefillTPS         float64
+	isolatedPrefillInitialized bool
+	firstContentIdle           bool
+	observedDecodeTPS          float64
+	observedPrefillTPS         float64 // measured per-slot prefill EWMA; 0 = unreported (fall back to prefillTPS chain)
+	activeTokenBudgetUsed      int64
+	activeTokenBudgetMax       int64
+	queuedTokenBudget          int64
 	// pooledTokenBudget is the provider's reconstructed whole-box token budget
 	// (all budget slots; layout selected from the provider release version).
 	// Zero value when the provider reports no backend capacity / no budget
@@ -200,18 +203,25 @@ type routingSnapshot struct {
 	// clamped to int32), computed from the `now` the snapshot already reads — no
 	// extra clock read. It is the "how stale were the routing inputs" signal of
 	// the system-profiler routing record (RoutingDecision.SnapshotAgeMs for the
-	// winner, CandidateSummary.HBAgeMs for the top candidates). Observability
-	// only; routing is NOT gated on it.
+	// winner, CandidateSummary.HBAgeMs for the top candidates). This is a
+	// liveness clock: rejected capacity sequences still advance it.
 	hbAgeMs int32
+	// Age of the accepted slot snapshot; never refreshed by a rejected frame.
+	capacityAgeMs int32
 	// queuedPrefillTokens is the slot's provider-reported Σ prompt tokens of
-	// requests whose engine submit has not returned (slice-2 SlotTelemetry
-	// producer). 0 until the wire field exists: BackendSlotCapacity has no
-	// telemetry sub-object at this compile point, so nothing populates it yet.
+	// requests whose engine submit has not returned. The legacy cost path
+	// still uses its local pending-work fallback. First-content preference
+	// reads explicit slot counters separately, without changing that score.
 	queuedPrefillTokens int64
 }
 
 type routingCandidate struct {
-	cacheAffinityEligible bool
+	firstContent               FirstContentEstimate
+	firstContentCachedTokens   float64
+	firstContentCacheWeight    float64
+	firstContentRestoreMs      float64
+	firstContentCacheExpiresAt time.Time
+	cacheAffinityEligible      bool
 	// Exact base-score work eligible for a cache credit; never includes load or decode.
 	pricedPromptTokens int
 	prefillCostMs      float64
@@ -314,15 +324,19 @@ type costBreakdown struct {
 // selection. Returned by ReserveProviderEx so callers can emit metrics
 // and structured logs without reaching into registry internals.
 type RoutingDecision struct {
-	ProviderID string  // winning provider, empty if no selection
-	Model      string  // requested model
-	CostMs     float64 // total cost of the winning candidate
-	StateMs    float64 // slot-state penalty contribution
-	QueueMs    float64 // pendingForModel × queueDepthPenaltyMs
-	PendingMs  float64 // totalPending × totalPendingPenaltyMs
-	BacklogMs  float64 // tokens-ahead / decodeTPS contribution
-	ThisReqMs  float64 // prefill+decode, including long-prompt and excess restore costs
-	HealthMs   float64 // memory/CPU/thermal/GPU-util contribution
+	FirstContentMode          string
+	FirstContent              FirstContentEstimate
+	FirstContentFeasibleCount int
+	FirstContentBestFeasible  CandidateSummary
+	ProviderID                string  // winning provider, empty if no selection
+	Model                     string  // requested model
+	CostMs                    float64 // total cost of the winning candidate
+	StateMs                   float64 // slot-state penalty contribution
+	QueueMs                   float64 // pendingForModel × queueDepthPenaltyMs
+	PendingMs                 float64 // totalPending × totalPendingPenaltyMs
+	BacklogMs                 float64 // tokens-ahead / decodeTPS contribution
+	ThisReqMs                 float64 // prefill+decode, including long-prompt and excess restore costs
+	HealthMs                  float64 // memory/CPU/thermal/GPU-util contribution
 	// CapacityRateMs is the gray-box capacity-503 rate penalty added to the
 	// winner's cost (capacity_rate.go); 0 for healthy pairs. In-memory
 	// observability only — not persisted (inference_routes has no column and
@@ -576,7 +590,8 @@ func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bo
 			if wantPlan {
 				// The scan pool is immutable value snapshots plus provider
 				// identities. Plan consumption revalidates both before use.
-				plan = newDispatchPlan(model, last.candidates, last.selected)
+				plan = newDispatchPlan(model, last.candidates, last.selected, pr)
+				plan.registry = r
 			}
 			return provider, decision, plan
 		}
@@ -593,35 +608,7 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 	// Profiler stamps: scan-lock wait (from here to the scan RLock) and the
 	// scan itself land on the decision as LockWaitUS / ScanUS; ~25 ns each.
 	tScanStart := time.Now()
-	// Snapshot receipt-confirmed cache hints before taking the registry scan lock.
-	// Query holders outside the scan lock; the later candidate quarantine check
-	// uses the same registry -> provider -> tracker order as receipt rejection.
-	r.mu.RLock()
-	cacheTracker, cacheMode := r.cacheRouting, r.cacheRoutingMode
-	// Skip digest derivation and holder lookup unless the request can use them.
-	// Only matching holders need a capability snapshot; cold providers are
-	// visited once, by the ordinary eligibility scan below.
-	wantHints := cacheTracker != nil && cacheMode == CacheRoutingOn &&
-		pr.CachePlan.present() && len(r.cacheRouteKeys.route) > 0
-	var cacheRouteKey []byte
-	if wantHints {
-		cacheRouteKey = append([]byte(nil), r.cacheRouteKeys.route...)
-	}
-	r.mu.RUnlock()
-	pr.cacheRoutingHints = nil
-	pr.CacheOpportunity = CacheOpportunity{}
-	if wantHints {
-		pr.cacheRoutingHints, pr.CacheOpportunity = r.cacheRoutingHintsWithObservation(
-			model, pr.CachePlan, cacheTracker, cacheRouteKey, cacheMode, time.Now())
-	}
-	pr.CacheSelectionMode = ""
-	pr.CacheSelectionTier = ""
-	pr.CacheSelectionDiscountMs = 0
-	pr.CacheSelectionEstimatedTTFTSavedMs = 0
-	pr.CacheSelectionSelected = false
-	if pr.CachePlan.present() && cacheMode == CacheRoutingOn {
-		pr.CacheSelectionMode = "active"
-	}
+	cacheTracker, cacheMode := r.prepareCacheRoutingHints(model, pr)
 
 	r.mu.RLock()
 	tLocked := time.Now()
@@ -690,7 +677,8 @@ func (r *Registry) commitProviderReservation(
 
 	// Cache routing reconfiguration after the shared scan invalidates its cost
 	// ordering. Retry from a new scan rather than committing a stale discount.
-	if r.cacheRouting != scan.cacheTracker || r.cacheRoutingMode != scan.cacheMode {
+	if r.cacheRouting != scan.cacheTracker || r.cacheRoutingMode != scan.cacheMode ||
+		r.firstContentRoutingMode != scan.candidates.firstContentMode {
 		return nil, nil, reservationNeedsRescan, RoutingDecision{}
 	}
 	selected := scan.selected
@@ -758,6 +746,7 @@ func (r *Registry) commitProviderReservation(
 			routingDecisionForCommitRejection(model, rejectNone, true)
 	}
 	r.applyCacheRoutingCostPLocked(p, model, pr, candidate)
+	r.estimateFirstContent(candidate, pr, now)
 
 	// Another reservation or cache quarantine changed this winner after the
 	// shared scan. Re-scan before committing stale cost or affinity preference.
@@ -768,7 +757,8 @@ func (r *Registry) commitProviderReservation(
 		snapshot.totalPending != selected.snapshot.totalPending ||
 		candidate.effectiveQueue != selected.effectiveQueue ||
 		candidate.costMs != selected.costMs ||
-		candidate.cacheAffinityEligible != selected.cacheAffinityEligible {
+		candidate.cacheAffinityEligible != selected.cacheAffinityEligible ||
+		(r.firstContentRoutingMode == FirstContentRoutingPrefer && candidate.firstContent.Status != selected.firstContent.Status) {
 		return nil, nil, reservationNeedsRescan, RoutingDecision{}
 	}
 
@@ -861,13 +851,16 @@ func addRoutingRejections(dst *RoutingDecision, src RoutingDecision) {
 
 func routingDecisionForFailedScan(model string, scan candidateScan) RoutingDecision {
 	return RoutingDecision{
-		Model:                   model,
-		CandidateCount:          scan.candidateCount,
-		CapacityRejections:      scan.capacityRejections,
-		ModelTooLargeRejections: scan.tooLargeRejections,
-		VisionRejections:        scan.visionRejections,
-		TTFTRejections:          scan.ttftRejections,
-		BestTTFTMs:              scan.bestTTFTMs,
+		FirstContentMode:          scan.firstContentMode,
+		FirstContentFeasibleCount: scan.firstContentFeasibleCount,
+		FirstContentBestFeasible:  scan.firstContentBestFeasible,
+		Model:                     model,
+		CandidateCount:            scan.candidateCount,
+		CapacityRejections:        scan.capacityRejections,
+		ModelTooLargeRejections:   scan.tooLargeRejections,
+		VisionRejections:          scan.visionRejections,
+		TTFTRejections:            scan.ttftRejections,
+		BestTTFTMs:                scan.bestTTFTMs,
 		// System-profiler routing context (by value, filled during the scan).
 		CandidateSetSize:   scan.candidateSetSize,
 		Scanned:            scan.scanned,
@@ -914,6 +907,7 @@ func routingDecisionForCandidate(model string, provider *Provider, candidate *ro
 	// quotient would be wrong for cold slots (the state penalty is
 	// deliberately unscaled).
 	decision.TTFTCalibrationRatio = candidate.calibrationRatio
+	applyFirstContentDecision(&decision, candidate, scan.firstContentMode)
 	return decision
 }
 
@@ -1001,15 +995,20 @@ func shouldBypassBreakerFailOpen(winner *routingCandidate, breakerRejected, capa
 // idle-spread shadow scan (loadedIdleAlternativeExistsLocked) so the two can
 // never drift on which providers are routable.
 type candidateScan struct {
-	pool                  []*routingCandidate
-	candidateCount        int
-	capacityRejections    int
-	tooLargeRejections    int
-	visionRejections      int
-	ttftRejections        int
-	bestTTFTMs            float64
-	breakerRejected       int
-	ignoreProviderBreaker bool
+	ordinaryPlanPool          []*routingCandidate
+	planPool                  []*routingCandidate
+	firstContentMode          string
+	firstContentFeasibleCount int
+	firstContentBestFeasible  CandidateSummary
+	pool                      []*routingCandidate
+	candidateCount            int
+	capacityRejections        int
+	tooLargeRejections        int
+	visionRejections          int
+	ttftRejections            int
+	bestTTFTMs                float64
+	breakerRejected           int
+	ignoreProviderBreaker     bool
 
 	// System-profiler routing context — fixed-size value fields filled inside
 	// the existing loops with ZERO heap allocation (hot-path review C5). See the
@@ -1152,6 +1151,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	// straight into its slot (candidate_arena.go).
 	var arena candidateArena
 	var scan candidateScan
+	scan.firstContentMode = r.firstContentRoutingMode
 	now := time.Now()
 	// Vision preparation is absent from the token-prefill projection, so media
 	// estimates are advisory even if a caller accidentally supplies a ceiling.
@@ -1258,6 +1258,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 		}
 
 		r.applyCacheRoutingCost(p, model, pr, c)
+		r.estimateFirstContent(c, pr, now)
 		// Best-idle is computed UNCONDITIONALLY over every routable candidate
 		// (before pool narrowing) so the record can answer "was an idle warm box
 		// available?" whether or not the shadow evaluator is on.
@@ -1281,6 +1282,8 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 			return providerOwnedBy(c.provider, pr.OwnerAccountID)
 		})
 	}
+
+	pool = r.preferFirstContentPool(&scan, pool, pr)
 
 	// Version-diverse retry (SOFT): when a previous attempt failed on a given
 	// binary version, prefer candidates running any OTHER version so a
@@ -1704,6 +1707,7 @@ func (r *Registry) snapshotProviderIntoPLockedEx(dst *routingSnapshot, p *Provid
 	// Heartbeat age from the scan clock (system-profiler record); a zero
 	// LastHeartbeat saturates rather than reading as "fresh".
 	snap.hbAgeMs = heartbeatAgeMs(now, p.LastHeartbeat)
+	snap.capacityAgeMs = heartbeatAgeMs(now, p.capacitySamplesAt)
 
 	fillSnapshotPendingAndPool(snap, p, model)
 	// Concurrency headroom with the quality-concurrency cap: a slow model whose
@@ -1723,6 +1727,7 @@ func (r *Registry) snapshotProviderIntoPLockedEx(dst *routingSnapshot, p *Provid
 		if p.BackendCapacity.TotalMemoryGB > 0 {
 			snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
 		}
+		r.fillFirstContentSnapshot(snap, p.BackendCapacity)
 		for _, slot := range p.BackendCapacity.Slots {
 			if slot.Model != model {
 				continue

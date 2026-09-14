@@ -20,9 +20,9 @@ import (
 // always-on dispatch-time deterministic stop (dispatch.go shouldStopFailover) is
 // the exact backstop for everything the estimate still misses.
 //
-// Applied ONLY to the servability context check (see shedIfUnservable). Billing
-// (estimateBillingPromptTokens upper-bounds independently) and the capacity/TTFT
-// estimate are intentionally left on the raw value.
+// Applied to the servability context check and the separate advisory first-
+// content estimate. Billing, physical capacity and the legacy TTFT/cost score
+// remain on their existing estimates. This multiplier is not an exact count.
 
 var (
 	calibrationMu sync.RWMutex

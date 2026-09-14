@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-09-14 · commit `42d0741b1`
+> Last updated: 2026-09-14 · commit `0deac8b0a`
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD

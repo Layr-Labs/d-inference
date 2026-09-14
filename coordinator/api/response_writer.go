@@ -29,7 +29,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(w http.Respons
 type responseServices struct{ server *Server }
 
 func (b responseServices) Refund(pr *registry.PendingRequest, reference string) bool {
-	return b.server.refundReservedBalance(pr, reference)
+	return b.server.inferenceSettlement().Refund(pr, reference)
 }
 func (b responseServices) Error(providerID string, pr *registry.PendingRequest, status int, message, reason, terminal string, causes ...protocol.CoordinatorInferenceErrorCause) {
 	b.server.noteInferenceError(providerID, pr, status, message, reason, terminal, causes...)

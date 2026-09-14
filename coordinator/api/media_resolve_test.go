@@ -605,8 +605,8 @@ func TestChatCompletionsRemoteMediaRequiresMediaAwareBalanceBeforeFetch(t *testi
 	if estimated <= billing {
 		t.Fatalf("test setup requires media estimate > URL-byte bound; estimated=%d billing=%d", estimated, billing)
 	}
-	urlOnlyCost := srv.reservationCost("test", billing, 1)
-	mediaAwareCost := srv.reservationCost("test", estimated, 1)
+	urlOnlyCost := srv.inferenceSettlement().Estimate("test", billing, 1)
+	mediaAwareCost := srv.inferenceSettlement().Estimate("test", estimated, 1)
 	if mediaAwareCost <= urlOnlyCost {
 		t.Fatalf("test setup requires distinct costs; URL=%d media=%d", urlOnlyCost, mediaAwareCost)
 	}

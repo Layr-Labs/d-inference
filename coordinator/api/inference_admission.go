@@ -64,7 +64,7 @@ func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request,
 	// larger bound so a low-balance caller cannot trigger coordinator egress and
 	// only then fail the platform-price balance check.
 	reservationPromptTokens := max(p.billingPromptTokens, p.estimatedPromptTokens)
-	reservedMicroUSD = s.reservationCost(p.model, reservationPromptTokens, p.requestedMaxTokens)
+	reservedMicroUSD = s.inferenceSettlement().Estimate(p.model, reservationPromptTokens, p.requestedMaxTokens)
 	// Per-key spend cap (phase 1) — checked before the reservation so a capped
 	// key never debits the account ledger.
 	if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
@@ -88,7 +88,7 @@ func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request,
 		return reservedMicroUSD, false, true
 	}
 	var err error
-	serviceReservation, err = s.reserveInitialBalance(consumerKey, p.model, reservedMicroUSD)
+	serviceReservation, err = s.inferenceSettlement().Reserve(consumerKey, p.model, reservedMicroUSD)
 	if err != nil {
 		if errors.Is(err, store.ErrInsufficientBalance) {
 			s.recordRejection(rejectionInfo{
@@ -143,7 +143,7 @@ func (s *Server) topUpReservationForInlinedMedia(w http.ResponseWriter, r *http.
 	if s.billing == nil || p.policy.enabled || currentMicroUSD <= 0 {
 		return currentMicroUSD, false
 	}
-	want := s.reservationCost(p.model, max(p.billingPromptTokens, p.estimatedPromptTokens), p.requestedMaxTokens)
+	want := s.inferenceSettlement().Estimate(p.model, max(p.billingPromptTokens, p.estimatedPromptTokens), p.requestedMaxTokens)
 	if want <= currentMicroUSD {
 		return currentMicroUSD, false
 	}
@@ -167,15 +167,15 @@ func (s *Server) topUpReservationForInlinedMedia(w http.ResponseWriter, r *http.
 		s.ddIncr("billing.media_reservation_topup", []string{"model:" + p.model, "outcome:rejected"})
 		writeJSON(w, http.StatusPaymentRequired, errorResponse(code, msg, withCode("insufficient_quota")))
 	}
-	// Cap check against the new TOTAL, matching reserveAdditionalForProvider.
+	// Cap check against the new TOTAL, matching Service.ReserveForProvider.
 	if msg, ok := s.checkKeySpendCap(r.Context(), want); !ok {
 		reject("insufficient_quota", "insufficient_quota", msg)
 		return currentMicroUSD, true
 	}
 	consumerKey := consumerKeyFromContext(r.Context())
-	// Charge only the delta; reserveInitialBalance re-derives the same
+	// Charge only the delta; Service.Reserve re-derives the same
 	// service-vs-ledger mode for this account, so the hold stays consistent.
-	if _, err := s.reserveInitialBalance(consumerKey, p.model, want-currentMicroUSD); err != nil {
+	if _, err := s.inferenceSettlement().Reserve(consumerKey, p.model, want-currentMicroUSD); err != nil {
 		if errors.Is(err, store.ErrInsufficientBalance) {
 			reject("insufficient_funds", "insufficient_funds",
 				"your balance is too low for this request once the linked media is included — add funds at /billing, use smaller media, or lower max_tokens")

@@ -998,7 +998,7 @@ func TestRefundWinsCompletionKeepsProviderOutcome(t *testing.T) {
 	awaitClaimed(t, f)
 
 	// What the relay's timer branch does (consumer.go): refund, then classify.
-	if !f.srv.refundReservedBalance(f.pr, "provider_timeout:"+id) {
+	if !f.srv.inferenceSettlement().Refund(f.pr, "provider_timeout:"+id) {
 		t.Fatal("the timeout refund must finalize the reservation before the completion settles")
 	}
 	want := postCommitStreamTimeoutOutcome(f.pr)

@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-14 · commit `42d0741b1`
+> Last updated: 2026-09-14 · commit `0deac8b0a`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is

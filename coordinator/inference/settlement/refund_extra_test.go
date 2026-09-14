@@ -1,4 +1,4 @@
-package api
+package settlement
 
 import (
 	"testing"
@@ -10,7 +10,7 @@ import (
 // top-up refund (used by cancelDispatch and the queue-path abandon branches)
 // refunds exactly the extra above the shared base, and never double-refunds.
 func TestRefundProviderExtraIdempotent(t *testing.T) {
-	srv, _, ledger := billingTestServer(t)
+	srv, _, ledger := settlementTestService(t)
 
 	acct := testConsumerID
 	base := ledger.Balance(acct) // $100 seeded by the harness
@@ -28,7 +28,7 @@ func TestRefundProviderExtraIdempotent(t *testing.T) {
 		ReservedMicroUSD:     baseReserve + extra, // a provider top-up was charged
 	}
 
-	srv.refundProviderExtra(pr)
+	srv.RefundProviderExtra(pr)
 	if got := ledger.Balance(acct); got != base+extra {
 		t.Errorf("after refund balance = %d, want %d (refunded extra %d)", got, base+extra, extra)
 	}
@@ -37,7 +37,7 @@ func TestRefundProviderExtraIdempotent(t *testing.T) {
 	}
 
 	// Second call must be a no-op (no double refund).
-	srv.refundProviderExtra(pr)
+	srv.RefundProviderExtra(pr)
 	if got := ledger.Balance(acct); got != base+extra {
 		t.Errorf("second refund changed balance to %d, want %d (no double-refund)", got, base+extra)
 	}
@@ -46,7 +46,7 @@ func TestRefundProviderExtraIdempotent(t *testing.T) {
 // TestRefundProviderExtraNoExtra verifies that when no top-up was charged
 // (ReservedMicroUSD == BaseReservedMicroUSD), the refund is a no-op.
 func TestRefundProviderExtraNoExtra(t *testing.T) {
-	srv, _, ledger := billingTestServer(t)
+	srv, _, ledger := settlementTestService(t)
 	acct := testConsumerID
 	base := ledger.Balance(acct)
 
@@ -57,7 +57,7 @@ func TestRefundProviderExtraNoExtra(t *testing.T) {
 		BaseReservedMicroUSD: 1_000_000,
 		ReservedMicroUSD:     1_000_000,
 	}
-	srv.refundProviderExtra(pr)
+	srv.RefundProviderExtra(pr)
 	if got := ledger.Balance(acct); got != base {
 		t.Errorf("balance changed to %d, want %d (no extra to refund)", got, base)
 	}

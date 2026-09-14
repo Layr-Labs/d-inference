@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-14 · commit `ea5ce6b16`
+> Last updated: 2026-09-14 · commit `641bd53b0`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -29,7 +29,7 @@ pieces fit together, and what they guarantee, is explained in
 | `minimumChargeMicroUSD` | `100` | per-request floor ($0.0001) applied by `CalculateCostWithOverrides`; not applied to service accounts | `coordinator/payments/pricing.go` |
 | `platformFeePercent` | see [billing.md, invariant 4](../architecture/billing.md#invariants) | global platform fee when no per-user override is set | `coordinator/payments/pricing.go` |
 | `defaultMaxOutputTokens` | `8192` | output bound when the request sets no max-tokens field and the registry has no `max_output_length` | `coordinator/api/consumer.go` |
-| `defaultTerminalSettleGrace` | `30 * time.Second` | how long a consumer-disconnected request waits for the provider terminal before refund | `coordinator/api/settlement.go` |
+| `settlement.DefaultGrace` | `30 * time.Second` | how long a consumer-disconnected request waits for the provider terminal before refund; API `defaultTerminalSettleGrace` aliases this constant | `coordinator/inference/settlement/holder.go`; `coordinator/api/settlement.go` |
 | `MinWithdrawMicroUSD` | `1_000_000` | minimum withdrawal ($1.00) | `coordinator/billing/stripe_connect.go` |
 | `InstantFeeBps` | `150` | instant payout fee (1.5%) | `coordinator/billing/stripe_connect.go` |
 | `InstantFeeMinMicroUSD` | `500_000` | instant payout fee floor ($0.50) | `coordinator/billing/stripe_connect.go` |
@@ -52,9 +52,9 @@ pieces fit together, and what they guarantee, is explained in
 | 2 | platform price | `GetModelPrice("platform", model)` | everyone |
 | 3 | hardcoded defaults | `DefaultInputPricePerMillion`, `DefaultOutputPricePerMillion` | everyone |
 
-Settlement: `coordinator/api/provider.go` (`handleCompleteAt`). Reservation:
-`coordinator/api/consumer.go` (`reservationCost` uses steps 2–3;
-`providerReservationCost` uses 1–3 for the dispatched provider).
+Settlement: `coordinator/inference/settlement/completion_price.go`
+(`priceCompletion`). Reservation: `coordinator/inference/settlement/reservation_price.go`
+(`Estimate` uses steps 2–3; `providerEstimate` uses 1–3 for the dispatched provider).
 
 | Price writer | Route | Validation | Citation |
 |---|---|---|---|
@@ -75,12 +75,12 @@ updated_at)`, primary key `(account_id, model)`
 | Cost, service accounts | `rawCost`; `1` when the tokens are non-zero but the product rounds to `0` (no per-request minimum) | `CalculateCostWithOverridesNoMinimum` |
 | Cached tokens | see [billing.md, invariant 5](../architecture/billing.md#invariants) | `calculateCost` |
 | Output bound | explicit `max_tokens` \| `max_completion_tokens` \| `max_output_tokens`, else registry `max_output_length`, else `defaultMaxOutputTokens` | `coordinator/api/consumer.go` (`explicitMaxTokens`, `ensureMaxTokensBound`) |
-| Reservation | `CalculateCostWithOverrides(model, max(billingPromptTokens, estimatedPromptTokens), outputBound, platform price)` | `coordinator/api/inference_admission.go` (`reserveInferenceBalance`); `coordinator/api/consumer.go` (`reservationCost`) |
-| Provider top-up | `providerReservationCost − reserved` when the dispatched provider's custom price makes it positive; skipped for service consumers | `coordinator/api/consumer.go` (`reserveAdditionalForProvider`) |
-| Media top-up | `reservationCost(inlined body) − reserved` when positive | `coordinator/api/inference_admission.go` (`topUpReservationForInlinedMedia`) |
-| Overage | `min(totalCost − reserved, reserved)`; debited as `charge` with reference `overage:<request_id>`; on failure `totalCost = reserved` | `coordinator/api/provider.go` (`handleCompleteAt`) |
-| Settlement refund | `reserved − totalCost` when positive; `refund` entry referenced by `<request_id>` | `handleCompleteAt` |
-| Whole-reservation refund | `reserved`; `refund` entry `reservation_refund:<request_id>` | `coordinator/api/consumer.go` (`refundReservedBalance`) |
+| Reservation | `CalculateCostWithOverrides(model, max(billingPromptTokens, estimatedPromptTokens), outputBound, platform price)` | `coordinator/api/inference_admission.go` (`reserveInferenceBalance`); `coordinator/inference/settlement/reservation_price.go` (`Estimate`) |
+| Provider top-up | `providerEstimate − reserved` when the dispatched provider's custom price makes it positive; skipped for service consumers | `coordinator/inference/settlement/reservation_price.go` (`ReserveForProvider`) |
+| Media top-up | `Estimate(inlined body) − reserved` when positive | `coordinator/api/inference_admission.go` (`topUpReservationForInlinedMedia`) |
+| Overage | `min(totalCost − reserved, reserved)`; debited as `charge` with reference `overage:<request_id>`; on failure `totalCost = reserved` | `coordinator/inference/settlement/completion_finalize.go` (`finalizeCompletion`) |
+| Settlement refund | `reserved − totalCost` when positive; `refund` entry referenced by `<request_id>` | `coordinator/inference/settlement/completion_finalize.go` (`finalizeCompletion`) |
+| Whole-reservation refund | `reserved`; `refund` entry `reservation_refund:<request_id>` | `coordinator/inference/settlement/refund.go` (`Refund`) |
 | Platform fee | `totalCost × resolveFeePercent(user.PlatformFeePercent) / 100`; override clamped to `[0, 100]`, else `platformFeePercent` | `coordinator/payments/pricing.go` (`PlatformFeeWithPercent`, `resolveFeePercent`) |
 | Referral reward | `platformFee × ReferralSharePercent / 100`, carved out of the platform fee | `coordinator/billing/referral.go` (`DistributeReferralReward`) |
 | Provider payout | `totalCost − platformFee` | `coordinator/payments/pricing.go` (`ProviderPayoutWithPercent`) |
@@ -133,18 +133,18 @@ rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
 |---|---|---|---|
 | `limit_usd` | `POST /v1/keys`, `PATCH /v1/keys/{id}` body | `>= 0`; stored as `APIKey.LimitMicroUSD` | `coordinator/api/apikey_handlers.go` (`validateKeyLimitInputs`, `handleCreateAPIKey`) |
 | `limit_reset` | same | `none`, `daily`, `weekly`, `monthly` (`KeyResetNone` …); unknown values normalise to `none` | `coordinator/store/apikey.go` (`NormalizeResetWindow`, `KeySpendWindowStart`) |
-| enforcement points | `reserveInferenceBalance`, `topUpReservationForInlinedMedia`, `reserveAdditionalForProvider` | soft cap on settled usage | `coordinator/api/inference_admission.go`; `coordinator/api/consumer.go` |
+| enforcement points | `reserveInferenceBalance`, `topUpReservationForInlinedMedia`, `ReserveForProvider` | soft cap on settled usage | `coordinator/api/inference_admission.go`; `coordinator/inference/settlement/reservation_price.go` |
 
 ## Service accounts
 
 | Property | Value | Citation |
 |---|---|---|
 | Role value | `users.role = "service"` (`RoleService`); `PUT /v1/admin/users/role` accepts `"service"` or `""` | `coordinator/store/interface.go`; `coordinator/api/billing/account_policy.go` (`AdminSetUserRole`) |
-| Cost function | `CalculateCostWithOverridesNoMinimum` | `coordinator/api/provider.go` (`handleCompleteAt`) |
-| Price | platform price; provider custom prices and the provider top-up are skipped | `handleCompleteAt`; `coordinator/api/consumer.go` (`isServiceConsumer`, `reserveAdditionalForProvider`) |
-| Reservation mode | ledger debit, or in-memory hold when `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED=true` | `coordinator/api/reservations.go` (`useServiceReservation`) |
+| Cost function | `CalculateCostWithOverridesNoMinimum` | `coordinator/inference/settlement/completion_price.go` (`priceCompletion`) |
+| Price | platform price; provider custom prices and the provider top-up are skipped | `coordinator/inference/settlement/completion_price.go` (`priceCompletion`); `coordinator/inference/settlement/reservation_price.go` (`isServiceConsumer`, `ReserveForProvider`) |
+| Reservation mode | ledger debit, or in-memory hold when `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED=true` | `coordinator/inference/settlement/reservation.go` (`useServiceReservation`) |
 | Rate limiter | `Service` ([Constants](#constants)) | `coordinator/ratelimit/config.go` |
-| Platform fee | same per-user override mechanism as other accounts | `handleCompleteAt` |
+| Platform fee | same per-user override mechanism as other accounts | `coordinator/inference/settlement/completion_price.go` (`priceCompletion`); `coordinator/inference/settlement/completion_credit.go` (`creditCompletion`) |
 
 ## Stripe Connect withdrawal states
 

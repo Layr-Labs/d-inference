@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/providerframe"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -54,7 +55,7 @@ func TestModelCacheCompletionsSeparateModelsAndPreserveUsage(t *testing.T) {
 		srv.handleComplete(provider.ID, provider, &msg)
 		if !tc.parked {
 			got := <-pr.CompleteCh
-			if validCacheUsage(tc.usage) && got.CachedTokens != tc.usage.CachedTokens {
+			if providerframe.ValidCacheUsage(tc.usage) && got.CachedTokens != tc.usage.CachedTokens {
 				t.Fatalf("telemetry changed response cached tokens: %+v", got)
 			}
 		}

@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/accountfleet"
@@ -31,6 +30,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
+	"github.com/eigeninference/d-inference/coordinator/inference/providerframe"
 	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/inference/settlement"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
@@ -244,11 +244,9 @@ type Server struct {
 	// /v1/encryption-key endpoint and the sealed-request middleware.
 	coordinatorKey *e2e.CoordinatorKey
 
-	// chunkKeys memoizes the per-request NaCl shared key so streaming chunk
-	// decryption skips the X25519 scalar multiplication per token. Zero value
-	// is ready; entries are dropped on request completion/error and bounded
-	// by chunkKeyCacheMax.
-	chunkKeys chunkKeyCache
+	// One frame owner holds the private chunk-key cache and ingress counter.
+	providerFrameOnce    sync.Once
+	providerFrameService *providerframe.Service
 
 	// metrics is the in-process metrics registry exposed via /v1/admin/metrics
 	// and used by internal counters/histograms. Never nil.
@@ -326,9 +324,6 @@ type Server struct {
 	// (system profiler). Nil on a Server built without NewServer.
 	profiler        *profiler
 	requestOutcomes *requestOutcomeSink
-	// unknownRequestFrames counts provider frames for requests the coordinator
-	// no longer tracks (zombie streams); exported on the fleet coordinator row.
-	unknownRequestFrames atomic.Int64
 
 	// mediaResolver fetches remote http(s) image_url/video_url links into
 	// inline base64 data: URIs before the request body is E2E-encrypted to a

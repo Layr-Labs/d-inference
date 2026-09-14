@@ -64,7 +64,7 @@ func (s *Server) sampleFleetOnce(now time.Time) {
 		coord.RouteSinkDroppedTotal = s.routeTelemetry.DroppedTotal()
 	}
 	registry.ClampFleetRowInts(&coord) // goroutines / sink depth are INT columns too
-	coord.UnknownRequestFramesTotal = s.unknownRequestFrames.Load()
+	coord.UnknownRequestFramesTotal = s.inferenceFrames().UnknownRequestFrames()
 	rows = append(rows, coord)
 	if err := s.store.RecordFleetSnapshots(rows); err != nil {
 		if s.logger != nil {

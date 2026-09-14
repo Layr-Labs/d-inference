@@ -17,6 +17,7 @@ import (
 )
 
 func (s *Server) providerSessionDependencies() session.Dependencies {
+	frames := s.inferenceFrames()
 	return session.Dependencies{
 		Registry: func() *registry.Registry { return s.registry },
 		Store: func() session.Store {
@@ -38,8 +39,8 @@ func (s *Server) providerSessionDependencies() session.Dependencies {
 		CodeLoop:              s.codeAttestLoop,
 		CodeRearm:             s.maybeRearmCodeAttest,
 		Frames: session.InferenceFrames{
-			Accepted: s.handleInferenceAccepted, Chunk: s.handleChunk,
-			Complete: s.handleCompleteAt, Error: s.handleInferenceError,
+			Accepted: frames.Accepted, Chunk: frames.Chunk,
+			Complete: frames.CompleteAt, Error: frames.Error,
 		},
 		LoadFailure: session.LoadFailurePolicy{Classify: classifyLoadFailure, Permanent: loadFailureIsPermanent},
 		Telemetry: session.Telemetry{

@@ -112,12 +112,7 @@ func TestHandleChunkOverflowFailsRequest(t *testing.T) {
 	}
 
 	// The memoized chunk-decryption key is dropped (terminal cleanup).
-	srv.chunkKeys.mu.Lock()
-	_, keyCached := srv.chunkKeys.m[pr.SessionPrivKey]
-	srv.chunkKeys.mu.Unlock()
-	if keyCached {
-		t.Error("chunk key cache entry should be forgotten on terminal error")
-	}
+	assertTerminalChunkKeyRetired(t, srv, provider, pr)
 
 	// (c) No reputation penalty: 499 + "request cancelled" classifies as a
 	// consumer-side terminal in handleInferenceError, so RecordJobFailure is
@@ -138,6 +133,43 @@ func TestHandleChunkOverflowFailsRequest(t *testing.T) {
 	}
 	if got.Status == registry.StatusUntrusted {
 		t.Fatalf("provider status = %v; overflow must not mark the provider untrusted", got.Status)
+	}
+}
+
+// Reuse the original key pointer with new key bytes: an entry left behind by
+// the terminal would select the old shared key and reject this valid ciphertext.
+// This observes actual decryption instead of reaching into the owner's cache.
+func assertTerminalChunkKeyRetired(t *testing.T, srv *Server, provider *registry.Provider, retired *registry.PendingRequest) {
+	t.Helper()
+	keys, err := e2e.GenerateSessionKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	*retired.SessionPrivKey = keys.PrivateKey
+	probe := &registry.PendingRequest{
+		RequestID: retired.RequestID + "-fresh-key", Model: retired.Model,
+		SessionPrivKey: retired.SessionPrivKey,
+		ChunkCh:        make(chan registry.ProviderChunk, 1),
+		CompleteCh:     make(chan protocol.UsageInfo, 1),
+		ErrorCh:        make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(probe)
+	defer provider.RemovePending(probe.RequestID)
+	const plaintext = `data: {"choices":[{"delta":{"content":"fresh-key"}}]}`
+	chunk := testEncryptedChunk(t, protocol.InferenceRequestMessage{
+		RequestID: probe.RequestID,
+		EncryptedBody: &protocol.EncryptedPayload{
+			EphemeralPublicKey: base64.StdEncoding.EncodeToString(keys.PublicKey[:]),
+		},
+	}, provider.PublicKey, plaintext)
+	srv.handleChunk(provider.ID, provider, &chunk)
+	select {
+	case got, ok := <-probe.ChunkCh:
+		if !ok || got.Data != plaintext {
+			t.Fatalf("chunk key was not retired: fresh-key chunk = %q, open=%v", got.Data, ok)
+		}
+	default:
+		t.Fatal("fresh-key chunk was not delivered after terminal cleanup")
 	}
 }
 

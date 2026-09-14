@@ -27,6 +27,9 @@ func (s *completionCreditBarrierStore) CreditProviderAccount(earning *store.Prov
 // opening the consumer's terminal channels. The barrier wraps the real store.
 func TestCompletionPublishesUsageBeforeCreditsAndConsumerTerminal(t *testing.T) {
 	srv, st, ledger := billingTestServer(t)
+	// Bind frame handling before replacing the store; completion must still
+	// resolve the current store when it reaches the provider-credit barrier.
+	srv.handleInferenceAccepted(nil, &protocol.InferenceAcceptedMessage{})
 	const model, account = "completion-order-model", "completion-order-provider"
 	provider := srv.registry.Register("completion-order-session", nil, &protocol.RegisterMessage{
 		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat"}},

@@ -1,4 +1,4 @@
-package api
+package providerframe
 
 import (
 	"crypto/rand"
@@ -6,9 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"golang.org/x/crypto/nacl/box"
-
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
+	"golang.org/x/crypto/nacl/box"
 )
 
 // testPeerKeyB64 generates a fresh X25519 keypair and returns the base64

@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-14 · commit `42727c9fc`
+> Last updated: 2026-09-14 · commit `7b89537e1`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -447,9 +447,11 @@ Bodies are lowered into the chat pipeline (`coordinator/promptcontract/endpoint_
 
 `/v1/completions` and `/v1/messages` are lowered to the chat contract (`coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_messages.go`); responses are re-shaped by `coordinator/inference/response/generic_endpoint_response.go` and streams by `NewEndpointSink` (`coordinator/inference/response/generic_stream.go`). Successful Completions streams terminate with `data: [DONE]`; Messages streams terminate with `event: message_stop` (`coordinator/inference/response/completions_stream.go`, `coordinator/inference/response/messages_stream.go`, `Finish`).
 
+Completion and cancellation rules differ by endpoint; see [streaming ownership](../architecture/components/consumer.md#streaming-ownership).
+
 ## SSE framing
 
-Built by `Writer.Stream` (`coordinator/inference/response/stream.go`), `coordinator/inference/response/sse_response.go`, and `coordinator/inference/response/chat_metadata_stream.go`; ordering guarantees come from the dispatch state machine in `coordinator/api/dispatch.go`.
+SSE orchestration lives in `Writer.Stream` (`coordinator/inference/response/stream.go`) and `Writer.handleEndpointStreamingResponse` (`coordinator/inference/response/endpoint_stream.go`). Header and chat terminal helpers are `writeSSEResponseHeader` (`coordinator/inference/response/sse_response.go`) and `Writer.ChatError` (`coordinator/inference/response/chat_metadata_stream.go`). The dispatch state machine in `coordinator/api/dispatch.go` preserves commit ordering.
 
 1. **Deferred commit.** No status line, headers, or bytes are written until the first *content* chunk arrives from a provider (`commitFirstContent`). Until then the coordinator can still fail over to another provider or return a JSON error with a real status code (`preContentTerminal`, `coordinator/api/dispatch_terminal_write.go`). Clients see a delayed 200, never a 200 that turns into an error mid-preamble.
 2. **Headers at commit**: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Inference-Job-ID` (`writeSSEResponseHeader`), plus `X-Timing` and the `X-Provider-*` headers.
@@ -556,6 +558,7 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Inference pipeline | `coordinator/api/consumer.go`, `coordinator/api/inference_preprocess.go`, `coordinator/api/inference_admission.go`, `coordinator/api/request_introspection.go`, `coordinator/api/reasoning_request_policy.go`, `coordinator/api/dispatch.go`, `coordinator/api/dispatch_terminal_write.go`, `coordinator/api/inference_failure_class.go` |
 | Endpoint lowering and response formatting (Responses, Completions, Messages) | `coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_responses.go`, `coordinator/promptcontract/endpoint_lower_messages.go`, `coordinator/inference/response/generic_endpoint_response.go`, `coordinator/inference/response/generic_stream.go`, `coordinator/inference/response/responses_stream.go` |
 | Response lifecycle binding | `coordinator/api/response_writer.go` (`responseWriter`, `responseServices`, `responseWriteObserver`) binds shared settlement, feedback, route outcomes and accepted-write evidence to `coordinator/inference/response/writer.go` (`Dependencies`, `Writer`) |
+| Provider channel arbitration | `coordinator/inference/response/provider_stream.go` (`relayProviderStream`) preserves queued chunks ahead of a provider error; endpoint callers apply terminal policy |
 | SSE, timing and provider metadata | `coordinator/inference/response/sse_response.go`, `coordinator/inference/response/chat_metadata_stream.go`, `coordinator/inference/response/provider_snapshot.go`, `coordinator/api/profiler_dispatch.go` |
 | Tools, media, constraints | `coordinator/inference/toolpolicy/`, `coordinator/api/tool_constraints.go`, `coordinator/api/media_resolve.go` |
 | Sealed transport | `coordinator/api/sender_encryption.go` |

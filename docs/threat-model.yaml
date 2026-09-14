@@ -972,6 +972,11 @@ threats:
     affected_assets: [A-009]
     affected_files:
       - coordinator/api/consumer.go
+      - coordinator/inference/response/stream.go
+      - coordinator/inference/response/endpoint_stream.go
+      - coordinator/inference/response/provider_stream.go
+      - coordinator/inference/response/endpoint_stream_test.go
+      - coordinator/api/endpoint_stream_reconciliation_test.go
       - coordinator/store/postgres.go
     mitigations:
       - description: Usage rows written per request to the ledger.

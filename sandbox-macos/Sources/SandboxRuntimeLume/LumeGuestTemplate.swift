@@ -10,6 +10,7 @@ enum LumeGuestTemplate {
         let directory = try SandboxAuthorityFileSystem.openPrivateDirectory(
             at: storage.appendingPathComponent(name), createIfMissing: false)
         defer { close(directory) }
+        try LumeOfflineOperationFence.requireAbsent(directory: directory, name: name)
         let file = openat(directory, SandboxGuestTemplateReceipt.fileName, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
         guard file >= 0 else { throw failure() }
         defer { close(file) }

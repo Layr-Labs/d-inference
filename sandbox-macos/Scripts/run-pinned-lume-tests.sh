@@ -44,6 +44,9 @@ REQUIRED_RUNTIME_TESTS=(
     stopPreservesAReplacementAtTheOldEndpointName
     flushesLargeLastFrameBeforeFINAndKeepsReverseDirectionAlive
     writerFailureReportsActualErrnoAndByteCount
+    everyEntryKindBlocksBothNativeGuardModesAndDelete
+    nativeFenceSurvivesOrdinaryStatusInspectionAndBlocksCommands
+    storageOverridesAndAliasesCannotUseAFencedImage
 )
 for test_name in "${REQUIRED_RUNTIME_TESTS[@]}"; do
     (

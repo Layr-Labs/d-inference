@@ -47,6 +47,10 @@
     {
       "path": "ThirdParty/lume-patches/0011-await-relay-fixture-io-without-blocking-test-executors.patch",
       "sha256": "45f6324e1eac2adcc09e7462d14bf37d3ef216c74c109e369fc1c8b3c9fd009b"
+    },
+    {
+      "path": "ThirdParty/lume-patches/0012-fence-images-during-offline-maintenance.patch",
+      "sha256": "4dfd68d6c6c739ca412c3e62e24b5611ca20e1b4618891d794406bb6fb831369"
     }
   ],
   "license": "MIT",

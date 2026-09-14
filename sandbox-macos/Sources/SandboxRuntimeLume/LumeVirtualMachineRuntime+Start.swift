@@ -24,6 +24,7 @@ extension LumeVirtualMachineRuntime {
             endOperation(name: name)
             withExtendedLifetime(operationLock) {}
         }
+        try LumeOfflineOperationFence.requireAbsent(storage: configuration.storageDirectory, name: name)
 
         let leaseAuthorization = try authorize(
             scope: scope,

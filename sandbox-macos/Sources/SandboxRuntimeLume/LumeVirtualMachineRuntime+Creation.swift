@@ -49,6 +49,7 @@ extension LumeVirtualMachineRuntime {
             endOperation(name: specification.name)
             withExtendedLifetime(operationLock) {}
         }
+        try LumeOfflineOperationFence.requireAbsent(storage: configuration.storageDirectory, name: specification.name)
 
         let leaseAuthorization = try authorize(
             scope: scope,
@@ -139,6 +140,7 @@ extension LumeVirtualMachineRuntime {
             sourceInstallationID = nil
             arguments = try restoreArguments(specification, url: url, unattendedPreset: unattendedPreset)
         case .localTemplate(let template):
+            try LumeOfflineOperationFence.requireAbsent(storage: configuration.storageDirectory, name: template)
             try LumeVirtualMachineDeletionIntent.requireAbsent(workspace: workspace, name: template)
             guard let templateRecord = try await inspect(name: template) else {
                 throw SandboxRuntimeError.invalidImageReference

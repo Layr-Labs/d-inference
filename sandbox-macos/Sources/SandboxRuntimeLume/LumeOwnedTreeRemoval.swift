@@ -33,6 +33,7 @@ extension LumeVirtualMachineDeletionIntent {
             throw Self.failure("owned directory identity changed")
         }
         try SandboxAuthorityFileSystem.requirePrivateDirectory(directory)
+        try LumeOfflineOperationFence.requireAbsent(directory: directory, name: name)
         try Self.removeContents(directory: directory, device: metadata.st_dev, relative: "", hooks: hooks)
         try Self.requireNamedIdentity(parent: storage, name: name, descriptor: directory)
         guard unlinkat(storage, name, AT_REMOVEDIR) == 0 else { throw Self.failure("owned directory removal failed") }

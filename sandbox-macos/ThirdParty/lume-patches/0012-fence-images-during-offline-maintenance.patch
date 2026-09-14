@@ -1,0 +1,338 @@
+diff --git a/libs/lume/src/FileSystem/DarkbloomOfflineOperation.swift b/libs/lume/src/FileSystem/DarkbloomOfflineOperation.swift
+new file mode 100644
+--- /dev/null
++++ b/libs/lume/src/FileSystem/DarkbloomOfflineOperation.swift
+@@ -0,0 +1,43 @@
++import Darwin
++import Foundation
++
++/// A durable fence for an interrupted root offline operation. Ordinary native
++/// commands only check absence; they never decode, repair or remove the record.
++enum DarkbloomOfflineOperation {
++    static let fileName = ".darkbloom-offline.json"
++
++    static func requireAbsent(in directory: URL) throws {
++        let path = directory.appendingPathComponent(fileName).path
++        var info = stat()
++        if lstat(path, &info) == 0 || errno != ENOENT {
++            throw PendingOfflineOperation(name: directory.lastPathComponent)
++        }
++    }
++
++    static func requireStoragePathsClear(_ paths: [Path]) throws {
++        for path in paths {
++            try requireAbsent(in: path.url.resolvingSymlinksInPath().deletingLastPathComponent())
++        }
++    }
++
++    struct PendingOfflineOperation: Error, LocalizedError {
++        let name: String
++        var errorDescription: String? {
++            "VM \(name) is fenced for pending offline maintenance; root recovery must prove cleanup"
++        }
++    }
++}
++
++extension VMDirectory {
++    func requireNoOfflineOperation() throws {
++        try DarkbloomOfflineOperation.requireAbsent(in: dir.url)
++    }
++
++    func withOfflineMutationGuard<T>(_ operation: () throws -> T) throws -> T {
++        guard let guardFile = try tryAcquireResizeGuard(exclusive: true) else {
++            throw DiskResizeError.vmRunning(name)
++        }
++        defer { try? guardFile.close() }
++        return try operation()
++    }
++}
+diff --git a/libs/lume/src/FileSystem/VMDirectory.swift b/libs/lume/src/FileSystem/VMDirectory.swift
+--- a/libs/lume/src/FileSystem/VMDirectory.swift
++++ b/libs/lume/src/FileSystem/VMDirectory.swift
+@@ -139,6 +139,7 @@
+ 
+ extension VMDirectory {
+     func tryAcquireResizeGuard(exclusive: Bool) throws -> FileHandle? {
++        try requireNoOfflineOperation()
+         if !resizeGuardPath.exists() {
+             guard FileManager.default.createFile(atPath: resizeGuardPath.path, contents: Data()) else {
+                 throw VMDirectoryError.fileCreationFailed(resizeGuardPath.path)
+@@ -150,7 +151,10 @@
+             try? handle.close()
+             return nil
+         }
+-        return handle
++        do {
++            try requireNoOfflineOperation()
++            return handle
++        } catch { try? handle.close(); throw error }
+     }
+ 
+     /// Loads the resize transaction marker if a resize is in progress.
+@@ -456,6 +460,7 @@
+ 
+ extension VMDirectory {
+     func delete() throws {
++        try requireNoOfflineOperation()
+         try FileManager.default.removeItem(atPath: dir.path)
+     }
+ }
+diff --git a/libs/lume/src/FileSystem/Home.swift b/libs/lume/src/FileSystem/Home.swift
+--- a/libs/lume/src/FileSystem/Home.swift
++++ b/libs/lume/src/FileSystem/Home.swift
+@@ -209,6 +209,8 @@
+     ) throws {
+         let sourceDir = try getVMDirectory(sourceName, storage: sourceLocation)
+         let destDir = try getVMDirectory(destName, storage: destLocation)
++        try sourceDir.requireNoOfflineOperation()
++        try destDir.requireNoOfflineOperation()
+ 
+         // Check if destination directory exists at all
+         if destDir.exists() {
+diff --git a/libs/lume/src/LumeController.swift b/libs/lume/src/LumeController.swift
+--- a/libs/lume/src/LumeController.swift
++++ b/libs/lume/src/LumeController.swift
+@@ -1059,12 +1059,13 @@
+ 
+             let vm = try get(name: normalizedName, storage: actualLocation)
+ 
+-            // Apply settings in order
+-            if let cpu = cpu {
+-                try vm.setCpuCount(cpu)
+-            }
+-            if let memory = memory {
+-                try vm.setMemorySize(memory)
++            // Each mutation group shares the native image guard with the root
++            // operator. Disk resize takes that same guard inside its transaction.
++            if cpu != nil || memory != nil {
++                try vm.vmDirContext.dir.withOfflineMutationGuard {
++                    if let cpu { try vm.setCpuCount(cpu) }
++                    if let memory { try vm.setMemorySize(memory) }
++                }
+             }
+             if let diskSize = diskSize {
+                 try vm.resizeDiskSafely(
+@@ -1073,7 +1074,7 @@
+                         backup: !noBackup, keepBackup: keepBackup, dryRun: dryRun))
+             }
+             if let display = display {
+-                try vm.setDisplay(display)
++                try vm.vmDirContext.dir.withOfflineMutationGuard { try vm.setDisplay(display) }
+             }
+ 
+             Logger.info("VM settings updated successfully", metadata: ["name": normalizedName])
+@@ -1350,6 +1351,14 @@
+                 force: force
+             )
+ 
++            // Hold the destination guard through download/publication, including
++            // force replacement. An early-only check would race root staging.
++            let destination = try home.getVMDirectory(vmName, storage: storage)
++            guard let destinationGuard = try destination.tryAcquireResizeGuard(exclusive: true) else {
++                throw resizeGuardContentionError(destination, name: vmName)
++            }
++            defer { try? destinationGuard.close() }
++
+             let imageRegistry = try RegistryFactory.createRegistry(
+                 registry: registry, organization: organization,
+                 username: username, password: password)
+@@ -1647,6 +1656,10 @@
+ 
+     @MainActor
+     private func loadVM(vmDir: VMDirectory, storage: String?, diskPath: Path? = nil, nvramPath: Path? = nil) throws -> VM {
++        try vmDir.requireNoOfflineOperation()
++        for override in [diskPath, nvramPath].compactMap({ $0 }) {
++            try DarkbloomOfflineOperation.requireAbsent(in: override.url.resolvingSymlinksInPath().deletingLastPathComponent())
++        }
+         // With path overrides, only config.json is required (not full initialized check)
+         let hasPathOverrides = diskPath != nil || nvramPath != nil
+         if !hasPathOverrides {
+diff --git a/libs/lume/src/VM/VM.swift b/libs/lume/src/VM/VM.swift
+--- a/libs/lume/src/VM/VM.swift
++++ b/libs/lume/src/VM/VM.swift
+@@ -282,6 +282,11 @@
+             throw VMError.notInitialized(vmDirContext.name)
+         }
+ 
++        try vmDirContext.dir.requireNoOfflineOperation()
++        let storagePaths = [vmDirContext.diskPath, vmDirContext.nvramPath]
++            + (usbMassStoragePaths ?? []) + (additionalDiskPaths ?? []) + (mount.map { [$0] } ?? [])
++        try DarkbloomOfflineOperation.requireStoragePathsClear(storagePaths)
++
+         // Refuse to boot while a disk-resize transaction is armed.
+         if vmDirContext.dir.hasResizeMarker() {
+             Logger.error(
+@@ -1292,8 +1297,9 @@
+                 vmDirContext.config.setDiskSize(newSize)  // keep in-memory config fresh
+             }
+         } else {
+-            if options.dryRun { return }
+-            try setDiskSize(newSize)
++            try vmDirContext.dir.withOfflineMutationGuard {
++                if !options.dryRun { try setDiskSize(newSize) }
++            }
+         }
+     }
+ 
+diff --git a/libs/lume/tests/DarkbloomOfflineOperationTests.swift b/libs/lume/tests/DarkbloomOfflineOperationTests.swift
+new file mode 100644
+--- /dev/null
++++ b/libs/lume/tests/DarkbloomOfflineOperationTests.swift
+@@ -0,0 +1,157 @@
++import Darwin
++import Foundation
++import Testing
++@testable import lume
++
++@Suite("Darkbloom offline image fence")
++struct DarkbloomOfflineOperationTests {
++    @Test func everyEntryKindBlocksBothNativeGuardModesAndDelete() throws {
++        for kind in ["empty", "json", "directory", "fifo", "symlink"] {
++            let fixture = try OfflineImageFixture()
++            defer { fixture.remove() }
++            switch kind {
++            case "directory": try FileManager.default.createDirectory(at: fixture.fence, withIntermediateDirectories: false)
++            case "fifo": #expect(mkfifo(fixture.fence.path, 0o600) == 0)
++            case "symlink": try FileManager.default.createSymbolicLink(at: fixture.fence,
++                withDestinationURL: fixture.root.appendingPathComponent("missing"))
++            default: try Data((kind == "empty" ? "" : "{").utf8).write(to: fixture.fence)
++            }
++            #expect(throws: DarkbloomOfflineOperation.PendingOfflineOperation.self) {
++                _ = try fixture.vm.tryAcquireResizeGuard(exclusive: false)
++            }
++            #expect(throws: DarkbloomOfflineOperation.PendingOfflineOperation.self) {
++                _ = try fixture.vm.tryAcquireResizeGuard(exclusive: true)
++            }
++            #expect(throws: DarkbloomOfflineOperation.PendingOfflineOperation.self) { try fixture.vm.delete() }
++            #expect(try Data(contentsOf: fixture.vm.diskPath.url) == Data("image canary".utf8))
++            var info = stat()
++            #expect(lstat(fixture.fence.path, &info) == 0)
++        }
++    }
++
++    @Test func nativeFenceSurvivesOrdinaryStatusInspectionAndBlocksCommands() throws {
++        let fixture = try OfflineImageFixture()
++        defer { fixture.remove() }
++        try Data().write(to: fixture.fence)
++        let before = try Data(contentsOf: fixture.vm.configPath.url)
++        // This is a deliberately non-bootable Linux fixture. No test operation
++        // can start a real VM, contact a registry, or inspect another VM.
++        let get = try fixture.command(["get", "source", "--storage", fixture.storage.path, "--format", "json"])
++        #expect(get.status == 0)
++        for arguments in [
++            ["run", "source", "--storage", fixture.storage.path, "--no-display"],
++            ["set", "source", "--storage", fixture.storage.path, "--cpu", "2"],
++            ["delete", "source", "--storage", fixture.storage.path, "--force"],
++            ["clone", "source", "destination", "--source-storage", fixture.storage.path, "--dest-storage", fixture.storage.path],
++            ["pull", "not-a-real-image:fixture", "source", "--storage", fixture.storage.path, "--force"],
++        ] {
++            let result = try fixture.command(arguments)
++            #expect(result.status != 0)
++            #expect(result.output.contains("offline maintenance"), "unexpected command result: \(result.output)")
++        }
++        #expect(try Data(contentsOf: fixture.vm.configPath.url) == before)
++        #expect(FileManager.default.fileExists(atPath: fixture.fence.path))
++        #expect(!FileManager.default.fileExists(atPath: fixture.storage.appendingPathComponent("destination").path))
++        try FileManager.default.removeItem(at: fixture.fence)
++        let updated = try fixture.command(["set", "source", "--storage", fixture.storage.path, "--cpu", "2"])
++        #expect(updated.status == 0, "unfenced settings positive control: \(updated.output)")
++        #expect(try fixture.vm.loadConfig().cpuCount == 2)
++
++        let destination = fixture.storage.appendingPathComponent("destination")
++        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
++        let destinationFence = destination.appendingPathComponent(DarkbloomOfflineOperation.fileName)
++        try Data().write(to: destinationFence)
++        let denied = try fixture.command(["clone", "source", "destination", "--source-storage", fixture.storage.path,
++                                         "--dest-storage", fixture.storage.path])
++        #expect(denied.status != 0 && denied.output.contains("offline maintenance"))
++        #expect(FileManager.default.fileExists(atPath: destinationFence.path))
++        let auxiliary = destination.appendingPathComponent("disk.img")
++        try Data("auxiliary canary".utf8).write(to: auxiliary)
++        for option in ["--disk", "--usb-storage", "--mount"] {
++            let rejected = try fixture.command(["run", "source", "--storage", fixture.storage.path,
++                                                "--no-display", option, auxiliary.path])
++            #expect(rejected.status != 0 && rejected.output.contains("offline maintenance"),
++                    "storage attachment fence: \(rejected.output)")
++        }
++    }
++
++    @Test func storageOverridesAndAliasesCannotUseAFencedImage() throws {
++        let fixture = try OfflineImageFixture()
++        defer { fixture.remove() }
++        let alias = fixture.root.appendingPathComponent("image-alias")
++        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: fixture.vm.diskPath.url)
++        try DarkbloomOfflineOperation.requireStoragePathsClear([Path(alias.path)])
++        try Data().write(to: fixture.fence)
++        for path in [fixture.vm.diskPath, Path(alias.path)] {
++            #expect(throws: DarkbloomOfflineOperation.PendingOfflineOperation.self) {
++                try DarkbloomOfflineOperation.requireStoragePathsClear([path])
++            }
++        }
++    }
++
++    @Test func removalOfTheFenceRestoresNativeGuardAcquisition() throws {
++        let fixture = try OfflineImageFixture()
++        defer { fixture.remove() }
++        try Data().write(to: fixture.fence)
++        #expect(throws: DarkbloomOfflineOperation.PendingOfflineOperation.self) { try fixture.vm.requireNoOfflineOperation() }
++        try FileManager.default.removeItem(at: fixture.fence)
++        let acquired = try fixture.vm.tryAcquireResizeGuard(exclusive: true)
++        let guardFile = try #require(acquired)
++        defer { try? guardFile.close() }
++        try fixture.vm.requireNoOfflineOperation()
++    }
++}
++
++private struct OfflineImageFixture {
++    let root: URL
++    let storage: URL
++    let vm: VMDirectory
++    var fence: URL { vm.dir.url.appendingPathComponent(DarkbloomOfflineOperation.fileName) }
++    init() throws {
++        root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
++            .appendingPathComponent("offline-fence-\(UUID().uuidString)")
++        storage = root.appendingPathComponent("vms")
++        let directory = storage.appendingPathComponent("source")
++        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
++            attributes: [.posixPermissions: 0o700])
++        vm = VMDirectory(Path(directory.path))
++        try Data("image canary".utf8).write(to: vm.diskPath.url)
++        try Data("nvram canary".utf8).write(to: vm.nvramPath.url)
++        let config = try VMConfig(os: "linux", cpuCount: 1, memorySize: 1024,
++            diskSize: 1024, display: "1024x768")
++        try vm.saveConfig(config)
++    }
++    func remove() { try? FileManager.default.removeItem(at: root) }
++
++    func command(_ arguments: [String]) throws -> (status: Int32, output: String) {
++        let package = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
++        let process = Process()
++        process.executableURL = package.appendingPathComponent(".build/debug/lume")
++        process.arguments = arguments
++        process.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": root.path,
++            "LUME_HOME": root.path, "XDG_CONFIG_HOME": root.appendingPathComponent("config").path,
++            "XDG_CACHE_HOME": root.appendingPathComponent("cache").path,
++            "LUME_TELEMETRY_ENABLED": "false", "LUME_LOG_LEVEL": "error"]
++        let log = root.appendingPathComponent("command-" + UUID().uuidString + ".log")
++        FileManager.default.createFile(atPath: log.path, contents: nil)
++        let output = try FileHandle(forWritingTo: log)
++        defer { try? output.close() }
++        process.standardOutput = output; process.standardError = output
++        process.standardInput = FileHandle.nullDevice
++        try process.run()
++        let deadline = DispatchTime.now().uptimeNanoseconds + 10_000_000_000
++        while process.isRunning, DispatchTime.now().uptimeNanoseconds < deadline { usleep(10_000) }
++        if process.isRunning {
++            process.terminate()
++            let grace = DispatchTime.now().uptimeNanoseconds + 1_000_000_000
++            while process.isRunning, DispatchTime.now().uptimeNanoseconds < grace { usleep(10_000) }
++            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
++            process.waitUntilExit()
++            throw POSIXError(.ETIMEDOUT)
++        }
++        process.waitUntilExit()
++        let size = try FileManager.default.attributesOfItem(atPath: log.path)[.size] as? NSNumber
++        guard let size, size.intValue <= 65536 else { throw POSIXError(.EFBIG) }
++        return (process.terminationStatus, String(decoding: try Data(contentsOf: log), as: UTF8.self))
++    }
++}

@@ -76,9 +76,15 @@ That shared library now provides root-only durable intent publication, exact
 recovery and explicit completion APIs. It blocks both ordinary inference SH and
 sandbox EX acquisition while any maintenance record exists. Abrupt process-exit
 tests prove that the fence persists after the kernel lock is released.
-The root base operator has not yet been wired to those APIs, and the per-image
-broker/native fence is still missing. This process-lifetime image guard alone
-does not provide that complete recovery protocol.
+The broker and pinned native runtime now reject any per-image
+`.darkbloom-offline.json` entry. Ordinary broker create/start/delete, clone-source
+validation and deletion replay cannot remove or bypass it. Native run, settings,
+clone, forced pull and delete reject it under the image guard; actual storage
+paths, auxiliary/USB/mount images and aliases are checked before VM startup.
+Read-only native inspection leaves the fence intact. The root base operator must
+still be wired to publish both global and per-image fences before attaching,
+bind recovery to the exact journal/source, and remove them only after cleanup.
+This process-lifetime image guard alone does not provide that complete workflow.
 Lume's legacy provisioning marker is unsuitable because details lookup can
 automatically remove it when the VM's required files exist. No offline-mount
 crash-recovery or successful root entrypoint execution is claimed by the local

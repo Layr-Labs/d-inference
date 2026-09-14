@@ -40,6 +40,7 @@ extension LumeVirtualMachineRuntime {
         catch SandboxCapacityError.leaseNotFound where releaseCapacity && scope != nil { reservationAbsent = true }
         let operationLock = try beginOperation(releaseCapacity ? "delete-and-release" : "delete", name: name)
         defer { endOperation(name: name); withExtendedLifetime(operationLock) {} }
+        try LumeOfflineOperationFence.requireAbsent(storage: configuration.storageDirectory, name: name)
         let pending = try LumeVirtualMachineDeletionIntent.load(workspace: workspace, name: name)
         try pending?.requireMatching(name: name, scope: scope)
         if releaseCapacity, let capacityArbiter, let scope,

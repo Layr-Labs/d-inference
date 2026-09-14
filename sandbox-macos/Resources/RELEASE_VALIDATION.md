@@ -33,7 +33,7 @@ under the descriptor-lifetime lock. It preserves a replacement inode and lets
 the accept loop finish closing its descriptors. The broker still allocates a
 fresh private endpoint directory on every stopped-to-running transition.
 
-The pinned native test runner executes the full suite plus thirteen required
+The pinned native test runner executes the full suite plus sixteen required
 selectors, including the final-frame half-close exchange and a writer-error
 diagnostic control. The relay fixture runs its complete timed exchange on
 dedicated test threads, retries interrupted socket IO, preserves actual errno
@@ -41,6 +41,11 @@ and byte counts, and joins owned workers during error cleanup. Production relay
 code and its timeout are unchanged by that test-only patch. The CI I/O failure
 that motivated it did not reproduce in eleven local full-suite baseline runs;
 the harness correction is not evidence of a diagnosed production relay defect.
+The offline-fence selectors also require denial of fenced native commands,
+read-only inspection preserving the marker, and storage alias checks. The
+per-image marker is never treated as the automatically cleared provisioning
+marker. Normal native commands cannot remove it. These temporary-file and CLI
+tests do not establish successful physical root maintenance.
 
 Managed raw Apple restore requires the current managed-installer patch and a new
 matching signed Lume artifact. `LumeManagedRestoreProcess` retains exclusive
@@ -295,8 +300,9 @@ The shared library also refuses ordinary SH/EX admission while root-owned
 `maintenance.json` is present. Only root recovery with the exact operation and
 journal binding can resume maintenance; the operator must verify and record
 cleanup before clearing the fence. All participating binaries need this updated
-admission behavior. The base operator's use of it and the per-image native fence
-remain required before automatic offline disk attachment is enabled.
+admission behavior. The per-image native fence is implemented; the base operator
+still needs to publish, recover and clear both fences before automatic offline
+disk attachment is enabled.
 
 Keep coordinator admission disabled and capacity draining during qualification.
 A job's launchctl exit is insufficient stop proof: independently verify the VM

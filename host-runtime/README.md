@@ -42,9 +42,11 @@ cleanup, then durably preserve that evidence in its journal, before calling
 `finishAfterVerifiedCleanup`. This library checks the fence and ownership;
 it does not perform or infer VM/disk cleanup. Clearing the record retains EX
 until the last lease reference is released. The completed scope cannot be reused.
-This global fence also needs the sandbox's per-image broker/native fence so a
-direct native VM invocation cannot race an interrupted offline mount. That
-per-image integration is a separate unfinished gate.
+The sandbox broker and pinned native runtime also reject the per-image
+`.darkbloom-offline.json` fence, including normal native commands and storage
+attachments through aliases. The root base operator must still publish both
+fences under ownership, prove cleanup, and remove them in the correct order;
+that end-to-end offline workflow remains unfinished.
 
 Root provisioning requires a coordinated transition: inference processes that
 started before the authority existed cannot retroactively hold a shared lock.

@@ -56,6 +56,9 @@ public struct LumeRuntimeConfiguration: Sendable {
     public static let pinnedRelayFixturePatchPath = "ThirdParty/lume-patches/0011-await-relay-fixture-io-without-blocking-test-executors.patch"
     public static let pinnedRelayFixturePatchSHA256 = "45f6324e1eac2adcc09e7462d14bf37d3ef216c74c109e369fc1c8b3c9fd009b"
 
+    public static let pinnedOfflineFencePatchPath = "ThirdParty/lume-patches/0012-fence-images-during-offline-maintenance.patch"
+    public static let pinnedOfflineFencePatchSHA256 = "4dfd68d6c6c739ca412c3e62e24b5611ca20e1b4618891d794406bb6fb831369"
+
     public static let pinnedPatches = [
         pinnedPatchPath: pinnedPatchSHA256,
         pinnedLivenessPatchPath: pinnedLivenessPatchSHA256,
@@ -68,6 +71,7 @@ public struct LumeRuntimeConfiguration: Sendable {
         pinnedManagedRestorePatchPath: pinnedManagedRestorePatchSHA256,
         pinnedGuestEndpointCleanupPatchPath: pinnedGuestEndpointCleanupPatchSHA256,
         pinnedRelayFixturePatchPath: pinnedRelayFixturePatchSHA256,
+        pinnedOfflineFencePatchPath: pinnedOfflineFencePatchSHA256,
     ]
 
     public let executable: URL

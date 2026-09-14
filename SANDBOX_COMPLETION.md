@@ -5,6 +5,7 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
+Current local changes add broker/native per-image offline fences as patch12.
 Pushedf12f72810 adds durable root maintenance to host-runtime; pushedd8fa61dc5
 adds native relay test-harness patch11. Pushed3c34dbbdd adds the root-only base source/machine lock scope, private
 source reader, shared raw ownership decoding and real process-lock tests.
@@ -12,16 +13,19 @@ Pushed3ac8a7fb6 adds recoverable accountless payload staging and its durable
 journal. Pushedf235b8ad2 adds signal cancellation, actual GUI-session monitoring
 and cleanup covering all post-runtime startup/service exits. Source6cf8f3381 adds
 installed-checkpoint publication after qualification-clone consumerb48455139 and
-requested-resource configuration32be94642. Full sandbox suite passes548tests,
-7explicit skips,0failures (128.289s); host-runtime18tests pass and the provider
+requested-resource configuration32be94642. Full sandbox suite passes552tests,
+7explicit skips,0failures (127.380s); host-runtime18tests pass and the provider
 darkbloom target builds. A clean replay of11native patches passes196tests plus
-13required selectors. Coordinator suite, Linux
+13required selectors. The new patch12 signed build passes200native tests and
+16required selectors; the final idle sandbox rerun passed after two legacy
+SSH-wrapper timing failures during concurrent release compilation, which remain
+a recorded stress concern. Coordinator suite, Linux
 build, docs lint, UI lint and Next.js build pass. CI34811478625 and integration
 34811478687 passed6cf8f3381. CI34813684236 and integration34813684227
 passed3ac8a7fb6. Integration34815356765 passed3c34dbbdd, but CI34815356747
 failed the native relay fixture's large-frame test; other jobs passed. The
-test-harness correction has freshCI34819884262 and integration34819884263
-running atd8fa61dc5; benchmark
+test-harness correction has CI34819884262 and integration34819884263
+passing atd8fa61dc5. Current local patch12 needs fresh CI; benchmark
 environment approval is separate and has not been granted.
 
 Physical guest exercise14 and coldboot15 PASS on the test Mac. They prove
@@ -1266,3 +1270,85 @@ and remaining per-image/root-operator work. FreshCI34819884262 and integration
 approval, not granted. Go-cache approval remains pending. No remote mutations.
 Next is per-image broker/native offline fencing as patch12, then typed root
 maintenance begin/recovery integration and the guarded mount/bootstrap pipeline.
+
+## Per-image broker/native fence and signed runtime12
+
+Current source adds LumeOfflineOperationFence with fixed .darkbloom-offline.json.
+Any entry, including empty/malformed/directory/FIFO/dangling link, blocks ordinary
+broker create/start/delete, clone-source readiness and direct durable-deletion
+replay. Ordinary code never interprets, removes or repairs the fence. Four focused
+broker tests pass; earlier83runtime/restore tests passed with1existing opt-in skip.
+
+Native patch12 adds DarkbloomOfflineOperation and checks before/after native
+resize-guard acquisition. Native run/get-for-operation/clone/delete/settings/
+forced-pull paths refuse fenced images; settings mutation groups share the image
+guard, and forced pull retains its destination guard through publication.
+Read-only getDetails still works and leaves the fence intact. Storage overrides,
+auxiliary virtio-blk, USB, mount paths and aliases are checked before VM startup.
+The native CLI tests use deliberately non-bootable temporary Linux fixtures and
+private per-child environments. They prove run/set/clone/delete/forced-pull denial,
+readonly inspection, destination protection and unfenced settings as a positive
+control. No actual VM is started by those tests. Native command fixture output is
+file-backed/bounded and child execution has a deadline. A test used pull --name,
+which upstream does not support; fixed to its positional name. The older Testing
+macro also required capturing the throwing optional before #require; corrected.
+
+Patch12 final path:
+ThirdParty/lume-patches/0012-fence-images-during-offline-maintenance.patch
+SHA4dfd68d6c6c739ca412c3e62e24b5611ca20e1b4618891d794406bb6fb831369.
+Swift pin mirror, contract test and JSON pin match. Required native selectors now
+number16, including fence commands, every entry kind and storage aliases. The
+editable native tree adds src/FileSystem/DarkbloomOfflineOperation.swift and
+tests/DarkbloomOfflineOperationTests.swift, modifies VMDirectory/Home/controller/VM,
+and retains earlier9/10/11 changes. Base11 snapshots for this diff are under
+/private/tmp/darkbloom-offline-fence-20260914/base11. Do NOT reset or fold earlier
+patches into a later patch. Initial manual clean replay of12patches matched the
+editable files at /private/tmp/darkbloom-offline-fence-replay-jzaueu49/libs/lume;
+that snapshot predates the final auxiliary-storage addition. The official final
+builder performed a fresh full archive/patch application for the final digest.
+
+Signed FINAL runtime12 was built by build-pinned-lume.sh with RUN_TESTS=1 and the
+existing Developer ID identity. Log:
+/private/tmp/darkbloom-offline-fence-20260914/signed-runtime-final-build.log.
+It passes200native tests (7.225s) and16required exact selectors, builds release,
+checks signatures and seals the artifact. Final executable:
+/private/tmp/darkbloom-sandbox-lab-20260913/runtime/lume-offline-fence-12-final/lume
+SHA3afc5eb6e291718920a83e881c97e90f4c78866bc49ca66cc011e7f35d86bfad.
+Provenance same directory/lume.provenance.json SHA
+ aa973a866ae5e89e6f02caa448d142ee98c7039b16f6ba2b7a5a81649361b4ba.
+Both signatures were independently rechecked with the exact identifier/team
+requirements. It has NOT been copied to the test Mac or used physically.
+An earlier signed candidate at runtime/lume-offline-fence-12 used old patchSHA
+4b2c9cc14f011fc6479eed24eb955fb0e4f075f24feafcaf7e9ed14fa2210a5c and
+runtimeSHA54de1f3376a05fae26c5695fb38164e7912f4a57111bd63b0b554f5bb08bfcee;
+it is superseded and must NOT be used with the final pin.
+
+Sandbox validation: initial552tests/7skips passed132.265s
+(offline-fence-full-tests.log). During the final native release compilation,
+a second run failed two older SSH-wrapper tests: testEnvelopeSeparatesStreamsAndPreservesExitCode
+hit the5s outer zsh timeout, and testGuestLocalDeadlineStopsJobBeforeDelayedSideEffect
+observed its sleep2/touch marker after a1s guest deadline. This does NOT prove a
+fence regression or a production isolated-guest defect, but remains a recorded
+load-sensitivity concern. All14LumeGuestCommandEncoderTests pass without the
+competing build (33.379s, offline-fence-encoder-idle-tests.log). A full idle rerun
+passes552tests/7skips/0failures in127.380s in offline-fence-idle-full-tests.log.
+Do not call the under-load failure fixed. The legacy launchd watchdog performs
+several status-file commands before bootout and can be delayed; production
+isolated guest supervision is a separate path. Follow up before final readiness,
+without merely loosening a deadline test or claiming absence of side effects.
+
+CI34819884262 and integration34819884263 passed precedingd8fa61dc5. No remote
+root, VM, service, model, cache or production mutation occurred. Go-cache approval
+remains pending. Last physical proof remains exercise14/coldboot15 on runtime8
+and guest244009eca. Final signed runtime12 is local only.
+
+NEXT: integrate global maintenance scopes and per-image fence publication into
+the typed root base operator. It must bind the journal to the exact reserved
+source, publish global then image fences before any attach, and remove image then
+global fences only after observed cleanup. Existing RootBaseImageGuard acquires
+its own EX; recovery needs a root-only path reusing the already-recovered EX
+scope, not a second acquisition. Distinguish initial unchanged-disk snapshots
+from same-inode recovery after authorized partial writes. No public bypass flag.
+Then finish guarded attach/Data selection/detach, GUI installer boot, receipt
+collection/removal, installed checkpoint, clone qualification/cold boot/teardown,
+and actual ready-template publication. These workflow/writer steps remain unbuilt.

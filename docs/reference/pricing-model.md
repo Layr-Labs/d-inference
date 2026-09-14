@@ -30,10 +30,10 @@ pieces fit together, and what they guarantee, is explained in
 | `platformFeePercent` | see [billing.md, invariant 4](../architecture/billing.md#invariants) | global platform fee when no per-user override is set | `coordinator/payments/pricing.go` |
 | `defaultMaxOutputTokens` | `8192` | output bound when the request sets no max-tokens field and the registry has no `max_output_length` | `coordinator/api/consumer.go` |
 | `settlement.DefaultGrace` | `30 * time.Second` | how long a consumer-disconnected request waits for the provider terminal before refund; API `defaultTerminalSettleGrace` aliases this constant | `coordinator/inference/settlement/holder.go`; `coordinator/api/settlement.go` |
-| `MinWithdrawMicroUSD` | `1_000_000` | minimum withdrawal ($1.00) | `coordinator/billing/stripe_connect.go` |
-| `InstantFeeBps` | `150` | instant payout fee (1.5%) | `coordinator/billing/stripe_connect.go` |
-| `InstantFeeMinMicroUSD` | `500_000` | instant payout fee floor ($0.50) | `coordinator/billing/stripe_connect.go` |
-| standard payout fee | `0` | `FeeForMethodMicroUSD("standard", …)` | `coordinator/billing/stripe_connect.go` |
+| `MinWithdrawMicroUSD` | `1_000_000` | minimum withdrawal ($1.00) | `coordinator/billing/stripe_connect_fees.go` |
+| `InstantFeeBps` | `150` | instant payout fee (1.5%) | `coordinator/billing/stripe_connect_fees.go` |
+| `InstantFeeMinMicroUSD` | `500_000` | instant payout fee floor ($0.50) | `coordinator/billing/stripe_connect_fees.go` |
+| standard payout fee | `0` | `FeeForMethodMicroUSD("standard", …)` | `coordinator/billing/stripe_connect_fees.go` |
 | `stripeRecipientTransferDelay` | `24 * time.Hour` | availability delay of a transfer into a `recipient`-agreement account; sweep-matching cutoff | `coordinator/api/billing/connect_sweep.go` |
 | `stripeReconcileInterval` / `stripeStuckThreshold` / `stripeReconcileBatch` | `1 * time.Hour` / `48 * time.Hour` / `200` | payout reconciler cadence, stuck threshold, rows per pass | `coordinator/api/billing/connect_reconcile.go` |
 | Stripe deposit minimum | `0.50` USD | `amount_usd` lower bound on `create-session` | `coordinator/api/billing/checkout.go` (`StripeCreateSession`) |
@@ -84,7 +84,7 @@ updated_at)`, primary key `(account_id, model)`
 | Platform fee | `totalCost × resolveFeePercent(user.PlatformFeePercent) / 100`; override clamped to `[0, 100]`, else `platformFeePercent` | `coordinator/payments/pricing.go` (`PlatformFeeWithPercent`, `resolveFeePercent`) |
 | Referral reward | `platformFee × ReferralSharePercent / 100`, carved out of the platform fee | `coordinator/billing/referral.go` (`DistributeReferralReward`) |
 | Provider payout | `totalCost − platformFee` | `coordinator/payments/pricing.go` (`ProviderPayoutWithPercent`) |
-| Withdrawal fee | `0` (standard); `max(gross × InstantFeeBps / 10_000, InstantFeeMinMicroUSD)` (instant) | `coordinator/billing/stripe_connect.go` (`FeeForMethodMicroUSD`) |
+| Withdrawal fee | `0` (standard); `max(gross × InstantFeeBps / 10_000, InstantFeeMinMicroUSD)` (instant) | `coordinator/billing/stripe_connect_fees.go` (`FeeForMethodMicroUSD`) |
 | Withdrawal net | `gross − fee`, transferred as `microUSDToCents(net)`; must be ≥ 1 cent | `coordinator/api/billing/connect_withdraw.go` (`StripeWithdraw`) |
 | Key spend | `Σ usage.cost_micro_usd` for the key since `KeySpendWindowStart(limit_reset, now)`; request rejected when `spend + additional > LimitMicroUSD` | `coordinator/store/postgres/keys.go` (`KeySpendSince`); `coordinator/api/accounts/key_policy.go` (`accounts.CheckKeySpendCap`) |
 

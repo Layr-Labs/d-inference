@@ -1,4 +1,4 @@
-package api
+package network
 
 import (
 	"encoding/json"
@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/httpresponse"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -27,11 +28,11 @@ func parseLeaderboardWindow(s string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// handleLeaderboard returns the top N accounts ranked by earnings,
+// Leaderboard returns the top N accounts ranked by earnings,
 // tokens, or jobs. Pseudonymized — never exposes raw account IDs.
 //
 // GET /v1/leaderboard?metric=earnings|tokens|jobs&window=24h|7d|30d|all&limit=50
-func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
+func (s *Controller) Leaderboard(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	metricParam := q.Get("metric")
 	if metricParam == "" {
@@ -46,7 +47,7 @@ func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 	case "jobs":
 		metric = store.LeaderboardJobs
 	default:
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+		httpresponse.WriteJSON(w, http.StatusBadRequest, httpresponse.ErrorBody("invalid_request_error",
 			"metric must be one of: earnings, tokens, jobs"))
 		return
 	}
@@ -54,7 +55,7 @@ func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 	windowParam := q.Get("window")
 	since, ok := parseLeaderboardWindow(windowParam)
 	if !ok {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+		httpresponse.WriteJSON(w, http.StatusBadRequest, httpresponse.ErrorBody("invalid_request_error",
 			"window must be one of: 24h, 7d, 30d, all"))
 		return
 	}
@@ -65,12 +66,12 @@ func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cacheKey := fmt.Sprintf("leaderboard:%s:%s:%d", metric, windowParam, limit)
-	if cached, ok := s.readCache.Get(cacheKey); ok {
-		writeCachedJSON(w, cached)
+	if cached, ok := s.readCache().Get(cacheKey); ok {
+		httpresponse.WriteCachedJSON(w, cached)
 		return
 	}
 
-	rows := s.store.Leaderboard(metric, since, limit)
+	rows := s.store().Leaderboard(metric, since, limit)
 
 	type entry struct {
 		Rank                   int    `json:"rank"`
@@ -102,11 +103,11 @@ func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := json.Marshal(resp)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode response"))
+		httpresponse.WriteJSON(w, http.StatusInternalServerError, httpresponse.ErrorBody("internal_error", "failed to encode response"))
 		return
 	}
-	s.readCache.Set(cacheKey, body, 5*time.Minute)
-	writeCachedJSON(w, body)
+	s.readCache().Set(cacheKey, body, 5*time.Minute)
+	httpresponse.WriteCachedJSON(w, body)
 }
 
 func windowParamOrDefault(s string) string {

@@ -1,4 +1,4 @@
-package api
+package network
 
 import (
 	"encoding/json"
@@ -19,7 +19,7 @@ func TestStatsAggregatesProviderLocationsWithPrivacyFloor(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := registry.New(logger)
 	st := store.NewMemory(store.Config{})
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := newTestController(reg, st, logger)
 
 	addProviderForStats(t, reg, "sf-1", "hardware", &store.ProviderLocation{
 		City:        "San Francisco",
@@ -55,7 +55,7 @@ func TestStatsAggregatesProviderLocationsWithPrivacyFloor(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	srv.refreshStatsGeography()
-	srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+	srv.Stats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 	}
@@ -99,14 +99,14 @@ func TestStatsIncludesExactLast24hUsageTotals(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := registry.New(logger)
 	st := store.NewMemory(store.Config{})
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := newTestController(reg, st, logger)
 
 	st.RecordUsageWithCostAndLocation("provider-a", "consumer", "model", "one", 10, 20, 0, nil)
 	st.RecordUsageWithCostAndLocation("provider-b", "consumer", "model", "two", 30, 40, 0, nil)
 
 	rr := httptest.NewRecorder()
 	srv.refreshStatsGeography()
-	srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+	srv.Stats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 	}
@@ -133,7 +133,7 @@ func TestStatsAggregatesRequestLocationsWithPrivacyFloor(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := registry.New(logger)
 	st := store.NewMemory(store.Config{})
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := newTestController(reg, st, logger)
 
 	sf := &store.ProviderLocation{
 		City:        "San Francisco",
@@ -169,7 +169,7 @@ func TestStatsAggregatesRequestLocationsWithPrivacyFloor(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	srv.refreshStatsGeography()
-	srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+	srv.Stats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 	}
@@ -209,7 +209,7 @@ func TestStatsAggregatesRequestFlowsToProviderLocations(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := registry.New(logger)
 	st := store.NewMemory(store.Config{})
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := newTestController(reg, st, logger)
 
 	providerLoc := &store.ProviderLocation{
 		City:        "San Francisco",
@@ -238,7 +238,7 @@ func TestStatsAggregatesRequestFlowsToProviderLocations(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	srv.refreshStatsGeography()
-	srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+	srv.Stats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 	}

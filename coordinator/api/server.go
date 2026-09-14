@@ -36,6 +36,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/network"
 	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/apns"
 	"github.com/eigeninference/d-inference/coordinator/auth"
@@ -344,19 +345,10 @@ type Server struct {
 	// endpoints (stats, leaderboard, model catalog, etc.). TTLs are
 	// per-key. Never nil.
 	readCache *ttlCache
-	// statsRefresh owns stats:v1 (stats.go), statsGeographyRefresh owns
-	// stats:geography:v1 (stats_geography.go);
-	// networkTotalsRefresh owns one network_totals:<window> entry per window
-	// (network_totals.go). All are driven by the refresher machinery in
-	// cache_refresher.go.
+	// summaryWindowsFlights coalesces per-account summary reads.
 	summaryWindowsFlights singleflight.Group
-	statsRefresh          cacheRefresher
-	statsGeographyRefresh cacheRefresher
-	networkTotalsRefresh  struct {
-		queryMu sync.Mutex
-		mu      sync.Mutex
-		entries map[string]*cacheRefresher
-	}
+	// networkViews owns public aggregation and its background refresh state.
+	networkViews *network.Controller
 
 	// emitter writes coordinator-side telemetry events (panics, handler
 	// failures, attestation failures, etc.). Set via SetEmitter; nil before
@@ -805,6 +797,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	s.profiler = newProfilerFromEnv(s)
 	s.requestOutcomes = newRequestOutcomeSink(s, defaultTelemetrySinkCapacity)
 	s.registerDefaultGauges()
+	s.networkViews = s.newNetworkViews()
 	s.routes()
 
 	// Apply server configuration from ServerConfig.
@@ -2659,13 +2652,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/models/capacity", s.handleModelsCapacity)
 
 	// Platform stats — no auth needed. Frontend dashboard uses this.
-	s.mux.HandleFunc("GET /v1/stats", s.handleStats)
+	s.mux.HandleFunc("GET /v1/stats", s.networkViews.Stats)
 
 	// Public leaderboard + network totals — no auth, pseudonymized,
 	// 5-min/1-min cache.
-	s.mux.HandleFunc("GET /v1/leaderboard", s.handleLeaderboard)
-	s.mux.HandleFunc("GET /v1/network/totals", s.handleNetworkTotals)
-	s.mux.HandleFunc("GET /v1/network/series", s.handleNetworkSeries)
+	s.mux.HandleFunc("GET /v1/leaderboard", s.networkViews.Leaderboard)
+	s.mux.HandleFunc("GET /v1/network/totals", s.networkViews.Totals)
+	s.mux.HandleFunc("GET /v1/network/series", s.networkViews.Series)
 
 	// Provider version check — no auth needed. Providers call this to check for updates.
 	s.mux.HandleFunc("GET /api/version", s.handleVersion)

@@ -1,4 +1,4 @@
-package api
+package network
 
 import (
 	"context"
@@ -12,13 +12,13 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-func readStatsGeography(t *testing.T, srv *Server) statsGeography {
+func readStatsGeography(t *testing.T, srv *Controller) statsGeography {
 	t.Helper()
 	if _, ok := srv.refreshStats(); !ok {
 		t.Fatal("core stats failed because of geography")
 	}
 	rr := httptest.NewRecorder()
-	srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+	srv.Stats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("stats status = %d: %s", rr.Code, rr.Body.String())
 	}
@@ -87,7 +87,7 @@ func TestStatsGeographyEmptyAndExpiredAreDifferent(t *testing.T) {
 	if _, err := time.Parse(time.RFC3339Nano, empty.UpdatedAt); err != nil {
 		t.Fatalf("geography needs its own source timestamp: %v", err)
 	}
-	srv.readCache.Set(statsGeographyCacheKey, []byte(`{}`), -time.Second)
+	srv.readCache().Set(statsGeographyCacheKey, []byte(`{}`), -time.Second)
 	expired := readStatsGeography(t, srv)
 	if expired.LocationsStatus != statsGeographyUnavailable || expired.Locations != nil || expired.UnknownRequests != nil {
 		t.Fatal("expired geography must not become fresh empty data")
@@ -124,7 +124,7 @@ func TestStatsCoreLoadsWhileGeographyRefreshIsBlocked(t *testing.T) {
 	response := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		rr := httptest.NewRecorder()
-		srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+		srv.Stats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
 		response <- rr
 	}()
 	select {

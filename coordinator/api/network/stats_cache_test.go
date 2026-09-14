@@ -1,4 +1,4 @@
-package api
+package network
 
 import (
 	"bytes"
@@ -27,21 +27,16 @@ func (s statsDelayedStore) UsageTotals() (store.UsageTotals, error) {
 }
 
 // Keep these fake-clock tests on the actual handler, cache and registry without
-// unrelated server workers; StartCacheRefreshers is started explicitly below.
-func newStatsSnapshotServer(st store.Store) *Server {
+// unrelated server workers; StartRefreshers is started explicitly below.
+func newStatsSnapshotServer(st store.Store) *Controller {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return &Server{
-		registry:  registry.New(logger),
-		store:     st,
-		logger:    logger,
-		readCache: newTTLCache(),
-	}
+	return newTestController(registry.New(logger), st, logger)
 }
 
-func readStatsSnapshot(t *testing.T, srv *Server) ([]byte, time.Time, int64) {
+func readStatsSnapshot(t *testing.T, srv *Controller) ([]byte, time.Time, int64) {
 	t.Helper()
 	rr := httptest.NewRecorder()
-	srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+	srv.Stats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 	}
@@ -105,7 +100,7 @@ func TestStatsRefreshCadenceLeavesNetworkTotalsAtOneMinute(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		startedAt := time.Now()
-		srv.StartCacheRefreshers(ctx)
+		srv.StartRefreshers(ctx)
 		synctest.Wait()
 		initialBody, capturedAt, _ := readStatsSnapshot(t, srv)
 		if !capturedAt.Equal(startedAt) || st.locationCalls.Load() != 1 || st.totalsCalls.Load() != 4 {
@@ -161,7 +156,7 @@ func TestStatsFailedRefreshPreservesTimestampAndSafetyExpiry(t *testing.T) {
 		}
 		time.Sleep(2 * time.Nanosecond)
 		rr := httptest.NewRecorder()
-		srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+		srv.Stats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
 		if rr.Code != http.StatusServiceUnavailable {
 			t.Fatalf("expired source with failed refresh: status=%d, body=%s", rr.Code, rr.Body.String())
 		}

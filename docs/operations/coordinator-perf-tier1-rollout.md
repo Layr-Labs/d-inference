@@ -1,6 +1,6 @@
 # Coordinator Performance Tier 1 Rollout
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-14 · commit `831869026`
 
 Operator companion to the `perf/coordinator-tier1-2026-09-03` branch (the
 code items 1.1, 1.3–1.8 of the 2026-09-03 coordinator performance proposal).
@@ -18,8 +18,8 @@ Canonical code (code wins over this doc; find declarations by symbol):
 | Behavior | Code |
 |---|---|
 | Bounded usage history with lazy allocation | `coordinator/payments/payments.go` (`Ledger.RecordUsage`, `usageHistoryGrowth`) |
-| Shared cache refresh and cold-miss coalescing | `coordinator/api/cache_refresher.go` (`StartCacheRefreshers`, `getCachedEntry`, `refreshCachedEntry`, `computeCachedEntry`) |
-| Stats / network totals computation | `coordinator/api/stats.go` (`computeStats`, `handleStats`); `coordinator/api/network_totals.go` (`computeNetworkTotals`, `handleNetworkTotals`) |
+| Shared cache refresh and cold-miss coalescing | `coordinator/api/network/refresh.go` (`Controller.StartRefreshers`, `getCachedEntry`, `refreshCachedEntry`, `computeCachedEntry`) |
+| Stats / network totals computation | `coordinator/api/network/stats_snapshot.go` (`computeStats`); `coordinator/api/network/stats.go` (`Controller.Stats`); `coordinator/api/network/totals.go` (`computeNetworkTotals`, `Controller.Totals`) |
 | Analytics transaction and query errors | `coordinator/store/postgres_analytics.go` (`withAnalyticsTx`, `UsageLocationBuckets`, `UsageFlowBuckets`, `NetworkTotals`) |
 | Verification poller cadence + busy floor | `coordinator/api/mdm_scheduler_exec.go` (`shouldLoadDueRows`, `nextDispatchDelay`) |
 | Dashboard rolling windows | `coordinator/store/postgres_dashboard.go` and `coordinator/store/memory_dashboard.go` (`AccountEarningsWindows`); `coordinator/api/me_summary_cache.go` (`accountEarningsWindows`) |
@@ -277,8 +277,8 @@ flowchart LR
   end
   subgraph After
     direction TB
-    D1[StartCacheRefreshers] --> D2[refreshCachedEntry<br/>coalesced, errors keep last success] --> D3[withAnalyticsTx<br/>SET LOCAL work_mem 1GB] --> D4[Set 5 min]
-    D5[handleStats / handleNetworkTotals] --> D6[readCache.Get; cold miss -> D2]
+    D1[Server.StartCacheRefreshers<br/>network.Controller.StartRefreshers] --> D2[refreshCachedEntry<br/>coalesced, errors keep last success] --> D3[withAnalyticsTx<br/>SET LOCAL work_mem 1GB] --> D4[Set 5 min]
+    D5[network.Controller.Stats / network.Controller.Totals] --> D6[readCache.Get; cold miss -> D2]
     D7[commitFirstContent] --> D8[MarkRateOutcomeCounted<br/>saferun.Go RecordCapacityAccept] --> D9[writeCommittedResponse] --> D10[provider.RecordLatency<br/>p.mu only] --> D11[stream]
     D12[dispatcher loop] --> D13[shouldLoadDueRows: 1 s cadence or empty queue] --> D14[ListDueVerificationJobsPage<br/>make 0,min limit,256]
     D15[RecordJobSuccess] --> D16[persistReputationThrottled; Disconnect flushes]

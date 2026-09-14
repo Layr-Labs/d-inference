@@ -1,4 +1,4 @@
-package api
+package network
 
 import (
 	"bytes"
@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -101,21 +100,16 @@ func (c *countingStatsStore) UsageFlowBuckets(since time.Time, locs map[string]*
 	return c.Store.UsageFlowBuckets(since, locs)
 }
 
-type staticGeoResolver struct{ loc *store.ProviderLocation }
-
-func (g staticGeoResolver) Lookup(*http.Request) *store.ProviderLocation { return g.loc }
-
 // newStatsRefresherFixture builds a server whose store has enough located
 // usage and a located provider for both analytics statements to return rows,
 // so a refresh produces a "good" value.
-func newStatsRefresherFixture(t *testing.T) (*Server, *registry.Registry, *countingStatsStore) {
+func newStatsRefresherFixture(t *testing.T) (*Controller, *registry.Registry, *countingStatsStore) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := registry.New(logger)
 	mem := store.NewMemory(store.Config{})
 	st := &countingStatsStore{Store: mem}
-	srv := NewServer(reg, st, ServerConfig{}, logger)
-	t.Cleanup(srv.Close)
+	srv := newTestController(reg, st, logger)
 
 	sf := &store.ProviderLocation{
 		City: "San Francisco", Region: "California", RegionCode: "CA",
@@ -198,7 +192,7 @@ func TestStatsRefresherOwnsEntryUnderConcurrentRequests(t *testing.T) {
 	}()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		if _, ok := srv.readCache.Get(statsCacheKey); ok {
+		if _, ok := srv.readCache().Get(statsCacheKey); ok {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -247,7 +241,7 @@ func TestStatsColdMissCoalescesConcurrentRequests(t *testing.T) {
 	if got := st.flowCalls.Load(); got != 1 {
 		t.Fatalf("flow statements for 50 concurrent cold misses = %d, want 1 (coalesced)", got)
 	}
-	if _, ok := srv.readCache.Get(statsCacheKey); !ok {
+	if _, ok := srv.readCache().Get(statsCacheKey); !ok {
 		t.Fatal("cold miss did not populate stats:v1")
 	}
 }
@@ -278,23 +272,23 @@ func TestStatsRefreshQueryFailures(t *testing.T) {
 			}
 			// An unexpired success still serves during the outage.
 			rr := httptest.NewRecorder()
-			srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+			srv.Stats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
 			if rr.Code != http.StatusOK || !bytes.Equal(rr.Body.Bytes(), good) {
 				t.Fatalf("warm response: %d %s", rr.Code, rr.Body.String())
 			}
 			// Expiry is a hard bound on staleness. Failed data must not be cached.
-			srv.readCache.Set(statsCacheKey, good, -time.Second)
+			srv.readCache().Set(statsCacheKey, good, -time.Second)
 			rr = httptest.NewRecorder()
-			srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+			srv.Stats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
 			if rr.Code != http.StatusServiceUnavailable {
 				t.Fatalf("cold query failure: %d %s", rr.Code, rr.Body.String())
 			}
-			if _, ok := srv.readCache.Get(statsCacheKey); ok {
+			if _, ok := srv.readCache().Get(statsCacheKey); ok {
 				t.Fatal("cached a failed query")
 			}
 			tc.flag.Store(false)
 			rr = httptest.NewRecorder()
-			srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+			srv.Stats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
 			if rr.Code != http.StatusOK {
 				t.Fatalf("recovery: %d %s", rr.Code, rr.Body.String())
 			}
@@ -323,55 +317,8 @@ func TestStatsRefreshAcceptsEmptyAnalytics(t *testing.T) {
 	if !ok || len(empty.Locations) != 0 || len(empty.Flows) != 0 {
 		t.Fatalf("empty analytics kept stale locations: ok=%v body=%s", ok, body)
 	}
-	if cached, ok := srv.readCache.Get(statsCacheKey); !ok || !bytes.Equal(cached, body) {
+	if cached, ok := srv.readCache().Get(statsCacheKey); !ok || !bytes.Equal(cached, body) {
 		t.Fatal("empty result not cached")
-	}
-}
-
-// TestProviderRegistrationNoLongerEvictsStats: resolving a provider location at
-// registration and a catalog change used to evict stats:v1; the refresher now
-// owns the entry, so both leave it in place.
-func TestProviderRegistrationNoLongerEvictsStats(t *testing.T) {
-	srv, reg, st := newStatsRefresherFixture(t)
-	srv.geoResolver = staticGeoResolver{loc: &store.ProviderLocation{
-		City: "Austin", Region: "Texas", RegionCode: "TX",
-		Country: "United States", CountryCode: "US", Source: "test",
-	}}
-
-	good, ok := srv.refreshStats()
-	if !ok {
-		t.Fatal("refresh failed")
-	}
-	before := st.locationCalls.Load()
-
-	p := reg.Register("provider-new", nil, &protocol.RegisterMessage{
-		Type: protocol.TypeRegister, Backend: "mlx-swift", Version: "1.0.0",
-		Hardware: protocol.Hardware{ChipName: "Apple M4 Max", MemoryGB: 64},
-		Models:   []protocol.ModelInfo{{ID: "model"}},
-	})
-	srv.attachProviderLocation(p.ID, p, httptest.NewRequest(http.MethodGet, "/ws/provider", nil))
-	p.Mu().Lock()
-	resolved := p.Location != nil && p.Location.City == "Austin"
-	p.Mu().Unlock()
-	if !resolved {
-		t.Fatal("attachProviderLocation did not resolve the location (test did not exercise the eviction site)")
-	}
-	if cached, ok := srv.readCache.Get(statsCacheKey); !ok || !bytes.Equal(cached, good) {
-		t.Fatalf("provider registration evicted stats:v1 (ok=%v)", ok)
-	}
-
-	srv.invalidateCatalogCache()
-	if cached, ok := srv.readCache.Get(statsCacheKey); !ok || !bytes.Equal(cached, good) {
-		t.Fatalf("catalog invalidation evicted stats:v1 (ok=%v)", ok)
-	}
-
-	rr := httptest.NewRecorder()
-	srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d", rr.Code)
-	}
-	if got := st.locationCalls.Load(); got != before {
-		t.Fatalf("handler recomputed stats after registration: %d extra statements", got-before)
 	}
 }
 
@@ -431,7 +378,7 @@ func TestNetworkTotalsRefreshKeepsPreviousValueOnStoreError(t *testing.T) {
 	if !ok || !bytes.Equal(served, good) {
 		t.Fatalf("refresh during store error: ok=%v served=%s", ok, served)
 	}
-	if cached, ok := srv.readCache.Get(networkTotalsCacheKey("all")); !ok || !bytes.Equal(cached, good) {
+	if cached, ok := srv.readCache().Get(networkTotalsCacheKey("all")); !ok || !bytes.Equal(cached, good) {
 		t.Fatalf("store error replaced the cached totals (ok=%v): %s", ok, cached)
 	}
 	if code, body := get("all"); code != http.StatusOK || !bytes.Equal(body, good) {
@@ -439,11 +386,11 @@ func TestNetworkTotalsRefreshKeepsPreviousValueOnStoreError(t *testing.T) {
 	}
 
 	// Nothing cached + store error: no zero row is cached or served.
-	srv.readCache.Invalidate(networkTotalsCacheKey("all"))
+	srv.readCache().Invalidate(networkTotalsCacheKey("all"))
 	if code, body := get("all"); code != http.StatusServiceUnavailable {
 		t.Fatalf("cold miss during store error: code=%d body=%s, want 503", code, body)
 	}
-	if _, ok := srv.readCache.Get(networkTotalsCacheKey("all")); ok {
+	if _, ok := srv.readCache().Get(networkTotalsCacheKey("all")); ok {
 		t.Fatal("a failed refresh cached a value")
 	}
 
@@ -469,7 +416,7 @@ func TestNetworkTotalsRefresherOwnsEveryWindow(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for _, window := range networkTotalsWindows {
 		for {
-			if _, ok := srv.readCache.Get(networkTotalsCacheKey(window)); ok {
+			if _, ok := srv.readCache().Get(networkTotalsCacheKey(window)); ok {
 				break
 			}
 			if time.Now().After(deadline) {

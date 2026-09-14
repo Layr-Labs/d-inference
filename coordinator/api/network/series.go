@@ -1,9 +1,11 @@
-package api
+package network
 
 import (
 	"encoding/json"
 	"net/http"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/api/httpresponse"
 )
 
 type networkSeriesWindow struct {
@@ -29,38 +31,38 @@ func parseNetworkSeriesWindow(value string) (networkSeriesWindow, bool) {
 	}
 }
 
-// handleNetworkSeries returns a bounded, complete-bucket traffic series.
+// Series returns a bounded, complete-bucket traffic series.
 // Bucket widths grow with the selected range so the payload remains compact
 // and every chart presents roughly 42-60 points instead of tens of thousands.
 //
 // GET /v1/network/series?window=30m|24h|7d|30d
-func (s *Server) handleNetworkSeries(w http.ResponseWriter, r *http.Request) {
+func (s *Controller) Series(w http.ResponseWriter, r *http.Request) {
 	spec, ok := parseNetworkSeriesWindow(r.URL.Query().Get("window"))
 	if !ok {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+		httpresponse.WriteJSON(w, http.StatusBadRequest, httpresponse.ErrorBody("invalid_request_error",
 			"window must be one of: 30m, 24h, 7d, 30d"))
 		return
 	}
 	if spec.duration > maxNetworkSeriesLookback {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+		httpresponse.WriteJSON(w, http.StatusBadRequest, httpresponse.ErrorBody("invalid_request_error",
 			"network series lookback exceeds 30 days"))
 		return
 	}
 
 	cacheKey := "network_series:" + spec.label
-	if cached, ok := s.readCache.Get(cacheKey); ok {
-		writeCachedJSON(w, cached)
+	if cached, ok := s.readCache().Get(cacheKey); ok {
+		httpresponse.WriteCachedJSON(w, cached)
 		return
 	}
 
 	end := time.Now().UTC().Truncate(spec.bucketSize)
 	start := end.Add(-spec.duration)
-	buckets, err := s.store.UsageTimeSeries(start, end, spec.bucketSize)
+	buckets, err := s.store().UsageTimeSeries(start, end, spec.bucketSize)
 	if err != nil {
 		// Never cache or serve an empty series for a statement that did not
 		// complete; the next request retries.
 		s.logger.Warn("network series unavailable", "window", spec.label, "error", err)
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable", "network series is temporarily unavailable"))
+		httpresponse.WriteJSON(w, http.StatusServiceUnavailable, httpresponse.ErrorBody("service_unavailable", "network series is temporarily unavailable"))
 		return
 	}
 	timeSeries := make([]map[string]any, 0, len(buckets))
@@ -86,9 +88,9 @@ func (s *Server) handleNetworkSeries(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := json.Marshal(response)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode network series"))
+		httpresponse.WriteJSON(w, http.StatusInternalServerError, httpresponse.ErrorBody("internal_error", "failed to encode network series"))
 		return
 	}
-	s.readCache.Set(cacheKey, body, time.Minute)
-	writeCachedJSON(w, body)
+	s.readCache().Set(cacheKey, body, time.Minute)
+	httpresponse.WriteCachedJSON(w, body)
 }

@@ -1,4 +1,4 @@
-package api
+package network
 
 import (
 	"encoding/json"
@@ -37,8 +37,8 @@ func unavailableStatsGeography() statsGeography {
 
 // cachedStatsGeography is read-only and never starts or waits for SQL work.
 // If the refresher has not completed yet, or its entry expired, report unknown.
-func (s *Server) cachedStatsGeography() statsGeography {
-	if body, ok := s.readCache.Get(statsGeographyCacheKey); ok {
+func (s *Controller) cachedStatsGeography() statsGeography {
+	if body, ok := s.readCache().Get(statsGeographyCacheKey); ok {
 		var geography statsGeography
 		if json.Unmarshal(body, &geography) == nil {
 			return geography
@@ -47,11 +47,11 @@ func (s *Server) cachedStatsGeography() statsGeography {
 	return unavailableStatsGeography()
 }
 
-func (s *Server) refreshStatsGeography() ([]byte, bool) {
+func (s *Controller) refreshStatsGeography() ([]byte, bool) {
 	return s.refreshCachedEntry(&s.statsGeographyRefresh, statsGeographyCacheKey, s.computeStatsGeography)
 }
 
-func (s *Server) computeStatsGeography() ([]byte, error) {
+func (s *Controller) computeStatsGeography() ([]byte, error) {
 	observedAt := time.Now()
 	since := observedAt.Add(-24 * time.Hour)
 	geography := unavailableStatsGeography()
@@ -81,9 +81,9 @@ func (s *Server) computeStatsGeography() ([]byte, error) {
 	return json.Marshal(geography)
 }
 
-func (s *Server) recordStatsGeographyFailure(section string, err error) {
+func (s *Controller) recordStatsGeographyFailure(section string, err error) {
 	s.logger.Warn("stats geography unavailable", "section", section, "error", err)
-	s.ddIncr("cache.refresh_failed", []string{"key:" + statsGeographyCacheKey, "section:" + section})
+	s.incr("cache.refresh_failed", []string{"key:" + statsGeographyCacheKey, "section:" + section})
 }
 
 func (g statsGeography) addTo(response map[string]any) {

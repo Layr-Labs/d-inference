@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -35,7 +36,7 @@ func reqWithUser(method, target, body, accountID string) *http.Request {
 		r = httptest.NewRequest(method, target, strings.NewReader(body))
 	}
 	ctx := context.WithValue(r.Context(), auth.CtxKeyUser, &store.User{AccountID: accountID})
-	ctx = context.WithValue(ctx, ctxKeyConsumer, accountID)
+	ctx = requestcontext.WithAccountID(ctx, accountID)
 	return r.WithContext(ctx)
 }
 

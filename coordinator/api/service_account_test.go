@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -16,7 +17,7 @@ import (
 // serviceRequest builds a request whose context carries a service-role user.
 func serviceRequest(accountID string) *http.Request {
 	user := &store.User{AccountID: accountID, Role: store.RoleService}
-	ctx := context.WithValue(context.Background(), ctxKeyConsumer, accountID)
+	ctx := requestcontext.WithAccountID(context.Background(), accountID)
 	ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
 	return httptest.NewRequest("POST", "/v1/chat/completions", nil).WithContext(ctx)
 }
@@ -42,7 +43,7 @@ func TestRateLimitServiceUsesElevatedLimiter(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/v1/chat/completions", nil).
-			WithContext(context.WithValue(context.Background(), ctxKeyConsumer, "normie"))
+			WithContext(requestcontext.WithAccountID(context.Background(), "normie"))
 		h(rec, req)
 		if rec.Code == http.StatusTooManyRequests {
 			throttled = true

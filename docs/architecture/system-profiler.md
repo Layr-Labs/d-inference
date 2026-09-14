@@ -67,7 +67,7 @@ attempt stamps.
 | `first_chunk_ingress_us`, `chunks_in`, `decrypt_us_total` | chunk ingress on the WS read loop (one clock read + two atomic adds per chunk) | provider dequeue → prefill → first frame → transport |
 | `first_content_ingress_us` | read loop | preamble frames before the first content-bearing chunk |
 | `first_chunk_dequeued_us`, `first_content_us`, `held_preamble_chunks` | dispatch goroutine (`profiler_dispatch.go`) | channel hand-off + commit decision |
-| `headers_written_us` | `stampCommitted` for streams; `writeNonStreamBody` for JSON bodies | `X-Timing` computed, headers written |
+| `headers_written_us` | `stampCommitted` for streams; `Writer.Body` (`coordinator/inference/response/egress_profile.go`) for JSON bodies | `X-Timing` computed, headers written |
 | `first_flush_us`, `last_flush_us`, `done_flushed_us`, `chunks_out`, `bytes_out`, `max_chunk_gap_us`, `client_write_err` | `relayStamps` (`coordinator/inference/response/egress_profile.go`) from the chat, Responses and generic SSE relays; `Writer.Body` stamps the same fields once for non-stream bodies | relay to the client; a failed or short write sets `client_write_err` and leaves `done_flushed_us` absent |
 | `client_gone_us`, `client_gone_phase` ∈ {`before_first_token`, `after_commit`} | dispatch / consumer / `finalizeProfile` | client disconnect |
 | `cancel_sent_us` | dispatch, after the relay returns | cancel frame to the provider |

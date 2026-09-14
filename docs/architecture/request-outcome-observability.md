@@ -54,7 +54,7 @@ The five persisted values are constants in `coordinator/api/route_outcome.go` (`
 | `final_status` | `error_class` | Decided in | When |
 |---|---|---|---|
 | `cancelled` | `client_gone` | `dispatch.go` (`r.Context().Done()` arms while waiting for accept/first chunk, queued-wait exit) | client disconnected before the first content chunk |
-| `cancelled` | `client_gone_before_response` | `consumer.go` non-streaming and generic relays (`clientGoneBeforeResponseOutcome`) | client disconnected while the coordinator was still waiting for the full response |
+| `cancelled` | `client_gone_before_response` | `coordinator/inference/response/nonstream.go` and `coordinator/inference/response/generic_relay.go` call `responseServices.ClientGone` (`coordinator/api/response_writer.go`), which uses `clientGoneBeforeResponseOutcome` | client disconnected while the coordinator was still waiting for the full response |
 | `cancelled` | `speculative_loser` | `dispatch.go` (`speculativeLoserOutcome`) | the other attempt of a speculative/backup race won |
 | `error` | `provider_error` | `preCommitProviderErrorOutcome`; `dispatchErrorClass` for a failed send | provider terminal before commit that is not otherwise classified |
 | `error` | `provider_disconnect_pre_commit` | `preCommitProviderErrorOutcome` when the synthetic terminal carries `CoordinatorCause = provider_disconnected` (a Go-only field, `json:"-"`, never on the wire) | provider session dropped before commit (`registry.Disconnect` injects the terminal) |
@@ -68,7 +68,7 @@ The five persisted values are constants in `coordinator/api/route_outcome.go` (`
 | `timeout` | `first_chunk_timeout` | `first_token_clock.go`, `dispatch.go` first-chunk waits and speculative timeouts | dispatched but no first content before the live first-content deadline |
 | `timeout` | `accepted_timeout` | `dispatch.go` accepted-wait arm | provider sent `inference_accepted` (or a cold load) but no content in time |
 | `timeout` | `preamble_liveness_timeout` | `dispatch.go` preamble-liveness arm | provider emitted only role/lifecycle preamble, then stalled |
-| `timeout` | `usage_timeout_before_response`, `response_timeout_before_response` | `consumer.go` non-streaming relay (`preResponseTimeoutOutcome`) | non-streaming response or its usage frame did not arrive in time |
+| `timeout` | `usage_timeout_before_response`, `response_timeout_before_response` | `Writer.NonStream` (`coordinator/inference/response/nonstream.go`) calls `responseServices.Timeout` (`coordinator/api/response_writer.go`), which uses `preResponseTimeoutOutcome` | non-streaming response or its usage frame did not arrive in time |
 | `partial_success` | `provider_error_after_commit` / `provider_disconnect_after_commit` | `postCommitProviderErrorOutcome` (streaming relays, `coordinator/inference/response/generic_relay.go`) | provider error or disconnect after the client had content |
 | `partial_success` | `provider_incomplete_after_commit` | `postCommitProviderIncompleteOutcome`, `502` | provider channel closed mid-stream with no terminal |
 | `partial_success` | `stream_timeout_after_commit` | `postCommitStreamTimeoutOutcome`, `504` | idle-stream timer expired mid-stream |

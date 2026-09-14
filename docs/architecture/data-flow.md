@@ -1,6 +1,6 @@
 # Data flow: one request end to end
 
-> Last updated: 2026-09-14 · commit `53480ffbd`
+> Last updated: 2026-09-14 · commit `83a88a577`
 
 A consumer request travels consumer → coordinator → provider → coordinator → consumer. This page shows that journey once — as a sequence diagram and a stage table naming the code that owns each step — for anyone tracing a request through the coordinator.
 

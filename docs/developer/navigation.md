@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-13 · commit `7945db8d4`
+> Last updated: 2026-09-13 · commit `3957e1d82`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -20,8 +20,9 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | API request handling, auth, attestation, dispatch | `coordinator/api/`; server construction in `server.go` (`NewServer`) |
 | Metrics and asynchronous observation writes | `coordinator/telemetry/metrics/`, `coordinator/telemetry/routequeue/`, `coordinator/telemetry/profilequeue/`, `coordinator/telemetry/outcomequeue/`; API adapters supply request context and persistence dependencies |
 | Profile construction, provider diagnostics and sampling | `coordinator/telemetry/profiler/` (`Builder`, `Profiler`); request/terminal lifecycle wiring remains in `coordinator/api/profiler.go` |
-| Durable device evidence, revocation and reconnect continuity | `coordinator/providercontrol/trustreuse/` (`Manager`); signature/MDM and HTTP integration remain in `coordinator/api/` |
+| Durable device evidence, revocation and reconnect continuity | `coordinator/providercontrol/trustreuse/` (`Manager`); HTTP lifecycle integration remains in `coordinator/api/` |
 | Provider challenge nonces, replies and verification | `coordinator/providercontrol/challenge/` (`Session`, `Verifier`); `coordinator/api/provider_challenge.go` binds current dependencies and `providerReadLoop` owns the connection lifecycle |
+| Registration, reconnect state and device verification | `coordinator/providercontrol/verification/` (`Verifier`, `Attempt`); `coordinator/api/provider_verification.go` binds current resources; scheduler claims and late-command ownership remain in `coordinator/api/mdm_scheduler.go` and `coordinator/api/mdm_scheduler_callbacks.go` |
 | Code-identity proof, APNs budgets and encrypted resume | `coordinator/providercontrol/codeidentity/` (`Manager`); the API adapter binds the release snapshot, startup proof store and live coverage store |
 | Provider selection, admission, queueing | `coordinator/registry/`; request eligibility in `request_traits.go` (`providerEligibleForTraitsLocked`) |
 | Billing and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/` |

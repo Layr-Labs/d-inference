@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-13 · commit `7945db8d4`
+> Last updated: 2026-09-13 · commit `3957e1d82`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -101,8 +101,8 @@ A verified registration whose durable state cannot be recovered after bounded
 retries closes with WebSocket code **1013** (`StatusTryAgainLater`). It receives
 no inference work while recovery is pending. The provider's normal reconnect
 retries registration; this is a transient store failure, not failed attestation
-(`coordinator/api/provider.go`, `verifyProviderAttestation`;
-`coordinator/api/provider_restore.go`, `restorePersistedProviderState`).
+(`coordinator/providercontrol/verification/registration.go`, `Verifier.VerifyRegistration`;
+`coordinator/providercontrol/verification/restore.go`, `Verifier.Restore`).
 
 #### `hardware`
 

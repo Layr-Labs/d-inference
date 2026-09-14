@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `7945db8d4`
+> Last updated: 2026-09-13 · commit `3957e1d82`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -151,6 +151,28 @@ a completed nonce does not add a challenge success. Heartbeat barriers establish
 frame processing order and final per-model hashes identify the accepted reply.
 The fixture passes against the original implementation and rejects a shared
 tracker mutation. It uses no provider executable, Apple service or model.
+
+Registration, reconnect recovery and SecurityInfo/MDA fixtures remain in
+`coordinator/api/` and call the production owner through
+`provider_verification_compat_test.go`. This test-only adapter carries no
+verification state. The owner is `coordinator/providercontrol/verification/`.
+`provider_verification_ownership_test.go`
+(`TestScheduledSecurityInfoKeepsItsAttemptObservations`) uses the real local
+MicroMDM HTTP/webhook path and scheduler executor. It checks exact command/UDID
+ownership, the returned attempt observation and that scheduled SecurityInfo
+leaves fresh MDA work to the shared worker budget. The same fixture passes the
+original implementation and rejects a detached attempt-pointer mutation.
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api ./coordinator/providercontrol/verification -run 'ProviderRegistration|ProviderRestore|Attestation|MDM|MDA|ScheduledSecurityInfo|TrustReuse' -count=1
+```
+
+Existing MDA fixtures use an authored test CA and locally seeded trust state;
+they do not issue Apple attestations. The long SecurityInfo timeout remains an
+explicit `RUN_MDM_TIMEOUT_TEST` opt-in. Full coordinator race testing is the
+integration gate; ordinary runs skip the existing database opt-ins when no
+isolated PostgreSQL instance is configured.
 
 The CI formatting step checks tracked Go files with `gofmt`. It excludes
 `docs/reports/evidence/`, whose captured source bytes are immutable and bound

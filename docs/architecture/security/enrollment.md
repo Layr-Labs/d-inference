@@ -1,6 +1,6 @@
 # MDM enrollment
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-13 · commit `3957e1d82`
 
 How a provider Mac joins Darkbloom's MDM so the coordinator can ask Apple's
 management subsystem, rather than the provider binary, whether SIP and Secure
@@ -44,7 +44,7 @@ sequenceDiagram
     M->>D: APNs wake → device connects to /mdm/connect
     D->>M: SecurityInfo result (CommandUUID)
     M->>K: POST /v1/mdm/webhook<br/>X-Webhook-Token or ?token= EIGENINFERENCE_MDM_WEBHOOK_SECRET · body ≤ maxMDMWebhookBodyBytes
-    K-->>K: HandleWebhook: Acknowledged + CommandUUID outstanding (outstandingCommandTTL)<br/>→ verifyProviderViaMDM → hardware grant · DeviceInformation → MDA flag
+    K-->>K: HandleWebhook: Acknowledged + CommandUUID outstanding (outstandingCommandTTL)<br/>→ Verifier.VerifySecurityInfo → hardware grant · DeviceInformation → MDA flag
 ```
 
 Source: `docs/assets/diagrams/enrollment-flow.mmd` (updated for this
@@ -137,14 +137,14 @@ anything under the unrequested `AccessRights` bits.
 5. The coordinator issues only `SecurityInfo` and `DeviceInformation` commands — `coordinator/mdm/mdm.go` (`assertReadOnlyCommand`).
 6. A webhook payload is acted on only if it is `Acknowledged` and its `CommandUUID` matches a command the coordinator issued within `outstandingCommandTTL` ([Coordinator ↔ MicroMDM](#coordinator--micromdm)) — `coordinator/mdm/mdm.go` (`HandleWebhook`).
 7. When a webhook secret is configured, unauthenticated webhooks are rejected before the body is read — `coordinator/api/server.go` (`HandleMDMWebhook`).
-8. Possession of the profile proves nothing; trust is earned by the per-connection verification described in [`attestation.md`](./attestation.md#layer-3--mdm-securityinfo-the-hardware-grant) — `coordinator/api/provider.go` (`verifyProviderViaMDM`).
+8. Possession of the profile proves nothing; trust is earned by the per-connection verification described in [`attestation.md`](./attestation.md#layer-3--mdm-securityinfo-the-hardware-grant) — `coordinator/providercontrol/verification/security_info.go` (`Verifier.VerifySecurityInfo`).
 
 ## Failure modes
 
 | Failure | Effect | Code |
 |---|---|---|
 | Mac already managed by another MDM | `darkbloom enroll` refuses (`managedByOtherMDM`); doctor reports "enrolled in another MDM … hardware trust unavailable on this Mac" | `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`; `provider-swift/Sources/darkbloom/DoctorCommand.swift` |
-| Profile downloaded but never installed | MDM lookup returns `device-not-found`; provider stays `self_signed` and the scheduler retries | `coordinator/api/provider.go` (`verifyProviderViaMDM`) |
+| Profile downloaded but never installed | MDM lookup returns `device-not-found`; provider stays `self_signed` and the scheduler retries | `coordinator/providercontrol/verification/security_info.go` (`Verifier.VerifySecurityInfo`) |
 | Enrolled but SecurityInfo never arrives (asleep, APNs delivery, Apple throttling) | `securityinfo-timeout`; retried on the MDM scheduler cadence ([attestation, Layer 3](./attestation.md#layer-3--mdm-securityinfo-the-hardware-grant)); a late webhook still grants | `coordinator/api/mdm_scheduler.go`; `coordinator/api/provider.go` (`ApplyLateSecurityInfo`) |
 | `EIGENINFERENCE_MDM_URL` unset | No MDM client, no scheduler; no provider can reach `hardware` | `coordinator/cmd/coordinator/main.go` |
 | Webhook secret mismatch | `403`; SecurityInfo responses are lost until MicroMDM's `command-webhook-url` token matches | `coordinator/api/server.go` (`mdmWebhookTokenValid`) |

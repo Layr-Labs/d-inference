@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-13 · commit `f6b5e111c`
+> Last updated: 2026-09-13 · commit `3957e1d82`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -135,8 +135,8 @@ providers rejected by gates 8–9 (`breakerRejected`) and providers that would
 have been routable but for gate 7 (`capacityRejections`) because both feed the
 fail-open and 429 decisions described under [Failure modes](#failure-modes).
 
-Registration recovery (`coordinator/api/provider_restore.go`,
-`restorePersistedProviderState`) retries transient reads within one bounded
+Registration recovery (`coordinator/providercontrol/verification/restore.go`,
+`Verifier.Restore`) retries transient reads within one bounded
 deadline. Until it completes, `providerStateRestoreRequiredLocked` keeps the
 verified identity out of routing, public capacity and warm-pool candidates.
 A sustained failure closes the new connection for retry before evicting an

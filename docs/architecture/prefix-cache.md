@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-09-11 · commit `ef7b5a9aa`
+> Last updated: 2026-09-14 · commit `4f6d1c551`
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -25,8 +25,8 @@ checkpoints streamed from SSD. Loaded historical-attention capabilities also
 allow exact paged window checkpoints for GPT-OSS and Gemma. Optional resident
 banks use the slot KV grant.
 SSD snapshots survive beyond a request without retaining their KV in resident memory
-(`provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift`,
-`provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Hybrid.swift`).
+(`provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift`,
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Hybrid.swift`).
 
 ## Mechanism
 
@@ -55,9 +55,9 @@ for these exact fleet model IDs, not family names, aliases or substrings:
 Every other ID, including unlisted Qwen artifacts, Gemma 8-bit and unknown
 models, resolves contiguous under `auto`. Per-model configuration still overrides
 the global setting, and explicit `"contiguous"` keeps a cohort model contiguous
-(`provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift`,
+(`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift`,
 `parseSelection`, `preferredBackend`; called by `prepareProductionBackend` in
-`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BackendPreparation.swift`).
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift`).
 
 Slot policy can force contiguous when a VLM cache lacks span-mask support
 (`EngineV2KVBackendPolicy.applySlotVetoes`). The factory then applies model
@@ -74,7 +74,7 @@ refuse an explicit `paged` load. Paged construction runs
 `DARKBLOOM_NO_UPDATE_CHECK=1` injected), then constructs an empty segmented
 backend with the already admitted slot grant. There is no separate eager-pool
 budget. Segment, buffer and kernel address limits remain native checks
-(`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+SegmentedBackend.swift`,
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift`,
 `makeSegmentedPagedBackend`; `PagedKernelPreflight.swift`). Grant derivation,
 shrink/regrow and live-memory gates are explained in
 [KV slot grants](hardware-support.md#kv-slot-grants).
@@ -104,7 +104,7 @@ contiguous fallback does not reuse that checkpoint. An explicit affirmative
 checks; a non-affirmative nonempty value disables all tiers. Both SSD codecs,
 local/connected load hashing and benchmark expectations use the model-scoped
 `PrefixCachePolicy.isEnabled(modelId:environment:)` gate in
-`provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Activation.swift`.
+`provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift`.
 Resident retention remains off unless explicitly enabled through the separate
 memory flag (`PrefixCachePolicy.isMemoryEnabled`).
 
@@ -458,10 +458,10 @@ are separate from the SSD results.
 
 | Concern | File / symbol |
 |---|---|
-| Backend selection, kill switch, vetoes | `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift` (`parseSelection`, `preferredBackend`, `applySlotVetoes`, `degradesPagedFailure`) |
-| `auto` resolution, paged fallback | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BackendPreparation.swift` (`prepareProductionBackend`) |
-| Prefix-cache gate, exactness, capability | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` (`isEnabled`, `adoptionIsExact`, `prefixReuseCapability`, `ssdDiskBudgetBytes`) |
-| Construction-skip logic | `provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift` (`PrefixCacheConstructionStatus`) |
+| Backend selection, kill switch, vetoes | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` (`parseSelection`, `preferredBackend`, `applySlotVetoes`, `degradesPagedFailure`) |
+| `auto` resolution, paged fallback | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift` (`prepareProductionBackend`) |
+| Prefix-cache gate, exactness, capability | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` (`isEnabled`, `adoptionIsExact`, `prefixReuseCapability`, `ssdDiskBudgetBytes`) |
+| Construction-skip logic | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` (`PrefixCacheConstructionStatus`) |
 | Reuse plan | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/PrefixReusePlan.swift` (`CBv2PrefixReuseCapability.derive`) |
 | Frozen full replay | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/FrozenReplayFullSequenceKV.swift`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVBackend.swift` |
 | Paged pool | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVPool.swift`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift` |
@@ -469,8 +469,8 @@ are separate from the SSD results.
 | Recurrent radix bank and ownership | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/HybridPrefixCache.swift`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/HybridCheckpointOwnership.swift`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/TokenRadixIndex.swift` |
 | Bounded recurrent KV publication | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/HybridPrefixPublication.swift` — `CBv2HybridPrefixPublication`, `compactedBytes`, `compactKV`; `HybridPrefixCache.swift` — `prepareCompactionLocked` |
 | Recurrent checkpoint capture and adoption | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/EngineLoopV2+HybridPrefix.swift`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/EngineV2+HybridPrefix.swift` |
-| Resident budget policy and routing receipts | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Hybrid.swift` (`hybridConfig`), `provider-swift/Sources/ProviderCore/Inference/ResidentPrefixCacheEvidence.swift`, `provider-swift/Sources/ProviderCore/Inference/PrefixCacheEvidenceSequencer.swift` |
-| Complete SSD construction and identity | `provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+CompletePrefixCache.swift`, `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+CheckpointIdentity.swift` |
+| Resident budget policy and routing receipts | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Hybrid.swift` (`hybridConfig`), `provider-swift/Sources/ProviderCore/Inference/PrefixCache/ResidentPrefixCacheEvidence.swift`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCacheEvidenceSequencer.swift` |
+| Complete SSD construction and identity | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+CompletePrefixCache.swift`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+CheckpointIdentity.swift` |
 | Complete SSD stream/import/ownership | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Read.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Write.swift`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift` |
 | SSD tier | `provider-swift/Sources/ProviderCore/KVCacheSSD/` (`SSDPrefixCache`, `SSDPrefixCacheFactory`, `SSDPrefixCachePolicy`, `SSDBlockStore`) |
 | Status and outcome vocabularies | `provider-swift/Sources/ProviderCore/Protocol/Messages.swift` (`PrefixCacheStatusReason`, `PrefixCacheDonationOutcome`) |

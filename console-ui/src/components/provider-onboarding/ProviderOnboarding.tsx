@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { ArrowRight, CheckCircle2 } from "lucide-react";
-import { useAuthContext } from "@/components/providers/PrivyClientProvider";
+import { useAuthContext } from "@/components/app-providers/PrivyClientProvider";
 import { ProviderRequirements } from "./ProviderRequirements";
 import { ProviderQuestions } from "./ProviderQuestions";
 import { SetupCommand } from "./SetupCommand";

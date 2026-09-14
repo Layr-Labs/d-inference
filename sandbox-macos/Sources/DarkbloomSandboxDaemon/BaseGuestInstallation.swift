@@ -1,28 +1,6 @@
 import Foundation
 import SandboxRuntime
 
-struct BaseGuestInstallationReceipt: Codable, Equatable, Sendable {
-    let schemaVersion: Int
-    let guestSHA256: String
-    let bootstrapSHA256: String
-    let launchdSHA256: String
-    let installerSHA256: String
-    let guestOperatingSystemVersion: String
-    let guestArchitecture: String
-    let bootstrapRetired: Bool
-
-    func validate(release: BaseGuestRelease) throws {
-        guard schemaVersion == 1, bootstrapRetired, guestArchitecture == "arm64",
-              !guestOperatingSystemVersion.isEmpty, guestOperatingSystemVersion.utf8.count < 64,
-              guestSHA256 == release.hashes["darkbloom-sandbox-guest"],
-              bootstrapSHA256 == release.hashes["darkbloom-sandbox-bootstrap.sh"],
-              launchdSHA256 == release.hashes["io.darkbloom.sandbox.guest.plist"],
-              installerSHA256 == release.hashes["install-sandbox-guest.sh"] else {
-            throw BaseGuestPreparationError.invalidReceipt
-        }
-    }
-}
-
 enum BaseGuestInstallation {
     static func request(staging: BaseGuestStaging, release: BaseGuestRelease) throws -> SandboxGuestCommandRequest {
         guard staging.directory.lastPathComponent.hasPrefix("bootstrap-"),

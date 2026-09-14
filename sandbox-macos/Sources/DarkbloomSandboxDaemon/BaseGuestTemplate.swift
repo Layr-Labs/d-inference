@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import SandboxRuntime
 import SandboxCore
+import SandboxRuntimeLume
 
 extension SandboxGuestTemplateReceipt {
     init(name: String, installationID: UUID, release: BaseGuestRelease, receipt: BaseGuestInstallationReceipt) throws {
@@ -43,21 +44,35 @@ struct BaseGuestTemplateStore {
         defer { close(descriptor) }
         let data = try SandboxAuthorityFileSystem.readStablePrivateFile(descriptor, maximumBytes: 16384)
         let record = try JSONDecoder().decode(SandboxGuestTemplateReceipt.self, from: data)
-        guard record.schemaVersion == 1, record.name == name,
-              record.installationID == (try installationID(name: name)),
-              BaseGuestRelease.isDigest(record.releaseManifestSHA256),
-              record.guestSHA256 == release.hashes["darkbloom-sandbox-guest"],
-              record.bootstrapSHA256 == release.hashes["darkbloom-sandbox-bootstrap.sh"],
-              record.launchdSHA256 == release.hashes["io.darkbloom.sandbox.guest.plist"],
-              record.installerSHA256 == release.hashes["install-sandbox-guest.sh"],
-              record.guestArchitecture == "arm64", record.bootstrapRetired, record.stoppedVerified else {
+        let source = try source(name: name)
+        let files = Dictionary(uniqueKeysWithValues: release.hashes.map { ("guest/" + $0.key, $0.value) })
+        guard record.isReady(for: source, guestFiles: files) else {
             throw BaseGuestPreparationError.staleTemplate
         }
         return record
     }
 
+    func source(name: String) throws -> SandboxGuestBaseSource {
+        guard directory.lastPathComponent == name else { throw BaseGuestPreparationError.unsafeTemplate }
+        return try LumeGuestTemplateSource.load(name: name, installationID: installationID(name: name),
+            storage: directory.deletingLastPathComponent())
+    }
+
     func publish(_ record: SandboxGuestTemplateReceipt) throws {
-        guard try installationID(name: record.name) == record.installationID else {
+        guard record.schemaVersion == 1 else { throw BaseGuestPreparationError.invalidReceipt }
+        try persist(record)
+    }
+
+    func publishAccountless(_ record: SandboxGuestTemplateReceipt, release: BaseGuestRelease) throws {
+        let files = Dictionary(uniqueKeysWithValues: release.hashes.map { ("guest/" + $0.key, $0.value) })
+        guard record.schemaVersion == 2, record.isReady(for: try source(name: record.name), guestFiles: files) else {
+            throw BaseGuestPreparationError.invalidReceipt
+        }
+        try persist(record)
+    }
+
+    private func persist(_ record: SandboxGuestTemplateReceipt) throws {
+        guard record.hasValidEvidence(for: try source(name: record.name)) else {
             throw BaseGuestPreparationError.staleTemplate
         }
         let folder = try SandboxAuthorityFileSystem.openPrivateDirectory(at: directory, createIfMissing: false)

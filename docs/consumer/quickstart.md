@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-13 · commit `f7a3ef1fd`
+> Last updated: 2026-09-14 · commit `14296eaf5`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -92,7 +92,7 @@ print(resp.choices[0].message.content)
 
 ### 7. Use the Anthropic SDK
 
-The Anthropic clients append `/v1/messages` to the base URL, so point them at the bare host. The coordinator reads credentials only from `Authorization: Bearer` (`extractBearerToken`, `coordinator/api/server.go`) and ignores `x-api-key`, so pass the key as the SDK's bearer `auth_token`, not as `api_key`:
+The Anthropic clients append `/v1/messages` to the base URL, so point them at the bare host. The coordinator reads credentials only from `Authorization: Bearer` (`BearerToken`, `coordinator/api/requestauth/bearer.go`) and ignores `x-api-key`, so pass the key as the SDK's bearer `auth_token`, not as `api_key`:
 
 ```python
 import anthropic

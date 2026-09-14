@@ -1,6 +1,6 @@
 # Data flow: one request end to end
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-14 · commit `ded9dbe71`
 
 A consumer request travels consumer → coordinator → provider → coordinator → consumer. This page shows that journey once — as a sequence diagram and a stage table naming the code that owns each step — for anyone tracing a request through the coordinator.
 
@@ -51,7 +51,7 @@ Two things the diagram makes visible. First, the consumer receives no bytes unti
 |---|---|---|---|
 | 1 | Ingress | HTTP request hits the mux; `X-Request-ID` is honoured or minted; global body ceiling [`maxRequestBodyBytes`](../reference/api-contracts.md#limits-and-validation) | `loggingMiddleware`, `bodyLimitMiddleware` (`coordinator/api/server.go`) |
 | 2 | Drain gate | While draining, new inference is refused with 429 `rate_limit_exceeded` and a fixed [`Retry-After`](../reference/api-contracts.md#timeouts-and-constants) (`coordinatorDrainRetryAfter`) | `drainGate` (`coordinator/api/drain.go`) |
-| 3 | Authenticate | Bearer resolved to an API key, Privy user, or admin; key lookups cached for [`apiKeyCacheTTL`](../reference/api-contracts.md#timeouts-and-constants) | `requireAuth`, `extractBearerToken` (`coordinator/api/server.go`) |
+| 3 | Authenticate | Bearer resolved to an API key, Privy user, active provider device token, or admin; API-key lookups cached for [`keyCacheTTL`](../reference/api-contracts.md#timeouts-and-constants) | `RequireAuth` (`coordinator/api/requestauth/middleware.go`), `BearerToken` (`coordinator/api/requestauth/bearer.go`) |
 | 4 | Rate limit | Per-key `rpm_limit`, then the account limiter; 429 with `Retry-After` | `rateLimitConsumer`, `applyKeyRPMLimit` (`coordinator/api/server.go`) |
 | 5 | Unseal (optional) | `application/eigeninference-sealed+json` bodies are decrypted; the response will be sealed per event | `sealedTransport` (`coordinator/api/sender_encryption.go`); [`security/encryption.md`](security/encryption.md) |
 | 6 | Parse and validate | Inference body cap [`maxInferenceBodyBytes`](../reference/api-contracts.md#limits-and-validation), tool-schema normalisation, `model` required, key allow-list, `n == 1`, tool-choice and vision rules | `parseInferencePrelude` (`coordinator/api/inference_preprocess.go`), `validateToolConstraintPolicy` (`coordinator/api/tool_constraints.go`), `visionToolsFailFast` |
@@ -108,7 +108,8 @@ Each row is the stage at which a request can end early and what the consumer see
 
 | Concern | File / symbol |
 |---|---|
-| Middleware chain, authentication, rate limits, token-rate admission | `coordinator/api/server.go` — `loggingMiddleware`, `bodyLimitMiddleware`, `requireAuth`, `rateLimitConsumer`, `applyTokenRateLimitWithAdmission` |
+| Middleware chain, rate limits, token-rate admission | `coordinator/api/server.go` — `loggingMiddleware`, `bodyLimitMiddleware`, `rateLimitConsumer`, `applyTokenRateLimitWithAdmission` |
+| Credential authentication and key-cache state | `coordinator/api/requestauth/` — `Authenticator`, `RequireAuth`, `RequirePrivyAuth`; `coordinator/api/authentication.go` binds current Server configuration |
 | Drain gate | `coordinator/api/drain.go` — `drainGate` |
 | Sealed client transport | `coordinator/api/sender_encryption.go` — `sealedTransport` |
 | Prelude parsing and validation | `coordinator/api/inference_preprocess.go` — `parseInferencePrelude`; `coordinator/api/tool_constraints.go` — `validateToolConstraintPolicy` |

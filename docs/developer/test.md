@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `a1f3c09c8`
+> Last updated: 2026-09-14 · commit `14296eaf5`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -65,6 +65,13 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 ```
 
 ### 2. Coordinator (Go)
+
+Authentication boundary tests use the real registered routes in
+`coordinator/api/authentication_contract_test.go`. Run
+`go test -race ./coordinator/api -run '^TestAuthentication'` from the repository
+root to check credential replacement after route registration, key-cache
+invalidation through management routes, and provider-token revocation. These
+checks use an in-memory store and locally signed JWTs.
 
 Run prediction telemetry checks from the repository root:
 

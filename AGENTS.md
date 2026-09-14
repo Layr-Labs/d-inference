@@ -10,6 +10,8 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── api/              HTTP + WebSocket handlers
 │   ├── consumer.go         OpenAI-compatible chat/completions/responses + Anthropic messages
 │   ├── provider.go         provider registration, heartbeats, attestation, relay
+│   ├── requestauth/      HTTP credential middleware and shared API-key cache
+│   ├── authentication.go current credential/store bindings for the router
 │   ├── billing_handlers.go Stripe/referral/pricing endpoints
 │   ├── device_auth.go      device code flow for linking providers to user accounts
 │   ├── enroll.go           MDM enrollment profile generation

@@ -1,8 +1,8 @@
 # Authentication
 
-> Last updated: 2026-09-13 · commit `f7a3ef1fd`
+> Last updated: 2026-09-14 · commit `14296eaf5`
 
-How to obtain and manage each credential the coordinator accepts, and which routes take it. Every request authenticates with one header, `Authorization: Bearer <token>` (`extractBearerToken`, `coordinator/api/server.go`); the token is an API key, a Privy session JWT, a device-flow provider token, or the operator's admin key, and `requireAuth` decides which by shape — JWTs (starting `eyJ`) are verified with Privy, the admin key is compared in constant time, everything else is looked up as an API key. For API consumers and console users; the per-route auth column is in [`../reference/api-contracts.md`](../reference/api-contracts.md).
+How to obtain and manage each credential the coordinator accepts, and which routes take it. Every request authenticates with one header, `Authorization: Bearer <token>` (`BearerToken`, `coordinator/api/requestauth/bearer.go`); the token is an API key, a Privy session JWT, a device-flow provider token, or the operator's admin key, and `RequireAuth` (`coordinator/api/requestauth/middleware.go`) checks configured Privy JWTs first, then the admin key, then API keys and active provider tokens. For API consumers and console users; the per-route auth column is in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
 ## Prerequisites
 
@@ -51,11 +51,11 @@ All management routes require a Privy JWT (`requirePrivyAuth`); calling them wit
 | Revoke | `DELETE /v1/keys/{id}` |
 | Inspect the key you are calling with | `GET /v1/key` — this one accepts the API key itself (`handleGetCallingKey`) |
 
-`POST /v1/auth/keys` and `DELETE /v1/auth/keys` are the older one-key-per-account endpoints (`handleCreateKey`, `handleRevokeKey`); they still work but the `/v1/keys` family is the managed surface. The coordinator caches key lookups (`coordinator/api/server.go`), so a revocation or a limit change takes up to [`apiKeyCacheTTL`](../reference/api-contracts.md#timeouts-and-constants) to apply everywhere.
+`POST /v1/auth/keys` and `DELETE /v1/auth/keys` are the older one-key-per-account endpoints (`handleCreateKey`, `handleRevokeKey`); they still work but the `/v1/keys` family is the managed surface. The coordinator caches key lookups in `coordinator/api/requestauth/key_cache.go`. Management routes invalidate the local cache when keys change; another coordinator instance can keep its own result until [`keyCacheTTL`](../reference/api-contracts.md#timeouts-and-constants) expires. Provider device tokens are checked in persistence on each request.
 
 ### 4. Sign in with Privy and use the session JWT
 
-The console signs you in with Privy (email only, in an in-page modal — `/login` redirects to `/`, `console-ui/src/proxy.ts`); the resulting JWT can be used directly as a bearer token. `requireAuth` verifies it (`privyAuth.VerifyToken`) and resolves or creates the account user, so a JWT is accepted everywhere an API key is. The console itself sends the JWT only on management routes — keys, fleet, earnings, device approval, Stripe Connect — through its `/api/*` relay (`managementHeaders`, `console-ui/src/lib/http/proxy-client.ts`); for chat, balance and usage it uses the `sk-db-…` console key it provisions on first login with `POST /v1/auth/keys` (`provisionConsoleKey`, `console-ui/src/hooks/useAuth.ts`). Some routes require the JWT:
+The console signs you in with Privy (email only, in an in-page modal — `/login` redirects to `/`, `console-ui/src/proxy.ts`); the resulting JWT can be used directly as a bearer token. `RequireAuth` verifies it (`PrivyAuth.VerifyToken`) and resolves or creates the account user, so a JWT is accepted everywhere an API key is. The console itself sends the JWT only on management routes — keys, fleet, earnings, device approval, Stripe Connect — through its `/api/*` relay (`managementHeaders`, `console-ui/src/lib/http/proxy-client.ts`); for chat, balance and usage it uses the `sk-db-…` console key it provisions on first login with `POST /v1/auth/keys` (`provisionConsoleKey`, `console-ui/src/hooks/useAuth.ts`). Some routes require the JWT:
 
 | Routes requiring a Privy JWT (`requirePrivyAuth`) | With an API key you get |
 |---|---|

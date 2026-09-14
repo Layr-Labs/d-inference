@@ -21,6 +21,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
+	"github.com/eigeninference/d-inference/coordinator/inference/ingress"
 	"github.com/eigeninference/d-inference/coordinator/inference/settlement"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
@@ -189,6 +190,8 @@ type Server struct {
 	// dispatchController owns shared scan admission, hedge feedback and route latency.
 	dispatchOnce       sync.Once
 	dispatchController *dispatch.Controller
+	ingressOnce        sync.Once
+	ingressController  *ingress.Controller
 
 	// minProviderVersion is the minimum provider version accepted for routing.
 	// Providers below this version are excluded and told to update.

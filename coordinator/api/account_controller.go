@@ -1,8 +1,6 @@
 package api
 
 import (
-	"context"
-
 	"github.com/eigeninference/d-inference/coordinator/api/accounts"
 )
 
@@ -22,12 +20,4 @@ func (s *Server) accountController() *accounts.Controller {
 		KeyCache:       s.requestAuth,
 		AuthorizeAdmin: s.requireAdminKey,
 	})
-}
-
-func (s *Server) keyModelAllowed(ctx context.Context, model string) bool {
-	return accounts.KeyModelAllowed(ctx, model)
-}
-
-func (s *Server) checkKeySpendCap(ctx context.Context, additionalMicroUSD int64) (string, bool) {
-	return accounts.CheckKeySpendCap(ctx, additionalMicroUSD, s.store)
 }

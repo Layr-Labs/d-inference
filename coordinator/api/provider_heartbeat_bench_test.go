@@ -20,6 +20,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/providercontrol/session"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -136,8 +137,8 @@ func benchLocalStatsd(tb testing.TB) *datadog.Client {
 // runHeartbeatBranch mirrors the post-decode heartbeat branch of
 // providerReadLoop for a baseline heartbeat (no prefix-cache fields, so
 // UpdatePrefixCacheSnapshot is skipped exactly as in production).
-func runHeartbeatBranch(ctx context.Context, s *Server, providerID string, provider *registry.Provider, hb *protocol.HeartbeatMessage) {
-	s.applyProviderHeartbeat(providerID, provider, hb)
+func runHeartbeatBranch(ctx context.Context, s *Server, connection *session.Session, providerID string, provider *registry.Provider, hb *protocol.HeartbeatMessage) {
+	connection.ApplyHeartbeat(providerID, provider, hb)
 	s.maybeRearmCodeAttest(ctx, providerID, provider, hb)
 }
 
@@ -157,10 +158,12 @@ func BenchmarkHeartbeatBranchNoDD(b *testing.B) {
 	s, p := benchHeartbeatServer(b)
 	hb := benchHeartbeatMessage()
 	ctx := context.Background()
+	// Session construction occurs once per connection, outside heartbeat timing.
+	connection := s.newProviderSession()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		runHeartbeatBranch(ctx, s, benchHeartbeatProviderID, p, hb)
+		runHeartbeatBranch(ctx, s, connection, benchHeartbeatProviderID, p, hb)
 	}
 }
 
@@ -171,10 +174,12 @@ func BenchmarkHeartbeatBranchStatsd(b *testing.B) {
 	s.SetDatadog(benchLocalStatsd(b))
 	hb := benchHeartbeatMessage()
 	ctx := context.Background()
+	// Session construction occurs once per connection, outside heartbeat timing.
+	connection := s.newProviderSession()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		runHeartbeatBranch(ctx, s, benchHeartbeatProviderID, p, hb)
+		runHeartbeatBranch(ctx, s, connection, benchHeartbeatProviderID, p, hb)
 	}
 }
 

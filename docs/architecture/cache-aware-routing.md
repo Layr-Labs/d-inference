@@ -524,7 +524,7 @@ For each selected hint, terminal correlation stays on the in-memory
 selected-holder precision and actual cached-read success without using an
 identifier as a metric tag (`PendingRequest` in
 `coordinator/registry/pending_request.go`; `cacheSelectionTerminalTags` in
-`coordinator/api/provider.go`).
+`coordinator/api/cache_selection_telemetry.go`).
 
 ### Observed demand and soft prefix affinity
 
@@ -670,7 +670,7 @@ back are operator procedures, kept in the runbook
    persisted or attached to telemetry**; `GET /v1/cache/status` and the
    terminal tags carry bounded categorical values only
    (`handleExactCacheStatus`, `coordinator/api/exact_cache_status.go`;
-   `cacheSelectionTerminalTags`, `coordinator/api/provider.go`).
+   `cacheSelectionTerminalTags`, `coordinator/api/cache_selection_telemetry.go`).
 8. **Cache-participating attempts never train TTFT calibration or
    first-content reputation** (`observeTTFTCalibration`,
    `coordinator/inference/dispatch/calibration.go`; `coordinator/inference/dispatch/commit.go`).
@@ -726,7 +726,7 @@ and `coordinator/api/cache_model_telemetry.go`.
 | Discount in the cost model | `coordinator/registry/candidate_cost.go` — `applyCacheRoutingCost`; `coordinator/registry/candidate_selection.go` — `selectRoutingCandidateWithAffinity`; `coordinator/registry/gate_reason.go` — `SelectionCacheTiebreak` (historical vocabulary) |
 | Plan construction and sealed body | `coordinator/api/prompt_artifacts.go` — `planCacheRoute`; `coordinator/inference/dispatch/provider_body.go` — `bodyForCacheAttempt` |
 | Status endpoint and gauges | `coordinator/api/exact_cache_status.go`, `coordinator/api/exact_cache_metrics.go` |
-| Terminal tags, calibration/reputation exclusion | `coordinator/api/provider.go` — `cacheSelectionTerminalTags`; `coordinator/inference/dispatch/calibration.go` — `observeTTFTCalibration`; `coordinator/inference/dispatch/commit.go` |
+| Terminal tags, calibration/reputation exclusion | `coordinator/api/cache_selection_telemetry.go` — `cacheSelectionTerminalTags`; `coordinator/inference/dispatch/calibration.go` — `observeTTFTCalibration`; `coordinator/inference/dispatch/commit.go` |
 | Sidecar | `coordinator/promptcontract/` — `provisioner.go` (`Counts`) |
 | Provider-side cache | `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` |
 

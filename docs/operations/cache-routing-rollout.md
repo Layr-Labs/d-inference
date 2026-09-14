@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-13 · commit `8670b2a08`
+> Last updated: 2026-09-14 · commit `359c62293`
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -73,7 +73,7 @@ the same request from the same account remains in or out of the cohort.
 - Datadog open on the `exact_cache.*` gauges
   (`emitExactCacheDDGauges`, `coordinator/api/exact_cache_metrics.go`) and the
   `routing.cache_selection_terminal`, `routing.cache_selection_precision` and
-  `routing.cache_selection_discount_ms` series (`coordinator/api/provider.go`).
+  `routing.cache_selection_discount_ms` series (`coordinator/api/cache_selection_telemetry.go`).
 
 ## Steps
 

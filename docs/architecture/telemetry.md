@@ -45,7 +45,7 @@ to start from them.
 ```
 provider (every heartbeat_interval_secs, event heartbeats ≤ 2/s)
   → GET /ws/provider frame `heartbeat`
-  → providerReadLoop            validate prefix-cache telemetry; reject → routing.cache_telemetry_rejected
+  → Session.heartbeat           validate prefix-cache telemetry; reject → routing.cache_telemetry_rejected
   → Registry.Heartbeat          clamp system_metrics to [0,1]; canonicalHeartbeatModelState → clampBackendCapacity;
                                  drop stale capacity_seq (only LastHeartbeat advances); delta-merge stats
   → BackendCapacitySnapshot     the accepted, clamped copy
@@ -74,7 +74,7 @@ claiming fleet percentiles. It emits
 cumulative reclaimer counters as nonnegative deltas from the previous accepted
 heartbeat. The first observation has no counter baseline; a reset contributes
 no negative delta (`coordinator/api/provider_mlx_cache_telemetry.go`).
-`applyProviderHeartbeat` (`coordinator/api/provider_heartbeat.go`) emits only
+`Session.ApplyHeartbeat` (`coordinator/providercontrol/session/heartbeat.go`) emits only
 when `Registry.Heartbeat` accepts the snapshot; stale sequence-stamped frames
 still prove liveness but emit no repeated allocator or wedge samples. Tags
 never include a provider session id. `sanitizeChipFamilyTag` uses the fixed
@@ -110,7 +110,7 @@ updated age. Whole-root maintenance contributes three process counters through
 [wire reference](../reference/protocol-messages.md#slotsprefix_cache) defines the
 fields; no free-form client event transport is used.
 
-`applyProviderHeartbeat` feeds only registry-accepted snapshots to
+`Session.ApplyHeartbeat` feeds only registry-accepted snapshots to
 `recordPrefixCacheTelemetry` (`coordinator/api/provider_prefix_cache_telemetry.go`).
 The existing live slot snapshot is the entire counter baseline: a new cache
 generation seeds it, removal or missing telemetry clears it, and disconnect
@@ -339,7 +339,7 @@ for populations, labels and reset semantics (`coordinator/api/cache_model_teleme
 
 | Concern | Path |
 |---|---|
-| Heartbeat ingest and metric emission | `coordinator/api/provider.go` (`providerReadLoop`), `coordinator/api/provider_wedge_telemetry.go`, `coordinator/api/provider_mlx_cache_telemetry.go` |
+| Heartbeat ingest and metric emission | `coordinator/providercontrol/session/heartbeat.go` (`heartbeat`, `ApplyHeartbeat`), `coordinator/api/provider_wedge_telemetry.go`, `coordinator/api/provider_mlx_cache_telemetry.go` |
 | Clamping and canonical snapshot | `coordinator/registry/heartbeat.go` (`Registry.Heartbeat`); `coordinator/registry/heartbeat_snapshot.go` (`canonicalHeartbeatModelState`, `Provider.BackendCapacitySnapshot`); `coordinator/registry/capacity_report.go` (`clampBackendCapacity`) |
 | Persistence throttle | `coordinator/registry/persistence.go` |
 | Datadog client, HTTPS series, trace-aware slog | `coordinator/datadog/datadog.go`, `coordinator/datadog/metrics_http.go`, `coordinator/datadog/slog.go` |

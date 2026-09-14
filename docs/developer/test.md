@@ -165,12 +165,26 @@ env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
 `TestCompletionPublishesUsageBeforeCreditsAndConsumerTerminal`
 (`coordinator/api/settlement_order_test.go`) pauses the real provider credit to
 check that the charge and in-memory usage precede payout and consumer-channel
-completion. It also passes against the pre-extraction API implementation.
+completion. It binds the frame service before replacing the store, so the same
+fixture also checks current-store lookup. It passes against the pre-extraction
+API implementation.
 `TestCompletionObservationPrecedesCurrentReferralAndPayouts`
 (`coordinator/inference/settlement/completion_order_test.go`) checks the public
 usage alias, late referral binding, exact credit amounts and reservation
 finalization using real memory-store/ledger operations and an explicit account
 fee. These checks require no payment credentials or model runtime.
+
+Shared-key cache and pure cache-usage validation tests live in
+`coordinator/inference/providerframe/`. The API retains registered-socket,
+encrypted-chunk, overflow, completion/refund and profile-order fixtures. The
+accounting/response command above includes both packages.
+`TestHandleChunkOverflowFailsRequest`
+(`coordinator/api/provider_chunk_overflow_test.go`) verifies terminal key eviction
+through a new encrypted request using the same session-key pointer and fresh key
+bytes; retaining the old cache entry makes that request fail to decrypt. The
+fixture passes against the original API owner and rejects an overlay that omits
+the real error-path eviction. Relay benchmarks bind the production frame service
+before timing (`coordinator/api/relay_bench_test.go`).
 
 Cancellation-history and pure rejection/terminal-policy tests live beside
 `coordinator/inference/attempt/`. Real provider WebSocket, refund and response
@@ -456,6 +470,26 @@ not mutate the owner's policy maps.
 
 ```bash
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/providercontrol/releasepolicy ./coordinator/api -run 'Release|RuntimeManifest|BinaryHashPolicy|SyncBinaryHashes|SemverPrerelease'
+```
+
+Provider connection fixtures keep real WebSockets, registry publication and
+inference-frame boundaries in `coordinator/api/`. The pure disconnect-reason and
+closed load-status grammar tests live beside the owner in
+`coordinator/providercontrol/session/`. Existing test-only adapters preserve the
+heartbeat/priority assertions; heartbeat benchmarks construct their Session
+outside the timed loop.
+
+`coordinator/api/provider_session_ownership_test.go`
+(`TestProviderSessionUsesCurrentStoreForSpecificClose`) switches the API store
+binding during the real registration-token lookup, then closes the socket. The
+first durable close must use the current store and specific peer-close reason,
+after the provider is offline. The same fixture passes the original
+implementation and rejects a captured-store mutation. It uses local HTTP and
+WebSocket fixtures, with no provider executable, Apple service or model.
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api ./coordinator/providercontrol/session -run 'ProviderSession|SessionDisconnectReason|ReadErrorDisconnectReason|ValidLoadModelStatus|Heartbeat|ProviderRegistration' -count=1
 ```
 
 Provider challenge fixtures stay in `coordinator/api/` so they keep real

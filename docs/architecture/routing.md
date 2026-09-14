@@ -148,7 +148,7 @@ Gates run in the order below. The first failing gate names the rejection;
 | 7 | `GateCapacityCooldown` | `capacity_cooldown` | `providerRoutingGateReasonLockedEx` | Pair is in capacity-reject cooldown (black-hole 503s). |
 | 8 | `GateBreaker` | `breaker` | `providerRoutingGateReasonLockedEx` | Node-health breaker open for genuine-fault errors. |
 | 9 | `GateEjection` | `ejection` | `providerRoutingGateReasonLockedEx` | Stable-identity health ejection open. |
-| 10 | `GateOffline` | `offline` | `providerLivenessGateReasonLocked` | `Status == StatusOffline` — set by the provider socket handler (`coordinator/api/provider.go`) the moment the WebSocket dies, before the deferred `Disconnect()` removes the record ([`scheduling.md`](scheduling.md#disconnect)). |
+| 10 | `GateOffline` | `offline` | `providerLivenessGateReasonLocked` | `Status == StatusOffline` — set by the connection owner (`coordinator/providercontrol/session/disconnect.go`, `readFailed`) the moment the WebSocket dies, before the deferred `Disconnect()` removes the record ([`scheduling.md`](scheduling.md#disconnect)). |
 | 11 | `GateUntrusted` | `untrusted` | `providerLivenessGateReasonLocked` | `Status == StatusUntrusted`. |
 | 12 | `GateStateRestoring` | `state_restoring` | `providerLivenessGateReasonLocked` | Verified SE identity is still awaiting durable account/counter/reputation restoration. Also excludes owner self-route, capacity and model loading. |
 | 13 | `GatePrivateOnly` | `private_only` | `providerLivenessGateReasonLocked` | Provider is `PrivateOnly` and the request is not from its owner. |
@@ -611,9 +611,10 @@ removal owned a still-running attempt, and refunds only that attempt's top-up.
 The tracker mutex orders nonblocking enqueue acceptance and sent marking against
 terminal consumption; expiry and terminal observations follow the tracker
 operation. Shared terminal publication belongs to `PublishPendingOutcome`;
-the API keeps provider-frame handling, parking and durable observation
+the frame service handles provider terminals; the API keeps parking and durable observation
 (`coordinator/inference/attempt/cancel.go`, `cancel_tracker.go`, `cancel_metrics.go`,
-`coordinator/inference/attempt/pending_outcome.go`; `coordinator/api/provider.go`,
+`coordinator/inference/attempt/pending_outcome.go`; `coordinator/inference/providerframe/error.go` (`Service.Error`),
+`coordinator/inference/providerframe/complete.go` (`Service.CompleteAt`), `coordinator/api/settlement.go`,
 `coordinator/api/route_outcome.go`).
 
 ### Cooldowns, breakers and ejection

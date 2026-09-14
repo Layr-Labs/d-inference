@@ -1,4 +1,4 @@
-package api
+package providerframe
 
 import (
 	"math"
@@ -6,7 +6,8 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
-func validCacheUsage(usage protocol.UsageInfo) bool {
+// ValidCacheUsage checks the provider extension before cache telemetry consumes it.
+func ValidCacheUsage(usage protocol.UsageInfo) bool {
 	switch usage.CacheOutcome {
 	case "":
 		return false

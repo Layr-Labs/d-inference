@@ -69,7 +69,7 @@ sequenceDiagram
    trust level, and re-challenges every
    [`DefaultChallengeInterval`](security/attestation.md#layer-2--periodic-challenge),
    allowing [`ChallengeResponseTimeout`](security/attestation.md#layer-2--periodic-challenge)
-   for the answer (`coordinator/api/provider.go`). The provider heartbeats every
+   for the answer (`coordinator/providercontrol/challenge/loop.go`, `Session.Run`). The provider heartbeats every
    [`heartbeat_interval_secs`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)
    with capacity, slot state, and telemetry; the coordinator's heartbeat timeout
    and eviction rule are in [`scheduling.md`](scheduling.md#heartbeat-cadence-and-eviction).
@@ -163,12 +163,12 @@ consumer routing to a provider it owns (self-route) pays nothing.
    (`handleChatCompletions`, `coordinator/api/consumer.go`).
 5. Balance is reserved before dispatch (`reserveInferenceBalance`,
    `coordinator/api/inference_admission.go`) and settled from
-   `inference_complete` (`handleComplete`, `coordinator/api/provider.go`): the
+   `inference_complete` (`Service.CompleteAt`, `coordinator/inference/providerframe/complete.go`): the
    difference is refunded, an overage is charged. A request that fails before
    any provider usage is reported is refunded in full (`Service.Refund`,
    `coordinator/inference/settlement/refund.go`). Accounting is owned by
-   `Service.Complete` (`coordinator/inference/settlement/completion.go`); the API
-   retains the terminal claim and consumer-channel signals.
+   `Service.Complete` (`coordinator/inference/settlement/completion.go`); the frame
+   service retains the terminal claim and consumer-channel signals.
 6. The provider version the coordinator advertises (`LatestProviderVersion`,
    `coordinator/api/server.go`) equals `ProviderCore.version`; the test
    `coordinator/api/provider_version_sync_test.go` enforces it.
@@ -198,7 +198,8 @@ consumer routing to a provider it owns (self-route) pays nothing.
 | Route table and middleware | `coordinator/api/routes.go` (`routes`) |
 | Chat / Responses handler | `coordinator/api/consumer.go` (`handleChatCompletions`) |
 | Completions / Messages handler | `coordinator/api/consumer.go` (`handleGenericInference`) |
-| Provider WebSocket, registration, challenges | `coordinator/api/provider.go` |
+| Provider WebSocket and connection lifecycle | `coordinator/api/provider.go` (`handleProviderWS`); `coordinator/providercontrol/session/read.go` (`Session.Run`) |
+| Registration publication and challenge startup | `coordinator/providercontrol/session/registration.go` (`register`); `coordinator/providercontrol/challenge/loop.go` (`Session.Run`) |
 | Attestation verification | `coordinator/attestation/attestation.go` |
 | Eligibility gate | `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`) |
 | Cost model and reservation | `coordinator/registry/candidate_cost.go` (`buildCandidateInto`), `coordinator/registry/routingcost/` (`Policy`), `coordinator/registry/reservation.go` (`ReserveProviderEx`) |

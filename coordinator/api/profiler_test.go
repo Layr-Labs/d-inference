@@ -578,7 +578,7 @@ func TestClaimedCompleteFrameFinalizesAfterPendingRemoved(t *testing.T) {
 		f.srv.updateInferenceRouteOutcomeForPending(f.pr, want)
 		f.pr.ResolveSpeculativeEmptyCompletion(true)
 		await(t, done, "released completion frame did not return")
-		if n := f.srv.unknownRequestFrames.Load(); n != 1 {
+		if n := f.srv.inferenceFrames().UnknownRequestFrames(); n != 1 {
 			t.Fatalf("frame must have returned through the unknown-request path, unknown frames=%d", n)
 		}
 		rec := awaitRecord(t, f)
@@ -610,7 +610,7 @@ func TestClaimedCompleteFrameFinalizesAfterPendingRemoved(t *testing.T) {
 		if !f.ap.TerminalClaimed() {
 			t.Fatal("the frame must own the terminal claim at ingress")
 		}
-		if n := f.srv.unknownRequestFrames.Load(); n != 1 {
+		if n := f.srv.inferenceFrames().UnknownRequestFrames(); n != 1 {
 			t.Fatalf("handleInferenceError must have taken the unknown-request path, unknown frames=%d", n)
 		}
 		// The dispatch side classifies the timeout through the funnel, which
@@ -655,7 +655,7 @@ func TestDuplicateErrorFrameAfterOwnedCompletionIsDropped(t *testing.T) {
 	if f.provider.GetPending(id) != f.pr {
 		t.Fatal("a duplicate error frame must leave the pending request to the terminal's owner")
 	}
-	if n := f.srv.unknownRequestFrames.Load(); n != 1 {
+	if n := f.srv.inferenceFrames().UnknownRequestFrames(); n != 1 {
 		t.Fatalf("duplicate error must be counted as an unknown-request frame once, got %d", n)
 	}
 	if fs, er, tc, po, co := f.ap.Outcome(); fs != "" || er != "" || tc != "" || po != "" || co != "" {
@@ -755,7 +755,7 @@ func TestClaimedErrorFrameFinalizesAfterPendingRemoved(t *testing.T) {
 	for i := 0; i < attempts; i++ {
 		id := "claimed-error-frame-" + strconv.Itoa(i)
 		f := newClaimFixtureOn(t, srv, id, time.Now().Add(time.Minute), 0)
-		before := srv.unknownRequestFrames.Load()
+		before := srv.inferenceFrames().UnknownRequestFrames()
 		mu := f.provider.Mu()
 		mu.Lock()
 		done := make(chan struct{})
@@ -789,7 +789,7 @@ func TestClaimedErrorFrameFinalizesAfterPendingRemoved(t *testing.T) {
 			continue
 		}
 		t.Logf("remover won the claim→RemovePending window on iteration %d", i)
-		if n := srv.unknownRequestFrames.Load() - before; n != 1 {
+		if n := srv.inferenceFrames().UnknownRequestFrames() - before; n != 1 {
 			t.Fatalf("frame must have returned through the unknown-request path exactly once, got %d", n)
 		}
 		if raw, _ := f.ap.ProviderProfileRaw(); string(raw) != errorProfile {

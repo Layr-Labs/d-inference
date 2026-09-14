@@ -76,14 +76,17 @@ hold map. Store, provider and referral getters resolve the current dependencies;
 asynchronous usage and credit writes also resolve the store when they run.
 The hold map retains its startup balance reader and enabled setting.
 
-`handleCompleteAt` in `coordinator/api/provider.go` keeps the provider-terminal
-claim and lifecycle. After that claim, `Service.Complete` resolves price,
+`Service.CompleteAt` in `coordinator/inference/providerframe/complete.go` keeps
+the provider-terminal claim and lifecycle. After that claim, `Service.Complete` resolves price,
 finalizes the reservation and, when that financial path wins, records in-memory
-usage while scheduling durable usage. It then calls the API's existing outcome/timing observation block before
+usage while scheduling durable usage. It then calls the frame service's
+outcome/timing observation block before
 looking up the current referral service and waiting for provider/platform credit
 operations. The settlement profile stamp follows those operations. Only after
-`Complete` returns does the API signal the consumer channels and mark the
-provider idle (`coordinator/inference/settlement/completion.go`). The asynchronous
+`Complete` returns does the frame service signal the consumer channels and mark the
+provider idle. The accounting operation is in
+`coordinator/inference/settlement/completion.go` (`Service.Complete`); channel
+signaling and the idle transition are in `Service.CompleteAt`. The asynchronous
 usage insert is not part of that wait.
 
 Grace-expiry outcome, log and metric decisions remain in
@@ -108,7 +111,8 @@ finalization remains guarded by `PendingRequest.FinalizeReservation`.
 ```mermaid
 sequenceDiagram
   participant C as Consumer
-  participant A as API lifecycle
+  participant A as API ingress
+  participant F as providerframe.Service
   participant T as settlement.Service
   participant S as Shared ledger and store
   participant P as Provider
@@ -117,16 +121,16 @@ sequenceDiagram
   A->>T: Reserve / ReserveForProvider
   T->>S: Debit reservation or hold service balance
   A->>P: Dispatch
-  P-->>A: inference_complete with usage
-  A->>A: Claim provider terminal
-  A->>T: Complete
+  P-->>F: inference_complete with usage
+  F->>F: Claim provider terminal
+  F->>T: Complete
   T->>S: Finalize charge/refund and publish usage
   Note over T,S: Durable usage insert runs asynchronously
-  T->>A: Existing outcome/timing observations
+  T->>F: Existing outcome/timing observations
   T->>S: Referral distribution and provider/platform credits
   Note over T,S: Wait for both credit operations
-  T-->>A: Final cost and payout
-  A-->>C: Signal completion channels
+  T-->>F: Final cost and payout
+  F-->>C: Signal completion channels
   Note over A,T: Abort: Refund; disconnected request: Holder then late terminal or expiry
 ```
 
@@ -369,7 +373,7 @@ the design record is [`design/base-rewards.md`](../design/base-rewards.md).
    `completionTokens`; `Usage.CachedTokens` and `PrefillTokensSaved` from the
    provider's terminal message feed only the `routing.cache_*` metrics
    (`coordinator/payments/pricing.go` `calculateCost`;
-   `coordinator/api/provider.go` `handleCompleteAt`).
+   `coordinator/inference/providerframe/complete.go` `Service.CompleteAt`).
 6. **A reservation is settled or refunded at most once.**
    `PendingRequest.FinalizeReservation` / `MarkReservationFinalized` (`coordinator/registry/pending_request.go`) gate every overage debit, settlement
    refund, whole-reservation refund, and service-hold release; a terminal that
@@ -532,7 +536,7 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 | `billing.overage_charged` | incr | `model` | `coordinator/inference/settlement/completion_finalize.go` (`finalizeCompletion`) |
 | `billing.overage_micro_usd` | histogram | `model` | `coordinator/inference/settlement/completion_finalize.go` (`finalizeCompletion`) |
 | `billing.settlement_refund_micro_usd` | histogram | `model` | `coordinator/inference/settlement/completion_finalize.go` (`finalizeCompletion`) |
-| `billing.zero_usage_complete` | incr | `model` | `coordinator/api/provider.go` (`handleCompleteAt`) |
+| `billing.zero_usage_complete` | incr | `model` | `coordinator/inference/providerframe/complete.go` (`Service.CompleteAt`) |
 | `billing.provider_credits_micro_usd` | count | `model`, `type:account` | `coordinator/inference/settlement/completion_credit.go` (`creditCompletion`) |
 | `billing.platform_fees_micro_usd` | count | `model` | `coordinator/inference/settlement/completion_credit.go` (`creditCompletion`) |
 | `billing.credit_failed` | incr | `op:settlement_refund\|platform_fee` | `coordinator/inference/settlement/completion_finalize.go`; `coordinator/inference/settlement/completion_credit.go` |
@@ -547,7 +551,7 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 | HTTP ownership | `coordinator/api/billing/controller.go` (`Controller`, `Dependencies`); `coordinator/api/billing/store.go` (`Store`); `coordinator/api/billing_controller.go` (`billingController`); `coordinator/api/requestauth/identity.go` (`ResolveAccountID`, `RequirePrivyUser`) | Router and middleware remain in `coordinator/api/routes.go` (`routes`). |
 | Prices and cost | `coordinator/payments/pricing.go` (`DefaultInputPricePerMillion`, `DefaultOutputPricePerMillion`, `minimumChargeMicroUSD`, `platformFeePercent`, `calculateCost`, `CalculateCostWithOverrides`, `CalculateCostWithOverridesNoMinimum`, `resolveFeePercent`, `PlatformFeeWithPercent`, `ProviderPayoutWithPercent`, `FormatPerTokenUSD`); `coordinator/store/postgres/model_prices.go` (`model_prices`, `GetModelPrice`) | `GET /v1/pricing`, `PUT /v1/pricing`, `DELETE /v1/pricing`, `PUT /v1/admin/pricing`, `POST /v1/admin/models/register` |
 | Reservation | `coordinator/inference/settlement/reservation.go` (`Reserve`, `Release`); `coordinator/inference/settlement/reservation_price.go` (`Estimate`, `ReserveForProvider`); `coordinator/inference/settlement/service_holds.go` (`ServiceHolds`); HTTP bounds/cap checks remain in `coordinator/api/inference_admission.go` and `coordinator/api/consumer.go` | — |
-| Settlement | `coordinator/inference/settlement/completion.go` (`Service.Complete`); `completion_price.go`, `completion_finalize.go`, `completion_usage.go`, `completion_credit.go`; `coordinator/inference/settlement/refund.go` (`Refund`, `RefundProviderExtra`); `coordinator/inference/settlement/holder.go` (`Holder`, `DefaultGrace`); lifecycle adapters in `coordinator/api/provider.go` (`handleCompleteAt`) and `coordinator/api/settlement.go` (`holdForSettlement`) | `GET /v1/payments/balance`, `GET /v1/payments/usage` |
+| Settlement | `coordinator/inference/settlement/completion.go` (`Service.Complete`); `completion_price.go`, `completion_finalize.go`, `completion_usage.go`, `completion_credit.go`; `coordinator/inference/settlement/refund.go` (`Refund`, `RefundProviderExtra`); `coordinator/inference/settlement/holder.go` (`Holder`, `DefaultGrace`); terminal lifecycle in `coordinator/inference/providerframe/complete.go` (`Service.CompleteAt`) and `coordinator/api/settlement.go` (`holdForSettlement`) | `GET /v1/payments/balance`, `GET /v1/payments/usage` |
 | Ledger and balances | `coordinator/store/contracts/ledger.go` (`LedgerEntryType`, `RewardLedgerTypes`); `coordinator/store/postgres/ledger.go` (`creditTx`, `creditWithdrawableTx`, `CreditWithdrawableOnce`, `Debit`); `coordinator/store/postgres/earnings.go` (`CreditProviderAccount`); `coordinator/store/postgres/earnings_index.go` (`ensureProviderEarningsJobIndex`) | `GET /v1/provider/earnings`, `GET /v1/provider/account-earnings`, `GET /v1/me/summary` |
 | Deposits | `coordinator/billing/stripe.go` (`CreateCheckoutSession`, `VerifyWebhookSignature`, `ParseCheckoutSession`); `coordinator/billing/billing.go` (`CreditDeposit`, `IsExternalIDProcessed`); `coordinator/api/billing/checkout.go` (`StripeCreateSession`, `StripeSessionStatus`); `coordinator/api/billing/checkout_webhook.go` (`StripeWebhook`); `coordinator/api/billing/wallet.go` (`WalletBalance`); `coordinator/api/billing/methods.go` (`BillingMethods`) | `POST /v1/billing/stripe/create-session`, `POST /v1/billing/stripe/webhook`, `GET /v1/billing/stripe/session`, `GET /v1/billing/wallet/balance`, `GET /v1/billing/methods` |
 | Stripe client and transport | `coordinator/billing/stripe_connect.go` (`StripeConnect`); `coordinator/billing/stripe_connect_transport.go` (`do`, `withStripeAccount`); `coordinator/billing/stripe_connect_errors.go` (`APIError`, `IsDefinitiveAPIErr`); `coordinator/billing/stripe_connect_webhooks.go` (`VerifyConnectWebhookSignature`) | One client holds the credentials, HTTP transport and logger; operations keep their idempotency keys, account headers and signature checks. |

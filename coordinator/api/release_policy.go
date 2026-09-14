@@ -58,9 +58,6 @@ func (s *Server) verifyRuntimeHashesForBackend(b, p, r string, t map[string]stri
 	return s.releasePolicyOwner().VerifyRuntimeHashesForBackend(b, p, r, t)
 }
 
-func runtimeManifestApprovesMetallib(m *RuntimeManifest, t map[string]string) bool {
-	return releasepolicy.RuntimeManifestApprovesMetallib(m, t)
-}
 func sortedTemplateHashes(t map[string]bool) []string { return releasepolicy.SortedTemplateHashes(t) }
 
 func semverLess(a, b string) bool                    { return releasepolicy.VersionLess(a, b) }

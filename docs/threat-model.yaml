@@ -1,3 +1,16 @@
+# Provider inference-frame ownership re-verified 2026-09-14 against commit 359c62293:
+# inference/providerframe keeps the existing encryption, cancellation, terminal,
+# accounting observation and profile operations; api/provider_frames.go binds
+# the shared services. Relevant affected_files selectors follow those producers.
+# Cache eviction and bounded abandoned-entry retention are unchanged. This source
+# map check does not re-verify other threat claims or change trust/privacy policy.
+
+# Provider connection ownership re-verified 2026-09-14 against commit 1470332c8:
+# providercontrol/session owns frame dispatch, registration publication, heartbeat
+# and teardown; API bindings retain existing verification and inference owners.
+# Relevant affected_files selectors follow those operations. This source-map
+# check does not re-verify unrelated threat claims or change trust/privacy policy.
+
 # MDM scheduler ownership re-verified 2026-09-14 against commit 391e1ebd4:
 # providercontrol/mdmscheduler owns queue/claims/worker and exact late-command state;
 # API keeps the existing trust-grant policy. TB-005 source references and relevant
@@ -300,24 +313,25 @@ trust_boundaries:
     description: >
       Providers open an outbound WebSocket to the coordinator. The coordinator upgrades
       the connection, receives a RegisterMessage, and runs attestation verification.
-      Critically, providers are added to the active registry before attestation completes;
-      verification is asynchronous. The coordinator is trusted; providers are adversarial
-      until fully attested.
+      Critically, providers are added to the active registry before synchronous
+      registration verification and state recovery complete. The coordinator is trusted;
+      providers are adversarial until fully attested.
     how_it_works: >
-      The WebSocket upgrade (provider.go) uses InsecureSkipVerify: true — no origin
-      validation. A hard 10 MB per-message read limit is applied (conn.SetReadLimit). No
+      The WebSocket upgrade (coordinator/api/provider.go, handleProviderWS) uses
+      InsecureSkipVerify: true — no origin validation. A hard 10 MB per-message read limit is applied (conn.SetReadLimit). No
       pre-authentication, rate limiting, or connection limit exists before the upgrade.
 
       On receiving a RegisterMessage the coordinator immediately calls registry.Register()
       (registry.Register) which adds the provider to the active registry. Attestation verification
-      runs asynchronously after this. Registration validates: TPS values clamped to hard
-      limits; hardware memory clamped to 0–1024 GB; models filtered against the catalog;
+      runs synchronously after this in coordinator/providercontrol/session/registration.go
+      (register), through Verifier.VerifyRegistration. Registry registration validates:
+      TPS values clamped to hard limits; hardware memory clamped to 0–1024 GB; models filtered against the catalog;
       X25519 public key decoded and checked for 32-byte length.
 
-      Binary hash policy: if a policy is configured, the hash in the attestation must
-      match a registered blessed hash or the provider is marked untrusted — but it
-      remains in the registry. If no policy is configured, any binary passes. Weight
-      hash enforcement is fail-open: omitting weight_hash never fails admission.
+      Binary hash policy: when binary-hash enforcement is enabled and a policy is
+      configured, the hash in the attestation must match a registered blessed hash or the provider is marked untrusted — but it
+      remains in the registry. Without enforcement or a configured policy, this
+      binary-hash check does not reject a registration. Weight hash enforcement is fail-open: omitting weight_hash never fails admission.
 
       The private-text routing gate (coordinator/registry/attestation_policy.go providerSupportsPrivateTextLocked)
       requires all of: PublicKey present, backend mlx-swift, EncryptedResponseChunks,
@@ -349,8 +363,9 @@ trust_boundaries:
         upgrade. Any client can open arbitrary connections and attempt registration
         (provider.go, SEC-034)."
       - "Provider is added to the live registry before synchronous registration verification
-        and state recovery finish (api/provider.go providerReadLoop, followed by
-        providercontrol/verification/registration.go Verifier.VerifyRegistration).
+        and state recovery finish (coordinator/providercontrol/session/registration.go
+        register calls coordinator/providercontrol/verification/registration.go
+        Verifier.VerifyRegistration).
         Registry presence alone does not satisfy the trust and routing gates."
       - "Weight hash enforcement is fail-open: a provider can omit weight_hash entirely
         and still be admitted, even for models with a known expected hash in the catalog
@@ -970,6 +985,12 @@ threats:
     adversaries: [ADV-003]
     affected_assets: [A-001]
     affected_files:
+      - coordinator/inference/providerframe/chunk.go
+      - coordinator/inference/providerframe/encryption.go
+      - coordinator/inference/providerframe/chunk_keys.go
+      - coordinator/api/provider_frames.go
+      - coordinator/inference/providerframe/dependencies.go
+      - coordinator/inference/providerframe/service.go
       - coordinator/api/sender_encryption.go
       - console-ui/src/lib/encryption.ts
       - console-ui/src/lib/chat/stream.ts
@@ -1030,6 +1051,11 @@ threats:
     adversaries: [ADV-002]
     affected_assets: [A-009]
     affected_files:
+      - coordinator/inference/providerframe/complete.go
+      - coordinator/inference/providerframe/error.go
+      - coordinator/api/provider_frames.go
+      - coordinator/inference/providerframe/dependencies.go
+      - coordinator/inference/providerframe/service.go
       - coordinator/api/consumer.go
       - coordinator/store/postgres/usage.go
       - coordinator/inference/dispatch/prepare.go
@@ -1062,6 +1088,12 @@ threats:
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-011]
     affected_files:
+      - coordinator/providercontrol/session/read.go
+      - coordinator/providercontrol/session/session.go
+      - coordinator/providercontrol/session/registration.go
+      - coordinator/providercontrol/session/disconnect.go
+      - coordinator/providercontrol/session/dependencies.go
+      - coordinator/api/provider_session.go
       - coordinator/api/provider.go
       - coordinator/registry/registry.go
       - coordinator/providercontrol/verification/registration.go
@@ -1100,6 +1132,17 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-001, A-004]
     affected_files:
+      - coordinator/inference/providerframe/chunk.go
+      - coordinator/inference/providerframe/complete.go
+      - coordinator/inference/providerframe/error.go
+      - coordinator/api/provider_frames.go
+      - coordinator/inference/providerframe/dependencies.go
+      - coordinator/inference/providerframe/service.go
+      - coordinator/providercontrol/session/read.go
+      - coordinator/providercontrol/session/registration.go
+      - coordinator/providercontrol/session/model_status.go
+      - coordinator/providercontrol/session/dependencies.go
+      - coordinator/api/provider_session.go
       - coordinator/registry/registry.go
       - coordinator/api/provider.go
       - provider-swift/Sources/ProviderCore/Inference/**
@@ -1137,6 +1180,17 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-001]
     affected_files:
+      - coordinator/inference/providerframe/chunk.go
+      - coordinator/inference/providerframe/encryption.go
+      - coordinator/inference/providerframe/chunk_keys.go
+      - coordinator/inference/providerframe/chunk_buffer.go
+      - coordinator/inference/providerframe/error.go
+      - coordinator/api/provider_frames.go
+      - coordinator/inference/providerframe/dependencies.go
+      - coordinator/inference/providerframe/service.go
+      - coordinator/providercontrol/session/read.go
+      - coordinator/providercontrol/session/dependencies.go
+      - coordinator/api/provider_session.go
       - provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift
       - coordinator/api/provider.go
     mitigations:
@@ -1205,6 +1259,11 @@ threats:
     adversaries: [ADV-002]
     affected_assets: [A-009]
     affected_files:
+      - coordinator/inference/providerframe/chunk.go
+      - coordinator/inference/providerframe/error.go
+      - coordinator/api/provider_frames.go
+      - coordinator/inference/providerframe/dependencies.go
+      - coordinator/inference/providerframe/service.go
       - provider-swift/Sources/ProviderCore/ProviderLoop.swift
     mitigations:
       - description: Swift provider wires InferenceCancellation into the generation loop.
@@ -1259,6 +1318,12 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-004, A-001]
     affected_files:
+      - coordinator/providercontrol/session/read.go
+      - coordinator/providercontrol/session/registration.go
+      - coordinator/providercontrol/session/heartbeat.go
+      - coordinator/providercontrol/session/model_status.go
+      - coordinator/providercontrol/session/dependencies.go
+      - coordinator/api/provider_session.go
       - coordinator/registry/registry.go
       - coordinator/api/provider.go
       - provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift
@@ -1355,6 +1420,11 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-001, A-010]
     affected_files:
+      - coordinator/providercontrol/session/read.go
+      - coordinator/providercontrol/session/registration.go
+      - coordinator/providercontrol/session/heartbeat.go
+      - coordinator/providercontrol/session/dependencies.go
+      - coordinator/api/provider_session.go
       - provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift
       - coordinator/api/provider.go
       - coordinator/registry/registry.go
@@ -1521,6 +1591,11 @@ threats:
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-010]
     affected_files:
+      - coordinator/providercontrol/session/read.go
+      - coordinator/providercontrol/session/registration.go
+      - coordinator/providercontrol/session/disconnect.go
+      - coordinator/providercontrol/session/dependencies.go
+      - coordinator/api/provider_session.go
       - coordinator/api/server.go
       - coordinator/mdm/**
       - coordinator/api/provider.go
@@ -1566,6 +1641,10 @@ threats:
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-010, A-012]
     affected_files:
+      - coordinator/providercontrol/session/read.go
+      - coordinator/providercontrol/session/registration.go
+      - coordinator/providercontrol/session/dependencies.go
+      - coordinator/api/provider_session.go
       - coordinator/api/provider.go
     mitigations:
       - description: >
@@ -1714,6 +1793,15 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-004, A-001]
     affected_files:
+      - coordinator/inference/providerframe/complete.go
+      - coordinator/api/provider_frames.go
+      - coordinator/inference/providerframe/dependencies.go
+      - coordinator/inference/providerframe/service.go
+      - coordinator/providercontrol/session/read.go
+      - coordinator/providercontrol/session/registration.go
+      - coordinator/providercontrol/session/model_status.go
+      - coordinator/providercontrol/session/dependencies.go
+      - coordinator/api/provider_session.go
       - provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift
       - provider-swift/Tests/ProviderCoreFoundationTests/WeightHasherMemoryTests.swift
       - coordinator/registry/registry.go
@@ -1892,6 +1980,19 @@ threats:
     adversaries: [ADV-002]
     affected_assets: [A-001]
     affected_files:
+      - coordinator/inference/providerframe/complete.go
+      - coordinator/inference/providerframe/cache_usage.go
+      - coordinator/api/cache_selection_telemetry.go
+      - coordinator/api/provider_frames.go
+      - coordinator/inference/providerframe/dependencies.go
+      - coordinator/inference/providerframe/service.go
+      - coordinator/providercontrol/session/read.go
+      - coordinator/providercontrol/session/registration.go
+      - coordinator/providercontrol/session/heartbeat.go
+      - coordinator/providercontrol/session/cache_receipts.go
+      - coordinator/providercontrol/session/telemetry.go
+      - coordinator/providercontrol/session/dependencies.go
+      - coordinator/api/provider_session.go
       # (BatchScheduler / PrefixCacheManager / EncryptedPrefixCachePersistence
       # were deleted with the legacy engine in v0.7.5; EncryptedKVStore is
       # PRESERVED as the chunked AES-GCM store the SSD-offload successor
@@ -2092,6 +2193,12 @@ threats:
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-010]
     affected_files:
+      - coordinator/providercontrol/session/read.go
+      - coordinator/providercontrol/session/session.go
+      - coordinator/providercontrol/session/registration.go
+      - coordinator/providercontrol/session/disconnect.go
+      - coordinator/providercontrol/session/dependencies.go
+      - coordinator/api/provider_session.go
       - coordinator/attestation/**
       - coordinator/api/provider.go
       - provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift
@@ -2144,6 +2251,12 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-010, A-011]
     affected_files:
+      - coordinator/providercontrol/session/read.go
+      - coordinator/providercontrol/session/registration.go
+      - coordinator/providercontrol/session/heartbeat.go
+      - coordinator/providercontrol/session/disconnect.go
+      - coordinator/providercontrol/session/dependencies.go
+      - coordinator/api/provider_session.go
       - coordinator/apns/attestor.go
       - coordinator/providercontrol/codeidentity/**
       - coordinator/api/provider_codeattest.go
@@ -2208,8 +2321,8 @@ threats:
     open_findings: []
     severity: critical
     detection_hint: >
-      Changes to coordinator/apns, the per-connection push-attest step in
-      api/provider.go, the CodeAttested gate in registry, or the provider's
+      Changes to coordinator/apns, the per-connection push-attest startup in
+      coordinator/providercontrol/session/registration.go, the CodeAttested gate in registry, or the provider's
       decrypt→Sign_SE→reply handler must preserve the property that only genuine,
       Apple-provisioned code can pass. Re-relying on binaryHash as a security control
       (vs telemetry) is a regression.
@@ -2229,6 +2342,10 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-002, A-010]
     affected_files:
+      - coordinator/providercontrol/session/read.go
+      - coordinator/providercontrol/session/registration.go
+      - coordinator/providercontrol/session/dependencies.go
+      - coordinator/api/provider_session.go
       - provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift
       - provider-swift/Sources/ProviderCore/Security/SecureEnclaveIdentity.swift
       - coordinator/api/provider.go
@@ -2267,6 +2384,13 @@ threats:
     adversaries: [ADV-001, ADV-003]
     affected_assets: [A-010]
     affected_files:
+      - coordinator/providercontrol/session/read.go
+      - coordinator/providercontrol/session/session.go
+      - coordinator/providercontrol/session/registration.go
+      - coordinator/providercontrol/session/heartbeat.go
+      - coordinator/providercontrol/session/disconnect.go
+      - coordinator/providercontrol/session/dependencies.go
+      - coordinator/api/provider_session.go
       - coordinator/attestation/**
       - coordinator/mdm/**
       - coordinator/api/provider.go
@@ -2354,6 +2478,11 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-001, A-010]
     affected_files:
+      - coordinator/providercontrol/session/read.go
+      - coordinator/providercontrol/session/registration.go
+      - coordinator/providercontrol/session/heartbeat.go
+      - coordinator/providercontrol/session/dependencies.go
+      - coordinator/api/provider_session.go
       - provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift
       - coordinator/api/provider.go
       - coordinator/providercontrol/verification/registration.go
@@ -3061,6 +3190,14 @@ threats:
     adversaries: [ADV-002, ADV-004]
     affected_assets: [A-007, A-009]
     affected_files:
+      - coordinator/inference/providerframe/accepted.go
+      - coordinator/inference/providerframe/chunk.go
+      - coordinator/inference/providerframe/complete.go
+      - coordinator/inference/providerframe/error.go
+      - coordinator/inference/providerframe/terminal.go
+      - coordinator/api/provider_frames.go
+      - coordinator/inference/providerframe/dependencies.go
+      - coordinator/inference/providerframe/service.go
       - coordinator/api/profiler*.go
       - coordinator/telemetry/profiler/**
       - coordinator/api/operations/**

@@ -60,8 +60,8 @@ anything else to `unknown`):
 |---|---|
 | `heartbeat` | A provider heartbeat for any model it serves (`Heartbeat`, `coordinator/registry/heartbeat.go`). |
 | `idle` | A provider finished a request (`SetProviderIdle`). |
-| `challenge` | A provider passed a challenge and became eligible (`coordinator/api/provider.go`, `coordinator/providercontrol/codeidentity/response.go` (`HandleResponse`)). |
-| `load` | A provider reported a model load complete (`coordinator/api/provider.go`). |
+| `challenge` | A provider passed a challenge and became eligible (`coordinator/providercontrol/challenge/verify.go` (`Verifier.VerifyResponse`), `coordinator/providercontrol/codeidentity/response.go` (`HandleResponse`)). |
+| `load` | A provider reported a model load complete (`coordinator/providercontrol/session/model_status.go`, `loadModelStatus`). |
 | `disconnect` | A provider left; queued requests it alone could have served fail fast (`Disconnect`). |
 | `kick` | Cold-dispatch kick from the API layer when a request is enqueued (`coordinator/inference/dispatch/cold.go`). |
 | `unknown` | Any other caller of the public drain helpers (`coordinator/registry/queue_drain.go`). |
@@ -81,8 +81,8 @@ is excluded as transient capacity until its next idle/serving heartbeat, or
 `drainStateTTL = 150 * time.Second` without a refresh. These rejections do not
 consume capacity retries or feed provider fault/capacity trackers
 (`coordinator/registry/drain_state.go`, `MarkDraining`;
-`coordinator/api/provider.go`, `handleInferenceErrorOwned`;
-`coordinator/api/provider_drain.go`, `noteProviderDraining`). Error ingress marks
+`coordinator/inference/providerframe/error.go`, `errorOwned`;
+`coordinator/inference/providerframe/draining.go`, `noteProviderDraining`). Error ingress marks
 the provider before removing its pending slot or draining queued demand.
 Consumer classification does not repeat the mutation, so a delayed error cannot
 overwrite a newer recovery heartbeat. Wire values are listed in
@@ -557,7 +557,7 @@ classification unchanged.
 
 `Registry.Disconnect` (`coordinator/registry/provider_disconnect.go`) is the single
 teardown path, reached from socket close and from eviction. On socket close
-the provider handler (`coordinator/api/provider.go`) first flips the record to
+the connection owner (`coordinator/providercontrol/session/disconnect.go`, `readFailed`) first flips the record to
 `StatusOffline` — failing the routing gate `offline` at once, so a slow
 session-close write can never leave a dead provider selectable — and only then
 runs the deferred `Disconnect`. `offline` is therefore a transient state between

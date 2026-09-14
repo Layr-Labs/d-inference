@@ -91,7 +91,7 @@ read once at process start and a restart applies a change.
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_MIN_PROVIDER_VERSION` | semver | unset (no floor) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/provider.go` | Providers below this version are refused at registration and excluded from routing; surfaced to operators in `/v1/me`. |
+| `EIGENINFERENCE_MIN_PROVIDER_VERSION` | semver | unset (no floor) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/providercontrol/session/registration.go` (`register`); `coordinator/providercontrol/releasepolicy/runtime_provider.go` (`ApplyChallengeMinVersionPolicy`) | Providers below this version stay connected with runtime verification cleared and are excluded from routing; surfaced to operators in `/v1/me`. |
 | `EIGENINFERENCE_RELEASE_POLICY_MODE` | `shadow`, `enforce` | `shadow` | `coordinator/cmd/coordinator/release_policy.go` (`configureReleasePolicy`) | Whether missing application evidence blocks routing; see [`../operations/release-policy-rollout.md`](../operations/release-policy-rollout.md). |
 | `EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE` | Go duration ≥ 20m (raise-only) | `20m` | `coordinator/cmd/coordinator/release_policy.go` (`configureReleasePolicy`) | Boot grace before enforcement bites; shorter values clamp up to 20m. |
 | `EIGENINFERENCE_BINARYHASH_ENFORCE` | `true` | `false` | `coordinator/cmd/coordinator/release_policy.go` (`configureReleasePolicy`) | Re-enables legacy derouting on a self-reported `binaryHash` mismatch (rollback only). |

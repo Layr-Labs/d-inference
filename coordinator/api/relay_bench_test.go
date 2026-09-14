@@ -12,6 +12,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/providerframe"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -23,7 +24,7 @@ import (
 const relayBenchContentChunk = `data: {"choices":[{"delta":{"content":" the"},"index":0}],"created":1756800000,"id":"chatcmpl-7f3a2b1c","model":"mlx-community/gemma-4-26B-A4B-it-qat-4bit","object":"chat.completion.chunk"}`
 
 type relayBenchFixture struct {
-	srv      *Server
+	frames   *providerframe.Service
 	provider *registry.Provider
 	pr       *registry.PendingRequest
 	frame    []byte // Swift-shaped WS frame
@@ -72,7 +73,7 @@ func newRelayBenchFixture(b *testing.B) *relayBenchFixture {
 		`","ephemeral_public_key":"` + payload.EphemeralPublicKey +
 		`"},"request_id":"` + pr.RequestID +
 		`","type":"` + protocol.TypeInferenceResponseChunk + `"}`
-	return &relayBenchFixture{srv: srv, provider: provider, pr: pr, frame: []byte(frame)}
+	return &relayBenchFixture{frames: srv.inferenceFrames(), provider: provider, pr: pr, frame: []byte(frame)}
 }
 
 // handleChunk alone (lookup + decrypt + classify + channel send).
@@ -86,7 +87,7 @@ func BenchmarkRelay_HandleChunk(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		f.srv.handleChunk(f.provider.ID, f.provider, msg)
+		f.frames.Chunk(f.provider.ID, f.provider, msg)
 		<-f.pr.ChunkCh
 	}
 }
@@ -103,7 +104,7 @@ func BenchmarkRelay_ReadLoopPerFrame(b *testing.B) {
 		if err := protocol.DecodeProviderMessage(f.frame, &pm); err != nil {
 			b.Fatal(err)
 		}
-		f.srv.handleChunk(f.provider.ID, f.provider, pm.Payload.(*protocol.InferenceResponseChunkMessage))
+		f.frames.Chunk(f.provider.ID, f.provider, pm.Payload.(*protocol.InferenceResponseChunkMessage))
 		<-f.pr.ChunkCh
 	}
 }
@@ -120,7 +121,7 @@ func BenchmarkRelay_ReadLoopPerFrame_GenericDecode(b *testing.B) {
 		if err := json.Unmarshal(f.frame, &msg); err != nil {
 			b.Fatal(err)
 		}
-		f.srv.handleChunk(f.provider.ID, f.provider, &msg)
+		f.frames.Chunk(f.provider.ID, f.provider, &msg)
 		<-f.pr.ChunkCh
 	}
 }

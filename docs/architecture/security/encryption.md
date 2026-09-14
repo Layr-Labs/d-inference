@@ -73,7 +73,7 @@ sequenceDiagram
 
 | Property | Value | Code |
 |---|---|---|
-| Session key | Fresh X25519 key pair per request (`SessionKeys`); the private key lives only in the in-flight `PendingRequest.SessionPrivKey` | `coordinator/internal/e2e/e2e.go` (`GenerateSessionKeys`) |
+| Session key | Fresh X25519 key pair per request (`SessionKeys`); `PendingRequest.SessionPrivKey` holds the private key and the chunk-key cache indexes the same pointer | `coordinator/internal/e2e/e2e.go` (`GenerateSessionKeys`) |
 | Recipient key | `Provider.PublicKey` — the X25519 key from `register.public_key`, which must equal the SE-signed blob's `encryptionPublicKey` ([`identity-binding.md`](./identity-binding.md)) | `coordinator/providercontrol/verification/registration.go` (`Verifier.VerifyRegistration`); `coordinator/internal/e2e/e2e.go` (`ParsePublicKey`) |
 | Encrypt | `box.Seal` with a random 24-byte nonce → `EncryptedPayload{ephemeral_public_key, ciphertext}` where `ciphertext` = base64(nonce ‖ box) | `coordinator/internal/e2e/e2e.go` (`Encrypt`); `coordinator/protocol/inference.go` (`EncryptedPayload`) |
 | Body preparation | The parsed request map is re-marshalled with HTML escaping disabled; plaintext inference bodies are capped at `maxInferenceBodyBytes` ([limits](../../reference/api-contracts.md#limits-and-validation)) before sealing | `coordinator/api/httpresponse/marshal.go` (`MarshalBody`), `coordinator/inference/dispatch/body_contract.go` (`MaxInferenceBodyBytes`) |
@@ -85,11 +85,11 @@ sequenceDiagram
 | Property | Value | Code |
 |---|---|---|
 | Wire message | `inference_response_chunk` with `encrypted_data = {ephemeral_public_key, ciphertext}` and `data` empty | `coordinator/protocol/inference.go` (`InferenceResponseChunkMessage`) |
-| Sender key | The provider's **static** registered X25519 key `K`; `encrypted_data.ephemeral_public_key` must equal `Provider.PublicKey`. Only the coordinator side of this hop is per-request | `coordinator/api/provider.go` (`decryptTextResponseChunk`) |
+| Sender key | The provider's **static** registered X25519 key `K`; `encrypted_data.ephemeral_public_key` must equal `Provider.PublicKey`. Only the coordinator side of this hop is per-request | `coordinator/inference/providerframe/encryption.go` (`decryptTextResponseChunk`) |
 | Recipient key | The request's session public key from hop 2 | `provider-swift/Sources/ProviderCore/ProviderLoop.swift` |
-| Decrypt | Shared key `box.Precompute(K, SessionPrivKey)` memoized per request in `chunkKeyCache` (keyed by the `SessionPrivKey` pointer, cap `chunkKeyCacheMax` = 8192, dropped wholesale when full); per chunk only `box.OpenAfterPrecomputation` runs | `coordinator/api/chunk_key_cache.go` (`sharedKey`, `forget`); `coordinator/internal/e2e/e2e.go` (`PrecomputeSharedKey`, `DecryptWithSharedKey`) |
+| Decrypt | Shared key `box.Precompute(K, SessionPrivKey)` memoized per request in `chunkKeyCache` (keyed by the `SessionPrivKey` pointer, cap `chunkKeyCacheMax` = 8192, dropped wholesale when full); per chunk only `box.OpenAfterPrecomputation` runs | `coordinator/inference/providerframe/chunk_keys.go` (`sharedKey`, `forget`); `coordinator/internal/e2e/e2e.go` (`PrecomputeSharedKey`, `DecryptWithSharedKey`) |
 | Requirement | The provider must register with `encrypted_response_chunks: true`; otherwise it never passes `providerSupportsPrivateTextLocked` | `coordinator/protocol/registration.go` (`RegisterMessage`) |
-| Violation | A plaintext chunk, a mixed chunk, or a sender key ≠ `K` marks the provider `untrusted` and fails the request with `502` / `FailureCodeEncryptionFailure` | `coordinator/api/provider.go` (`decryptTextResponseChunk`, `errTextChunkViolation`) |
+| Violation | A plaintext chunk, a mixed chunk, or a sender key ≠ `K` marks the provider `untrusted` and fails the request with `502` / `FailureCodeEncryptionFailure` | `coordinator/inference/providerframe/encryption.go` (`decryptTextResponseChunk`, `errTextChunkViolation`); `coordinator/inference/providerframe/chunk.go` (`Service.Chunk`) |
 
 ### What each party can observe
 
@@ -125,17 +125,17 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | Provider inference errors are reduced to a closed vocabulary before logging or returning | `coordinator/inference/attempt/error_sanitize.go` (`SanitizeProviderInferenceError`), `coordinator/inference/response/error_message.go` (`ClientSafeInferenceErrorMessage`) |
 | `POST /v1/telemetry/events` answers `telemetry_ingest_disabled` ([api-contracts](../../reference/api-contracts.md#telemetry-1)) and never reads the body, because provider telemetry has free-form `message` / `stack` fields | `coordinator/api/telemetry_handlers.go` (`handleTelemetryIngest`) |
 | Sealed requests never trigger remote-media fetching (no coordinator egress derived from sealed content) | `coordinator/api/sender_encryption.go` (`isSealedRequest`) |
-| Session private key and memoized shared key are dropped at request end | `coordinator/api/chunk_key_cache.go` (`forget`) |
+| Owned completion/error cleanup removes the memoized shared-key entry; it does not explicitly overwrite key bytes | `coordinator/inference/providerframe/chunk_keys.go` (`forget`); `coordinator/inference/providerframe/complete.go` (`Service.CompleteAt`); `coordinator/inference/providerframe/error.go` (`errorOwned`) |
 
 ## Invariants
 
 1. A request is dispatched only to a provider that passes `providerSupportsPrivateTextLocked`: non-empty X25519 key, `mlx-swift` backend, `encrypted_response_chunks`, runtime manifest checked, coordinator-verified SIP, code identity when enforced, and the five required `PrivacyCapabilities` — `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`). The full gate is tabulated in [`attestation.md`](./attestation.md#routing-gate).
 2. Every hop-2 payload uses a fresh X25519 session key pair and a random 24-byte nonce — `coordinator/internal/e2e/e2e.go` (`GenerateSessionKeys`, `Encrypt`).
-3. A response chunk is accepted only if it is encrypted, carries no plaintext, and its `ephemeral_public_key` equals `Provider.PublicKey`; any other chunk untrusts the provider and fails the request — `coordinator/api/provider.go` (`decryptTextResponseChunk`).
+3. A response chunk is accepted only if it is encrypted, carries no plaintext, and its `ephemeral_public_key` equals `Provider.PublicKey`; any other chunk untrusts the provider and fails the request — `coordinator/inference/providerframe/encryption.go` (`decryptTextResponseChunk`), `coordinator/inference/providerframe/chunk.go` (`Service.Chunk`).
 4. The provider's X25519 key is the one bound to its Secure Enclave identity: `register.public_key` must equal the signed blob's `encryptionPublicKey` — `coordinator/providercontrol/verification/registration.go` (`Verifier.VerifyRegistration`).
 5. A sealed request that fails to open is rejected (`decryption_failed`) and never falls through to plaintext handling; a sealed request is recognised by `Content-Type` alone — `coordinator/api/sender_encryption.go` (`sealedTransport`, `isSealedContentType`).
 6. A sealed request never causes the coordinator to fetch remote media — `coordinator/api/media_resolve.go` (`gateRemoteMediaPreDispatch`), `coordinator/api/sender_encryption.go` (`isSealedRequest`).
-7. The hop-2 session private key and the memoized hop-3 shared key exist only in the in-flight request state and are forgotten when the request completes, errors, or the provider disconnects — `coordinator/api/chunk_key_cache.go` (`forget`).
+7. Session and memoized shared keys remain in process memory. Owned completion/error cleanup removes the cache entry; abandoned requests, including disconnects without such cleanup, can retain entries until the bounded cache resets. Removal does not zero key bytes — `coordinator/inference/providerframe/chunk_keys.go` (`sharedKey`, `forget`, `chunkKeyCacheMax`).
 8. No request body, prompt, or completion text reaches structured logs or the store; the only content-derived artifacts are keyed digests for cache routing — `coordinator/inference/dispatch/run.go`, `coordinator/store/contracts/telemetry.go`, `coordinator/registry/cache_route_keys.go`.
 9. Client telemetry ingest is disabled (`telemetry_ingest_disabled`, [api-contracts](../../reference/api-contracts.md#telemetry-1)) and its body is never read — `coordinator/api/telemetry_handlers.go` (`handleTelemetryIngest`).
 
@@ -149,8 +149,8 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | Sealed body over the [inference body limit](../../reference/api-contracts.md#limits-and-validation) | `400 invalid_request_error` | `coordinator/api/sender_encryption.go` |
 | Plaintext inference body over `maxInferenceBodyBytes` | `413 invalid_request_error`; the global ceiling for any body is `maxRequestBodyBytes` ([limits](../../reference/api-contracts.md#limits-and-validation)) | `coordinator/api/inference_preprocess.go` (`parseInferencePrelude`, `maxInferenceBodyBytes`); `coordinator/api/http_middleware.go` (`bodyLimitMiddleware`) |
 | Provider registered without an X25519 key or without `encrypted_response_chunks` | Never routable for private text | `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`) |
-| Provider returns a plaintext or wrong-key chunk | Provider marked `untrusted`; request fails `502` with `FailureCodeEncryptionFailure` | `coordinator/api/provider.go` |
-| Provider disconnects mid-stream | Session key forgotten; `chunkKeyCache` cap (8192) bounds leaked entries and drops the cache wholesale when full | `coordinator/api/chunk_key_cache.go` |
+| Provider returns a plaintext or wrong-key chunk | Provider marked `untrusted`; request fails `502` with `FailureCodeEncryptionFailure` | `coordinator/inference/providerframe/chunk.go` (`Service.Chunk`) |
+| Provider disconnects mid-stream | Abandoned shared-key entries can remain; `chunkKeyCacheMax = 8192` bounds the cache, which resets on a subsequent insertion at capacity | `coordinator/inference/providerframe/chunk_keys.go` (`sharedKey`) |
 
 ## Code map
 
@@ -159,9 +159,9 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | Sealed request middleware, key endpoint, response sealing | `coordinator/api/sender_encryption.go` (`sealedTransport`, `handleEncryptionKey`, `sealingResponseWriter`) |
 | Coordinator key derivation | `coordinator/internal/e2e/coordinator_key.go` (`DeriveCoordinatorKey`) |
 | NaCl Box helpers | `coordinator/internal/e2e/e2e.go` (`GenerateSessionKeys`, `Encrypt`, `Decrypt`, `PrecomputeSharedKey`, `DecryptWithSharedKey`) |
-| Per-request shared-key memoization | `coordinator/api/chunk_key_cache.go` (`chunkKeyCache`) |
+| Per-request shared-key memoization | `coordinator/inference/providerframe/chunk_keys.go` (`chunkKeyCache`) |
 | Request body cap and forward marshalling | `coordinator/inference/dispatch/body_contract.go` (`MaxInferenceBodyBytes`), `coordinator/api/httpresponse/marshal.go` (`MarshalBody`); API adapters in `coordinator/api/inference_preprocess.go` |
-| Chunk decryption and violation handling | `coordinator/api/provider.go` (`decryptTextResponseChunk`) |
+| Chunk decryption and violation handling | `coordinator/inference/providerframe/encryption.go` (`decryptTextResponseChunk`) |
 | Wire types | `coordinator/protocol/inference.go` (`EncryptedPayload`, `InferenceRequestMessage`, `InferenceResponseChunkMessage`); `coordinator/protocol/registration.go` (`RegisterMessage`) |
 | Private-text routing gate | `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`) |
 | Consumer-visible headers | `coordinator/inference/response/provider_snapshot.go` (`WriteCommittedProviderHeaders`) |

@@ -8,7 +8,7 @@ const auth = vi.hoisted(() => ({
   user: { id: "account-a" } as { id: string } | null,
   getAccessToken: vi.fn<() => Promise<string | null>>(),
 }));
-vi.mock("@/components/providers/PrivyClientProvider", () => ({ useAuthContext: () => auth }));
+vi.mock("@/components/app-providers/PrivyClientProvider", () => ({ useAuthContext: () => auth }));
 const upstreamFetch = vi.fn<typeof fetch>();
 
 function deferred<T>() {

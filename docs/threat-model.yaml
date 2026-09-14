@@ -559,7 +559,7 @@ trust_boundaries:
       only for outbound API calls to MicroMDM, not to authenticate inbound callbacks.
 
       When a provider registers, the coordinator's store-backed MDM scheduler sends a
-      SecurityInfo MDM command to the enrolled device (mdm.go
+      SecurityInfo MDM command to the enrolled device (coordinator/mdm/security_info.go
       VerifyProviderWithUDIDObserver), then waits up to 90 seconds for the webhook
       response; a late SecurityInfo for the same CommandUUID is still applied
       (coordinator/api/provider_late_verification.go ApplyLateSecurityInfo, after the exact current
@@ -1623,7 +1623,7 @@ threats:
     open_findings: [SEC-004]
     severity: high
     detection_hint: >
-      Changes to MDM webhook handling (mdm.go, server.go route registration) must
+      Changes to MDM webhook handling (coordinator/mdm/webhook.go, coordinator/api/server.go HandleMDMWebhook and routes) must
       verify the shared-secret check, body cap, and CommandUUID correlation remain in
       front of any trust state change, and that deployments set the secret.
 

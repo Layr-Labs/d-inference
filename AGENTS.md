@@ -32,7 +32,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── ratelimit/        rate limiting
 ├── registry/         provider registry, queueing, routing, reputation, token-budget admission,
 │                     warmpool/ (controller, pressure and target policy),
-│                     two-lane provider WS writer (provider_writer.go),
+│                     providerwriter/ (two-lane WS writer, handoff and watchdog),
 │                     admission/ (immutable capacity math), providerversion/ (shared interpreter),
 │                     cacheattempt/ (request lifetime), cachedirectory/ (receipt/holder transactions),
 │                     modelloads/ (session command clocks and fleet plan gate),
@@ -113,7 +113,7 @@ docs/                 how-tos, runbooks, reference, architecture, design records
 - Billing logic is split between `coordinator/payments` (ledger + pricing) and `coordinator/billing` (Stripe, referrals).
 - Providers serve text inference through the Swift `darkbloom` CLI with continuous batching via MLX-Swift.
 - Model registry data is DB-backed in the coordinator and points to R2 manifests under `https://models.darkbloom.ai`; model bytes are not hardcoded in the provider or UI.
-- Streaming hot path: provider frames are decoded in a single parse (`coordinator/protocol/type_scan.go` scans the `type` key; malformed input falls back to a full envelope decode); per-request X25519 shared keys are memoized for chunk decryption and forgotten on request terminal (`coordinator/api/chunk_key_cache.go`); all writes to a provider WebSocket go through a two-lane writer (`coordinator/registry/provider_writer.go`) with a per-connection write watchdog — control frames (challenges, cancels, trust status) take strict (non-preemptive) priority over data frames, FIFO holds only within a lane, and `WriteText` blocks until the frame is on the wire.
+- Streaming hot path: provider frames are decoded in a single parse (`coordinator/protocol/type_scan.go` scans the `type` key; malformed input falls back to a full envelope decode); per-request X25519 shared keys are memoized for chunk decryption and forgotten on request terminal (`coordinator/api/chunk_key_cache.go`); all writes to a provider WebSocket go through a two-lane owner (`coordinator/registry/providerwriter/`, bound by `coordinator/registry/provider_writer.go`) with a per-connection write watchdog — control frames (challenges, cancels, trust status) take strict (non-preemptive) priority over data frames, FIFO holds only within a lane, and `WriteText` blocks until the frame is on the wire.
 - Observability: Datadog metrics (DogStatsD) for attestation, routing, billing, fleet version, and provider capacity. X-Timing header decomposes per-request latency.
 
 ## Building And Testing

@@ -7,6 +7,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/providerwriter"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
@@ -90,7 +91,7 @@ type Provider struct {
 	// (drain_state.go). Guarded by p.mu.
 	drainingUntil    time.Time
 	Conn             *websocket.Conn
-	writer           *providerWriter
+	writer           *providerwriter.Writer
 	LastHeartbeat    time.Time
 	Stats            protocol.HeartbeatStats // lifetime counters shown to users
 	lastSessionStats protocol.HeartbeatStats // raw counters from the current provider process

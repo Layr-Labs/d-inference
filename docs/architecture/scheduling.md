@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-13 · commit `e98d46fbd`
+> Last updated: 2026-09-13 · commit `19ba12cf7`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -471,22 +471,51 @@ replacement session registered under the same ID, cancels the stale eviction.
 
 ### Provider writer: two lanes
 
-All frames to a provider WebSocket go through one `providerWriter` goroutine
-(`coordinator/registry/provider_writer.go`) with two lanes:
+All frames to a provider WebSocket go through one `providerwriter.Writer`
+(`coordinator/registry/providerwriter/writer.go`). It privately owns both queues,
+acceptance and shutdown state, request handoff state and the write watchdog.
+`Provider` methods in `coordinator/registry/provider_writer.go` retrieve or detach
+the exact writer pointer under `p.mu`, then release the lock before calling it.
+The two lanes retain their existing wire behavior:
 
 | Lane | Carries | Queue | Timeout |
 |---|---|---|---|
-| control | attestation challenges (`WriteTextControl`), cancel / trust-status / runtime-status frames (`EnqueueText`) | `providerControlQueueSize = 64` | `providerControlWriteTimeout = 5 * time.Second` |
-| data | inference bodies (up to ~21 MiB sealed vision payloads), `load_model`, `prefetch_model`, `desired_models` (`WriteText`) | `providerWriteQueueSize = 128` | `providerWriteTimeout(frameBytes)` = `frameBytes / providerWriteBytesPerSecond` (`2 << 20`, 2 MiB/s) clamped to [`providerWriteMinTimeout = 5 * time.Second`, `providerWriteMaxTimeout = 30 * time.Second`] |
+| control | attestation challenges (`WriteTextControl`), cancel / trust-status / runtime-status frames (`EnqueueText`) | `controlQueueSize = 256` | Same whole-message schedule as data; caller enqueue/result deadlines remain separate |
+| data | inference bodies (up to ~21 MiB sealed vision payloads), `load_model`, `prefetch_model`, `desired_models` (`WriteText`) | `dataQueueSize = 128` | `writeTimeout(frameBytes)` = `frameBytes / writeBytesPerSecond` (`2 << 20`, 2 MiB/s) clamped to [`minWriteTimeout = 5 * time.Second`, `maxWriteTimeout = 30 * time.Second`] |
+
+Queue sizes and timeout values are in `coordinator/registry/providerwriter/policy.go`.
+`ControlWriteTimeout = 5 * time.Second` remains the caller deadline used by model
+commands in `coordinator/registry/model_commands.go`; those commands still use
+the data lane. Fire-and-forget control enqueue checks the caller context before
+submission and retains a background context for its accepted frame.
 
 Control has strict but non-preemptive priority: a control frame waits for
 any in-flight data write to finish, then goes next. Ordering is FIFO within a
-lane and unspecified across lanes. Per-frame deadlines are enforced by one
-watchdog goroutine per connection (`watchWrites`) polling every
-`providerWriteWatchdogInterval = 250 * time.Millisecond`; on a missed
+lane and unspecified across lanes. Whole-message deadlines are enforced by one
+watchdog goroutine per connection (`Writer.watchWrites` in
+`coordinator/registry/providerwriter/watchdog.go`) polling every
+`watchdogInterval = 250 * time.Millisecond`; on a missed
 deadline it closes the socket and the writer surfaces a timeout rather than
-a generic closed-connection error. When the writer stops, queued frames fail
-with `providerWriteDrainErrorString = "provider websocket writer stopped"`.
+a generic closed-connection error. An explicit stop drains queued frames with
+`drainErrorString = "provider websocket writer stopped"`; a write failure drains
+them with that write's error (`Writer.serve`, `drainAll`).
+
+Deferred writes keep their handoff transaction in
+`coordinator/registry/providerwriter/handoff.go` (`Writer.writeRequest`) and
+`coordinator/registry/providerwriter/run.go` (`Writer.serve`). The writer builds
+at dequeue time; the submitting goroutine observes `TextFrameWriteMetadata`
+and acknowledges it before socket exposure. Cancellation claims queued,
+building or awaiting-ack frames without sending them. Cancellation during a
+write closes the connection before the caller can clean up; an already-completed
+write remains successful even if cancellation or shutdown races its result.
+The acceptance mutex is released before builders or submitting-owner callbacks.
+
+`Writer.writeFrame` and `writeFragmented` in
+`coordinator/registry/providerwriter/frames.go` keep one deadline for the whole
+message. Messages larger than `fragmentBytes = 256 << 10` use continuation
+frames so peer pongs can interleave; a partial-write error returns without
+attempting a final frame. Registry sentinel aliases keep API cancel-failure
+classification unchanged.
 
 ### `Disconnect()`
 
@@ -565,7 +594,7 @@ gate. The existing eviction-loop gate sweep handles this cleanup
    sweeps and a fresh identity/heartbeat recheck at removal** — `evictStale`,
    `disconnectProvider` ([above](#heartbeat-cadence-and-eviction)).
 9. **Control frames never wait behind queued data frames** — lane priority
-   in `providerWriter`.
+   in `Writer.run` (`coordinator/registry/providerwriter/run.go`).
 10. **Disconnect preserves stable-identity fault state** — `Disconnect`.
 11. **A provider is never double-booked** — the admit re-check and the
     pending debit run under one `p.mu` hold in `commitProviderReservation`
@@ -582,8 +611,8 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 | Model never loads despite demand | Every cold candidate is disqualified (`ColdDisqualifiers`) or `MaxGlobalPendingLoads` is saturated. | `warm_pool_tick` logs the reason tally; pending entries expire after `PendingTTL`. |
 | Warm count oscillates | `MinDwell` too short for the load duration. | Anti-flap holds a lowered target for `MinDwell`; raise it or set `MinWarmByModel`. |
 | Provider evicted while alive | Heartbeats older than the eviction timeout at `evictStrikeThreshold` consecutive sweeps ([above](#heartbeat-cadence-and-eviction)); network stall, sleeping Mac. | `Disconnect`; the provider re-registers, fault state persists by stable identity. |
-| Cancel arrives late at provider | A multi-MiB data frame was mid-write. | Control priority is non-preemptive; worst case one `providerWriteMaxTimeout`. |
-| Attestation timeout under load | Same cause as above. | Control lane exists to bound this; see `providerWriter` doc comment. |
+| Cancel arrives late at provider | A multi-MiB data frame was mid-write. | Control priority is non-preemptive; worst case one `maxWriteTimeout`. |
+| Attestation timeout under load | Same cause as above. | Control lane exists to bound this; see `Writer` in `coordinator/registry/providerwriter/writer.go`. |
 
 ## Code map
 
@@ -606,7 +635,8 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 | Observed throughput and batch policy | `coordinator/registry/throughput/observations.go` — `Observations`; `coordinator/registry/throughput/batch.go` — `QualityConcurrency`; `coordinator/registry/throughput/anomaly.go` — `EvaluateAnomaly` |
 | Warm-pool and quality-cap configuration | `coordinator/registry/warmpool/config.go` — `Config`, `Check`, `PerTickCeiling`; `coordinator/registry/config.go` — `WarmPoolConfig` alias, `QualityCapConfig`, `ReadConfig` |
 | Eviction | `coordinator/registry/provider_lifecycle.go` — `StartEvictionLoop`, `evictStale`, `disconnectProvider`, `evictStrikeThreshold`; wired in `coordinator/cmd/coordinator/main.go` |
-| Provider writer | `coordinator/registry/provider_writer.go` — `providerWriter`, `providerWriteTimeout`, `watchWrites` |
+| Provider writer and live binding | `coordinator/registry/providerwriter/writer.go` — `Writer`, `New`, `CloseNow`; `coordinator/registry/provider_writer.go` — `Provider.WriteText`, `WriteTextDeferred`, `WriteTextControl`, `EnqueueText`, `closeWriterNow` |
+| Writer handoff, lane selection and socket policy | `coordinator/registry/providerwriter/handoff.go` — `Writer.writeRequest`; `coordinator/registry/providerwriter/run.go` — `serve`, `run`; `coordinator/registry/providerwriter/frames.go` — `writeFrame`, `writeFragmented`; `coordinator/registry/providerwriter/watchdog.go` — `watchWrites`; `coordinator/registry/providerwriter/policy.go` — `writeTimeout` |
 | Teardown | `coordinator/registry/provider_lifecycle.go` — `Disconnect` |
 | Cold dispatch and queue-before-shed flags | `coordinator/api/cold_dispatch.go` |
 | Provider-side slot limit and heartbeat interval | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` — `maxModelSlots`, `heartbeatIntervalSecs` |

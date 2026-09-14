@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-09-13 · commit `3cf03209a`
+> Last updated: 2026-09-14 · commit `60b20b73d`
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, the field allowlist, and the tests
@@ -192,10 +192,10 @@ and their fields are enumerated in
 | Test | File | Pins |
 |---|---|---|
 | `TestTelemetryJSONSymmetry`, `TestTelemetryKindsMatch` | `coordinator/protocol/telemetry_symmetry_test.go` | canonical event encodes to the exact JSON string; the kind set |
-| `telemetryEventJSONSymmetry`, `telemetryKindsMatch`, `sourceAndSeverityRawValues` | `provider-swift/Tests/ProviderCoreTests/TelemetrySymmetryTests.swift` | the Swift mirror of the two Go tests plus the source/severity raw values |
+| `telemetryEventJSONSymmetry`, `telemetryKindsMatch`, `sourceAndSeverityRawValues` | `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` | the Swift mirror of the two Go tests plus the source/severity raw values |
 | `TestTelemetryAllowlistThreeWayParity`, `TestTelemetryAllowlistKnownGapsAreStillReal`, `TestTelemetryAllowlistDiffDetectsNewDrift` | `coordinator/api/telemetry_allowlist_parity_test.go` | Go ↔ Swift ↔ TS allowlist sets, parsed from source; known gaps stay real |
 | `TestTelemetryIngestIsGoneWithoutReadingOrForwardingBody`, `TestTelemetryFieldAllowlistHasKnownKeys`, `TestSanitizeTruncatesLongMessage` | `coordinator/api/telemetry_handlers_test.go` | the `telemetry_ingest_disabled` response, allowlist membership, message truncation |
-| `TelemetryClientTests.swift`, `TelemetryOverflowQueueTests.swift` | `provider-swift/Tests/ProviderCoreTests/` | the facade stays inert |
+| `TelemetryClientTests.swift`, `TelemetryOverflowQueueTests.swift` | `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetryClientTests.swift`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetryOverflowQueueTests.swift` | the facade stays inert |
 
 ## Related
 

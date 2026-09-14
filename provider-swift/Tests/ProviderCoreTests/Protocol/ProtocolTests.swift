@@ -1809,6 +1809,7 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     // the Go side; both sides decode every frame, re-encode, and compare the
     // key sets of the contract additions (`profile`, `telemetry`, `stats`).
     let fixtureURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()  // Protocol
         .deletingLastPathComponent()  // ProviderCoreTests
         .deletingLastPathComponent()  // Tests
         .deletingLastPathComponent()  // provider-swift

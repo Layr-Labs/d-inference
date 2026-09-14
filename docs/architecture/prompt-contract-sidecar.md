@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-11 · commit `beb33a8c7`
+> Last updated: 2026-09-14 · commit `60b20b73d`
 
 How the coordinator's `promptsidecar` child process derives deterministic,
 provider-compatible token boundaries so exact-cache routing can predict which
@@ -163,7 +163,7 @@ The production parity gate captures the request entering the engine through
 `MLXOpenAIService.streamChatCompletionFrames`, then checks tokens and scoped
 block hashes. Calling the tokenizer directly on the inbound body would miss
 service-level prompt transformations
-(`provider-swift/Tests/ProviderCoreTests/ProductionPromptParityTests.swift`).
+(`provider-swift/Tests/ProviderCoreTests/Inference/Prompting/ProductionPromptParityTests.swift`).
 This corrects planner parity with existing provider behavior; it does not change
 the provider contract, relax receipt checks or clear existing fences.
 

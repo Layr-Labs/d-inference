@@ -300,9 +300,23 @@ The shared library also refuses ordinary SH/EX admission while root-owned
 `maintenance.json` is present. Only root recovery with the exact operation and
 journal binding can resume maintenance; the operator must verify and record
 cleanup before clearing the fence. All participating binaries need this updated
-admission behavior. The per-image native fence is implemented; the base operator
-still needs to publish, recover and clear both fences before automatic offline
-disk attachment is enabled.
+admission behavior. `AccountlessStagingMaintenance` now binds its protected
+journal to `LumeRootBaseImageGuard`: machine fence first, image fence second,
+then image IO. Recovery retains the same system EX lease and checks the exact
+reservation, original directory/image identity and immutable image fence. A
+missing image fence permits staging recovery only when the original disk
+snapshot is unchanged. Before clearing either fence, the operator records
+`staging-detached.json`, which permanently closes image writes. That checkpoint
+also permits completion after a crash between image-fence and machine-fence
+removal. Live fence replacement, changed completion snapshots and inconsistent
+journals fail closed. Deinitialization never clears either fence.
+
+These ownership primitives do not observe mounted-device cleanup themselves.
+The enclosing operator still needs guarded Data-volume attach/mount/detach,
+independent no-openers/stopped-state checks, GUI installer boot, and receipt
+collection before automatic base installation can be enabled. A disposable
+nonbootable image has passed real root process-crash/recovery checks against the
+test Mac's permanent authority; that is not a mounted-image or qualified-VM test.
 
 Keep coordinator admission disabled and capacity draining during qualification.
 A job's launchctl exit is insufficient stop proof: independently verify the VM

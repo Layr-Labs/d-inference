@@ -34,6 +34,16 @@ public final class HostRuntimeLease: @unchecked Sendable {
         try validate()
     }
 
+    /// Privileged base operations must use the permanent system authority,
+    /// never an alternate or test authority supplied by a caller.
+    public func validateSystemExclusive() throws {
+        guard !authority.testing,
+              authority.directory.standardizedFileURL == HostRuntimeAuthority.system.directory.standardizedFileURL else {
+            throw HostRuntimeOwnershipError.insecureAuthority
+        }
+        try validateExclusive()
+    }
+
     /// The descriptor is valid only inside `spawn`. Add a child-only dup2 spawn
     /// action; never clear CLOEXEC in the parent. The duplicate shares this
     /// lease's open file description, so closing the parent does not release

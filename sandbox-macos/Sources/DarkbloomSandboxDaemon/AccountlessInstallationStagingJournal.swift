@@ -1,6 +1,9 @@
 import Darwin
 import Foundation
+import HostRuntimeCoordination
+import SandboxCore
 import SandboxRuntime
+import SandboxRuntimeLume
 
 /// The privileged operator owns this directory. Persist intent before touching
 /// a guest disk; a boot intent permanently closes the staging recovery path.
@@ -32,13 +35,47 @@ final class AccountlessInstallationStagingJournal {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         intent = try encoder.encode(Intent(schemaVersion: 1, candidate: candidate, plan: plan))
         owned = true
-        try requireStagingAllowed()
+        try validateJournal(allowMissingIntent: true)
         try publishMatching(intent, name: "staging-intent.json")
     }
 
     deinit { close(lock); close(descriptor) }
 
     func requireStagingAllowed() throws {
+        try validateJournal()
+        guard try detachedCleanup() == nil else { throw AccountlessInstallationError.stagingClosed }
+    }
+
+    func maintenanceIntent() throws -> HostRuntimeMaintenanceIntent {
+        try validateJournal()
+        return try .init(operationID: candidate.bootstrapAttemptID, journalSHA256: BaseGuestRelease.digest(intent))
+    }
+
+    /// This closes offline writes permanently, including after process restart.
+    /// The operator calls it only after observing detach and stopped-state proof.
+    func recordDetached(_ cleanup: LumeImageMaintenanceCleanup) throws {
+        try validateJournal()
+        guard try read("staged.json") != nil else { throw AccountlessInstallationError.invalidBinding }
+        try requireCleanupBinding(cleanup)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        try publishMatching(encoder.encode(cleanup), name: "staging-detached.json")
+    }
+
+    func detachedCleanup() throws -> LumeImageMaintenanceCleanup? {
+        guard let data = try read("staging-detached.json") else { return nil }
+        try SandboxJSONIntegrity.requireNoDuplicateKeys(data)
+        let cleanup = try JSONDecoder().decode(LumeImageMaintenanceCleanup.self, from: data)
+        try requireCleanupBinding(cleanup)
+        return cleanup
+    }
+
+    private func requireCleanupBinding(_ cleanup: LumeImageMaintenanceCleanup) throws {
+        guard cleanup.schemaVersion == 1, BaseGuestRelease.isDigest(cleanup.imageFenceSHA256),
+              cleanup.disk.device == candidate.disk.device, cleanup.disk.inode == candidate.disk.inode,
+              cleanup.disk.size == candidate.disk.size else { throw AccountlessInstallationError.invalidBinding }
+    }
+
+    private func validateJournal(allowMissingIntent: Bool = false) throws {
         try requireBoundDirectory()
         for name in ["boot-intent.json", "installation-result.json", "cleanup-intent.json", "cleaned.json"] {
             var metadata = stat()
@@ -48,11 +85,17 @@ final class AccountlessInstallationStagingJournal {
             guard errno == ENOENT else { throw AccountlessInstallationError.unsafeDestination }
         }
         let existingIntent = try read("staging-intent.json")
+        guard existingIntent != nil || allowMissingIntent else { throw AccountlessInstallationError.invalidBinding }
         if let existing = existingIntent, existing != intent {
             throw AccountlessInstallationError.invalidBinding
         }
         if let existing = try read("staged.json") {
             guard existingIntent != nil, existing == (try stagedData()) else {
+                throw AccountlessInstallationError.invalidBinding
+            }
+        }
+        if try detachedCleanup() != nil {
+            guard existingIntent != nil, try read("staged.json") != nil else {
                 throw AccountlessInstallationError.invalidBinding
             }
         }

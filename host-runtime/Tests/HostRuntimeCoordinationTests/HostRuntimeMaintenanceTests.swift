@@ -4,6 +4,15 @@ import Foundation
 import XCTest
 
 final class HostRuntimeMaintenanceTests: XCTestCase {
+    func testAlternateAuthorityCannotBeUsedForPrivilegedBaseOperations() throws {
+        let f = try HostRuntimeTestFixture(); defer { f.remove() }
+        let lease = try f.authority.acquireSandbox()
+        try lease.validateExclusive()
+        XCTAssertThrowsError(try lease.validateSystemExclusive()) {
+            XCTAssertEqual($0 as? HostRuntimeOwnershipError, .insecureAuthority)
+        }
+    }
+
     private func intent() throws -> HostRuntimeMaintenanceIntent {
         try .init(operationID: UUID(), journalSHA256: String(repeating: "a", count: 64))
     }

@@ -93,7 +93,7 @@ package struct LumeCandidateInstallationCleanup: Codable, Equatable, Sendable {
 }
 
 /// Reads the existing immutable reservation format; it never advances its phase.
-struct LumeReservedCandidateRecord: Decodable {
+struct LumeReservedCandidateRecord: Decodable, Equatable {
     let schemaVersion: Int
     let phase: String
     let candidateID: UUID

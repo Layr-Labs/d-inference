@@ -1,4 +1,5 @@
 import Darwin
+import CryptoKit
 import Foundation
 import SandboxCore
 import SandboxRuntime
@@ -7,6 +8,7 @@ import SandboxRuntime
 /// process-owner locks. This does not mount an image or prove no open image IO.
 /// Root's caller additionally holds machine EX; tests use an owned namespace.
 final class LumeBaseImageSourceLocks {
+    enum SnapshotPolicy { case unchanged, rootMaintenanceRecovery }
     private struct Held {
         let directory: LumePrivilegedSourceDirectory
         let name: String
@@ -22,9 +24,13 @@ final class LumeBaseImageSourceLocks {
     let initialDisk: LumeCandidateDiskIdentity
     var imageURL: URL { directory.path.appendingPathComponent("disk.img") }
     var retainedImageDescriptor: Int32 { imageDescriptor }
+    var directoryDescriptor: Int32 { directory.descriptor }
+    var reservationSHA256: String { SHA256.hash(data: reservationData).map { String(format: "%02x", $0) }.joined() }
+    var baseSource: SandboxGuestBaseSource { reservation.source }
 
     init(storage: URL, name: String, ownerUID: uid_t, ownerGID: gid_t,
-         reservationData: Data, expectedDisk: LumeCandidateDiskIdentity) throws {
+         reservationData: Data, expectedDisk: LumeCandidateDiskIdentity,
+         snapshotPolicy: SnapshotPolicy = .unchanged) throws {
         guard SandboxVirtualMachineNamePolicy.isValid(name), reservationData.count <= 16 * 1024,
               expectedDisk.isValid else { throw failure() }
         try SandboxJSONIntegrity.requireNoDuplicateKeys(reservationData)
@@ -48,7 +54,10 @@ final class LumeBaseImageSourceLocks {
             try acquire(directory, name: "config.json", privateMode: false)
             try acquire(directory, name: ".run-owner.lock", create: true, posix: true)
             imageDescriptor = try directory.openFile("disk.img", allowEmpty: false)
-            try validateUnchanged()
+            switch snapshotPolicy {
+            case .unchanged: try validateUnchanged()
+            case .rootMaintenanceRecovery: try validateIdentity()
+            }
         } catch {
             closeOwnedFiles()
             throw error
@@ -93,6 +102,15 @@ final class LumeBaseImageSourceLocks {
     func currentDiskIdentityAfterOwnedIO() throws -> LumeCandidateDiskIdentity {
         try validateIdentity()
         return try diskIdentity()
+    }
+
+    func requireReservation(_ encodedCandidate: Data) throws {
+        guard encodedCandidate.count <= 16 * 1024 else { throw failure() }
+        try SandboxJSONIntegrity.requireNoDuplicateKeys(encodedCandidate)
+        guard try JSONDecoder().decode(LumeReservedCandidateRecord.self, from: encodedCandidate) == reservation else {
+            throw failure()
+        }
+        try validateIdentity()
     }
 
     private func diskIdentity() throws -> LumeCandidateDiskIdentity {

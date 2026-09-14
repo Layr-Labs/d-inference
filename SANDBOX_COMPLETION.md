@@ -5,6 +5,16 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
+Current work adds typed root image-maintenance begin/recovery/completion and its
+staging-journal binding. Local full sandbox565tests/7skips/0failures and
+host-runtime19tests pass. A real-root disposable-image campaign on the test Mac
+passes two abrupt process exits, blocked admission, exact completion recovery,
+restored ordinary SH/EX admission and unchanged permanent ownership inode. The
+new end-of-file section contains exact paths/digests and next work. No image was
+attached or VM booted by that campaign; automatic mounted-base orchestration
+remains unfinished. CI34822858087 and integration34822857983 now both PASS the
+preceding pushed2812390a5; fresh CI is required for the new source.
+
 Pushed2812390a5 adds broker/native per-image offline fences as patch12.
 Pushedf12f72810 adds durable root maintenance to host-runtime; pushedd8fa61dc5
 adds native relay test-harness patch11. Pushed3c34dbbdd adds the root-only base source/machine lock scope, private
@@ -25,8 +35,8 @@ build, docs lint, UI lint and Next.js build pass. CI34811478625 and integration
 passed3ac8a7fb6. Integration34815356765 passed3c34dbbdd, but CI34815356747
 failed the native relay fixture's large-frame test; other jobs passed. The
 test-harness correction has CI34819884262 and integration34819884263
-passing atd8fa61dc5. FreshCI34822858087 and integration34822857983 are
-running2812390a5; benchmark
+passing atd8fa61dc5. CI34822858087 and integration34822857983 pass
+2812390a5; benchmark
 environment approval is separate and has not been granted.
 
 Physical guest exercise14 and coldboot15 PASS on the test Mac. They prove
@@ -1362,3 +1372,103 @@ legacy-wrapper load-sensitivity observation. FreshCI34822858087 and integration
 granted. Worktree checkpoint may be one commit ahead; source/pin are pushed.
 Next work is typed root maintenance/fence publication and recovery, then the
 actual guarded mount/bootstrap workflow. Go-cache question remains pending.
+
+
+## Typed root maintenance and real-root crash recovery (2026-09-14)
+
+LumeRootBaseImageGuard now begins maintenance only after validating the full
+candidate/reservation binding and absent image fence, then publishes the global
+fence followed by the immutable root-owned per-image fence. Recovery uses the
+existing recovered system EX lease, never acquiring it twice. The new
+HostRuntimeLease.validateSystemExclusive rejects alternate/test authorities.
+LumeImageMaintenanceRecord binds exact intent, reservation digest, source,
+original directory device/inode and disk snapshot. LumeImageMaintenanceStore uses
+the retained directory descriptor, bounded nofollow IO, root600/single-link/no-ACL
+records, unlinked temporary publication and a pinned marker fd. Same-byte live
+replacement is rejected. Normal readers never interpret/clear the marker.
+
+Source recovery permits changed timestamps only with the original matching
+per-image fence and unchanged reservation/device/inode/size. If a crash left only
+the global fence, image-fence publication requires the original disk snapshot
+unchanged. LumeImageMaintenanceCleanup binds the fence digest and final image
+snapshot. IO closes before persistence starts (including uncertain callback
+failure). The operator must independently verify cleanup, persist the checkpoint,
+then remove the image fence before the global fence. Recovered completion never
+reopens image IO, and can finish when the image fence is already absent.
+Neither deinit nor a thrown error clears fences.
+
+AccountlessStagingMaintenance composes the protected journal and root image
+operation. The journal issues the exact maintenance intent, rejects missing live
+intent, and persists staging-detached.json only after matching staged.json.
+Detached completion permanently closes staging but permits exact completion
+recovery. Orphaned/malformed/duplicate-key completion cannot recreate missing
+intent or staged receipts. The actual mounted-image/installer orchestration is
+still unbuilt; these APIs deliberately do not claim detached or stopped proof.
+
+Validation (no native patch or signed runtime changes in this step):
+- image-maintenance-focused-tests.log:28 tests pass (new image9 + journal4,
+  existing journal6 + overlay9). Initial test compile had a local variable
+  redeclaration; fixed before this passing run.
+- image-maintenance-full-tests.log:565 tests,7skips,0failures,128.135s.
+- image-maintenance-host-tests.log:19 tests,0failures.
+- Initial source-lock compile run:7 existing tests pass.
+All logs under /private/tmp/darkbloom-sandbox-completion-evidence.
+The previous legacy SSH-wrapper under-load timing failures remain unresolved;
+this idle pass does not claim they are fixed. CI34822858087 and integration
+34822857983 now pass the preceding pushed2812390a5.
+
+Real-root experiment on authorized test Mac100.104.151.128:
+- External test-only RootImageMaintenanceProbe.swift is linked against the exact
+  current debug objects with package-name sandbox_macos. It is not shipped and
+  does not create a bootable/qualified image. SourceSHA
+  11d4ac2c3c2abd981f6d09b02aaa94b18ba2996a8b88ca79ebfad80696d114b0;
+  executableSHA f282ffe7d775a51bede32f08d7558ee4ec30173e04d7d48911af5d81710e552e.
+- Bounded root operator run-root-image-maintenance-probe.py SHA
+  868dc6d4824c583d1f9b149e5f483f82c7ae8bf74eb1dc8a3ae86fa3cf8631e7.
+- Protected remote fixture /private/tmp/darkbloom-root-maintenance-20260914-0854,
+  with root700 journal, root500 verified probe copy, selected501:20 source tree.
+  The source is a deliberately invalid {} config plus100GiB sparse nonbootable
+  image; its fake restore/payload metadata is fixture data, NOT installation proof.
+- begin-crash performs bounded fixture IO after both fences then _exit(86).
+  Ordinary EX admission rejects pending maintenance. recover-completion-crash
+  resumes exact ownership, persists completion then _exit(86). Admission still
+  rejects. recover-finish refuses further image IO, removes image then global
+  marker, and exits0. A new process proves ordinary EX and SH acquisition works.
+- Root hdiutil/lsof/process inventories before/after every phase show no image
+  attachment, no foreign image openers, no authority holders after process exit,
+  and no running lume/sandboxd. Permanent inode stays dev16777229/inode29088927,
+  root:431/660/single-link/zero bytes. Temporary global inode30658507 and image
+  inode30658509 persisted unchanged through both crashes and are now absent.
+- Root evidence remote journal sibling operator-evidence.json; captured primary
+  root-image-maintenance-physical.json SHA
+  6198abfa329120bfe3ad260721aac726406e1e86d0664b744aa10d5f2777e23b
+  (primary serialization includes a trailing newline). All primary probe/evidence
+  files are in the evidence directory above. Remote incoming copies are at
+  /private/tmp/darkbloom-root-maintenance-incoming-20260914.
+- First fixture -0850 was correctly rejected before fence publication: macOS
+  inherited wheel GID0 from /private/tmp while the selected-user binding required
+  GID20. Fixed the test preparer to set each directory's UID/GID before creating
+  children, with no production weakening. The old root-protected -0850 evidence
+  and tiny sparse fixture remain; no fence was ever created there.
+- Both disposable fixtures remain stopped/nonbootable, no mounts or root process
+  remain. No CI/group/service/model/cache/production mutation occurred; only this
+  authorized test fixture and transient maintenance markers were created.
+- Latest disk inventory had54931396KiB free on the test volume (~52.4GiB).
+  Go-cache deletion approval is still unanswered; do not infer approval.
+
+NEXT: build the actual guarded attach/Data-volume selection/mount/detach operator
+using this typed transaction. It needs durable attachment and cleanup observations,
+bounded async cancellation, recovery of an attached image, exact no-openers and
+native-stopped checks, and no arbitrary pre-mounted path supplied through the CLI.
+The current withOfflineImage callback is synchronous; extend it deliberately for
+bounded async process IO with an in-use guard before the mount orchestration.
+Then selected GUI installer boot, its separate phase journal, receipt collection
+and temporary-payload removal, installed checkpoint, qualification clone/coldboot/
+teardown and ready-template publication. A completed staging journal cannot be
+reused for post-boot collection; bind that separate maintenance phase explicitly.
+Also handle a crash after both fences are removed using the protected completion
+snapshot under a freshly acquired ordinary EX; do not reopen staging or fabricate
+cleanup. The final ready publication must validate RELEASED lease cleanup after
+clone teardown rather than calling the ACTIVE qualification capability validator.
+Physical two-VM/system tests, build tools, performance, actual GUI login/logout
+service recovery, signed runtime12 physical validation and release gates remain.

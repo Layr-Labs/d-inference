@@ -60,6 +60,10 @@ user/2001 = {
                                                    after: .init(userDomainBootedOut: false)))
         XCTAssertFalse(GuestTenantDomains.quiescent(result(observed), domain: "gui/2001",
                                                    after: .init(userDomainBootedOut: true)))
+        XCTAssertEqual(GuestTenantDomains.verificationFailure(result(observed), domain: "user/2001",
+                         after: .init(userDomainBootedOut: false)), .userDomainRemovalUnproven)
+        XCTAssertEqual(GuestTenantDomains.verificationFailure(result(observed), domain: "gui/2001",
+                         after: .init(userDomainBootedOut: true)), .loginDomainNotAbsent)
     }
 
     func testAnyServiceUnmanagedProcessOrEndpointPreventsCleanupProof() {

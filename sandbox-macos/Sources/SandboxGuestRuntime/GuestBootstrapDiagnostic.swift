@@ -53,6 +53,8 @@ public struct GuestBootstrapDiagnostic: Error, Sendable {
             case .io(let value): reason = "filesystem_io"; systemError = value
             case .publicationUncertain(let value): reason = "publication_uncertain"; systemError = value
             }
+        } else if let domain = error as? GuestTenantDomains.VerificationFailure {
+            reason = domain.rawValue
         } else if error is GuestProtocolError {
             reason = "policy_mismatch"
         } else if error is CancellationError {

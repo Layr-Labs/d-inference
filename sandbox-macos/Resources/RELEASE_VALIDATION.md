@@ -84,6 +84,11 @@ truncated, malformed or nonempty launchctl output fails closed;
 this output format and a submitted-job respawn probe require qualification on
 each supported guest OS. This does not establish cancellation of every possible
 system service or delegated queue; VM stop/delete remains the outer boundary.
+The cleanup worker itself drops to UID2001 and can cause its user domain to be
+created. Cleanup therefore removes the fixed domains again after the worker
+exits, then checks zero tenant processes and verifies domain quiescence. A
+missing successful removal, unrecognized domain output, and a non-absent login
+domain retain separate fixed diagnostic codes; no domain contents are logged.
 No physical-host scheduler configuration is changed.
 There is no Python, package manager, or Xcode dependency inside the guest.
 The offline CPU profile intentionally has no tenant username. Account-dependent

@@ -7,6 +7,13 @@ import SandboxRuntime
 enum GuestTenantDomains {
     static let domains = ["gui/2001", "user/2001"]
     struct Removal: Sendable { let userDomainBootedOut: Bool }
+    enum VerificationFailure: String, Error, Sendable {
+        case unknownDomain = "unknown_domain"
+        case inspectionUnproven = "domain_inspection_unproven"
+        case loginDomainNotAbsent = "login_domain_not_absent"
+        case userDomainRemovalUnproven = "user_domain_removal_unproven"
+        case userDomainFormatUnproven = "user_domain_format_unproven"
+    }
 
     static func remove() async throws -> Removal {
         var userDomainBootedOut = false
@@ -27,14 +34,25 @@ enum GuestTenantDomains {
     static func verifyQuiescent(after removal: Removal) async throws {
         for domain in domains {
             let result = try await command(["print", domain])
-            guard quiescent(result, domain: domain, after: removal)
-            else { throw GuestProtocolError.cleanupUncertain }
+            if let failure = verificationFailure(result, domain: domain, after: removal) { throw failure }
         }
     }
 
     static func quiescent(_ result: SandboxProcessResult, domain: String, after removal: Removal) -> Bool {
-        if absent(result, domain: domain) { return true }
-        return domain == "user/2001" && removal.userDomainBootedOut && GuestEmptyUserDomain.matches(result)
+        verificationFailure(result, domain: domain, after: removal) == nil
+    }
+
+    static func verificationFailure(_ result: SandboxProcessResult, domain: String,
+                                    after removal: Removal) -> VerificationFailure? {
+        guard domains.contains(domain) else { return .unknownDomain }
+        if absent(result, domain: domain) { return nil }
+        guard result.exitCode == 0, !result.standardOutputTruncated, !result.standardErrorTruncated else {
+            return .inspectionUnproven
+        }
+        guard domain == "user/2001" else { return .loginDomainNotAbsent }
+        guard removal.userDomainBootedOut else { return .userDomainRemovalUnproven }
+        guard GuestEmptyUserDomain.matches(result) else { return .userDomainFormatUnproven }
+        return nil
     }
 
     static func absent(_ result: SandboxProcessResult, domain: String) -> Bool {

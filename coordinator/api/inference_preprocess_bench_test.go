@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/catalog"
+	"github.com/eigeninference/d-inference/coordinator/inference/toolpolicy"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -217,16 +218,15 @@ func benchPreprocess(b *testing.B, srv *Server, body []byte) {
 	shape := introspectRequest(parsed)
 	requiresVision := shape.requiresVision()
 	hasTools := shape.hasTools
-	validatedPolicy, err := validateParsedToolConstraintPolicy(
-		constraintView(parsed, prelude.originalTools))
+	validatedPolicy, err := toolpolicy.ValidateParsed(parsed, prelude.originalTools)
 	if err != nil {
 		b.Fatalf("constraint validation: %v", err)
 	}
 	traits := registry.RequestTraits{
 		HasTools:          hasTools,
-		ToolChoiceMode:    string(validatedPolicy.mode),
-		ToolChoiceName:    validatedPolicy.name,
-		ParallelToolCalls: validatedPolicy.parallel,
+		ToolChoiceMode:    string(validatedPolicy.Mode),
+		ToolChoiceName:    validatedPolicy.Name,
+		ParallelToolCalls: validatedPolicy.Parallel,
 	}
 	buildModel, _, rewrote, ok := srv.resolveRequestedBuild(
 		parsed, model, nil, selfRoutePolicy{}, traits)

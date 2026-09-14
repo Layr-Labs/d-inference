@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/eigeninference/d-inference/coordinator/api/types"
+	"github.com/eigeninference/d-inference/coordinator/inference/toolpolicy"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -103,11 +104,11 @@ func responsesToolPolicy(traits registry.RequestTraits) (any, bool) {
 		return "auto", true
 	}
 	switch traits.ToolChoiceMode {
-	case string(toolChoiceNone):
+	case string(toolpolicy.None):
 		return "none", traits.ParallelToolCalls
-	case string(toolChoiceRequired):
+	case string(toolpolicy.Required):
 		return "required", traits.ParallelToolCalls
-	case string(toolChoiceNamed):
+	case string(toolpolicy.Named):
 		return map[string]any{
 			"type": "function",
 			"name": traits.ToolChoiceName,

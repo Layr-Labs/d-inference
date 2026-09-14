@@ -19,6 +19,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 |---|---|
 | API request handling, auth, attestation, dispatch | `coordinator/api/`; server construction in `server.go` (`NewServer`) |
 | HTTP response caching and refresh coalescing | `coordinator/api/readcache/`; catalog fill fences in `generation.go` (`SetIfCurrent`, `SetValueIfCurrent`) |
+| Tool schemas, tool-choice policy and tool-call history | `coordinator/inference/toolpolicy/`; `NormalizeParsed` and `ValidateParsed` preserve validation of the original schemas |
 | Provider selection, admission, queueing | `coordinator/registry/`; request eligibility in `request_traits.go` (`providerEligibleForTraitsLocked`) |
 | Billing, pricing, referrals and payout endpoints | `coordinator/api/billing/` (`Controller`); route and shared-dependency binding in `coordinator/api/billing_controller.go` |
 | Model publishing, discovery and aliases | `coordinator/api/catalog/` (`Controller`); shared bindings in `coordinator/api/catalog_controller.go`; runtime publication stays in `server.go` (`SyncModelCatalog`) |

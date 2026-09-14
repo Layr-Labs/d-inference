@@ -52,6 +52,7 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/api/requestcontext` | Private context keys and typed account, API-key and request-ID access shared by middleware and endpoint packages (`WithAccountID`, `WithAPIKey`, `WithRequestID`). |
 | `coordinator/api/httpresponse` | JSON response writing and the common OpenAI-compatible error envelope (`WriteJSON`, `ErrorBody`); `WriteCachedJSON` and `EncodeCachedJSON` preserve pre-encoded response bytes. |
 | `coordinator/api/readcache` | Cached response bytes and immutable values, expiry, generation-fenced catalog fills and per-entry refresh coalescing (`Cache`, `Refresher`). Endpoint packages retain cache keys, TTLs and schedules. |
+| `coordinator/inference/toolpolicy` | Tool-schema normalization, tool-choice and history validation (`NormalizeParsed`, `ValidateParsed`); HTTP error mapping and resolved-model compatibility remain in `coordinator/api/tool_constraints.go`. |
 | `coordinator/registry` | In-memory fleet view, scheduler and cost model, queue, warm pool, capacity breakers, health ejection, cache routing, TTFT calibration and shadow admission. |
 | `coordinator/store` | `Store` interface, Postgres and memory backends, schema migrations. |
 | `coordinator/protocol` | Wire types for the provider WebSocket: register, heartbeat, capacity, inference frames, telemetry, profiles. |

@@ -2,9 +2,9 @@ import Foundation
 import SandboxCore
 import SandboxRuntime
 
-/// Validated source/allocation binding only. There is no clone consumer yet.
-/// Future consumption must still enforce platform, encryption and native-start
-/// requirements. This cannot be decoded or supplied through public create APIs.
+/// Single-use permission to clone one installed candidate for qualification.
+/// Source evidence and the active lease are checked again before and after the
+/// native clone. This cannot be decoded or supplied through public create APIs.
 package final class LumeQualificationCloneCapability: @unchecked Sendable {
     package let qualificationID: UUID
     package let specification: SandboxVirtualMachineSpecification
@@ -15,6 +15,9 @@ package final class LumeQualificationCloneCapability: @unchecked Sendable {
     fileprivate let sourceGuard: LumeBaseCandidateOperationGuard
     fileprivate let store: LumeInstalledCandidateStore
     fileprivate let snapshot: LumeInstalledCandidateStore.Snapshot
+    // Accessed only by issuingRuntime. The retained actor identity prevents a
+    // different actor from reading or consuming this mutable state.
+    fileprivate var consumed = false
 
     private init(qualificationID: UUID, specification: SandboxVirtualMachineSpecification,
                  lease: SandboxCapacityLease, issuingRuntime: LumeVirtualMachineRuntime,
@@ -51,6 +54,7 @@ extension LumeVirtualMachineRuntime {
         defer { withExtendedLifetime(authorization) {} }
         let sourceGuard = try LumeBaseCandidateOperationGuard(name: sourceName, storage: configuration.storageDirectory)
         let store = try LumeInstalledCandidateStore(name: sourceName, storage: configuration.storageDirectory)
+        try await requireQualificationDestinationAvailable(specification, lease: authorization.lease)
         let snapshot = try await validateQualificationSource(sourceGuard: sourceGuard, store: store,
             candidateID: candidateID, qualificationID: qualificationID, specification: specification,
             lease: authorization.lease)
@@ -59,7 +63,7 @@ extension LumeVirtualMachineRuntime {
     }
 
     package func revalidateQualificationCloneCapability(_ capability: LumeQualificationCloneCapability) async throws {
-        guard capability.issuingRuntime === self else { throw qualificationFailure() }
+        guard capability.issuingRuntime === self, !capability.consumed else { throw qualificationFailure() }
         let specification = capability.specification
         let destinationLock = try beginOperation("qualification-authority", name: specification.name)
         defer { endOperation(name: specification.name); withExtendedLifetime(destinationLock) {} }
@@ -68,10 +72,43 @@ extension LumeVirtualMachineRuntime {
             bootDiskBytes: specification.diskBytes)
         guard let authorization, authorization.lease == capability.lease else { throw qualificationFailure() }
         defer { withExtendedLifetime(authorization) {} }
+        try await requireQualificationDestinationAvailable(specification, lease: authorization.lease)
         let current = try await validateQualificationSource(sourceGuard: capability.sourceGuard,
             store: capability.store, candidateID: capability.checkpoint.candidateID,
             qualificationID: capability.qualificationID, specification: specification, lease: capability.lease)
         guard current == capability.snapshot else { throw qualificationFailure() }
+    }
+
+    // The caller already holds the destination operation and lease-mutation
+    // locks. Do not acquire either lock again, or the source lock retained by
+    // the capability: those locks deliberately are not reentrant.
+    func consumeQualificationCloneCapability(_ capability: LumeQualificationCloneCapability,
+                                            lease: SandboxCapacityLease) async throws {
+        guard capability.issuingRuntime === self, !capability.consumed,
+              capability.lease == lease else { throw qualificationFailure() }
+        try await requireQualificationDestinationAvailable(capability.specification, lease: lease)
+        try await requireQualificationSourceUnchanged(capability)
+        capability.consumed = true
+    }
+
+    func revalidateConsumedQualificationSource(_ capability: LumeQualificationCloneCapability,
+                                              lease: SandboxCapacityLease) async throws {
+        guard capability.issuingRuntime === self, capability.consumed,
+              capability.lease == lease else { throw qualificationFailure() }
+        try await requireQualificationSourceUnchanged(capability)
+    }
+
+    private func requireQualificationSourceUnchanged(_ capability: LumeQualificationCloneCapability) async throws {
+        let current = try await validateQualificationSource(sourceGuard: capability.sourceGuard,
+            store: capability.store, candidateID: capability.checkpoint.candidateID,
+            qualificationID: capability.qualificationID, specification: capability.specification, lease: capability.lease)
+        guard current == capability.snapshot else { throw qualificationFailure() }
+    }
+
+    private func requireQualificationDestinationAvailable(_ specification: SandboxVirtualMachineSpecification,
+                                                         lease: SandboxCapacityLease) async throws {
+        guard try await inspect(name: specification.name) == nil else { throw qualificationFailure() }
+        try requireUnlistedVirtualMachineIsUnowned(name: specification.name, owner: .init(operationScope: lease.scope))
     }
 
     private func validateQualificationSource(sourceGuard: LumeBaseCandidateOperationGuard,
@@ -104,8 +141,6 @@ extension LumeVirtualMachineRuntime {
             name: sourceName, owner: .baseTemplate, in: configuration.storageDirectory)
         try LumeVirtualMachineResourceCommitment.requireMatch(observed: observed,
             ownership: sourceCommitment, lease: nil)
-        guard try await inspect(name: specification.name) == nil else { throw qualificationFailure() }
-        try requireUnlistedVirtualMachineIsUnowned(name: specification.name, owner: .init(operationScope: lease.scope))
         try Task.checkCancellation()
         try authority.validateExclusive()
         guard try capacityArbiter.authorize(scope: lease.scope, virtualMachineName: specification.name,

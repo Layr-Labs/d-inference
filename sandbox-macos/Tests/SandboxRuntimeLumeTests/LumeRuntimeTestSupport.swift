@@ -81,7 +81,8 @@ struct FakeLumeFixture {
         observedMemoryBytes: UInt64 =
             8 * SandboxResourcePolicy.gibibyte,
         observedDiskBytes: UInt64 =
-            100 * SandboxResourcePolicy.gibibyte
+            100 * SandboxResourcePolicy.gibibyte,
+        scriptOverride: String? = nil
     ) throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
@@ -127,7 +128,7 @@ struct FakeLumeFixture {
             to: paths.observedDiskBytes
         )
         try Data().write(to: restoreImage)
-        try Data(Self.script.utf8).write(to: executable)
+        try Data((scriptOverride ?? Self.script).utf8).write(to: executable)
         guard chmod(executable.path, 0o555) == 0 else {
             throw POSIXError(.EACCES)
         }

@@ -58,6 +58,10 @@ public actor LumeLeaseFencedVirtualMachineRuntime {
             scope: scope, specification: specification)
     }
 
+    package func createQualificationClone(_ capability: LumeQualificationCloneCapability) async throws {
+        try await runtime.createQualificationClone(capability)
+    }
+
     package func revalidateQualificationCloneCapability(_ capability: LumeQualificationCloneCapability) async throws {
         try await runtime.revalidateQualificationCloneCapability(capability)
     }

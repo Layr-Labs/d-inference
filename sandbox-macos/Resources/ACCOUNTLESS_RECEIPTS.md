@@ -133,10 +133,19 @@ retains the normal source operation lock and binds the capability to its issuing
 runtime. Revalidation rejects changed files, disk, runtime, lease or source.
 The capability has no public constructor or Codable conformance.
 
-This is only a source/allocation validator: no clone entrypoint consumes the
-capability, no template is published and no reservation is added or extended.
-Ordinary `create` still requires `LumeGuestTemplate.requireReady`. The future
-clone consumer must enforce encryption, supported host execution context and
-native start requirements, persist attempt/recovery state, run the actual native
-checks, and complete cleanup before publishing readiness. Unit fixtures exercise
-these validation boundaries without providing physical installation evidence.
+The package-only `createQualificationClone` consumes the capability once, inside
+the existing destination operation and lease-mutation locks. It retains the source
+lock without reacquiring it, rechecks source evidence and the exact active lease
+before and after native cloning, and writes the ordinary fresh lease ownership
+record only after the stopped clone and its resources are verified. Native
+failure, cancellation or a failed postcondition uses the shared creation cleanup;
+the source and capacity reservation remain intact. A consumed capability cannot
+recreate a subsequently removed destination.
+
+No template is published and no reservation is added or extended by this path.
+Ordinary `create` still requires `LumeGuestTemplate.requireReady`; there is no
+public bypass flag. Qualification clones use the existing encrypted-storage,
+guest-material and native-start gates when started. The enclosing base factory
+must still persist attempt/recovery state, run the actual native checks and
+complete cleanup before publishing readiness. Unit fixtures use real locks and
+APFS clones to exercise these transitions; they are not physical qualification.

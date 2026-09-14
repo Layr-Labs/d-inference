@@ -13,6 +13,15 @@ extension LumeVirtualMachineRuntime {
         _ specification: SandboxVirtualMachineSpecification,
         scope: SandboxOperationScope?
     ) async throws {
+        try await create(specification, scope: scope, qualification: nil)
+    }
+
+    package func createQualificationClone(_ capability: LumeQualificationCloneCapability) async throws {
+        try await create(capability.specification, scope: capability.lease.scope, qualification: capability)
+    }
+
+    private func create(_ specification: SandboxVirtualMachineSpecification, scope: SandboxOperationScope?,
+                        qualification: LumeQualificationCloneCapability?) async throws {
         guard SandboxVirtualMachineNamePolicy.isValid(specification.name) else {
             throw SandboxRuntimeError.invalidName
         }
@@ -49,13 +58,17 @@ extension LumeVirtualMachineRuntime {
             bootDiskBytes: specification.diskBytes
         )
         defer { withExtendedLifetime(leaseAuthorization) {} }
+        if let qualification {
+            guard let leaseAuthorization else { throw SandboxRuntimeError.invalidImageReference }
+            try await consumeQualificationCloneCapability(qualification, lease: leaseAuthorization.lease)
+        }
         let owner = LumeVirtualMachineOwnership.Owner(
             operationScope: scope
         )
         _ = try await validateRuntime()
         try ensureStorageDirectory()
         if let existing = try await inspect(name: specification.name) {
-            guard Self.matches(existing, specification: specification),
+            guard qualification == nil, Self.matchesCreation(existing, specification: specification),
                   LumeVirtualMachineOwnership.matches(
                       specification: specification,
                       owner: owner,
@@ -104,11 +117,10 @@ extension LumeVirtualMachineRuntime {
                 owner: .baseTemplate,
                 in: configuration.storageDirectory
             )
-            sourceOperationLock = try beginOperation(
-                "clone-source",
-                name: template
-            )
-            sourceOperationName = template
+            if qualification == nil {
+                sourceOperationLock = try beginOperation("clone-source", name: template)
+                sourceOperationName = template
+            }
         }
         defer {
             if let sourceOperationName {
@@ -152,7 +164,7 @@ extension LumeVirtualMachineRuntime {
                 owner: .baseTemplate,
                 in: configuration.storageDirectory
             )
-            if let release = configuration.isolatedGuest {
+            if let release = configuration.isolatedGuest, qualification == nil {
                 try LumeGuestTemplate.requireReady(name: template, installationID: sourceIdentity.installationID,
                     storage: configuration.storageDirectory, release: release)
             }
@@ -165,60 +177,9 @@ extension LumeVirtualMachineRuntime {
                 "--dest-storage", configuration.storageDirectory.path,
             ]
         }
-        let creationWorkspace = try workspace.makeCreationWorkspace(
-            name: specification.name
-        )
-
-        do {
-            if let capacityArbiter {
-                _ = try capacityArbiter.validateStorageHeadroom()
-            }
-            if case .appleRestore = specification.imageSource {
-                let result = try await runManagedAppleRestore(arguments: arguments, environment: creationWorkspace.environment)
-                try validateCommandResult(result, operation: "create")
-            } else {
-                _ = try await run(arguments: arguments, timeoutSeconds: configuration.createTimeoutSeconds,
-                                  operation: "create", environment: creationWorkspace.environment)
-            }
-            guard let created = try await inspect(name: specification.name),
-                  created.state == .stopped,
-                  Self.matches(created, specification: specification)
-            else {
-                throw SandboxRuntimeError.malformedOutput(
-                    "Lume create completed without the requested stopped VM"
-                )
-            }
-            try LumeVirtualMachineOwnership.write(
-                specification: specification,
-                owner: owner,
-                sourceInstallationID: sourceInstallationID,
-                to: creationWorkspace.destination
-            )
-        } catch {
-            do {
-                try await cleanupFailedCreationIgnoringCancellation(
-                    workspace: creationWorkspace
-                )
-            } catch let cleanupError {
-                throw SandboxRuntimeError.cleanupFailed(
-                    operation: "create \(specification.name)",
-                    primary: String(describing: error),
-                    cleanup: String(describing: cleanupError)
-                )
-            }
-            throw error
-        }
-        do {
-            try await cleanupCreationScratchIgnoringCancellation(
-                workspace: creationWorkspace
-            )
-        } catch {
-            throw SandboxRuntimeError.cleanupFailed(
-                operation: "finish create \(specification.name)",
-                primary: "virtual machine creation completed",
-                cleanup: String(describing: error)
-            )
-        }
+        try await executeCreation(specification: specification, owner: owner,
+            sourceInstallationID: sourceInstallationID, arguments: arguments,
+            qualification: qualification, lease: leaseAuthorization?.lease)
     }
 
     private func restoreArguments(_ specification: SandboxVirtualMachineSpecification,
@@ -239,25 +200,7 @@ extension LumeVirtualMachineRuntime {
         return storageArguments(arguments)
     }
 
-    private func cleanupFailedCreationIgnoringCancellation(
-        workspace: LumeCreationWorkspace
-    ) async throws {
-        let cleanup = Task.detached {
-            try await workspace.removeAllArtifacts()
-        }
-        try await cleanup.value
-    }
-
-    private func cleanupCreationScratchIgnoringCancellation(
-        workspace: LumeCreationWorkspace
-    ) async throws {
-        let cleanup = Task.detached {
-            try await workspace.removeScratch()
-        }
-        try await cleanup.value
-    }
-
-    private static func matches(
+    static func matchesCreation(
         _ record: SandboxVirtualMachineRecord,
         specification: SandboxVirtualMachineSpecification
     ) -> Bool {

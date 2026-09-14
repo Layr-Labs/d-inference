@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `cdaf37d64`
+> Last updated: 2026-09-14 · commit `f006da0b2`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -71,6 +71,17 @@ in `coordinator/registry/admission/` and `coordinator/registry/providerversion/`
 Concurrent reservation, fleet preflight and routing simulations remain in the
 registry and `routingsim` packages. From the repository root,
 `GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/...` runs all of them.
+
+Cache-attempt ownership tests in `coordinator/registry/cacheattempt/` verify
+receipt cleanup outside the preparation mutex and ticket-bound legacy metadata.
+The registry retains concurrent reconfiguration/cancellation, connection
+replacement, authenticated late receipts and accepted-write cutoff fixtures.
+The full registry command above includes both groups. To check the affected
+HTTP/writer and terminal telemetry paths as well, run from the repository root:
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run '^(Test.*Cache|Test.*ProviderInference|Test.*ProviderWire|Test.*CacheTerminal|Test.*CacheOpportunity)' -count=1
+```
 
 Run prediction telemetry checks from the repository root:
 

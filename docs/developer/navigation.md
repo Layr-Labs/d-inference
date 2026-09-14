@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-14 · commit `4482d5422`
+> Last updated: 2026-09-14 · commit `dedb0f894`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -21,6 +21,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Metrics and asynchronous observation writes | `coordinator/telemetry/metrics/`, `coordinator/telemetry/routequeue/`, `coordinator/telemetry/profilequeue/`, `coordinator/telemetry/outcomequeue/`; API adapters supply request context and persistence dependencies |
 | Profile construction, provider diagnostics and sampling | `coordinator/telemetry/profiler/` (`Builder`, `Profiler`); request/terminal lifecycle wiring remains in `coordinator/api/profiler.go` |
 | Durable device evidence, revocation and reconnect continuity | `coordinator/providercontrol/trustreuse/` (`Manager`); signature/MDM and HTTP integration remain in `coordinator/api/` |
+| Code-identity proof, APNs budgets and encrypted resume | `coordinator/providercontrol/codeidentity/` (`Manager`); the API adapter binds the release snapshot, startup proof store and live coverage store |
 | Provider selection, admission, queueing | `coordinator/registry/`; request eligibility in `request_traits.go` (`providerEligibleForTraitsLocked`) |
 | Billing and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/` |
 | Provider inference, downloads, security, local serving | `provider-swift/Sources/ProviderCore/`; entrypoints in `provider-swift/Sources/darkbloom/` |

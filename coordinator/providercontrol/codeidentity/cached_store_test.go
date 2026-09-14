@@ -1,4 +1,4 @@
-package api
+package codeidentity
 
 import (
 	"context"
@@ -19,10 +19,10 @@ import (
 func newCachedCodeAttestStore(t *testing.T) *store.CachedStore {
 	t.Helper()
 	cached := store.NewCached(store.NewMemory(store.Config{}), store.CacheConfig{})
-	if _, direct := any(cached).(codeAttestPushBudgetStore); direct {
+	if _, direct := any(cached).(pushBudgetStore); direct {
 		t.Fatal("direct assertion on CachedStore succeeded; this test no longer exercises the wrapped path")
 	}
-	if _, ok := store.As[codeAttestPushBudgetStore](cached); !ok {
+	if _, ok := store.As[pushBudgetStore](cached); !ok {
 		t.Fatal("store.As cannot find codeAttestPushBudgetStore through CachedStore")
 	}
 	return cached
@@ -30,7 +30,7 @@ func newCachedCodeAttestStore(t *testing.T) *store.CachedStore {
 
 func TestCodeAttestDurableReservationThroughCachedStore(t *testing.T) {
 	cached := newCachedCodeAttestStore(t)
-	th := newCodeAttestThrottle()
+	th := newDeviceState()
 	th.store = cached
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	th.now = func() time.Time { return now }
@@ -39,7 +39,7 @@ func TestCodeAttestDurableReservationThroughCachedStore(t *testing.T) {
 	if !th.tryReservePush(context.Background(), "se-cached", "token", false, generation) {
 		t.Fatal("first push not admitted over the cached store")
 	}
-	budgets, _ := store.As[codeAttestPushBudgetStore](cached)
+	budgets, _ := store.As[pushBudgetStore](cached)
 	rows, err := budgets.ListCodeAttestPushBudgets(context.Background())
 	if err != nil || len(rows) != 2 { // token row + admission-floor sentinel
 		t.Fatalf("durable reservation missing over cached store: rows=%+v err=%v", rows, err)
@@ -51,7 +51,7 @@ func TestCodeAttestDurableReservationThroughCachedStore(t *testing.T) {
 	}
 
 	// The durable row, not just in-memory state, blocks a second instance.
-	other := newCodeAttestThrottle()
+	other := newDeviceState()
 	other.store = cached
 	other.now = th.now
 	if other.tryReservePush(context.Background(), "se-cached", "token", false, other.beginLoop("se-cached")) {
@@ -62,7 +62,7 @@ func TestCodeAttestDurableReservationThroughCachedStore(t *testing.T) {
 func TestCodeAttestDurableClearThroughCachedStore(t *testing.T) {
 	cached := newCachedCodeAttestStore(t)
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
-	first := newCodeAttestThrottle()
+	first := newDeviceState()
 	first.store = cached
 	first.now = func() time.Time { return now }
 	if !first.clearPushBudget(context.Background(), "se-clear") {
@@ -71,7 +71,7 @@ func TestCodeAttestDurableClearThroughCachedStore(t *testing.T) {
 
 	// A fresh instance (empty in-memory state) sharing the store must see
 	// the durably spent clear window and refuse.
-	second := newCodeAttestThrottle()
+	second := newDeviceState()
 	second.store = cached
 	second.now = first.now
 	if second.clearPushBudget(context.Background(), "se-clear") {
@@ -84,17 +84,17 @@ func TestCodeAttestSeedRestoresDurableBudgetsThroughCachedStore(t *testing.T) {
 	now := time.Now().UTC()
 	next := now.Add(time.Hour)
 	tokenHash := codeAttestTokenHash("token-1")
-	budgets, _ := store.As[codeAttestPushBudgetStore](cached)
+	budgets, _ := store.As[pushBudgetStore](cached)
 	if ok, err := budgets.ReserveCodeAttestPushBudget(context.Background(), "se-seed", tokenHash, now, next); err != nil || !ok {
 		t.Fatalf("pre-restart reservation: ok=%v err=%v", ok, err)
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := NewServer(registry.New(logger), cached, ServerConfig{}, logger)
+	srv := newTestManager(registry.New(logger), cached, testServerConfig{}, logger)
 	t.Cleanup(srv.Close)
-	srv.SeedCodeAttestCache(context.Background())
+	srv.Seed(context.Background())
 
-	th := srv.codeAttestThrottle
+	th := srv.state
 	th.mu.Lock()
 	seeded, ok := th.durableNextPush[codeAttestPushBudgetKey("se-seed", tokenHash)]
 	th.mu.Unlock()

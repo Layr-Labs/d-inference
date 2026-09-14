@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-10 · commit `213b8c2b6`
+> Last updated: 2026-09-14 · commit `dedb0f894`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -59,7 +59,7 @@ anything else to `unknown`):
 |---|---|
 | `heartbeat` | A provider heartbeat for any model it serves (`Heartbeat`, `coordinator/registry/heartbeat.go`). |
 | `idle` | A provider finished a request (`SetProviderIdle`). |
-| `challenge` | A provider passed a challenge and became eligible (`coordinator/api/provider.go`, `coordinator/api/provider_codeattest.go`). |
+| `challenge` | A provider passed a challenge and became eligible (`coordinator/api/provider.go`, `coordinator/providercontrol/codeidentity/response.go` (`HandleResponse`)). |
 | `load` | A provider reported a model load complete (`coordinator/api/provider.go`). |
 | `disconnect` | A provider left; queued requests it alone could have served fail fast (`Disconnect`). |
 | `kick` | Cold-dispatch kick from the API layer when a request is enqueued (`coordinator/api/cold_dispatch.go`). |

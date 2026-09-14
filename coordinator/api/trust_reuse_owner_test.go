@@ -83,7 +83,7 @@ func TestTrustReuseShutdownKeepsAuthorityThroughCoverageAndRouteDrain(t *testing
 	p.Version, p.APNsDeviceToken = "0.9.0", "shutdown-token"
 	p.AttestationResult.BinaryHash = trHashA
 	p.Mu().Unlock()
-	srv.codeAttestThrottle.recordAttestedForProcess("shutdown-se", "0.9.0", "shutdown-token", p.PublicKey, trHashA)
+	seedFreshProcessAttestation(t, srv, "shutdown-se", "0.9.0", "shutdown-token", p.PublicKey, trHashA)
 
 	started, release, stopped := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once

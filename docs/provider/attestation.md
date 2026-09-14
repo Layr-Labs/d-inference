@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-14 · commit `4482d5422`
+> Last updated: 2026-09-14 · commit `dedb0f894`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -102,6 +102,8 @@ darkbloom status
   enforcement, un-attested providers receive no private text
   ([Flag — APNs code identity](../architecture/security/attestation.md#flag--apns-code-identity)).
 - **Short coordinator reconnects.** A continuously code-verified process can resume through a fresh encrypted WebSocket challenge within the bounded [code-continuity window](../architecture/security/attestation.md#flag--apns-code-identity). Restarting the provider changes its process key; hardware continuity alone does not substitute for code identity.
+  The coordinator's [code-identity owner](../architecture/security/attestation.md#code-identity-ownership)
+  preserves this process-proof requirement and the existing push budget.
 - **Keep the same identity.** The Secure Enclave signing key is persistent in
   the keychain, so your SE public key survives restarts and is the identity the
   trust-reuse and code-identity caches are keyed on

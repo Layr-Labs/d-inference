@@ -2,10 +2,10 @@ package api
 
 import (
 	"context"
+
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/providercontrol/trustreuse"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"time"
 )
 
 // approvedReleaseTransitionFact is constructed only from the current runtime
@@ -106,8 +106,3 @@ func providerApplicationBinaryHash(provider *registry.Provider, seKey, registrat
 	}
 	return evidence.BinaryHash
 }
-
-// Shared application-evidence callers retain the same device-coverage conventions.
-const clockSkewTolerance = trustreuse.ClockSkewTolerance
-
-func coverageFromStore(until *time.Time) time.Time { return trustreuse.CoverageFromStore(until) }

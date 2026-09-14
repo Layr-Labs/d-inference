@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `588b70166`
+> Last updated: 2026-09-14 · commit `7466e7fa5`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -119,6 +119,25 @@ outlive the test that scheduled it. Existing outcome assertions and deadlines re
 The isolated journal fixtures do not require PostgreSQL. The full coordinator
 race suite remains the integration gate; unchanged PostgreSQL store tests need
 the database configuration below to execute.
+
+Code-identity proof, nonce, APNs budget and loop fixtures live in
+`coordinator/providercontrol/codeidentity/`. They keep the original test names
+and assertions, using real Go encryption/signatures with an in-process fake
+APNs sender; they do not contact Apple or exercise a real Secure Enclave.
+The test-only manager supplies inert API metrics and copied identity helpers.
+Release-policy, persistence, signed resume, shutdown and fleet assertions stay
+in `coordinator/api/` and exercise the actual API dependency binding. They seed
+proofs through an owned store and configure clocks/senders at construction.
+`code_identity_owner_test.go` pins startup proof/budget persistence versus live
+coverage writes and rejection when no release-policy snapshot exists; both
+characterizations also pass before extraction.
+`code_identity_disabled_test.go` additionally preserves the no-op loop and
+heartbeat entry points on a directly constructed server with no attestor.
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/providercontrol/codeidentity
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'CodeIdentity|CodeCoverage|CodeContinuity|CrossVersionReuse|Restart.*Transition|Seeded|HashlessRegistration|PersistOnAttest|TrustReuseShutdown|ApprovedTransitionGrants|MDMSchedulerFleet1500'
+```
 
 The CI formatting step checks tracked Go files with `gofmt`. It excludes
 `docs/reports/evidence/`, whose captured source bytes are immutable and bound

@@ -16,6 +16,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── env/              Shared env-var helpers/constants
 ├── mdm/              MicroMDM integration for device attestation
 ├── payments/         Internal ledger, pricing tables, base rewards
+├── providercontrol/codeidentity/ per-device code proofs, APNs budgets/nonces and encrypted resume (Manager)
 ├── profilesign/      CMS-signing of .mobileconfig enrollment profiles
 ├── protocol/         WebSocket message types shared with provider (type_scan.go: single-parse frame decode)
 ├── ratelimit/        Rate limiting

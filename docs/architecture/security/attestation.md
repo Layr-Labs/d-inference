@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-14 · commit `01ef51811`
+> Last updated: 2026-09-14 · commit `7466e7fa5`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -252,14 +252,14 @@ selected by `register.apns_environment`.
 
 | Step | Behaviour | Code |
 |---|---|---|
-| 1 Register | `register.apns_device_token` and `register.apns_environment` are read from the registration; the push budget is keyed by SE key + token hash. A provider without a token cannot become `CodeAttested` | `coordinator/protocol/messages.go` (`RegisterMessage`); `coordinator/api/code_attest_throttle.go` (`codeAttestTokenHash`, `codeAttestPushBudgetKey`) |
-| 2 Loop start | `codeAttestLoop` waits for this connection's first signed challenge, then decides between resume and push | `coordinator/api/provider_codeattest.go` (`codeAttestLoopForGeneration`) |
-| 3 Resume | If a durable proof for (SE key, version, APNs token, process key `K`) is younger than `reuseWindow` = 30m, or the exact same process has coordinator-observed verified continuity within `codeAttestContinuityGap` = 120s, or a release-approved transition has a recent APNs proof, the coordinator sends `code_attestation_resume_challenge{code_challenge}` over the WebSocket — a NaCl-Box-sealed nonce to `K` — and waits `resumeTimeout` = 30s. Cached evidence only *authorises* the challenge; the flag is set by the answer | `coordinator/api/provider_codeattest.go` (`sendCodeIdentityResumeChallenge`, `tryCrossVersionReuse`); `coordinator/api/code_attest_throttle.go` (`reuseAttestation`); `coordinator/api/code_attest_coverage.go` |
+| 1 Register | `register.apns_device_token` and `register.apns_environment` are read from the registration; the push budget is keyed by SE key + token hash. A provider without a token cannot become `CodeAttested` | `coordinator/protocol/messages.go` (`RegisterMessage`); `coordinator/providercontrol/codeidentity/push_budget.go` (`codeAttestTokenHash`, `codeAttestPushBudgetKey`) |
+| 2 Loop start | `codeAttestLoop` waits for this connection's first signed challenge, then decides between resume and push | `coordinator/providercontrol/codeidentity/challenge_loop.go` (`Loop`, `codeAttestLoopForGeneration`) |
+| 3 Resume | If a durable proof for (SE key, version, APNs token, process key `K`) is younger than `reuseWindow` = 30m, or the exact same process has coordinator-observed verified continuity within `codeAttestContinuityGap` = 120s, or a release-approved transition has a recent APNs proof, the coordinator sends `code_attestation_resume_challenge{code_challenge}` over the WebSocket — a NaCl-Box-sealed nonce to `K` — and waits `resumeTimeout` = 30s. Cached evidence only *authorises* the challenge; the flag is set by the answer | `coordinator/providercontrol/codeidentity/resume_dispatch.go` (`sendCodeIdentityResumeChallenge`); `coordinator/providercontrol/codeidentity/resume_policy.go` (`TryResumeApproved`); `coordinator/providercontrol/codeidentity/reuse.go` (`reuseAttestation`); `coordinator/providercontrol/codeidentity/coverage.go` (`SweepCoverage`) |
 | 4 Push | Otherwise a 32-byte nonce is sealed to `K` with `e2e.Encrypt` and sent as APNs JSON `{aps: {"content-available": 1}, code_challenge: {ephemeral_public_key, ciphertext}}`; alert mode adds `aps.alert = {title: "Darkbloom", body: "attestation"}` (safe only because the provider never requests notification authorisation). Headers `apns-topic`, `apns-push-type: background|alert`, `apns-priority: 5|10`, `apns-expiration = now + challengeExpirySeconds` (300). Provider-token JWT (ES256) cached `jwtMaxAge` = 50m; HTTP timeout 15s | `coordinator/apns/attestor.go` (`BuildCodeChallengePayload`, `SendChallenge`) |
-| 5 Throttle | Per device: at most one push per `backgroundPushCooldown` = 20m (background) or `alertPushCooldown` = 75s (alert); `maxAttempts` = 3 per loop; retry delay `retrySpacing` = 15s + jitter in [0, `retryJitter` = 15s); a pushed nonce is accepted for `challengeValidity` = `CodeAttestResponseTimeout` = 300s; token-rotation budget resets at most once per `budgetClearCooldown` = 20m | `coordinator/api/code_attest_throttle.go` |
-| 6 Reply | `code_attestation_response{nonce, signature}`: the nonce must match the outstanding challenge recorded for **this** SE key + APNs token + `K` (`matchChallengeForIdentity` / `matchResumeChallenge`); `signature` = ECDSA over the nonce bytes, verified against the **registration** SE key; consumed atomically; `GrantProcessCodeAttested` refuses if the token or `K` rotated meanwhile | `coordinator/api/provider_codeattest.go` (`handleCodeAttestationResponse`); `coordinator/registry/provider_evidence.go` (`GrantProcessCodeAttested`) |
-| 7 Persist | An APNs-proven round-trip is upserted as `CodeAttestation{se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash}` so step 3 can authorise a resume on a later connection; the push budget (`CodeAttestPushBudget`) stores only the token hash | `coordinator/api/code_attest_throttle.go` (`persistCodeAttestation`); `coordinator/store/interface.go` (`CodeAttestation`, `CodeAttestPushBudget`) |
-| 8 Exhaustion | After `maxAttempts` unanswered pushes the loop stops and waits for a later reconnect; `CodeAttested` stays false. Token rotation or hard untrust clears an existing flag | `coordinator/api/provider_codeattest.go`; `coordinator/registry/attestation_policy.go` (`MarkUntrusted`) |
+| 5 Throttle | Per device: at most one push per `backgroundPushCooldown` = 20m (background) or `alertPushCooldown` = 75s (alert); `maxAttempts` = 3 per loop; retry delay `retrySpacing` = 15s + jitter in [0, `retryJitter` = 15s); a pushed nonce is accepted for `challengeValidity` = `CodeAttestResponseTimeout` = 300s; token-rotation budget resets at most once per `budgetClearCooldown` = 20m | `coordinator/providercontrol/codeidentity/config.go` (`DefaultConfig`); `coordinator/providercontrol/codeidentity/push_budget.go` (`reservePush`) |
+| 6 Reply | `code_attestation_response{nonce, signature}`: the nonce must match the outstanding challenge recorded for **this** SE key + APNs token + `K` (`matchChallengeForIdentity` / `matchResumeChallenge`); `signature` = ECDSA over the nonce bytes, verified against the **registration** SE key; consumed atomically; `GrantProcessCodeAttested` refuses if the token or `K` rotated meanwhile | `coordinator/providercontrol/codeidentity/response.go` (`HandleResponse`); `coordinator/registry/provider_evidence.go` (`GrantProcessCodeAttested`) |
+| 7 Persist | An APNs-proven round-trip is upserted as `CodeAttestation{se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash}` so step 3 can authorise a resume on a later connection; the push budget (`CodeAttestPushBudget`) stores only the token hash | `coordinator/providercontrol/codeidentity/persistence.go` (`persistCodeAttestation`); `coordinator/store/interface.go` (`CodeAttestation`, `CodeAttestPushBudget`) |
+| 8 Exhaustion | After `maxAttempts` unanswered pushes the loop stops and waits for a later reconnect; `CodeAttested` stays false. Token rotation or hard untrust clears an existing flag | `coordinator/providercontrol/codeidentity/challenge_loop.go` (`Loop`); `coordinator/registry/attestation_policy.go` (`MarkUntrusted`) |
 | 9 Enforcement | `SetCodeAttestationConfigured(true)` when an attestor exists; `SetCodeAttestationDeadline` from `APNS_ENFORCE_AFTER`; `codeAttestationEnforcedLocked` = configured ∧ deadline non-zero ∧ now ≥ deadline. Before that the fleet is measured (`attestation.code_attested`, `attestation.code_enforced`) but routes un-attested providers | `coordinator/registry/attestation_policy.go` (`codeAttestationEnforcedLocked`); `coordinator/cmd/coordinator/main.go` (`parseAPNsEnforceAfter`) |
 
 Same-process continuity is separate from hardware continuity. The coordinator
@@ -276,7 +276,7 @@ APNs timestamp. An old proof with missing, expired or future coverage requires
 a push. A changed
 process key/version can use an approved release transition only with a proof
 still inside the original 30-minute window. See
-`coordinator/api/code_attest_coverage.go` and
+`coordinator/providercontrol/codeidentity/coverage.go` (`SweepCoverage`) and
 `coordinator/store/code_attest_coverage.go`.
 
 The first deployment from a coordinator that never recorded code continuity
@@ -288,6 +288,30 @@ Boot, or hardware genuineness (Layers 3 and MDA). It binds App ID and Team ID,
 not an exact `cdhash`. Delivery needs a logged-in Aqua session
 (`provider-swift/Sources/darkbloom/ProviderAppKitHost.swift`); a dropped push
 is an availability event, not a confidentiality breach.
+
+### Code-identity ownership
+
+`coordinator/providercontrol/codeidentity/manager.go` (`Manager`) owns the
+per-device proof cache, push budgets, challenge nonces and loop generations.
+Its API adapter (`coordinator/api/provider_codeattest.go`,
+`codeIdentityDependencies`) supplies the existing registry operations, metrics
+and measured binary identity. The owner has no `api.Server` dependency.
+
+`Seed` binds the startup store for proof persistence and durable push-budget
+reservations (`bootstrap.go`, `persistence.go`, `push_budget.go` in that package).
+Coverage separately discovers the current store through `CoverageStore` at
+each write. `TryResumeApproved` captures one immutable release-policy snapshot
+for its entire decision; an absent snapshot remains a true nil interface and
+cannot authorize resume. The adapter retains the existing active-predecessor
+derivation.
+
+The per-SE reservation lock still covers budget admission, the final identity
+check and APNs dispatch (`loop_ownership.go`, `apns_dispatch.go`). Reply handling
+verifies the signature before consuming the bound nonce and requesting the
+registry grant (`response.go`, `HandleResponse`). Disconnect clears only that
+connection's resume challenges before the final coverage observation. The
+existing trust-reuse worker and ordered `Server.Close` sequence invoke coverage;
+this owner starts no additional periodic coverage worker.
 
 ### Routing gate
 
@@ -343,9 +367,9 @@ received (`darkbloom status`, `Trust: <level> / <status>`).
 2. A stored `hardware` level and a stored `MDAVerified` flag are never restored on reconnect; the connection re-earns them — `coordinator/registry/persistence.go` (`RestoreProviderState`).
 3. Only a posture mismatch proven by a received SecurityInfo demotes; lookup failures, timeouts, and not-enrolled outcomes leave trust unchanged and retry — `coordinator/api/provider.go` (`verifyProviderViaMDM`).
 4. The coordinator sends only `SecurityInfo` and `DeviceInformation` MDM commands and honours only webhook responses for an outstanding `CommandUUID` — `coordinator/mdm/mdm.go` (`assertReadOnlyCommand`, `HandleWebhook`).
-5. Every challenge and code-identity signature is verified against the SE key from the registration blob, never a key carried in the reply — `coordinator/api/provider.go` (`verifyChallengeResponse`), `coordinator/api/provider_codeattest.go` (`handleCodeAttestationResponse`).
+5. Every challenge and code-identity signature is verified against the SE key from the registration blob, never a key carried in the reply — `coordinator/api/provider.go` (`verifyChallengeResponse`), `coordinator/providercontrol/codeidentity/response.go` (`HandleResponse`).
 6. `sip_enabled == false` or `secure_boot_enabled == false` in any challenge reply, a binary/model-hash drift, or an encrypted-chunk violation untrusts the provider immediately, without the three-strike count — `coordinator/api/provider.go` (`verifyChallengeResponse`, `decryptTextResponseChunk`).
-7. A code-identity proof is accepted only for the exact (SE key, APNs token, `K`) it was issued to and only within `challengeValidity`; cached proofs authorise a resume challenge, never a grant — `coordinator/api/provider_codeattest.go` (`codeAttestLoopForGeneration`, `handleCodeAttestationResponse`), `coordinator/api/code_attest_throttle.go`.
+7. A code-identity proof is accepted only for the exact (SE key, APNs token, `K`) it was issued to and only within `challengeValidity`; cached proofs authorise a resume challenge, never a grant — `coordinator/providercontrol/codeidentity/challenge_loop.go` (`codeAttestLoopForGeneration`); `coordinator/providercontrol/codeidentity/response.go` (`HandleResponse`), `coordinator/providercontrol/codeidentity/apns_challenge.go` (`matchChallengeForIdentity`).
 8. Code identity becomes mandatory only when an attestor is configured and `APNS_ENFORCE_AFTER` has passed — `coordinator/registry/attestation_policy.go` (`codeAttestationEnforcedLocked`).
 9. Routing evaluates `providerLivenessGateReasonLocked` in a fixed order and skips any provider whose last verified challenge is older than [`challengeFreshnessMaxAge`](../routing.md#challenge-freshness) — `coordinator/registry/routing_eligibility.go`, `coordinator/registry/scheduler.go`.
 10. Hard untrust writes a durable tombstone that wins any race with a pending hardware grant — `coordinator/providercontrol/trustreuse/revocation.go` (`Invalidate`), `coordinator/registry/provider_evidence.go` (`GrantHardwareEvidenceAtEpochIfNotUntrusted`).
@@ -367,8 +391,8 @@ received (`darkbloom status`, `Trust: <level> / <status>`).
 | MDM `securityinfo-timeout` / `error` | Stays `self_signed`; retried; a late webhook can still grant | `coordinator/api/provider.go` (`ApplyLateSecurityInfo`) |
 | MDM `posture-mismatch` | `untrusted`, terminal for the connection | `coordinator/api/provider.go` |
 | MDA chain invalid or unbound | `mda_verified` stays false; level unaffected | `coordinator/api/provider.go` (`verifyAppleDeviceAttestation`) |
-| No APNs token / no Aqua session / pushes unanswered | `CodeAttested` false; routable in grace mode, derouted from private text after `APNS_ENFORCE_AFTER` | `coordinator/api/provider_codeattest.go` |
-| APNs token rotates after a grant | `CodeAttested` cleared; new challenge cycle | `coordinator/api/provider_codeattest.go` |
+| No APNs token / no Aqua session / pushes unanswered | `CodeAttested` false; routable in grace mode, derouted from private text after `APNS_ENFORCE_AFTER` | `coordinator/providercontrol/codeidentity/challenge_loop.go` (`Loop`) |
+| APNs token rotates after a grant | `CodeAttested` cleared; new challenge cycle | `coordinator/providercontrol/codeidentity/rearm.go` (`Rearm`) |
 | Reconnect | Level capped to `self_signed`, `MDAVerified` reset; trust reuse may restore `hardware` on the first passing challenge within `defaultTrustReuseWindow` or a measured gap ≤ `defaultTrustReuseReconnectGap` ([Layer 3 trust reuse](#layer-3--mdm-securityinfo-the-hardware-grant)) | `coordinator/registry/persistence.go`, `coordinator/providercontrol/trustreuse/reuse.go` |
 
 ## Code map
@@ -382,7 +406,8 @@ received (`darkbloom status`, `Trust: <level> / <status>`).
 | Trust reuse | `coordinator/providercontrol/trustreuse/manager.go` (`Manager`); `coordinator/providercontrol/trustreuse/grant.go` (`RecordVerified`, `RecordLate`); `coordinator/providercontrol/trustreuse/reuse.go` (`TryReuse`); `coordinator/providercontrol/trustreuse/revocation.go` (`Invalidate`) |
 | Reconnect state | `coordinator/registry/persistence.go` (`RestoreProviderState`) |
 | MDA | `coordinator/attestation/mda.go` (`VerifyMDADeviceAttestation`); `coordinator/api/provider.go` (`verifyAppleDeviceAttestation`, `attachCachedMDAProof`); `coordinator/mdm/mdm.go` (`RequestDeviceAttestation`) |
-| Code identity | `coordinator/apns/attestor.go`; `coordinator/api/provider_codeattest.go`; `coordinator/api/code_attest_throttle.go`; `coordinator/cmd/coordinator/main.go` (`parseAPNsEnforceAfter`) |
+| Code-identity lifecycle and binding | `coordinator/providercontrol/codeidentity/manager.go` (`Manager`); `coordinator/api/provider_codeattest.go` (`codeIdentityDependencies`); `coordinator/cmd/coordinator/main.go` (`parseAPNsEnforceAfter`) |
+| Code proofs, push admission and continuity | `coordinator/providercontrol/codeidentity/reuse.go` (`reuseAttestationBasis`); `coordinator/providercontrol/codeidentity/push_budget.go` (`reservePush`); `coordinator/providercontrol/codeidentity/coverage.go` (`SweepCoverage`) |
 | Routing gate | `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`); `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`); `coordinator/registry/model_capacity.go` (`publiclyRoutableLocked`); `coordinator/registry/scheduler.go` (`challengeFreshnessMaxAge`) |
 | Release evidence publication | `coordinator/api/release_policy_publish.go` (`publishReleaseTrustPolicy`, `retainedReleaseTrustPolicy`, `addRelease`): successful sync and committed-mutation recovery publish the snapshot, revalidate the generation, then challenge invalidated providers; cold-start deny-all stays separate in `coordinator/api/server.go` |
 | Runtime manifest | `coordinator/api/server.go` (`SyncRuntimeManifest`, `RuntimeManifest`, `verifyRuntimeHashesForBackend`, `verifyRuntimeHashesAgainstManifest`, `runtimeManifestApprovesMetallib`, `revalidateConnectedProvidersAgainstRuntimePolicy`, `handleRuntimeManifest`); `coordinator/api/provider.go` (`applyChallengeRuntimePolicy`); `coordinator/api/release_handlers.go` |

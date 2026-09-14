@@ -1,6 +1,6 @@
 # Incoming request accounting
 
-> Last updated: 2026-09-07 · commit `b07fe2c39`
+> Last updated: 2026-09-11 · commit `5e41029dd`
 
 `request_outcomes` records unsampled observations of incoming inference requests, including early rejections, independently of sampled attempt profiles. Operators use this source to distinguish final request outcomes from internal retries. The dashboard aggregation and presentation work in issue #845 remains open.
 
@@ -68,7 +68,7 @@ The summary `termination` follows deterministic precedence: unfinished handler �
 
 A non-streaming provider may emit content and then fail while the client receives only an error body. That request is rejected with provider progress, with `content_write_completed=false`. A zero-token completion is completed if its provider terminal and endpoint egress contract complete successfully. Native Responses pass-through observes its actual terminal events; `response.incomplete` and response-error terminals cannot become completed merely because the provider ended or the handler returned. A speculative loser's refusal/error cannot override a winner's completion.
 
-Attempt finalization uses the existing idempotent handler/terminal lifecycle, including its 31-second missing-terminal fallback. Compact observers preserve the profiler-off `RemovePending`/settlement arbitration; they claim evidence only after winning that existing ownership boundary. Heavy profiling retains its existing earlier terminal claims. Evidence arriving after an attempt's existing finalization/retention boundary is not retroactively invented. Pending or abandoned receipts remain `in_progress`/unknown when terminal persistence is lost. There is no timeout-based fabrication of success or rejection.
+Finalization tracking retains only attempt identities; each published revision reads current evidence from the existing request profile. Attempt finalization uses the existing idempotent handler/terminal lifecycle, including its 31-second missing-terminal fallback. Compact observers preserve the profiler-off `RemovePending`/settlement arbitration; they claim evidence only after winning that existing ownership boundary. Heavy profiling retains its existing earlier terminal claims. Evidence arriving after an attempt's existing finalization/retention boundary is not retroactively invented. Pending or abandoned receipts remain `in_progress`/unknown when terminal persistence is lost. There is no timeout-based fabrication of success or rejection.
 
 ## Versioned normalization
 

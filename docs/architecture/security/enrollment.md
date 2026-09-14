@@ -1,6 +1,6 @@
 # MDM enrollment
 
-> Last updated: 2026-09-14 · commit `391e1ebd4`
+> Last updated: 2026-09-14 · commit `6b49c898c`
 
 How a provider Mac joins Darkbloom's MDM so the coordinator can ask Apple's
 management subsystem, rather than the provider binary, whether SIP and Secure

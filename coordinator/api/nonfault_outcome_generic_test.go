@@ -1,12 +1,13 @@
 package api
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 // PR #548 review round 3 (Codex P2): tool_noncompliance route rows must not be

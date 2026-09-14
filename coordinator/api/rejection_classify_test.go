@@ -1,9 +1,10 @@
 package api
 
 import (
+	"testing"
+
 	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"testing"
 )
 
 // TestClassifyRejection pins the deterministic-vs-transient split that drives the

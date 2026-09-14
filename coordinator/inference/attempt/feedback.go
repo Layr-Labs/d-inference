@@ -1,10 +1,11 @@
 package attempt
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
 	"net/http"
 	"strings"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 // Error feeds the circuit breakers for a provider-side error
@@ -257,8 +258,8 @@ func (s Service) Success(pr *registry.PendingRequest) {
 // registry.Disconnect's pending flush) remove the pending request BEFORE
 // pushing the error, so the arm's Cancel sees RemovePending()==nil and
 // skips its own refund — without this the custom-price surcharge reserved by
-// Service.ReserveForProvider would be stranded for the failed attempt.
-// Service.RefundProviderExtra is idempotent (it resets ReservedMicroUSD to the base),
+// settlement.Service.ReserveForProvider would be stranded for the failed attempt.
+// settlement.Service.RefundProviderExtra is idempotent (it resets ReservedMicroUSD to the base),
 // so arms where Cancel did refund are safe, and a failed pre-commit
 // attempt never reaches settlement (its channels are closed and it is neither
 // pending nor parked), so this can never double-credit against a settle.

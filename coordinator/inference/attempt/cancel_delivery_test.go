@@ -3,8 +3,9 @@ package attempt
 import (
 	"context"
 	"errors"
-	"github.com/eigeninference/d-inference/coordinator/registry"
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 func TestCancelSendFailureReason(t *testing.T) {

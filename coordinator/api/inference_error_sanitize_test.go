@@ -3,9 +3,6 @@ package api
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,6 +10,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 func TestSanitizeProviderInferenceErrorDiscardsUntrustedStrings(t *testing.T) {

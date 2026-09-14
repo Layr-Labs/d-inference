@@ -3,12 +3,13 @@ package api
 import (
 	"bytes"
 	"fmt"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"log/slog"
 	"strings"
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 func capacityTestPending(model, providerID string, n int) *registry.PendingRequest {

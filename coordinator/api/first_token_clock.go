@@ -2,11 +2,12 @@ package api
 
 import (
 	"context"
+	"net/http"
+	"time"
+
 	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"net/http"
-	"time"
 )
 
 // The request-absolute first-token clock.

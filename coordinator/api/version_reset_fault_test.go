@@ -2,9 +2,10 @@ package api
 
 import (
 	"fmt"
+	"testing"
+
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"testing"
 )
 
 func TestProviderEncryption502SurvivesVersionReset(t *testing.T) {

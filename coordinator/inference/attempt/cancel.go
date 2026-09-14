@@ -3,9 +3,10 @@ package attempt
 import (
 	"context"
 	"encoding/json"
+	"time"
+
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"time"
 )
 
 const (

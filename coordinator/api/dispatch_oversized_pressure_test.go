@@ -2,16 +2,17 @@ package api
 
 import (
 	"context"
-	"github.com/eigeninference/d-inference/coordinator/api/catalog"
-	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"io"
 	"log/slog"
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/api/catalog"
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // DAR-347 follow-ups: the dispatch-time "stop the storm" logic must NOT turn a

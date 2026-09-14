@@ -2,16 +2,17 @@ package api
 
 import (
 	"context"
-	"github.com/eigeninference/d-inference/coordinator/attestation"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
 	"net/http"
 	"net/http/httptest"
-	"nhooyr.io/websocket"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"nhooyr.io/websocket"
 )
 
 // R1 integration tests: a provider that closes its socket GRACEFULLY

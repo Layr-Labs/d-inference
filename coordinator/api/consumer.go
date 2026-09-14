@@ -1,10 +1,30 @@
 package api
 
+// Consumer-facing API handlers for the Darkbloom coordinator.
+//
+// This file implements the OpenAI-compatible HTTP endpoints that consumers
+// use to send inference requests. The coordinator acts as a trusted routing
+// layer between consumers and providers.
+//
+// Trust model:
+//   The coordinator runs in a Confidential VM, providing hardware-encrypted
+//   memory. Consumers may additionally sender-seal requests to the
+//   coordinator's X25519 key. The coordinator decrypts for routing purposes
+//   but never logs prompt content, then re-encrypts each request to the
+//   selected provider's X25519 public key before forwarding over the
+//   WebSocket. Providers are attested via Secure Enclave challenge-response.
+
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
@@ -19,26 +39,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
-	"math"
-	"net/http"
-	"strconv"
-	"strings"
-	"time"
 )
-
-// Consumer-facing API handlers for the Darkbloom coordinator.
-//
-// This file implements the OpenAI-compatible HTTP endpoints that consumers
-// use to send inference requests. The coordinator acts as a trusted routing
-// layer between consumers and providers.
-//
-// Trust model:
-//   The coordinator runs in a Confidential VM, providing hardware-encrypted
-//   memory. Consumers may additionally sender-seal requests to the
-//   coordinator's X25519 key. The coordinator decrypts for routing purposes
-//   but never logs prompt content, then re-encrypts each request to the
-//   selected provider's X25519 public key before forwarding over the
-//   WebSocket. Providers are attested via Secure Enclave challenge-response.
 
 const (
 	// inferenceTimeout is the maximum time to wait between chunks (streaming)

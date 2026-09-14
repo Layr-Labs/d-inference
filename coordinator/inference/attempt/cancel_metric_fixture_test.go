@@ -1,13 +1,14 @@
 package attempt
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"log/slog"
 	"net"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/datadog"
 )
 
 // udpCollector listens on a random UDP port and collects DogStatsD packets.

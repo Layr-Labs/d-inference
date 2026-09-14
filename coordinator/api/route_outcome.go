@@ -1,14 +1,15 @@
 package api
 
 import (
+	"net/http"
+	"strings"
+	"time"
+
 	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"net/http"
-	"strings"
-	"time"
 )
 
 const metricInferenceError = "inference.error"

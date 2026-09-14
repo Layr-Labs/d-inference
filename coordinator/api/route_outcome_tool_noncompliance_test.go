@@ -1,13 +1,14 @@
 package api
 
 import (
+	"log/slog"
+	"os"
+	"testing"
+
 	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"log/slog"
-	"os"
-	"testing"
 )
 
 // E5: providers map a forced-tool_choice violation ("model did not emit the

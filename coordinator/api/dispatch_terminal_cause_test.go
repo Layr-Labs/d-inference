@@ -1,10 +1,11 @@
 package api
 
 import (
+	"testing"
+
 	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"testing"
 )
 
 // Regression tests for the PR review findings on typed-terminal handling in

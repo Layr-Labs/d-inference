@@ -1,10 +1,11 @@
 package api
 
 import (
+	"testing"
+
 	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"testing"
 )
 
 // C1: a deterministic provider client-shape 4xx must STOP failover immediately

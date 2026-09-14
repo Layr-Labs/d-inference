@@ -3,9 +3,10 @@ package attempt
 import (
 	"context"
 	"errors"
-	"github.com/eigeninference/d-inference/coordinator/registry"
 	"strconv"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 // SendAbandonCancel is the cancel primitive for an abandon path whose pending

@@ -1,12 +1,13 @@
 package api
 
 import (
+	"testing"
+	"time"
+
 	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"testing"
-	"time"
 )
 
 // Attempt-usage observability (deadline incident fix): a typed error terminal

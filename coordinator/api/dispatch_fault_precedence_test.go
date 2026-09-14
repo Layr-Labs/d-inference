@@ -1,11 +1,12 @@
 package api
 
 import (
+	"net/http"
+	"testing"
+
 	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"net/http"
-	"testing"
 )
 
 func genuineInternalFaultMessage() protocol.InferenceErrorMessage {

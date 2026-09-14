@@ -2,13 +2,14 @@ package api
 
 import (
 	"fmt"
+	"log/slog"
+	"os"
+	"testing"
+
 	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"log/slog"
-	"os"
-	"testing"
 )
 
 // Typed terminal-cause health classification (the generation-deadline incident

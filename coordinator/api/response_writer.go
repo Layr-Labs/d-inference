@@ -1,10 +1,11 @@
 package api
 
 import (
+	"net/http"
+
 	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"net/http"
 )
 
 // responseWriter binds formatting to the same settlement, routing feedback and

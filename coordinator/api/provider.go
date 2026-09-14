@@ -1,32 +1,5 @@
 package api
 
-import (
-	"bytes"
-	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
-	"github.com/eigeninference/d-inference/coordinator/attestation"
-	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
-	"github.com/eigeninference/d-inference/coordinator/inference/response"
-	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
-	"github.com/eigeninference/d-inference/coordinator/mdm"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/saferun"
-	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/google/uuid"
-	"maps"
-	"math"
-	"net/http"
-	"nhooyr.io/websocket"
-	"strconv"
-	"strings"
-	"sync"
-	"time"
-)
-
 // Provider WebSocket management for the Darkbloom coordinator.
 //
 // This file handles the provider side of the coordinator: WebSocket connections,
@@ -46,6 +19,34 @@ import (
 //   - none: No attestation provided (Open Mode, still accepted)
 //   - self_signed: Attestation signed by provider's own Secure Enclave key
 //   - hardware: MDA certificate chain verified against Apple Root CA (future)
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"maps"
+	"math"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
+	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
+	"github.com/eigeninference/d-inference/coordinator/mdm"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/saferun"
+	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/google/uuid"
+	"nhooyr.io/websocket"
+)
 
 const (
 	// DefaultChallengeInterval is how often the coordinator challenges providers.

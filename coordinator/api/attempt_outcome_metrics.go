@@ -1,11 +1,12 @@
 package api
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"math"
 	"strings"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // Attempt-level outcome + OpenRouter-view request outcome instrumentation.

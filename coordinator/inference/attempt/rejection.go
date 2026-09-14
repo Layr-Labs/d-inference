@@ -1,8 +1,9 @@
 package attempt
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"strings"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // RejectionKind refines a CAPACITY-class provider rejection by how the dispatch

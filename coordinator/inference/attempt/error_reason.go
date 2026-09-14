@@ -1,8 +1,9 @@
 package attempt
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"strings"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // IsJinjaTemplateErrorReason reports whether a provider-supplied error_reason

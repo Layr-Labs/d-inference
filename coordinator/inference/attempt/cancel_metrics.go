@@ -1,9 +1,10 @@
 package attempt
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"strconv"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 const (

@@ -1,8 +1,9 @@
 package api
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"strings"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 )
 
 // Load-failure reason buckets for the routing.load_model_rejects counter.

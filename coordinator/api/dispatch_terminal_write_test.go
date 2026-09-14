@@ -1,11 +1,12 @@
 package api
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 )
 
 func TestPreContentTerminalRetainsHTTPStatus(t *testing.T) {

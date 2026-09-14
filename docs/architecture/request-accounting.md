@@ -1,6 +1,6 @@
 # Incoming request accounting
 
-> Last updated: 2026-09-13 · commit `a3493b5ac`
+> Last updated: 2026-09-13 · commit `b258e17596`
 
 `request_outcomes` records unsampled observations of incoming inference requests, including early rejections, independently of sampled attempt profiles. Operators use this source to distinguish final request outcomes from internal retries. The dashboard aggregation and presentation work in issue #845 remains open.
 
@@ -103,7 +103,7 @@ A raw historical `dispatch_exhausted` can represent a retained real provider err
 | Observation, lifecycle and mapping | `coordinator/api/request_outcome.go` |
 | Content and write evidence | `coordinator/api/request_outcome_egress.go`, `coordinator/api/sender_encryption.go` |
 | Bounded persistence | `coordinator/telemetry/outcomequeue/` (`Sink`, `Submit`, `Close`, `Stats`); `coordinator/api/request_outcome_sink.go` (`newRequestOutcomeSink`) injects the active-store writer and metrics |
-| Health endpoint | `coordinator/api/request_outcome_admin.go` (`handleAdminRequestOutcomes`) reads independent process counters through `Stats` |
+| Health endpoint | `coordinator/api/operations/request_outcomes.go` (`Controller.RequestOutcomes`) reads independent process counters through `Stats` |
 | Schema, revision merge and reads | `coordinator/store/contracts/request_outcomes.go`, `coordinator/store/postgres/request_outcomes.go`, `coordinator/store/memory/request_outcomes.go` |
 | Live isolated endpoint regressions | `coordinator/api/request_outcome_integration_test.go`, `coordinator/api/request_outcome_test.go`, `coordinator/api/deadline_unreachable_integration_test.go` |
 | Memory/Postgres parity and retention | `coordinator/store/postgres/request_outcomes_test.go` |

@@ -88,7 +88,7 @@ database; it is skipped when its database environment is absent.
 Run prediction telemetry checks from the repository root:
 
 ```bash
-go test -race ./coordinator/api ./coordinator/registry ./coordinator/protocol ./coordinator/store/... ./coordinator/telemetry/profiler
+go test -race ./coordinator/api/... ./coordinator/registry ./coordinator/protocol ./coordinator/store/... ./coordinator/telemetry/profiler
 ```
 
 Persistence tests follow the backend packages. Use `./coordinator/store/...` to
@@ -254,6 +254,19 @@ they do not issue Apple attestations. The long SecurityInfo timeout remains an
 explicit `RUN_MDM_TIMEOUT_TEST` opt-in. Full coordinator race testing is the
 integration gate; ordinary runs skip the existing database opt-ins when no
 isolated PostgreSQL instance is configured.
+
+Operator export tests live beside the read controller in
+`coordinator/api/operations/`: `route_csv_test.go` checks outcome columns and
+filtering, `rejection_csv_test.go` preserves unknown servability, and
+`csv_test.go` guards spreadsheet formulas. `TestOperationsRoutesUseCurrentBindings`
+in `coordinator/api/operations_binding_test.go` exercises the registered routes
+with current authorization, stores, fleet/metrics snapshots and nullable outcome
+counters. Full profiler persistence and HTTP/accounting cases remain in the API.
+Use recursive API package selection so the export tests run:
+
+```bash
+go test -race ./coordinator/api/... -run 'OperationsRoutes|RouteCSV|FilterRouteRecords|RejectionExports|CSVCell|ProfileSink|RequestOutcomeAdmin|TelemetryE2E'
+```
 
 The CI formatting step checks tracked Go files with `gofmt`. It excludes
 `docs/reports/evidence/`, whose captured source bytes are immutable and bound

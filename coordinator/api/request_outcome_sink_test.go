@@ -32,12 +32,12 @@ func TestRequestOutcomeAdminReadFailureIsNotKnownZero(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/v1/admin/request-outcomes", nil)
 	r.Header.Set("Authorization", "Bearer outcome-admin")
 	w := httptest.NewRecorder()
-	s.handleAdminRequestOutcomes(w, r)
+	s.newOperations().RequestOutcomes(w, r)
 	if w.Code != 503 {
 		t.Fatalf("read error became %d: %s", w.Code, w.Body.String())
 	}
 	w = httptest.NewRecorder()
-	s.handleAdminRequestOutcomes(w, httptest.NewRequest(http.MethodGet, "/v1/admin/request-outcomes", nil))
+	s.newOperations().RequestOutcomes(w, httptest.NewRequest(http.MethodGet, "/v1/admin/request-outcomes", nil))
 	if w.Code < 400 {
 		t.Fatal("admin source accessible without authorization")
 	}

@@ -131,6 +131,8 @@ configuration and store; no additional service or build step is needed.
 The normal Go build includes the profiler owner and telemetry queue packages
 under `coordinator/telemetry/`. Their API adapters link them into the same
 coordinator binary; no separate worker executable or build flag is required.
+The operator read/export controller in `coordinator/api/operations/` is also
+part of this binary, wired by `newOperations` in `coordinator/api/operations.go`.
 
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
 its test binary after helper or lifecycle changes. The CPU-only

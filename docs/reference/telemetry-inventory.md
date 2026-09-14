@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-13 · commit `a3493b5ac`
+> Last updated: 2026-09-13 · commit `b258e17596`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -242,9 +242,9 @@ two profiler tables: [`../architecture/system-profiler.md`](../architecture/syst
 
 | Route | Returns | Limits |
 |---|---|---|
-| `GET /v1/admin/routes`, `/export` | `inference_routes` (JSON; CSV default or `?format=ndjson`) | `?since` (duration or RFC 3339, default 24 h); browse default 1000, max 50 000 (`coordinator/api/admin_telemetry.go`); store cap `maxTelemetryReadRows = 50000` |
+| `GET /v1/admin/routes`, `/export` | `inference_routes` (JSON; CSV default or `?format=ndjson`) | `?since` (duration or RFC 3339, default 24 h); browse default 1000, max 50 000 (`coordinator/api/operations/query.go`, `parseSince` / `parseLimit`); store cap `maxTelemetryReadRows = 50000` |
 | `GET /v1/admin/rejections`, `/export` | `request_rejections` | same |
-| `GET /v1/admin/profiles`, `/export`; `GET /v1/admin/snapshots`, `/export` | `request_profiles`, `fleet_snapshots` (export is NDJSON only) | same (`coordinator/api/profiler_admin.go`) |
+| `GET /v1/admin/profiles`, `/export`; `GET /v1/admin/snapshots`, `/export` | `request_profiles`, `fleet_snapshots` (export is NDJSON only) | same (`coordinator/api/operations/profiles.go`, `Controller.Profiles`; `coordinator/api/operations/snapshots.go`, `Controller.Snapshots`) |
 | `GET /v1/admin/metrics` | in-process registry snapshot | `?format=prom` |
 | `GET /v1/admin/log-reports/{id}` | one log bundle | admin key |
 | `GET /v1/stats` | usage aggregates (`coordinator/api/stats.go`, `handleStats`) | Unauthenticated; source timestamp and cache interval: [public stats contract](api-contracts.md#public-stats-and-health-5) |

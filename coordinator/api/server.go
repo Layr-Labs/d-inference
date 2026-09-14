@@ -1440,6 +1440,7 @@ func (s *Server) resolveBaseURL(r *http.Request) string {
 func (s *Server) routes() {
 	readinessAPI := s.readinessController()
 	releaseAPI := s.newReleaseAPI()
+	operations := s.newOperations()
 	// Install script — served from the generated embed with the coordinator URL
 	// substituted per environment.
 	s.mux.HandleFunc("GET /install.sh", func(w http.ResponseWriter, r *http.Request) {
@@ -1687,12 +1688,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/admin/log-reports/{id}", s.requireAuth(s.handleGetLogReport))
 
 	// Metrics snapshot (admin only)
-	s.mux.HandleFunc("GET /v1/admin/metrics", s.handleAdminMetrics)
+	s.mux.HandleFunc("GET /v1/admin/metrics", operations.Metrics)
 	s.mux.HandleFunc("GET /v1/admin/base-rewards", s.handleAdminBaseRewards)
 
 	// Network utilization snapshot (admin only) — handler enforces admin auth
 	// internally via requireAdminKey.
-	s.mux.HandleFunc("GET /v1/admin/utilization", s.handleAdminUtilization)
+	s.mux.HandleFunc("GET /v1/admin/utilization", operations.Utilization)
 
 	// Graceful drain toggle (admin only) — sets the coordinator into drain mode
 	// before a restart/upgrade so new inference requests get 429 while in-flight
@@ -1708,15 +1709,15 @@ func (s *Server) routes() {
 	// Browse as JSON or stream a CSV/NDJSON download for offline analysis.
 	// See docs/design/routing-telemetry-and-calibration.md §6. Handlers
 	// enforce admin auth internally via requireAdminKey.
-	s.mux.HandleFunc("GET /v1/admin/routes", s.handleAdminRoutes)
-	s.mux.HandleFunc("GET /v1/admin/routes/export", s.handleAdminRoutesExport)
-	s.mux.HandleFunc("GET /v1/admin/profiles", s.handleAdminProfiles)
-	s.mux.HandleFunc("GET /v1/admin/request-outcomes", s.handleAdminRequestOutcomes)
-	s.mux.HandleFunc("GET /v1/admin/profiles/export", s.handleAdminProfilesExport)
-	s.mux.HandleFunc("GET /v1/admin/snapshots", s.handleAdminSnapshots)
-	s.mux.HandleFunc("GET /v1/admin/snapshots/export", s.handleAdminSnapshotsExport)
-	s.mux.HandleFunc("GET /v1/admin/rejections", s.handleAdminRejections)
-	s.mux.HandleFunc("GET /v1/admin/rejections/export", s.handleAdminRejectionsExport)
+	s.mux.HandleFunc("GET /v1/admin/routes", operations.Routes)
+	s.mux.HandleFunc("GET /v1/admin/routes/export", operations.RoutesExport)
+	s.mux.HandleFunc("GET /v1/admin/profiles", operations.Profiles)
+	s.mux.HandleFunc("GET /v1/admin/request-outcomes", operations.RequestOutcomes)
+	s.mux.HandleFunc("GET /v1/admin/profiles/export", operations.ProfilesExport)
+	s.mux.HandleFunc("GET /v1/admin/snapshots", operations.Snapshots)
+	s.mux.HandleFunc("GET /v1/admin/snapshots/export", operations.SnapshotsExport)
+	s.mux.HandleFunc("GET /v1/admin/rejections", operations.Rejections)
+	s.mux.HandleFunc("GET /v1/admin/rejections/export", operations.RejectionsExport)
 
 	// Catch-all for unimplemented OpenAI-compatible endpoints.
 	// Registered last (old-style pattern) so explicit method+path routes
@@ -1837,21 +1838,6 @@ func (s *Server) runReadCacheJanitor(ctx context.Context, interval time.Duration
 			s.readCache.PurgeExpired()
 		}
 	}
-}
-
-// handleAdminMetrics returns the metrics snapshot in JSON or Prometheus text.
-func (s *Server) handleAdminMetrics(w http.ResponseWriter, r *http.Request) {
-	if !s.isAdminAuthorized(w, r) {
-		return
-	}
-	snap := s.metrics.Snapshot()
-	if r.URL.Query().Get("format") == "prom" {
-		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(snap.RenderProm()))
-		return
-	}
-	writeJSON(w, http.StatusOK, snap)
 }
 
 // handleUnimplementedEndpoint returns a structured JSON error for any /v1/*

@@ -1,10 +1,40 @@
 import Darwin
 import Foundation
 import SandboxRuntime
+import SandboxGuestProtocol
 @testable import SandboxGuestRuntime
 import XCTest
 
 final class GuestBootstrapDiagnosticTests: XCTestCase {
+    func testAsyncCleanupDiagnosticsKeepTheirFixedStageWithoutUnderlyingContents() async throws {
+        for stage in [GuestBootstrapDiagnostic.Stage.guestPolicy, .tenantDomainRemoval, .tenantCleanupWorker,
+                      .tenantProcessInventory, .tenantDomainVerification] {
+            do {
+                let _: Void = try await GuestBootstrapDiagnostic.runAsync(stage) {
+                    throw NSError(domain: "private-configuration", code: 3,
+                                  userInfo: [NSLocalizedDescriptionKey: "secret=not-for-logs"])
+                }
+                XCTFail("expected diagnostic")
+            } catch {
+                XCTAssertEqual((error as? GuestBootstrapDiagnostic)?.code, "guest_bootstrap.\(stage.rawValue).unavailable")
+            }
+        }
+        let observed = try await GuestBootstrapDiagnostic.runAsync(.tenantCleanupWorker) { 42 }
+        XCTAssertEqual(observed, 42)
+    }
+
+    func testNestedCleanupFailureRetainsTheMoreSpecificStage() async {
+        do {
+            let _: Void = try await GuestBootstrapDiagnostic.runAsync(.guestPolicy) {
+                try GuestBootstrapDiagnostic.run(.tenantDomainVerification) { throw GuestProtocolError.cleanupUncertain }
+            }
+            XCTFail("expected diagnostic")
+        } catch {
+            XCTAssertEqual((error as? GuestBootstrapDiagnostic)?.code,
+                           "guest_bootstrap.tenant_domain_verification.policy_mismatch")
+        }
+    }
+
     func testBootstrapDiagnosticNamesFixedStageAndBoundedSystemError() throws {
         XCTAssertThrowsError(try GuestBootstrapDiagnostic.run(.workspaceMountpoint) {
             throw SandboxAuthorityFileSystemError.unsafePath

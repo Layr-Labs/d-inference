@@ -25,12 +25,32 @@ public struct GuestTenantExecutor: GuestCommandExecuting {
     /// Used before the bootstrap shell touches the workspace mount. It is also
     /// repeated before native workspace preparation on every agent restart.
     public static func quiesceTenant() async throws {
-        try GuestConfiguration.requireVirtualizedRoot()
-        let executable = try GuestConfiguration.signedExecutable()
-        try await GuestBootstrapValidation.validate()
-        guard await Self.cleanTenant(executable: executable) else {
-            throw GuestProtocolError.cleanupUncertain
+        try GuestBootstrapDiagnostic.run(.virtualizedRoot) { try GuestConfiguration.requireVirtualizedRoot() }
+        let executable = try GuestBootstrapDiagnostic.run(.guestIdentity) { try GuestConfiguration.signedExecutable() }
+        try await GuestBootstrapDiagnostic.runAsync(.guestPolicy) { try await GuestBootstrapValidation.validate() }
+        try await cleanTenantChecked(executable: executable)
+    }
+
+    private static func cleanTenantChecked(executable: URL) async throws {
+        // Preserve fixed-stage diagnostics for bootstrap. The command path
+        // below still converts any uncertain cleanup into requiresVMStop.
+        for _ in 0..<5 {
+            let domains = try await GuestBootstrapDiagnostic.runAsync(.tenantDomainRemoval) {
+                try await GuestTenantDomains.remove()
+            }
+            _ = try await GuestBootstrapDiagnostic.runAsync(.tenantCleanupWorker) {
+                try await SandboxProcessRunner().run(executable: executable,
+                    arguments: ["tenant-cleanup"], timeoutSeconds: 3, maximumOutputBytes: 1024)
+            }
+            if try GuestBootstrapDiagnostic.run(.tenantProcessInventory, { try activeTenantProcesses() }) == 0 {
+                try await GuestBootstrapDiagnostic.runAsync(.tenantDomainVerification) {
+                    try await GuestTenantDomains.verifyQuiescent(after: domains)
+                }
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(100))
         }
+        try GuestBootstrapDiagnostic.run(.tenantProcessInventory) { throw GuestProtocolError.cleanupUncertain }
     }
 
     public func execute(_ command: GuestCommand, id: UUID) async throws -> GuestResponse {
@@ -82,19 +102,8 @@ public struct GuestTenantExecutor: GuestCommandExecuting {
     private static func cleanTenant(executable: URL) async -> Bool {
         // Signaling happens after setuid inside the helper: kernel permissions
         // cannot redirect a reused PID to a host/guest-root process.
-        for _ in 0..<5 {
-            do {
-                let domains = try await GuestTenantDomains.remove()
-                _ = try await SandboxProcessRunner().run(executable: executable,
-                    arguments: ["tenant-cleanup"], timeoutSeconds: 3, maximumOutputBytes: 1024)
-                if try activeTenantProcesses() == 0 {
-                    try await GuestTenantDomains.verifyQuiescent(after: domains)
-                    return true
-                }
-            } catch { return false }
-            try? await Task.sleep(for: .milliseconds(100))
-        }
-        return false
+        do { try await cleanTenantChecked(executable: executable); return true }
+        catch { return false }
     }
 
     private static func activeTenantProcesses() throws -> Int {

@@ -10,6 +10,11 @@ public struct GuestBootstrapDiagnostic: Error, Sendable {
         case guestIdentity = "guest_identity"
         case workspaceMountpoint = "workspace_mountpoint"
         case numericIdentity = "numeric_identity"
+        case guestPolicy = "guest_policy"
+        case tenantDomainRemoval = "tenant_domain_removal"
+        case tenantCleanupWorker = "tenant_cleanup_worker"
+        case tenantProcessInventory = "tenant_process_inventory"
+        case tenantDomainVerification = "tenant_domain_verification"
     }
 
     private let stage: Stage
@@ -23,6 +28,11 @@ public struct GuestBootstrapDiagnostic: Error, Sendable {
 
     static func run<T>(_ stage: Stage, _ operation: () throws -> T) throws -> T {
         do { return try operation() }
+        catch { throw classify(error, stage: stage) }
+    }
+
+    static func runAsync<T>(_ stage: Stage, _ operation: () async throws -> T) async throws -> T {
+        do { return try await operation() }
         catch { throw classify(error, stage: stage) }
     }
 

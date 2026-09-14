@@ -29,6 +29,7 @@ enum DarkbloomSandboxGuest {
             try await GuestSocketServer.serve(configuration: configuration)
         } catch {
             let bootstrap = arguments == ["provision-workspace-mountpoint"] || arguments == ["validate-tenant-identity"]
+                || arguments == ["quiesce-tenant"]
             let message = bootstrap ? (error as? GuestBootstrapDiagnostic)?.code : nil
             FileHandle.standardError.write(Data("darkbloom-sandbox-guest: \(message ?? "startup or control channel unavailable")\n".utf8))
             exit(78)

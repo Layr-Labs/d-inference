@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-13 · commit `7945db8d4`
+> Last updated: 2026-09-13 · commit `3957e1d82`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -127,6 +127,11 @@ darkbloom status
 | `hardware / online` with a trust-reuse reason (`same_binary`, `continuity`, `approved_release_transition`, `continuity_release_transition`) | Restored from durable device evidence after a reconnect |
 | `self_signed / online`, reason `SE attestation verified, awaiting MDM verification` | Enrolment not complete or the report has not arrived yet — see Troubleshooting |
 | any level `/ untrusted` with a failure reason | The coordinator stopped routing to you — see Troubleshooting |
+
+Registration recovery and device checks use the coordinator
+[verification owner](../architecture/security/attestation.md#registration-and-device-verification-ownership).
+A stored MDA chain is only a reuse candidate until it verifies against the current
+connection; enrolment and operator recovery steps stay the same.
 
 The coordinator matches each challenge reply to the current connection; an old
 reply cannot satisfy a new challenge after reconnect. The

@@ -1,3 +1,7 @@
+# Registration/device verification ownership re-verified 2026-09-13 against commit 3957e1d82:
+# providercontrol/verification keeps the existing signature, restore, grant and MDA
+# checks; API retains scheduler claims and late-command authorization. This does
+# not re-verify unrelated threat entries or change the public evidence contract.
 # Challenge ownership in TB-009 re-verified against commit 7945db8d4:
 # per-connection Session nonce state and the existing Verifier gate order.
 # This source-ownership check does not re-verify other threat entries.
@@ -310,9 +314,10 @@ trust_boundaries:
       - "No pre-authentication rate limiting or per-IP connection caps before WebSocket
         upgrade. Any client can open arbitrary connections and attempt registration
         (provider.go, SEC-034)."
-      - "Provider is added to the active registry before attestation verification
-        completes. There is an async window where a provider with an invalid attestation
-        is technically registered (provider.go registry.Register vs async verifyProviderAttestation)."
+      - "Provider is added to the live registry before synchronous registration verification
+        and state recovery finish (api/provider.go providerReadLoop, followed by
+        providercontrol/verification/registration.go Verifier.VerifyRegistration).
+        Registry presence alone does not satisfy the trust and routing gates."
       - "Weight hash enforcement is fail-open: a provider can omit weight_hash entirely
         and still be admitted, even for models with a known expected hash in the catalog
         (registry.go, SEC-007)."
@@ -1012,6 +1017,8 @@ threats:
     affected_files:
       - coordinator/api/provider.go
       - coordinator/registry/registry.go
+      - coordinator/providercontrol/verification/registration.go
+      - coordinator/api/provider_verification.go
     mitigations:
       - description: Binary hash verified at registration against known blessed hashes.
         status: implemented
@@ -1274,6 +1281,10 @@ threats:
       - provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift
       - coordinator/api/provider.go
       - coordinator/registry/registry.go
+      - coordinator/providercontrol/verification/registration.go
+      - coordinator/providercontrol/verification/security_info.go
+      - coordinator/providercontrol/verification/dependencies.go
+      - coordinator/api/provider_verification.go
     mitigations:
       - description: darkbloom checks SIP at startup and refuses to serve if disabled.
         status: implemented
@@ -1425,6 +1436,11 @@ threats:
       - coordinator/api/server.go
       - coordinator/mdm/mdm.go
       - coordinator/api/provider.go
+      - coordinator/providercontrol/verification/security_info.go
+      - coordinator/providercontrol/verification/mda.go
+      - coordinator/providercontrol/verification/attempt.go
+      - coordinator/providercontrol/verification/dependencies.go
+      - coordinator/api/provider_verification.go
     mitigations:
       - description: Coordinator verifies MDA cert chain against Apple Enterprise Attestation Root CA.
         status: implemented
@@ -1970,6 +1986,11 @@ threats:
       - provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift
       - provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift
       - provider-swift/Sources/ProviderCore/Security/AttestationSigner.swift
+      - coordinator/providercontrol/verification/registration.go
+      - coordinator/providercontrol/verification/restore.go
+      - coordinator/providercontrol/verification/config.go
+      - coordinator/providercontrol/verification/dependencies.go
+      - coordinator/api/provider_verification.go
     mitigations:
       - description: Attestation blob includes ISO 8601 timestamp; coordinator checks freshness.
         status: implemented
@@ -2014,6 +2035,10 @@ threats:
       - coordinator/registry/registry.go
       - provider-swift/Sources/ProviderCore/ProviderLoop.swift
       - provider-swift/Sources/darkbloom/ProviderAppKitHost.swift
+      - coordinator/providercontrol/verification/registration.go
+      - coordinator/providercontrol/verification/restore.go
+      - coordinator/providercontrol/verification/dependencies.go
+      - coordinator/api/provider_verification.go
     mitigations:
       - description: >
           Same-process code continuity is observed only on online hardware-trusted
@@ -2078,6 +2103,10 @@ threats:
       - provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift
       - provider-swift/Sources/ProviderCore/Security/SecureEnclaveIdentity.swift
       - coordinator/api/provider.go
+      - coordinator/providercontrol/verification/registration.go
+      - coordinator/providercontrol/verification/restore.go
+      - coordinator/providercontrol/verification/dependencies.go
+      - coordinator/api/provider_verification.go
     mitigations:
       - description: Coordinator logs registration events with SE public key fingerprint.
         status: implemented
@@ -2114,11 +2143,13 @@ threats:
       - coordinator/api/provider.go
       - coordinator/registry/registry.go
       - coordinator/providercontrol/trustreuse/**
+      - coordinator/providercontrol/verification/**
+      - coordinator/api/provider_verification.go
     mitigations:
       - description: >
           Hardware grant requires SE signature verification and then an MDM SecurityInfo
           cross-check whose SIP and SecureBootLevel == full agree with the SE blob
-          (verifyProviderViaMDM); a posture mismatch proven by a received SecurityInfo
+          (providercontrol/verification/security_info.go Verifier.VerifySecurityInfo); a posture mismatch proven by a received SecurityInfo
           is terminal (MarkUntrusted), while lookup failures and timeouts leave trust
           unchanged and retry. The MDA cert chain from the Apple root CA is verified
           afterwards and attached only if hardware is already held
@@ -2183,6 +2214,10 @@ threats:
     affected_files:
       - provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift
       - coordinator/api/provider.go
+      - coordinator/providercontrol/verification/registration.go
+      - coordinator/providercontrol/verification/security_info.go
+      - coordinator/providercontrol/verification/dependencies.go
+      - coordinator/api/provider_verification.go
     mitigations:
       - description: SIP checked at startup, before every request, and in every 5-minute challenge.
         status: implemented

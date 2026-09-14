@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `d7c108ef8`
+> Last updated: 2026-09-14 · commit `06b6f634b`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -87,6 +87,10 @@ Continue with the per-component steps when you need one piece or want to
 understand what `make` runs.
 
 ### 3. Coordinator (Go)
+
+The normal Go build includes `coordinator/providercontrol/verification/` through
+`coordinator/api/provider_verification.go` (`newProviderVerifier`). The verifier
+uses the existing registry, store and MDM client; it starts no worker.
 
 The normal Go build includes `coordinator/providercontrol/challenge/`. The API
 creates its connection sessions through `coordinator/api/provider_challenge.go`;

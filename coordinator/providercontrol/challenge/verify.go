@@ -174,7 +174,7 @@ func (s *Verifier) VerifyResponse(providerID string, provider *registry.Provider
 		// always ran; any gate miss falls through to durable live verification.
 		if s.deps.TryReuse(providerID, provider, resp, statusFieldsTrusted, releaseFact) {
 			// The fast-skip granted hardware WITHOUT running the full live MDM verify,
-			// so verifyAppleDeviceAttestation never ran on this connection. Reuse the
+			// so verification.Verifier.VerifyMDA never ran on this connection. Reuse the
 			// durable MDA proof (re-verified locally against Apple's root + re-bound to
 			// this SE key) so a restart keeps mda_verified green with zero MDM/APNs
 			// traffic — the whole point of the fast-skip is to avoid that round-trip.

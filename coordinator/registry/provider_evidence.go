@@ -284,7 +284,7 @@ func (p *Provider) SetMDAProofIfHardwareBound(certChain [][]byte, mdaResult *att
 // StagedMDAChain returns the durable MDA cert chain restored from the store for
 // this reconnect (nil if none). Thread-safe. The chain is a CANDIDATE only: the
 // caller must re-verify it against Apple's root and re-bind it to the live SE key
-// before trusting it (see api.attachCachedMDAProof).
+// before trusting it (see verification.Verifier.AttachCachedMDA).
 func (p *Provider) StagedMDAChain() [][]byte {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -294,7 +294,7 @@ func (p *Provider) StagedMDAChain() [][]byte {
 // StageMDAChainFromJSON stages a JSON-encoded ([][]byte) MDA cert chain — recovered
 // from a live store record at reconnect — as a reuse candidate. No-op on empty
 // input or a decode error. Like the staging in RestoreProviderState, this only
-// sets the candidate; the proof is surfaced only after attachCachedMDAProof
+// sets the candidate; the proof is surfaced only after verification.Verifier.AttachCachedMDA
 // re-verifies it against Apple's root and re-binds it to this SE key.
 func (p *Provider) StageMDAChainFromJSON(raw json.RawMessage) {
 	if len(raw) == 0 {
@@ -522,7 +522,7 @@ func (p *Provider) SetAttestationResult(result *attestation.VerificationResult) 
 // RebindStableFaultKey re-derives this session's stable identity and re-binds
 // its fault key. Account linkage happens AFTER the registration-time
 // attestation bind (api/provider.go resolves the auth token only once
-// Register + verifyProviderAttestation have returned), so a provider whose
+// Register + verification.Verifier.VerifyRegistration have returned), so a provider whose
 // identity resolves to the ACCOUNT fallback — attestation absent (Open Mode)
 // or invalid — would otherwise never bind: all its fault state would key by
 // session UUID and be wiped on reconnect. Same lock discipline as

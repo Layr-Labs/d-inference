@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-13 · commit `7945db8d4`
+> Last updated: 2026-09-13 · commit `3957e1d82`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -54,10 +54,11 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/internal/e2e` | NaCl Box (X25519 + XSalsa20-Poly1305) for coordinator↔provider and sender↔coordinator sealing. |
 | `coordinator/attestation` | Secure Enclave attestation verification and Apple MDA certificate chains. |
 | `coordinator/apns` | APNs push attestor for code identity. |
-| `coordinator/mdm` | MicroMDM client and verification scheduler. |
+| `coordinator/mdm` | MicroMDM transport, outstanding-command correlation and webhook dispatch; the verification scheduler remains in `coordinator/api/mdm_scheduler.go` and `coordinator/api/mdm_scheduler_callbacks.go`. |
 | `coordinator/auth` | Privy JWT verification. |
 | `coordinator/providercontrol/trustreuse` | Durable device-evidence cache, trust-reuse admission, journal authority/replay and continuity tracking (`Manager`); API adapters supply verified release facts and keep the ordered shutdown boundary. |
 | `coordinator/providercontrol/challenge` | Per-connection nonce tracking, challenge transport, ordered signature/posture/integrity checks and success/failure transitions (`Session`, `Verifier`); API lifecycle and live policy/trust dependencies stay explicit. |
+| `coordinator/providercontrol/verification` | Signed registration, identity-scoped reconnect recovery, SecurityInfo outcomes and cached/fresh MDA checks (`Verifier`); each scheduled `Attempt` shares its observations with API callbacks. Connection publication and scheduler claims remain in API. |
 | `coordinator/providercontrol/codeidentity` | Per-device code-identity proof, APNs budget admission, encrypted resume, nonce verification and code continuity (`Manager`); the API supplies an immutable release-policy view and retains lifecycle ordering. |
 | `coordinator/profilesign` | CMS signing of the enrollment profile. |
 | `coordinator/billing` | Billing service, Stripe Checkout and Connect, referrals. |

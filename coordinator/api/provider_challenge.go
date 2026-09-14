@@ -40,7 +40,7 @@ func (s *Server) newProviderChallengeVerifier() *challenge.Verifier {
 		MinimumVersion:          func() string { return s.minProviderVersion },
 		DeriveReleaseTransition: s.deriveApprovedReleaseTransition,
 		TryReuse:                s.tryTrustReuseFastSkip,
-		AttachMDA:               s.attachCachedMDAProof,
+		AttachMDA:               s.newProviderVerifier().AttachCachedMDA,
 		SendStatus:              s.sendTrustStatus,
 		Incr:                    s.ddIncr, Emit: s.emit,
 		CodeMetric:      s.codeAttestMetric,

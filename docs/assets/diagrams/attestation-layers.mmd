@@ -8,7 +8,7 @@ flowchart TB
         A0["No attestation blob (Open Mode), or MarkUntrusted:<br/>invalid blob under a binary-hash policy, 3 hard challenge failures,<br/>SIP/Secure Boot off, hash drift, MDM posture mismatch, chunk violation"]
     end
     subgraph L1["Level self_signed (TrustSelfSigned)"]
-        A1["Registration blob signed by the SE P-256 key<br/>verifyProviderAttestation → SetAttested(true, TrustSelfSigned)"]
+        A1["Registration blob signed by the SE P-256 key<br/>Verifier.VerifyRegistration → SetAttested(true, TrustSelfSigned)"]
         A2["Session.Run every DefaultChallengeInterval = 5m<br/>ChallengeResponseTimeout = 30s · routable while LastChallengeVerified ≤ 16m old"]
     end
     subgraph L2["Level hardware (TrustHardware)"]

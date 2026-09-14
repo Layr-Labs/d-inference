@@ -78,7 +78,7 @@ public enum UnifiedMemoryCap {
     /// ``liveKVHeadroomBytes``, which subtracts real MLX `active + cache`; the
     /// reserve only has to keep the NEXT step's working set from crossing the
     /// cap. Retune it against a measurement, in one place, for the whole fleet
-    /// — and mirror any change in `coordinator/registry/servability.go`
+    /// — and mirror any change in `coordinator/registry/admission/model_memory.go`
     /// (`servabilityActivationFloorGB` / `servabilityModelActivationFloorsGB`),
     /// which predicts this exact arithmetic for cold providers.
     ///
@@ -101,7 +101,7 @@ public enum UnifiedMemoryCap {
     /// (summation order), not memory. Either way the answer here is the env
     /// override, not a per-model formula.
     // 5.5 GiB (11 × 2^30 / 2 = 5_905_580_032). Mirrored by
-    // coordinator/registry/servability.go (servabilityActivationFloorGB);
+    // coordinator/registry/admission/model_memory.go (servabilityActivationFloorGB);
     // the two MUST move in the same commit — see the doc comment above.
     static let defaultActivationReserveBytes: UInt64 = 11 * 1024 * 1024 * 1024 / 2
 
@@ -131,7 +131,7 @@ public enum UnifiedMemoryCap {
     /// run 2026-07-10; compiled figures are the `v2-compiled B=8`
     /// peak-over-resident rows).
     ///
-    /// Mirrored by coordinator/registry/servability.go
+    /// Mirrored by coordinator/registry/admission/model_memory.go
     /// (`servabilityModelActivationFloorsGB` +
     /// `servabilityPerModelFloorMinVersion`); the tables MUST move in the
     /// same commit — see the doc comment on ``defaultActivationReserveBytes``.
@@ -363,7 +363,7 @@ public enum UnifiedMemoryCap {
     /// set's. A value below the floor — most likely a legacy `3` set when
     /// 3 GiB WAS the default — would silently recreate the B=8 activation
     /// OOM the floor exists to prevent, while the coordinator keeps
-    /// predicting capacity with the floor (`servability.go`). A `<= 0` or
+    /// predicting capacity with the floor (`coordinator/registry/admission/model_memory.go`). A `<= 0` or
     /// non-finite env value is likewise treated as UNSET (→ the floor): a
     /// `0` reserve would remove the activation headroom the cap exists to
     /// guarantee. An explicit programmatic value (tests) is honored as

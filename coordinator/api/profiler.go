@@ -18,29 +18,24 @@ package api
 
 import (
 	"context"
-	"hash/fnv"
-	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/telemetry/profilequeue"
+	profiling "github.com/eigeninference/d-inference/coordinator/telemetry/profiler"
 )
 
 const (
-	envProfiler           = env.EnvPrefix + "_PROFILER"
-	envProfileSampleRate  = env.EnvPrefix + "_PROFILE_SAMPLE_RATE"
-	defaultProfileSample  = 0.1
+	envProfiler           = profiling.EnvEnabled
+	envProfileSampleRate  = profiling.EnvSampleRate
+	defaultProfileSample  = profiling.DefaultSampleRate
 	profileFallbackGrace  = defaultTerminalSettleGrace + time.Second
 	profileRetainProfiles = 14 * 24 * time.Hour
 	profileRetainFleet    = 30 * 24 * time.Hour
 	fleetSampleInterval   = 60 * time.Second
 	profilePruneInterval  = time.Hour
 	profilePruneBatch     = 5000
-	// Always-record predicates (code constants, not knobs).
-	profileSlowFirstContent = 5 * time.Second
-	profileSlowTotal        = 30 * time.Second
 )
 
 // requestMeta is the single context value the logging middleware attaches to
@@ -90,42 +85,9 @@ func coordRequestIDFromContext(ctx context.Context) string {
 	return ""
 }
 
-// profiler holds the profiler configuration and sinks.
-type profiler struct {
-	enabled    bool
-	sampleRate float64
-	logger     *slog.Logger
-	sink       *profileSink
-}
-
-func newProfilerFromEnv(s *Server) *profiler {
-	p := &profiler{
-		enabled:    !strings.EqualFold(strings.TrimSpace(env.EnvOr(envProfiler, "on")), "off"),
-		sampleRate: env.EnvFloat(envProfileSampleRate, defaultProfileSample),
-		logger:     s.logger,
-	}
-	if p.sampleRate < 0 {
-		p.sampleRate = 0
-	}
-	if p.sampleRate > 1 {
-		p.sampleRate = 1
-	}
-	if p.enabled && s.store != nil {
-		p.sink = newProfileSink(s, defaultTelemetrySinkCapacity)
-	}
-	return p
-}
-
-func (p *profiler) close() {
-	if p == nil || p.sink == nil {
-		return
-	}
-	p.sink.Close()
-}
-
 // profilerEnabled reports whether profile records should be created.
 func (s *Server) profilerEnabled() bool {
-	return s != nil && s.profiler != nil && s.profiler.enabled
+	return s != nil && s.profiler.Enabled()
 }
 
 // newRequestProfile creates the request-level profile at inference-handler
@@ -171,27 +133,6 @@ func (s *Server) newRequestProfile(r *http.Request, model, publicModel string, s
 	return rp
 }
 
-// sampled decides, per logical request, whether a success record is kept.
-// Deterministic on the coordinator-minted id so every attempt of a request
-// lands together; a missing id (no middleware) is always kept.
-func (p *profiler) sampled(coordID string) bool {
-	if p == nil {
-		return false
-	}
-	if p.sampleRate >= 1 || coordID == "" {
-		return true
-	}
-	if p.sampleRate <= 0 {
-		return false
-	}
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(coordID))
-	// Map the hash to [0,1) and compare; FNV spreads short ids well enough for
-	// a fixed-rate sample and costs no allocation.
-	frac := float64(h.Sum32()) / float64(1<<32)
-	return frac < p.sampleRate
-}
-
 // profileDBCall measures a synchronous store call made on the request
 // goroutine and folds it into the request-level accumulator.
 func profileDBCall(rp *registry.RequestProfile, start time.Time) {
@@ -224,5 +165,28 @@ func stampSealedOpen(r *http.Request, bodyBytes int) {
 	if m := requestMetaFromContext(r.Context()); m != nil && m.sealedOpenUS == 0 {
 		m.sealedOpenUS = m.offsetUS()
 		m.sealedBodyBytes = bodyBytes
+	}
+}
+
+type profiler = profiling.Profiler
+
+func newProfilerFromEnv(s *Server) *profiler {
+	return newProfiler(s, profiling.ConfigFromEnv(), defaultTelemetrySinkCapacity)
+}
+
+func newProfiler(s *Server, config profiling.Config, capacity int) *profiler {
+	return profiling.New(config, profiling.Hooks{
+		Logger: s.logger,
+		Store:  func() profilequeue.Writer { return s.store },
+		Incr:   s.ddIncr,
+		Count:  s.ddCount,
+	}, capacity)
+}
+
+// finalizeAttemptProfile only attempts the nonblocking enqueue. Record
+// construction and sampling stay on the profiler's independent worker.
+func (s *Server) finalizeAttemptProfile(rp *registry.RequestProfile, ap *registry.AttemptProfile) {
+	if s != nil {
+		s.profiler.Submit(rp, ap)
 	}
 }

@@ -1,6 +1,6 @@
 # Prediction decision telemetry
 
-> Last updated: 2026-09-14 · commit `39bb12da8`
+> Last updated: 2026-09-14 · commit `d69fa7e04`
 
 Optional attempt records compare what the coordinator selected with what the
 provider decided. They explain decisions; they do not establish whether a
@@ -10,8 +10,8 @@ refused request would have completed on time.
 
 `coordinator/api/profiler_prediction.go` (`recordPredictivePolicy`) records
 request policy. `coordinator/registry/attempt_profile_prediction.go` keeps
-observations under the attempt lock; `coordinator/api/profiler_record.go`
-(`buildProfileRecord`) persists them with existing request and attempt IDs.
+observations under the attempt lock; `coordinator/telemetry/profiler/record.go`
+(`Builder.Build`) copies them into persisted rows with existing request and attempt IDs.
 
 | Field in `request_profiles` | Meaning |
 |---|---|
@@ -65,7 +65,7 @@ fabricates projected work.
 - Older providers omit the object. Older coordinators ignore the new optional
   object; schema remains 1. Unknown enums fold to `other`; numeric fields are
   bounded and free-form provider text is not persisted. The full profile cap
-  remains 4,096 bytes. Sources: `coordinator/api/profiler_provider_deadline.go`
+  remains 4,096 bytes. Sources: `coordinator/telemetry/profiler/provider_deadline.go`
   (`storeDeadlineDecision`) and `coordinator/protocol/profile.go`.
 - Existing profiler enablement, retention, sampling, asynchronous persistence
   and loss limits remain in effect. Refusals/retries are retained by existing

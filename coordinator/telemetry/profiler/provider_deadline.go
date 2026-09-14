@@ -1,4 +1,4 @@
-package api
+package profiler
 
 import (
 	"math"

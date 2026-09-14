@@ -56,9 +56,9 @@ func (s *Server) sampleFleetOnce(now time.Time) {
 	rows := s.registry.FleetSample(now)
 	coord := s.registry.CoordinatorSample(now)
 	coord.Goroutines = runtime.NumGoroutine()
-	if s.profiler != nil && s.profiler.sink != nil {
-		coord.ProfileSinkDepth = s.profiler.sink.Depth()
-		coord.ProfileSinkDroppedTotal = s.profiler.sink.DroppedTotal()
+	if s.profiler.HasSink() {
+		coord.ProfileSinkDepth = s.profiler.Depth()
+		coord.ProfileSinkDroppedTotal = s.profiler.DroppedTotal()
 	}
 	if s.routeTelemetry != nil {
 		coord.RouteSinkDroppedTotal = s.routeTelemetry.DroppedTotal()
@@ -74,8 +74,8 @@ func (s *Server) sampleFleetOnce(now time.Time) {
 		return
 	}
 	s.ddCount("profiler.fleet_snapshot", int64(len(rows)), []string{"status:written"})
-	if s.profiler != nil && s.profiler.sink != nil {
-		s.ddGauge("telemetry.sink_depth", float64(s.profiler.sink.Depth()), []string{"sink:profile"})
+	if s.profiler.HasSink() {
+		s.ddGauge("telemetry.sink_depth", float64(s.profiler.Depth()), []string{"sink:profile"})
 	}
 	if s.routeTelemetry != nil {
 		s.ddGauge("telemetry.sink_depth", float64(s.routeTelemetry.Depth()), []string{"sink:route"})

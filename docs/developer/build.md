@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `39bb12da8`
+> Last updated: 2026-09-14 · commit `d69fa7e04`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -88,9 +88,9 @@ understand what `make` runs.
 
 ### 3. Coordinator (Go)
 
-The normal Go build includes the telemetry queue packages under
-`coordinator/telemetry/`. Their API adapters link them into the same coordinator
-binary; no separate worker executable or build flag is required.
+The normal Go build includes the profiler owner and telemetry queue packages
+under `coordinator/telemetry/`. Their API adapters link them into the same
+coordinator binary; no separate worker executable or build flag is required.
 
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
 its test binary after helper or lifecycle changes. The CPU-only
@@ -457,7 +457,7 @@ local stub servers; its default observation mode sends only public GETs.
 | `e2e-integration` | `go test ./e2e/... -run TestIntegration -v` |
 | `e2e-benchmark` | `go test ./e2e/... -run TestBenchmark -v` |
 | `e2e` | `e2e-integration` |
-| `docs-check` | `scripts/docs-check.sh` (stamps, links, cited paths, orphans) |
+| `docs-check` | `scripts/docs-check.sh` (stamps, links, cited paths, orphans; frozen source links require their stamped Git objects when the current path is absent) |
 | `docs-stamp` | `scripts/docs-stamp.sh $(FILES)` — refresh freshness stamps |
 | `test` | `coordinator-test prompt-sidecar-test provider-test ui-test benchmark-wrapper-test docs-check` |
 | `build` | `coordinator-build prompt-sidecar-build provider-build ui-build` |

@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-14 · commit `39bb12da8`
+> Last updated: 2026-09-14 · commit `d69fa7e04`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -348,7 +348,8 @@ for populations, labels and reset semantics (`coordinator/api/cache_model_teleme
 | In-process metrics registry | `coordinator/telemetry/metrics/registry.go`; `handleAdminMetrics` in `coordinator/api/server.go` |
 | Event shape, allowlist, retired ingest | `coordinator/protocol/telemetry.go`, `coordinator/api/telemetry_handlers.go` |
 | Persistence queues | `coordinator/telemetry/routequeue/`, `coordinator/telemetry/profilequeue/`, `coordinator/telemetry/outcomequeue/` (`Sink`) |
-| Profile/fleet API wiring | `coordinator/api/profiler_sink.go` (`newProfileSink`), `coordinator/api/profiler_fleet.go` (`sampleFleetOnce`) |
+| Profile construction and sampling | `coordinator/telemetry/profiler/` (`ConfigFromEnv`, `Builder.Build`, `Profiler`) |
+| Profile/fleet API wiring | `coordinator/api/profiler.go` (`newProfiler`), `coordinator/api/profiler_fleet.go` (`sampleFleetOnce`) |
 | Disconnect classification | `coordinator/registry/disconnect_classify.go` |
 | Provider side | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift` (`buildHeartbeatJSON`), `provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Capacity.swift`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift` (no-op facade) |
 | Tests | `coordinator/api/telemetry_allowlist_parity_test.go`, `coordinator/api/telemetry_handlers_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/metrics_http_test.go`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` |

@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-14 · commit `39bb12da8`
+> Last updated: 2026-09-14 · commit `d69fa7e04`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -405,7 +405,7 @@ Go `InferenceCompleteMessage` · Swift `InferenceComplete`.
 | `stop_sequence` | `string` | `String?` | opt | exact caller stop string matched |
 | `se_signature` | `string` | `String?` | opt | Secure Enclave signature over `response_hash` |
 | `response_hash` | `string` | `String?` | opt | SHA-256 of the response data |
-| `profile` | `json.RawMessage` | `InferenceProfile?` (encoded via `saturatedToWireRanges()`) | opt | the system-profiler per-attempt object. Go keeps the **raw bytes**: the WS read loop only length-checks it (`MaxInferenceProfileBytes = 4096`) so a malformed profile can never fail the terminal decode; the typed decode runs on the profile-sink worker (`coordinator/api/profiler_provider.go`). Observability only. Field list and validation: [`../architecture/system-profiler.md`](../architecture/system-profiler.md) |
+| `profile` | `json.RawMessage` | `InferenceProfile?` (encoded via `saturatedToWireRanges()`) | opt | the system-profiler per-attempt object. Go keeps the **raw bytes**: the WS read loop only length-checks it (`MaxInferenceProfileBytes = 4096`) so a malformed profile can never fail the terminal decode; the typed decode runs on the profile-sink worker (`decodeInferenceProfile`, `coordinator/telemetry/profiler/provider_decode.go`). Observability only. Field list and validation: [`../architecture/system-profiler.md`](../architecture/system-profiler.md) |
 
 ### `inference_error`
 

@@ -224,7 +224,14 @@ This creates a qualification plan, a plist, `host-user.json` and typed `plan.jso
 root-owned plist destination is outside global `/Library/LaunchAgents`, under
 `/Library/Application Support/Darkbloom/host-plans/<host UUID>/`; the reviewed
 command loads only `gui/<selected UID>`. It specifies Aqua, no UserName/GroupName,
-no shell or credential switching, no HOME override, and KeepAlive=false. It does
+no shell or credential switching, no HOME override, KeepAlive=false, and a
+600-second ExitTimeOut for cooperative shutdown. SIGTERM/SIGINT cancel service
+work; every exit after runtime construction awaits VM stop cleanup, including
+startup reconciliation failures. An independent monitor checks the process's
+actual GUI/audit session throughout startup and service operation. Session loss
+cancels work and enters the same cleanup path. Failed stop proof remains an error
+and does not release capacity; VM owners retain inherited machine authority.
+The launchd allowance does not establish that physical logout cleanup succeeds. It does
 not install recurring login startup. Logout makes this host unavailable; login
 alone does not restore it. Actual logout/relogin recovery remains a separate
 qualification gate.

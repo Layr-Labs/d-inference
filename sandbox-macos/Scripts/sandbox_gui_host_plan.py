@@ -34,6 +34,7 @@ def launch_agent(arguments):
     return {"Label": HOST_ID, "ProgramArguments": arguments,
             "LimitLoadToSessionType": "Aqua", "RunAtLoad": True,
             "KeepAlive": False, "ProcessType": "Interactive", "Umask": 63,
+            "ExitTimeOut": 600,
             "EnvironmentVariables": {"LUME_TELEMETRY_ENABLED": "false", "LUME_LOG_LEVEL": "error"}}
 
 
@@ -129,7 +130,13 @@ enforcement in the installed agent, actual GUI/audit context, guest readiness, o
    `launchctl asuser`, or an unrelated console login is not equivalent proof.
    Keep coordinator admission disabled and the capacity store draining.
 7. The one-shot job uses KeepAlive=false so an unqualified failure cannot cause
-   an automatic restart loop. No relogin startup is installed. Logout ends
+   an automatic restart loop. ExitTimeOut=600 allows cooperative VM cleanup
+   before launchd's forced termination deadline. SIGTERM/SIGINT cancel service
+   work; cleanup is awaited independently of cancellation. The process also
+   monitors its actual GUI/audit session during startup and service operation.
+   The allowance is not proof of cleanup: unknown stops retain reservations,
+   and VM owners retain inherited machine authority through their own cleanup.
+   No relogin startup is installed. Logout ends
    availability; login alone does not restore it. Before any availability claim,
    prove actual logout/agent-death cleanup, inherited VM authority retention,
    reconciliation and fresh-login recovery. Preserve capacity on unknown cleanup.

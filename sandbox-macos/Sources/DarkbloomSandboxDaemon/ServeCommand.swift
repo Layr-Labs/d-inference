@@ -11,6 +11,7 @@ enum ServeCommand {
     static func run(_ arguments: [String]) async throws {
         let options = try Options(arguments)
         try HostUserIdentityValidator.validate(file: options.hostIdentityFile, hostID: options.hostID)
+        let sessionMonitor = try SandboxGUISessionMonitor()
         let hostRuntimeLease = try HostRuntimeAuthority.system.acquireSandbox()
         defer { withExtendedLifetime(hostRuntimeLease) {} }
         let report = SandboxHostInspector().inspect(
@@ -56,6 +57,25 @@ enum ServeCommand {
             ),
             capacityArbiter: capacity
         )
+        try await SandboxServiceShutdown.run {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    try await runService(options: options, report: report, capacity: capacity,
+                        runtime: runtime, guestMaterials: guestMaterials)
+                }
+                group.addTask { try await sessionMonitor.run() }
+                defer { group.cancelAll() }
+                _ = try await group.next()
+            }
+        } shutdown: {
+            try await runtime.stopAllForShutdown()
+        }
+    }
+
+    private static func runService(
+        options: Options, report: SandboxHostReport, capacity: SandboxHostCapacityArbiter,
+        runtime: LumeLeaseFencedVirtualMachineRuntime, guestMaterials: LumeGuestMaterialConfiguration?
+    ) async throws {
         let reconciliation = try await runtime.reconcileExpiredLeases()
         guard reconciliation.allSatisfy({
             if case .retained = $0.outcome {
@@ -110,23 +130,12 @@ enum ServeCommand {
             snapshot: { try capacity.snapshot().leases },
             cancelCommands: { await adapter.cancelCommandsForExpiredLeases($0) },
             reconcile: { try await runtime.reconcileExpiredLeases() })
-        do {
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask { try await client.run() }
-                group.addTask { try await maintenance.run() }
-                defer { group.cancelAll() }
-                _ = try await group.next()
-            }
-        } catch {
-            // Cancellation must not interrupt the final stop proof. Each VM
-            // also holds an inherited EX descriptor through a broker crash.
-            let cleanup = Task.detached { try await runtime.stopAllForShutdown() }
-            do { try await cleanup.value }
-            catch { throw SandboxRuntimeError.cleanupFailed(operation: "sandbox service shutdown",
-                primary: "control connection ended", cleanup: String(describing: error)) }
-            throw error
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { try await client.run() }
+            group.addTask { try await maintenance.run() }
+            defer { group.cancelAll() }
+            _ = try await group.next()
         }
-        try await runtime.stopAllForShutdown()
     }
 
     static func hostInspectionPolicy(developmentAdHocLume: Bool) -> SandboxHostInspectionPolicy {

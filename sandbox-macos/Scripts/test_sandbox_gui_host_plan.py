@@ -30,6 +30,7 @@ class GUIHostPlanTests(unittest.TestCase):
             self.assertEqual(value["LimitLoadToSessionType"], "Aqua")
             self.assertIs(value["KeepAlive"], False)
             self.assertIs(value["RunAtLoad"], True)
+            self.assertEqual(value["ExitTimeOut"], 600)
             self.assertEqual(value["ProgramArguments"], arguments)
             self.assertEqual(value["EnvironmentVariables"], {"LUME_TELEMETRY_ENABLED": "false", "LUME_LOG_LEVEL": "error"})
             self.assertNotIn("UserName", value)
@@ -67,7 +68,8 @@ class GUIInstalledLayoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "job.plist"
             for mutation in ({}, {"UserName": "other"}, {"LimitLoadToSessionType": "Background"},
-                             {"KeepAlive": True}, {"KeepAlive": 0}, {"Umask": False}):
+                             {"KeepAlive": True}, {"KeepAlive": 0}, {"Umask": False},
+                             {"ExitTimeOut": 20}, {"ExitTimeOut": True}):
                 path.write_bytes(plistlib.dumps(dict(expected, **mutation)))
                 path.chmod(0o644)
                 metadata = self.root_metadata(path.stat())

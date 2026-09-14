@@ -5,9 +5,11 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
-Source6cf8f3381 adds installed-checkpoint publication after qualification-clone
-consumerb48455139 and requested-resource configuration32be94642.
-Full sandbox suite:513tests,7explicit skips,0failures. Coordinator suite, Linux
+Current local changes add signal cancellation, actual GUI-session monitoring and
+cleanup covering all post-runtime startup/service exits. Source6cf8f3381 adds
+installed-checkpoint publication after qualification-clone consumerb48455139 and
+requested-resource configuration32be94642. Full sandbox suite passes524tests,
+7explicit skips,0failures (126.512s). Coordinator suite, Linux
 build, docs lint, UI lint and Next.js build pass. CI34809434499 and integration
 34809434503 passed244009eca. The latest code requires fresh CI; benchmark
 environment approval is separate and has not been granted.
@@ -21,8 +23,8 @@ it is not a qualified production template. The full details and exact root proof
 digests are recorded at the end of this checkpoint.
 
 Next: complete accountless privileged staging/boot/collection orchestration and
-the automatic qualification/cleanup-to-ready-template handoff; actual GUI host
-service termination/login recovery; full2VM coordinator acceptance, build tools,
+the automatic qualification/cleanup-to-ready-template handoff; physical GUI host
+service termination/login recovery and recurring startup; full2VM coordinator acceptance, build tools,
 performance and final release qualification. Keep test CI paused and gaj's
 explicit temporary runtime-group membership until the machine campaign finishes.
 
@@ -939,3 +941,42 @@ NEXT implementation order:
    fabricating readiness or silently dropping source namespace identity.
 4. Finish selected-user recurring service lifecycle, build tools, real coordinator
    two-VM/expiry/crash/ownership tests, workload measurements and final release gates.
+
+## Cooperative service termination and GUI-session monitoring
+
+Current local lifecycle changes:
+- SandboxSignalCancellation owns SIGINT/SIGTERM handling only within the process
+  entrypoint scope, cancels the operation and awaits it, then restores prior
+  dispositions. Nested scopes are rejected without releasing the outer owner's
+  claim. Actual signals are tested only in an owned subprocess fixture.
+- Serve wraps all work after runtime construction in SandboxServiceShutdown,
+  including startup reconciliation and token/client setup. Cleanup runs in an
+  awaited detached task so cancellation cannot interrupt stop proof. Cleanup
+  failure remains an error with its primary cause and does not release capacity.
+- SandboxGUISessionMonitor captures the process's own Security/audit context,
+  rejects an unusable initial session, and checks once per second during startup
+  and service operation. Session ID, actual UID and audit UID must remain bound;
+  graphical access must remain valid. It never relies on the current console UID.
+- The CLI serve entrypoint handles clean cooperative cancellation as success;
+  cleanup failures still exit nonzero. The generated qualification job allows
+  600 seconds via ExitTimeOut. KeepAlive=false and no recurring login startup
+  remain intentional until the physical lifecycle and activation gates pass.
+- The shutdown, signal and monitor concerns are separate focused modules. The
+  main Serve entrypoint stays thin. The public legacy prepare-base path has not
+  been migrated or wrapped; integrate the signal scope when the new managed
+  installation orchestration is built.
+
+Targeted Swift validation passes18tests (service-shutdown-targeted-tests.log),
+including prior process ownership tests. Python GUI plan/identity validation
+passes18tests (service-shutdown-plan-tests.log). Full suite passes524tests,
+7explicit skips,0failures in126.512s (service-shutdown-full-tests.log).
+No remote VM, service, group or disk action occurred.
+No actual logout/relogin or latest-native-runtime physical result is implied.
+CI34811478625 and integration34811478687 at6cf8 remain in progress; the former's
+coordinator, UI, docs, release-integrity and provider Swift test steps passed,
+with nested provider tests still pending/running. Do not report whole CI success.
+
+Resume next with privileged base preparation orchestration and a protected
+selected-GUI-user installer job. Preserve all accountless receipts, source/lease
+binding, machine/source/native locks and root attachment cleanup described above.
+Physical evidence remains exercise14/coldboot15 on guest244009eca/runtime8.

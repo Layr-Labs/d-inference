@@ -6,8 +6,9 @@ import Foundation
 final class ManagedProcessBrokerFixture {
     private let pid: pid_t
     private var reaped = false
+    private var exitCode: Int32?
 
-    init(executable: URL, directory: URL) throws {
+    init(executable: URL, directory: URL, mode: String? = nil) throws {
         var actions: posix_spawn_file_actions_t?
         var attributes: posix_spawnattr_t?
         guard posix_spawn_file_actions_init(&actions) == 0 else { throw POSIXError(.EIO) }
@@ -15,7 +16,7 @@ final class ManagedProcessBrokerFixture {
         guard posix_spawnattr_init(&attributes) == 0 else { throw POSIXError(.EIO) }
         defer { posix_spawnattr_destroy(&attributes) }
         var defaults = sigset_t(), mask = sigset_t()
-        guard sigemptyset(&defaults) == 0, sigaddset(&defaults, SIGTERM) == 0,
+        guard sigemptyset(&defaults) == 0, sigaddset(&defaults, SIGTERM) == 0, sigaddset(&defaults, SIGINT) == 0,
               sigemptyset(&mask) == 0,
               posix_spawnattr_setsigdefault(&attributes, &defaults) == 0,
               posix_spawnattr_setsigmask(&attributes, &mask) == 0,
@@ -26,11 +27,12 @@ final class ManagedProcessBrokerFixture {
             guard posix_spawn_file_actions_addopen(&actions, descriptor, "/dev/null",
                 descriptor == STDIN_FILENO ? O_RDONLY : O_WRONLY, 0) == 0 else { throw POSIXError(.EIO) }
         }
-        let command = strdup(executable.path), argument = strdup(directory.path)
+        let strings = [executable.path] + (mode.map { [$0] } ?? []) + [directory.path]
+        let allocated = strings.map { strdup($0) }
         let path = strdup("PATH=/usr/bin:/bin:/usr/sbin:/sbin")
-        defer { free(command); free(argument); free(path) }
-        guard command != nil, argument != nil, path != nil else { throw POSIXError(.ENOMEM) }
-        var argv: [UnsafeMutablePointer<CChar>?] = [command, argument, nil]
+        defer { allocated.forEach { free($0) }; free(path) }
+        guard allocated.allSatisfy({ $0 != nil }), path != nil else { throw POSIXError(.ENOMEM) }
+        var argv: [UnsafeMutablePointer<CChar>?] = allocated + [nil]
         var environment: [UnsafeMutablePointer<CChar>?] = [path, nil]
         var child: pid_t = 0
         let result = posix_spawn(&child, executable.path, &actions, &attributes, &argv, &environment)
@@ -51,11 +53,32 @@ final class ManagedProcessBrokerFixture {
         throw POSIXError(.ETIMEDOUT)
     }
 
+    func send(signal: Int32) throws {
+        guard !reaped, try !collectIfExited() else { throw POSIXError(.ESRCH) }
+        // No reaper runs concurrently; this direct child's PID remains reserved.
+        guard kill(pid, signal) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    }
+
+    func waitForExit() throws -> Int32 {
+        let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+        while !reaped, DispatchTime.now().uptimeNanoseconds < deadline {
+            if try collectIfExited() { break }
+            usleep(1_000)
+        }
+        guard let exitCode else { throw POSIXError(.ETIMEDOUT) }
+        return exitCode
+    }
+
     private func collectIfExited() throws -> Bool {
         var status: Int32 = 0
         while true {
             let result = waitpid(pid, &status, WNOHANG)
-            if result == pid { reaped = true; return true }
+            if result == pid {
+                reaped = true
+                let signal = status & 0x7f
+                exitCode = signal == 0 ? (status >> 8) & 0xff : 128 + signal
+                return true
+            }
             if result == 0 { return false }
             if errno == EINTR { continue }
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)

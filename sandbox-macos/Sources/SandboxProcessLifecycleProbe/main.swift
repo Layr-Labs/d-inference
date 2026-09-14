@@ -4,6 +4,9 @@ import Foundation
 import SandboxRuntime
 
 let arguments = Array(CommandLine.arguments.dropFirst())
+if arguments.count == 2, ["--signal-cancel", "--signal-restore"].contains(arguments[0]) {
+    exit(await SignalProbe.run(mode: arguments[0], directory: URL(fileURLWithPath: arguments[1], isDirectory: true)))
+}
 guard arguments.count == 1 else { exit(64) }
 let directory = URL(fileURLWithPath: arguments[0], isDirectory: true)
 var metadata = stat()

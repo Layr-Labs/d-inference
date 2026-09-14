@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import SandboxRuntime
 import SandboxRuntimeVZ
 
 @main
@@ -32,7 +33,15 @@ enum DarkbloomSandboxDaemon {
                 Array(arguments.dropFirst())
             )
         case "serve":
-            try await ServeCommand.run(Array(arguments.dropFirst()))
+            do {
+                try await SandboxSignalCancellation.run {
+                    try await ServeCommand.run(Array(arguments.dropFirst()))
+                }
+            } catch is CancellationError {
+                // Serve has already awaited cleanup. A failed stop proof is a
+                // different error and must still produce a nonzero exit.
+                return
+            }
         case "host-mode":
             try HostModeCommand.run(Array(arguments.dropFirst()))
         case "version":

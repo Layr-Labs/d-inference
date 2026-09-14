@@ -7,12 +7,14 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
+	"github.com/eigeninference/d-inference/coordinator/sandboxhost"
 )
 
 // ServerConfig holds coordinator HTTP server and URL configuration applied
 // when NewServer constructs an instance.
 type ServerConfig struct {
 	Port                string
+	BindHost            string
 	ConsoleURL          string
 	CORSOrigin          string
 	BaseURL             string
@@ -22,6 +24,8 @@ type ServerConfig struct {
 	AdminEmails         []string
 	ReleaseKey          string
 	ServiceReservations bool
+	SandboxHostAuth     sandboxhost.AuthConfig
+	SandboxService      SandboxServiceConfig
 	// DurableTrustReuse enables the fsync-backed local hard-untrust journal.
 	// Production enables it when the coordinator uses its durable Postgres store.
 	DurableTrustReuse     bool
@@ -67,10 +71,21 @@ type BaseRewardsConfig struct {
 	AccountCapFrac float64 // EIGENINFERENCE_BASE_REWARDS_ACCOUNT_CAP (0 = per-machine, no cap)
 }
 
+func (c ServerConfig) Check() error {
+	if err := c.checkBindHost(); err != nil {
+		return err
+	}
+	if err := c.SandboxService.Check(); err != nil {
+		return err
+	}
+	return c.SandboxHostAuth.Check()
+}
+
 // ReadServerConfig reads server configuration from environment variables.
 func ReadServerConfig() ServerConfig {
 	return ServerConfig{
 		Port:                  env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
+		BindHost:              os.Getenv(env.EnvPrefix + "_BIND_HOST"),
 		ConsoleURL:            os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),
 		CORSOrigin:            os.Getenv("CORS_ORIGIN"),
 		BaseURL:               os.Getenv(env.EnvPrefix + "_BASE_URL"),
@@ -82,6 +97,12 @@ func ReadServerConfig() ServerConfig {
 		ServiceReservations:   env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
 		TrustReuseJournalPath: resolveTrustReuseRevocationJournalPath(),
 		MDMScheduler:          readMDMSchedulerConfig(),
+		SandboxHostAuth: sandboxhost.AuthConfig{
+			TokenSHA256JSON: os.Getenv(
+				env.EnvPrefix + "_SANDBOX_HOST_TOKEN_SHA256_JSON",
+			),
+		},
+		SandboxService: readSandboxServiceConfig(),
 		BaseRewards: BaseRewardsConfig{
 			Enabled:        env.EnvBool(env.EnvPrefix+"_BASE_REWARDS", false),
 			ReductionK:     env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_K", 0), // 0 = additive base income (full floor on top of earnings)

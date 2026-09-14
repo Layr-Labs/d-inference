@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-13 · commit `ec73023e4`
+> Last updated: 2026-09-13 · commit `642cf31a6`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -75,6 +75,8 @@
 ## Consumer how-tos
 
 - [`consumer/quickstart.md`](consumer/quickstart.md): first request, streaming, SDK base-URL swap.
+- [`consumer/sandbox-commands.md`](consumer/sandbox-commands.md): allocate a private-alpha sandbox, run/cancel commands, retrieve results and delete it.
+- [`consumer/sandbox-cli.md`](consumer/sandbox-cli.md): use the standalone macOS/Linux client for resumable uploads, exact commands and verified downloads.
 - [`consumer/authentication.md`](consumer/authentication.md): create and manage API keys, sign in with Privy, run the device-code flow for the CLI; auth failures and fixes.
 - [`consumer/models.md`](consumer/models.md): the model catalog, aliases, capabilities, and how to query it.
 - [`consumer/billing.md`](consumer/billing.md): funding a balance, reading usage, what a 402 means.
@@ -101,6 +103,7 @@
 - [`developer/navigation.md`](developer/navigation.md): find implementation and tests, choose descriptive filenames, and check path dependencies when moving files.
 - [`developer/build.md`](developer/build.md): build the coordinator, sidecar, provider, and UIs; toolchain pins.
 - [`developer/test.md`](developer/test.md): every test suite, what CI runs, how to run the e2e suite.
+- [`developer/sandbox-acceptance.md`](developer/sandbox-acceptance.md): prepare a loopback-only real-coordinator fixture with private consumer/host credentials for physical sandbox acceptance.
 
 ## Operations runbooks (production; human approval per mutation)
 

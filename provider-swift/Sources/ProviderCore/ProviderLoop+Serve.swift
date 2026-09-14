@@ -6,6 +6,7 @@
 
 import CryptoKit
 import Foundation
+import HostRuntimeCoordination
 import MLX
 import MLXLLM
 import MLXLMCommon
@@ -19,6 +20,10 @@ extension ProviderLoop {
     // MARK: - Main Run Loop
 
     public func run() async throws {
+        // Keep the shared machine reservation through final request/model cleanup.
+        // Legacy hosts preserve inference behavior until root provisions authority.
+        let runtimeOwnership = try HostRuntimeAuthority.system.acquireInferenceIfInstalled()
+        defer { withExtendedLifetime(runtimeOwnership) {} }
         // Retired-knob warnings are emitted once by `Start.run()`, before
         // the serving-mode split — see `RetiredKnobWarnings`. Doing it here
         // reached only the coordinator-serving modes.

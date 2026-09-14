@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-13 · commit `a1f3c09c8`
+> Last updated: 2026-09-14 · commit `4485bbbf1`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -47,14 +47,38 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 
 | Path | Toolchain | Notes |
 |---|---|---|
-| `go.mod` (repo root) | Go | Single module `github.com/eigeninference/d-inference`; contains `coordinator/...` and `e2e/...`. There is no `go.work` and no nested `go.mod`. |
+| `go.mod` (repo root) | Go | Main module `github.com/eigeninference/d-inference`; contains `coordinator/...` and `e2e/...`. There is no `go.work`; the standalone benchmark runner has its own module. |
 | `coordinator/cmd/coordinator/` | Go | The coordinator binary (`main.go`). |
 | `coordinator/promptsidecar/` | Rust | Crate `promptsidecar`, edition 2024, `Cargo.lock` committed; built with `--locked`. |
 | `provider-swift/` | SwiftPM | Products: `darkbloom` (CLI), `darkbloom-enclave`, `darkbloom-fan-helper`, `darkbloom-publish`; libraries `ProviderCore`, `ProviderCoreFoundation`, `DarkbloomFan*`. Platform `macOS 14+`. |
+| `sandbox-macos/` | SwiftPM | Standalone `darkbloom-sandboxd` and `darkbloom-sandbox-guest`; pinned Lume build and signed artifact tooling under `Scripts/`. |
+| `host-runtime/` | SwiftPM | Shared machine-ownership library used by inference and sandbox VM processes. |
+| `coordinator/cmd/darkbloom-sandbox/` | Go | Standalone consumer CLI; `make sandbox-client-build` writes `build/darkbloom-sandbox`. |
+| `coordinator/cmd/sandbox-acceptance-fixture/` | Go | Disposable two-consumer seed and private coordinator/client launch environments; [acceptance setup](sandbox-acceptance.md). |
+| `sandbox-macos/Benchmarks/go-ci/runner/` | Go | Standard-library CI benchmark runner, packaged with an explicit local SDK by the [offline CI workload harness](../../sandbox-macos/Benchmarks/go-ci/README.md). |
+| `sandbox-macos/Scripts/test-sandbox-live.py` | Python on the caller's machine | Modular consumer CLI and bounded file REST acceptance; guest Python is not required. See [isolated acceptance](sandbox-acceptance.md). |
 | `console-ui/` | Next.js 16 / React 19 | `npm`; tests with Vitest. |
 | `admin-ui/` | Next.js 16 / React 19 | `npm`; dev/start on port `4001`. |
 | `landing/` | static HTML/JS | No build step; `earn-calculator-core.test.js` runs with `node --test`. |
 | `Makefile` | — | Every target below; `make help` lists them. |
+
+Rebuild and sign the pinned Lume tree when its patch set changes. Managed raw
+Apple restores require the installer ownership patch in
+`sandbox-macos/ThirdParty/lume.lock.json`; the wrapper verifies that provenance
+through `LumeRuntimeConfiguration.pinnedManagedRestorePatchPath` in
+`sandbox-macos/Sources/SandboxRuntimeLume/LumeRuntimeConfiguration.swift`.
+The `SandboxProcessLifecycleProbe` executable is a test fixture and is not part
+of the signed host or guest package.
+
+Rebuild both sandbox products when changing native qualification. The guest
+includes the fixed `qualify-tenant` probe; the host's `prepare-accountless-base
+qualify` phase uses an existing dedicated capacity store and its own private
+attempt journal. Package/sign the new guest and prepare a matching base; an old
+guest binary cannot satisfy the new probe. See the [operator commands](../../sandbox-macos/Resources/ACCOUNTLESS_RECEIPTS.md#accountless-operator-commands).
+The host also supplies `discard-base` to remove an exact stopped, unqualified
+Apple restore after root maintenance has settled. It uses the pinned runtime
+and retained machine authority, without requiring a guest package or free-space
+admission; see [failed-base cleanup](../../sandbox-macos/Resources/ACCOUNTLESS_RECEIPTS.md#discard-a-failed-base).
 
 Provider tests are grouped by subsystem inside their existing SwiftPM targets.
 See [finding provider tests](test.md#finding-provider-tests) for the folder map;

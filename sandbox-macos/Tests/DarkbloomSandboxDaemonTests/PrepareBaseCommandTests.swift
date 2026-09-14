@@ -1,0 +1,69 @@
+@testable import DarkbloomSandboxDaemon
+import XCTest
+
+final class PrepareBaseCommandTests: XCTestCase {
+    func testParsesRequiredPathsAndBoundedDefaults() throws {
+        let options = try PrepareBaseCommand.Options([
+            "--lume", "/opt/darkbloom/lume",
+            "--storage", "/var/lib/darkbloom/vms",
+            "--ipsw", "/var/lib/darkbloom/images/tahoe.ipsw",
+            "--name", "phase0-base",
+            "--development-ad-hoc-lume",
+            "--guest-release", "/opt/darkbloom/sandbox-release",
+            "--json",
+        ])
+
+        XCTAssertEqual(options.lumeExecutable.path, "/opt/darkbloom/lume")
+        XCTAssertEqual(options.storageDirectory.path, "/var/lib/darkbloom/vms")
+        XCTAssertEqual(
+            options.restoreImage.path,
+            "/var/lib/darkbloom/images/tahoe.ipsw"
+        )
+        XCTAssertEqual(options.name, "phase0-base")
+        XCTAssertEqual(options.cpuCount, 4)
+        XCTAssertEqual(options.memoryGiB, 8)
+        XCTAssertEqual(options.diskGiB, 100)
+        XCTAssertTrue(options.json)
+        XCTAssertTrue(options.developmentAdHocLume)
+        XCTAssertEqual(options.guestRelease?.path, "/opt/darkbloom/sandbox-release")
+    }
+
+    func testRejectsRelativeMissingDuplicateAndUnknownOptions() {
+        XCTAssertThrowsError(try PrepareBaseCommand.Options([
+            "--lume", "/lume", "--storage", "/vms", "--ipsw", "/image.ipsw",
+            "--name", "base", "--guest-release", "relative/release",
+        ]))
+        XCTAssertThrowsError(try PrepareBaseCommand.Options([
+            "--lume", "relative/lume",
+            "--storage", "/vms",
+            "--ipsw", "/image.ipsw",
+            "--name", "base",
+        ]))
+        XCTAssertThrowsError(try PrepareBaseCommand.Options([
+            "--lume", "/lume",
+            "--storage", "/vms",
+            "--ipsw", "/image.ipsw",
+        ]))
+        XCTAssertThrowsError(try PrepareBaseCommand.Options([
+            "--lume", "/lume",
+            "--lume", "/other-lume",
+            "--storage", "/vms",
+            "--ipsw", "/image.ipsw",
+            "--name", "base",
+        ]))
+        XCTAssertThrowsError(try PrepareBaseCommand.Options([
+            "--lume", "/lume",
+            "--storage", "/vms",
+            "--ipsw", "/image.ipsw",
+            "--name", "base",
+            "--disk-gib", "101",
+        ]))
+        XCTAssertThrowsError(try PrepareBaseCommand.Options([
+            "--lume", "/lume",
+            "--storage", "/vms",
+            "--ipsw", "/image.ipsw",
+            "--name", "base",
+            "--unknown", "value",
+        ]))
+    }
+}

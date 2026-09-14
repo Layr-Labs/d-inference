@@ -21,6 +21,22 @@ coordinator deployment.
 - Prevent large process lists from blocking `doctor` and `verify`. Capture contention and sleep-probe output without pipe backpressure and apply an execution deadline; preserve diagnostic output and failure handling.
 - Match the coordinator's canonical status bytes for mixed-case model IDs and template names, including Unicode separators. Preserve signed fields, omission rules and signature verification.
 
+## Unreleased — sandbox private-alpha control
+
+- Let sandbox host `doctor --storage DIR` inspect the actual VM-storage volume, so its free-space diagnosis matches admission on separate APFS volumes and quotas.
+- Add `discard-base` for exact unqualified Apple-restore installations. Preserve ready templates and unknown data; recover interrupted removal through a durable installation-bound deletion intent without disk-capacity or guest-package admission.
+- Wire `prepare-accountless-base qualify` to durable attempt journaling, native checks, clone cleanup and guarded ready publication. Recovery settles exact prior resources without rerunning checks or publishing from saved flags; aborted attempts report exit75 and preserve unknown source status.
+- Add a signed guest isolation probe and internal native qualification sequence with authenticated command checks, verified workspace transfer, cold-boot identity and persistence checks, and guarded readiness publication after durable clone cleanup. The operator workflow and physical acceptance remain release gates.
+- Add accountless base preparation through controlled staging, one-use installer boot, root receipt collection and resumable temporary-file cleanup. Publish an installed checkpoint only after exact source/runtime/boot bindings and detached cleanup pass; native qualification and physical acceptance remain separate release gates.
+- Require exclusive host ownership for managed raw Apple restores, retain it in the installer process through cancellation or broker death, and preserve files when native VM stop is unproven. This requires a matching rebuilt and signed Lume runtime.
+- Resume stopped workspaces with durable start operations and CLI support; rotate fencing authority without changing capacity, lease expiry or prior command idempotency. Cancel blocked host writes on disconnect and require consistent proof before clearing pending command cleanup.
+
+- Default the sandbox service and admission off; require explicit account enrollment for new work. Keep owner status, cancellation, stop and delete available while admission drains.
+- Add durable consumer command cancellation and bounded command-history metadata. Retain capacity until host cleanup acknowledges cancellation; report background cleanup failures with bounded logs.
+- Add bounded workspace upload, status, commit, abort and download APIs over a typed host relay. Check account, host connection and lease scope; keep file bytes out of coordinator command records. Default commands to `/workspace` and reject unsafe working directories and privileged environment overrides.
+- Add the standalone macOS/Linux `darkbloom-sandbox` consumer CLI with exact-argument jobs, durable cancellation, resumable verified uploads, and revision-bound downloads published locally without overwriting existing files.
+- Expire terminal sandbox command payloads after a configurable retention period (24h default) while preserving request commitments, status and idempotency. Skip active/cancellation-pending rows, bound indexed cleanup, and expose payload expiry to API and CLI consumers.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

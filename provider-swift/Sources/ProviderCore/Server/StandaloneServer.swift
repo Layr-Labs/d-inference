@@ -35,6 +35,7 @@
 
 import Darwin
 import Foundation
+import HostRuntimeCoordination
 import Hummingbird
 import MLX
 import MLXLMCommon
@@ -241,6 +242,8 @@ public actor StandaloneServer {
     var models: [ModelInfo]
     private var serverTask: Task<Void, Never>?
     private var shutdownTask: Task<Void, Never>?
+    private var hostRuntimeOwnership: HostRuntimeLease?
+    private var hostRuntimeGeneration: UInt64 = 0
     /// Periodic driver for the proactive MLX buffer-pool sweep. ProviderLoop
     /// drives the same sweep from its capacity-refresh tick; the standalone
     /// path has no such tick, so it runs its own. Without one, freed
@@ -453,6 +456,8 @@ public actor StandaloneServer {
     /// Start listening for HTTP connections. The server runs in a child task.
     public func start() throws {
         guard lifecycleState == .stopped else { return }
+        hostRuntimeOwnership = try HostRuntimeAuthority.system.acquireInferenceIfInstalled()
+        hostRuntimeGeneration &+= 1
 
         didBind = false
         bindFailed = false
@@ -536,6 +541,7 @@ public actor StandaloneServer {
 
         let serviceTask = serverTask
         lifecycleState = .stopping
+        hostRuntimeGeneration &+= 1
         let task = Task {
             await finishShutdown(serviceTask: serviceTask)
         }
@@ -582,6 +588,8 @@ public actor StandaloneServer {
         bindFailed = false
         lifecycleState = .stopped
         shutdownTask = nil
+        // Release only after the HTTP service, engines, and allocator cleanup finish.
+        hostRuntimeOwnership = nil
     }
 
     // MARK: - Test/debug surface
@@ -1394,6 +1402,8 @@ public actor StandaloneServer {
     /// applies LRU + memory-headroom eviction, then builds the v2 slot
     /// through the shared sizing → re-slice → bridge path.
     func ensureModelLoaded(_ modelId: String) async throws {
+        let loadGeneration = hostRuntimeGeneration
+        try requireCurrentLoadGeneration(loadGeneration)
         await waitForMTPUpgrade(modelId)
         try ModelRuntimeRequirements.requireEligible(
             modelID: modelId, available: config.runtimeCapabilities)
@@ -1402,6 +1412,8 @@ public actor StandaloneServer {
             touchSlot(modelId)
             return
         }
+        let loadOwnership = try HostRuntimeAuthority.system.acquireInferenceIfInstalled()
+        defer { withExtendedLifetime(loadOwnership) {} }
 
         if modelsLoading.contains(modelId) {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, any Error>) in
@@ -1539,6 +1551,7 @@ public actor StandaloneServer {
             pendingLoadLeases[modelId] = acceptedLoad
 
             try await v2TestHooks?.beforeWeightLoad?(modelId)
+            try requireCurrentLoadGeneration(loadGeneration)
             let reusableSSDRequested = PrefixCachePolicy.requiresLoadHashBracket(
                 modelId: modelId, modelDirectory: modelPath)
             let preLoadCacheHash = await computeStandaloneWeightHash(
@@ -1559,9 +1572,18 @@ public actor StandaloneServer {
             // BEFORE survivor grants are restored/regrown. Never bind
             // `borrow()` to a long-lived local — that would keep the weights
             // alive past `release()`.
+            try requireCurrentLoadGeneration(loadGeneration)
             let newcomer = EngineV2NewcomerBox(
                 try await ModelContainerLoading.loadContainer(from: modelPath))
+            defer { newcomer.release() }
             try Task.checkCancellation()
+            guard loadGeneration == hostRuntimeGeneration,
+                  lifecycleState != .stopping,
+                  lifecycleState == .running || loadGeneration == 0 else {
+                newcomer.release()
+                MLX.Memory.clearCache()
+                throw CancellationError()
+            }
             let postLoadCacheHash = await computeStandaloneWeightHash(
                 modelPath: modelPath, modelId: modelId, required: reusableSSDRequested)
             let cacheEligibleWeightHash: String?
@@ -1743,6 +1765,14 @@ public actor StandaloneServer {
                     + "KV headroom under the memory cap (\(headroomGb) GB free) — unloaded")
             }
 
+            // A load may outlive stop() if underlying shard I/O ignores task
+            // cancellation. Its private SH lease stays held through this unwind.
+            guard loadGeneration == hostRuntimeGeneration,
+                  lifecycleState == .running || loadGeneration == 0,
+                  lifecycleState != .stopping, !Task.isCancelled else {
+                await unwindBuiltSlotAndRegrow(bundle: bundle, newcomer: newcomer)
+                throw CancellationError()
+            }
             // Guards passed — NOW publish the slot.
             guard let installContainer = newcomer.container else {
                 // Unreachable (the box is drained only on failure paths) —
@@ -1803,6 +1833,14 @@ public actor StandaloneServer {
             // moved the floor meanwhile, re-size them under it now.
             await applyDeferredModelsIfNeeded()
             throw error
+        }
+    }
+
+    private func requireCurrentLoadGeneration(_ generation: UInt64) throws {
+        try Task.checkCancellation()
+        guard generation == hostRuntimeGeneration, lifecycleState != .stopping,
+              lifecycleState == .running || generation == 0 else {
+            throw CancellationError()
         }
     }
 

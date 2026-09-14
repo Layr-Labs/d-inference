@@ -1,0 +1,408 @@
+diff --git a/libs/lume/src/VM/DarkbloomRuntimeAuthority.swift b/libs/lume/src/VM/DarkbloomRuntimeAuthority.swift
+new file mode 100644
+index 000000000..e098b8c50
+--- /dev/null
++++ b/libs/lume/src/VM/DarkbloomRuntimeAuthority.swift
+@@ -0,0 +1,128 @@
++import Darwin
++import Foundation
++
++/// Pins machine-exclusive ownership in the actual VM process. Process lifetime
++/// retention is deliberate: an inconclusive stop must not release this lock
++/// before the broker-lifecycle fail-stop has terminated the remaining VM owner.
++@MainActor
++enum DarkbloomRuntimeAuthority {
++    static let environmentVariable = "DARKBLOOM_HOST_RUNTIME_FD"
++    static let inheritedDescriptor: Int32 = 4
++    static let authorityDirectory = "/Library/Application Support/Darkbloom/runtime"
++    private static var retainedLease: DarkbloomRuntimeLease?
++
++    static func retainInheritedIfIsolated() throws {
++        guard try DarkbloomDevicePolicy.isIsolated() else { return }
++        if let retainedLease { try retainedLease.validate(); return }
++        guard ProcessInfo.processInfo.environment[environmentVariable] == String(inheritedDescriptor) else {
++            throw DarkbloomDevicePolicyError.invalidConfiguration("isolated VM requires inherited machine ownership")
++        }
++        unsetenv(environmentVariable)
++        retainedLease = try DarkbloomRuntimeLease(
++            adopting: inheritedDescriptor, authorityDirectory: authorityDirectory
++        )
++    }
++}
++
++final class DarkbloomRuntimeLease {
++    private let descriptor: Int32
++    private let directory: String
++    private let owner: uid_t
++    private let group: gid_t
++    private let testing: Bool
++    private let directoryIdentity: stat
++
++    /// Path/owner injection exists only for unit fixtures. Production has no
++    /// command-line or environment override for its root-provisioned authority.
++    init(adopting descriptor: Int32, authorityDirectory: String,
++         testOwner: uid_t? = nil, testGroup: gid_t? = nil) throws {
++        var adopted = false
++        defer { if !adopted { close(descriptor) } }
++        self.descriptor = descriptor
++        directory = authorityDirectory
++        owner = testOwner ?? 0
++        testing = testOwner != nil
++        if let testGroup { group = testGroup }
++        else {
++            guard let entry = getgrnam("darkbloom_runtime"), entry.pointee.gr_gid != 0 else {
++                throw Self.invalid()
++            }
++            group = entry.pointee.gr_gid
++        }
++        let parent = try Self.openDirectory(directory, owner: owner, testing: testing)
++        defer { close(parent) }
++        directoryIdentity = try Self.metadata(parent)
++        try Self.validate(descriptor, parent: parent, owner: owner, group: group)
++        while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
++            if errno == EINTR { continue }
++            throw Self.invalid()
++        }
++        let flags = fcntl(descriptor, F_GETFD)
++        guard flags >= 0, fcntl(descriptor, F_SETFD, flags | FD_CLOEXEC) == 0 else {
++            throw Self.invalid()
++        }
++        adopted = true
++    }
++
++    deinit { close(descriptor) } // Never LOCK_UN: the broker/other VMs share this open description.
++
++    func validate() throws {
++        let parent = try Self.openDirectory(directory, owner: owner, testing: testing)
++        defer { close(parent) }
++        let current = try Self.metadata(parent)
++        guard current.st_dev == directoryIdentity.st_dev, current.st_ino == directoryIdentity.st_ino else {
++            throw Self.invalid()
++        }
++        try Self.validate(descriptor, parent: parent, owner: owner, group: group)
++    }
++
++    private static func validate(_ descriptor: Int32, parent: Int32, owner: uid_t, group: gid_t) throws {
++        let held = try metadata(descriptor)
++        var named = stat()
++        guard held.st_mode & S_IFMT == S_IFREG, held.st_mode & 0o777 == 0o660,
++              held.st_uid == owner, held.st_gid == group, held.st_nlink == 1, held.st_size == 0,
++              fstatat(parent, "ownership.lock", &named, AT_SYMLINK_NOFOLLOW) == 0,
++              named.st_dev == held.st_dev, named.st_ino == held.st_ino else { throw invalid() }
++        try DarkbloomPrivatePath.requireNoACL(descriptor)
++    }
++
++    private static func openDirectory(_ original: String, owner: uid_t, testing: Bool) throws -> Int32 {
++        let normalized = URL(fileURLWithPath: original).standardizedFileURL.path
++        let alias = ["/var", "/tmp"].contains { normalized == $0 || normalized.hasPrefix($0 + "/") }
++        guard original.hasPrefix("/"), !original.contains("\0"),
++              original == normalized || (alias && original == "/private" + normalized) else { throw invalid() }
++        let path = alias ? "/private" + normalized : original
++        let components = path.split(separator: "/").map(String.init)
++        guard !components.isEmpty else { throw invalid() }
++        var descriptor = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
++        guard descriptor >= 0 else { throw invalid() }
++        do {
++            for (index, component) in components.enumerated() {
++                let next = openat(descriptor, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
++                guard next >= 0 else { throw invalid() }
++                do {
++                    let info = try metadata(next)
++                    let fixtureTemporary = testing && index < components.count - 1
++                        && info.st_uid == 0 && info.st_mode & mode_t(S_ISTXT) != 0
++                    guard info.st_mode & S_IFMT == S_IFDIR,
++                          info.st_uid == 0 || (testing && info.st_uid == owner),
++                          info.st_mode & 0o022 == 0 || fixtureTemporary else { throw invalid() }
++                    try DarkbloomPrivatePath.requireNoACL(next)
++                } catch { close(next); throw error }
++                close(descriptor)
++                descriptor = next
++            }
++            return descriptor
++        } catch { close(descriptor); throw error }
++    }
++
++    private static func metadata(_ descriptor: Int32) throws -> stat {
++        var metadata = stat()
++        guard fstat(descriptor, &metadata) == 0 else { throw invalid() }
++        return metadata
++    }
++
++    private static func invalid() -> DarkbloomDevicePolicyError {
++        .invalidConfiguration("inherited machine runtime ownership is missing, occupied or unsafe")
++    }
++}
+diff --git a/libs/lume/src/VM/VM.swift b/libs/lume/src/VM/VM.swift
+index 61d2b68cc..3f86262bb 100644
+--- a/libs/lume/src/VM/VM.swift
++++ b/libs/lume/src/VM/VM.swift
+@@ -208,6 +208,7 @@ class VM {
+         guard !runLifecycleIsActive, activeBrokerLifecycle == nil else {
+             throw VMError.alreadyRunning(vmDirContext.name)
+         }
++        try DarkbloomRuntimeAuthority.retainInheritedIfIsolated()
+         var runLifecycleRegistered = false
+         runStopRequested = brokerLifecycle?.isStopRequested ?? false
+         activeBrokerLifecycle = brokerLifecycle
+diff --git a/libs/lume/src/Virtualization/DarkbloomDevicePolicy.swift b/libs/lume/src/Virtualization/DarkbloomDevicePolicy.swift
+index 6e68f1175..17e9784c3 100644
+--- a/libs/lume/src/Virtualization/DarkbloomDevicePolicy.swift
++++ b/libs/lume/src/Virtualization/DarkbloomDevicePolicy.swift
+@@ -43,10 +43,10 @@ enum DarkbloomDevicePolicy {
+         try DarkbloomPrivatePath.openDirectory(directory.path).withDescriptor { _ in }
+         var identities = Swift.Set<String>()
+         for (path, mode) in [(boot, Optional<mode_t>.none), (control, mode_t(0o400)), (workspace, mode_t(0o600))] {
+-            guard path.url.standardizedFileURL.resolvingSymlinksInPath().path == path.path else {
++            guard let canonicalPath = DarkbloomPrivatePath.canonicalPath(path.path) else {
+                 throw invalid("isolated disk path must be canonical")
+             }
+-            let descriptor = open(path.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
++            let descriptor = open(canonicalPath, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+             guard descriptor >= 0 else { throw invalid("isolated disk unavailable") }
+             defer { close(descriptor) }
+             var metadata = stat()
+diff --git a/libs/lume/src/Virtualization/DarkbloomPrivatePath.swift b/libs/lume/src/Virtualization/DarkbloomPrivatePath.swift
+index cb3fe0369..bd20db82b 100644
+--- a/libs/lume/src/Virtualization/DarkbloomPrivatePath.swift
++++ b/libs/lume/src/Virtualization/DarkbloomPrivatePath.swift
+@@ -11,15 +11,22 @@ struct DarkbloomPrivateDirectory {
+ 
+ enum DarkbloomPrivatePath {
+     static func openDirectory(_ path: String) throws -> DarkbloomPrivateDirectory {
+-        let url = URL(fileURLWithPath: path)
+-        guard path.hasPrefix("/"), !path.contains("\0"),
+-              url.standardizedFileURL.resolvingSymlinksInPath().path == path else {
++        guard let canonical = canonicalPath(path) else {
+             throw DarkbloomDevicePolicyError.invalidConfiguration("noncanonical private directory")
+         }
+-        let descriptor = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
++        var descriptor = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+         guard descriptor >= 0 else { throw POSIXError(.ENOENT) }
+         var valid = false
+         defer { if !valid { close(descriptor) } }
++        try requireTrustedAncestor(descriptor)
++        for component in canonical.split(separator: "/").map(String.init) {
++            let next = openat(descriptor, component, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
++            guard next >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
++            do { try requireTrustedAncestor(next) }
++            catch { close(next); throw error }
++            close(descriptor)
++            descriptor = next
++        }
+         var metadata = stat()
+         guard fstat(descriptor, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFDIR,
+               metadata.st_uid == geteuid(), metadata.st_mode & 0o777 == 0o700 else {
+@@ -30,6 +37,31 @@ enum DarkbloomPrivatePath {
+         return DarkbloomPrivateDirectory(descriptor: descriptor)
+     }
+ 
++    static func canonicalPath(_ path: String) -> String? {
++        guard path.hasPrefix("/"), !path.contains("\0") else { return nil }
++        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
++        let alias = ["/tmp", "/var"].contains { normalized == $0 || normalized.hasPrefix($0 + "/") }
++        guard path == normalized || (alias && path == "/private" + normalized),
++              let pointer = realpath(path, nil) else { return nil }
++        defer { free(pointer) }
++        let resolved = String(cString: pointer)
++        if resolved == path { return resolved }
++        if alias && path == normalized && resolved == "/private" + path { return resolved }
++        return nil
++    }
++
++    private static func requireTrustedAncestor(_ descriptor: Int32) throws {
++        var metadata = stat()
++        guard fstat(descriptor, &metadata) == 0,
++              metadata.st_mode & S_IFMT == S_IFDIR,
++              metadata.st_uid == 0 || metadata.st_uid == geteuid(),
++              metadata.st_mode & 0o022 == 0
++                || (metadata.st_uid == 0 && metadata.st_mode & mode_t(S_ISTXT) != 0) else {
++            throw DarkbloomDevicePolicyError.invalidConfiguration("unsafe private directory ancestor")
++        }
++        try requireNoACL(descriptor)
++    }
++
+     static func requireNoACL(_ descriptor: Int32) throws {
+         errno = 0
+         guard let acl = acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED) else {
+diff --git a/libs/lume/tests/DarkbloomDevicePolicyTests.swift b/libs/lume/tests/DarkbloomDevicePolicyTests.swift
+index f608f1add..feb103eb3 100644
+--- a/libs/lume/tests/DarkbloomDevicePolicyTests.swift
++++ b/libs/lume/tests/DarkbloomDevicePolicyTests.swift
+@@ -15,7 +15,8 @@ struct DarkbloomDevicePolicyTests {
+         let control: Path
+         let workspace: Path
+         init() throws {
+-            root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".db-device-\(UUID().uuidString)")
++            root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
++                .appendingPathComponent(".db-device-\(UUID().uuidString)")
+             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+             let guest = root.appendingPathComponent(".darkbloom-guest")
+             try FileManager.default.createDirectory(at: guest, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+diff --git a/libs/lume/tests/DarkbloomGuestBridgeTests.swift b/libs/lume/tests/DarkbloomGuestBridgeTests.swift
+index d0ea2538c..fc4918d80 100644
+--- a/libs/lume/tests/DarkbloomGuestBridgeTests.swift
++++ b/libs/lume/tests/DarkbloomGuestBridgeTests.swift
+@@ -6,7 +6,7 @@ import Testing
+ @Suite("Darkbloom private guest bridge")
+ struct DarkbloomGuestBridgeTests {
+     @Test func rejectsPublicParentAndPreservesExistingSocketPath() throws {
+-        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".dbg-\(UUID())")
++        let root = URL(fileURLWithPath: "/private/tmp").appendingPathComponent(".dbg-\(UUID())")
+         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o755])
+         defer { try? FileManager.default.removeItem(at: root) }
+         let path = root.appendingPathComponent("s").path
+@@ -18,7 +18,7 @@ struct DarkbloomGuestBridgeTests {
+     }
+ 
+     @Test func pendingConnectStopsAndLateCallbackDoesNotRetainAnOpenClient() throws {
+-        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".dbg-\(UUID())")
++        let root = URL(fileURLWithPath: "/private/tmp").appendingPathComponent(".dbg-\(UUID())")
+         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+         defer { try? FileManager.default.removeItem(at: root) }
+         let path = root.appendingPathComponent("s").path, delayed = DelayedConnect()
+diff --git a/libs/lume/tests/DarkbloomPrivatePathTests.swift b/libs/lume/tests/DarkbloomPrivatePathTests.swift
+new file mode 100644
+index 000000000..337c37759
+--- /dev/null
++++ b/libs/lume/tests/DarkbloomPrivatePathTests.swift
+@@ -0,0 +1,33 @@
++import Darwin
++import Foundation
++import Testing
++@testable import lume
++
++@Suite("Darkbloom canonical private paths")
++struct DarkbloomPrivatePathTests {
++    @Test func systemTemporaryAliasAndCanonicalPathAreBothAccepted() throws {
++        let name = "darkbloom-alias-\(UUID().uuidString)"
++        let canonical = "/private/tmp/" + name
++        let alias = "/tmp/" + name
++        try FileManager.default.createDirectory(atPath: canonical, withIntermediateDirectories: false,
++                                                attributes: [.posixPermissions: 0o700])
++        defer { try? FileManager.default.removeItem(atPath: canonical) }
++        #expect(DarkbloomPrivatePath.canonicalPath(alias) == canonical)
++        #expect(DarkbloomPrivatePath.canonicalPath(canonical) == canonical)
++        try DarkbloomPrivatePath.openDirectory(alias).withDescriptor { _ in }
++        try DarkbloomPrivatePath.openDirectory(canonical).withDescriptor { _ in }
++    }
++
++    @Test func arbitraryDirectorySymlinksAndTraversalAreRejected() throws {
++        let root = "/private/tmp/darkbloom-path-\(UUID().uuidString)"
++        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: false,
++                                                attributes: [.posixPermissions: 0o700])
++        defer { try? FileManager.default.removeItem(atPath: root) }
++        try FileManager.default.createDirectory(atPath: root + "/real", withIntermediateDirectories: false,
++                                                attributes: [.posixPermissions: 0o700])
++        try FileManager.default.createSymbolicLink(atPath: root + "/alias", withDestinationPath: root + "/real")
++        #expect(DarkbloomPrivatePath.canonicalPath(root + "/alias") == nil)
++        #expect(DarkbloomPrivatePath.canonicalPath(root + "/real/../real") == nil)
++        #expect(throws: (any Error).self) { try DarkbloomPrivatePath.openDirectory(root + "/alias").withDescriptor { _ in } }
++    }
++}
+diff --git a/libs/lume/tests/DarkbloomRuntimeAuthorityTests.swift b/libs/lume/tests/DarkbloomRuntimeAuthorityTests.swift
+new file mode 100644
+index 000000000..723c9b3b8
+--- /dev/null
++++ b/libs/lume/tests/DarkbloomRuntimeAuthorityTests.swift
+@@ -0,0 +1,101 @@
++import Darwin
++import Foundation
++import Testing
++@testable import lume
++
++@Suite("Darkbloom inherited machine runtime authority")
++struct DarkbloomRuntimeAuthorityTests {
++    @Test func validLeaseIsCloseOnExecAndRetainsExclusiveOwnership() throws {
++        let fixture = try Fixture()
++        defer { fixture.remove() }
++        let descriptor = try fixture.openLock()
++        let lease = try DarkbloomRuntimeLease(adopting: descriptor, authorityDirectory: fixture.directory.path,
++                                             testOwner: geteuid(), testGroup: getegid())
++        #expect(fcntl(descriptor, F_GETFD) & FD_CLOEXEC != 0)
++        let competitor = try fixture.openLock()
++        defer { close(competitor) }
++        #expect(flock(competitor, LOCK_SH | LOCK_NB) != 0)
++        try lease.validate()
++        withExtendedLifetime(lease) {}
++    }
++
++    @Test func closingChildCopyDoesNotUnlockBrokerCopy() throws {
++        let fixture = try Fixture()
++        defer { fixture.remove() }
++        let broker = try fixture.openLock()
++        defer { close(broker) }
++        #expect(flock(broker, LOCK_EX | LOCK_NB) == 0)
++        let child = fcntl(broker, F_DUPFD_CLOEXEC, 64)
++        #expect(child >= 0)
++        var lease: DarkbloomRuntimeLease? = try DarkbloomRuntimeLease(
++            adopting: child, authorityDirectory: fixture.directory.path,
++            testOwner: geteuid(), testGroup: getegid())
++        try lease?.validate()
++        lease = nil
++        let competitor = try fixture.openLock()
++        defer { close(competitor) }
++        #expect(flock(competitor, LOCK_SH | LOCK_NB) != 0)
++    }
++
++    @Test func sharedInferencePreventsIsolatedVMOwnership() throws {
++        let fixture = try Fixture()
++        defer { fixture.remove() }
++        let inference = try fixture.openLock()
++        defer { close(inference) }
++        #expect(flock(inference, LOCK_SH | LOCK_NB) == 0)
++        #expect(throws: (any Error).self) {
++            try DarkbloomRuntimeLease(adopting: fixture.openLock(), authorityDirectory: fixture.directory.path,
++                                      testOwner: geteuid(), testGroup: getegid())
++        }
++    }
++
++    @Test func mismatchedInodeAndUnsafePermissionsAreRejected() throws {
++        let fixture = try Fixture()
++        defer { fixture.remove() }
++        let old = try fixture.openLock()
++        try FileManager.default.moveItem(at: fixture.lock, to: fixture.directory.appendingPathComponent("old.lock"))
++        try fixture.createLock()
++        #expect(throws: (any Error).self) {
++            try DarkbloomRuntimeLease(adopting: old, authorityDirectory: fixture.directory.path,
++                                      testOwner: geteuid(), testGroup: getegid())
++        }
++        #expect(chmod(fixture.lock.path, 0o666) == 0)
++        #expect(throws: (any Error).self) {
++            try DarkbloomRuntimeLease(adopting: fixture.openLock(), authorityDirectory: fixture.directory.path,
++                                      testOwner: geteuid(), testGroup: getegid())
++        }
++    }
++
++    @Test func validatesNamespaceAgainBeforeUse() throws {
++        let fixture = try Fixture()
++        defer { fixture.remove() }
++        let lease = try DarkbloomRuntimeLease(adopting: fixture.openLock(), authorityDirectory: fixture.directory.path,
++                                             testOwner: geteuid(), testGroup: getegid())
++        try FileManager.default.moveItem(at: fixture.lock, to: fixture.directory.appendingPathComponent("old.lock"))
++        try fixture.createLock()
++        #expect(throws: (any Error).self) { try lease.validate() }
++    }
++
++    private struct Fixture {
++        let directory: URL
++        var lock: URL { directory.appendingPathComponent("ownership.lock") }
++        init() throws {
++            directory = FileManager.default.temporaryDirectory.appendingPathComponent("lume-runtime-\(UUID().uuidString)")
++            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
++                                                     attributes: [.posixPermissions: 0o700])
++            try createLock()
++        }
++        func createLock() throws {
++            let descriptor = open(lock.path, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0o660)
++            guard descriptor >= 0 else { throw POSIXError(.EIO) }
++            defer { close(descriptor) }
++            guard fchmod(descriptor, 0o660) == 0, fchown(descriptor, geteuid(), getegid()) == 0 else { throw POSIXError(.EIO) }
++        }
++        func openLock() throws -> Int32 {
++            let descriptor = open(lock.path, O_RDWR | O_CLOEXEC | O_NOFOLLOW)
++            guard descriptor >= 0 else { throw POSIXError(.EIO) }
++            return descriptor
++        }
++        func remove() { try? FileManager.default.removeItem(at: directory) }
++    }
++}

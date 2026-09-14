@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `a1f3c09c8`
+> Last updated: 2026-09-14 · commit `4485bbbf1`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -65,6 +65,59 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 ```
 
 ### 2. Coordinator (Go)
+
+`make sandbox-ci-test` runs the offline Go CI benchmark's bundle/evidence tests
+and portable runner race tests using private temporary caches. It requires the
+repository Go toolchain and does not run a VM or contact an API. The same gate
+runs in macOS sandbox CI and default `validate-sandbox.py` validation. See the
+[CI workload benchmark](../../sandbox-macos/Benchmarks/go-ci/README.md) for
+explicit host-only and paired measurement commands.
+
+`make sandbox-test` includes that gate and runs the shared machine-ownership
+tests, sandbox host/guest tests, and release-tool contracts. `make sandbox-client-test` exercises the
+consumer workflow against an isolated HTTP fixture, including upload replay,
+version-pinned downloads and cancellation. These checks do not boot a VM or
+establish physical isolation. The `macOS Sandbox Tests` CI job separately builds
+and tests the exact pinned Lume patches and builds release host/guest products.
+See the [sandbox CLI workflow](../consumer/sandbox-cli.md) and
+[sandbox API contract](../reference/sandbox-api.md).
+
+Qualification owner integration tests share the native-runtime fixture through
+the `SandboxRuntimeLumeTests` target's test-only dependency on the daemon. They
+exercise real capacity and ownership files, allocation-gap recovery, preservation
+of unknown same-name data and read-only published replay. These fixtures do not
+run a VM or issue a native qualification result. Complete physical factory and
+two-VM acceptance remain separate [release gates](../../sandbox-macos/Resources/RELEASE_VALIDATION.md).
+
+`LumeUnqualifiedBaseDeletionTests` covers exact-installation discard, rejected
+ready/unknown/running sources, maintenance fences, operation ownership and
+recovery after partial native removal. Recreated names and replacement
+directories remain intact. `DiscardBaseOptionsTests` checks required identity
+and path validation before command IO. These are subprocess/filesystem tests;
+the signed command still requires real-Mac acceptance.
+
+`ManagedProcessOwnershipTests` in
+`sandbox-macos/Tests/SandboxRuntimeTests/ManagedProcessOwnershipTests.swift`
+uses real child processes and kernel file locks to check cancellation, timeout
+and broker death. It does not run a VM. Raw restore tests require an exclusive
+fixture lease and reject missing/shared authority before creation.
+`sandbox-macos/Scripts/run-pinned-lume-tests.sh` runs the full native suite and
+nine required tests individually, including installer cancellation before start,
+completion ordering and stopped-proof cleanup. Native restore tests use fake
+installers; physical installation and cancellation remain separate checks.
+
+`python3 -B sandbox-macos/Scripts/test-sandbox-live-tools.py` tests the live
+consumer harness with fake CLI/REST transports and simulated time. It checks
+command replay, separate-account denial with owner controls and independent
+cleanup ledgers, partial upload resumption/abort, changed-revision denial,
+running-command expiry assertions and explicit evidence limits. It performs no
+physical acceptance. Follow [isolated sandbox acceptance](sandbox-acceptance.md)
+for the real deployment and retain the separate physical cleanup evidence.
+
+`go test -race ./coordinator/cmd/sandbox-acceptance-fixture` verifies ordinary
+account/key seeding, separate launch environments and relocation of consumer-only
+fixtures through the memory store and real HTTP auth handlers. It does not seed
+PostgreSQL or start network services.
 
 Run prediction telemetry checks from the repository root:
 

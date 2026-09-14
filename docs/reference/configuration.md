@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-13 · commit `642cf31a6`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -8,6 +8,22 @@ the code that reads it, and its effect. Defaults are the fallbacks at the cited
 symbol; a production or dev host may pin a different value in its environment
 file. Secrets are named, never valued. Unless a row says *live*, the variable is
 read once at process start and a restart applies a change.
+
+## Sandbox private alpha
+
+The sandbox service and new-work admission are separate startup settings; keep
+service enabled while admission is paused so cleanup acknowledgements continue.
+See the [sandbox API contract](sandbox-api.md#access-and-service-modes).
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `EIGENINFERENCE_SANDBOX_SERVICE_ENABLED` | boolean | `false` | `coordinator/api/sandbox_config.go` (`readSandboxServiceConfig`) | Starts the sandbox controller and sweeper and permits authenticated host connections. |
+| `EIGENINFERENCE_SANDBOX_ADMISSION_ENABLED` | boolean | `false` | `coordinator/api/sandbox_config.go` (`readSandboxServiceConfig`) | Allows enrolled accounts to create, execute and renew. Requires the service and a nonempty account allowlist. |
+| `EIGENINFERENCE_SANDBOX_ALLOWED_ACCOUNT_IDS` | comma-separated account IDs | unset | `coordinator/api/sandbox_config.go` (`readSandboxServiceConfig`, `SandboxServiceConfig.Check`) | Exact account identities; wildcards, duplicates and whitespace within IDs are rejected. Removed owners retain read/cleanup access to existing resources. |
+| `EIGENINFERENCE_SANDBOX_HOST_TOKEN_SHA256_JSON` | JSON object from host UUID to 64-character hexadecimal SHA-256 | unset | `coordinator/api/server_config.go` (`ReadServerConfig`), `coordinator/sandboxhost/auth.go` (`NewAuthenticator`) | Dedicated host bearer credential hashes; empty configuration disables host connection admission. |
+| `EIGENINFERENCE_SANDBOX_COMMAND_PAYLOAD_RETENTION` | positive Go duration, at most `720h` | `24h` | `coordinator/api/sandbox_config.go` (`readSandboxServiceConfig`), `coordinator/sandboxcontrol/payload_retention.go` (`DefaultCommandPayloadRetention`) | Makes completed command payloads eligible for bounded redaction; active and cancellation-pending commands are excluded. `0`, negative, malformed and excessive values reject startup. |
+| `DARKBLOOM_API_URL` | HTTPS origin | `https://api.darkbloom.dev` | `coordinator/cmd/darkbloom-sandbox/config.go` (`parseConfig`) | Standalone sandbox client endpoint; `--api-url` overrides it. HTTP requires explicit `--allow-insecure-localhost` and a loopback origin. |
+| `DARKBLOOM_API_KEY` | account bearer credential (secret) | unset; required | `coordinator/cmd/darkbloom-sandbox/config.go` (`parseConfig`) | Standalone sandbox client authentication; never accepted as a command-line argument or forwarded into job environments. |
 
 ## Where values are set
 
@@ -29,6 +45,7 @@ read once at process start and a restart applies a change.
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `EIGENINFERENCE_PORT` | TCP port | `8080` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Listen port for the HTTP API and the provider WebSocket. |
+| `EIGENINFERENCE_BIND_HOST` | IP literal, or empty | empty (all interfaces) | `coordinator/api/server_config.go` (`ReadServerConfig`), `coordinator/api/listen_address.go` (`ListenAddress`, `checkBindHost`); `coordinator/cmd/coordinator/main.go` | Restricts the real HTTP and WebSocket listener to an explicit IPv4/IPv6 address. Hostnames, bracketed hosts, host:port strings and zone suffixes are rejected. `127.0.0.1` permits isolated local acceptance; the default preserves the existing bind behavior. |
 | `EIGENINFERENCE_BASE_URL` | URL | unset — derived per request from `Host` and `X-Forwarded-Proto` | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/server.go` (`resolveBaseURL`) | Public origin templated into the served `/install.sh` and other self-referencing URLs. |
 | `EIGENINFERENCE_CONSOLE_URL` | URL | unset — `<scheme>://<Host>/link` is derived per request | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/device_auth.go` | Console origin used to build the device-code `verification_uri` (`<console>/link`). |
 | `CORS_ORIGIN` | origin | `https://console.darkbloom.dev` (applied in `corsMiddleware`) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/server.go` (`corsMiddleware`) | The single origin allowed for credentialed CORS; public read-only GETs stay wildcard. |

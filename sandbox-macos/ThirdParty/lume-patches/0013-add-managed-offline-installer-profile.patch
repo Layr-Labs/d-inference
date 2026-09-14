@@ -1,0 +1,348 @@
+diff --git a/libs/lume/src/Commands/Run.swift b/libs/lume/src/Commands/Run.swift
+index 7f91fc8..115c6ca 100644
+--- a/libs/lume/src/Commands/Run.swift
++++ b/libs/lume/src/Commands/Run.swift
+@@ -196,7 +196,7 @@ struct Run: AsyncParsableCommand {
+             vncDisabled: vnc == .disabled, clipboard: clipboard, recovery: recoveryMode,
+             sharedDirectoryCount: sharedDirectories.count, usbCount: usbStorageDevices.count,
+             networkOverride: network != nil, control: mount.map { Path($0) },
+-            disks: parsedAdditionalDisks)
++            disks: parsedAdditionalDisks, storageOverride: diskPath != nil || nvramPath != nil)
+         if detach {
+             guard brokerLifecycle == nil else {
+                 throw ValidationError(
+diff --git a/libs/lume/src/LumeController.swift b/libs/lume/src/LumeController.swift
+index 1a71e3a..522a835 100644
+--- a/libs/lume/src/LumeController.swift
++++ b/libs/lume/src/LumeController.swift
+@@ -1145,7 +1145,8 @@ final class LumeController {
+             displayDisabled: effectiveDisplayMode == .none, vncDisabled: vncPolicy == .disabled,
+             clipboard: clipboard, recovery: recoveryMode,
+             sharedDirectoryCount: sharedDirectories.count, usbCount: usbMassStoragePaths?.count ?? 0,
+-            networkOverride: networkMode != nil, control: mount, disks: additionalDiskPaths)
++            networkOverride: networkMode != nil, control: mount, disks: additionalDiskPaths,
++            storageOverride: diskPath != nil || nvramPath != nil)
+ 
+         if let option = VNCPolicy.conflictingOption(
+             policy: vncPolicy,
+@@ -1806,10 +1807,11 @@ final class LumeController {
+ 
+         // Load config directly from vmDir
+         let vmConfig = try vmDir.loadConfig()
++        try DarkbloomDevicePolicy.validateOperatingSystem(vmConfig.os)
+         switch vmConfig.os.lowercased() {
+         case "macos":
+-            if try DarkbloomDevicePolicy.isIsolated() {
+-                try DarkbloomDevicePolicy.validateStorage(boot: primaryDiskPath,
++            if try DarkbloomDevicePolicy.isManagedOffline() {
++                try DarkbloomDevicePolicy.validateManagedStorage(boot: primaryDiskPath,
+                     control: mount, disks: additionalDiskPaths)
+             } else if mount != nil {
+                 throw ValidationError(
+diff --git a/libs/lume/src/VM/DarkbloomRuntimeAuthority.swift b/libs/lume/src/VM/DarkbloomRuntimeAuthority.swift
+index fc96b38..5600e75 100644
+--- a/libs/lume/src/VM/DarkbloomRuntimeAuthority.swift
++++ b/libs/lume/src/VM/DarkbloomRuntimeAuthority.swift
+@@ -11,8 +11,8 @@ enum DarkbloomRuntimeAuthority {
+     static let authorityDirectory = "/Library/Application Support/Darkbloom/runtime"
+     private static var retainedLease: DarkbloomRuntimeLease?
+ 
+-    static func retainInheritedIfIsolated() throws {
+-        guard try DarkbloomDevicePolicy.isIsolated() else { return }
++    static func retainInheritedIfManagedOffline() throws {
++        guard try DarkbloomDevicePolicy.isManagedOffline() else { return }
+         try retainInherited()
+     }
+ 
+@@ -21,7 +21,7 @@ enum DarkbloomRuntimeAuthority {
+     private static func retainInherited() throws {
+         if let retainedLease { try retainedLease.validate(); return }
+         guard ProcessInfo.processInfo.environment[environmentVariable] == String(inheritedDescriptor) else {
+-            throw DarkbloomDevicePolicyError.invalidConfiguration("isolated VM requires inherited machine ownership")
++            throw DarkbloomDevicePolicyError.invalidConfiguration("managed offline VM requires inherited machine ownership")
+         }
+         unsetenv(environmentVariable)
+         retainedLease = try DarkbloomRuntimeLease(
+diff --git a/libs/lume/src/VM/VM.swift b/libs/lume/src/VM/VM.swift
+index cf17418..c7eec77 100644
+--- a/libs/lume/src/VM/VM.swift
++++ b/libs/lume/src/VM/VM.swift
+@@ -208,7 +208,7 @@ class VM {
+         guard !runLifecycleIsActive, activeBrokerLifecycle == nil else {
+             throw VMError.alreadyRunning(vmDirContext.name)
+         }
+-        try DarkbloomRuntimeAuthority.retainInheritedIfIsolated()
++        try DarkbloomRuntimeAuthority.retainInheritedIfManagedOffline()
+         var runLifecycleRegistered = false
+         runStopRequested = brokerLifecycle?.isStopRequested ?? false
+         activeBrokerLifecycle = brokerLifecycle
+diff --git a/libs/lume/src/Virtualization/DarkbloomDevicePolicy.swift b/libs/lume/src/Virtualization/DarkbloomDevicePolicy.swift
+index 17e9784..27f4ce7 100644
+--- a/libs/lume/src/Virtualization/DarkbloomDevicePolicy.swift
++++ b/libs/lume/src/Virtualization/DarkbloomDevicePolicy.swift
+@@ -2,18 +2,28 @@ import Darwin
+ import Foundation
+ import Virtualization
+ 
+-/// The isolated profile is selected only by the broker. It has no IP network
+-/// or host peripherals; ordinary image preparation keeps upstream behavior.
++/// Managed profiles have no IP network or host peripherals. Tenant execution
++/// has private control/workspace disks; installer boot has only its boot disk.
+ enum DarkbloomDevicePolicyError: Error { case invalidConfiguration(String) }
+ 
+ enum DarkbloomDevicePolicy {
+     static let environmentKey = "DARKBLOOM_VM_PROFILE"
+     static let isolatedProfile = "isolated-v1"
++    static let installerProfile = "installer-v1"
++    enum Profile: String { case isolated = "isolated-v1", installer = "installer-v1" }
++
++    static func profile(environment: [String: String] = ProcessInfo.processInfo.environment) throws -> Profile? {
++        guard let value = environment[environmentKey] else { return nil }
++        guard let profile = Profile(rawValue: value) else { throw invalid("unknown Darkbloom device profile") }
++        return profile
++    }
+ 
+     static func isIsolated(environment: [String: String] = ProcessInfo.processInfo.environment) throws -> Bool {
+-        guard let profile = environment[environmentKey] else { return false }
+-        guard profile == isolatedProfile else { throw invalid("unknown Darkbloom device profile") }
+-        return true
++        try profile(environment: environment) == .isolated
++    }
++
++    static func isManagedOffline(environment: [String: String] = ProcessInfo.processInfo.environment) throws -> Bool {
++        try profile(environment: environment) != nil
+     }
+ 
+     static func validateInvocation(hasBrokerLifecycle: Bool, detached: Bool,
+@@ -21,12 +31,51 @@ enum DarkbloomDevicePolicy {
+                                    clipboard: Bool, recovery: Bool,
+                                    sharedDirectoryCount: Int, usbCount: Int,
+                                    networkOverride: Bool, control: Path?, disks: [Path]?,
++                                   storageOverride: Bool = false,
+                                    environment: [String: String] = ProcessInfo.processInfo.environment) throws {
+-        guard try isIsolated(environment: environment) else { return }
++        guard let profile = try profile(environment: environment) else { return }
+         guard hasBrokerLifecycle, !detached, displayDisabled, vncDisabled,
+               !clipboard, !recovery, sharedDirectoryCount == 0, usbCount == 0,
+-              !networkOverride, control != nil, disks?.count == 1 else {
+-            throw invalid("isolated VMs require broker lifecycle, disabled display/VNC, one read-only control disk and one workspace; host shares, networking, USB, recovery and clipboard are forbidden")
++              !networkOverride else {
++            throw invalid("managed offline VMs require broker lifecycle and disabled display/VNC; host shares, networking, USB, recovery and clipboard are forbidden")
++        }
++        switch profile {
++        case .isolated:
++            guard control != nil, disks?.count == 1 else { throw invalid("isolated VMs require one control disk and one workspace") }
++        case .installer:
++            guard control == nil, disks?.isEmpty != false, !storageOverride else {
++                throw invalid("installer VMs use only their owned boot disk and NVRAM; storage overrides and extra disks are forbidden")
++            }
++        }
++    }
++
++    static func validateOperatingSystem(_ os: String,
++                environment: [String: String] = ProcessInfo.processInfo.environment) throws {
++        if try profile(environment: environment) == .installer, os.lowercased() != "macos" {
++            throw invalid("managed installer profile requires macOS")
++        }
++    }
++
++    static func validateManagedStorage(boot: Path, control: Path?, disks: [Path]?,
++                environment: [String: String] = ProcessInfo.processInfo.environment) throws {
++        switch try profile(environment: environment) {
++        case .none: return
++        case .isolated: try validateStorage(boot: boot, control: control, disks: disks)
++        case .installer:
++            guard control == nil, disks?.isEmpty != false, boot.url.lastPathComponent == "disk.img" else {
++                throw invalid("installer VMs require the owned boot disk only")
++            }
++            try DarkbloomPrivatePath.openDirectory(boot.url.deletingLastPathComponent().path).withDescriptor { _ in }
++            guard let canonical = DarkbloomPrivatePath.canonicalPath(boot.path) else { throw invalid("noncanonical installer disk") }
++            let file = open(canonical, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
++            guard file >= 0 else { throw invalid("installer disk unavailable") }
++            defer { close(file) }
++            var info = stat()
++            guard fstat(file, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == geteuid(),
++                  info.st_mode & 0o7777 == 0o600, info.st_nlink == 1, info.st_size > 0, info.st_size % 512 == 0 else {
++                throw invalid("installer disk is not a private owned image")
++            }
++            try DarkbloomPrivatePath.requireNoACL(file)
+         }
+     }
+ 
+@@ -65,13 +114,14 @@ enum DarkbloomDevicePolicy {
+     static func apply(to configuration: VZVirtualMachineConfiguration,
+                       context: VMVirtualizationServiceContext,
+                       environment: [String: String] = ProcessInfo.processInfo.environment) throws {
+-        guard try isIsolated(environment: environment) else { return }
++        guard let profile = try profile(environment: environment) else { return }
+         guard context.sharedDirectories?.isEmpty != false,
+               context.usbMassStoragePaths?.isEmpty != false, !context.recoveryMode,
+               context.networkMode == .nat else { throw invalid("forbidden isolated device configuration") }
+-        try validateStorage(boot: context.diskPath, control: context.mount, disks: context.additionalDiskPaths)
+-        guard configuration.storageDevices.count == 3 else { throw invalid("isolated VM requires exactly three block devices") }
+-        let expected = [(context.diskPath, false), (context.mount!, true), (context.additionalDiskPaths![0], false)]
++        try validateManagedStorage(boot: context.diskPath, control: context.mount, disks: context.additionalDiskPaths, environment: environment)
++        let expected: [(Path, Bool)] = profile == .installer ? [(context.diskPath, false)]
++            : [(context.diskPath, false), (context.mount!, true), (context.additionalDiskPaths![0], false)]
++        guard configuration.storageDevices.count == expected.count else { throw invalid("managed offline VM block device count differs") }
+         for (device, requirement) in zip(configuration.storageDevices, expected) {
+             guard let block = device as? VZVirtioBlockDeviceConfiguration,
+                   let attachment = block.attachment as? VZDiskImageStorageDeviceAttachment,
+@@ -87,7 +137,7 @@ enum DarkbloomDevicePolicy {
+         configuration.keyboards = []
+         configuration.pointingDevices = []
+         if #available(macOS 15.0, *) { configuration.usbControllers = [] }
+-        configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
++        configuration.socketDevices = profile == .isolated ? [VZVirtioSocketDeviceConfiguration()] : []
+     }
+ 
+     private static func invalid(_ message: String) -> DarkbloomDevicePolicyError { .invalidConfiguration(message) }
+diff --git a/libs/lume/src/Virtualization/VMVirtualizationService.swift b/libs/lume/src/Virtualization/VMVirtualizationService.swift
+index ebaf2f2..70d84a3 100644
+--- a/libs/lume/src/Virtualization/VMVirtualizationService.swift
++++ b/libs/lume/src/Virtualization/VMVirtualizationService.swift
+@@ -457,7 +457,7 @@ final class DarwinVirtualizationService: BaseVirtualizationService {
+         // at a writable path, attach a virtio serial port whose output is written
+         // there. Useful for observing early boot / recoveryOS behaviour that has
+         // no other headless channel.
+-        if try !DarkbloomDevicePolicy.isIsolated(),
++        if try !DarkbloomDevicePolicy.isManagedOffline(),
+            let serialLogPath = ProcessInfo.processInfo.environment["LUME_SERIAL_CONSOLE"],
+             !serialLogPath.isEmpty
+         {
+diff --git a/libs/lume/tests/DarkbloomInstallerDevicePolicyTests.swift b/libs/lume/tests/DarkbloomInstallerDevicePolicyTests.swift
+new file mode 100644
+index 0000000..653bf1c
+--- /dev/null
++++ b/libs/lume/tests/DarkbloomInstallerDevicePolicyTests.swift
+@@ -0,0 +1,130 @@
++import Darwin
++import Foundation
++import Testing
++import Virtualization
++@testable import lume
++
++@Suite("Darkbloom managed offline installer devices")
++@MainActor
++struct DarkbloomInstallerDevicePolicyTests {
++    private let environment = [DarkbloomDevicePolicy.environmentKey: DarkbloomDevicePolicy.installerProfile]
++
++    @Test func installerHasOnlyItsBootDiskAndNoHostOrGuestBridgeDevices() throws {
++        let fixture = try Fixture(), config = try fixture.configuration()
++        config.networkDevices = [VZVirtioNetworkDeviceConfiguration()]
++        config.audioDevices = [VZVirtioSoundDeviceConfiguration()]
++        config.consoleDevices = [VZVirtioConsoleDeviceConfiguration()]
++        config.serialPorts = [VZVirtioConsoleDeviceSerialPortConfiguration()]
++        config.directorySharingDevices = [VZVirtioFileSystemDeviceConfiguration(tag: "unwanted")]
++        config.keyboards = [VZUSBKeyboardConfiguration()]
++        config.pointingDevices = [VZUSBScreenCoordinatePointingDeviceConfiguration()]
++        config.socketDevices = [VZVirtioSocketDeviceConfiguration()]
++        if #available(macOS 15.0, *) { config.usbControllers = [VZXHCIControllerConfiguration()] }
++        try DarkbloomDevicePolicy.apply(to: config, context: fixture.context(), environment: environment)
++        #expect(config.storageDevices.count == 1)
++        let attachment = (config.storageDevices[0] as? VZVirtioBlockDeviceConfiguration)?.attachment as? VZDiskImageStorageDeviceAttachment
++        #expect(attachment?.url == fixture.boot.url && attachment?.isReadOnly == false)
++        #expect(config.networkDevices.isEmpty && config.audioDevices.isEmpty && config.consoleDevices.isEmpty)
++        #expect(config.serialPorts.isEmpty && config.directorySharingDevices.isEmpty)
++        #expect(config.keyboards.isEmpty && config.pointingDevices.isEmpty && config.socketDevices.isEmpty)
++        if #available(macOS 15.0, *) { #expect(config.usbControllers.isEmpty) }
++    }
++
++    @Test func installerRequiresBrokerAndRejectsEveryExtraDeviceOrStorageOverride() throws {
++        let fixture = try Fixture()
++        for violation in 0..<12 {
++            #expect(throws: DarkbloomDevicePolicyError.self) {
++                try DarkbloomDevicePolicy.validateInvocation(hasBrokerLifecycle: violation != 0,
++                    detached: violation == 1, displayDisabled: violation != 2, vncDisabled: violation != 3,
++                    clipboard: violation == 4, recovery: violation == 5,
++                    sharedDirectoryCount: violation == 6 ? 1 : 0, usbCount: violation == 7 ? 1 : 0,
++                    networkOverride: violation == 8, control: violation == 9 ? fixture.boot : nil,
++                    disks: violation == 10 ? [fixture.boot] : [], storageOverride: violation == 11,
++                    environment: environment)
++            }
++        }
++        for disks: [Path]? in [nil, []] {
++            try DarkbloomDevicePolicy.validateInvocation(hasBrokerLifecycle: true, detached: false,
++                displayDisabled: true, vncDisabled: true, clipboard: false, recovery: false,
++                sharedDirectoryCount: 0, usbCount: 0, networkOverride: false, control: nil,
++                disks: disks, environment: environment)
++        }
++    }
++
++    @Test func installerRejectsWrongBlockPermissionsAndDeviceCount() throws {
++        let fixture = try Fixture()
++        for kind in 0..<3 {
++            let config = try fixture.configuration(readOnly: kind == 0)
++            if kind == 1 { config.storageDevices = [] }
++            if kind == 2 { config.storageDevices.append(config.storageDevices[0]) }
++            #expect(throws: DarkbloomDevicePolicyError.self) {
++                try DarkbloomDevicePolicy.apply(to: config, context: fixture.context(), environment: environment)
++            }
++        }
++    }
++
++    @Test func installerStorageRejectsSharedModeLinksAndAdditionalMedia() throws {
++        let fixture = try Fixture()
++        func check() throws {
++            try DarkbloomDevicePolicy.validateManagedStorage(boot: fixture.boot, control: nil, disks: nil, environment: environment)
++        }
++        try check()
++        #expect(chmod(fixture.boot.path, 0o644) == 0)
++        #expect(throws: DarkbloomDevicePolicyError.self) { try check() }
++        #expect(chmod(fixture.boot.path, 0o600) == 0)
++        let alias = fixture.root.appendingPathComponent("alias.img")
++        #expect(link(fixture.boot.path, alias.path) == 0)
++        #expect(throws: DarkbloomDevicePolicyError.self) { try check() }
++        #expect(unlink(alias.path) == 0)
++        try check()
++        #expect(throws: DarkbloomDevicePolicyError.self) {
++            try DarkbloomDevicePolicy.validateManagedStorage(boot: fixture.boot, control: fixture.boot, disks: nil, environment: environment)
++        }
++        #expect(throws: DarkbloomDevicePolicyError.self) {
++            try DarkbloomDevicePolicy.validateManagedStorage(boot: fixture.boot, control: nil, disks: [fixture.boot], environment: environment)
++        }
++    }
++
++    @Test func installerRequiresMacOSAndManagedAuthorityButNeverGuestBridge() throws {
++        #expect(try DarkbloomDevicePolicy.isManagedOffline(environment: environment))
++        #expect(try !DarkbloomDevicePolicy.isIsolated(environment: environment))
++        try DarkbloomDevicePolicy.validateOperatingSystem("macOS", environment: environment)
++        for os in ["linux", "unknown", ""] {
++            #expect(throws: DarkbloomDevicePolicyError.self) {
++                try DarkbloomDevicePolicy.validateOperatingSystem(os, environment: environment)
++            }
++        }
++        let tenant = [DarkbloomDevicePolicy.environmentKey: DarkbloomDevicePolicy.isolatedProfile]
++        #expect(try DarkbloomDevicePolicy.isManagedOffline(environment: tenant))
++        #expect(try DarkbloomDevicePolicy.isIsolated(environment: tenant))
++        #expect(try !DarkbloomDevicePolicy.isManagedOffline(environment: [:]))
++        #expect(throws: DarkbloomDevicePolicyError.self) {
++            try DarkbloomDevicePolicy.isManagedOffline(environment: [DarkbloomDevicePolicy.environmentKey: "installer-v2"])
++        }
++    }
++
++    private final class Fixture {
++        let root: URL
++        let boot: Path
++        init() throws {
++            root = URL(fileURLWithPath: "/private/tmp").appendingPathComponent(".db-installer-\(UUID().uuidString)")
++            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
++            boot = Path(root.appendingPathComponent("disk.img").path)
++            guard FileManager.default.createFile(atPath: boot.path, contents: Data(repeating: 0, count: 512),
++                attributes: [.posixPermissions: 0o600]) else { throw POSIXError(.EIO) }
++        }
++        deinit { try? FileManager.default.removeItem(at: root) }
++        func configuration(readOnly: Bool = false) throws -> VZVirtualMachineConfiguration {
++            let config = VZVirtualMachineConfiguration()
++            config.storageDevices = [VZVirtioBlockDeviceConfiguration(attachment:
++                try VZDiskImageStorageDeviceAttachment(url: boot.url, readOnly: readOnly))]
++            return config
++        }
++        func context() -> VMVirtualizationServiceContext {
++            .init(cpuCount: 2, memorySize: 4 << 30, display: "1024x768", sharedDirectories: nil,
++                mount: nil, hardwareModel: nil, machineIdentifier: nil, macAddress: "02:00:00:00:00:01",
++                diskPath: boot, nvramPath: Path(root.appendingPathComponent("nvram.bin").path),
++                recoveryMode: false, usbMassStoragePaths: nil, additionalDiskPaths: nil, networkMode: .nat)
++        }
++    }
++}

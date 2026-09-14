@@ -147,8 +147,21 @@ const legacyCacheAffinityScrubMigration = `DO $$ BEGIN
 	END IF;
 END $$`
 
+const (
+	postgresMigrationAdvisoryLockID            int64 = 0x44424D4947524154
+	postgresMigrationAdvisoryLockRetryInterval       = 100 * time.Millisecond
+)
+
 // migrate runs the schema creation statements.
 func (s *PostgresStore) migrate(ctx context.Context) error {
+	return s.withMigrationLock(ctx, func() error {
+		return s.migrateLocked(ctx)
+	})
+}
+
+// migrateLocked runs every startup migration phase while the caller holds the
+// database-wide PostgreSQL migration advisory lock.
+func (s *PostgresStore) migrateLocked(ctx context.Context) error {
 	migrations := []string{
 		globalPayoutSchema,
 		// schema_migrations records one-time data migrations that must run at most
@@ -1173,14 +1186,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE fleet_snapshots ADD COLUMN IF NOT EXISTS template_render_ok BOOL; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 		fleetSnapshotsProviderIndexDDL,
 	}
+	migrations = append(migrations, sandboxSchemaMigrations()...)
 
-	for i, m := range migrations {
-		started := time.Now()
-		_, err := s.pool.Exec(ctx, m)
-		logStartupMigration(fmt.Sprintf("schema_statement_%03d", i), started, err)
-		if err != nil {
-			return fmt.Errorf("migration statement %d failed: %w", i, err)
-		}
+	if err := s.executeSchemaMigrationsLocked(ctx, migrations); err != nil {
+		return err
 	}
 
 	if err := s.migrateEarningsSummary(ctx); err != nil {
@@ -1205,6 +1214,111 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (s *PostgresStore) executeSchemaMigrations(
+	ctx context.Context,
+	migrations []string,
+) error {
+	return s.withMigrationLock(ctx, func() error {
+		return s.executeSchemaMigrationsLocked(ctx, migrations)
+	})
+}
+
+func (s *PostgresStore) executeSchemaMigrationsLocked(
+	ctx context.Context,
+	migrations []string,
+) error {
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration connection: %w", err)
+	}
+	defer conn.Release()
+
+	for index, migration := range migrations {
+		started := time.Now()
+		_, err := conn.Exec(ctx, migration)
+		logStartupMigration(fmt.Sprintf("schema_statement_%03d", index), started, err)
+		if err != nil {
+			return fmt.Errorf("migration statement %d failed: %w", index, err)
+		}
+	}
+	return nil
+}
+
+func (s *PostgresStore) withMigrationLock(
+	ctx context.Context,
+	run func() error,
+) error {
+	// Startup phases borrow from the pool themselves. Holding a pooled
+	// connection for the outer lock would deadlock a one-connection pool and
+	// can starve a small pool when several migration callers wait for the lock.
+	// Keep one bounded direct session instead; closing it always releases its
+	// advisory lock, including failed unlocks after cancellation.
+	conn, err := pgx.ConnectConfig(ctx, s.pool.Config().ConnConfig)
+	if err != nil {
+		return fmt.Errorf("acquire migration lock connection: %w", err)
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = conn.Close(closeCtx)
+	}()
+
+	if err := acquirePostgresMigrationLock(ctx, conn); err != nil {
+		return fmt.Errorf("acquire migration advisory lock: %w", err)
+	}
+	if err := run(); err != nil {
+		return err
+	}
+
+	var released bool
+	if err := conn.QueryRow(
+		ctx,
+		`SELECT pg_advisory_unlock($1)`,
+		postgresMigrationAdvisoryLockID,
+	).Scan(&released); err != nil {
+		return fmt.Errorf("release migration advisory lock: %w", err)
+	}
+	if !released {
+		return errors.New("release migration advisory lock: lock was not held")
+	}
+	return nil
+}
+
+func acquirePostgresMigrationLock(
+	ctx context.Context,
+	conn interface {
+		QueryRow(context.Context, string, ...any) pgx.Row
+	},
+) error {
+	retry := time.NewTicker(postgresMigrationAdvisoryLockRetryInterval)
+	defer retry.Stop()
+
+	for {
+		var acquired bool
+		if err := conn.QueryRow(
+			ctx,
+			`SELECT pg_try_advisory_lock($1)`,
+			postgresMigrationAdvisoryLockID,
+		).Scan(&acquired); err != nil {
+			return err
+		}
+		if acquired {
+			return nil
+		}
+
+		// A blocking pg_advisory_lock call keeps the waiter's virtual
+		// transaction open. CREATE INDEX CONCURRENTLY on the lock holder then
+		// waits for that virtual transaction, while the waiter waits for the
+		// holder: an application-level deadlock. Retrying the non-blocking form
+		// leaves no database transaction open between attempts.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-retry.C:
+		}
+	}
 }
 
 // ensureProviderEarningsJobIndex creates the partial UNIQUE index that backs the

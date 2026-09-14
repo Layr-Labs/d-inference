@@ -1,0 +1,489 @@
+diff --git a/libs/lume/src/Commands/Create.swift b/libs/lume/src/Commands/Create.swift
+index 5ec08cc..8129b46 100644
+--- a/libs/lume/src/Commands/Create.swift
++++ b/libs/lume/src/Commands/Create.swift
+@@ -93,6 +93,8 @@ struct Create: AsyncParsableCommand {
+ 
+     @MainActor
+     func run() async throws {
++        let managedRestore = try ManagedRestoreContext.inherited(os: os, unattended: unattended != nil)
++        defer { managedRestore?.finishCommand() }
+         let diskSize = diskSize ?? Self.defaultDiskSize(for: os)
+ 
+         // Validate unattended is only used with macOS
+@@ -127,6 +129,7 @@ struct Create: AsyncParsableCommand {
+             "has_unattended": unattendedConfig != nil
+         ])
+ 
++        try ManagedRestoreContext.checkCancellation()
+         let controller = LumeController()
+         try await controller.create(
+             name: name,
+diff --git a/libs/lume/src/LumeController.swift b/libs/lume/src/LumeController.swift
+index e1726dd..231eb6a 100644
+--- a/libs/lume/src/LumeController.swift
++++ b/libs/lume/src/LumeController.swift
+@@ -788,7 +788,12 @@ final class LumeController {
+         }
+     }
+ 
++    @MainActor
+     private func cleanupFailedCreateVMDirectory(_ vmDir: VMDirectory, context: String) {
++        guard ManagedRestoreContext.mayRemoveCreatedFiles else {
++            Logger.error("Retaining created files because installer VM stop is unproven")
++            return
++        }
+         do {
+             if vmDir.exists() {
+                 try vmDir.delete()
+@@ -847,6 +852,7 @@ final class LumeController {
+                 display: display
+             )
+ 
++            try ManagedRestoreContext.checkCancellation()
+             // If vmDir was pre-created (async flow), we need to handle finalization differently
+             if let existingVmDir = vmDir {
+                 // Delete the pre-created directory (with just config and marker)
+@@ -856,6 +862,10 @@ final class LumeController {
+ 
+             try vm.finalize(to: name, home: home, storage: storage)
+         } catch {
++            guard ManagedRestoreContext.mayRemoveCreatedFiles else {
++                Logger.error("Retaining installer files and owner until process termination")
++                throw error
++            }
+             // Clean up the temporary VM directory on setup/finalize failure
+             Logger.info("Cleaning up temporary VM directory after failed creation",
+                        metadata: ["path": tempVMDir.dir.path])
+diff --git a/libs/lume/src/VM/DarkbloomRuntimeAuthority.swift b/libs/lume/src/VM/DarkbloomRuntimeAuthority.swift
+index e098b8c..fc96b38 100644
+--- a/libs/lume/src/VM/DarkbloomRuntimeAuthority.swift
++++ b/libs/lume/src/VM/DarkbloomRuntimeAuthority.swift
+@@ -13,6 +13,12 @@ enum DarkbloomRuntimeAuthority {
+ 
+     static func retainInheritedIfIsolated() throws {
+         guard try DarkbloomDevicePolicy.isIsolated() else { return }
++        try retainInherited()
++    }
++
++    static func retainInheritedForManagedRestore() throws { try retainInherited() }
++
++    private static func retainInherited() throws {
+         if let retainedLease { try retainedLease.validate(); return }
+         guard ProcessInfo.processInfo.environment[environmentVariable] == String(inheritedDescriptor) else {
+             throw DarkbloomDevicePolicyError.invalidConfiguration("isolated VM requires inherited machine ownership")
+diff --git a/libs/lume/src/VM/DarwinVM.swift b/libs/lume/src/VM/DarwinVM.swift
+index 2d00951..29ec6db 100644
+--- a/libs/lume/src/VM/DarwinVM.swift
++++ b/libs/lume/src/VM/DarwinVM.swift
+@@ -38,6 +38,7 @@ final class DarwinVM: VM {
+         }
+ 
+         let requirements = try await imageLoader.loadImageRequirements(from: imagePath.url)
++        try ManagedRestoreContext.checkCancellation()
+         try setDiskSize(diskSize)
+ 
+         let finalCpuCount = max(cpuCount, requirements.minimumSupportedCPUCount)
+@@ -80,8 +81,22 @@ final class DarwinVM: VM {
+         // Create auxiliary storage with hardware model
+         try darwinService.createAuxiliaryStorage(at: vmDirContext.nvramPath, hardwareModel: requirements.hardwareModel)
+ 
+-        try await darwinService.installMacOS(imagePath: imagePath) { progress in
+-            Logger.info("Installing macOS", metadata: ["progress": "\(Int(progress * 100))%"])
++        let managedRestore = ManagedRestoreContext.current
++        managedRestore?.retainInstallation(darwinService)
++        let installation: Result<Void, Error>
++        do {
++            try await darwinService.installMacOS(imagePath: imagePath) { progress in
++                Logger.info("Installing macOS", metadata: ["progress": "\(Int(progress * 100))%"])
++            }
++            installation = .success(())
++        } catch { installation = .failure(error) }
++        if let managedRestore {
++            // installMacOS resumes only after the VZ install completion callback.
++            // Stopping before that callback is explicitly unsupported by Apple.
++            try await darwinService.stop()
++            managedRestore.recordStoppedInstallation()
+         }
++        try installation.get()
++        try ManagedRestoreContext.checkCancellation()
+     }
+ }
+diff --git a/libs/lume/src/VM/ManagedRestoreContext.swift b/libs/lume/src/VM/ManagedRestoreContext.swift
+new file mode 100644
+index 0000000..0affcd4
+--- /dev/null
++++ b/libs/lume/src/VM/ManagedRestoreContext.swift
+@@ -0,0 +1,73 @@
++import Foundation
++
++/// Explicit broker-only raw restore mode. Ordinary standalone/unattended create
++/// remains separate; no device/readiness policy is disabled for a tenant VM.
++@MainActor
++final class ManagedRestoreContext {
++    static let profileKey = "DARKBLOOM_RESTORE_PROFILE"
++    private(set) static var current: ManagedRestoreContext?
++    let lifecycle: BrokerLifecycleCapability
++    private let cleanupProof = ManagedRestoreCleanupProof()
++
++    private init(lifecycle: BrokerLifecycleCapability) { self.lifecycle = lifecycle }
++
++    static func validateInvocation(profile: String?, os: String, unattended: Bool,
++                                   hasAuthority: Bool, hasLifecycle: Bool, hasDeviceProfile: Bool) throws -> Bool {
++        guard let profile else {
++            guard !hasAuthority, !hasLifecycle else {
++                throw VMError.internalError("restore capabilities require the managed raw restore profile")
++            }
++            return false
++        }
++        guard profile == "apple-v1", os.lowercased() == "macos", !unattended,
++              hasAuthority, hasLifecycle, !hasDeviceProfile else {
++            throw VMError.internalError("invalid managed raw restore invocation")
++        }
++        return true
++    }
++
++    static func inherited(os: String, unattended: Bool) throws -> ManagedRestoreContext? {
++        let environment = ProcessInfo.processInfo.environment
++        guard try validateInvocation(profile: environment[profileKey], os: os, unattended: unattended,
++            hasAuthority: environment[DarkbloomRuntimeAuthority.environmentVariable] != nil,
++            hasLifecycle: environment[BrokerLifecycleCapability.environmentVariable] != nil,
++            hasDeviceProfile: environment["DARKBLOOM_VM_PROFILE"] != nil) else { return nil }
++        guard current == nil else { throw VMError.internalError("managed restore is already active") }
++        unsetenv(profileKey)
++        try DarkbloomRuntimeAuthority.retainInheritedForManagedRestore()
++        guard let lifecycle = try BrokerLifecycleCapability.inherited() else {
++            throw VMError.internalError("managed restore requires broker lifecycle ownership")
++        }
++        let context = ManagedRestoreContext(lifecycle: lifecycle)
++        current = context
++        try checkCancellation()
++        return context
++    }
++
++    static func checkCancellation() throws {
++        try Task.checkCancellation()
++        if current?.lifecycle.isStopRequested == true { throw CancellationError() }
++    }
++
++    static var mayRemoveCreatedFiles: Bool { current?.cleanupProof.isSafeToRemove ?? true }
++
++    func retainInstallation(_ owner: AnyObject) { cleanupProof.retain(owner) }
++    func recordStoppedInstallation() { cleanupProof.recordStopped() }
++
++    func finishCommand() {
++        lifecycle.clearStopHandler()
++        if Self.mayRemoveCreatedFiles { lifecycle.cancelFailStopAfterTerminalCleanup() }
++        // The context and inherited EX descriptor remain process-owned. If VZ
++        // stop was unproven, retain its owner and watchdog until process exit.
++    }
++}
++
++/// Separates framework completion from a proved stopped owner. A failed stop
++/// deliberately leaves the actual service retained until command process exit.
++@MainActor
++final class ManagedRestoreCleanupProof {
++    private var owner: AnyObject?
++    var isSafeToRemove: Bool { owner == nil }
++    func retain(_ owner: AnyObject) { self.owner = owner }
++    func recordStopped() { owner = nil }
++}
+diff --git a/libs/lume/src/Virtualization/MacOSInstallationOperation.swift b/libs/lume/src/Virtualization/MacOSInstallationOperation.swift
+new file mode 100644
+index 0000000..dcf94b5
+--- /dev/null
++++ b/libs/lume/src/Virtualization/MacOSInstallationOperation.swift
+@@ -0,0 +1,86 @@
++import Foundation
++
++protocol MacOSInstallationDriver: AnyObject {
++    var progress: Progress { get }
++    func install(completion: @escaping @Sendable (Result<Void, Error>) -> Void)
++}
++
++/// All installer access occurs on its VZ queue. Cancellation is sticky before
++/// registration, but Progress.cancel is never called before install() starts.
++final class MacOSInstallationOperation: @unchecked Sendable {
++    private let queue: DispatchQueue
++    private let makeDriver: @Sendable () throws -> any MacOSInstallationDriver
++    private let progressHandler: (@Sendable (Double) -> Void)?
++    private let cancellationLock = NSLock()
++    private var cancellationRequested = false
++    private var completionReceived = false
++    // The following fields are confined to queue.
++    private var driver: (any MacOSInstallationDriver)?
++    private var observation: NSKeyValueObservation?
++    private var continuation: CheckedContinuation<Void, Error>?
++    private var started = false
++    private var finished = false
++    private var cancellationDelivered = false
++
++    init(queue: DispatchQueue, makeDriver: @escaping @Sendable () throws -> any MacOSInstallationDriver,
++         progressHandler: (@Sendable (Double) -> Void)? = nil) {
++        self.queue = queue; self.makeDriver = makeDriver; self.progressHandler = progressHandler
++    }
++
++    func run() async throws {
++        try await withTaskCancellationHandler {
++            try await withCheckedThrowingContinuation { continuation in
++                queue.async { self.begin(continuation) }
++            }
++        } onCancel: { self.requestCancellation() }
++    }
++
++    func requestCancellation() {
++        cancellationLock.lock(); cancellationRequested = true; cancellationLock.unlock()
++        queue.async { self.deliverCancellationIfStarted() }
++    }
++
++    private var isCancellationRequested: Bool {
++        cancellationLock.lock(); defer { cancellationLock.unlock() }
++        return cancellationRequested
++    }
++
++    private func begin(_ continuation: CheckedContinuation<Void, Error>) {
++        guard !started, !finished, self.continuation == nil else {
++            continuation.resume(throwing: VMError.internalError("installation operation already used")); return
++        }
++        self.continuation = continuation
++        if isCancellationRequested { complete(.failure(CancellationError())); return }
++        do {
++            let driver = try makeDriver(); self.driver = driver
++            if let progressHandler {
++                observation = driver.progress.observe(\.fractionCompleted, options: [.initial, .new]) { progress, _ in
++                    progressHandler(progress.fractionCompleted)
++                }
++            }
++            driver.install { result in
++                self.cancellationLock.lock(); self.completionReceived = true; self.cancellationLock.unlock()
++                self.queue.async { self.complete(result) }
++            }
++            started = true
++            deliverCancellationIfStarted()
++        } catch { complete(.failure(error)) }
++    }
++
++    private func deliverCancellationIfStarted() {
++        cancellationLock.lock()
++        let shouldCancel = cancellationRequested && !completionReceived
++        cancellationLock.unlock()
++        guard started, !finished, !cancellationDelivered, shouldCancel else { return }
++        cancellationDelivered = true
++        driver?.progress.cancel()
++    }
++
++    private func complete(_ result: Result<Void, Error>) {
++        guard !finished else { return }
++        finished = true; observation = nil; driver = nil
++        let pending = continuation; continuation = nil
++        if isCancellationRequested { pending?.resume(throwing: CancellationError()) }
++        else { pending?.resume(with: result) }
++    }
++}
+diff --git a/libs/lume/src/Virtualization/VMVirtualizationService.swift b/libs/lume/src/Virtualization/VMVirtualizationService.swift
+index eb87a8b..ebaf2f2 100644
+--- a/libs/lume/src/Virtualization/VMVirtualizationService.swift
++++ b/libs/lume/src/Virtualization/VMVirtualizationService.swift
+@@ -548,36 +548,14 @@ final class DarwinVirtualizationService: BaseVirtualizationService {
+     func installMacOS(imagePath: Path, progressHandler: (@Sendable (Double) -> Void)?) async throws
+     {
+         let handle = virtualMachineHandle
+-        try await withCheckedThrowingContinuation {
+-            (continuation: CheckedContinuation<Void, Error>) in
+-            handle.queue.async {
+-                let installer = VZMacOSInstaller(
+-                    virtualMachine: handle.machine, restoringFromImageAt: imagePath.url)
+-                Logger.info("Starting macOS installation")
+-
+-                let progressObserver = progressHandler.map { progressHandler in
+-                    installer.progress.observe(
+-                        \.fractionCompleted, options: [.initial, .new]
+-                    ) { (progress, change) in
+-                        if let newValue = change.newValue {
+-                            progressHandler(newValue)
+-                        }
+-                    }
+-                }
+-
+-                installer.install { result in
+-                    withExtendedLifetime(progressObserver) {
+-                        switch result {
+-                        case .success:
+-                            continuation.resume()
+-                        case .failure(let error):
+-                            Logger.error("Failed to install, error=\(error))")
+-                            continuation.resume(throwing: error)
+-                        }
+-                    }
+-                }
+-            }
+-        }
++        let operation = MacOSInstallationOperation(queue: handle.queue, makeDriver: {
++            SystemMacOSInstallationDriver(virtualMachine: handle.machine, imageURL: imagePath.url)
++        }, progressHandler: progressHandler)
++        let lifecycle = ManagedRestoreContext.current?.lifecycle
++        lifecycle?.installStopHandler { operation.requestCancellation() }
++        defer { lifecycle?.clearStopHandler() }
++        Logger.info("Starting macOS installation")
++        try await operation.run()
+         Logger.info("macOS installation finished")
+     }
+ }
+@@ -733,3 +711,14 @@ final class LinuxVirtualizationService: BaseVirtualizationService {
+         )
+     }
+ }
++
++private final class SystemMacOSInstallationDriver: MacOSInstallationDriver {
++    private let installer: VZMacOSInstaller
++    var progress: Progress { installer.progress }
++    init(virtualMachine: VZVirtualMachine, imageURL: URL) {
++        installer = VZMacOSInstaller(virtualMachine: virtualMachine, restoringFromImageAt: imageURL)
++    }
++    func install(completion: @escaping @Sendable (Result<Void, Error>) -> Void) {
++        installer.install(completionHandler: completion)
++    }
++}
+diff --git a/libs/lume/tests/MacOSInstallationOperationTests.swift b/libs/lume/tests/MacOSInstallationOperationTests.swift
+new file mode 100644
+index 0000000..e0d07d6
+--- /dev/null
++++ b/libs/lume/tests/MacOSInstallationOperationTests.swift
+@@ -0,0 +1,137 @@
++import Foundation
++import Testing
++@testable import lume
++
++private final class FakeMacOSInstallation: MacOSInstallationDriver, @unchecked Sendable {
++    let progress = Progress(totalUnitCount: 1)
++    let starts: AsyncStream<Void>
++    let cancellations: AsyncStream<Void>
++    private let startSignal: AsyncStream<Void>.Continuation
++    private let cancelSignal: AsyncStream<Void>.Continuation
++    private let lock = NSLock()
++    private var callback: (@Sendable (Result<Void, Error>) -> Void)?
++    private var startCount = 0
++    private var cancelCount = 0
++    private var cancelledBeforeStart = false
++    var synchronousCompletion = false
++
++    init() {
++        (starts, startSignal) = AsyncStream.makeStream(of: Void.self)
++        (cancellations, cancelSignal) = AsyncStream.makeStream(of: Void.self)
++        progress.cancellationHandler = { [weak self] in self?.cancelled() }
++    }
++    func install(completion: @escaping @Sendable (Result<Void, Error>) -> Void) {
++        lock.lock(); startCount += 1; callback = completion; lock.unlock()
++        startSignal.yield(())
++        if synchronousCompletion { completion(.success(())) }
++    }
++    private func cancelled() {
++        lock.lock(); cancelCount += 1; cancelledBeforeStart = startCount == 0; lock.unlock()
++        cancelSignal.yield(())
++    }
++    func complete(_ result: Result<Void, Error>) {
++        lock.lock(); let callback = callback; lock.unlock(); callback?(result)
++    }
++    var facts: (starts: Int, cancels: Int, prematureCancel: Bool) {
++        lock.lock(); defer { lock.unlock() }; return (startCount, cancelCount, cancelledBeforeStart)
++    }
++}
++
++@Test("restore cancellation before installation never cancels unstarted Progress")
++func restoreCancelBeforeInstallation() async {
++    let driver = FakeMacOSInstallation()
++    let operation = MacOSInstallationOperation(queue: DispatchQueue(label: "restore-before"), makeDriver: { driver })
++    operation.requestCancellation()
++    do { try await operation.run(); Issue.record("cancelled operation succeeded") }
++    catch { #expect(error is CancellationError) }
++    #expect(driver.facts.starts == 0 && driver.facts.cancels == 0)
++}
++
++@Test("broker restore cancellation waits for installer completion before returning")
++func restoreCancellationWaitsForInstallerCompletion() async throws {
++    let driver = FakeMacOSInstallation()
++    let operation = MacOSInstallationOperation(queue: DispatchQueue(label: "restore-active"), makeDriver: { driver })
++    let task = Task { try await operation.run() }
++    var started = driver.starts.makeAsyncIterator(); await started.next()
++    operation.requestCancellation(); operation.requestCancellation()
++    var cancelled = driver.cancellations.makeAsyncIterator(); await cancelled.next()
++    #expect(driver.facts.cancels == 1 && !driver.facts.prematureCancel)
++    let returnedEarly = await withTaskGroup(of: Bool.self) { group in
++        group.addTask { _ = await task.result; return true }
++        group.addTask { try? await Task.sleep(for: .milliseconds(20)); return false }
++        let first = await group.next() ?? true
++        driver.complete(.success(()))
++        group.cancelAll()
++        while await group.next() != nil {}
++        return first
++    }
++    #expect(!returnedEarly, "cancellation must wait for the framework completion callback")
++    do { try await task.value; Issue.record("cancelled operation succeeded") }
++    catch { #expect(error is CancellationError) }
++}
++
++@Test("Swift task cancellation uses the same installer Progress path")
++func restoreTaskCancellationCancelsProgress() async throws {
++    let driver = FakeMacOSInstallation()
++    let operation = MacOSInstallationOperation(queue: DispatchQueue(label: "restore-task"), makeDriver: { driver })
++    let task = Task { try await operation.run() }
++    var started = driver.starts.makeAsyncIterator(); await started.next(); task.cancel()
++    var cancelled = driver.cancellations.makeAsyncIterator(); await cancelled.next()
++    #expect(driver.facts.cancels == 1 && !driver.facts.prematureCancel)
++    driver.complete(.failure(CancellationError()))
++    do { try await task.value; Issue.record("cancelled task succeeded") }
++    catch { #expect(error is CancellationError) }
++}
++
++@Test("completed restore never cancels installer Progress afterward")
++func restoreCompletionPrecedesLateCancellation() async throws {
++    let driver = FakeMacOSInstallation(); driver.synchronousCompletion = true
++    let queue = DispatchQueue(label: "restore-complete")
++    let operation = MacOSInstallationOperation(queue: queue, makeDriver: { driver })
++    try await operation.run(); operation.requestCancellation(); queue.sync {}
++    #expect(driver.facts.starts == 1 && driver.facts.cancels == 0)
++}
++
++@Test("installer creation failure preserves the error without starting Progress")
++func restoreDriverCreationFailure() async {
++    struct Failure: Error {}
++    let operation = MacOSInstallationOperation(queue: DispatchQueue(label: "restore-factory"), makeDriver: { throw Failure() })
++    do { try await operation.run(); Issue.record("failed factory succeeded") }
++    catch { #expect(error is Failure) }
++}
++
++@Test("managed restore rejects partial authority, tenant profiles and unattended setup")
++@MainActor
++func managedRestoreInvocationIsRawAndFullyAuthorized() throws {
++    #expect(try ManagedRestoreContext.validateInvocation(profile: nil, os: "macOS", unattended: true,
++        hasAuthority: false, hasLifecycle: false, hasDeviceProfile: false) == false)
++    #expect(try ManagedRestoreContext.validateInvocation(profile: "apple-v1", os: "macOS", unattended: false,
++        hasAuthority: true, hasLifecycle: true, hasDeviceProfile: false))
++    for (profile, os, unattended, authority, lifecycle, device) in [
++        (Optional("apple-v1"), "linux", false, true, true, false),
++        (Optional("apple-v1"), "macOS", true, true, true, false),
++        (Optional("apple-v1"), "macOS", false, false, true, false),
++        (Optional("apple-v1"), "macOS", false, true, false, false),
++        (Optional("apple-v1"), "macOS", false, true, true, true),
++        (nil, "macOS", false, true, true, false),
++        (Optional("unknown"), "macOS", false, true, true, false),
++    ] {
++        #expect(throws: (any Error).self) {
++            try ManagedRestoreContext.validateInvocation(profile: profile, os: os, unattended: unattended,
++                hasAuthority: authority, hasLifecycle: lifecycle, hasDeviceProfile: device)
++        }
++    }
++}
++
++@Test("installer owner remains retained and files protected until stopped proof")
++@MainActor
++func managedRestoreRequiresStoppedProofBeforeCleanup() {
++    let proof = ManagedRestoreCleanupProof()
++    weak var observed: NSObject?
++    do { let owner = NSObject(); observed = owner; proof.retain(owner) }
++    #expect(observed != nil && !proof.isSafeToRemove)
++    // Framework completion or a failed stop does not call recordStopped.
++    #expect(observed != nil && !proof.isSafeToRemove)
++    proof.recordStopped()
++    #expect(observed == nil && proof.isSafeToRemove)
++}

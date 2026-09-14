@@ -906,7 +906,7 @@ func main() {
 
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{
-		Addr:    ":" + cfg.ServerConfig.Port,
+		Addr:    cfg.ServerConfig.ListenAddress(),
 		Handler: srv.Handler(),
 		// ReadHeaderTimeout bounds the request-header read phase independently of
 		// the body, closing the slow-header (Slowloris) DoS window: a client that
@@ -944,7 +944,7 @@ func main() {
 
 	// Start listening.
 	go func() {
-		logger.Info("coordinator starting", "port", cfg.ServerConfig.Port, "admin_key_set", adminKey != "")
+		logger.Info("coordinator starting", "port", cfg.ServerConfig.Port, "listen_address", httpServer.Addr, "admin_key_set", adminKey != "")
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("server failed", "error", err)
 			os.Exit(1)

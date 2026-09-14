@@ -1,0 +1,109 @@
+diff --git a/libs/lume/src/VM/BrokerLifecycleCapability.swift b/libs/lume/src/VM/BrokerLifecycleCapability.swift
+index d8f882dd8..5e963a827 100644
+--- a/libs/lume/src/VM/BrokerLifecycleCapability.swift
++++ b/libs/lume/src/VM/BrokerLifecycleCapability.swift
+@@ -261,6 +261,7 @@ final class BrokerLifecycleCapability: @unchecked Sendable {
+ }
+ 
+ private func terminateAfterBrokerLifecycleDeadline() {
++    VMOwnerFailureDiagnostic.emit("broker_lifecycle_deadline_expired")
+     Darwin._exit(70)
+ }
+ 
+diff --git a/libs/lume/src/VM/VMOwnerFailStopPolicy.swift b/libs/lume/src/VM/VMOwnerFailStopPolicy.swift
+index cad101417..206402587 100644
+--- a/libs/lume/src/VM/VMOwnerFailStopPolicy.swift
++++ b/libs/lume/src/VM/VMOwnerFailStopPolicy.swift
+@@ -22,14 +22,11 @@ typealias VMOwnerFailStopHandler =
+ func terminateOwnerProcessAfterFailedEmergencyStop(
+     _ reason: VMOwnerFailStopReason
+ ) -> VMOwnerFailStopDisposition {
+-    Logger.error(
+-        "Emergency VM stop failed; terminating the owner process",
+-        metadata: [
+-            "name": reason.vmName,
+-            "runError": reason.runError,
+-            "stopError": reason.stopError,
+-            "serviceState": reason.serviceState,
+-        ])
++    VMOwnerFailureDiagnostic.emit(
++        "emergency_stop_failed name=\(reason.vmName) "
++            + "state=\(reason.serviceState) run_error=\(reason.runError) "
++            + "stop_error=\(reason.stopError)"
++    )
+     Darwin._exit(70)
+     fatalError("Darwin._exit unexpectedly returned")
+ }
+diff --git a/libs/lume/src/VM/VMOwnerFailureDiagnostic.swift b/libs/lume/src/VM/VMOwnerFailureDiagnostic.swift
+new file mode 100644
+index 000000000..129fbe027
+--- /dev/null
++++ b/libs/lume/src/VM/VMOwnerFailureDiagnostic.swift
+@@ -0,0 +1,19 @@
++import Darwin
++import Foundation
++
++/// Fail-stop uses _exit, which deliberately skips buffered logger flushing.
++/// Best-effort nonblocking output must never postpone terminating a live VM.
++enum VMOwnerFailureDiagnostic {
++    static func emit(_ message: String, descriptor: Int32 = STDERR_FILENO) {
++        let flags = fcntl(descriptor, F_GETFL)
++        guard flags >= 0,
++              fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0,
++              fcntl(descriptor, F_SETNOSIGPIPE, 1) == 0 else { return }
++        let clean = message.replacingOccurrences(of: "\n", with: " ")
++            .replacingOccurrences(of: "\r", with: " ")
++        let bytes = Data(("Lume owner fail-stop: " + String(clean.prefix(1800)) + "\n").utf8)
++        bytes.withUnsafeBytes { buffer in
++            _ = Darwin.write(descriptor, buffer.baseAddress, min(buffer.count, 2048))
++        }
++    }
++}
+diff --git a/libs/lume/tests/VMOwnerFailureDiagnosticTests.swift b/libs/lume/tests/VMOwnerFailureDiagnosticTests.swift
+new file mode 100644
+index 000000000..2f19c242d
+--- /dev/null
++++ b/libs/lume/tests/VMOwnerFailureDiagnosticTests.swift
+@@ -0,0 +1,42 @@
++import Darwin
++import Foundation
++import Testing
++@testable import lume
++
++@Suite struct VMOwnerFailureDiagnosticTests {
++    @Test func diagnosticSurvivesWithoutBufferedLoggerFlush() throws {
++        var descriptors = [Int32](repeating: -1, count: 2)
++        #expect(pipe(&descriptors) == 0)
++        defer { close(descriptors[0]); close(descriptors[1]) }
++        VMOwnerFailureDiagnostic.emit("emergency_stop_failed state=error\nno newline injection",
++                                      descriptor: descriptors[1])
++        #expect(fcntl(descriptors[0], F_SETFL, O_NONBLOCK) == 0)
++        var bytes = [UInt8](repeating: 0, count: 4096)
++        let count = read(descriptors[0], &bytes, bytes.count)
++        #expect(count > 0)
++        let message = String(decoding: bytes.prefix(max(0, count)), as: UTF8.self)
++        #expect(message == "Lume owner fail-stop: emergency_stop_failed state=error no newline injection\n")
++    }
++
++    @Test func fullDiagnosticPipeCannotDelayFailStop() throws {
++        var descriptors = [Int32](repeating: -1, count: 2)
++        #expect(pipe(&descriptors) == 0)
++        defer { close(descriptors[0]); close(descriptors[1]) }
++        #expect(fcntl(descriptors[1], F_SETFL, O_NONBLOCK) == 0)
++        let bytes = [UInt8](repeating: 65, count: 4096)
++        while write(descriptors[1], bytes, bytes.count) > 0 {}
++        #expect(errno == EAGAIN)
++        let start = ContinuousClock.now
++        VMOwnerFailureDiagnostic.emit("must not block", descriptor: descriptors[1])
++        #expect(start.duration(to: .now) < .seconds(1))
++    }
++
++    @Test func closedDiagnosticReaderDoesNotSignalProcess() throws {
++        var descriptors = [Int32](repeating: -1, count: 2)
++        #expect(pipe(&descriptors) == 0)
++        close(descriptors[0])
++        defer { close(descriptors[1]) }
++        VMOwnerFailureDiagnostic.emit("reader gone", descriptor: descriptors[1])
++        #expect(fcntl(descriptors[1], F_GETFD) >= 0)
++    }
++}

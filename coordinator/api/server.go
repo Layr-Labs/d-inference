@@ -51,6 +51,8 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
+	"github.com/eigeninference/d-inference/coordinator/sandboxcontrol"
+	"github.com/eigeninference/d-inference/coordinator/sandboxhost"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
 	"github.com/google/uuid"
@@ -80,6 +82,17 @@ const (
 	ctxKeyConsumer contextKey = iota
 	ctxKeyRequestID
 	ctxKeyAPIKey
+	ctxKeyCredentialKind
+)
+
+type credentialKind uint8
+
+const (
+	credentialUnknown credentialKind = iota
+	credentialPrivy
+	credentialAPIKey
+	credentialProviderToken
+	credentialAdmin
 )
 
 // requestIDFromContext returns the per-request correlation ID set by
@@ -199,6 +212,10 @@ type releaseTrustPolicySnapshot struct {
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
 	registry                      *registry.Registry
+	sandboxHosts                  *sandboxhost.Registry
+	sandboxes                     *sandboxcontrol.Controller
+	sandboxHostAuth               *sandboxhost.Authenticator
+	sandboxService                SandboxServiceConfig
 	store                         store.Store
 	ledger                        *payments.Ledger
 	billing                       *billing.Service
@@ -807,12 +824,39 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	if cfg.MediaFetch != nil {
 		mediaFetchCfg = *cfg.MediaFetch
 	}
+	sandboxHostAuth, sandboxHostAuthError := sandboxhost.NewAuthenticator(
+		cfg.SandboxHostAuth,
+	)
+	if sandboxHostAuthError != nil {
+		logger.Error(
+			"invalid sandbox host authentication config; endpoint disabled",
+			"error",
+			sandboxHostAuthError,
+		)
+		sandboxHostAuth, _ = sandboxhost.NewAuthenticator(sandboxhost.AuthConfig{})
+	}
 	firstContentDeadlineBase := cfg.FirstContentDeadlineBase
 	if firstContentDeadlineBase <= 0 {
 		firstContentDeadlineBase = defaultFirstContentDeadlineBase
 	}
 
+	sandboxHosts := sandboxhost.NewRegistry(nil)
+	sandboxService := cfg.SandboxService
+	sandboxService.AllowedAccountIDs = append([]string(nil), sandboxService.AllowedAccountIDs...)
+	if err := sandboxService.Check(); err != nil {
+		logger.Error("invalid sandbox service configuration; service disabled", "error", err)
+		sandboxService = SandboxServiceConfig{}
+	}
+	var sandboxController *sandboxcontrol.Controller
+	if sandboxService.Enabled {
+		sandboxController = sandboxcontrol.New(st, sandboxHosts, sandboxcontrol.WithLogger(logger),
+			sandboxcontrol.WithCommandPayloadRetention(sandboxService.CommandPayloadRetention))
+	}
 	s := &Server{
+		sandboxHosts:             sandboxHosts,
+		sandboxes:                sandboxController,
+		sandboxHostAuth:          sandboxHostAuth,
+		sandboxService:           sandboxService,
 		registry:                 reg,
 		store:                    st,
 		ledger:                   payments.NewLedger(st),
@@ -934,6 +978,9 @@ func (s *Server) submitTelemetry(name string, fn func()) {
 
 // Close releases background resources owned by the Server.
 func (s *Server) Close() {
+	if s.sandboxes != nil {
+		s.sandboxes.Close()
+	}
 	// Graceful-shutdown continuity sweep: stop the periodic coverage loop,
 	// then persist the exact shutdown instant for every covered provider so a
 	// short deploy reconnects into the continuity fast-skip on the next
@@ -2642,6 +2689,7 @@ func (s *Server) routes() {
 
 	// Provider WebSocket — no API key auth (providers authenticate differently).
 	s.mux.HandleFunc("GET /ws/provider", s.handleProviderWS)
+	s.registerSandboxRoutes()
 
 	// Key management — requires interactive Privy session (API keys rejected
 	// to prevent self-replication from a leaked key).
@@ -3062,7 +3110,9 @@ func (s *Server) Handler() http.Handler {
 // messages (bounded separately), not r.Body.
 func (s *Server) bodyLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Body != nil && r.URL.Path != "/ws/provider" {
+		if r.Body != nil &&
+			r.URL.Path != "/ws/provider" &&
+			r.URL.Path != "/ws/sandbox-host" {
 			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 		}
 		next.ServeHTTP(w, r)
@@ -3210,6 +3260,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			}
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
 			ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
+			ctx = context.WithValue(ctx, ctxKeyCredentialKind, credentialPrivy)
 			stampAuth(r, "privy", true)
 			next(w, r.WithContext(ctx))
 			return
@@ -3218,6 +3269,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Accept admin key (admin endpoints handle further authorization in-handler).
 		if s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1 {
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, "admin")
+			ctx = context.WithValue(ctx, ctxKeyCredentialKind, credentialAdmin)
 			stampAuth(r, "admin", false)
 			next(w, r.WithContext(ctx))
 			return
@@ -3225,7 +3277,10 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		// Fall back to API key auth.
 		// Check cache first to skip DB on repeat requests with the same key.
-		var keyRec *store.APIKey
+		var (
+			keyRec         *store.APIKey
+			credentialType = credentialAPIKey
+		)
 		authKind := "apikey_cache"
 		if cached, ok := s.lookupAPIKeyCache(token); ok {
 			keyRec = cached.key
@@ -3266,6 +3321,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 				// until TTL. GetProviderToken is cheap and provider-token traffic
 				// is low-volume.
 				keyRec = &store.APIKey{OwnerAccountID: pt.AccountID}
+				credentialType = credentialProviderToken
 			} else {
 				// Unknown token — negative-cache to avoid hammering the DB.
 				s.storeAPIKeyCache(token, apiKeyCacheEntry{key: nil, cachedAt: time.Now()})
@@ -3303,6 +3359,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		ctx = context.WithValue(ctx, ctxKeyConsumer, accountID)
 		ctx = context.WithValue(ctx, ctxKeyAPIKey, keyRec)
+		ctx = context.WithValue(ctx, ctxKeyCredentialKind, credentialType)
 		stampAuth(r, authKind, authDBRead)
 		next(w, r.WithContext(ctx))
 	}
@@ -3479,7 +3536,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		} else {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, "+metadataDetailsHeader)
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key, "+metadataDetailsHeader)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 		}
 

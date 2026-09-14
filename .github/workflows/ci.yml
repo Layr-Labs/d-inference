@@ -120,6 +120,44 @@ jobs:
           file "$RUNNER_TEMP/promptsidecar-linux" | grep -Eq "statically linked|static-pie linked"
           ./scripts/verify-prompt-sidecar-linux.sh "$RUNNER_TEMP/promptsidecar-linux"
 
+  test-sandbox:
+    name: macOS Sandbox Tests
+    runs-on: blacksmith-12vcpu-macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Test offline Go CI benchmark tooling
+        run: make sandbox-ci-test
+      - name: Test fail-closed Lume runtime publication
+        run: /bin/bash sandbox-macos/Scripts/run-lume-publication-contract-tests.sh
+      - name: Test and build the exact pinned Lume patch set
+        env:
+          DARKBLOOM_LUME_RUN_TESTS: "1"
+        run: |
+          umask 077
+          publication_parent="$(mktemp -d /private/tmp/darkbloom-lume-publication.XXXXXX)"
+          /bin/chmod -N "$publication_parent"
+          /bin/chmod 0700 "$publication_parent"
+          install_root="$publication_parent/darkbloom-pinned-lume"
+          /bin/bash sandbox-macos/Scripts/build-pinned-lume.sh "$install_root"
+          echo "DARKBLOOM_SANDBOX_LUME_PATH=$install_root/lume" >> "$GITHUB_ENV"
+      - name: Build isolated sandbox host runtime
+        run: swift build --package-path sandbox-macos
+      - name: Test machine ownership and sandbox release tooling
+        run: |
+          swift test --package-path host-runtime
+          python3 sandbox-macos/Scripts/test-sandbox-release-tools.py
+          python3 sandbox-macos/Scripts/test-sandbox-benchmarks.py
+          python3 sandbox-macos/Scripts/test-sandbox-live-tools.py
+      - name: Run sandbox host unit and contract tests
+        run: swift test --package-path sandbox-macos
+      - name: Build release host and guest products
+        run: swift build --package-path sandbox-macos -c release
+
   test-provider:
     name: Provider Tests
     runs-on: blacksmith-12vcpu-macos-latest

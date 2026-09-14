@@ -797,3 +797,242 @@ type ProviderStore interface {
 	// GetLogReport retrieves a single log report by ID.
 	GetLogReport(id int64) (*LogReport, error)
 }
+
+// SandboxStore is the durable state machine for developer sandboxes. Mutating
+// methods fence every write by sandbox generation and fencing token so a late
+// host response cannot change a newer sandbox incarnation.
+type SandboxStore interface {
+	// RedactSandboxCommandPayloads removes expired terminal payloads in one
+	// bounded batch, preserving a request commitment and all lifecycle metadata.
+	// Active and cancellation-pending commands are never eligible.
+	RedactSandboxCommandPayloads(ctx context.Context, completedBefore, redactedAt time.Time, limit int) (int, error)
+
+	// ListSandboxCommands returns bounded metadata newest first, without
+	// retaining command input or output in the listing. Unknown and non-owned
+	// sandboxes both return ErrNotFound.
+	ListSandboxCommands(ctx context.Context, accountID, sandboxID string, limit int) ([]SandboxCommandSummary, error)
+
+	// CreateSandbox atomically creates the sandbox and its prepare operation.
+	CreateSandbox(
+		ctx context.Context,
+		sandbox *SandboxRecord,
+		operation *SandboxOperation,
+		limits SandboxAllocationLimits,
+	) (
+		storedSandbox *SandboxRecord,
+		storedOperation *SandboxOperation,
+		created bool,
+		err error,
+	)
+
+	// GetSandboxByIdempotency returns an existing create allocation and its
+	// prepare operation before host scheduling is attempted.
+	GetSandboxByIdempotency(
+		ctx context.Context,
+		accountID string,
+		idempotencyKey string,
+	) (*SandboxRecord, *SandboxOperation, error)
+
+	// GetSandbox returns one account-owned sandbox.
+	GetSandbox(
+		ctx context.Context,
+		accountID string,
+		sandboxID string,
+	) (*SandboxRecord, error)
+
+	// GetSandboxByID is the host-control lookup. Callers must separately verify
+	// the reporting host before applying a result.
+	GetSandboxByID(
+		ctx context.Context,
+		sandboxID string,
+	) (*SandboxRecord, error)
+
+	// ListSandboxes returns an account's sandboxes newest first. Implementations
+	// cap non-positive or excessive limits at MaxSandboxListLimit.
+	ListSandboxes(
+		ctx context.Context,
+		accountID string,
+		limit int,
+	) ([]SandboxRecord, error)
+
+	// ListActiveSandboxesByHost returns every non-terminal allocation for a host.
+	// It is used to account for coordinator reservations not yet reflected by the
+	// host's latest heartbeat.
+	ListActiveSandboxesByHost(
+		ctx context.Context,
+		hostID string,
+	) ([]SandboxRecord, error)
+
+	// ListExpiringSandboxes returns capacity-consuming sandboxes whose lease
+	// expires at or before the supplied deadline.
+	ListExpiringSandboxes(
+		ctx context.Context,
+		expiresBefore time.Time,
+		limit int,
+	) ([]SandboxRecord, error)
+
+	// BeginSandboxOperation atomically checks account ownership, the current
+	// scope/state, records the operation, and moves the sandbox to targetState.
+	BeginSandboxOperation(
+		ctx context.Context,
+		operation *SandboxOperation,
+		targetState string,
+	) (
+		sandbox *SandboxRecord,
+		storedOperation *SandboxOperation,
+		created bool,
+		err error,
+	)
+
+	// ActivateQueuedSandboxOperation moves a queued termination stop into the
+	// active pending state only after every command and cancellation outbox for
+	// the sandbox has reached a terminal acknowledgement.
+	ActivateQueuedSandboxOperation(
+		ctx context.Context,
+		operationID string,
+		activatedAt time.Time,
+	) (
+		sandbox *SandboxRecord,
+		operation *SandboxOperation,
+		activated bool,
+		err error,
+	)
+
+	// GetSandboxOperation returns one account-owned lifecycle operation.
+	GetSandboxOperation(
+		ctx context.Context,
+		accountID string,
+		operationID string,
+	) (*SandboxOperation, error)
+
+	// GetSandboxOperationByIdempotency resolves a lifecycle mutation retry
+	// before evaluating the sandbox's now-changed state.
+	GetSandboxOperationByIdempotency(
+		ctx context.Context,
+		accountID string,
+		sandboxID string,
+		idempotencyKey string,
+	) (*SandboxOperation, error)
+
+	// MarkSandboxTerminationRequested durably blocks new commands before an
+	// expiry or terminate flow cancels active work and starts teardown.
+	MarkSandboxTerminationRequested(
+		ctx context.Context,
+		accountID string,
+		sandboxID string,
+		idempotencyKey string,
+		at time.Time,
+	) (*SandboxRecord, error)
+	// ObserveSandboxStopped accepts an exact host lease observation only from
+	// ready and with no pending lifecycle operation. Command cleanup is retained.
+	ObserveSandboxStopped(ctx context.Context, observation SandboxStoppedObservation) (bool, error)
+
+	// ApplySandboxOperationUpdate applies a host lifecycle result and its
+	// resulting fence. Unknown, terminal, stale, or invalid transitions fail
+	// closed without changing either row.
+	ApplySandboxOperationUpdate(
+		ctx context.Context,
+		update SandboxOperationUpdate,
+	) (*SandboxRecord, *SandboxOperation, error)
+
+	// RecordSandboxOperationDispatch records an outbox delivery attempt. An
+	// empty dispatchError means the frame reached the WebSocket writer.
+	RecordSandboxOperationDispatch(
+		ctx context.Context,
+		operationID string,
+		dispatchedAt time.Time,
+		dispatchError string,
+	) error
+
+	// ListPendingSandboxOperationsByHost returns non-terminal lifecycle outbox
+	// rows for reconnect/startup reconciliation.
+	ListPendingSandboxOperationsByHost(
+		ctx context.Context,
+		hostID string,
+	) ([]PendingSandboxOperation, error)
+
+	// CreateSandboxCommand atomically validates the sandbox scope/readiness and
+	// inserts a pending command. A repeated idempotency key returns the original
+	// command with created=false; the caller must reject payload mismatches.
+	CreateSandboxCommand(
+		ctx context.Context,
+		command *SandboxCommand,
+	) (stored *SandboxCommand, created bool, err error)
+
+	// GetSandboxCommand returns one account-owned command.
+	GetSandboxCommand(
+		ctx context.Context,
+		accountID string,
+		sandboxID string,
+		commandID string,
+	) (*SandboxCommand, error)
+
+	// ListActiveSandboxCommands returns non-terminal commands oldest first.
+	ListActiveSandboxCommands(
+		ctx context.Context,
+		sandboxID string,
+	) ([]SandboxCommand, error)
+
+	// ListExpiringSandboxCommands returns non-terminal commands whose execution
+	// deadline is at or before the supplied instant.
+	ListExpiringSandboxCommands(
+		ctx context.Context,
+		expiresBefore time.Time,
+		limit int,
+	) ([]PendingSandboxCommand, error)
+
+	// ApplySandboxCommandUpdate applies a fenced host command result.
+	ApplySandboxCommandUpdate(
+		ctx context.Context,
+		update SandboxCommandUpdate,
+	) (*SandboxCommand, error)
+
+	// RecordSandboxCommandDispatch records a command outbox delivery attempt.
+	RecordSandboxCommandDispatch(
+		ctx context.Context,
+		commandID string,
+		dispatchedAt time.Time,
+		dispatchError string,
+	) error
+
+	// ClaimSandboxCommandCancellationDispatch atomically claims one
+	// cancellation outbox delivery attempt before the frame is sent. The claim
+	// is applied only while cancellation remains pending and the durable
+	// attempt count matches expectedAttempts, and when its previous dispatch is
+	// absent or no later than retryCutoff. A successful claim advances the
+	// attempt count, stamps dispatchedAt, and clears the prior dispatch error.
+	ClaimSandboxCommandCancellationDispatch(
+		ctx context.Context,
+		commandID string,
+		expectedAttempts uint32,
+		retryCutoff time.Time,
+		dispatchedAt time.Time,
+	) (attempt uint32, claimed bool, err error)
+
+	// CompleteSandboxCommandCancellationDispatch records the result of a
+	// claimed delivery attempt. The attempt count is a compare-and-swap token:
+	// a stale completion cannot overwrite a newer attempt or an acknowledged
+	// cancellation.
+	CompleteSandboxCommandCancellationDispatch(
+		ctx context.Context,
+		commandID string,
+		attempt uint32,
+		dispatchError string,
+	) (completed bool, err error)
+
+	// ListPendingSandboxCommandsByHost returns non-terminal command outbox rows
+	// for reconnect/startup reconciliation.
+	ListPendingSandboxCommandsByHost(
+		ctx context.Context,
+		hostID string,
+	) ([]PendingSandboxCommand, error)
+
+	// ListPendingSandboxCommandCancellations returns at most limit terminal or
+	// active commands assigned to hostIDs whose host execution has not
+	// acknowledged cancellation.
+	ListPendingSandboxCommandCancellations(
+		ctx context.Context,
+		hostIDs []string,
+		limit int,
+	) ([]PendingSandboxCommand, error)
+}

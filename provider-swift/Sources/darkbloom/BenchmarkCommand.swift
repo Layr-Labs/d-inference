@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import HostRuntimeCoordination
 import ProviderCore
 import ProviderBenchmark
 
@@ -172,6 +173,12 @@ struct Benchmark: AsyncParsableCommand {
             printError(error)
             throw ExitCode(2)
         }
+        // All benchmark modes allocate inference memory, including the signed
+        // scheduler path. Hold shared machine ownership before any MLX setup
+        // and through the mode's cleanup, just like provider/local serving.
+        let runtimeLease = try HostRuntimeAuthority.system.acquireInferenceIfInstalled()
+        defer { withExtendedLifetime(runtimeLease) {} }
+
         if schedulerPrefillDecision {
             try await runSignedSchedulerPrefillDecision()
             return

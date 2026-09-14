@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-13 · commit `1f52a71fb`
+> Last updated: 2026-09-14 · commit `03ee21c83`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -126,7 +126,9 @@ darkbloom status
 | `self_signed / online`, reason `SE attestation verified, awaiting MDM verification` | Enrolment not complete or the report has not arrived yet — see Troubleshooting |
 | any level `/ untrusted` with a failure reason | The coordinator stopped routing to you — see Troubleshooting |
 
-The reason strings are listed in
+The coordinator evaluates reuse after the fresh signed challenge; its
+[evidence lifecycle](../architecture/security/attestation.md#device-evidence-ownership-and-shutdown)
+also retains revocations across coordinator restarts. The reason strings are listed in
 [trust status messages](../architecture/security/attestation.md#trust-status-messages-to-providers).
 
 `darkbloom doctor` shows the local side: MDM enrolment, SIP, the console-session

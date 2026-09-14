@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `285f7c9f8`
+> Last updated: 2026-09-14 · commit `03ee21c83`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -96,6 +96,23 @@ The API keeps the live store-binding and full HTTP/accounting fixtures:
 ```bash
 go test -race ./coordinator/telemetry/profiler ./coordinator/telemetry/profilequeue ./coordinator/telemetry/outcomequeue ./coordinator/api -run 'Profile|RequestOutcome|PersistenceSinks|FleetSample'
 ```
+
+Device-evidence decision, cache, journal, replay and coverage fixtures live in
+`coordinator/providercontrol/trustreuse/`. Their store/registry fixtures exercise the real
+owner; API-only callbacks are inert there. Signed-challenge, late-MDM,
+readiness/routing denial and fleet reconnect assertions remain in
+`coordinator/api/`, using real store seeding and construction-time clocks.
+`trust_reuse_owner_test.go` pins the startup store binding, live MDM predicate,
+final coverage order and journal authority through a blocked route drain.
+Both new boundary tests also pass against the pre-extraction source.
+
+```bash
+go test -race ./coordinator/providercontrol/trustreuse ./coordinator/api -run 'TrustReuse|HardUntrustJournal|TrustAuthority|TrustCoverage|Continuity|ApprovedTransition|VerifyChallengeFastSkip'
+```
+
+The isolated journal fixtures do not require PostgreSQL. The full coordinator
+race suite remains the integration gate; unchanged PostgreSQL store tests need
+the database configuration below to execute.
 
 The CI formatting step checks tracked Go files with `gofmt`. It excludes
 `docs/reports/evidence/`, whose captured source bytes are immutable and bound

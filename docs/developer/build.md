@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-13 · commit `285f7c9f8`
+> Last updated: 2026-09-14 · commit `03ee21c83`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -76,6 +76,10 @@ Continue with the per-component steps when you need one piece or want to
 understand what `make` runs.
 
 ### 3. Coordinator (Go)
+
+The normal Go build includes the device-evidence owner at
+`coordinator/providercontrol/trustreuse/` (`Manager`) through the API adapters; it has no
+separate binary or configuration surface.
 
 The normal Go build includes the profiler owner and telemetry queue packages
 under `coordinator/telemetry/`. Their API adapters link them into the same

@@ -1,13 +1,13 @@
 package api
 
 import (
+	"net/http"
+
 	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"net/http"
 )
 
 // Test-only bindings keep whole-API fixtures on the shared response operations.
-var applyMetadataDetailsRequest = response.ApplyMetadataDetailsRequest
 
 type committedProviderInfo = response.ProviderInfo
 

@@ -73,10 +73,11 @@ func (s *Server) routes() {
 	// because it isn't counted by readiness, won't be seen by WaitForInflightZero
 	// — so a graceful shutdown could cut it off mid-flight. Add new dispatch routes
 	// here, gated, alongside the four below.
-	s.mux.HandleFunc("POST /v1/chat/completions", readinessAPI.Gate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions)))))
-	s.mux.HandleFunc("POST /v1/responses", readinessAPI.Gate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions))))) // Responses API — same handler, auto-detects input vs messages
-	s.mux.HandleFunc("POST /v1/completions", readinessAPI.Gate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleCompletions)))))
-	s.mux.HandleFunc("POST /v1/messages", readinessAPI.Gate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleAnthropicMessages)))))
+	ingressAPI := s.inferenceIngress()
+	s.mux.HandleFunc("POST /v1/chat/completions", readinessAPI.Gate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(ingressAPI.ChatCompletions)))))
+	s.mux.HandleFunc("POST /v1/responses", readinessAPI.Gate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(ingressAPI.ChatCompletions))))) // Responses API — same handler, auto-detects input vs messages
+	s.mux.HandleFunc("POST /v1/completions", readinessAPI.Gate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(ingressAPI.Completions)))))
+	s.mux.HandleFunc("POST /v1/messages", readinessAPI.Gate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(ingressAPI.Messages)))))
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(modelCatalog.ListModels))
 	// Dedicated OpenRouter provider feed — pure OpenRouter schema, no Darkbloom metadata.
 	s.mux.HandleFunc("GET /v1/models/openrouter", s.requireAuth(modelCatalog.ListOpenRouterModels))

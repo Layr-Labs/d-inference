@@ -1,10 +1,7 @@
 package api
 
 import (
-	"context"
-
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
-	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -55,32 +52,4 @@ func (s *Server) reconcilePromptArtifacts(records []store.ModelRegistryRecord) e
 		})
 	}
 	return s.promptArtifacts.Reconcile(manifests)
-}
-
-func (s *Server) planCacheRoute(
-	ctx context.Context,
-	account, model string,
-	body []byte,
-	hasMedia bool,
-) registry.CachePlan {
-	if s.promptArtifacts == nil || s.promptContract == nil || s.promptPreloader == nil {
-		return registry.CachePlan{}
-	}
-	status, ok := s.promptArtifacts.Status(model)
-	if !ok || !status.ArtifactReady || status.PromptContractID == "" {
-		return registry.CachePlan{}
-	}
-	if !s.promptPreloader.ReadyFor(status.PromptContractID) {
-		return registry.CachePlan{}
-	}
-	result := s.registry.PlanCacheRouteWithResult(ctx, s.promptContract, registry.CachePlanInput{
-		Account:              account,
-		Model:                model,
-		PromptContractID:     status.PromptContractID,
-		ModelAggregateSHA256: status.ModelAggregateSHA256,
-		Body:                 body,
-		HasMedia:             hasMedia,
-	})
-	s.emitExactCachePlan(result)
-	return result.Plan
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
+	"github.com/eigeninference/d-inference/coordinator/internal/inferencefixture"
 	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -320,7 +321,7 @@ func TestModelSpecificFirstContentDeadlineReachesProviderWire(t *testing.T) {
 				t.Fatalf("parse request body: %v", err)
 			}
 			expected := srv.FirstContentDeadline(
-				tt.model, estimatePromptTokens(parsed),
+				tt.model, inferencefixture.PromptTokens(parsed),
 			).Milliseconds()
 			if expected < tt.wantBase.Milliseconds() ||
 				expected >= tt.wantBase.Milliseconds()+time.Second.Milliseconds() {

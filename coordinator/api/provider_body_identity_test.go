@@ -1,13 +1,5 @@
 package api
 
-// Byte-identity guards for the provider-bound body. The chat handler parses
-// the request once, applies its rewrites to the decoded map, and serializes
-// once; these tests drive real requests through httptest against a fake
-// provider and compare the RAW decrypted bytes the provider receives with an
-// oracle built independently (decode the original → apply the expected
-// rewrite → marshalForwardBody). The request-owned date now makes every input
-// a coordinator serialization, including requests with no other rewrite.
-
 import (
 	"bytes"
 	"context"
@@ -19,7 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/httpresponse"
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
 	"github.com/eigeninference/d-inference/coordinator/inference/toolpolicy"
+	"github.com/eigeninference/d-inference/coordinator/internal/inferencefixture"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -30,14 +25,14 @@ import (
 // handler does.
 func forwardOracle(t *testing.T, body string, mutate func(map[string]any)) []byte {
 	t.Helper()
-	parsed, err := decodeInferenceJSONObject([]byte(body))
+	parsed, err := dispatch.DecodeJSONObject([]byte(body))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if mutate != nil {
 		mutate(parsed)
 	}
-	out, err := marshalForwardBody(parsed)
+	out, err := httpresponse.MarshalBody(parsed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +73,7 @@ func postAndCapture(t *testing.T, ctx context.Context, ts *httptest.Server, fp *
 
 func assertProviderBytes(t *testing.T, got, want []byte) {
 	t.Helper()
-	actual, err := decodeInferenceJSONObject(got)
+	actual, err := dispatch.DecodeJSONObject(got)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,12 +83,12 @@ func assertProviderBytes(t *testing.T, got, want []byte) {
 	}
 	// Clock ownership is asserted by the endpoint/fallback tests. Bind this
 	// byte oracle to the observed date, leaving every other value independent.
-	expected, err := decodeInferenceJSONObject(want)
+	expected, err := dispatch.DecodeJSONObject(want)
 	if err != nil {
 		t.Fatal(err)
 	}
 	expected[promptcontract.RequestDateField] = date
-	want, err = marshalForwardBody(expected)
+	want, err = httpresponse.MarshalBody(expected)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +211,7 @@ func TestProviderBodyByteIdentity(t *testing.T) {
 	t.Run("max_tokens bound injected", func(t *testing.T) {
 		body := `{"model":"` + plainBuild + `","messages":` + messages + `}`
 		got := postAndCapture(t, ctx, ts, fp, "/v1/chat/completions", "test-key", body)
-		assertProviderBytes(t, got, forwardOracle(t, body, func(p map[string]any) { p["max_tokens"] = defaultMaxOutputTokens }))
+		assertProviderBytes(t, got, forwardOracle(t, body, func(p map[string]any) { p["max_tokens"] = 8192 }))
 	})
 
 	t.Run("max_completion_tokens mirrored to max_tokens", func(t *testing.T) {
@@ -281,7 +276,7 @@ func TestProviderBodyByteIdentity(t *testing.T) {
 		got := postAndCapture(t, ctx, ts, fp, "/v1/responses", "test-key", body)
 		rewritten := forwardOracle(t, body, func(p map[string]any) {
 			p["model"] = plainBuild
-			p["max_output_tokens"] = defaultMaxOutputTokens
+			p["max_output_tokens"] = 8192
 		})
 		want, err := promptcontract.LowerProviderBody(promptcontract.EndpointResponses, rewritten)
 		if err != nil {
@@ -392,7 +387,7 @@ func TestProviderBodyByteIdentityMediaInlined(t *testing.T) {
 	p.Mu().Unlock()
 
 	var hits int32
-	media := httptest.NewServer(pngHandler(t, &hits))
+	media := httptest.NewServer(inferencefixture.PNGHandler(t, &hits))
 	defer media.Close()
 	imageURL := media.URL + "/cat.png"
 	body := `{"model":"` + model + `","max_tokens":16,"messages":[{"role":"user","content":[` +

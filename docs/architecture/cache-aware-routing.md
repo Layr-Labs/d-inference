@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-14 · commit `cf3427a1e`
+> Last updated: 2026-09-14 · commit `60b20b73d`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -144,10 +144,20 @@ publishing the nonce. Reconfiguration, including an
 unchanged-key update, revokes the old generation and clears its tracker maps
 (`PlanCacheRouteWithResult`, `PreparePrefixCacheV2Attempt`, `ConfigureCacheRouting`).
 
-A queued frame retains one immutable attempt owner. At writer dequeue,
-`CacheAttemptSnapshot.ApplyTo` checks revocation without registry or tracker
-locks. A revoked attempt sends the ordinary encrypted request with its remaining
-deadline budget and no scope, nonce or cache negotiation. That check is the
+`cacheattempt.State` owns the request's preparation ticket, terminal closure
+and active attempt (`coordinator/registry/cacheattempt/state.go`). `Begin`
+revokes the previous attempt and resets `LegacyCacheBustKey` under the same
+mutex; `PublishLegacy` writes that key only while its ticket is still current
+and open. The registry's `publishCacheAttempt` keeps the final tracker,
+connection and capability check under `r.mu` then `provider.mu` before
+`State.Publish`. Receipt removal and terminal-grace updates run after the
+request mutex is released; the receipt directory retains its own lock.
+
+A queued frame retains one immutable attempt snapshot. At writer dequeue,
+`cacheattempt.Snapshot.ApplyTo` checks revocation without registry or tracker
+locks (`coordinator/registry/cacheattempt/snapshot.go`). The public
+`registry.CacheAttemptSnapshot` name is an alias. A revoked attempt sends the
+ordinary encrypted request with its remaining deadline budget and no scope, nonce or cache negotiation. That check is the
 cutoff: an accepted write may finish after reconfiguration. Cancellation,
 timeout and failed dispatch clean up the original owner and tracker; a late
 cleanup cannot modify a replacement attempt. A stale proof mismatch likewise
@@ -157,8 +167,10 @@ Cache participation is an atomic per-attempt observation. Revocation before the
 first accepted dequeue restores ordinary calibration eligibility; an already
 accepted cache write remains excluded. Terminal requests retain the existing
 bounded grace period for authenticated durable-ready receipts while revoking
-queued dispatch (`coordinator/registry/cache_attempt_ownership.go`,
-`coordinator/api/provider_wire.go`).
+queued dispatch (`State.Terminal`, `coordinator/registry/cacheattempt/state.go`;
+`coordinator/api/provider_wire.go`). `Generation.Revoke`
+(`coordinator/registry/cacheattempt/generation.go`) permanently invalidates a
+configuration generation without retaining its receipt maps.
 
 ### Protocol v2 proof
 
@@ -683,6 +695,8 @@ and `coordinator/api/cache_model_telemetry.go`.
 | Resident proof/publication and unique receipt correlation | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/ResidentPrefixCacheEvidence.swift` — `ResidentPrefixCacheEvidence`, `ResidentPrefixCachePromptProof`; `PrefixCacheEvidenceSequencer.swift` |
 | Per-tier holders and bounded lifetime | `coordinator/registry/cache_tiers.go` — `cacheTierBoundaryKey`, `receiptTTL`; `cache_routing_hints.go` — `hints` |
 | Route keys and scopes | `coordinator/registry/cache_route_keys.go` |
+| Request preparation and queued-frame lifetime | `coordinator/registry/cacheattempt/` — `State`, `Attempt`, `Snapshot.ApplyTo`, `Generation` |
+| Live publication and public compatibility adapters | `coordinator/registry/cache_attempt_ownership.go` — `publishCacheAttempt`, `CacheAttemptSnapshot`; provider/registry locks remain here |
 | Receipts, v2 proof acceptance and quarantine, legacy cache-bust key | `coordinator/registry/cache_receipts.go`, `coordinator/registry/cache_receipts_v2.go` — `ApplyPrefixCacheLookupV2`, `ApplyPrefixCacheReadyV2`, `rejectCapability` |
 | Status vocabularies and sanitization | `coordinator/registry/cache_eligibility.go`, `coordinator/registry/cache_status.go`, `coordinator/registry/cache_snapshot.go` |
 | Discount in the cost model | `coordinator/registry/scheduler.go` — `applyCacheRoutingCost`, `SelectionCacheTiebreak` |

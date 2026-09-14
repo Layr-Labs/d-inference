@@ -85,12 +85,12 @@ func prepareBoundTestCacheAttempt(r *Registry, pr *PendingRequest, provider *Pro
 }
 
 func preparedTestCacheMetadata(pr *PendingRequest) protocol.InferenceRequestMessage {
-	owner := pr.CacheAttemptSnapshot().owner
-	if owner == nil {
+	metadata, present := pr.CacheAttemptSnapshot().Metadata()
+	if !present {
 		return protocol.InferenceRequestMessage{}
 	}
-	return protocol.InferenceRequestMessage{CacheReceiptNonce: owner.nonce, CacheScope: owner.scope,
-		PrefixCacheProtocol: 2, CacheReceiptBoundaryMode: owner.boundaryMode}
+	return protocol.InferenceRequestMessage{CacheReceiptNonce: metadata.Nonce, CacheScope: metadata.Scope,
+		PrefixCacheProtocol: 2, CacheReceiptBoundaryMode: metadata.BoundaryMode}
 }
 
 func TestExactRoutingHintRevalidatesCapabilityBeforeDiscount(t *testing.T) {

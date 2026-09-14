@@ -136,7 +136,7 @@ func (r *Registry) PlanCacheRouteWithResult(
 	artifacts := r.cacheRoutingAllowedArtifacts
 	catalog, ok := r.modelCatalog[input.Model]
 	r.mu.RUnlock()
-	if mode != CacheRoutingOn || tracker == nil || tracker.generation.revoked.Load() {
+	if mode != CacheRoutingOn || tracker == nil || tracker.generation.Revoked() {
 		return CachePlanResult{Outcome: CachePlanOff}
 	}
 	aggregateHash := strings.ToLower(strings.TrimSpace(catalog.WeightHash))

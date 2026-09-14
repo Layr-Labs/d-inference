@@ -55,8 +55,7 @@ func (p CachePlan) present() bool {
 // contributing ordinary TTFT/reputation feedback.
 func (pr *PendingRequest) CacheRoutingParticipates() bool {
 	if pr != nil {
-		owner := pr.cacheAttempt.Load()
-		return owner != nil && owner.dispatchState.Load() != cacheDispatchCold
+		return pr.cacheAttempt.Participates()
 	}
 	return false
 }
@@ -411,7 +410,7 @@ func (r *Registry) ConfigureCacheRouting(cfg CacheRoutingConfig) error {
 	r.mu.Lock()
 	previous := r.cacheRouting
 	if previous != nil {
-		previous.generation.revoked.Store(true)
+		previous.generation.Revoke()
 	}
 	r.cacheRouting = tracker
 	r.cacheActivation = activation

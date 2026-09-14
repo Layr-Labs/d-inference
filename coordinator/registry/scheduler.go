@@ -1255,7 +1255,7 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 
 	affinity := ""
 	if pr.CacheSelectionMode == "active" && r.cacheRouting != nil &&
-		pr.CachePlan.generation == r.cacheRouting.generation && !r.cacheRouting.generation.revoked.Load() {
+		pr.CachePlan.generation == r.cacheRouting.generation && !r.cacheRouting.generation.Revoked() {
 		affinity = pr.CachePlan.affinityKey
 	}
 	pr.CacheOpportunity.UsableCandidates = 0

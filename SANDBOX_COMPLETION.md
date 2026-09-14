@@ -621,3 +621,131 @@ daemon. Wait for actual terminal/quiescence, then collect only the fixed domain
 sequence logs with a read-only helper bound to watchdog7. This should distinguish
 launchctl errors/in-progress teardown from an output parser mismatch. No native
 tenant workload qualification or ready-template publication has occurred.
+
+## Guest launchd diagnosis after attempt 9
+
+HEAD cd1449e5e adds bounded domain-state stabilization (19 focused tests pass).
+Attempt 7 completed with host owner exit 0 and independently proven quiescence;
+its exact shell sequence saw a transient pending-request block after bootout.
+Attempt 8 with cd1449e5e still failed readiness at the fixed diagnostic
+`tenant_domain_removal.domain_inspection_unproven`; stabilization is not a
+physically proven fix. Its watchdog digest is
+36fd23cd48ae266dcaf9e9f5d440bb783d7afd922a3b0e3c02eeaba05edbf57a.
+Current diagnostic guest hash is
+2776af1e7e137db88df629174264a01b741b1430945f5b7b0f9fb4d987b36b4c,
+installed only in the GUI clone (inode 28294).
+
+Attempt 9 used a separate signed native probe with the actual SandboxProcessRunner.
+It proved exit 0 and 112 preservation, no ignored SIGCHLD disposition, and exact
+stderr capture. `launchctl print gui/2001` returned 125 (domain does not support
+specified action), while user/2001 held 39 default Apple services, including a
+running distnoted. A successful user-domain bootout was followed by a newly
+created empty Background domain; the numeric UID cleanup worker recreated the
+populated user domain. This is not evidence to accept arbitrary exit 125, ignore
+services, or bypass cleanup. Product output limits were not implicated: only the
+probe's 4 KiB capture truncated the populated domain listing.
+
+Attempt 9 watchdog SHA:
+161a97ffd0ee8c40ad4af3b43a34f9677986358300a4b9580e6f67d72d7230aa.
+Root log: /private/tmp/darkbloom-vsock-operator-20260913/gui-native-runner-read1/
+native-domain-runner1.stdout, SHA
+f8b2448a8e06191640261515918e837aaf54bd5f7012831db826a00f38430102.
+All attachments detached, owned VM stopped, original Apple image unchanged.
+The latest pushed commit 4aa723e7e passed CI 34805686214 and integration
+34805686104. No physical readiness or release claim follows from those checks.
+
+A focused attempt 10 is now running the fixed guest-domain order probe, testing
+GUI inspection immediately after retiring user/2001. It uses a fresh endpoint
+attempt10 and root control gui-discriminator10, config SHA
+71017d30f2b612d3015cccf15a3bdbc5f63a437fd29a58711f77973e27c5bb81.
+Root watchdog session 77123; output gui-watchdog10. The diagnostic guest job
+io.darkbloom.sandbox.domain-order1 (inode 29930, SHA
+42c9bd28b3c611177c4a44781c1b8670a8e03beb30af53a9c1ad881d4f05a5be)
+replaces the exact native-runner job inode 29117. The native probe executable
+inode 29116 remains, unused. The first staging helper stopped on an overbroad
+stat comparison after reading changed atime; a separate recovery verified both
+exact job digests and stable identity fields, then removed only old inode 29117.
+Original failure and recovery proofs are retained. Remove the order-probe job
+before a normal readiness run. No account, keychain, or original base changed.
+
+Still required: proven guest cleanup/readiness; completed accountless staging,
+qualification clone and readiness publication; actual host service lifecycle;
+two-VM authenticated coordinator lifecycle, expiry/recovery, isolation and
+performance evidence; final modularity/review and release gates. Runtime10 is
+built and tested locally but not yet physically substituted for runtime8.
+
+Full sandbox suite at cd1449e5e subsequently passed: 498 tests, 7 explicit skips,
+0 failures, 132.605 seconds. Evidence:
+/private/tmp/darkbloom-sandbox-completion-evidence/sandbox-domain-stabilization-full-tests.log.
+
+## Proven cleanup-order defect and current fix
+
+Attempt 10 completed, owner stopped and quiescence independently verified.
+Watchdog SHA de0c2e195b016813133d669925bf6dc1ea2925c8496b9f791a9973939cf62ddf.
+Root read gui-domain-order-read1 captured 7,686 bytes without truncation;
+domain-order1.stdout SHA55642784059fe0fc1d25abf903461aafa705b3120a26127775a5bd5d2286bb84.
+The sequence establishes that user-domain bootout succeeds and then GUI print
+returns exact absence 112 both immediately and after 200 ms. Printing user/2001
+recreates an initially empty domain and subsequent GUI inspection returns 125.
+The cleanup worker also recreates the domain; another bootout restores 112.
+Thus printing an empty user-domain structure is not a safe final verification:
+it recreates the domain and schedules services after that empty snapshot.
+
+Commit b4f6bbaf5 removes the empty-domain parser and its false verification path.
+Cleanup retires the user domain before GUI inspection, removes the user domain
+again if GUI removal occurred, and never queries user/2001 after final removal.
+Successful bootout (or exact identified absence), exact GUI absence and a final
+zero-live-tenant-process snapshot are required. Exit125 still fails closed.
+The post-worker removal remains required. A process appearing during final
+verification causes another cleanup attempt. Twelve focused cleanup tests pass.
+The new signed guest and a normal physical readiness run remain to be performed;
+latest all-tests evidence is still the 498-test cd1449e5e run, not b4f6bbaf5.
+All test VMs stopped and attachments detached. Temporary domain-order job
+inode29930 must be removed when installing the new guest. Native probe executable
+inode29116 remains unused in this diagnostic clone.
+
+Signed b4f6bbaf5 guest: 2,602,672 bytes, SHA
+932f14c6e5757261c5c9edd7b807784e8a502ff04d7c585796b5aeecfdd0ee1c,
+Developer ID identifier io.darkbloom.sandbox.guest. Root63948 installed it only
+in the GUI diagnostic clone, new inode30744, replacing exact inode28294 and
+removing only the temporary domain-order plist inode29930. Independent stopped,
+attachment and untouched-image checks pass. A first host preparation attempt
+stopped before mutation on an image-opener observation; a later root lsof check
+showed none and the same guarded preparation then succeeded.
+
+Current normal attempt11: rootwatchdog92975, gui-discriminator11, freshendpoint
+attempt11, evidence11; config SHA
+d0c60d17a2e7a1dab4365becc12a9aa74c75cef11b1880c8b14bb325c5c0c8de.
+Wait for terminal/quiescence before any disk inspection. Prepared readonly log
+reader is primary/remotelab read-gui-diagnostics-run11.py (output gui-diagnostics-read6),
+requiring the actual watchdog11 digest. Full b4f6bbaf5 suite session11126 is also
+running, log sandbox-no-recreate-full-tests.log. No new readiness claim yet.
+
+## First authenticated physical guest acceptance PASS
+
+Attempt11 completed successfully. Client exit0, VM owner exit0, native stopped
+state and root quiescence verified. Rootwatchdog SHA
+62abfbdd15d3f22cba4b8613badd05beed0ac670615abca3d456affa3fb58567.
+Evidence11/client.stdout records authenticated readiness, invalid-credential and
+invalid-instance rejection with positive controls, numeric UID/group/account
+absence plus root-file/raw-disk/network isolation, native CPU work, file chunk
+resume/commit/replay/version/path controls, both output bounds, descendant
+cleanup, actual timeout cleanup, and disconnect cancellation cleanup. These are
+selected physical guest checks; they do not qualify the template or host service.
+The same run staged a workspace marker and first-boot UUID for the next cold-boot
+run. Build tools are explicitly absent: xcode-select presence=false and
+build_tools_qualified=false. Do not rerun the exercise in the same workspace and
+overwrite the first-boot marker before testing cold boot.
+
+Full b4f6bbaf5 sandbox suite passed497tests,7skips,0failures in134.200seconds;
+log sandbox-no-recreate-full-tests.log. The count decreased because the invalid
+empty-domain parser and its tests were removed; new tests cover no recreation,
+error125 rejection, domain retirement order and process respawn during final
+verification. This is the first successful authenticated guest campaign.
+
+NEXT: preserve evidence11, implement a selected --cold-boot mode in a new version
+of the GUI test supervisor (frozen current supervisor always invokes --exercise),
+then prove different guest boot UUID and retained workspace marker. No guest
+probe jobs remain. The unused native diagnostic probe binary inode29116 can be
+removed in a later exact guarded cleanup. Full base factory, actual host service,
+2VM coordinator campaign, build tools and performance/release gates remain.

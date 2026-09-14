@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-13 · commit `8670b2a08`
+> Last updated: 2026-09-14 · commit `bf2678202`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident

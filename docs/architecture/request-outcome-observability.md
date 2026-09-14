@@ -1,6 +1,6 @@
 # Request Outcome Observability
 
-> Last updated: 2026-09-14 · commit `cdef55575`
+> Last updated: 2026-09-14 · commit `303ed6d30`
 
 Every provider dispatch attempt ends in one claimed terminal outcome, and that outcome is recorded three ways: a closed `final_status` / `error_class` / `error_reason` triple on the `inference_routes` row, a per-attempt `request_profiles` row with separate `client_outcome` and `provider_outcome` columns, and a small set of low-cardinality Datadog counters. Requests refused before dispatch land in the `request_rejections` ledger instead. This page explains the existing attempt taxonomy and protected counters. The unsampled incoming-request ledger, its coverage limits, and separate egress/completion evidence are defined in [incoming request accounting](request-accounting.md).
 

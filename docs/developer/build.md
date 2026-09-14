@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `5dcb43e69`
+> Last updated: 2026-09-14 · commit `7ed639174`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -53,7 +53,7 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 | `provider-swift/` | SwiftPM | Products: `darkbloom` (CLI), `darkbloom-enclave`, `darkbloom-fan-helper`, `darkbloom-publish`; libraries `ProviderCore`, `ProviderCoreFoundation`, `DarkbloomFan*`. Platform `macOS 14+`. |
 | `console-ui/` | Next.js 16 / React 19 | `npm`; tests with Vitest. |
 | `admin-ui/` | Next.js 16 / React 19 | `npm`; dev/start on port `4001`. |
-| `landing/` | Next.js 16 / React 19 | Static export to `landing/out/`; lint, typecheck, and Node tests. |
+| `landing/` | Next.js 16 / React 19 | Static export to its generated `out/` directory; lint, typecheck, and Node tests. |
 | `Makefile` | — | Every target below; `make help` lists them. |
 
 Provider tests are grouped by subsystem inside their existing SwiftPM targets.

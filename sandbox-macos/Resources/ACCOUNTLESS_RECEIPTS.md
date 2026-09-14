@@ -55,3 +55,33 @@ refuses schema2. Existing receipts are not overwritten.
 `LumeGuestTemplate.requireReady` applies the same schema/source/qualification
 rules before normal cloning. These types add no consumer option, readiness
 bypass flag, or qualification-source exception.
+
+## Candidate reservation
+
+`AccountlessBaseCandidatePreparer` accepts an injected base runtime and an
+already verified `BaseGuestRelease`. It requires `.appleRestore` and matching
+runtime/storage configuration, calls the existing OS restore operation, then
+holds the base preparation lock and normal per-VM broker operation lock while
+checking stopped state, ownership, resources and the raw disk snapshot.
+
+The exclusively published `.darkbloom-accountless-candidate.json` uses schema1
+with phase `awaitingRootInstallation`, fresh candidate/bootstrap-attempt UUIDs,
+source ownership digest, exact guest hashes and manifest, requested resources,
+and disk device/inode/size plus modification/change timestamps. Its `installed`
+and `qualified` fields are both false. It is not a template or an authorization
+to rerun an installer.
+
+A replay returns the same IDs and unchanged record only while the source,
+release, resources, stopped image snapshot and phase still match. An existing VM
+without a candidate record is quarantined, even when it has valid ownership:
+it could be an interrupted first attempt or have booted since restoration.
+Malformed/later-phase records, changed disks, ready receipts and existing guest
+materials are retained and rejected. Cancellation after restore likewise leaves
+the unclaimed image for explicit operator inspection.
+
+This preparer does not mount the image, install the guest agent, start the
+restored guest, qualify a clone or publish readiness. A later orchestrator must
+persist a one-shot phase transition before offline writes, acquire the native
+image guards, and perform the installation/qualification protocol. No new CLI
+is exposed until raw-restore process ownership and crash lifetime are enforced;
+the legacy `prepare-base` entrypoint is unchanged.

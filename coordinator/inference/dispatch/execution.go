@@ -48,7 +48,7 @@ type dispatchTerminalFailure struct {
 }
 
 // execution carries everything the per-request dispatch loop needs. The
-// immutable inputs are set once by runDispatch; the mutable fields track the
+// immutable inputs are set once by Controller.Run; the mutable fields track the
 // in-flight attempt (selected provider, held preamble, commit/accept flags,
 // last error for the exhaustion ladder, and the version to steer retries away from).
 type execution struct {

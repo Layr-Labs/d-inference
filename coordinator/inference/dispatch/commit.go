@@ -73,10 +73,6 @@ func (d *execution) successRoutingOutcomeFor(pr *registry.PendingRequest) *store
 	return attemptpolicy.CommittedRouteOutcome(pr)
 }
 
-// writeCommittedResponse writes the provider attestation + timing headers, installs
-// the park-before-remove settlement defer, and hands off to the streaming /
-// non-streaming response writer. Extracted verbatim from the committed tail of the
-// original handler.
 // contentLatency is the time from dispatch to the first CONTENT chunk delivered
 // to the client (FirstContentAt). It deliberately does NOT fall back to
 // FirstChunkAt — that timestamp is also stamped on held role-only / lifecycle
@@ -120,6 +116,10 @@ func shouldRecordReputationLatency(pr *registry.PendingRequest, firstChunk strin
 	return pr != nil && pr.Timing != nil && firstChunk != "" && !pr.CacheRoutingParticipates()
 }
 
+// writeCommittedResponse writes the provider attestation + timing headers, installs
+// the park-before-remove settlement defer, and hands off to the streaming /
+// non-streaming response writer. Extracted verbatim from the committed tail of the
+// original handler.
 func (d *execution) writeCommittedResponse() {
 	s := d.s
 	w, r := d.w, d.r

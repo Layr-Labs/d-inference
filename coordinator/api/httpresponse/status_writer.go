@@ -7,7 +7,7 @@ import (
 	"net/http"
 )
 
-// statusWriter wraps http.ResponseWriter to capture the status code
+// StatusWriter wraps http.ResponseWriter to capture the status code
 // for logging. It also implements http.Flusher and http.Hijacker by
 // delegating to the underlying writer, which is required for SSE
 // streaming and WebSocket upgrade respectively.

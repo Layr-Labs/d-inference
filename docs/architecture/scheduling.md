@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-13 · commit `01c6761cc`
+> Last updated: 2026-09-13 · commit `e98d46fbd`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -359,7 +359,7 @@ Configuration is read once from the environment in `ReadConfig`
 | `RampGapFraction` | `EIGENINFERENCE_WARM_POOL_RAMP_GAP_FRACTION` |
 | `MaxGlobalPendingLoads` | `EIGENINFERENCE_WARM_POOL_MAX_GLOBAL_PENDING_LOADS` |
 
-**Demand pressure** (`Controller.hasDemandPressure`,
+**Demand pressure** (`planningPass.hasDemandPressure`,
 `coordinator/registry/warmpool/target_policy.go`). A model is under pressure when,
 within the current pressure window, capacity rejects, TTFT misses, cold
 dispatches, speculative starts or speculative wins reach their thresholds;
@@ -384,7 +384,7 @@ target       = clamp(target, warm, warm + eligibleCold)
 
 `spillArrivalRate` is an EWMA of arrivals the warm set could not absorb,
 `ArrivalEWMAAlpha = 0.3` (`coordinator/registry/warmpool/state.go`).
-`Controller.TargetWarm` then applies anti-flap and floors: a target lower than the last
+`planningPass.targetWarm` then applies anti-flap and floors: a target lower than the last
 one is held for `MinDwell`, and `MinWarmByModel` raises the target (both
 capped at `warm + eligibleCold`).
 
@@ -411,7 +411,7 @@ reason (`offline_untrusted_private`, `pending_load_or_cooldown`, `not_idle`,
 `ServiceTime`, `QualityConcurrency`, `DemandConcurrency`, `ColdIneligible`,
 `ColdDisqualifiers`. With `ObserveOnly` the snapshot is produced but no
 `load_model` is sent; `MaxLoadsPerTick = 0` or `MaxGlobalPendingLoads = 0`
-has the same effect (`Controller.Plan`, `coordinator/registry/warmpool/plan.go`).
+has the same effect (`Controller.Plan`, `coordinator/registry/warmpool/planning_pass.go`).
 
 A tick retains its serialization lock across planning, snapshot publication,
 diagnostics and sends, in that order. Pressure, queue and snapshot locks are
@@ -421,7 +421,13 @@ reservations retain the model-load transaction locks described above.
 `Controller.Configure` publishes the configuration through a private atomic
 pointer without taking the tick lock, so registry-held configuration updates
 cannot invert the tick-to-registry callback order
-(`coordinator/registry/warmpool/owner.go`).
+(`coordinator/registry/warmpool/owner.go`). Each planning entry captures one
+configuration value in `planningPass`
+(`coordinator/registry/warmpool/planning_pass.go`). Target calculations, load
+limits, reservation decisions and the snapshot's `ObserveOnly` use that value;
+a configuration published during the pass applies to the next one. A reserved
+action therefore cannot be stranded by switching to observation mode before
+sending, and observation-only actions cannot be sent after a mid-pass switch.
 
 Latest-snapshot readers receive a copy of the outer slice, preserving the
 existing nested action and diagnostic-map values. `WarmPoolSnapshot` aliases
@@ -594,7 +600,7 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 | Pending command lifecycle | `coordinator/registry/modelloads/commands.go` — `Commands.Reserve`, `Disconnect`; `coordinator/registry/modelloads/deadlines.go` — `Expire`, `Count`, `Backoff`, `Complete`, `Observe`; `coordinator/registry/model_load_state.go` retains live registry/provider synchronization |
 | Model swap planning and publication | `coordinator/registry/model_loading.go` — `TriggerModelSwaps`; `coordinator/registry/model_load_plan.go` — `bestModelLoadProviderLocked`; `coordinator/registry/model_load_commands.go` — `reservePendingModelLoads`, `sendModelLoadActions`; `coordinator/registry/model_load_warm.go` — `MarkModelWarm`; `coordinator/registry/model_commands.go` — `SendLoadModel` |
 | Heartbeat plan coalescing | `coordinator/registry/modelloads/plan_gate.go` — `PlanGate.Claim`, `ArmTrailing`; `coordinator/registry/model_swap_coalesce.go` — `triggerModelSwapsFromHeartbeat`, `trailingModelSwapPlan`; `coordinator/registry/modelloads/limits.go` — `PlanInterval` |
-| Warm-pool controller | `coordinator/registry/warmpool/controller.go` — `Controller.Run`, `Tick`; `coordinator/registry/warmpool/plan.go` — `Plan`, `PlanObserveOnly`; `coordinator/registry/warmpool/target_policy.go` — `TargetWarm`, `hasDemandPressure`; `coordinator/registry/warmpool/queue_pressure.go` — `RecordQueuePressure`; `coordinator/registry/warmpool/snapshots.go` — `Snapshot`, `LatestSnapshots` |
+| Warm-pool controller | `coordinator/registry/warmpool/controller.go` — `Controller.Run`, `Tick`; `coordinator/registry/warmpool/planning_pass.go` — `Plan`, `PlanObserveOnly`, `planningPass`; `coordinator/registry/warmpool/plan.go` — `planningPass.plan`, `planObserveOnly`; `coordinator/registry/warmpool/target_policy.go` — `targetWarm`, `hasDemandPressure`; `coordinator/registry/warmpool/queue_pressure.go` — `RecordQueuePressure`; `coordinator/registry/warmpool/snapshots.go` — `Snapshot`, `LatestSnapshots` |
 | Live warm-pool fleet and commands | `coordinator/registry/warm_pool_controller.go` — `newWarmPoolController`, `TriggerWarmPool`; `coordinator/registry/warm_pool_fleet.go` — `warmPoolFleetSnapshot`; `coordinator/registry/warm_pool_eligibility.go` — `warmPoolCandidateReasonLocked` |
 | Warm-pool demand and target math | `coordinator/registry/warmpool/target.go` — `Target`, `ServiceTime`, `LoadsThisTick`; `coordinator/registry/warmpool/state.go` — `State`, `ArrivalEWMAAlpha` |
 | Observed throughput and batch policy | `coordinator/registry/throughput/observations.go` — `Observations`; `coordinator/registry/throughput/batch.go` — `QualityConcurrency`; `coordinator/registry/throughput/anomaly.go` — `EvaluateAnomaly` |

@@ -5,7 +5,7 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
-Current work adds typed root image-maintenance begin/recovery/completion and its
+Pushedb1743dd53 adds typed root image-maintenance begin/recovery/completion and its
 staging-journal binding. Local full sandbox565tests/7skips/0failures and
 host-runtime19tests pass. A real-root disposable-image campaign on the test Mac
 passes two abrupt process exits, blocked admission, exact completion recovery,
@@ -58,7 +58,7 @@ explicit temporary runtime-group membership until the machine campaign finishes.
 - Worktree: `.worktrees/sandbox-completion-20260913`.
 - Branch: `codex/sandbox-completion-20260913`.
 - Starting sandbox tip0950ac41e; master93337ef05 integrated in453b37667.
-- Latest pushed code:2812390a5; per-image fence, maintenancef12f72810, root source guard, lifecycle commitf235b8ad2 and accountless staging
+- Latest pushed code:b1743dd53; typed root recovery, per-image fence, maintenancef12f72810, root source guard, lifecycle commitf235b8ad2 and accountless staging
   are included. Verify git HEAD and remote before resuming.
 - Local GUI plan commit3abe05f712de1d2dcc6958315c1fbf56b4b693ff follows
   host context50145d4b4 and qualification validator4cab8f470.
@@ -1472,3 +1472,15 @@ cleanup. The final ready publication must validate RELEASED lease cleanup after
 clone teardown rather than calling the ACTIVE qualification capability validator.
 Physical two-VM/system tests, build tools, performance, actual GUI login/logout
 service recovery, signed runtime12 physical validation and release gates remain.
+
+
+Typed root maintenance source and its tests/documentation committed and pushed
+b1743dd53fb89204badfad238fa61c0148ac4ad3. Pre-push checks pass; docs-check passes
+286files. PR996 remains draft and its Before/After body includes this implementation
+and real-root proof. CI34825232114 and integration34825232144 are in progress
+atb1743dd53; benchmark34825232097 awaits separate environment approval, not granted.
+The next checkpoint commit is local-only; source is already pushed. No live root
+probe, new VM, image attachment or transient maintenance fence remains. The old
+CI-service pause and temporary runtime-group membership remain as documented;
+Go-cache approval remains pending. Continue with actual guarded Data mounting,
+then phase-specific GUI installer boot/collection and final qualification.

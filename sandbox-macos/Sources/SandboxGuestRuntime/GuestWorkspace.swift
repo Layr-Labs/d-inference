@@ -67,11 +67,13 @@ public final class GuestWorkspace: @unchecked Sendable {
                 guard fstat(fd, &metadata) == 0, metadata.st_dev == device,
                       metadata.st_uid == tenantUID, metadata.st_mode & S_IFMT == S_IFDIR
                 else { throw GuestProtocolError.invalidPath }
-                return
+            } else {
+                guard fchown(fd, tenantUID, tenantGID) == 0 else { throw GuestProtocolError.invalidPath }
             }
-            guard fchown(fd, tenantUID, tenantGID) == 0, fsync(parent) == 0 else {
-                throw GuestProtocolError.invalidPath
-            }
+            // Persist the new directory's own inode as well as its parent
+            // entry. An existing-path retry must finish an uncertain barrier.
+            try GuestWorkspaceDurability.synchronize(fd)
+            try GuestWorkspaceDurability.synchronize(parent)
         }
     }
 
@@ -136,11 +138,13 @@ public final class GuestWorkspace: @unchecked Sendable {
             }
             guard upload.hasher.finalize().map({ String(format: "%02x", $0) }).joined() == upload.digest,
                   fchown(upload.file, tenantUID, tenantGID) == 0,
-                  fchmod(upload.file, 0o600) == 0,
-                  fsync(upload.file) == 0,
-                  fclonefileat(upload.file, upload.parent, upload.name, 0) == 0
+                  fchmod(upload.file, 0o600) == 0
             else { throw GuestProtocolError.transferConflict }
-            guard fsync(upload.parent) == 0 else { throw GuestProtocolError.publicationUncertain }
+            try GuestWorkspaceDurability.synchronize(upload.file)
+            guard fclonefileat(upload.file, upload.parent, upload.name, 0) == 0 else {
+                throw GuestProtocolError.transferConflict
+            }
+            try GuestWorkspaceDurability.synchronize(upload.parent)
             completed[id] = GuestUploadStatus(path: upload.path, size: upload.size,
                 sha256: upload.digest, offset: upload.size, committed: true)
         }

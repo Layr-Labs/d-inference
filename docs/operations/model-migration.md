@@ -1,6 +1,6 @@
 # Migrate a public model to a new build
 
-> Last updated: 2026-09-14 · commit `1470332c8`
+> Last updated: 2026-09-14 · commit `3d9f990f8`
 
 Runbook for moving a public model name (an **alias**, e.g. `gemma-4-26b`) from
 one concrete build to another with no downtime and without consumers ever

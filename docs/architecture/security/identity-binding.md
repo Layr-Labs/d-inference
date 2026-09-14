@@ -1,6 +1,6 @@
 # Identity binding
 
-> Last updated: 2026-09-14 · commit `1470332c8`
+> Last updated: 2026-09-14 · commit `3d9f990f8`
 
 A provider connection carries five identities — a Secure Enclave P-256 key, an
 X25519 process key `K`, an APNs device token, an Apple device identity

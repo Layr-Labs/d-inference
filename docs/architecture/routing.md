@@ -833,7 +833,7 @@ must not run in parallel with other scheduler tests in the same process.
    `providerLivenessGateReasonLocked` with `challengeFreshnessMaxAge`.
 4. **A model that is not resident is never routed to hardware it cannot
    fit** — `modelFitsHardware` in `buildCandidateInto`; resident slots
-   (`slotStateModelLoaded`) are exempt because they have demonstrably fit.
+   (`SlotStateModelLoaded`, `coordinator/registry/routingcost/penalties.go`) are exempt because they have demonstrably fit.
 5. **Every scanned provider is accounted for exactly once**: as a candidate
    or under one `GateReason` — `scanCandidatesLocked.tallyGate`.
 6. **The cost breakdown sums to the total** — `buildCandidateInto`

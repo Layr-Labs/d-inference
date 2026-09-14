@@ -34,9 +34,17 @@ var (
 	readMatchers  = []*regexp.Regexp{reFrom, reJoin}
 
 	// SQL keywords that can legally follow FROM/JOIN without naming a table.
+	//
+	// Function names are not in this list, and deliberately: `unnest` and
+	// `generate_series` used to be, which made the list a census of the
+	// set-returning functions the store happened to call — so the first new one
+	// (`jsonb_to_recordset`, in the code-attestation coverage upsert) was read as a
+	// table with no `CREATE TABLE` and failed the map. `isCallAt` decides that
+	// syntactically instead, which is a property of the text rather than a list
+	// anyone has to keep current. `dual` stays: it names no arguments.
 	sqlNoise = map[string]bool{
-		"select": true, "values": true, "only": true, "lateral": true, "unnest": true,
-		"generate_series": true, "dual": true, "set": true, "where": true,
+		"select": true, "values": true, "only": true, "lateral": true,
+		"dual": true, "set": true, "where": true,
 	}
 )
 
@@ -133,9 +141,15 @@ func Tables(sql string) []TableAccess {
 			}
 		}
 	}
+	read := string(masked)
 	for _, re := range readMatchers {
-		for _, m := range re.FindAllStringSubmatch(string(masked), -1) {
-			add(m[1], "R")
+		for _, loc := range re.FindAllStringSubmatchIndex(read, -1) {
+			// A name in FROM/JOIN position that carries an argument list is a
+			// set-returning function rather than a table — see isCallAt.
+			if isCallAt(read, loc[3]) {
+				continue
+			}
+			add(read[loc[2]:loc[3]], "R")
 		}
 	}
 	out := make([]TableAccess, 0, len(modes))
@@ -144,6 +158,37 @@ func Tables(sql string) []TableAccess {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Table < out[j].Table })
 	return out
+}
+
+// isCallAt reports whether the name ending at `end` is immediately applied to an
+// argument list — which, in FROM or JOIN position, means it is a set-returning
+// function and not a table. `FROM jsonb_to_recordset($1::jsonb) AS x(...)` reads
+// no table at all; the rows it scans are the parameter's.
+//
+// The rule is syntactic because the grammar makes it decidable: PostgreSQL takes a
+// column-alias list only after an alias (`FROM t AS u(a, b)`, `FROM t u(a, b)`), so
+// a bare table name followed by `(` is not legal SQL, and there is nothing for the
+// test to be wrong about. That is worth more than the accuracy of any list of
+// function names, which is only ever as current as the last person to extend it.
+//
+// It is applied to FROM and JOIN only. `INSERT INTO usage (id, tokens)` and `CREATE
+// TABLE models (...)` both put a real table in front of a parenthesis, so the same
+// rule there would drop every write the store issues.
+//
+// Whitespace is skipped, since `FROM unnest ($1)` calls a function as much as
+// `FROM unnest($1)` does. Anything else — a comma, a keyword, the end of the text —
+// means the name stood alone and is a table.
+func isCallAt(text string, end int) bool {
+	for i := end; i < len(text); i++ {
+		switch text[i] {
+		case ' ', '\t', '\n', '\r':
+		case '(':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // keywordCalls are the SQL functions whose arguments are separated by keywords

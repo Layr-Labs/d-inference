@@ -128,6 +128,31 @@ func TestTables(t *testing.T) {
 		name: "the lock itself is still masked, however it continues",
 		sql:  `SELECT id FROM models WHERE id = $1 FOR NO KEY UPDATE OF models SKIP LOCKED`,
 		want: []TableAccess{{"models", "R"}},
+	}, {
+		// The regression that replaced a list of function names with a rule. `unnest`
+		// and `generate_series` were spelled out in `sqlNoise`, so the first
+		// set-returning function the store reached for that nobody had added — this
+		// one, in the code-attestation coverage upsert — became a table with no
+		// `CREATE TABLE` and failed the map.
+		name: "a set-returning function in FROM names no table",
+		sql: `WITH observed AS (SELECT * FROM jsonb_to_recordset($1::jsonb) AS x(id text, tokens bigint))
+UPDATE usage u SET tokens = o.tokens FROM observed o WHERE u.id = o.id`,
+		want: []TableAccess{{"usage", "W"}},
+	}, {
+		name: "the functions the old list happened to name are still skipped",
+		sql:  `SELECT id FROM models WHERE id = ANY($1) UNION SELECT id FROM UNNEST($2::text[]) AS id JOIN generate_series (1, 10) AS g ON true`,
+		want: []TableAccess{{"models", "R"}},
+	}, {
+		// The other half of the rule, and the reason it is FROM/JOIN only: a write's
+		// target is a real table that is very often followed by a parenthesis. Reading
+		// those as calls would drop every insert and every migration in the tree.
+		name: "a parenthesis after a write target is a column list, not a call",
+		sql:  `INSERT INTO usage (id, tokens) VALUES ($1, $2)`,
+		want: []TableAccess{{"usage", "W"}},
+	}, {
+		name: "nor is a table's own column-alias list a call",
+		sql:  `SELECT a FROM usage AS u(a, b) JOIN models m ON m.id = u.a`,
+		want: []TableAccess{{"models", "R"}, {"usage", "R"}},
 	}}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

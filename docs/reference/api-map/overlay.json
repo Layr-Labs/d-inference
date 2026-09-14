@@ -2617,6 +2617,7 @@
       "coordinator/registry:cacheRoutingTracker": "mem.cache_routing",
       "coordinator/registry:cacheAttemptOwner": "mem.cache_routing",
       "coordinator/registry:cacheRoutingGeneration": "mem.cache_routing",
+      "coordinator/registry:cacheDemandTracker": "mem.cache_routing",
       "coordinator/registry:pendingQuote": "mem.capacity",
       "coordinator/registry:quoteTracker": "mem.capacity",
       "coordinator/registry:providerWriter": "mem.provider_writer",

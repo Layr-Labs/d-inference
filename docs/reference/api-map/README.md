@@ -1,6 +1,6 @@
 # Darkbloom system map
 
-> Last updated: 2026-09-10 · commit `f557e861e`
+> Last updated: 2026-09-14 · commit `11b5bc037`
 
 A generated map of Darkbloom's entry points: what authorizes each one, what state
 its reachable code touches, and whether that access reads or writes. The
@@ -227,9 +227,11 @@ pointed, because SVG opacity applies to a path's markers too and a wire's restin
 a 9px glyph into a rumour.
 
 The unfiltered coordinator map is on the wrong side of that budget on purpose, and it is
-worth stating how far: at the fitted zoom, 971 of the 976 heads would have another head
-within their own width, 120 on average, and one 9-pixel square would hold 156 of them.
-Moving them to the wires' midpoints — five times less crowded — still leaves 971 touching.
+worth stating how far: at the fitted zoom, 949 of the 975 heads would have another head
+within their own 9.4px width, 50 of them on average, and one 9-pixel square would hold
+156. Moving them to the wires' midpoints thins the pile-ups without emptying them — 22
+neighbours on average instead of 50, and 967 heads touching instead of 949, because a
+midpoint has more room around it and every wire has one.
 No arrangement points every wire in this system legibly, so the picture has to be narrowed
 first: hover a dot, click one, filter, or zoom past roughly twice the fitted scale, where
 you have stopped looking at the system and started reading a corner of it. The `↦` button's
@@ -298,7 +300,7 @@ same walk, so they are derived rather than described:
   handler and is shifted the same way, so the state a gate reads is numbered before
   the state it gates. A `defer` postpones the call and not its operands, so an
   argument that reads state is numbered where the statement is. The coordinator's
-  widest handler reaches **56** constructions this way; the whole map derives **976**
+  widest handler reaches **56** constructions this way; the whole map derives **975**
   steps over 107 routes.
 - **Indirection.** Each step carries how it is reached, from a four-word vocabulary
   the artifact publishes with its own explanations (`stepKindLegend`): `direct`
@@ -362,8 +364,8 @@ thousand. Both halves are screen-pixel quantities:
 
 | The arc | Because |
 |---|---|
-| Its **stroke and dashes** never scale (`vector-effect: non-scaling-stroke`) | A stroke inside the zoomed scene is scaled with it. At the zoom that fits the whole map a 1.1-unit stroke was 0.44px wide with dashes to match — the arcs were present, with correct geometry, and invisible. The 976 access wires scale on purpose: their collective mass carries them, and at close zoom screen-width lines would fill the picture |
-| Its **head** is dropped when the arc draws less than 1.6 heads of ink (`fkHeads`) | A head does not shrink either, so on a short arc it stops annotating the line and replaces it. The layout packs some pairs of tables adjacently — at the fit, five of the seven keys are bare: four draw between 2 and 5px of ink, and the fifth draws 13.4px, just under the 15px a 9.4px head asks for. Bare, a key still says *there is a key here*; the direction it stops claiming was never legible at that size, and the table below states it at every zoom |
+| Its **stroke and dashes** never scale (`vector-effect: non-scaling-stroke`) | A stroke inside the zoomed scene is scaled with it. At the zoom that fits the whole map a 1.1-unit stroke was 0.44px wide with dashes to match — the arcs were present, with correct geometry, and invisible. The 975 access wires scale on purpose: their collective mass carries them, and at close zoom screen-width lines would fill the picture |
+| Its **head** is dropped when the arc draws less than 1.6 heads of ink (`fkHeads`) | A head does not shrink either, so on a short arc it stops annotating the line and replaces it. The layout packs some pairs of tables adjacently — at the fit, four of the seven keys are bare, each drawing between 2 and 5px of ink; the fifth clears the bar by a third of a pixel, drawing 15.3px where a 9.4px head asks for 15. Bare, a key still says *there is a key here*; the direction it stops claiming was never legible at that size, and the table below states it at every zoom |
 
 The measure is the ink `drawArc` actually drew, not the gap between two table centres —
 the end is pulled back out of the target's disc, which is up to a node radius. Zooming
@@ -377,18 +379,18 @@ want a little more zoom than the chip gives.
 
 ## How much of it is opinion
 
-Everything countable is derived: **108 routes, 101 nodes, 20 groups, 281
-associations, 976 wiring steps, 44 table definitions (674 columns, 7 foreign keys),
-1,183 citations**. The opinions are a bounded, greppable set of
+Everything countable is derived: **108 routes, 101 nodes, 20 groups, 280
+associations, 975 wiring steps, 45 table definitions (681 columns, 7 foreign keys),
+1,176 citations**. The opinions are a bounded, greppable set of
 overlay tables:
 
 | Kind of opinion | Where | Size today |
 |---|---|---|
-| what a field/type/call *is* | `deps.fields`, `deps.types`, `deps.functions` | 150 (21 wildcards, 36 sentinels), 58, 1 |
+| what a field/type/call *is* | `deps.fields`, `deps.types`, `deps.functions` | 154 (21 wildcards, 36 sentinels), 71, 1 |
 | what a literal points at | `deps.hosts`, `deps.endpoints`, `deps.messages` | 21, 7, 25 |
-| how far to look | `deps.traverse`, `deps.inherit`, `deps.packageDefault`, `deps.strict`, `deps.preferImpl`, `deps.sqlDriver`, `gateDepth` | 21, 3, 21, 1, 1, 1 (+4 assembled statements), 1 |
-| how to name things | `namespaces`, `authRules`, `clusters`, `categories`, `labels` | 38, 15, 6, 6, 59 |
-| prose | `routes`, `depDocs`, `categoryDocs`, `cacheSemantics` | 105, 97, 6, 4 |
+| how far to look | `deps.traverse`, `deps.inherit`, `deps.packageDefault`, `deps.strict`, `deps.preferImpl`, `deps.sqlDriver`, `gateDepth` | 21, 3, 22, 1, 1, 1 (+6 assembled statements), 2 |
+| how to name things | `namespaces`, `authRules`, `clusters`, `categories`, `labels` | 38, 15, 6, 6, 60 |
+| prose | `routes`, `depDocs`, `categoryDocs`, `cacheSemantics` | 108, 101, 6, 4 |
 
 A handful of opinions are structural — changing them means changing
 `tools/systemmap`, not the overlay: that an entry point is an HTTP route
@@ -474,8 +476,8 @@ a machine which has never been migrated — the coordinator's `users` table is s
 columns wider in production than its `CREATE` says. The `CREATE`, `ALTER` and
 `CREATE INDEX` statements are shown as written, each with its citation. The drawer
 also lists the table's foreign keys in both directions — the ones it declares and
-the ones pointing at it — each followable to the other table. **674 columns across
-44 tables** are derived this way; nothing about a table's shape is curated.
+the ones pointing at it — each followable to the other table. **681 columns across
+45 tables** are derived this way; nothing about a table's shape is curated.
 
 ## Walking the history
 
@@ -516,7 +518,7 @@ Three things make that work across a repository whose layout moved:
   name or place are counted per point and said in the page. Without that, a deleted
   subsystem — whose overlay entries left with it — would read as a service that simply
   did less. A *partly* extracted point is not among the things that can go wrong:
-  `extract.Go` refuses to return a program some of whose packages failed to type-check,
+  `extract.Load` refuses to return a program some of whose packages failed to type-check,
   so a commit either yields a whole shape or yields none and is listed in the
   timeline's `failed` — and the page says how many of those the axis is missing,
   because a dropped commit's changes are attributed to the next commit that did
@@ -706,6 +708,19 @@ this dies of:
   silence: an upper-case keyword in a message — `fmt.Errorf("could not UPDATE %s
   rows", t)` — reads as a spliced table name, and writing that word in lower case
   clears it.
+
+  What `FROM` introduces is not always a table, and the one shape that is decided
+  syntactically is a call: a name applied to an argument list in `FROM` or `JOIN`
+  position is a set-returning function, so `FROM jsonb_to_recordset($1::jsonb) AS
+  x(…)` reads no table and contributes no node. That used to be a list of function
+  names (`UNNEST`, `GENERATE_SERIES`), which is a list that is only ever as current
+  as the last person to extend it — the coordinator's code-attestation coverage
+  upsert reached for a third one and became a `pg.*` node with no `CREATE TABLE`.
+  The grammar makes the test decidable instead: PostgreSQL takes a column-alias list
+  only *after* an alias (`FROM t AS u(a, b)`), so a bare table name in front of a
+  parenthesis is not legal SQL. The rule is `FROM`/`JOIN` only, because a write's
+  target is a real table that very often precedes one — `INSERT INTO usage (id,
+  tokens)`, `CREATE TABLE models (…)`.
 
   Case is also what tells the `FOR UPDATE` family from prose running into a statement.
   A comment whose last word is "for" sits directly in front of the line below it once

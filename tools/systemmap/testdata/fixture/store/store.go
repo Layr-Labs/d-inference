@@ -1068,8 +1068,8 @@ func (p *Postgres) UsageWindow(ctx context.Context, all bool) error {
 }
 
 // UsageUnnest appends a fragment whose FROM opens a function instead of naming a
-// table. `Tables` skips those keywords; the fragment scan has to skip the same ones
-// or `unnest` becomes a table in the report.
+// table. `Tables` skips a call in that position; the fragment scan has to skip it
+// too, or `unnest` becomes a table in the report.
 //
 // Reached only by the direct-walk tests.
 func (p *Postgres) UsageUnnest(ctx context.Context, all bool) error {
@@ -1078,6 +1078,22 @@ func (p *Postgres) UsageUnnest(ctx context.Context, all bool) error {
 		q += ` UNION SELECT id FROM UNNEST($2::text[]) AS id`
 	}
 	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// UsageRecordset calls a set-returning function no list in the extractor mentions,
+// which is the case that decides whether the rule is syntactic or a census. The
+// coordinator has exactly this statement (`AdvanceCodeAttestationCoverage`): a
+// CTE over `jsonb_to_recordset($1::jsonb)`, joined against a real table. Reading
+// the function as a table put a `pg.*` node with no `CREATE TABLE` in the map and
+// failed the gate — with no fix available except naming one more function
+// somewhere.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) UsageRecordset(ctx context.Context) error {
+	_, err := p.db.ExecContext(ctx, `WITH observed AS (
+ SELECT * FROM jsonb_to_recordset($1::jsonb) AS x(id text, tokens bigint))
+ UPDATE usage u SET tokens = o.tokens FROM observed o WHERE u.id = o.id`)
 	return err
 }
 

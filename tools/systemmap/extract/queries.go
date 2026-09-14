@@ -511,10 +511,11 @@ func sortedKeys(m map[string]string) []string {
 // ONLY and LATERAL are stepped over rather than treated as the token, because
 // they prefix a table name instead of replacing it — `Tables` reads through ONLY
 // the same way, and a scan that stopped at the keyword would let `FROM ONLY %s`
-// splice a table in unseen. The keywords that genuinely end the search (SELECT
-// opening a subquery, UNNEST opening a function) are `sqlNoise`, which still lists
-// ONLY and LATERAL for `Tables`' benefit — this pattern steps over them before they
-// are ever looked up there.
+// splice a table in unseen. The words that genuinely end the search are `sqlNoise`
+// (SELECT opening a subquery), which still lists ONLY and LATERAL for `Tables`'
+// benefit — this pattern steps over them before they are ever looked up there. A
+// function opening its arguments (`FROM UNNEST($1)`) ends the search too, but
+// syntactically rather than by name: see `isCallAt`.
 //
 // UPDATE reaches this pattern only where it heads an update statement, because
 // `maskLockingClauses` has already blanked the clauses where it does not — see
@@ -574,11 +575,17 @@ func (f *fnWalk) auditText(s string, pos token.Pos, statement bool) {
 	f.noteCTEs(masked)
 	var names []string
 	spliced := ""
-	for _, m := range reTableName.FindAllStringSubmatch(masked, -1) {
-		keyword, name := m[1], m[2]
+	for _, loc := range reTableName.FindAllStringSubmatchIndex(masked, -1) {
+		keyword, name := masked[loc[2]:loc[3]], masked[loc[4]:loc[5]]
 		table := cleanIdent(strings.ToLower(name))
+		// A set-returning function in FROM or JOIN position, decided the same way
+		// `Tables` decides it, so the two readers agree about what the text names.
+		// The name must be readable first: `FROM %s(...)` is a splice whichever way
+		// it is punctuated, and skipping it here would hide the finding below.
+		call := (keyword == "FROM" || keyword == "JOIN") &&
+			reBareIdent.MatchString(name) && isCallAt(masked, loc[5])
 		switch {
-		case sqlNoise[table]:
+		case sqlNoise[table] || call:
 			// A keyword that ends the search rather than naming a table: `FROM
 			// (SELECT ...)`, `FROM UNNEST($1)`.
 		case !reBareIdent.MatchString(name):

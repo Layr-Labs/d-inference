@@ -805,6 +805,11 @@ func TestFixtureReadableSQLIsNotDrift(t *testing.T) {
 		// well as `Tables` does.
 		{"UsageWindow", []string{"pg.usage R"}},
 		{"UsageUnnest", []string{"pg.usage R"}},
+		// A set-returning function the extractor has never heard of, in a whole
+		// statement that also writes a real table. The write is drawn, the function is
+		// not a node, and the gate stays quiet — which it only does because the rule
+		// reads the punctuation rather than a list of names.
+		{"UsageRecordset", []string{"pg.usage W"}},
 	} {
 		t.Run(tc.method, func(t *testing.T) {
 			accesses, rep := walkFixtureMethod(t, tc.method)

@@ -20,7 +20,7 @@ Canonical code (code wins over this doc; find declarations by symbol):
 | Bounded usage history with lazy allocation | `coordinator/payments/payments.go` (`Ledger.RecordUsage`, `usageHistoryGrowth`) |
 | Shared cache refresh and cold-miss coalescing | `coordinator/api/network/refresh.go` (`Controller.StartRefreshers`, `getCachedEntry`, `refreshCachedEntry`, `computeCachedEntry`) |
 | Stats / network totals computation | `coordinator/api/network/stats_snapshot.go` (`computeStats`); `coordinator/api/network/stats.go` (`Controller.Stats`); `coordinator/api/network/totals.go` (`computeNetworkTotals`, `Controller.Totals`) |
-| Analytics transaction and query errors | `coordinator/store/postgres/analytics.go` (`withAnalyticsTx`, `NetworkTotals`); `coordinator/store/postgres/analytics_locations.go` (`UsageLocationBuckets`); `coordinator/store/postgres/analytics_flows.go` (`UsageFlowBuckets`) |
+| Analytics transaction and query errors | `coordinator/store/postgres/analytics.go` (`withAnalyticsTx`, `NetworkTotals`, `UsageLocationBuckets`, `UsageFlowBuckets`) |
 | Verification poller cadence + busy floor | `coordinator/providercontrol/mdmscheduler/dispatch.go` (`shouldLoadDueRows`, `nextDispatchDelay`) |
 | Dashboard rolling windows | `coordinator/store/postgres/dashboard.go` and `coordinator/store/memory/dashboard.go` (`AccountEarningsWindows`); `coordinator/api/accountfleet/summary_cache.go` (`accountEarningsWindows`) |
 | Batched reputation reads | `coordinator/store/postgres/dashboard.go` and `coordinator/store/memory/dashboard.go` (`GetReputations`); `coordinator/api/accountfleet/reputation.go` (`attachStoredReputations`) |

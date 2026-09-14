@@ -180,7 +180,8 @@ finishes, persisted rows omit the indexed serial and SE key, including late writ
 from a registration that already disconnected. Provider-record and reputation persistence share a mutex, and pending reputation
 writes are skipped. Completed records publish together with their reputation in
 one Postgres transaction or MemoryStore lock (`UpsertProviderWithReputation`,
-`coordinator/store/postgres/provider_record_write.go`), so an older zero snapshot cannot
+`coordinator/store/postgres/provider_record_write.go` and
+`coordinator/store/memory/provider_record_write.go`), so an older zero snapshot cannot
 overwrite the completed state and no completed identity appears without its
 reputation. Registration retries history/reputation reads up to three times,
 within one five-second deadline shared with `RestoreProviderStateContext`.

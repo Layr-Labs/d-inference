@@ -43,7 +43,7 @@ func (s *Server) cachedModelEntries(includeBuilds bool) ([]types.ModelEntry, err
 	if err != nil {
 		return nil, err
 	}
-	s.readCacheSetEntryIfCurrent(key, ttlEntry{obj: entries}, modelListCacheTTL, generation)
+	s.readCacheSetValueIfCurrent(key, entries, modelListCacheTTL, generation)
 	return entries, nil
 }
 
@@ -66,7 +66,7 @@ func (s *Server) cachedModelListBody(includeBuilds bool) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.readCacheSetEntryIfCurrent(modelEntriesCacheKey(includeBuilds), ttlEntry{obj: entries}, modelListCacheTTL, generation)
-	s.readCacheSetEntryIfCurrent(key, ttlEntry{value: body}, modelListCacheTTL, generation)
+	s.readCacheSetValueIfCurrent(modelEntriesCacheKey(includeBuilds), entries, modelListCacheTTL, generation)
+	s.readCacheSetIfCurrent(key, body, modelListCacheTTL, generation)
 	return body, nil
 }

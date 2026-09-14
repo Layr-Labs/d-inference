@@ -18,6 +18,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Behavior | Start here |
 |---|---|
 | API request handling, auth, attestation, dispatch | `coordinator/api/`; server construction in `server.go` (`NewServer`) |
+| HTTP response caching and refresh coalescing | `coordinator/api/readcache/`; catalog fill fences in `generation.go` (`SetIfCurrent`, `SetValueIfCurrent`) |
 | Provider selection, admission, queueing | `coordinator/registry/`; request eligibility in `request_traits.go` (`providerEligibleForTraitsLocked`) |
 | Billing, pricing, referrals and payout endpoints | `coordinator/api/billing/` (`Controller`); route and shared-dependency binding in `coordinator/api/billing_controller.go` |
 | Financial services and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/` |

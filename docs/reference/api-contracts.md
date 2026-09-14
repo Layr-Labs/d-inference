@@ -162,8 +162,10 @@ geography never blocks core stats. Geography refreshes on its own
 `statsRefreshInterval` loop, using `statsGeographyCacheKey`. Core snapshots
 include the latest completed geography attempt, so availability changes appear
 on a subsequent core refresh. Missing or expired geography is unavailable.
-Cache behavior is implemented by `coordinator/api/cache_refresher.go`
-(`computeCachedEntry`, `StartCacheRefreshers`) and
+Coalesced cache fills are owned by `coordinator/api/readcache/refresher.go`
+(`Refresher.Get`, `Refresher.Refresh`). Endpoint schedules and error telemetry
+remain in `coordinator/api/cache_refresher.go` (`StartCacheRefreshers`), and
+geography composition is in
 `coordinator/api/stats_geography.go` (`cachedStatsGeography`, `computeStatsGeography`).
 
 | Stats geography field | Contract | Code |
@@ -555,7 +557,7 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Models and catalog | `coordinator/api/models_endpoints.go`, `coordinator/api/concrete_model_entries.go`, `coordinator/api/openrouter_endpoint.go`, `coordinator/api/model_registry_handlers.go`, `coordinator/api/model_alias_handlers.go`, `coordinator/api/openrouter_alias_handlers.go`, `coordinator/api/capacity.go`, `coordinator/api/exact_cache_status.go` |
 | Keys, device code, accounts | `coordinator/api/apikey_handlers.go`, `coordinator/store/apikey.go`, `coordinator/api/device_auth.go`, `coordinator/api/me_handlers.go` |
 | Billing, Stripe, referral, invites | `coordinator/api/billing/` (`Controller`); `coordinator/api/billing_controller.go` (`billingController`); `coordinator/api/requestauth/identity.go` (`RequirePrivyUser`); `coordinator/api/invite_handlers.go` |
-| Stats | `coordinator/api/stats.go`, `coordinator/api/cache_refresher.go`, `coordinator/api/network_totals.go`, `coordinator/api/leaderboard.go`, `coordinator/api/network_series.go` |
+| Stats | `coordinator/api/stats.go`, `coordinator/api/cache_refresher.go`, `coordinator/api/readcache/`, `coordinator/api/network_totals.go`, `coordinator/api/leaderboard.go`, `coordinator/api/network_series.go` |
 | Release, enrollment, provider WS, log reports | `coordinator/api/release_handlers.go`, `coordinator/api/enroll.go`, `coordinator/api/provider.go`, `coordinator/api/log_report_handlers.go` |
 | Drain, admin telemetry, profiler, state export, telemetry stub | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/admin_state_export.go`, `coordinator/api/telemetry_handlers.go` |
 | Rate-limit bucket consumption | `coordinator/ratelimit/ratelimit.go` (`allowBucket`, `debitBucket`): fixed and per-key rate paths share token consumption and retry calculation while keeping their own admission and clamp rules |

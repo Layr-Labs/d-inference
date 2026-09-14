@@ -98,6 +98,7 @@ func assertion(t *testing.T, f fixture, counter uint32, hash [32]byte) []byte {
 	t.Helper()
 	auth := testAuth(t, f.private, counter, false, "production")
 	nonce := digest(auth, hash)
+	nonce = sha256.Sum256(nonce[:])
 	sig, _ := ecdsa.SignASN1(rand.Reader, f.private, nonce[:])
 	proof, _ := cbor.Marshal(map[string]any{"signature": sig, "authenticatorData": auth})
 	return proof

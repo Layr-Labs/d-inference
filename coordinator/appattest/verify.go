@@ -150,7 +150,11 @@ func (v *Verifier) Assertion(proof, publicKey []byte, clientHash [32]byte, previ
 		return 0, nil, invalid("public_key")
 	}
 	nonce := digest(a.AuthData, clientHash)
-	if !ecdsa.VerifyASN1(&ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}, nonce[:], a.Signature) {
+	// Apple's assertion is ES256 over the nonce as a message. VerifyASN1
+	// accepts an already-hashed digest, so hash that nonce once more here.
+	// Attestation certificate nonces above retain the single composite hash.
+	signatureHash := sha256.Sum256(nonce[:])
+	if !ecdsa.VerifyASN1(&ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}, signatureHash[:], a.Signature) {
 		return 0, nil, invalid("signature")
 	}
 	meta, err := v.authData(a.AuthData, false)

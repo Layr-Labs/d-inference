@@ -1,6 +1,6 @@
 # App Attest shadow protocol and observations
 
-> Last updated: 2026-09-14 · commit `2f39698d2`
+> Last updated: 2026-09-14 · commit `cc4847115`
 
 Reference for the optional App Attest exchange alongside APNs and MDM. Shadow evidence is stored and measured independently; it never changes provider trust, routing, rewards, or the minimum supported macOS version. The rollout decision is in [the coexistence plan](../design/app-attest-migration.md).
 
@@ -28,6 +28,8 @@ Code: `coordinator/api/app_attest_shadow_config.go` (`readAppAttestShadowConfig`
 | Provider → coordinator | `assertion` | The app decrypts with its own process key; returns `result`, `key_id`, recovered `challenge`, base64 `proof`. Verify signature/transcript and atomically advance the stored counter. |
 
 Code: `coordinator/protocol/app_attest_shadow.go` (`AppAttestShadowPayload`), `provider-swift/Sources/ProviderAppAttest/ShadowProtocol.swift` (`AppAttestShadowPayload`).
+
+The registration capability is encoded in both `ProviderMessage.encode` and `ProviderProtocolCodec.encodeRegisterPreservingRawAttestation`; the latter preserves the existing signed JSON fragment and must also carry `app_attest_protocol`.
 
 The SHA-256 transcript encodes these UTF-8 strings in order, each preceded by its four-byte unsigned big-endian byte length: domain `darkbloom.app-attest.shadow.v1`, request action (`attest` or `assert`), session, environment, App Attest key ID, plaintext challenge, and the app's locally held X25519 public key. The provider never signs a caller-supplied endpoint key. Go/Swift tests pin an independently calculated transcript vector.
 
@@ -61,6 +63,8 @@ The coordinator emits `App Attest shadow observation` through its telemetry emit
 
 `coordinator/appattest/authenticator.go` (`validationCategory`) accepts an unsigned CBOR integer fitting `uint32` or an exact four-byte little-endian byte string for `apple_validation_category_01`. It rejects other representations, including null; unknown numeric values remain unknown categories. This compatibility rule does not relax signature or Mac policy checks. See the [specification review](../reports/2026-09-14-app-attest-spec-review.md) and [proposed retirement policy](../design/app-attest-retirement.md) for evidence and remaining work.
 
+`coordinator/appattest/verify.go` (`Verifier.Assertion`) verifies ES256 over the composite nonce as a message, supplying SHA-256 of that nonce to Go's digest-based ECDSA verifier. Certificate nonce comparison still uses the original composite hash. The assertion parser permits the Mac's retained AT flag without parsing credential data into the simplified header; undeclared trailing bytes remain invalid. A physical Mac assertion fixture covers this behavior independently of synthetic signing helpers.
+
 Coverage analysis must count distinct provider/session identities, not raw event counts. Separate registration, preparation, key enrollment, and assertion populations. Group logs by reported OS/build/hardware; keep unsupported, unconfigured, disconnected, busy, timeout, invalid-proof, and dropped observations visible. Do not equate repeated assertions from one Mac with coverage of additional Macs. The database key table is not a coverage denominator: it contains successful enrollments only. Logs/metrics retain their existing telemetry retention and delivery limits.
 
 ## Storage
@@ -73,7 +77,7 @@ Code: `coordinator/store/app_attest_shadow.go` (`AppAttestShadowStore`), `postgr
 
 `scripts/prepare-app-attest-entitlements.py` preserves APNs production signing and existing keychain grants. It prepares the `CDhash` opt-in independently from the environment entitlement, preserving a granted string or array type and requesting only `CDhash`. The regenerated macOS Developer ID profile inspected on 2026-09-14 grants `com.apple.developer.devicecheck.app-attest-opt-in = ["CDhash"]` and no `appattest-environment`; that is sufficient to configure the local shadow attempt. If the profile also explicitly grants the production environment entitlement, the helper includes it; otherwise it does not manufacture one. Both provider release and signing-validation workflows use this helper and compare extracted signed entitlements against its result. A profile without the grant produces a legacy-compatible bundle; on a supported OS the client reports `not_configured`.
 
-The real adapter checks macOS 27+, `DCAppAttestService.isSupported`, the app bundle, and the signed CDhash opt-in through `AppAttestEntitlementPolicy`. An explicit environment entitlement must match the requested environment; its absence does not determine the environment and does not block an attempt. The coordinator still verifies the environment from Apple-signed attestation evidence before recording success. Current SDK compilation and unit tests do not establish live Mac eligibility. Verify that the final additive signing/profile configuration still launches and completes APNs/MDM checks on existing supported macOS versions. The exact profile grants, launch mechanism, metadata extensions, and Apple acceptance require a physical macOS 27 Mac with the final signed app. No private daemon entitlement is manufactured. [Apple's macOS restrictions](https://developer.apple.com/forums/thread/836329) apply to shadow mode too.
+The real adapter checks macOS 27+, `DCAppAttestService.isSupported`, the app bundle, and the signed CDhash opt-in through `AppAttestEntitlementPolicy`. An explicit environment entitlement must match the requested environment; its absence does not determine the environment and does not block an attempt. The coordinator still verifies the environment from Apple-signed attestation evidence before recording success. A physical M5 Max on macOS 27.0 build `26A428` completed the real exchange using the opt-in-only profile, including the full signed debug provider through a user LaunchAgent. Its proofs omitted version/category extensions, correctly yielding `metadata_missing`. Direct SSH launch of the smaller validation app reported support but a Keychain error. These observations do not qualify a final signed/notarized release or every launch/OS cohort; see the [physical validation report](../reports/2026-09-14-app-attest-macos27-validation.md). Verify APNs/MDM, install, and update behavior with the final artifact on supported older macOS versions. No private daemon entitlement is manufactured. [Apple's macOS restrictions](https://developer.apple.com/forums/thread/836329) apply to shadow mode too.
 
 ## Validation
 

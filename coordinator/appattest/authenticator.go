@@ -22,9 +22,12 @@ func (v *Verifier) authData(data []byte, attest bool) (*authenticator, error) {
 	if v.policy.AppID == "" || !bytes.Equal(data[:32], rp[:]) {
 		return nil, invalid("app_identity")
 	}
-	if (data[32]&0x40 != 0) != attest {
+	if attest && data[32]&0x40 == 0 {
 		return nil, invalid("authenticator_flags")
 	}
+	// Real macOS assertions retain the AT bit but contain only the 37-byte
+	// header. Only attestation objects carry credential data; the assertion
+	// parser still rejects trailing bytes unless ED declares extensions.
 	a := &authenticator{counter: binary.BigEndian.Uint32(data[33:37])}
 	tail := data[37:]
 	if attest {

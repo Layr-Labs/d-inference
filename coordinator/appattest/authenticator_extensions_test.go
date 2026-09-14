@@ -54,6 +54,7 @@ func TestAssertionAuthenticatesByteEncodedCategory(t *testing.T) {
 	f := makeFixture(t, true)
 	auth := categoryAuthData(t, cbor.RawMessage{0x44, 6, 0, 0, 0})
 	nonce := digest(auth, f.hash)
+	nonce = sha256.Sum256(nonce[:])
 	signature, err := ecdsa.SignASN1(rand.Reader, f.private, nonce[:])
 	if err != nil {
 		t.Fatal(err)

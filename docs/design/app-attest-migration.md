@@ -1,8 +1,8 @@
 # App Attest shadow rollout alongside APNs and MDM
 
-> Last updated: 2026-09-12 · commit `7c394fa2b`
+> Last updated: 2026-09-14 · commit `cc4847115`
 
-Status: **In progress** — 2026-09-12 — coexistence implemented and locally tested; final signed-artifact and macOS 27 acceptance remain unverified.
+Status: **In progress** — 2026-09-14 — [physical macOS 27 validation](../reports/2026-09-14-app-attest-macos27-validation.md) passes with a signed debug provider; final release-artifact and cohort qualification remain open.
 
 The next release keeps APNs and MDM/MDA as its authoritative verification path. App Attest runs alongside that path in shadow mode: perform the real exchange, verify evidence on the coordinator, and record results without changing routing, trust, rewards, or supported OS versions.
 

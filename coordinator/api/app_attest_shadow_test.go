@@ -60,6 +60,7 @@ func TestAppAttestShadowCannotChangeRoutingOrTrust(t *testing.T) {
 	auth := append(append([]byte{}, rp[:]...), 0, 0, 0, 0, 1)
 	hash := protocol.AppAttestShadowHash("assert", x.id, "production", record.KeyID, x.challenge, x.publicKey)
 	signed := sha256.Sum256(append(auth, hash[:]...))
+	signed = sha256.Sum256(signed[:])
 	signature, _ := ecdsa.SignASN1(rand.Reader, key, signed[:])
 	proof, _ := cbor.Marshal(map[string]any{"signature": signature, "authenticatorData": auth})
 	if next := x.handle(ctx, protocol.AppAttestShadowPayload{Result: "ok", KeyID: record.KeyID, Challenge: x.challenge, Proof: base64.StdEncoding.EncodeToString(proof)}); next != "wait" {
@@ -88,6 +89,7 @@ func TestAppAttestShadowCannotChangeRoutingOrTrust(t *testing.T) {
 	auth[len(auth)-1] = 2
 	hash = protocol.AppAttestShadowHash("assert", x.id, "production", record.KeyID, x.challenge, x.publicKey)
 	signed = sha256.Sum256(append(auth, hash[:]...))
+	signed = sha256.Sum256(signed[:])
 	signature, _ = ecdsa.SignASN1(rand.Reader, key, signed[:])
 	proof, _ = cbor.Marshal(map[string]any{"signature": signature, "authenticatorData": auth})
 	if next := x.handle(ctx, protocol.AppAttestShadowPayload{Result: "ok", KeyID: record.KeyID, Challenge: x.challenge, Proof: base64.StdEncoding.EncodeToString(proof)}); next != "wait" {

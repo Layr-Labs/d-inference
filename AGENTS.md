@@ -16,6 +16,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 │   ├── billing_controller.go shared service, store, cache and auth bindings
 │   ├── catalog/          model publishing, discovery, aliases and their tests
 │   ├── catalog_controller.go shared catalog bindings and runtime publication callback
+│   ├── inference_dispatch.go current service and observation bindings for dispatch
 │   ├── accounts/           key management/policy, provider device login and invites
 │   ├── account_controller.go current account-store/config/auth-cache bindings
 │   ├── authorization.go    shared in-handler admin authorization
@@ -43,7 +44,8 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── env/              shared env-var helpers/constants
 ├── inference/        toolpolicy/ (request policy), response/ (endpoint formatting and relays),
 │                     settlement/ (reservation, refunds and completion accounting),
-│                     attempt/ (cancellation, terminal policy and provider feedback)
+│                     attempt/ (cancellation, terminal policy and provider feedback),
+│                     dispatch/ (provider preparation, queue/hedge/failover and commit)
 ├── mdm/              MicroMDM client + webhook handling
 ├── payments/         ledger + pricing (+ baserewards/)
 ├── providercontrol/trustreuse/ durable device evidence, revocation journal/replay and continuity (Manager)

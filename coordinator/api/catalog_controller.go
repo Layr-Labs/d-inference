@@ -19,7 +19,7 @@ func (s *Server) catalogController() *catalog.Controller {
 			AdminKey: func() string { return s.adminKey },
 			SelfRouteAccount: func(r *http.Request) (string, bool) {
 				policy := s.resolveSelfRoutePolicy(r)
-				return policy.ownerAccountID, policy.enabled
+				return policy.OwnerAccountID, policy.Enabled
 			},
 			SyncCatalog: s.SyncModelCatalog,
 		})

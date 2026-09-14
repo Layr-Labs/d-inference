@@ -99,7 +99,7 @@ sequenceDiagram
 5. **Dispatch.** The request body is sealed with a per-request NaCl Box to the
    provider's attested X25519 key (`coordinator/internal/e2e/e2e.go`) and sent
    as `inference_request`. If the first content is late, a speculative second
-   dispatch starts at [`speculativeTimerRatio`](routing.md#hedged-speculative-dispatch)
+   dispatch starts at [`SpeculativeTimerRatio`](routing.md#hedged-speculative-dispatch)
    of the first-content deadline; the coordinator tries at most
    [`maxDispatchAttempts`](../reference/api-contracts.md#timeouts-and-constants)
    providers (`coordinator/api/consumer.go`). [`data-flow.md`](data-flow.md).

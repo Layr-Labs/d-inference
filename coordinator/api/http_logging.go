@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/httpresponse"
 	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/google/uuid"
 )
@@ -19,7 +20,7 @@ var cryptoRand = rand.Read
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		sw := httpresponse.NewStatusWriter(w, http.StatusOK)
 
 		// Generate (or honor) a request_id and stash it in context +
 		// response headers so logs and the client can correlate.
@@ -60,14 +61,14 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 			"method", r.Method,
 			"path", r.URL.Path,
 			"route", route,
-			"status", sw.status,
+			"status", sw.Status(),
 			"duration_ms", dur.Milliseconds(),
 			"remote", r.RemoteAddr,
 			"user_id", userID,
 		)
 
 		pathLabel := httpPathLabel(route)
-		statusStr := strconvItoa(sw.status)
+		statusStr := strconvItoa(sw.Status())
 
 		if s.metrics != nil {
 			s.metrics.IncCounter("http_requests_total",

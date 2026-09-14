@@ -22,6 +22,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | HTTP body caps, CORS, panic recovery and request logging | `coordinator/api/http_middleware.go` (`Handler`); `coordinator/api/http_logging.go` (`loggingMiddleware`) |
 | Per-account/per-key rate limits and token admission | `coordinator/api/request_rate_limits.go` (`rateLimitWithTier`); `coordinator/api/token_admission.go` (`applyTokenRateLimitWithAdmission`) |
 | Installer URL rendering | `coordinator/api/installer.go` (`resolveBaseURL`, `installScript`) |
+| Inference dispatch, queue handoff, hedging and failover | `coordinator/inference/dispatch/` (`Controller.Run`); current-service and observation bindings in `coordinator/api/inference_dispatch.go` |
 | HTTP response caching and refresh coalescing | `coordinator/api/readcache/`; catalog fill fences in `generation.go` (`SetIfCurrent`, `SetValueIfCurrent`) |
 | Chat/Responses/Completions/Messages formatting and relays | `coordinator/inference/response/` (`Writer`, `ChatSink`, `EndpointSink`); lifecycle and accepted-write binding in `coordinator/api/response_writer.go` |
 | Attempt cancellation, terminal correlation and provider feedback | `coordinator/inference/attempt/` (`Service`, private `Tracker` state); `coordinator/api/inference_attempt.go` binds current services and the shared tracker |
@@ -80,7 +81,7 @@ rg --files console-ui/src -g '*Auth*' -g '*auth*'
 Then find the implementation and its callers or tests:
 
 ```bash
-rg -n 'recordRequestOutcome|classifyOutcomeByCode' coordinator/api
+rg -n 'recordRequestOutcome|ClassifyOutcomeByCode' coordinator/api coordinator/inference/dispatch
 rg -n 'StatusCanonical' provider-swift/Sources provider-swift/Tests coordinator/attestation
 ```
 

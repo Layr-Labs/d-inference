@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-13 · commit `89a671179`
+> Last updated: 2026-09-14 · commit `0afcf6e47`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -45,14 +45,15 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/cmd/coordinator` | `main`: configuration load, store selection, wiring, background loops, HTTP server, graceful shutdown. |
 | `coordinator/config` | `AppConfig` — composes every package's `ReadConfig` and runs their `Check` methods. |
 | `coordinator/env` | `EnvPrefix` (`EIGENINFERENCE`) and the `EnvOr`/`EnvInt`/`EnvFloat`/`EnvBool` helpers. |
-| `coordinator/api` | The HTTP router (`routes` in `server.go`), middleware, consumer handlers (`consumer.go`), the provider WebSocket (`provider.go`), dispatch ladder (`dispatch.go`), sender encryption, admin, release, device-auth handlers, billing/catalog dependency wiring, runtime catalog publication, drain, profiler wiring. |
+| `coordinator/api` | The HTTP router (`routes` in `server.go`), middleware, consumer handlers (`consumer.go`), the provider WebSocket (`provider.go`), dispatch bindings (`inference_dispatch.go`), sender encryption, admin, release, device-auth handlers, billing/catalog dependency wiring, runtime catalog publication, drain, profiler wiring. |
 | `coordinator/api/billing` | Billing, pricing, referrals, earnings, Stripe Connect and Global Payouts HTTP controllers and payout reconciliation (`Controller`); `billing_controller.go` in the parent API package binds shared services, store, cache, metrics and authorization. |
 | `coordinator/api/catalog` | Model publishing, manifests, aliases, consumer/marketplace/install projections and cache invalidation (`Controller`); `catalog_controller.go` in the parent API package binds current store and credentials, fleet views, the shared cache and runtime publication callback. |
 | `coordinator/api/requestauth` | Shared linked-user identity resolution and HTTP rejection (`ResolveAccountID`, `RequirePrivyUser`); route middleware still decides which credentials are admitted. |
-| `coordinator/api/requestcontext` | Private context keys and typed account, API-key and request-ID access shared by middleware and endpoint packages (`WithAccountID`, `WithAPIKey`, `WithRequestID`). |
-| `coordinator/api/httpresponse` | JSON response writing and the common OpenAI-compatible error envelope (`WriteJSON`, `ErrorBody`); `WriteCachedJSON` and `EncodeCachedJSON` preserve cached response encoding; `MarshalBody` preserves non-HTML-escaped inference-body encoding without a trailing newline. |
+| `coordinator/api/requestcontext` | Private context keys and typed account, API-key and request-ID access shared by middleware and endpoint packages (`WithAccountID`, `WithAPIKey`, `WithRequestID`); `coordinator/api/requestcontext/key_limits.go` projects key spending and token limits for dispatch. |
+| `coordinator/api/httpresponse` | JSON response writing and the common OpenAI-compatible error envelope (`WriteJSON`, `ErrorBody`); `WriteCachedJSON` and `EncodeCachedJSON` preserve cached response encoding; `MarshalBody` preserves non-HTML-escaped inference-body encoding without a trailing newline; `StatusWriter` observes the first explicit status and delegates transport capabilities. |
 | `coordinator/api/readcache` | Cached response bytes and immutable values, expiry, generation-fenced catalog fills and per-entry refresh coalescing (`Cache`, `Refresher`). Endpoint packages retain cache keys, TTLs and schedules. |
 | `coordinator/inference/response` | Endpoint response formatting, provider-output relays, SSE batching and egress profile stamps (`Writer`, `ChatSink`, `EndpointSink`). `coordinator/api/response_writer.go` binds the existing settlement, feedback, metrics and accepted-write owners. |
+| `coordinator/inference/dispatch/request.go` (`Controller.Run`) | Provider preparation/encryption, plan consumption, queue handoff, first-content/hedge/failover and commit (`Controller.Run`); private per-request execution and per-controller scan/governor/EWMA state. API binds current services and observation sinks; see [dispatch ownership](../routing.md#dispatch-controller). |
 | `coordinator/inference/attempt` | Cancellation tracking and delivery, terminal/rejection policy and provider-health feedback (`Tracker`, `Service`); API binds current services in `inference_attempt.go`, and response relays use the same feedback owner. |
 | `coordinator/inference/settlement` | Reservation pricing, service holds, refunds, parked billing records and completion accounting (`Service`, `ServiceHolds`, `Holder`); API retains terminal ownership, outcome observations and consumer-channel signaling. |
 | `coordinator/inference/toolpolicy` | Tool-schema normalization, tool-choice and history validation (`NormalizeParsed`, `ValidateParsed`); HTTP error mapping and resolved-model compatibility remain in `coordinator/api/tool_constraints.go`. |
@@ -147,7 +148,7 @@ flowchart TD
    decrypted inside the CVM, re-sealed per request to the provider's attested
    key, and never written to the store or logs; provider error strings are
    reduced to a closed vocabulary before logging
-   (`coordinator/api/consumer.go`, `coordinator/api/inference_error_sanitize.go`,
+   (`coordinator/api/consumer.go`, `coordinator/inference/attempt/error_sanitize.go`,
    `coordinator/internal/e2e/e2e.go`).
 2. **A misconfigured coordinator does not serve.** `AppConfig.Check` and the
    fatal startup steps above exit 1 before the listener opens

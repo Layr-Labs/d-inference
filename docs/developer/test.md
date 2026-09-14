@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `89a671179`
+> Last updated: 2026-09-14 · commit `0afcf6e47`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -141,10 +141,34 @@ completion. The unchanged fixture also passes against the original API owner.
 `cancel_lifecycle_test.go` checks cancellation through real provider writers and
 consumes the same terminal receipts as ingress; tracker internals stay private.
 
+Dispatch policy, clock, body, queue and speculative-race tests live beside
+`coordinator/inference/dispatch/`. HTTP envelopes, real provider-frame handling,
+UDP metric serialization and durable request-outcome sink tests remain in the
+API. Run the owner and these API boundaries from the repository root:
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/inference/dispatch ./coordinator/inference/attempt ./coordinator/api/httpresponse
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api -run 'Dispatch|RequestOutcome|RoutingScan|CapturedDispatch|SpeculativeLoser'
+```
+
+`TestQueuedDispatchProfileDoesNotInheritPriorError`
+(`coordinator/inference/dispatch/queued_history_test.go`) uses a real registry,
+heartbeat and WebSocket writer to verify queue handoff and clean attempt
+evidence after an earlier error. Its API counterpart in
+`coordinator/api/request_outcome_queue_test.go` feeds the known producer facts
+through the real outcome sink and receives completion over a registered
+socket. The pending-publication tests in
+`coordinator/inference/attempt/pending_outcome_test.go` check claim/profile/cache/
+route order, callback reentry, lost claims and provider-owned completion.
+`coordinator/api/httpresponse/status_writer_test.go` checks implicit writes,
+repeated explicit headers, flush, hijack and unwrap delegation.
+
 Run prediction telemetry checks from the repository root:
 
 ```bash
-go test -race ./coordinator/api ./coordinator/registry ./coordinator/protocol ./coordinator/store ./coordinator/telemetry/profiler
+go test -race ./coordinator/api ./coordinator/inference/dispatch ./coordinator/registry ./coordinator/protocol ./coordinator/store ./coordinator/telemetry/profiler
 ```
 
 API fixtures use isolated encrypted WebSocket providers;

@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-13 · commit `89a671179`
+> Last updated: 2026-09-14 · commit `0afcf6e47`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -17,7 +17,8 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 
 | Behavior | Start here |
 |---|---|
-| API request handling, auth, attestation, dispatch | `coordinator/api/`; server construction in `server.go` (`NewServer`) |
+| API request handling, auth and attestation | `coordinator/api/`; server construction in `server.go` (`NewServer`) |
+| Inference dispatch, queue handoff, hedging and failover | `coordinator/inference/dispatch/` (`Controller.Run`); current-service and observation bindings in `coordinator/api/inference_dispatch.go` |
 | HTTP response caching and refresh coalescing | `coordinator/api/readcache/`; catalog fill fences in `generation.go` (`SetIfCurrent`, `SetValueIfCurrent`) |
 | Chat/Responses/Completions/Messages formatting and relays | `coordinator/inference/response/` (`Writer`, `ChatSink`, `EndpointSink`); lifecycle and accepted-write binding in `coordinator/api/response_writer.go` |
 | Attempt cancellation, terminal correlation and provider feedback | `coordinator/inference/attempt/` (`Service`, private `Tracker` state); `coordinator/api/inference_attempt.go` binds current services and the shared tracker |
@@ -52,7 +53,7 @@ rg --files console-ui/src -g '*Auth*' -g '*auth*'
 Then find the implementation and its callers or tests:
 
 ```bash
-rg -n 'recordRequestOutcome|classifyOutcomeByCode' coordinator/api
+rg -n 'recordRequestOutcome|ClassifyOutcomeByCode' coordinator/api coordinator/inference/dispatch
 rg -n 'StatusCanonical' provider-swift/Sources provider-swift/Tests coordinator/attestation
 ```
 

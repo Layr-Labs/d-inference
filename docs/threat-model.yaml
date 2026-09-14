@@ -883,6 +883,10 @@ threats:
       - coordinator/api/consumer.go
       - coordinator/api/inference_preprocess.go
       - coordinator/api/server.go
+      - coordinator/inference/dispatch/body_contract.go
+      - coordinator/inference/dispatch/provider_body.go
+      - coordinator/inference/dispatch/prepare.go
+      - coordinator/api/httpresponse/marshal.go
     mitigations:
       - description: >
           http.MaxBytesReader caps on every body: 64 MiB global (bodyLimitMiddleware),
@@ -973,6 +977,11 @@ threats:
     affected_files:
       - coordinator/api/consumer.go
       - coordinator/store/postgres.go
+      - coordinator/inference/dispatch/prepare.go
+      - coordinator/inference/dispatch/request_metrics.go
+      - coordinator/inference/dispatch/route_observation.go
+      - coordinator/inference/attempt/pending_outcome.go
+      - coordinator/api/inference_dispatch.go
     mitigations:
       - description: Usage rows written per request to the ledger.
         status: implemented

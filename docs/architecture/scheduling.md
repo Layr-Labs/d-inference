@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-10 · commit `213b8c2b6`
+> Last updated: 2026-09-14 · commit `0afcf6e47`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -62,7 +62,7 @@ anything else to `unknown`):
 | `challenge` | A provider passed a challenge and became eligible (`coordinator/api/provider.go`, `coordinator/api/provider_codeattest.go`). |
 | `load` | A provider reported a model load complete (`coordinator/api/provider.go`). |
 | `disconnect` | A provider left; queued requests it alone could have served fail fast (`Disconnect`). |
-| `kick` | Cold-dispatch kick from the API layer when a request is enqueued (`coordinator/api/cold_dispatch.go`). |
+| `kick` | Cold-dispatch kick from the API layer when a request is enqueued (`coordinator/inference/dispatch/cold.go`). |
 | `unknown` | Any other caller of the public drain helpers (`coordinator/registry/scheduler.go`). |
 
 `drainModelQueue` (`coordinator/registry/scheduler.go`) serializes passes per
@@ -284,7 +284,7 @@ model in rather than waiting out the queue. It has two entry points:
   suppressed state change. The queue *drain* uses the per-model coalescing and
   heartbeat suppression described above.
 - **Cold dispatch** ([`EIGENINFERENCE_COLD_DISPATCH`](../reference/configuration.md#routing-admission-and-ttft),
-  `coordinator/api/cold_dispatch.go`) calls `TriggerModelSwaps` directly the
+  `coordinator/inference/dispatch/cold.go`) calls `TriggerModelSwaps` directly the
   moment a request is enqueued; that kick is immediate and not subject to
   the heartbeat gate.
 
@@ -534,7 +534,7 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 | Eviction | `coordinator/registry/provider_lifecycle.go` — `StartEvictionLoop`, `evictStale`, `disconnectProvider`, `evictStrikeThreshold`; wired in `coordinator/cmd/coordinator/main.go` |
 | Provider writer | `coordinator/registry/provider_writer.go` — `providerWriter`, `providerWriteTimeout`, `watchWrites` |
 | Teardown | `coordinator/registry/provider_lifecycle.go` — `Disconnect` |
-| Cold dispatch and queue-before-shed flags | `coordinator/api/cold_dispatch.go` |
+| Cold dispatch and queue-before-shed flags | `coordinator/inference/dispatch/cold.go` |
 | Provider-side slot limit and heartbeat interval | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` — `maxModelSlots`, `heartbeatIntervalSecs` |
 
 ## Related

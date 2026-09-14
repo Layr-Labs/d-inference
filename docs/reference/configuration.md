@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-14 · commit `ea5ce6b16`
+> Last updated: 2026-09-14 · commit `0afcf6e47`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -33,7 +33,7 @@ read once at process start and a restart applies a change.
 | `EIGENINFERENCE_CONSOLE_URL` | URL | unset — `<scheme>://<Host>/link` is derived per request | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/device_auth.go` | Console origin used to build the device-code `verification_uri` (`<console>/link`). |
 | `CORS_ORIGIN` | origin | `https://console.darkbloom.dev` (applied in `corsMiddleware`) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/server.go` (`corsMiddleware`) | The single origin allowed for credentialed CORS; public read-only GETs stay wildcard. |
 | `EIGENINFERENCE_DRAIN_GRACE` | Go duration | `10m` (`DefaultDrainGrace`) | `coordinator/api/drain.go` (`DrainGraceFromEnv`) | How long shutdown waits for in-flight requests after SIGTERM before `http.Server.Shutdown`; `0` skips the wait. |
-| `EIGENINFERENCE_ROUTING_CONCURRENCY` | integer ≥ 2 | `runtime.NumCPU()` (min 2) | `coordinator/cmd/coordinator/main.go`; `coordinator/api/server.go` (`DefaultRoutingConcurrency`) | Cap on concurrent routing scans. |
+| `EIGENINFERENCE_ROUTING_CONCURRENCY` | integer ≥ 2 | `runtime.NumCPU()` (min 2) | `coordinator/cmd/coordinator/main.go`; `coordinator/inference/dispatch/scan_admission.go` (`DefaultRoutingConcurrency`) | Cap on concurrent routing scans. |
 | `EIGENINFERENCE_PPROF_ADDR` | `host:port` | unset (off) | `coordinator/cmd/coordinator/main.go` (`startPprofListener`) | Serves `net/http/pprof` on a separate listener; bind loopback or firewall it. A successful listener enables mutex sampling at fraction `100` and block sampling at rate `1_000_000` ns (`enableContentionProfiling`). |
 
 ### Database, store and persistent disk
@@ -128,8 +128,8 @@ TTFT admission and dispatch termination:
 | `EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA` | float 0–1e6 | `0` (term off) | `coordinator/cmd/coordinator/main.go` (`validateTTFTOccupancyAlpha`) | Weight of the occupancy term in the TTFT estimate. |
 | `EIGENINFERENCE_TTFT_ADMISSION_MODE` | `off`, `shadow`, `enforce` | `off` | `coordinator/cmd/coordinator/main.go`; `coordinator/registry/ttft_shadow.go` (`ParseTTFTAdmissionMode`) | Shadow evaluation of TTFT admission that emits `routing.ttft_admission` metrics without changing decisions; `enforce` currently behaves like `shadow`. |
 | `EIGENINFERENCE_TTFT_CALIBRATION` | `off`/`false`/`0` disables | `on` (*live*) | `coordinator/registry/ttft_calibration.go` (`ttftCalibrationEnabled`) | Per-model TTFT calibration from observed samples; off makes the apply path return ratio 1.0. |
-| `EIGENINFERENCE_TTFT_TERMINAL_REJECT` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/dispatch.go` (`ttftTerminalRejectEnabled`) | A TTFT-too-slow rejection ends the dispatch ladder on any attempt. |
-| `EIGENINFERENCE_JINJA_TERMINAL_REJECT` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/dispatch.go` (`jinjaTerminalRejectEnabled`) | A chat-template render failure ends the ladder with one 422 instead of failing over. |
+| `EIGENINFERENCE_TTFT_TERMINAL_REJECT` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/inference/dispatch/policy.go` (`ttftTerminalRejectEnabled`) | A TTFT-too-slow rejection ends the dispatch ladder on any attempt. |
+| `EIGENINFERENCE_JINJA_TERMINAL_REJECT` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/inference/dispatch/policy.go` (`JinjaTerminalRejectEnabled`) | A chat-template render failure ends the ladder with one 422 instead of failing over. |
 
 Queue and cold dispatch:
 
@@ -137,8 +137,8 @@ Queue and cold dispatch:
 |---|---|---|---|---|
 | `EIGENINFERENCE_QUEUE_MAX_DEPTH` | integer ≥ 1 | `32` | `coordinator/registry/queue.go` (`NewRequestQueueFromEnv`) | Per-model queue depth before 429. |
 | `EIGENINFERENCE_QUEUE_MAX_WAIT` | Go duration > 0 | `120s` | `coordinator/registry/queue.go` (`NewRequestQueueFromEnv`) | Maximum time a request waits in the queue. |
-| `EIGENINFERENCE_QUEUE_BEFORE_SHED` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/cold_dispatch.go` (`queueBeforeShedEnabled`) | Queue `machine_busy` preflight rejections instead of returning 429 immediately. |
-| `EIGENINFERENCE_COLD_DISPATCH` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/cold_dispatch.go` (`coldDispatchEnabled`) | Spill `no_provider` requests into the queue when an idle on-disk provider can be warmed, and kick the load. |
+| `EIGENINFERENCE_QUEUE_BEFORE_SHED` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/inference/dispatch/cold.go` (`QueueBeforeShedEnabled`) | Queue `machine_busy` preflight rejections instead of returning 429 immediately. |
+| `EIGENINFERENCE_COLD_DISPATCH` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/inference/dispatch/cold.go` (`ColdDispatchEnabled`) | Spill `no_provider` requests into the queue when an idle on-disk provider can be warmed, and kick the load. |
 
 Capacity breakers:
 

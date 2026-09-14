@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-14 · commit `5f2c53f32`
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -51,7 +51,7 @@ Open `url` and pay. The coordinator does not credit on redirect; it credits
 when Stripe delivers `checkout.session.completed` to its webhook, usually
 within seconds. The credit lands as a `stripe_deposit` ledger entry on your
 spendable balance; deposits are never withdrawable
-(`coordinator/api/billing_handlers.go` `handleStripeWebhook`).
+(`coordinator/api/billing/checkout_webhook.go` `StripeWebhook`).
 
 In the console, **Buy Credits** on `/billing` reaches the same endpoint through
 the same-origin relay `/api/payments/stripe/checkout`, which forwards your Privy
@@ -67,7 +67,7 @@ curl "https://api.darkbloom.dev/v1/billing/stripe/session?id=3f0e..." \
 ```
 
 `status` moves from `pending` to `completed` when the webhook has been
-processed (`handleStripeSessionStatus`).
+processed (`StripeSessionStatus`).
 
 ### 3. Read your balance and usage
 
@@ -87,14 +87,16 @@ curl https://api.darkbloom.dev/v1/payments/usage   -H "Authorization: Bearer sk-
 rewards) and can pay out through Stripe Connect; deposits and invite credits
 never count toward it, so a pure consumer sees `0`. `GET /v1/payments/usage` lists settled
 requests with `job_id`, `model`, `prompt_tokens`, `completion_tokens`,
-`cost_micro_usd`, `timestamp` (`coordinator/api/consumer.go` `handleBalance`,
-`handleUsage`). Console users get the same figures from `GET /v1/me/summary`
+`cost_micro_usd`, `timestamp` (`coordinator/api/account_usage.go` `handleBalance`,
+`handleUsage`; usage is recorded by `recordCompletionUsage` in
+`coordinator/inference/settlement/completion_usage.go`). Console users get the
+same figures from `GET /v1/me/summary`
 (**Privy**). Usage is a recent-history view, not a complete billing export;
 the process retains the newest entries up to the [usage history limit](../reference/pricing-model.md#constants).
 Dashboard earnings windows include every row in each window, without the old
 5,000-row truncation. Concurrent tabs share one aggregate per account and may
 lag by the per-account cache interval
-(`coordinator/api/me_summary_cache.go`, `mySummaryWindowsCacheTTL`).
+(`coordinator/api/accountfleet/summary_cache.go`, `mySummaryWindowsCacheTTL`).
 
 ### 4. Understand what a request costs you
 
@@ -128,11 +130,11 @@ curl -X POST https://api.darkbloom.dev/v1/keys \
 
 `limit_usd` is a USD number `>= 0`; `limit_reset` is `none` (lifetime cap),
 `daily`, `weekly`, or `monthly`, aligned to UTC midnight, Monday, and the 1st
-(`coordinator/store/apikey.go` `KeySpendWindowStart`). Change either later with
+(`coordinator/store/contracts/keys.go` `KeySpendWindowStart`). Change either later with
 `PATCH /v1/keys/{id}`. The cap is checked against the key's settled usage in
 the window before each request's reservation; it is a soft sub-cap under your
 account balance, so several in-flight requests can together overshoot it by up
-to their reservations (`coordinator/api/apikey_handlers.go` `checkKeySpendCap`).
+to their reservations (`coordinator/api/accounts/key_policy.go` `accounts.CheckKeySpendCap`).
 `GET /v1/keys` shows `usage_usd`, `limit_usd`, and `remaining_usd` per key.
 
 ### 6. Referral codes
@@ -170,7 +172,7 @@ curl -X POST https://api.darkbloom.dev/v1/invite/redeem \
 Invite codes are created by Darkbloom staff and carry a fixed amount. A
 successful redemption returns `credited_usd` and `balance_usd`; the credit is
 spendable but not withdrawable, and each account can redeem a given code once
-(`coordinator/api/invite_handlers.go` `handleRedeemInviteCode`).
+(`coordinator/api/accounts/invites.go` `Controller.RedeemInvite`).
 
 ### 8. High-volume integrations: service accounts
 

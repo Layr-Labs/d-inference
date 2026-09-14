@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -69,29 +71,29 @@ func TestAttemptOutcomeClass_Mapping(t *testing.T) {
 		want    string
 	}{
 		{"pre-fill (non-terminal) is not counted", store.InferenceRouteOutcome{}, ""},
-		{"success", store.InferenceRouteOutcome{FinalStatus: finalStatusSuccess}, attemptClassSuccess},
-		{"partial_success is a committed attempt", store.InferenceRouteOutcome{FinalStatus: finalStatusPartialSuccess, ErrorClass: "provider_error_after_commit"}, attemptClassSuccess},
-		{"client_gone", store.InferenceRouteOutcome{FinalStatus: finalStatusCancelled, ErrorClass: "client_gone"}, attemptClassClientGone},
-		{"speculative loser", store.InferenceRouteOutcome{FinalStatus: finalStatusCancelled, ErrorClass: "speculative_loser"}, attemptClassSpeculativeLoser},
-		{"first_chunk_timeout (timeout status)", store.InferenceRouteOutcome{FinalStatus: finalStatusTimeout, ErrorClass: "first_chunk_timeout", ErrorReason: errorReasonProviderError}, attemptClassFirstChunkTimeout},
-		{"accepted_timeout", store.InferenceRouteOutcome{FinalStatus: finalStatusTimeout, ErrorClass: "accepted_timeout"}, attemptClassFirstChunkTimeout},
-		{"preamble_liveness_timeout", store.InferenceRouteOutcome{FinalStatus: finalStatusTimeout, ErrorClass: "preamble_liveness_timeout"}, attemptClassFirstChunkTimeout},
-		{"queue_timeout is capacity", store.InferenceRouteOutcome{FinalStatus: finalStatusTimeout, ErrorClass: "queue_timeout"}, attemptClassCapacity},
-		{"queue_deadline is capacity, not a kill", store.InferenceRouteOutcome{FinalStatus: finalStatusTimeout, ErrorClass: "queue_deadline"}, attemptClassCapacity},
-		{"first_chunk_timeout via dispatch error class", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: "first_chunk_timeout"}, attemptClassFirstChunkTimeout},
-		{"deadline_unreachable", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: errorClassDeadlineUnreachable, ErrorReason: errorReasonDeadlineUnreachable}, attemptClassDeadlineUnreachable},
-		{"client_error (jinja)", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: errorClassClientError, ErrorReason: errorReasonJinjaTemplate}, attemptClassClientError},
-		{"provider disconnect pre-commit", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: "provider_disconnect_pre_commit", ErrorReason: errorReasonProviderError, AdmittedButFailed: true}, attemptClassDisconnect},
-		{"ttft_too_slow is capacity", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: "ttft_too_slow"}, attemptClassCapacity},
-		{"provider capacity 503 (token budget)", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: errorReasonProviderError, ErrorReason: errorReasonTokenBudgetExhaust, AdmittedButFailed: true, ErrorCode: 503}, attemptClassCapacity},
-		{"provider capacity 503 (busy)", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: errorReasonProviderError, ErrorReason: errorReasonCapacityBusy, AdmittedButFailed: true, ErrorCode: 503}, attemptClassCapacity},
-		{"model load failure is capacity", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: errorReasonProviderError, ErrorReason: errorReasonModelLoad, AdmittedButFailed: true}, attemptClassCapacity},
-		{"typed draining refusal (chat pre-commit) is capacity, not a fault", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: errorReasonProviderError, ErrorReason: errorReasonDraining, AdmittedButFailed: true, ErrorCode: 503}, attemptClassCapacity},
-		{"typed draining refusal (generic endpoint) is capacity, not a fault", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: "provider_error_before_response", ErrorReason: errorReasonDraining, AdmittedButFailed: true, ErrorCode: 503}, attemptClassCapacity},
-		{"genuine provider fault", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: errorReasonProviderError, ErrorReason: errorReasonProviderError, AdmittedButFailed: true, ErrorCode: 500}, attemptClassFault},
-		{"failed to send (never admitted)", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: errorReasonProviderError, ErrorReason: errorReasonProviderError}, attemptClassSendFailed},
-		{"generic endpoint provider error before response", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: "provider_error_before_response", AdmittedButFailed: true}, attemptClassFault},
-		{"encryption_missing is other", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: "encryption_missing"}, attemptClassOther},
+		{"success", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusSuccess}, attemptClassSuccess},
+		{"partial_success is a committed attempt", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusPartialSuccess, ErrorClass: "provider_error_after_commit"}, attemptClassSuccess},
+		{"client_gone", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusCancelled, ErrorClass: "client_gone"}, attemptClassClientGone},
+		{"speculative loser", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusCancelled, ErrorClass: "speculative_loser"}, attemptClassSpeculativeLoser},
+		{"first_chunk_timeout (timeout status)", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusTimeout, ErrorClass: "first_chunk_timeout", ErrorReason: attempt.ErrorReasonProviderError}, attemptClassFirstChunkTimeout},
+		{"accepted_timeout", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusTimeout, ErrorClass: "accepted_timeout"}, attemptClassFirstChunkTimeout},
+		{"preamble_liveness_timeout", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusTimeout, ErrorClass: "preamble_liveness_timeout"}, attemptClassFirstChunkTimeout},
+		{"queue_timeout is capacity", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusTimeout, ErrorClass: "queue_timeout"}, attemptClassCapacity},
+		{"queue_deadline is capacity, not a kill", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusTimeout, ErrorClass: "queue_deadline"}, attemptClassCapacity},
+		{"first_chunk_timeout via dispatch error class", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusError, ErrorClass: "first_chunk_timeout"}, attemptClassFirstChunkTimeout},
+		{"deadline_unreachable", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusError, ErrorClass: attempt.ErrorClassDeadlineUnreachable, ErrorReason: attempt.ErrorReasonDeadlineUnreachable}, attemptClassDeadlineUnreachable},
+		{"client_error (jinja)", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusError, ErrorClass: attempt.ErrorClassClientError, ErrorReason: attempt.ErrorReasonJinjaTemplate}, attemptClassClientError},
+		{"provider disconnect pre-commit", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusError, ErrorClass: "provider_disconnect_pre_commit", ErrorReason: attempt.ErrorReasonProviderError, AdmittedButFailed: true}, attemptClassDisconnect},
+		{"ttft_too_slow is capacity", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusError, ErrorClass: "ttft_too_slow"}, attemptClassCapacity},
+		{"provider capacity 503 (token budget)", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusError, ErrorClass: attempt.ErrorReasonProviderError, ErrorReason: attempt.ErrorReasonTokenBudgetExhaust, AdmittedButFailed: true, ErrorCode: 503}, attemptClassCapacity},
+		{"provider capacity 503 (busy)", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusError, ErrorClass: attempt.ErrorReasonProviderError, ErrorReason: attempt.ErrorReasonCapacityBusy, AdmittedButFailed: true, ErrorCode: 503}, attemptClassCapacity},
+		{"model load failure is capacity", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusError, ErrorClass: attempt.ErrorReasonProviderError, ErrorReason: attempt.ErrorReasonModelLoad, AdmittedButFailed: true}, attemptClassCapacity},
+		{"typed draining refusal (chat pre-commit) is capacity, not a fault", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusError, ErrorClass: attempt.ErrorReasonProviderError, ErrorReason: attempt.ErrorReasonDraining, AdmittedButFailed: true, ErrorCode: 503}, attemptClassCapacity},
+		{"typed draining refusal (generic endpoint) is capacity, not a fault", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusError, ErrorClass: "provider_error_before_response", ErrorReason: attempt.ErrorReasonDraining, AdmittedButFailed: true, ErrorCode: 503}, attemptClassCapacity},
+		{"genuine provider fault", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusError, ErrorClass: attempt.ErrorReasonProviderError, ErrorReason: attempt.ErrorReasonProviderError, AdmittedButFailed: true, ErrorCode: 500}, attemptClassFault},
+		{"failed to send (never admitted)", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusError, ErrorClass: attempt.ErrorReasonProviderError, ErrorReason: attempt.ErrorReasonProviderError}, attemptClassSendFailed},
+		{"generic endpoint provider error before response", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusError, ErrorClass: "provider_error_before_response", AdmittedButFailed: true}, attemptClassFault},
+		{"encryption_missing is other", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusError, ErrorClass: "encryption_missing"}, attemptClassOther},
 		{"unknown status is other", store.InferenceRouteOutcome{FinalStatus: "weird"}, attemptClassOther},
 	}
 	for _, tc := range cases {
@@ -113,16 +115,16 @@ func TestORViewClassForCommittedOutcome(t *testing.T) {
 		want    string
 		wantOK  bool
 	}{
-		{"success", store.InferenceRouteOutcome{FinalStatus: finalStatusSuccess}, orClassSuccess, true},
-		{"provider error after commit is mid_stream", store.InferenceRouteOutcome{FinalStatus: finalStatusPartialSuccess, ErrorClass: "provider_error_after_commit"}, orClassMidStream, true},
-		{"provider disconnect after commit is mid_stream", store.InferenceRouteOutcome{FinalStatus: finalStatusPartialSuccess, ErrorClass: "provider_disconnect_after_commit"}, orClassMidStream, true},
-		{"stream timeout after commit is mid_stream", store.InferenceRouteOutcome{FinalStatus: finalStatusPartialSuccess, ErrorClass: "stream_timeout_after_commit"}, orClassMidStream, true},
-		{"provider incomplete after commit is mid_stream", store.InferenceRouteOutcome{FinalStatus: finalStatusPartialSuccess, ErrorClass: "provider_incomplete_after_commit"}, orClassMidStream, true},
-		{"client gone after commit (completed) is excluded", store.InferenceRouteOutcome{FinalStatus: finalStatusPartialSuccess, ErrorClass: errorClassClientGoneAfterCommitCompleted}, orClassClientGone, true},
-		{"client gone after commit (error) is excluded", store.InferenceRouteOutcome{FinalStatus: finalStatusPartialSuccess, ErrorClass: "client_gone_after_commit_provider_error"}, orClassClientGone, true},
-		{"no terminal after cancel is excluded", store.InferenceRouteOutcome{FinalStatus: finalStatusPartialSuccess, ErrorClass: "no_terminal_after_cancel"}, orClassClientGone, true},
-		{"pre-content error is not a committed outcome", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: "provider_error"}, "", false},
-		{"pre-content timeout is not a committed outcome", store.InferenceRouteOutcome{FinalStatus: finalStatusTimeout, ErrorClass: "first_chunk_timeout"}, "", false},
+		{"success", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusSuccess}, dispatch.OrClassSuccess, true},
+		{"provider error after commit is mid_stream", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusPartialSuccess, ErrorClass: "provider_error_after_commit"}, dispatch.OrClassMidStream, true},
+		{"provider disconnect after commit is mid_stream", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusPartialSuccess, ErrorClass: "provider_disconnect_after_commit"}, dispatch.OrClassMidStream, true},
+		{"stream timeout after commit is mid_stream", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusPartialSuccess, ErrorClass: "stream_timeout_after_commit"}, dispatch.OrClassMidStream, true},
+		{"provider incomplete after commit is mid_stream", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusPartialSuccess, ErrorClass: "provider_incomplete_after_commit"}, dispatch.OrClassMidStream, true},
+		{"client gone after commit (completed) is excluded", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusPartialSuccess, ErrorClass: attempt.ErrorClassClientGoneAfterCommitCompleted}, dispatch.OrClassClientGone, true},
+		{"client gone after commit (error) is excluded", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusPartialSuccess, ErrorClass: "client_gone_after_commit_provider_error"}, dispatch.OrClassClientGone, true},
+		{"no terminal after cancel is excluded", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusPartialSuccess, ErrorClass: "no_terminal_after_cancel"}, dispatch.OrClassClientGone, true},
+		{"pre-content error is not a committed outcome", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusError, ErrorClass: "provider_error"}, "", false},
+		{"pre-content timeout is not a committed outcome", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusTimeout, ErrorClass: "first_chunk_timeout"}, "", false},
 		{"pre-fill is not counted", store.InferenceRouteOutcome{}, "", false},
 	}
 	for _, tc := range cases {
@@ -132,39 +134,6 @@ func TestORViewClassForCommittedOutcome(t *testing.T) {
 				t.Fatalf("orViewClassForCommittedOutcome = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.wantOK)
 			}
 		})
-	}
-}
-
-func TestDeadlineBucket_AndORViewClass(t *testing.T) {
-	budget := 10 * time.Second
-	cases := []struct {
-		elapsed time.Duration
-		budget  time.Duration
-		want    string
-		wantOR  string
-	}{
-		{0, 0, deadlineBucketUnknown, orClassClientGone},
-		{time.Second, budget, deadlineBucketUnderHalf, orClassClientGone},
-		{4999 * time.Millisecond, budget, deadlineBucketUnderHalf, orClassClientGone},
-		{5 * time.Second, budget, deadlineBucketMid, orClassClientGone},
-		{7999 * time.Millisecond, budget, deadlineBucketMid, orClassClientGone},
-		{8 * time.Second, budget, deadlineBucketNearDeadline, orClassTimeout},
-		{9800 * time.Millisecond, budget, deadlineBucketNearDeadline, orClassTimeout},
-		{10 * time.Second, budget, deadlineBucketOver, orClassTimeout},
-		{30 * time.Second, budget, deadlineBucketOver, orClassTimeout},
-		{-time.Second, budget, deadlineBucketUnknown, orClassClientGone},
-	}
-	for _, tc := range cases {
-		got := deadlineBucket(tc.elapsed, tc.budget)
-		if got != tc.want {
-			t.Errorf("deadlineBucket(%s, %s) = %q, want %q", tc.elapsed, tc.budget, got, tc.want)
-		}
-		if or := orViewClassForClientGone(got); or != tc.wantOR {
-			t.Errorf("orViewClassForClientGone(%q) = %q, want %q", got, or, tc.wantOR)
-		}
-	}
-	if got := orViewClassForClientGone(deadlineBucketNotApplicable); got != orClassClientGone {
-		t.Errorf("not_applicable bucket must be excluded, got %q", got)
 	}
 }
 
@@ -267,7 +236,7 @@ func TestAttemptOutcome_SilentProviderLadder(t *testing.T) {
 		var total int64
 		for _, class := range classes {
 			total += snap.Counters[counterKey(metricAttemptOutcomeCounter,
-				MetricLabel{"model", model}, MetricLabel{"class", class})]
+				MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: class})]
 		}
 		return total
 	}
@@ -279,12 +248,12 @@ func TestAttemptOutcome_SilentProviderLadder(t *testing.T) {
 			got, dispatched, snap.Counters)
 	}
 	kills := snap.Counters[counterKey(metricAttemptOutcomeCounter,
-		MetricLabel{"model", model}, MetricLabel{"class", attemptClassFirstChunkTimeout})]
+		MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: attemptClassFirstChunkTimeout})]
 	if kills < 1 {
 		t.Fatalf("attempt_outcome{first_chunk_timeout} = %d, want >= 1; counters=%v", kills, snap.Counters)
 	}
 	if got := snap.Counters[counterKey(metricRequestOutcomeORViewCounter,
-		MetricLabel{"model", model}, MetricLabel{"class", orClassRateLimited})]; got != 1 {
+		MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: orClassRateLimited})]; got != 1 {
 		t.Fatalf("request_outcome_or_view{rate_limited} = %d, want 1; counters=%v", got, snap.Counters)
 	}
 
@@ -321,7 +290,7 @@ func TestAttemptOutcome_SilentProviderLadder(t *testing.T) {
 // instead be recorded as a pre-content client_gone (with a deadline bucket),
 // refund exactly once, and write nothing.
 func TestDispatch_ClientGoneBetweenAttempts_RecordsClientGone(t *testing.T) {
-	srv, _ := testServer(t)
+	srv, st := testServer(t)
 	collector := newUDPCollector(t)
 	defer collector.Close()
 	dd := newTestDD(t, collector)
@@ -341,23 +310,19 @@ func TestDispatch_ClientGoneBetweenAttempts_RecordsClientGone(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}")).WithContext(ctx)
 	refunds := 0
 	deadline := 5 * time.Second
-	d := &dispatchState{
-		s:                     srv,
-		w:                     w,
-		r:                     r,
-		model:                 model,
-		publicModel:           model,
-		rawBody:               []byte(`{"model":"` + model + `"}`),
-		consumerKey:           "test-key",
-		estimatedPromptTokens: 6,
-		requestedMaxTokens:    64,
-		timing:                &registry.RequestTiming{ReceivedAt: time.Now()},
-		deadline:              deadline,
-		speculativeAt:         deadline / 2,
-		refundReservation:     func() { refunds++ },
-		excludeProviders:      make(map[string]struct{}),
+	request := dispatch.Request{
+		Model:                 model,
+		PublicModel:           model,
+		RawBody:               []byte(`{"model":"` + model + `"}`),
+		ConsumerKey:           "test-key",
+		EstimatedPromptTokens: 6,
+		RequestedMaxTokens:    64,
+		Timing:                &registry.RequestTiming{ReceivedAt: time.Now()},
+		Deadline:              deadline,
+		SpeculativeAt:         deadline / 2,
+		RefundReservation:     func() { refunds++ },
 	}
-	d.run()
+	srv.inferenceDispatch().Run(w, r, request)
 
 	if refunds != 1 {
 		t.Errorf("reservation refunds = %d, want exactly 1", refunds)
@@ -365,17 +330,20 @@ func TestDispatch_ClientGoneBetweenAttempts_RecordsClientGone(t *testing.T) {
 	if w.Body.Len() != 0 {
 		t.Errorf("wrote a response to a dead socket: %s", w.Body.String())
 	}
-	if d.attempt != 1 {
-		t.Errorf("ladder stopped at attempt %d, want the client-gone exit at attempt 1", d.attempt)
+	// One recorded dispatch followed by client-gone proves the second ladder
+	// iteration exited before another provider selection.
+	waitForAdaptiveCondition(t, time.Second, func() bool { return len(st.InferenceRouteRecordsSince(time.Time{})) >= 1 })
+	if got := len(st.InferenceRouteRecordsSince(time.Time{})); got != 1 {
+		t.Errorf("ladder recorded %d attempts, want the client-gone exit after attempt 0", got)
 	}
 
 	snap := srv.metrics.Snapshot()
 	if got := snap.Counters[counterKey(metricRequestOutcomeORViewCounter,
-		MetricLabel{"model", model}, MetricLabel{"class", orClassClientGone})]; got != 1 {
+		MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: dispatch.OrClassClientGone})]; got != 1 {
 		t.Errorf("request_outcome_or_view{client_gone} = %d, want 1; counters=%v", got, snap.Counters)
 	}
 	if got := snap.Counters[counterKey(metricAttemptOutcomeCounter,
-		MetricLabel{"model", model}, MetricLabel{"class", attemptClassSendFailed})]; got != 1 {
+		MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: attemptClassSendFailed})]; got != 1 {
 		t.Errorf("attempt_outcome{send_failed} = %d, want 1 (attempt 0's socketless write); counters=%v", got, snap.Counters)
 	}
 
@@ -393,7 +361,7 @@ func TestDispatch_ClientGoneBetweenAttempts_RecordsClientGone(t *testing.T) {
 	if out := findMetrics(packets, metricRequestOutcome+":"); len(out) != 0 {
 		t.Errorf("a client that left mid-ladder must not be counted on request_outcome: %v", out)
 	}
-	if got := sumMetric(t, packets, metricRequestOutcomeORView, "model:"+model, "class:"+orClassClientGone); got != 1 {
+	if got := sumMetric(t, packets, metricRequestOutcomeORView, "model:"+model, "class:"+dispatch.OrClassClientGone); got != 1 {
 		t.Errorf("UDP request_outcome_or_view{client_gone} = %v, want 1", got)
 	}
 }
@@ -412,12 +380,12 @@ func TestRecordRejection_MirrorsORView(t *testing.T) {
 
 	const model = "or-view-mirror-model"
 	srv.recordRejection(rejectionInfo{
-		stage: "preflight_capacity", reasonCode: "machine_busy", httpStatus: http.StatusTooManyRequests,
-		requestedModel: "client-typed-alias", resolvedModel: model, retryAfterMs: 7000,
+		Stage: "preflight_capacity", ReasonCode: "machine_busy", HttpStatus: http.StatusTooManyRequests,
+		RequestedModel: "client-typed-alias", ResolvedModel: model, RetryAfterMs: 7000,
 	})
 	srv.recordRejection(rejectionInfo{
-		stage: "validation", reasonCode: "bad_request", httpStatus: http.StatusBadRequest,
-		requestedModel: "client-typed-alias", resolvedModel: model,
+		Stage: "validation", ReasonCode: "bad_request", HttpStatus: http.StatusBadRequest,
+		RequestedModel: "client-typed-alias", ResolvedModel: model,
 	})
 
 	_ = dd.Statsd.Flush()
@@ -473,7 +441,7 @@ func TestUnknownFrames_CountedByKindAndVersion(t *testing.T) {
 
 	key := func(kind string) string {
 		return counterKey(metricUnknownFramesCounter,
-			MetricLabel{"kind", kind}, MetricLabel{"provider_version", "0.6.x"})
+			MetricLabel{Name: "kind", Value: kind}, MetricLabel{Name: "provider_version", Value: "0.6.x"})
 	}
 	snap := waitForCounters(t, srv, 3*time.Second, func(s MetricsSnapshot) bool {
 		return s.Counters[key(unknownFrameKindChunk)] == 1 &&
@@ -546,12 +514,12 @@ func TestQueueOutcomeClass_Mapping(t *testing.T) {
 		want    string
 	}{
 		{"pre-fill (non-terminal) is not counted", store.InferenceRouteOutcome{}, ""},
-		{"client gone while queued", store.InferenceRouteOutcome{FinalStatus: finalStatusCancelled, ErrorClass: "client_gone"}, queueClassClientGone},
-		{"queue_deadline", store.InferenceRouteOutcome{FinalStatus: finalStatusTimeout, ErrorClass: rejectionReasonQueueDeadline}, queueClassQueueDeadline},
-		{"queue_timeout", store.InferenceRouteOutcome{FinalStatus: finalStatusTimeout, ErrorClass: "queue_timeout"}, queueClassQueueTimeout},
-		{"ttft_too_slow", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: "ttft_too_slow"}, queueClassTTFTTooSlow},
-		{"tool constraint unavailable", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: "model_capability_unsupported"}, queueClassCapabilityUnsupported},
-		{"unknown exit class is other", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: "something_new"}, queueClassOther},
+		{"client gone while queued", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusCancelled, ErrorClass: "client_gone"}, queueClassClientGone},
+		{"queue_deadline", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusTimeout, ErrorClass: dispatch.RejectionReasonQueueDeadline}, queueClassQueueDeadline},
+		{"queue_timeout", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusTimeout, ErrorClass: "queue_timeout"}, queueClassQueueTimeout},
+		{"ttft_too_slow", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusError, ErrorClass: "ttft_too_slow"}, queueClassTTFTTooSlow},
+		{"tool constraint unavailable", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusError, ErrorClass: "model_capability_unsupported"}, queueClassCapabilityUnsupported},
+		{"unknown exit class is other", store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusError, ErrorClass: "something_new"}, queueClassOther},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -589,14 +557,14 @@ func TestEmitAttemptOutcomeMetric_QueueExitIsNotAnAttempt(t *testing.T) {
 		return total
 	}
 
-	queued := &store.InferenceRouteOutcome{FinalStatus: finalStatusTimeout, ErrorClass: rejectionReasonQueueDeadline, ErrorCode: http.StatusGatewayTimeout, QueueExit: true}
+	queued := &store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusTimeout, ErrorClass: dispatch.RejectionReasonQueueDeadline, ErrorCode: http.StatusGatewayTimeout, QueueExit: true}
 	srv.emitAttemptOutcomeMetric(model, queued)
 	snap := srv.metrics.Snapshot()
 	if got := attemptTotal(snap); got != 0 {
 		t.Fatalf("attempt_outcome after a queue exit = %d, want 0; counters=%v", got, snap.Counters)
 	}
 	if got := snap.Counters[counterKey(metricQueueOutcomeCounter,
-		MetricLabel{"model", model}, MetricLabel{"class", queueClassQueueDeadline})]; got != 1 {
+		MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: queueClassQueueDeadline})]; got != 1 {
 		t.Fatalf("queue_outcome{queue_deadline} = %d, want 1; counters=%v", got, snap.Counters)
 	}
 
@@ -604,14 +572,14 @@ func TestEmitAttemptOutcomeMetric_QueueExitIsNotAnAttempt(t *testing.T) {
 	srv.emitAttemptOutcomeMetric(model, &store.InferenceRouteOutcome{QueueExit: true})
 
 	// The same class from a DISPATCHED attempt still counts as an attempt.
-	dispatched := &store.InferenceRouteOutcome{FinalStatus: finalStatusTimeout, ErrorClass: rejectionReasonQueueDeadline, ErrorCode: http.StatusGatewayTimeout}
+	dispatched := &store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusTimeout, ErrorClass: dispatch.RejectionReasonQueueDeadline, ErrorCode: http.StatusGatewayTimeout}
 	srv.emitAttemptOutcomeMetric(model, dispatched)
 	snap = srv.metrics.Snapshot()
 	if got := attemptTotal(snap); got != 1 {
 		t.Fatalf("attempt_outcome after a dispatched terminal = %d, want 1; counters=%v", got, snap.Counters)
 	}
 	if got := snap.Counters[counterKey(metricAttemptOutcomeCounter,
-		MetricLabel{"model", model}, MetricLabel{"class", attemptClassCapacity})]; got != 1 {
+		MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: attemptClassCapacity})]; got != 1 {
 		t.Fatalf("attempt_outcome{capacity} = %d, want 1; counters=%v", got, snap.Counters)
 	}
 	var queueTotal int64
@@ -662,7 +630,7 @@ func TestQueuedExit_LiveQueueDeadline_CountsOnQueueOutcome(t *testing.T) {
 		t.Fatalf("status = %d, want 429; body=%s", res.status, res.body)
 	}
 
-	queueKey := counterKey(metricQueueOutcomeCounter, MetricLabel{"model", model}, MetricLabel{"class", queueClassQueueDeadline})
+	queueKey := counterKey(metricQueueOutcomeCounter, MetricLabel{Name: "model", Value: model}, MetricLabel{Name: "class", Value: queueClassQueueDeadline})
 	snap := waitForCounters(t, srv, 3*time.Second, func(s MetricsSnapshot) bool {
 		return s.Counters[queueKey] >= 1
 	})

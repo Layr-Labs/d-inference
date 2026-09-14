@@ -19,6 +19,10 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/dispatchplan"
+	"github.com/eigeninference/d-inference/coordinator/registry/faultstate"
+	"github.com/eigeninference/d-inference/coordinator/registry/modelloads"
+	"github.com/eigeninference/d-inference/coordinator/registry/requestqueue"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -32,9 +36,9 @@ type Registry struct {
 	// after a saturated pass (queue_drain_suppress.go). Zero value ready.
 	drainSuppress queueDrainSuppressor
 	// drainPasses runs one queue-drain pass per model at a time and reruns it
-	// for triggers that landed mid-pass (queue_drain_coalesce.go). Zero value
+	// for triggers that landed mid-pass (requestqueue/drain.go). Zero value
 	// ready.
-	drainPasses queueDrainCoalescer
+	drainPasses requestqueue.DrainCoalescer
 
 	MinTrustLevel TrustLevel
 
@@ -49,7 +53,7 @@ type Registry struct {
 	// SetDedicatedModels and dedicated_models.go. Guarded by r.mu.
 	dedicatedModels []string
 
-	// Quality-concurrency admission cap (see concurrency_cap.go). When enabled,
+	// Quality-concurrency admission cap (see quality_cap_admission.go). When enabled,
 	// the per-provider concurrency cap for a model is tightened from the flat
 	// fallback to quality_concurrency × overcommit, computed from the provider's
 	// STATIC single-stream decode rate so slow/saturated models stop
@@ -135,15 +139,15 @@ type Registry struct {
 
 	// swapPlanGate coalesces heartbeat-triggered model-swap planning to at
 	// most one plan per modelSwapPlanInterval fleet-wide (model_swap_coalesce.go).
-	swapPlanGate modelSwapPlanGate
+	swapPlanGate modelloads.PlanGate
 
 	onlineCount      atomic.Int64
 	modelProviders   map[string]*atomic.Int64
 	modelProvidersMu sync.Mutex
 
-	// pendingModelLoads tracks provider-model pairs that have been sent a
+	// modelLoads owns provider-model pairs that have been sent a
 	// load_model command and are awaiting completion, or are cooling down
-	// after a failed one. The value is the entry's expiry time. While an
+	// after a failed one. It keeps expiry and original start time private. While an
 	// entry lives, the provider is skipped for new load_model sends
 	// (bestModelLoadProviderLocked / reservePendingModelLoads).
 	//
@@ -155,48 +159,16 @@ type Registry struct {
 	// is derived entirely from BackendCapacity.Slots (with WarmModels as the
 	// legacy fallback). Do not add routing reads of this field — see the
 	// "Coordinator State Model" section in AGENTS.md.
-	pendingModelLoads       map[modelLoadKey]time.Time // value: expiry (see pair_keys.go)
-	pendingModelLoadStarted map[modelLoadKey]time.Time
+	modelLoads modelloads.Commands
 
-	// Per-identity routing-gate state (gate_state.go). Every fault tracker —
-	// the dispatch-load cooldown, the shape-keyed inference-error breaker
-	// (error_cooldown.go), the node-health breaker (provider_breaker.go), the
-	// capacity cooldown / rate window / budget clamp (capacity_cooldown.go,
-	// capacity_rate.go, budget_clamp.go) and stable-identity health ejection
-	// (health_ejection.go) — lives on the gateState of the provider's STABLE
-	// fault key (serial → SE key → account → session id), each gate with its
-	// own mutex. Recorders take gate.mu only, never r.mu: the six per-request
-	// write acquisitions of r.mu that convoyed behind the fleet-scan readers
-	// are gone. gates is keyed by fault key; sessions indexes LIVE session ids
-	// to their Provider (whose p.gate caches the current gate) so recorders
-	// resolve a session without r.mu; disconnectedStableIDs caches a
-	// provider's stable identity at Disconnect time, keyed by its now-removed
-	// session id, so the trailing pending-request ErrorCh flush — which
-	// carries the 502 "provider disconnected" faults that define a
-	// reconnecting zombie — still resolves the identity. All three under
-	// gatesMu: RLock to resolve, Lock only in Register / Disconnect / the
-	// attestation-time bind / the periodic sweep. Fault state is keyed by
-	// identity and NOT cleared on Disconnect — it re-attaches on reconnect
-	// (the prod zombie exploit: median 18 sessions/machine/week reset every
-	// session-keyed breaker before it could trip).
-	gatesMu               sync.RWMutex
-	gates                 map[string]*gateState
-	sessions              map[string]*Provider
-	disconnectedStableIDs map[string]disconnectedStableID
-	gateSweepAt           time.Time
-	// gateWaitObserver, when set, is told about gate.mu acquisition waits above
-	// gateWaitReportThreshold, tagged by recorder site (SetGateWaitObserver).
-	gateWaitObserver atomic.Pointer[func(site string, wait time.Duration)]
+	// faults owns the session/identity index and all coupled fault trackers.
+	// Registry and Provider locks remain outside its private index and gate locks.
+	faults faultstate.Manager[*Provider]
 
 	// reserveCommitMode selects whether the reservation commit holds r.mu for
 	// reading (shared, default) or writing (global — the kill switch). Read
 	// once from EIGENINFERENCE_RESERVE_COMMIT_MODE at construction.
 	reserveCommitMode reserveCommitMode
-
-	// Env-tunable tracker configs, read once at construction.
-	capacityCooldownCfg capacityCooldownConfig
-	budgetClampCfg      budgetClampConfig
-	capacityRateCfg     capacityRateConfig
 
 	// evictStrikes counts consecutive eviction sweeps a provider has been stale.
 	// A provider is only evicted after STALE on two sweeps in a row, so a single
@@ -209,7 +181,7 @@ type Registry struct {
 	// by quote_id (routing v2 W2). Value field with an internal LEAF mutex and
 	// a lazily-created map, so bare &Registry{} test constructions work
 	// without New(). See capacity_quotes.go.
-	capacityQuotes quoteTracker
+	capacityQuotes dispatchplan.Probes[*Provider]
 
 	cacheRouting                 *cacheRoutingTracker
 	cacheActivation              *cacheActivationGate
@@ -241,25 +213,19 @@ type Registry struct {
 // New creates a new Registry.
 func New(logger *slog.Logger) *Registry {
 	return &Registry{
-		providers:               make(map[string]*Provider),
-		queue:                   NewRequestQueueFromEnv(),
-		MinTrustLevel:           TrustHardware,
-		tpsRegistry:             NewTPSRegistry(),
-		modelProviders:          make(map[string]*atomic.Int64),
-		pendingModelLoads:       make(map[modelLoadKey]time.Time),
-		pendingModelLoadStarted: make(map[modelLoadKey]time.Time),
-		gates:                   make(map[string]*gateState),
-		sessions:                make(map[string]*Provider),
-		disconnectedStableIDs:   make(map[string]disconnectedStableID),
-		reserveCommitMode:       loadReserveCommitMode(logger),
-		capacityCooldownCfg:     loadCapacityCooldownConfig(),
-		budgetClampCfg:          loadBudgetClampConfig(),
-		capacityRateCfg:         loadCapacityRateConfig(),
-		evictStrikes:            make(map[string]int),
-		cacheRouting:            newCacheRoutingTracker(defaultCacheRoutingTTL, defaultCacheRoutingMaxHolders),
-		cacheActivation:         newCacheActivationGate(defaultCacheRoutingActivationPct, defaultCacheRoutingMaxPlanQPS),
-		cacheRoutingMode:        CacheRoutingOff,
-		logger:                  logger,
+		providers:         make(map[string]*Provider),
+		queue:             NewRequestQueueFromEnv(),
+		MinTrustLevel:     TrustHardware,
+		tpsRegistry:       NewTPSRegistry(),
+		modelProviders:    make(map[string]*atomic.Int64),
+		modelLoads:        modelloads.NewCommands(),
+		reserveCommitMode: loadReserveCommitMode(logger),
+		faults:            faultstate.New[*Provider](logger),
+		evictStrikes:      make(map[string]int),
+		cacheRouting:      newCacheRoutingTracker(defaultCacheRoutingTTL, defaultCacheRoutingMaxHolders),
+		cacheActivation:   newCacheActivationGate(defaultCacheRoutingActivationPct, defaultCacheRoutingMaxPlanQPS),
+		cacheRoutingMode:  CacheRoutingOff,
+		logger:            logger,
 	}
 }
 

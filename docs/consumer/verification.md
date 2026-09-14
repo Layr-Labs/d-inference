@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-13 · commit `1f52a71fb`
+> Last updated: 2026-09-14 · commit `5f2c53f32`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -42,11 +42,28 @@ the `code_attested` flag.
 | `self_signed` | The Secure-Enclave-signed attestation verified and the provider is passing the coordinator's periodic challenge, but there is no MDM confirmation yet |
 | `none` | No verified attestation |
 
+On reconnect, a hardware verdict may reuse prior device evidence after a
+fresh signed challenge. The coordinator owns this
+[evidence lifecycle](../architecture/security/attestation.md#device-evidence-ownership-and-shutdown);
+it does not add fields or a per-response attestation receipt.
+
+The coordinator
+[verification owner](../architecture/security/attestation.md#registration-and-device-verification-ownership)
+checks registration and device evidence before the existing grants. This source
+organization adds no public evidence fields or consumer verification step.
+The [MDM scheduler](../architecture/security/attestation.md#mdm-scheduler-ownership)
+keeps delayed replies bound to the current provider generation and exact command
+before the existing trust-grant and MDA attachment paths.
+
 The grant and loss conditions for each level are tabulated in
 [`../architecture/security/attestation.md#trust-levels`](../architecture/security/attestation.md#trust-levels);
 the challenge cadence is in [Layer 2](../architecture/security/attestation.md#layer-2--periodic-challenge)
 and the routing freshness window is
 [`challengeFreshnessMaxAge`](../architecture/routing.md#challenge-freshness).
+
+Challenge replies are correlated with pending nonces on the same provider
+connection (`coordinator/providercontrol/challenge/transport.go`, `Session.Deliver`).
+This is a coordinator liveness check; it adds no consumer receipt or public field.
 
 The coordinator verifies `status_signature` by reconstructing the exact signed
 bytes (`coordinator/attestation/attestation.go`, `VerifyStatusSignature`). The
@@ -71,8 +88,8 @@ send without self-routing is served only by a provider that passes all of them
 ## Per-response signals
 
 Once a provider has been committed to your request, the coordinator writes
-these headers (`writeCommittedProviderHeaders`,
-`coordinator/api/response_metadata.go`):
+these headers (`WriteCommittedProviderHeaders`,
+`coordinator/inference/response/provider_snapshot.go`):
 
 | Header | Value |
 |---|---|
@@ -122,6 +139,8 @@ A coordinator reconnect still requires a fresh process-possession challenge befo
 private routing. Recorded code-verified continuity can avoid another Apple push
 for the same process; it does not grant hardware trust or bypass verification.
 See [APNs code identity](../architecture/security/attestation.md#flag--apns-code-identity).
+Its [coordinator ownership boundary](../architecture/security/attestation.md#code-identity-ownership)
+preserves the same proof checks and exposes no additional consumer fields.
 
 ## Related
 

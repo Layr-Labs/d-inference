@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-13 · commit `f7a3ef1fd`
+> Last updated: 2026-09-14 · commit `5f2c53f32`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -18,7 +18,7 @@ Open `https://console.darkbloom.dev` and sign in with your email address.
 
 ### 2. Create an API key
 
-Open the API console page (`/api-console`, `console-ui/src/app/api-console/page.tsx` — not Settings) and create a key. The console calls `POST /v1/keys` with your Privy session through its same-origin `/api/keys` relay (`console-ui/src/app/api/keys/route.ts`; `handleCreateAPIKey`, `coordinator/api/apikey_handlers.go`). The secret starts with `sk-db-` and is shown once — copy it now; its exact shape and how it is stored are in [`../reference/api-contracts.md#api-key-shapes`](../reference/api-contracts.md#api-key-shapes). If you lose it, rotate or create another ([`authentication.md`](authentication.md)).
+Open the API console page (`/api-console`, `console-ui/src/app/api-console/page.tsx` — not Settings) and create a key. The console calls `POST /v1/keys` with your Privy session through its same-origin `/api/keys` relay (`console-ui/src/app/api/keys/route.ts`; `Controller.CreateKey`, `coordinator/api/accounts/keys.go`). The secret starts with `sk-db-` and is shown once — copy it now; its exact shape and how it is stored are in [`../reference/api-contracts.md#api-key-shapes`](../reference/api-contracts.md#api-key-shapes). If you lose it, rotate or create another ([`authentication.md`](authentication.md)).
 
 Export it for the commands below:
 
@@ -33,7 +33,7 @@ curl -s https://api.darkbloom.dev/v1/models \
   -H "Authorization: Bearer $DARKBLOOM_API_KEY" | jq '.data[] | {id, context_length, input_modalities, supported_features}'
 ```
 
-A 200 with a `data` array confirms the key works (`handleListModels`, `coordinator/api/models_endpoints.go`). The `id` values are the model names to send; they are aliases maintained in the coordinator's database, so the list is authoritative and this page does not repeat it. Field meanings are in [`models.md`](models.md).
+A 200 with a `data` array confirms the key works (`ListModels`, `coordinator/api/catalog/consumer_list.go`). The `id` values are the model names to send; they are aliases maintained in the coordinator's database, so the list is authoritative and this page does not repeat it. Field meanings are in [`models.md`](models.md).
 
 Pick one id and export it:
 
@@ -54,9 +54,9 @@ curl -s https://api.darkbloom.dev/v1/chat/completions \
   }'
 ```
 
-The body is an OpenAI `chat.completion` object whose `model` field echoes the alias you sent and whose `usage` has `prompt_tokens`, `completion_tokens`, `total_tokens`. Response headers `X-Provider-Id`, `X-Provider-Attested` and `X-Timing` tell you which machine served it and how long each coordinator stage took (`writeCommittedProviderHeaders`, `coordinator/api/response_metadata.go`).
+The body is an OpenAI `chat.completion` object whose `model` field echoes the alias you sent and whose `usage` has `prompt_tokens`, `completion_tokens`, `total_tokens`. Response headers `X-Provider-Id`, `X-Provider-Attested` and `X-Timing` tell you which machine served it and how long each coordinator stage took (`WriteCommittedProviderHeaders`, `coordinator/inference/response/provider_snapshot.go`).
 
-Expect a short delay before the first byte: the coordinator sends nothing until a provider has produced content, so it can still fail over or return a real error status in the meantime (`commitFirstContent`, `coordinator/api/dispatch.go`).
+Expect a short delay before the first byte: the coordinator sends nothing until a provider has produced content, so it can still fail over or return a real error status in the meantime (`commitFirstContent`, `coordinator/inference/dispatch/commit.go`).
 
 ### 5. Stream the response
 
@@ -71,7 +71,7 @@ curl -N https://api.darkbloom.dev/v1/chat/completions \
   }'
 ```
 
-You receive `text/event-stream` frames, one `data: {...}` chunk per provider token group, a final frame carrying `usage` and `finish_reason`, then exactly one `data: [DONE]`. There are no keepalive comments; silence means no token has been produced yet (`handleStreamingResponseWithFirstChunkAndError`, `coordinator/api/consumer_stream.go`).
+A successful request returns `text/event-stream` frames, one `data: {...}` chunk per provider token group, a final frame carrying `usage` and `finish_reason`, then exactly one `data: [DONE]`. A provider error after content ends the chat stream with an error frame and no `[DONE]`; handle it as a failed stream. There are no keepalive comments; silence means no token has been produced yet (`Writer.Stream`, `coordinator/inference/response/stream.go`).
 
 ### 6. Use the OpenAI SDK
 
@@ -88,11 +88,11 @@ resp = client.chat.completions.create(
 print(resp.choices[0].message.content)
 ```
 
-`client.models.list()` and `client.responses.create(...)` also work: they hit `GET /v1/models` and `POST /v1/responses`, both registered routes. Endpoints the coordinator does not implement (embeddings, moderations, files) return a structured 404 from the `/v1/` catch-all (`handleUnimplementedEndpoint`, `coordinator/api/server.go`).
+`client.models.list()` and `client.responses.create(...)` also work: they hit `GET /v1/models` and `POST /v1/responses`, both registered routes. Endpoints the coordinator does not implement (embeddings, moderations, files) return a structured 404 from the `/v1/` catch-all (`handleUnimplementedEndpoint`, `coordinator/api/routes.go`).
 
 ### 7. Use the Anthropic SDK
 
-The Anthropic clients append `/v1/messages` to the base URL, so point them at the bare host. The coordinator reads credentials only from `Authorization: Bearer` (`extractBearerToken`, `coordinator/api/server.go`) and ignores `x-api-key`, so pass the key as the SDK's bearer `auth_token`, not as `api_key`:
+The Anthropic clients append `/v1/messages` to the base URL, so point them at the bare host. The coordinator reads credentials only from `Authorization: Bearer` (`BearerToken`, `coordinator/api/requestauth/bearer.go`) and ignores `x-api-key`, so pass the key as the SDK's bearer `auth_token`, not as `api_key`:
 
 ```python
 import anthropic
@@ -106,7 +106,7 @@ msg = client.messages.create(
 print(msg.content[0].text)
 ```
 
-Requests land on `POST /v1/messages` (`handleAnthropicMessages`, `coordinator/api/consumer.go`) and are translated to the same pipeline as chat completions.
+Requests land on `POST /v1/messages` (`Controller.Messages`, `coordinator/inference/ingress/endpoints.go`) and share admission and dispatch services with chat completions.
 
 ## Verify
 

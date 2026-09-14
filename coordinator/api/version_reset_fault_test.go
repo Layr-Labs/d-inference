@@ -32,7 +32,7 @@ func TestProviderEncryption502SurvivesVersionReset(t *testing.T) {
 	reg.RecordProviderOutcome(provider2.ID, true, 200, "")
 	reg.RecordProviderSessionServeOutcome(provider2.ID, true, 200, "")
 	for range breakerStrikeRounds {
-		srv.noteInferenceError(provider.ID, &registry.PendingRequest{Model: pr.Model}, 502, "encryption failure", "", "")
+		srv.inferenceAttempts().Error(provider.ID, &registry.PendingRequest{Model: pr.Model}, 502, "encryption failure", "", "")
 	}
 	assertBreakerStates(t, reg, provider2, pr, true)
 }

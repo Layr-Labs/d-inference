@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -24,11 +25,11 @@ func TestPreCommitOutcome_NonProviderFaultReasons(t *testing.T) {
 		{422, "tool_noncompliance"},
 		{500, "jinja_template"},
 	} {
-		out := preCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{
+		out := attempt.PreCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{
 			StatusCode: tc.code, Error: "x", ErrorReason: tc.reason,
 		})
-		if out.ErrorClass != errorClassClientError {
-			t.Fatalf("%s: class = %q, want %q", tc.reason, out.ErrorClass, errorClassClientError)
+		if out.ErrorClass != attempt.ErrorClassClientError {
+			t.Fatalf("%s: class = %q, want %q", tc.reason, out.ErrorClass, attempt.ErrorClassClientError)
 		}
 		if out.AdmittedButFailed {
 			t.Fatalf("%s: AdmittedButFailed must stay false", tc.reason)
@@ -41,7 +42,7 @@ func TestPreCommitOutcome_NonProviderFaultReasons(t *testing.T) {
 	// Control: a plain 422 with NO structured reason stays a provider-fault
 	// outcome — the reclassification cannot widen to generic output-validation
 	// errors.
-	ctrl := preCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{
+	ctrl := attempt.PreCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{
 		StatusCode: 422, Error: "model output was not valid JSON",
 	})
 	if ctrl.ErrorClass != "provider_error" || !ctrl.AdmittedButFailed {
@@ -50,22 +51,6 @@ func TestPreCommitOutcome_NonProviderFaultReasons(t *testing.T) {
 	}
 	if ctrl.ErrorCode != http.StatusInternalServerError {
 		t.Fatalf("plain legacy 422 must fail closed to canonical 500, got %d", ctrl.ErrorCode)
-	}
-}
-
-func TestProviderFailedRoutingOutcome_ToolNoncompliance(t *testing.T) {
-	d := &dispatchState{
-		s: newTestServerForDispatch(t), model: "m",
-		lastErrCode: 422, lastErr: "model did not emit the required tool call",
-		lastErrReason: "tool_noncompliance",
-	}
-	out := d.providerFailedRoutingOutcome()
-	if out.ErrorClass != errorClassClientError || out.AdmittedButFailed {
-		t.Fatalf("class=%q admitted=%v, want client_error/not-admitted",
-			out.ErrorClass, out.AdmittedButFailed)
-	}
-	if out.ErrorReason != "tool_noncompliance" {
-		t.Fatalf("reason = %q, must survive on the row", out.ErrorReason)
 	}
 }
 
@@ -81,9 +66,9 @@ func TestGenericPathNonFaultReasonsSkipBreakers(t *testing.T) {
 	// Far past every trip threshold (pair cooldown trips at 2, node health at
 	// 5, stable identity at 8).
 	for range 10 {
-		srv.noteInferenceError(provider.ID, pr, http.StatusInternalServerError,
+		srv.inferenceAttempts().Error(provider.ID, pr, http.StatusInternalServerError,
 			"Runtime error: upper filter requires string", "jinja_template", "")
-		srv.noteInferenceError(provider.ID, pr, 422,
+		srv.inferenceAttempts().Error(provider.ID, pr, 422,
 			"model did not emit the required tool call", "tool_noncompliance", "")
 	}
 	assertBreakerStates(t, reg, provider, pr, false)
@@ -91,7 +76,7 @@ func TestGenericPathNonFaultReasonsSkipBreakers(t *testing.T) {
 	// Control: the same volume of plain 500s through the same chokepoint still
 	// trips the breakers — the gate keys on the structured reason only.
 	for range 10 {
-		srv.noteInferenceError(provider.ID, pr, http.StatusInternalServerError, "boom", "", "")
+		srv.inferenceAttempts().Error(provider.ID, pr, http.StatusInternalServerError, "boom", "", "")
 	}
 	assertBreakerStates(t, reg, provider, pr, true)
 }

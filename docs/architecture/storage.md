@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-11 · commit `e8790dafe`
+> Last updated: 2026-09-14 · commit `5f2c53f32`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -11,7 +11,7 @@ the SSD cache file format is in
 [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md).
 
 Model versions also store the optional `hugging_face_artifact` as nullable JSONB
-(`coordinator/store/postgres.go`). `SetModelVersion` replaces it and invalidates
+(`coordinator/store/postgres/schema/model_registry.go`). `SetModelVersion` replaces it and invalidates
 the existing model read-through cache; [artifact schema](../reference/model-registry-format.md#hugging-face-download-artifact).
 
 Attempt decision fields are additive columns and existing provider JSONB;
@@ -33,9 +33,17 @@ Keychain. Nothing prompt-derived is stored on either side.
 
 ### The store interface
 
-`Store` (`coordinator/store/interface.go`) is the union of thirteen domain
-interfaces declared in `coordinator/store/interface_domains.go`. Callers depend
-on the narrow slice they need; both implementations satisfy all thirteen.
+`Store` (`coordinator/store/contracts/store.go`) composes thirteen domain
+interfaces. `coordinator/store` preserves the existing import surface with type
+aliases and forwarding constructors; it owns no backend state. Callers can use
+`contracts` directly and depend on the narrow operations they need.
+
+`BillingStore` composes `ReferralStore`, `BillingSessionStore`, `ModelPriceStore`
+and `StripeWithdrawalStore`. `ProviderStore` composes `ProviderRecordStore`,
+`ProviderSessionStore`, `ReputationStore`, `CodeAttestationStore`, `TrustReuseStore`,
+`VerificationStore` and `LogReportStore`. Their records and contracts live together
+in the corresponding files under `coordinator/store/contracts/`; both backends
+retain the complete method sets.
 
 | Sub-interface | Owns |
 |---|---|
@@ -60,8 +68,8 @@ Datadog only (see [`telemetry.md`](telemetry.md)).
 
 | Backend | File | Selected when | Durability |
 |---|---|---|---|
-| `PostgresStore` | `coordinator/store/postgres.go` (+ `postgres_*.go`) | `EIGENINFERENCE_DATABASE_URL` is set | Durable; the only backend for dev and production. In production the database is AWS RDS, outside the coordinator VM and its container, so a container swap or VM reboot cannot touch it ([`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md)). |
-| `MemoryStore` | `coordinator/store/memory.go` | No DSN **and** `EIGENINFERENCE_ALLOW_MEMORY_STORE=true` | Process memory; everything is lost on exit. |
+| `PostgresStore` | `coordinator/store/postgres/store.go` (`Store`, `New`) | `EIGENINFERENCE_DATABASE_URL` is set | Durable; the only backend for dev and production. In production the database is AWS RDS, outside the coordinator VM and its container, so a container swap or VM reboot cannot touch it ([`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md)). |
+| `MemoryStore` | `coordinator/store/memory/store.go` | No DSN **and** `EIGENINFERENCE_ALLOW_MEMORY_STORE=true` | Process memory; everything is lost on exit. |
 
 Selection is in `main` (`coordinator/cmd/coordinator/main.go`): with a DSN it
 calls `store.NewPostgres` and exits 1 on any connect, ping or migration error;
@@ -73,7 +81,8 @@ it in `store.Config`.
 
 ### Connecting to Postgres
 
-`NewPostgres` parses the DSN with `pgxpool.ParseConfig` and overrides the pool
+`store.NewPostgres` forwards to `postgres.New` (`coordinator/store/postgres/store.go`),
+which parses the DSN with `pgxpool.ParseConfig` and overrides the pool
 shape: at least 80 max connections, 10 minimum, 30 minute connection lifetime,
 5 minute idle timeout, 30 second health check. The 80 floor exists because the
 stats endpoint can hold connections for seconds while heartbeat upserts,
@@ -86,17 +95,19 @@ the only connection-level knob; there is no separate host/user/password set.
 key seeding, listeners, or background workers. It requires a PostgreSQL URL;
 there is no memory-store fallback or schema-skip mode. Normal startup still
 checks every migration. There is no versioned migration directory for the
-schema. `PostgresStore.migrate` (`coordinator/store/postgres.go`) executes an
-ordered slice of idempotent statements — `CREATE TABLE IF NOT EXISTS`,
+schema. `postgres.Store.migrate` (`coordinator/store/postgres/schema.go`) executes
+`schema.Statements` (`coordinator/store/postgres/schema/statements.go`), an ordered
+slice assembled from domain files with the established statement ordinals intact.
+It runs idempotent statements — `CREATE TABLE IF NOT EXISTS`,
 `ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `DROP TABLE IF EXISTS`
 for retired tables — on every start, followed by:
-`migrateEarningsSummary` (`postgres_earnings_summary_migration.go`),
-`ensureProviderRestoreIndexes` (`postgres_startup.go`),
-`migrateUsageTotals` (`postgres_usage_totals_migration.go`),
-`migrateWithdrawableBalance` (`postgres_withdrawable_migration.go`) and
+`migrateEarningsSummary` (`coordinator/store/postgres/earnings_summary_migration.go`),
+`ensureProviderRestoreIndexes` (`coordinator/store/postgres/startup.go`),
+`migrateUsageTotals` (`coordinator/store/postgres/usage_totals_migration.go`),
+`migrateWithdrawableBalance` (`coordinator/store/postgres/withdrawable_migration.go`) and
 `ensureProviderEarningsJobIndex`. One-shot *data* migrations are gated by a row
 in `schema_migrations` so they run at most once. Two SQL files under
-`coordinator/store/migrations/` are deliberately **not** on that path and are
+`coordinator/store/postgres/migrations/` are deliberately **not** on that path and are
 applied by hand with `psql`: `dedupe_provider_earnings.sql` (an offline cleanup
 that once ran at boot, held a relation lock for ~15 minutes on the production
 table and kept the coordinator from binding its port) and
@@ -149,7 +160,7 @@ overwrite those maintained summaries. Imported earnings or manually deleted and
 rebuilt summaries can have different provenance and require evidence-backed
 reconciliation. Neither subtracting every retained base reward nor replacing
 lifetime counters from retained detail rows is a safe general repair; the
-upgrade regression in `coordinator/store/earnings_summary_legacy_upgrade_test.go`
+upgrade regression in `coordinator/store/postgres/earnings_summary_legacy_upgrade_test.go`
 checks the production sequence and preservation of lifetime totals.
 
 Postgres startup logs connection time and individual schema statement durations
@@ -169,7 +180,8 @@ finishes, persisted rows omit the indexed serial and SE key, including late writ
 from a registration that already disconnected. Provider-record and reputation persistence share a mutex, and pending reputation
 writes are skipped. Completed records publish together with their reputation in
 one Postgres transaction or MemoryStore lock (`UpsertProviderWithReputation`,
-`coordinator/store/provider_record_write.go`), so an older zero snapshot cannot
+`coordinator/store/postgres/provider_record_write.go` and
+`coordinator/store/memory/provider_record_write.go`), so an older zero snapshot cannot
 overwrite the completed state and no completed identity appears without its
 reputation. Registration retries history/reputation reads up to three times,
 within one five-second deadline shared with `RestoreProviderStateContext`.
@@ -214,13 +226,13 @@ Roughly forty tables; grouped by what would be lost if the family vanished.
 
 ### Global Payouts state
 
-Claims, result application and definitive-rejection records use one locked PostgreSQL mutation boundary (`coordinator/store/global_payouts_postgres.go`, `mutateGlobalPayout`). Operation-specific checks run under the withdrawal row lock; any refund ledger entry and payout update commit together. A no-op claim rolls back without changing the lease or dispatch count.
+Claims, result application and definitive-rejection records use one locked PostgreSQL mutation boundary (`coordinator/store/postgres/global_payouts.go`, `mutateGlobalPayout`). Operation-specific checks run under the withdrawal row lock; any refund ledger entry and payout update commit together. A no-op claim rolls back without changing the lease or dispatch count.
 
-Payouts marked `manual_reconciliation_required` without an external payment ID are excluded from automatic scans and claims; their pending row and debit are retained. A verified external ID permits readback reconciliation to resume (`coordinator/store/global_payouts.go`, `GlobalPayout.RequiresManualReconciliation`).
+Payouts marked `manual_reconciliation_required` without an external payment ID are excluded from automatic scans and claims; their pending row and debit are retained. A verified external ID permits readback reconciliation to resume (`coordinator/store/contracts/global_payouts.go`, `GlobalPayout.RequiresManualReconciliation`).
 
-Global Payouts uses separate recipient and withdrawal tables with immutable request data, persisted dispatch counts, definitive rejection records, an indexed quote expiry and a unique external-payment index. `GlobalPayoutStore` is accessed through `store.As` so decorators preserve the capability. These mutations do not write the cached users table. The migration creates the payout tables and adds/backfills indexed quote expiry for an earlier Global Payouts schema (`coordinator/store/global_payouts_postgres.go`, `globalPayoutSchema`). Cleanup locks and removes only expired, never-confirmed quotes in bounded batches; confirmed payout and ledger records are retained (`coordinator/store/global_payouts_maintenance.go`, `PruneExpiredGlobalPayoutQuotes`).
+Global Payouts uses separate recipient and withdrawal tables with immutable request data, persisted dispatch counts, definitive rejection records, an indexed quote expiry and a unique external-payment index. `GlobalPayoutStore` is accessed through `store.As` so decorators preserve the capability. These mutations do not write the cached users table. The migration creates the payout tables and adds/backfills indexed quote expiry for an earlier Global Payouts schema (`coordinator/store/postgres/schema/global_payouts.go`, `GlobalPayoutSchema`). Cleanup locks and removes only expired, never-confirmed quotes in bounded batches; confirmed payout and ledger records are retained (`coordinator/store/postgres/global_payouts_maintenance.go`, `PruneExpiredGlobalPayoutQuotes`).
 
-Quote invalidation is serialized with confirmation. An invalidation flag prevents an earlier request timestamp from admitting a canceled quote; an already-confirmed payout is returned unchanged for reconciliation (`coordinator/store/global_payouts_quote_expiry.go`, `ExpireGlobalPayoutQuote`).
+Quote invalidation is serialized with confirmation. An invalidation flag prevents an earlier request timestamp from admitting a canceled quote; an already-confirmed payout is returned unchanged for reconciliation (`coordinator/store/postgres/global_payouts_quote_expiry.go`, `ExpireGlobalPayoutQuote`).
 
 ### Retention and pruning
 
@@ -229,13 +241,13 @@ The store keeps most business rows forever; the loops that exist are narrow.
 | Loop | Where | What it bounds |
 |---|---|---|
 | Profiler retention sweep, hourly | `coordinator/api/profiler_fleet.go` (`StartProfilerLoops` → `PruneTelemetry`) | `request_outcomes` by receipt time, plus `request_profiles` and `fleet_snapshots` older than their retention windows ([telemetry-inventory](../reference/telemetry-inventory.md#coordinator-per-request-records-postgres)), in batches; runs even when the profiler is off. |
-| Memory-store pruner, every 15 minutes | `coordinator/cmd/coordinator/main.go` (`memory_store_pruner`, `MemoryStore.Prune`) | Append-only history slices to `DefaultPruneMaxEntries` (100 000); memory store only. |
-| Session reconciliation, once at boot | `coordinator/cmd/coordinator/main.go` (`CloseOpenProviderSessions`) | Closes `provider_sessions` rows whose last heartbeat is more than 3 minutes old, so a blue-green cutover does not truncate live sessions. |
-| Read-cache janitor, every minute | `coordinator/api/server.go` (`StartReadCacheJanitor`) | In-process response cache, not a table. |
+| Memory-store pruner, every 15 minutes | `coordinator/cmd/coordinator/storage.go` (`startMemoryStorePruner`) | Append-only history slices to `DefaultPruneMaxEntries` (100 000); memory store only. |
+| Session reconciliation, once at boot | `coordinator/cmd/coordinator/storage.go` (`reconcileProviderSessions`) | Closes `provider_sessions` rows whose last heartbeat is more than 3 minutes old, so a blue-green cutover does not truncate live sessions. |
+| Read-cache janitor, every minute | `coordinator/api/cache.go` (`StartReadCacheJanitor`) | In-process response cache, not a table. |
 
 The existing nullable `request_rejections.could_have_served` column stores NULL
 when counterfactual servability is not evaluated. Go reads it as `*bool`
-(`coordinator/store/interface.go`, `RejectionRecord`); both stores preserve
+(`coordinator/store/contracts/telemetry.go`, `RejectionRecord`); both stores preserve
 unknown, false, and true. This requires no schema migration.
 
 `usage`, `inference_routes`, `request_rejections` and `ledger_entries` have no
@@ -266,20 +278,20 @@ KV blocks under a per-model key, not tokens.
 
 1. **A production coordinator never runs on the memory store.**
    `store.Config.Check` fails and `main` exits unless a DSN is present or the
-   memory store is opted into by name (`coordinator/store/config.go`,
+   memory store is opted into by name (`coordinator/store/contracts/config.go`,
    `coordinator/cmd/coordinator/main.go`).
 2. **Schema changes ship with the binary and are idempotent.** Every statement
    in `PostgresStore.migrate` can run on an already-migrated database; the
    process serves traffic only after the whole slice succeeds
-   (`coordinator/store/postgres.go`).
+   (`coordinator/store/postgres/schema.go`).
 3. **Committed migration progress is not applied twice.** Small migrations
    commit their marker with their update. Earnings backfill commits its plan,
    then each delta with pending-row deletion, before recording completion
-   (`coordinator/store/postgres_earnings_summary_backfill.go`).
+   (`coordinator/store/postgres/earnings_summary_backfill.go`).
 4. **Boot never holds a long lock on a hot table.** The
    `provider_earnings(job_id)` unique index is built `CONCURRENTLY`, only after
    a duplicate check, and skipped when already valid; the dedupe that violated
-   this lives in `coordinator/store/migrations/dedupe_provider_earnings.sql` and
+   this lives in `coordinator/store/postgres/migrations/dedupe_provider_earnings.sql` and
    is manual (`ensureProviderEarningsJobIndex`).
 5. **Money is micro-USD integers in an append-only ledger.** `LedgerStore`
    and `balances` never store floats; see
@@ -287,8 +299,8 @@ KV blocks under a per-model key, not tokens.
 6. **Nothing prompt-derived is persisted.** `TelemetryStore` rows carry token
    counts, timings and outcomes only; the `serial_number` column of
    `provider_log_reports` and the legacy `cache_affinity_key` column are kept
-   empty by triggers (`coordinator/store/postgres_log_report_privacy.go`,
-   `legacyCacheAffinityGuardTrigger` in `coordinator/store/postgres.go`).
+   empty by triggers (`coordinator/store/postgres/schema/log_report_privacy.go`,
+   `LegacyCacheAffinityGuardTrigger` in `coordinator/store/postgres/schema/cache_affinity.go`).
 7. **Provider secrets never leave the Keychain in the clear.** The KV KEK is
    wrapped by a Secure Enclave key and the SSD cache is unreadable without it
    (`provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift`).
@@ -302,7 +314,7 @@ KV blocks under a per-model key, not tokens.
 | `EIGENINFERENCE_DATABASE_URL is required in production` | No DSN and no memory-store opt-in | The environment file; see [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md). |
 | Billing or key state gone after a restart | The process ran on the memory store | Startup log line `using in-memory store`. |
 | `/v1/stats` slow and pool saturated | Full scans on `usage` holding connections; the 80-connection floor is the mitigation, not a fix | `pg_stat_activity`; the read cache. |
-| `request_waterfall` view missing after a fresh database | It is applied by hand, not at boot | `coordinator/store/migrations/request_waterfall.sql`. |
+| `request_waterfall` view missing after a fresh database | It is applied by hand, not at boot | `coordinator/store/postgres/migrations/request_waterfall.sql`. |
 | Provider re-challenged after every coordinator deploy | Trust-reuse rows missing (memory store) or `provider_trust_reuse` revoked | [`security/attestation.md`](security/attestation.md). |
 | Provider SSD cache empty after reboot | Budget clamp or block TTL ([size and eviction rules](../reference/ssd-kv-cache.md#size-and-eviction-rules)), or the KEK item missing | [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md); `darkbloom doctor`. |
 
@@ -310,14 +322,15 @@ KV blocks under a per-model key, not tokens.
 
 | Concern | Location |
 |---|---|
-| Interface and record types | `coordinator/store/interface.go`, `coordinator/store/interface_domains.go` |
-| Backend selection and validation | `coordinator/store/config.go`, `coordinator/cmd/coordinator/main.go` |
-| Postgres pool, schema, one-shot migrations | `coordinator/store/postgres.go`, `coordinator/store/postgres_usage_totals_migration.go`, `coordinator/store/postgres_withdrawable_migration.go`, `coordinator/store/postgres_log_report_privacy.go` |
-| Provider identity and usage reads | `coordinator/store/postgres_provider_read.go` (`providerRecordColumns`, `scanProviderRecord`, `GetProviderRecord`, `GetProviderBySerial`); `coordinator/store/provider_restore.go` (`GetProviderForRestore`, using the same projection); `coordinator/store/postgres_usage_read.go` (`readUsageRecords`, `UsageRecords`, `UsageRecordsSince`); `coordinator/store/postgres_row.go` (`rowScanner`) |
-| Domain files | `coordinator/store/postgres_model_registry.go`, `coordinator/store/postgres_base_rewards.go`, `coordinator/store/postgres_profiles.go`, `coordinator/store/route_telemetry.go`, `coordinator/store/usage_time_series.go`, `coordinator/store/apikey.go` |
-| Memory backend | `coordinator/store/memory.go`, `coordinator/store/memory_base_rewards.go` |
-| Manual SQL | `coordinator/store/migrations/` |
-| Persistent-disk state outside Postgres (MicroMDM, journals) | `coordinator/deploy/start.sh`, `coordinator/api/trust_reuse_journal.go`, [`../operations/state-export.md`](../operations/state-export.md) |
+| Compatibility imports | `coordinator/store/` (`Store`, `NewMemory`, `NewPostgres`, `NewCached`, `As` aliases/forwarders) |
+| Domain records and interfaces | `coordinator/store/contracts/` (`Store`, `BillingStore`, `ProviderStore` and their composed domains); `contracts.Config.Check` validates backend selection |
+| PostgreSQL connection and startup | `coordinator/store/postgres/store.go` (`New`, `Store`); `coordinator/store/postgres/schema.go` (`migrate`); `coordinator/store/postgres/schema/` (`Statements`) |
+| PostgreSQL domain operations and backfills | `coordinator/store/postgres/`: `ledger.go` (`creditTx`), `provider_read.go` (`scanProviderRecord`), `provider_restore.go` (`GetProviderForRestore`), `usage_read.go` (`readUsageRecords`), `earnings_summary_backfill.go` (`applyNextEarningsSummaryBackfill`), `usage_totals_migration.go` (`migrateUsageTotals`) |
+| Memory backend | `coordinator/store/memory/` (`Store`, `New`, `Prune`); one mutex owns all maps and cross-domain atomic mutations |
+| User/model lookup cache | `coordinator/store/cache/store.go` (`Store`, `New`, `Unwrap`); `coordinator/store/cache/domain.go` (`domainCache`, generation fences); `coordinator/store/cache/clone.go` (copy ownership) |
+| Shared backend-only helpers | `coordinator/store/internal/`: record copies, payout transitions, route merges, release ordering and usage time bounds; helpers do not import a backend or the facade |
+| Manual SQL and PostgreSQL test data | `coordinator/store/postgres/migrations/`; `coordinator/store/postgres/testdata/`; neither is automatic startup input |
+| Persistent-disk state outside Postgres (MicroMDM, journals) | `coordinator/deploy/start.sh`, `coordinator/providercontrol/trustreuse/journal_file.go`, [`../operations/state-export.md`](../operations/state-export.md) |
 | Provider files and Keychain | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `provider-swift/Sources/ProviderCore/Service/`, `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` |
 
 ## Related

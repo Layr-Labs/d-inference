@@ -1,5 +1,15 @@
 package api
 
+import (
+	"testing"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+)
+
 // Attempt-usage observability (deadline incident fix): a typed error terminal
 // can carry the engine-reconciled partial usage of the failed attempt
 // (InferenceErrorMessage.AttemptUsage). The coordinator persists those token
@@ -7,22 +17,13 @@ package api
 // prompt_tokens/completion_tokens" gap — WITHOUT touching billing: refunds,
 // reservations, earnings, and cost stay exactly as for a usage-less error.
 
-import (
-	"testing"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
-)
-
 func attemptUsageErrMsg(reqID string, usage *protocol.UsageInfo) protocol.InferenceErrorMessage {
 	return protocol.InferenceErrorMessage{
 		Type:          protocol.TypeInferenceError,
 		RequestID:     reqID,
 		Error:         "request exceeded safety deadline",
 		StatusCode:    504,
-		TerminalCause: terminalCauseSafetyDeadline,
+		TerminalCause: attempt.TerminalCauseSafetyDeadline,
 		AttemptUsage:  usage,
 	}
 }
@@ -39,9 +40,9 @@ func TestProviderErrorOutcomesCarryAttemptUsage(t *testing.T) {
 		name    string
 		outcome *store.InferenceRouteOutcome
 	}{
-		{"post_commit", postCommitProviderErrorOutcome(pr, msg)},
-		{"pre_response", preResponseProviderErrorOutcome(pr, msg)},
-		{"pre_commit", preCommitProviderErrorOutcome(pr, msg)},
+		{"post_commit", attempt.PostCommitProviderErrorOutcome(pr, msg)},
+		{"pre_response", attempt.PreResponseProviderErrorOutcome(pr, msg)},
+		{"pre_commit", attempt.PreCommitProviderErrorOutcome(pr, msg)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -64,7 +65,7 @@ func TestProviderErrorOutcomesCarryAttemptUsage(t *testing.T) {
 	clientMsg := attemptUsageErrMsg(pr.RequestID, usage)
 	clientMsg.StatusCode = 400
 	clientMsg.TerminalCause = ""
-	if out := preCommitProviderErrorOutcome(pr, clientMsg); out.PromptTokens != 123 || out.CompletionTokens != 456 {
+	if out := attempt.PreCommitProviderErrorOutcome(pr, clientMsg); out.PromptTokens != 123 || out.CompletionTokens != 456 {
 		t.Errorf("client-error branch tokens = %d/%d, want 123/456", out.PromptTokens, out.CompletionTokens)
 	}
 }
@@ -79,7 +80,7 @@ func TestProviderErrorOutcomesWithoutAttemptUsageUnchanged(t *testing.T) {
 		Error: "boom", StatusCode: 500,
 	}
 
-	pre := preCommitProviderErrorOutcome(pr, msg)
+	pre := attempt.PreCommitProviderErrorOutcome(pr, msg)
 	if pre.PromptTokens != 0 || pre.CompletionTokens != 0 || pre.ReasoningTokens != 0 {
 		t.Errorf("pre-commit legacy tokens = %d/%d/%d, want 0/0/0",
 			pre.PromptTokens, pre.CompletionTokens, pre.ReasoningTokens)
@@ -88,7 +89,7 @@ func TestProviderErrorOutcomesWithoutAttemptUsageUnchanged(t *testing.T) {
 		t.Error("error terminal must still force-persist completion_tokens=0 (existing behavior)")
 	}
 
-	post := postCommitProviderErrorOutcome(pr, msg)
+	post := attempt.PostCommitProviderErrorOutcome(pr, msg)
 	if post.CompletionTokensSet {
 		t.Error("partial_success without usage must not force completion_tokens (existing behavior)")
 	}
@@ -109,7 +110,7 @@ func TestAttemptUsagePersistsOnErrorRouteRow(t *testing.T) {
 	}
 
 	msg := attemptUsageErrMsg(pr.RequestID, &protocol.UsageInfo{PromptTokens: 123, CompletionTokens: 456, ReasoningTokens: 7})
-	if err := st.UpdateInferenceRouteOutcome(pr.RequestID, pr.Attempt, postCommitProviderErrorOutcome(pr, msg)); err != nil {
+	if err := st.UpdateInferenceRouteOutcome(pr.RequestID, pr.Attempt, attempt.PostCommitProviderErrorOutcome(pr, msg)); err != nil {
 		t.Fatalf("UpdateInferenceRouteOutcome: %v", err)
 	}
 
@@ -117,7 +118,7 @@ func TestAttemptUsagePersistsOnErrorRouteRow(t *testing.T) {
 	if rec == nil {
 		t.Fatal("route record not found")
 	}
-	if rec.FinalStatus != finalStatusPartialSuccess {
+	if rec.FinalStatus != attempt.FinalStatusPartialSuccess {
 		t.Errorf("final_status = %q, want partial_success", rec.FinalStatus)
 	}
 	if rec.PromptTokens != 123 || rec.CompletionTokens != 456 || rec.ReasoningTokens != 7 {

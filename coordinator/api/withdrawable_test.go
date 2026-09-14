@@ -132,7 +132,7 @@ func TestStripeWithdrawRejectsNonWithdrawableBalance(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.billingController().StripeWithdraw(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("got %d, want 400: %s", w.Code, w.Body.String())
@@ -155,7 +155,7 @@ func TestStripeWithdrawAllowsWithdrawableBalance(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.billingController().StripeWithdraw(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -175,7 +175,7 @@ func TestStripeWithdrawRejectsExceedingWithdrawable(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.billingController().StripeWithdraw(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("got %d, want 400 (only $5 withdrawable): %s", w.Code, w.Body.String())
@@ -193,7 +193,7 @@ func TestAdminCreditNonWithdrawable(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/credit", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w := httptest.NewRecorder()
-	srv.handleAdminCredit(w, req)
+	srv.billingController().AdminCredit(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -228,7 +228,7 @@ func TestAdminCreditRejectsNonAdmin(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/credit", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer wrong-key")
 	w := httptest.NewRecorder()
-	srv.handleAdminCredit(w, req)
+	srv.billingController().AdminCredit(w, req)
 
 	if w.Code != http.StatusForbidden {
 		t.Errorf("got %d, want 403", w.Code)
@@ -243,7 +243,7 @@ func TestAdminCreditUnknownEmail(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/credit", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w := httptest.NewRecorder()
-	srv.handleAdminCredit(w, req)
+	srv.billingController().AdminCredit(w, req)
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("got %d, want 404", w.Code)
@@ -261,7 +261,7 @@ func TestAdminRewardWithdrawable(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/reward", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w := httptest.NewRecorder()
-	srv.handleAdminReward(w, req)
+	srv.billingController().AdminReward(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
@@ -296,7 +296,7 @@ func TestAdminRewardRejectsNonAdmin(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/reward", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer wrong-key")
 	w := httptest.NewRecorder()
-	srv.handleAdminReward(w, req)
+	srv.billingController().AdminReward(w, req)
 
 	if w.Code != http.StatusForbidden {
 		t.Errorf("got %d, want 403", w.Code)
@@ -315,7 +315,7 @@ func TestAdminRewardThenWithdraw(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/reward", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w := httptest.NewRecorder()
-	srv.handleAdminReward(w, req)
+	srv.billingController().AdminReward(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("reward: got %d: %s", w.Code, w.Body.String())
 	}
@@ -325,7 +325,7 @@ func TestAdminRewardThenWithdraw(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w = httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.billingController().StripeWithdraw(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("withdraw: got %d: %s", w.Code, w.Body.String())
 	}
@@ -388,7 +388,7 @@ func TestStripeWithdrawFailureRestoresWithdrawable(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
 	req = withPrivyUser(req, user)
 	w := httptest.NewRecorder()
-	srv.handleStripeWithdraw(w, req)
+	srv.billingController().StripeWithdraw(w, req)
 
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("got %d, want 502", w.Code)
@@ -412,7 +412,7 @@ func TestAdminCreditMissingEmail(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/credit", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w := httptest.NewRecorder()
-	srv.handleAdminCredit(w, req)
+	srv.billingController().AdminCredit(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("got %d, want 400 for missing email", w.Code)
@@ -428,7 +428,7 @@ func TestAdminCreditInvalidAmount(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/credit", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w := httptest.NewRecorder()
-	srv.handleAdminCredit(w, req)
+	srv.billingController().AdminCredit(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("got %d, want 400 for negative amount", w.Code)
@@ -443,7 +443,7 @@ func TestAdminRewardMissingEmail(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/reward", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	w := httptest.NewRecorder()
-	srv.handleAdminReward(w, req)
+	srv.billingController().AdminReward(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("got %d, want 400 for missing email", w.Code)

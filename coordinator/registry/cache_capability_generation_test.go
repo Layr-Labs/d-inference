@@ -11,7 +11,7 @@ func TestCacheRetiredTrackerCannotRepopulateOrQuarantineReplacement(t *testing.T
 	r, p, capability := exactTestRegistry(t)
 	pr, ready := checkpointTestAttempt(t, r, p, capability, "old", exactTestPlan(exactTestAnchor(16, "c")), 1)
 	old := r.cacheRouting
-	owner := pr.cacheAttempt.Load()
+	metadata, _ := pr.CacheAttemptSnapshot().Metadata()
 	if err := r.ConfigureCacheRouting(generationTestConfig(CacheRoutingOn)); err != nil {
 		t.Fatal(err)
 	}
@@ -22,17 +22,17 @@ func TestCacheRetiredTrackerCannotRepopulateOrQuarantineReplacement(t *testing.T
 	if r.ApplyPrefixCacheReadyV2(p.ID, ready) {
 		t.Fatal("old nonce donated into replacement tracker")
 	}
-	old.mu.Lock()
-	old.storeAttemptLocked("late", cacheAttempt{ExpiresAt: time.Now().Add(time.Hour)})
-	if len(old.attempts) != 0 || old.holderCount != 0 || len(old.v2Sequences) != 0 || len(old.rejectedV2) != 0 {
+
+	old.directory.RegisterAttempt("late", cacheAttempt{ExpiresAt: time.Now().Add(time.Hour)})
+	if old.directory.Snapshot().Attempts != 0 || old.directory.Snapshot().Holders != 0 || old.directory.Snapshot().Sequences != 0 || old.directory.Snapshot().Rejected != 0 {
 		t.Error("retired tracker retained or recreated evidence")
 	}
-	old.mu.Unlock()
+
 	r.MarkCacheAttemptTerminal(pr)
 	r.ForgetCacheAttempt(pr)
-	old.mu.Lock()
-	_, retained := old.attempts[owner.nonce]
-	old.mu.Unlock()
+
+	_, retained := old.directory.AttemptDeadline(metadata.Nonce)
+
 	if retained {
 		t.Fatal("late cleanup retained old nonce")
 	}
@@ -81,7 +81,7 @@ func TestCacheQuarantineSerializesIdenticalConnectionReplacement(t *testing.T) {
 		r.mu.Lock()
 		r.providers[old.ID] = replacement
 		r.mu.Unlock()
-		tracker.disconnect(old.ID, cacheHolderRemovalDisconnect)
+		tracker.directory.Disconnect(old.ID, cacheHolderRemovalDisconnect)
 		close(installed)
 	}()
 	old.mu.Unlock()

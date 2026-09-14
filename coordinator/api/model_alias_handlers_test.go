@@ -9,19 +9,18 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
-
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"nhooyr.io/websocket"
-
+	"github.com/eigeninference/d-inference/coordinator/api/catalog"
+	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"nhooyr.io/websocket"
 )
 
 func seedActiveModel(t *testing.T, st store.Store, modelID, displayName string) {
@@ -33,7 +32,7 @@ func seedActiveModel(t *testing.T, st store.Store, modelID, displayName string) 
 	}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
 	if err := st.SetModelVersion(entry, &store.ModelVersion{
-		ModelID: modelID, Version: "v1", R2Prefix: modelR2Prefix(modelID, "v1"),
+		ModelID: modelID, Version: "v1", R2Prefix: catalog.ModelR2Prefix(modelID, "v1"),
 		AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready",
 	}, files); err != nil {
 		t.Fatal(err)
@@ -131,7 +130,7 @@ func TestModelAliasCreateAndListing(t *testing.T) {
 	// /v1/models shows the alias and hides the raw builds.
 	listReq := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	listRec := httptest.NewRecorder()
-	srv.handleListModels(listRec, listReq)
+	srv.catalogController().ListModels(listRec, listReq)
 	if listRec.Code != http.StatusOK {
 		t.Fatalf("list status = %d", listRec.Code)
 	}
@@ -159,101 +158,6 @@ func TestModelAliasCreateAndListing(t *testing.T) {
 	}
 	if leaked {
 		t.Fatalf("raw builds should be hidden behind the alias: data=%+v", resp.Data)
-	}
-}
-
-// aliasModelEntries returns the alias entry and the set of builds it covers,
-// hiding retired lineage while aggregating active capacity from desired + previous.
-func TestAliasModelEntriesHidesBuilds(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{})
-	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
-
-	seedActiveModel(t, st, aliasFP8, "Gemma 4 26B (fp8)")
-	seedActiveModel(t, st, aliasQAT, "Gemma 4 26B (qat-4bit)")
-	if err := st.UpsertModelAlias(&store.ModelAlias{
-		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
-		DesiredBuild: aliasQAT, PreviousBuild: aliasFP8, RetiredBuilds: []string{"gemma-4-26b-retired"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	_, registryByID, err := srv.activeCatalogLookups()
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalogByID := map[string]store.SupportedModel{
-		aliasFP8:              {ID: aliasFP8, Active: true, ModelType: "text"},
-		aliasQAT:              {ID: aliasQAT, Active: true, ModelType: "text"},
-		"gemma-4-26b-retired": {ID: "gemma-4-26b-retired", Active: true, ModelType: "text"},
-	}
-	capByModel := map[string]*registry.ModelCapacity{
-		aliasQAT:              {ModelID: aliasQAT, RoutableProviders: 2, WarmProviders: 1, CanAccept: true},
-		aliasFP8:              {ModelID: aliasFP8, RoutableProviders: 1, WarmProviders: 0, CanAccept: false},
-		"gemma-4-26b-retired": {ModelID: "gemma-4-26b-retired", RoutableProviders: 10, WarmProviders: 10, CanAccept: true},
-	}
-
-	entries, hidden := srv.aliasModelEntries(capByModel, catalogByID, registryByID)
-	if len(entries) != 1 || entries[0].ID != "gemma-4-26b" {
-		t.Fatalf("expected one alias entry, got %+v", entries)
-	}
-	if entries[0].HuggingFaceID != aliasQAT {
-		t.Fatalf("alias hugging_face_id = %q, want primary build %q", entries[0].HuggingFaceID, aliasQAT)
-	}
-	// Capacity aggregates across desired + previous only (2 + 1 = 3 routable);
-	// retired builds are hide-only and must not count as active alias capacity.
-	if entries[0].Metadata.RoutableProviders != 3 || entries[0].Metadata.WarmProviders != 1 || !entries[0].Metadata.CanAccept {
-		t.Fatalf("alias capacity not aggregated: %+v", entries[0].Metadata)
-	}
-	if _, ok := hidden[aliasFP8]; !ok {
-		t.Fatalf("fp8 (previous) build should be hidden: %v", hidden)
-	}
-	if _, ok := hidden[aliasQAT]; !ok {
-		t.Fatalf("qat (desired) build should be hidden: %v", hidden)
-	}
-	if _, ok := hidden["gemma-4-26b-retired"]; !ok {
-		t.Fatalf("retired build should be hidden without counting capacity: %v", hidden)
-	}
-}
-
-// An alias whose desired build isn't in the catalog yet falls back to the
-// previous build for its primary metadata; an alias with no in-catalog build is
-// not advertised.
-func TestAliasModelEntriesDesiredNotInCatalog(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{})
-	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
-
-	seedActiveModel(t, st, aliasFP8, "fp8 only")
-	// Only fp8 (previous) is in the catalog; qat (desired) isn't registered yet.
-	if err := st.UpsertModelAlias(&store.ModelAlias{
-		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
-		DesiredBuild: aliasQAT, PreviousBuild: aliasFP8,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	// An alias whose desired build is empty / has no in-catalog build is skipped.
-	if err := st.UpsertModelAlias(&store.ModelAlias{
-		AliasID: "ghost", DisplayName: "Ghost", Active: true,
-		DesiredBuild: "mlx-community/not-registered",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	_, registryByID, err := srv.activeCatalogLookups()
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalogByID := map[string]store.SupportedModel{aliasFP8: {ID: aliasFP8, Active: true, ModelType: "text"}}
-	entries, hidden := srv.aliasModelEntries(map[string]*registry.ModelCapacity{}, catalogByID, registryByID)
-	if len(entries) != 1 || entries[0].ID != "gemma-4-26b" {
-		t.Fatalf("only the alias with an in-catalog build should list, got %+v", entries)
-	}
-	if _, ok := hidden[aliasFP8]; !ok {
-		t.Fatalf("previous build should still be hidden, got %v", hidden)
-	}
-	if _, ok := hidden["mlx-community/not-registered"]; ok {
-		t.Fatalf("a skipped alias must not hide its build, got %v", hidden)
 	}
 }
 
@@ -290,50 +194,6 @@ func TestAliasRoutingDesiredAndPrevious(t *testing.T) {
 		if b, _, ok := reg.ResolveModel("gemma-4-26b"); !ok || b != aliasQAT {
 			t.Fatalf("should route to desired qat once routable, got %q ok=%v", b, ok)
 		}
-	}
-}
-
-func TestAliasCapacityFallbackUsesPreviousWhenDesiredFull(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{})
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
-
-	seedActiveModel(t, st, aliasFP8, "fp8")
-	seedActiveModel(t, st, aliasQAT, "qat")
-	if err := st.UpsertModelAlias(&store.ModelAlias{
-		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
-		DesiredBuild: aliasQAT, PreviousBuild: aliasFP8,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	srv.SyncModelCatalog()
-
-	registerBuildsProvider(srv, "p-prev", aliasFP8)
-	registerBuildsProvider(srv, "p-desired", aliasQAT)
-	p := reg.GetProvider("p-desired")
-	p.Mu().Lock()
-	p.BackendCapacity.Slots[0].ActiveTokenBudgetUsed = 1_000
-	p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 1_000
-	p.Mu().Unlock()
-
-	if candidates, rejections, _ := reg.QuickCapacityCheck(aliasQAT, 10, 128, registry.RequestTraits{}); candidates != 0 || rejections != 1 {
-		t.Fatalf("desired capacity = candidates %d rejections %d, want 0/1", candidates, rejections)
-	}
-	if candidates, rejections, _ := reg.QuickCapacityCheck(aliasFP8, 10, 128, registry.RequestTraits{}); candidates != 1 || rejections != 0 {
-		t.Fatalf("previous capacity = candidates %d rejections %d, want 1/0", candidates, rejections)
-	}
-
-	parsed := map[string]any{
-		"model":    aliasQAT,
-		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
-	}
-	fallback, _, _, _, _, _, switched := srv.maybeFallbackAlias(parsed, aliasFallbackCapacity, "gemma-4-26b", aliasQAT, 10, 128, 0, registry.RequestTraits{}, false, nil)
-	if !switched || fallback != aliasFP8 {
-		t.Fatalf("fallback = %q switched=%v, want previous %q", fallback, switched, aliasFP8)
-	}
-	if parsed["model"] != aliasFP8 {
-		t.Fatalf("parsed model = %q, want fallback build", parsed["model"])
 	}
 }
 
@@ -664,38 +524,6 @@ func readDesiredModels(
 	}
 }
 
-// The headline guarantee at the function level: the consumer-facing model name
-// is the alias, and the concrete build is never substituted in.
-func TestConsumerModelAndChunkRewriteNeverLeakBuild(t *testing.T) {
-	const build = aliasQAT
-	const alias = "gemma-4-26b"
-
-	pr := &registry.PendingRequest{Model: build, PublicModel: alias}
-	if got := consumerModel(pr); got != alias {
-		t.Fatalf("consumerModel = %q, want alias %q", got, alias)
-	}
-	compact := `data: {"id":"x","model":"` + build + `","choices":[]}`
-	spaced := `data: {"id":"x","model": "` + build + `","choices":[]}`
-	if out := rewriteChunkModel(compact, pr); strings.Contains(out, build) || !strings.Contains(out, alias) {
-		t.Fatalf("compact chunk still leaks build: %q", out)
-	}
-	if out := rewriteChunkModel(spaced, pr); strings.Contains(out, build) || !strings.Contains(out, alias) {
-		t.Fatalf("spaced chunk still leaks build: %q", out)
-	}
-
-	raw := &registry.PendingRequest{Model: build, PublicModel: build}
-	if got := consumerModel(raw); got != build {
-		t.Fatalf("raw consumerModel = %q, want %q", got, build)
-	}
-	if out := rewriteChunkModel(compact, raw); out != compact {
-		t.Fatalf("raw-id chunk should be unchanged, got %q", out)
-	}
-	none := &registry.PendingRequest{Model: build}
-	if got := consumerModel(none); got != build {
-		t.Fatalf("empty PublicModel should fall back to build, got %q", got)
-	}
-}
-
 func TestHandleUsageUsesRecordedPublicModelOnly(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{})
@@ -709,7 +537,7 @@ func TestHandleUsageUsesRecordedPublicModelOnly(t *testing.T) {
 	st.RecordUsageFull("p2", "acct-1", "", aliasQAT, "req-raw", 3, 2, 50, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/payments/usage", nil)
-	req = req.WithContext(context.WithValue(req.Context(), ctxKeyConsumer, "acct-1"))
+	req = req.WithContext(requestcontext.WithAccountID(req.Context(), "acct-1"))
 	rec := httptest.NewRecorder()
 	srv.handleUsage(rec, req)
 
@@ -774,42 +602,6 @@ func TestAliasIDCharsetValidation(t *testing.T) {
 		if code := post(good); code != http.StatusOK {
 			t.Fatalf("alias_id %q rejected with status %d, want 200", good, code)
 		}
-	}
-}
-
-// retiredBuildsAfterUpsert keeps the alias lineage: rotated-out members are
-// retained (bounded), re-promoted members leave the list.
-func TestRetiredBuildsAfterUpsert(t *testing.T) {
-	// No prior alias → no lineage.
-	if got := retiredBuildsAfterUpsert(nil, "b2", ""); got != nil {
-		t.Fatalf("no prior should yield nil, got %v", got)
-	}
-	// Rotation: desired b1→b2 (previous b1) retires nothing (b1 still a member);
-	// then b2→b3 with previous cleared retires both b2 and b1.
-	step1 := retiredBuildsAfterUpsert(&store.ModelAlias{DesiredBuild: "b1"}, "b2", "b1")
-	if len(step1) != 0 {
-		t.Fatalf("members must not be retired, got %v", step1)
-	}
-	step2 := retiredBuildsAfterUpsert(&store.ModelAlias{DesiredBuild: "b2", PreviousBuild: "b1"}, "b3", "")
-	if len(step2) != 2 || step2[0] != "b2" || step2[1] != "b1" {
-		t.Fatalf("rotated-out members should be retired, got %v", step2)
-	}
-	// Re-promotion: b1 comes back as desired → leaves the lineage.
-	step3 := retiredBuildsAfterUpsert(&store.ModelAlias{DesiredBuild: "b3", RetiredBuilds: []string{"b2", "b1"}}, "b1", "")
-	if len(step3) != 2 || step3[0] != "b2" || step3[1] != "b3" {
-		t.Fatalf("re-promoted build must leave lineage and old desired must join, got %v", step3)
-	}
-	// Bound: the oldest entries are dropped first.
-	var many []string
-	for i := 0; i < maxRetiredBuilds+4; i++ {
-		many = append(many, "old-"+strconv.Itoa(i))
-	}
-	bounded := retiredBuildsAfterUpsert(&store.ModelAlias{DesiredBuild: "bX", RetiredBuilds: many}, "bY", "")
-	if len(bounded) != maxRetiredBuilds {
-		t.Fatalf("lineage should be bounded to %d, got %d", maxRetiredBuilds, len(bounded))
-	}
-	if bounded[0] == "old-0" {
-		t.Fatal("oldest entry should be dropped first")
 	}
 }
 
@@ -965,73 +757,6 @@ func TestRegisterModelRejectsAliasCollision(t *testing.T) {
 	}
 }
 
-// After full retirement (previous_build cleared, the old build moved into the
-// retired lineage but still a registered/active model), /v1/models must STILL
-// show only the alias — never the raw retired quant. Regression for the
-// retired-build listing leak: a consumer must only ever see the alias.
-func TestListModelsHidesRetiredAliasBuild(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	st := store.NewMemory(store.Config{})
-	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
-
-	seedActiveModel(t, st, aliasFP8, "Gemma 4 26B (fp8)")
-	seedActiveModel(t, st, aliasQAT, "Gemma 4 26B (qat-4bit)")
-	// Fully retired: desired=qat, previous cleared, fp8 in the retired lineage
-	// (still registered + active in the catalog — the exact leak condition).
-	if err := st.UpsertModelAlias(&store.ModelAlias{
-		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
-		DesiredBuild: aliasQAT, RetiredBuilds: []string{aliasFP8},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	srv.SyncModelCatalog()
-
-	rec := httptest.NewRecorder()
-	srv.handleListModels(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
-	}
-	var resp struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatal(err)
-	}
-	sawAlias, leakedFP8, leakedQAT := false, false, false
-	for _, m := range resp.Data {
-		switch m.ID {
-		case "gemma-4-26b":
-			sawAlias = true
-		case aliasFP8:
-			leakedFP8 = true
-		case aliasQAT:
-			leakedQAT = true
-		}
-	}
-	if !sawAlias {
-		t.Fatalf("alias gemma-4-26b missing from /v1/models: %+v", resp.Data)
-	}
-	if leakedFP8 {
-		t.Fatalf("retired build %q leaked into /v1/models — consumers must only ever see the alias", aliasFP8)
-	}
-	if leakedQAT {
-		t.Fatalf("desired build %q leaked into /v1/models", aliasQAT)
-	}
-
-	// The hidden set covers the retired build directly too.
-	_, registryByID, err := srv.activeCatalogLookups()
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalogByID := map[string]store.SupportedModel{aliasFP8: {ID: aliasFP8, Active: true, ModelType: "text"}, aliasQAT: {ID: aliasQAT, Active: true, ModelType: "text"}}
-	_, hidden := srv.aliasModelEntries(map[string]*registry.ModelCapacity{}, catalogByID, registryByID)
-	if _, ok := hidden[aliasFP8]; !ok {
-		t.Fatalf("retired build should be in the hidden set: %v", hidden)
-	}
-}
-
 // TestModelAliasTakeoverOfConcreteID covers the 8-bit→4-bit public-name cutover:
 // an alias adopts the live concrete id "gemma-4-26b", absorbing it as the
 // previous/fallback build while pointing desired at the new 4-bit build. The
@@ -1087,9 +812,6 @@ func TestModelAliasTakeoverOfConcreteID(t *testing.T) {
 		t.Fatalf("takeover changed catalog hash for %s (%q -> %q) — would untrust the live fleet", legacyID, hashBefore, after)
 	}
 }
-
-// An OpenRouter-only alias clones every model-list and dedicated-feed detail
-// from a standard source alias while overriding its configured identities.
 
 func TestOpenRouterAliasClonesSourceEntry(t *testing.T) {
 	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
@@ -1160,7 +882,7 @@ func TestOpenRouterAliasClonesSourceEntry(t *testing.T) {
 	// OpenRouter-only aliases remain callable but are not advertised in the
 	// standard consumer catalog.
 	listRec := httptest.NewRecorder()
-	srv.handleListModels(listRec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	srv.catalogController().ListModels(listRec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
 	if listRec.Code != http.StatusOK {
 		t.Fatalf("list status = %d", listRec.Code)
 	}
@@ -1185,7 +907,7 @@ func TestOpenRouterAliasClonesSourceEntry(t *testing.T) {
 	retrieveReq := httptest.NewRequest(http.MethodGet, "/v1/models/"+paidAlias, nil)
 	retrieveReq.SetPathValue("id", paidAlias)
 	retrieveRec := httptest.NewRecorder()
-	srv.handleGetModel(retrieveRec, retrieveReq)
+	srv.catalogController().GetModel(retrieveRec, retrieveReq)
 	if retrieveRec.Code != http.StatusOK {
 		t.Fatalf("retrieve hidden OpenRouter alias: status=%d body=%s", retrieveRec.Code, retrieveRec.Body.String())
 	}
@@ -1200,7 +922,7 @@ func TestOpenRouterAliasClonesSourceEntry(t *testing.T) {
 	// The dedicated feed clone differs from its source only in the three public
 	// identities configured by the dedicated endpoint.
 	orRec := httptest.NewRecorder()
-	srv.handleListModelsOpenRouter(orRec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
+	srv.catalogController().ListOpenRouterModels(orRec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
 	if orRec.Code != http.StatusOK {
 		t.Fatalf("openrouter feed status = %d body = %s", orRec.Code, orRec.Body.String())
 	}
@@ -1286,7 +1008,7 @@ func TestOpenRouterAliasClonesConcreteModel(t *testing.T) {
 	}
 
 	listRec := httptest.NewRecorder()
-	srv.handleListModels(listRec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	srv.catalogController().ListModels(listRec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
 	if listRec.Code != http.StatusOK {
 		t.Fatalf("list status = %d body=%s", listRec.Code, listRec.Body.String())
 	}
@@ -1310,7 +1032,7 @@ func TestOpenRouterAliasClonesConcreteModel(t *testing.T) {
 	retrieveReq := httptest.NewRequest(http.MethodGet, "/v1/models/"+aliasID, nil)
 	retrieveReq.SetPathValue("id", aliasID)
 	retrieveRec := httptest.NewRecorder()
-	srv.handleGetModel(retrieveRec, retrieveReq)
+	srv.catalogController().GetModel(retrieveRec, retrieveReq)
 	if retrieveRec.Code != http.StatusOK {
 		t.Fatalf("retrieve hidden concrete-source alias: status=%d body=%s", retrieveRec.Code, retrieveRec.Body.String())
 	}
@@ -1323,7 +1045,7 @@ func TestOpenRouterAliasClonesConcreteModel(t *testing.T) {
 	}
 
 	openRouterRec := httptest.NewRecorder()
-	srv.handleListModelsOpenRouter(openRouterRec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
+	srv.catalogController().ListOpenRouterModels(openRouterRec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
 	if openRouterRec.Code != http.StatusOK {
 		t.Fatalf("OpenRouter feed status = %d body=%s", openRouterRec.Code, openRouterRec.Body.String())
 	}
@@ -1383,7 +1105,7 @@ func TestOpenRouterAliasConcreteRetrievalWithoutProviders(t *testing.T) {
 	retrieveReq := httptest.NewRequest(http.MethodGet, "/v1/models/"+aliasID, nil)
 	retrieveReq.SetPathValue("id", aliasID)
 	retrieveRec := httptest.NewRecorder()
-	srv.handleGetModel(retrieveRec, retrieveReq)
+	srv.catalogController().GetModel(retrieveRec, retrieveReq)
 	if retrieveRec.Code != http.StatusOK {
 		t.Fatalf("retrieve zero-provider concrete clone: status=%d body=%s", retrieveRec.Code, retrieveRec.Body.String())
 	}
@@ -1522,20 +1244,6 @@ func TestStandardAliasRejectsConcreteSourceTakeover(t *testing.T) {
 	}
 	if _, found, err := st.GetModelAlias(sourceID); err != nil || found {
 		t.Fatalf("rejected takeover persisted: found=%v err=%v", found, err)
-	}
-}
-
-func TestStandardAliasCoversEveryBuildState(t *testing.T) {
-	for name, alias := range map[string]store.ModelAlias{
-		"desired":  {Active: true, DesiredBuild: "source"},
-		"previous": {Active: true, PreviousBuild: "source"},
-		"retired":  {Active: true, RetiredBuilds: []string{"source"}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if !standardAliasCoversBuild(alias, "source") {
-				t.Fatalf("%s build was not covered: %+v", name, alias)
-			}
-		})
 	}
 }
 

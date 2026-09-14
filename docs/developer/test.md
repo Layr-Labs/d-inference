@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `a1f3c09c8`
+> Last updated: 2026-09-14 · commit `5f2c53f32`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -28,7 +28,7 @@ and teardown; `CBv2QwenMTPIntegrationTests` independently covers allocation-refu
 ownership in the shared engine. Loaded-artifact tests remain an additional gate,
 not evidence supplied by tiny fixtures. `scripts/test-publish-model.sh`
 checks the artifact workflow payload. `TestHuggingFaceArtifactPostgresAndCache`
-in `coordinator/store/hugging_face_artifact_test.go` uses a disposable
+in `coordinator/store/postgres/hugging_face_artifact_test.go` uses a disposable
 `DATABASE_URL` to check storage and cache invalidation.
 
 `ProductionPromptParityTests` drives the real model-free `MLXOpenAIService`
@@ -66,16 +66,315 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 
 ### 2. Coordinator (Go)
 
+`coordinator/protocol/messages_envelope_test.go`
+(`TestDecodeProviderMessageFailedDecodePreservesPayload`) checks receiver state
+after invalid envelope, invalid concrete payload and unknown-type frames.
+`coordinator/protocol/chunk_scan_test.go` (`FuzzChunkFrameDecode`) compares the
+chunk scanner and direct frame decoder with `encoding/json`. Run the protocol
+checks with `GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/protocol`.
+
+Wire-contract tests remain in `coordinator/protocol/` beside the message families.
+`GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/protocol/...` checks the existing
+JSON round trips, omitted-versus-empty fields, Go telemetry JSON contracts and
+provider-envelope/scanner equivalence cases. [The protocol source map](../reference/protocol-messages.md#source-files)
+locates each record and its decoder.
+
+The command's process fixture lives in
+`coordinator/cmd/coordinator/startup_process_test.go`
+(`TestCoordinatorStartupAndDrainProcess`). It launches the actual `main` in a
+child process with an isolated environment and temporary home: readiness,
+admin drain/undrain, liveness while draining, inference rejection and SIGTERM
+exit ordering. Separate child cases refuse missing durable-store configuration
+and an invalid APNs enforcement deadline before the public HTTP listener starts.
+The APNs case uses a generated local signing key and makes no Apple request.
+Existing parser and pprof tests live beside `provider_trust.go`,
+`routing_deadlines.go` and `profiling.go` in the command package.
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/cmd/coordinator ./coordinator/config
+```
+
+The PostgreSQL maintenance-process fixture still requires an isolated disposable
+database; it is skipped when its database environment is absent.
+
+Authentication boundary tests use the real registered routes in
+`coordinator/api/authentication_contract_test.go`. Run
+`go test -race ./coordinator/api -run '^TestAuthentication'` from the repository
+root to check credential replacement after route registration, key-cache
+invalidation through management routes, and provider-token revocation. These
+checks use an in-memory store and locally signed JWTs.
+
+Account key and device-flow unit tests live beside their controller in
+`coordinator/api/accounts/`. Keep actual route/auth/rate-limit integration tests
+in `coordinator/api/`; `TestAccountControllerUsesCurrentBindings` checks that
+routes use the current store, console URL and admin policy after registration.
+Run these boundary checks from the repository root:
+
+```bash
+go test -race ./coordinator/api/accounts ./coordinator/api \
+  -run 'Test(AccountController|Authentication|Handle.*APIKey|Device|Key|Security)'
+```
+
+Billing controller and payout tests live beside their owner in
+`coordinator/api/billing/`. Authenticated route, financial-rate-limit and
+whole-system billing tests remain in `coordinator/api/`; both packages are
+included by the normal coordinator test target. Run the billing-focused checks
+from the repository root with database environment variables unset:
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api/billing ./coordinator/api/requestauth ./coordinator/api \
+  -run 'Test(Stripe|Connect|GlobalPayout|AccountEarnings|BillingControllerUsesCurrentServices|BillingRequestIdentityContract)'
+```
+
+These cases use real memory-store/ledger operations and local HTTP Stripe
+fixtures. The API boundary tests in `coordinator/api/billing_controller_test.go`
+check late service replacement/clearing through the registered HTTP routes and
+the exact linked-user identity response. `requestauth` is exercised through
+those API tests; it has no separate test file. These checks require no Stripe
+credentials or live payment calls.
+
+Catalog policy and projection tests live in `coordinator/api/catalog/`.
+Authenticated route, provider-notification and cache-publication tests remain in
+`coordinator/api/`. Run both owners from the repository root:
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api/catalog ./coordinator/api \
+  -run 'Test(Catalog|Model|Register|OpenRouter|ProviderCapability|HuggingFace|Publishing|StandardAlias|Alias|ListModels)'
+```
+
+The new route fixture in `coordinator/api/catalog_controller_test.go` replaces
+the publishing credential and memory store after mounting routes, then checks
+the actual mutation, routing publication and immediately refreshed marketplace and
+install views. The existing `TestCatalogSyncRejectsInflightCachePublication`
+keeps delayed fills from publishing into a newer cache generation. These cases
+use local stores and HTTP fixtures; they require no model or production access.
+
+Reservation/holder tests live beside their owner in
+`coordinator/inference/settlement/`. API tests retain actual terminal handling,
+service configuration, refund failures and client-disconnect outcomes. Run the
+accounting and response boundaries together from the repository root:
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api/... ./coordinator/inference/... -count=1
+```
+
+`TestCompletionPublishesUsageBeforeCreditsAndConsumerTerminal`
+(`coordinator/api/settlement_order_test.go`) pauses the real provider credit to
+check that the charge and in-memory usage precede payout and consumer-channel
+completion. It binds the frame service before replacing the store, so the same
+fixture also checks current-store lookup. It passes against the pre-extraction
+API implementation.
+`TestCompletionObservationPrecedesCurrentReferralAndPayouts`
+(`coordinator/inference/settlement/completion_order_test.go`) checks the public
+usage alias, late referral binding, exact credit amounts and reservation
+finalization using real memory-store/ledger operations and an explicit account
+fee. These checks require no payment credentials or model runtime.
+
+Shared-key cache and pure cache-usage validation tests live in
+`coordinator/inference/providerframe/`. The API retains registered-socket,
+encrypted-chunk, overflow, completion/refund and profile-order fixtures. The
+accounting/response command above includes both packages.
+`TestHandleChunkOverflowFailsRequest`
+(`coordinator/api/provider_chunk_overflow_test.go`) verifies terminal key eviction
+through a new encrypted request using the same session-key pointer and fresh key
+bytes; retaining the old cache entry makes that request fail to decrypt. The
+fixture passes against the original API owner and rejects an overlay that omits
+the real error-path eviction. Relay benchmarks bind the production frame service
+before timing (`coordinator/api/relay_bench_test.go`).
+
+Cancellation-history and pure rejection/terminal-policy tests live beside
+`coordinator/inference/attempt/`. Real provider WebSocket, refund and response
+boundary tests remain in `coordinator/api/`. From the repository root:
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/inference/attempt
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api -run 'Cancel|TerminalCause|TypedTerminal|Capacity|ResponseFeedbackUsesCurrentAttemptBindings'
+```
+
+`TestResponseFeedbackUsesCurrentAttemptBindings`
+(`coordinator/api/inference_attempt_binding_test.go`) constructs the response
+writer before replacing its registry/model store and configuring metrics, then
+checks actual error responses, capacity classification and recovery on a clean
+completion. The unchanged fixture also passes against the original API owner.
+`cancel_lifecycle_test.go` checks cancellation through real provider writers and
+consumes the same terminal receipts as ingress; tracker internals stay private.
+
+Dispatch policy, clock, body, queue and speculative-race tests live beside
+`coordinator/inference/dispatch/`. HTTP envelopes, real provider-frame handling,
+UDP metric serialization and durable request-outcome sink tests remain in the
+API. Run the owner and these API boundaries from the repository root:
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/inference/dispatch ./coordinator/inference/attempt ./coordinator/api/httpresponse
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api -run 'Dispatch|RequestOutcome|RoutingScan|CapturedDispatch|SpeculativeLoser'
+```
+
+`TestQueuedDispatchProfileDoesNotInheritPriorError`
+(`coordinator/inference/dispatch/queued_history_test.go`) uses a real registry,
+heartbeat and WebSocket writer to verify queue handoff and clean attempt
+evidence after an earlier error. Its API counterpart in
+`coordinator/api/request_outcome_queue_test.go` feeds the known producer facts
+through the real outcome sink and receives completion over a registered
+socket. The pending-publication tests in
+`coordinator/inference/attempt/pending_outcome_test.go` check claim/profile/cache/
+route order, callback reentry, lost claims and provider-owned completion.
+`coordinator/api/httpresponse/status_writer_test.go` checks implicit writes,
+repeated explicit headers, flush, hijack and unwrap delegation.
+
+Consumer request preparation, tool/media policy, token quotas and capacity
+admission tests live in `coordinator/inference/ingress/`. Authenticated HTTP,
+WebSocket, sealed-transport, settlement and provider-byte fixtures remain in the
+API. Run the owner and its route boundaries from the repository root:
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/inference/ingress
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api -run '^(TestInferenceIngressRoutesUseCurrentStoreAndTokenLimiters|TestModelShed.*)$'
+```
+
+`TestInferenceIngressRoutesUseCurrentStoreAndTokenLimiters`
+(`coordinator/api/inference_ingress_bindings_test.go`) mounts all four inference
+routes before replacing the store and configuring token limiters. It checks
+authentication before parsing, malformed JSON before store access, quota
+rejection before self-route ownership, and the live owned-machine lookup after
+disabling the same limiter. The unchanged route fixture also passes against
+the original API implementation. The retained `TestModelShed*` API fixtures
+exercise real authenticated routes and preserve their rejection-journal checks.
+Shared request bodies, media builders and the independent legacy estimator live
+in `coordinator/internal/inferencefixture/`; that package is imported only by
+tests. The two benchmark groups below smoke-test their fixtures; one iteration
+does not establish a performance comparison:
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test ./coordinator/inference/ingress -run '^$' -bench '^(BenchmarkChatPreprocessHelpers|BenchmarkRequestIntrospection)$' -benchtime=1x
+```
+
+Capacity arithmetic and version-interpretation tests live beside their owners
+in `coordinator/registry/admission/` and `coordinator/registry/providerversion/`.
+Concurrent reservation, fleet preflight and routing simulations remain in the
+registry and `routingsim` packages. From the repository root,
+`GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/...` runs all of them.
+
+Private calibration, pending prediction expiry and pure latency cases live in
+`coordinator/registry/routingcost/`. The same command also runs the real
+preflight/reservation and cross-registry policy-binding fixtures retained at
+registry; `TestRoutingPolicySharedAcrossRegistryBindings` in
+`coordinator/registry/routing_policy_binding_test.go` verifies shared calibration
+and startup tuning through those public operations.
+
+Registry lifecycle fixtures sit beside the corresponding transactions:
+`coordinator/registry/provider_registration_test.go`,
+`coordinator/registry/provider_disconnect_test.go`,
+`coordinator/registry/provider_eviction_test.go`,
+`coordinator/registry/provider_recovery_test.go` and
+`coordinator/registry/provider_restore_test.go`. Heartbeat counter and
+copy/privacy checks are in `coordinator/registry/heartbeat_stats_test.go` and
+`coordinator/registry/heartbeat_snapshot_test.go`; the real concurrent routing
+fixture remains `TestConcurrentFindProviderAndHeartbeat` in
+`coordinator/registry/heartbeat_routing_race_test.go`. Run the full registry
+subtree with `GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/... -count=1`.
+
+Private quote correlation and sweep tests live in
+`coordinator/registry/dispatchplan/`. Real reservation, reconnect identity,
+concurrent admission, heartbeat sequence, probe transport and API hedge tests
+stay at their registry/API boundaries. The registry fixture
+`TestDispatchPlanProbeRejectsWrongProviderBeforeBoundReply` in
+`coordinator/registry/dispatch_plan_boundary_test.go` checks that a wrong-provider
+reply leaves a real probe usable and that its bound reply updates the plan before
+publishing an outcome. From the repository root:
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/... ./coordinator/api -run 'Test.*(DispatchPlan|ReserveNextFromPlan|Quote|CapacitySeq|HedgeGovernorSnapshot)' -count=1
+```
+
+Cache-attempt ownership tests in `coordinator/registry/cacheattempt/` verify
+receipt cleanup outside the preparation mutex and ticket-bound legacy metadata.
+The registry retains concurrent reconfiguration/cancellation, connection
+replacement, authenticated late receipts and accepted-write cutoff fixtures.
+Directory proof and eviction tests live in `coordinator/registry/cachedirectory/`;
+registry fixtures establish holders through validated receipt transactions and
+observe copied status instead of sharing private maps or locks. The full registry
+command above includes all these groups. To check the affected
+HTTP/writer and terminal telemetry paths as well, run from the repository root:
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run '^(Test.*Cache|Test.*ProviderInference|Test.*ProviderWire|Test.*CacheTerminal|Test.*CacheOpportunity)' -count=1
+```
+
+Model-load command concurrency tests live in `coordinator/registry/modelloads/`.
+Registry tests retain the exact-deadline, backoff, session-disconnect, capability
+revocation and trailing-timer fixtures; the API tests retain unsolicited-status
+rejection and warm-state publication. Run the affected groups from the repository
+root:
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/... ./coordinator/api -run 'Test.*(ModelLoad|ModelSwap|SwapPlan|Trailing|PendingLoad|WarmPool|LoadModel|StableFault|DisconnectKeepsStable|CommandsReserve)' -count=1
+```
+
+Warm-pool controller concurrency tests live beside `Controller` in
+`coordinator/registry/warmpool/`. The registry retains real fleet eligibility,
+reservation, private action JSON and publication-before-send checks in
+`coordinator/registry/warm_pool_publication_test.go`. The existing root warm-pool,
+headroom and fleet benchmark fixtures retain their outcome assertions.
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/... -run 'Test.*(WarmPool|WarmTarget|ControllerWarms|ControllerConfigure|DedicatedWarm|MemoryBackoff)' -count=1
+```
+
+Provider transport tests live in `coordinator/registry/providerwriter/`: queue
+priority and saturation, deferred handoff/cancellation, whole-message watchdog,
+raw fragment boundaries and peer-ping liveness. Real `Provider` write/control
+ordering and model-load queue-rejection cleanup remain in the registry. Its
+queue fixture fills the private data lane through accepted writes and cancellation;
+`provider_writer_handoff_test.go` checks submitting-owner reentry before exposure
+and unchanged fragmented message/control ordering.
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/... -run 'TestProviderWrit|TestWriteTextThen|TestSendModelLoadActionsClearsPendingWhenWriterQueueFull|TestUnfragmentedConnWriteStallsPeerPing' -count=1
+```
+
 Run prediction telemetry checks from the repository root:
 
 ```bash
-go test -race ./coordinator/api ./coordinator/registry ./coordinator/protocol ./coordinator/store
+go test -race ./coordinator/api/... ./coordinator/inference/dispatch ./coordinator/registry/... ./coordinator/protocol/... ./coordinator/store/... ./coordinator/telemetry/profiler
 ```
+
+Persistence tests follow the backend packages. Use `./coordinator/store/...` to
+include all of them; the facade package alone checks import compatibility.
+`store/cache` owns private cache tests, `store/memory` owns tests that inspect its
+mutex-protected state, and `store/postgres` keeps the existing PostgreSQL and
+cross-backend fixtures together. This avoids parallel packages truncating the same
+fixture database. Shared test-only builders live under `store/internal/testfixture`.
+The PostgreSQL fixtures require the existing disposable `DATABASE_URL`; without it
+those fixtures explicitly skip. Startup SQL source guards inspect the actual
+`store/postgres/schema/` files and reject unconditional aggregation or dedupe.
+
+The recursive package paths include tests beside their subsystem owners.
+Account dashboard query bounds and concurrent misses live in
+`coordinator/api/accountfleet/dashboard_queries_test.go` and
+`coordinator/api/accountfleet/summary_concurrency_test.go`; the real route,
+heartbeat, privacy and removal cases remain in `coordinator/api/`.
 
 API fixtures use isolated encrypted WebSocket providers;
 Postgres tests require an explicitly disposable `DATABASE_URL` and include an
 upgrade from the old profile schema. See
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
+
+Provider-deletion fixtures in `coordinator/api/account_fleet_removal_test.go` cover ownership,
+offline removal and refusal while a reconnect with the same serial remains live.
+The reconnect uses its own session ID so asynchronous registration cannot replace
+the historical record being deleted. Run them with
+`GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run '^TestDeleteMyProvider_'`.
 
 The [admission calibration baseline](../reports/2026-09-06-admission-calibration-baseline.md)
 gives the focused `TestTTFTPendingPrompt` comparison command. Its registry
@@ -84,6 +383,247 @@ output capacity. The HTTP cases cover both a feasible alternative behind a
 long pending prompt and a long arrival completing behind a short pending prompt.
 They use a real isolated coordinator and encrypted WebSocket providers with
 scripted compute. It does not require model downloads or production access.
+
+Response formatting tests live beside their owner in `coordinator/inference/response/`: chat/tool reconstruction, endpoint framing, metadata sanitization and normalization. The API retains real request/outcome, short-write, failed-write, sealed-transport and settlement fixtures.
+
+`coordinator/inference/response/endpoint_stream_test.go` (`TestEndpointCompletionClientCancellationPolicy`) pins the different cancellation rules. `coordinator/api/endpoint_stream_reconciliation_test.go` (`TestEndpointStreamMissingCompletion`, `TestEndpointStreamInitialErrorPreservesDispatchChunks`) checks actual refunds, terminal markers and dispatch-time content across Responses, Completions and Messages.
+
+Run both owners from the repository root (no model or provider process is required):
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/inference/response
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'Test(Endpoint|RequestOutcome|ProfilerKillSwitch|Streaming|StreamRelay|NonStream|NonStreamingCompleteObject|ConfigurePendingCopiesMetadataDetails)'
+```
+
+`TestMarshalForwardBodyDoesNotHTMLEscape` in
+`coordinator/inference/ingress/body_test.go` keeps the request-body adapter bound
+to `httpresponse.MarshalBody`; it runs with the ingress command above. Cached
+response encoding has separate byte-equivalence fixtures. These commands do not
+measure model quality or runtime throughput.
+
+Profiler construction, allowlist, sampling and environment tests live in
+`coordinator/telemetry/profiler/`. Its worker fixtures use a real memory store
+to check sampled-out successes and retained failures. Queue tests live with
+their owners in `coordinator/telemetry/profilequeue/` and
+`coordinator/telemetry/outcomequeue/`; they cover nonblocking construction,
+batch limits, quiet flushing, write failures and the outcome drain deadline.
+The API keeps the live store-binding and full HTTP/accounting fixtures:
+
+```bash
+go test -race ./coordinator/telemetry/profiler ./coordinator/telemetry/profilequeue ./coordinator/telemetry/outcomequeue ./coordinator/api -run 'Profile|RequestOutcome|PersistenceSinks|FleetSample'
+```
+
+Device-evidence decision, cache, journal, replay and coverage fixtures live in
+`coordinator/providercontrol/trustreuse/`. Their store/registry fixtures exercise the real
+owner; API-only callbacks are inert there. Signed-challenge, late-MDM,
+readiness/routing denial and fleet reconnect assertions remain in
+`coordinator/api/`, using real store seeding and construction-time clocks.
+`trust_reuse_owner_test.go` pins the startup store binding, live MDM predicate,
+final coverage order and journal authority through a blocked route drain.
+Both new boundary tests also pass against the pre-extraction source.
+
+```bash
+go test -race ./coordinator/providercontrol/trustreuse ./coordinator/api -run 'TrustReuse|HardUntrustJournal|TrustAuthority|TrustCoverage|Continuity|ApprovedTransition|VerifyChallengeFastSkip'
+```
+
+Journal and inline-retry fixtures use the fixed production delays in
+`coordinator/providercontrol/trustreuse/replay.go` (`trustReuseReplayInitialBackoff`)
+and `coordinator/providercontrol/trustreuse/revocation.go` (`trustReuseDeleteRetryBackoff`).
+They do not mutate package timing between cases: a cancelled replay worker can
+outlive the test that scheduled it. Existing outcome assertions and deadlines remain active.
+
+The isolated journal fixtures do not require PostgreSQL. The full coordinator
+race suite remains the integration gate; unchanged PostgreSQL store tests need
+the database configuration below to execute.
+
+Code-identity proof, nonce, APNs budget and loop fixtures live in
+`coordinator/providercontrol/codeidentity/`. They keep the original test names
+and assertions, using real Go encryption/signatures with an in-process fake
+APNs sender; they do not contact Apple or exercise a real Secure Enclave.
+The test-only manager supplies inert API metrics and copied identity helpers.
+Release-policy, persistence, signed resume, shutdown and fleet assertions stay
+in `coordinator/api/` and exercise the actual API dependency binding. They seed
+proofs through an owned store and configure clocks/senders at construction.
+`code_identity_owner_test.go` pins startup proof/budget persistence versus live
+coverage writes and rejection when no release-policy snapshot exists; both
+characterizations also pass before extraction.
+`code_identity_disabled_test.go` additionally preserves the no-op loop and
+heartbeat entry points on a directly constructed server with no attestor.
+
+`coordinator/providercontrol/codeidentity/device_state_test.go`
+(`TestCodeAttestThrottleModeAwareBudget`, `TestCodeAttestThrottleMultipleInFlightNonces`)
+checks both APNs cooldown boundaries and retention of earlier valid nonces
+through the serving reservation and identity-bound challenge operations.
+The reservation adapters in
+`coordinator/providercontrol/codeidentity/push_fixture_test.go`
+(`tryReservePush`, `clearPushBudget`) use the production reservation lock and
+release it before the fixture's next step. Token-rotation cases call
+`coordinator/providercontrol/codeidentity/push_rotation.go`
+(`rotateLoopAndClearPushBudget`); legacy proof cases use durable-row seeding.
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/providercontrol/codeidentity
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'CodeIdentity|CodeCoverage|CodeContinuity|CrossVersionReuse|Restart.*Transition|Seeded|HashlessRegistration|PersistOnAttest|TrustReuseShutdown|ApprovedTransitionGrants|MDMSchedulerFleet1500'
+```
+
+Readiness and drain HTTP/auth/health/capacity tests remain in
+`coordinator/api/drain_test.go`; the 64-worker concurrent gate fixture checks
+that admitted requests are counted. Private state, grace parsing and polling
+fixtures live in `coordinator/api/readiness/state_test.go`.
+`coordinator/api/readiness_zero_test.go` checks public lifecycle methods on a
+directly constructed server. The durable-journal failure in
+`coordinator/api/trust_reuse_journal_test.go` exercises the real trust-safety
+latch through both the gate and readiness endpoint.
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api/readiness
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'ReadinessZero|AdminDrain|DrainGate|Readyz|Health_ReflectsDrainState|ModelsCapacity_EmptyWhileDraining|HardUntrustJournalAppendFailureLatchesRoutingClosed'
+```
+
+State archive HTTP tests remain in `coordinator/api/state_archive_test.go`:
+feature/auth/output gates, symlinked roots, plaintext ZIP, age decryption and
+snapshot consistency during live BoltDB writes. The pure root-precedence test,
+`TestResolveStateExportRootPrecedence_DAR70`, lives beside the configuration in
+`coordinator/api/statearchive/config_test.go`.
+The HTTP fixture sets the admin key and export environment after server
+construction, so the controller must read current settings.
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api -run StateExport
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api/statearchive ./coordinator/stateexport
+```
+
+Release HTTP and artifact regressions stay in `coordinator/api/` and reach
+`coordinator/api/releases/` through the registered routes. The current store,
+cache and admin credential test is `release_endpoints_owner_test.go`; release
+inventory failures, forced deactivation, artifact limits and mixed-fleet policy
+regressions retain their existing API fixtures. The two direct deactivation
+calls in `provider_registration_test.go` invoke the real release controller.
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api/...
+```
+
+Release-policy HTTP, fleet, signed-challenge and inventory-failure regressions
+remain in `coordinator/api/`. Pure manifest-membership and version-precedence
+cases follow `coordinator/providercontrol/releasepolicy/` with their original
+names. `release_policy_owner_test.go` checks current inventory/fleet/logger/
+version-floor bindings and setup on a directly constructed server; these cases
+also pass against the original production code. Resume fixtures seed policy
+through a fixed inventory dependency and inspect detached snapshots; they do
+not mutate the owner's policy maps.
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/providercontrol/releasepolicy ./coordinator/api -run 'Release|RuntimeManifest|BinaryHashPolicy|SyncBinaryHashes|SemverPrerelease'
+```
+
+Provider connection fixtures keep real WebSockets, registry publication and
+inference-frame boundaries in `coordinator/api/`. The pure disconnect-reason and
+closed load-status grammar tests live beside the owner in
+`coordinator/providercontrol/session/`. Existing test-only adapters preserve the
+heartbeat/priority assertions; heartbeat benchmarks construct their Session
+outside the timed loop.
+
+`coordinator/api/provider_session_ownership_test.go`
+(`TestProviderSessionUsesCurrentStoreForSpecificClose`) switches the API store
+binding during the real registration-token lookup, then closes the socket. The
+first durable close must use the current store and specific peer-close reason,
+after the provider is offline. The same fixture passes the original
+implementation and rejects a captured-store mutation. It uses local HTTP and
+WebSocket fixtures, with no provider executable, Apple service or model.
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api ./coordinator/providercontrol/session -run 'ProviderSession|SessionDisconnectReason|ReadErrorDisconnectReason|ValidLoadModelStatus|Heartbeat|ProviderRegistration' -count=1
+```
+
+Provider challenge fixtures stay in `coordinator/api/` so they keep real
+WebSocket, signature, registry and routing boundaries. The production owner is
+`coordinator/providercontrol/challenge/`; `provider_challenge_compat_test.go`
+passes expected nonce/timestamp values to its actual verifier for existing direct
+fixtures, with no second nonce tracker.
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api ./coordinator/providercontrol/challenge -run 'Challenge|ModelHash|RuntimeManifest|TrustReuse' -count=1
+```
+
+`TestProviderChallengeNoncesStayWithTheirConnection`
+(`coordinator/api/provider_challenge_ownership_test.go`) uses two real WebSockets
+and P-256 signatures. One connection cannot consume another's nonce; replaying
+a completed nonce does not add a challenge success. Heartbeat barriers establish
+frame processing order and final per-model hashes identify the accepted reply.
+The fixture passes against the original implementation and rejects a shared
+tracker mutation. It uses no provider executable, Apple service or model.
+
+The MicroMDM client tests in `coordinator/mdm/command_security_test.go`,
+`coordinator/mdm/command_delivery_test.go` and
+`coordinator/mdm/waiter_ownership_test.go` cover the read-only command boundary,
+solicited replies, push behavior and exclusive waiter correlation through local
+HTTP fixtures. Run them with
+`GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/mdm`.
+
+Durable MDM queue, worker-budget, retry, claim, polling and late-command fixtures
+live with `coordinator/providercontrol/mdmscheduler/`. Their existing test names
+and private-state assertions stay in that package. The API keeps the real fleet,
+restart, trust-reuse and local MicroMDM/webhook fixtures; it observes existing
+metric snapshots instead of accessing the owner's maps.
+
+`coordinator/providercontrol/mdmscheduler/completion_test.go`
+(`TestMDMSchedulerMDAReuseCannotForgetReplacementBinding`) holds the cached-proof
+callback while registering a replacement connection. It checks the replacement
+binding and durable pending job for worker reuse, late reuse and missing-UDID
+cleanup. The three cases use a local MemoryStore and bounded channel barriers.
+
+`coordinator/api/provider_scheduler_ownership_test.go`
+(`TestMDMSchedulerKeepsClaimsAndCurrentLateBindings`) checks that claims stay on
+the construction-time store while late MDA proof persistence and metrics use
+current API bindings. It replaces those bindings before the dispatcher starts,
+then holds the real worker at its exact command. Adapted API fixtures also run
+against the original implementation; authored MDA certificates remain local
+fixtures, not Apple-issued production evidence.
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/providercontrol/mdmscheduler ./coordinator/api -run 'MDMScheduler|ContinuityMiss|FailedFastSkip|UpgradeStorm|ScheduledSecurityInfo|ApplyLateSecurityInfo|ExecuteScheduledMDA|CoordinatorRestart' -count=1
+```
+
+Registration, reconnect recovery and SecurityInfo/MDA fixtures remain in
+`coordinator/api/` and call the production owner through
+`provider_verification_compat_test.go`. This test-only adapter carries no
+verification state. The owner is `coordinator/providercontrol/verification/`.
+`provider_verification_ownership_test.go`
+(`TestScheduledSecurityInfoKeepsItsAttemptObservations`) uses the real local
+MicroMDM HTTP/webhook path and scheduler executor. It checks exact command/UDID
+ownership, the returned attempt observation and that scheduled SecurityInfo
+leaves fresh MDA work to the shared worker budget. The same fixture passes the
+original implementation and rejects a detached attempt-pointer mutation.
+
+```bash
+env -u DATABASE_URL -u EIGENINFERENCE_DATABASE_URL GOTOOLCHAIN=go1.25.0 \
+  go test -race ./coordinator/api ./coordinator/providercontrol/verification -run 'ProviderRegistration|ProviderRestore|Attestation|MDM|MDA|ScheduledSecurityInfo|TrustReuse' -count=1
+```
+
+Existing MDA fixtures use an authored test CA and locally seeded trust state;
+they do not issue Apple attestations. The long SecurityInfo timeout remains an
+explicit `RUN_MDM_TIMEOUT_TEST` opt-in. Full coordinator race testing is the
+integration gate; ordinary runs skip the existing database opt-ins when no
+isolated PostgreSQL instance is configured.
+
+Operator export tests live beside the read controller in
+`coordinator/api/operations/`: `route_csv_test.go` checks outcome columns and
+filtering, `rejection_csv_test.go` preserves unknown servability, and
+`csv_test.go` guards spreadsheet formulas. `TestOperationsRoutesUseCurrentBindings`
+in `coordinator/api/operations_binding_test.go` exercises the registered routes
+with current authorization, stores, fleet/metrics snapshots and nullable outcome
+counters. Full profiler persistence and HTTP/accounting cases remain in the API.
+Use recursive API package selection so the export tests run:
+
+```bash
+go test -race ./coordinator/api/... -run 'OperationsRoutes|RouteCSV|FilterRouteRecords|RejectionExports|CSVCell|ProfileSink|RequestOutcomeAdmin|TelemetryE2E'
+```
 
 The CI formatting step checks tracked Go files with `gofmt`. It excludes
 `docs/reports/evidence/`, whose captured source bytes are immutable and bound
@@ -103,10 +643,10 @@ matches the difference of coordinator and provider spans. Negative values remain
 valid observations; this is not a direct nonnegative network-latency measurement.
 The focused `TestApplyProviderProfileTransportEstimateArithmetic` regression covers
 positive, negative and missing operands in
-`coordinator/api/profiler_provider_test.go`.
+`coordinator/telemetry/profiler/provider_test.go`.
 
 Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
-(`coordinator/store/harness_test.go`, `testPostgresStore`); CI provides a
+(`coordinator/store/postgres/harness_test.go`, `testPostgresStore`); CI provides a
 `postgres:16` service with user/password/db `testbed`. The pre-push hook runs
 `go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
 the slow WebSocket integration tests; run the full set before merging.
@@ -146,7 +686,7 @@ tests truncate tables and create/drop isolated databases; never point
 ```bash
 cd coordinator
 # DATABASE_URL must name a throwaway local database.
-go test -p 1 ./store ./cmd/coordinator -run 'Test(EarningsSummary|LegacyFloor|RecordProviderEarningMaintains|ProviderRestore|PostgresRestore|Maintenance)' -count=1
+go test -p 1 ./store/... ./cmd/coordinator -run 'Test(EarningsSummary|LegacyFloor|RecordProviderEarningMaintains|ProviderRestore|PostgresRestore|Maintenance)' -count=1
 go test -race ./api ./registry -run 'Test(ProviderRestore|ProviderPendingRestore|RestoreProviderState|AttachCachedMDAProof|StageDurableMDAChain)' -count=1
 ```
 
@@ -1072,8 +1612,16 @@ file has moved; current missing links still fail. See
 
 ```bash
 make docs-check          # scripts/docs-check.sh — stamps, relative links, cited paths, orphans
+python3 scripts/test-docs-check-historical-links.py  # isolated Git history/rename regressions
 make docs-stamp FILES="docs/developer/test.md"   # refresh a stamp after editing
 ```
+
+Docs Lint checks out complete Git history. A frozen report, release or design
+record may keep a relative source link after a move only when the exact target
+exists at its freshness-stamp commit. The isolated Git fixtures cover renamed
+source, path normalization and shallow-history recovery. Current-doc links,
+documentation targets, invalid stamps and unavailable historical targets still
+fail; see [the documentation rules](../AGENTS.md#6-checks-make-docs-check-ci-job-docs-lint).
 
 ### 8. End-to-end suite
 
@@ -1226,7 +1774,7 @@ token IDs are accepted.
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh` · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm run build` |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — full-history checkout, isolated historical-source-link regressions and `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh` · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm run build` |
 | [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 120 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) → current coordinator vs released v0.7.12 provider (`scripts/fetch-v0712-provider.sh`, `DARKBLOOM_MIXED_VERSION_EXPECT=artifact`, fails unless `MIXED_VERSION_TIER_ARTIFACT_OK` appears) → released v0.7.12 coordinator (`git worktree add … v0.7.12`) vs candidate provider (`NonStreamingInference`, `StreamingInference`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |

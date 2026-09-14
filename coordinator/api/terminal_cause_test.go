@@ -1,5 +1,17 @@
 package api
 
+import (
+	"fmt"
+	"log/slog"
+	"os"
+	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+)
+
 // Typed terminal-cause health classification (the generation-deadline incident
 // fix): the provider's flat safety deadline used to arrive as a generic 500,
 // so the coordinator recorded a provider job failure and struck every health
@@ -10,17 +22,6 @@ package api
 // (shape breaker, node-health breaker, stable-identity ejection, capacity
 // cooldown), the same two funnels the incident report warns must be gated
 // together.
-
-import (
-	"fmt"
-	"log/slog"
-	"os"
-	"testing"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
-)
 
 // deliverTypedError routes one full provider error terminal through both
 // production funnels: handleInferenceError (provider read-loop side), then —
@@ -44,7 +45,7 @@ func deliverTypedError(t *testing.T, srv *Server, provider *registry.Provider, m
 	if !ok {
 		t.Fatalf("ErrorCh closed without a terminal for %s", requestID)
 	}
-	srv.noteInferenceError(pr.ProviderID, pr, em.StatusCode, em.Error, em.ErrorReason, em.TerminalCause, em.CoordinatorCause)
+	srv.inferenceAttempts().Error(pr.ProviderID, pr, em.StatusCode, em.Error, em.ErrorReason, em.TerminalCause, em.CoordinatorCause)
 	return pr
 }
 
@@ -68,14 +69,14 @@ func TestTerminalCauseHealthClassification(t *testing.T) {
 		// wantCapacityCooldown: the black-hole capacity cooldown tripped.
 		wantCapacityCooldown bool
 	}{
-		{"admission_timeout", terminalCauseAdmissionTimeout, false, false, true},
-		{"prefill_stall", terminalCausePrefillStall, true, true, false},
-		{"decode_stall", terminalCauseDecodeStall, true, true, false},
-		{"safety_deadline", terminalCauseSafetyDeadline, false, false, false},
-		{"backpressure_timeout", terminalCauseBackpressureTimeout, false, false, false},
-		{"watchdog", terminalCauseWatchdog, true, true, false},
-		{"cancelled", terminalCauseCancelled, false, false, false},
-		{"engine_error", terminalCauseEngineError, true, true, false},
+		{"admission_timeout", attempt.TerminalCauseAdmissionTimeout, false, false, true},
+		{"prefill_stall", attempt.TerminalCausePrefillStall, true, true, false},
+		{"decode_stall", attempt.TerminalCauseDecodeStall, true, true, false},
+		{"safety_deadline", attempt.TerminalCauseSafetyDeadline, false, false, false},
+		{"backpressure_timeout", attempt.TerminalCauseBackpressureTimeout, false, false, false},
+		{"watchdog", attempt.TerminalCauseWatchdog, true, true, false},
+		{"cancelled", attempt.TerminalCauseCancelled, false, false, false},
+		{"engine_error", attempt.TerminalCauseEngineError, true, true, false},
 		{"legacy_absent", "", true, true, false},
 		{"unknown_drift_value", "lease_reaped", true, true, false},
 	}
@@ -136,7 +137,7 @@ func TestNeutralTerminalCauseDoesNotClearBreakers(t *testing.T) {
 	assertBreakerStates(t, reg, provider, lastPR, true)
 
 	// Neutral terminals of every neutral flavor must leave them open.
-	for i, cause := range []string{terminalCauseSafetyDeadline, terminalCauseBackpressureTimeout, terminalCauseCancelled} {
+	for i, cause := range []string{attempt.TerminalCauseSafetyDeadline, attempt.TerminalCauseBackpressureTimeout, attempt.TerminalCauseCancelled} {
 		lastPR = deliverTypedError(t, srv, provider, model,
 			fmt.Sprintf("req-neutral-%d", i), protocol.InferenceErrorMessage{
 				Error:         "request exceeded safety deadline",
@@ -170,7 +171,7 @@ func TestSafetyDeadline500IsFullyNeutral(t *testing.T) {
 			fmt.Sprintf("req-safety-%d", i), protocol.InferenceErrorMessage{
 				Error:         "generation error: request exceeded 120s deadline",
 				StatusCode:    500,
-				TerminalCause: terminalCauseSafetyDeadline,
+				TerminalCause: attempt.TerminalCauseSafetyDeadline,
 			})
 	}
 	provider.Mu().Lock()
@@ -200,7 +201,7 @@ func TestAdmissionTimeoutAcceptResetsCapacityStreak(t *testing.T) {
 				fmt.Sprintf("req-adm-%d-%d", round, i), protocol.InferenceErrorMessage{
 					Error:         "admission timeout: engine did not admit request",
 					StatusCode:    503,
-					TerminalCause: terminalCauseAdmissionTimeout,
+					TerminalCause: attempt.TerminalCauseAdmissionTimeout,
 				})
 		}
 		reg.RecordCapacityAccept(provider.ID, model)
@@ -252,35 +253,6 @@ func TestLegacyAbsentCauseKeepsExistingCarveouts(t *testing.T) {
 	}
 }
 
-// classifyTerminalCause unit table: every vocabulary value maps to its class
-// and only out-of-vocabulary values report unknown.
-func TestClassifyTerminalCause(t *testing.T) {
-	cases := []struct {
-		cause     string
-		wantClass terminalCauseClass
-		wantKnown bool
-	}{
-		{"", causeClassLegacy, true},
-		{terminalCauseAdmissionTimeout, causeClassCapacity, true},
-		{terminalCausePrefillStall, causeClassFault, true},
-		{terminalCauseDecodeStall, causeClassFault, true},
-		{terminalCauseSafetyDeadline, causeClassNeutral, true},
-		{terminalCauseBackpressureTimeout, causeClassNeutral, true},
-		{terminalCauseWatchdog, causeClassFault, true},
-		{terminalCauseCancelled, causeClassNeutral, true},
-		{terminalCauseEngineError, causeClassLegacy, true},
-		{"lease_reaped", causeClassLegacy, false},
-		{"SAFETY_DEADLINE", causeClassLegacy, false}, // vocabulary is exact-match
-	}
-	for _, tc := range cases {
-		class, known := classifyTerminalCause(tc.cause)
-		if class != tc.wantClass || known != tc.wantKnown {
-			t.Errorf("classifyTerminalCause(%q) = (%v, %v), want (%v, %v)",
-				tc.cause, class, known, tc.wantClass, tc.wantKnown)
-		}
-	}
-}
-
 // Typed terminal metrics: a known cause emits inference.typed_terminal tagged
 // with the cause; an unknown value emits the vocabulary-drift counter and is
 // tagged cause:unknown; a legacy frame emits neither.
@@ -302,7 +274,7 @@ func TestTypedTerminalMetrics(t *testing.T) {
 	})
 
 	deliverTypedError(t, srv, provider, "test-model", "req-metric-typed", protocol.InferenceErrorMessage{
-		Error: "deadline", StatusCode: 504, TerminalCause: terminalCauseSafetyDeadline,
+		Error: "deadline", StatusCode: 504, TerminalCause: attempt.TerminalCauseSafetyDeadline,
 	})
 	deliverTypedError(t, srv, provider, "test-model", "req-metric-unknown", protocol.InferenceErrorMessage{
 		Error: "??", StatusCode: 500, TerminalCause: "lease_reaped",
@@ -314,11 +286,11 @@ func TestTypedTerminalMetrics(t *testing.T) {
 	_ = dd.Statsd.Flush()
 	packets := collector.drain()
 
-	typed := findMetrics(packets, metricTypedTerminal+":")
+	typed := findMetrics(packets, attempt.MetricTypedTerminal+":")
 	if len(typed) != 2 {
 		t.Fatalf("typed_terminal packets = %d (%v), want 2 (typed + unknown; legacy emits none)", len(typed), typed)
 	}
-	if !hasMetric(typed, "cause:"+terminalCauseSafetyDeadline) {
+	if !hasMetric(typed, "cause:"+attempt.TerminalCauseSafetyDeadline) {
 		t.Errorf("missing cause:safety_deadline tag in %v", typed)
 	}
 	if !hasMetric(typed, "cause:unknown") {
@@ -327,7 +299,7 @@ func TestTypedTerminalMetrics(t *testing.T) {
 	if hasMetric(typed, "cause:lease_reaped") {
 		t.Errorf("raw drift value must never become a tag, got %v", typed)
 	}
-	if drift := findMetrics(packets, metricUnknownTerminalCause+":"); len(drift) != 1 {
+	if drift := findMetrics(packets, attempt.MetricUnknownTerminalCause+":"); len(drift) != 1 {
 		t.Errorf("unknown-cause drift counter packets = %d (%v), want 1", len(drift), drift)
 	}
 }

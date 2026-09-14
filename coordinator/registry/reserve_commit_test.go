@@ -201,7 +201,7 @@ func TestReserveNextFromPlanAdmitsExactlyTheSerialCapacityUnderConcurrency(t *te
 			// The alternate is the plan's only entry while it has headroom and
 			// drops out of the scan pool (hence the plan) once it is full.
 			plan := newDispatchPlan(model, scan, w)
-			if plan.Len() > 1 || (plan.Len() == 1 && plan.entries[0].provider != alt) {
+			if plan.Len() > 1 || (plan.Len() == 1 && plan.state.Entries()[0].Connection != alt) {
 				t.Fatalf("plan must hold at most the alternate, got %d entries", plan.Len())
 			}
 			return plan
@@ -285,12 +285,12 @@ func TestReserveNextFromPlanAdmitsExactlyTheSerialCapacityUnderConcurrency(t *te
 // do not share p.mu; only the check-and-claim under gate.mu makes this exact.
 func TestCommitProbeClaimAdmitsExactlyOneAcrossSessions(t *testing.T) {
 	forEachCommitMode(t, func(t *testing.T, mode reserveCommitMode) {
-		reg := New(testLogger())
+		reg := newClockedFaultRegistry(t)
 		setReserveCommitModeForTest(reg, mode)
 		const model = "probe-race-model"
 		p1 := attestSchedulerProvider(t, reg, "probe-sess-1", model, "SER-PROBE-RACE", 100)
 		p2 := attestSchedulerProvider(t, reg, "probe-sess-2", model, "SER-PROBE-RACE", 100)
-		for i := 0; i < reg.capacityCooldownCfg.Threshold; i++ {
+		for i := 0; i < reg.faults.Policy().CapacityCooldown.Threshold; i++ {
 			reg.RecordCapacityReject(p1.ID, model)
 		}
 		if !reg.CapacityCooldownActive(p2.ID, model) {
@@ -386,7 +386,7 @@ func commitModeFleets(t *testing.T, model string) (map[reserveCommitMode]*benchF
 		for i := 0; i < healthEjectionConsecTrip+1; i++ {
 			r.RecordProviderServeOutcome("serial:SER-MODE-EJECT", false, 500, "boom")
 		}
-		for i := 0; i < r.capacityCooldownCfg.Threshold+1; i++ {
+		for i := 0; i < r.faults.Policy().CapacityCooldown.Threshold+1; i++ {
 			r.RecordCapacityReject(faulted["capacity_cooldown"], model)
 		}
 		r.RecordDispatchLoadFailure(faulted["dispatch_load"], model)

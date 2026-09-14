@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-08 · commit `0c162cdae`
+> Last updated: 2026-09-14 · commit `5f2c53f32`
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -342,7 +342,7 @@ psql "$PROD_DB_URL" -c "select date_trunc('minute', created_at) m,
 
 Roll back only to the image and env captured in step 3. Never start a
 coordinator older than the `backfill_withdrawable_balance_v1` migration
-(`coordinator/store/postgres_withdrawable_migration.go`): pre-marker binaries
+(`coordinator/store/postgres/withdrawable_migration.go`): pre-marker binaries
 re-run the historical balance backfill on every start, which is not
 financially safe — for those cases roll **forward** with a patched image.
 

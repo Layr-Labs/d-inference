@@ -48,7 +48,7 @@ R2_SECRET_KEY_SECRET="${R2_SECRET_KEY_SECRET:-darkbloom-r2-secret-access-key}"
 : "${R2_ACCOUNT_ID:?R2_ACCOUNT_ID is required}"
 : "${GCP_PROJECT:?GCP_PROJECT is required}"
 
-# Mirror coordinator/api/model_registry_handlers.go readableModelSlug+modelR2Prefix:
+# Mirror coordinator/api/catalog/manifest_paths.go readableModelSlug+ModelR2Prefix:
 # slug = sanitized id, trimmed of '-', + "--" + first 12 hex of sha256(model_id);
 # prefix = v2/<slug>/<version>
 slug() {

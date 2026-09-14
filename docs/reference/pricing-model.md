@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-11 · commit `e3993c611`
+> Last updated: 2026-09-14 · commit `5f2c53f32`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -14,10 +14,10 @@ pieces fit together, and what they guarantee, is explained in
 |---|---|---|
 | Balances, reservations, ledger amounts, earnings | `int64` micro-USD; 1 USD = 1,000,000 µUSD | `coordinator/payments/payments.go` (package comment) |
 | Prices (`input_price`, `output_price`) | µUSD per 1,000,000 tokens | `coordinator/payments/pricing.go` (`DefaultInputPricePerMillion`) |
-| Stripe Checkout amount in | `AmountTotal` cents × `10_000` = µUSD | `coordinator/api/billing_handlers.go` (`handleStripeWebhook`) |
-| Stripe Connect amount out | `microUSDToCents(µUSD)` integer cents; sub-cent remainder stays with the platform | `coordinator/api/stripe_payouts.go` (`microUSDToCents`); `coordinator/api/stripe_withdraw.go` (`handleStripeWithdraw`) |
+| Stripe Checkout amount in | `AmountTotal` cents × `10_000` = µUSD | `coordinator/api/billing/checkout_webhook.go` (`StripeWebhook`) |
+| Stripe Connect amount out | `microUSDToCents(µUSD)` integer cents; sub-cent remainder stays with the platform | `coordinator/api/billing/amounts.go` (`microUSDToCents`); `coordinator/api/billing/connect_withdraw.go` (`StripeWithdraw`) |
 | OpenRouter model feed | USD per single token = µUSD/1M ÷ 1e12, rendered as a trimmed decimal string (`50000` → `"0.00000005"`) | `coordinator/payments/pricing.go` (`FormatPerTokenUSD`) |
-| `GET /v1/pricing` `*_usd` fields | `"$%.4f"` of µUSD/1M ÷ 1e6 (USD per 1M tokens) | `coordinator/api/billing_handlers.go` (`handleGetPricing`) |
+| `GET /v1/pricing` `*_usd` fields | `"$%.4f"` of µUSD/1M ÷ 1e6 (USD per 1M tokens) | `coordinator/api/billing/pricing.go` (`GetPricing`) |
 
 ## Constants
 
@@ -28,18 +28,18 @@ pieces fit together, and what they guarantee, is explained in
 | `DefaultOutputPricePerMillion` | `200_000` | fallback output price ($0.20 / 1M tokens) | `coordinator/payments/pricing.go` |
 | `minimumChargeMicroUSD` | `100` | per-request floor ($0.0001) applied by `CalculateCostWithOverrides`; not applied to service accounts | `coordinator/payments/pricing.go` |
 | `platformFeePercent` | see [billing.md, invariant 4](../architecture/billing.md#invariants) | global platform fee when no per-user override is set | `coordinator/payments/pricing.go` |
-| `defaultMaxOutputTokens` | `8192` | output bound when the request sets no max-tokens field and the registry has no `max_output_length` | `coordinator/api/consumer.go` |
-| `defaultTerminalSettleGrace` | `30 * time.Second` | how long a consumer-disconnected request waits for the provider terminal before refund | `coordinator/api/settlement.go` |
-| `MinWithdrawMicroUSD` | `1_000_000` | minimum withdrawal ($1.00) | `coordinator/billing/stripe_connect.go` |
-| `InstantFeeBps` | `150` | instant payout fee (1.5%) | `coordinator/billing/stripe_connect.go` |
-| `InstantFeeMinMicroUSD` | `500_000` | instant payout fee floor ($0.50) | `coordinator/billing/stripe_connect.go` |
-| standard payout fee | `0` | `FeeForMethodMicroUSD("standard", …)` | `coordinator/billing/stripe_connect.go` |
-| `stripeRecipientTransferDelay` | `24 * time.Hour` | availability delay of a transfer into a `recipient`-agreement account; sweep-matching cutoff | `coordinator/api/stripe_payouts_webhooks.go` |
-| `stripeReconcileInterval` / `stripeStuckThreshold` / `stripeReconcileBatch` | `1 * time.Hour` / `48 * time.Hour` / `200` | payout reconciler cadence, stuck threshold, rows per pass | `coordinator/api/stripe_reconcile.go` |
-| Stripe deposit minimum | `0.50` USD | `amount_usd` lower bound on `create-session` | `coordinator/api/billing_handlers.go` (`handleStripeCreateSession`) |
+| `defaultMaxOutputTokens` | `8192` | output bound when the request sets no max-tokens field and the registry has no `max_output_length` | `coordinator/inference/ingress/output_bound.go` |
+| `settlement.DefaultGrace` | `30 * time.Second` | how long a consumer-disconnected request waits for the provider terminal before refund; API `defaultTerminalSettleGrace` aliases this constant | `coordinator/inference/settlement/holder.go`; `coordinator/api/settlement.go` |
+| `MinWithdrawMicroUSD` | `1_000_000` | minimum withdrawal ($1.00) | `coordinator/billing/stripe_connect_fees.go` |
+| `InstantFeeBps` | `150` | instant payout fee (1.5%) | `coordinator/billing/stripe_connect_fees.go` |
+| `InstantFeeMinMicroUSD` | `500_000` | instant payout fee floor ($0.50) | `coordinator/billing/stripe_connect_fees.go` |
+| standard payout fee | `0` | `FeeForMethodMicroUSD("standard", …)` | `coordinator/billing/stripe_connect_fees.go` |
+| `stripeRecipientTransferDelay` | `24 * time.Hour` | availability delay of a transfer into a `recipient`-agreement account; sweep-matching cutoff | `coordinator/api/billing/connect_sweep.go` |
+| `stripeReconcileInterval` / `stripeStuckThreshold` / `stripeReconcileBatch` | `1 * time.Hour` / `48 * time.Hour` / `200` | payout reconciler cadence, stuck threshold, rows per pass | `coordinator/api/billing/connect_reconcile.go` |
+| Stripe deposit minimum | `0.50` USD | `amount_usd` lower bound on `create-session` | `coordinator/api/billing/checkout.go` (`StripeCreateSession`) |
 | `ReferralSharePercent` default | `20`; `NewReferralService` resets values outside `(0, 50]` to `20` | referrer's share of the platform fee | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/billing/referral.go` (`NewReferralService`) |
 | Referral code | 3–20 characters, letters/digits/hyphen, no leading or trailing hyphen, uppercased | `validateReferralCode` | `coordinator/billing/referral.go` |
-| Invite code default `max_uses` | `1`; auto-generated code `INV-<8 hex>` | `handleAdminCreateInviteCode` | `coordinator/api/invite_handlers.go` |
+| Invite code default `max_uses` | `1`; auto-generated code `INV-<8 hex>` | `Controller.CreateInvite` | `coordinator/api/accounts/invites.go` |
 | Financial rate limiter | `0.2` rps, burst `3` | `create-session`, `POST/PATCH/DELETE /v1/keys`, referral register/apply, invite create/redeem, Stripe dashboard link | `coordinator/ratelimit/config.go` (`Financial`) |
 | Service rate limiter | `200` rps, burst `600` | `RoleService` accounts | `coordinator/ratelimit/config.go` (`Service`) |
 | `FloorPoolBudgetMicroUSD` | `9_000_000_000` | base-rewards monthly pool ($9,000), prorated per epoch by `PeriodBudget` | `coordinator/payments/baserewards/alloc.go`, `epoch.go` |
@@ -52,19 +52,19 @@ pieces fit together, and what they guarantee, is explained in
 | 2 | platform price | `GetModelPrice("platform", model)` | everyone |
 | 3 | hardcoded defaults | `DefaultInputPricePerMillion`, `DefaultOutputPricePerMillion` | everyone |
 
-Settlement: `coordinator/api/provider.go` (`handleCompleteAt`). Reservation:
-`coordinator/api/consumer.go` (`reservationCost` uses steps 2–3;
-`providerReservationCost` uses 1–3 for the dispatched provider).
+Settlement: `coordinator/inference/settlement/completion_price.go`
+(`priceCompletion`). Reservation: `coordinator/inference/settlement/reservation_price.go`
+(`Estimate` uses steps 2–3; `providerEstimate` uses 1–3 for the dispatched provider).
 
 | Price writer | Route | Validation | Citation |
 |---|---|---|---|
-| platform | `PUT /v1/admin/pricing` | `input_price > 0`, `output_price > 0` | `coordinator/api/billing_handlers.go` (`handleAdminPricing`) |
-| platform | `POST /v1/admin/models/register` | `input_price`, `output_price` required and positive | `coordinator/api/model_registry_handlers.go` (`handleRegisterModel`) |
-| provider custom | `PUT /v1/pricing`, `DELETE /v1/pricing` | positive; no floor or ceiling relative to the platform price | `coordinator/api/billing_handlers.go` (`handleSetPricing`, `handleDeletePricing`) |
+| platform | `PUT /v1/admin/pricing` | `input_price > 0`, `output_price > 0` | `coordinator/api/billing/pricing.go` (`AdminPricing`) |
+| platform | `POST /v1/admin/models/register` | `input_price`, `output_price` required and positive | `coordinator/api/catalog/register_model.go` (`RegisterModel`) |
+| provider custom | `PUT /v1/pricing`, `DELETE /v1/pricing` | positive; no floor or ceiling relative to the platform price | `coordinator/api/billing/pricing.go` (`SetPricing`, `DeletePricing`) |
 
 Storage: `model_prices(account_id, model, input_price, output_price,
 updated_at)`, primary key `(account_id, model)`
-(`coordinator/store/postgres.go`).
+(`coordinator/store/postgres/schema/billing.go`).
 
 ## Formulas
 
@@ -74,23 +74,23 @@ updated_at)`, primary key `(account_id, model)`
 | Cost, direct consumers | `max(rawCost, minimumChargeMicroUSD)` | `CalculateCostWithOverrides` |
 | Cost, service accounts | `rawCost`; `1` when the tokens are non-zero but the product rounds to `0` (no per-request minimum) | `CalculateCostWithOverridesNoMinimum` |
 | Cached tokens | see [billing.md, invariant 5](../architecture/billing.md#invariants) | `calculateCost` |
-| Output bound | explicit `max_tokens` \| `max_completion_tokens` \| `max_output_tokens`, else registry `max_output_length`, else `defaultMaxOutputTokens` | `coordinator/api/consumer.go` (`explicitMaxTokens`, `ensureMaxTokensBound`) |
-| Reservation | `CalculateCostWithOverrides(model, max(billingPromptTokens, estimatedPromptTokens), outputBound, platform price)` | `coordinator/api/inference_admission.go` (`reserveInferenceBalance`); `coordinator/api/consumer.go` (`reservationCost`) |
-| Provider top-up | `providerReservationCost − reserved` when the dispatched provider's custom price makes it positive; skipped for service consumers | `coordinator/api/consumer.go` (`reserveAdditionalForProvider`) |
-| Media top-up | `reservationCost(inlined body) − reserved` when positive | `coordinator/api/inference_admission.go` (`topUpReservationForInlinedMedia`) |
-| Overage | `min(totalCost − reserved, reserved)`; debited as `charge` with reference `overage:<request_id>`; on failure `totalCost = reserved` | `coordinator/api/provider.go` (`handleCompleteAt`) |
-| Settlement refund | `reserved − totalCost` when positive; `refund` entry referenced by `<request_id>` | `handleCompleteAt` |
-| Whole-reservation refund | `reserved`; `refund` entry `reservation_refund:<request_id>` | `coordinator/api/consumer.go` (`refundReservedBalance`) |
+| Output bound | explicit `max_tokens` \| `max_completion_tokens` \| `max_output_tokens`, else registry `max_output_length`, else `defaultMaxOutputTokens` | `coordinator/inference/ingress/output_bound.go` (`explicitMaxTokens`, `ensureMaxTokensBound`) |
+| Reservation | `CalculateCostWithOverrides(model, max(billingPromptTokens, estimatedPromptTokens), outputBound, platform price)` | `coordinator/inference/ingress/balance.go` (`reserveInferenceBalance`); `coordinator/inference/settlement/reservation_price.go` (`Estimate`) |
+| Provider top-up | `providerEstimate − reserved` when the dispatched provider's custom price makes it positive; skipped for service consumers | `coordinator/inference/settlement/reservation_price.go` (`ReserveForProvider`) |
+| Media top-up | `Estimate(inlined body) − reserved` when positive | `coordinator/inference/ingress/balance.go` (`topUpReservationForInlinedMedia`) |
+| Overage | `min(totalCost − reserved, reserved)`; debited as `charge` with reference `overage:<request_id>`; on failure `totalCost = reserved` | `coordinator/inference/settlement/completion_finalize.go` (`finalizeCompletion`) |
+| Settlement refund | `reserved − totalCost` when positive; `refund` entry referenced by `<request_id>` | `coordinator/inference/settlement/completion_finalize.go` (`finalizeCompletion`) |
+| Whole-reservation refund | `reserved`; `refund` entry `reservation_refund:<request_id>` | `coordinator/inference/settlement/refund.go` (`Refund`) |
 | Platform fee | `totalCost × resolveFeePercent(user.PlatformFeePercent) / 100`; override clamped to `[0, 100]`, else `platformFeePercent` | `coordinator/payments/pricing.go` (`PlatformFeeWithPercent`, `resolveFeePercent`) |
 | Referral reward | `platformFee × ReferralSharePercent / 100`, carved out of the platform fee | `coordinator/billing/referral.go` (`DistributeReferralReward`) |
 | Provider payout | `totalCost − platformFee` | `coordinator/payments/pricing.go` (`ProviderPayoutWithPercent`) |
-| Withdrawal fee | `0` (standard); `max(gross × InstantFeeBps / 10_000, InstantFeeMinMicroUSD)` (instant) | `coordinator/billing/stripe_connect.go` (`FeeForMethodMicroUSD`) |
-| Withdrawal net | `gross − fee`, transferred as `microUSDToCents(net)`; must be ≥ 1 cent | `coordinator/api/stripe_withdraw.go` (`handleStripeWithdraw`) |
-| Key spend | `Σ usage.cost_micro_usd` for the key since `KeySpendWindowStart(limit_reset, now)`; request rejected when `spend + additional > LimitMicroUSD` | `coordinator/store/postgres.go` (`KeySpendSince`); `coordinator/api/apikey_handlers.go` (`checkKeySpendCap`) |
+| Withdrawal fee | `0` (standard); `max(gross × InstantFeeBps / 10_000, InstantFeeMinMicroUSD)` (instant) | `coordinator/billing/stripe_connect_fees.go` (`FeeForMethodMicroUSD`) |
+| Withdrawal net | `gross − fee`, transferred as `microUSDToCents(net)`; must be ≥ 1 cent | `coordinator/api/billing/connect_withdraw.go` (`StripeWithdraw`) |
+| Key spend | `Σ usage.cost_micro_usd` for the key since `KeySpendWindowStart(limit_reset, now)`; request rejected when `spend + additional > LimitMicroUSD` | `coordinator/store/postgres/keys.go` (`KeySpendSince`); `coordinator/api/accounts/key_policy.go` (`accounts.CheckKeySpendCap`) |
 
 ## Ledger entry types
 
-`LedgerEntryType` (`coordinator/store/interface.go`). "Withdrawable" says
+`LedgerEntryType` (`coordinator/store/contracts/ledger.go`). "Withdrawable" says
 whether the credit raises `withdrawable_micro_usd`; which function writes each
 type is in [billing.md](../architecture/billing.md#ledger).
 
@@ -113,45 +113,45 @@ type is in [billing.md](../architecture/billing.md#ledger).
 
 `RewardLedgerTypes = [referral_reward, admin_reward]` — counted as "reward"
 rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
-(`coordinator/store/interface.go` `IsRewardLedgerType`).
+(`coordinator/store/contracts/ledger.go` `IsRewardLedgerType`).
 
 ## Balance primitives
 
 | Store method | `balance_micro_usd` | `withdrawable_micro_usd` | Idempotent | Citation |
 |---|---|---|---|---|
-| `Credit` | + | — | no | `coordinator/store/postgres.go` (`creditTx`) |
+| `Credit` | + | — | no | `coordinator/store/postgres/ledger.go` (`creditTx`) |
 | `CreditWithdrawable` | + | + | no | `creditWithdrawableTx` |
 | `CreditWithdrawableOnce` | + | + | on `(account_id, entry_type, reference)` under `pg_advisory_xact_lock` | `CreditWithdrawableOnce` |
 | `Debit` | − (fails with `ErrInsufficientBalance` if `balance < amount`) | `LEAST(withdrawable, balance − amount)` | no | `Debit` |
 | `CreateStripeWithdrawalWithDebit` | − | − (fails unless `withdrawable >= amount`) | row insert in the same transaction | `CreateStripeWithdrawalWithDebit` |
 | `CreditProviderAccount` | + | + | on `provider_earnings.job_id` | `CreditProviderAccount`; index `idx_provider_earnings_job` |
-| `SettleProviderFloorDraw` | + | + | on `(provider_key, epoch_id)` | `coordinator/store/postgres_base_rewards.go` |
+| `SettleProviderFloorDraw` | + | + | on `(provider_key, epoch_id)` | `coordinator/store/postgres/base_rewards.go` |
 
 ## Per-key spend caps
 
 | Field | Where | Values | Citation |
 |---|---|---|---|
-| `limit_usd` | `POST /v1/keys`, `PATCH /v1/keys/{id}` body | `>= 0`; stored as `APIKey.LimitMicroUSD` | `coordinator/api/apikey_handlers.go` (`validateKeyLimitInputs`, `handleCreateAPIKey`) |
-| `limit_reset` | same | `none`, `daily`, `weekly`, `monthly` (`KeyResetNone` …); unknown values normalise to `none` | `coordinator/store/apikey.go` (`NormalizeResetWindow`, `KeySpendWindowStart`) |
-| enforcement points | `reserveInferenceBalance`, `topUpReservationForInlinedMedia`, `reserveAdditionalForProvider` | soft cap on settled usage | `coordinator/api/inference_admission.go`; `coordinator/api/consumer.go` |
+| `limit_usd` | `POST /v1/keys`, `PATCH /v1/keys/{id}` body | `>= 0`; stored as `APIKey.LimitMicroUSD` | `coordinator/api/accounts/keys.go`, `coordinator/api/accounts/key_inputs.go` (`validateKeyLimitInputs`, `Controller.CreateKey`) |
+| `limit_reset` | same | `none`, `daily`, `weekly`, `monthly` (`KeyResetNone` …); unknown values normalise to `none` | `coordinator/store/contracts/keys.go` (`NormalizeResetWindow`, `KeySpendWindowStart`) |
+| enforcement points | `reserveInferenceBalance`, `topUpReservationForInlinedMedia`, `ReserveForProvider` | soft cap on settled usage | `coordinator/inference/ingress/balance.go`; `coordinator/inference/settlement/reservation_price.go` |
 
 ## Service accounts
 
 | Property | Value | Citation |
 |---|---|---|
-| Role value | `users.role = "service"` (`RoleService`); `PUT /v1/admin/users/role` accepts `"service"` or `""` | `coordinator/store/interface.go`; `coordinator/api/billing_handlers.go` (`handleAdminSetUserRole`) |
-| Cost function | `CalculateCostWithOverridesNoMinimum` | `coordinator/api/provider.go` (`handleCompleteAt`) |
-| Price | platform price; provider custom prices and the provider top-up are skipped | `handleCompleteAt`; `coordinator/api/consumer.go` (`isServiceConsumer`, `reserveAdditionalForProvider`) |
-| Reservation mode | ledger debit, or in-memory hold when `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED=true` | `coordinator/api/reservations.go` (`useServiceReservation`) |
+| Role value | `users.role = "service"` (`RoleService`); `PUT /v1/admin/users/role` accepts `"service"` or `""` | `coordinator/store/contracts/users.go`; `coordinator/api/billing/account_policy.go` (`AdminSetUserRole`) |
+| Cost function | `CalculateCostWithOverridesNoMinimum` | `coordinator/inference/settlement/completion_price.go` (`priceCompletion`) |
+| Price | platform price; provider custom prices and the provider top-up are skipped | `coordinator/inference/settlement/completion_price.go` (`priceCompletion`); `coordinator/inference/settlement/reservation_price.go` (`isServiceConsumer`, `ReserveForProvider`) |
+| Reservation mode | ledger debit, or in-memory hold when `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED=true` | `coordinator/inference/settlement/reservation.go` (`useServiceReservation`) |
 | Rate limiter | `Service` ([Constants](#constants)) | `coordinator/ratelimit/config.go` |
-| Platform fee | same per-user override mechanism as other accounts | `handleCompleteAt` |
+| Platform fee | same per-user override mechanism as other accounts | `coordinator/inference/settlement/completion_price.go` (`priceCompletion`); `coordinator/inference/settlement/completion_credit.go` (`creditCompletion`) |
 
 ## Stripe Connect withdrawal states
 
-`stripe_withdrawals.status` (`coordinator/api/stripe_withdraw.go`
-`handleStripeWithdraw`): `pending` → `transferred` → `paid` \| `failed`.
+`stripe_withdrawals.status` (`coordinator/api/billing/connect_withdraw.go`
+`StripeWithdraw`): `pending` → `transferred` → `paid` \| `failed`.
 Connected-account status `users.stripe_account_status`
-(`coordinator/api/stripe_payouts.go`): `""` → `pending` → `ready` \|
+(`coordinator/api/billing/connect_status.go`): `""` → `pending` → `ready` \|
 `restricted` \| `rejected`. Service agreements (`coordinator/billing/stripe_regions.go`):
 `full`, `recipient`.
 
@@ -191,56 +191,58 @@ Formulas: `Avail(u) = clamp((u − 0.90) / 0.10, 0, 1)`;
 `Draw = max(0, floor − int64(k × earned))` (`floor.go`). Settlement row:
 `provider_floor_draws` with `UNIQUE (provider_key, epoch_id)`; mirrored
 `provider_earnings` row has `model = 'base_reward'` and
-`job_id = floor:<epoch_id>:<provider_key>` (`coordinator/store/postgres_base_rewards.go`
+`job_id = floor:<epoch_id>:<provider_key>` (`coordinator/store/postgres/base_rewards.go`
 `SettleProviderFloorDraw`).
 
 ## Routes
 
-Registered in `coordinator/api/server.go`. "Auth" is the middleware plus any
-check inside the handler: `requireAuth` accepts an API key or a Privy JWT;
-`requirePrivyAuth` / "Privy" requires a Privy user (`requirePrivyUser`);
+Registered in `coordinator/api/routes.go` (`routes`). "Auth" is the middleware plus any
+check inside the handler: `requireAuth` accepts an API key, a Privy JWT, the
+admin key, or an active provider device token. `requirePrivyAuth` requires a Privy JWT. "Linked user" is the
+in-handler `RequirePrivyUser` check (`coordinator/api/requestauth/identity.go`),
+which also accepts an API key belonging to a Privy account;
 "admin" is `isAdminAuthorized` / `requireAdminKey` (`EIGENINFERENCE_ADMIN_KEY`
 bearer or a Privy user listed in `EIGENINFERENCE_ADMIN_EMAILS`); "financial" is
 the financial rate limiter ([Constants](#constants)).
 
 | Method and path | Auth | Handler |
 |---|---|---|
-| `GET /v1/payments/balance` | requireAuth | `coordinator/api/consumer.go` (`handleBalance`) → `BalanceResponse` |
-| `GET /v1/payments/usage` | requireAuth | `coordinator/api/consumer.go` (`handleUsage`) → `UsageResponse` |
-| `GET /v1/provider/earnings` | none; identifies by `?wallet=` / `X-Provider-Wallet` (legacy) | `coordinator/api/consumer.go` (`handleProviderEarnings`) |
-| `GET /v1/provider/account-earnings` | requireAuth | `coordinator/api/billing_handlers.go` (`handleAccountEarnings`) |
-| `GET /v1/me/summary` | requirePrivyAuth | `coordinator/api/me_handlers.go` (`handleMySummary`) |
-| `POST /v1/keys`, `PATCH /v1/keys/{id}` | requirePrivyAuth + financial | `coordinator/api/apikey_handlers.go` (`handleCreateAPIKey`, `handleUpdateAPIKey`) |
-| `POST /v1/billing/stripe/create-session` | requireAuth + financial | `coordinator/api/billing_handlers.go` (`handleStripeCreateSession`) |
-| `POST /v1/billing/stripe/webhook` | none; `Stripe-Signature` | `handleStripeWebhook` |
-| `GET /v1/billing/stripe/session` | requireAuth | `handleStripeSessionStatus` |
-| `GET /v1/billing/wallet/balance` | requireAuth | `handleWalletBalance` → `{"credit_balance_micro_usd"}` |
-| `GET /v1/billing/methods` | none | `handleBillingMethods` |
-| `POST /v1/billing/stripe/onboard` | requireAuth; Privy | `coordinator/api/stripe_payouts.go` (`handleStripeOnboard`) |
-| `GET /v1/billing/stripe/status` | requireAuth; Privy | `handleStripeStatus` |
-| `POST /v1/billing/withdraw/stripe` | requireAuth; Privy; status `ready` | `coordinator/api/stripe_withdraw.go` (`handleStripeWithdraw`) |
-| `GET /v1/billing/stripe/withdrawals` | requireAuth | `coordinator/api/stripe_payouts.go` (`handleStripeWithdrawals`) |
-| `POST /v1/billing/stripe/dashboard` | requirePrivyAuth + financial | `handleStripeDashboardLink` |
-| `DELETE /v1/billing/stripe/account` | requirePrivyAuth | `handleStripeUnlink` |
-| `POST /v1/billing/stripe/connect/webhook` | none; `Stripe-Signature` | `coordinator/api/stripe_payouts_webhooks.go` (`handleStripeConnectWebhook`) |
-| `GET /v1/pricing` | none | `coordinator/api/billing_handlers.go` (`handleGetPricing`) |
-| `PUT /v1/pricing` | requireAuth; Privy | `handleSetPricing` |
-| `DELETE /v1/pricing` | requireAuth; Privy | `handleDeletePricing` |
-| `PUT /v1/admin/pricing` | requireAuth; admin | `handleAdminPricing` |
-| `PUT /v1/admin/users/role` | requireAuth; admin | `handleAdminSetUserRole` |
-| `PUT /v1/admin/users/platform-fee` | requireAuth; admin | `handleAdminSetUserPlatformFee` |
-| `POST /v1/admin/models/register` | publishing key (`X-Darkbloom-Publishing-Key` or bearer; `MODEL_REGISTRY_PUBLISHING_KEY`, the admin key, or a stored publishing key) | `coordinator/api/model_registry_handlers.go` (`handleRegisterModel`, `requirePublishingAPIKey`) |
-| `POST /v1/referral/register` | requireAuth + financial; Privy | `coordinator/api/billing_handlers.go` (`handleReferralRegister`) |
-| `POST /v1/referral/apply` | requireAuth + financial; Privy | `handleReferralApply` |
-| `GET /v1/referral/stats` | requireAuth | `handleReferralStats` |
-| `GET /v1/referral/info` | requireAuth | `handleReferralInfo` |
-| `POST /v1/admin/invite-codes` | requireAuth + financial; admin | `coordinator/api/invite_handlers.go` (`handleAdminCreateInviteCode`) |
-| `GET /v1/admin/invite-codes` | requireAuth; admin | `handleAdminListInviteCodes` |
-| `DELETE /v1/admin/invite-codes` | requireAuth; admin | `handleAdminDeactivateInviteCode` |
-| `POST /v1/invite/redeem` | requireAuth + financial | `handleRedeemInviteCode` |
-| `POST /v1/admin/credit` | requireAuth; admin | `coordinator/api/admin_balance_adjustment.go` (`handleAdminCredit`) |
-| `POST /v1/admin/reward` | requireAuth; admin | `handleAdminReward` |
-| `GET /v1/admin/base-rewards` | admin (in handler) | `coordinator/api/base_rewards_handlers.go` (`handleAdminBaseRewards`) |
+| `GET /v1/payments/balance` | requireAuth | `coordinator/api/account_usage.go` (`handleBalance`) → `BalanceResponse` |
+| `GET /v1/payments/usage` | requireAuth | `coordinator/api/account_usage.go` (`handleUsage`) → `UsageResponse` |
+| `GET /v1/provider/earnings` | none; identifies by `?wallet=` / `X-Provider-Wallet` (legacy) | `coordinator/api/provider_earnings.go` (`handleProviderEarnings`) |
+| `GET /v1/provider/account-earnings` | requireAuth | `coordinator/api/billing/earnings.go` (`AccountEarnings`) |
+| `GET /v1/me/summary` | requirePrivyAuth | `coordinator/api/accountfleet/summary.go` (`Controller.Summary`) |
+| `POST /v1/keys`, `PATCH /v1/keys/{id}` | requirePrivyAuth + financial | `coordinator/api/accounts/keys.go` (`Controller.CreateKey`, `Controller.UpdateKey`) |
+| `POST /v1/billing/stripe/create-session` | requireAuth + financial | `coordinator/api/billing/checkout.go` (`StripeCreateSession`) |
+| `POST /v1/billing/stripe/webhook` | none; `Stripe-Signature` | `StripeWebhook` |
+| `GET /v1/billing/stripe/session` | requireAuth | `StripeSessionStatus` |
+| `GET /v1/billing/wallet/balance` | requireAuth | `WalletBalance` → `{"credit_balance_micro_usd"}` |
+| `GET /v1/billing/methods` | none | `BillingMethods` |
+| `POST /v1/billing/stripe/onboard` | requirePrivyAuth + financial | `coordinator/api/billing/connect_onboarding.go` (`StripeOnboard`) |
+| `GET /v1/billing/stripe/status` | requireAuth; linked user | `StripeStatus` |
+| `POST /v1/billing/withdraw/stripe` | requirePrivyAuth + financial; status `ready` | `coordinator/api/billing/connect_withdraw.go` (`StripeWithdraw`) |
+| `GET /v1/billing/stripe/withdrawals` | requireAuth | `coordinator/api/billing/withdrawal_history.go` (`StripeWithdrawals`) |
+| `POST /v1/billing/stripe/dashboard` | requirePrivyAuth + financial | `StripeDashboardLink` |
+| `DELETE /v1/billing/stripe/account` | requirePrivyAuth | `StripeUnlink` |
+| `POST /v1/billing/stripe/connect/webhook` | none; `Stripe-Signature` | `coordinator/api/billing/connect_webhook.go` (`StripeConnectWebhook`) |
+| `GET /v1/pricing` | none | `coordinator/api/billing/pricing.go` (`GetPricing`) |
+| `PUT /v1/pricing` | requireAuth; linked user | `SetPricing` |
+| `DELETE /v1/pricing` | requireAuth; linked user | `DeletePricing` |
+| `PUT /v1/admin/pricing` | requireAuth; admin | `AdminPricing` |
+| `PUT /v1/admin/users/role` | requireAuth; admin | `AdminSetUserRole` |
+| `PUT /v1/admin/users/platform-fee` | requireAuth; admin | `AdminSetUserPlatformFee` |
+| `POST /v1/admin/models/register` | publishing key (`X-Darkbloom-Publishing-Key` or bearer; `MODEL_REGISTRY_PUBLISHING_KEY`, the admin key, or a stored publishing key) | `coordinator/api/catalog/register_model.go` (`RegisterModel`); `coordinator/api/catalog/publishing_auth.go` (`requirePublishingAPIKey`) |
+| `POST /v1/referral/register` | requireAuth + financial; linked user | `coordinator/api/billing/referrals.go` (`ReferralRegister`) |
+| `POST /v1/referral/apply` | requireAuth + financial; linked user | `ReferralApply` |
+| `GET /v1/referral/stats` | requireAuth | `ReferralStats` |
+| `GET /v1/referral/info` | requireAuth | `ReferralInfo` |
+| `POST /v1/admin/invite-codes` | requireAuth + financial; admin | `coordinator/api/accounts/invites.go` (`Controller.CreateInvite`) |
+| `GET /v1/admin/invite-codes` | requireAuth; admin | `Controller.ListInvites` |
+| `DELETE /v1/admin/invite-codes` | requireAuth; admin | `Controller.DeactivateInvite` |
+| `POST /v1/invite/redeem` | requireAuth + financial | `Controller.RedeemInvite` |
+| `POST /v1/admin/credit` | requireAuth; admin | `coordinator/api/billing/admin_adjustment.go` (`AdminCredit`) |
+| `POST /v1/admin/reward` | requireAuth; admin | `AdminReward` |
+| `GET /v1/admin/base-rewards` | admin (in handler) | `coordinator/api/billing/base_rewards.go` (`AdminBaseRewards`) |
 
 ### `GET /v1/pricing` response
 
@@ -257,7 +259,7 @@ the financial rate limiter ([Constants](#constants)).
 ```
 
 `prices` lists every `model_prices` row with `account_id = 'platform'`
-(`handleGetPricing`).
+(`GetPricing`).
 
 ### `GET /v1/payments/balance` and `GET /v1/payments/usage` responses
 
@@ -280,7 +282,7 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED` | in-memory reservation holds for `RoleService` accounts | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
 | `EIGENINFERENCE_BASE_REWARDS`, `EIGENINFERENCE_BASE_REWARDS_K`, `EIGENINFERENCE_BASE_REWARDS_POOL_MICRO`, `EIGENINFERENCE_BASE_REWARDS_MIN_UPTIME`, `EIGENINFERENCE_BASE_REWARDS_ACCOUNT_CAP` | base-rewards engine switch, reduction factor `k`, monthly pool (µUSD), eligibility uptime fraction, per-account cap fraction | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
 | `MNEMONIC`, `EIGENINFERENCE_MNEMONIC` | read by billing config but used for the coordinator's X25519 request-encryption key, not for money | [Auth: admin key, Privy, release key, sender encryption](configuration.md#auth-admin-key-privy-release-key-sender-encryption) |
-| `EIGENINFERENCE_ADMIN_KEY`, `EIGENINFERENCE_ADMIN_EMAILS` | admin authorization for admin billing routes (`isAdminAuthorized`, `coordinator/api/release_handlers.go`) | [Auth: admin key, Privy, release key, sender encryption](configuration.md#auth-admin-key-privy-release-key-sender-encryption) |
+| `EIGENINFERENCE_ADMIN_KEY`, `EIGENINFERENCE_ADMIN_EMAILS` | admin authorization for admin billing routes (`isAdminAuthorized`, `coordinator/api/admin_auth.go`) | [Auth: admin key, Privy, release key, sender encryption](configuration.md#auth-admin-key-privy-release-key-sender-encryption) |
 | `MODEL_REGISTRY_PUBLISHING_KEY` | bootstrap publishing key accepted by `POST /v1/admin/models/register` (`requirePublishingAPIKey`) | [Model registry, releases and R2/CDN](configuration.md#model-registry-releases-and-r2cdn) |
 | `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_RPS`, `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_BURST`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_RPS`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_BURST` | financial and service limiters; compiled defaults under [Constants](#constants) | [Routing, admission and TTFT](configuration.md#routing-admission-and-ttft) |
 
@@ -288,12 +290,12 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 
 | Quantity | Policy | Citation |
 |---|---|---|
-| User fee | Zero for standard bank withdrawals; platform pays Stripe charges | `coordinator/api/global_payouts_withdraw.go` (`handleGlobalPayoutQuote`) |
-| USD input | Decimal with at most two fractional digits; $1 to $1,000,000, further constrained by balance and published recipient limits in local currency | `coordinator/api/global_payouts_withdraw.go` (`payoutUSDCents`) |
-| Local amount | Stripe quote, in destination minor units with explicit currency exponent | `coordinator/api/global_payouts_withdraw.go` (`payoutCurrencyExponent`) |
-| Quote validity | At most two minutes, shortened to the Stripe FX lock expiry | `coordinator/api/global_payouts_withdraw.go` (`handleGlobalPayoutQuote`) |
-| Quote cleanup | Up to 1,000 expired, never-confirmed quotes per minute; confirmed withdrawals are retained | `coordinator/store/global_payouts_maintenance.go` (`PruneExpiredGlobalPayoutQuotes`); `coordinator/api/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`) |
-| Retry window without remote ID | Twelve hours, then `manual_reconciliation_required`: excluded from automatic scans and claims, without refund | `coordinator/api/global_payouts_reconcile.go` (`syncGlobalPayout`) |
-| Reconciliation | One-minute loop, up to 200 records per scan; posted records polled for 90 days and later returns handled by events | `coordinator/api/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`); `coordinator/store/global_payouts_postgres.go` (`ListGlobalPayoutsToReconcile`) |
+| User fee | Zero for standard bank withdrawals; platform pays Stripe charges | `coordinator/api/billing/global_quote.go` (`GlobalPayoutQuote`) |
+| USD input | Decimal with at most two fractional digits; $1 to $1,000,000, further constrained by balance and published recipient limits in local currency | `coordinator/api/billing/amounts.go` (`payoutUSDCents`) |
+| Local amount | Stripe quote, in destination minor units with explicit currency exponent | `coordinator/api/billing/amounts.go` (`payoutCurrencyExponent`) |
+| Quote validity | At most two minutes, shortened to the Stripe FX lock expiry | `coordinator/api/billing/global_quote.go` (`GlobalPayoutQuote`) |
+| Quote cleanup | Up to 1,000 expired, never-confirmed quotes per minute; confirmed withdrawals are retained | `coordinator/store/postgres/global_payouts_maintenance.go` (`PruneExpiredGlobalPayoutQuotes`); `coordinator/api/billing/global_reconcile.go` (`StartGlobalPayoutReconciler`) |
+| Retry window without remote ID | Twelve hours, then `manual_reconciliation_required`: excluded from automatic scans and claims, without refund | `coordinator/api/billing/global_reconcile.go` (`syncGlobalPayout`) |
+| Reconciliation | One-minute loop, up to 200 records per scan; posted records polled for 90 days and later returns handled by events | `coordinator/api/billing/global_reconcile.go` (`StartGlobalPayoutReconciler`); `coordinator/store/postgres/global_payouts.go` (`ListGlobalPayoutsToReconcile`) |
 
-Published recipient bounds are stored in `coordinator/billing/globalpayouts/recipient_limits.go` (`Country.Limits`) from [Stripe's recipient minimums and maximums](https://docs.stripe.com/global-payouts/send-money#recipient-minimums). The API reports the local-currency threshold and validates the credited amount; direct pre-quote comparison is possible for USD destinations. The private payout row retains Stripe's `estimated_fees` as `estimated_stripe_fees` for operator cost review (`coordinator/api/global_payouts_withdraw.go`, `handleGlobalPayoutQuote`).
+Published recipient bounds are stored in `coordinator/billing/globalpayouts/recipient_limits.go` (`Country.Limits`) from [Stripe's recipient minimums and maximums](https://docs.stripe.com/global-payouts/send-money#recipient-minimums). The API reports the local-currency threshold and validates the credited amount; direct pre-quote comparison is possible for USD destinations. The private payout row retains Stripe's `estimated_fees` as `estimated_stripe_fees` for operator cost review (`coordinator/api/billing/global_quote.go`, `GlobalPayoutQuote`).

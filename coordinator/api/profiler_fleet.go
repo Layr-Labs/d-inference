@@ -56,15 +56,15 @@ func (s *Server) sampleFleetOnce(now time.Time) {
 	rows := s.registry.FleetSample(now)
 	coord := s.registry.CoordinatorSample(now)
 	coord.Goroutines = runtime.NumGoroutine()
-	if s.profiler != nil && s.profiler.sink != nil {
-		coord.ProfileSinkDepth = s.profiler.sink.depth()
-		coord.ProfileSinkDroppedTotal = s.profiler.sink.droppedTotal()
+	if s.profiler.HasSink() {
+		coord.ProfileSinkDepth = s.profiler.Depth()
+		coord.ProfileSinkDroppedTotal = s.profiler.DroppedTotal()
 	}
 	if s.routeTelemetry != nil {
-		coord.RouteSinkDroppedTotal = s.routeTelemetry.dropped.Load()
+		coord.RouteSinkDroppedTotal = s.routeTelemetry.DroppedTotal()
 	}
 	registry.ClampFleetRowInts(&coord) // goroutines / sink depth are INT columns too
-	coord.UnknownRequestFramesTotal = s.unknownRequestFrames.Load()
+	coord.UnknownRequestFramesTotal = s.inferenceFrames().UnknownRequestFrames()
 	rows = append(rows, coord)
 	if err := s.store.RecordFleetSnapshots(rows); err != nil {
 		if s.logger != nil {
@@ -74,11 +74,11 @@ func (s *Server) sampleFleetOnce(now time.Time) {
 		return
 	}
 	s.ddCount("profiler.fleet_snapshot", int64(len(rows)), []string{"status:written"})
-	if s.profiler != nil && s.profiler.sink != nil {
-		s.ddGauge("telemetry.sink_depth", float64(s.profiler.sink.depth()), []string{"sink:profile"})
+	if s.profiler.HasSink() {
+		s.ddGauge("telemetry.sink_depth", float64(s.profiler.Depth()), []string{"sink:profile"})
 	}
 	if s.routeTelemetry != nil {
-		s.ddGauge("telemetry.sink_depth", float64(len(s.routeTelemetry.ch)), []string{"sink:route"})
+		s.ddGauge("telemetry.sink_depth", float64(s.routeTelemetry.Depth()), []string{"sink:route"})
 	}
 }
 

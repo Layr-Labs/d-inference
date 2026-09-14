@@ -1,6 +1,6 @@
 # Incoming request accounting
 
-> Last updated: 2026-09-11 · commit `5e41029dd`
+> Last updated: 2026-09-14 · commit `5f2c53f32`
 
 `request_outcomes` records unsampled observations of incoming inference requests, including early rejections, independently of sampled attempt profiles. Operators use this source to distinguish final request outcomes from internal retries. The dashboard aggregation and presentation work in issue #845 remains open.
 
@@ -25,20 +25,20 @@ flowchart LR
   Relay --> Finish[Recovered handler return: one request observation]
   Attempts --> Late[Late provider terminal or bounded fallback]
   Late --> Revision[Enrich same coordinator UUID]
-  Finish --> Sink[Dedicated bounded requestOutcomeSink]
+  Finish --> Sink[Dedicated bounded outcomequeue.Sink]
   Revision --> Sink
   Sink --> Ledger[(request_outcomes)]
 ```
 
 Only the compact fixed schema is unsampled. The existing in-memory request/attempt lifecycle objects collect evidence when the heavy profiler is off; `CompactOnly` preserves the profiler-off timing-header behavior. Heavy `request_profiles` persistence, provider-profile payload retention, sampling and fleet sampling retain their existing switches.
 
-The request sink has 4,096 queued snapshots, one worker, batches of up to 128, and a 100 ms flush interval. Each database transaction has a one-second context deadline. Upserts run through one `pgx.Batch`. A full/closed queue drops the snapshot, while failed transactions increment a separate failure count. No telemetry write blocks the inference path. Shutdown waits up to two seconds for draining. The existing hourly retention loop deletes ledger rows by receipt time after 14 days, even with the heavy profiler off.
+The request sink (`coordinator/telemetry/outcomequeue/queue.go`, `Sink`) has 4,096 queued snapshots, one worker, batches of up to 128, and a 100 ms flush interval. Each database transaction has a one-second context deadline. Upserts run through one `pgx.Batch`. A full/closed queue drops the snapshot, while failed transactions increment a separate failure count. No telemetry write blocks the inference path. Shutdown waits up to two seconds for draining. The existing hourly retention loop deletes ledger rows by receipt time after 14 days, even with the heavy profiler off.
 
 ## Identity, coverage and time
 
 | Contract | Definition and code |
 |---|---|
-| Covered requests | Matched `POST /v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`, streaming and non-streaming. The root observer filters the four exact POST paths in `coordinator/api/server.go` (`Handler`). |
+| Covered requests | Matched `POST /v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`, streaming and non-streaming. The root observer filters the four exact POST paths in `coordinator/api/http_middleware.go` (`Handler`). |
 | Early exits | Drain, auth, account/key rate limits, sealed-envelope/decryption, validation, model resolution, balance, preflight, queue and dispatch exits are included. Streaming mode remains unknown before valid JSON parsing. `parseInferencePrelude` records the handler's parsed true/false mode before model lookup, including catalog rejections. Existing explicit rejection stages/reasons are copied; uncovered reason details remain `ext_unknown` with the last known pipeline stage. |
 | Exclusions | OPTIONS, other methods, unmatched paths, and connections that never enter these HTTP routes. A recovered panic records `handler_panic` and the actual final HTTP status after recovery writes. A panic after headers preserves the committed status and response format. Raw recovery JSON written into an already committed SSE stream is not counted as a valid streaming terminal. An unrecovered abort records `handler_aborted`; no replacement status is invented. |
 | Request identity | `coord_request_id`, a coordinator-minted UUID. Repeated client `X-Request-ID` values do not merge requests. Empty identities are rejected by both stores. Count HTTP requests, never `n` or attempt rows. |
@@ -49,7 +49,7 @@ The request sink has 4,096 queued snapshots, one worker, batches of up to 128, a
 
 ## Evidence and precedence
 
-`coordinator/store/request_outcomes.go` defines schema version 1. Evidence booleans mean an observation exists; false does not prove that nothing happened remotely. No token count, preamble, acknowledgment, successful reservation, committed HTTP 200, or profile `client_outcome=completed` establishes completed response delivery.
+`coordinator/store/contracts/request_outcomes.go` defines schema version 1. Evidence booleans mean an observation exists; false does not prove that nothing happened remotely. No token count, preamble, acknowledgment, successful reservation, committed HTTP 200, or profile `client_outcome=completed` establishes completed response delivery.
 
 | Field | Meaning |
 |---|---|
@@ -101,11 +101,13 @@ A raw historical `dispatch_exhausted` can represent a retained real provider err
 | Concern | Source |
 |---|---|
 | Observation, lifecycle and mapping | `coordinator/api/request_outcome.go` |
-| Content and write evidence | `coordinator/api/request_outcome_egress.go`, `coordinator/api/sender_encryption.go` |
-| Bounded persistence and health | `coordinator/api/request_outcome_sink.go`, `coordinator/api/request_outcome_admin.go` |
-| Schema, revision merge and reads | `coordinator/store/request_outcomes.go`, `coordinator/store/postgres_request_outcomes.go`, `coordinator/store/memory_request_outcomes.go` |
+| Content and terminal classification | `coordinator/inference/response/content_evidence.go`, `coordinator/inference/response/terminal_evidence.go`; pure classifiers used by the response formatters and API writer |
+| Accepted writes and sealed transport | `coordinator/api/response_writer.go` (`responseWriteObserver`), `coordinator/api/request_outcome_egress.go`, `coordinator/api/request_outcome_terminal.go`, `coordinator/api/sender_encryption.go`; the API retains the sealing-buffer guard and outcome lock |
+| Bounded persistence | `coordinator/telemetry/outcomequeue/` (`Sink`, `Submit`, `Close`, `Stats`); `coordinator/api/request_outcome_sink.go` (`newRequestOutcomeSink`) injects the active-store writer and metrics |
+| Health endpoint | `coordinator/api/operations/request_outcomes.go` (`Controller.RequestOutcomes`) reads independent process counters through `Stats` |
+| Schema, revision merge and reads | `coordinator/store/contracts/request_outcomes.go`, `coordinator/store/postgres/request_outcomes.go`, `coordinator/store/memory/request_outcomes.go` |
 | Live isolated endpoint regressions | `coordinator/api/request_outcome_integration_test.go`, `coordinator/api/request_outcome_test.go`, `coordinator/api/deadline_unreachable_integration_test.go` |
-| Memory/Postgres parity and retention | `coordinator/store/request_outcomes_test.go` |
+| Memory/Postgres parity and retention | `coordinator/store/postgres/request_outcomes_test.go` |
 
 ## Related
 

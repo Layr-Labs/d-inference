@@ -1,6 +1,6 @@
 # System overview — how a Darkbloom request works
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-14 · commit `5f2c53f32`
 
 Darkbloom sells inference on other people's Apple Silicon Macs. A Go
 **coordinator** accepts OpenAI- and Anthropic-shaped HTTP requests, picks an
@@ -69,40 +69,41 @@ sequenceDiagram
    trust level, and re-challenges every
    [`DefaultChallengeInterval`](security/attestation.md#layer-2--periodic-challenge),
    allowing [`ChallengeResponseTimeout`](security/attestation.md#layer-2--periodic-challenge)
-   for the answer (`coordinator/api/provider.go`). The provider heartbeats every
+   for the answer (`coordinator/providercontrol/challenge/loop.go`, `Session.Run`). The provider heartbeats every
    [`heartbeat_interval_secs`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)
    with capacity, slot state, and telemetry; the coordinator's heartbeat timeout
    and eviction rule are in [`scheduling.md`](scheduling.md#heartbeat-cadence-and-eviction).
    Messages: [`../reference/protocol-messages.md`](../reference/protocol-messages.md).
 2. **Consumer calls.** Every route passes
    `corsMiddleware → recoverMiddleware → loggingMiddleware → bodyLimitMiddleware`;
-   inference routes add `drainGate → requireAuth → rateLimitConsumer →
-   sealedTransport` (`coordinator/api/server.go`, `routes`). `/v1/chat/completions`
-   and `/v1/responses` share `handleChatCompletions`; `/v1/completions` and
-   `/v1/messages` share `handleGenericInference` (`coordinator/api/consumer.go`).
+   inference routes add `readiness.Controller.Gate → requireAuth → rateLimitConsumer →
+   sealedTransport` (`coordinator/api/routes.go`, `routes`). `/v1/chat/completions`
+   and `/v1/responses` share `Controller.ChatCompletions` (`coordinator/inference/ingress/chat.go`); `/v1/completions` and
+   `/v1/messages` share `handleGenericInference` (`coordinator/inference/ingress/generic.go`).
    Routes and shapes: [`../reference/api-contracts.md`](../reference/api-contracts.md).
 3. **Admission.** The handler validates the body (size cap
    [`maxInferenceBodyBytes`](../reference/api-contracts.md#limits-and-validation),
    tool-schema normalisation), resolves the public alias to a concrete build
-   ([`model-registry.md`](model-registry.md)), reserves the consumer's balance for
-   the worst-case output ([`billing.md`](billing.md)), and applies token-rate
-   admission ([`../reference/api-contracts.md`](../reference/api-contracts.md)).
+   ([`model-registry.md`](model-registry.md)), applies token-rate admission
+   ([`../reference/api-contracts.md`](../reference/api-contracts.md)), then reserves
+   the consumer's balance for the worst-case output ([`billing.md`](billing.md)).
 4. **Selection.** The registry filters providers through one ordered liveness
    gate (`providerLivenessGateReasonLocked`,
    `coordinator/registry/routing_eligibility.go`) — online, trusted at or above
    the floor, runtime-verified, private-text capable, challenge verified within
    [`challengeFreshnessMaxAge`](routing.md#challenge-freshness) — then scores survivors with an
    estimated-completion-time cost model and reserves the cheapest
-   (`coordinator/registry/scheduler.go`). Every rejection has a name from a
+   (`coordinator/registry/reservation.go`, `ReserveProviderEx`). Every rejection has a name from a
    closed vocabulary (`coordinator/registry/gate_reason.go`).
    [`routing.md`](routing.md), [`scheduling.md`](scheduling.md).
 5. **Dispatch.** The request body is sealed with a per-request NaCl Box to the
    provider's attested X25519 key (`coordinator/internal/e2e/e2e.go`) and sent
    as `inference_request`. If the first content is late, a speculative second
-   dispatch starts at [`speculativeTimerRatio`](routing.md#hedged-speculative-dispatch)
+   dispatch starts at [`SpeculativeTimerRatio`](routing.md#hedged-speculative-dispatch)
    of the first-content deadline; the coordinator tries at most
    [`maxDispatchAttempts`](../reference/api-contracts.md#timeouts-and-constants)
-   providers (`coordinator/api/consumer.go`). [`data-flow.md`](data-flow.md).
+   providers (`coordinator/inference/dispatch/limits.go`, `maxDispatchAttempts`;
+   `coordinator/inference/dispatch/run.go`, `run`). [`data-flow.md`](data-flow.md).
 6. **Inference.** The provider decrypts in-process, runs the continuous-batching
    engine over the pinned MLX forks, and encrypts every response chunk to the
    coordinator's ephemeral key. [`inference.md`](inference.md),
@@ -158,15 +159,18 @@ consumer routing to a provider it owns (self-route) pays nothing.
    (`coordinator/registry/routing_eligibility.go`).
 3. Every coordinator → provider request body is a fresh NaCl Box to the key the
    provider attested at registration (`coordinator/internal/e2e/e2e.go`).
-4. Nothing is written to the consumer's HTTP response before the first content
-   chunk, so a failed dispatch can always fail over or return a JSON error
-   (`handleChatCompletions`, `coordinator/api/consumer.go`).
+4. Successful responses wait for the first content chunk, so a failed dispatch
+   can fail over or return a JSON error before commit
+   (`Controller.ChatCompletions`, `coordinator/inference/ingress/chat.go`;
+   `writeCommittedResponse`, `coordinator/inference/dispatch/commit.go`).
 5. Balance is reserved before dispatch (`reserveInferenceBalance`,
-   `coordinator/api/inference_admission.go`) and settled from
-   `inference_complete` (`handleComplete`, `coordinator/api/provider.go`): the
+   `coordinator/inference/ingress/balance.go`) and settled from
+   `inference_complete` (`Service.CompleteAt`, `coordinator/inference/providerframe/complete.go`): the
    difference is refunded, an overage is charged. A request that fails before
-   any provider usage is reported is refunded in full (`refundReservedBalance`,
-   `coordinator/api/consumer.go`).
+   any provider usage is reported is refunded in full (`Service.Refund`,
+   `coordinator/inference/settlement/refund.go`). Accounting is owned by
+   `Service.Complete` (`coordinator/inference/settlement/completion.go`); the frame
+   service retains the terminal claim and consumer-channel signals.
 6. The provider version the coordinator advertises (`LatestProviderVersion`,
    `coordinator/api/server.go`) equals `ProviderCore.version`; the test
    `coordinator/api/provider_version_sync_test.go` enforces it.
@@ -193,13 +197,14 @@ consumer routing to a provider it owns (self-route) pays nothing.
 
 | Concern | Entry point |
 |---|---|
-| Route table and middleware | `coordinator/api/server.go` (`routes`) |
-| Chat / Responses handler | `coordinator/api/consumer.go` (`handleChatCompletions`) |
-| Completions / Messages handler | `coordinator/api/consumer.go` (`handleGenericInference`) |
-| Provider WebSocket, registration, challenges | `coordinator/api/provider.go` |
+| Route table and middleware | `coordinator/api/routes.go` (`routes`) |
+| Chat / Responses handler | `coordinator/inference/ingress/chat.go` (`Controller.ChatCompletions`) |
+| Completions / Messages handler | `coordinator/inference/ingress/generic.go` (`handleGenericInference`) |
+| Provider WebSocket and connection lifecycle | `coordinator/api/provider.go` (`handleProviderWS`); `coordinator/providercontrol/session/read.go` (`Session.Run`) |
+| Registration publication and challenge startup | `coordinator/providercontrol/session/registration.go` (`register`); `coordinator/providercontrol/challenge/loop.go` (`Session.Run`) |
 | Attestation verification | `coordinator/attestation/attestation.go` |
 | Eligibility gate | `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`) |
-| Cost model and reservation | `coordinator/registry/scheduler.go` |
+| Cost model and reservation | `coordinator/registry/candidate_cost.go` (`buildCandidateInto`), `coordinator/registry/routingcost/` (`Policy`), `coordinator/registry/reservation.go` (`ReserveProviderEx`) |
 | Per-request encryption | `coordinator/internal/e2e/e2e.go`; optional sender sealing `coordinator/api/sender_encryption.go` |
 | Pricing and ledger | `coordinator/payments/pricing.go`, `coordinator/billing/` |
 | Provider main loop | `provider-swift/Sources/ProviderCore/ProviderLoop.swift` |

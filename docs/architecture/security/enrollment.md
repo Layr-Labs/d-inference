@@ -1,6 +1,6 @@
 # MDM enrollment
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-14 · commit `5f2c53f32`
 
 How a provider Mac joins Darkbloom's MDM so the coordinator can ask Apple's
 management subsystem, rather than the provider binary, whether SIP and Secure
@@ -44,7 +44,7 @@ sequenceDiagram
     M->>D: APNs wake → device connects to /mdm/connect
     D->>M: SecurityInfo result (CommandUUID)
     M->>K: POST /v1/mdm/webhook<br/>X-Webhook-Token or ?token= EIGENINFERENCE_MDM_WEBHOOK_SECRET · body ≤ maxMDMWebhookBodyBytes
-    K-->>K: HandleWebhook: Acknowledged + CommandUUID outstanding (outstandingCommandTTL)<br/>→ verifyProviderViaMDM → hardware grant · DeviceInformation → MDA flag
+    K-->>K: HandleWebhook: Acknowledged + CommandUUID outstanding (outstandingCommandTTL)<br/>→ Verifier.VerifySecurityInfo → hardware grant · DeviceInformation → MDA flag
 ```
 
 Source: `docs/assets/diagrams/enrollment-flow.mmd` (updated for this
@@ -55,9 +55,9 @@ re-rendered).
 
 | Property | Value | Code |
 |---|---|---|
-| Endpoint | `POST /v1/enroll`, no authentication, JSON body decoded into an empty struct, capped at [`maxControlPlaneBodyBytes`](../../reference/api-contracts.md#limits-and-validation); a legacy `serial_number` field is ignored, never stored or logged | `coordinator/api/server.go` (route), `coordinator/api/enroll.go` (`handleEnroll`) |
+| Endpoint | `POST /v1/enroll`, no authentication, JSON body decoded into an empty struct, capped at [`maxControlPlaneBodyBytes`](../../reference/api-contracts.md#limits-and-validation); a legacy `serial_number` field is ignored, never stored or logged | `coordinator/api/routes.go` (`routes`), `coordinator/api/enroll.go` (`handleEnroll`) |
 | Response | `200`, `Content-Type: application/x-apple-aspen-config`, `Content-Disposition: attachment; filename="Darkbloom-Enroll.mobileconfig"` | `coordinator/api/enroll.go` (`handleEnroll`) |
-| Base URL | `EIGENINFERENCE_BASE_URL` when set; only in local/dev does it fall back to `X-Forwarded-Proto` + request `Host`, because a signed profile pointing at an attacker host would launder a malicious enrollment | `coordinator/api/server.go` (`resolveBaseURL`); `coordinator/api/server_config.go` |
+| Base URL | `EIGENINFERENCE_BASE_URL` when set; only in local/dev does it fall back to `X-Forwarded-Proto` + request `Host`, because a signed profile pointing at an attacker host would launder a malicious enrollment | `coordinator/api/installer.go` (`resolveBaseURL`); `coordinator/api/server_config.go` |
 | Top-level payload | `PayloadType Configuration`, `PayloadIdentifier io.darkbloom.enroll`, `PayloadDisplayName "Darkbloom Provider Enrollment"`, `PayloadOrganization Darkbloom`, fresh `PayloadUUID` per download | `coordinator/api/enroll.go` (`generateCombinedProfile`) |
 | Payload 1 — SCEP | `PayloadType com.apple.security.scep`, `PayloadIdentifier io.darkbloom.enroll.scep`, `PayloadUUID D01D95F9-762E-4538-A9B3-4D949D55577C`; `URL <base>/scep`, `Challenge micromdm`, RSA 2048, `Key Usage 5`, Subject `O=Darkbloom`, `CN=Darkbloom Identity` | `coordinator/api/enroll.go` (`generateCombinedProfile`) |
 | Payload 2 — MDM | `PayloadType com.apple.mdm`, `PayloadIdentifier io.darkbloom.enroll.mdm`, `PayloadUUID 4DF05DBF-6D20-41A4-8072-A51D327258E7`; `IdentityCertificateUUID` = SCEP UUID; `CheckInURL <base>/mdm/checkin`; `ServerURL <base>/mdm/connect`; `Topic com.apple.mgmt.External.10520cbe-9635-453d-ac4e-c79aab56f8ce`; `SignMessage true`; `CheckOutWhenRemoved true`; `ServerCapabilities [com.apple.mdm.per-user-connections, com.apple.mdm.bootstraptoken]` | `coordinator/api/enroll.go` (`generateCombinedProfile`) |
@@ -101,11 +101,11 @@ re-rendered).
 
 | Property | Value | Code |
 |---|---|---|
-| Client config | `EIGENINFERENCE_MDM_URL` (empty = MDM verification disabled), `EIGENINFERENCE_MDM_API_KEY`; HTTP Basic `micromdm:<api key>` | `coordinator/mdm/config.go` (`ReadConfig`); `coordinator/mdm/mdm.go` (`NewClient`) |
-| Device lookup | `POST /v1/devices` filtered by serial → UDID and `EnrollmentStatus` | `coordinator/mdm/mdm.go` (`LookupDevice`) |
-| Commands | `POST /v1/commands` (structured; MicroMDM sends exactly one push) for `SecurityInfo`; raw plist `POST /v1/commands/<udid>` + `GET /push/<udid>` for `DeviceInformation` with `DeviceAttestationNonce` (the raw endpoint does not auto-push) | `coordinator/mdm/mdm.go` (`SendSecurityInfoCommand`, `SendDeviceAttestationCommand`, `pushDevice`, `RequestDeviceAttestation`) |
-| Allowed request types | `SecurityInfo`, `DeviceInformation` only; anything else panics in `assertReadOnlyCommand` before it is sent | `coordinator/mdm/mdm.go` (`readOnlyMDMRequestTypes`, `assertReadOnlyCommand`) |
-| Outstanding commands | `CommandUUID` recorded per issued command with `outstandingCommandTTL` = 30m; consumed on the first matching response | `coordinator/mdm/mdm.go` (`trackCommand`, `consumeCommand`) |
+| Client config | `EIGENINFERENCE_MDM_URL` (empty = MDM verification disabled), `EIGENINFERENCE_MDM_API_KEY`; HTTP Basic `micromdm:<api key>` | `coordinator/mdm/config.go` (`ReadConfig`); `coordinator/mdm/client.go` (`NewClient`) |
+| Device lookup | `POST /v1/devices` filtered by serial → UDID and `EnrollmentStatus` | `coordinator/mdm/devices.go` (`LookupDevice`) |
+| Commands | `POST /v1/commands` (structured; MicroMDM sends exactly one push) for `SecurityInfo`; raw plist `POST /v1/commands/<udid>` + `GET /push/<udid>` for `DeviceInformation` with `DeviceAttestationNonce` (the raw endpoint does not auto-push) | `coordinator/mdm/commands.go` (`sendSecurityInfoCommand`, `sendDeviceAttestationWithNonce`, `pushDevice`); `coordinator/mdm/device_attestation.go` (`RequestDeviceAttestation`) |
+| Allowed request types | `SecurityInfo`, `DeviceInformation` only; anything else returns `ErrMutatingCommandBlocked` from `assertReadOnlyCommand` before it is sent | `coordinator/mdm/command_policy.go` (`readOnlyMDMRequestTypes`, `assertReadOnlyCommand`) |
+| Outstanding commands | `CommandUUID` recorded per issued command with `outstandingCommandTTL` = 30m; consumed on the first matching response | `coordinator/mdm/command_tracking.go` (`trackCommand`, `consumeCommand`) |
 
 ### Webhook
 
@@ -113,18 +113,18 @@ MicroMDM is started with `command-webhook-url` pointing at the coordinator.
 
 | Property | Value | Code |
 |---|---|---|
-| Route | `POST /v1/mdm/webhook` | `coordinator/api/server.go` |
-| Authentication | When `EIGENINFERENCE_MDM_WEBHOOK_SECRET` is set: `X-Webhook-Token: <secret>` header **or** `?token=<secret>` query (MicroMDM cannot add headers), constant-time compare; failure → `403 forbidden` before the body is read. Unset → startup warning; the CommandUUID gate alone protects the webhook | `coordinator/api/server.go` (`HandleMDMWebhook`, `mdmWebhookTokenValid`); `coordinator/cmd/coordinator/main.go` |
+| Route | `POST /v1/mdm/webhook` | `coordinator/api/routes.go` (`routes`) |
+| Authentication | When `EIGENINFERENCE_MDM_WEBHOOK_SECRET` is set: `X-Webhook-Token: <secret>` header **or** `?token=<secret>` query (MicroMDM cannot add headers), constant-time compare; failure → `403 forbidden` before the body is read. Unset → startup warning; the CommandUUID gate alone protects the webhook | `coordinator/api/server.go` (`HandleMDMWebhook`, `mdmWebhookTokenValid`); `coordinator/cmd/coordinator/provider_trust.go` (`configureProviderTrust`) |
 | Body cap | [`maxMDMWebhookBodyBytes`](../../reference/api-contracts.md#limits-and-validation) | `coordinator/api/server.go` |
 | Logging | `Debug` level: `body_size` and a 500-byte `body_preview` (MDM plist, never inference data) | `coordinator/api/server.go` (`HandleMDMWebhook`) |
-| Parsing | JSON `{topic, acknowledge_event: {status, raw_payload}}`; only `status == "Acknowledged"` with a non-empty base64 plist is processed | `coordinator/mdm/mdm.go` (`HandleWebhook`) |
-| Solicited-response gate | `parseCommandUUID(plist)` must match an outstanding command; otherwise the payload is dropped — a forged SecurityInfo can never drive a grant | `coordinator/mdm/mdm.go` (`HandleWebhook`) |
-| Dispatch | `SecurityInfo` → the waiting `VerifyProviderWithUDIDObserver` or the late path `ApplyLateSecurityInfo`; `DevicePropertiesAttestation` → `ApplyLateMDA` | `coordinator/mdm/mdm.go` (`SetOnLateSecurityInfo`, `SetOnMDA`); `coordinator/api/provider.go` (`ApplyLateSecurityInfo`); `coordinator/api/mdm_scheduler_callbacks.go` (`ApplyLateMDA`) |
+| Parsing | JSON `{topic, acknowledge_event: {status, raw_payload}}`; only `status == "Acknowledged"` with a non-empty base64 plist is processed | `coordinator/mdm/webhook.go` (`HandleWebhook`) |
+| Solicited-response gate | `parseCommandUUID(plist)` must match an issued command before delivery. A SecurityInfo reply arriving before MicroMDM returns its UUID may be buffered on the exclusive waiter; only the exact returned UUID releases it | `coordinator/mdm/webhook.go` (`HandleWebhook`) |
+| Dispatch | `SecurityInfo` → the waiting `VerifyProviderWithUDIDObserver` or the late path `ApplyLateSecurityInfo`; `DevicePropertiesAttestation` → `ApplyLateMDA` | `coordinator/mdm/client.go` (`SetOnLateSecurityInfo`, `SetOnMDA`); `coordinator/api/provider_late_verification.go` (`ApplyLateSecurityInfo`); `coordinator/providercontrol/mdmscheduler/late_mda.go` (`ApplyLateMDA`) |
 | Response | `200` once the body is read, even for payloads the gate drops; `400 bad request` only when the body cannot be read (for example over the cap) | `coordinator/api/server.go` (`HandleMDMWebhook`) |
 
 What the coordinator reads from `SecurityInfo`: `SystemIntegrityProtectionEnabled`,
 `SecureBootLevel` (`"full"` required), `AuthenticatedRootVolumeEnabled`
-(recorded only) — `coordinator/mdm/mdm.go` (`parseSecurityInfoPlist`). What
+(recorded only) — `coordinator/mdm/plist.go` (`parseSecurityInfoPlist`). What
 it never requests: installed apps, network information, restrictions, or
 anything under the unrequested `AccessRights` bits.
 
@@ -132,24 +132,24 @@ anything under the unrequested `AccessRights` bits.
 
 1. The enrollment profile contains no device identity and grants only read-only rights (`AccessRights` 1041) — `coordinator/api/enroll.go` (`generateCombinedProfile`).
 2. `POST /v1/enroll` never reads, stores, or logs a serial number; enrollment identity comes from the authenticated MDM check-in — `coordinator/api/enroll.go` (`handleEnroll`).
-3. SCEP/MDM URLs in a signed profile come from `EIGENINFERENCE_BASE_URL`, not from the request `Host` — `coordinator/api/server.go` (`resolveBaseURL`).
+3. SCEP/MDM URLs in a signed profile come from `EIGENINFERENCE_BASE_URL`, not from the request `Host` — `coordinator/api/installer.go` (`resolveBaseURL`).
 4. Signing failures degrade to an unsigned profile with an error log and metric; they never block enrollment — `coordinator/api/enroll.go` (`handleEnroll`).
-5. The coordinator issues only `SecurityInfo` and `DeviceInformation` commands — `coordinator/mdm/mdm.go` (`assertReadOnlyCommand`).
-6. A webhook payload is acted on only if it is `Acknowledged` and its `CommandUUID` matches a command the coordinator issued within `outstandingCommandTTL` ([Coordinator ↔ MicroMDM](#coordinator--micromdm)) — `coordinator/mdm/mdm.go` (`HandleWebhook`).
+5. The coordinator issues only `SecurityInfo` and `DeviceInformation` commands — `coordinator/mdm/command_policy.go` (`assertReadOnlyCommand`).
+6. A webhook payload is acted on only if it is `Acknowledged` and its `CommandUUID` matches a command the coordinator issued within `outstandingCommandTTL` ([Coordinator ↔ MicroMDM](#coordinator--micromdm)) — `coordinator/mdm/webhook.go` (`HandleWebhook`).
 7. When a webhook secret is configured, unauthenticated webhooks are rejected before the body is read — `coordinator/api/server.go` (`HandleMDMWebhook`).
-8. Possession of the profile proves nothing; trust is earned by the per-connection verification described in [`attestation.md`](./attestation.md#layer-3--mdm-securityinfo-the-hardware-grant) — `coordinator/api/provider.go` (`verifyProviderViaMDM`).
+8. Possession of the profile proves nothing; trust is earned by the per-connection verification described in [`attestation.md`](./attestation.md#layer-3--mdm-securityinfo-the-hardware-grant) — `coordinator/providercontrol/verification/security_info.go` (`Verifier.VerifySecurityInfo`).
 
 ## Failure modes
 
 | Failure | Effect | Code |
 |---|---|---|
 | Mac already managed by another MDM | `darkbloom enroll` refuses (`managedByOtherMDM`); doctor reports "enrolled in another MDM … hardware trust unavailable on this Mac" | `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`; `provider-swift/Sources/darkbloom/DoctorCommand.swift` |
-| Profile downloaded but never installed | MDM lookup returns `device-not-found`; provider stays `self_signed` and the scheduler retries | `coordinator/api/provider.go` (`verifyProviderViaMDM`) |
-| Enrolled but SecurityInfo never arrives (asleep, APNs delivery, Apple throttling) | `securityinfo-timeout`; retried on the MDM scheduler cadence ([attestation, Layer 3](./attestation.md#layer-3--mdm-securityinfo-the-hardware-grant)); a late webhook still grants | `coordinator/api/mdm_scheduler.go`; `coordinator/api/provider.go` (`ApplyLateSecurityInfo`) |
-| `EIGENINFERENCE_MDM_URL` unset | No MDM client, no scheduler; no provider can reach `hardware` | `coordinator/cmd/coordinator/main.go` |
+| Profile downloaded but never installed | MDM lookup returns `device-not-found`; provider stays `self_signed` and the scheduler retries | `coordinator/providercontrol/verification/security_info.go` (`Verifier.VerifySecurityInfo`) |
+| Enrolled but SecurityInfo never arrives (asleep, APNs delivery, Apple throttling) | `securityinfo-timeout`; retried on the MDM scheduler cadence ([attestation, Layer 3](./attestation.md#layer-3--mdm-securityinfo-the-hardware-grant)); an exactly owned late webhook can still grant | `coordinator/providercontrol/mdmscheduler/late_security_info.go` (`ApplyLateSecurityInfo`); `coordinator/api/provider_late_verification.go` (`ApplyLateSecurityInfo`) |
+| `EIGENINFERENCE_MDM_URL` unset | No MDM client, no scheduler; no provider can reach `hardware` | `coordinator/cmd/coordinator/provider_trust.go` (`configureProviderTrust`) |
 | Webhook secret mismatch | `403`; SecurityInfo responses are lost until MicroMDM's `command-webhook-url` token matches | `coordinator/api/server.go` (`mdmWebhookTokenValid`) |
 | Webhook body over `maxMDMWebhookBodyBytes` | `400 bad request`; payload ignored | `coordinator/api/server.go` (`HandleMDMWebhook`) |
-| Forged or replayed SecurityInfo | Dropped by the CommandUUID gate | `coordinator/mdm/mdm.go` (`HandleWebhook`) |
+| Forged or replayed SecurityInfo | Dropped by the CommandUUID gate | `coordinator/mdm/webhook.go` (`HandleWebhook`) |
 | Signing identity misconfigured | Unsigned profile served; macOS shows it as unverified; `enroll.profile_sign_error` | `coordinator/api/enroll.go` (`handleEnroll`) |
 
 ## Code map
@@ -158,10 +158,10 @@ anything under the unrequested `AccessRights` bits.
 |---|---|
 | Profile generation and serving | `coordinator/api/enroll.go` (`handleEnroll`, `generateCombinedProfile`) |
 | Profile signing | `coordinator/profilesign/signer.go` (`LoadFromEnv`, `Sign`) |
-| Base URL pinning | `coordinator/api/server.go` (`resolveBaseURL`); `coordinator/api/server_config.go` |
+| Base URL pinning | `coordinator/api/installer.go` (`resolveBaseURL`); `coordinator/api/server_config.go` |
 | Webhook | `coordinator/api/server.go` (`HandleMDMWebhook`, `mdmWebhookTokenValid`, `maxMDMWebhookBodyBytes`) |
-| MicroMDM client | `coordinator/mdm/mdm.go` (`NewClient`, `LookupDevice`, `VerifyProviderWithUDIDObserver`, `RequestDeviceAttestation`, `HandleWebhook`, `assertReadOnlyCommand`, `parseSecurityInfoPlist`); `coordinator/mdm/config.go` |
-| Wiring and env | `coordinator/cmd/coordinator/main.go` |
+| MicroMDM client | `coordinator/mdm/client.go` (`NewClient`); `coordinator/mdm/devices.go` (`LookupDevice`); `coordinator/mdm/security_info.go` (`VerifyProviderWithUDIDObserver`); `coordinator/mdm/device_attestation.go` (`RequestDeviceAttestation`); `coordinator/mdm/webhook.go` (`HandleWebhook`); `coordinator/mdm/command_policy.go` (`assertReadOnlyCommand`); `coordinator/mdm/plist.go` (`parseSecurityInfoPlist`); `coordinator/mdm/config.go` |
+| Wiring and env | `coordinator/cmd/coordinator/provider_trust.go` (`configureProviderTrust`) |
 | Reverse proxy | `coordinator/Caddyfile`; `deploy/gcp/vm-startup.sh` |
 | Provider CLI | `provider-swift/Sources/darkbloom/EnrollCommand.swift`, `provider-swift/Sources/darkbloom/UnenrollCommand.swift`; `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`; `provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift` |
 

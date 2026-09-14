@@ -1,5 +1,18 @@
 package api
 
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+)
+
 // Timeout-class ladder cap regression tests (2026-09-01 congestion collapse).
 //
 // A first-chunk TIMEOUT (slow provider, reason "first_chunk_timeout") used to
@@ -13,18 +26,6 @@ package api
 // timeout-class ladder the same way maxCapacityClassRetries caps capacity
 // failovers, exhausting into the existing synthetic-timeout → 429
 // reclassification (classifyExhaustedStatus).
-
-import (
-	"context"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
-	"strings"
-	"testing"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/registry"
-)
 
 // TestDispatch_FirstChunkTimeoutLadder_CapsAtThreeAttempts drives the REAL
 // dispatch loop (dispatchState.run, per the TestDispatch_TTFTRejectAttempt0
@@ -57,32 +58,26 @@ func TestDispatch_FirstChunkTimeoutLadder_CapsAtThreeAttempts(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
 	deadline := 150 * time.Millisecond
-	d := &dispatchState{
-		s:                     srv,
-		w:                     w,
-		r:                     r,
-		model:                 model,
-		publicModel:           model,
-		rawBody:               []byte(`{"model":"` + model + `"}`),
-		consumerKey:           "test-key",
-		estimatedPromptTokens: 6,
-		requestedMaxTokens:    64,
+	request := dispatch.Request{
+		Model:                 model,
+		PublicModel:           model,
+		RawBody:               []byte(`{"model":"` + model + `"}`),
+		ConsumerKey:           "test-key",
+		EstimatedPromptTokens: 6,
+		RequestedMaxTokens:    64,
 		// ReceivedAt unstamped: per-attempt relative timers (invariant 5).
-		timing:   &registry.RequestTiming{},
-		deadline: deadline,
+		Timing:   &registry.RequestTiming{},
+		Deadline: deadline,
 		// Keep the speculative launch point far past the per-attempt deadline
 		// so every attempt performs exactly ONE dispatch (no backup race).
-		speculativeAt:     10 * deadline,
-		refundReservation: func() {},
-		excludeProviders:  map[string]struct{}{},
+		SpeculativeAt:     10 * deadline,
+		RefundReservation: func() {},
 	}
 
 	start := time.Now()
 	srv.observeRequestOutcome(func(ow http.ResponseWriter, incoming *http.Request) {
-		d.w = ow
-		d.r = incoming
-		d.profile = srv.newRequestProfile(incoming, model, model, false)
-		d.run()
+		request.Profile = srv.newRequestProfile(incoming, model, model, false)
+		srv.inferenceDispatch().Run(ow, incoming, request)
 	})(w, r)
 	elapsed := time.Since(start)
 
@@ -107,9 +102,6 @@ func TestDispatch_FirstChunkTimeoutLadder_CapsAtThreeAttempts(t *testing.T) {
 		t.Errorf("total dispatches = %d, want exactly %d — the timeout ladder must stop at the cap, not walk all %d providers",
 			total, maxFirstChunkTimeoutRetries, fleet)
 	}
-	if d.firstChunkTimeoutRetries != maxFirstChunkTimeoutRetries {
-		t.Errorf("firstChunkTimeoutRetries = %d, want %d", d.firstChunkTimeoutRetries, maxFirstChunkTimeoutRetries)
-	}
 	// Sanity on the wall clock: 3 timed-out windows plus overhead, never the
 	// 5-provider (or 64-attempt) walk.
 	if elapsed > 4*time.Second {
@@ -124,52 +116,5 @@ func TestDispatch_FirstChunkTimeoutLadder_CapsAtThreeAttempts(t *testing.T) {
 	}
 	if outcome.Termination != "rejected" || outcome.NormalizedCode != "ext_first_content_timeout" || timeouts != maxFirstChunkTimeoutRetries {
 		t.Fatalf("timeout accounting %+v", outcome)
-	}
-}
-
-// TestShouldStopFailover_TimeoutCapCountsOnlySyntheticTimeouts pins the
-// counting rule at the unit level: only the untyped 504 (the dispatch loop's
-// synthetic first-chunk timeout discriminator) consumes the timeout allowance;
-// a TYPED provider 504 (safety_deadline — a real provider terminal) keeps its
-// existing fault-failover behavior and consumes nothing.
-func TestShouldStopFailover_TimeoutCapCountsOnlySyntheticTimeouts(t *testing.T) {
-	srv, _ := testServer(t)
-	d := &dispatchState{
-		s:                srv,
-		model:            "cap-count-model",
-		excludeProviders: map[string]struct{}{},
-	}
-
-	// A typed provider 504 must not touch the timeout counter.
-	d.setLastError("safety_deadline: safety ceiling expired", http.StatusGatewayTimeout)
-	d.lastErrTerminalCause = terminalCauseSafetyDeadline
-	if d.shouldStopFailover() {
-		t.Fatal("typed provider 504 must keep the existing fault failover, not stop")
-	}
-	if d.firstChunkTimeoutRetries != 0 {
-		t.Fatalf("typed 504 consumed the timeout allowance: %d", d.firstChunkTimeoutRetries)
-	}
-
-	// Synthetic timeouts stop at exactly maxFirstChunkTimeoutRetries.
-	for i := 1; i < maxFirstChunkTimeoutRetries; i++ {
-		d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
-		if d.shouldStopFailover() {
-			t.Fatalf("synthetic timeout %d stopped early (cap is %d)", i, maxFirstChunkTimeoutRetries)
-		}
-	}
-	d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
-	if !d.shouldStopFailover() {
-		t.Fatalf("synthetic timeout %d must stop the ladder", maxFirstChunkTimeoutRetries)
-	}
-
-	// The exhausted ladder must reclassify the latched synthetic 504 to the
-	// retryable 429 with the closed first_chunk_timeout reason.
-	failure, sticky := d.terminalFailureForExhaustion()
-	code, reason, reclassified, dominance := d.resolveDominantExhaustedStatus(failure, sticky)
-	if code != http.StatusTooManyRequests || reason != "first_chunk_timeout" || !reclassified {
-		t.Fatalf("exhausted classification = (%d, %q, %v), want (429, first_chunk_timeout, true)", code, reason, reclassified)
-	}
-	if dominance != exhaustedUndecided {
-		t.Fatalf("dominance = %d, want exhaustedUndecided (plain reclassified timeout)", dominance)
 	}
 }

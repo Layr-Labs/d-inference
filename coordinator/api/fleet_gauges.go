@@ -1,6 +1,10 @@
 package api
 
-import "sync"
+import (
+	"context"
+	"sync"
+	"time"
+)
 
 // Only the immediately preceding set is retained. A departing model gets one
 // zero sample, then leaves the tracker rather than accumulating forever.
@@ -67,5 +71,90 @@ func (s *Server) emitPerModelQueueGauges(servedModels map[string]int64) {
 		tags := []string{"model:" + model}
 		s.ddGauge(metricQueueDepthByModel, 0, tags)
 		s.ddGauge(metricQueueOldestAgeMs, 0, tags)
+	}
+}
+
+// registerDefaultGauges wires live-computed gauges (fleet size, etc.) into
+// the metrics registry at construction time.
+func (s *Server) registerDefaultGauges() {
+	s.metrics.RegisterGauge("providers_online", func() float64 {
+		return float64(s.registry.ProviderCount())
+	})
+	s.metrics.RegisterGauge("min_provider_version_set", func() float64 {
+		if s.minProviderVersion != "" {
+			return 1
+		}
+		return 0
+	})
+	s.registerExactCacheGauges()
+}
+
+// StartDDGaugeLoop periodically pushes gauge values to DogStatsD. Gauges
+// are point-in-time values and must be pushed regularly (not on-demand like
+// counters). Call as a goroutine; stops when ctx is cancelled.
+func (s *Server) StartDDGaugeLoop(ctx context.Context) {
+	if s.dd == nil {
+		return
+	}
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.ddGauge("providers.online", float64(s.registry.OnlineCount()), nil)
+			// APNs code-identity coverage — watch this climb during the grace
+			// window before letting APNS_ENFORCE_AFTER pass.
+			codeAttested, _ := s.registry.CodeAttestationCoverage()
+			s.ddGauge("attestation.code_attested", float64(codeAttested), nil)
+			enforced := 0.0
+			if s.registry.CodeAttestationEnforced() {
+				enforced = 1.0
+			}
+			s.ddGauge("attestation.code_enforced", enforced, nil)
+			perModel := s.registry.ModelProviderSnapshot()
+			for model, count := range perModel {
+				s.ddGauge("providers.per_model", float64(count), []string{"model:" + model})
+			}
+			// Per-model queue depth/age (fleet_gauges.go).
+			s.emitPerModelQueueGauges(perModel)
+			for ver, count := range s.registry.ProviderCountByVersion() {
+				s.ddGauge("providers.per_version", float64(count), []string{"version:" + ver})
+			}
+			// Trust-state cohort gauges — alert when self_signed/untrusted grows.
+			for _, b := range s.registry.ProviderCountByTrustStatus() {
+				s.ddGauge("providers.by_trust_status", float64(b.Count),
+					[]string{"trust_level:" + b.TrustLevel, "status:" + b.Status})
+			}
+			// Stuck-cohort breakdown — distinguishes never-enrolled from
+			// enrolled-but-SecurityInfo-timing-out so we know if the problem is
+			// provider-side enrollment or APNs/MDM delivery.
+			for reason, count := range s.registry.ProviderCountByMDMFailure() {
+				s.ddGauge("providers.by_mdm_failure", float64(count), []string{"reason:" + reason})
+			}
+			if s.minProviderVersion != "" {
+				s.ddGauge("coordinator.min_provider_version_set", 1, []string{"min_version:" + s.minProviderVersion})
+			}
+			if q := s.registry.Queue(); q != nil {
+				s.ddGauge("request_queue.depth", float64(q.TotalSize()), nil)
+			}
+			s.emitExactCacheDDGauges()
+			s.emitStoreCacheGauges()
+			// Network utilization — demand/capacity across the warm-serving and
+			// token-budget axes, plus a per-model breakdown.
+			util := s.registry.NetworkUtilizationSnapshot()
+			s.ddGauge("utilization.network", util.Utilization, nil)
+			s.ddGauge("utilization.warm", util.WarmUtilization, nil)
+			s.ddGauge("utilization.token_budget", util.TokenBudgetUtilization, nil)
+			s.ddGauge("utilization.bottleneck", util.BottleneckUtilization, nil)
+			s.ddGauge("capacity.tps", util.CapacityTPS, nil)
+			s.ddGauge("capacity.demand_concurrency", util.DemandConcurrency, nil)
+			s.ddGauge("capacity.serving_capacity", util.ServingCapacity, nil)
+			s.ddGauge("capacity.spill_arrival_rate", util.SpillArrivalRate, nil)
+			for _, m := range util.Models {
+				s.ddGauge("utilization.model", m.Utilization, []string{"model:" + m.Model})
+			}
+		}
 	}
 }

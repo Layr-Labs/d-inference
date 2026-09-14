@@ -124,24 +124,9 @@ func (r *Reputation) Score() float64 {
 		jobRate = 0.5 // neutral if no jobs yet
 	}
 
-	// Uptime ratio (30%) — 24-hour expected-uptime baseline, FLOORED at the
-	// neutral 0.5 during ramp-up. Uptime only ever *adds* above the legacy
-	// baseline: it never pulls a provider below the score it had when uptime
-	// was untracked (== 0.5). Without this floor a freshly-connected or
-	// recently-restarted provider (small TotalUptime → tiny ratio) would score
-	// BELOW the old 0.85 cap for ~12h and be derouted — and because prod uses
-	// the in-memory store, TotalUptime resets on every coordinator restart /
-	// provider reconnect, so that penalty would re-apply fleet-wide.
-	uptimeRate := 0.5
-	expectedUptime := 24 * time.Hour
-	if r.TotalUptime > 0 {
-		if ratio := float64(r.TotalUptime) / float64(expectedUptime); ratio > uptimeRate {
-			uptimeRate = ratio
-		}
-		if uptimeRate > 1.0 {
-			uptimeRate = 1.0
-		}
-	}
+	// Uptime contributes above a neutral floor during the 24-hour ramp;
+	// newly connected providers are never penalized for missing uptime history.
+	uptimeRate := min(1.0, max(0.5, float64(r.TotalUptime)/float64(24*time.Hour)))
 
 	// Challenge pass rate (20%)
 	var challengeRate float64
@@ -170,14 +155,7 @@ func (r *Reputation) Score() float64 {
 
 	score := 0.4*jobRate + 0.3*uptimeRate + 0.2*challengeRate + 0.1*responseTimeFactor
 
-	// Clamp to [0.0, 1.0]
-	if score < 0.0 {
-		return 0.0
-	}
-	if score > 1.0 {
-		return 1.0
-	}
-	return score
+	return min(1.0, max(0.0, score))
 }
 
 // RecordJobSuccess records a successful job completion for the provider's
@@ -196,10 +174,8 @@ func (r *Reputation) Score() float64 {
 // same exposure the uptime counter already had. Failures still persist
 // immediately (RecordJobFailure).
 func (r *Registry) RecordJobSuccess(providerID string, latency time.Duration) {
-	r.mu.RLock()
-	p, ok := r.providers[providerID]
-	r.mu.RUnlock()
-	if !ok {
+	p := r.GetProvider(providerID)
+	if p == nil {
 		return
 	}
 
@@ -226,10 +202,8 @@ func (r *Registry) RecordLatency(providerID string, latency time.Duration) {
 	if latency <= 0 {
 		return
 	}
-	r.mu.RLock()
-	p, ok := r.providers[providerID]
-	r.mu.RUnlock()
-	if !ok {
+	p := r.GetProvider(providerID)
+	if p == nil {
 		return
 	}
 	p.RecordLatency(latency)
@@ -251,10 +225,8 @@ func (p *Provider) RecordLatency(latency time.Duration) {
 
 // RecordJobFailure records a failed job for the provider's reputation.
 func (r *Registry) RecordJobFailure(providerID string) {
-	r.mu.RLock()
-	p, ok := r.providers[providerID]
-	r.mu.RUnlock()
-	if !ok {
+	p := r.GetProvider(providerID)
+	if p == nil {
 		return
 	}
 

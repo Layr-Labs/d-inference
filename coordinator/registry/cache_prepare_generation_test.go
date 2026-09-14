@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/cacheattempt"
 )
 
 func generationTestConfig(mode string) CacheRoutingConfig {
@@ -71,11 +72,11 @@ func TestCachePreparePublicationRevalidatesOwnership(t *testing.T) {
 				t.Fatal("new request closed")
 			}
 			tracker := r.cacheRouting
-			owner := &cacheAttemptOwner{tracker: tracker, generation: tracker.generation, nonce: "staged-nonce", scope: "scope"}
+			owner := cacheattempt.New(tracker.generation, tracker.directory, cacheattempt.Metadata{Nonce: "staged-nonce", Scope: "scope"})
 			revision := p.prefixCacheRevision
-			tracker.mu.Lock()
-			tracker.storeAttemptLocked(owner.nonce, cacheAttempt{RequestID: pr.RequestID, ProviderID: p.ID, Provider: p, Model: pr.Model, ExpiresAt: time.Now().Add(time.Hour)})
-			tracker.mu.Unlock()
+
+			tracker.directory.RegisterAttempt("staged-nonce", cacheAttempt{RequestID: pr.RequestID, ProviderID: p.ID, Provider: p, Model: pr.Model, ExpiresAt: time.Now().Add(time.Hour)})
+
 			switch change {
 			case "reconfigure", "off":
 				mode := CacheRoutingOn
@@ -99,23 +100,23 @@ func TestCachePreparePublicationRevalidatesOwnership(t *testing.T) {
 				r.MarkCacheAttemptTerminal(pr)
 			case "replacement":
 				next, _ := pr.beginCachePreparation()
-				replacement := &cacheAttemptOwner{tracker: tracker, generation: tracker.generation, nonce: "replacement", scope: "new"}
+				replacement := cacheattempt.New(tracker.generation, tracker.directory, cacheattempt.Metadata{Nonce: "replacement", Scope: "new"})
 				if !pr.publishCacheAttempt(next, replacement) {
 					t.Fatal("replacement failed")
 				}
 			}
-			published := r.publishCacheAttempt(pr, p, revision, ticket, owner)
+			published := r.publishCacheAttempt(pr, p, revision, ticket, tracker, owner)
 			if published != (change == "none") {
 				t.Fatalf("publication=%v", published)
 			}
-			tracker.mu.Lock()
-			_, retained := tracker.attempts[owner.nonce]
-			tracker.mu.Unlock()
+
+			_, retained := tracker.directory.AttemptDeadline("staged-nonce")
+
 			if retained != published {
 				t.Fatal("failed publication retained original nonce")
 			}
 			if change == "replacement" {
-				if got := pr.cacheAttempt.Load(); got == nil || got.nonce != "replacement" {
+				if got, present := pr.CacheAttemptSnapshot().Metadata(); !present || got.Nonce != "replacement" {
 					t.Fatal("old publication overwrote newer request owner")
 				}
 			} else if pr.CacheRoutingParticipates() != published {
@@ -174,6 +175,7 @@ func TestCacheOldSnapshotCannotChangeNewAttemptParticipation(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := pr.CacheAttemptSnapshot()
+	oldMetadata, _ := old.Metadata()
 	if err := r.PrepareCacheAttempt(pr, p); err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +185,7 @@ func TestCacheOldSnapshotCannotChangeNewAttemptParticipation(t *testing.T) {
 	}
 	var message protocol.InferenceRequestMessage
 	pr.CacheAttemptSnapshot().ApplyTo(&message)
-	if message.CacheReceiptNonce == "" || message.CacheReceiptNonce == old.owner.nonce {
+	if message.CacheReceiptNonce == "" || message.CacheReceiptNonce == oldMetadata.Nonce {
 		t.Fatal("replacement did not retain its nonce")
 	}
 	r.ForgetCacheAttempt(pr)
@@ -201,11 +203,12 @@ func TestCacheTerminalRetainsReceiptGraceButRevokesQueue(t *testing.T) {
 	if !r.ApplyPrefixCacheReadyV2(p.ID, ready) {
 		t.Fatal("terminal discarded authenticated late donor receipt")
 	}
-	owner := snapshot.owner
-	owner.tracker.mu.Lock()
-	attempt, exists := owner.tracker.attempts[owner.nonce]
-	owner.tracker.mu.Unlock()
-	if !exists || time.Until(attempt.ExpiresAt) > cacheRoutingAttemptTTL {
+	metadata, _ := snapshot.Metadata()
+	tracker := r.cacheRouting
+
+	deadline, exists := tracker.directory.AttemptDeadline(metadata.Nonce)
+
+	if !exists || time.Until(deadline) > cacheRoutingAttemptTTL {
 		t.Fatal("terminal did not shorten original attempt grace")
 	}
 	if !pr.CacheRoutingParticipates() {
@@ -214,7 +217,7 @@ func TestCacheTerminalRetainsReceiptGraceButRevokesQueue(t *testing.T) {
 	if err := r.PrepareCacheAttempt(pr, p); err != nil {
 		t.Fatal(err)
 	}
-	if pr.cacheAttempt.Load() != nil {
+	if _, present := pr.CacheAttemptSnapshot().Metadata(); present {
 		t.Fatal("terminal request reopened cache preparation")
 	}
 }
@@ -261,9 +264,9 @@ func TestCachePrepareReconfigureCancelConcurrent(t *testing.T) {
 	r.mu.RLock()
 	tracker := r.cacheRouting
 	r.mu.RUnlock()
-	tracker.mu.Lock()
-	remaining := len(tracker.attempts)
-	tracker.mu.Unlock()
+
+	remaining := tracker.directory.Snapshot().Attempts
+
 	if remaining != 0 {
 		t.Fatalf("cleanup left %d current-generation attempts", remaining)
 	}

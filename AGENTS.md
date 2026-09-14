@@ -6,40 +6,84 @@ Darkbloom is a decentralized private inference network for Apple Silicon Macs. C
 
 ```text
 coordinator/          Go control plane (packages live at top level, not internal/)
-├── cmd/coordinator/  main service entrypoint
+├── cmd/coordinator/  startup composition and shutdown (main.go); subsystem setup beside it
 ├── api/              HTTP + WebSocket handlers
-│   ├── consumer.go         OpenAI-compatible chat/completions/responses + Anthropic messages
-│   ├── provider.go         provider registration, heartbeats, attestation, relay
-│   ├── billing_handlers.go Stripe/referral/pricing endpoints
-│   ├── device_auth.go      device code flow for linking providers to user accounts
+│   ├── inference_ingress.go live request-owner bindings for all four inference endpoints
+│   ├── provider.go         provider WS upgrade and attestation roster
+│   ├── requestauth/      credential middleware, shared API-key cache and linked-user identity
+│   ├── authentication.go current credential/store bindings for the router
+│   ├── billing/          billing/referral/pricing/payout HTTP controllers and tests
+│   ├── billing_controller.go shared service, store, cache and auth bindings
+│   ├── catalog/          model publishing, discovery, aliases and their tests
+│   ├── catalog_controller.go shared catalog bindings and runtime publication callback
+│   ├── inference_dispatch.go current service and observation bindings for dispatch
+│   ├── accounts/           key management/policy, provider device login and invites
+│   ├── account_controller.go current account-store/config/auth-cache bindings
+│   ├── authorization.go    shared in-handler admin authorization
+│   ├── httprequest/        bounded JSON decoding shared by controllers
 │   ├── enroll.go           MDM enrollment profile generation
-│   ├── invite_handlers.go  invite code admin/user flows
-│   ├── release_handlers.go binary release registration (GitHub Actions integration)
-│   ├── chunk_key_cache.go  per-request X25519 shared-key memoization for chunk decrypt
-│   ├── stats.go            public network stats
+│   ├── releases/          release HTTP, artifact validation and discovery (Controller)
+│   ├── readiness/         shared ingress count, drain control and readiness (Controller)
+│   ├── statearchive/      gated state archive download (Controller)
+│   ├── admin_auth.go       admin authorization and Privy OTP endpoints
+│   ├── provider_frames.go shared inference-frame service and live observation bindings
+│   ├── network/            public stats, geography, totals, series and leaderboard refresh state
+│   ├── accountfleet/       account provider views, earnings summaries and offline removal
+│   ├── operations/         operator telemetry reads, bounded queries, CSV/NDJSON exports
 │   ├── types/              canonical JSON shapes for consumer-facing endpoints
-│   └── server.go           route wiring, auth middleware, version gate
+│   ├── routes.go           HTTP/WS route registration and controller middleware chains
+│   ├── http_middleware.go  global body caps, CORS and panic recovery
+│   ├── http_logging.go     request IDs, access logs and bounded HTTP metric labels
+│   ├── request_rate_limits.go account/key RPM; token_admission.go configures token limiters
+│   └── server.go           shared server state, construction and lifecycle
 ├── apns/             APNs-push code-identity attestation
 ├── attestation/      Secure Enclave + MDA verification
 ├── auth/             Privy JWT integration
 ├── billing/          Stripe (deposits + Connect payouts), referrals
 ├── config/           AppConfig aggregation of per-package configs
 ├── env/              shared env-var helpers/constants
+├── inference/        ingress/ (consumer preparation, media and token/capacity admission),
+│                     toolpolicy/ (request policy), response/ (endpoint formatting and relays),
+│                     settlement/ (reservation, refunds and completion accounting),
+│                     attempt/ (cancellation, terminal policy and provider feedback),
+│                     dispatch/ (provider preparation, queue/hedge/failover and commit),
+│                     providerframe/ (accepted/chunk/terminal handling and shared-key cache)
 ├── mdm/              MicroMDM client + webhook handling
 ├── payments/         ledger + pricing (+ baserewards/)
+├── providercontrol/session/ per-connection frame dispatch, registration, heartbeat and ordered teardown (Session)
+├── providercontrol/trustreuse/ durable device evidence, revocation journal/replay and continuity (Manager)
+├── providercontrol/challenge/ connection-local nonces, challenge transport and ordered verification (Session, Verifier)
+├── providercontrol/mdmscheduler/ durable MDM/MDA queue, claims, worker budget and exact command ownership (Scheduler)
+├── providercontrol/verification/ signed registration, reconnect recovery and MDM/MDA evidence checks (Verifier)
+├── providercontrol/codeidentity/ code proofs, APNs budgets/nonces, encrypted resume and continuity (Manager)
+├── providercontrol/releasepolicy/ active release generations, binary allowlists and runtime manifest (Manager)
 ├── profilesign/      CMS-signing of .mobileconfig enrollment profiles
 ├── protocol/         WebSocket message types shared with provider (type_scan.go: single-parse frame decode)
 ├── ratelimit/        rate limiting
 ├── registry/         provider registry, queueing, routing, reputation, token-budget admission,
-│                     warm-pool controller, two-lane provider WS writer (provider_writer.go),
+│                     warmpool/ (controller, pressure and target policy),
+│                     providerwriter/ (two-lane WS writer, handoff and watchdog),
+│                     faultstate/ (identity gates, cooldowns, breaker, ejection and reset history),
+│                     admission/ (immutable capacity math), providerversion/ (shared interpreter),
+│                     cacheattempt/ (request lifetime), cachedirectory/ (receipt/holder transactions),
+│                     modelloads/ (session command clocks and fleet plan gate),
+│                     dispatchplan/ (private shortlist, quote correlation and probe settlement),
+│                     routingcost/ (shared latency tuning, calibration and snapshot calculations),
 │                     routingsim/ (trace-driven routing simulation harness)
 ├── saferun/          panic-safe goroutine runners
 ├── stateexport/      consistent encrypted archive of MicroMDM (+ legacy step-ca) state (migration)
-├── store/            in-memory or Postgres persistence
-├── telemetry/        telemetry event emitter (process logs + Datadog forwarding)
+├── store/            compatibility facade for persistence
+│   ├── contracts/    domain records and small persistence interfaces
+│   ├── memory/       one-lock development/test backend
+│   ├── postgres/     durable domain operations, pool and gated backfills
+│   │   └── schema/   ordered startup DDL
+│   └── cache/        bounded user/model lookup decorator
+├── telemetry/        event emitter, metrics/, profiler/, routequeue/, profilequeue/, outcomequeue/
 ├── datadog/          Datadog APM / DogStatsD / Logs API client
 ├── deploy/           container entrypoint (start.sh)
-└── internal/e2e/     X25519 request-encryption helpers (+ cross-compat/tamper tests)
+└── internal/
+    ├── e2e/         X25519 request-encryption helpers (+ cross-compat/tamper tests)
+    └── inferencefixture/ shared test-only request bodies and independent estimator
 
 e2e/                  System-level E2E testing framework
 ├── integration_test.go  14 E2E tests (streaming, billing, encryption, attestation, etc.)
@@ -101,6 +145,8 @@ docs/                 how-tos, runbooks, reference, architecture, design records
                       model registration (register-model.yml)
 ```
 
+Coordinator startup: `coordinator/cmd/coordinator/main.go` (`main`) keeps resource creation and shutdown order visible. Setup functions live in `storage.go`, `registry.go`, `serving.go`, `routing_admission.go`, `routing_deadlines.go`, `rate_limits.go`, `release_policy.go`, `accounts.go`, `provider_trust.go`, `profiling.go`, `prompt_contract.go` and `background.go` in that same command package. See [the startup sequence and source map](docs/architecture/components/coordinator.md#startup-sequence).
+
 ## Current Surface Area
 
 - Coordinator HTTP routes include `POST /v1/chat/completions`, `POST /v1/responses`, `POST /v1/completions`, `POST /v1/messages`, `GET /v1/models`, `GET /v1/models/capacity`, billing/pricing endpoints, invite flows, stats, enrollment, device authorization, and release registration endpoints.
@@ -109,7 +155,7 @@ docs/                 how-tos, runbooks, reference, architecture, design records
 - Billing logic is split between `coordinator/payments` (ledger + pricing) and `coordinator/billing` (Stripe, referrals).
 - Providers serve text inference through the Swift `darkbloom` CLI with continuous batching via MLX-Swift.
 - Model registry data is DB-backed in the coordinator and points to R2 manifests under `https://models.darkbloom.ai`; model bytes are not hardcoded in the provider or UI.
-- Streaming hot path: provider frames are decoded in a single parse (`coordinator/protocol/type_scan.go` scans the `type` key; malformed input falls back to a full envelope decode); per-request X25519 shared keys are memoized for chunk decryption and forgotten on request terminal (`coordinator/api/chunk_key_cache.go`); all writes to a provider WebSocket go through a two-lane writer (`coordinator/registry/provider_writer.go`) with a per-connection write watchdog — control frames (challenges, cancels, trust status) take strict (non-preemptive) priority over data frames, FIFO holds only within a lane, and `WriteText` blocks until the frame is on the wire.
+- Streaming hot path: provider frames are decoded in a single parse (`coordinator/protocol/type_scan.go` scans the `type` key; malformed input falls back to a full envelope decode); per-request X25519 shared keys are memoized for chunk decryption and forgotten on request terminal (`coordinator/inference/providerframe/chunk_keys.go`); all writes to a provider WebSocket go through a two-lane owner (`coordinator/registry/providerwriter/`, bound by `coordinator/registry/provider_writer.go`) with a per-connection write watchdog — control frames (challenges, cancels, trust status) take strict (non-preemptive) priority over data frames, FIFO holds only within a lane, and `WriteText` blocks until the frame is on the wire.
 - Observability: Datadog metrics (DogStatsD) for attestation, routing, billing, fleet version, and provider capacity. X-Timing header decomposes per-request latency.
 
 ## Building And Testing
@@ -197,7 +243,7 @@ Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
 
 ## Important Sync Points
 
-- Protocol changes must be mirrored in both `provider-swift/Sources/ProviderCore/Protocol/` and `coordinator/protocol/messages.go`.
+- Protocol changes must be mirrored in both `provider-swift/Sources/ProviderCore/Protocol/` and `coordinator/protocol/`.
 - Telemetry wire types live in three places and MUST stay aligned:
   - `coordinator/protocol/telemetry.go` (canonical),
   - `provider-swift/Sources/ProviderCore/Telemetry/` (Swift mirror),
@@ -221,7 +267,7 @@ Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
 - Store selection (`cmd/coordinator/main.go`): the coordinator uses the **Postgres** store whenever `EIGENINFERENCE_DATABASE_URL` is set (prod does — durable across restarts/deploys), and refuses to start without it unless `EIGENINFERENCE_ALLOW_MEMORY_STORE=true`. The in-memory store is the dev/test fallback only (state lost on restart). Note: the live provider *registry* (WebSocket connections/attestation) is always in-process and is rebuilt on reconnect regardless of store.
 - Request queue timeout is 120 seconds. Initial attestation challenge is sent immediately on registration, then every 5 minutes.
 - Backend idle timeout is 1 hour (not 10 minutes as some comments may say).
-- `handleChunk` never silently drops streamed chunks: when a consumer's chunk buffer is full it gets one 250ms grace window (`chunkOverflowGrace`), then the request is failed with 499 and the provider's generation is cancelled.
+- `Service.Chunk` (`coordinator/inference/providerframe/chunk.go`) never silently drops streamed chunks: when a consumer's chunk buffer is full it gets one 250ms grace window (`chunkOverflowGrace`), then the request is failed with 499 and the provider's generation is cancelled.
 - `hypervisor_active` is retired (#492): current providers no longer send it, but `AttestationResponseMessage.HypervisorActive` and the canonical-status support must keep decoding so signed payloads from older (< v0.6.31) providers still verify. Remove only once the fleet version floor passes v0.6.31.
 
 ### Coordinator State Model — Multiple Overlapping Views
@@ -231,22 +277,22 @@ Provider state lives in several fields that are read by different code paths wit
 - `BackendCapacity.Slots` is **authoritative** for the scheduler when present (Swift providers). The scheduler derives `slotState`, `modelLoaded`, token budgets, and observed TPS from it. `WarmModels` is only a fallback for legacy providers without `BackendCapacity`.
 - `WarmModels` is updated by heartbeats. It is NOT consulted by `snapshotProviderLocked` or `buildCandidateWithReason` when `BackendCapacity` is non-nil. `TriggerModelSwaps` / `hasWarmProviderLocked` checks it as a fallback, and `/v1/me/providers` copies it into API responses.
 - `CurrentModel` is set from heartbeat `active_model`. A nil/omitted `active_model` means no model is loaded. Stale `CurrentModel` can cause attestation hash mismatches.
-- `pendingModelLoads` is checked by `TriggerModelSwaps` planning, cold-spill eligibility (`registry/cold_dispatch.go`), and the warm-pool controller's target math. It is NOT checked by `QuickCapacityCheck`, `ReserveProviderEx`, or `freeMemoryAdmits` — do not assume pending-load state affects routing admission.
+- `modelLoads` (`registry/modelloads/Commands`) is checked by `TriggerModelSwaps` planning, cold-spill eligibility (`registry/cold_dispatch.go`), and the warm-pool controller's target math. It is NOT checked by `QuickCapacityCheck`, `ReserveProviderEx`, or `freeMemoryAdmits` — do not assume pending-load state affects routing admission.
 - Provider-reported slot states include `"running"` (active requests), `"idle"` (loaded, no requests), `"crashed"`, `"reloading"`, and `"idle_shutdown"`. The `"idle"` state means the model IS loaded — treat it the same as `"running"` for warm detection, not as `"unknown"`.
 - Providers can hold up to `maxModelSlots` models simultaneously (default 3). Do not assume a model swap evicts all other models.
-- The provider's memory model is `UnifiedMemoryCap` (`provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift`): hard cap = 0.90 × physical RAM (always leaving ≥ 2 GiB for the OS; `DARKBLOOM_MEM_CAP_FRACTION` override). The model-load gate requires resident weights + incoming weights + headroom (the resolved activation reserve plus 1 GiB minimum KV) ≤ the cap, and a post-load guard unloads a freshly-loaded model whose measured live KV headroom is below the minimum serveable KV. The weights figure at EVERY admit-time gate (load gate, pending-load reservation, startup preload, doctor, and the coordinator's `reportedFreeForLoadAdmits`) is the scanner's padded estimate (disk × 1.2) for every model — the padding covers the LOAD TRANSIENT (shard staging exceeds steady residency). Measured post-load residency lives only in the coordinator's `servabilityMeasuredResidentGiB` (text-only artifacts; canonical values re-measured per engine release, see docs/reports/2026-08-30-activation-floor-measurements.md) and feeds only `coldTokenBudgetEstimate` — the POST-load token-budget arithmetic that converges to warm reports. The `DARKBLOOM_ACTIVATION_RESERVE_GB` env override is **raise-only against the resolved floor**; only programmatic `activationReserveBytes` values (tests) are honored as given.
-- The activation reserve inside that cap resolves **per serving set** (≥ the per-model release): `resolvedActivationReserveBytes(modelIDs:)` takes the max over advertised ∪ resident ∪ loading models of each member's **measured floor** (`measuredActivationFloorsBytes`, exact catalog-id match) with the flat 5.5 GiB default for any unmeasured member — so one unmeasured model pins the default, and vision-capable models deliberately have NO measured floor until a vision-inclusive peak is measured (the tower transient rides this reserve; text-decode evidence alone must not lower it). The resolved reserve threads through the load gate, `KVHeadroomProbe`, `GlobalKVCacheBudget` (epoch-stamped pushes — cross-actor delivery is not FIFO), engine KV grants, the heartbeat clamp, `free_for_load_gb`, and doctor **in lockstep**; a consumer left on the flat figure re-creates the admit-then-fail class this design removed. `coordinator/registry/servability.go` mirrors both tables (`servabilityActivationFloorGB` default + `servabilityModelActivationFloorsGB`, selected per (version, model) by `servabilityActivationFloor`; regimes: 3 GiB pre-0.8.0/unknown, flat 5.5 for 0.8.0 ≤ v < `servabilityPerModelFloorMinVersion`, per-model table above it — fail-open toward the larger legacy budget). **The provider table and the coordinator mirror must move in the same commit**, floors and measured weights alike; retuning either side alone silently desyncs admission (the historical score-tensor surcharge incident). A per-SHAPE/formula reserve remains banned on both sides — floors are measured constants, never modelled; the measurement convention must include a ≥ 4k-token B=8 cell (short-prompt cells under-measure the saturated envelope — see `docs/reports/2026-08-30-activation-floor-measurements.md`).
+- The provider's memory model is `UnifiedMemoryCap` (`provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift`): hard cap = 0.90 × physical RAM (always leaving ≥ 2 GiB for the OS; `DARKBLOOM_MEM_CAP_FRACTION` override). The model-load gate requires resident weights + incoming weights + headroom (the resolved activation reserve plus 1 GiB minimum KV) ≤ the cap, and a post-load guard unloads a freshly-loaded model whose measured live KV headroom is below the minimum serveable KV. The weights figure at EVERY admit-time gate (load gate, pending-load reservation, startup preload, doctor, and the coordinator's `reportedFreeForLoadAdmits`) is the scanner's padded estimate (disk × 1.2) for every model — the padding covers the LOAD TRANSIENT (shard staging exceeds steady residency). Measured post-load residency lives only in the coordinator's `servabilityMeasuredResidentGiB` (`coordinator/registry/admission/model_memory.go`) (text-only artifacts; canonical values re-measured per engine release, see docs/reports/2026-08-30-activation-floor-measurements.md) and feeds only `admission.Policy.ColdTokenBudgetEstimate` — the POST-load token-budget arithmetic that converges to warm reports. The `DARKBLOOM_ACTIVATION_RESERVE_GB` env override is **raise-only against the resolved floor**; only programmatic `activationReserveBytes` values (tests) are honored as given.
+- The activation reserve inside that cap resolves **per serving set** (≥ the per-model release): `resolvedActivationReserveBytes(modelIDs:)` takes the max over advertised ∪ resident ∪ loading models of each member's **measured floor** (`measuredActivationFloorsBytes`, exact catalog-id match) with the flat 5.5 GiB default for any unmeasured member — so one unmeasured model pins the default, and vision-capable models deliberately have NO measured floor until a vision-inclusive peak is measured (the tower transient rides this reserve; text-decode evidence alone must not lower it). The resolved reserve threads through the load gate, `KVHeadroomProbe`, `GlobalKVCacheBudget` (epoch-stamped pushes — cross-actor delivery is not FIFO), engine KV grants, the heartbeat clamp, `free_for_load_gb`, and doctor **in lockstep**; a consumer left on the flat figure re-creates the admit-then-fail class this design removed. `coordinator/registry/admission/model_memory.go` mirrors both tables (`servabilityActivationFloorGB` default + `servabilityModelActivationFloorsGB`, selected per (version, model) by `Policy.ActivationFloor`; regimes: 3 GiB pre-0.8.0/unknown, flat 5.5 for 0.8.0 ≤ v < `servabilityPerModelFloorMinVersion`, per-model table above it — fail-open toward the larger legacy budget). **The provider table and the coordinator mirror must move in the same commit**, floors and measured weights alike; retuning either side alone silently desyncs admission (the historical score-tensor surcharge incident). A per-SHAPE/formula reserve remains banned on both sides — floors are measured constants, never modelled; the measurement convention must include a ≥ 4k-token B=8 cell (short-prompt cells under-measure the saturated envelope — see `docs/reports/2026-08-30-activation-floor-measurements.md`).
 
 ### Coordinator Mutation Checklist
 
 When adding code that mutates provider state or sends commands (`load_model`, etc.):
 
-1. Enumerate every reader of the fields you're mutating (`BackendCapacity.Slots`, `WarmModels`, `CurrentModel`, `pendingModelLoads`).
+1. Enumerate every reader of the fields you're mutating (`BackendCapacity.Slots`, `WarmModels`, `CurrentModel`, `modelLoads`).
 2. Check what happens on the failure path — does state get cleaned up on disconnect, timeout, and load failure?
 3. Check concurrent access — heartbeats arrive per-provider on separate goroutines; `TriggerModelSwaps` can race with `drainQueuedRequestsForModels`.
 4. Check the cleanup path — `Disconnect()` must clear any per-provider state you add.
 5. Verify pre-existing invariants: `maxModelSlots`, heartbeat field omission semantics (`nil` vs empty), and the `UnifiedMemoryCap` load gate on the provider side.
-6. **Store read-through cache** (`store/cached.go`): `CachedStore` serves `GetUserByAccountID`/`GetUserByPrivyID` and `GetModelRegistryRecord`/`GetModelManifest` from memory and invalidates on the store mutators it overrides. Any NEW `store.Store` method that writes the `users` table or the model-registry tables must be overridden in `CachedStore` to invalidate its domain, or callers read stale data for up to the TTL. Backend-only capabilities discovered by type assertion must go through `store.As` (the decorator implements `Unwrap`).
+6. **Store read-through cache** (`store/cache/store.go`): `CachedStore` serves `GetUserByAccountID`/`GetUserByPrivyID` and `GetModelRegistryRecord`/`GetModelManifest` from memory and invalidates on the store mutators it overrides. Any NEW `store.Store` method that writes the `users` table or the model-registry tables must be overridden in `CachedStore` to invalidate its domain, or callers read stale data for up to the TTL. Backend-only capabilities discovered by type assertion must go through `store.As` (the decorator implements `Unwrap`).
 
 ## Code Structure & Modularity
 

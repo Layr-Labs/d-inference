@@ -45,12 +45,12 @@ func TestDispatchPlanRetainsBoundedLowestCostAlternates(t *testing.T) {
 	if plan.Len() != dispatchPlanMaxAlternates {
 		t.Fatalf("plan.Len()=%d, want %d (bounded)", plan.Len(), dispatchPlanMaxAlternates)
 	}
-	for i, e := range plan.entries {
+	for i, e := range plan.state.Entries() {
 		want := fmt.Sprintf("p%02d", i+1) // winner p00 excluded, ascending cost
-		if e.view.ProviderID != want {
-			t.Fatalf("entry[%d]=%q, want %q (ascending cost, winner excluded)", i, e.view.ProviderID, want)
+		if e.View.ProviderID != want {
+			t.Fatalf("entry[%d]=%q, want %q (ascending cost, winner excluded)", i, e.View.ProviderID, want)
 		}
-		if e.view.ProviderID == p.ID {
+		if e.View.ProviderID == p.ID {
 			t.Fatalf("winner %q retained as alternate", p.ID)
 		}
 	}
@@ -278,7 +278,7 @@ func TestRefreshDispatchPlanExcludesAttemptedAndRunsOnce(t *testing.T) {
 	if fp == nil || fp.ID != "a2" {
 		t.Fatalf("refresh winner=%v, want a2 (w and a1 attempted)", fp)
 	}
-	if fresh == nil || fresh.Len() != 1 || fresh.entries[0].view.ProviderID != "a3" {
+	if fresh == nil || fresh.Len() != 1 || fresh.state.Entries()[0].View.ProviderID != "a3" {
 		t.Fatalf("fresh plan=%+v, want single a3 alternate", fresh)
 	}
 	if !plan.RefreshUsed() || !fresh.RefreshUsed() {
@@ -533,7 +533,7 @@ func TestCommitRejectsExpiredFirstContentDeadline(t *testing.T) {
 
 // TestHeartbeatResyncRestoresProviderReportedTruth: while a reservation is in
 // the heartbeat dark window, its coordinator-side debit gates admission; once
-// the provider's heartbeat reports the admitted work, committedTokenBudget
+// the provider's heartbeat reports the admitted work, admission.CommittedTokenBudget
 // covers the pending entry and coordinatorExtra drops to zero — the same
 // in-flight tokens are charged exactly once, per the provider's own report.
 func TestHeartbeatResyncRestoresProviderReportedTruth(t *testing.T) {
@@ -554,7 +554,7 @@ func TestHeartbeatResyncRestoresProviderReportedTruth(t *testing.T) {
 	}
 
 	// Heartbeat re-sync: the provider now reports A's 2,500 tokens as active.
-	// A is STILL coordinator-pending, but committedTokenBudget covers it, so a
+	// A is STILL coordinator-pending, but admission.CommittedTokenBudget covers it, so a
 	// 1,400-token request fits the remaining 3,900-2,500 exactly — the debit
 	// is not double-counted on top of the provider's report.
 	p.mu.Lock()

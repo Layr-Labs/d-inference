@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -16,7 +17,7 @@ import (
 // serviceRequest builds a request whose context carries a service-role user.
 func serviceRequest(accountID string) *http.Request {
 	user := &store.User{AccountID: accountID, Role: store.RoleService}
-	ctx := context.WithValue(context.Background(), ctxKeyConsumer, accountID)
+	ctx := requestcontext.WithAccountID(context.Background(), accountID)
 	ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
 	return httptest.NewRequest("POST", "/v1/chat/completions", nil).WithContext(ctx)
 }
@@ -42,7 +43,7 @@ func TestRateLimitServiceUsesElevatedLimiter(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/v1/chat/completions", nil).
-			WithContext(context.WithValue(context.Background(), ctxKeyConsumer, "normie"))
+			WithContext(requestcontext.WithAccountID(context.Background(), "normie"))
 		h(rec, req)
 		if rec.Code == http.StatusTooManyRequests {
 			throttled = true
@@ -102,7 +103,7 @@ func TestAdminSetUserRole(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPut, "/v1/admin/users/role", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer admin-key")
 		rec := httptest.NewRecorder()
-		srv.handleAdminSetUserRole(rec, req)
+		srv.billingController().AdminSetUserRole(rec, req)
 		return rec
 	}
 
@@ -139,7 +140,7 @@ func TestAdminSetUserRoleRequiresAdmin(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/v1/admin/users/role", strings.NewReader(`{"account_id":"acct-or","role":"service"}`))
 	req.Header.Set("Authorization", "Bearer wrong-key")
 	rec := httptest.NewRecorder()
-	srv.handleAdminSetUserRole(rec, req)
+	srv.billingController().AdminSetUserRole(rec, req)
 	if rec.Code == http.StatusOK {
 		t.Errorf("non-admin got %d, want non-200", rec.Code)
 	}
@@ -156,7 +157,7 @@ func TestAdminSetUserPlatformFee(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPut, "/v1/admin/users/platform-fee", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer admin-key")
 		rec := httptest.NewRecorder()
-		srv.handleAdminSetUserPlatformFee(rec, req)
+		srv.billingController().AdminSetUserPlatformFee(rec, req)
 		return rec
 	}
 

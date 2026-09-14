@@ -42,6 +42,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"io"
 	"mime"
 	"net/http"
@@ -348,8 +349,8 @@ func (w *sealingResponseWriter) flushCompleteEvents() {
 		}
 		encoded := base64.StdEncoding.EncodeToString(sealed)
 		n, writeErr := fmt.Fprintf(w.inner, "data: %s\n\n", encoded)
-		markContentWrite(w.inner, generatedContentSSE(event), n, len(encoded)+8, writeErr)
-		markResponseTerminalWrite(w.inner, responseStreamTerminals(event), n, len(encoded)+8, writeErr)
+		markContentWrite(w.inner, response.GeneratedContentSSE(event), n, len(encoded)+8, writeErr)
+		markResponseTerminalWrite(w.inner, response.ResponseStreamTerminals(event), n, len(encoded)+8, writeErr)
 	}
 }
 
@@ -361,8 +362,8 @@ func (w *sealingResponseWriter) finish() {
 		// (rare — most servers terminate with `data: [DONE]\n\n`), seal and
 		// emit it now to avoid losing data.
 		if w.sseScratch.Len() > 0 {
-			content := generatedContentSSE(w.sseScratch.Bytes())
-			terminals := responseStreamTerminals(w.sseScratch.Bytes())
+			content := response.GeneratedContentSSE(w.sseScratch.Bytes())
+			terminals := response.ResponseStreamTerminals(w.sseScratch.Bytes())
 			sealed, err := sealBytes(w.sseScratch.Bytes(), w.clientPub, w.coordPriv)
 			if err != nil {
 				markEgressError(w.inner)
@@ -399,8 +400,8 @@ func (w *sealingResponseWriter) finish() {
 		w.inner.Header().Set("X-Eigen-Sealed-Kid", w.kid)
 		w.inner.WriteHeader(w.statusCode)
 		n, writeErr := w.inner.Write(envelope)
-		markContentWrite(w.inner, generatedContentJSON(w.bodyBuf.Bytes()), n, len(envelope), writeErr)
-		markResponseTerminalWrite(w.inner, responseBodyTerminals(w.bodyBuf.Bytes()), n, len(envelope), writeErr)
+		markContentWrite(w.inner, response.GeneratedContentJSON(w.bodyBuf.Bytes()), n, len(envelope), writeErr)
+		markResponseTerminalWrite(w.inner, response.ResponseBodyTerminals(w.bodyBuf.Bytes()), n, len(envelope), writeErr)
 		return
 	}
 }

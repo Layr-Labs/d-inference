@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-13 · commit `a1f3c09c8`
+> Last updated: 2026-09-14 · commit `5f2c53f32`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -18,6 +18,12 @@ Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 Profiler wire changes require both coordinator and provider builds; the shared
 Go/Swift fixture and focused checks are described in [test.md](test.md) and
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
+
+The coordinator's persistence packages compile through the normal Go build.
+`coordinator/store` retains existing caller imports; backend code lives under
+`store/memory`, `store/postgres` and `store/cache`, with shared records in
+`store/contracts`. The [storage code map](../architecture/storage.md#code-map)
+identifies each owner; changing this layout adds no migration or startup flag.
 
 ## Prerequisites
 
@@ -48,7 +54,9 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 | Path | Toolchain | Notes |
 |---|---|---|
 | `go.mod` (repo root) | Go | Single module `github.com/eigeninference/d-inference`; contains `coordinator/...` and `e2e/...`. There is no `go.work` and no nested `go.mod`. |
-| `coordinator/cmd/coordinator/` | Go | The coordinator binary (`main.go`). |
+| `coordinator/cmd/coordinator/` | Go | The coordinator binary; build the whole command package, including `main.go` and its subsystem setup files. |
+| `coordinator/api/accountfleet/`, `coordinator/api/network/` | Go | Dashboard and public network owners compiled into the coordinator through API wiring; no separate binary or build step. Tests live beside the owners and in the API boundary fixtures ([test.md](test.md)). |
+| `coordinator/inference/ingress/` | Go | Consumer request preparation and admission compiled into the same coordinator through `coordinator/api/inference_ingress.go` (`inferenceIngress`); no separate artifact. [Owner and real-route tests](test.md#2-coordinator-go) run without a model. |
 | `coordinator/promptsidecar/` | Rust | Crate `promptsidecar`, edition 2024, `Cargo.lock` committed; built with `--locked`. |
 | `provider-swift/` | SwiftPM | Products: `darkbloom` (CLI), `darkbloom-enclave`, `darkbloom-fan-helper`, `darkbloom-publish`; libraries `ProviderCore`, `ProviderCoreFoundation`, `DarkbloomFan*`. Platform `macOS 14+`. |
 | `console-ui/` | Next.js 16 / React 19 | `npm`; tests with Vitest. |
@@ -88,6 +96,19 @@ understand what `make` runs.
 
 ### 3. Coordinator (Go)
 
+Build the command package with the targets below.
+`coordinator/cmd/coordinator/main.go` (`main`) composes setup functions from
+the other files in that package; a single-file invocation omits those functions.
+
+HTTP controllers, provider-control owners, inference services, registry owners
+and telemetry queues link into this command through their API and registry
+bindings. They share the Go module and build targets below. Use the
+[repository source map](navigation.md) to find each subsystem and
+[the test guide](test.md#2-coordinator-go) for its focused checks.
+
+The adapters in `coordinator/providercontrol/codeidentity/push_fixture_test.go`
+(`tryReservePush`, `clearPushBudget`) compile only into the package's test binary.
+
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
 its test binary after helper or lifecycle changes. The CPU-only
 `TestPrepareConnectedInputBindings` check uses the actual fixture input/report
@@ -108,7 +129,7 @@ make coordinator-build-linux      # GOOS=linux GOARCH=amd64 CGO_ENABLED=0 → co
 The host build writes `./coordinator/coordinator`. Version identity is injected
 only by the container build (`-ldflags -X …api.BuildVersion/BuildCommit/BuildDate`
 in `coordinator/Dockerfile`); a local `go build` reports `dev`/`unknown` on
-`GET /health` (`coordinator/api/consumer.go`, `handleHealth`).
+`GET /health` (`coordinator/api/health.go`, `handleHealth`).
 
 ### 4. Prompt-contract sidecar (Rust)
 
@@ -453,7 +474,7 @@ local stub servers; its default observation mode sends only public GETs.
 | `e2e-integration` | `go test ./e2e/... -run TestIntegration -v` |
 | `e2e-benchmark` | `go test ./e2e/... -run TestBenchmark -v` |
 | `e2e` | `e2e-integration` |
-| `docs-check` | `scripts/docs-check.sh` (stamps, links, cited paths, orphans) |
+| `docs-check` | `scripts/docs-check.sh` (stamps, links, cited paths, orphans; frozen source links require their stamped Git objects when the current path is absent) |
 | `docs-stamp` | `scripts/docs-stamp.sh $(FILES)` — refresh freshness stamps |
 | `test` | `coordinator-test prompt-sidecar-test provider-test ui-test benchmark-wrapper-test docs-check` |
 | `build` | `coordinator-build prompt-sidecar-build provider-build ui-build` |

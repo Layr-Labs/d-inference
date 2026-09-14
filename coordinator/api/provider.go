@@ -34,7 +34,6 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
-	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/providercontrol/challenge"
@@ -2268,57 +2267,6 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 		"failure_code", msg.FailureCode,
 		"status_code", msg.StatusCode,
 		"terminal_cause", msg.TerminalCause,
-	)
-}
-
-// ApplyLateSecurityInfo accepts a delayed response only for the exact current
-// scheduler binding that issued the command and has completed the current
-// connection's phase-1 challenge. Unowned or stale-generation callbacks are
-// dropped; they are never bearer credentials for a fleet-wide provider lookup.
-func (s *Server) ApplyLateSecurityInfo(
-	udid, commandUUID string,
-	info *mdm.SecurityInfoResponse,
-) {
-	if s.mdmClient == nil || info == nil || commandUUID == "" {
-		return
-	}
-	securityOK := info.SystemIntegrityProtectionEnabled && info.SecureBootLevel == "full"
-	if s.mdmScheduler == nil {
-		return
-	}
-	binding := s.mdmScheduler.ApplyLateSecurityInfo(
-		udid, commandUUID, securityOK,
-	)
-	if binding == nil {
-		return
-	}
-	if !securityOK {
-		binding.provider.SetMDMFailureReason("posture-mismatch")
-		s.registry.MarkUntrusted(binding.providerID)
-		s.mdmScheduler.RejectLateSecurityInfo(
-			*binding, udid, commandUUID,
-		)
-		return
-	}
-	ar := binding.attestation
-	binaryHash := providerApplicationBinaryHash(
-		binding.provider, ar.PublicKey, ar.BinaryHash,
-	)
-	if !s.recordLateTrustReuse(
-		binding.provider, ar.PublicKey, ar.SerialNumber, binaryHash,
-		true, true, udid,
-	) {
-		return
-	}
-	binding.provider.SetMDMFailureReason("")
-	s.sendTrustStatus(binding.provider, registry.TrustHardware, "online", "MDM verification passed (late SecurityInfo)")
-	s.registry.PersistProvider(binding.provider)
-	if s.metrics != nil {
-		s.metrics.IncCounter("mdm_late_securityinfo_upgrade_total")
-	}
-	s.ddIncr("mdm.verification", []string{"outcome:granted-late"})
-	s.mdmScheduler.CompleteLateSecurityInfo(
-		*binding, udid, commandUUID,
 	)
 }
 

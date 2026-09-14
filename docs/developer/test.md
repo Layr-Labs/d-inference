@@ -490,6 +490,12 @@ and private-state assertions stay in that package. The API keeps the real fleet,
 restart, trust-reuse and local MicroMDM/webhook fixtures; it observes existing
 metric snapshots instead of accessing the owner's maps.
 
+`coordinator/providercontrol/mdmscheduler/completion_test.go`
+(`TestMDMSchedulerMDAReuseCannotForgetReplacementBinding`) holds the cached-proof
+callback while registering a replacement connection. It checks the replacement
+binding and durable pending job for worker reuse, late reuse and missing-UDID
+cleanup. The three cases use a local MemoryStore and bounded channel barriers.
+
 `coordinator/api/provider_scheduler_ownership_test.go`
 (`TestMDMSchedulerKeepsClaimsAndCurrentLateBindings`) checks that claims stay on
 the construction-time store while late MDA proof persistence and metrics use

@@ -233,6 +233,12 @@ outside the scheduler mutex. `coordinator/providercontrol/mdmscheduler/late_mda.
 (`ApplyLateMDA`) retains the Apple-chain and SE-key/serial/UDID
 checks before attaching proof and completing the owned claim.
 
+Worker and late SecurityInfo completion share the cached-MDA follow-up in
+`coordinator/providercontrol/mdmscheduler/completion.go` (`finishSecurityInfo`).
+Its `forgetBinding` removes only the completed connection's generation. A
+reconnect during cached-proof verification keeps its replacement binding and
+queued verification; the missing-UDID cleanup uses the same generation check.
+
 | Fact | Value | Code |
 |---|---|---|
 | Scheduling | One durable `VerificationJob` per SE public key and task kind, usable only through its current live binding; kinds `security_info` and `mda`; `Workers` ≤ 12 (`defaultWorkers`), queue ≤ 4096, one worker reserved for first/expired SecurityInfo attempts, claim TTL 3m, dispatch tick 1s | `coordinator/providercontrol/mdmscheduler/scheduler.go` (`Scheduler`), `coordinator/providercontrol/mdmscheduler/config.go` (`Config`), `coordinator/providercontrol/mdmscheduler/policy.go` (`reservedUrgentWorkers`, `dispatchInterval`); `coordinator/store/contracts/verification.go` (`VerificationJob`, `VerificationTaskKind`) |

@@ -1406,7 +1406,7 @@ threats:
     adversaries: [ADV-003]
     affected_assets: [A-007]
     affected_files:
-      - console-ui/src/components/providers/PrivyClientProvider.tsx
+      - console-ui/src/components/app-providers/PrivyClientProvider.tsx
     mitigations:
       - description: Mock auth only intended for local development.
         status: open
@@ -1634,8 +1634,8 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-001]
     affected_files:
-      - provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift
-      - provider-swift/Sources/ProviderCore/Inference/EngineV2Runtime.swift
+      - provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift
+      - provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2Runtime.swift
       - libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVBackend.swift
     mitigations:
       - description: CPU-side inference buffers are zeroed after each request.
@@ -1668,7 +1668,7 @@ threats:
     adversaries: [ADV-002]
     affected_assets: []
     affected_files:
-      - provider-swift/Sources/ProviderCore/Inference/IdleTimeoutPolicy.swift
+      - provider-swift/Sources/ProviderCore/Inference/Engine/IdleTimeoutPolicy.swift
     mitigations:
       - description: IdleTimeoutPolicy unloads model after 1 hour of no requests.
         status: implemented
@@ -1794,10 +1794,10 @@ threats:
       - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBehind.swift
       - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift
       - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift
-      - provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift
-      - provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift
-      - provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift
-      - provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift
+      - provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift
+      - provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift
+      - provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift
+      - provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift
       - provider-swift/Sources/ProviderCore/ProviderLoop+EngineV2.swift
     mitigations:
       - description: >
@@ -1810,7 +1810,7 @@ threats:
           explicit affirmative value enables encrypted SSD; any explicit
           non-affirmative value disables it. Production never constructs or
           funds the upstream resident-RAM PrefixCacheV2 implementation
-          (ProviderCore/Inference/PrefixCachePolicy.swift and
+          (ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift and
           EngineV2SlotFactory.swift).
         status: implemented
       - description: >
@@ -2850,8 +2850,8 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-001]
     affected_files:
-      - provider-swift/Sources/ProviderCore/Inference/MediaIngest.swift
-      - provider-swift/Sources/ProviderCore/Inference/EngineV2VisionPrefill.swift
+      - provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift
+      - provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift
       - provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift
       - provider-swift/Sources/darkbloom/StartCommand+Modes.swift
       - libs/mlx-swift-lm/Libraries/MLXLMCommon/MemoryBackedVideoAsset.swift

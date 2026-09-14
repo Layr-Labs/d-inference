@@ -167,7 +167,7 @@ as `\u2028` and `\u2029` to match Go's JSON encoder. Literal backslash escape
 text remains distinct. Nil optional fields, empty hash strings and empty maps
 are omitted; explicit `false` values remain signed. Matching Swift and Go
 golden vectors cover these byte rules; signature verification still rejects
-changed fields (`provider-swift/Tests/ProviderCoreTests/StatusCanonicalTests.swift`,
+changed fields (`provider-swift/Tests/ProviderCoreTests/Security/StatusCanonicalTests.swift`,
 `statusCanonicalMatchesCoordinatorNestedMapVectors`;
 `coordinator/attestation/status_canonical_mixed_case_test.go`,
 `TestBuildStatusCanonicalNestedMapVectors`, `TestVerifyStatusSignatureBindsMixedCaseNestedMaps`).

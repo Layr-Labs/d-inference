@@ -5,6 +5,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/providercontrol/verification"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -383,38 +384,31 @@ func (s *mdmVerificationScheduler) retryDelay(stage int) time.Duration {
 	}
 }
 
-type mdmSchedulerAttemptMetadata struct {
-	udid       string
-	mdaOutcome string
-}
-type mdmSchedulerAttemptContextKey struct{}
-
 func (s *Server) executeScheduledVerification(ctx context.Context, binding mdmLiveBinding, kind store.VerificationTaskKind, udid string) mdmSchedulerAttemptResult {
 	if binding.provider == nil || binding.provider.ChallengeShouldStop() {
 		return mdmSchedulerAttemptResult{outcome: store.VerificationOutcomePostureMismatch, terminal: true}
 	}
-	metadata := &mdmSchedulerAttemptMetadata{}
-	ctx = context.WithValue(ctx, mdmSchedulerAttemptContextKey{}, metadata)
+	ctx, metadata := verification.NewScheduledAttempt(ctx)
 	if kind == store.VerificationTaskSecurityInfo {
-		outcome := s.verifyProviderViaMDM(ctx, binding.providerID, binding.provider, binding.attestation)
+		outcome := s.newProviderVerifier().VerifySecurityInfo(ctx, binding.providerID, binding.provider, binding.attestation)
 		switch outcome {
-		case mdmVerifyGranted:
-			return mdmSchedulerAttemptResult{outcome: store.VerificationOutcomeSuccess, granted: true, udid: metadata.udid}
-		case mdmVerifyTerminal:
-			return mdmSchedulerAttemptResult{outcome: store.VerificationOutcomePostureMismatch, terminal: true, udid: metadata.udid}
+		case verification.Granted:
+			return mdmSchedulerAttemptResult{outcome: store.VerificationOutcomeSuccess, granted: true, udid: metadata.UDID()}
+		case verification.Terminal:
+			return mdmSchedulerAttemptResult{outcome: store.VerificationOutcomePostureMismatch, terminal: true, udid: metadata.UDID()}
 		default:
 			fixed := store.VerificationOutcomeTransient
 			if binding.provider.GetMDMFailureReason() == "securityinfo-timeout" {
 				fixed = store.VerificationOutcomeTimeout
 			}
-			return mdmSchedulerAttemptResult{outcome: fixed, udid: metadata.udid}
+			return mdmSchedulerAttemptResult{outcome: fixed, udid: metadata.UDID()}
 		}
 	}
 	if udid == "" {
 		return mdmSchedulerAttemptResult{outcome: store.VerificationOutcomeInvalid, terminal: true}
 	}
 	s.mdmScheduler.metricCounter("mda_verification_total", "outcome", "sent")
-	s.verifyAppleDeviceAttestation(ctx, binding.providerID, binding.provider, binding.attestation, udid)
+	s.newProviderVerifier().VerifyMDA(ctx, binding.providerID, binding.provider, binding.attestation, udid)
 	if ctx.Err() != nil {
 		return mdmSchedulerAttemptResult{outcome: store.VerificationOutcomeCancelled}
 	}
@@ -427,11 +421,11 @@ func (s *Server) executeScheduledVerification(ctx context.Context, binding mdmLi
 	if binding.provider.ChallengeShouldStop() {
 		return mdmSchedulerAttemptResult{outcome: store.VerificationOutcomeInvalid, terminal: true, udid: udid}
 	}
-	if metadata.mdaOutcome == "timeout" {
+	if metadata.MDAOutcome() == "timeout" {
 		return mdmSchedulerAttemptResult{outcome: store.VerificationOutcomeTimeout, udid: udid}
 	}
-	if metadata.mdaOutcome == "invalid" ||
-		metadata.mdaOutcome == "binding_mismatch" {
+	if metadata.MDAOutcome() == "invalid" ||
+		metadata.MDAOutcome() == "binding_mismatch" {
 		return mdmSchedulerAttemptResult{
 			outcome: store.VerificationOutcomeInvalid, terminal: true, udid: udid,
 		}

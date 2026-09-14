@@ -157,7 +157,7 @@ func newMDMVerificationScheduler(s *Server, cfg MDMSchedulerConfig, deps mdmSche
 	}
 	if deps.reuseMDA == nil {
 		deps.reuseMDA = func(binding mdmLiveBinding) bool {
-			return s.attachCachedMDAProof(binding.providerID, binding.provider, binding.attestation)
+			return s.newProviderVerifier().AttachCachedMDA(binding.providerID, binding.provider, binding.attestation)
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())

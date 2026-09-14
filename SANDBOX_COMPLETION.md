@@ -5,14 +5,15 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
-Current changes add recoverable accountless payload staging and its durable
-journal. Localf235b8ad2 adds signal cancellation, actual GUI-session monitoring
+Pushed3ac8a7fb6 adds recoverable accountless payload staging and its durable
+journal. Pushedf235b8ad2 adds signal cancellation, actual GUI-session monitoring
 and cleanup covering all post-runtime startup/service exits. Source6cf8f3381 adds
 installed-checkpoint publication after qualification-clone consumerb48455139 and
 requested-resource configuration32be94642. Full sandbox suite passes539tests,
 7explicit skips,0failures (130.665s). Coordinator suite, Linux
-build, docs lint, UI lint and Next.js build pass. CI34811478625 passed6cf8f3381;
-integration34811478687 is still running. The latest local code requires fresh CI; benchmark
+build, docs lint, UI lint and Next.js build pass. CI34811478625 and integration
+34811478687 passed6cf8f3381. FreshCI34813684236 and integration34813684227
+are running3ac8a7fb6; benchmark
 environment approval is separate and has not been granted.
 
 Physical guest exercise14 and coldboot15 PASS on the test Mac. They prove
@@ -34,8 +35,8 @@ explicit temporary runtime-group membership until the machine campaign finishes.
 - Worktree: `.worktrees/sandbox-completion-20260913`.
 - Branch: `codex/sandbox-completion-20260913`.
 - Starting sandbox tip0950ac41e; master93337ef05 integrated in453b37667.
-- Latest pushed code:6cf8f3381; local lifecycle commitf235b8ad2 plus current
-  accountless staging changes. Verify git HEAD and remote before resuming.
+- Latest pushed code:3ac8a7fb6; lifecycle commitf235b8ad2 and accountless staging
+  are included. Verify git HEAD and remote before resuming.
 - Local GUI plan commit3abe05f712de1d2dcc6958315c1fbf56b4b693ff follows
   host context50145d4b4 and qualification validator4cab8f470.
 - Managed restore lifetime commitb5680748bd9d4670f3ee4c02ea2ffc38810c981d
@@ -1053,3 +1054,11 @@ installed checkpoint -> qualification clone -> checks/cold boot -> teardown ->
 source revalidation and genuine ready-template publication. The final source
 check must bind the durable released-lease cleanup proof, not the existing
 active-lease-only capability revalidator.
+
+Source3ac8a7fb6f431f75973cb6a4259128e90395479d is pushed. Mandatory pre-push
+checks passed (offline-staging-push.log). PR996 body now includes the journaled
+staging and service shutdown changes, before/after diagrams and remaining gates.
+CI34811478625 and integration34811478687 both passed preceding6cf8f3381.
+FreshCI34813684236 and integration34813684227 are in progress at3ac8a7fb6.
+Benchmark34813684136 awaits its separate environment approval; no approval was
+granted. Current pending Go-cache cleanup question has not been answered.

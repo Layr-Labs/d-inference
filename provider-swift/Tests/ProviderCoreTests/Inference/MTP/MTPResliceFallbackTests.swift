@@ -257,7 +257,14 @@ func mtpFloorLoop(
     mtpDrafterPath: String? = nil,
     mtpMode: MTPMode? = nil
 ) throws -> ProviderLoop {
-    try ProviderLoop(
+    let budget = GlobalKVCacheBudget(
+        activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
+            modelIDs: models.map(\.id)),
+        memorySnapshot: {
+            .init(total: mtpFloorPhysical, active: 0, cache: 0,
+                systemAvailable: mtpFloorPhysical)
+        })
+    return try ProviderLoop(
         config: ProviderLoopConfig(
             coordinatorURL: "ws://127.0.0.1:0/ignored",
             hardware: HardwareInfo(
@@ -277,7 +284,8 @@ func mtpFloorLoop(
                     mtpDrafterPath: mtpDrafterPath),
                 coordinator: .init(heartbeatIntervalSecs: 60))),
         purgeLegacyFiles: false,
-        attestationSigner: nil)
+        attestationSigner: nil,
+        kvBudgetForTesting: budget)
 }
 
 private func mtpFloorTargetOnlyGrants() -> [String: Int] {
@@ -316,6 +324,9 @@ struct MTPResliceFallbackTests {
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(.init(
             physicalMemoryBytes: mtpFloorPhysical,
+            measuredKVHeadroomBytes: UnifiedMemoryCap.liveKVHeadroomBytes(
+                physicalBytes: mtpFloorPhysical, mlxUsedBytes: 0,
+                systemAvailableBytes: mtpFloorPhysical),
             assistantLoader: MTPFloorAssistantLoader(),
             makeEngine: { _, grant in MTPFloorEngine(capacityBytes: grant) }))
 
@@ -434,6 +445,9 @@ struct MTPResliceFallbackTests {
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(.init(
             physicalMemoryBytes: mtpFloorPhysical,
+            measuredKVHeadroomBytes: UnifiedMemoryCap.liveKVHeadroomBytes(
+                physicalBytes: mtpFloorPhysical, mlxUsedBytes: 0,
+                systemAvailableBytes: mtpFloorPhysical),
             assistantLoader: MTPFloorFailingAssistantLoader(),
             makeEngine: { _, grant in MTPFloorEngine(capacityBytes: grant) }))
 
@@ -555,6 +569,9 @@ struct MTPResliceFallbackTests {
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(.init(
             physicalMemoryBytes: mtpFloorPhysical,
+            measuredKVHeadroomBytes: UnifiedMemoryCap.liveKVHeadroomBytes(
+                physicalBytes: mtpFloorPhysical, mlxUsedBytes: 0,
+                systemAvailableBytes: mtpFloorPhysical),
             assistantLoader: MTPFloorAssistantLoader(),
             makeEngine: { _, grant in factory.make(grant: grant) }))
 
@@ -621,6 +638,9 @@ struct MTPResliceFallbackTests {
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(.init(
             physicalMemoryBytes: mtpFloorPhysical,
+            measuredKVHeadroomBytes: UnifiedMemoryCap.liveKVHeadroomBytes(
+                physicalBytes: mtpFloorPhysical, mlxUsedBytes: 0,
+                systemAvailableBytes: mtpFloorPhysical),
             assistantLoader: MTPFloorAssistantLoader(counter: counter),
             makeEngine: { _, grant in factory.make(grant: grant) }))
 
@@ -696,6 +716,9 @@ struct MTPResliceFallbackTests {
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(.init(
             physicalMemoryBytes: mtpFloorPhysical,
+            measuredKVHeadroomBytes: UnifiedMemoryCap.liveKVHeadroomBytes(
+                physicalBytes: mtpFloorPhysical, mlxUsedBytes: 0,
+                systemAvailableBytes: mtpFloorPhysical),
             assistantLoader: MTPFloorAssistantLoader(counter: counter),
             makeEngine: { _, grant in factory.make(grant: grant) }))
 

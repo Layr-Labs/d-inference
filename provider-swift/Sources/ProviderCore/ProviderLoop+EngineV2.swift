@@ -105,6 +105,9 @@ extension ProviderLoop {
         let physicalMemoryBytes: UInt64?
         /// Deterministic load-admission sample for eviction integration tests.
         let availableMemoryGb: Double?
+        /// Explicit post-build memory sample for scripted recovery tests.
+        /// Nil preserves the production probe of current MLX/OS memory.
+        let measuredKVHeadroomBytes: UInt64?
         /// Backend kind the hook-built bridge reports per model (default
         /// `.contiguous`). A `.paged` entry makes the bridge apply the
         /// production paged semantics — resize clamps to the scripted
@@ -127,6 +130,7 @@ extension ProviderLoop {
             emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
             physicalMemoryBytes: UInt64? = nil,
             availableMemoryGb: Double? = nil,
+            measuredKVHeadroomBytes: UInt64? = nil,
             kvBackendKindByModel: [String: EngineV2KVBackendKind] = [:],
             assistantLoader: (any ProviderMTPAssistantLoading)? = nil,
             makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
@@ -137,6 +141,7 @@ extension ProviderLoop {
             self.emitTelemetry = emitTelemetry
             self.physicalMemoryBytes = physicalMemoryBytes
             self.availableMemoryGb = availableMemoryGb
+            self.measuredKVHeadroomBytes = measuredKVHeadroomBytes
             self.kvBackendKindByModel = kvBackendKindByModel
             self.assistantLoader = assistantLoader
             self.makeEngine = makeEngine

@@ -242,7 +242,17 @@ private func makeWiringLoop(
             coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
         )
     )
-    return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+    // Scripted engines allocate no weights. Keep admission on the same
+    // simulated machine as re-slicing, independent of the CI host's RAM.
+    let budget = GlobalKVCacheBudget(
+        configReserveBytes: wiringReserveBytes,
+        memorySnapshot: {
+            .init(total: wiringPhysicalBytes, active: 0, cache: 0,
+                systemAvailable: wiringPhysicalBytes)
+        })
+    return try ProviderLoop(
+        config: config, purgeLegacyFiles: false, attestationSigner: nil,
+        kvBudgetForTesting: budget)
 }
 
 private func makeBridge(
@@ -400,7 +410,7 @@ struct EngineV2SlotBuildTests {
         }
         #expect(sawChunk)
         #expect(sawInfo)
-        #expect(engine.submitted.count == 1)
+        try #require(engine.submitted.count == 1)
         // Tokenization went through the tokenizer's chat-template path.
         #expect(engine.submitted[0].promptTokens == [1, 2, 3, 4, 5])
     }

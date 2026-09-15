@@ -210,7 +210,17 @@ private func makeLivenessLoop() throws -> ProviderLoop {
             coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
         )
     )
-    return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+    // Scripted engines allocate no weights. Keep admission on the same
+    // simulated machine as re-slicing, independent of the CI host's RAM.
+    let budget = GlobalKVCacheBudget(
+        configReserveBytes: livenessReserveBytes,
+        memorySnapshot: {
+            .init(total: livenessPhysicalBytes, active: 0, cache: 0,
+                systemAvailable: livenessPhysicalBytes)
+        })
+    return try ProviderLoop(
+        config: config, purgeLegacyFiles: false, attestationSigner: nil,
+        kvBudgetForTesting: budget)
 }
 
 private func makeSizing(
@@ -372,7 +382,10 @@ struct EngineV2LivenessRecoveryTests {
 
     private func installHooks(
         _ loop: ProviderLoop, runtime: EngineV2Runtime,
-        factory: EngineFactoryScript, telemetry: LivenessTelemetrySink
+        factory: EngineFactoryScript, telemetry: LivenessTelemetrySink,
+        measuredHeadroomBytes: UInt64 = UnifiedMemoryCap.liveKVHeadroomBytes(
+            physicalBytes: livenessPhysicalBytes, mlxUsedBytes: 0,
+            systemAvailableBytes: livenessPhysicalBytes)
     ) async {
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(
@@ -380,6 +393,7 @@ struct EngineV2LivenessRecoveryTests {
                 eosTokenIds: [2],
                 emitTelemetry: telemetry.callback(),
                 physicalMemoryBytes: livenessPhysicalBytes,
+                measuredKVHeadroomBytes: measuredHeadroomBytes,
                 makeEngine: { modelId, grant in try factory.make(modelId: modelId, grant: grant) }))
     }
 
@@ -460,6 +474,28 @@ struct EngineV2LivenessRecoveryTests {
         #expect(sawChunk)
     }
 
+    @Test("recovery refuses a rebuilt engine when measured headroom is exhausted")
+    func recoveryRefusesExhaustedMeasuredHeadroom() async throws {
+        let (loop, runtime, factory, telemetry) = try makeHarness(scripts: [.hang, .hang])
+        await installHooks(
+            loop, runtime: runtime, factory: factory, telemetry: telemetry,
+            measuredHeadroomBytes: 0)
+        let bridge = try await loadSlot(
+            loop, modelId: Self.modelA, modelType: "gemma4", sizing: makeSizing(weightsGiB: 15))
+        let t0 = ContinuousClock.Instant.now
+        let stream = await injectWedge(bridge: bridge, modelId: Self.modelA, at: t0)
+
+        await loop.recoverWedgedEngineV2SlotsForTesting(now: t0.advanced(by: .seconds(130)))
+
+        try #require(factory.built.count == 2)
+        #expect(factory.built[1].engine.shutdownCalls == 1)
+        #expect(await loop.slotBridgeForTesting(modelId: Self.modelA) == nil)
+        #expect(await runtime.bridge(forModel: Self.modelA) == nil)
+        #expect(telemetry.operations().contains("engine_v2_self_restart_failed"))
+        #expect(!telemetry.operations().contains("engine_v2_self_restart_complete"))
+        withExtendedLifetime(stream) {}
+    }
+
     @Test("regression: SSD-only recovery preserves the full live KV grant")
     func recoveryPreservesSSDOnlyGrant() async throws {
         let (loop, runtime, factory, telemetry) = try makeHarness(
@@ -477,6 +513,9 @@ struct EngineV2LivenessRecoveryTests {
                 eosTokenIds: [2],
                 emitTelemetry: telemetry.callback(),
                 physicalMemoryBytes: livenessPhysicalBytes,
+                measuredKVHeadroomBytes: UnifiedMemoryCap.liveKVHeadroomBytes(
+                    physicalBytes: livenessPhysicalBytes, mlxUsedBytes: 0,
+                    systemAvailableBytes: livenessPhysicalBytes),
                 makeEngine: { modelId, grant in try factory.make(modelId: modelId, grant: grant) }))
 
         let sizing = makeSizing(weightsGiB: 15)

@@ -606,7 +606,9 @@ public actor ProviderLoop {
         purgeLegacyFiles: Bool,
         attestationSigner: (any AttestationSigner)?,
         preloadTaskStarted: (@Sendable (String) -> Void)? = nil,
-        beforeModelLoad: (@Sendable (String) async -> Void)? = nil
+        beforeModelLoad: (@Sendable (String) async -> Void)? = nil,
+        // Scripted slot fixtures must not inherit the test host's RAM.
+        kvBudgetForTesting: GlobalKVCacheBudget? = nil
     ) throws {
         self.loopConfig = config
         self.specDecFunnel = SpecDecArtifactFunnel(
@@ -665,7 +667,7 @@ public actor ProviderLoop {
         // (measured per-model floors; env raise-only above them) and re-pushed
         // via refreshActivationReserve() whenever that set changes, so the
         // runtime KV gate and the load gate always carve the same reserve.
-        self.kvBudget = GlobalKVCacheBudget(
+        self.kvBudget = kvBudgetForTesting ?? GlobalKVCacheBudget(
             activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
                 modelIDs: Array(advertised.keys)),
             configReserveBytes: Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB))

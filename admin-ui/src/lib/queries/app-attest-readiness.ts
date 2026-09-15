@@ -2,6 +2,8 @@ import { query } from "@/lib/db";
 
 // One current observation per machine. A success on an older connection never
 // makes a replacement connection ready. Stored prospective verdicts expire.
+// Keep this fail-closed qualification version aligned with appattest.AuthorizationPolicyVersion.
+const authorizationPolicyVersion = "mac-app-attest-v2";
 const readiness = `WITH latest AS (
  SELECT DISTINCT ON (machine_id) machine_id,session_id,disconnected_at,last_seen,observation
  FROM darkbloom_machine_sessions WHERE last_seen>=NOW()-$1::int*INTERVAL '1 day'
@@ -18,7 +20,8 @@ const readiness = `WITH latest AS (
  WHEN disconnected_at IS NOT NULL OR last_seen<NOW()-INTERVAL '90 seconds' THEN 'offline'
  WHEN policy_id IS NULL THEN 'not_evaluated'
  WHEN credential_revoked THEN 'ineligible'
- WHEN outcome='eligible' AND (fields->>'valid_until')::timestamptz<=NOW() THEN 'stale'
+ WHEN outcome='eligible' AND (fields->>'policy_version' IS DISTINCT FROM '${authorizationPolicyVersion}'
+   OR ((fields->>'valid_until')::timestamptz>NOW()) IS NOT TRUE) THEN 'stale'
  ELSE outcome END AS readiness
  FROM observed
 )`;
@@ -33,6 +36,10 @@ export async function appAttestReadinessReasons(days: number) {
   return query<{ reason: string; machines: string }>(`${readiness}
     SELECT reason,COUNT(DISTINCT machine_id) AS machines FROM evaluated
     CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(fields->'reasons','[]'::jsonb)
-      || CASE WHEN credential_revoked THEN '["credential_revoked"]'::jsonb ELSE '[]'::jsonb END) reason
-    WHERE readiness IN ('unknown','ineligible') GROUP BY reason ORDER BY machines DESC,reason`, [days]);
+      || CASE WHEN credential_revoked THEN '["credential_revoked"]'::jsonb ELSE '[]'::jsonb END
+      || CASE WHEN readiness='stale' AND fields->>'policy_version' IS DISTINCT FROM '${authorizationPolicyVersion}'
+         THEN '["policy_version_stale"]'::jsonb ELSE '[]'::jsonb END
+      || CASE WHEN readiness='stale' AND ((fields->>'valid_until')::timestamptz>NOW()) IS NOT TRUE
+         THEN '["verdict_expired_or_missing"]'::jsonb ELSE '[]'::jsonb END) reason
+    WHERE readiness IN ('unknown','ineligible','stale') GROUP BY reason ORDER BY machines DESC,reason`, [days]);
 }

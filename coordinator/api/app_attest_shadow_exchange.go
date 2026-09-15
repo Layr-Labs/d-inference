@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -149,7 +150,9 @@ func (x *appAttestShadowSession) handleExchange(ctx context.Context, reply proto
 		}
 		x.key = &store.AppAttestShadowKey{KeyID: x.key.KeyID, Owner: x.owner, AccountID: x.account, MachineID: x.machineID(), PublicKey: verified.PublicKey, AppID: x.s.appAttestShadow.AppID,
 			Environment: x.s.appAttestShadow.Environment, BundleVersion: verified.BundleVersion, ValidationCategory: verified.ValidationCategory}
-		if !x.commitEvidence(ctx, store.AppAttestDecision{Outcome: "verified", Key: x.key, Receipt: x.initialReceipt(proof, hash)}) {
+		details, _ := json.Marshal(map[string]any{"bundle_version": verified.BundleVersion, "validation_category": verified.ValidationCategory,
+			"code_directory_hash": hex.EncodeToString(verified.CodeDirectoryHash), "code_directory_type": verified.CodeDirectoryType})
+		if !x.commitEvidence(ctx, store.AppAttestDecision{Outcome: "verified", Key: x.key, Receipt: x.initialReceipt(proof, hash), Details: details}) {
 			return "stop"
 		}
 		x.observe("attestation", "verified", verified)
@@ -160,7 +163,8 @@ func (x *appAttestShadowSession) handleExchange(ctx context.Context, reply proto
 		x.observe("assertion", err.Error(), nil)
 		return "stop"
 	}
-	details, _ := json.Marshal(map[string]any{"received_counter": counter, "bundle_version": metadata.BundleVersion, "validation_category": metadata.ValidationCategory})
+	details, _ := json.Marshal(map[string]any{"received_counter": counter, "bundle_version": metadata.BundleVersion, "validation_category": metadata.ValidationCategory,
+		"code_directory_hash": hex.EncodeToString(metadata.CodeDirectoryHash), "code_directory_type": metadata.CodeDirectoryType})
 	if !x.commitEvidence(ctx, store.AppAttestDecision{Outcome: "verified", Counter: &counter, KeyID: x.key.KeyID, Owner: x.owner, Details: details}) {
 		return "stop"
 	}

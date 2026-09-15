@@ -297,6 +297,11 @@ jobs:
         working-directory: provider-swift
         run: |
           set -euo pipefail
+          # Swift's linker must receive the same SDK selected for compilation.
+          # In CLT 27 beta 6, --sdk alone can leave LC_BUILD_VERSION at the
+          # deployment target; SDKROOT preserves the actual linked SDK version.
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+          echo "BUILD_SDK_VERSION=$(xcrun --sdk macosx --show-sdk-version)" >> "$GITHUB_ENV"
           swift build -c release --product darkbloom
           swift build -c release --product darkbloom-enclave
           swift build -c release --product darkbloom-fan-helper
@@ -774,12 +779,32 @@ jobs:
             "$SMOKE_ROOT/Darkbloom.app/Contents/Info.plist")" = "$VERSION"
 
           BINARY_HASH=$(shasum -a 256 "$SMOKE_ROOT/bin/$CLI_NAME" | cut -d' ' -f1)
+          CODE_DIRECTORY_HASH=$(codesign -d --verbose=4 \
+            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" 2>&1 \
+            | sed -n 's/^CandidateCDHashFull sha256=//p')
+          if [[ ! "$CODE_DIRECTORY_HASH" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Expected one full SHA-256 CodeDirectory hash from the final signed provider"
+            exit 1
+          fi
+          LINKED_SDK=$(codesign -d --verbose=4 \
+            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" 2>&1 \
+            | sed -n 's/^VersionSDK=//p')
+          python3 - "$LINKED_SDK" "$BUILD_SDK_VERSION" <<'PY'
+          import sys
+          linked = int(sys.argv[1])
+          expected = [int(p) for p in sys.argv[2].split('.')]
+          expected += [0] * (3 - len(expected))
+          if [linked >> 16, (linked >> 8) & 255, linked & 255] != expected:
+              raise SystemExit('Final executable SDK differs from the selected build SDK')
+          PY
           BUNDLE_HASH=$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
           METALLIB_HASH=$(shasum -a 256 "$FINAL_FLAT_METALLIB" | cut -d' ' -f1)
           echo "BINARY_HASH=$BINARY_HASH" >> "$GITHUB_ENV"
+          echo "CODE_DIRECTORY_HASH=$CODE_DIRECTORY_HASH" >> "$GITHUB_ENV"
           echo "BUNDLE_HASH=$BUNDLE_HASH" >> "$GITHUB_ENV"
           echo "METALLIB_HASH=$METALLIB_HASH" >> "$GITHUB_ENV"
           echo "Binary hash:   $BINARY_HASH"
+          echo "CodeDirectory SHA256: $CODE_DIRECTORY_HASH"
           echo "Bundle hash:   $BUNDLE_HASH"
           echo "Metallib hash: $METALLIB_HASH"
 
@@ -808,6 +833,8 @@ jobs:
               'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
               'bundle_sha256': digest, 'bundle_bytes': bundle.stat().st_size,
               'binary_sha256': os.environ['BINARY_HASH'], 'metallib_sha256': os.environ['METALLIB_HASH'],
+              'code_directory_sha256': os.environ['CODE_DIRECTORY_HASH'],
+              'build_sdk_version': os.environ['BUILD_SDK_VERSION'],
               'release_published': False,
           }
           pathlib.Path('/tmp/darkbloom-validation-identity.json').write_text(json.dumps(identity, indent=2) + '\n')
@@ -902,6 +929,7 @@ jobs:
           ## Provider v${VERSION} (Swift CLI)
 
           **Binary hash:**   \`${BINARY_HASH}\`
+          **CodeDirectory SHA-256:** \`${CODE_DIRECTORY_HASH}\`
           **Bundle hash:**   \`${BUNDLE_HASH}\`
           **Metallib hash:** \`${METALLIB_HASH}\` (built from mlx \`${{ steps.mlxkey.outputs.mlx_sha_short }}\`)
           **Signed by:**     \`${DEVELOPER_ID}\`

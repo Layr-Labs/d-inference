@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-14 · commit `46299ff78`
+> Last updated: 2026-09-15 · commit `a99ce680a`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -19,7 +19,7 @@ Terminal `profile` objects can include optional schema-1
 [`deadline_decision`](prediction-decision-telemetry.md#provider-fields).
 This does not add a message type or change the public error code.
 
-The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 2` (with protocol 1 compatibility) and `app_attest_shadow` frames. Version 2 binds account scope and locally measured status and supports lost-enrollment recovery. It does not replace the authoritative attestation messages.
+The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` (with protocol 1 and 2 compatibility) and `app_attest_shadow` frames. Version 3 also binds static hardware and the existing verification key; version 2 account/status binding and lost-enrollment recovery remain compatible. It does not replace the authoritative attestation messages.
 
 ## Envelope and the single-parse rule
 
@@ -658,6 +658,18 @@ set is pinned by `TestCapacityProbeShapeClosed` (`coordinator/protocol/capacity_
 | `vision_image_count` | `int` | opt | count only |
 | `deadline_remaining_ms` | `int64` | req | duration on the first-content clock, never a wall clock |
 
+## App Attest protocol 3 hardware binding
+
+`register.app_attest_protocol=3` negotiates the account/endpoint-bound shadow
+exchange plus signed static hardware claims. `AppAttestStatus` adds optional
+string fields `machine_model`, `memory_gb`, `cpu_total`, `cpu_performance`,
+`cpu_efficiency`, `gpu_cores` and `attestation_public_key`; version 3 hashes them after the version 2 status
+fields under its own domain. Old transcripts remain unchanged. Original enrollment
+protocol is retained for cached-response recovery across upgrades. These fields
+are app measurements, not Apple-certified hardware. See
+[the App Attest reference](app-attest-shadow.md) and
+`coordinator/protocol/app_attest_hardware.go` (`AppAttestShadowHashV3`).
+
 ## Shared objects
 
 ### `EncryptedPayload`
@@ -706,15 +718,3 @@ comment in `coordinator/registry/capacity_cooldown.go`.
 - [`../architecture/telemetry.md`](../architecture/telemetry.md) — what the coordinator does with heartbeat data
 - [`telemetry-inventory.md`](telemetry-inventory.md) — producer, sink and cadence of every datum
 - [`api-contracts.md#headers`](api-contracts.md#headers) — the `X-Timing` header
-
-### App Attest protocol 3 hardware binding
-
-`register.app_attest_protocol=3` negotiates the account/endpoint-bound shadow
-exchange plus signed static hardware claims. `AppAttestStatus` adds optional
-string fields `machine_model`, `memory_gb`, `cpu_total`, `cpu_performance`,
-`cpu_efficiency`, `gpu_cores` and `attestation_public_key`; version 3 hashes them after the version 2 status
-fields under its own domain. Old transcripts remain unchanged. Original enrollment
-protocol is retained for cached-response recovery across upgrades. These fields
-are app measurements, not Apple-certified hardware. See
-[the App Attest reference](app-attest-shadow.md) and
-`coordinator/protocol/app_attest_hardware.go` (`AppAttestShadowHashV3`).

@@ -2,9 +2,7 @@ package api
 
 import (
 	"context"
-	"encoding/hex"
 	"encoding/json"
-	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/appattest"
@@ -30,6 +28,7 @@ func (x *appAttestShadowSession) observeBuildPolicy(status *protocol.AppAttestSt
 		evidence.VerificationKeyMatched = evidence.VerificationKeyKnown && status.AttestationPublicKey == x.attestationKey
 		evidence.ReportedVersion = status.AppVersion
 		evidence.BuildQualified = qualifiedAppAttestBuild(x.s.appAttestShadow.QualifiedBuildHashes, status.BinaryHash)
+		evidence.CodeMeasurementKnown, evidence.CodeMeasurementMatched = qualifiedAppAttestMeasurement(x.s.appAttestShadow.QualifiedCodeHashes, status.BinaryHash, metadata)
 		if evidence.CatalogKnown {
 			for _, candidate := range snapshot.ByBinaryHash[status.BinaryHash] {
 				if candidate.Platform == "macos-arm64" && candidate.Version == status.AppVersion {
@@ -45,14 +44,6 @@ func (x *appAttestShadowSession) observeBuildPolicy(status *protocol.AppAttestSt
 		cancel()
 		if err == nil {
 			evidence.RevocationKnown, evidence.Revoked = true, state.Revoked
-			if !state.Revoked && x.inventory != nil && status != nil {
-				x.inventory.mu.Lock()
-				x.inventory.observation.VerifiedAppAttestKey = x.key.KeyID
-				x.inventory.mu.Unlock()
-				x.inventory.recordStatus(status)
-				evidence.Binding.Machine = x.machineID()
-				evidence.Expected.Machine = x.machineID()
-			}
 			if r := state.Receipt; r != nil {
 				var receipt appattest.Receipt
 				if json.Unmarshal(r.Details, &receipt) == nil {
@@ -63,30 +54,30 @@ func (x *appAttestShadowSession) observeBuildPolicy(status *protocol.AppAttestSt
 			}
 		}
 	}
+	// Signed status was already verified and durably committed. A readiness
+	// lookup failure or revocation cannot erase that observation, but only a
+	// known non-revoked credential may attach an identity alias.
+	if x.inventory != nil && status != nil {
+		x.inventory.mu.Lock()
+		x.inventory.observation.VerifiedAppAttestKey = ""
+		if evidence.RevocationKnown && !evidence.Revoked {
+			x.inventory.observation.VerifiedAppAttestKey = x.key.KeyID
+		}
+		x.inventory.mu.Unlock()
+		x.inventory.recordStatus(status)
+		evidence.Binding.Machine = x.machineID()
+		evidence.Expected.Machine = x.machineID()
+	}
 	verdict := appattest.EvaluateAuthorization(evidence, time.Now().UTC())
 	x.policyFields = map[string]any{"policy_version": verdict.PolicyVersion, "reasons": verdict.Reasons,
 		"valid_until": verdict.ValidUntil, "assertion_at": x.assertionAt, "credential_id": x.key.KeyID,
 		"release_matched": evidence.BuildMatched, "build_qualified": evidence.BuildQualified,
+		"apple_code_measurement_known": evidence.CodeMeasurementKnown, "apple_code_measurement_matched": evidence.CodeMeasurementMatched,
 		"hardware_claims_bound":  evidence.HardwareKnown && evidence.HardwareMatched,
 		"verification_key_bound": evidence.VerificationKeyKnown && evidence.VerificationKeyMatched,
 		"receipt_verified":       evidence.ReceiptVerified, "risk_metric_available": evidence.RiskMetric != nil}
 	x.observe("prospective_policy", verdict.Outcome, nil)
 	x.policyFields = nil
-}
-
-func qualifiedAppAttestBuild(configured, hash string) bool {
-	if len(hash) != 64 {
-		return false
-	}
-	if _, err := hex.DecodeString(hash); err != nil {
-		return false
-	}
-	for _, candidate := range strings.Split(configured, ",") {
-		if strings.TrimSpace(candidate) == hash {
-			return true
-		}
-	}
-	return false
 }
 
 // A failed exchange supersedes the prior prospective verdict immediately.

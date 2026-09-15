@@ -1,6 +1,6 @@
 # Roll out App Attest recovery and qualify MDM retirement
 
-> Last updated: 2026-09-14 · commit `46299ff78`
+> Last updated: 2026-09-15 · commit `a99ce680a`
 
 Use this runbook to qualify provider 0.9.4 alongside authoritative APNs/MDM.
 The [protocol reference](../reference/app-attest-shadow.md) owns configuration,
@@ -19,7 +19,7 @@ have been explicitly approved.
 - Review and merge the candidate. Pass coordinator race/PostgreSQL contracts,
   provider callback/client/updater tests, installer acceptance, admin queries,
   and the full optimized packaged runtime smoke.
-- Qualify the final notarized bundle on physical macOS 27 with real Apple
+- Build the qualification candidate with the macOS 27 SDK. Qualify the final notarized bundle on physical macOS 27 with real Apple
   enrollment, repeated assertions, process/coordinator restart, sleep/reboot,
   account change and key loss. Confirm install/update and ordinary APNs/MDM
   serving on supported older macOS. Local Developer ID signing is not final
@@ -51,7 +51,11 @@ have been explicitly approved.
    against the excluded cohort on the same OS/version/time window.
 5. Record the exact signed binary hashes for builds that pass Mac launch/build
    identity and security-transition qualification. Only then populate
-   `EIGENINFERENCE_APP_ATTEST_QUALIFIED_BUILD_HASHES`. This cannot make missing
+   `EIGENINFERENCE_APP_ATTEST_QUALIFIED_BUILD_HASHES` and the corresponding
+   `EIGENINFERENCE_APP_ATTEST_QUALIFIED_CODE_HASHES` pairs. Obtain the full
+   SHA-256 CodeDirectory digest from the same final executable using
+   `codesign -d --verbose=4`; use `CandidateCDHashFull sha256`, not the truncated
+   `CDHash`. Confirm Apple returns exactly that measurement. This cannot make missing
    Apple assertion metadata, absent receipts, revoked keys or old clients pass.
 6. Review the private `/app-attest` readiness view by provider version. Include
    all recent identities; distinguish online, offline, excluded, unsupported,
@@ -66,7 +70,7 @@ have been explicitly approved.
 | Recovery | Interrupted enrollment, delayed receipt delivery, Apple timeout/late callback, DB failure, reconnect and concurrent-counter negatives |
 | Evidence completeness | No missing accepted-proof/receipt blobs; pending/interrupted/storage-error and dropped counts explicitly reconciled or explained; renewal jobs not overdue |
 | Mac policy | Existing-key assertions fail after SIP or Full Security is reduced and rebooted; fresh enrollment under reduced posture also fails |
-| App/build identity | Current Apple metadata, wrong-team/re-sign/unapproved-build/altered-resource negatives, correct catalog and qualified signed hash; protocol 3 hardware claims match registration |
+| App/build identity | Current Apple launch category and exact CodeDirectory measurement, wrong-team/re-sign/unapproved-build/altered-resource negatives, correct catalog and qualified binary/code-hash pair; protocol 3 hardware claims match registration |
 | Identity continuity | Same account/credential and fresh endpoint proof retain identity without MDM; account transfer/claimed key cannot inherit it; balances and historical accounting remain unchanged |
 | Revocation and dispatch | The later enforcement change must call the shared policy at every dispatch/reseal path, using current revocation and catalog state; expiry/reconnect cannot reuse an old verdict |
 | Supported fleet and rewards | Explicit policy for Macs without App Attest; explicit resolution of any reward rule requiring one certified physical Mac or certified RAM |

@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-14 · commit `b725a72a8`
+> Last updated: 2026-09-15 · commit `a99ce680a`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -244,7 +244,12 @@ R2 uploads, release registration and GitHub Release creation. The default remain
 
 The Actions artifact contains the final signed tarball and
 `darkbloom-validation-identity.json`, with source/submodule revisions and final
-bundle, executable and metallib hashes. Retention is 14 days. Verify those hashes
+bundle, executable and metallib hashes plus the full SHA-256 CodeDirectory digest and build SDK version.
+The workflow sets `SDKROOT` for compilation/linking and rejects a final executable
+whose recorded SDK differs from the selected SDK.
+The CodeDirectory digest is also printed in production release notes and supplies
+the measurement side of an explicitly qualified App Attest binary/code-hash pair.
+Recording it does not authorize the build. Retention is 14 days. Verify those hashes
 before an isolated model or persistent-cache restart test, and retain the artifact
 with that test's evidence. A successful artifact build does not establish restart
 durability or authorize rollout.
@@ -270,7 +275,7 @@ shown in the run):
 | 11 | Hashes | computed **after** signing, notarizing, stapling and the tar rebuild: `BINARY_HASH = sha256(bin/darkbloom)` from the extracted tar, `BUNDLE_HASH = sha256(tar.gz)`, `METALLIB_HASH = sha256(flat mlx.metallib)` |
 | 12 | Upload bundle to R2 | `s3://$R2_BUCKET/releases/v$VERSION/darkbloom-bundle-macos-arm64.tar.gz`, plus `releases/latest/darkbloom-bundle-macos-arm64.tar.gz` and the legacy `releases/latest/eigeninference-bundle-macos-arm64.tar.gz` |
 | 13 | Register release with coordinator | `POST $COORDINATOR_URL/v1/releases` (below) |
-| 14 | Create GitHub Release | prod + tag only: `gh release create <tag> <tar.gz> --notes-file … --generate-notes`; notes list the three hashes, signer, "Notarized: yes", `Min macOS: 14.0`, and the `curl -fsSL <coordinator>/install.sh \| bash` install line |
+| 14 | Create GitHub Release | prod + tag only: `gh release create <tag> <tar.gz> --notes-file … --generate-notes`; notes list the three file hashes plus the full CodeDirectory SHA-256, signer, "Notarized: yes", `Min macOS: 14.0`, and the `curl -fsSL <coordinator>/install.sh \| bash` install line |
 | 15 | Cleanup keychain | always |
 
 The registration payload (`coordinator/api/release_handlers.go`,

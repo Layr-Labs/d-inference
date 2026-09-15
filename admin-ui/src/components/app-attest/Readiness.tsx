@@ -16,6 +16,6 @@ export async function AppAttestReadiness({ days }: { days: number }) {
     <table className="w-full text-left text-sm"><thead><tr><th>Missing or rejected condition</th><th>Machine identities</th></tr></thead><tbody>
       {reasons.value.map(r => <tr key={r.reason} className="border-t border-[var(--border)]"><td className="py-2">{r.reason}</td><td>{r.machines}</td></tr>)}
     </tbody></table>
-    <p className="text-xs text-[var(--text-faint)]">These are recent evaluations, not live authorization leases. Catalog/configuration changes require another evaluation. Revocations and expiry are checked by this view; multiple reasons can apply to one machine.</p>
+    <p className="text-xs text-[var(--text-faint)]">These are recent evaluations, not live authorization leases. Catalog/configuration changes require another evaluation. This view checks current revocations, expiry and policy version; multiple reasons can apply to one machine.</p>
   </section>;
 }

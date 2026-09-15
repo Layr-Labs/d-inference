@@ -1,6 +1,6 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-09-14 · commit `1d840807c`
+> Last updated: 2026-09-15 · commit `a99ce680a`
 
 App Attest runs alongside authoritative APNs and MDM verification. The coordinator records stable machine identities, fleet adoption, complete submitted proofs, and receipts. These records do not change routing, rewards, trust, or the supported OS floor. DeviceCheck's separate two-bit API is deferred.
 
@@ -10,6 +10,7 @@ App Attest runs alongside authoritative APNs and MDM verification. The coordinat
 |---|---|---|
 | `EIGENINFERENCE_APP_ATTEST_SHADOW` | `false` | Enables negotiated shadow requests. Disabling it preserves machine inventory, legacy verification, and renewal of existing receipts when credentials are configured. |
 | `EIGENINFERENCE_APP_ATTEST_ROLLOUT_PERCENT` | `0` | Stable authenticated-account cohort, integer 0–100. Invalid values exclude all clients. The hard provider floor is `0.9.4`; older, missing, malformed and prerelease versions below that floor never receive Apple operations. |
+| `EIGENINFERENCE_APP_ATTEST_QUALIFIED_CODE_HASHES` | unset | Comma-separated `binary_sha256:full_code_directory_sha256` pairs from the same final qualified signed artifact. Only full SHA-256 CodeDirectory measurements (Apple type 2, 32 bytes) can match. Missing, malformed or conflicting mappings remain unknown. The release catalog and qualified binary allowlist must also approve the build. |
 | `EIGENINFERENCE_APP_ATTEST_QUALIFIED_BUILD_HASHES` | unset | Comma-separated immutable binary hashes with completed Mac build/security-transition qualification. This does not override the active release catalog or missing Apple metadata. Empty means prospective build qualification is unknown. |
 | `EIGENINFERENCE_APP_ATTEST_APP_ID` | `SLDQ2GJ6TL.io.darkbloom.provider` | Expected team prefix and macOS signing identifier. |
 | `EIGENINFERENCE_APP_ATTEST_ENVIRONMENT` | `production` | Apple attestation environment; `development` is also supported. |
@@ -39,7 +40,7 @@ Code: `coordinator/protocol/app_attest_shadow.go`, `coordinator/protocol/app_att
 
 All transcript versions encode UTF-8 fields preceded by four-byte big-endian byte lengths, then SHA-256 the result. Version 1 fields are domain `darkbloom.app-attest.shadow.v1`, action, session, environment, key ID, plaintext challenge, and the app-owned X25519 public key. Version 2 changes the domain to `darkbloom.app-attest.shadow.v2` and appends account scope, OS version, OS build, app version, chip, and binary hash in that order. Version 3 uses domain `darkbloom.app-attest.shadow.v3` and additionally appends machine model, physical RAM in GiB, total/performance/efficiency CPU cores and GPU cores as canonical decimal strings, followed by the app’s existing attestation public key. Go and Swift tests pin independent vectors. The coordinator compares these signed app measurements against the registration; version 2 cannot authenticate the added fields.
 
-The app derives status locally. The server never supplies a replacement endpoint key or arbitrary status to sign. Assertion-bound status is authenticated app reporting; it is not an independent Apple certification of the OS version, chip, or binary hash. The prospective policy requires Apple-provided current assertion metadata, an active catalog match and separately qualified build hash. Missing assertion metadata never falls back to enrollment metadata or an app-reported version.
+The app derives status locally. The server never supplies a replacement endpoint key or arbitrary status to sign. Assertion-bound status is authenticated app reporting; it is not an independent Apple certification of the OS version, chip, or binary hash. The prospective policy requires the current Apple launch category and full CodeDirectory SHA-256 measurement, an active catalog match and separately qualified binary/code-hash pair. Missing assertion metadata never falls back to enrollment metadata or an app-reported version.
 
 ## Machine inventory and identity
 
@@ -134,7 +135,7 @@ exchanges supersede the previous verdict.
 | Protocol 3 existing verification key matches the verified registration key | `unknown` if unavailable/unbound | `ineligible` on substitution; keeps existing model/runtime signatures linked to the verified app |
 | Protocol 3 static hardware claims match registration | `unknown` if absent/unbound | `ineligible` for a model, chip, RAM or CPU/GPU mismatch |
 | Verified credential, endpoint custody and current assertion | `unknown`; assertions expire after `AssertionFreshness = 15 * time.Minute` | Existing crypto verifier rejects invalid signatures/replay |
-| Current Apple launch category and bundle version | `unknown`; no enrollment fallback | `ineligible` for a non-Developer-ID category or version mismatch |
+| Current Apple launch category and exact code measurement | `unknown` for absent metadata, unsupported algorithm or missing qualified mapping; no enrollment fallback | `ineligible` for non-Developer-ID launch, a code-hash mismatch, or a present bundle-version mismatch. A missing bundle version is allowed only with the required matching code measurement. |
 | Active release catalog plus qualified immutable build | `unknown` when unavailable/unqualified | `ineligible` for a known catalog mismatch |
 | Credential revocation | `unknown` when storage is unavailable | `ineligible` when revoked |
 | Verified unexpired receipt, risk metric and configured renewal | `unknown` | Renewal overdue by 24 hours remains `unknown`, not a zero risk metric |
@@ -148,13 +149,20 @@ threshold or physical-device identifier. `app_attest_key_revocations` and
 changing legacy trust. The [rollout runbook](../operations/app-attest-rollout.md)
 lists qualification and retirement gates.
 
+### macOS SDK and signed code measurements
+
+A controlled physical macOS 27 test of the same probe with SDK 26.5 and SDK 27.0 found that only the SDK 27 build returned the launch category and code measurement. With CDhash opt-in, its assertions carried `apple_cd_hash_type_01` as one byte (`2`) and `apple_cd_hash_hash_01` as the full 32-byte SHA-256 CodeDirectory digest. That digest exactly matched `codesign -d --verbose=4` `CandidateCDHashFull sha256`; it is neither the truncated 20-byte `CDHash` nor the SHA-256 of the entire signed executable. No bundle-version extension was present. These are observed wire semantics requiring qualification on the final artifact and supported OS builds, not a promise of an undocumented future format.
+
+`coordinator/appattest/code_measurement.go` parses the bounded signed fields and exposes only the observed type-2 SHA-256 format for matching. `coordinator/api/app_attest_build_policy.go` requires an explicit qualified mapping for the reported binary hash; the independently loaded release catalog also pins that binary hash and version. The policy never accepts a code hash supplied in ordinary client status as Apple's measurement. Unknown algorithms remain recorded but cannot qualify. Assertions and enrollment observations retain `attested_code_directory_type` and `attested_code_directory_hash`; only the current assertion feeds prospective authorization. Parsed measurements are also committed atomically into the proof decision details. Verified OS/build status is recorded even when readiness storage fails or the key is revoked; only identity alias attachment depends on a known non-revoked credential. SDK 26 builds remain safe shadow clients and stay unknown for replacement readiness.
+
+
 ## Dashboard and telemetry
 
 The private admin dashboard at `/app-attest` queries the read replica. It distinguishes 24-hour/7-day windows, distinct accounts, stable machine records, provisional/key-bound/hardware-verified identities, connection sessions, latest OS, first recorded macOS 27+ observation, fresh assertions, stage outcomes, latency, and archive/receipt health. The machine list displays the latest 200 identities; aggregate census counts cover the whole window. Evidence history is paginated at 100 submissions per page.
 
 Machine drill-downs download complete evidence/context and receipt history. Both the global Basic Auth proxy and the raw-download route authenticate access; downloads have `private, no-store` caching. A missing schema or unavailable query renders an explicit unavailable section, without false zeroes or hiding other working sections.
 
-Code: `admin-ui/src/lib/queries/app-attest.ts`, `admin-ui/src/lib/queries/app-attest-readiness.ts`, and `admin-ui/src/app/app-attest/page.tsx`. Readiness groups the newest observed connection per machine/version, shows all recent identities with offline cohorts separately, checks verdict expiration and current revocation, and lists missing/rejected conditions. A current revocation immediately contributes `credential_revoked` to the reasons table, even before another assertion; repeated reasons count each machine once. An earlier connection’s success never qualifies its replacement. These are recent evaluations; catalog or qualification changes require another evaluation.
+Code: `admin-ui/src/lib/queries/app-attest.ts`, `admin-ui/src/lib/queries/app-attest-readiness.ts`, and `admin-ui/src/app/app-attest/page.tsx`. Readiness groups the newest observed connection per machine/version, shows all recent identities with offline cohorts separately, checks verdict expiration, current policy version and revocation, and lists missing/rejected conditions. Expired or missing expiry contributes `verdict_expired_or_missing`; a retired policy contributes `policy_version_stale`. A current revocation immediately contributes `credential_revoked` to the reasons table, even before another assertion; repeated reasons count each machine once. An earlier connection’s success never qualifies its replacement. These are recent evaluations; catalog or qualification changes require another evaluation.
 
 Metrics include `app_attest.shadow.events`, `app_attest.shadow.duration_ms`, `app_attest.shadow.metadata`, `app_attest.inventory.recorded`, `app_attest.inventory.failed`, `app_attest.archive.received`, `app_attest.archive.completed`, `app_attest.events.storage_failed`, and receipt/archive failure counters. `app_attest.receipt.configured` reports whether both credential settings are present; `app_attest.maintenance.interrupted`, `app_attest.maintenance.receipt_recovery` and `app_attest.maintenance.failed` expose reconciliation. Machine/account IDs appear in private records and logs, not high-cardinality metric tags. Logs complement the durable census rather than defining the denominator.
 

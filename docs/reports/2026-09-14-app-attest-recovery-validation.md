@@ -1,6 +1,6 @@
 # App Attest 0.9.4 recovery qualification
 
-> Last updated: 2026-09-14 · commit `1d840807c`
+> Last updated: 2026-09-14 · commit `a99ce680a`
 
 The 0.9.4 candidate adds guarded shadow activation, recovery, receipt renewal
 and prospective authorization. Local tests and real Apple exchanges validate
@@ -23,6 +23,7 @@ or notarized release and this report does not certify MDM retirement.
 | Locally Developer ID signed 0.9.4 app | Real Apple enrollment and assertions 1–3 verified; restart reused the key and verified counters 4–6 without another enrollment |
 | Actual Go coordinator + PostgreSQL + signed protocol 3 provider | Across restarts and the hardware-substitution negative: one machine, five sessions, one credential, assertion counter 5, six proof blobs and two receipt blobs; provider remained alive. The final provider bound both hardware and its existing verification key |
 | Hardware substitution through a local WebSocket proxy | Changing only registration RAM produced `hardware_claims_mismatch` and an ineligible prospective verdict; the cryptographic assertion remained valid and the provider stayed alive |
+| SDK 27 full provider + actual coordinator/PostgreSQL | All optimized smoke markers passed. The existing credential advanced counters 6–7 across an SDK upgrade/reconnect. An exact lab-qualified binary/code-hash mapping produced `eligible`; an intentionally wrong code hash produced only `apple_code_measurement_mismatch`. Both providers remained alive. Qualification/catalog inputs were synthetic local test approvals, not production qualification. |
 | Apple risk receipt endpoint | HTTP 200; fresh `RECEIPT` signature, app/key, dates and risk metric verified; Apple provided next-refresh and expiration timestamps |
 
 Both the challenge harness and actual Go coordinator tests used isolated loopback endpoints, synthetic auth,
@@ -38,7 +39,7 @@ base-reward memory-cap table moved unchanged into the hardware package.
 Review regressions cover a single enrollment snapshot shared by archive and
 verification, retryable enrollment-store failures, account-stable cohort selection
 through provisional identity changes, and live-session preference after a delayed
-terminal capture.
+terminal capture, signed OS status after readiness failure/revocation, and explicit stale/expired-policy blockers.
 
 ## Renewal format correction
 
@@ -58,10 +59,11 @@ this validation. See [Apple's receipt contract](https://developer.apple.com/docu
 
 ## Qualification limits
 
-The observed macOS 27 assertions had valid signatures/counters but omitted
-Apple bundle-version and validation-category extensions. The prospective policy
-therefore reports missing metadata as unknown. Neither an app-reported build
-nor enrollment metadata substitutes for a current Apple assertion field.
+The original full provider, built with SDK 26.5, produced valid macOS 27 signatures/counters but no Apple extensions. A subsequent controlled Objective-C probe used the same full app Info.plist, Developer ID, profile and entitlements with SDK 26.5 versus SDK 27.0 (Command Line Tools 27 beta 6, clang 21.0.0). Both completed real Apple enrollment and assertion verification. SDK 26.5 returned 37-byte authenticator data without extensions; SDK 27.0 returned 153 bytes with Developer ID category 6, code-hash type 2 and a 32-byte digest matching the signed executable's full CodeDirectory SHA-256. Neither returned a bundle-version field.
+
+The server now records these signed code measurements and the prospective policy requires an exact qualified binary/code-hash mapping plus the active catalog. A matching current code measurement can identify the release when the Mac omits bundle version. Missing/unsupported measurements and absent qualification remain unknown. These wire details are empirically verified; public documentation for the two code-hash extension names was not found. They still require final-artifact and supported-OS qualification. No client-reported field or enrollment metadata substitutes for a current Apple assertion measurement.
+
+The full SDK 27 provider test finished on 2026-09-15. Its compile commands selected SDK 27, but CLT 27 beta 6 initially linked SDK 14 metadata. A minimal Swift control reproduced this independently of the build engine. Supplying the same SDK through `SDKROOT` corrected the link metadata; the full provider was relinked from its SDK 27 objects, signed, checked for SDK 27 and tested. The release workflow now supplies that environment and checks the final linked SDK. No global toolchain selection was changed.
 
 Physical SIP/Full Security transitions, altered-resource/re-sign negatives,
 final notarization and multi-machine/older-OS release qualification remain

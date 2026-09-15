@@ -9,6 +9,7 @@ import (
 type AppAttestShadowConfig struct {
 	RolloutPercent       int
 	QualifiedBuildHashes string
+	QualifiedCodeHashes  string
 	ReceiptKeyPath       string
 	ReceiptKeyID         string
 	Enabled              bool
@@ -27,6 +28,7 @@ func readAppAttestShadowConfig() AppAttestShadowConfig {
 		Enabled:              env.EnvBool(env.EnvPrefix+"_APP_ATTEST_SHADOW", false),
 		RolloutPercent:       env.EnvInt(env.EnvPrefix+"_APP_ATTEST_ROLLOUT_PERCENT", 0),
 		QualifiedBuildHashes: os.Getenv(env.EnvPrefix + "_APP_ATTEST_QUALIFIED_BUILD_HASHES"),
+		QualifiedCodeHashes:  os.Getenv(env.EnvPrefix + "_APP_ATTEST_QUALIFIED_CODE_HASHES"),
 		AppID:                env.EnvOr(env.EnvPrefix+"_APP_ATTEST_APP_ID", "SLDQ2GJ6TL.io.darkbloom.provider"),
 		Environment:          environment,
 	}

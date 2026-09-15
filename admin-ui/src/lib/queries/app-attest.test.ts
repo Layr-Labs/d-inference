@@ -45,32 +45,50 @@ describe.skipIf(!enabled)("App Attest inventory queries on PostgreSQL", () => {
     expect(await appAttestMachineHistory("machine-b",0)).toEqual([]);
   });
   it("requires a fresh verdict on the current connection and honors revocation", async()=>{
+    const withUnevaluatedMachine = (reason: string) => [
+      {reason,machines:"1"}, {reason:"prospective_verdict_missing",machines:"1"},
+    ].sort((a,b)=>a.reason.localeCompare(b.reason));
     const { appAttestReadinessCohorts, appAttestReadinessReasons } = await import("./app-attest-readiness");
+    expect(await appAttestReadinessReasons(7)).toEqual([
+      {reason:"prospective_verdict_missing",machines:"2"},
+    ]);
     const fields = JSON.stringify({ policy_version:"mac-app-attest-v2", credential_id:"readiness-key", valid_until:new Date(Date.now()+600_000).toISOString(), reasons:[] });
     await pool.query(`INSERT INTO app_attest_shadow_events VALUES('policy','session-b',NOW(),'prospective_policy','eligible',$1)`, [fields]);
     expect(await appAttestReadinessCohorts(7)).toContainEqual({readiness:"eligible",version:"0.9.2",machines:"1"});
     await pool.query(`UPDATE app_attest_shadow_events SET fields=fields || '{"policy_version":"mac-app-attest-v1"}'::jsonb WHERE id='policy'`);
     expect(await appAttestReadinessCohorts(7)).toContainEqual({readiness:"stale",version:"0.9.2",machines:"1"});
-    expect(await appAttestReadinessReasons(7)).toEqual([{reason:"policy_version_stale",machines:"1"}]);
+    expect(await appAttestReadinessReasons(7)).toEqual(withUnevaluatedMachine("policy_version_stale"));
     await pool.query(`UPDATE app_attest_shadow_events SET fields=$1::jsonb - 'valid_until' WHERE id='policy'`,[fields]);
     expect(await appAttestReadinessCohorts(7)).toContainEqual({readiness:"stale",version:"0.9.2",machines:"1"});
-    expect(await appAttestReadinessReasons(7)).toEqual([{reason:"verdict_expired_or_missing",machines:"1"}]);
+    expect(await appAttestReadinessReasons(7)).toEqual(withUnevaluatedMachine("verdict_expired_or_missing"));
     await pool.query(`UPDATE app_attest_shadow_events SET fields=$1 WHERE id='policy'`,[fields]);
     await pool.query(`UPDATE app_attest_shadow_events SET fields=fields || jsonb_build_object('valid_until',NOW()-INTERVAL '1 second') WHERE id='policy'`);
     expect(await appAttestReadinessCohorts(7)).toContainEqual({readiness:"stale",version:"0.9.2",machines:"1"});
-    expect(await appAttestReadinessReasons(7)).toEqual([{reason:"verdict_expired_or_missing",machines:"1"}]);
+    expect(await appAttestReadinessReasons(7)).toEqual(withUnevaluatedMachine("verdict_expired_or_missing"));
     await pool.query(`UPDATE app_attest_shadow_events SET fields=$1 WHERE id='policy'`,[fields]);
     await pool.query(`INSERT INTO app_attest_shadow_keys(key_id,owner,evidence) VALUES('readiness-key','owner','{}')`);
     await pool.query(`INSERT INTO app_attest_key_revocations VALUES('readiness-key','owner','test',NOW())`);
     expect(await appAttestReadinessCohorts(7)).toContainEqual({readiness:"ineligible",version:"0.9.2",machines:"1"});
-    expect(await appAttestReadinessReasons(7)).toEqual([{reason:"credential_revoked",machines:"1"}]);
+    expect(await appAttestReadinessReasons(7)).toEqual(withUnevaluatedMachine("credential_revoked"));
     await pool.query(`UPDATE app_attest_shadow_events SET fields=fields || '{"reasons":["credential_revoked"]}'::jsonb WHERE id='policy'`);
-    expect(await appAttestReadinessReasons(7)).toEqual([{reason:"credential_revoked",machines:"1"}]);
+    expect(await appAttestReadinessReasons(7)).toEqual(withUnevaluatedMachine("credential_revoked"));
     await pool.query(`INSERT INTO darkbloom_machine_sessions SELECT 'replacement',machine_id,original_machine_id,account_id,NOW(),NOW()+INTERVAL '1 second',NULL,observation FROM darkbloom_machine_sessions WHERE session_id='session-b'`);
     await pool.query(`UPDATE darkbloom_machine_sessions SET disconnected_at=NOW(),last_seen=NOW()+INTERVAL '2 seconds' WHERE session_id='session-b'`);
     expect(await appAttestReadinessCohorts(7)).toEqual([{readiness:"not_evaluated",version:"0.9.2",machines:"2"}]);
+    expect(await appAttestReadinessReasons(7)).toEqual([
+      {reason:"prospective_verdict_missing",machines:"2"},
+    ]);
     await pool.query(`INSERT INTO app_attest_shadow_events VALUES('missing','replacement',NOW(),'prospective_policy','unknown','{"reasons":["apple_bundle_version_missing"]}')`);
-    expect(await appAttestReadinessReasons(7)).toEqual([{reason:"apple_bundle_version_missing",machines:"1"}]);
+    expect(await appAttestReadinessReasons(7)).toEqual(withUnevaluatedMachine("apple_bundle_version_missing"));
+    // An offline machine must not remain an online readiness blocker.
+    await pool.query(`UPDATE darkbloom_machine_sessions SET disconnected_at=NOW() WHERE session_id='session-c'`);
+    try {
+      expect(await appAttestReadinessReasons(7)).toEqual([
+        {reason:"apple_bundle_version_missing",machines:"1"},
+      ]);
+    } finally {
+      await pool.query(`UPDATE darkbloom_machine_sessions SET disconnected_at=NULL WHERE session_id='session-c'`);
+    }
   });
 
 });

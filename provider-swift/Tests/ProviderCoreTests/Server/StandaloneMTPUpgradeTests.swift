@@ -72,10 +72,12 @@ private struct StandaloneUpgradeFixture: Sendable {
         try FileManager.default.createDirectory(at: targetDirectory, withIntermediateDirectories: true)
         try Data("{}".utf8).write(to: targetDirectory.appendingPathComponent("config.json"))
         let server = StandaloneServer(config: .init(mtpMode: .auto, mtpDrafterPath: useLocalAssistant ? artifact.directory.path : nil),
-            models: [ModelInfo(id: standaloneUpgradeModelID, modelType: "gemma4", sizeBytes: 1, estimatedMemoryGb: 1)])
+            models: [ModelInfo(id: standaloneUpgradeModelID, modelType: "gemma4", sizeBytes: 1, estimatedMemoryGb: 1)],
+            kvBudgetForTesting: ScriptedProviderMemory.budget(modelIDs: [standaloneUpgradeModelID]))
         let telemetry = UpgradePostureSink()
         let factory = StandaloneUpgradeScriptedFactory()
-        await server.setV2TestHooksForTesting(.init(physicalMemoryBytes: 64 << 30,
+        await server.setV2TestHooksForTesting(.init(physicalMemoryBytes: ScriptedProviderMemory.physicalBytes,
+            measuredKVHeadroomBytes: ScriptedProviderMemory.headroom(modelIDs: [standaloneUpgradeModelID]),
             emitTelemetry: { telemetry.record($0) },
             assistantLoader: UpgradePausedAssistantLoader(gate: assistantBarrier), makeEngine: { _, bytes in try factory.make(bytes) }))
         let engine = StandaloneUpgradeScriptedEngine(bytes: 1 << 30, shutdownBarrier: shutdownBarrier)

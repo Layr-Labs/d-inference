@@ -189,6 +189,7 @@ public actor StandaloneServer {
     /// `ProviderLoop.EngineV2SlotHooks`; nil in production.
     struct V2TestHooks: Sendable {
         let physicalMemoryBytes: UInt64?
+        let measuredKVHeadroomBytes: UInt64?
         let emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
         let beforeWeightLoad: (@Sendable (String) async throws -> Void)?
         let assistantLoader: (any ProviderMTPAssistantLoading)?
@@ -199,6 +200,7 @@ public actor StandaloneServer {
 
         init(
             physicalMemoryBytes: UInt64? = nil,
+            measuredKVHeadroomBytes: UInt64? = nil,
             emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
             beforeWeightLoad: (@Sendable (String) async throws -> Void)? = nil,
             assistantLoader: (any ProviderMTPAssistantLoading)? = nil,
@@ -208,6 +210,7 @@ public actor StandaloneServer {
             makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
         ) {
             self.physicalMemoryBytes = physicalMemoryBytes
+            self.measuredKVHeadroomBytes = measuredKVHeadroomBytes
             self.emitTelemetry = emitTelemetry
             self.beforeWeightLoad = beforeWeightLoad
             self.assistantLoader = assistantLoader

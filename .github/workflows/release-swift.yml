@@ -343,7 +343,19 @@ jobs:
           while IFS= read -r macos; do
             cp "$RELEASE_TEST_METALLIB" "$macos/mlx.metallib"
           done < <(find .build -type d -path '*.xctest/Contents/MacOS' -print)
-          ../scripts/run-provider-tests.sh
+          python3 ../scripts/run-provider-test-watchdog.py \
+            --output-dir "$RUNNER_TEMP/provider-sdk-tests" \
+            --diagnostic-after-seconds 480 --timeout-seconds 900 \
+            -- ../scripts/run-provider-tests.sh
+
+      - name: Retain SDK test diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: provider-sdk-test-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/provider-sdk-tests
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Save SwiftPM cache
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0

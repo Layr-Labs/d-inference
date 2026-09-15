@@ -880,6 +880,7 @@ func main() {
 
 	// Push gauge values to DogStatsD periodically.
 	go srv.StartDDGaugeLoop(ctx)
+	go srv.StartWarmPoolTelemetryLoop(ctx)
 	srv.StartProfilerLoops(ctx)
 
 	// Reclaim expired read-cache entries periodically (bounds memory growth).

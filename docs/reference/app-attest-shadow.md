@@ -1,6 +1,6 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-09-14 · commit `1dacb9ec2`
+> Last updated: 2026-09-14 · commit `2232503f8`
 
 App Attest runs alongside authoritative APNs and MDM verification. The coordinator records stable machine identities, fleet adoption, complete submitted proofs, and receipts. These records do not change routing, rewards, trust, or the supported OS floor. DeviceCheck's separate two-bit API is deferred.
 
@@ -128,5 +128,12 @@ Metrics include `app_attest.shadow.events`, `app_attest.shadow.duration_ms`, `ap
 The existing CLI, app identity, user LaunchAgent, APNs grants, and deployment floor remain intact. `scripts/prepare-app-attest-entitlements.py` adds only profile-authorized CDhash opt-in and any explicitly granted environment entitlement. An old profile keeps legacy signing. The real adapter requires the full signed app in the supported user context and checks actual API availability.
 
 The [initial physical report](../reports/2026-09-14-app-attest-macos27-validation.md) records macOS 27 acceptance and its limits. The [version 2 release validation](../reports/2026-09-14-app-attest-inventory-validation.md) covers this implementation. Final notarization, install/update and APNs/MDM regressions across the supported OS fleet, security-transition negatives, and production rollout remain separate release gates.
+
+The [0.9.3 disconnect investigation](../reports/2026-09-14-app-attest-release-disconnects.md)
+records the optimized callback-timer crash and production pause. App Attest
+deadlines and retry delays use the non-generic nanoseconds sleep workaround.
+The packaged `runtime-smoke` command exercises callback completion and deadline
+expiry without calling Apple; the release workflow requires its
+`app-attest-callback-runtime-smoke: ok` marker before publishing.
 
 Run focused Go tests under `-race`, including App Attest, receipts, inventory and archive contracts. PostgreSQL tests require a disposable `DATABASE_URL`; the harness truncates tables. Swift tests cover both transcripts, account isolation, response loss, deadlines, and both registration encoders. Admin query integration tests use `APP_ATTEST_TEST_DATABASE_URL` on the designated disposable local database. No production state is mutated by these tests.

@@ -93,7 +93,7 @@ public actor AppAttestShadowClient {
                     for attempt in 0..<3 {
                         do { proof = try await service.attestKey(key.keyID, hash: hash); break }
                         catch ShadowFailure.appleUnavailable where attempt < 2 {
-                            try await Task.sleep(for: .seconds(attempt == 0 ? 2 : 8))
+                            try await appAttestSleep(seconds: attempt == 0 ? 2 : 8)
                         }
                     }
                     guard let proof, proof.count <= 32*1024 else { throw ShadowFailure.appleError }

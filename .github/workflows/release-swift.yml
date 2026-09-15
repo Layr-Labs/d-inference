@@ -488,6 +488,8 @@ jobs:
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT"
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
             | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
+          printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
+            | grep -Fqx 'app-attest-callback-runtime-smoke: ok'
 
           # Hardened-runtime sign each binary and resource, then the bundle.
           # mlx.metallib must be signed before the bundle or codesign rejects
@@ -760,6 +762,8 @@ jobs:
           printf '%s\n' "$FINAL_SMOKE_OUTPUT"
           printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
             | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
+          printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
+            | grep -Fqx 'app-attest-callback-runtime-smoke: ok'
           REPORTED=$("$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" --version)
           ./scripts/check-release-version.sh "$VERSION" "$REPORTED"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \

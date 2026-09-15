@@ -48,7 +48,7 @@ test:
 # controls, and checks the geometry the layout computes. `webdeps` installs jsdom;
 # `go test` picks the suite up on its own once it is there (TestPageExecutes), so
 # `make test` covers the page too and `make webtest` is the way to run it alone —
-# over the real coordinator map, whose 108 routes, 20 groups and 975 wires
+# over the real coordinator map, whose 108 routes, 20 groups and 990 wires
 # crowd the label pass on their own, rather than over the five-route fixture, which
 # only reaches that claim through a deliberately small viewport.
 webdeps: render/webtest/node_modules/jsdom

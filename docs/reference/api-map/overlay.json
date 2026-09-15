@@ -378,7 +378,7 @@
     },
     "mem.app_attest_shadow": {
       "overview": "The per-connection App Attest shadow exchange and the two permit channels that bound it, so a shadow verdict can never become backpressure on the authoritative path.",
-      "represents": "One appAttestShadowSession per provider WebSocket — its nonce, expected stage, owner digest, protocol version, verifier and the reply channel the provider's frames arrive on — plus a server-wide verifier semaphore and a lazily created storage semaphore of four permits.",
+      "represents": "One appAttestShadowSession per provider WebSocket — its nonce, expected stage, owner digest, protocol version, verifier and the reply channel the provider's frames arrive on — plus a server-wide verifier semaphore of four permits and a lazily created storage semaphore of another four.",
       "construction": "startAppAttestShadow builds the session when the shadow toggle is on and the provider's encryption key is canonically encoded; appAttestStorageOnce creates the storage channel on first use.",
       "access": "The provider WebSocket handler drives the session's stages, records observations, and archives evidence. Both semaphores are acquired non-blockingly: a full verifier channel is recorded as a verifier_busy observation and a full storage channel drops the write rather than waiting.",
       "concurrency": "One serialized session goroutine per connection owns the stage machine; the semaphores are the only cross-connection state, and nested observations reuse the permit the session already holds.",
@@ -518,7 +518,7 @@
       "overview": "The per-connection machine-identity session that turns a provider registration into a stable machine id, and the permit channel that bounds its writes.",
       "represents": "One machineInventorySession per provider WebSocket — the observation being accumulated (OS, chip, memory, protocol, legacy trust, SE key, verified serial), the identity the store resolved it to, and a ready latch — plus a server-wide write semaphore.",
       "construction": "startMachineInventory builds it when the store implements MachineInventoryStore, seeds the observation from the registration report, and starts a goroutine that captures on connect, every minute, and once more on disconnect.",
-      "access": "The provider WebSocket handler updates the observation and calls ObserveMachine; the App Attest shadow session reads the resolved identity. A full permit channel is counted as an inventory failure rather than waited on.",
+      "access": "The shadow session folds each assertion's OS report into the observation; the inventory session's own capture goroutine is what calls ObserveMachine, and the provider WebSocket handler only starts the session. A capture waits up to two seconds for a permit and is recorded as an inventory failure only if none frees up \u2014 unlike the shadow permits, which never wait.",
       "concurrency": "One mutex guards the observation and the resolved identity against the capture goroutine; the semaphore is the only cross-connection state.",
       "lifecycle": "The session dies with the provider connection, after a final disconnected capture.",
       "restart": "Starts empty. The machine identities themselves are durable in PostgreSQL darkbloom_machines and its satellite tables.",
@@ -906,7 +906,7 @@
     },
     "pg.app_attest_enrollments": {
       "overview": "The app_attest_enrollments PostgreSQL table.",
-      "represents": "Durable first-enrollment record for each App Attest key: the key id, the owner it was bound to, when it was accepted, and the registration context it arrived with. One row per key, so a re-enrollment under a different owner is visible rather than silent. This node represents SQL rows and indexes—not a Go object or cache.",
+      "represents": "Durable first-enrollment record for each App Attest key: the key id, the owner it was bound to, when it was accepted, and the registration context it arrived with. The primary key is the enrolling session's own id rather than the key id, so a key accumulates one row per enrollment and a re-enrollment under a different owner is visible rather than silent. This node represents SQL rows and indexes—not a Go object or cache.",
       "construction": "Declared and migrated by PostgresStore; the shadow session writes it through typed coordinator/store methods.",
       "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
       "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
@@ -943,7 +943,7 @@
     "pg.app_attest_receipt_blobs": {
       "overview": "The app_attest_receipt_blobs PostgreSQL table.",
       "represents": "The request and response bodies of one receipt-renewal exchange with Apple, split from the receipt's metadata so they can be REVOKEd from PUBLIC. This node represents SQL rows and indexes—not a Go object or cache.",
-      "construction": "Declared and migrated by PostgresStore; written by the receipt-renewal worker through typed coordinator/store methods.",
+      "construction": "Declared and migrated by PostgresStore; the first row is written on the provider WebSocket path, when completing an assertion's evidence stores the receipt the attestation carried, and every later one by the receipt-renewal worker \u2014 both through typed coordinator/store methods.",
       "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
       "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
       "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
@@ -955,7 +955,7 @@
     "pg.app_attest_receipt_jobs": {
       "overview": "The app_attest_receipt_jobs PostgreSQL table.",
       "represents": "Durable work queue for receipt renewal: one row per key, holding the receipt to refresh, when it is next due, the lease a worker holds while it tries, and how many attempts it has made. The lease is what keeps one renewal from running twice across coordinator instances. This node represents SQL rows and indexes—not a Go object or cache.",
-      "construction": "Declared and migrated by PostgresStore; leased and advanced by the receipt-renewal worker through typed coordinator/store methods.",
+      "construction": "Declared and migrated by PostgresStore; the row is created on the provider WebSocket path when a verified assertion yields a receipt, then leased and advanced by the receipt-renewal worker \u2014 both through typed coordinator/store methods.",
       "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
       "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
       "lifecycle": "A row lives as long as its key needs refreshing; the worker's minute ticker moves next_at forward and clears the lease.",
@@ -966,8 +966,8 @@
     },
     "pg.app_attest_receipts": {
       "overview": "The app_attest_receipts PostgreSQL table.",
-      "represents": "Durable history of receipt renewals: the receipt's lineage (evidence and parent receipt), the outcome and HTTP status Apple answered with, and the validity window read out of the receipt itself. Renewal is inert until server credentials are configured, so an empty table is the expected shadow-rollout state. This node represents SQL rows and indexes—not a Go object or cache.",
-      "construction": "Declared and migrated by PostgresStore; written by the receipt-renewal worker through typed coordinator/store methods.",
+      "represents": "Durable history of receipt renewals: the receipt's lineage (evidence and parent receipt), the outcome and HTTP status Apple answered with, and the validity window read out of the receipt itself. Renewal with Apple is inert until server credentials are configured, so during the shadow rollout a key's chain is usually just the receipt its own attestation carried. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; the first row is written on the provider WebSocket path, when completing an assertion's evidence stores the receipt the attestation carried, and every later one by the receipt-renewal worker \u2014 both through typed coordinator/store methods.",
       "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
       "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
       "lifecycle": "Append-only: each renewal writes a new row rather than overwriting the last, so the chain of receipts for a key stays readable.",
@@ -1090,7 +1090,7 @@
       "construction": "Declared and migrated by PostgresStore; written by the machine-inventory session through typed coordinator/store methods.",
       "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
       "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
-      "lifecycle": "A row is opened when a provider registers and closed by disconnected_at; partial indexes serve the open-session and recent-session reads.",
+      "lifecycle": "A row is opened when a provider registers and closed by disconnected_at; three indexes serve the reads, one of them partial on the sessions still open.",
       "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
       "sources": [
         "coordinator/store/machine_inventory_schema.go:13"

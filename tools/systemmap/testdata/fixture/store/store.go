@@ -306,6 +306,46 @@ func (p *Postgres) CountOnly(ctx context.Context, table string) error {
 	return err
 }
 
+// DeleteUsingSpliced splices its from-list table in after `USING`. `Tables` reads
+// USING as a from-list keyword, so the audit has to as well: while its keyword set
+// was FROM/JOIN/INTO/UPDATE only, this shape hid a table with nothing reported —
+// the driver was handed a statement, the base text read clean, and the count
+// balanced. That is the silence the whole check exists to break.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) DeleteUsingSpliced(ctx context.Context, other string) error {
+	_, err := p.db.ExecContext(ctx, fmt.Sprintf(`DELETE FROM models m USING %s u WHERE u.id = m.id`, other))
+	return err
+}
+
+// DeleteUsingTrailing is the same splice concatenated instead of formatted, so the
+// literal ends *at* the keyword. Both halves of the check have to know USING or one
+// of the two shapes stays invisible.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) DeleteUsingTrailing(ctx context.Context, other string) error {
+	q := `DELETE FROM models m`
+	q += ` USING ` + other + ` u WHERE u.id = m.id`
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// DeleteUsingReadable is the false positive the widened keyword must not create.
+// A join condition puts a parenthesis where a table name would go, so `USING (id)`
+// is not a name at all — the shape the coordinator's own machine-inventory
+// reconcile query is written in — and a from-list table after USING is readable
+// like any other. Neither may report.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) DeleteUsingReadable(ctx context.Context) error {
+	_, err := p.db.ExecContext(ctx, `SELECT m.id FROM models m JOIN usage u USING (id)`)
+	if err != nil {
+		return err
+	}
+	_, err = p.db.ExecContext(ctx, `DELETE FROM models m USING usage u WHERE u.id = m.id`)
+	return err
+}
+
 // LockModelMultiline closes its literal on the line after the last keyword, the
 // way long queries are formatted. `FOR UPDATE` followed by a newline is a complete,
 // readable statement — the whitespace after the keyword must not turn it into a

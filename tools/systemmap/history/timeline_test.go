@@ -319,7 +319,7 @@ func TestMarshalRoundTrip(t *testing.T) {
 // the last point recolours the map the moment the slider is touched. The rule is: the
 // endpoint's own derived mode, and the namespace's aggregate only where the endpoint
 // has none. This is the regression test for having had it the other way round, which
-// repainted 98 of 976 wires at the head revision.
+// repainted 98 of the 976 wires the head revision had when it was measured.
 func TestWiresPreferTheEndpointsOwnMode(t *testing.T) {
 	routes := []*ir.Endpoint{
 		{Method: "GET", Path: "/a", DepModes: map[string]string{"pg.x": "R"}},

@@ -936,12 +936,12 @@ function sizeMarkers() {
 // How many live wires the picture can carry a head on each and still be a picture, and
 // the zoom past which the count stops mattering because most of them are off-screen.
 //
-// The whole coordinator map fits at k ≈ 0.40 in the default 1200×620 viewport and has 975
+// The whole coordinator map fits at k ≈ 0.40 in the default 1200×620 viewport and has 990
 // wires, so the unfiltered view is deliberately on the wrong side of both numbers, and it
 // is worth saying how far. Measured on the page itself, in screen pixels, with the head's
-// own ARROW_PX box: 971 of the 975 heads overlap another head, 122 on average, and the
-// worst of them overlaps 316. Moving them to the wires' midpoints — five times less
-// crowded, 24 on average, worst 74 — still leaves 969 of them touching.
+// own ARROW_PX box: 986 of the 990 heads overlap another head, 111 on average, and the
+// worst of them overlaps 301. Moving them to the wires' midpoints — four and a half times
+// less crowded, 25 on average, worst 67 — still leaves 985 of them touching.
 // There is no arrangement in which a picture of this system points every wire legibly, so
 // the reader has to narrow it first, and the toolbar says so rather than leaving them to
 // wonder.
@@ -953,7 +953,7 @@ const ARROW_ALL_MAX = 140;
 const ARROW_ALL_ZOOM = 0.9;
 
 // The toolbar control is also the answer to "why can I see no arrows": rather than leaving
-// a reader to discover that 976 wires is over a threshold they cannot see, the button says
+// a reader to discover that 990 wires is over a threshold they cannot see, the button says
 // what the rule decided and what would change it. Written on every styleGraph, because the
 // count it reports moves with every filter.
 function arrowsNote(live, all) {
@@ -971,7 +971,7 @@ function arrowsNote(live, all) {
 // syncArrows decides which wires carry an arrowhead.
 //
 // Every wire has a direction and a kind of indirection, and both are worth stating — but
-// 976 heads over the whole coordinator map is a smear rather than an answer, so the
+// 990 heads over the whole coordinator map is a smear rather than an answer, so the
 // picture earns them by being narrow enough to read: a filter, a focus, or a zoom close
 // enough that most wires are off the frame. Below that, a head is drawn where a line is
 // actually being read — lit by a hover, or on the focused node's own edges.
@@ -1268,7 +1268,7 @@ function seqLinks() {
 // stepped off it along the normal — in screen pixels, like every other label position, so
 // a number keeps its distance from its wire at every zoom.
 //
-// One position per badge is what an endpoint with 57 wires cannot afford. The wires
+// One position per badge is what an endpoint with 70 wires cannot afford. The wires
 // leaving one endpoint for one cluster put their midpoints on top of each other, the
 // collision pass dropped the losers, and the numbering that survived on the widest
 // handler in the coordinator read `3, 5, 7, 9, 10, 32, 36, 56` — an order with holes in

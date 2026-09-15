@@ -65,7 +65,7 @@ export function drawnMid(p, l) {
 
 // The leader ticks, scored. A badge the ladder had to move is joined back to its wire by a
 // dashed tick, and that tick is the only thing in the picture that says which of a fan of
-// 57 wires a moved number belongs to — on the widest handler, a badge one rung off its
+// 70 wires a moved number belongs to — on the widest handler, a badge one rung off its
 // midpoint routinely has a *different* wire passing within a pixel of it, so proximity
 // cannot carry the pairing and the tick has to. Two claims, per visible badge:
 //

@@ -698,6 +698,16 @@ func TestFixtureOpaqueQuery(t *testing.T) {
 			"1 database call(s) but only 0 readable statement(s) in the body",
 			"the text ends at `UPDATE`, so the table that follows it is spliced in at run time (`-- rows queued for UPDATE`)",
 		}},
+		// A from-list table spliced in after USING, formatted and concatenated. `Tables`
+		// reads USING as a from-list keyword; while the audit's keyword set did not,
+		// both shapes hid a table with nothing reported — the base text read clean and
+		// the count balanced, which is the one silence this check exists to break.
+		{"DeleteUsingSpliced", []string{
+			"the table after `USING` is spliced in at run time (`USING %s`)",
+		}},
+		{"DeleteUsingTrailing", []string{
+			"the text ends at `USING`, so the table that follows it is spliced in at run time (`USING`)",
+		}},
 	} {
 		t.Run(tc.method, func(t *testing.T) {
 			if got := opaqueDetails(t, tc.method); !reflect.DeepEqual(got, tc.want) {
@@ -723,6 +733,11 @@ func TestFixtureReadableSQLIsNotDrift(t *testing.T) {
 		{"LockModel", []string{"pg.models R"}},
 		// A column list opening where a table name's next character would be.
 		{"InsertModel", []string{"pg.models W"}},
+		// The two legal uses of USING, which the audit had to learn beside the splice.
+		// A join condition puts a parenthesis where the name would be, so it is not a
+		// match at all — the shape the coordinator's machine-inventory reconcile query
+		// uses — and a from-list table after USING is readable like any other.
+		{"DeleteUsingReadable", []string{"pg.models R", "pg.models W", "pg.usage R", "pg.usage W"}},
 		// A CTE shadowing a table that really exists. The schema cannot settle this
 		// one — `usage` has a CREATE TABLE — so only the WITH clause assembled into
 		// the same variable says the appended JOIN is not a read of it.

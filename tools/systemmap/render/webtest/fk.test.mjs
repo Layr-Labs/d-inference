@@ -3,7 +3,7 @@
 // The inventory half of this feature was never in doubt: `tableLinks` is derived from
 // the same DDL the column definitions come from, and the *Table relationships* table
 // lists every key including the ones the graph cannot draw. What went wrong was the
-// drawing, and it went wrong invisibly — seven arcs with correct geometry, correct
+// drawing, and it went wrong invisibly — the arcs had correct geometry, correct
 // endpoints and a correct tooltip, stroked thinly enough at the zoom that fits the
 // whole map to not be there. Nothing in a DOM check that asks "is the path present"
 // could tell that apart from a working feature, so these tests ask about the width of
@@ -11,8 +11,8 @@
 //
 // The rule, and it is the same one the arrowheads follow: a stroke inside the zoomed
 // scene is scaled with the scene, so anything that has to stay legible across the
-// page's whole zoom range must opt out. Access wires do not, deliberately — 976 of
-// them have collective mass. Seven do not, which is the asymmetry this file pins.
+// page's whole zoom range must opt out. Access wires do not, deliberately — 990 of
+// them have collective mass. Fifteen do not, which is the asymmetry this file pins.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -133,7 +133,7 @@ test('an access wire still scales, because a thousand of them carry each other',
   const p = await load({ t });
   assert.ok(!rule(p, '.glink').includes('non-scaling-stroke'),
     'access wires were made non-scaling; at close zoom a thousand screen-width lines ' +
-    'fill the picture, which is why only the seven keys opt out');
+    'fill the picture, which is why only the foreign keys opt out');
 });
 
 // The arcs are geometry over node positions, so they have to follow the zoom the way

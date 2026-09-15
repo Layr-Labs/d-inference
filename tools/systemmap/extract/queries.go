@@ -524,7 +524,14 @@ func sortedKeys(m map[string]string) []string {
 // UPDATE reaches this pattern only where it heads an update statement, because
 // `maskLockingClauses` has already blanked the clauses where it does not — see
 // `auditText`.
-var reTableName = regexp.MustCompile(`\b(FROM|JOIN|INTO|UPDATE)[ \t\n\r]+(?:(?:ONLY|LATERAL)[ \t\n\r]+)*([^\s,;()]+)`)
+//
+// USING is here because `Tables` reads it: the keyword set of the two readers is
+// one fact about the SQL dialect, and splitting it is what made the audit blind to
+// `DELETE FROM usage USING ` + other, a splice with every count still balanced.
+// Its other two uses need no exception, because both put a parenthesis where this
+// pattern demands a name: a join condition (`JOIN x USING (id)`) is not matched at
+// all, and an index method (`USING gin (tags)`) is a call — see `auditText`.
+var reTableName = regexp.MustCompile(`\b(FROM|JOIN|INTO|UPDATE|USING)[ \t\n\r]+(?:(?:ONLY|LATERAL)[ \t\n\r]+)*([^\s,;()]+)`)
 
 // reTrailingKeyword is the other half of demanding a token after the keyword.
 // Requiring one is what stops `q += " FOR UPDATE"` from being a finding, but it
@@ -536,7 +543,14 @@ var reTableName = regexp.MustCompile(`\b(FROM|JOIN|INTO|UPDATE)[ \t\n\r]+(?:(?:O
 // statement, and reporting it would red-light a correct map with no remedy that
 // keeps the statement correct. That case does not reach here either: the mask has
 // taken the words away before the search.
-var reTrailingKeyword = regexp.MustCompile(`\b(FROM|JOIN|INTO|UPDATE)[ \t\n\r]+$`)
+var reTrailingKeyword = regexp.MustCompile(`\b(FROM|JOIN|INTO|UPDATE|USING)[ \t\n\r]+$`)
+
+// fromListKeyword is the subset of `reTableName`'s keywords that introduces a
+// from-list item, and so may hold a set-returning function rather than a table.
+// It is the audit's copy of the `call: true` flag on `readMatchers` and `reUsing`:
+// one dialect fact, needed by both readers, which is why an index method reads as
+// a call on this side too.
+var fromListKeyword = map[string]bool{"FROM": true, "JOIN": true, "USING": true}
 
 // reCTEName finds a WITH clause's name. Unlike `reCTE`, which reads a whole
 // normalized statement, this runs over text as written and so demands upper-case
@@ -582,11 +596,14 @@ func (f *fnWalk) auditText(s string, pos token.Pos, statement bool) {
 	for _, loc := range reTableName.FindAllStringSubmatchIndex(masked, -1) {
 		keyword, name := masked[loc[2]:loc[3]], masked[loc[4]:loc[5]]
 		table := cleanIdent(strings.ToLower(name))
-		// A set-returning function in FROM or JOIN position, decided the same way
+		// A set-returning function in a from-list position, decided the same way
 		// `Tables` decides it, so the two readers agree about what the text names.
-		// The name must be readable first: `FROM %s(...)` is a splice whichever way
-		// it is punctuated, and skipping it here would hide the finding below.
-		call := (keyword == "FROM" || keyword == "JOIN") &&
+		// The three keywords are the ones that introduce a from-list item, which is
+		// the same set `readMatchers` and `reUsing` carry `call: true` for; the rest
+		// introduce a table and nothing else. The name must be readable first:
+		// `FROM %s(...)` is a splice whichever way it is punctuated, and skipping it
+		// here would hide the finding below.
+		call := fromListKeyword[keyword] &&
 			reBareIdent.MatchString(name) && isCallAt(masked, loc[5])
 		switch {
 		case sqlNoise[table] || call:

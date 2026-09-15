@@ -136,7 +136,7 @@ svg.prov .hull-sub { fill: var(--pp); }
 .glink.k-async { opacity: .17; }
 /* The wires of a focused node: what the click asked about, so they are drawn to be read
    rather than to be seen. At the base opacity a wire is a hint of a line — enough to say
-   the association exists in a picture of 976 of them, and not enough to make out a dash
+   the association exists in a picture of 990 of them, and not enough to make out a dash
    pattern or an arrowhead, which are the two things a focus is for. The shadow around
    them is what the focus removes; this is what it promotes. Hover still wins. */
 .glink.pick { stroke-width: 1.5; opacity: .8; }
@@ -152,7 +152,7 @@ svg.prov .hull-sub { fill: var(--pp); }
    on the map CI publishes — a 1.1-unit stroke was 0.44px wide with its dash period
    scaled to 0.40px on and 1.21px off, a half-transparent quarter-duty hairline, which
    is not a line anyone can see; while zooming to the postgres cluster inflated the same
-   dots past 2px with 6px gaps, a row of blobs. 976 access wires get away with scaling
+   dots past 2px with 6px gaps, a row of blobs. 990 access wires get away with scaling
    because their collective mass carries them; seven do not. Pinning the stroke and the
    dashes to screen pixels makes a key the same dotted line at every zoom, which is what
    it is a fact about.

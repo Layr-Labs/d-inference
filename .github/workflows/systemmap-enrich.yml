@@ -137,11 +137,16 @@ jobs:
         run: make -C tools/systemmap check
 
       - name: Commit to the pull request branch
-        if: ${{ !cancelled() && steps.plan.outputs.work != '0' && env.IS_FORK != 'true' }}
+        if: ${{ !cancelled() && steps.plan.conclusion == 'success' && steps.plan.outputs.work != '0' && env.IS_FORK != 'true' }}
         # `!cancelled()` so prose that was written survives a *later failure*: the
         # entries are correct, they cost a model call, and committing them means the
         # next run only writes what is still missing. Not `always()` — a cancelled run
         # is a superseded one, and pushing from it would race the run that replaced it.
+        #
+        # The planning step's own conclusion is checked because `!cancelled()` reaches
+        # past its failure too, and an unset output is `''` — which `!= '0'` is happy
+        # with. There is no prose.json to add in that case, so the step died on a
+        # pathspec and reported the same failure a second time, wrongly.
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -180,7 +185,7 @@ jobs:
           exit 1
 
       - name: Upload the manifest
-        if: ${{ !cancelled() && steps.plan.outputs.work != '0' }}
+        if: ${{ !cancelled() && steps.plan.conclusion == 'success' && steps.plan.outputs.work != '0' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: systemmap-prose-manifest

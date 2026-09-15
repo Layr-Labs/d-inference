@@ -221,7 +221,7 @@ test('arrowheads state a wire\'s kind and mode, and follow the page\'s own rule 
   // Back to the shipped default, and `auto` is held to its own rule rather than to a
   // number: on a map small enough to carry them it is `all`, and on one that is not it is
   // `read`. Both maps this file runs over therefore check the branch they are. The real
-  // coordinator map is the one where the budget binds — 857 wires at the fitted zoom —
+  // coordinator map is the one where the budget binds — 990 wires at the fitted zoom —
   // and the fixture is the one where it does not, so between them the rule is covered in
   // both directions.
   arrows('auto');

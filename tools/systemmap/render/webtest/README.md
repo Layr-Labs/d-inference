@@ -21,7 +21,7 @@ renders the five-route fixture, writes it to a temp dir, and shells to
 `node --test`. It **skips** when node or `node_modules` is missing, so a Go-only
 checkout still passes `go test ./...`; CI sets `SYSTEMMAP_WEBTEST=1`, which turns
 every such skip into a failure, and separately runs every `*.test.mjs` against the
-real coordinator map — 101 routes, 6 clusters, 20 groups, 840 associations.
+real coordinator map — 108 routes, 6 clusters, 20 groups, 990 wires.
 
 The two gates — the Go driver and the CI step — check the tally *and* the exit code,
 and both discover the suite by glob rather than by list, so a new `*.test.mjs` raises

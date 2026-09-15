@@ -156,10 +156,10 @@ func Snapshot(root string, overlay []byte, routePkg, rev, date, subject string) 
 //
 // And it colours them the way the page's `epMode` does: an endpoint's own derived
 // mode, falling back to its namespace's aggregate only where the endpoint has none.
-// Taking the aggregate everywhere recorded 98 of the coordinator's current 976 wires
-// as read-write where the endpoint only reads — so returning the slider to the head
+// Taking the aggregate everywhere recorded 98 of the coordinator's then-976 wires as
+// read-write where the endpoint only reads — so returning the slider to the head
 // revision repainted a tenth of the picture, which is the bug this function's shape
-// exists to prevent coming back.
+// exists to prevent coming back. The total has moved since; the ratio is the point.
 func wires(routes []*ir.Endpoint, access []*ir.Edge) []Link {
 	own := make(map[string]map[string]string, len(routes))
 	for _, r := range routes {

@@ -109,8 +109,8 @@ jobs:
       - name: Drive the real map
         # The Go driver already ran this suite over the five-route fixture. This
         # runs the same files over the artifact a reader will actually open: a
-        # hundred routes, six clusters, twenty groups and eight hundred forty
-        # associations, which is what really crowds the label pass. Two claims are
+        # hundred-odd routes, six clusters, twenty groups and getting on for a
+        # thousand wires, which is what really crowds the label pass. Two claims are
         # out of the fixture's reach altogether and are only tested here — that the
         # label budget is ever the binding constraint, and that a cluster name ever
         # has to climb its rung ladder to get clear of another label. The fixture
@@ -127,6 +127,10 @@ jobs:
           # Globbed, not listed: a new *.test.mjs has to raise the floor here, or it
           # would run without ever being required to.
           declared=$(grep -hc '^test(' *.test.mjs | awk '{n += $1} END {print n}')
+          # A floor on the floor, the same one the Go driver applies: the count is
+          # derived from the files, so a suite emptied down to one test would agree
+          # with itself and pass.
+          test "${declared:-0}" -ge 25
           status=0
           SYSTEMMAP_PAGE="$GITHUB_WORKSPACE/docs/reference/api-map/system-map.html" \
             node --test --test-reporter=tap *.test.mjs | tee /tmp/webtest.tap || status=$?

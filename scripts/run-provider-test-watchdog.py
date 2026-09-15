@@ -26,6 +26,8 @@ def owned_processes(root_pid):
             if os.getsid(row['pid']) == root_pid:
                 owned.add(row['pid'])
         except OSError:
+            # A process may exit or deny inspection between ps and getsid.
+            # The ancestry walk still finds accessible descendants.
             pass
     while True:
         expanded = owned | {r['pid'] for r in rows if r['ppid'] in owned}
@@ -48,6 +50,7 @@ def diagnose(root_pid, output_dir):
                          str(output_dir / f"sample-{row['pid']}.txt")],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
                 except subprocess.TimeoutExpired:
+                    # A slow symbolicator must not hang diagnostic collection.
                     pass
     except Exception as error:
         (output_dir / 'diagnostic-error.txt').write_text(str(error) + '\n')
@@ -66,6 +69,7 @@ def stop_owned(process):
             try:
                 os.killpg(group, sig)
             except ProcessLookupError:
+                # The group may exit between enumeration and killpg.
                 pass
             except PermissionError:
                 # macOS can report EPERM when the last member exits between
@@ -109,6 +113,7 @@ def main():
                     sys.stdout.buffer.write(chunk)
                     sys.stdout.buffer.flush()
                 except BrokenPipeError:
+                    # Preserve the file transcript if the CI console closes.
                     pass
 
     reader = threading.Thread(target=forward_output, daemon=True)

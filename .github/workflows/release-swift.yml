@@ -104,6 +104,8 @@ jobs:
     # Blacksmith image is macOS 26.3 and cannot install Apple's SDK 27 tools.
     runs-on: xcode-27
     environment: ${{ needs.resolve-env.outputs.environment }}
+    outputs:
+      validation_artifact: ${{ steps.validation_identity.outputs.artifact_name }}
 
     env:
       VERSION: ${{ needs.resolve-env.outputs.version }}
@@ -828,6 +830,7 @@ jobs:
           echo "Metallib hash: $METALLIB_HASH"
 
       - name: Record signed validation identity
+        id: validation_identity
         if: needs.resolve-env.outputs.publish == 'false'
         run: |
           python3 - <<'PY'
@@ -858,12 +861,13 @@ jobs:
           }
           pathlib.Path('/tmp/darkbloom-validation-identity.json').write_text(json.dumps(identity, indent=2) + '\n')
           PY
+          echo "artifact_name=darkbloom-signed-validation-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
 
       - name: Retain signed validation bundle
         if: needs.resolve-env.outputs.publish == 'false'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: darkbloom-signed-validation-${{ github.sha }}-${{ github.run_attempt }}
+          name: ${{ steps.validation_identity.outputs.artifact_name }}
           path: |
             /tmp/darkbloom-bundle-macos-arm64.tar.gz
             /tmp/darkbloom-validation-identity.json
@@ -986,11 +990,13 @@ jobs:
       - name: Verify and smoke the exact signed validation artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          SIGNED_VALIDATION_ARTIFACT: ${{ needs.build-and-release.outputs.validation_artifact }}
         run: |
           set -euo pipefail
           ARTIFACT="$RUNNER_TEMP/signed-provider"
+          test -n "$SIGNED_VALIDATION_ARTIFACT"
           gh run download "$GITHUB_RUN_ID" \
-            --name "darkbloom-signed-validation-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}" \
+            --name "$SIGNED_VALIDATION_ARTIFACT" \
             --dir "$ARTIFACT"
           python3 - "$ARTIFACT" <<'PY'
           import hashlib, json, os, pathlib, subprocess, sys

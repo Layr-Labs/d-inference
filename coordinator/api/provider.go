@@ -369,6 +369,14 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		// DecodeProviderMessage is json.Unmarshal minus its redundant outer
 		// validation pass; per-token chunk frames take a hand-written decoder.
 		if err := protocol.DecodeProviderMessage(data, &msg); err != nil {
+			if errors.Is(err, protocol.ErrAppAttestShadowFrameTooLarge) {
+				if appAttestShadow != nil {
+					// Inventory periodically persists this same atomic counter,
+					// including on disconnect. No proof or database work here.
+					appAttestShadow.dropped.Add(1)
+				}
+				s.ddIncr("app_attest.shadow.frames_rejected", []string{"reason:oversized"})
+			}
 			// Decoder errors may quote provider-controlled fields (notably an
 			// unknown message type). Never reflect the detail into logs.
 			s.logger.Warn("invalid provider message", "provider_id", providerID)

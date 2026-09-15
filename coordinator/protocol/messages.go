@@ -1012,7 +1012,7 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 	case TypeAppAttestShadow:
 		var msg AppAttestShadowMessage
 		if len(data) > 48*1024 {
-			return fmt.Errorf("protocol: oversized app attest shadow")
+			return ErrAppAttestShadowFrameTooLarge
 		}
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: malformed app attest shadow")

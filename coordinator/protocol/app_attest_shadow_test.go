@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -27,6 +28,27 @@ func TestAppAttestShadowSwiftTranscriptAndWire(t *testing.T) {
 	}
 	if err := DecodeProviderMessage(append(wire, bytes.Repeat([]byte(" "), 48*1024)...), &decoded); err == nil {
 		t.Fatal("oversized frame accepted")
+	}
+}
+
+func TestAppAttestOversizedFrameErrorIsSpecific(t *testing.T) {
+	padding := bytes.Repeat([]byte(" "), 48*1024)
+	for _, discriminator := range []string{`"app_attest_shadow"`, `"app_attest_\u0073hadow"`} {
+		frame := append([]byte(`{"type":`+discriminator+`,"payload":{"action":"assertion"}}`), padding...)
+		var decoded ProviderMessage
+		if err := DecodeProviderMessage(frame, &decoded); !errors.Is(err, ErrAppAttestShadowFrameTooLarge) {
+			t.Fatalf("oversized shadow frame not identifiable: %v", err)
+		}
+		if decoded.Payload != nil {
+			t.Fatal("oversized shadow payload was decoded")
+		}
+	}
+	var decoded ProviderMessage
+	if err := DecodeProviderMessage(append([]byte(`{"type":"heartbeat"}`), padding...), &decoded); err != nil {
+		t.Fatalf("shadow limit incorrectly applied to a different frame type: %v", err)
+	}
+	if err := DecodeProviderMessage([]byte(`{"type":"app_attest_shadow","payload":42}`), &decoded); err == nil || errors.Is(err, ErrAppAttestShadowFrameTooLarge) {
+		t.Fatalf("ordinary decode error misclassified as oversized: %v", err)
 	}
 }
 

@@ -1,6 +1,6 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-09-14 · commit `df5d14a73`
+> Last updated: 2026-09-14 · commit `1dacb9ec2`
 
 App Attest runs alongside authoritative APNs and MDM verification. The coordinator records stable machine identities, fleet adoption, complete submitted proofs, and receipts. These records do not change routing, rewards, trust, or the supported OS floor. DeviceCheck's separate two-bit API is deferred.
 
@@ -82,6 +82,8 @@ The archive stores invalid base64 verbatim and preserves invalid, replayed, wron
 `acquireStorage` in `coordinator/api/app_attest_shadow_storage.go` admits at most four concurrent session storage operations. Normal verification, verifier-busy rejection, disconnect draining, standalone events, and outbound enrollment writes share this limit. Admission is nonblocking; an admitted proof retains its permit through deferred archive completion, and nested observations reuse it. Refused proof submissions increment the session's dropped count and report `archive/storage_busy`; event persistence refusals emit `app_attest.events.storage_failed` with `reason:busy`. Metrics/logs remain available without making another unbounded database call. Inventory and receipt renewal retain their separate worker limits.
 
 Input refused by frame, queue, or storage admission bounds is counted rather than retained without limit. Storage failures pause that connection's shadow exchange and appear in metrics; they do not interrupt inference. The system cannot guarantee recording bytes it never accepts or durably receives during an outage. Re-verification uses the archived context and original evaluation time, never treats a historical assertion as a fresh challenge.
+
+The protocol decoder returns a distinct error for App Attest frames exceeding 48 KiB. The WebSocket read loop increments the negotiated shadow session's atomic refusal counter before discarding the frame; periodic and terminal inventory captures persist that count for the census. It also emits `app_attest.shadow.frames_rejected` with `reason:oversized`, including when no shadow session is negotiated. This path decodes no proof payload, writes no database rows on the read loop, and continues processing normal provider traffic. Other decoder errors do not increment the oversized-shadow counter. Code: `coordinator/protocol/messages.go` and `coordinator/api/provider.go`.
 
 ## Receipt verification and renewal
 

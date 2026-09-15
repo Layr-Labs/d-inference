@@ -3,9 +3,14 @@ package protocol
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 )
 
 const TypeAppAttestShadow = "app_attest_shadow"
+
+// ErrAppAttestShadowFrameTooLarge lets the connection account for a refused
+// shadow frame without decoding or retaining its oversized proof payload.
+var ErrAppAttestShadowFrameTooLarge = errors.New("protocol: oversized app attest shadow")
 
 // AppAttestShadow is deliberately separate from the authoritative attestation messages.
 // action: prepare -> ready -> attest -> attestation -> assert -> assertion.

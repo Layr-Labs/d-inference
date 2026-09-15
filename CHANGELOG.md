@@ -32,6 +32,7 @@ coordinator deployment.
 - Bind account scope and locally derived OS/build status with protocol 2. Recover lost enrollment responses, cap key generation across accounts, and bound Apple callback waits. DeviceCheck's separate device-bit service stays deferred.
 - Bound shadow archive, rejection, and disconnect work against the shared database pool; count saturation as a coverage gap. Recover after missing Apple callbacks without restarting the provider. Continue renewing existing receipts when new shadow exchanges are disabled.
 - Repair missed inventory disconnect records from durable liveness history after contention or restart. Use only bounded, validated endpoint keys for shadow enrollment, and label original-field and decoded-proof checksums explicitly.
+- Include App Attest frames rejected by the 48 KiB decoder limit in refusal telemetry and the machine-inventory census, without retaining oversized proof payloads or blocking normal provider messages.
 
 - Add negotiated App Attest shadow enrollment and fresh connection assertions, with independent certificate/policy verification, durable counters, and coverage/latency observations. APNs and MDM remain authoritative; shadow success or failure changes no routing, trust, payments, or supported OS floor.
 - Keep the CLI and app launch flow; add profile-authorized App Attest signing alongside APNs in release and validation workflows. Actual macOS 27 acceptance requires the final signed app on physical hardware.

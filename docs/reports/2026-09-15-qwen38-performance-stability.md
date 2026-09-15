@@ -1,9 +1,9 @@
 # Qwen 3.8 Next performance and stability draft update
 
-> Last updated: 2026-09-15 · commit `82e9824b3`
+> Last updated: 2026-09-15 · commit `28da956a`
 
 This report records the qualified native Qwen4 speed/cache work and native
-required-tool framing included in the draft update. It is engineering-review
+required-tool framing and scoped mixed-position correction in the draft update. It is engineering-review
 evidence, not unconditional model-quality or deployment approval.
 
 ## Included changes
@@ -69,6 +69,46 @@ was fixed. The 81K context and uncached lifecycle checks passed.
 Matched 7,041/192 client decode proxies: 31.76/32.48 tok/s OFF and 54.02/49.34
 AUTO, with 87.8%/84.2% acceptance. They are not the native original-target table.
 
+## Mixed text/media position correction
+
+The updated SDK preserves absent versus explicit request positions when mixed
+text/image rows are packed into a rectangular tensor. Text filler ramps no
+longer select the explicit media rotary path. Genuine media planes remain
+intact even when their values coincide. The binding covers ordinary forwards
+and direct MTP hidden-returning seed/decode/prefill/verification, including
+history maintenance while batch pressure forces speculative depth to zero.
+No weight, tokenizer, quantization, head, cache-format or sampler change is
+included. Other architectures and singleton forwarding retain their paths.
+
+Assessed correction executable SHA-256:
+`16e4c23ed2e2691f207977d64acf294d950b887c46c67c37840b1df676333544`.
+The metallib and selected checkpoint config above are unchanged. SDK library/
+test source equivalence to the public packaging was checked; retained license
+and layer-description comments differ, not runtime code. Public SDK pin:
+`f3f0b235c4e98c9c8e9f3cd76b4ec1752c27960b`.
+
+- Release builds and 43 targeted tests passed: seven XCTest position/policy/
+  PLE tests and 36 stateful-MTP integration tests, zero failures/skips. Actual
+  EngineV2 route spies exercise ordinary and hidden-returning mixed forwards.
+- MTP OFF/cache ON and MTP AUTO/cache OFF each passed 11 unchanged real-model
+  HTTP/lifecycle waves: six serial controls, two mixed B4 waves, simultaneous
+  images, cancellation with live mixed peers and post-cancel text. Each arm
+  completed 19 responses and one cancellation. Content, reasoning, arguments,
+  finish and prompt/completion/total usage match original isolated references.
+- Both arms observed native B4, not merely queued clients. AUTO's singleton
+  control proposed 238 draft tokens; OFF proposed zero. This does not claim
+  batched speculation: native Qwen4 retains its one-row speculative cap.
+- A separate 6,788-token long-prefix batching mismatch already reproduces on
+  the preceding runtime, including cache-disabled B2 and reversed B2. Its
+  failing output is identical before/after the first position correction.
+  Cache-enabled long-pair/warm controls also fail exactness. These original
+  failures remain open; no long-prefix cure is attributed to this patch.
+
+These are scoped position-regression results, not a fresh full-suite run, a
+full cache-by-MTP matrix, raw-logit/state proof, long-context concurrency or
+hosted qualification. Default admission remains one active generation row;
+`DARKBLOOM_QWEN4_BATCHED_QSA=1` remains an unqualified opt-in for broader serving.
+
 ## Open gates and rollback
 
 - Original strict fidelity on the published framing runtime: 8/20 exact passes,
@@ -80,6 +120,8 @@ AUTO, with 87.8%/84.2% acceptance. They are not the native original-target table
 - New-target native MTP/state, affected cache/transport, physical hardware,
   BF16 equivalence, signed persistence/trust and hosted routing need separate
   evidence. Local compatibility is not hosted OpenRouter certification.
+- Long-prefix concurrent/cached exactness and the full affected-suite rerun
+  remain open; the scoped mixed-position pass does not close these gates.
 - [ ] All required end-to-end release gates complete, with current evidence.
 
 Disable the performance switches to restore prior scheduling/attention dispatch.

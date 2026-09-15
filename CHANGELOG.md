@@ -23,6 +23,9 @@ coordinator deployment.
 
 ## Unreleased — Qwen 3.8 Next (Flash-Next) private candidate
 
+- Preserve per-request rotary position semantics in mixed text/image batches,
+  including hidden-returning MTP history paths. Keep singleton admission and
+  speculative caps unchanged; longer-prefix batching qualification remains open.
 - Add qualified opt-in full-KV parallel attention and early layer submission,
   plus canonical media-prefix positions for appended-text reuse. Preserve
   native state, PLE fill/fault ownership, MTP and existing fallback behavior.

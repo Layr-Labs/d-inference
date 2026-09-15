@@ -1,0 +1,8 @@
+1788311889.652347000 Downloading Benchmark large 2026-09-01-r1 (bench-large-2026-09-01-r1)…
+1788311889.659109000   ✓ shard-04.bin  1.0 GB
+1788311889.664254000   ✓ shard-01.bin  1.0 GB  4 MB/s  4m 40s
+1788311889.669156000   ✓ shard-02.bin  1.0 GB  4 MB/s  4m 40s
+1788311889.675359000   ✓ shard-03.bin  1.0 GB  4 MB/s  4m 40s
+1788311889.680299000   ✓ shard-04.bin  1.0 GB  4 MB/s  4m 40s
+1788311889.684948000   ✓ bench-large-2026-09-01-r1  4096.0 MB
+1788311889.690018000 Done. Cached at /Users/fork/.cache/huggingface/hub/models--bench-large-2026-09-01-r1

@@ -1,0 +1,4 @@
+shard-01.bin 1073741824 MISS a348a6c92f3850d1-MIA cache-control: public, max-age=31536000, immutable
+shard-02.bin 1073741824 MISS a348a6ca5f9b4851-MIA cache-control: public, max-age=31536000, immutable
+shard-03.bin 1073741824 MISS a348a6cc39f6052d-MIA cache-control: public, max-age=31536000, immutable
+shard-04.bin 1073741824 MISS a348a6ce2856a681-MIA cache-control: public, max-age=31536000, immutable

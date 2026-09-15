@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-15 · commit `a99ce680a`
+> Last updated: 2026-09-15 · commit `53e537e4f`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -245,8 +245,13 @@ R2 uploads, release registration and GitHub Release creation. The default remain
 The Actions artifact contains the final signed tarball and
 `darkbloom-validation-identity.json`, with source/submodule revisions and final
 bundle, executable and metallib hashes plus the full SHA-256 CodeDirectory digest and build SDK version.
-The workflow sets `SDKROOT` for compilation/linking and rejects a final executable
-whose recorded SDK differs from the selected SDK.
+The workflow selects Apple Command Line Tools 27.0 / Swift 6.4, installing that
+specific package through Software Update on the CI runner when needed.
+`scripts/prepare-provider-release-toolchain.sh` scopes
+`scripts/provider-release-swift.sh` to provider builds/tests while Xcode remains
+the Metal/signing toolchain. The release SDK runs the provider unit suite and
+isolated allocator gates. `SDKROOT` covers compilation/linking, and a final
+executable whose recorded SDK differs from the selected SDK fails qualification.
 The CodeDirectory digest is also printed in production release notes and supplies
 the measurement side of an explicitly qualified App Attest binary/code-hash pair.
 Recording it does not authorize the build. Retention is 14 days. Verify those hashes

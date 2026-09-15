@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `b725a72a8`
+> Last updated: 2026-09-15 · commit `53e537e4f`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1586,3 +1586,7 @@ a release-only allocator failure that debug tests missed. Run
 `bash scripts/test-install-atomic.sh` for installer acceptance and rollback cases.
 The [rollout runbook](../operations/app-attest-rollout.md) separates these checks
 from real Apple receipt renewal and final signed-artifact fleet qualification.
+
+## Provider release toolchain
+
+`python3 scripts/test-provider-release-toolchain.py` checks SDK selection, rejection of older SDK/compiler inputs, wrapper argument boundaries and propagation of `SDKROOT` without installing software. Release Integrity runs these tests. The signed provider workflow runs the provider unit suite and isolated allocator gates with the selected SDK 27 / Swift 6.4 toolchain before packaging; [provider release](../operations/provider-release.md) describes artifact qualification.

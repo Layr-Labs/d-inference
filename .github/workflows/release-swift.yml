@@ -290,8 +290,12 @@ jobs:
           key: ${{ steps.mlxkey.outputs.key }}
 
       # ----------------------------------------------------------------------
-      # Build (tests run by CI, not the release workflow).
+      # Build and test with the SDK required for Apple code measurements.
       # ----------------------------------------------------------------------
+
+      - name: Select SDK 27 provider toolchain
+        timeout-minutes: 20
+        run: ./scripts/prepare-provider-release-toolchain.sh
 
       - name: Build provider-swift (release)
         working-directory: provider-swift
@@ -300,8 +304,8 @@ jobs:
           # Swift's linker must receive the same SDK selected for compilation.
           # In CLT 27 beta 6, --sdk alone can leave LC_BUILD_VERSION at the
           # deployment target; SDKROOT preserves the actual linked SDK version.
-          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
-          echo "BUILD_SDK_VERSION=$(xcrun --sdk macosx --show-sdk-version)" >> "$GITHUB_ENV"
+          export SDKROOT="$PROVIDER_SDKROOT"
+          echo "BUILD_SDK_VERSION=$PROVIDER_SDK_VERSION" >> "$GITHUB_ENV"
           swift build -c release --product darkbloom
           swift build -c release --product darkbloom-enclave
           swift build -c release --product darkbloom-fan-helper
@@ -314,6 +318,21 @@ jobs:
           REPORTED=$("$BIN_DIR/$CLI_NAME" --version)
           ../scripts/check-release-version.sh "$VERSION" "$REPORTED"
 
+      - name: Test provider with release SDK
+        working-directory: provider-swift
+        timeout-minutes: 35
+        env:
+          RELEASE_TEST_METALLIB: ${{ steps.metallib.outputs.metallib }}
+        run: |
+          set -euo pipefail
+          swift build --build-tests
+          TEST_BIN_DIR=$(swift build --show-bin-path)
+          cp "$RELEASE_TEST_METALLIB" "$TEST_BIN_DIR/mlx.metallib"
+          while IFS= read -r macos; do
+            cp "$RELEASE_TEST_METALLIB" "$macos/mlx.metallib"
+          done < <(find .build -type d -path '*.xctest/Contents/MacOS' -print)
+          ../scripts/run-provider-tests.sh
+
       - name: Save SwiftPM cache
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         if: always()
@@ -325,9 +344,8 @@ jobs:
             libs/mlx-swift-lm/.build
           key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
 
-      # Unit tests are run by CI (ci.yml + integration.yml) on push to
-      # master. Skipped here to avoid flaky live MLX inference tests
-      # blocking signed releases on CI hardware timing differences.
+      # General PR CI also validates the existing developer toolchain. The
+      # release SDK suite above qualifies the compiler used for these binaries.
 
       # ----------------------------------------------------------------------
       # Stage the app, every SwiftPM runtime bundle, and flat verifier files.

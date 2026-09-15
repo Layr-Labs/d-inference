@@ -15,6 +15,7 @@ jobs:
         run: |
           ./scripts/check-release-version.sh
           python3 scripts/test-provider-release-resolution.py
+          python3 scripts/test-provider-release-toolchain.py
           python3 scripts/test-app-attest-entitlements.py
           ./scripts/sync-install-embed.sh check
           ./scripts/test-prod-env-refresh.sh

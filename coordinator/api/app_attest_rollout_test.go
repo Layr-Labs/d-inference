@@ -81,3 +81,32 @@ func TestAppAttestRecoveryRotatesSessionAndReloadsWithoutDisconnect(t *testing.T
 		t.Fatal("shutdown did not cancel recovery")
 	}
 }
+
+func TestAppAttestSendFailureSchedulesFreshRecovery(t *testing.T) {
+	x := &appAttestShadowSession{s: &Server{}, provider: &registry.Provider{ID: "provider"}, id: "first"}
+	attempts, waits := 0, 0
+	x.runRecovering(context.Background(), func(ctx context.Context) {
+		attempts++
+		if attempts == 1 {
+			// All enqueue failures, including a saturated control lane, take
+			// send's same failure path. A stopped writer supplies that error here.
+			if x.send(ctx, "prepare") || x.lastOutcome != "send_failed" {
+				t.Fatal("send failure did not reach recovery")
+			}
+			return
+		}
+		if x.id == "first" || x.challenge != "" || x.expected != "" {
+			t.Fatal("retry retained the failed send's challenge")
+		}
+		x.lastOutcome = "unsupported"
+	}, func(_ context.Context, delay time.Duration) bool {
+		waits++
+		if delay != time.Minute {
+			t.Fatalf("retry delay %s", delay)
+		}
+		return true
+	})
+	if attempts != 2 || waits != 1 {
+		t.Fatalf("attempts=%d waits=%d", attempts, waits)
+	}
+}

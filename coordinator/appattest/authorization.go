@@ -13,20 +13,21 @@ type AuthorizationBinding struct {
 }
 
 type AuthorizationEvidence struct {
-	HardwareKnown, HardwareMatched             bool
-	ArchiveComplete                            bool
-	RenewalConfigured                          bool
-	Binding, Expected                          AuthorizationBinding
-	ProtocolVersion                            int
-	CredentialVerified, EndpointBound          bool
-	AssertionAt                                time.Time
-	ValidationCategory                         *uint32
-	BundleVersion, ReportedVersion             string
-	CatalogKnown, BuildMatched, BuildQualified bool
-	RevocationKnown, Revoked                   bool
-	ReceiptVerified                            bool
-	ReceiptExpiresAt, ReceiptRenewAt           time.Time
-	RiskMetric                                 *uint64
+	VerificationKeyKnown, VerificationKeyMatched bool
+	HardwareKnown, HardwareMatched               bool
+	ArchiveComplete                              bool
+	RenewalConfigured                            bool
+	Binding, Expected                            AuthorizationBinding
+	ProtocolVersion                              int
+	CredentialVerified, EndpointBound            bool
+	AssertionAt                                  time.Time
+	ValidationCategory                           *uint32
+	BundleVersion, ReportedVersion               string
+	CatalogKnown, BuildMatched, BuildQualified   bool
+	RevocationKnown, Revoked                     bool
+	ReceiptVerified                              bool
+	ReceiptExpiresAt, ReceiptRenewAt             time.Time
+	RiskMetric                                   *uint64
 }
 
 type AuthorizationVerdict struct {
@@ -64,6 +65,11 @@ func EvaluateAuthorization(e AuthorizationEvidence, now time.Time) Authorization
 		unknown("hardware_claims_unbound")
 	} else if !e.HardwareMatched {
 		deny("hardware_claims_mismatch")
+	}
+	if e.ProtocolVersion != 3 || !e.VerificationKeyKnown {
+		unknown("verification_key_unbound")
+	} else if !e.VerificationKeyMatched {
+		deny("verification_key_mismatch")
 	}
 	if !e.CredentialVerified {
 		unknown("credential_unverified")

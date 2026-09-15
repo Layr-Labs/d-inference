@@ -13,7 +13,7 @@ func TestAuthorizationRequiresEveryCurrentConnectionCondition(t *testing.T) {
 	binding := AuthorizationBinding{"account", "machine", "credential", "connection", "endpoint", "TEAM.app", "production"}
 	good := AuthorizationEvidence{Binding: binding, Expected: binding, ProtocolVersion: 3, CredentialVerified: true, EndpointBound: true, AssertionAt: now,
 		ValidationCategory: &category, BundleVersion: "0.9.4", ReportedVersion: "0.9.4", CatalogKnown: true, BuildMatched: true, BuildQualified: true,
-		RevocationKnown: true, RenewalConfigured: true, ArchiveComplete: true, HardwareKnown: true, HardwareMatched: true, ReceiptVerified: true, ReceiptExpiresAt: now.Add(time.Hour), ReceiptRenewAt: now.Add(time.Hour), RiskMetric: &metric}
+		RevocationKnown: true, RenewalConfigured: true, ArchiveComplete: true, HardwareKnown: true, HardwareMatched: true, VerificationKeyKnown: true, VerificationKeyMatched: true, ReceiptVerified: true, ReceiptExpiresAt: now.Add(time.Hour), ReceiptRenewAt: now.Add(time.Hour), RiskMetric: &metric}
 	if got := EvaluateAuthorization(good, now); got.Outcome != "eligible" || !got.ValidUntil.Equal(now.Add(AssertionFreshness)) {
 		t.Fatalf("positive control: %+v", got)
 	}
@@ -23,6 +23,7 @@ func TestAuthorizationRequiresEveryCurrentConnectionCondition(t *testing.T) {
 	}{
 		{"wrong environment", "connection_binding_mismatch", "ineligible", func(e *AuthorizationEvidence) { e.Expected.Environment = "development" }},
 		{"wrong app", "connection_binding_mismatch", "ineligible", func(e *AuthorizationEvidence) { e.Expected.AppID = "OTHER.app" }},
+		{"substituted verification key", "verification_key_mismatch", "ineligible", func(e *AuthorizationEvidence) { e.VerificationKeyMatched = false }},
 		{"unsigned hardware", "hardware_claims_unbound", "unknown", func(e *AuthorizationEvidence) { e.HardwareKnown = false }},
 		{"altered hardware", "hardware_claims_mismatch", "ineligible", func(e *AuthorizationEvidence) { e.HardwareMatched = false }},
 		{"archive gap", "evidence_archive_gap", "unknown", func(e *AuthorizationEvidence) { e.ArchiveComplete = false }},

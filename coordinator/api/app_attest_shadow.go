@@ -24,6 +24,7 @@ const shadowAssertionInterval = 10 * time.Minute
 // One bounded inbox/worker per negotiated connection; the read loop never waits
 // for Apple, database, or cryptography. No method on this type changes trust.
 type appAttestShadowSession struct {
+	attestationKey                                 string
 	hardware                                       protocol.Hardware
 	offerMu                                        sync.Mutex
 	rejectReason                                   string
@@ -65,13 +66,17 @@ func (s *Server) startAppAttestShadow(ctx context.Context, provider *registry.Pr
 	}
 	provider.Mu().Lock()
 	owner := account
+	attestationKey := ""
 	publicKey := provider.PublicKey
 	if provider.AttestationResult != nil {
 		owner += ":" + provider.AttestationResult.PublicKey
+		if provider.AttestationResult.Valid && provider.AttestationResult.EncryptionPublicKey == publicKey {
+			attestationKey = provider.AttestationResult.PublicKey
+		}
 	}
 	provider.Mu().Unlock()
 	hash := sha256.Sum256([]byte(owner))
-	x := &appAttestShadowSession{s: s, provider: provider, inventory: inventory, account: account, protocolVersion: registration.AppAttestProtocol, hardware: registration.Hardware, in: make(chan protocol.AppAttestShadowPayload, 2),
+	x := &appAttestShadowSession{s: s, provider: provider, inventory: inventory, account: account, protocolVersion: registration.AppAttestProtocol, hardware: registration.Hardware, attestationKey: attestationKey, in: make(chan protocol.AppAttestShadowPayload, 2),
 		id: base64.StdEncoding.EncodeToString(nonce[:]), owner: hex.EncodeToString(hash[:]),
 		publicKey: publicKey, version: registration.Version,
 		chip:     registration.Hardware.ChipName,
@@ -155,6 +160,10 @@ func (x *appAttestShadowSession) offer(p protocol.AppAttestShadowPayload) {
 	}
 	// Length bounds also cover decode-only fields; oversized proofs never queue.
 	if len(p.Action) > 32 || len(p.Environment) > 32 || len(p.AccountScope) > 64 || len(p.EnrollmentSession) > 64 || len(p.KeyID) > 64 || len(p.Challenge) > 64 || len(p.Session) > 64 || len(p.Proof) > 44*1024 || len(p.Result) > 64 {
+		x.dropped.Add(1)
+		return
+	}
+	if p.Status != nil && len(p.Status.AttestationPublicKey) > 128 {
 		x.dropped.Add(1)
 		return
 	}

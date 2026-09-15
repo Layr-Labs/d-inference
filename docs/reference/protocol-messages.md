@@ -712,7 +712,7 @@ comment in `coordinator/registry/capacity_cooldown.go`.
 `register.app_attest_protocol=3` negotiates the account/endpoint-bound shadow
 exchange plus signed static hardware claims. `AppAttestStatus` adds optional
 string fields `machine_model`, `memory_gb`, `cpu_total`, `cpu_performance`,
-`cpu_efficiency` and `gpu_cores`; version 3 hashes them after the version 2 status
+`cpu_efficiency`, `gpu_cores` and `attestation_public_key`; version 3 hashes them after the version 2 status
 fields under its own domain. Old transcripts remain unchanged. Original enrollment
 protocol is retained for cached-response recovery across upgrades. These fields
 are app measurements, not Apple-certified hardware. See

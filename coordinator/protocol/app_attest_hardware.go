@@ -18,6 +18,11 @@ func AppAttestShadowHashV3(action, session, environment, keyID, challenge, publi
 	h := sha256.New()
 	values := append([]string{"darkbloom.app-attest.shadow.v3", action, session, environment, keyID, challenge, publicKey, accountScope}, status.Values()...)
 	values = append(values, status.HardwareValues()...)
+	verificationKey := ""
+	if status != nil {
+		verificationKey = status.AttestationPublicKey
+	}
+	values = append(values, verificationKey)
 	for _, value := range values {
 		var length [4]byte
 		binary.BigEndian.PutUint32(length[:], uint32(len(value)))

@@ -26,7 +26,9 @@ created: "2026-05-14"
 # metadata/qualification never becomes eligibility. App Attest aliases prove
 # credential continuity, not one physical Mac or certified RAM. Protocol 3
 # binds model/RAM/CPU/GPU app measurements to the current assertion and rejects
-# prospective mismatches against registration; it does not change reward rules.
+# prospective mismatches against registration. The app also binds its existing
+# verification public key, preventing substitution of model/runtime signature
+# credentials during the later trust transition. Reward rules are unchanged.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference

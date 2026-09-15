@@ -32,7 +32,7 @@ not application crashes. Test credentials/proof bytes/receipts remain in private
 local artifacts and are not committed here.
 
 Protocol 3 has an independent Go/Swift transcript vector and regression coverage
-for version 2 cached-enrollment recovery, memory substitution and bounds. The
+for version 2 cached-enrollment recovery, memory/verification-key substitution and bounds. Protocol 3 also binds the existing attestation public key, preserving the link to model/runtime signatures after MDM retirement. The
 base-reward memory-cap table moved unchanged into the hardware package.
 
 Review regressions cover a single enrollment snapshot shared by archive and

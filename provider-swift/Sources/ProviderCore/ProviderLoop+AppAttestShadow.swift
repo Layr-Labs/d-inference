@@ -35,7 +35,7 @@ extension ProviderLoop {
         let status = AppAttestStatus(osVersion: "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)", osBuild: appAttestOSBuild(), appVersion: ProviderCore.version, chip: loopConfig.hardware.chipName, binaryHash: binaryHash ?? "",
             machineModel: loopConfig.hardware.machineModel, memoryGB: String(ProcessInfo.processInfo.physicalMemory / (1024 * 1024 * 1024)),
             cpuTotal: String(loopConfig.hardware.cpuCores.total), cpuPerformance: String(loopConfig.hardware.cpuCores.performance),
-            cpuEfficiency: String(loopConfig.hardware.cpuCores.efficiency), gpuCores: String(loopConfig.hardware.gpuCores))
+            cpuEfficiency: String(loopConfig.hardware.cpuCores.efficiency), gpuCores: String(loopConfig.hardware.gpuCores), attestationPublicKey: signer?.publicKeyBase64)
         appAttestShadowTask = Task.detached(priority: .utility) { [weak self] in
             let reply = await client.respond(to: message, publicKey: publicKey, status: status)
             guard !Task.isCancelled else { return }

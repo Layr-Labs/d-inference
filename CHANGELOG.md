@@ -7,7 +7,7 @@
 - Retry transient shadow failures without disconnecting serving providers; bound actual uncancellable Apple operations and fence late callbacks.
 - Recover cached enrollment receipts through a separately validated renewal path, retain original failure records, and reconcile interrupted evidence without advancing counters. Receipt renewal requires the dedicated server credentials.
 - Associate machine identities through fresh account-bound App Attest assertions, including reconnects after legacy-key rotation. This does not rewrite balances or certify physical-device uniqueness.
-- Negotiate App Attest protocol 3 to bind app-measured machine model, RAM and CPU/GPU counts to the signed transcript. Preserve old transcripts and cached enrollment recovery across upgrades; move the unchanged base-reward memory-cap catalog out of the MDM package.
+- Negotiate App Attest protocol 3 to bind app-measured machine model, RAM, CPU/GPU counts and the existing verification key to the signed transcript. Preserve old transcripts and cached enrollment recovery across upgrades; move the unchanged base-reward memory-cap catalog out of the MDM package.
 - Record versioned prospective authorization outcomes, revocation, current-connection freshness, qualified builds and receipt/risk readiness. The private dashboard shows exact cohort denominators and blockers for a later MDM retirement.
 
 

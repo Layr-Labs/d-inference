@@ -1,6 +1,6 @@
 # Qwen 3.8 Next native API and cache qualification
 
-> Last updated: 2026-09-15 · commit `2d380f71e`
+> Last updated: 2026-09-15 · commit `2a843bb2c`
 
 The reviewed Qwen 3.8 Next (Flash-Next) candidate preserves native Qwen4,
 multimodal assets, embedded MTP, paged storage, prefix caching and SSD PLE

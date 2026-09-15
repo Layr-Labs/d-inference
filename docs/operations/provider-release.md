@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-15 · commit `53e537e4f`
+> Last updated: 2026-09-15 · commit `e2e0cb33f`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -245,8 +245,11 @@ R2 uploads, release registration and GitHub Release creation. The default remain
 The Actions artifact contains the final signed tarball and
 `darkbloom-validation-identity.json`, with source/submodule revisions and final
 bundle, executable and metallib hashes plus the full SHA-256 CodeDirectory digest and build SDK version.
-The workflow selects Apple Command Line Tools 27.0 / Swift 6.4, installing that
-specific package through Software Update on the CI runner when needed.
+The release build uses GitHub’s `xcode-27` runner with Apple Command Line Tools
+27.0 / Swift 6.4 preinstalled. The ordinary Blacksmith runner was observed on
+macOS 26.3, below the SDK 27 installer’s 26.4 minimum; it remains the general
+PR CI environment. The selector refuses an older SDK/compiler instead of
+installing software or falling back.
 `scripts/prepare-provider-release-toolchain.sh` scopes
 `scripts/provider-release-swift.sh` to provider builds/tests while Xcode remains
 the Metal/signing toolchain. The release SDK runs the provider unit suite and

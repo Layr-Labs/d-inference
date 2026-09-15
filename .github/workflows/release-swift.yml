@@ -100,7 +100,9 @@ jobs:
   build-and-release:
     name: Build, sign, notarize, optionally publish
     needs: [resolve-env]
-    runs-on: blacksmith-12vcpu-macos-latest
+    # App Attest's current code measurements require SDK 27. The ordinary
+    # Blacksmith image is macOS 26.3 and cannot install Apple's SDK 27 tools.
+    runs-on: xcode-27
     environment: ${{ needs.resolve-env.outputs.environment }}
 
     env:

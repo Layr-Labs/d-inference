@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Select SDK 27 for App Attest's current code measurements. Install only the
-# Apple-offered Command Line Tools package, and only on a GitHub Actions runner.
-# Keep Xcode selected for Metal/signing; the wrapper scopes this to Swift builds.
+# Select the preinstalled SDK 27 tools on the xcode-27 runner. Keep Xcode
+# selected for Metal/signing; the wrapper scopes this to Swift builds/tests.
 set -euo pipefail
 : "${GITHUB_ENV:?}"
 : "${GITHUB_PATH:?}"
@@ -23,12 +22,8 @@ PY
 }
 
 if ! ready; then
-  if [[ "${GITHUB_ACTIONS:-false}" != true || "$toolchain" != /Library/Developer/CommandLineTools || "$sdk" != "$toolchain/SDKs/MacOSX27.0.sdk" ]]; then
-    echo 'SDK 27 / Swift 6.4 unavailable; automatic installation is limited to the default CI toolchain' >&2
-    exit 1
-  fi
-  sudo /usr/sbin/softwareupdate --install 'Command Line Tools for Xcode 27.0-27.0' --verbose
-  ready
+  echo 'Provider release requires preinstalled SDK 27 / Swift 6.4; use the xcode-27 runner' >&2
+  exit 1
 fi
 
 wrapper_dir="$RUNNER_TEMP/darkbloom-release-toolchain/bin"

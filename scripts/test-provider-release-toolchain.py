@@ -47,11 +47,11 @@ class ReleaseToolchainTests(unittest.TestCase):
                                  text=True, capture_output=True, check=True)
         self.assertIn("Apple Swift version 6.4", version.stdout)
 
-    def test_wrong_sdk_cannot_fall_back_or_install_outside_ci(self):
+    def test_wrong_sdk_cannot_fall_back(self):
         (self.sdk / "SDKSettings.json").write_text('{"Version":"26.5"}')
         result = self.select()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("automatic installation is limited", result.stderr)
+        self.assertIn("requires preinstalled SDK 27", result.stderr)
         self.assertFalse((self.root / "env").exists())
 
     def test_old_swift_cannot_select_sdk_27(self):

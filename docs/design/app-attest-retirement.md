@@ -2,7 +2,7 @@
 
 > Last updated: 2026-09-14 · commit `2f39698d2`
 
-Status: **Proposed** — 2026-09-14 — source review and draft implementation audit complete; enforcement and retirement are not implemented.
+Status: **In progress** — 2026-09-14 — shadow recovery and prospective policy are implemented in the 0.9.4 candidate; [qualification and retirement gates](../operations/app-attest-rollout.md) remain distinct from enforcement/removal.
 
 Use App Attest as the basis for a new provider authorization policy, while the
 [coexistence release](app-attest-migration.md) keeps APNs and MDM authoritative.

@@ -65,6 +65,12 @@ func (x *appAttestShadowSession) keyOwnerMatches(ctx context.Context, key *store
 	if key.Owner == x.owner {
 		return true
 	}
+	// A claimed key ID never assigns identity. Same-account reuse must first
+	// prove custody through a fresh encrypted assertion. Only after its durable
+	// acceptance does inventory attach the credential alias to this session.
+	if x.protocolVersion == 2 && x.account != "" && key.AccountID == x.account {
+		return true
+	}
 	if x.account == "" || key.AccountID != x.account || key.MachineID == "" || x.machineID() == "" {
 		return false
 	}

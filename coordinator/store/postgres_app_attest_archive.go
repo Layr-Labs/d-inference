@@ -73,7 +73,7 @@ func (s *PostgresStore) CompleteAppAttestEvidence(ctx context.Context, id string
 		}
 	}
 	if d.Receipt != nil {
-		if outcome != "verified" && d.Receipt.Outcome == "verified" {
+		if outcome != "verified" && (d.Receipt.Outcome == "verified" || d.Receipt.Outcome == "renewal_required") {
 			d.Receipt.Outcome = "attestation_not_accepted"
 		}
 		if err = insertAppAttestReceipt(ctx, tx, *d.Receipt); err != nil {

@@ -6,7 +6,7 @@ import Security
 public actor AppleAppAttestService: AppAttestService {
     private let callbacks: any AppAttestCallbacks
     private let operationTimeout: Double
-    private var operationPending = false
+    private let operations = AppleOperationGate()
 
     public init() {
         callbacks = SystemAppAttestCallbacks()
@@ -53,15 +53,20 @@ public actor AppleAppAttestService: AppAttestService {
     }
 
     private func perform<Value: Sendable>(
-        start: @Sendable (@escaping @Sendable (Result<Value, Error>) -> Void) -> Void
+        start: @escaping @Sendable (@escaping @Sendable (Result<Value, Error>) -> Void) -> Void
     ) async throws -> Value {
         try Task.checkCancellation()
-        guard !operationPending else { throw ShadowFailure.busy }
-        operationPending = true
-        // Completion, timeout, and cancellation all release admission. Apple
-        // callbacks never mutate actor state, so an old callback cannot unlock
-        // a newer operation. Client retry/key-generation budgets still apply.
-        defer { operationPending = false }
-        return try await CallbackDeadline.call(seconds: operationTimeout, start: start)
+        return try await CallbackDeadline.call(seconds: operationTimeout) { [operations] complete in
+            // Acquire only after the deadline installs its continuation: an
+            // already-cancelled waiter must not strand admission without a call.
+            guard let token = operations.acquire() else {
+                complete(.failure(ShadowFailure.busy))
+                return
+            }
+            start { result in
+                operations.finish(token)
+                complete(result)
+            }
+        }
     }
 }

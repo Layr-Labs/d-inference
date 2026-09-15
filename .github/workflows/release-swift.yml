@@ -428,6 +428,7 @@ jobs:
             "$APP/Contents/Resources/darkbloom-runtime-capabilities"
 
           cp "$BIN_DIR/$CLI_NAME" "$APP/Contents/MacOS/"
+          printf '1\n' > "$APP/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1"
           cp "$BIN_DIR/$ENCLAVE_NAME" "$APP/Contents/MacOS/"
           cp "${{ steps.metallib.outputs.metallib }}" "$APP/Contents/MacOS/mlx.metallib"
           install -m 0755 \
@@ -739,6 +740,7 @@ jobs:
             fi
           done
           FINAL_FAN_HELPER="$SMOKE_ROOT/Darkbloom.app/Contents/Helpers/$FAN_HELPER_NAME"
+          test -f "$SMOKE_ROOT/Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1"
           FINAL_FAN_MARKER="$SMOKE_ROOT/Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
           test -f "$FINAL_FAN_HELPER"
           test ! -L "$FINAL_FAN_HELPER"

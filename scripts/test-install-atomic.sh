@@ -31,6 +31,8 @@ int main(int argc, char **argv) {
     if (weighted == NULL || strcmp(weighted, "1") != 0) return 5;
     if (safe_r1 == NULL || strcmp(safe_r1, "1") != 0) return 6;
 
+    if (getenv("DARKBLOOM_TEST_SMOKE_NO_ATTEST") == NULL) puts("app-attest-callback-runtime-smoke: ok");
+
     char resolved[PATH_MAX];
     if (realpath(argv[0], resolved) == NULL) return 2;
     char first[PATH_MAX], second[PATH_MAX], third[PATH_MAX];
@@ -110,6 +112,7 @@ make_artifact() {
     local capability=$2
     local include_resource=$3
     local include_fan=${4:-no}
+    local include_attest=${5:-no}
     local stage="$ROOT/stage-$RANDOM"
     local app="$stage/Darkbloom.app"
     local binary="$ROOT/$capability"
@@ -137,6 +140,11 @@ PLIST
             printf 'kernel\n' \
                 > "$app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal"
         fi
+    fi
+
+    if [ "$include_attest" = "yes" ]; then
+        mkdir -p "$app/Contents/Resources/darkbloom-runtime-capabilities"
+        printf '1\n' > "$app/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1"
     fi
 
     if [ "$include_fan" = "yes" ]; then
@@ -420,3 +428,12 @@ test -x "$COORD_LEGACY_INSTALL/bin/darkbloom"
 test ! -e "$COORD_LEGACY_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
 
 echo "atomic installer tests passed"
+
+ATTEST="$ROOT/attest.tar.gz"
+make_artifact "$ATTEST" paged yes yes yes
+run_install "$ATTEST" "$ROOT/attest-install"
+if DARKBLOOM_TEST_SMOKE_NO_ATTEST=1 run_install "$ATTEST" "$ROOT/attest-install" >"$ROOT/attest-failure.log" 2>&1; then
+    echo "Missing App Attest smoke marker was accepted" >&2
+    exit 1
+fi
+grep -q 'App Attest callback runtime smoke omitted' "$ROOT/attest-failure.log"

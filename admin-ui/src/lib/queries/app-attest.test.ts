@@ -42,4 +42,21 @@ describe.skipIf(!enabled)("App Attest inventory queries on PostgreSQL", () => {
     expect((await appAttestMachineHistory("machine-a",0))[0].id).toBe("proof");
     expect(await appAttestMachineHistory("machine-b",0)).toEqual([]);
   });
+  it("requires a fresh verdict on the current connection and honors revocation", async()=>{
+    const { appAttestReadinessCohorts, appAttestReadinessReasons } = await import("./app-attest-readiness");
+    const fields = JSON.stringify({ credential_id:"readiness-key", valid_until:new Date(Date.now()+600_000).toISOString(), reasons:[] });
+    await pool.query(`INSERT INTO app_attest_shadow_events VALUES('policy','session-b',NOW(),'prospective_policy','eligible',$1)`, [fields]);
+    expect(await appAttestReadinessCohorts(7)).toContainEqual({readiness:"eligible",version:"0.9.2",machines:"1"});
+    await pool.query(`UPDATE app_attest_shadow_events SET fields=fields || jsonb_build_object('valid_until',NOW()-INTERVAL '1 second') WHERE id='policy'`);
+    expect(await appAttestReadinessCohorts(7)).toContainEqual({readiness:"stale",version:"0.9.2",machines:"1"});
+    await pool.query(`UPDATE app_attest_shadow_events SET fields=$1 WHERE id='policy'`,[fields]);
+    await pool.query(`INSERT INTO app_attest_shadow_keys(key_id,owner,evidence) VALUES('readiness-key','owner','{}')`);
+    await pool.query(`INSERT INTO app_attest_key_revocations VALUES('readiness-key','owner','test',NOW())`);
+    expect(await appAttestReadinessCohorts(7)).toContainEqual({readiness:"ineligible",version:"0.9.2",machines:"1"});
+    await pool.query(`INSERT INTO darkbloom_machine_sessions SELECT 'replacement',machine_id,original_machine_id,account_id,NOW(),NOW()+INTERVAL '1 second',NULL,observation FROM darkbloom_machine_sessions WHERE session_id='session-b'`);
+    expect(await appAttestReadinessCohorts(7)).toEqual([{readiness:"not_evaluated",version:"0.9.2",machines:"2"}]);
+    await pool.query(`INSERT INTO app_attest_shadow_events VALUES('missing','replacement',NOW(),'prospective_policy','unknown','{"reasons":["apple_bundle_version_missing"]}')`);
+    expect(await appAttestReadinessReasons(7)).toEqual([{reason:"apple_bundle_version_missing",machines:"1"}]);
+  });
+
 });

@@ -12,6 +12,9 @@ import (
 )
 
 func (x *appAttestShadowSession) observe(stage, outcome string, metadata *appattest.Key) {
+	if stage != "archive" {
+		x.lastOutcome = outcome
+	}
 	if x.evidenceID != "" && stage != "archive" {
 		x.evidenceOutcome = outcome
 	}
@@ -44,6 +47,11 @@ func (x *appAttestShadowSession) observe(stage, outcome string, metadata *appatt
 		x.s.ddIncr("app_attest.shadow.metadata", []string{"result:" + policy})
 	}
 	fields["account_id"] = x.account
+	if stage == "prospective_policy" {
+		for key, value := range x.policyFields {
+			fields[key] = value
+		}
+	}
 	if x.inventory != nil {
 		identity := x.inventory.snapshot()
 		fields["machine_id"] = identity.ID

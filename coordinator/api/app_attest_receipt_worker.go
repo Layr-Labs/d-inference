@@ -22,10 +22,15 @@ import (
 func (s *Server) startAppAttestReceiptWorker(ctx context.Context) {
 	worker := s.newAppAttestReceiptWorker()
 	if worker == nil {
+		s.ddGauge("app_attest.receipt.configured", 0, nil)
 		return
 	}
+	s.ddGauge("app_attest.receipt.configured", 1, nil)
 	saferun.Go(s.logger, "appAttestReceiptRenewal", func() {
-		ticker := time.NewTicker(time.Minute)
+		// One request at a time, at most one per second per coordinator. Leases
+		// prevent duplicate work across replicas; a fleet no longer takes days
+		// to receive its first risk receipts at one request per minute.
+		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		worker.run(ctx, ticker.C, &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }})
 	})
@@ -75,13 +80,20 @@ func (w *appAttestReceiptWorker) run(ctx context.Context, ticks <-chan time.Time
 
 func renewAppAttestReceipt(ctx context.Context, old store.AppAttestReceipt, cfg AppAttestShadowConfig, client *http.Client) store.AppAttestReceipt {
 	r := store.AppAttestReceipt{ID: uuid.NewString(), KeyID: old.KeyID, EvidenceID: old.EvidenceID, ParentID: old.ID, ReceivedAt: time.Now().UTC(), Context: old.Context, Details: json.RawMessage(`{}`), NextAt: time.Now().UTC().Add(time.Hour), ExpiresAt: old.ExpiresAt, Outcome: "configuration_error"}
+	var c receiptVerificationContext
+	if json.Unmarshal(old.Context, &c) != nil {
+		return r
+	}
+	if old.Outcome == "receipt_creation_time" {
+		// Append a recovery decision; retain the original failure unchanged.
+		// No network call is made until the historical input passes validation.
+		r.Body = old.Body
+		verifyInitialReceiptRecord(&r, c)
+		return r
+	}
 	if !old.ExpiresAt.After(r.ReceivedAt) {
 		r.Outcome = "receipt_expired"
 		r.NextAt = r.ReceivedAt.Add(365 * 24 * time.Hour)
-		return r
-	}
-	var c receiptVerificationContext
-	if json.Unmarshal(old.Context, &c) != nil {
 		return r
 	}
 	team := strings.SplitN(c.AppID, ".", 2)[0]

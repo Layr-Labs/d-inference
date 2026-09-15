@@ -44,6 +44,9 @@ type appAttestShadowSession struct {
 	protocolVersion                                int
 	evidenceID                                     string
 	evidenceOutcome                                string
+	lastOutcome                                    string
+	assertionAt                                    time.Time
+	policyFields                                   map[string]any
 }
 
 func (s *Server) startAppAttestShadow(ctx context.Context, provider *registry.Provider, registration *protocol.RegisterMessage, authenticatedAccount ...string) *appAttestShadowSession {
@@ -129,6 +132,10 @@ func (s *Server) startAppAttestShadow(ctx context.Context, provider *registry.Pr
 			return
 		}
 		x.observe("registration", "observed", nil)
+		if decision := appAttestRolloutDecision(x.version, x.account, inventory.snapshot().ID, s.appAttestShadow.RolloutPercent); decision != "enabled" {
+			x.observe("rollout", decision, nil)
+			return
+		}
 		if x.protocolVersion == 2 {
 			owner := sha256.Sum256([]byte("machine-owner-v1:" + x.account + ":" + inventory.snapshot().ID))
 			x.owner = hex.EncodeToString(owner[:])
@@ -163,7 +170,7 @@ func (x *appAttestShadowSession) offer(p protocol.AppAttestShadowPayload) {
 	}
 }
 
-func (x *appAttestShadowSession) run(ctx context.Context) {
+func (x *appAttestShadowSession) runAttempt(ctx context.Context) {
 	// Spread onboarding so a coordinator restart does not synchronize Apple calls.
 	var jitter [1]byte
 	_, _ = rand.Read(jitter[:])
@@ -196,6 +203,14 @@ func (x *appAttestShadowSession) run(ctx context.Context) {
 			}
 			timer.Reset(shadowResponseTimeout)
 		case reply := <-x.in:
+			if reply.Session != x.id {
+				// A callback from a timed-out attempt cannot stop or satisfy the
+				// current exchange. Retain it without moving the current timer.
+				operation, cancel := context.WithTimeout(ctx, 2*time.Second)
+				x.handle(operation, reply)
+				cancel()
+				continue
+			}
 			if !timer.Stop() {
 				select {
 				case <-timer.C:

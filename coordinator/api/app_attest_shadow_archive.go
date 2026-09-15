@@ -18,6 +18,7 @@ import (
 func (x *appAttestShadowSession) handle(ctx context.Context, reply protocol.AppAttestShadowPayload) string {
 	release, ok := x.acquireStorage()
 	if !ok {
+		x.lastOutcome = "storage_busy"
 		x.dropped.Add(1)
 		x.observe("archive", "storage_busy", nil)
 		return "stop"
@@ -85,6 +86,8 @@ func (x *appAttestShadowSession) handle(ctx context.Context, reply protocol.AppA
 		e := store.AppAttestEvidence{ID: x.evidenceID, SessionID: x.provider.ID, KeyID: reply.KeyID, ReceivedAt: time.Now().UTC(), Action: reply.Action,
 			ProofField: reply.Proof, Proof: raw, SHA256: hex.EncodeToString(sum[:]), Context: contextJSON}
 		if err := x.archive.BeginAppAttestEvidence(ctx, e); err != nil {
+			x.dropped.Add(1)
+			x.lastOutcome = "write_failed"
 			x.evidenceID = ""
 			x.observe("archive", "write_failed", nil)
 			return "stop"
@@ -113,6 +116,7 @@ func (x *appAttestShadowSession) handle(ctx context.Context, reply protocol.AppA
 		return "stop"
 	}
 	if x.rejectReason != "" {
+		x.lastOutcome = x.rejectReason
 		x.observe("archive", x.rejectReason, nil)
 		x.evidenceOutcome = x.rejectReason
 		return "stop"

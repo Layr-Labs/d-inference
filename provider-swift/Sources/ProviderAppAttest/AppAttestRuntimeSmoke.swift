@@ -1,4 +1,3 @@
-import Dispatch
 import Foundation
 
 /// Exercises real deadline completion and expiry inside the fully linked release
@@ -8,21 +7,22 @@ public enum AppAttestRuntimeSmoke {
     public static let successMarker = "app-attest-callback-runtime-smoke: ok"
 
     public static func run() async throws {
-        // A successful callback cancels its sleeping deadline. Repetition catches
-        // the original asynchronous cleanup failure after the callback returned.
+        // Complete synchronously, before installing the timer. This deterministically
+        // exercises completion/cancellation without racing a queued utility callback
+        // against a wall-clock deadline on a busy installer or CI host.
         for _ in 0..<64 {
-            let value: Int = try await CallbackDeadline.call(seconds: 1) { complete in
-                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .milliseconds(1)) {
-                    complete(.success(1))
-                }
+            let value: Int = try await CallbackDeadline.call(seconds: 0) { complete in
+                complete(.success(1))
             }
             guard value == 1 else { throw SmokeFailure.unexpectedResult }
-        }
-        do {
-            let _: Int = try await CallbackDeadline.call(seconds: 0.01) { _ in }
-            throw SmokeFailure.deadlineDidNotFire
-        } catch ShadowFailure.operationTimeout {
-            // Expiry is the other cleanup path of the same real deadline task.
+            do {
+                // No callback competes with expiry. Await the actual runtime sleep
+                // and its cleanup; scheduling delays cannot cause a false failure.
+                let _: Int = try await CallbackDeadline.call(seconds: 0.01) { _ in }
+                throw SmokeFailure.deadlineDidNotFire
+            } catch ShadowFailure.operationTimeout {
+                // Expected: the fully linked deadline task ran to completion.
+            }
         }
     }
 

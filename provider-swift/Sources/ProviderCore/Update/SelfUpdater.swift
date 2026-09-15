@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import ProviderAppAttest
 
 /// Release information returned by the coordinator.
 public struct ReleaseInfo: Sendable {
@@ -1169,6 +1170,11 @@ public struct SelfUpdater: Sendable {
         else {
             throw UpdateError.replaceFailed(
                 "packaged runtime smoke omitted the retained Gemma optimization marker")
+        }
+        let callbackMarker = app.appendingPathComponent("Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1")
+        if fileManager.fileExists(atPath: callbackMarker.path),
+           !String(decoding: smokeOutput, as: UTF8.self).split(whereSeparator: \.isNewline).contains(Substring(AppAttestRuntimeSmoke.successMarker)) {
+            throw UpdateError.replaceFailed("packaged App Attest callback runtime smoke omitted its success marker")
         }
     }
 

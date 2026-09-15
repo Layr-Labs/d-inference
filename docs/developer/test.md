@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `4676eedbe`
+> Last updated: 2026-09-14 · commit `b725a72a8`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1567,3 +1567,22 @@ with the original fixture (`e2e/connected_cache_http_test.go`,
 production-attestation or persistent-key restart claim. The original measured
 fixture rejects `correctness_only: true`; preserve its schema-2 evidence and use
 a separately reviewed schema-3 comparator for this seven-case pair.
+
+## App Attest release qualification
+
+Run `go test ./appattest ./api ./store -run 'TestAppAttest|TestAuthorization|TestApple'`
+from `coordinator/`, using a disposable local `DATABASE_URL` for the store
+contracts (the test harness truncates tables). Add `-race` for concurrency checks.
+Run `swift test --filter ProviderAppAttestTests` from `provider-swift/`.
+The private admin queries have PostgreSQL coverage in
+`admin-ui/src/lib/queries/app-attest.test.ts`.
+
+After the optimized provider is packaged with its resources, run
+`Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`. Require all three markers:
+`app-attest-callback-runtime-smoke: ok`, `gemma-optimizations-runtime-smoke: ok`,
+and `paged-kernel-runtime-smoke: ok`. Callback completion and expiry are exercised
+without Apple service calls or a Keychain item. This linked-binary check catches
+a release-only allocator failure that debug tests missed. Run
+`bash scripts/test-install-atomic.sh` for installer acceptance and rollback cases.
+The [rollout runbook](../operations/app-attest-rollout.md) separates these checks
+from real Apple receipt renewal and final signed-artifact fleet qualification.

@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS app_attest_evidence (
 CREATE INDEX IF NOT EXISTS app_attest_evidence_session ON app_attest_evidence(session_id,received_at DESC);
 CREATE INDEX IF NOT EXISTS app_attest_evidence_key ON app_attest_evidence(key_id,received_at DESC);
 CREATE INDEX IF NOT EXISTS app_attest_evidence_time ON app_attest_evidence(received_at DESC);
+CREATE INDEX IF NOT EXISTS app_attest_evidence_pending ON app_attest_evidence(received_at) WHERE outcome='pending';
 CREATE TABLE IF NOT EXISTS app_attest_evidence_blobs (
  evidence_id TEXT PRIMARY KEY REFERENCES app_attest_evidence(id),
  proof_field TEXT NOT NULL, proof BYTEA NOT NULL

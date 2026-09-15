@@ -157,11 +157,9 @@ func (x *appAttestShadowSession) handleExchange(ctx context.Context, reply proto
 		return "stop"
 	}
 	x.key.Counter = counter
+	x.assertionAt = time.Now().UTC()
 	x.observe("assertion", "verified", metadata)
-	x.observeBuildPolicy(reply.Status)
-	if x.inventory != nil && reply.Status != nil {
-		x.inventory.recordStatus(reply.Status)
-	}
+	x.observeBuildPolicy(reply.Status, metadata)
 	return "wait"
 }
 

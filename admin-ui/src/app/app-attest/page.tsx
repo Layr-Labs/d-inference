@@ -1,3 +1,4 @@
+import { AppAttestReadiness } from "@/components/app-attest/Readiness";
 import Link from "next/link";
 import { DbError } from "@/components/DbError";
 import { StatCard } from "@/components/StatCard";
@@ -37,6 +38,7 @@ export default async function AppAttestPage({ searchParams }: { searchParams: Pr
       </p>
     </> : unavailable(census.reason)}
     <p className="text-sm text-[var(--text-dim)]">The denominator includes every registered identity seen in this window, including older clients and failures. Reconnects count as sessions. Key-bound and provisional identities are not proven unique physical Macs. OS values are app-reported; old records without OS data stay unknown. Historical backfill runs in bounded batches.</p>
+    <AppAttestReadiness days={days} />
     <div className="space-y-2"><h2 className="font-semibold">Machine adoption</h2>
       <p className="text-sm text-[var(--text-dim)]">Latest 200 identities by last observation. “First 27+” is the first recorded observation, not the installation date. Fresh assertion means within the last 15 minutes.</p>
       {machines.status === "fulfilled" ? <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr><th>Machine / evidence</th><th>macOS / build</th><th>Provider / chip</th><th>Sessions</th><th>First 27+</th><th>Assertion</th></tr></thead><tbody>
@@ -53,7 +55,7 @@ export default async function AppAttestPage({ searchParams }: { searchParams: Pr
       {stages.status === "fulfilled" ? <table className="w-full text-left text-sm"><thead><tr><th>Stage</th><th>Outcome</th><th>Unique machines</th><th>Events</th><th>p95 ms</th></tr></thead><tbody>{stages.value.map(r => <tr key={`${r.stage}:${r.outcome}`} className="border-t border-[var(--border)]"><td className="py-2">{r.stage}</td><td>{r.outcome}</td><td>{r.machines}</td><td>{r.events}</td><td>{r.p95_ms?.toFixed(1) ?? "—"}</td></tr>)}</tbody></table> : unavailable(stages.reason)}
     </div>
     <div className="space-y-2"><h2 className="font-semibold">Evidence and receipt archive</h2>
-      <p className="text-sm text-[var(--text-dim)]">Proof bytes and results are stored durably in PostgreSQL. Pending rows are received proofs awaiting completion, including interrupted verification. Write failures appear in the stage table and coordinator metrics. Receipt renewal needs dedicated server credentials; overdue jobs remain visible until configured.</p>
+      <p className="text-sm text-[var(--text-dim)]">Proof bytes and results are stored durably in PostgreSQL. Pending rows await completion; interrupted verification is reconciled without changing credential counters. Write failures appear in the stage table and coordinator metrics. Receipt renewal needs dedicated server credentials; overdue jobs remain visible until configured.</p>
       {archive.status === "fulfilled" ? <table className="w-full text-left text-sm"><thead><tr><th>Record</th><th>Outcome</th><th>Count</th></tr></thead><tbody>{archive.value.map(r => <tr key={`${r.kind}:${r.outcome}`} className="border-t border-[var(--border)]"><td className="py-2">{r.kind}</td><td>{r.outcome}</td><td>{r.count}</td></tr>)}</tbody></table> : unavailable(archive.reason)}
     </div>
   </div>;

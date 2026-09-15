@@ -24,6 +24,8 @@ const shadowAssertionInterval = 10 * time.Minute
 // One bounded inbox/worker per negotiated connection; the read loop never waits
 // for Apple, database, or cryptography. No method on this type changes trust.
 type appAttestShadowSession struct {
+	attestationKey                                 string
+	hardware                                       protocol.Hardware
 	offerMu                                        sync.Mutex
 	rejectReason                                   string
 	storageSlotHeld                                bool // owned by the serialized session worker
@@ -44,6 +46,9 @@ type appAttestShadowSession struct {
 	protocolVersion                                int
 	evidenceID                                     string
 	evidenceOutcome                                string
+	lastOutcome                                    string
+	assertionAt                                    time.Time
+	policyFields                                   map[string]any
 }
 
 func (s *Server) startAppAttestShadow(ctx context.Context, provider *registry.Provider, registration *protocol.RegisterMessage, authenticatedAccount ...string) *appAttestShadowSession {
@@ -61,13 +66,17 @@ func (s *Server) startAppAttestShadow(ctx context.Context, provider *registry.Pr
 	}
 	provider.Mu().Lock()
 	owner := account
+	attestationKey := ""
 	publicKey := provider.PublicKey
 	if provider.AttestationResult != nil {
 		owner += ":" + provider.AttestationResult.PublicKey
+		if provider.AttestationResult.Valid && provider.AttestationResult.EncryptionPublicKey == publicKey {
+			attestationKey = provider.AttestationResult.PublicKey
+		}
 	}
 	provider.Mu().Unlock()
 	hash := sha256.Sum256([]byte(owner))
-	x := &appAttestShadowSession{s: s, provider: provider, inventory: inventory, account: account, protocolVersion: registration.AppAttestProtocol, in: make(chan protocol.AppAttestShadowPayload, 2),
+	x := &appAttestShadowSession{s: s, provider: provider, inventory: inventory, account: account, protocolVersion: registration.AppAttestProtocol, hardware: registration.Hardware, attestationKey: attestationKey, in: make(chan protocol.AppAttestShadowPayload, 2),
 		id: base64.StdEncoding.EncodeToString(nonce[:]), owner: hex.EncodeToString(hash[:]),
 		publicKey: publicKey, version: registration.Version,
 		chip:     registration.Hardware.ChipName,
@@ -93,7 +102,7 @@ func (s *Server) startAppAttestShadow(ctx context.Context, provider *registry.Pr
 	_ = json.Unmarshal(registration.Attestation, &platform)
 	x.osVersion = platform.Attestation.OSVersion
 
-	if registration.AppAttestProtocol != 1 && registration.AppAttestProtocol != 2 {
+	if registration.AppAttestProtocol != 1 && registration.AppAttestProtocol != 2 && registration.AppAttestProtocol != 3 {
 
 		return nil
 	}
@@ -129,7 +138,11 @@ func (s *Server) startAppAttestShadow(ctx context.Context, provider *registry.Pr
 			return
 		}
 		x.observe("registration", "observed", nil)
-		if x.protocolVersion == 2 {
+		if decision := appAttestRolloutDecision(x.version, x.account, inventory.snapshot().ID, s.appAttestShadow.RolloutPercent); decision != "enabled" {
+			x.observe("rollout", decision, nil)
+			return
+		}
+		if x.protocolVersion >= 2 {
 			owner := sha256.Sum256([]byte("machine-owner-v1:" + x.account + ":" + inventory.snapshot().ID))
 			x.owner = hex.EncodeToString(owner[:])
 		}
@@ -150,7 +163,11 @@ func (x *appAttestShadowSession) offer(p protocol.AppAttestShadowPayload) {
 		x.dropped.Add(1)
 		return
 	}
-	for _, value := range p.Status.Values() {
+	if p.Status != nil && len(p.Status.AttestationPublicKey) > 128 {
+		x.dropped.Add(1)
+		return
+	}
+	for _, value := range append(p.Status.Values(), p.Status.HardwareValues()...) {
 		if len(value) > 128 {
 			x.dropped.Add(1)
 			return
@@ -163,7 +180,7 @@ func (x *appAttestShadowSession) offer(p protocol.AppAttestShadowPayload) {
 	}
 }
 
-func (x *appAttestShadowSession) run(ctx context.Context) {
+func (x *appAttestShadowSession) runAttempt(ctx context.Context) {
 	// Spread onboarding so a coordinator restart does not synchronize Apple calls.
 	var jitter [1]byte
 	_, _ = rand.Read(jitter[:])
@@ -196,6 +213,14 @@ func (x *appAttestShadowSession) run(ctx context.Context) {
 			}
 			timer.Reset(shadowResponseTimeout)
 		case reply := <-x.in:
+			if reply.Session != x.id {
+				// A callback from a timed-out attempt cannot stop or satisfy the
+				// current exchange. Retain it without moving the current timer.
+				operation, cancel := context.WithTimeout(ctx, 2*time.Second)
+				x.handle(operation, reply)
+				cancel()
+				continue
+			}
 			if !timer.Stop() {
 				select {
 				case <-timer.C:

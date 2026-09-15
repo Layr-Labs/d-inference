@@ -24,7 +24,7 @@ import (
 var appleRoot []byte
 
 const MaxProofBytes = 32 * 1024
-const VerifierVersion = "mac-shadow-v2"
+const VerifierVersion = "mac-shadow-v4"
 
 func RootSHA256() string { hash := sha256.Sum256(appleRoot); return hex.EncodeToString(hash[:]) }
 
@@ -37,6 +37,8 @@ type Key struct {
 	PublicKey          []byte
 	BundleVersion      string
 	ValidationCategory *uint32
+	CodeDirectoryHash  []byte
+	CodeDirectoryType  *uint8
 }
 
 type Verifier struct {
@@ -136,7 +138,7 @@ func (v *Verifier) Attestation(proof []byte, keyID string, clientHash [32]byte) 
 	if !bytes.Equal(meta.publicKey, encoded) {
 		return nil, invalid("credential_key")
 	}
-	return &Key{PublicKey: encoded, BundleVersion: meta.version, ValidationCategory: meta.category}, nil
+	return &Key{PublicKey: encoded, BundleVersion: meta.version, ValidationCategory: meta.category, CodeDirectoryHash: meta.codeHash, CodeDirectoryType: meta.codeType}, nil
 }
 
 // Assertion verifies a fresh transcript signed by the previously attested key.
@@ -168,7 +170,7 @@ func (v *Verifier) Assertion(proof, publicKey []byte, clientHash [32]byte, previ
 	if meta.counter <= previous {
 		return 0, nil, invalid("counter_replay")
 	}
-	return meta.counter, &Key{BundleVersion: meta.version, ValidationCategory: meta.category}, nil
+	return meta.counter, &Key{BundleVersion: meta.version, ValidationCategory: meta.category, CodeDirectoryHash: meta.codeHash, CodeDirectoryType: meta.codeType}, nil
 }
 
 func digest(auth []byte, hash [32]byte) [32]byte {

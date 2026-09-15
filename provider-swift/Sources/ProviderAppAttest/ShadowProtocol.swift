@@ -38,8 +38,9 @@ public struct AppAttestShadowPayload: Codable, Sendable, Equatable {
 
     public func clientHash(publicKey: String) -> Data {
         var data = Data()
-        var values = [protocolVersion == 2 ? "darkbloom.app-attest.shadow.v2" : "darkbloom.app-attest.shadow.v1", action, session, environment ?? "", keyID ?? "", challenge ?? "", publicKey]
-        if protocolVersion == 2 { values += [accountScope ?? ""] + (status?.values ?? ["", "", "", "", ""]) }
+        var values = [protocolVersion == 3 ? "darkbloom.app-attest.shadow.v3" : (protocolVersion == 2 ? "darkbloom.app-attest.shadow.v2" : "darkbloom.app-attest.shadow.v1"), action, session, environment ?? "", keyID ?? "", challenge ?? "", publicKey]
+        if [2,3].contains(protocolVersion ?? 0) { values += [accountScope ?? ""] + (status?.values ?? ["", "", "", "", ""]) }
+        if protocolVersion == 3 { values += (status?.hardwareValues ?? Array(repeating: "", count: 6)) + [status?.attestationPublicKey ?? ""] }
         for value in values {
             let bytes = Data(value.utf8)
             var length = UInt32(bytes.count).bigEndian
@@ -84,16 +85,29 @@ public protocol ShadowKeyStorage: Sendable {
 /// Locally derived, assertion-bound measurements. Apple does not independently
 /// certify these values; the coordinator preserves their source.
 public struct AppAttestStatus: Codable, Sendable, Equatable {
+    public var attestationPublicKey: String?
+    public var machineModel: String?
+    public var memoryGB: String?
+    public var cpuTotal: String?
+    public var cpuPerformance: String?
+    public var cpuEfficiency: String?
+    public var gpuCores: String?
+
     public var osVersion: String
     public var osBuild: String
     public var appVersion: String
     public var chip: String
     public var binaryHash: String
-    public init(osVersion: String, osBuild: String, appVersion: String, chip: String, binaryHash: String) {
+    public init(osVersion: String, osBuild: String, appVersion: String, chip: String, binaryHash: String, machineModel: String? = nil, memoryGB: String? = nil, cpuTotal: String? = nil, cpuPerformance: String? = nil, cpuEfficiency: String? = nil, gpuCores: String? = nil, attestationPublicKey: String? = nil) {
+        self.attestationPublicKey=attestationPublicKey
+        self.machineModel=machineModel; self.memoryGB=memoryGB; self.cpuTotal=cpuTotal; self.cpuPerformance=cpuPerformance; self.cpuEfficiency=cpuEfficiency; self.gpuCores=gpuCores
         self.osVersion=osVersion; self.osBuild=osBuild; self.appVersion=appVersion; self.chip=chip; self.binaryHash=binaryHash
     }
     enum CodingKeys: String, CodingKey {
+        case attestationPublicKey="attestation_public_key"
+        case machineModel="machine_model", memoryGB="memory_gb", cpuTotal="cpu_total", cpuPerformance="cpu_performance", cpuEfficiency="cpu_efficiency", gpuCores="gpu_cores"
         case osVersion="os_version", osBuild="os_build", appVersion="app_version", chip, binaryHash="binary_hash"
     }
     var values: [String] { [osVersion,osBuild,appVersion,chip,binaryHash] }
+    var hardwareValues: [String] { [machineModel ?? "", memoryGB ?? "", cpuTotal ?? "", cpuPerformance ?? "", cpuEfficiency ?? "", gpuCores ?? ""] }
 }

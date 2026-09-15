@@ -60,6 +60,17 @@ func TestReceiptValidationUsesIndependentRootAndChecksBindings(t *testing.T) {
 	if _, err = verifyReceipt(raw, public, "TEST.app", hash, now, roots); err != nil {
 		t.Fatal(err)
 	}
+	// Historical recovery is a separate, non-authorizing validator. It may
+	// seed renewal after five minutes, but never skips signature or binding.
+	if _, err = verifyReceiptWithFreshness(raw, public, "TEST.app", hash, now.Add(6*time.Minute), roots, false); err != nil {
+		t.Fatal("historical renewal input rejected", err)
+	}
+	if _, err = verifyReceiptWithFreshness(raw, public, "OTHER.app", hash, now.Add(6*time.Minute), roots, false); err == nil {
+		t.Fatal("historical validation skipped identity")
+	}
+	if _, err = verifyReceiptWithFreshness(raw, public, "TEST.app", hash, now.Add(2*time.Hour), roots, false); err == nil {
+		t.Fatal("expired receipt accepted for renewal")
+	}
 	if _, err = VerifyReceipt(raw, public, "TEST.app", hash, now); err == nil {
 		t.Fatal("production accepted test root")
 	}
@@ -75,6 +86,34 @@ func TestReceiptValidationUsesIndependentRootAndChecksBindings(t *testing.T) {
 				t.Fatal("invalid receipt accepted")
 			}
 		})
+	}
+	// Apple's renewed risk receipt can carry a lossy text representation of
+	// field 4. It is authenticated by its signature, app/key and fresh date,
+	// not by pretending that field remains an enrollment nonce.
+	riskAttrs := append([]attr(nil), attrs...)
+	for i := range riskAttrs {
+		if riskAttrs[i].Type == 6 {
+			riskAttrs[i].Value = []byte("RECEIPT")
+		}
+		if riskAttrs[i].Type == 4 {
+			riskAttrs[i].Value = []byte("\uFFFD\uFFFD")
+		}
+	}
+	riskAttrs = append(riskAttrs, attr{17, 1, []byte("4")}, attr{19, 1, []byte(now.Add(time.Minute).Format(time.RFC3339Nano))})
+	riskRaw := sign(riskAttrs)
+	if r, e := verifyReceipt(riskRaw, public, "TEST.app", hash, now, roots); e != nil || r.RiskMetric == nil || *r.RiskMetric != 4 {
+		t.Fatalf("valid risk receipt: %+v %v", r, e)
+	}
+	for _, wrong := range []struct {
+		app string
+		key []byte
+		at  time.Time
+	}{
+		{"OTHER.app", public, now}, {"TEST.app", []byte{4}, now}, {"TEST.app", public, now.Add(6 * time.Minute)},
+	} {
+		if _, e := verifyReceipt(riskRaw, wrong.key, wrong.app, hash, wrong.at, roots); e == nil {
+			t.Fatal("risk receipt lost identity/key/freshness checks")
+		}
 	}
 	if _, err = verifyReceipt(sign(append(attrs, attrs[0])), public, "TEST.app", hash, now, roots); err == nil {
 		t.Fatal("duplicate fields accepted")

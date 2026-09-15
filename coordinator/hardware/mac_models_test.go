@@ -1,4 +1,4 @@
-package mdm
+package hardware
 
 import "testing"
 

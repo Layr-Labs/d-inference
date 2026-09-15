@@ -51,7 +51,7 @@ final class CallbackDeadline<Value: Sendable>: @unchecked Sendable {
                 guard gate.install(continuation) else { return }
                 start { gate.finish($0) }
                 gate.installTimer(Task {
-                    do { try await Task.sleep(for: .seconds(seconds)) }
+                    do { try await appAttestSleep(seconds: seconds) }
                     catch { return }
                     gate.finish(.failure(ShadowFailure.operationTimeout))
                 })

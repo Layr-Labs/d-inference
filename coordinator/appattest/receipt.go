@@ -38,16 +38,31 @@ func ExtractReceipt(proof []byte) []byte {
 }
 
 func VerifyReceipt(raw, publicKey []byte, appID string, clientHash [32]byte, now time.Time) (*Receipt, error) {
+	return receiptWithAppleRoot(raw, publicKey, appID, clientHash, now, true)
+}
+
+// ReceiptForRenewal validates a historical receipt ONLY as input to Apple's
+// renewal endpoint. Its result is not a fresh receipt or an authorization.
+// All signature, identity, key, challenge and expiration checks still apply.
+func ReceiptForRenewal(raw, publicKey []byte, appID string, clientHash [32]byte, now time.Time) (*Receipt, error) {
+	return receiptWithAppleRoot(raw, publicKey, appID, clientHash, now, false)
+}
+
+func receiptWithAppleRoot(raw, publicKey []byte, appID string, clientHash [32]byte, now time.Time, fresh bool) (*Receipt, error) {
 	root, err := x509.ParseCertificate(receiptRoot)
 	if err != nil {
 		panic("invalid receipt root")
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(root)
-	return verifyReceipt(raw, publicKey, appID, clientHash, now, roots)
+	return verifyReceiptWithFreshness(raw, publicKey, appID, clientHash, now, roots, fresh)
 }
 
 func verifyReceipt(raw, publicKey []byte, appID string, clientHash [32]byte, now time.Time, roots *x509.CertPool) (*Receipt, error) {
+	return verifyReceiptWithFreshness(raw, publicKey, appID, clientHash, now, roots, true)
+}
+
+func verifyReceiptWithFreshness(raw, publicKey []byte, appID string, clientHash [32]byte, now time.Time, roots *x509.CertPool, fresh bool) (*Receipt, error) {
 	if len(raw) == 0 || len(raw) > MaxProofBytes {
 		return nil, invalid("receipt_size")
 	}
@@ -86,19 +101,26 @@ func verifyReceipt(raw, publicKey []byte, appID string, clientHash [32]byte, now
 	if !ok || ec.Curve != elliptic.P256() || !bytes.Equal(elliptic.Marshal(ec.Curve, ec.X, ec.Y), publicKey) {
 		return nil, invalid("receipt_key")
 	}
-	if !bytes.Equal(fields[4], clientHash[:]) {
-		return nil, invalid("receipt_client_hash")
-	}
 	r := &Receipt{Type: string(fields[6])}
 	if r.Type != "ATTEST" && r.Type != "RECEIPT" {
 		return nil, invalid("receipt_type")
 	}
+	// The initial ATTEST receipt binds the enrollment challenge. Renewed risk
+	// receipts bind the app and attested key instead: Apple's verification
+	// contract does not require field 4 to repeat the enrollment hash. A real
+	// macOS renewal returned that binary field with UTF-8 replacement bytes.
+	// Never accept that lossy representation as a nonce binding. Authenticate
+	// RECEIPT using the signature, app/key, fresh creation time and expiration.
+	// https://developer.apple.com/documentation/devicecheck/assessing-fraud-risk
+	if r.Type == "ATTEST" && !bytes.Equal(fields[4], clientHash[:]) {
+		return nil, invalid("receipt_client_hash")
+	}
 	r.CreatedAt, err = time.Parse(time.RFC3339Nano, string(fields[12]))
-	if err != nil || now.Sub(r.CreatedAt) > 5*time.Minute || r.CreatedAt.After(now.Add(30*time.Second)) {
+	if err != nil || (fresh && now.Sub(r.CreatedAt) > 5*time.Minute) || r.CreatedAt.After(now.Add(30*time.Second)) {
 		return nil, invalid("receipt_creation_time")
 	}
 	r.ExpiresAt, err = time.Parse(time.RFC3339Nano, string(fields[21]))
-	if err != nil || !r.ExpiresAt.After(now) {
+	if err != nil || !r.ExpiresAt.After(now) || !r.ExpiresAt.After(r.CreatedAt) {
 		return nil, invalid("receipt_expired")
 	}
 	if len(fields[19]) > 0 {

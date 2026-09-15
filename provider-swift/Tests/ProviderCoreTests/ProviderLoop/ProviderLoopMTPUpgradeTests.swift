@@ -105,7 +105,7 @@ private struct ProviderUpgradeFixture {
 
     static func make(shutdownBarrier: UpgradeBarrier? = nil,
                      useLocalAssistant: Bool = true, assistantBarrier: UpgradeBarrier? = nil,
-                     availableMemoryGb: Double? = nil) async throws -> Self {
+                     availableMemoryGb: Double? = 60) async throws -> Self {
         let artifact = try mtpFloorArtifact()
         let targetDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("mtp-upgrade-target-\(UUID().uuidString)")
@@ -121,6 +121,7 @@ private struct ProviderUpgradeFixture {
         await loop.setEngineV2SlotHooksForTesting(.init(
             emitTelemetry: { telemetry.record($0) }, physicalMemoryBytes: 64 << 30,
             availableMemoryGb: availableMemoryGb,
+            measuredKVHeadroomBytes: ScriptedProviderMemory.headroom(modelIDs: [upgradeModelID]),
             assistantLoader: UpgradePausedAssistantLoader(gate: assistantBarrier),
             makeEngine: { _, bytes in try factory.make(bytes) }))
         let engine = UpgradeScriptedEngine(bytes: 1 << 30, shutdownBarrier: shutdownBarrier)

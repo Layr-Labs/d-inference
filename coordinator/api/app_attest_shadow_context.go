@@ -16,32 +16,60 @@ func (x *appAttestShadowSession) accountScope() string {
 	return hex.EncodeToString(hash[:])
 }
 
+type shadowProofContext struct {
+	Hash [32]byte
+	Err  error
+}
+
 func (x *appAttestShadowSession) clientHash(ctx context.Context, action string, reply protocol.AppAttestShadowPayload) ([32]byte, error) {
+	hash, _, err := x.prepareClientHash(ctx, action, reply)
+	return hash, err
+}
+
+// Snapshot recovery inputs once so the archived transcript is exactly the one
+// used by verification, even if a database timeout resolves on the next query.
+func (x *appAttestShadowSession) prepareClientHash(ctx context.Context, action string, reply protocol.AppAttestShadowPayload) ([32]byte, *store.AppAttestEnrollment, error) {
 	id := reply.KeyID
 	if x.key != nil {
 		id = x.key.KeyID
 	}
-	if x.protocolVersion != 2 {
-		return protocol.AppAttestShadowHash(action, x.id, x.s.appAttestShadow.Environment, id, x.challenge, x.publicKey), nil
+	if x.protocolVersion < 2 {
+		return protocol.AppAttestShadowHash(action, x.id, x.s.appAttestShadow.Environment, id, x.challenge, x.publicKey), nil, nil
 	}
-	if reply.Status == nil || reply.ProtocolVersion != 2 {
-		return [32]byte{}, errors.New("missing_signed_status")
+	if reply.Status == nil || reply.ProtocolVersion != x.protocolVersion {
+		return [32]byte{}, nil, errors.New("missing_signed_status")
 	}
 	session, challenge, publicKey := x.id, x.challenge, x.publicKey
+	version := x.protocolVersion
+	var enrollment *store.AppAttestEnrollment
 	if action == "attest" && reply.EnrollmentSession != "" && reply.EnrollmentSession != x.id {
 		st, ok := store.As[store.AppAttestEnrollmentStore](x.s.store)
 		if !ok {
-			return [32]byte{}, errors.New("enrollment_storage")
+			return [32]byte{}, nil, errors.New("enrollment_storage")
 		}
 		e, err := st.GetAppAttestEnrollment(ctx, reply.EnrollmentSession)
-		if err != nil || e == nil || e.Owner != x.owner || e.KeyID != id || e.AppID != x.s.appAttestShadow.AppID || e.Environment != x.s.appAttestShadow.Environment || e.AccountScope != x.accountScope() || time.Since(e.CreatedAt) > 24*time.Hour || e.CreatedAt.After(time.Now()) {
-			return [32]byte{}, errors.New("enrollment_context")
+		if err != nil {
+			return [32]byte{}, nil, errors.New("enrollment_storage_error")
+		}
+		if e == nil || e.Owner != x.owner || e.KeyID != id || e.AppID != x.s.appAttestShadow.AppID || e.Environment != x.s.appAttestShadow.Environment || e.AccountScope != x.accountScope() || time.Since(e.CreatedAt) > 24*time.Hour || e.CreatedAt.After(time.Now()) {
+			return [32]byte{}, nil, errors.New("enrollment_context")
 		}
 		// This recovers enrollment only. A fresh assertion, encrypted to the
 		// new connection's actual endpoint, must still follow every reconnect.
 		session, challenge, publicKey = e.ID, e.Challenge, e.PublicKey
+		enrollment = e
+		version = e.ProtocolVersion
+		if version == 0 {
+			version = 2
+		}
+		if version != 2 && version != 3 {
+			return [32]byte{}, nil, errors.New("enrollment_protocol")
+		}
 	}
-	return protocol.AppAttestShadowHashV2(action, session, x.s.appAttestShadow.Environment, id, challenge, publicKey, x.accountScope(), reply.Status), nil
+	if version == 3 {
+		return protocol.AppAttestShadowHashV3(action, session, x.s.appAttestShadow.Environment, id, challenge, publicKey, x.accountScope(), reply.Status), enrollment, nil
+	}
+	return protocol.AppAttestShadowHashV2(action, session, x.s.appAttestShadow.Environment, id, challenge, publicKey, x.accountScope(), reply.Status), enrollment, nil
 }
 
 func (x *machineInventorySession) recordStatus(status *protocol.AppAttestStatus) {
@@ -63,6 +91,12 @@ func (x *appAttestShadowSession) machineID() string {
 }
 func (x *appAttestShadowSession) keyOwnerMatches(ctx context.Context, key *store.AppAttestShadowKey) bool {
 	if key.Owner == x.owner {
+		return true
+	}
+	// A claimed key ID never assigns identity. Same-account reuse must first
+	// prove custody through a fresh encrypted assertion. Only after its durable
+	// acceptance does inventory attach the credential alias to this session.
+	if x.protocolVersion >= 2 && x.account != "" && key.AccountID == x.account {
 		return true
 	}
 	if x.account == "" || key.AccountID != x.account || key.MachineID == "" || x.machineID() == "" {

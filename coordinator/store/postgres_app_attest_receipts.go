@@ -23,7 +23,7 @@ func insertAppAttestReceipt(ctx context.Context, tx pgx.Tx, r AppAttestReceipt) 
 	if err != nil {
 		return err
 	}
-	if r.Outcome == "verified" {
+	if r.Outcome == "verified" || r.Outcome == "renewal_required" {
 		_, err = tx.Exec(ctx, `INSERT INTO app_attest_receipt_jobs(key_id,receipt_id,next_at) VALUES($1,$2,$3)
 		 ON CONFLICT(key_id) DO UPDATE SET receipt_id=$2,next_at=$3,lease_until=NULL
 		 WHERE app_attest_receipt_jobs.receipt_id=$4`, r.KeyID, r.ID, r.NextAt, r.ParentID)
@@ -67,7 +67,7 @@ func (s *PostgresStore) SaveAppAttestReceiptRefresh(ctx context.Context, r AppAt
 	if err = insertAppAttestReceipt(ctx, tx, r); err != nil {
 		return err
 	}
-	if r.Outcome != "verified" {
+	if r.Outcome != "verified" && r.Outcome != "renewal_required" {
 		_, err = tx.Exec(ctx, `UPDATE app_attest_receipt_jobs SET next_at=$3,lease_until=NULL WHERE key_id=$1 AND receipt_id=$2`, r.KeyID, r.ParentID, r.NextAt)
 		if err != nil {
 			return err

@@ -2,27 +2,6 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
-actor UpgradeBarrier {
-    var entered = false
-    var released = false
-    var waiters: [CheckedContinuation<Void, Never>] = []
-    var observers: [CheckedContinuation<Void, Never>] = []
-    func wait() async {
-        entered = true
-        let observing = observers; observers.removeAll()
-        for observer in observing { observer.resume() }
-        if !released { await withCheckedContinuation { waiters.append($0) } }
-    }
-    func observeEntry() async {
-        if !entered { await withCheckedContinuation { observers.append($0) } }
-    }
-    func release() {
-        released = true
-        let current = waiters; waiters.removeAll()
-        for waiter in current { waiter.resume() }
-    }
-}
-
 private actor UpgradeServingFixture {
     enum Failure: Error { case preparation, stale }
     var serving = 0

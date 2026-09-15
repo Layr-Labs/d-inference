@@ -161,15 +161,27 @@ verify_staged_app() {
             return 1
         }
 
-    DARKBLOOM_NO_UPDATE_CHECK=1 \
+    local smoke_output
+    smoke_output=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
         DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
         MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
         MLX_GATHER_QMM_EXPERT_SLICES=1 \
-        "$executable" runtime-smoke >/dev/null \
+        "$executable" runtime-smoke 2>&1) \
         || {
-            fail_install "Packaged paged-kernel runtime smoke failed."
+            if ! printf '%s\n' "$smoke_output" | grep -q '^app-attest-callback-runtime-smoke: ok$' \
+                && [ -f "$app/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1" ]; then
+                fail_install "Packaged App Attest callback runtime smoke failed."
+            else
+                fail_install "Packaged runtime smoke failed (App Attest, configuration, or Metal)."
+            fi
             return 1
         }
+    if [ -f "$app/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1" ]; then
+        printf '%s\n' "$smoke_output" | grep -q '^app-attest-callback-runtime-smoke: ok$' || {
+            fail_install "Packaged App Attest callback runtime smoke omitted its success marker."
+            return 1
+        }
+    fi
 }
 
 verify_staged_app_payload() {

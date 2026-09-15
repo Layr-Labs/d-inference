@@ -175,6 +175,7 @@ let package = Package(
                 "DarkbloomFanCore",
                 "DarkbloomFanProtocol",
                 "DarkbloomFanService",
+                "ProviderAppAttest",
                 "ProviderCore",
                 "ProviderBenchmark",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),

@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS app_attest_receipts (
  details JSONB NOT NULL,context JSONB NOT NULL,next_at TIMESTAMPTZ NOT NULL,expires_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS app_attest_receipts_key ON app_attest_receipts(key_id,received_at DESC);
+CREATE INDEX IF NOT EXISTS app_attest_receipts_recovery ON app_attest_receipts(key_id,received_at DESC) WHERE outcome='receipt_creation_time';
 CREATE TABLE IF NOT EXISTS app_attest_receipt_blobs (
  receipt_id TEXT PRIMARY KEY REFERENCES app_attest_receipts(id),body BYTEA NOT NULL,response_body BYTEA NOT NULL
 );

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
@@ -12,6 +13,9 @@ import (
 )
 
 func (x *appAttestShadowSession) observe(stage, outcome string, metadata *appattest.Key) {
+	if stage != "archive" {
+		x.lastOutcome = outcome
+	}
 	if x.evidenceID != "" && stage != "archive" {
 		x.evidenceOutcome = outcome
 	}
@@ -31,9 +35,9 @@ func (x *appAttestShadowSession) observe(stage, outcome string, metadata *appatt
 	}
 	if metadata != nil {
 		policy := "matched"
-		if metadata.ValidationCategory == nil || metadata.BundleVersion == "" {
+		if metadata.ValidationCategory == nil || metadata.BundleVersion == "" && len(metadata.CodeDirectorySHA256()) == 0 {
 			policy = "metadata_missing"
-		} else if *metadata.ValidationCategory != 6 || metadata.BundleVersion != x.version {
+		} else if *metadata.ValidationCategory != 6 || metadata.BundleVersion != "" && metadata.BundleVersion != x.version {
 			policy = "metadata_mismatch"
 		}
 		fields["metadata_comparison"] = policy
@@ -41,9 +45,18 @@ func (x *appAttestShadowSession) observe(stage, outcome string, metadata *appatt
 		if metadata.ValidationCategory != nil {
 			fields["attested_validation_category"] = *metadata.ValidationCategory
 		}
+		if metadata.CodeDirectoryType != nil {
+			fields["attested_code_directory_type"] = *metadata.CodeDirectoryType
+			fields["attested_code_directory_hash"] = hex.EncodeToString(metadata.CodeDirectoryHash)
+		}
 		x.s.ddIncr("app_attest.shadow.metadata", []string{"result:" + policy})
 	}
 	fields["account_id"] = x.account
+	if stage == "prospective_policy" {
+		for key, value := range x.policyFields {
+			fields[key] = value
+		}
+	}
 	if x.inventory != nil {
 		identity := x.inventory.snapshot()
 		fields["machine_id"] = identity.ID

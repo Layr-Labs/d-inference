@@ -171,7 +171,8 @@ extension ProviderLoop {
             guard active, KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: replacement.bridge.kvBackendKind,
                 pagedPoolBytes: await replacement.bridge.kvBackendPoolBytes(),
-                activationReserveBytes: resolvedActivationReserveBytes)
+                activationReserveBytes: resolvedActivationReserveBytes,
+                measuredHeadroomBytes: engineV2SlotHooks?.measuredKVHeadroomBytes)
             else { throw CancellationError() }
             logger.info("mtp: model=\(modelID) verified replacement prepared in \(preparationStarted.duration(to: .now)); ready to drain accepted requests")
             return StagedProviderMTPUpgrade(modelID: modelID, original: original,

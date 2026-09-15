@@ -1,4 +1,5 @@
 import Foundation
+import ProviderAppAttest
 import Testing
 @testable import ProviderCore
 
@@ -2186,4 +2187,21 @@ private func jsonObject(_ data: Data) throws -> [String: Any] {
 private enum TestFailure: Error {
     case notJSONObject
     case unexpectedMessage
+}
+
+@Test func appAttestShadowWireRoundTripsBothDirections() throws {
+    var payload = AppAttestShadowPayload(action: "ready", session: "session")
+    payload.result = "unsupported"
+    let outbound = ProviderMessage.appAttestShadow(payload)
+    let data = try ProviderProtocolCodec.encodeProviderMessage(outbound)
+    let object = try jsonObject(data)
+    #expect(object["type"] as? String == "app_attest_shadow")
+    #expect((object["payload"] as? [String: Any])?["result"] as? String == "unsupported")
+    #expect(try ProviderProtocolCodec.decodeProviderMessage(from: data) == outbound)
+    payload.action = "prepare"; payload.result = nil; payload.environment = "production"
+    let inbound = CoordinatorMessage.appAttestShadow(payload)
+    let encoded = try JSONEncoder().encode(inbound)
+    #expect(try JSONDecoder().decode(CoordinatorMessage.self, from: encoded) == inbound)
+    let legacy = ProviderMessage.register(ProviderMessage.Register(hardware: sampleHardware(), models: [sampleModel()], backend: "mlx_swift_lm"))
+    #expect(try jsonObject(ProviderProtocolCodec.encodeProviderMessage(legacy))["app_attest_protocol"] == nil)
 }

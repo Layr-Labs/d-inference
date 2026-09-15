@@ -12,6 +12,7 @@
 
 import CryptoKit
 import Foundation
+import ProviderAppAttest
 import MLXLMServer
 #if canImport(os)
 import os
@@ -178,6 +179,9 @@ internal enum ProviderLoopError: Error, CustomStringConvertible {
 // purely-local members (e.g. `configuredMaxModelSlots`, `bytesPerGiB`,
 // `createAttestationSigner`) stay `private`. Behavior is unchanged.
 public actor ProviderLoop {
+    internal var appAttestShadowClient: AppAttestShadowClient?
+    internal var appAttestShadowTask: Task<Void, Never>?
+    internal var appAttestShadowGeneration: UInt64 = 0
     internal let loopConfig: ProviderLoopConfig
     internal let keyPair: NodeKeyPair
     internal let signer: (any AttestationSigner)?

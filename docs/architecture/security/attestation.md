@@ -1,11 +1,13 @@
 # Provider attestation
 
-> Last updated: 2026-09-13 · commit `69454529a`
+> Last updated: 2026-09-14 · commit `4676eedbe`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
 the level (`mda_verified`, `code_attested`), the five-minute challenge that
 keeps the verdict fresh, and the single routing gate that consumes all of it.
+
+[App Attest shadow observations](../../reference/app-attest-shadow.md) run alongside this mechanism. They grant and remove no trust; the existing APNs/MDM gates described here remain authoritative.
 
 ## Context
 

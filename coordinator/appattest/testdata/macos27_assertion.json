@@ -1,0 +1,8 @@
+{
+  "source": "Physical macOS 27.0 build 26A428; Developer ID app launched in user context on 2026-09-14. Attestation verified against production Apple root and exact Mac ACL at capture. This fixture tests assertions only. No receipt or private key is included.",
+  "app_id": "SLDQ2GJ6TL.io.darkbloom.provider",
+  "public_key": "BAbtGSGrOqtlDMmqTGPiMEN2AG/k7G0xm0X8GyihjKI8mSOzpIrzHf8mpfGMoiX7KgScHH9+wBbo0Es4ezEz37w=",
+  "client_data_hash": "63TqIQxCjf+CF6oHFhBunopIJV1gffBhnmeuKKzv0hU=",
+  "assertion": "omlzaWduYXR1cmVYRzBFAiEA+n0clID+u9tQrgyoe8x+clb5YlBdfv3ODiP0kVNxRZECICn2EVhUyJOttsT7lk6sgmf4cdl8VSiW/hpdZOzFL4GpcWF1dGhlbnRpY2F0b3JEYXRhWCUgxwoKRgsh8IVhJJRF0gsIaJd828y61NFv6/Si+4vI/EAAAAAB",
+  "counter": 1
+}

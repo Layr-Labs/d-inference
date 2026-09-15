@@ -149,6 +149,7 @@
     "mdm.waiters": "Security/MDA waiters + command UUIDs",
     "mem.alias_lock": "Cross-endpoint alias mutation lock",
     "mem.api_key_cache": "API-key auth cache + generation",
+    "mem.app_attest_shadow": "App Attest shadow session + verifier/storage permits",
     "mem.cache_routing": "Prefix-cache holder tracker + activation gate",
     "mem.capacity": "TPS EWMA + provider/model capacity",
     "mem.challenges": "Outstanding attestation challenges + reply channels",
@@ -158,6 +159,7 @@
     "mem.drain": "Drain flag + HTTP in-flight counter",
     "mem.exact_cache": "Exact-cache gauge + status TTL cache",
     "mem.hash_policy": "Binary/runtime policy maps + reject-model set",
+    "mem.machine_inventory": "Per-connection machine-identity session + write permits",
     "mem.media_resolver": "Remote-media SSRF-safe resolver",
     "mem.metrics": "Metrics counters/histograms/rings",
     "mem.model_state": "Model catalog + alias + pending-load state",
@@ -374,6 +376,20 @@
         "coordinator/api/server.go:378"
       ]
     },
+    "mem.app_attest_shadow": {
+      "overview": "The per-connection App Attest shadow exchange and the two permit channels that bound it, so a shadow verdict can never become backpressure on the authoritative path.",
+      "represents": "One appAttestShadowSession per provider WebSocket — its nonce, expected stage, owner digest, protocol version, verifier and the reply channel the provider's frames arrive on — plus a server-wide verifier semaphore and a lazily created storage semaphore of four permits.",
+      "construction": "startAppAttestShadow builds the session when the shadow toggle is on and the provider's encryption key is canonically encoded; appAttestStorageOnce creates the storage channel on first use.",
+      "access": "The provider WebSocket handler drives the session's stages, records observations, and archives evidence. Both semaphores are acquired non-blockingly: a full verifier channel is recorded as a verifier_busy observation and a full storage channel drops the write rather than waiting.",
+      "concurrency": "One serialized session goroutine per connection owns the stage machine; the semaphores are the only cross-connection state, and nested observations reuse the permit the session already holds.",
+      "lifecycle": "The session dies with the provider connection; the permits are process-wide and hold no per-connection state.",
+      "restart": "Starts empty. Everything a shadow exchange concluded is in PostgreSQL app_attest_* tables, and a reconnect starts a new exchange.",
+      "sources": [
+        "coordinator/api/app_attest_shadow.go:55",
+        "coordinator/api/app_attest_shadow.go:208",
+        "coordinator/api/app_attest_shadow_storage.go:12"
+      ]
+    },
     "mem.cache_routing": {
       "overview": "Where a prefix-cache copy of a prompt currently lives, plus the two gates that decide whether cache-aware routing participates in a given request.",
       "represents": "Per-prefix holder sets with attempt records, donation/hit/miss counters, per-(provider,model) v2 capability rejections and sequence numbers; alongside a deterministic HMAC sampling percentage and a token bucket bounding sidecar plan QPS.",
@@ -496,6 +512,20 @@
         "coordinator/api/server.go:218",
         "coordinator/api/server.go:249",
         "coordinator/cmd/coordinator/main.go:389"
+      ]
+    },
+    "mem.machine_inventory": {
+      "overview": "The per-connection machine-identity session that turns a provider registration into a stable machine id, and the permit channel that bounds its writes.",
+      "represents": "One machineInventorySession per provider WebSocket — the observation being accumulated (OS, chip, memory, protocol, legacy trust, SE key, verified serial), the identity the store resolved it to, and a ready latch — plus a server-wide write semaphore.",
+      "construction": "startMachineInventory builds it when the store implements MachineInventoryStore, seeds the observation from the registration report, and starts a goroutine that captures on connect, every minute, and once more on disconnect.",
+      "access": "The provider WebSocket handler updates the observation and calls ObserveMachine; the App Attest shadow session reads the resolved identity. A full permit channel is counted as an inventory failure rather than waited on.",
+      "concurrency": "One mutex guards the observation and the resolved identity against the capture goroutine; the semaphore is the only cross-connection state.",
+      "lifecycle": "The session dies with the provider connection, after a final disconnected capture.",
+      "restart": "Starts empty. The machine identities themselves are durable in PostgreSQL darkbloom_machines and its satellite tables.",
+      "sources": [
+        "coordinator/api/machine_inventory.go:29",
+        "coordinator/api/machine_inventory.go:77",
+        "coordinator/api/machine_inventory.go:100"
       ]
     },
     "mem.media_resolver": {
@@ -874,6 +904,102 @@
         "coordinator/store/postgres.go:1"
       ]
     },
+    "pg.app_attest_enrollments": {
+      "overview": "The app_attest_enrollments PostgreSQL table.",
+      "represents": "Durable first-enrollment record for each App Attest key: the key id, the owner it was bound to, when it was accepted, and the registration context it arrived with. One row per key, so a re-enrollment under a different owner is visible rather than silent. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; the shadow session writes it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/app_attest_enrollment.go:29"
+      ]
+    },
+    "pg.app_attest_evidence": {
+      "overview": "The app_attest_evidence PostgreSQL table.",
+      "represents": "Durable metadata for every proof the shadow exchange archived: session, key id, action, the proof's SHA-256, the context it was received in, and the verification outcome once it completes. The digest and the outcome live here while the proof bytes live in app_attest_evidence_blobs. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; the shadow session archives through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows are written when a proof arrives and completed later with the verdict, so a crash between the two leaves a row whose outcome is still pending rather than a lost proof.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/app_attest_archive.go:40"
+      ]
+    },
+    "pg.app_attest_evidence_blobs": {
+      "overview": "The app_attest_evidence_blobs PostgreSQL table.",
+      "represents": "The raw archived proof bytes, one row per evidence record, kept apart from the metadata so the bytes can carry their own grant: the table REVOKEs ALL from PUBLIC. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; written beside the evidence row through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/app_attest_archive.go:48"
+      ]
+    },
+    "pg.app_attest_receipt_blobs": {
+      "overview": "The app_attest_receipt_blobs PostgreSQL table.",
+      "represents": "The request and response bodies of one receipt-renewal exchange with Apple, split from the receipt's metadata so they can be REVOKEd from PUBLIC. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; written by the receipt-renewal worker through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/app_attest_receipts.go:37"
+      ]
+    },
+    "pg.app_attest_receipt_jobs": {
+      "overview": "The app_attest_receipt_jobs PostgreSQL table.",
+      "represents": "Durable work queue for receipt renewal: one row per key, holding the receipt to refresh, when it is next due, the lease a worker holds while it tries, and how many attempts it has made. The lease is what keeps one renewal from running twice across coordinator instances. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; leased and advanced by the receipt-renewal worker through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "A row lives as long as its key needs refreshing; the worker's minute ticker moves next_at forward and clears the lease.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/app_attest_receipts.go:41"
+      ]
+    },
+    "pg.app_attest_receipts": {
+      "overview": "The app_attest_receipts PostgreSQL table.",
+      "represents": "Durable history of receipt renewals: the receipt's lineage (evidence and parent receipt), the outcome and HTTP status Apple answered with, and the validity window read out of the receipt itself. Renewal is inert until server credentials are configured, so an empty table is the expected shadow-rollout state. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; written by the receipt-renewal worker through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Append-only: each renewal writes a new row rather than overwriting the last, so the chain of receipts for a key stays readable.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/app_attest_receipts.go:31"
+      ]
+    },
+    "pg.app_attest_shadow_events": {
+      "overview": "The app_attest_shadow_events PostgreSQL table.",
+      "represents": "Durable observations of the shadow exchange — one row per stage and outcome, with the bounded fields that explain it — which is the whole product of a shadow rollout: what App Attest *would* have decided, recorded without any authoritative path depending on it. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; written by the shadow session through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Append-only per session, indexed by session and by time so a rollout can be read either way.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/machine_inventory_schema.go:30"
+      ]
+    },
+    "pg.app_attest_shadow_keys": {
+      "overview": "The app_attest_shadow_keys PostgreSQL table.",
+      "represents": "Durable per-key shadow state: the owner the key is bound to, the evidence it was accepted on, and the assertion counter, which the CHECK constraint holds inside Apple's 32-bit range. The counter is the replay defence — an assertion that does not advance it is an observation, not an acceptance. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; read and advanced by the shadow session through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "One mutable row per key id, updated in place as assertions arrive.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/app_attest_shadow.go:29"
+      ]
+    },
     "pg.balances": {
       "overview": "The balances PostgreSQL table.",
       "represents": "Durable balances records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
@@ -920,6 +1046,66 @@
       "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
       "sources": [
         "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.darkbloom_machine_aliases": {
+      "overview": "The darkbloom_machine_aliases PostgreSQL table.",
+      "represents": "The evidence that ties an identifier to a machine: a (kind, scope, digest) triple pointing at a darkbloom_machines row, with the time that binding was verified. Identifiers are stored as digests rather than as serials or UDIDs, so the table can coalesce machines without holding the hardware identities themselves. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; written by the machine-inventory session through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/machine_inventory_schema.go:8"
+      ]
+    },
+    "pg.darkbloom_machine_merges": {
+      "overview": "The darkbloom_machine_merges PostgreSQL table.",
+      "represents": "The audit of every coalescing decision: which machine id was folded into which, in what session, when, and on what reason. A merge is irreversible in the identity table, so the reason is recorded here rather than inferred later. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; written by the machine-inventory session through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Append-only, one row per merged source machine.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/machine_inventory_schema.go:22"
+      ]
+    },
+    "pg.darkbloom_machine_observations": {
+      "overview": "The darkbloom_machine_observations PostgreSQL table.",
+      "represents": "The time series behind a session: one JSONB observation per session and instant, captured on connect, every minute, and again on disconnect. The session row holds the latest; this table holds how it got there. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; written by the machine-inventory session's minute ticker through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Append-only, keyed by session and observation time.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/machine_inventory_schema.go:26"
+      ]
+    },
+    "pg.darkbloom_machine_sessions": {
+      "overview": "The darkbloom_machine_sessions PostgreSQL table.",
+      "represents": "One row per provider connection: the machine it was attributed to, the machine it was *first* attributed to before any merge, the account, the window it was connected for, and the latest observation. Keeping the original id beside the current one is what makes a coalescing decision auditable rather than retroactive. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; written by the machine-inventory session through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "A row is opened when a provider registers and closed by disconnected_at; partial indexes serve the open-session and recent-session reads.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/machine_inventory_schema.go:13"
+      ]
+    },
+    "pg.darkbloom_machines": {
+      "overview": "The darkbloom_machines PostgreSQL table.",
+      "represents": "The stable machine identity itself: an id, the assurance level it was established at, the window it has been seen in, and a self-reference to the machine it was merged into. A provider that reinstalls or reconnects keeps its identity here rather than becoming a new one. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; created and coalesced by the machine-inventory session through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows are never deleted; a merged machine keeps its row and points at its target, so an old id still resolves.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/machine_inventory_schema.go:4"
       ]
     },
     "pg.device_codes": {
@@ -2406,6 +2592,10 @@
       "coordinator/api:Server.apiKeyCache": "mem.api_key_cache",
       "coordinator/api:Server.apiKeyCacheGen": "mem.api_key_cache",
       "coordinator/api:Server.apiKeyCacheMu": "mem.api_key_cache",
+      "coordinator/api:Server.appAttestShadow": "@skip",
+      "coordinator/api:Server.appAttestShadowSlots": "mem.app_attest_shadow",
+      "coordinator/api:Server.appAttestStorageOnce": "mem.app_attest_shadow",
+      "coordinator/api:Server.appAttestStorageSlots": "mem.app_attest_shadow",
       "coordinator/api:Server.baseRewards": "@through",
       "coordinator/api:Server.baseURL": "@skip",
       "coordinator/api:Server.billing": "@through",
@@ -2443,6 +2633,7 @@
       "coordinator/api:Server.knownRuntimeManifest": "mem.hash_policy",
       "coordinator/api:Server.ledger": "@through",
       "coordinator/api:Server.logger": "@skip",
+      "coordinator/api:Server.machineInventorySlots": "mem.machine_inventory",
       "coordinator/api:Server.manualBinaryHashPolicyConfigured": "mem.hash_policy",
       "coordinator/api:Server.manualKnownBinaryHashes": "mem.hash_policy",
       "coordinator/api:Server.mdmClient": "mdm.client",
@@ -2557,6 +2748,7 @@
     "packageDefault": {
       "coordinator/api": "@skip",
       "coordinator/api/types": "@skip",
+      "coordinator/appattest": "@skip",
       "coordinator/attestation": "@skip",
       "coordinator/auth": "@skip",
       "coordinator/apns": "@skip",
@@ -2599,6 +2791,8 @@
       "coordinator/api:profileSink": "mem.profiler",
       "coordinator/api:requestOutcome": "mem.outcomes",
       "coordinator/api:requestOutcomeSink": "mem.outcomes",
+      "coordinator/api:appAttestShadowSession": "mem.app_attest_shadow",
+      "coordinator/api:machineInventorySession": "mem.machine_inventory",
       "coordinator/api:mdmVerificationScheduler": "mdm.waiters",
       "coordinator/api:serviceReservationManager": "mem.service_reservations",
       "coordinator/registry:Registry": "mem.registry",

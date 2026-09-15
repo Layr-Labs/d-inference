@@ -19,6 +19,7 @@ extension ProviderLoop {
     // MARK: - Main Run Loop
 
     public func run() async throws {
+        defer { cancelAppAttestShadow() }
         // Retired-knob warnings are emitted once by `Start.run()`, before
         // the serving-mode split — see `RetiredKnobWarnings`. Doing it here
         // reached only the coordinator-serving modes.
@@ -238,6 +239,7 @@ extension ProviderLoop {
                     setRetirementReconnectBarrier(false)
 
                 case .disconnected:
+                    cancelAppAttestShadow()
                     logger.warning(.coordinatorDisconnected)
                     // Cancel all in-flight requests on disconnect -- the coordinator
                     // will not route responses for a dead connection.
@@ -275,6 +277,9 @@ extension ProviderLoop {
                         timestamp: timestamp,
                         send: send
                     )
+
+                case .appAttestShadow(let payload):
+                    handleAppAttestShadow(payload, send: send)
 
                 case .codeAttestationResumeChallenge(let challenge):
                     handleCodeChallenge(challenge, send: send)

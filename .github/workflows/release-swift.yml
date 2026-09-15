@@ -514,12 +514,16 @@ jobs:
             --entitlements provider-swift/entitlements-enclave.plist \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/$ENCLAVE_NAME"
+          # Add App Attest beside APNs only with a matching profile grant.
+          python3 scripts/prepare-app-attest-entitlements.py \
+            --base provider-swift/entitlements.plist --profile /tmp/profile.plist \
+            --output /tmp/provider-signing-entitlements.plist
           codesign --force --options runtime --timestamp \
-            --entitlements provider-swift/entitlements.plist \
+            --entitlements /tmp/provider-signing-entitlements.plist \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/$CLI_NAME"
           codesign --force --options runtime --timestamp \
-            --entitlements provider-swift/entitlements.plist \
+            --entitlements /tmp/provider-signing-entitlements.plist \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP"
 
@@ -566,6 +570,9 @@ jobs:
             echo "::error::Failed to extract entitlements from signed CLI for APNs/get-task-allow verification"
             exit 1
           fi
+          python3 scripts/prepare-app-attest-entitlements.py \
+            --base provider-swift/entitlements.plist --profile /tmp/profile.plist \
+            --output /tmp/provider-signing-entitlements.plist --verify /tmp/cli-ents.plist
           APS_ENV=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.aps-environment' /tmp/cli-ents.plist 2>/dev/null || echo "")
           if [ "$APS_ENV" != "production" ]; then
             echo "::error::Signed CLI aps-environment must be 'production' (got '${APS_ENV:-<absent>}'). Regenerate the push provisioning profile + entitlements (v0.6.0 APNs code-identity)."

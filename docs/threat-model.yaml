@@ -13,6 +13,11 @@ created: "2026-05-14"
 # Status-signature canonicalization in TB-009 re-verified 2026-09-13 against
 # commit 1f52a71fb: provider byte compatibility, with signature/trust policy
 # unchanged. This does not re-verify the remaining threat entries.
+
+# App Attest coexistence added 2026-09-12: observation only; no trust/routing
+# mutation. The app-owned X25519 endpoint is bound into a fresh shadow transcript;
+# Apple API failures and malformed proofs are bounded and do not replace APNs/MDM.
+# Physical macOS 27 acceptance and downgrade resistance remain unverified.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
@@ -34,6 +39,7 @@ scope:
     - Optional provider → privileged fan-helper XPC boundary and AppleSMC writes
     - Coordinator → Stripe payment network
     - Apple attestation trust chain (cross-cutting)
+    - Optional App Attest shadow evidence exchange (observation only; APNs/MDM still authoritative)
   out_of_scope:
     - Dev / staging environment (api.dev.darkbloom.xyz)
     - GitHub Actions / R2 release supply chain

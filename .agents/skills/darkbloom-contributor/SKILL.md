@@ -17,10 +17,12 @@ Use the repository's instructions as the source of truth:
 4. Preserve the cross-language and release synchronization points in
    `AGENTS.md`. Trace readers, failure cleanup, concurrency, and disconnect
    cleanup when provider registry state changes.
-5. Run focused tests while implementing, then the component checks required by
+5. Create signed commits and confirm every PR commit is GitHub-verified after
+   pushing. Amend and re-sign any unsigned commit before requesting review.
+6. Run focused tests while implementing, then the component checks required by
    `Makefile`. Run `make docs-impact-check BASE=<target-branch>` and
    `make docs-check` before pushing.
-6. Prepare the PR around the final implementation. Include the required Before
+7. Prepare the PR around the final implementation. Include the required Before
    and After Mermaid diagrams for both observable behavior and code flow,
    concrete validation commands, interface or migration effects, and material
    limitations.

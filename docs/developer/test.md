@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-15 · commit `4a11604ba`
+> Last updated: 2026-09-15 · commit `1fee36798`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1061,8 +1061,14 @@ This prevents task scheduling from silently changing admission order. Sources: `
 
 ### 7. Docs lint
 
-The lightweight Docs Impact workflow runs before review and again when the
-`docs-not-needed` label is added or removed:
+The lightweight Contribution Policy workflow runs before review and again when
+the `docs-not-needed` label is added or removed. Its `Commit Signatures` job
+queries GitHub's pull-request commit list and requires
+`commit.verification.verified = true` for every commit. This covers commits on
+contributor forks, which the protected branch's signed-commit rule does not
+evaluate.
+
+Its `Docs Impact` job runs:
 
 ```bash
 make docs-impact-check BASE=origin/master

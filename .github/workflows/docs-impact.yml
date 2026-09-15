@@ -1,10 +1,39 @@
-name: Docs Impact
+name: Contribution Policy
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
 jobs:
+  commit-signatures:
+    name: Commit Signatures
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Require GitHub-verified signatures on every PR commit
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const commits = await github.paginate(github.rest.pulls.listCommits, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            const unverified = commits.filter(
+              ({ commit }) => commit.verification?.verified !== true,
+            );
+            if (unverified.length > 0) {
+              const details = unverified.map(
+                ({ sha, commit }) =>
+                  `${sha.slice(0, 12)} (${commit.verification?.reason ?? "unsigned"})`,
+              );
+              core.setFailed(`Unsigned or unverified commits: ${details.join(", ")}`);
+            }
+
   docs-impact:
     name: Docs Impact
     runs-on: blacksmith-4vcpu-ubuntu-2404

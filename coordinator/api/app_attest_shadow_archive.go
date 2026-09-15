@@ -130,6 +130,7 @@ func (x *appAttestShadowSession) commitEvidence(ctx context.Context, d store.App
 	outcome, err := x.archive.CompleteAppAttestEvidence(ctx, x.evidenceID, d)
 	if err != nil {
 		x.evidenceOutcome = "storage_error"
+		x.lastOutcome = "storage_error"
 		x.observe("archive", "completion_failed", nil)
 		return false
 	}

@@ -43,3 +43,37 @@ func TestAppAttestEnrollmentStoreFailureIsRetryableAndSnapshotReadOnce(t *testin
 		t.Fatal("later retry could not recover", err)
 	}
 }
+
+type failingEvidenceCompletion struct{ *store.MemoryStore }
+
+func (s *failingEvidenceCompletion) CompleteAppAttestEvidence(context.Context, string, store.AppAttestDecision) (string, error) {
+	return "", errors.New("temporary commit failure")
+}
+
+func TestAppAttestCompletionFailureReentersRecovery(t *testing.T) {
+	st := &failingEvidenceCompletion{MemoryStore: store.NewMemory(store.Config{})}
+	x := &appAttestShadowSession{s: &Server{store: st, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, archive: st, provider: &registry.Provider{ID: "serving"}, id: "original", evidenceID: "proof"}
+	attempts := 0
+	x.runRecovering(context.Background(), func(context.Context) {
+		attempts++
+		x.lastOutcome = "attempted"
+		if attempts == 1 {
+			if x.commitEvidence(context.Background(), store.AppAttestDecision{Outcome: "verified"}) {
+				t.Fatal("failed commit accepted")
+			}
+			if x.lastOutcome != "storage_error" {
+				t.Fatalf("lost completion failure: %s", x.lastOutcome)
+			}
+		} else {
+			x.lastOutcome = "unsupported"
+		}
+	}, func(_ context.Context, delay time.Duration) bool {
+		if delay != time.Minute {
+			t.Fatalf("unexpected retry delay: %s", delay)
+		}
+		return true
+	})
+	if attempts != 2 {
+		t.Fatalf("storage failure stopped recovery after %d attempts", attempts)
+	}
+}

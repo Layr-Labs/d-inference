@@ -8,8 +8,19 @@
 //   - DD_DOGSTATSD_URL: DogStatsD address (default "localhost:8125")
 //
 // The DD agent sidecar handles trace intake (default localhost:8126) and
-// DogStatsD aggregation. The coordinator only pushes directly to the Logs
-// API for telemetry event forwarding.
+// DogStatsD aggregation. The coordinator pushes directly to the Logs API for
+// telemetry event forwarding, and to the series API for gauges and counters
+// (metrics_http.go) when DD_API_KEY is set.
+//
+// Everything the coordinator submits itself carries env and service, because
+// on a host with no agent there is nothing else to add them: an agent tags the
+// log stream it collects itself (the dev agent reads the coordinator unit over
+// journald and stamps env:development), the intake does not. The dashboards
+// scope every query by that pair, so an untagged submission is invisible.
+// Tagging cannot rescue the Histogram method, which has no HTTPS leg at all
+// and needs an agent on the host; HistogramOrGauge (metrics_snapshot.go) is
+// the one histogram-shaped call that does survive without one, by submitting
+// a gauge instead.
 package datadog
 
 import (
@@ -20,6 +31,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +48,12 @@ type Client struct {
 	logsURL    string
 	eventsURL  string
 	httpClient *http.Client
+	// service is the log payload's service field and env/service the tags
+	// every forwarded log carries — the same pair metricsTags puts on metrics.
+	// Held on the client because a log is tagged where it is built, not where
+	// it is flushed.
+	env     string
+	service string
 
 	// Batching for log forwarding.
 	logMu      sync.Mutex
@@ -107,6 +125,8 @@ func NewClient(cfg Config, logger *slog.Logger) (*Client, error) {
 	c.eventsURL = fmt.Sprintf("https://api.%s/api/v1/events", site)
 	c.seriesURL = fmt.Sprintf("https://api.%s/api/v1/series", site)
 	c.series = newSeriesBuffer()
+	c.env = cfg.Env
+	c.service = cfg.Service
 	c.metricsTags = []string{"env:" + cfg.Env, "service:" + cfg.Service}
 	c.metricsHost = envOr("DD_HOSTNAME", cfg.Service)
 	c.flushIntervalSecs = int64(cfg.FlushSecs)
@@ -262,9 +282,9 @@ func (c *Client) ForwardLog(entry TelemetryLogEntry) {
 
 	log := ddLog{
 		DDSource: entry.Source,
-		DDTags:   fmt.Sprintf("kind:%s,severity:%s", entry.Kind, entry.Severity),
+		DDTags:   c.logTags(entry),
 		Hostname: entry.MachineID,
-		Service:  "d-inference-coordinator",
+		Service:  c.service,
 		Status:   mapSeverityToStatus(entry.Severity),
 		Message:  entry.Message,
 		Attrs:    attrs,
@@ -283,6 +303,31 @@ func (c *Client) ForwardLog(entry TelemetryLogEntry) {
 	if entry.Severity == "fatal" {
 		go c.emitDDEvent(entry)
 	}
+}
+
+// logTags builds the ddtags string for a forwarded log. env and service are
+// mandatory: the dashboards scope every log query by them (the template
+// variables expand to `env:<x> service:<y>`), and unlike an agent — which tags
+// the log stream it collects itself — nothing downstream adds them to a log the
+// coordinator POSTs itself. A log without them matches no widget
+// on any host that has no agent, which is every environment the HTTPS path
+// exists for. kind and severity are per-entry and omitted when empty rather
+// than sent as a valueless `kind:` tag.
+func (c *Client) logTags(entry TelemetryLogEntry) string {
+	tags := make([]string, 0, 4)
+	if c.env != "" {
+		tags = append(tags, "env:"+c.env)
+	}
+	if c.service != "" {
+		tags = append(tags, "service:"+c.service)
+	}
+	if entry.Kind != "" {
+		tags = append(tags, "kind:"+entry.Kind)
+	}
+	if entry.Severity != "" {
+		tags = append(tags, "severity:"+entry.Severity)
+	}
+	return strings.Join(tags, ",")
 }
 
 func mapSeverityToStatus(sev string) string {
@@ -344,11 +389,15 @@ func (c *Client) flushLogs() {
 		c.logger.Warn("datadog: logs API request failed", "error", err, "batch_size", len(batch))
 		return
 	}
-	_, _ = io.ReadAll(resp.Body)
+	// The status alone does not say why: 403 is a bad key, 413 an oversized
+	// batch, 400 a malformed payload, and the intake puts the reason in the
+	// body — which was being read and discarded.
+	respBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-
 	if resp.StatusCode >= 400 {
-		c.logger.Warn("datadog: logs API returned error", "status", resp.StatusCode, "batch_size", len(batch))
+		c.logger.Warn("datadog: logs API returned error",
+			"status", resp.StatusCode, "batch_size", len(batch),
+			"body", truncate(string(respBody), 200))
 	}
 }
 
@@ -363,7 +412,14 @@ func (c *Client) emitDDEvent(entry TelemetryLogEntry) {
 		"text":       entry.Message,
 		"alert_type": "error",
 		"source":     "d-inference",
-		"tags":       []string{"source:" + entry.Source, "kind:" + entry.Kind, "env:" + envOr("DD_ENV", "production")},
+		// c.env/c.service, not a fresh DD_ENV read: the event must carry the
+		// same pair as the metrics and logs of the client that emitted it,
+		// whether or not the Config came from the environment. A monitor that
+		// scopes by service needs the tag as much as a dashboard does.
+		"tags": []string{
+			"source:" + entry.Source, "kind:" + entry.Kind,
+			"env:" + c.env, "service:" + c.service,
+		},
 	}
 	if entry.Stack != "" {
 		event["text"] = entry.Message + "\n\n```\n" + entry.Stack + "\n```"
@@ -386,8 +442,12 @@ func (c *Client) emitDDEvent(entry TelemetryLogEntry) {
 		c.logger.Warn("datadog: events API request failed", "error", err)
 		return
 	}
-	_, _ = io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		c.logger.Warn("datadog: events API returned error",
+			"status", resp.StatusCode, "body", truncate(string(respBody), 200))
+	}
 }
 
 func truncate(s string, n int) string {

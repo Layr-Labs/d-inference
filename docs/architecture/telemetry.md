@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-16 · commit `51272c00b`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -233,6 +233,18 @@ Which leg carries a metric depends on kind and on whether an API key is set
 The HTTPS series path is therefore a **replacement** for the UDP leg when a key
 is present, not a fallback behind it.
 
+Everything the coordinator submits itself carries `env:<DD_ENV>` and
+`service:<DD_SERVICE>` — `metricsTags` on series points, `WithTags` on the
+DogStatsD client, and `ddtags` on forwarded logs (`logTags`, which appends the
+per-entry `kind` and `severity` and omits either when empty). The log payload's
+`service` field is the configured service, not a literal. This matters because
+the dashboards scope every query by that pair (`deploy/datadog/dev-network-dashboard.json`
+expands the `env`/`service` template variables into each widget's query), and on
+a host with no agent nothing else can add them: an agent tags the log stream it
+collects itself (the dev agent reads `d-inference-coordinator.service` over
+journald and stamps `env:development`, `deploy/gcp/vm-startup.sh`), the HTTPS
+intake does not.
+
 ### Coordinator events and logs
 
 `Emitter.Emit` (`coordinator/telemetry/emitter.go`) forces `source =
@@ -303,7 +315,8 @@ and the `inference.timing.*` histograms are built from the same
 |---|---|---|
 | Neither `DD_API_KEY` nor `DD_AGENT_HOST` set | no Datadog client; every metric and forwarded event is dropped; `slog` mirror and in-process counters still work | startup log lacks `datadog integration enabled` |
 | `DD_API_KEY` set, no local agent | counters and gauges arrive via HTTPS; **histograms** (`inference.ttft_ms`, `http.latency_ms`, `inference.timing.*`) are lost | `datadog: DogStatsD client init failed` or silent UDP drops |
-| Series or Logs intake returns ≥ 400 or times out (10 s) | batch dropped; one `Warn` per batch | `datadog: series API returned error`, `datadog: logs API request failed` |
+| Series or Logs intake returns ≥ 400 or times out (10 s) | batch dropped; one `Warn` per batch, carrying the status and the intake's own reason (first 200 bytes of the body) | `datadog: series API returned error`, `datadog: logs API returned error`, `datadog: logs API request failed` |
+| A widget scopes by `env`/`service` that the submission does not carry | the series or log exists in Datadog but no dashboard query matches it, and nothing anywhere reports a problem | compare `logTags`/`metricsTags` against the dashboard's template variables |
 | Profile or route sink full | write dropped and counted; request unaffected | `telemetry.sink_dropped{sink:profile}`, `route_sink_dropped_total` in `fleet_snapshots` |
 | Stale or reordered `capacity_seq` | frame ignored except `LastHeartbeat`; metrics not re-emitted | registry debug log |
 | Heartbeat prefix-cache telemetry fails validation | dropped for that frame | `routing.cache_telemetry_rejected{source:heartbeat}` |
@@ -344,7 +357,7 @@ for populations, labels and reset semantics (`coordinator/api/cache_model_teleme
 | Sinks | `coordinator/api/telemetry_sink.go`, `coordinator/api/profiler_sink.go`, `coordinator/api/profiler_fleet.go` |
 | Disconnect classification | `coordinator/registry/disconnect_classify.go` |
 | Provider side | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift` (`buildHeartbeatJSON`), `provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Capacity.swift`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift` (no-op facade) |
-| Tests | `coordinator/api/telemetry_allowlist_parity_test.go`, `coordinator/api/telemetry_handlers_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/metrics_http_test.go`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` |
+| Tests | `coordinator/api/telemetry_allowlist_parity_test.go`, `coordinator/api/telemetry_handlers_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/logs_wire_test.go`, `coordinator/datadog/metrics_http_test.go`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` |
 
 ## Related
 

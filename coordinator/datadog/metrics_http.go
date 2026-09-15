@@ -141,9 +141,11 @@ func (c *Client) flushSeries() {
 		c.logger.Warn("datadog: series API request failed", "error", err, "batch_size", len(series))
 		return
 	}
-	_, _ = io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		c.logger.Warn("datadog: series API returned error", "status", resp.StatusCode, "batch_size", len(series))
+		c.logger.Warn("datadog: series API returned error",
+			"status", resp.StatusCode, "batch_size", len(series),
+			"body", truncate(string(respBody), 200))
 	}
 }

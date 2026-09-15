@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-15 · commit `4a11604ba`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1061,7 +1061,8 @@ This prevents task scheduling from silently changing admission order. Sources: `
 
 ### 7. Docs lint
 
-The Docs Lint CI job first runs the documentation-impact gate:
+The lightweight Docs Impact workflow runs before review and again when the
+`docs-not-needed` label is added or removed:
 
 ```bash
 make docs-impact-check BASE=origin/master

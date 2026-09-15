@@ -1,0 +1,21 @@
+name: Docs Impact
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  docs-impact:
+    name: Docs Impact
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Test documentation-impact validation
+        run: python3 scripts/test-docs-impact-check.py
+      - name: Check documentation impact
+        env:
+          DOCS_IMPACT_BASE: ${{ github.event.pull_request.base.sha }}
+          DOCS_IMPACT_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: python3 scripts/docs-impact-check.py

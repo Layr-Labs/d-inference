@@ -155,6 +155,8 @@ public enum EngineV2Factory {
         defaultMaxTokens: Int = 4096,
         maxConcurrentRequests: Int = 4,
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
+        advertisedContextTokens: Int? = nil,
+        pagedPageSize: Int? = nil,
         runtimePolicyEnvironment: [String: String] =
             ProcessInfo.processInfo.environment,
         kvBytesPerToken: Int = 0,
@@ -208,10 +210,14 @@ public enum EngineV2Factory {
                 residentPrefixCacheEvidence: residentPrefixCacheEvidence,
                 prefixCacheStatus: prefixCacheStatus,
                 kvBackendKind: build.kvBackendKind,
+                pagedPageSize: pagedPageSize,
                 // Same value the INFO event below reports, but on a channel
                 // that cannot be dropped: the bridge republishes it on every
                 // heartbeat as `BackendSlotCapacity.kv_backend_fallback_reason`.
                 kvBackendFallbackReason: build.kvBackendFallbackReason,
+                advertisedContextTokens: advertisedContextTokens
+                    ?? Qwen4SupportPolicy.contextLimit(
+                        modelID: modelId, environment: runtimePolicyEnvironment),
                 emitTelemetry: emitTelemetry
             )
         } catch {

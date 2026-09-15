@@ -32,7 +32,8 @@ protocol ProviderMTPAssistantLoading: Sendable {
 
 /// The sole production assistant loader. Qwen targets accept either a
 /// combined inline assistant or a separately published `qwen3_5_mtp`
-/// artifact; Gemma targets retain their dedicated drafter path.
+/// artifact. Native Qwen4 uses its trained in-tree assistant; Gemma targets
+/// retain their dedicated drafter path.
 struct ProductionProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
     func loadAndBind(
         artifact: SpecDecArtifact,
@@ -48,6 +49,20 @@ struct ProductionProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
             } catch let error as Qwen35InlineMTPError {
                 throw ProviderMTPAssistantLoadError.loadFailed(
                     error.localizedDescription)
+            } catch {
+                throw ProviderMTPAssistantLoadError.loadFailed(String(describing: error))
+            }
+        }
+
+        if target is any Qwen4ExpMTPTargeting {
+            do {
+                let assistant = try Qwen4ExpInlineMTPAssistant.load(
+                    from: artifact.directory, target: target)
+                return ProviderMTPAssistantHandle(owner: assistant, drafter: assistant)
+            } catch let error as ProviderMTPAssistantLoadError {
+                throw error
+            } catch let error as Qwen4ExpInlineMTPError {
+                throw ProviderMTPAssistantLoadError.loadFailed(error.localizedDescription)
             } catch {
                 throw ProviderMTPAssistantLoadError.loadFailed(String(describing: error))
             }

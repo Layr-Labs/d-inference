@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-14 · commit `b725a72a8`
+> Last updated: 2026-09-15 · commit `dfe556c13`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -88,11 +88,28 @@ these headers (`writeCommittedProviderHeaders`,
 | `X-Attestation-Se-Public-Key` | The provider's SE P-256 public key (base64) |
 | `X-Eigen-Sealed`, `X-Eigen-Sealed-Kid` | Present when you sealed the request; the body is sealed to your ephemeral key ([`../architecture/security/encryption.md`](../architecture/security/encryption.md)) |
 
-There is **no** per-response signature or receipt: the coordinator does not
-sign responses with the provider's SE key, and the headers are the
-coordinator's assertion over TLS. What `X-Attestation-Se-Public-Key` lets you
-do is pin: compare it with `se_public_key` from the public endpoint across
-requests to confirm you are being served by the same attested identity.
+The headers are the coordinator's assertion over TLS. Pin the provider identity
+by comparing `X-Attestation-Se-Public-Key` with `se_public_key` from the public
+endpoint across requests.
+
+Successful bodies may also carry optional **provider-generated** `se_signature`
+and `response_hash`; the coordinator forwards them rather than signing the
+consumer response itself. The native provider's `computeResponseAttestation`
+hashes UTF-8 `requestId:completionTokens:responseBody` and signs the UTF-8 hex
+hash using its `AttestationSigner`
+(`provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift`).
+`responseBody` is the producer's accumulated content, reasoning and encoded
+tool calls, not the final coordinator JSON or SSE representation
+(`ProviderLoop.handleInferenceRequest`, `provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`).
+
+Field presence alone is not verification. Verify the signature against the
+provided hash and the matching provider key; do not compare the hash with a
+reserialized consumer response or only its visible answer. Streaming signature
+metadata retains the response's ID; the distinct coordinator request ID is
+available in `X-Inference-Job-ID` (and opt-in `metadata.job_id`). See the
+[SSE contract](../reference/api-contracts.md#sse-framing). These optional signals
+do not create a new hardware-trust level or establish account/attestation
+qualification in an ephemeral test environment.
 
 Pre-commit errors (validation, capacity, availability) have no selected provider
 and therefore no `X-Provider-*` headers.

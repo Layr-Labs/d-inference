@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-13 · commit `f6b5e111c`
+> Last updated: 2026-09-15 · commit `2a843bb2c`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -91,6 +91,28 @@ flowchart TD
     DISP -->|first content| OK[stream]
     RACE --> OK
 ```
+
+### SSD-offloaded model weights
+
+Native Qwen4 can advertise a validated immutable offloaded payload alongside
+its padded native-weight estimate. `advertisedOffloadedMemoryGBLocked`
+(`coordinator/registry/offloaded_weights.go`) requires matching model ID and
+native Qwen4 type, finite positive memory, and an offloaded byte count strictly
+between zero and total artifact bytes. It uses the larger of the reported
+estimate and the remaining weight bytes with the provider's load-transient
+padding. Missing/invalid or other-family declarations keep the existing
+catalog/measured-weight policy.
+
+`coordinator/registry/scheduler.go` carries this estimate into cold snapshots.
+`reportedFreeForLoadAdmitsWithOffload` in
+`coordinator/registry/offloaded_weights.go` uses it at the cold-load boundary;
+`coldTokenBudgetEstimateWithOffload` in `coordinator/registry/servability.go`
+uses it for the post-load token-budget estimate.
+This does not subtract request KV, prove physical capacity, waive catalog
+minimum RAM or activate a model. Wire fields are defined in
+[model registration messages](../reference/protocol-messages.md#models), and
+the [private candidate reference](../reference/qwen4-next-support.md)
+records the unqualified serving boundary.
 
 ### Eligibility gates and the `GateReason` vocabulary
 

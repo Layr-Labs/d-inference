@@ -173,6 +173,9 @@ func DescribeKVPosture(cfg ProviderConfig) string {
 }
 
 type ProviderConfig struct {
+	// LocalEndpointPort opts into the native authenticated loopback endpoint
+	// alongside coordinator serving. Zero preserves the existing launch.
+	LocalEndpointPort int
 	// PrefixCacheMode is explicit only for owned targets; empty preserves inherited behavior.
 	PrefixCacheMode string
 
@@ -277,6 +280,9 @@ type UserAccount struct {
 }
 
 type SuiteConfig struct {
+	// LocalEndpointPort is supported for one locally launched provider only.
+	// It exposes that same engine's metrics, never a second model process.
+	LocalEndpointPort int
 	// ProviderTargets opts into exact owned host processes; nil preserves local defaults.
 	ProviderTargets []ProviderTarget
 	PrefixCacheMode string

@@ -183,25 +183,20 @@ func multiModelEngineTranslateDropsEmptyStop() {
     #expect(translated.stop == nil)
 }
 
-// P1 #3 deviation guard (narrowed): the upstream request type carries
-// neither `seed` nor `logit_bias`, so a translation WITHOUT the sealed-body
-// overlay yields nil for both. If a future upstream PR adds the fields,
-// plumb them through `translate` directly and retire the overlay. Until
-// then this fixture pins the bare-translation behaviour so the deviation
-// stays visible.
-@Test("translate without an overlay yields nil seed/logit_bias (upstream shape omits them)")
-func multiModelEngineTranslateDropsSeed() {
+@Test("translate preserves upstream seed/logit_bias without an overlay")
+func multiModelEngineTranslatePreservesSamplingFields() {
     let request = OpenAIChatCompletionRequest(
         model: "any",
-        messages: [.init(role: .user, content: .text("hi"))]
+        messages: [.init(role: .user, content: .text("hi"))],
+        seed: 99,
+        logitBias: ["42": -2]
     )
     let translated = MultiModelBatchSchedulerEngine.translate(
         openAIRequest: request,
         defaultMaxTokens: 4096
     )
-    #expect(translated.seed == nil,
-        "the upstream OpenAIChatCompletionRequest exposes no seed field; without the sealed-body overlay the adapter must yield nil")
-    #expect(translated.logit_bias == nil)
+    #expect(translated.seed == 99)
+    #expect(translated.logit_bias == ["42": -2])
 }
 
 // Coordinator-path recovery for the same two fields: the inference handler
@@ -211,7 +206,9 @@ func multiModelEngineTranslateDropsSeed() {
 func multiModelEngineTranslateOverlaysSamplingFields() {
     let request = OpenAIChatCompletionRequest(
         model: "any",
-        messages: [.init(role: .user, content: .text("hi"))]
+        messages: [.init(role: .user, content: .text("hi"))],
+        seed: 99,
+        logitBias: ["42": -2]
     )
     let translated = MultiModelBatchSchedulerEngine.translate(
         openAIRequest: request,

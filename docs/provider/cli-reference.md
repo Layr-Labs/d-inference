@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-15 · commit `2a843bb2c`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -772,6 +772,13 @@ override `provider.toml` for one process, are in
 | `[backend] continuous_batching`, `adaptive_prefill`, `engine_v2`, `legacy_compiled_decode`, `kv_quant` | retired | Parsed for presence only; one startup WARN each (`RetiredCodingKeys`) |
 
 ## LaunchAgent environment passthrough
+
+For native Flash-Next foreground/local serving, the lower-only
+`DARKBLOOM_QWEN4_LISTING_CONTEXT` control bounds the complete request envelope.
+Its parsing, default and mandatory PLE acceptance setting are in the
+[candidate configuration reference](../reference/configuration.md#native-flash-next-candidate).
+These two Qwen controls are not in the daemon passthrough list below; source
+defaults still apply. This private candidate adds no release or catalog command.
 
 `darkbloom start` copies only these variables from the invoking shell into the
 provider plist's `EnvironmentVariables`

@@ -1,8 +1,9 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Production bridge from a normalized OpenAI request to the Gemma token
-// automaton installed on CBv2. Vocabulary decoding is cached per loaded
-// tokenizer; schemas and grammar state remain per request.
+// Production bridge from a normalized OpenAI request to native CBv2 token
+// constraints. Vocabulary decoding is cached per loaded tokenizer; schemas
+// and grammar state remain per request. Qwen4 uses its rendered native channel
+// boundary and opaque framed arguments; Gemma keeps its own schema automaton.
 
 import Foundation
 import MLXLMCommon
@@ -18,7 +19,8 @@ enum ToolConstraintFactory {
         tokenizer: TokenizerHandle,
         modelContext: ChatTemplateFixContext,
         defaultMaxTokens: Int,
-        stopTokenIDs: Set<Int>
+        stopTokenIDs: Set<Int>,
+        nativePromptTokens: [Int]? = nil
     ) throws -> (any CBv2TokenConstraint)? {
         guard prepared.mode.requiresInferenceConstraint else { return nil }
         // `.none` keeps Gemma's sampler guard when its prompt contract is
@@ -32,6 +34,20 @@ enum ToolConstraintFactory {
             let strategy = try ToolChoiceEnforcementPolicy.forcedStrategy(
                 mode: prepared.mode, modelContext: modelContext)
             if strategy == .structuredPostValidation {
+                if modelContext.modelId == ModelMediaPolicy.ownedQwen4ModelID,
+                   modelContext.modelType == "qwen4_exp" {
+                    guard let nativePromptTokens, !nativePromptTokens.isEmpty,
+                          let prefix = ReasoningPromptProbe.streamingPrefix(forPromptTail:
+                            tokenizer.inner.decode(tokenIds: Array(nativePromptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
+                                skipSpecialTokens: false)) else {
+                        throw ToolConstraintSchemaError.invalid("Native Qwen4 tool framing requires the rendered prompt boundary")
+                    }
+                    return try Qwen4NativeToolConstraint(mode: prepared.mode,
+                        maxTokens: request.maxTokens ?? defaultMaxTokens,
+                        vocabulary: tokenizer.qwen4FramingVocabulary(stopTokenIDs: stopTokenIDs),
+                        nativePrefix: prefix, allowsParallel: prepared.allowsParallelCalls,
+                        allowedToolNames: prepared.allowedToolNames)
+                }
                 // The structured parser withholds call bytes until finish; the
                 // shared validator below the stream rejects missing, wrong,
                 // undeclared, or schema-invalid calls before exposing them.

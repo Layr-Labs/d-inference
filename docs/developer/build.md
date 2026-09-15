@@ -499,19 +499,6 @@ ls console-ui/.next
 | `go build` picks a different Go | `mise` not activated in this shell | `eval "$(mise activate bash)"` (or zsh) then retry |
 | `docker build` fails at `file … statically linked` | sidecar not statically linked (musl target missing) | the Dockerfile adds the target itself; check Docker platform is `linux/amd64` |
 
-## Related
-
-- [test.md](test.md) — unit, e2e, CI.
-- [../operations/provider-release.md](../operations/provider-release.md) — provider release runbook.
-- [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md) — container build and deploy on GCP.
-- [`../architecture/components/mlx-swift.md`](../architecture/components/mlx-swift.md) — why the metallib must match the MLX source.
-
-Candidate native prefix-cache benchmarks must build ProviderCore and
-`scripts/benchmarks/radix-engine` from the same source revision: the benchmark
-prompt SPI carries production sampling parameters into each engine request.
-See [native benchmark validation](test.md#resident-prefix-benchmark-validation)
-for sampling scope, regression filters and diagnostic restrictions.
-
 ## App Attest release qualification
 
 Use the macOS 27 SDK for a candidate that needs Apple code-measurement extensions. The release workflow explicitly selects Command Line Tools 27.0 / Swift 6.4, then runs provider tests under that same SDK; ordinary development retains the Swift 6.3 minimum. Set `SDKROOT` to that SDK for both compilation and linking: a CLT 27 beta 6 Swift probe compiled with `--sdk` alone embedded the deployment target as its SDK; setting `SDKROOT` produced the correct linked SDK. Verify `LC_BUILD_VERSION` with `xcrun vtool -show-build` on the final executable. Confirm the final signed executable produces the current launch category and full CodeDirectory digest on physical macOS 27; SDK 26 builds can collect ordinary shadow proofs but cannot qualify replacement readiness. See the [observed SDK and measurement contract](../reference/app-attest-shadow.md#macos-sdk-and-signed-code-measurements).
@@ -532,3 +519,16 @@ a release-only allocator failure that debug tests missed. Run
 `bash scripts/test-install-atomic.sh` for installer acceptance and rollback cases.
 The [rollout runbook](../operations/app-attest-rollout.md) separates these checks
 from real Apple receipt renewal and final signed-artifact fleet qualification.
+
+## Related
+
+- [test.md](test.md) — unit, e2e, CI.
+- [../operations/provider-release.md](../operations/provider-release.md) — provider release runbook.
+- [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md) — container build and deploy on GCP.
+- [`../architecture/components/mlx-swift.md`](../architecture/components/mlx-swift.md) — why the metallib must match the MLX source.
+
+Candidate native prefix-cache benchmarks must build ProviderCore and
+`scripts/benchmarks/radix-engine` from the same source revision: the benchmark
+prompt SPI carries production sampling parameters into each engine request.
+See [native benchmark validation](test.md#resident-prefix-benchmark-validation)
+for sampling scope, regression filters and diagnostic restrictions.

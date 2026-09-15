@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-15 · commit `2a843bb2c`
+> Last updated: 2026-09-15 · commit `dfe556c13`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -13,6 +13,8 @@ freshness stamp carries its own date, not the current one.
 
 - [Qwen 3.8 Next native API and cache qualification](2026-09-15-qwen38-native-api-qualification.md) — synchronized native tool prompts, response/accounting fixes, final local API/cache regressions and preserved multirow/quality limits.
 - [Qwen 3.8 Next performance and stability update](2026-09-15-qwen38-performance-stability.md) — qualified opt-in speed/cache work and native tool framing, with distinct checkpoint results and open quality/release gates.
+- [App Attest 0.9.4 recovery qualification](2026-09-14-app-attest-recovery-validation.md) — recovery/identity tests, real Apple renewal format and current qualification limits.
+- [App Attest release-build disconnect investigation](2026-09-14-app-attest-release-disconnects.md) — reproduced 0.9.3 callback timer crash, retained evidence, containment and fixed-build validation.
 - [Physical macOS 27 App Attest validation](2026-09-14-app-attest-macos27-validation.md) — real Apple attestations/assertions, user-session launch behavior, full provider negotiation, and verifier/serializer corrections.
 - [App Attest specification and draft review](2026-09-14-app-attest-spec-review.md) — Apple example compatibility, parser correction, credential/receipt gaps, and the proposed path to APNs/MDM retirement.
 - [GPT-OSS 20B default SSD prefix-cache qualification](2026-09-11-gptoss-default-prefix-cache.md) — authenticated reconstruction, mixed suffixes and B1/B2/B4 task checks pass; 86–91% median warm-hit TTFT reductions, with standalone transport and ephemeral-key limits retained.

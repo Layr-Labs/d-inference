@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-15 · commit `2a843bb2c`
+> Last updated: 2026-09-15 · commit `dfe556c13`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -9,7 +9,7 @@ symbol; a production or dev host may pin a different value in its environment
 file. Secrets are named, never valued. Unless a row says *live*, the variable is
 read once at process start and a restart applies a change.
 
-[App Attest shadow configuration](app-attest-shadow.md#configuration) lists the observation-only coordinator knobs, including optional dedicated receipt-renewal credentials. Disabling shadow requests keeps the machine census running. APNs/MDM configuration remains authoritative.
+[App Attest shadow configuration](app-attest-shadow.md#configuration) lists the observation-only coordinator knobs, including optional dedicated receipt-renewal credentials. Shadow defaults off; rollout requires an explicit percentage and the safe provider version floor. Qualified build hashes are a separate prospective-policy input. Disabling shadow requests keeps the machine census and evidence maintenance running. APNs/MDM configuration remains authoritative.
 
 ## Where values are set
 

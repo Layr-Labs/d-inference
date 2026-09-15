@@ -10,6 +10,9 @@ private final class AssistantHFProtocol: URLProtocol, @unchecked Sendable {
         var status = 200
         var failure: URLError.Code?
     }
+    private let stateLock = NSLock()
+    private var stopped = false
+    private var isStopped: Bool { stateLock.withLock { stopped } }
     private static let lock = NSLock()
     nonisolated(unsafe) private static var replies: [String: Reply] = [:]
     nonisolated(unsafe) private static var requests: [URLRequest] = []
@@ -26,6 +29,12 @@ private final class AssistantHFProtocol: URLProtocol, @unchecked Sendable {
             return Self.replies[request.url!.absoluteString]
                 ?? Reply(data: Data(), status: 404)
         }
+        // Match network delivery: never reenter URLSession's byte-stream
+        // setup synchronously from startLoading on the protocol queue.
+        DispatchQueue.global().async { [weak self] in self?.deliver(reply) }
+    }
+    private func deliver(_ reply: Reply) {
+        guard !isStopped else { return }
         if let failure = reply.failure {
             client?.urlProtocol(self, didFailWithError: URLError(failure))
             return
@@ -33,13 +42,15 @@ private final class AssistantHFProtocol: URLProtocol, @unchecked Sendable {
         let response = HTTPURLResponse(url: request.url!, statusCode: reply.status,
             httpVersion: "HTTP/1.1", headerFields: ["Content-Length": "\(reply.data.count)"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        guard !isStopped else { return }
         client?.urlProtocol(self, didLoad: reply.data)
+        guard !isStopped else { return }
         client?.urlProtocolDidFinishLoading(self)
     }
-    override func stopLoading() {}
+    override func stopLoading() { stateLock.withLock { stopped = true } }
 }
 
-@Suite("Pinned assistant Hugging Face downloads", .serialized)
+@Suite("Pinned assistant Hugging Face downloads", .serialized, .timeLimit(.minutes(1)))
 struct SpecDecHuggingFaceTests {
     private struct Fixture {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -48,6 +59,13 @@ struct SpecDecHuggingFaceTests {
         let config = Data(#"{"model_type":"gemma4_assistant"}"#.utf8)
         let weight = Data("verified assistant weight".utf8)
         let manifestData: Data
+        private let session: URLSession = {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [AssistantHFProtocol.self]
+            configuration.timeoutIntervalForRequest = 5
+            configuration.timeoutIntervalForResource = 10
+            return URLSession(configuration: configuration)
+        }()
 
         init() throws {
             let files = [("config.json", config, "config"), ("model.safetensors", weight, "weight")]
@@ -95,12 +113,13 @@ struct SpecDecHuggingFaceTests {
              hf("config.json"): .init(data: config), hf("model.safetensors"): .init(data: weight)]
         }
         func resolver() -> SpecDecResolver {
-            let configuration = URLSessionConfiguration.ephemeral
-            configuration.protocolClasses = [AssistantHFProtocol.self]
-            return SpecDecResolver(storeRoot: root, cdnBaseURL: "https://assistant-r2.test",
-                urlSession: URLSession(configuration: configuration))
+            SpecDecResolver(storeRoot: root, cdnBaseURL: "https://assistant-r2.test",
+                urlSession: session, prefetchTimeout: .seconds(30))
         }
-        func clean() { try? FileManager.default.removeItem(at: root) }
+        func clean() {
+            session.invalidateAndCancel()
+            try? FileManager.default.removeItem(at: root)
+        }
     }
 
     @Test("assistant files prefer HF and verified local reuse is offline")

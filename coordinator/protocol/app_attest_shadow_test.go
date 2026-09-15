@@ -65,3 +65,26 @@ func TestAppAttestV2TranscriptBindsAccountAndStatus(t *testing.T) {
 		t.Fatal("status not bound")
 	}
 }
+
+func TestAppAttestV3TranscriptBindsHardwareAndPreservesV2(t *testing.T) {
+	b64 := func(b byte) string { return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{b}, 32)) }
+	scope := string(bytes.Repeat([]byte("a"), 64))
+	status := &AppAttestStatus{OSVersion: "27.0.0", OSBuild: "26A428", AppVersion: "0.9.2", Chip: "Apple M5 Max", BinaryHash: string(bytes.Repeat([]byte("b"), 64)), MachineModel: "Mac17,6", MemoryGB: "128", CPUTotal: "18", CPUPerformance: "12", CPUEfficiency: "6", GPUCores: "40", AttestationPublicKey: "verification-key"}
+	hash := AppAttestShadowHashV3("assert", b64(0), "production", b64(1), b64(2), b64(3), scope, status)
+	if hex.EncodeToString(hash[:]) != "e654e820b8dcd646201bb43de1cba0e0e56dff697f2ee62534bf28fe143bbf17" {
+		t.Fatal("Swift v3 drift")
+	}
+	old := AppAttestShadowHashV2("assert", b64(0), "production", b64(1), b64(2), b64(3), scope, status)
+	status.MemoryGB = "1024"
+	if hash == AppAttestShadowHashV3("assert", b64(0), "production", b64(1), b64(2), b64(3), scope, status) {
+		t.Fatal("memory not bound")
+	}
+	status.MemoryGB = "128"
+	status.AttestationPublicKey = "substituted-key"
+	if hash == AppAttestShadowHashV3("assert", b64(0), "production", b64(1), b64(2), b64(3), scope, status) {
+		t.Fatal("verification key not bound")
+	}
+	if old != AppAttestShadowHashV2("assert", b64(0), "production", b64(1), b64(2), b64(3), scope, status) {
+		t.Fatal("legacy transcript changed")
+	}
+}

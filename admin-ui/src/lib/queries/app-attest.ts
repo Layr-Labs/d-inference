@@ -25,7 +25,7 @@ export async function appAttestCensus(days: number) {
     COUNT(*) FILTER(WHERE assurance='key_bound') AS key_bound,
     COUNT(*) FILTER(WHERE (observation->>'os_major')::int>=27) AS macos27,
     COUNT(*) FILTER(WHERE COALESCE((observation->>'os_major')::int,0)=0) AS os_unknown,
-    COUNT(*) FILTER(WHERE (observation->>'protocol')::int IN (1,2)) AS protocol_capable,
+    COUNT(*) FILTER(WHERE (observation->>'protocol')::int IN (1,2,3)) AS protocol_capable,
     COUNT(*) FILTER(WHERE observation->>'source'='live_registration' AND NOT (observation->>'shadow_enabled')::boolean) AS shadow_off,
     COUNT(*) FILTER(WHERE disconnected_at IS NULL AND last_seen>NOW()-INTERVAL '90 seconds') AS online
     ,COUNT(*) FILTER(WHERE EXISTS(SELECT 1 FROM darkbloom_machine_observations o JOIN darkbloom_machine_sessions s ON s.session_id=o.session_id WHERE s.machine_id=latest.machine_id AND (o.observation->>'os_major')::int>=27)) AS ever_macos27

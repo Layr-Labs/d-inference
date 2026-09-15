@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -23,13 +24,13 @@ func (x *appAttestShadowSession) send(ctx context.Context, action string) bool {
 	if x.key != nil {
 		p.KeyID = x.key.KeyID
 	}
-	if x.protocolVersion == 2 {
-		p.ProtocolVersion = 2
+	if x.protocolVersion >= 2 {
+		p.ProtocolVersion = x.protocolVersion
 		p.AccountScope = x.accountScope()
 	}
 	if action == "attest" {
 		p.Challenge = x.challenge
-		if x.protocolVersion == 2 {
+		if x.protocolVersion >= 2 {
 			enrollments, ok := store.As[store.AppAttestEnrollmentStore](x.s.store)
 			if !ok {
 				x.observe(action, "storage_unavailable", nil)
@@ -41,7 +42,7 @@ func (x *appAttestShadowSession) send(ctx context.Context, action string) bool {
 				return false
 			}
 			operation, cancel := context.WithTimeout(ctx, 2*time.Second)
-			err := enrollments.SaveAppAttestEnrollment(operation, store.AppAttestEnrollment{ID: x.id, Owner: x.owner, KeyID: x.key.KeyID, CreatedAt: time.Now().UTC(), Environment: x.s.appAttestShadow.Environment, AppID: x.s.appAttestShadow.AppID, Challenge: x.challenge, PublicKey: x.publicKey, AccountScope: x.accountScope()})
+			err := enrollments.SaveAppAttestEnrollment(operation, store.AppAttestEnrollment{ProtocolVersion: x.protocolVersion, ID: x.id, Owner: x.owner, KeyID: x.key.KeyID, CreatedAt: time.Now().UTC(), Environment: x.s.appAttestShadow.Environment, AppID: x.s.appAttestShadow.AppID, Challenge: x.challenge, PublicKey: x.publicKey, AccountScope: x.accountScope()})
 			cancel()
 			release()
 			if err != nil {
@@ -80,7 +81,7 @@ func (x *appAttestShadowSession) send(ctx context.Context, action string) bool {
 	return true
 }
 
-func (x *appAttestShadowSession) handleExchange(ctx context.Context, reply protocol.AppAttestShadowPayload) string {
+func (x *appAttestShadowSession) handleExchange(ctx context.Context, reply protocol.AppAttestShadowPayload, prepared *shadowProofContext) string {
 	// Timer and inbox can become ready together; never let select ordering
 	// count a late proof as a timely success.
 	if !x.started.IsZero() && time.Since(x.started) > shadowResponseTimeout {
@@ -128,9 +129,17 @@ func (x *appAttestShadowSession) handleExchange(ctx context.Context, reply proto
 	if x.expected == "attestation" {
 		action = "attest"
 	}
-	hash, err := x.clientHash(ctx, action, reply)
-	if err != nil {
+	if prepared == nil {
 		x.observe(x.expected, "enrollment_context", nil)
+		return "stop"
+	}
+	hash, err := prepared.Hash, prepared.Err
+	if err != nil {
+		reason := "enrollment_context"
+		if err.Error() == "enrollment_storage_error" {
+			reason = "enrollment_storage_error"
+		}
+		x.observe(x.expected, reason, nil)
 		return "stop"
 	}
 	if action == "attest" {
@@ -141,7 +150,9 @@ func (x *appAttestShadowSession) handleExchange(ctx context.Context, reply proto
 		}
 		x.key = &store.AppAttestShadowKey{KeyID: x.key.KeyID, Owner: x.owner, AccountID: x.account, MachineID: x.machineID(), PublicKey: verified.PublicKey, AppID: x.s.appAttestShadow.AppID,
 			Environment: x.s.appAttestShadow.Environment, BundleVersion: verified.BundleVersion, ValidationCategory: verified.ValidationCategory}
-		if !x.commitEvidence(ctx, store.AppAttestDecision{Outcome: "verified", Key: x.key, Receipt: x.initialReceipt(proof, hash)}) {
+		details, _ := json.Marshal(map[string]any{"bundle_version": verified.BundleVersion, "validation_category": verified.ValidationCategory,
+			"code_directory_hash": hex.EncodeToString(verified.CodeDirectoryHash), "code_directory_type": verified.CodeDirectoryType})
+		if !x.commitEvidence(ctx, store.AppAttestDecision{Outcome: "verified", Key: x.key, Receipt: x.initialReceipt(proof, hash), Details: details}) {
 			return "stop"
 		}
 		x.observe("attestation", "verified", verified)
@@ -152,16 +163,15 @@ func (x *appAttestShadowSession) handleExchange(ctx context.Context, reply proto
 		x.observe("assertion", err.Error(), nil)
 		return "stop"
 	}
-	details, _ := json.Marshal(map[string]any{"received_counter": counter, "bundle_version": metadata.BundleVersion, "validation_category": metadata.ValidationCategory})
+	details, _ := json.Marshal(map[string]any{"received_counter": counter, "bundle_version": metadata.BundleVersion, "validation_category": metadata.ValidationCategory,
+		"code_directory_hash": hex.EncodeToString(metadata.CodeDirectoryHash), "code_directory_type": metadata.CodeDirectoryType})
 	if !x.commitEvidence(ctx, store.AppAttestDecision{Outcome: "verified", Counter: &counter, KeyID: x.key.KeyID, Owner: x.owner, Details: details}) {
 		return "stop"
 	}
 	x.key.Counter = counter
+	x.assertionAt = time.Now().UTC()
 	x.observe("assertion", "verified", metadata)
-	x.observeBuildPolicy(reply.Status)
-	if x.inventory != nil && reply.Status != nil {
-		x.inventory.recordStatus(reply.Status)
-	}
+	x.observeBuildPolicy(reply.Status, metadata)
 	return "wait"
 }
 

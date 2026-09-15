@@ -165,3 +165,35 @@ extension AppAttestShadowTests {
         try await Task.sleep(for:.milliseconds(20))
     }
 }
+
+extension AppAttestShadowTests {
+    func testV3TranscriptBindsHardwareWithoutChangingV2() {
+        var p=requestV2("assert",key:Data(repeating:1,count:32).base64EncodedString())
+        p.protocolVersion=3
+        p.status=AppAttestStatus(osVersion:"27.0.0",osBuild:"26A428",appVersion:"0.9.2",chip:"Apple M5 Max",binaryHash:String(repeating:"b",count:64),machineModel:"Mac17,6",memoryGB:"128",cpuTotal:"18",cpuPerformance:"12",cpuEfficiency:"6",gpuCores:"40",attestationPublicKey:"verification-key")
+        let hash=p.clientHash(publicKey:publicKey)
+        XCTAssertEqual(hash.map { String(format:"%02x",$0) }.joined(),"e654e820b8dcd646201bb43de1cba0e0e56dff697f2ee62534bf28fe143bbf17")
+        p.status?.memoryGB="1024"
+        XCTAssertNotEqual(hash,p.clientHash(publicKey:publicKey))
+        p.status?.memoryGB="128"; p.status?.attestationPublicKey="substituted-key"
+        XCTAssertNotEqual(hash,p.clientHash(publicKey:publicKey))
+    }
+
+    func testV3UpgradeKeepsPendingV2ProofAndUsesFreshV3Assertion() async {
+        let service=FakeService(); let storage=MemoryKeys()
+        let original=AppAttestShadowClient(scope:"upgrade",service:service,storage:storage)
+        let ready=await original.respond(to:requestV2("prepare"),publicKey:publicKey)
+        let proof=await original.respond(to:requestV2("attest",key:ready.keyID),publicKey:publicKey,status:statusV2)
+        let upgraded=AppAttestShadowClient(scope:"upgrade",service:service,storage:storage)
+        var prepare=requestV2("prepare"); prepare.protocolVersion=3; prepare.session=Data(repeating:8,count:32).base64EncodedString()
+        let next=await upgraded.respond(to:prepare,publicKey:publicKey)
+        var attest=requestV2("attest",key:next.keyID);attest.protocolVersion=3;attest.session=prepare.session
+        let recovered=await upgraded.respond(to:attest,publicKey:publicKey,status:statusV2)
+        XCTAssertEqual(recovered.proof,proof.proof)
+        XCTAssertEqual(recovered.enrollmentSession,session)
+        attest.action="assert"
+        let fresh=await upgraded.respond(to:attest,publicKey:publicKey,status:statusV2)
+        XCTAssertEqual(fresh.result,"ok")
+        let counts=await service.counts();XCTAssertEqual(counts,[1,1,1])
+    }
+}

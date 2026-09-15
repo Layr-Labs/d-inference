@@ -27,16 +27,17 @@ public actor AppAttestShadowClient {
         busy = true
         defer { busy = false }
         do {
-            guard request.session.utf8.count == 44, Data(base64Encoded: request.session)?.count == 32,
+            guard request.protocolVersion == nil || [1,2,3].contains(request.protocolVersion ?? 0),
+                  request.session.utf8.count == 44, Data(base64Encoded: request.session)?.count == 32,
                   let environment = request.environment, ["production", "development"].contains(environment),
                   Data(base64Encoded: publicKey)?.count == 32 else { throw ShadowFailure.invalidRequest }
             try Task.checkCancellation()
             if request.action == "prepare" {
                 try await service.checkAvailability(environment: environment)
-                if request.protocolVersion == 2 {
+                if [2,3].contains(request.protocolVersion ?? 0) {
                     guard let accountScope=request.accountScope, accountScope.utf8.count == 64 else { throw ShadowFailure.invalidRequest }
                 }
-                let keyScope = scope + ":" + environment + (request.protocolVersion == 2 ? ":account:" + (request.accountScope ?? "") : "")
+                let keyScope = scope + ":" + environment + ([2,3].contains(request.protocolVersion ?? 0) ? ":account:" + (request.accountScope ?? "") : "")
                 var key = try storage.load(scope: keyScope)
                 if var expired=key, expired.pendingProof != nil, Date().timeIntervalSince(expired.pendingCreatedAt ?? expired.createdAt)>86400 {
                     expired.keyID=""; expired.pendingProof=nil; expired.pendingEnrollment=nil; expired.pendingStatus=nil; expired.pendingCreatedAt=nil
@@ -73,13 +74,13 @@ public actor AppAttestShadowClient {
                 else { throw ShadowFailure.invalidRequest }
                 guard let keyScope=preparedScope else { throw ShadowFailure.invalidRequest }
                 var signedRequest=request
-                if request.protocolVersion == 2 {
+                if [2,3].contains(request.protocolVersion ?? 0) {
                     guard let status else { throw ShadowFailure.invalidRequest }
                     signedRequest.status=status; response.status=status
                 }
                 let hash = signedRequest.clientHash(publicKey: publicKey)
                 if request.action == "attest" {
-                    if request.protocolVersion == 2, let proof=key.pendingProof, let enrollment=key.pendingEnrollment {
+                    if [2,3].contains(request.protocolVersion ?? 0), let proof=key.pendingProof, let enrollment=key.pendingEnrollment {
                         response.proof=proof; response.enrollmentSession=enrollment; response.status=key.pendingStatus
                         response.result="ok"; return response
                     }
@@ -93,12 +94,12 @@ public actor AppAttestShadowClient {
                     for attempt in 0..<3 {
                         do { proof = try await service.attestKey(key.keyID, hash: hash); break }
                         catch ShadowFailure.appleUnavailable where attempt < 2 {
-                            try await Task.sleep(for: .seconds(attempt == 0 ? 2 : 8))
+                            try await appAttestSleep(seconds: attempt == 0 ? 2 : 8)
                         }
                     }
                     guard let proof, proof.count <= 32*1024 else { throw ShadowFailure.appleError }
                     key.attested = true
-                    if request.protocolVersion == 2 { key.pendingProof=proof.base64EncodedString(); key.pendingEnrollment=request.session; key.pendingStatus=status; key.pendingCreatedAt=Date() }
+                    if [2,3].contains(request.protocolVersion ?? 0) { key.pendingProof=proof.base64EncodedString(); key.pendingEnrollment=request.session; key.pendingStatus=status; key.pendingCreatedAt=Date() }
                     record = key
                     try storage.save(key, scope: keyScope)
                     response.proof = proof.base64EncodedString()

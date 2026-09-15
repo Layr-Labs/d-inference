@@ -56,7 +56,7 @@ final class AppleAppAttestServiceTests: XCTestCase {
         }
     }
 
-    func testEveryOperationRecoversAfterMissingCallback() async throws {
+    func testEveryOperationBoundsMissingCallbackAndRecoversWhenAppleCompletes() async throws {
         for operation in Operation.allCases {
             let callbacks = CapturedAppAttestCallbacks()
             let service = AppleAppAttestService(callbacks: callbacks, operationTimeout: 0.01)
@@ -64,6 +64,14 @@ final class AppleAppAttestServiceTests: XCTestCase {
                 _ = try await operation.run(service)
                 XCTFail("missing callback must time out: \(operation)")
             } catch { XCTAssertEqual(error as? ShadowFailure, .operationTimeout) }
+
+            do { _ = try await operation.run(service); XCTFail("timed-out Apple operation overlapped") }
+            catch { XCTAssertEqual(error as? ShadowFailure, .busy) }
+            switch operation {
+            case .key: callbacks.key.finish(0, .success("late"))
+            case .attestation: callbacks.attestation.finish(0, .success(Data()))
+            case .assertion: callbacks.assertion.finish(0, .success(Data()))
+            }
 
             callbacks.key.configure(immediate: .success("recovered"))
             callbacks.attestation.configure(immediate: .success(Data("recovered".utf8)))
@@ -84,11 +92,15 @@ final class AppleAppAttestServiceTests: XCTestCase {
         do { _ = try await first.value; XCTFail("cancelled call succeeded") }
         catch { XCTAssertTrue(error is CancellationError) }
 
+        do { _ = try await service.generateKey(); XCTFail("cancellation released an uncancellable Apple operation") }
+        catch { XCTAssertEqual(error as? ShadowFailure, .busy) }
+        callbacks.key.finish(0, .success("late"))
+
         let secondStarted = expectation(description: "next Apple call admitted")
         callbacks.key.configure(started: { secondStarted.fulfill() })
         let second = Task { try await service.generateKey() }
         await fulfillment(of: [secondStarted], timeout: 2)
-        // A callback from the cancelled operation must not reset admission or
+        // A duplicate callback from the cancelled operation must not reset admission or
         // complete the second call. Both API families share the same admission.
         callbacks.key.finish(0, .success("late"))
         do { _ = try await service.attestKey("key", hash: Data()); XCTFail("overlapping Apple call admitted") }

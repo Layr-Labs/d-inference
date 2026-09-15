@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run from provider-swift after building tests and staging the matched metallib.
-# Allocator, interleaving, environment and stage-deadline cases need isolation.
+# Allocator, interleaving, environment, stage-deadline and URLSession mock
+# cases need fresh processes. Every isolated suite still has a non-zero/no-skip gate.
 # Keep both outcomes: a failure in the general suite must not silence this gate.
 set -uo pipefail
 script_directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -10,6 +11,7 @@ isolated_filters=(
   processLedgerCannotCombineOldUsageWithNewMaterializationCredit
   defaultApplyProjectsSettings
   stageDelta
+  SpecDecHuggingFaceTests
 )
 isolated_pattern=$(IFS='|'; printf '%s' "${isolated_filters[*]}")
 isolated_pattern="ProcessMemoryNativeIntegrationTests|${isolated_pattern}"

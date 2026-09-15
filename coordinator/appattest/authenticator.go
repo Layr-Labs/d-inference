@@ -12,6 +12,8 @@ type authenticator struct {
 	aaguid, credentialID, publicKey []byte
 	version                         string
 	category                        *uint32
+	codeHash                        []byte
+	codeType                        *uint8
 }
 
 func (v *Verifier) authData(data []byte, attest bool) (*authenticator, error) {
@@ -69,6 +71,11 @@ func (v *Verifier) authData(data []byte, attest bool) (*authenticator, error) {
 			return nil, err
 		}
 		a.category = &category
+	}
+	var err error
+	a.codeHash, a.codeType, err = codeDirectoryMeasurement(extensions)
+	if err != nil {
+		return nil, err
 	}
 	return a, nil
 }

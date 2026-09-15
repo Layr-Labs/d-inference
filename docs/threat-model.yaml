@@ -17,7 +17,18 @@ created: "2026-05-14"
 # App Attest coexistence added 2026-09-12: observation only; no trust/routing
 # mutation. The app-owned X25519 endpoint is bound into a fresh shadow transcript;
 # Apple API failures and malformed proofs are bounded and do not replace APNs/MDM.
-# Physical macOS 27 acceptance and downgrade resistance remain unverified.
+# Physical macOS 27 enrollment/assertions were observed; security-transition
+# qualification remains outstanding. The 0.9.3 in-process callback timer crash
+# showed that shadow policy alone does not isolate runtime failures. The 0.9.4
+# candidate adds a fixed-version/cohort gate, bounded uncancellable operations,
+# release callback smoke, historical-receipt renewal recovery, credential
+# revocation, and a non-enforcing prospective connection policy. Unknown build
+# metadata/qualification never becomes eligibility. App Attest aliases prove
+# credential continuity, not one physical Mac or certified RAM. Protocol 3
+# binds model/RAM/CPU/GPU app measurements to the current assertion and rejects
+# prospective mismatches against registration. The app also binds its existing
+# verification public key, preventing substitution of model/runtime signature
+# credentials during the later trust transition. Reward rules are unchanged.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference

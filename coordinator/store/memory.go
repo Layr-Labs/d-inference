@@ -52,6 +52,7 @@ type MemoryStore struct {
 
 	// Observation-only keys; independent from provider/rewards identity.
 	appAttestShadowKeys  map[string]AppAttestShadowKey
+	appAttestRevocations map[string]bool
 	machineInventory     *memoryMachineInventory
 	appAttestEvidence    map[string]memoryAppAttestEvidence
 	appAttestEnrollments map[string]AppAttestEnrollment

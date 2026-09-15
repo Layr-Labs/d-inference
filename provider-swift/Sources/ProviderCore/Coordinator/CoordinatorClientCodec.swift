@@ -67,7 +67,7 @@ public enum CoordinatorClientCodec {
             prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
             toolConstraintProtocol: constrainedModels.isEmpty ? nil : 1,
             toolConstraintModels: constrainedModels.isEmpty ? nil : constrainedModels,
-            appAttestProtocol: 2
+            appAttestProtocol: 3
         ))
     }
 

@@ -158,7 +158,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // assistant support; model-aware MTP defaults remain provider-side policy.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.9.3"
+var LatestProviderVersion = "0.9.4"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -860,6 +860,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	s.trustCoverageCtx, s.trustCoverageCancel = context.WithCancel(context.Background())
 	saferun.Go(logger, "trustCoverageLoop", s.trustCoverageLoop)
 	s.startAppAttestReceiptWorker(s.trustCoverageCtx)
+	s.startAppAttestMaintenance(s.trustCoverageCtx)
 	s.startMachineInventoryBackfill(s.trustCoverageCtx)
 	s.startMachineInventoryReconciler(s.trustCoverageCtx)
 	if cfg.DurableTrustReuse {

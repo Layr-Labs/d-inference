@@ -257,13 +257,7 @@ func mtpFloorLoop(
     mtpDrafterPath: String? = nil,
     mtpMode: MTPMode? = nil
 ) throws -> ProviderLoop {
-    let budget = GlobalKVCacheBudget(
-        activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
-            modelIDs: models.map(\.id)),
-        memorySnapshot: {
-            .init(total: mtpFloorPhysical, active: 0, cache: 0,
-                systemAvailable: mtpFloorPhysical)
-        })
+    let budget = ScriptedProviderMemory.budget(physicalBytes: mtpFloorPhysical, modelIDs: models.map(\.id))
     return try ProviderLoop(
         config: ProviderLoopConfig(
             coordinatorURL: "ws://127.0.0.1:0/ignored",
@@ -388,7 +382,8 @@ struct MTPResliceFallbackTests {
     func standaloneTargetSurvivesAssistantFloor() async throws {
         let artifact = try mtpFloorArtifact()
         defer { try? FileManager.default.removeItem(at: artifact.directory) }
-        let server = StandaloneServer(config: .init(maxCachedModels: 3))
+        let server = StandaloneServer(config: .init(maxCachedModels: 3),
+            kvBudgetForTesting: ScriptedProviderMemory.budget())
         await server.setV2TestHooksForTesting(.init(
             physicalMemoryBytes: mtpFloorPhysical,
             assistantLoader: MTPFloorAssistantLoader(),
@@ -487,7 +482,8 @@ struct MTPResliceFallbackTests {
     func standalonePrepareFailOpenReleasesPhantomReservation() async throws {
         let artifact = try mtpFloorArtifact()
         defer { try? FileManager.default.removeItem(at: artifact.directory) }
-        let server = StandaloneServer(config: .init(maxCachedModels: 3))
+        let server = StandaloneServer(config: .init(maxCachedModels: 3),
+            kvBudgetForTesting: ScriptedProviderMemory.budget())
         await server.setV2TestHooksForTesting(.init(
             physicalMemoryBytes: mtpFloorPhysical,
             assistantLoader: MTPFloorFailingAssistantLoader(),
@@ -525,7 +521,8 @@ struct MTPResliceFallbackTests {
             config: .init(maxCachedModels: 3, mtp: true),
             models: [ModelInfo(
                 id: fakeId, modelType: "gemma4", parameters: nil,
-                quantization: nil, sizeBytes: 1, estimatedMemoryGb: 0.01)])
+                quantization: nil, sizeBytes: 1, estimatedMemoryGb: 0.01)],
+            kvBudgetForTesting: ScriptedProviderMemory.budget(modelIDs: [fakeId]))
         let gate = RaceGateCatalog()
         await server.setSpecDecFunnelForTesting(SpecDecArtifactFunnel(
             resolver: SpecDecResolver(), catalog: gate))

@@ -337,21 +337,26 @@ struct QwenVLMTargetExtractionTests {
         let container = ModelContainer(context: ModelContext(
             configuration: ModelConfiguration(id: "tiny/qwen-benchmark-budget"),
             model: Qwen35Model(config), processor: QwenExtractionProcessor(), tokenizer: tokenizer))
-        let requested = oversized ? Int(ProcessInfo.processInfo.physicalMemory) : 64 << 20
+        let physical = ScriptedProviderMemory.physicalBytes
+        let requested = oversized ? Int(physical) : 64 << 20
         do {
             let session = try await EngineV2Factory.makeBenchmarkSession(
                 modelId: "tiny/qwen-benchmark-budget", modelDirectory: directory,
                 isVLM: false, container: container, tokenizer: TokenizerHandle(tokenizer),
                 verifiedWeightHash: String(repeating: "a", count: 64),
                 kvBytesCapacity: requested, maxConcurrentRequests: 2,
-                mtpEnabled: false, kvBackendConfig: "contiguous",
-                environment: ["DARKBLOOM_PREFIX_CACHE": "0", "DARKBLOOM_PREFIX_CACHE_MEMORY": "0"])
+                mtpEnabled: false,
+                kvBudget: ScriptedProviderMemory.budget(modelIDs: ["tiny/qwen-benchmark-budget"]),
+                kvBackendConfig: "contiguous",
+                environment: ["DARKBLOOM_PREFIX_CACHE": "0", "DARKBLOOM_PREFIX_CACHE_MEMORY": "0"],
+                memorySnapshotForTesting: { (physical, 0) })
             let snapshot = await session.cacheSnapshot()
             #expect(oversized == false)
             #expect(snapshot.engineKVCapacityBytes == requested)
+            // The guard uses the injected sample; hardware telemetry stays real.
             #expect(snapshot.physicalMemoryBytes == ProcessInfo.processInfo.physicalMemory)
             #expect(snapshot.activationReserveBytes > 0)
-            #expect(snapshot.postLoadMaximumKVBytes < snapshot.physicalMemoryBytes)
+            #expect(snapshot.postLoadMaximumKVBytes < physical)
             #expect(UInt64(requested) <= snapshot.postLoadMaximumKVBytes)
             await session.shutdown()
         } catch EngineV2BenchmarkSession.Failure.invalidCapacity {

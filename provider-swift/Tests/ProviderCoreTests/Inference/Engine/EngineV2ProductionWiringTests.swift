@@ -244,12 +244,8 @@ private func makeWiringLoop(
     )
     // Scripted engines allocate no weights. Keep admission on the same
     // simulated machine as re-slicing, independent of the CI host's RAM.
-    let budget = GlobalKVCacheBudget(
-        configReserveBytes: wiringReserveBytes,
-        memorySnapshot: {
-            .init(total: wiringPhysicalBytes, active: 0, cache: 0,
-                systemAvailable: wiringPhysicalBytes)
-        })
+    let budget = ScriptedProviderMemory.budget(
+        physicalBytes: wiringPhysicalBytes, configReserveBytes: wiringReserveBytes)
     return try ProviderLoop(
         config: config, purgeLegacyFiles: false, attestationSigner: nil,
         kvBudgetForTesting: budget)

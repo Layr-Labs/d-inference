@@ -281,6 +281,13 @@ public actor StandaloneServer {
         config: StandaloneServerConfig = StandaloneServerConfig(),
         models: [ModelInfo] = []
     ) {
+        self.init(config: config, models: models, kvBudgetForTesting: nil)
+    }
+
+    init(
+        config: StandaloneServerConfig = StandaloneServerConfig(),
+        models: [ModelInfo] = [], kvBudgetForTesting: GlobalKVCacheBudget?
+    ) {
         self.config = config
         // Architecture-derived supported set (v0.7.5 fail-loud): the v2
         // engine is the ONLY engine, so a model whose family has no CBv2
@@ -295,7 +302,7 @@ public actor StandaloneServer {
         // load), so the per-model activation reserve resolves once here —
         // the same measured floors the network provider carves, so a tight
         // box the coordinator path admits is admitted locally too.
-        self.kvBudget = GlobalKVCacheBudget(
+        self.kvBudget = kvBudgetForTesting ?? GlobalKVCacheBudget(
             activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
                 modelIDs: served.map(\.id)))
         self.specDecFunnel = SpecDecArtifactFunnel(

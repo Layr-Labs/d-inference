@@ -33,7 +33,8 @@ struct NemotronStandaloneAdmissionTests {
 
         let server = StandaloneServer(
             config: .init(mtpMode: .off),
-            models: [.init(id: modelID, modelType: "nemotron_h", sizeBytes: 1, estimatedMemoryGb: 0.25)])
+            models: [.init(id: modelID, modelType: "nemotron_h", sizeBytes: 1, estimatedMemoryGb: 0.25)],
+            kvBudgetForTesting: ScriptedProviderMemory.budget(modelIDs: [modelID]))
         await server.setV2TestHooksForTesting(.init(
             beforeWeightLoad: { _ in throw ReachedWeightLoad() },
             makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))

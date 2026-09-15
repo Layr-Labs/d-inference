@@ -212,12 +212,8 @@ private func makeLivenessLoop() throws -> ProviderLoop {
     )
     // Scripted engines allocate no weights. Keep admission on the same
     // simulated machine as re-slicing, independent of the CI host's RAM.
-    let budget = GlobalKVCacheBudget(
-        configReserveBytes: livenessReserveBytes,
-        memorySnapshot: {
-            .init(total: livenessPhysicalBytes, active: 0, cache: 0,
-                systemAvailable: livenessPhysicalBytes)
-        })
+    let budget = ScriptedProviderMemory.budget(
+        physicalBytes: livenessPhysicalBytes, configReserveBytes: livenessReserveBytes)
     return try ProviderLoop(
         config: config, purgeLegacyFiles: false, attestationSigner: nil,
         kvBudgetForTesting: budget)

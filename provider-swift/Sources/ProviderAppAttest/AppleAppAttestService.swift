@@ -4,9 +4,19 @@ import Security
 
 /// Uses public DeviceCheck APIs. No private entitlements or OS bypasses.
 public actor AppleAppAttestService: AppAttestService {
-    public init() {}
+    private let callbacks: any AppAttestCallbacks
+    private let operationTimeout: Double
     private var operationPending = false
-    private func finishOperation() { operationPending = false }
+
+    public init() {
+        callbacks = SystemAppAttestCallbacks()
+        operationTimeout = 25
+    }
+
+    init(callbacks: any AppAttestCallbacks, operationTimeout: Double) {
+        self.callbacks = callbacks
+        self.operationTimeout = operationTimeout
+    }
 
     public func checkAvailability(environment: String) throws {
         guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 else { throw ShadowFailure.unsupported }
@@ -25,48 +35,33 @@ public actor AppleAppAttestService: AppAttestService {
     }
 
     public func generateKey() async throws -> String {
-        guard !operationPending else { throw ShadowFailure.busy }
-        operationPending = true
-        return try await CallbackDeadline<String>.call { complete in
-            DCAppAttestService.shared.generateKey { value, error in
-                Task { await self.finishOperation() }
-                if let value { complete(.success(value)) }
-                else { complete(.failure(Self.failure(error))) }
-            }
+        try await perform { [callbacks] complete in
+            callbacks.generateKey(complete)
         }
     }
 
     public func attestKey(_ id: String, hash: Data) async throws -> Data {
-        guard !operationPending else { throw ShadowFailure.busy }
-        operationPending = true
-        return try await CallbackDeadline<Data>.call { complete in
-            DCAppAttestService.shared.attestKey(id, clientDataHash: hash) { value, error in
-                Task { await self.finishOperation() }
-                if let value { complete(.success(value)) }
-                else { complete(.failure(Self.failure(error))) }
-            }
+        try await perform { [callbacks] complete in
+            callbacks.attestKey(id, hash: hash, complete: complete)
         }
     }
 
     public func generateAssertion(_ id: String, hash: Data) async throws -> Data {
-        guard !operationPending else { throw ShadowFailure.busy }
-        operationPending = true
-        return try await CallbackDeadline<Data>.call { complete in
-            DCAppAttestService.shared.generateAssertion(id, clientDataHash: hash) { value, error in
-                Task { await self.finishOperation() }
-                if let value { complete(.success(value)) }
-                else { complete(.failure(Self.failure(error))) }
-            }
+        try await perform { [callbacks] complete in
+            callbacks.generateAssertion(id, hash: hash, complete: complete)
         }
     }
 
-    private static func failure(_ error: Error?) -> ShadowFailure {
-        guard let error = error as NSError?, error.domain == DCErrorDomain else { return .appleError }
-        switch error.code {
-        case DCError.Code.featureUnsupported.rawValue: return .unsupported
-        case DCError.Code.serverUnavailable.rawValue: return .appleUnavailable
-        case DCError.Code.invalidKey.rawValue: return .appleInvalidKey
-        default: return .appleError
-        }
+    private func perform<Value: Sendable>(
+        start: @Sendable (@escaping @Sendable (Result<Value, Error>) -> Void) -> Void
+    ) async throws -> Value {
+        try Task.checkCancellation()
+        guard !operationPending else { throw ShadowFailure.busy }
+        operationPending = true
+        // Completion, timeout, and cancellation all release admission. Apple
+        // callbacks never mutate actor state, so an old callback cannot unlock
+        // a newer operation. Client retry/key-generation budgets still apply.
+        defer { operationPending = false }
+        return try await CallbackDeadline.call(seconds: operationTimeout, start: start)
     }
 }

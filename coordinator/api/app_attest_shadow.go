@@ -26,6 +26,7 @@ const shadowAssertionInterval = 10 * time.Minute
 type appAttestShadowSession struct {
 	offerMu                                        sync.Mutex
 	rejectReason                                   string
+	storageSlotHeld                                bool // owned by the serialized session worker
 	closed                                         atomic.Bool
 	dropped                                        atomic.Uint64
 	s                                              *Server

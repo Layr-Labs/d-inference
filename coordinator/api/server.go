@@ -200,6 +200,8 @@ type releaseTrustPolicySnapshot struct {
 type Server struct {
 	appAttestShadow               AppAttestShadowConfig
 	appAttestShadowSlots          chan struct{}
+	appAttestStorageOnce          sync.Once
+	appAttestStorageSlots         chan struct{}
 	machineInventorySlots         chan struct{}
 	registry                      *registry.Registry
 	store                         store.Store

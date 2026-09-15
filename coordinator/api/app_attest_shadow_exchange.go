@@ -35,7 +35,15 @@ func (x *appAttestShadowSession) send(ctx context.Context, action string) bool {
 				x.observe(action, "storage_unavailable", nil)
 				return false
 			}
-			err := enrollments.SaveAppAttestEnrollment(ctx, store.AppAttestEnrollment{ID: x.id, Owner: x.owner, KeyID: x.key.KeyID, CreatedAt: time.Now().UTC(), Environment: x.s.appAttestShadow.Environment, AppID: x.s.appAttestShadow.AppID, Challenge: x.challenge, PublicKey: x.publicKey, AccountScope: x.accountScope()})
+			release, ok := x.acquireStorage()
+			if !ok {
+				x.observe(action, "storage_busy", nil)
+				return false
+			}
+			operation, cancel := context.WithTimeout(ctx, 2*time.Second)
+			err := enrollments.SaveAppAttestEnrollment(operation, store.AppAttestEnrollment{ID: x.id, Owner: x.owner, KeyID: x.key.KeyID, CreatedAt: time.Now().UTC(), Environment: x.s.appAttestShadow.Environment, AppID: x.s.appAttestShadow.AppID, Challenge: x.challenge, PublicKey: x.publicKey, AccountScope: x.accountScope()})
+			cancel()
+			release()
 			if err != nil {
 				x.observe(action, "storage_error", nil)
 				return false

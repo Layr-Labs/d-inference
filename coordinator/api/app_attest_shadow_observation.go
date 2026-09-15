@@ -48,12 +48,18 @@ func (x *appAttestShadowSession) observe(stage, outcome string, metadata *appatt
 		identity := x.inventory.snapshot()
 		fields["machine_id"] = identity.ID
 		fields["identity_assurance"] = identity.Assurance
-		raw, _ := json.Marshal(fields)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		err := x.inventory.store.RecordAppAttestEvent(ctx, store.AppAttestEvent{ID: uuid.NewString(), SessionID: x.provider.ID, At: time.Now().UTC(), Stage: stage, Outcome: outcome, Fields: raw})
-		cancel()
-		if err != nil {
-			x.s.ddIncr("app_attest.events.storage_failed", nil)
+		if release, ok := x.acquireStorage(); ok {
+			raw, _ := json.Marshal(fields)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			err := x.inventory.store.RecordAppAttestEvent(ctx, store.AppAttestEvent{ID: uuid.NewString(), SessionID: x.provider.ID, At: time.Now().UTC(), Stage: stage, Outcome: outcome, Fields: raw})
+			cancel()
+			release()
+			if err != nil {
+				x.s.ddIncr("app_attest.events.storage_failed", nil)
+			}
+		} else {
+			fields["event_storage"] = "busy"
+			x.s.ddIncr("app_attest.events.storage_failed", []string{"reason:busy"})
 		}
 	}
 	x.s.ddIncr("app_attest.shadow.events", tags)

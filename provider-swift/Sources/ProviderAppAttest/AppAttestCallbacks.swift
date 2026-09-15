@@ -1,0 +1,43 @@
+import Foundation
+@preconcurrency import DeviceCheck
+
+/// Callback boundary allows the adapter's timeout and recovery to be tested
+/// without contacting Apple or requiring a signed macOS 27 app.
+protocol AppAttestCallbacks: Sendable {
+    func generateKey(_ complete: @escaping @Sendable (Result<String, Error>) -> Void)
+    func attestKey(_ id: String, hash: Data, complete: @escaping @Sendable (Result<Data, Error>) -> Void)
+    func generateAssertion(_ id: String, hash: Data, complete: @escaping @Sendable (Result<Data, Error>) -> Void)
+}
+
+struct SystemAppAttestCallbacks: AppAttestCallbacks {
+    func generateKey(_ complete: @escaping @Sendable (Result<String, Error>) -> Void) {
+        DCAppAttestService.shared.generateKey { value, error in
+            if let value { complete(.success(value)) }
+            else { complete(.failure(Self.failure(error))) }
+        }
+    }
+
+    func attestKey(_ id: String, hash: Data, complete: @escaping @Sendable (Result<Data, Error>) -> Void) {
+        DCAppAttestService.shared.attestKey(id, clientDataHash: hash) { value, error in
+            if let value { complete(.success(value)) }
+            else { complete(.failure(Self.failure(error))) }
+        }
+    }
+
+    func generateAssertion(_ id: String, hash: Data, complete: @escaping @Sendable (Result<Data, Error>) -> Void) {
+        DCAppAttestService.shared.generateAssertion(id, clientDataHash: hash) { value, error in
+            if let value { complete(.success(value)) }
+            else { complete(.failure(Self.failure(error))) }
+        }
+    }
+
+    private static func failure(_ error: Error?) -> ShadowFailure {
+        guard let error = error as NSError?, error.domain == DCErrorDomain else { return .appleError }
+        switch error.code {
+        case DCError.Code.featureUnsupported.rawValue: return .unsupported
+        case DCError.Code.serverUnavailable.rawValue: return .appleUnavailable
+        case DCError.Code.invalidKey.rawValue: return .appleInvalidKey
+        default: return .appleError
+        }
+    }
+}

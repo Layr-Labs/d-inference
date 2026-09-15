@@ -1,6 +1,6 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-09-14 · commit `b7d0735e4`
+> Last updated: 2026-09-14 · commit `f33905d61`
 
 App Attest runs alongside authoritative APNs and MDM verification. The coordinator records stable machine identities, fleet adoption, complete submitted proofs, and receipts. These records do not change routing, rewards, trust, or the supported OS floor. DeviceCheck's separate two-bit API is deferred.
 
@@ -8,7 +8,7 @@ App Attest runs alongside authoritative APNs and MDM verification. The coordinat
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `EIGENINFERENCE_APP_ATTEST_SHADOW` | `true` | Enables negotiated shadow requests. Disabling it preserves machine inventory and legacy verification. |
+| `EIGENINFERENCE_APP_ATTEST_SHADOW` | `true` | Enables negotiated shadow requests. Disabling it preserves machine inventory, legacy verification, and renewal of existing receipts when credentials are configured. |
 | `EIGENINFERENCE_APP_ATTEST_APP_ID` | `SLDQ2GJ6TL.io.darkbloom.provider` | Expected team prefix and macOS signing identifier. |
 | `EIGENINFERENCE_APP_ATTEST_ENVIRONMENT` | `production` | Apple attestation environment; `development` is also supported. |
 | `EIGENINFERENCE_APP_ATTEST_RECEIPT_KEY_PATH` | unset | Private server-side ES256 key file with DeviceCheck service authorization, used only for App Attest receipt renewal. Unset disables renewal. |
@@ -71,28 +71,30 @@ PostgreSQL is the durable archive itself, including its normal database backup p
 
 The archive stores invalid base64 verbatim and preserves invalid, replayed, wrong-session, and late proofs within protocol bounds. `sha256` covers the original proof field's UTF-8 bytes; context also includes SHA-256 of decoded proof bytes. Complete attestation CBOR includes every certificate and extension, even fields the verifier does not interpret.
 
-`BeginAppAttestEvidence` writes the full submission before verification. `CompleteAppAttestEvidence` commits the result and accepted key/counter update in one transaction. A failed completion cannot advance a counter or acknowledge enrollment. Interrupted verification remains a visible `pending` record. Identical enrollment is idempotent; replayed assertions remain separate rejected records. Queued proofs are archived as rejected when a shadow session stops or the verifier is busy.
+`BeginAppAttestEvidence` writes the full submission before verification. `CompleteAppAttestEvidence` commits the result and accepted key/counter update in one transaction. A failed completion cannot advance a counter or acknowledge enrollment. Interrupted verification remains a visible `pending` record. Identical enrollment is idempotent; replayed assertions remain separate rejected records. Queued proofs are archived as rejected when a shadow session stops or the verifier is busy, subject to the shared storage limit.
 
-Input refused by frame/queue bounds is counted rather than retained without limit. Storage failures pause that connection's shadow exchange and appear in metrics; they do not interrupt inference. The system cannot guarantee recording bytes it never accepts or durably receives during an outage. Re-verification uses the archived context and original evaluation time, never treats a historical assertion as a fresh challenge.
+`acquireStorage` in `coordinator/api/app_attest_shadow_storage.go` admits at most four concurrent session storage operations. Normal verification, verifier-busy rejection, disconnect draining, standalone events, and outbound enrollment writes share this limit. Admission is nonblocking; an admitted proof retains its permit through deferred archive completion, and nested observations reuse it. Refused proof submissions increment the session's dropped count and report `archive/storage_busy`; event persistence refusals emit `app_attest.events.storage_failed` with `reason:busy`. Metrics/logs remain available without making another unbounded database call. Inventory and receipt renewal retain their separate worker limits.
+
+Input refused by frame, queue, or storage admission bounds is counted rather than retained without limit. Storage failures pause that connection's shadow exchange and appear in metrics; they do not interrupt inference. The system cannot guarantee recording bytes it never accepts or durably receives during an outage. Re-verification uses the archived context and original evaluation time, never treats a historical assertion as a fresh challenge.
 
 ## Receipt verification and renewal
 
 `coordinator/appattest/receipt.go` verifies the PKCS#7 signature and chain against the separately pinned Apple Root CA G3, then validates App ID, key, client hash, type, creation freshness, expiry, and renewal fields. Mac field 3 can contain the attestation leaf certificate; its public key must match the verified credential. Duplicate ASN.1 fields and malformed metadata fail closed. Receipt errors are observational and do not remove legacy trust.
 
-`coordinator/api/app_attest_receipt_worker.go` leases one due job per minute when dedicated credentials are configured. It sends the previous receipt to the environment-specific Apple endpoint, verifies the response, retains every recorded version, and advances the job only for a verified successor. Failures retain the previous usable receipt and back off. HTTP bodies are bounded to 64 KiB; an oversized response has an explicit outcome. Raw server authentication material is never archived. Overdue jobs remain visible while credentials are unconfigured. Mac production receipt renewal is a separate qualification from initial local receipt verification.
+`coordinator/api/app_attest_receipt_worker.go` leases one due job per minute when dedicated credentials are configured, including when new shadow exchanges are disabled. It sends the previous receipt to the environment-specific Apple endpoint, verifies the response, retains every recorded version, and advances the job only for a verified successor. Failures retain the previous usable receipt and back off. HTTP bodies are bounded to 64 KiB; an oversized response has an explicit outcome. Raw server authentication material is never archived. Overdue jobs remain visible while credentials are unconfigured. Mac production receipt renewal is a separate qualification from initial local receipt verification.
 
-Apple's [receipt contract](https://developer.apple.com/documentation/devicecheck/assessing-fraud-risk) describes the approximate recent key-count metric. It is not a permanent machine identifier or an automatic fraud verdict.
+Apple's [receipt contract](https://developer.apple.com/documentation/devicecheck/assessing-fraud-risk) specifies `Authorization: <JWT>` for this endpoint, including its curl example. The worker sends that raw ES256 JWT; the linked APNs guide supplies the JWT generation procedure. The receipt's approximate recent key-count metric is not a permanent machine identifier or an automatic fraud verdict.
 
 ## Bounds and credential lifecycle
 
 | Boundary | Behavior |
 |---|---|
 | Initial spread | Random 0–29 seconds after inventory is ready. |
-| Shadow processing | One worker, two queued replies per connection, four verification operations globally. |
+| Shadow processing | One worker and two queued replies per connection; four verification operations and four shared session storage permits globally, including rejection and cleanup paths. |
 | Protocol | 48 KiB frame, 32 KiB decoded proof; bounded CBOR and status fields. |
-| Response/storage | 90-second response deadline; two-second handling/storage budget. |
+| Response/storage | 90-second response deadline; two-second handling budget, with a separate two-second budget for deferred archive completion. Standalone events and enrollment writes each have a two-second storage timeout. |
 | Assertions | Every ten minutes; a fresh encrypted challenge after reconnect. |
-| Apple callbacks | 25-second operation deadline; a late callback cannot resume twice. The adapter keeps the operation pending until Apple's callback arrives, preventing overlapping orphan calls. |
+| Apple callbacks | 25-second operation deadline; timeout, cancellation, success, or failure releases adapter admission. Late callbacks cannot resume twice or clear a newer operation. Apple's underlying operation cannot be cancelled; retries remain subject to the client budgets below. |
 | Attestation retries | At most three attempts, 2/8-second waits, only for service unavailable, using the same key/hash. |
 | Key generation | Per-key one-hour replacement cooldown plus five generations per coordinator/environment per hour across account scopes, persisted before calling Apple. |
 | Lost enrollment response | Keychain temporarily retains proof and original status; retry uses a server-persisted, same-owner transaction up to 24 hours old. Expired pending proof is replaced under the generation budget. |

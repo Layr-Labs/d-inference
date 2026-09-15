@@ -16,10 +16,18 @@ import (
 )
 
 func (x *appAttestShadowSession) handle(ctx context.Context, reply protocol.AppAttestShadowPayload) string {
+	release, ok := x.acquireStorage()
+	if !ok {
+		x.dropped.Add(1)
+		x.observe("archive", "storage_busy", nil)
+		return "stop"
+	}
+	// Registered first so the permit is released AFTER deferred completion.
+	defer release()
 	if x.archive == nil {
 		x.archive, _ = store.As[store.AppAttestArchiveStore](x.store)
 	}
-	// Every in-bounds proof is archived before parsing, challenge checks, or
+	// Every admitted proof is archived before parsing, challenge checks, or
 	// cryptographic verification. Invalid base64 is retained verbatim too.
 	if reply.Proof != "" || reply.Action == "attestation" || reply.Action == "assertion" || x.expected == "attestation" || x.expected == "assertion" {
 		if x.archive == nil {

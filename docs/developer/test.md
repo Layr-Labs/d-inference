@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-15 · commit `2a843bb2c`
+> Last updated: 2026-09-15 · commit `7a0823c41`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -317,13 +317,29 @@ thousands of them can starve bounded test handshakes. Concurrency tests retain
 their own tasks, barriers and interleavings. This does not serialize provider
 inference or the separate model-concurrency benchmarks.
 
-`scripts/run-provider-tests.sh` runs exact allocator integration, the controlled
-ledger interleaving, the real process-environment projection test and the SSD
-sidecar stage-deadline test in separate processes. The general suite excludes
-those cases; each isolated invocation uses the existing nonempty/no-skips guard.
+`scripts/run-provider-tests.sh` runs each native allocator assertion, the
+controlled ledger interleaving, the real process-environment projection test
+and the SSD sidecar stage-deadline test in separate processes. The general
+suite excludes those cases; each isolated invocation uses the existing
+nonempty/no-skips guard.
 A general-suite failure does not silence the isolated gates. Isolation keeps the
 stage-deadline assertion at the production budget without unrelated suite load;
 it does not change an assertion or runtime resource-selection rule.
+
+`scripts/run-exclusive-native-gpu-test.sh` accepts only the reviewed allocator
+and batch-composition test functions. It sets
+`DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST=1` for that one child process and passes
+`--no-parallel`. Ordinary invocations explicitly remove inherited opt-in state.
+`scripts/run-paged-kernel-tests.sh` runs the remaining kernel suite and then
+the composition assertion separately, preserving both results if either fails.
+Run these helpers only on an owned GPU test lane with the matched metallib;
+they do not download model weights or manage an inference endpoint.
+
+To check this CI wiring without invoking Swift or using a GPU, run
+`python3 scripts/test-native-gpu-ci.py`. Its temporary fake `swift` executable
+checks selector/opt-in isolation and verifies that failed assertions, actual
+skips and zero executed tests still fail the existing tripwires. The same
+CPU-only check runs in the Release Integrity job; it is not GPU qualification.
 
 ```bash
 make provider-test

@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-15 · commit `2a843bb2c`
+> Last updated: 2026-09-15 · commit `7a0823c41`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -10,6 +10,11 @@ of it; the per-component steps below explain what each target runs.
 Docs Lint needs Git history to validate moved source links in frozen records;
 its checkout uses `fetch-depth: 0` (`.github/workflows/ci.yml`, `docs` job).
 See [historical source references](historical-references.md) for local setup.
+
+Native CI test isolation reuses these built test products and their staged
+metallib; it does not rebuild or download a model. Follow the
+[provider test procedure](test.md) to run GPU-global assertions in separate
+processes with the exclusive opt-in scoped to the named test.
 
 Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 `scripts/publish-model.sh` to registration. See the

@@ -103,6 +103,10 @@ type myProvider struct {
 	MaxConcurrency  int      `json:"max_concurrency"`
 	PrefillTPS      float64  `json:"prefill_tps,omitempty"`
 	DecodeTPS       float64  `json:"decode_tps,omitempty"`
+	// WarmPool is the coordinator's per-model answer to "would you pre-load a
+	// model onto this machine, and if not, why not". Only set when the machine
+	// is currently connected, since every input is live registry state.
+	WarmPool *registry.ProviderWarmPoolEligibility `json:"warm_pool,omitempty"`
 
 	// Reputation
 	Reputation myReputation `json:"reputation"`
@@ -325,6 +329,10 @@ func (s *Server) handleMyProviders(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.attachStoredReputations(r.Context(), fleet)
+	now := time.Now()
+	for i := range fleet {
+		s.attachWarmPoolEligibility(&fleet[i], now)
+	}
 
 	resp := myProvidersResponse{
 		Providers:             fleet,
@@ -410,6 +418,25 @@ func emittedIdentity(mp *myProvider) string {
 		return "sekey:" + mp.SEPublicKey
 	}
 	return "id:" + mp.ID
+}
+
+// attachWarmPoolEligibility populates mp.WarmPool from the live registry.
+//
+// Connected-ness is decided by registry membership, not mp.Online:
+// WarmPoolEligibility returns nil for an id the registry does not hold, and
+// disconnectProvider deletes the entry, so nil is the liveness check. Online
+// answers "would we route here" (buildMyProvider clears it for StatusUntrusted
+// too) and gating on it would withhold the diagnostic from a connected but
+// untrusted machine — the one that most needs to see its own
+// offline_untrusted_private blocker.
+//
+// Runs after buildMyProvider has released p.mu, because WarmPoolEligibility
+// takes r.mu and p.mu itself.
+func (s *Server) attachWarmPoolEligibility(mp *myProvider, now time.Time) {
+	if mp == nil || mp.ID == "" || s.registry == nil {
+		return
+	}
+	mp.WarmPool = s.registry.WarmPoolEligibility(mp.ID, now)
 }
 
 // attachStoredReputations fills in persisted reputation for every machine in

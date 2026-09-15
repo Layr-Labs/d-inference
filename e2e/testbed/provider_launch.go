@@ -60,6 +60,11 @@ func buildProviderStartSpec(coordinatorURL, root string, cfg ProviderConfig, ind
 		args = append(args, "--model", id)
 	}
 	args = append(args, "--config", filepath.Join(root, "provider.toml"))
+	localArgs, err := localEndpointArguments(cfg.LocalEndpointPort)
+	if err != nil {
+		return s, err
+	}
+	args = append(args, localArgs...)
 	env := map[string]string{
 		"DARKBLOOM_PID_FILE":           filepath.Join(root, "provider.pid"),
 		"DARKBLOOM_NO_UPDATE_CHECK":    "1",

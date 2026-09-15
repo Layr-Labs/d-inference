@@ -25,7 +25,10 @@ fn shared_parallel_tool_instructions_match_provider_contract() {
         if let Some(parallel) = case.get("parallel_tool_calls") {
             body["parallel_tool_calls"] = parallel.clone();
         }
-        let normalized = normalize(body.as_object().unwrap().clone(), Some("qwen4_exp")).unwrap();
+        // The frozen instruction corpus remains the exact legacy contract.
+        // Native Qwen4 prompt ownership has separate paired tests.
+        let normalized =
+            normalize(body.as_object().unwrap().clone(), Some("qwen4_exp_text")).unwrap();
         assert_eq!(
             Value::Object(normalized.additional_context.clone()),
             json!({"enable_thinking": true, "reasoning_effort": "low"}),

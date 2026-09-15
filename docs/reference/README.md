@@ -1,11 +1,13 @@
 # Reference — exact shapes and values
 
-> Last updated: 2026-09-14 · commit `4e90ac8b1`
+> Last updated: 2026-09-15 · commit `2d380f71e`
 
 Tables and schemas for Darkbloom's public interfaces, wire protocol,
 configuration, and formats. Consult these; do not read them front to back.
 Every row cites the code that defines it. For how and why things work, use
 [`../architecture/README.md`](../architecture/README.md).
+
+[App Attest shadow protocol](app-attest-shadow.md) defines the coexistence exchange, observations, storage, and packaging requirements.
 
 ## Interfaces
 

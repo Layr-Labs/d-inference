@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `ac3d606b`
+> Last updated: 2026-09-15 · commit `2d380f71e`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -52,6 +52,75 @@ separate real-state and quiet-cancellation/reload Swift opt-ins and their limits
 These local fixtures do not qualify a hosted OpenRouter route or authorize
 model uploads, signing or production changes.
 
+`TestIntegration_FlashNextConnectedMatrices` in
+`e2e/flash_next_connected_matrix_test.go` is an explicit opt-in for the same API
+oracles through a real local Go coordinator. Reserve one owned model/GPU lane
+first. Supply `DARKBLOOM_FLASH_NEXT_CONNECTED_MATRIX=1`, the exact native Next
+model ID through `DARKBLOOM_TESTBED_MODEL` and `TESTBED_MODEL_ID`, a matching
+`DARKBLOOM_QWEN4_MODEL_PATH`, and a verified `DARKBLOOM_PROVIDER_BINARY` with its
+adjacent resources. The pinned checkpoint hash is checked before startup;
+similarly named Qwen3.8 27B/M5/NAX fixtures are not substitutes.
+
+Set `DARKBLOOM_FLASH_NEXT_MATRIX_MTP` to `off` or `auto`,
+`DARKBLOOM_FLASH_NEXT_MATRIX_PYTHON` to the approved Python executable,
+`DARKBLOOM_FLASH_NEXT_MATRIX_SCRIPT` to the absolute path of
+`scripts/qwen38_validation/connected_matrix_runner.py`, and
+`DARKBLOOM_FLASH_NEXT_MATRIX_OUTPUT` to a new private output directory. The
+testbed's optional `LocalEndpointPort` uses the native authenticated unified
+mode on one locally launched provider. API calls go to the coordinator; metrics
+and the original four-field drain checks go to the same provider's loopback
+listener. No second model is loaded and neither key is printed or copied from
+an operator credential store. Default launches are unchanged.
+
+Retain failures, the one unsupported-high observation, per-suite native metrics
+and bounded wire-profile receipts. Synthetic auth, `TrustNone`, skipped
+challenges and mock payment services do not qualify production trust or hosted
+routing. Audit persistent-key access separately before using a signed runtime.
+
+`TestIntegration_FlashNextExtendedMatrices` is separately opted in with
+`DARKBLOOM_FLASH_NEXT_EXTENDED_MATRIX=1`. It keeps the same native/Go setup but
+selects the approved runner's `weather`, `fidelity`, `heldout` and `multimodal`
+suites. Supply the retained original private fixtures and their verified runner;
+do not substitute new prompts, bias special tokens or weaken failed oracles.
+These selections report known quality failures and dependency skips separately
+from actual request/page retirement and MTP-policy checks. The core 59-cell
+matrix remains unchanged.
+
+For single-provider account-cache checks, first run the CPU-only opt-ins in
+`e2e/flash_next_cache_manifest_test.go` and
+`e2e/flash_next_cache_planner_test.go`. Set
+`DARKBLOOM_FLASH_NEXT_CACHE_MANIFEST_CHECK=1`, an absolute
+`DARKBLOOM_FLASH_NEXT_ARTIFACT_MANIFEST`, the selected
+`DARKBLOOM_QWEN4_MODEL_PATH`, and a source-verified
+`DARKBLOOM_PROMPT_SIDECAR_BINARY`. The manifest contains `model_id`,
+`model_type`, `model_aggregate_sha256` and the complete integrity-file `files`
+array (`path`, `role`, `size_bytes`, `sha256`), including weights and video
+processor metadata. Provisioning checks that full aggregate but downloads only
+prompt-role files. The planner check starts only the Rust sidecar, not MLX:
+
+```bash
+go test ./e2e -count=1 -run '^TestFlashNextCache(ManifestProvisioning|PlannerBindings)$'
+```
+
+After that preflight, an owned maintenance wrapper may select
+`DARKBLOOM_FLASH_NEXT_CACHE_SCOPE=1` and run
+`TestIntegration_FlashNextCacheScope` in `e2e/flash_next_cache_scope_test.go`,
+with the same model/binary/output/MTP bindings described above. It recomputes
+the actual loaded model identity, binds the local catalog's weight hash, and
+compares two authenticated synthetic accounts with identical caller cache
+labels. Retain native drain checks, HTTP equivalence and accepted SSD receipts
+for both `off` and `auto`. Sidecar outage and re-preload are separate from
+provider-process restart: the ordinary testbed stop helper deletes its temporary
+cache directory and cannot establish persistence. These fixtures do not qualify
+multi-host routing, signed key durability, raw logits or hosted account trust.
+
+The cache fixture also compares consumer-visible cached/reasoning counts with
+the native terminal (`e2e/flash_next_cache_usage_test.go`); observed SSD activity
+alone cannot pass this check. `TestStreamingCombinedFinishUsage` in
+`coordinator/api/chat_combined_terminal_usage_test.go` covers combined and
+separate terminal shapes, absent usage, untrusted cache details, unchanged
+totals/content, public identity, signature pairing and a single `[DONE]`.
+
 ```bash
 python3 -B -m unittest discover -s scripts/qwen38_conversion -p 'test_qwen38_provenance.py' -v
 go test ./coordinator/protocol ./coordinator/registry
@@ -81,9 +150,13 @@ source/dependency/binary/metallib/artifact tuple:
    Confirm native dtypes, ownership and truthful cached-token accounting.
 4. Cover disconnect versus legal half-close, cancellation during prefill/decode/
    cache I/O, readmission, model switches, pressure and actual admitted concurrency.
-   Check Chat/Responses reasoning/tools/usage/finish behavior and text-only media
-   rejection. Preserve failed cells and distinguish natural stops from full output
+   Check Chat/Responses reasoning/tools/usage/finish behavior and capability-bound
+   media acceptance/rejection. Preserve failed cells and distinguish natural stops from full output
    budget tests. Speed targets remain deferred.
+
+## App Attest validation
+
+The [App Attest shadow validation commands](../reference/app-attest-shadow.md#validation) cover cryptography, protocol symmetry, counter races, unchanged routing, and coexistence signing. Live macOS 27 acceptance remains separate.
 
 ## Prerequisites
 
@@ -284,7 +357,7 @@ environment variable does not reset MLX's cached value, and `.serialized`
 does not isolate other suites. See `StartCommandTests.defaultApplyProjectsSettings`
 in `provider-swift/Tests/DarkbloomCLITests/StartCommandTests.swift` and
 `GPUEnforcementTests.requireMetalPinsGPU` in
-`provider-swift/Tests/ProviderCoreTests/GPUEnforcementTests.swift`.
+`provider-swift/Tests/ProviderCoreTests/Inference/Engine/GPUEnforcementTests.swift`.
 
 The standalone resource-release test and the two periodic MTP sampler tests
 also use child processes, giving their real listener/timer tasks an executor
@@ -292,9 +365,9 @@ separate from concurrent MLX tests. Their original deadlines, recurring-sample
 requirements and shutdown/resource assertions remain active. Each helper
 requires `ExitTest.current` so it cannot accidentally run in the parent process.
 See `standaloneServerStopAndWaitReleaseResidentBridgeAndSSDResources` in
-`provider-swift/Tests/ProviderCoreTests/StandaloneServerTests.swift` and
+`provider-swift/Tests/ProviderCoreTests/Server/StandaloneServerTests.swift` and
 `periodicSamplerEmitsForEverySlot` / `shutdownStopsSampler` in
-`provider-swift/Tests/ProviderCoreTests/MTPPostureTelemetryTests.swift`.
+`provider-swift/Tests/ProviderCoreTests/Telemetry/MTPPostureTelemetryTests.swift`.
 
 **Nested `libs/mlx-swift-lm` suites.** The paged-KV correctness gates live in
 the submodule, not in `provider-swift/`. Build them once, stage the metallib,
@@ -315,6 +388,49 @@ for suite in CBv2PagedSafetyTests CBv2PrefixCacheHasherTests CBv2PagedEligibilit
 done
 ```
 
+#### Finding provider tests
+
+Start from the production owner, then look in the matching folder under
+`provider-swift/Tests/ProviderCoreTests/`. These folders remain one SwiftPM
+target (`provider-swift/Package.swift`, `package`), so existing suite/function
+filters still select the same tests. The [inference source map](../architecture/inference.md#code-map)
+locates those owners under `provider-swift/Sources/ProviderCore/Inference/`;
+tests group engine, bridge, factory and scheduler responsibilities together in
+`Inference/Engine`.
+
+| Folder below `ProviderCoreTests` | Responsibility |
+|---|---|
+| `Inference/Engine` | Assembly, admission, cancellation, health, device gates and timing |
+| `Inference/Memory` | Load budgets, KV grants, allocation ownership and memory telemetry |
+| `Inference/PrefixCache` | Reuse eligibility, cache identity, receipts and routing evidence |
+| `KVCacheSSD` | Encrypted SSD storage, checkpoint coordination and persistence |
+| `Inference/MTP` | Assistant activation and inference capacity accounting |
+| `Inference/Prompting`, `Inference/Tools`, `Inference/Streaming`, `Inference/Vision` | Request preparation, tool contracts, streamed output and media handling |
+| `Inference/Kernels` | Synthetic Metal arithmetic and accuracy contracts |
+| `Inference/Live` | Opt-in inference and parity tests using actual local models, with `Gemma`, `GPTOSS` and `Qwen` subfolders |
+
+Other folders follow provider responsibilities: `ProviderLoop`, `Server`,
+`Models`, `SpecDec`, `Auth`, `Security`, `Diagnostics`, `Protocol`, `Coordinator`,
+`Telemetry`, `Update`, and the smaller source subsystems. `Benchmark` tests
+the `ProviderBenchmark` module and its production-engine integration.
+Drain/swap orchestration stays with `ProviderLoop` and `Server`.
+
+Keep model fixtures in `Inference/Live/Fixtures`, synthetic engine support in
+`Inference/Fixtures`, checkpoint support in `KVCacheSSD/Fixtures`, and shared
+HTTP/coordinator fixtures in `Helpers`. Shared input files under `fixtures/`
+and `coordinator/protocol/testdata/` remain canonical; moving a test deeper
+requires checking any lookup based on `#filePath`.
+`CachePromptParityTests.vectorFile` locates the owning repository using its
+provider and coordinator manifests instead of assuming a fixed source-folder
+depth. Its three suites still read the canonical shared vectors; a missing
+fixture fails the test and is never replaced by a skip or copied test data.
+
+Check each suite's annotations and prerequisites before running it. Tests
+that need no model weights can still execute Metal. The startup decode live
+test stays with its `ProviderLoop` owner, and `LiveInferenceMetallibSourceTests`
+tests the fixture resolver without loading a model. Use the preparation and
+isolated filters above; folder names do not change execution requirements.
+
 #### Doctor capture and attestation canonical bytes
 
 After building the provider test targets, run these focused regressions:
@@ -328,7 +444,7 @@ After building the provider test targets, run these focused regressions:
 (`DoctorCaptureTests`) uses real subprocesses with output beyond pipe capacity,
 excluded stderr, nonzero exits, deadline escalation and an inherited stdout
 descriptor. Each child has an independent expiry and fixture-owned cleanup.
-`provider-swift/Tests/ProviderCoreTests/StatusCanonicalTests.swift`
+`provider-swift/Tests/ProviderCoreTests/Security/StatusCanonicalTests.swift`
 (`statusCanonicalMatchesCoordinatorNestedMapVectors`) and
 `coordinator/attestation/status_canonical_mixed_case_test.go`
 (`TestBuildStatusCanonicalNestedMapVectors`) retain identical
@@ -449,7 +565,7 @@ Explicit Gemma verification, projection, logits and attention diagnostics requir
 untransformed greedy input. Historical baseline binaries retain their greedy
 sampling path; they are not sampled-throughput controls.
 Sampling wiring lives in
-`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkPrompt.swift`
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkPrompt.swift`
 and `scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkSampling.swift`.
 
 Run the CPU wrapper tests first:
@@ -1074,6 +1190,17 @@ This prevents task scheduling from silently changing admission order. Sources: `
 
 ### 7. Docs lint
 
+The historical-link regression checks run in isolated temporary Git repositories:
+
+```bash
+python3 scripts/test-docs-check-historical-links.py
+```
+
+Docs Lint also runs these checks before validating the documentation tree.
+Frozen source references resolve against the exact stamped commit when the
+file has moved; current missing links still fail. See
+[historical source references](historical-references.md).
+
 ```bash
 make docs-check          # scripts/docs-check.sh — stamps, relative links, cited paths, orphans
 make docs-stamp FILES="docs/developer/test.md"   # refresh a stamp after editing
@@ -1289,7 +1416,7 @@ DARKBLOOM_LIVE_MLX_GPTOSS_MODEL_DIRECTORY=/absolute/verified-gpt-oss-20b \
     --no-parallel --filter GPTOSSCheckpointRestartLiveTests
 ```
 
-`provider-swift/Tests/ProviderCoreTests/GPTOSSCheckpointRestartLiveTests.swift`
+`provider-swift/Tests/ProviderCoreTests/Inference/Live/GPTOSS/GPTOSSCheckpointRestartLiveTests.swift`
 (`sameKeyNewEngineRestoresBranchedPrompt`) donates a complete encrypted historical
 checkpoint, shuts down the engine/store, reconstructs both and requests a branched
 prompt first. It requires disk reads, exact checkpoint-boundary hit accounting,
@@ -1315,11 +1442,11 @@ env -u MLX_ENABLE_TF32 \
 
 The model-directory variable is optional when the exact verified snapshot is
 already discoverable in the local cache.
-`provider-swift/Tests/ProviderCoreTests/GPTOSSMixedPrefixCacheLiveTests.swift`
+`provider-swift/Tests/ProviderCoreTests/Inference/Live/GPTOSS/GPTOSSMixedPrefixCacheLiveTests.swift`
 (`concurrentSuffixesRemainIsolated`) compares cache-off controls with restored
 branches in B2/B4 cohorts, reverses the B2 request order, and submits a four-request
 mixture of matching prefixes, a changed early fact and another tenant.
-`provider-swift/Tests/ProviderCoreTests/GPTOSSMixedPrefixCohort.swift` (`run`)
+`provider-swift/Tests/ProviderCoreTests/Inference/Live/Fixtures/GPTOSSMixedPrefixCohort.swift` (`run`)
 submits through the real bridge and requires completed native target-decode
 observations at widths two and four for the restored B2/B4 cohorts. The cold
 `off-four-submitted` control and mixed four-request cohorts require at least
@@ -1338,7 +1465,7 @@ the gate and does not assert that it passed.
 
 The focused construction and load-policy suites are `GPTOSSDefaultPrefixCacheWiringTests`,
 `PrefixCachePolicyTests` and `PrefixCacheLoadHashTests` in
-`provider-swift/Tests/ProviderCoreTests/`. They cover exact-ID activation, disabled
+`provider-swift/Tests/ProviderCoreTests/Inference/PrefixCache/`. They cover exact-ID activation, disabled
 and unsupported backends, fresh load hashes and identity rejection. A passing
 construction suite does not replace the real-checkpoint fixture above. Live test
 skips must be reported as unrun qualification.

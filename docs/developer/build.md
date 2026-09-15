@@ -1,11 +1,15 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `2c9c6f3f1`
+> Last updated: 2026-09-15 · commit `2d380f71e`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
 source-matched `mlx.metallib`), and the two Next.js UIs. `make build` does all
 of it; the per-component steps below explain what each target runs.
+
+Docs Lint needs Git history to validate moved source links in frozen records;
+its checkout uses `fetch-depth: 0` (`.github/workflows/ci.yml`, `docs` job).
+See [historical source references](historical-references.md) for local setup.
 
 Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 `scripts/publish-model.sh` to registration. See the
@@ -14,6 +18,8 @@ Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 Profiler wire changes require both coordinator and provider builds; the shared
 Go/Swift fixture and focused checks are described in [test.md](test.md) and
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
+
+The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its [shadow packaging and live-validation requirements](../reference/app-attest-shadow.md#packaging-and-live-acceptance) are separate from a successful local compile.
 
 ## Prerequisites
 
@@ -70,6 +76,13 @@ Before describing the candidate as reproducible:
 Current source and validation limits are in the
 [candidate reference](../reference/qwen4-next-support.md#validation-status-and-next-gates).
 
+The connected Go API matrix can reuse an independently hashed production
+provider via `DARKBLOOM_PROVIDER_BINARY`; it does not build or substitute a
+different native runtime. Record the Go coordinator/test source separately.
+The [connected qualification instructions](test.md#native-flash-next-candidate)
+bind coordinator traffic and native metrics to one authenticated unified
+provider, with the Python runner and original oracles owned by this repository.
+
 ### Repository layout for builders
 
 | Path | Toolchain | Notes |
@@ -82,6 +95,13 @@ Current source and validation limits are in the
 | `admin-ui/` | Next.js 16 / React 19 | `npm`; dev/start on port `4001`. |
 | `landing/` | static HTML/JS | No build step; `earn-calculator-core.test.js` runs with `node --test`. |
 | `Makefile` | — | Every target below; `make help` lists them. |
+
+Provider tests are grouped by subsystem inside their existing SwiftPM targets.
+See [finding provider tests](test.md#finding-provider-tests) for the folder map;
+`provider-swift/Package.swift` (`package`) retains recursive source discovery.
+The [inference source map](../architecture/inference.md#code-map) locates engine,
+memory, caching and request-processing code within the same `ProviderCore`
+target; building these folders requires no separate products or commands.
 
 ## Steps
 
@@ -342,7 +362,7 @@ an XCTest runner may report zero tests before Swift Testing executes its suite.
 It retains the separate post-build live OS/activation headroom gate.
 The mode requires the candidate SSD serving path; it cannot be combined with
 resident reproduction, native-probe-only mode or an explicit grant
-(`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkGrant.swift`,
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkGrant.swift`,
 `benchmarkProductionGrant`; `BenchmarkOptions.swift`).
 
 For explicit envelope controls, use `--kv-budget-gib N`. Without either flag,

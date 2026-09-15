@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-13 · commit `1f52a71fb`
+> Last updated: 2026-09-13 · commit `93337ef05`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -8,6 +8,8 @@ mechanism — what each layer proves, the grant and loss conditions, the routing
 gate, and the code map — is in
 [`../architecture/security/attestation.md`](../architecture/security/attestation.md)
 and is not restated here.
+
+Optional [App Attest shadow checks](../reference/app-attest-shadow.md) run in the background. Unsupported status or failure does not change these enrollment requirements or your existing trust eligibility.
 
 ## Prerequisites
 

@@ -1,3 +1,4 @@
+use crate::render_values::{sanitize_array, scalar_string};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use thiserror::Error;
@@ -41,7 +42,8 @@ pub fn normalize(
     let mut messages = template_messages(&body)?;
     crate::response_format::prepare(&body, &mut messages)?;
     let mut tools = template_tools(&body)?;
-    let requires_tool_call = apply_tool_choice_policy(&body, &mut messages, &mut tools)?;
+    let requires_tool_call =
+        apply_tool_choice_policy(&body, model_type, &mut messages, &mut tools)?;
     messages = sanitize_array(messages);
     tools = tools.map(sanitize_array);
     if crate::leading_system::qwen_applies(&model_id, model_type)
@@ -849,6 +851,7 @@ fn finite_value_types(object: &Map<String, Value>) -> Option<(HashSet<String>, b
 
 fn apply_tool_choice_policy(
     body: &Map<String, Value>,
+    model_type: Option<&str>,
     messages: &mut Vec<Value>,
     tools: &mut Option<Vec<Value>>,
 ) -> Result<bool, NormalizeError> {
@@ -953,8 +956,35 @@ fn apply_tool_choice_policy(
             "Call one of the declared tools now. You must emit a tool call with valid arguments before any final answer, even when the user's request does not require a tool. Your entire response must be the tool call; a text answer is forbidden.".into()
         }
     };
-    add_instruction(messages, &instruction, true);
+    if !native_qwen4_tool_prompt(body, model_type) {
+        add_instruction(messages, &instruction, true);
+    }
     Ok(true)
+}
+
+// Exact mirror of ToolChoicePromptPolicy's native-framing predicate. Other
+// artifacts, missing metadata and image/video requests retain legacy shaping.
+fn native_qwen4_tool_prompt(body: &Map<String, Value>, model_type: Option<&str>) -> bool {
+    body.get("model").and_then(Value::as_str) == Some("DarkBloom/Qwen3.8-Flash-Next-Q4-mtp")
+        && model_type == Some("qwen4_exp")
+        && !body
+            .get("messages")
+            .and_then(Value::as_array)
+            .is_some_and(|messages| {
+                messages.iter().any(|message| {
+                    message
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .is_some_and(|parts| {
+                            parts.iter().any(|part| {
+                                matches!(
+                                    part.get("type").and_then(Value::as_str),
+                                    Some("image_url" | "video_url")
+                                )
+                            })
+                        })
+                })
+            })
 }
 
 fn parallel_calls_instruction(function: Option<&str>) -> String {
@@ -1033,24 +1063,6 @@ fn tool_name(tool: &Value) -> Option<&str> {
         .as_object()?
         .get("name")?
         .as_str()
-}
-
-fn sanitize_array(values: Vec<Value>) -> Vec<Value> {
-    values.into_iter().filter_map(sanitize).collect()
-}
-
-fn sanitize(value: Value) -> Option<Value> {
-    match value {
-        Value::Null => None,
-        Value::Array(values) => Some(Value::Array(sanitize_array(values))),
-        Value::Object(values) => Some(Value::Object(
-            values
-                .into_iter()
-                .filter_map(|(key, value)| sanitize(value).map(|value| (key, value)))
-                .collect(),
-        )),
-        value => Some(value),
-    }
 }
 
 fn validate_tool_history(messages: &[Value]) -> Result<(), NormalizeError> {
@@ -1291,15 +1303,6 @@ fn normalize_harmony_schema(value: &mut Value) {
     {
         let rendered = scalar_string(object.get("default").unwrap());
         object.insert("default".into(), Value::String(rendered));
-    }
-}
-
-fn scalar_string(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        Value::Bool(value) => value.to_string(),
-        Value::Number(value) => value.to_string(),
-        _ => String::new(),
     }
 }
 

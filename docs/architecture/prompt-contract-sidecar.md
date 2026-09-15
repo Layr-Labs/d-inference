@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-13 · commit `1d041341` · private normalization-v4 integration
+> Last updated: 2026-09-15 · commit `2d380f71e`
 
 How the coordinator's `promptsidecar` child process derives deterministic,
 provider-compatible token boundaries so exact-cache routing can predict which
@@ -153,11 +153,17 @@ this instruction itself. Qwen and Harmony system-turn folding then mirrors
 (`coordinator/promptsidecar/src/leading_system.rs`, `normalize_messages`). Invalid or
 unsupported shapes fail cold.
 
+Constrained tool validation and grammar-cost accounting inspect the same borrowed
+`const`/`enum` values from the parsed schema; they do not allocate temporary
+reference vectors. Numeric, nullable, delimiter and grammar-complexity bounds
+remain in `coordinator/promptsidecar/src/tool_constraint.rs`
+(`validate_finite_values`, `constrained_schema_grammar_cost`).
+
 The production parity gate captures the request entering the engine through
 `MLXOpenAIService.streamChatCompletionFrames`, then checks tokens and scoped
 block hashes. Calling the tokenizer directly on the inbound body would miss
 service-level prompt transformations
-(`provider-swift/Tests/ProviderCoreTests/ProductionPromptParityTests.swift`).
+(`provider-swift/Tests/ProviderCoreTests/Inference/Prompting/ProductionPromptParityTests.swift`).
 This corrects planner parity with existing provider behavior; it does not change
 the provider contract, relax receipt checks or clear existing fences.
 
@@ -182,7 +188,7 @@ the provider contract, relax receipt checks or clear existing fences.
 
 The semantic versions (`CurrentVersions`) are:
 
-- normalization: `darkbloom-request-normalization-v4` (retains Gemma 4 compatibility, detached Harmony reasoning content and GPT-OSS effort policy; adds parallel-aware required/named tool instructions shared by Swift and Rust)
+- normalization: `darkbloom-request-normalization-v5` (retains prior model policies and parallel-aware required/named instructions; preserves original messages for the exact owned native Qwen4 text path)
 - renderer: `swift-jinja-request-date-compatible-v3`
 - tokenizer: `huggingface-tokenizer-json-v1`
 - block hash: `PromptContractIdentity.blockHashVersion`, stated in
@@ -191,13 +197,24 @@ The semantic versions (`CurrentVersions`) are:
 Changing an artifact digest, path, role, semantic implementation, or block size
 creates a different contract.
 
-The v4 instruction contract preserves the user's independent requested calls
+The instruction contract preserves the user's independent requested calls
 when `parallel_tool_calls` is true, null or omitted; explicit false keeps the
 previous singular wording. Named calls remain restricted to the selected
 function. `ToolChoicePromptPolicy.prepare` and
 `coordinator/promptsidecar/src/normalize.rs` (`apply_tool_choice_policy`) share
 exact instruction fixtures across all four parallel settings. Auto and none
 modes are unchanged.
+
+V5 leaves the original messages unchanged for required/named text requests only
+when the serving ID is the exact owned Qwen4 ID and `model_type` is `qwen4_exp`.
+Media-bearing requests do not select this policy. The trained template supplies
+the tool format; the provider's native framing constraint and final
+name/schema/cardinality validator enforce the request. Selected named tools are
+still filtered before rendering. Swift serving, admission/accounting and the
+Rust planner share this predicate; other models retain their prior messages.
+Sources: `provider-swift/Sources/ProviderCore/Inference/Prompting/ToolChoicePromptPolicy.swift`
+(`prepare`), `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift`
+(`tokenize`) and `coordinator/promptsidecar/src/normalize.rs` (`apply_tool_choice_policy`).
 
 Native `qwen4_exp` / `qwen4_exp_text` and the explicitly supported Nemotron
 identities preserve caller reasoning during forced tools instead of inheriting
@@ -208,12 +225,12 @@ them to a different value. The context/error vectors mirror
 `Qwen4SupportPolicy.validateReasoningContext` and
 `MultiModelBatchSchedulerEngine.templateAdditionalContext`.
 
-A v3 provider and v4 coordinator (or the reverse) cannot earn cache credit or
+A v3/v4 provider and v5 coordinator (or the reverse) cannot earn cache credit or
 affinity from the other's contract: `coordinator/registry/cache_tiers.go`
 (`capabilityMatchesPlan`) requires identical IDs while ordinary serving remains
 available. Before an authorized rollout, regenerate prompt artifacts/preloaded
 contracts and any configured exact artifact allowlist using the new identity;
-do not relabel old cache objects as v4. Renderer, tokenizer and block-hash
+do not relabel old cache objects as v5. Renderer, tokenizer and block-hash
 versions are unchanged. No deployment or allowlist mutation follows merely
 from building this private candidate.
 
@@ -427,11 +444,14 @@ gate.
 | Configuration and startup checks | `coordinator/promptcontract/config.go` (`ReadSupervisorConfig`, `Check`) |
 | Go client: plan, fail-cold, preload, metrics | `coordinator/promptcontract/client.go` (`Plan`, `PlanFailCold`), `coordinator/promptcontract/client_control.go` (`Ready`, `Preload`, `Metrics`) |
 | Artifact provisioning and verified publication | `coordinator/promptcontract/provisioner.go`, `coordinator/promptcontract/artifact_cache.go` |
+| Descriptor-relative artifact paths | `coordinator/promptcontract/secure_files_unix.go` (`walkSecureDirectories`): absolute and root-relative path validation share descriptor traversal, optional directory creation, `O_NOFOLLOW` checks and ownership cleanup |
 | Preload gate per child generation | `coordinator/promptcontract/preload_controller.go` |
 | Contract identity and block chain (Go) | `coordinator/promptcontract/contract.go`, `coordinator/promptcontract/blockhash.go` |
 | Sidecar process, socket server, routes | `coordinator/promptsidecar/src/main.rs`, `coordinator/promptsidecar/src/server.rs`, `coordinator/promptsidecar/src/server/handler.rs` |
+| Bounded HTTP JSON decoding | `coordinator/promptsidecar/src/server/handler.rs` (`decode_request`): plan and preload share declared/streamed body bounds, read deadline and JSON decoding; each operation retains its own malformed-request message and worker timeout policy |
 | Planner, contract LRU, artifact loading | `coordinator/promptsidecar/src/planner.rs`, `coordinator/promptsidecar/src/artifact_cache.rs`, `coordinator/promptsidecar/src/artifacts.rs` |
 | Normalisation, render, tokenizer-side identity and hashes | `coordinator/promptsidecar/src/normalize.rs`, `coordinator/promptsidecar/src/render.rs`, `coordinator/promptsidecar/src/contract.rs`, `coordinator/promptsidecar/src/hash.rs` |
+| Template value coercion | `coordinator/promptsidecar/src/render_values.rs` (`sanitize`, `sanitize_array`, `scalar_string`): base/Harmony normalization and Gemma argument/schema preparation share null removal and scalar string rendering |
 | Wire shapes and metrics | `coordinator/promptsidecar/src/api.rs`, `coordinator/promptsidecar/src/preload.rs`, `coordinator/promptsidecar/src/metrics.rs` |
 | Provider-side identity | `provider-swift/Sources/ProviderCoreFoundation/PromptContractIdentity.swift` |
 | Fixtures, generator, parity gate | `fixtures/prompt-contract/v1`, `coordinator/promptsidecar/src/bin/prompt-fixtures.rs`, `coordinator/cmd/promptfixtureinput`, `coordinator/cmd/promptsidecarloadproof`, `scripts/verify-prompt-parity.sh`, `coordinator/promptsidecar/tests/planner_fixture.rs` |

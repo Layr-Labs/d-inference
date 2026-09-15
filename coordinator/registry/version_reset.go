@@ -199,17 +199,7 @@ func (w *providerHealthWindow) dropFlushFaults() (dropped bool) {
 	if !dropped {
 		return false
 	}
-	*w = providerHealthWindow{}
-	for _, o := range kept {
-		w.outcomes[w.head] = o
-		w.head = (w.head + 1) % providerHealthRingSize
-		w.size++
-		if o.ok {
-			w.consecFail = 0
-		} else {
-			w.consecFail++
-		}
-	}
+	w.rebuild(kept)
 	return true
 }
 

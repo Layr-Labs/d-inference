@@ -3,6 +3,7 @@ package registry
 import (
 	"math"
 	"testing"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -112,6 +113,26 @@ func TestModelsUpdateRetainsOffloadDeclaration(t *testing.T) {
 	p.Mu().Unlock()
 	if got != 84 {
 		t.Fatalf("offload declaration lost in merge: %v", got)
+	}
+}
+
+func TestRoutingSnapshotPreservesOffloadAndClearsDifferentModel(t *testing.T) {
+	reg := New(testLogger())
+	reg.SetModelCatalog([]CatalogEntry{{ID: "qwen"}, {ID: "other"}})
+	p := modelIndexRegister(t, reg, "provider", "qwen")
+	reg.MergeProviderModels("provider", []protocol.ModelInfo{{ID: "qwen", ModelType: "qwen4_exp",
+		SizeBytes: 100 << 30, EstimatedMemoryGB: 84, SSDOffloadedWeightBytes: 30 << 30}})
+	reg.mu.RLock()
+	p.mu.Lock()
+	defer func() { p.mu.Unlock(); reg.mu.RUnlock() }()
+	var snap routingSnapshot
+	reg.fillRoutingSnapshotPLocked(&snap, p, "qwen", time.Now())
+	if snap.estimatedOffloadedMemoryGB != 84 {
+		t.Fatalf("shared routing/capacity projection lost offload footprint: %v", snap.estimatedOffloadedMemoryGB)
+	}
+	reg.fillRoutingSnapshotPLocked(&snap, p, "other", time.Now())
+	if snap.estimatedOffloadedMemoryGB != 0 {
+		t.Fatal("shared projection retained another model's offload footprint")
 	}
 }
 

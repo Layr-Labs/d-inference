@@ -1,6 +1,6 @@
 # Make repeated text requests cache-friendly
 
-> Last updated: 2026-09-13 · commit `3cf03209a`
+> Last updated: 2026-09-15 · commit `2d380f71e`
 
 This how-to helps API consumers preserve identical prefixes across related text
 requests. Reuse depends on the model, a valid checkpoint, provider capacity and
@@ -51,6 +51,9 @@ Check `usage.prompt_tokens_details.cached_tokens` in the completion response.
 For streaming, request usage with `stream_options.include_usage` and inspect the
 final usage-bearing event. Compare the same workload's TTFT and cached-token
 share over multiple requests; a single miss does not establish a failure.
+The final usage may be on the same event as `finish_reason`; do not require a
+separate event with empty `choices`. See the
+[Chat response contract](../reference/api-contracts.md) for terminal handling.
 
 Operators can additionally compare the per-model cache opportunity counters,
 proof rejection reasons and donation outcomes described in

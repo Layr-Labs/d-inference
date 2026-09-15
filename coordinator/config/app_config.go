@@ -52,35 +52,26 @@ type AppConfig struct {
 
 // Check runs validation on every per-package config.
 func (c AppConfig) Check() error {
-	if err := c.StoreConfig.Check(); err != nil {
-		return fmt.Errorf("store: %w", err)
+	// Preserve validation order: startup reports the first failing component.
+	checks := []struct {
+		name  string
+		check func() error
+	}{
+		{"store", c.StoreConfig.Check},
+		{"billing", c.BillingConfig.Check},
+		{"auth", c.AuthConfig.Check},
+		{"rate_limit", c.RateLimitCfg.Check},
+		{"financial_rate_limit", c.FinancialRL.Check},
+		{"registry", c.RegistryCfg.Check},
+		{"mdm", c.MDMConfig.Check},
+		{"datadog", c.DatadogConfig.Check},
+		{"media_fetch", c.MediaFetchCfg.Check},
+		{"prompt_sidecar", c.PromptSidecar.Check},
 	}
-	if err := c.BillingConfig.Check(); err != nil {
-		return fmt.Errorf("billing: %w", err)
-	}
-	if err := c.AuthConfig.Check(); err != nil {
-		return fmt.Errorf("auth: %w", err)
-	}
-	if err := c.RateLimitCfg.Check(); err != nil {
-		return fmt.Errorf("rate_limit: %w", err)
-	}
-	if err := c.FinancialRL.Check(); err != nil {
-		return fmt.Errorf("financial_rate_limit: %w", err)
-	}
-	if err := c.RegistryCfg.Check(); err != nil {
-		return fmt.Errorf("registry: %w", err)
-	}
-	if err := c.MDMConfig.Check(); err != nil {
-		return fmt.Errorf("mdm: %w", err)
-	}
-	if err := c.DatadogConfig.Check(); err != nil {
-		return fmt.Errorf("datadog: %w", err)
-	}
-	if err := c.MediaFetchCfg.Check(); err != nil {
-		return fmt.Errorf("media_fetch: %w", err)
-	}
-	if err := c.PromptSidecar.Check(); err != nil {
-		return fmt.Errorf("prompt_sidecar: %w", err)
+	for _, component := range checks {
+		if err := component.check(); err != nil {
+			return fmt.Errorf("%s: %w", component.name, err)
+		}
 	}
 	return nil
 }

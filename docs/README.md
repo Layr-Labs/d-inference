@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-14 · commit `4e90ac8b1`
+> Last updated: 2026-09-15 · commit `2d380f71e`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -11,6 +11,8 @@
 > reference, explanation, design record, or dated report) and carries a
 > freshness stamp. Rules for reading and writing them:
 > [`AGENTS.md`](AGENTS.md). One name for each thing: [`glossary.md`](glossary.md).
+
+[App Attest inventory validation](reports/2026-09-14-app-attest-inventory-validation.md) records the protocol 2 Mac test, durable machine identity, complete evidence archive, and remaining release gates.
 
 ## Start here, by task
 
@@ -98,6 +100,8 @@
 
 ## Developer how-tos
 
+- [`developer/historical-references.md`](developer/historical-references.md): open the original source behind a frozen report after files move.
+- [`developer/navigation.md`](developer/navigation.md): find implementation and tests, choose descriptive filenames, and check path dependencies when moving files.
 - [`developer/build.md`](developer/build.md): build the coordinator, sidecar, provider, and UIs; toolchain pins.
 - [`developer/test.md`](developer/test.md): every test suite, what CI runs, how to run the e2e suite.
 

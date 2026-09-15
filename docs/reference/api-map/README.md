@@ -1,6 +1,6 @@
 # Darkbloom system map
 
-> Last updated: 2026-09-14 · commit `6f03472f8`
+> Last updated: 2026-09-15 · commit `5b3251167`
 
 A generated map of Darkbloom's entry points: what authorizes each one, what state
 its reachable code touches, and whether that access reads or writes. The
@@ -229,11 +229,11 @@ a 9px glyph into a rumour.
 The unfiltered coordinator map is on the wrong side of that budget on purpose, and it is
 worth stating how far. Measured on the page itself, at the zoom that fits the map in the
 default 1200×620 viewport (k ≈ 0.40) and scored in screen pixels with the head's own
-11.25 × 9px box: 971 of the 975 heads overlap another head, 122 of them on average, and
-the worst one overlaps 316. Moving them to the wires' midpoints thins the pile-ups without
-emptying them — 24 neighbours on average instead of 122, five times less crowded, worst
-case 74 — and still leaves 969 heads touching, because a midpoint has more room around it
-but every wire has one.
+11.25 × 9px box: 986 of the 990 heads overlap another head, 111 of them on average, and
+the worst one overlaps 301. Moving them to the wires' midpoints thins the pile-ups without
+emptying them — 25 neighbours on average instead of 111, four and a half times less
+crowded, worst case 67 — and still leaves 985 heads touching, because a midpoint has more
+room around it but every wire has one.
 No arrangement points every wire in this system legibly, so the picture has to be narrowed
 first: hover a dot, click one, filter, or zoom past roughly twice the fitted scale, where
 you have stopped looking at the system and started reading a corner of it. The `↦` button's
@@ -241,7 +241,7 @@ tooltip says which rule is in force, how many wires are on the picture, and what
 change it, so "why do I see no arrows" is answered in the toolbar rather than inferred.
 
 A number sits on the midpoint of the wire it belongs to when it can. On the widest handler
-57 wires leave one square and their midpoints pile up, so a number that cannot fit there
+70 wires leave one square and their midpoints pile up, so a number that cannot fit there
 slides along its own curve, then steps off it, and any number that ended up more than a
 few pixels from its wire is joined back to it by a **dashed tick in its own colour**. The
 tick is what makes the moved numbers readable rather than merely present: in a fan that
@@ -302,8 +302,8 @@ same walk, so they are derived rather than described:
   handler and is shifted the same way, so the state a gate reads is numbered before
   the state it gates. A `defer` postpones the call and not its operands, so an
   argument that reads state is numbered where the statement is. The coordinator's
-  widest handler reaches **55** constructions this way; the whole map derives **975**
-  steps over 107 routes.
+  widest handler — the provider WebSocket — reaches **70** constructions this way; the
+  whole map derives **990** steps over 107 routes.
 - **Indirection.** Each step carries how it is reached, from a four-word vocabulary
   the artifact publishes with its own explanations (`stepKindLegend`): `direct`
   (every hop is a statically resolved call), `interface` (some hop dispatches
@@ -312,17 +312,17 @@ same walk, so they are derived rather than described:
   runs in a `defer`, so the touch happens as that frame unwinds) and `async` (some
   hop runs in a goroutine, so the touch is concurrent with the rest of the request
   and unordered against it). A step takes the *strongest* kind on any path that
-  reaches it, because the weaker claim would be the false one. Today: 410
-  `interface`, 220 `direct`, 202 `deferred`, 25 `async`.
+  reaches it, because the weaker claim would be the false one. Today: 514
+  `interface`, 226 `direct`, 225 `deferred`, 25 `async`.
 - **Which touch that was.** `kind` is the strongest touch's and everything printed
   beside it — the depth, the leading call path — is the *earliest* touch's, so the
   two can be two different touches. When they are, the earliest one's own kind is
-  published as `leadKind` (188 steps) and the page says "first touch …" under a
+  published as `leadKind` (255 steps) and the page says "first touch …" under a
   glyph its path does not justify: without it the artifact prints a sentence about
   unwinding beside a wire that does not unwind. Dispatch is tracked off that ladder
   as `iface`, because "which implementation runs" is a different question from
   "when does this happen" and a later `defer` must not answer it; the page states it
-  only where the glyph does not already (32 steps).
+  only where the glyph does not already (51 steps).
 - **Weight.** `touches` counts the distinct source sites that touch the node, and
   `repeats` says at least one of them is inside a loop. `wireCount` is a **floor**,
   not a census — evidence is collapsed per (node, mode, site, innermost function)
@@ -366,8 +366,8 @@ thousand. Both halves are screen-pixel quantities:
 
 | The arc | Because |
 |---|---|
-| Its **stroke and dashes** never scale (`vector-effect: non-scaling-stroke`) | A stroke inside the zoomed scene is scaled with it. At the zoom that fits the whole map a 1.1-unit stroke was 0.44px wide with dashes to match — the arcs were present, with correct geometry, and invisible. The 975 access wires scale on purpose: their collective mass carries them, and at close zoom screen-width lines would fill the picture |
-| Its **head** is dropped when the arc draws less than 1.6 heads of ink (`fkHeads`) | A head does not shrink either, so on a short arc it stops annotating the line and replaces it. The layout packs some pairs of tables adjacently — at the fit, four of the seven keys are bare, each drawing between 1.8 and 4.6px of ink; the fifth clears the bar by a third of a pixel, drawing 15.3px where a 9.4px head asks for 15. Bare, a key still says *there is a key here*; the direction it stops claiming was never legible at that size, and the table below states it at every zoom |
+| Its **stroke and dashes** never scale (`vector-effect: non-scaling-stroke`) | A stroke inside the zoomed scene is scaled with it. At the zoom that fits the whole map a 1.1-unit stroke was 0.44px wide with dashes to match — the arcs were present, with correct geometry, and invisible. The 990 access wires scale on purpose: their collective mass carries them, and at close zoom screen-width lines would fill the picture |
+| Its **head** is dropped when the arc draws less than 1.6 heads of ink (`fkHeads`) | A head does not shrink either, so on a short arc it stops annotating the line and replaces it. The layout packs some pairs of tables adjacently — at the fit, five of the fifteen keys are bare, each drawing between 6.7 and 12.5px of ink where a 9.4px head asks for 15; the shortest headed arc clears that bar by three pixels, drawing 18.2px. Bare, a key still says *there is a key here*; the direction it stops claiming was never legible at that size, and the table below states it at every zoom |
 
 The measure is the ink `drawArc` actually drew, not the gap between two table centres —
 the end is pulled back out of the target's disc, which is up to a node radius. Zooming
@@ -381,18 +381,18 @@ want a little more zoom than the chip gives.
 
 ## How much of it is opinion
 
-Everything countable is derived: **108 routes, 101 nodes, 20 groups, 280
-associations, 975 wiring steps, 45 table definitions (681 columns, 7 foreign keys),
-1,176 citations**. The opinions are a bounded, greppable set of
+Everything countable is derived: **108 routes, 116 nodes, 20 groups, 295
+associations, 990 wiring steps, 58 table definitions (756 columns, 15 foreign keys),
+1,216 citations**. The opinions are a bounded, greppable set of
 overlay tables:
 
 | Kind of opinion | Where | Size today |
 |---|---|---|
-| what a field/type/call *is* | `deps.fields`, `deps.types`, `deps.functions` | 154 (21 wildcards, 36 sentinels), 71, 1 |
+| what a field/type/call *is* | `deps.fields`, `deps.types`, `deps.functions` | 159 (21 wildcards, 37 sentinels), 73, 1 |
 | what a literal points at | `deps.hosts`, `deps.endpoints`, `deps.messages` | 21, 7, 25 |
-| how far to look | `deps.traverse`, `deps.inherit`, `deps.packageDefault`, `deps.strict`, `deps.preferImpl`, `deps.sqlDriver`, `gateDepth` | 21, 3, 22, 1, 1, 1 (+6 assembled statements), 2 |
-| how to name things | `namespaces`, `authRules`, `clusters`, `categories`, `labels` | 38, 15, 6, 6, 60 |
-| prose | `routes`, `depDocs`, `categoryDocs`, `cacheSemantics` | 108, 101, 6, 4 |
+| how far to look | `deps.traverse`, `deps.inherit`, `deps.packageDefault`, `deps.strict`, `deps.preferImpl`, `deps.sqlDriver`, `gateDepth` | 21, 3, 23, 1, 1, 1 (+6 assembled statements), 2 |
+| how to name things | `namespaces`, `authRules`, `clusters`, `categories`, `labels` | 38, 15, 6, 6, 62 |
+| prose | `routes`, `depDocs`, `categoryDocs`, `cacheSemantics` | 108, 116, 6, 4 |
 
 A handful of opinions are structural — changing them means changing
 `tools/systemmap`, not the overlay: that an entry point is an HTTP route
@@ -478,8 +478,8 @@ a machine which has never been migrated — the coordinator's `users` table is s
 columns wider in production than its `CREATE` says. The `CREATE`, `ALTER` and
 `CREATE INDEX` statements are shown as written, each with its citation. The drawer
 also lists the table's foreign keys in both directions — the ones it declares and
-the ones pointing at it — each followable to the other table. **681 columns across
-45 tables** are derived this way; nothing about a table's shape is curated.
+the ones pointing at it — each followable to the other table. **756 columns across
+58 tables** are derived this way; nothing about a table's shape is curated.
 
 ## Walking the history
 

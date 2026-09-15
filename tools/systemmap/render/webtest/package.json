@@ -1,0 +1,15 @@
+{
+  "name": "systemmap-webtest",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Executes the generated system-map.html in a DOM and drives its explorer.",
+  "scripts": {
+    "test": "node --test --test-reporter=tap *.test.mjs"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}

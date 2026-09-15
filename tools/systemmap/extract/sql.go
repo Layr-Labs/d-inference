@@ -1,0 +1,358 @@
+package extract
+
+import (
+	"bytes"
+	"go/ast"
+	"regexp"
+	"sort"
+	"strings"
+)
+
+// TableAccess is one table named by a SQL statement, with the mode the
+// statement's verb implies.
+type TableAccess struct {
+	Table string
+	Mode  string // "R" or "W"
+}
+
+// sqlMatcher is one keyword pattern and whether a name it captures may be a call
+// rather than a table — see isCallAt.
+type sqlMatcher struct {
+	re   *regexp.Regexp
+	call bool
+}
+
+var (
+	reIdent      = `((?:"[a-z_][a-z0-9_$]*"|[a-z_][a-z0-9_$]*)(?:\.(?:"[a-z_][a-z0-9_$]*"|[a-z_][a-z0-9_$]*))?)`
+	reInsert     = regexp.MustCompile(`insert\s+into\s+` + reIdent)
+	reUpdate     = regexp.MustCompile(`update\s+(?:only\s+)?` + reIdent)
+	reDelete     = regexp.MustCompile(`delete\s+from\s+(?:only\s+)?` + reIdent)
+	reCreate     = regexp.MustCompile(`create\s+(?:unlogged\s+|temp\s+|temporary\s+)?table\s+(?:if\s+not\s+exists\s+)?` + reIdent)
+	reAlter      = regexp.MustCompile(`alter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?` + reIdent)
+	reDrop       = regexp.MustCompile(`drop\s+table\s+(?:if\s+exists\s+)?` + reIdent)
+	reTruncate   = regexp.MustCompile(`truncate\s+(?:table\s+)?` + reIdent)
+	reFrom       = regexp.MustCompile(`from\s+(?:only\s+)?` + reIdent)
+	reJoin       = regexp.MustCompile(`join\s+(?:only\s+)?` + reIdent)
+	reUsing      = regexp.MustCompile(`\busing\s+` + reIdent)
+	reCTE        = regexp.MustCompile(`(?:with|,)\s+(?:recursive\s+)?([a-z_][a-z0-9_$]*)\s+as\s*\(`)
+	reWhitespace = regexp.MustCompile(`\s+`)
+
+	// A matcher and whether the position it matches may hold a call. `FROM`, `JOIN`
+	// and `USING` all introduce a from-list item, which PostgreSQL lets be a
+	// set-returning function; the rest introduce a table and nothing else. The
+	// distinction has to travel with the matcher rather than with the mode, because
+	// `USING` is scored as a write here and still reads a function's rows.
+	writeMatchers = []sqlMatcher{{re: reInsert}, {re: reUpdate}, {re: reDelete}, {re: reCreate},
+		{re: reAlter}, {re: reDrop}, {re: reTruncate}, {re: reUsing, call: true}}
+	readMatchers = []sqlMatcher{{re: reFrom, call: true}, {re: reJoin, call: true}}
+
+	// SQL keywords that can legally follow FROM/JOIN/USING without naming a table.
+	//
+	// Function names are not in this list, and deliberately: `unnest` and
+	// `generate_series` used to be, which made the list a census of the
+	// set-returning functions the store happened to call — so the first new one
+	// (`jsonb_to_recordset`, in the code-attestation coverage upsert) was read as a
+	// table with no `CREATE TABLE` and failed the map. `isCallAt` decides that
+	// syntactically instead, which is a property of the text rather than a list
+	// anyone has to keep current. `dual` stays: it names no arguments.
+	sqlNoise = map[string]bool{
+		"select": true, "values": true, "only": true, "lateral": true,
+		"dual": true, "set": true, "where": true,
+	}
+)
+
+// sqlForms is the grammar test for "is this literal a statement": a leading verb
+// plus the clause that verb cannot legally appear without. The verb alone is not
+// enough — the coordinator is full of English that starts with one ("update
+// capabilities", "delete from the fleet"), and a prose match would invent a
+// table named after the next word.
+var sqlForms = []struct {
+	verb     *regexp.Regexp
+	requires *regexp.Regexp // nil when the verb is unambiguous on its own
+}{
+	{regexp.MustCompile(`^insert\s`), regexp.MustCompile(`\binto\s+` + reIdent)},
+	{regexp.MustCompile(`^update\s`), regexp.MustCompile(`\bset\s`)},
+	{regexp.MustCompile(`^delete\s`), regexp.MustCompile(`^delete\s+from\s+(?:only\s+)?` + reIdent)},
+	{regexp.MustCompile(`^select\s`), regexp.MustCompile(`\bfrom\s|\(`)},
+	{regexp.MustCompile(`^with\s`), regexp.MustCompile(`\bas\s*\(`)},
+	{regexp.MustCompile(`^create\s+(?:unlogged\s+|temp\s+|temporary\s+|unique\s+)?(?:table|index)\s`), nil},
+	{regexp.MustCompile(`^alter\s+table\s`), nil},
+	{regexp.MustCompile(`^drop\s+(?:table|index)\s`), nil},
+	{regexp.MustCompile(`^truncate\s`), regexp.MustCompile(`^truncate\s+(?:table\s+)?` + reIdent)},
+	{regexp.MustCompile(`^do\s+\$\$`), nil},
+	// Session configuration. `SET LOCAL work_mem = '1GB'` is a whole statement
+	// that names no table, and the analytics reads raise work_mem, pin
+	// hash_mem_multiplier and force a custom plan that way
+	// (coordinator/store/postgres_analytics.go). Without this form the extractor
+	// read those as "not a statement", so a body whose only statements are SET
+	// looked like one that assembled its SQL out of sight — the count check
+	// reported `withAnalyticsTx` while nothing was actually hidden. The remedy on
+	// offer there is to declare the function's tables, which would have been a
+	// human vouching for the empty set forever.
+	//
+	// `LOCAL`/`SESSION` and the assignment are both required. `^set\s` alone matches
+	// English ("set the provider idle"), and a prose match invents a table named
+	// after the next word. Dropping the scope word is not enough either: the tail of
+	// a spliced update is `SET name = $1`, which would then count as a statement of
+	// its own and balance the count for a body whose table really is spliced in at
+	// run time — the one thing that check exists to catch. Every SET the coordinator
+	// issues is scoped to the transaction, so requiring the word costs nothing, and
+	// `Tables` finds no table in either shape either way.
+	{regexp.MustCompile(`^set\s`), regexp.MustCompile(`^set\s+(?:local|session)\s+[a-z_][a-z0-9_.$]*\s*(?:=|to)\s`)},
+}
+
+// IsSQL reports whether a string literal is a SQL statement.
+func IsSQL(s string) bool {
+	if len(s) < 12 || !strings.ContainsAny(s, " \t\n") {
+		return false
+	}
+	norm := normalizeSQL(s)
+	for _, form := range sqlForms {
+		if !form.verb.MatchString(norm) {
+			continue
+		}
+		return form.requires == nil || form.requires.MatchString(norm)
+	}
+	return false
+}
+
+func normalizeSQL(s string) string {
+	return strings.ToLower(strings.TrimSpace(reWhitespace.ReplaceAllString(s, " ")))
+}
+
+// Tables classifies a SQL statement into per-table read and write accesses.
+//
+// Writes are matched first and masked out of the statement, so the `FROM` of an
+// `INSERT ... SELECT ... FROM other` still reads `other` while the insert target
+// stays a write and is not double-counted as a read.
+func Tables(sql string) []TableAccess {
+	norm := normalizeSQL(sql)
+	ctes := map[string]bool{}
+	for _, m := range reCTE.FindAllStringSubmatch(norm, -1) {
+		ctes[m[1]] = true
+	}
+	modes := map[string]string{}
+	add := func(name, mode string) {
+		name = cleanIdent(name)
+		if name == "" || ctes[name] || sqlNoise[name] {
+			return
+		}
+		switch {
+		case modes[name] == "" || modes[name] == mode:
+			modes[name] = mode
+		default:
+			modes[name] = "RW"
+		}
+	}
+	base := string(maskLockingClauses(maskKeywordCalls([]byte(norm)), reLockingAnyCase))
+	masked := []byte(base)
+	for _, m := range writeMatchers {
+		for _, loc := range m.re.FindAllStringSubmatchIndex(base, -1) {
+			if m.call && isCallAt(base, loc[3]) {
+				continue
+			}
+			add(base[loc[2]:loc[3]], "W")
+			for i := loc[0]; i < loc[1]; i++ {
+				masked[i] = ' '
+			}
+		}
+	}
+	read := string(masked)
+	for _, m := range readMatchers {
+		for _, loc := range m.re.FindAllStringSubmatchIndex(read, -1) {
+			// A name in a from-list position that carries an argument list is a
+			// set-returning function rather than a table — see isCallAt.
+			if m.call && isCallAt(read, loc[3]) {
+				continue
+			}
+			add(read[loc[2]:loc[3]], "R")
+		}
+	}
+	out := make([]TableAccess, 0, len(modes))
+	for name, mode := range modes {
+		out = append(out, TableAccess{Table: name, Mode: mode})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Table < out[j].Table })
+	return out
+}
+
+// isCallAt reports whether the name ending at `end` is immediately applied to an
+// argument list — which, in a from-list position, means it is a set-returning
+// function and not a table. `FROM jsonb_to_recordset($1::jsonb) AS x(...)` reads
+// no table at all; the rows it scans are the parameter's.
+//
+// The rule is syntactic because the grammar makes it decidable: PostgreSQL takes a
+// column-alias list only after an alias (`FROM t AS u(a, b)`, `FROM t u(a, b)`), so
+// a bare table name followed by `(` is not legal SQL, and there is nothing for the
+// test to be wrong about. That is worth more than the accuracy of any list of
+// function names, which is only ever as current as the last person to extend it.
+//
+// It is applied to the three keywords that introduce a from-list item — FROM, JOIN
+// and `DELETE ... USING`, all of which take a function where they take a table — and
+// to no others. `INSERT INTO usage (id, tokens)` and `CREATE TABLE models (...)` both
+// put a real table in front of a parenthesis, so the same rule there would drop every
+// write the store issues. Leaving USING out was a bug of exactly the kind this rule
+// replaced: with the function names gone from `sqlNoise`, `DELETE FROM usage u USING
+// unnest($1::text[]) ids` read `unnest` as a table nothing declares.
+//
+// Whitespace is skipped, since `FROM unnest ($1)` calls a function as much as
+// `FROM unnest($1)` does. Anything else — a comma, a keyword, the end of the text —
+// means the name stood alone and is a table.
+func isCallAt(text string, end int) bool {
+	for i := end; i < len(text); i++ {
+		switch text[i] {
+		case ' ', '\t', '\n', '\r':
+		case '(':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// keywordCalls are the SQL functions whose arguments are separated by keywords
+// rather than commas. They are the complete set in which FROM/IN/FOR/PLACING
+// appear without introducing a table — `extract(epoch FROM created_at)` would
+// otherwise be read as a table named `created_at`.
+var keywordCalls = []string{"extract", "substring", "trim", "overlay", "position"}
+
+// maskKeywordCalls blanks the argument list of each keyword-argument call,
+// tracking nesting so a call containing parentheses is masked in full. Names are
+// matched without regard to case, so the mask works on statement text that has
+// not been normalized — `auditText` needs the original case to tell SQL keywords
+// from the same words in prose.
+//
+// The case-folded copy is folded byte by byte over ASCII rather than through
+// strings.ToLower, whose output can be a different length than its input (U+212A
+// KELVIN SIGN is three bytes and folds to one). One such rune anywhere in a
+// statement would shift every offset after it and mask the wrong bytes; the names
+// being matched are ASCII, so folding only ASCII loses nothing.
+func maskKeywordCalls(b []byte) []byte {
+	lower := make([]byte, len(b))
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		lower[i] = c
+	}
+	for _, name := range keywordCalls {
+		for at := 0; at < len(b); {
+			j := bytes.Index(lower[at:], []byte(name+"("))
+			if j < 0 {
+				break
+			}
+			start := at + j
+			open := start + len(name)
+			at = open + 1
+			if start > 0 && isIdentByte(lower[start-1]) {
+				continue // the tail of a longer identifier
+			}
+			depth := 0
+			for k := open; k < len(b); k++ {
+				switch b[k] {
+				case '(':
+					depth++
+				case ')':
+					depth--
+				}
+				if depth == 0 {
+					at = k
+					break
+				}
+				if k > open {
+					b[k] = ' '
+					lower[k] = ' '
+				}
+			}
+		}
+	}
+	return b
+}
+
+// The clauses in which UPDATE is not the head of an update statement: the row locks
+// a SELECT can end with, and the action of an upsert's ON CONFLICT. In every one of
+// them the word is followed by something that is not a table — `FOR UPDATE SKIP
+// LOCKED` read as `UPDATE skip` put a table called `skip` in the map, and `DO UPDATE
+// SET` was only saved by `set` being in sqlNoise.
+//
+// There are two patterns because the two readers see different text and need
+// different strictness, and a single case-insensitive one was wrong in both of them.
+// `Tables` reads normalized lower-case text and so cannot use case at all;
+// `auditText` keeps the original case, which is the only thing that tells `FOR` the
+// SQL keyword from `for` the last word of a comment.
+var (
+	// reLockingAnyCase is for `Tables`.
+	reLockingAnyCase = regexp.MustCompile(`(?i)\b(?:for[ \t\n\r]+(?:no[ \t\n\r]+key[ \t\n\r]+)?update|do[ \t\n\r]+update)\b`)
+	// reLockingUpperCase is for `auditText`. A lower-case `for` before an upper-case
+	// `UPDATE` is prose running into a statement — `"-- rows queued for\nUPDATE " +
+	// table` — and masking it hid the splice that follows, which is the whole point
+	// of that scan.
+	reLockingUpperCase = regexp.MustCompile(`\b(?:FOR[ \t\n\r]+(?:NO[ \t\n\r]+KEY[ \t\n\r]+)?UPDATE|DO[ \t\n\r]+UPDATE)\b`)
+	// reLockContinues is what may legally follow the masked words: the end of the
+	// text (a literal that closes right after the lock, or splices its SET clause on),
+	// a clause or statement boundary, the start of a comment, the rest of a lock (`OF
+	// t`, `NOWAIT`, `SKIP LOCKED`), or the upsert's `SET`. An identifier that is none
+	// of those means the word was `UPDATE` heading a statement after all, and masking
+	// it lost a real write: `-- rows queued for\nUPDATE usage SET tokens = 0` dropped
+	// `usage` from the map entirely.
+	//
+	// A comment is in the list because `... FOR UPDATE -- lock the row` is as legal as
+	// `... FOR UPDATE NOWAIT`, and refusing to mask it made `auditText` read `--` as a
+	// table spliced in at run time: a finding against correct, fully readable SQL whose
+	// only remedy was to move the comment.
+	reLockContinues = regexp.MustCompile(`(?i)^[ \t\n\r]*(?:$|[;,)]|--|/\*|(?:of|nowait|skip|set)\b)`)
+)
+
+// maskLockingClauses blanks those clauses, keeping the text the same length so
+// offsets into it stay valid.
+func maskLockingClauses(b []byte, re *regexp.Regexp) []byte {
+	for _, loc := range re.FindAllIndex(b, -1) {
+		if !reLockContinues.Match(b[loc[1]:]) {
+			continue
+		}
+		for i := loc[0]; i < loc[1]; i++ {
+			b[i] = ' '
+		}
+	}
+	return b
+}
+
+func isIdentByte(c byte) bool {
+	return c == '_' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+}
+
+// cleanIdent strips quoting and a schema qualifier.
+func cleanIdent(name string) string {
+	name = strings.ReplaceAll(name, `"`, "")
+	if i := strings.LastIndex(name, "."); i >= 0 {
+		name = name[i+1:]
+	}
+	// Trimmed after the cut, not before it: `public . users` reaches here from a
+	// schema-qualified reference with space around the dot, and returning " users"
+	// would report a table nothing declares.
+	return strings.TrimSpace(name)
+}
+
+// StringLiterals collects every string literal a package declares, so an overlay
+// claim about a remote endpoint path can be checked against source even when no
+// endpoint reaches it (the MDM command surfaces are driven by the background
+// verification scheduler).
+func (p *Program) StringLiterals(importPath string) map[string]bool {
+	out := map[string]bool{}
+	pkg := p.pkgs[importPath]
+	if pkg == nil {
+		return out
+	}
+	for _, file := range pkg.Syntax {
+		ast.Inspect(file, func(n ast.Node) bool {
+			if lit, ok := n.(*ast.BasicLit); ok {
+				if s, ok := stringLit(lit); ok {
+					out[s] = true
+				}
+			}
+			return true
+		})
+	}
+	return out
+}

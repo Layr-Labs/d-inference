@@ -66,6 +66,7 @@
 - [`reference/README.md`](reference/README.md): index.
 - [`reference/api-contracts.md`](reference/api-contracts.md): every HTTP route, header, status code, and JSON shape of the coordinator.
 - [`reference/protocol-messages.md`](reference/protocol-messages.md): every WebSocket message between coordinator and provider, field by field, Go ↔ Swift.
+- [`reference/api-map/README.md`](reference/api-map/README.md): the generated Darkbloom system map — every entry point clustered by surface, what authorizes it, and the state its reachable code reads or writes. Built from source, not committed.
 - [`reference/configuration.md`](reference/configuration.md): every environment variable with type, default, reading file and effect — coordinator `EIGENINFERENCE_*` (routing, admission, TTFT, warm pool, cache routing, billing, MDM, telemetry), provider `DARKBLOOM_*`, console-ui and admin-ui — plus where each process gets its environment.
 - [`reference/telemetry-schema.md`](reference/telemetry-schema.md): telemetry event types, field allowlist, symmetry rules.
 - [`reference/telemetry-inventory.md`](reference/telemetry-inventory.md): every telemetry datum collected — producer, sink, cadence, retention — and the Datadog metric-name inventory with tags and emitting file.

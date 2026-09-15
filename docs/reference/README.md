@@ -15,6 +15,7 @@ Every row cites the code that defines it. For how and why things work, use
 |---|---|
 | [api-contracts.md](api-contracts.md) | Every coordinator HTTP route: method, path, auth, request and response shapes, headers, status codes, SSE framing |
 | [protocol-messages.md](protocol-messages.md) | Every WebSocket message between coordinator and provider, field by field, with the Go and Swift types |
+| [api-map/](api-map/README.md) | Generated Darkbloom system map: clustered knowledge graph, per-route auth, state reached, R/W mode, citations |
 
 ## Configuration and schemas
 

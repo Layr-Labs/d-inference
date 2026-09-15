@@ -13,6 +13,7 @@ type AuthorizationBinding struct {
 }
 
 type AuthorizationEvidence struct {
+	HardwareKnown, HardwareMatched             bool
 	ArchiveComplete                            bool
 	RenewalConfigured                          bool
 	Binding, Expected                          AuthorizationBinding
@@ -53,11 +54,16 @@ func EvaluateAuthorization(e AuthorizationEvidence, now time.Time) Authorization
 	if e.Binding.Account == "" || e.Binding.Machine == "" || e.Binding.Credential == "" || e.Binding.Connection == "" || e.Binding.Endpoint == "" || e.Binding.AppID == "" || e.Binding.Environment == "" {
 		unknown("identity_missing")
 	}
-	if e.ProtocolVersion != 2 {
+	if e.ProtocolVersion != 2 && e.ProtocolVersion != 3 {
 		unknown("signed_status_unavailable")
 	}
 	if !e.ArchiveComplete {
 		unknown("evidence_archive_gap")
+	}
+	if e.ProtocolVersion != 3 || !e.HardwareKnown {
+		unknown("hardware_claims_unbound")
+	} else if !e.HardwareMatched {
+		deny("hardware_claims_mismatch")
 	}
 	if !e.CredentialVerified {
 		unknown("credential_unverified")

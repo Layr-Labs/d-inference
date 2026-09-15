@@ -68,7 +68,7 @@ func appAttestRetryDelay(failures int) time.Duration {
 
 func retryableAppAttestOutcome(outcome string) bool {
 	switch outcome {
-	case "timeout", "operation_timeout", "apple_unavailable", "busy", "storage_error", "write_failed", "storage_busy", "verifier_busy", "key_unregistered", "apple_invalid_key", "keychain_error":
+	case "timeout", "operation_timeout", "apple_unavailable", "busy", "storage_error", "enrollment_storage_error", "write_failed", "storage_busy", "verifier_busy", "key_unregistered", "apple_invalid_key", "keychain_error":
 		return true
 	}
 	return false

@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-14 · commit `4676eedbe`
+> Last updated: 2026-09-14 · commit `46299ff78`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -706,3 +706,15 @@ comment in `coordinator/registry/capacity_cooldown.go`.
 - [`../architecture/telemetry.md`](../architecture/telemetry.md) — what the coordinator does with heartbeat data
 - [`telemetry-inventory.md`](telemetry-inventory.md) — producer, sink and cadence of every datum
 - [`api-contracts.md#headers`](api-contracts.md#headers) — the `X-Timing` header
+
+### App Attest protocol 3 hardware binding
+
+`register.app_attest_protocol=3` negotiates the account/endpoint-bound shadow
+exchange plus signed static hardware claims. `AppAttestStatus` adds optional
+string fields `machine_model`, `memory_gb`, `cpu_total`, `cpu_performance`,
+`cpu_efficiency` and `gpu_cores`; version 3 hashes them after the version 2 status
+fields under its own domain. Old transcripts remain unchanged. Original enrollment
+protocol is retained for cached-response recovery across upgrades. These fields
+are app measurements, not Apple-certified hardware. See
+[the App Attest reference](app-attest-shadow.md) and
+`coordinator/protocol/app_attest_hardware.go` (`AppAttestShadowHashV3`).

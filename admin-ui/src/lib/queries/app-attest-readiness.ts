@@ -5,7 +5,7 @@ import { query } from "@/lib/db";
 const readiness = `WITH latest AS (
  SELECT DISTINCT ON (machine_id) machine_id,session_id,disconnected_at,last_seen,observation
  FROM darkbloom_machine_sessions WHERE last_seen>=NOW()-$1::int*INTERVAL '1 day'
- ORDER BY machine_id,last_seen DESC,session_id
+ ORDER BY machine_id,(disconnected_at IS NULL AND last_seen>NOW()-INTERVAL '90 seconds') DESC,last_seen DESC,session_id
 ), evaluated AS (
  SELECT l.*,p.fields,CASE
  WHEN l.disconnected_at IS NOT NULL OR l.last_seen<NOW()-INTERVAL '90 seconds' THEN 'offline'

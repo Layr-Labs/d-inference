@@ -1,6 +1,6 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-09-14 · commit `b725a72a8`
+> Last updated: 2026-09-14 · commit `46299ff78`
 
 App Attest runs alongside authoritative APNs and MDM verification. The coordinator records stable machine identities, fleet adoption, complete submitted proofs, and receipts. These records do not change routing, rewards, trust, or the supported OS floor. DeviceCheck's separate two-bit API is deferred.
 
@@ -9,22 +9,22 @@ App Attest runs alongside authoritative APNs and MDM verification. The coordinat
 | Variable | Default | Meaning |
 |---|---|---|
 | `EIGENINFERENCE_APP_ATTEST_SHADOW` | `false` | Enables negotiated shadow requests. Disabling it preserves machine inventory, legacy verification, and renewal of existing receipts when credentials are configured. |
-| `EIGENINFERENCE_APP_ATTEST_ROLLOUT_PERCENT` | `0` | Stable account/machine cohort, integer 0–100. Invalid values exclude all clients. The hard provider floor is `0.9.4`; older, missing, malformed and prerelease versions below that floor never receive Apple operations. |
+| `EIGENINFERENCE_APP_ATTEST_ROLLOUT_PERCENT` | `0` | Stable authenticated-account cohort, integer 0–100. Invalid values exclude all clients. The hard provider floor is `0.9.4`; older, missing, malformed and prerelease versions below that floor never receive Apple operations. |
 | `EIGENINFERENCE_APP_ATTEST_QUALIFIED_BUILD_HASHES` | unset | Comma-separated immutable binary hashes with completed Mac build/security-transition qualification. This does not override the active release catalog or missing Apple metadata. Empty means prospective build qualification is unknown. |
 | `EIGENINFERENCE_APP_ATTEST_APP_ID` | `SLDQ2GJ6TL.io.darkbloom.provider` | Expected team prefix and macOS signing identifier. |
 | `EIGENINFERENCE_APP_ATTEST_ENVIRONMENT` | `production` | Apple attestation environment; `development` is also supported. |
 | `EIGENINFERENCE_APP_ATTEST_RECEIPT_KEY_PATH` | unset | Private server-side ES256 key file with DeviceCheck service authorization, used only for App Attest receipt renewal. Unset disables renewal. |
 | `EIGENINFERENCE_APP_ATTEST_RECEIPT_KEY_ID` | unset | Apple key identifier for receipt renewal. Both credential settings are required. |
 
-Code: `coordinator/api/app_attest_shadow_config.go` (`readAppAttestShadowConfig`) and `coordinator/api/app_attest_rollout.go` (`appAttestRolloutDecision`). Direct `ServerConfig{}` construction keeps shadow disabled. There is no enforcement setting. Receipt renewal does not generate DCDevice tokens, read or write DeviceCheck bits, or send APNs pushes.
+Code: `coordinator/api/app_attest_shadow_config.go` (`readAppAttestShadowConfig`) and `coordinator/api/app_attest_rollout.go` (`appAttestRolloutDecision`). All machines on one authenticated account share the cohort; the percentage is of accounts, not an exact fraction of machines. A provisional machine ID or lost legacy key cannot reroll it. Direct `ServerConfig{}` construction keeps shadow disabled. There is no enforcement setting. Receipt renewal does not generate DCDevice tokens, read or write DeviceCheck bits, or send APNs pushes.
 
 ## Wire exchange
 
-New clients advertise `register.app_attest_protocol = 2`; the coordinator also accepts protocol 1. Older providers receive no unknown frames. A coordinator predating version 2 may ignore the new capability while continuing legacy serving. The registration capability is preserved by both Swift encoders, including `encodeRegisterPreservingRawAttestation`.
+New clients advertise `register.app_attest_protocol = 3`; the coordinator also accepts protocols 1 and 2. Older providers receive no unknown frames. A coordinator predating version 3 may ignore the new capability while continuing legacy serving. The registration capability is preserved by both Swift encoders, including `encodeRegisterPreservingRawAttestation`.
 
 The shadow session uses the registry's validated endpoint key, never the original registration field. It requires a canonical 44-character base64 encoding of 32 bytes, rejecting missing/invalid keys and encodings padded with CR/LF before enrollment. Machine inventory remains independent of that readiness check. Code: `coordinator/api/app_attest_shadow.go`.
 
-Frames use `type = "app_attest_shadow"` and nested `payload`. Every request has a random session and expected environment. Version 2 adds `protocol_version = 2` and an opaque authenticated-account scope.
+Frames use `type = "app_attest_shadow"` and nested `payload`. Every request has a random session and expected environment. Versions 2 and 3 carry the negotiated `protocol_version` and an opaque authenticated-account scope.
 
 | Direction | Action | Behavior |
 |---|---|---|
@@ -37,7 +37,7 @@ Frames use `type = "app_attest_shadow"` and nested `payload`. Every request has 
 
 Code: `coordinator/protocol/app_attest_shadow.go`, `coordinator/protocol/app_attest_status.go`, and `provider-swift/Sources/ProviderAppAttest/ShadowProtocol.swift`.
 
-Both transcript versions encode UTF-8 fields preceded by four-byte big-endian byte lengths, then SHA-256 the result. Version 1 fields are domain `darkbloom.app-attest.shadow.v1`, action, session, environment, key ID, plaintext challenge, and the app-owned X25519 public key. Version 2 changes the domain to `darkbloom.app-attest.shadow.v2` and appends account scope, OS version, OS build, app version, chip, and binary hash in that order. Go and Swift tests pin independent vectors.
+All transcript versions encode UTF-8 fields preceded by four-byte big-endian byte lengths, then SHA-256 the result. Version 1 fields are domain `darkbloom.app-attest.shadow.v1`, action, session, environment, key ID, plaintext challenge, and the app-owned X25519 public key. Version 2 changes the domain to `darkbloom.app-attest.shadow.v2` and appends account scope, OS version, OS build, app version, chip, and binary hash in that order. Version 3 uses domain `darkbloom.app-attest.shadow.v3` and additionally appends machine model, physical RAM in GiB, total/performance/efficiency CPU cores and GPU cores as canonical decimal strings. Go and Swift tests pin independent vectors. The coordinator compares these signed app measurements against the registration; version 2 cannot authenticate the added fields.
 
 The app derives status locally. The server never supplies a replacement endpoint key or arbitrary status to sign. Assertion-bound status is authenticated app reporting; it is not an independent Apple certification of the OS version, chip, or binary hash. The prospective policy requires Apple-provided current assertion metadata, an active catalog match and separately qualified build hash. Missing assertion metadata never falls back to enrollment metadata or an app-reported version.
 
@@ -113,7 +113,7 @@ Apple's [receipt contract](https://developer.apple.com/documentation/devicecheck
 | Apple callbacks | 25-second waiter deadline. The actual uncancellable Apple operation retains admission until its callback arrives; retries receive `busy` in the meantime. A token fences duplicate late callbacks from unlocking a newer operation. A pre-cancelled call does not acquire admission. Code: `AppleOperationGate.swift` and `AppleAppAttestService.swift` in `provider-swift/Sources/ProviderAppAttest/`. |
 | Attestation retries | At most three attempts, 2/8-second waits, only for service unavailable, using the same key/hash. |
 | Key generation | Per-key one-hour replacement cooldown plus five generations per coordinator/environment per hour across account scopes, persisted before calling Apple. |
-| Lost enrollment response | Keychain temporarily retains proof and original status; retry uses a server-persisted, same-owner transaction up to 24 hours old. Expired pending proof is replaced under the generation budget. |
+| Lost enrollment response | Keychain temporarily retains proof and original status; retry uses a server-persisted, same-owner transaction up to 24 hours old. Its stored protocol selects the original transcript; a version 3 upgrade can recover an old version 2 enrollment, but the following fresh assertion must use the new protocol. Expired pending proof is replaced under the generation budget. |
 | Acknowledgement | An assertion request follows durable enrollment acceptance; the successful local assertion clears the cached enrollment proof. |
 | Cancellation | Connection generation prevents late delivery into a different session. |
 
@@ -131,7 +131,8 @@ exchanges supersede the previous verdict.
 |---|---|---|
 | Account, machine, credential, connection, endpoint, app and environment binding | `unknown` | `ineligible` on a binding mismatch |
 | Complete admitted evidence for this connection | `unknown` when a proof was refused or its initial archive write failed | No readiness claim can erase a recorded archive gap |
-| Verified credential, endpoint custody and current protocol 2 assertion | `unknown`; assertions expire after `AssertionFreshness = 15 * time.Minute` | Existing crypto verifier rejects invalid signatures/replay |
+| Protocol 3 static hardware claims match registration | `unknown` if absent/unbound | `ineligible` for a model, chip, RAM or CPU/GPU mismatch |
+| Verified credential, endpoint custody and current assertion | `unknown`; assertions expire after `AssertionFreshness = 15 * time.Minute` | Existing crypto verifier rejects invalid signatures/replay |
 | Current Apple launch category and bundle version | `unknown`; no enrollment fallback | `ineligible` for a non-Developer-ID category or version mismatch |
 | Active release catalog plus qualified immutable build | `unknown` when unavailable/unqualified | `ineligible` for a known catalog mismatch |
 | Credential revocation | `unknown` when storage is unavailable | `ineligible` when revoked |
@@ -162,7 +163,7 @@ Metrics include `app_attest.shadow.events`, `app_attest.shadow.duration_ms`, `ap
 
 The existing CLI, app identity, user LaunchAgent, APNs grants, and deployment floor remain intact. `scripts/prepare-app-attest-entitlements.py` adds only profile-authorized CDhash opt-in and any explicitly granted environment entitlement. An old profile keeps legacy signing. The real adapter requires the full signed app in the supported user context and checks actual API availability.
 
-The [initial physical report](../reports/2026-09-14-app-attest-macos27-validation.md) records macOS 27 acceptance and its limits. The [version 2 release validation](../reports/2026-09-14-app-attest-inventory-validation.md) covers this implementation. Final notarization, install/update and APNs/MDM regressions across the supported OS fleet, security-transition negatives, and production rollout remain separate release gates.
+The [initial physical report](../reports/2026-09-14-app-attest-macos27-validation.md) records macOS 27 acceptance and its limits. The [version 2 validation](../reports/2026-09-14-app-attest-inventory-validation.md) records earlier integration evidence; [0.9.4 recovery qualification](../reports/2026-09-14-app-attest-recovery-validation.md) records the current candidate and its limits. Final notarization, install/update and APNs/MDM regressions across the supported OS fleet, security-transition negatives, and production rollout remain separate release gates.
 
 The [0.9.3 disconnect investigation](../reports/2026-09-14-app-attest-release-disconnects.md)
 records the optimized callback-timer crash and production pause. App Attest
@@ -171,4 +172,4 @@ The packaged `runtime-smoke` command exercises callback completion and deadline
 expiry without calling Apple; the release workflow requires its
 `app-attest-callback-runtime-smoke: ok` marker before publishing.
 
-Run focused Go tests under `-race`, including App Attest, receipts, inventory and archive contracts. PostgreSQL tests require a disposable `DATABASE_URL`; the harness truncates tables. Swift tests cover both transcripts, account isolation, response loss, deadlines, and both registration encoders. Admin query integration tests use `APP_ATTEST_TEST_DATABASE_URL` on the designated disposable local database. No production state is mutated by these tests.
+Run focused Go tests under `-race`, including App Attest, receipts, inventory and archive contracts. PostgreSQL tests require a disposable `DATABASE_URL`; the harness truncates tables. Swift tests cover all three transcripts, account isolation, response loss, deadlines, and both registration encoders. Admin query integration tests use `APP_ATTEST_TEST_DATABASE_URL` on the designated disposable local database. No production state is mutated by these tests.

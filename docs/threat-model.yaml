@@ -24,7 +24,9 @@ created: "2026-05-14"
 # release callback smoke, historical-receipt renewal recovery, credential
 # revocation, and a non-enforcing prospective connection policy. Unknown build
 # metadata/qualification never becomes eligibility. App Attest aliases prove
-# credential continuity, not one physical Mac or certified RAM.
+# credential continuity, not one physical Mac or certified RAM. Protocol 3
+# binds model/RAM/CPU/GPU app measurements to the current assertion and rejects
+# prospective mismatches against registration; it does not change reward rules.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference

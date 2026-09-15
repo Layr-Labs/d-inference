@@ -25,6 +25,7 @@ func (x *appAttestShadowSession) observeBuildPolicy(status *protocol.AppAttestSt
 	snapshot := x.s.releaseTrustPolicy.Load()
 	evidence.CatalogKnown = snapshot != nil && len(snapshot.ByBinaryHash) > 0
 	if status != nil {
+		evidence.HardwareKnown, evidence.HardwareMatched = appAttestHardwareComparison(x.protocolVersion, status, x.hardware)
 		evidence.ReportedVersion = status.AppVersion
 		evidence.BuildQualified = qualifiedAppAttestBuild(x.s.appAttestShadow.QualifiedBuildHashes, status.BinaryHash)
 		if evidence.CatalogKnown {
@@ -64,7 +65,8 @@ func (x *appAttestShadowSession) observeBuildPolicy(status *protocol.AppAttestSt
 	x.policyFields = map[string]any{"policy_version": verdict.PolicyVersion, "reasons": verdict.Reasons,
 		"valid_until": verdict.ValidUntil, "assertion_at": x.assertionAt, "credential_id": x.key.KeyID,
 		"release_matched": evidence.BuildMatched, "build_qualified": evidence.BuildQualified,
-		"receipt_verified": evidence.ReceiptVerified, "risk_metric_available": evidence.RiskMetric != nil}
+		"hardware_claims_bound": evidence.HardwareKnown && evidence.HardwareMatched,
+		"receipt_verified":      evidence.ReceiptVerified, "risk_metric_available": evidence.RiskMetric != nil}
 	x.observe("prospective_policy", verdict.Outcome, nil)
 	x.policyFields = nil
 }

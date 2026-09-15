@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-12 · commit `52ba357f6`
+> Last updated: 2026-09-14 · commit `46299ff78`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -505,3 +505,11 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 - [`architecture/request-outcome-observability.md`](request-outcome-observability.md) — how billing outcomes join the request outcome taxonomy
 - [`reference/api-contracts.md`](../reference/api-contracts.md) — error envelope and status codes
 - [`storage.md`](storage.md) — which store backend holds the ledger and what survives a restart
+
+## Hardware cap dependency
+
+The base-reward model memory ceiling lives in `coordinator/hardware/mac_models.go`
+(`ModelMaxMemoryGB`). Moving that static catalog out of MDM does not change any
+cap, eligibility rule, serial/accounting key, or payout. `coordinator/mdm/mac_models.go`
+retains a compatibility wrapper. App Attest hardware claims are observational in
+this release; they do not replace the existing reward inputs or eligibility gates.

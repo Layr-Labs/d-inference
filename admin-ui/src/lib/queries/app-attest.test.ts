@@ -54,6 +54,7 @@ describe.skipIf(!enabled)("App Attest inventory queries on PostgreSQL", () => {
     await pool.query(`INSERT INTO app_attest_key_revocations VALUES('readiness-key','owner','test',NOW())`);
     expect(await appAttestReadinessCohorts(7)).toContainEqual({readiness:"ineligible",version:"0.9.2",machines:"1"});
     await pool.query(`INSERT INTO darkbloom_machine_sessions SELECT 'replacement',machine_id,original_machine_id,account_id,NOW(),NOW()+INTERVAL '1 second',NULL,observation FROM darkbloom_machine_sessions WHERE session_id='session-b'`);
+    await pool.query(`UPDATE darkbloom_machine_sessions SET disconnected_at=NOW(),last_seen=NOW()+INTERVAL '2 seconds' WHERE session_id='session-b'`);
     expect(await appAttestReadinessCohorts(7)).toEqual([{readiness:"not_evaluated",version:"0.9.2",machines:"2"}]);
     await pool.query(`INSERT INTO app_attest_shadow_events VALUES('missing','replacement',NOW(),'prospective_policy','unknown','{"reasons":["apple_bundle_version_missing"]}')`);
     expect(await appAttestReadinessReasons(7)).toEqual([{reason:"apple_bundle_version_missing",machines:"1"}]);

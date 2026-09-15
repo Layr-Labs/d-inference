@@ -23,13 +23,13 @@ func (x *appAttestShadowSession) send(ctx context.Context, action string) bool {
 	if x.key != nil {
 		p.KeyID = x.key.KeyID
 	}
-	if x.protocolVersion == 2 {
-		p.ProtocolVersion = 2
+	if x.protocolVersion >= 2 {
+		p.ProtocolVersion = x.protocolVersion
 		p.AccountScope = x.accountScope()
 	}
 	if action == "attest" {
 		p.Challenge = x.challenge
-		if x.protocolVersion == 2 {
+		if x.protocolVersion >= 2 {
 			enrollments, ok := store.As[store.AppAttestEnrollmentStore](x.s.store)
 			if !ok {
 				x.observe(action, "storage_unavailable", nil)
@@ -41,7 +41,7 @@ func (x *appAttestShadowSession) send(ctx context.Context, action string) bool {
 				return false
 			}
 			operation, cancel := context.WithTimeout(ctx, 2*time.Second)
-			err := enrollments.SaveAppAttestEnrollment(operation, store.AppAttestEnrollment{ID: x.id, Owner: x.owner, KeyID: x.key.KeyID, CreatedAt: time.Now().UTC(), Environment: x.s.appAttestShadow.Environment, AppID: x.s.appAttestShadow.AppID, Challenge: x.challenge, PublicKey: x.publicKey, AccountScope: x.accountScope()})
+			err := enrollments.SaveAppAttestEnrollment(operation, store.AppAttestEnrollment{ProtocolVersion: x.protocolVersion, ID: x.id, Owner: x.owner, KeyID: x.key.KeyID, CreatedAt: time.Now().UTC(), Environment: x.s.appAttestShadow.Environment, AppID: x.s.appAttestShadow.AppID, Challenge: x.challenge, PublicKey: x.publicKey, AccountScope: x.accountScope()})
 			cancel()
 			release()
 			if err != nil {
@@ -80,7 +80,7 @@ func (x *appAttestShadowSession) send(ctx context.Context, action string) bool {
 	return true
 }
 
-func (x *appAttestShadowSession) handleExchange(ctx context.Context, reply protocol.AppAttestShadowPayload) string {
+func (x *appAttestShadowSession) handleExchange(ctx context.Context, reply protocol.AppAttestShadowPayload, prepared *shadowProofContext) string {
 	// Timer and inbox can become ready together; never let select ordering
 	// count a late proof as a timely success.
 	if !x.started.IsZero() && time.Since(x.started) > shadowResponseTimeout {
@@ -128,9 +128,17 @@ func (x *appAttestShadowSession) handleExchange(ctx context.Context, reply proto
 	if x.expected == "attestation" {
 		action = "attest"
 	}
-	hash, err := x.clientHash(ctx, action, reply)
-	if err != nil {
+	if prepared == nil {
 		x.observe(x.expected, "enrollment_context", nil)
+		return "stop"
+	}
+	hash, err := prepared.Hash, prepared.Err
+	if err != nil {
+		reason := "enrollment_context"
+		if err.Error() == "enrollment_storage_error" {
+			reason = "enrollment_storage_error"
+		}
+		x.observe(x.expected, reason, nil)
 		return "stop"
 	}
 	if action == "attest" {

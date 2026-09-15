@@ -1,6 +1,6 @@
 # Roll out App Attest recovery and qualify MDM retirement
 
-> Last updated: 2026-09-14 · commit `b725a72a8`
+> Last updated: 2026-09-14 · commit `46299ff78`
 
 Use this runbook to qualify provider 0.9.4 alongside authoritative APNs/MDM.
 The [protocol reference](../reference/app-attest-shadow.md) owns configuration,
@@ -44,7 +44,7 @@ have been explicitly approved.
 3. Publish the approved provider 0.9.4 artifact. Verify its registered release,
    final hashes and installer/updater smoke. Older 0.9.3 providers must continue
    ordinary serving and must receive no App Attest operations.
-4. Enable shadow with a one-percent stable cohort. Leave qualified build hashes
+4. Enable shadow with a one-percent stable account cohort. Leave qualified build hashes
    empty until the exact artifact completes the Mac security tests below.
    Increase the percentage only after comparing disconnects, serving success,
    Apple/storage timeouts, retries, dropped submissions and evidence completeness
@@ -66,7 +66,7 @@ have been explicitly approved.
 | Recovery | Interrupted enrollment, delayed receipt delivery, Apple timeout/late callback, DB failure, reconnect and concurrent-counter negatives |
 | Evidence completeness | No missing accepted-proof/receipt blobs; pending/interrupted/storage-error and dropped counts explicitly reconciled or explained; renewal jobs not overdue |
 | Mac policy | Existing-key assertions fail after SIP or Full Security is reduced and rebooted; fresh enrollment under reduced posture also fails |
-| App/build identity | Current Apple metadata, wrong-team/re-sign/unapproved-build/altered-resource negatives, correct catalog and qualified signed hash |
+| App/build identity | Current Apple metadata, wrong-team/re-sign/unapproved-build/altered-resource negatives, correct catalog and qualified signed hash; protocol 3 hardware claims match registration |
 | Identity continuity | Same account/credential and fresh endpoint proof retain identity without MDM; account transfer/claimed key cannot inherit it; balances and historical accounting remain unchanged |
 | Revocation and dispatch | The later enforcement change must call the shared policy at every dispatch/reseal path, using current revocation and catalog state; expiry/reconnect cannot reuse an old verdict |
 | Supported fleet and rewards | Explicit policy for Macs without App Attest; explicit resolution of any reward rule requiring one certified physical Mac or certified RAM |

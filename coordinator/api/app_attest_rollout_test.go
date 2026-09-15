@@ -35,6 +35,11 @@ func TestAppAttestRolloutProtectsReleasedClientsAndRequiresOptIn(t *testing.T) {
 			t.Fatal("cohort shrank when percentage increased")
 		}
 	}
+	for percent := 1; percent <= 99; percent++ {
+		if appAttestRolloutDecision("0.9.4", "same-account", "first-provisional", percent) != appAttestRolloutDecision("0.9.4", "same-account", "replacement-provisional", percent) {
+			t.Fatal("reconnect rerolled account cohort")
+		}
+	}
 	t.Setenv("EIGENINFERENCE_APP_ATTEST_SHADOW", "")
 	t.Setenv("EIGENINFERENCE_APP_ATTEST_ROLLOUT_PERCENT", "")
 	if c := readAppAttestShadowConfig(); c.Enabled || c.RolloutPercent != 0 {

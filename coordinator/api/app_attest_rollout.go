@@ -23,7 +23,10 @@ func appAttestRolloutDecision(version, account, machine string, percent int) str
 	if percent < 0 || percent > 100 {
 		return "configuration_error"
 	}
-	h := sha256.Sum256([]byte("app-attest-rollout-v1\x00" + account + "\x00" + machine))
+	// Accounts are authenticated before enrollment and survive provisional
+	// machine IDs or legacy-key loss. All machines on one account share a
+	// cohort; the percentage is of accounts, not a claimed physical census.
+	h := sha256.Sum256([]byte("app-attest-rollout-account-v1\x00" + account))
 	if int(binary.BigEndian.Uint32(h[:4])%100) >= percent {
 		return "cohort_excluded"
 	}

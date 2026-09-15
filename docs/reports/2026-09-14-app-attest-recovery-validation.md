@@ -1,6 +1,6 @@
 # App Attest 0.9.4 recovery qualification
 
-> Last updated: 2026-09-14 · commit `b725a72a8`
+> Last updated: 2026-09-14 · commit `46299ff78`
 
 The 0.9.4 candidate adds guarded shadow activation, recovery, receipt renewal
 and prospective authorization. Local tests and real Apple exchanges validate
@@ -15,19 +15,30 @@ or notarized release and this report does not certify MDM retirement.
 | App Attest/API/store/authorization race tests | Passed, including a disposable local PostgreSQL instance |
 | PostgreSQL recovery | Old receipt failures remain unchanged; historical recovery is queued once; interrupted verification cannot advance counters |
 | Identity and revocation | Fresh credential association retains identity without legacy proof; other accounts cannot inherit it; revocation is durable and idempotent |
-| Swift tests | 17 App Attest XCTest cases and 23 CLI/updater tests passed |
+| Swift tests | 19 App Attest XCTest cases, 18 coordinator-client cases and 23 CLI/updater cases passed |
 | Atomic installer | Existing cases and rejection of a missing callback marker passed |
 | Admin UI | PostgreSQL cohort/current-connection/expiry/revocation cases, lint and production build passed |
 | Final optimized callback smoke | Completion, cancellation and expiry paths passed alongside Gemma and Metal markers |
 | Negative control | Replacing only the safe callback-timer sleep with the old generic overload made the revised deterministic smoke abort with SIGABRT and `freed pointer was not the last allocation`; fixed source was restored and rebuilt |
 | Locally Developer ID signed 0.9.4 app | Real Apple enrollment and assertions 1–3 verified; restart reused the key and verified counters 4–6 without another enrollment |
+| Actual Go coordinator + PostgreSQL + signed protocol 3 provider | Across restart: one machine, two sessions, one credential, assertion counter 2, three proof blobs and two receipt blobs; provider remained alive |
+| Hardware substitution through a local WebSocket proxy | Changing only registration RAM produced `hardware_claims_mismatch` and an ineligible prospective verdict; the cryptographic assertion remained valid and the provider stayed alive |
 | Apple risk receipt endpoint | HTTP 200; fresh `RECEIPT` signature, app/key, dates and risk metric verified; Apple provided next-refresh and expiration timestamps |
 
-The full-client tests used an isolated loopback coordinator, synthetic auth,
+Both the challenge harness and actual Go coordinator tests used isolated loopback endpoints, synthetic auth,
 separate local state and no consumer inference. Each provider remained alive
 until the harness deliberately sent SIGTERM. Those resulting socket EOFs are
 not application crashes. Test credentials/proof bytes/receipts remain in private
 local artifacts and are not committed here.
+
+Protocol 3 has an independent Go/Swift transcript vector and regression coverage
+for version 2 cached-enrollment recovery, memory substitution and bounds. The
+base-reward memory-cap table moved unchanged into the hardware package.
+
+Review regressions cover a single enrollment snapshot shared by archive and
+verification, retryable enrollment-store failures, account-stable cohort selection
+through provisional identity changes, and live-session preference after a delayed
+terminal capture.
 
 ## Renewal format correction
 

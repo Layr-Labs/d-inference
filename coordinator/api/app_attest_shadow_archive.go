@@ -28,6 +28,7 @@ func (x *appAttestShadowSession) handle(ctx context.Context, reply protocol.AppA
 	if x.archive == nil {
 		x.archive, _ = store.As[store.AppAttestArchiveStore](x.store)
 	}
+	var prepared *shadowProofContext
 	// Every admitted proof is archived before parsing, challenge checks, or
 	// cryptographic verification. Invalid base64 is retained verbatim too.
 	if reply.Proof != "" || reply.Action == "attestation" || reply.Action == "assertion" || x.expected == "attestation" || x.expected == "assertion" {
@@ -52,7 +53,8 @@ func (x *appAttestShadowSession) handle(ctx context.Context, reply protocol.AppA
 			keyID = x.key.KeyID
 			previous = x.key.Counter
 		}
-		hash, hashErr := x.clientHash(ctx, action, reply)
+		hash, enrollment, hashErr := x.prepareClientHash(ctx, action, reply)
+		prepared = &shadowProofContext{Hash: hash, Err: hashErr}
 		inputs := map[string]any{"verifier_version": appattest.VerifierVersion, "policy_version": "mac-acl-shadow-v1", "coordinator_version": coordinatorBuildRevision(),
 			"app_id": x.s.appAttestShadow.AppID, "environment": x.s.appAttestShadow.Environment, "shadow_session": x.id,
 			"action": action, "key_id": keyID, "challenge": x.challenge, "public_key": x.publicKey, "client_data_hash": hex.EncodeToString(hash[:]),
@@ -60,12 +62,8 @@ func (x *appAttestShadowSession) handle(ctx context.Context, reply protocol.AppA
 			"received_key_id": reply.KeyID, "received_challenge": reply.Challenge, "client_result": reply.Result,
 			"status": reply.Status, "account_scope": x.accountScope(), "protocol_version": x.protocolVersion, "enrollment_session": reply.EnrollmentSession, "hash_context_valid": hashErr == nil,
 			"root_sha256": appattest.RootSHA256(), "evaluated_at": time.Now().UTC()}
-		if reply.EnrollmentSession != "" {
-			if st, ok := store.As[store.AppAttestEnrollmentStore](x.s.store); ok {
-				if e, err := st.GetAppAttestEnrollment(ctx, reply.EnrollmentSession); err == nil && e != nil && e.Owner == x.owner {
-					inputs["enrollment_context"] = e
-				}
-			}
+		if enrollment != nil {
+			inputs["enrollment_context"] = enrollment
 		}
 		inputs["proof_field_sha256"] = hex.EncodeToString(sum[:])
 		inputs["proof_field_checksum_encoding"] = "proof_field_utf8"
@@ -121,7 +119,7 @@ func (x *appAttestShadowSession) handle(ctx context.Context, reply protocol.AppA
 		x.evidenceOutcome = x.rejectReason
 		return "stop"
 	}
-	return x.handleExchange(ctx, reply)
+	return x.handleExchange(ctx, reply, prepared)
 }
 
 func (x *appAttestShadowSession) commitEvidence(ctx context.Context, d store.AppAttestDecision) bool {

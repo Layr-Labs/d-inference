@@ -173,6 +173,9 @@ jobs:
         with:
           go-version: '1.25.0'
 
+      - name: Select SDK 27 provider toolchain
+        run: ./scripts/prepare-provider-release-toolchain.sh
+
       - name: Show toolchain versions
         run: |
           set -euo pipefail
@@ -294,10 +297,6 @@ jobs:
       # ----------------------------------------------------------------------
       # Build and test with the SDK required for Apple code measurements.
       # ----------------------------------------------------------------------
-
-      - name: Select SDK 27 provider toolchain
-        timeout-minutes: 20
-        run: ./scripts/prepare-provider-release-toolchain.sh
 
       - name: Build provider-swift (release)
         working-directory: provider-swift
@@ -973,3 +972,45 @@ jobs:
         if: always()
         run: |
           security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+
+  validate-older-macos:
+    name: Signed SDK 27 artifact on older macOS
+    needs: [resolve-env, build-and-release]
+    if: needs.resolve-env.outputs.publish == 'false'
+    runs-on: blacksmith-12vcpu-macos-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Verify and smoke the exact signed validation artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ARTIFACT="$RUNNER_TEMP/signed-provider"
+          gh run download "$GITHUB_RUN_ID" \
+            --name "darkbloom-signed-validation-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}" \
+            --dir "$ARTIFACT"
+          python3 - "$ARTIFACT" <<'PY'
+          import hashlib, json, os, pathlib, subprocess, sys
+          root = pathlib.Path(sys.argv[1])
+          identity = json.loads((root / 'darkbloom-validation-identity.json').read_text())
+          assert identity['source_commit'] == os.environ['GITHUB_SHA']
+          assert identity['release_published'] is False
+          assert identity['build_sdk_version'] == '27.0'
+          assert hashlib.sha256((root / 'darkbloom-bundle-macos-arm64.tar.gz').read_bytes()).hexdigest() == identity['bundle_sha256']
+          major = int(subprocess.check_output(['sw_vers', '-productVersion'], text=True).split('.')[0])
+          assert 14 <= major < 27, 'This compatibility lane must exercise older macOS'
+          PY
+          mkdir "$ARTIFACT/extracted"
+          # Native tar restores the non-Mach-O signing extended attributes.
+          /usr/bin/tar -xzf "$ARTIFACT/darkbloom-bundle-macos-arm64.tar.gz" -C "$ARTIFACT/extracted"
+          APP="$ARTIFACT/extracted/Darkbloom.app"
+          codesign --verify --deep --strict "$APP"
+          xcrun stapler validate "$APP"
+          OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 "$APP/Contents/MacOS/$CLI_NAME" runtime-smoke)
+          printf '%s\n' "$OUTPUT"
+          for marker in app-attest-callback-runtime-smoke gemma-optimizations-runtime-smoke paged-kernel-runtime-smoke; do
+            printf '%s\n' "$OUTPUT" | grep -Fqx "$marker: ok"
+          done

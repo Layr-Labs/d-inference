@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-15 · commit `e2e0cb33f`
+> Last updated: 2026-09-15 · commit `c59159cbe`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -257,7 +257,11 @@ isolated allocator gates. `SDKROOT` covers compilation/linking, and a final
 executable whose recorded SDK differs from the selected SDK fails qualification.
 The CodeDirectory digest is also printed in production release notes and supplies
 the measurement side of an explicitly qualified App Attest binary/code-hash pair.
-Recording it does not authorize the build. Retention is 14 days. Verify those hashes
+Recording it does not authorize the build. In validation-only mode, a second
+job downloads that exact artifact to the older macOS runner, verifies its
+source/archive hashes and notarization, and requires all three runtime smoke
+markers. It asserts that the host is below macOS 27 so the compatibility lane
+cannot silently become another current-OS run. Retention is 14 days. Verify those hashes
 before an isolated model or persistent-cache restart test, and retain the artifact
 with that test's evidence. A successful artifact build does not establish restart
 durability or authorize rollout.

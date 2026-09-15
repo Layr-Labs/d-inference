@@ -34,7 +34,12 @@ func (x *appAttestShadowSession) handle(ctx context.Context, reply protocol.AppA
 			x.observe("archive", "unavailable", nil)
 			return "stop"
 		}
-		raw, _ := base64.StdEncoding.DecodeString(reply.Proof)
+		raw, decodeErr := base64.StdEncoding.DecodeString(reply.Proof)
+		if decodeErr != nil {
+			// Partial decode output is not a complete proof. The exact original
+			// field and its checksum remain available for malformed submissions.
+			raw = nil
+		}
 		sum := sha256.Sum256([]byte(reply.Proof))
 		action := "assert"
 		if x.expected == "attestation" {
@@ -61,9 +66,14 @@ func (x *appAttestShadowSession) handle(ctx context.Context, reply protocol.AppA
 				}
 			}
 		}
-		rawSum := sha256.Sum256(raw)
-		inputs["proof_sha256"] = hex.EncodeToString(rawSum[:])
-		inputs["checksum_encoding"] = "proof_field_utf8"
+		inputs["proof_field_sha256"] = hex.EncodeToString(sum[:])
+		inputs["proof_field_checksum_encoding"] = "proof_field_utf8"
+		inputs["proof_decode_valid"] = decodeErr == nil
+		if decodeErr == nil {
+			rawSum := sha256.Sum256(raw)
+			inputs["proof_sha256"] = hex.EncodeToString(rawSum[:])
+			inputs["checksum_encoding"] = "base64_decoded_bytes"
+		}
 		x.provider.Mu().Lock()
 		inputs["legacy_trust"] = string(x.provider.TrustLevel)
 		inputs["legacy_code_attested"] = x.provider.CodeAttested

@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-14 · commit `4676eedbe`
+> Last updated: 2026-09-14 · commit `df5d14a73`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -19,6 +19,8 @@ Attempt decision fields are additive columns and existing provider JSONB;
 defines migration, historical NULLs and the separately applied waterfall view.
 
 The additive [App Attest inventory and evidence tables](../reference/app-attest-shadow.md#storage-and-complete-evidence-archive) retain stable machine mappings, session/OS history, complete proof bytes, receipt versions, and atomic verification results. They neither restore routing trust nor replace provider accounting identity.
+
+Machine-session reconciliation uses a partial index over open sessions and bounded, row-locked batches to repair missed disconnect writes after contention or restart. Fresh inventory or provider-session heartbeats preserve liveness. Known closures retain their timestamp; inferred stale closures are labelled and can recover when fresh observations resume. Older observations and confirmed disconnects are fenced in `ObserveMachine`. See the [inventory lifecycle](../reference/app-attest-shadow.md#machine-inventory-and-identity) and `coordinator/store/machine_inventory_reconcile.go`.
 
 ## Context
 

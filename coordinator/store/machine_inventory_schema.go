@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS darkbloom_machine_sessions (
  observation JSONB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS darkbloom_machine_sessions_seen ON darkbloom_machine_sessions(last_seen DESC);
+CREATE INDEX IF NOT EXISTS darkbloom_machine_sessions_open ON darkbloom_machine_sessions(last_seen,session_id) WHERE disconnected_at IS NULL;
 CREATE INDEX IF NOT EXISTS darkbloom_machine_sessions_machine ON darkbloom_machine_sessions(machine_id,last_seen DESC);
 CREATE TABLE IF NOT EXISTS darkbloom_machine_merges (
  source_id TEXT PRIMARY KEY REFERENCES darkbloom_machines(id), target_id TEXT NOT NULL REFERENCES darkbloom_machines(id),

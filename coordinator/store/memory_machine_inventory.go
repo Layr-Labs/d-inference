@@ -30,8 +30,16 @@ func (s *MemoryStore) ObserveMachine(ctx context.Context, o MachineObservation) 
 		s.machineInventory = &memoryMachineInventory{machines: map[string]MachineIdentity{}, aliases: map[machineAlias]string{}, sessions: map[string]MachineObservation{}, sessionMachines: map[string]string{}}
 	}
 	m := s.machineInventory
-	if old, ok := m.sessions[o.SessionID]; ok && old.AccountID != o.AccountID {
-		return MachineIdentity{}, errors.New("machine_session_owner_conflict")
+	if old, ok := m.sessions[o.SessionID]; ok {
+		if o.Source != "historical_registration" && old.AccountID != o.AccountID {
+			return MachineIdentity{}, errors.New("machine_session_owner_conflict")
+		}
+		if o.Source == "historical_registration" || inventoryObservationSuperseded(old.At, old.Disconnected, old.DisconnectReason, o) {
+			return m.machines[m.sessionMachines[o.SessionID]], nil
+		}
+	}
+	if o.Disconnected && o.DisconnectReason == "" {
+		o.DisconnectReason = "observed_disconnect"
 	}
 	var candidates []string
 	for _, a := range o.aliases() {

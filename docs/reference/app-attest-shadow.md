@@ -1,6 +1,6 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-09-14 · commit `f33905d61`
+> Last updated: 2026-09-14 · commit `df5d14a73`
 
 App Attest runs alongside authoritative APNs and MDM verification. The coordinator records stable machine identities, fleet adoption, complete submitted proofs, and receipts. These records do not change routing, rewards, trust, or the supported OS floor. DeviceCheck's separate two-bit API is deferred.
 
@@ -19,6 +19,8 @@ Code: `coordinator/api/app_attest_shadow_config.go` (`readAppAttestShadowConfig`
 ## Wire exchange
 
 New clients advertise `register.app_attest_protocol = 2`; the coordinator also accepts protocol 1. Older providers receive no unknown frames. A coordinator predating version 2 may ignore the new capability while continuing legacy serving. The registration capability is preserved by both Swift encoders, including `encodeRegisterPreservingRawAttestation`.
+
+The shadow session uses the registry's validated endpoint key, never the original registration field. It requires a canonical 44-character base64 encoding of 32 bytes, rejecting missing/invalid keys and encodings padded with CR/LF before enrollment. Machine inventory remains independent of that readiness check. Code: `coordinator/api/app_attest_shadow.go`.
 
 Frames use `type = "app_attest_shadow"` and nested `payload`. Every request has a random session and expected environment. Version 2 adds `protocol_version = 2` and an opaque authenticated-account scope.
 
@@ -40,6 +42,10 @@ The app derives status locally. The server never supplies a replacement endpoint
 ## Machine inventory and identity
 
 `startMachineInventory` in `coordinator/api/machine_inventory.go` observes each completed registration, even with shadow disabled or an old client. A separate worker updates liveness once a minute, appends changed observations, and records disconnects. Four concurrent inventory operations are allowed; storage failures are measured and retried. Initial shadow work waits for durable inventory.
+
+`startMachineInventoryReconciler` in `coordinator/api/machine_inventory_reconcile.go` repairs missed terminal captures on startup and every five seconds. Each attempt shares the four inventory slots, has a two-second deadline, and processes at most 100 rows; errors and locked rows are retried on later ticks. The repair reads durable rows and survives a coordinator restart. The partial index over open sessions avoids scanning closed history.
+
+Reconciliation requires inventory liveness older than five minutes and preserves sessions with a fresh, open `provider_sessions` heartbeat, including connections on another coordinator during a cutover. A known provider-session closure supplies its timestamp and records `disconnect_reason=provider_session`. Otherwise both available liveness streams must be stale; closure is estimated at the latest recorded activity and explicitly labelled `inventory_stale`. A fresh observation can reopen an inferred stale closure using the same machine identity. Confirmed disconnects stay closed, and delayed older observations cannot overwrite newer liveness. Reconciliation appends history and never changes provider routing or accounting records. Code: `coordinator/store/machine_inventory_reconcile.go` and `coordinator/store/postgres_machine_inventory.go`.
 
 | Identity evidence | Association | Meaning |
 |---|---|---|
@@ -69,7 +75,7 @@ PostgreSQL is the durable archive itself, including its normal database backup p
 | `app_attest_enrollments` | Original enrollment challenge, endpoint, scope, owner, and policy for response-loss recovery | `coordinator/store/app_attest_enrollment.go` |
 | `app_attest_receipts`, `app_attest_receipt_blobs`, `app_attest_receipt_jobs` | Complete initial/refreshed receipt versions, bounded HTTP responses, independent verification result, renewal schedule and lease | `coordinator/store/app_attest_receipts.go` |
 
-The archive stores invalid base64 verbatim and preserves invalid, replayed, wrong-session, and late proofs within protocol bounds. `sha256` covers the original proof field's UTF-8 bytes; context also includes SHA-256 of decoded proof bytes. Complete attestation CBOR includes every certificate and extension, even fields the verifier does not interpret.
+The archive stores invalid base64 verbatim and preserves invalid, replayed, wrong-session, and late proofs within protocol bounds. The top-level `sha256` and context's `proof_field_sha256` cover the original field's UTF-8 bytes, labelled by `proof_field_checksum_encoding=proof_field_utf8`. Successfully decoded proofs also have `proof_sha256` with `checksum_encoding=base64_decoded_bytes`. `proof_decode_valid=false` identifies malformed base64; partial decoder output is not stored or labelled as a complete decoded proof. Complete attestation CBOR includes every certificate and extension, even fields the verifier does not interpret.
 
 `BeginAppAttestEvidence` writes the full submission before verification. `CompleteAppAttestEvidence` commits the result and accepted key/counter update in one transaction. A failed completion cannot advance a counter or acknowledge enrollment. Interrupted verification remains a visible `pending` record. Identical enrollment is idempotent; replayed assertions remain separate rejected records. Queued proofs are archived as rejected when a shadow session stops or the verifier is busy, subject to the shared storage limit.
 
@@ -112,6 +118,8 @@ Machine drill-downs download complete evidence/context and receipt history. Both
 Code: `admin-ui/src/lib/queries/app-attest.ts` and `admin-ui/src/app/app-attest/page.tsx`.
 
 Metrics include `app_attest.shadow.events`, `app_attest.shadow.duration_ms`, `app_attest.shadow.metadata`, `app_attest.inventory.recorded`, `app_attest.inventory.failed`, `app_attest.archive.received`, `app_attest.archive.completed`, `app_attest.events.storage_failed`, and receipt/archive failure counters. Machine/account IDs appear in private records and logs, not high-cardinality metric tags. Logs complement the durable census rather than defining the denominator.
+
+`app_attest.inventory.reconciled` counts repaired terminal records; `app_attest.inventory.reconcile_failed` distinguishes contention from storage failures.
 
 ## Packaging and qualification
 

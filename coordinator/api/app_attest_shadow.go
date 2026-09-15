@@ -61,6 +61,7 @@ func (s *Server) startAppAttestShadow(ctx context.Context, provider *registry.Pr
 	}
 	provider.Mu().Lock()
 	owner := account
+	publicKey := provider.PublicKey
 	if provider.AttestationResult != nil {
 		owner += ":" + provider.AttestationResult.PublicKey
 	}
@@ -68,9 +69,21 @@ func (s *Server) startAppAttestShadow(ctx context.Context, provider *registry.Pr
 	hash := sha256.Sum256([]byte(owner))
 	x := &appAttestShadowSession{s: s, provider: provider, inventory: inventory, account: account, protocolVersion: registration.AppAttestProtocol, in: make(chan protocol.AppAttestShadowPayload, 2),
 		id: base64.StdEncoding.EncodeToString(nonce[:]), owner: hex.EncodeToString(hash[:]),
-		publicKey: registration.PublicKey, version: registration.Version,
+		publicKey: publicKey, version: registration.Version,
 		chip:     registration.Hardware.ChipName,
 		verifier: appattest.New(appattest.Policy{AppID: s.appAttestShadow.AppID, Environment: s.appAttestShadow.Environment}),
+	}
+	// Registry.Register clears invalid endpoint keys. Never retain the original
+	// registration field here. Require its canonical bounded encoding too:
+	// base64 decoders accept arbitrarily many embedded CR/LF characters.
+	if len(publicKey) != 44 {
+		x.observe("prepare", "encryption_key", nil)
+		return nil
+	}
+	decodedKey, err := base64.StdEncoding.DecodeString(publicKey)
+	if err != nil || len(decodedKey) != 32 || base64.StdEncoding.EncodeToString(decodedKey) != publicKey {
+		x.observe("prepare", "encryption_key", nil)
+		return nil
 	}
 	var platform struct {
 		Attestation struct {

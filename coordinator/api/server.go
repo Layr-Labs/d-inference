@@ -861,6 +861,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	saferun.Go(logger, "trustCoverageLoop", s.trustCoverageLoop)
 	s.startAppAttestReceiptWorker(s.trustCoverageCtx)
 	s.startMachineInventoryBackfill(s.trustCoverageCtx)
+	s.startMachineInventoryReconciler(s.trustCoverageCtx)
 	if cfg.DurableTrustReuse {
 		journalPath := cfg.TrustReuseJournalPath
 		if strings.TrimSpace(journalPath) == "" {

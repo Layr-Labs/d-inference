@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -24,12 +25,15 @@ func (s *PostgresStore) ObserveMachine(ctx context.Context, o MachineObservation
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(9952701)`); err != nil {
 		return result, err
 	}
-	var existing, account string
-	err = tx.QueryRow(ctx, `SELECT machine_id,account_id FROM darkbloom_machine_sessions WHERE session_id=$1`, o.SessionID).Scan(&existing, &account)
+	var existing, account, disconnectReason string
+	var lastSeen time.Time
+	var disconnectedAt *time.Time
+	err = tx.QueryRow(ctx, `SELECT machine_id,account_id,last_seen,disconnected_at,COALESCE(observation->>'disconnect_reason','')
+	 FROM darkbloom_machine_sessions WHERE session_id=$1 FOR UPDATE`, o.SessionID).Scan(&existing, &account, &lastSeen, &disconnectedAt, &disconnectReason)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return result, err
 	}
-	if existing != "" && o.Source == "historical_registration" {
+	returnExisting := func() (MachineIdentity, error) {
 		result.ID = existing
 		err = tx.QueryRow(ctx, `SELECT assurance FROM darkbloom_machines WHERE id=$1`, existing).Scan(&result.Assurance)
 		if err != nil {
@@ -37,8 +41,17 @@ func (s *PostgresStore) ObserveMachine(ctx context.Context, o MachineObservation
 		}
 		return result, tx.Commit(ctx)
 	}
+	if existing != "" && o.Source == "historical_registration" {
+		return returnExisting()
+	}
 	if existing != "" && account != o.AccountID {
 		return result, errors.New("machine_session_owner_conflict")
+	}
+	if existing != "" && inventoryObservationSuperseded(lastSeen, disconnectedAt != nil, disconnectReason, o) {
+		return returnExisting()
+	}
+	if o.Disconnected && o.DisconnectReason == "" {
+		o.DisconnectReason = "observed_disconnect"
 	}
 	var candidates []string
 	for _, a := range o.aliases() {
@@ -109,7 +122,7 @@ func (s *PostgresStore) ObserveMachine(ctx context.Context, o MachineObservation
 	_, err = tx.Exec(ctx, `INSERT INTO darkbloom_machine_sessions(session_id,machine_id,original_machine_id,account_id,first_seen,last_seen,disconnected_at,observation)
 	 VALUES($1,$2,$2,$3,$4,$4,CASE WHEN $5 THEN $4::timestamptz END,$6)
 	 ON CONFLICT(session_id) DO UPDATE SET machine_id=$2,last_seen=GREATEST(darkbloom_machine_sessions.last_seen,$4),
-	 disconnected_at=CASE WHEN $5 THEN $4 ELSE darkbloom_machine_sessions.disconnected_at END,observation=$6`, o.SessionID, result.ID, o.AccountID, o.At, o.Disconnected, raw)
+	 disconnected_at=EXCLUDED.disconnected_at,observation=$6`, o.SessionID, result.ID, o.AccountID, o.At, o.Disconnected, raw)
 	if err != nil {
 		return result, err
 	}

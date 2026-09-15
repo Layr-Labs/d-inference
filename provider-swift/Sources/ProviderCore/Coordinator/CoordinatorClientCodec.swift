@@ -66,7 +66,8 @@ public enum CoordinatorClientCodec {
             prefixCacheStatuses: prefixCacheStatuses,
             prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
             toolConstraintProtocol: constrainedModels.isEmpty ? nil : 1,
-            toolConstraintModels: constrainedModels.isEmpty ? nil : constrainedModels
+            toolConstraintModels: constrainedModels.isEmpty ? nil : constrainedModels,
+            appAttestProtocol: 2
         ))
     }
 
@@ -189,6 +190,9 @@ public enum CoordinatorClientCodec {
                 templateHashes: payload.templateHashes,
                 modelHashes: payload.modelHashes
             ))
+
+        case .appAttestShadow(let payload):
+            return .appAttestShadow(payload)
 
         case .codeAttestationResponse(let nonce, let signature):
             return .codeAttestationResponse(ProviderMessage.CodeAttestationResponse(

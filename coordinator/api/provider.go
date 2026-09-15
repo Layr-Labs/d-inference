@@ -233,6 +233,7 @@ func (s *Server) closeSessionWithReason(providerID, reason string) {
 // them. It runs until the connection closes or the context is cancelled.
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
 	var provider *registry.Provider
+	var appAttestShadow *appAttestShadowSession
 	tracker := newChallengeTracker()
 	var schedulerSEKey string
 	var schedulerGeneration uint64
@@ -368,6 +369,14 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		// DecodeProviderMessage is json.Unmarshal minus its redundant outer
 		// validation pass; per-token chunk frames take a hand-written decoder.
 		if err := protocol.DecodeProviderMessage(data, &msg); err != nil {
+			if errors.Is(err, protocol.ErrAppAttestShadowFrameTooLarge) {
+				if appAttestShadow != nil {
+					// Inventory periodically persists this same atomic counter,
+					// including on disconnect. No proof or database work here.
+					appAttestShadow.dropped.Add(1)
+				}
+				s.ddIncr("app_attest.shadow.frames_rejected", []string{"reason:oversized"})
+			}
 			// Decoder errors may quote provider-controlled fields (notably an
 			// unknown message type). Never reflect the detail into logs.
 			s.logger.Warn("invalid provider message", "provider_id", providerID)
@@ -429,6 +438,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				})
 
 			// Resolve auth token → account linkage.
+			authenticatedAccountID := ""
 			if regMsg.AuthToken != "" {
 				pt, err := s.store.GetProviderToken(regMsg.AuthToken)
 				if err != nil {
@@ -439,6 +449,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				} else {
 					provider.Mu().Lock()
 					provider.AccountID = pt.AccountID
+					authenticatedAccountID = pt.AccountID
 					provider.Mu().Unlock()
 					// Account linkage can be the provider's ONLY stable identity
 					// (Open Mode / invalid attestation → the acct: fallback), and
@@ -590,6 +601,13 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				saferun.Go(s.logger, "codeAttest", func() {
 					s.codeAttestLoop(loopCtx, providerID, provider)
 				})
+			}
+
+			appAttestShadow = s.startAppAttestShadow(loopCtx, provider, regMsg, authenticatedAccountID)
+
+		case protocol.TypeAppAttestShadow:
+			if appAttestShadow != nil {
+				appAttestShadow.offer(msg.Payload.(*protocol.AppAttestShadowMessage).Payload)
 			}
 
 		case protocol.TypeHeartbeat:

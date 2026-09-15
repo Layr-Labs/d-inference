@@ -126,6 +126,7 @@ public enum ProviderProtocolCodec {
         }
         try appendIfPresent(register.apnsDeviceToken, key: "apns_device_token", to: &fields)
         try appendIfPresent(register.apnsEnvironment, key: "apns_environment", to: &fields)
+        try appendIfPresent(register.appAttestProtocol, key: "app_attest_protocol", to: &fields)
         if let version = register.prefixCacheProtocol, version != 0 {
             try fields.append(("prefix_cache_protocol", encodeValue(version)))
         }

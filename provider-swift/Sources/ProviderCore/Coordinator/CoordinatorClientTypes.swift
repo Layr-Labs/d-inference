@@ -2,6 +2,7 @@
 // runtime hashes, outbound message enum + attestation payload, and errors.
 
 import Foundation
+import ProviderAppAttest
 import Network
 #if canImport(os)
 import os
@@ -114,6 +115,7 @@ public enum CoordinatorEvent: Sendable {
     case cancel(requestId: String)
     case attestationChallenge(nonce: String, timestamp: String)
     case codeAttestationResumeChallenge(EncryptedPayload)
+    case appAttestShadow(AppAttestShadowPayload)
     case runtimeOutdated(mismatches: [RuntimeMismatch])
     /// Coordinator-driven preload. Provider should eagerly load the model
     /// (off-thread) and reply with a `loadModelStatus` outbound message
@@ -250,6 +252,7 @@ public enum OutboundMessage: Sendable {
     )
     case attestationResponse(AttestationResponsePayload)
     case codeAttestationResponse(nonce: String, signature: String)
+    case appAttestShadow(AppAttestShadowPayload)
     case loadModelStatus(modelId: String, status: ProviderMessage.LoadModelStatus.Status, error: String?)
     case prefetchModelStatus(
         modelId: String,

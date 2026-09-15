@@ -143,6 +143,9 @@ extension CoordinatorClient {
                 timestamp: challenge.timestamp
             ))
 
+        case .appAttestShadow(let payload):
+            eventContinuation?.yield(.appAttestShadow(payload))
+
         case .codeAttestationResumeChallenge(let challenge):
             eventContinuation?.yield(
                 .codeAttestationResumeChallenge(challenge.codeChallenge))

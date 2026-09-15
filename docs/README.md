@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-13 · commit `ec73023e4`
+> Last updated: 2026-09-14 · commit `4676eedbe`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -11,6 +11,8 @@
 > reference, explanation, design record, or dated report) and carries a
 > freshness stamp. Rules for reading and writing them:
 > [`AGENTS.md`](AGENTS.md). One name for each thing: [`glossary.md`](glossary.md).
+
+[App Attest inventory validation](reports/2026-09-14-app-attest-inventory-validation.md) records the protocol 2 Mac test, durable machine identity, complete evidence archive, and remaining release gates.
 
 ## Start here, by task
 

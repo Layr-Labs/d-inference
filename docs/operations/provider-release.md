@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-10 · commit `5f021ba4d`
+> Last updated: 2026-09-14 · commit `d90945f66`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -9,13 +9,27 @@ build, sign, notarize, hash, upload, and register the bundle. The coordinator
 verifies every registered artifact by re-downloading it, so a release either
 lands fully or not at all.
 
-The prepared version is **0.9.2**; its source changes since `v0.9.1` are
+The prepared version is **0.9.3**; its source changes since `v0.9.2` are
 collected in [`CHANGELOG.md`](../../CHANGELOG.md). The version bump prepares
 the source for the provider bundle. Publication and coordinator deployment remain
 separate operations; the bump alone does not change the registered release
 returned by `GET /v1/releases/latest`.
 
-### Provider-only 0.9.2 rollout
+### App Attest shadow rollout in 0.9.3
+
+The provider advertises App Attest protocol 2 while retaining APNs/MDM verification
+and the existing macOS floor. The compatible coordinator supplies machine inventory,
+complete evidence storage, and shadow challenges; an older coordinator continues
+legacy serving without these observations. Deploy the coordinator and its schema
+before relying on adoption measurements. Provider publication, coordinator rollout,
+and private admin deployment remain separate operations.
+
+Complete final signed/notarized-bundle, installer/update, and older-OS APNs/MDM
+checks before public release. The PR can be ready for code review while those
+release checks remain open; [physical validation](../reports/2026-09-14-app-attest-inventory-validation.md)
+used a signed debug provider and does not certify the final 0.9.3 artifact.
+
+### Previous provider-only 0.9.2 rollout
 
 A coordinator binary upgrade is not required solely to register 0.9.2. The
 0.9.1 coordinator already validates and stores the release, refreshes active
@@ -45,6 +59,8 @@ and actual inference separately. `/health` should retain the previous
 coordinator `build_commit`; its build `version` can remain 0.9.1 while
 `/v1/releases/latest` returns 0.9.2. Registration exposes the release to
 provider auto-update; it is not a limited canary rollout by itself.
+
+For App Attest coexistence, both signing workflows prepare optional profile-authorized grants while retaining APNs. Follow the [shadow packaging contract](../reference/app-attest-shadow.md#packaging-and-qualification); a missing grant is an explicit coverage gap, not permission to remove existing verification.
 
 ## Environment-free signing validation
 
@@ -140,8 +156,8 @@ Coordinator deploys are a separate runbook:
 
 The provider and coordinator versions must be identical strings:
 
-- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.2"`
-- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.2"`
+- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.3"`
+- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.3"`
 
 ```bash
 ./scripts/check-release-version.sh          # provider == coordinator, semver
@@ -149,8 +165,8 @@ The provider and coordinator versions must be identical strings:
 ```
 
 `check-release-version.sh` accepts an optional expected version
-(`check-release-version.sh v0.9.2`) and an optional reported string from a
-built binary (`darkbloom 0.9.2` or `0.9.2`); the workflow calls it in all
+(`check-release-version.sh v0.9.3`) and an optional reported string from a
+built binary (`darkbloom 0.9.3` or `0.9.3`); the workflow calls it in all
 three forms. CI job "Release Integrity" runs the two commands above on every
 push. Do not touch `minProviderVersionForDesiredModels` (`"0.5.17"`, same file)
 for a routine release; it is the floor for desired-model fan-out, not the
@@ -179,10 +195,10 @@ change that is not fixture-synced will fail the release, not just CI.
 
 ```bash
 git checkout master && git pull --ff-only
-git tag -a v0.9.2 -m "v0.9.2 — <one-line theme>
+git tag -a v0.9.3 -m "v0.9.3 — <one-line theme>
 
 <body: the changelog bullets for this release>"
-git push origin v0.9.2
+git push origin v0.9.3
 ```
 
 Accepted tag patterns (`on.push.tags`): `v*.*.*`, `v*-swift`, `v*-swift.*`.
@@ -196,7 +212,7 @@ this before writing job outputs or requesting environment approval.
 
 ```bash
 gh workflow run release-swift.yml --ref <branch> -f environment=dev
-# optional: -f version_override=0.9.2
+# optional: -f version_override=0.9.3
 ```
 
 Without a tag the version is read from `ProviderCore.swift` (or
@@ -257,14 +273,14 @@ The registration payload (`coordinator/api/release_handlers.go`,
 
 ```json
 {
-  "version": "0.9.2",
+  "version": "0.9.3",
   "platform": "macos-arm64",
   "backend": "mlx-swift",
   "binary_hash": "<sha256 of bin/darkbloom>",
   "bundle_hash": "<sha256 of the tar.gz>",
   "metallib_hash": "<sha256 of mlx.metallib>",
-  "url": "<R2_PUBLIC_URL>/releases/v0.9.2/darkbloom-bundle-macos-arm64.tar.gz",
-  "changelog": "<tag subject + body, or 'Release v0.9.2'>"
+  "url": "<R2_PUBLIC_URL>/releases/v0.9.3/darkbloom-bundle-macos-arm64.tar.gz",
+  "changelog": "<tag subject + body, or 'Release v0.9.3'>"
 }
 ```
 
@@ -329,7 +345,7 @@ it** so the previous active version becomes "latest" again.
    ```bash
    curl -fsS -X DELETE "$COORD/v1/admin/releases" \
      -H "Authorization: Bearer $ADMIN_KEY" -H "Content-Type: application/json" \
-     -d '{"version":"0.9.2","platform":"macos-arm64"}'
+     -d '{"version":"0.9.3","platform":"macos-arm64"}'
    ```
 
    `handleAdminDeleteRelease` answers `409 release_in_use` while connected
@@ -352,7 +368,7 @@ it** so the previous active version becomes "latest" again.
    (`install.sh` uses the versioned URL from `/v1/releases/latest`; the
    `latest/` objects are for legacy clients.)
 4. Mark the GitHub Release as a pre-release or delete it
-   (`gh release delete v0.9.2`), and record the outcome in `CHANGELOG.md` as
+   (`gh release delete v0.9.3`), and record the outcome in `CHANGELOG.md` as
    `## Release candidate vX.Y.Z (not shipped; …)`.
 5. Do **not** re-register the same version with a different artifact. Fix
    forward with a new patch version.

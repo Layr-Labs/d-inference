@@ -49,6 +49,7 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
     #expect(object["auth_token"] as? String == "device-token")
     #expect(object["encrypted_response_chunks"] as? Bool == true)
     #expect(object["prefix_cache_protocol"] as? Int == 1)
+    #expect(object["app_attest_protocol"] as? Int == 2)
     #expect(json.contains(#""attestation":\#(rawAttestation)"#))
 
     // The hypervisor concept was removed: the registration frame's
@@ -63,6 +64,7 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
         throw ClientTestFailure.unexpectedMessage
     }
     #expect(register.attestation?.rawBytes == Data(rawAttestation.utf8))
+    #expect(register.appAttestProtocol == 2)
     #expect(register.runtimeHash == "runtimehash")
     #expect(register.templateHashes["chatml"] == "templatehash")
     #expect(register.privacyCapabilities?.textBackendInprocess == true)

@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-13 · commit `a1f3c09c8`
+> Last updated: 2026-09-14 · commit `4676eedbe`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -18,6 +18,8 @@ Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 Profiler wire changes require both coordinator and provider builds; the shared
 Go/Swift fixture and focused checks are described in [test.md](test.md) and
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
+
+The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its [shadow packaging and live-validation requirements](../reference/app-attest-shadow.md#packaging-and-live-acceptance) are separate from a successful local compile.
 
 ## Prerequisites
 

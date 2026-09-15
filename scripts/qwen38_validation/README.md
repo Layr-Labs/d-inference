@@ -1,8 +1,8 @@
 # Qwen 3.8 Next (Flash-Next) reproducible validation
 
-> Last updated: 2026-09-13 · provider `2146f336` · SDK `ce7c08e`
+> Last updated: 2026-09-14 · provider runtime `db08d749` · SDK runtime `6445eeb`, fixture follow-up `141e067`
 
-These harnesses send synthetic requests to an **existing healthy**, explicitly
+The HTTP harnesses send synthetic requests to an **existing healthy**, explicitly
 configured release CLI. No workstation address, port or credential is embedded.
 They do not start/restart a server, execute generated
 tool calls or upload a model. The fixed model is the large native Qwen4 artifact
@@ -137,7 +137,7 @@ ID's complete-cache default is enabled. This is not signed persistence.
 
 ```sh
 python3 -B scripts/qwen38_validation/lifecycle_matrix.py --mode reference --output /absolute/new-prefix-off-reference
-python3 -B scripts/qwen38_validation/lifecycle_matrix.py --mode cached --reference /absolute/new-prefix-off-reference --output /absolute/new-prefix-on-results
+python3 -B scripts/qwen38_validation/lifecycle_matrix.py --mode cached --media-capability supported --reference /absolute/new-prefix-off-reference --output /absolute/new-prefix-on-results
 ```
 
 The second command runs only after the operator has prepared and verified the
@@ -145,7 +145,14 @@ cache-ON server. The scripts do not perform that transition. Reference mode
 records two uncached long requests; cached mode requires matching output,
 finish and non-cache usage, cold zero-hit and positive repeat/suffix/readmission
 hits, actual paged/cache/ephemeral-key posture, cancellation after streamed
-content with bounded native drain, legal HTTP half-close and media refusal.
+content with bounded native drain, legal HTTP half-close and the explicitly
+selected media contract. The full native VLM must use `--media-capability supported`
+and return valid HTTP 200 media output without speculation. A separately bound
+text-only artifact uses `--media-capability unsupported`, retaining the strict
+HTTP 400/privacy refusal gate. Choose from immutable artifact/factory evidence
+before requesting; never accept either status based on what the server returns.
+Pixel-answer quality remains a separate multimodal gate. Earlier text-only
+refusal receipts must not be relabeled as full-VLM qualification.
 It does not prove byte-exact full-state restoration, physical SSD reads,
 cross-tenant isolation, corruption recovery or persistent restart.
 
@@ -155,6 +162,16 @@ Prepare the exact testable build and colocate its matching metallib before
 running each filter alone. These load the real artifact; do not overlap them
 with the HTTP server or another GPU test. A discovered or skipped test is not a
 pass. Retain both assertion failures and final exit status.
+For the provider fixtures, set both `DARKBLOOM_QWEN4_REAL_MODEL` (fixture identity)
+and `DARKBLOOM_QWEN4_MODEL_PATH` (the serving scanner) to the same verified owned
+artifact. The inode checks must prove both paths identify the same payload.
+
+The [latest clean-source revalidation](REVALIDATION-20260914.md) records final
+reruns, exact artifacts, fixture corrections, speed and unchanged quality limits.
+The [earlier private performance checkpoint](PERFORMANCE-QUALIFICATION.md) records the
+qualified opt-in paths, exact source/artifact identities, measured speeds,
+portable numerical fixtures and still-open quality/release gates. It supersedes
+earlier performance totals, not the independent operations and authority gates.
 
 - SDK `Qwen4RealStateTests.testOwnedArtifactStateRollbackReload` compares native
   target logits/KV/QSA/GDN/PLE across retained-width rollback, serialized suffix
@@ -176,6 +193,22 @@ pass. Retain both assertion failures and final exit status.
   handler, checks drain and weak/native/PLE ownership before reload, then
   compares fresh output. Its signer/tenant and transport sink are injected;
   it is not account authentication, WebSocket or signed-key qualification.
+- Provider `FlashNextEncryptedHandlerLiveTests.realModelEncryptsResponseAndRetires`
+  requires `DARKBLOOM_FLASH_NEXT_HANDLER_LIVE=1`, the verified artifact and
+  prefix OFF. After rebuilding the updated fixture, run the four combinations
+  of `DARKBLOOM_FLASH_NEXT_HANDLER_REASONING=off|on` and
+  `DARKBLOOM_FLASH_NEXT_HANDLER_MTP=off|auto`, one process at a time.
+  Remove conflicting global MTP-disable controls for the AUTO arm.
+  The [fixture](../../provider-swift/Tests/ProviderCoreTests/FlashNextEncryptedHandlerLiveTests.swift)
+  checks plain text, auto/required/named/none tools and actual returned tool
+  history over loopback WebSocket, decrypting received bytes with the synthetic
+  consumer key. It checks channel separation, exact tool values, terminals,
+  usage and per-request proposal counts. Required/named requests remain
+  target-only; the AUTO arm must demonstrate proposals on eligible requests.
+  Its authenticated tenant/account/attestation are not production qualifications.
+  This is Chat streaming transport coverage, not the full Responses/media matrix.
+  Older fixture binaries ignore these new controls: a configuration variable
+  alone cannot establish execution of the expanded matrix.
 
 These tools grant no signing, persistent-key creation, production/publication
 or upload authority. Each such action requires current explicit human approval.

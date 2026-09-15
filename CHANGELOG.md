@@ -23,6 +23,14 @@ coordinator deployment.
 
 ## Unreleased — Qwen 3.8 Next (Flash-Next) private candidate
 
+- Add qualified opt-in full-KV parallel attention and early layer submission,
+  plus canonical media-prefix positions for appended-text reuse. Preserve
+  native state, PLE fill/fault ownership, MTP and existing fallback behavior.
+- Require native tool framing after the rendered reasoning boundary for
+  required/named Qwen4 text calls. Keep argument values model-generated and
+  retain strict postvalidation and target-only constraint safety gates.
+- Record bounded speed gains and unresolved quality/release gates in the
+  [September 15 draft update](docs/reports/2026-09-15-qwen38-performance-stability.md).
 - Mirror parallel-aware required/named tool instructions in the coordinator's
   prompt sidecar. Advance normalization to v4 in Swift, Go and Rust so old and
   new prompt contracts cannot share cache credits. Regenerate immutable

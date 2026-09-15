@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `4e90ac8b1`
+> Last updated: 2026-09-14 · commit `ac3d606b`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -271,6 +271,12 @@ For a custom SwiftPM `--scratch-path`, stage the authoritative `mlx.metallib`
 in the active `debug` or `release` directory containing the `.xctest` bundle.
 `LiveInferenceFixtures.findSourceMetallib` uses that same-configuration source
 before replacing the runner copy; a runner-local file alone is insufficient.
+
+`LiveInferenceFixtures.buildProduct` likewise anchors updater child executables,
+fan helpers and resource bundles to the running test bundle's configuration.
+Release tests do not require or borrow a separate `.build/debug` tree. Missing
+active-configuration products remain failures; no peer-configuration fallback is
+used. This is test-fixture discovery, not release signing or deployment evidence.
 
 Tests that change process-wide MLX settings must use Swift Testing's
 `#expect(processExitsWith: .success)` child-process boundary. Restoring an

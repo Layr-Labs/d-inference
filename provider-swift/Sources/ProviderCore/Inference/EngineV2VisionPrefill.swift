@@ -275,11 +275,14 @@ public enum EngineV2VisionPrefill {
             self.mediaKind = mediaKind
         }
 
-        public func hybridPrefixIdentity() throws -> CBv2HybridPrefixIdentity {
+        public func hybridPrefixIdentity(
+            canonicalQwen4TextTail: Bool = false
+        ) throws -> CBv2HybridPrefixIdentity {
             try EngineV2HybridPrefixIdentityBuilder.make(
                 spans: spans, spanKinds: spanKinds, embeddings: embeddings,
                 deepstackEmbeddings: deepstackEmbeddings, attention: attention,
-                positionState: positionState)
+                positionState: positionState,
+                canonicalQwen4TextTail: canonicalQwen4TextTail)
         }
 
         /// The engine-facing input. The closure returns the precomputed

@@ -444,7 +444,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     let mediaPrefixIdentity: CBv2HybridPrefixIdentity?
                     if nativeMediaTools, Qwen4SupportPolicy.isOwnedModelID(modelId), cacheEnabled,
                        await bridge.ssdHybridCheckpointStore != nil {
-                        mediaPrefixIdentity = try visionPrepared.hybridPrefixIdentity()
+                        mediaPrefixIdentity = try visionPrepared.hybridPrefixIdentity(
+                            canonicalQwen4TextTail: true)
                     } else {
                         mediaPrefixIdentity = nil
                     }
@@ -679,7 +680,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 modelContext: ChatTemplateFixContext(
                     modelId: request.model, modelType: modelType),
                 defaultMaxTokens: defaultMaxTokens,
-                stopTokenIDs: bridge.stopTokenIds)
+                stopTokenIDs: bridge.stopTokenIds,
+                nativePromptTokens: promptTokens)
             // Grammar compile (Gemma) can take the tool-constraint lock on the
             // first build per stop-set; only worth a lock when tools exist.
             if prepared.tools?.isEmpty == false {

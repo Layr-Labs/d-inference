@@ -1,6 +1,6 @@
 # Qwen 3.8 Next (Flash-Next) native support reference
 
-> Last updated: 2026-09-14 · commit `2c9c6f3f1`
+> Last updated: 2026-09-15 · commit `82e9824b3`
 
 Reference for the native Qwen4 support candidate and its remaining qualification gates. These source defaults do not publish a model, approve a catalog entry, qualify a hardware tier or establish a production release. The composed SDK's `libs/mlx-swift-lm/docs/qwen4/composition.md` records source selection and excluded experiments.
 
@@ -28,7 +28,7 @@ Reference for the native Qwen4 support candidate and its remaining qualification
 
 ## Validation status and next gates
 
-The [qualification record](../reports/2026-09-14-qwen38-next-qualification.md)
+The [performance/stability update](../reports/2026-09-15-qwen38-performance-stability.md)
 records the exact build/evidence scopes and remaining deployment gates.
 Required/named tool prompt shaping respects allowed parallel calls, including
 when thinking is disabled; an eight-case real four-call matrix qualifies the
@@ -86,7 +86,7 @@ Source: `provider-swift/Sources/ProviderCore/Server/LocalServingPosture.swift`
 | Boundary | Contract | Source |
 |---|---|---|
 | Reasoning examples | The canonical native Qwen4 target preserves balanced inner reasoning examples as reasoning. Delimiters are not removed from argument data; malformed or excessively nested spans fail closed. Other families retain their routing | `provider-swift/Sources/ProviderCore/Inference/NativeChannelSplitter.swift`; `provider-swift/Sources/ProviderCore/Inference/NativeToolStreamRouter.swift` |
-| Required/named text tools | The native vocabulary-aware envelope guard blocks terminal tokens while a generated tool envelope remains open; function, schema and cardinality validation is still required. The guard does not repair values or guarantee completion within an insufficient output budget | `provider-swift/Sources/ProviderCore/Inference/Qwen4ToolEnvelopeConstraint.swift`; `provider-swift/Sources/ProviderCore/Inference/ToolConstraintFactory.swift` |
+| Required/named text tools | Native framing follows the actual rendered reasoning boundary and requires a completed tool frame before EOS; bare function-looking prose cannot satisfy the call requirement. Argument values remain opaque. Function, schema and cardinality validation is mandatory; budget exhaustion and semantic-copy failures are not repaired | `provider-swift/Sources/ProviderCore/Inference/Qwen4NativeToolConstraint.swift`; `provider-swift/Sources/ProviderCore/Inference/ToolConstraintFactory.swift` |
 | MTP eligibility | Constrained required/named text requests remain target-only under the engine's safety gate. Ordinary text and auto-tool requests retain their existing eligibility. Slot-level head activation alone does not prove a request speculated | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift` |
 | Multimodal tools | Auto/none choice and tool history are supported; required/named multimodal forcing is rejected by the shared media path. Media remains target-only | `provider-swift/Sources/ProviderCore/Inference/MultiModelBatchSchedulerEngine.swift` |
 

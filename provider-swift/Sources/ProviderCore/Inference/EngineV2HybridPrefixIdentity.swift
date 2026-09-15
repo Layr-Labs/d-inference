@@ -9,11 +9,13 @@ import MLXLMCommon
 enum EngineV2HybridPrefixIdentityBuilder {
     enum Failure: Error, Equatable { case invalidGeometry }
     private static let domain = "darkbloom.engine-v2.media-prefix.v1"
+    private static let canonicalDomain = "darkbloom.engine-v2.media-prefix.qwen4-linear-tail.v2"
 
     static func make(
         spans: [CBv2ImageSpan], spanKinds: [EngineV2VisionPrefill.SpanKind],
         embeddings: [MLXArray], deepstackEmbeddings: [[MLXArray]],
-        attention: CBv2MultimodalAttention, positionState: CBv2PositionState?
+        attention: CBv2MultimodalAttention, positionState: CBv2PositionState?,
+        canonicalQwen4TextTail: Bool = false
     ) throws -> CBv2HybridPrefixIdentity {
         guard !spans.isEmpty, spans.count == spanKinds.count,
             spans.count == embeddings.count,
@@ -30,8 +32,10 @@ enum EngineV2HybridPrefixIdentityBuilder {
                 })
             else { throw Failure.invalidGeometry }
         }
+        let canonicalLength = canonicalQwen4TextTail && attention == .causal
+            ? canonicalPositionLength(spans: spans, state: positionState) : nil
         var encoder = Encoder()
-        encoder.append(Self.domain)
+        encoder.append(canonicalLength == nil ? Self.domain : Self.canonicalDomain)
         encoder.append(UInt64(attention == .causal ? 1 : 2))
         encoder.append(UInt64(spans.count))
         for index in spans.indices {
@@ -48,12 +52,40 @@ enum EngineV2HybridPrefixIdentityBuilder {
         if let positionState {
             encoder.append(UInt64(1))
             encoder.append(positionState.axisCount)
-            encoder.append(positionState.promptLength)
+            encoder.append(canonicalLength ?? positionState.promptLength)
             encoder.append(UInt64(positionState.decodeDeltas.count))
             for delta in positionState.decodeDeltas { encoder.append(delta) }
-            encoder.append(positionState.promptPositionIds)
+            if let canonicalLength {
+                encoder.append(positionState.promptSlice(0 ..< canonicalLength))
+            } else {
+                encoder.append(positionState.promptPositionIds)
+            }
         } else { encoder.append(UInt64(0)) }
         return try CBv2HybridPrefixIdentity(digest: encoder.finalize())
+    }
+
+    private static func canonicalPositionLength(
+        spans: [CBv2ImageSpan], state: CBv2PositionState?
+    ) -> Int? {
+        guard let state, state.axisCount == 3, state.decodeDeltas.count == 1,
+            state.promptPositionIds.dtype == .int32 || state.promptPositionIds.dtype == .int64
+        else { return nil }
+        var ranges: [Range<Int>] = []
+        for span in spans {
+            let (end, overflow) = span.tokenOffset.addingReportingOverflow(span.length)
+            guard !overflow, span.tokenOffset >= 0, span.length > 0 else { return nil }
+            ranges.append(span.tokenOffset ..< end)
+        }
+        if state.promptPositionIds.dtype == .int32 {
+            return Qwen4CanonicalMediaPositions.prefixLength(
+                positions: state.promptPositionIds.asArray(Int32.self), axes: state.axisCount,
+                promptLength: state.promptLength, mediaRanges: ranges,
+                decodeDelta: state.decodeDeltas[0])
+        }
+        return Qwen4CanonicalMediaPositions.prefixLength(
+            positions: state.promptPositionIds.asArray(Int64.self), axes: state.axisCount,
+            promptLength: state.promptLength, mediaRanges: ranges,
+            decodeDelta: state.decodeDeltas[0])
     }
 
     private struct Encoder {

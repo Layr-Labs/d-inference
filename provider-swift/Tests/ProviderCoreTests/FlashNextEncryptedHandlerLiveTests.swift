@@ -13,6 +13,12 @@ struct FlashNextEncryptedHandlerLiveTests {
     func realModelEncryptsResponseAndRetires() async throws {
         let env = ProcessInfo.processInfo.environment
         try #require(env["DARKBLOOM_PREFIX_CACHE"] == "0")
+        let reasoningMode = env["DARKBLOOM_FLASH_NEXT_HANDLER_REASONING"] ?? "off"
+        try #require(["off", "on"].contains(reasoningMode))
+        let rawMTP = env["DARKBLOOM_FLASH_NEXT_HANDLER_MTP"] ?? "auto"
+        try #require(["off", "auto"].contains(rawMTP))
+        let mode = FlashNextHandlerMode(reasoningEnabled: reasoningMode == "on",
+            mtpMode: try #require(MTPMode(rawValue: rawMTP)))
         let path = try #require(env["DARKBLOOM_QWEN4_REAL_MODEL"])
         let directory = URL(fileURLWithPath: path).resolvingSymlinksInPath()
         let modelID = "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp"
@@ -39,7 +45,7 @@ struct FlashNextEncryptedHandlerLiveTests {
             coordinatorURL: "ws://127.0.0.1:1/unused", hardware: hardware,
             models: [model], config: ProviderConfig(
                 provider: ProviderSettings(name: "flash-next-handler-fixture"),
-                backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 1)))
+                backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 1, mtpMode: mode.mtpMode)))
         let loop = try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("flash-next-handler-\(UUID().uuidString)", isDirectory: true)
@@ -54,6 +60,9 @@ struct FlashNextEncryptedHandlerLiveTests {
         let runID = UUID().uuidString
         do {
             try await loop.ensureModelLoaded(modelId: modelID, allowEviction: false)
+            let bridge = try #require(await loop.slotBridgeForTesting(modelId: modelID))
+            try #require(await bridge.kvBackendKind == .paged)
+            try #require(await bridge.mtpStatusSnapshot().active == (mode.mtpMode != .off))
             let consumer = NodeKeyPair.generate()
             let providerKey = await loop.keyPair.publicKeyBytes
             let baseURL = try await mock.start()
@@ -92,11 +101,14 @@ struct FlashNextEncryptedHandlerLiveTests {
             ], expectedText: "handler works"), at: 0)
             var callIDs = Set<String>()
             var historyCall: FlashNextHandlerCall?
+            var sawReasoning = false
             for fixture in cases {
                 let requestID = "flash-next-\(runID)-\(fixture.name)"
                 sentRequestIDs.append(requestID)
                 let result = try await run(fixture, requestID: requestID, modelID: modelID,
-                    consumer: consumer, providerKey: providerKey, mock: mock, recorder: recorder)
+                    consumer: consumer, providerKey: providerKey, mock: mock, recorder: recorder,
+                    mode: mode, bridge: bridge)
+                sawReasoning = sawReasoning || !result.reasoning.isEmpty
                 if fixture.expectedText == nil {
                     let call = try #require(result.calls.first)
                     #expect(callIDs.insert(call.id).inserted, "tool call IDs must be unique across requests")
@@ -114,8 +126,18 @@ struct FlashNextEncryptedHandlerLiveTests {
             ], expectedText: "12")
             let historyID = "flash-next-\(runID)-tool-history"
             sentRequestIDs.append(historyID)
-            _ = try await run(history, requestID: historyID, modelID: modelID,
-                consumer: consumer, providerKey: providerKey, mock: mock, recorder: recorder)
+            let historyResult = try await run(history, requestID: historyID, modelID: modelID,
+                consumer: consumer, providerKey: providerKey, mock: mock, recorder: recorder,
+                mode: mode, bridge: bridge)
+            sawReasoning = sawReasoning || !historyResult.reasoning.isEmpty
+            #expect(sawReasoning == mode.reasoningEnabled,
+                "Reasoning ON must execute reasoning; OFF must never emit it")
+            let finalMTP = await bridge.mtpStatusSnapshot()
+            if mode.mtpMode == .off {
+                #expect(finalMTP.proposedTokens == 0 && finalMTP.acceptedDraftTokens == 0)
+            } else {
+                #expect(finalMTP.proposedTokens > 0, "Loaded MTP alone is not execution evidence")
+            }
             let finalWire = try #require(await mock.waitForSnapshot(timeout: .seconds(10)) {
                 $0.inferenceComplete.count == 6 || !$0.inferenceErrors.isEmpty
             })
@@ -143,15 +165,18 @@ struct FlashNextEncryptedHandlerLiveTests {
 
     private func run(_ fixture: FlashNextHandlerCase, requestID: String, modelID: String,
         consumer: NodeKeyPair, providerKey: Data, mock: MockCoordinator,
-        recorder: FlashNextHandlerRecorder) async throws -> FlashNextHandlerOutput
+        recorder: FlashNextHandlerRecorder, mode: FlashNextHandlerMode,
+        bridge: EngineV2Bridge) async throws -> FlashNextHandlerOutput
     {
         var request: [String: Any] = [
-            "model": modelID, "temperature": 0, "max_tokens": 128,
-            "reasoning": ["enabled": false], "enable_thinking": false,
-            "reasoning_effort": "none", "stream": true,
+            "model": modelID, "temperature": 0, "max_tokens": mode.reasoningEnabled ? 512 : 128,
+            "reasoning": ["enabled": mode.reasoningEnabled], "enable_thinking": mode.reasoningEnabled,
+            "stream": true,
             "stream_options": ["include_usage": true], "parallel_tool_calls": false,
         ]
+        if !mode.reasoningEnabled { request["reasoning_effort"] = "none" }
         request.merge(fixture.fields) { _, value in value }
+        let mtpBefore = await bridge.mtpStatusSnapshot()
         try await mock.pushInferenceRequest(requestId: requestID,
             providerPublicKeyBase64: providerKey.base64EncodedString(),
             chatRequestJSON: JSONSerialization.data(withJSONObject: request),
@@ -186,7 +211,9 @@ struct FlashNextEncryptedHandlerLiveTests {
         }
         #expect(output.doneCount == 1, "\(fixture.name): exactly one SSE terminal")
         #expect(output.finishReasons.count == 1)
-        #expect(output.reasoning.isEmpty, "\(fixture.name): reasoning must stay disabled")
+        if !mode.reasoningEnabled {
+            #expect(output.reasoning.isEmpty, "\(fixture.name): reasoning must stay disabled")
+        }
         for marker in ["<think>", "</think>", "<tool_call>", "</tool_call>", "<function=", "<parameter="] {
             #expect(!output.content.contains(marker), "\(fixture.name): frame leaked into content")
         }
@@ -206,9 +233,22 @@ struct FlashNextEncryptedHandlerLiveTests {
             let arguments = try JSONDecoder().decode([String: Int].self, from: Data(call.arguments.utf8))
             #expect(arguments == ["a": 7, "b": 5])
         }
-        print("Flash-Next encrypted WebSocket case \(fixture.name) completed: prompt=\(terminal.usage.promptTokens), output=\(terminal.usage.completionTokens)")
+        let mtpAfter = await bridge.mtpStatusSnapshot()
+        let proposed = mtpAfter.proposedTokens - mtpBefore.proposedTokens
+        let accepted = mtpAfter.acceptedDraftTokens - mtpBefore.acceptedDraftTokens
+        #expect(proposed >= 0 && accepted >= 0 && accepted <= proposed)
+        if mode.mtpMode == .off || ["required", "named"].contains(fixture.name) {
+            #expect(proposed == 0 && accepted == 0,
+                "Constrained requests and explicit MTP OFF must remain target-only")
+        }
+        print("Flash-Next encrypted WebSocket case \(fixture.name) completed: reasoning=\(mode.reasoningEnabled) mtp=\(mode.mtpMode.rawValue) prompt=\(terminal.usage.promptTokens) output=\(terminal.usage.completionTokens) reasoning_chars=\(output.reasoning.count) proposed=\(proposed) accepted=\(accepted)")
         return output
     }
+}
+
+private struct FlashNextHandlerMode {
+    let reasoningEnabled: Bool
+    let mtpMode: MTPMode
 }
 
 private final class FlashNextHandlerRecorder: @unchecked Sendable {

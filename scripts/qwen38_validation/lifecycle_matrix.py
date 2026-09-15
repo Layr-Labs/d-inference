@@ -234,11 +234,31 @@ class Matrix:
         assert not view["reasoning"] and not view["calls"]
         return {"finish": view["finish"], "usage": usage(view)}
 
-    def image_refusal(self):
-        payload = {"model": MODEL, "max_tokens": 16, "messages": [{"role": "user", "content": [
+    @staticmethod
+    def image_payload():
+        return {"model": MODEL, "max_tokens": 16, "messages": [{"role": "user", "content": [
             {"type": "text", "text": "Describe this synthetic image."},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,"
              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jY9kAAAAASUVORK5CYII="}}]}]}
+
+    def image_supported(self):
+        # Capability is selected explicitly from the bound artifact before the
+        # request, never inferred from whichever HTTP status happens to arrive.
+        # This checks admission/retirement; pixel-answer quality has its own matrix.
+        payload = self.image_payload()
+        payload.update(temperature=0, max_tokens=64, reasoning={"enabled": False})
+        before = metrics()
+        view = self.chat("image-supported", payload)
+        assert cached_tokens(view) == 0, "short fresh media request unexpectedly reused a checkpoint"
+        after = metrics()
+        deltas = {name: metric(after, name) - metric(before, name)
+                  for name in ("mtp_tokens_proposed_total", "mtp_tokens_accepted_total")}
+        assert all(value == 0 for value in deltas.values()), "media unexpectedly speculated"
+        return {"http": 200, "finish": view["finish"], "usage": usage(view), "mtp_deltas": deltas,
+                "scope": "Declared full-VLM admission; not pixel-answer quality"}
+
+    def image_refusal(self):
+        payload = self.image_payload()
         save(self.output / "image-refusal.request.json", payload)
         response = exchange(ENDPOINT, payload)
         save(self.output / "image-refusal.response.json", response)
@@ -259,9 +279,13 @@ def main():
     parser.add_argument("--mode", required=True, choices=("reference", "cached"))
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--reference", type=Path)
+    parser.add_argument("--media-capability", choices=("supported", "unsupported"),
+                        help="Required for cached mode: select from the exact bound artifact, not its response.")
     args = parser.parse_args()
     if args.mode == "cached" and args.reference is None:
         parser.error("cached mode requires --reference from a successful prefix-OFF run")
+    if args.mode == "cached" and args.media_capability is None:
+        parser.error("cached mode requires explicit --media-capability from the bound artifact")
     args.output.mkdir(parents=True, exist_ok=False)
     suite = Matrix(args.output)
     try:
@@ -301,10 +325,14 @@ def main():
             suite.case("cancel", lambda: suite.cancel_after_content(requests["original"]))
             suite.case("readmission", lambda: cached_case("readmission", "original"))
             suite.case("half-close", suite.half_close)
-            suite.case("image-refusal", suite.image_refusal)
+            if args.media_capability == "supported":
+                suite.case("image-supported", suite.image_supported)
+            else:
+                suite.case("image-refusal", suite.image_refusal)
             suite.case("final-drain", lambda: suite.drained("final-drain"))
     finally:
         save(args.output / "summary.json", {"mode": args.mode, "model": MODEL,
+            "media_capability": args.media_capability,
             "base_url": base_url(), "reference": str(args.reference) if args.reference else None,
             "passed": len(suite.results) == (2 if args.mode == "reference" else 9)
                       and all(row["passed"] for row in suite.results),

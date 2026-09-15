@@ -1,6 +1,6 @@
 # App Attest 0.9.4 recovery qualification
 
-> Last updated: 2026-09-14 · commit `46299ff78`
+> Last updated: 2026-09-14 · commit `1d840807c`
 
 The 0.9.4 candidate adds guarded shadow activation, recovery, receipt renewal
 and prospective authorization. Local tests and real Apple exchanges validate
@@ -17,11 +17,11 @@ or notarized release and this report does not certify MDM retirement.
 | Identity and revocation | Fresh credential association retains identity without legacy proof; other accounts cannot inherit it; revocation is durable and idempotent |
 | Swift tests | 19 App Attest XCTest cases, 18 coordinator-client cases and 23 CLI/updater cases passed |
 | Atomic installer | Existing cases and rejection of a missing callback marker passed |
-| Admin UI | PostgreSQL cohort/current-connection/expiry/revocation cases, lint and production build passed |
+| Admin UI | PostgreSQL cohort/current-connection/expiry/revocation cases, including immediate revocation reasons and deduplicated machine counts, lint and production build passed |
 | Final optimized callback smoke | Completion, cancellation and expiry paths passed alongside Gemma and Metal markers |
 | Negative control | Replacing only the safe callback-timer sleep with the old generic overload made the revised deterministic smoke abort with SIGABRT and `freed pointer was not the last allocation`; fixed source was restored and rebuilt |
 | Locally Developer ID signed 0.9.4 app | Real Apple enrollment and assertions 1–3 verified; restart reused the key and verified counters 4–6 without another enrollment |
-| Actual Go coordinator + PostgreSQL + signed protocol 3 provider | Across restart: one machine, two sessions, one credential, assertion counter 2, three proof blobs and two receipt blobs; provider remained alive |
+| Actual Go coordinator + PostgreSQL + signed protocol 3 provider | Across restarts and the hardware-substitution negative: one machine, five sessions, one credential, assertion counter 5, six proof blobs and two receipt blobs; provider remained alive. The final provider bound both hardware and its existing verification key |
 | Hardware substitution through a local WebSocket proxy | Changing only registration RAM produced `hardware_claims_mismatch` and an ineligible prospective verdict; the cryptographic assertion remained valid and the provider stayed alive |
 | Apple risk receipt endpoint | HTTP 200; fresh `RECEIPT` signature, app/key, dates and risk metric verified; Apple provided next-refresh and expiration timestamps |
 

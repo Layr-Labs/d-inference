@@ -3,13 +3,15 @@ import { Pool } from "pg";
 
 const testURL = process.env.APP_ATTEST_TEST_DATABASE_URL;
 // This integration test writes fixtures only in the designated disposable DB.
-const enabled = !!testURL?.startsWith("postgres://gaj@127.0.0.1:55495/");
-const pool = new Pool({ connectionString: testURL });
+const enabled = !!testURL?.startsWith("postgres://gaj@127.0.0.1:55495/darkbloom_attest_094_test?");
+// Keep fixtures on one connection and roll them back, including truncation.
+const pool = new Pool({ connectionString: testURL, max: 1 });
 vi.mock("@/lib/db", () => ({ query: async (text: string, params: unknown[]) => (await pool.query(text, params)).rows }));
 
 describe.skipIf(!enabled)("App Attest inventory queries on PostgreSQL", () => {
   beforeAll(async () => {
-    await pool.query("TRUNCATE darkbloom_machines,app_attest_evidence,app_attest_receipts,app_attest_shadow_events,darkbloom_machine_observations CASCADE");
+    await pool.query("BEGIN");
+    await pool.query("TRUNCATE darkbloom_machines,app_attest_shadow_keys,app_attest_evidence,app_attest_receipts,app_attest_shadow_events,darkbloom_machine_observations CASCADE");
     await pool.query(`INSERT INTO darkbloom_machines VALUES
       ('machine-a','hardware_verified',NULL,NOW()-INTERVAL '2 days',NOW()),
       ('machine-b','provisional',NULL,NOW(),NOW())`);
@@ -26,7 +28,7 @@ describe.skipIf(!enabled)("App Attest inventory queries on PostgreSQL", () => {
     await pool.query(`INSERT INTO app_attest_shadow_events VALUES('event','session-b',NOW(),'assertion','verified','{"duration_ms":20}')`);
     await pool.query(`INSERT INTO app_attest_evidence(id,session_id,key_id,received_at,action,sha256,context,outcome) VALUES('proof','session-b','key',NOW(),'assertion','sum','{}','verified')`);
   });
-  afterAll(async()=>{ await pool.end(); });
+  afterAll(async()=>{ await pool.query("ROLLBACK"); await pool.end(); });
 
   it("counts identities instead of sessions and keeps unknown/disabled cohorts", async()=>{
     const {appAttestCensus,appAttestMachines,appAttestStages,appAttestArchiveHealth,appAttestMachineHistory}=await import("./app-attest");
@@ -53,6 +55,9 @@ describe.skipIf(!enabled)("App Attest inventory queries on PostgreSQL", () => {
     await pool.query(`INSERT INTO app_attest_shadow_keys(key_id,owner,evidence) VALUES('readiness-key','owner','{}')`);
     await pool.query(`INSERT INTO app_attest_key_revocations VALUES('readiness-key','owner','test',NOW())`);
     expect(await appAttestReadinessCohorts(7)).toContainEqual({readiness:"ineligible",version:"0.9.2",machines:"1"});
+    expect(await appAttestReadinessReasons(7)).toEqual([{reason:"credential_revoked",machines:"1"}]);
+    await pool.query(`UPDATE app_attest_shadow_events SET fields=fields || '{"reasons":["credential_revoked"]}'::jsonb WHERE id='policy'`);
+    expect(await appAttestReadinessReasons(7)).toEqual([{reason:"credential_revoked",machines:"1"}]);
     await pool.query(`INSERT INTO darkbloom_machine_sessions SELECT 'replacement',machine_id,original_machine_id,account_id,NOW(),NOW()+INTERVAL '1 second',NULL,observation FROM darkbloom_machine_sessions WHERE session_id='session-b'`);
     await pool.query(`UPDATE darkbloom_machine_sessions SET disconnected_at=NOW(),last_seen=NOW()+INTERVAL '2 seconds' WHERE session_id='session-b'`);
     expect(await appAttestReadinessCohorts(7)).toEqual([{readiness:"not_evaluated",version:"0.9.2",machines:"2"}]);

@@ -1,6 +1,6 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-09-14 · commit `46299ff78`
+> Last updated: 2026-09-14 · commit `1d840807c`
 
 App Attest runs alongside authoritative APNs and MDM verification. The coordinator records stable machine identities, fleet adoption, complete submitted proofs, and receipts. These records do not change routing, rewards, trust, or the supported OS floor. DeviceCheck's separate two-bit API is deferred.
 
@@ -154,7 +154,7 @@ The private admin dashboard at `/app-attest` queries the read replica. It distin
 
 Machine drill-downs download complete evidence/context and receipt history. Both the global Basic Auth proxy and the raw-download route authenticate access; downloads have `private, no-store` caching. A missing schema or unavailable query renders an explicit unavailable section, without false zeroes or hiding other working sections.
 
-Code: `admin-ui/src/lib/queries/app-attest.ts`, `admin-ui/src/lib/queries/app-attest-readiness.ts`, and `admin-ui/src/app/app-attest/page.tsx`. Readiness groups the newest observed connection per machine/version, shows all recent identities with offline cohorts separately, checks verdict expiration and current revocation, and lists missing/rejected conditions. An earlier connection’s success never qualifies its replacement. These are recent evaluations; catalog or qualification changes require another evaluation.
+Code: `admin-ui/src/lib/queries/app-attest.ts`, `admin-ui/src/lib/queries/app-attest-readiness.ts`, and `admin-ui/src/app/app-attest/page.tsx`. Readiness groups the newest observed connection per machine/version, shows all recent identities with offline cohorts separately, checks verdict expiration and current revocation, and lists missing/rejected conditions. A current revocation immediately contributes `credential_revoked` to the reasons table, even before another assertion; repeated reasons count each machine once. An earlier connection’s success never qualifies its replacement. These are recent evaluations; catalog or qualification changes require another evaluation.
 
 Metrics include `app_attest.shadow.events`, `app_attest.shadow.duration_ms`, `app_attest.shadow.metadata`, `app_attest.inventory.recorded`, `app_attest.inventory.failed`, `app_attest.archive.received`, `app_attest.archive.completed`, `app_attest.events.storage_failed`, and receipt/archive failure counters. `app_attest.receipt.configured` reports whether both credential settings are present; `app_attest.maintenance.interrupted`, `app_attest.maintenance.receipt_recovery` and `app_attest.maintenance.failed` expose reconciliation. Machine/account IDs appear in private records and logs, not high-cardinality metric tags. Logs complement the durable census rather than defining the denominator.
 

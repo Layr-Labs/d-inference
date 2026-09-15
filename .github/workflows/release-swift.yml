@@ -178,6 +178,15 @@ jobs:
       - name: Select SDK 27 provider toolchain
         run: ./scripts/prepare-provider-release-toolchain.sh
 
+      - name: Ensure matching Metal compiler is available
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          if ! xcrun --sdk macosx metal --version; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun --sdk macosx metal --version
+
       - name: Show toolchain versions
         run: |
           set -euo pipefail

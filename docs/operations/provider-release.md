@@ -250,6 +250,9 @@ The release build uses GitHub’s `xcode-27` runner with Apple Command Line Tool
 macOS 26.3, below the SDK 27 installer’s 26.4 minimum; it remains the general
 PR CI environment. The selector refuses an older SDK/compiler instead of
 installing software or falling back.
+The workflow obtains Xcode's matching Metal compiler through
+`xcodebuild -downloadComponent MetalToolchain` when the image omits it, and
+checks availability before computing the source-matched metallib cache key.
 `scripts/prepare-provider-release-toolchain.sh` scopes
 `scripts/provider-release-swift.sh` to provider builds/tests while Xcode remains
 the Metal/signing toolchain. The release SDK runs the provider unit suite and

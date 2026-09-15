@@ -32,6 +32,14 @@ jobs:
           fetch-depth: 0 # Frozen source links are checked at their stamped commits.
       - name: Test historical source-link validation
         run: python3 scripts/test-docs-check-historical-links.py
+      - name: Test documentation-impact validation
+        run: python3 scripts/test-docs-impact-check.py
+      - name: Check documentation impact
+        if: github.event_name == 'pull_request'
+        env:
+          DOCS_IMPACT_BASE: ${{ github.event.pull_request.base.sha }}
+          DOCS_IMPACT_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: python3 scripts/docs-impact-check.py
       - name: Check freshness stamps, links, cited paths, orphans
         run: ./scripts/docs-check.sh
 

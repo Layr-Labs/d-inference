@@ -260,6 +260,13 @@ Keep the codebase modular, never monolithic.
 
 ## Pull Requests
 
+The canonical agent workflow for repository contributions is
+`.agents/skills/darkbloom-contributor/SKILL.md`. Before finalizing any PR,
+evaluate documentation impact using `docs/AGENTS.md` section 7 and run
+`make docs-impact-check BASE=<target-branch>` plus `make docs-check`. CI applies
+the same source-to-doc mapping; a non-applicable mapping requires the
+maintainer-applied `docs-not-needed` label.
+
 **Every PR MUST include a before-and-after diagram (Mermaid) in its description** that details what changed — covering BOTH:
 
 - **Behavior**: the request/response flow, states, and outcomes a user or caller observes (e.g. dispatch → retry → 429/503/200).

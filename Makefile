@@ -5,7 +5,7 @@
         provider-build provider-test provider benchmark-gemma-contbatch benchmark-wrapper-test \
         ui-install ui-build ui-lint ui-test ui \
         e2e-integration e2e-benchmark e2e \
-        docs-check docs-stamp \
+        docs-check docs-impact-check docs-stamp \
         test build all clean
 
 help:
@@ -113,6 +113,9 @@ e2e: e2e-integration ## Run the integration suite
 
 docs-check: ## Lint docs/: freshness stamps, relative links, cited code paths, orphans
 	./scripts/docs-check.sh
+
+docs-impact-check: ## Check source changes have their mapped canonical docs (BASE=origin/master)
+	python3 scripts/docs-impact-check.py --base "$(if $(BASE),$(BASE),origin/master)"
 
 docs-stamp: ## Refresh the freshness stamp on changed docs (FILES=... to target specific files)
 	./scripts/docs-stamp.sh $(FILES)

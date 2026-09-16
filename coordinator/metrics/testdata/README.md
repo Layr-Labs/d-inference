@@ -1,18 +1,30 @@
-# Golden metric names
+# Golden metric names and tag keys
 
-`emitted_names.txt` and `mirror_names.txt` are a snapshot of every metric name
-the coordinator emitted **before** the catalog existed: the DogStatsD names that
-were spelled out at `s.ddIncr`/`ddCount`/`ddGauge`/`ddHistogram` call sites, and
-the in-process registry names behind `GET /v1/admin/metrics`.
+Three snapshots of what the coordinator emitted **before** the catalog existed,
+taken from the call sites the declarations replace:
 
-`catalog_test.go` asserts every declared name is in the matching snapshot. That
-is what makes the migration non-destructive: a typo in a declaration would
-otherwise mint a new series and silently retire the one a dashboard queries, and
-nothing else in the build would notice.
+| File | Holds | Asserted by |
+|---|---|---|
+| `emitted_names.txt` | DogStatsD names spelled at `s.ddIncr`/`ddCount`/`ddGauge`/`ddHistogram` | `TestDeclaredNamesAlreadyExist` |
+| `mirror_names.txt` | in-process registry names behind `GET /v1/admin/metrics` | `TestDeclaredNamesAlreadyExist` |
+| `emitted_tag_keys.txt` | per name, each distinct **ordered** tag-key list observed | `TestDeclaredTagKeysMatchWhatWasEmitted` |
 
-The check is containment, not equality, while the migration is in flight — names
-whose call sites have not moved yet are still emitted from those call sites. It
-becomes an equality check when the last `ddX` shim is deleted.
+Together they are what makes the migration non-destructive. A typo in a
+declaration would otherwise mint a new series and silently retire the one a
+dashboard queries; a declaration that keeps the name but adds, drops or reorders
+a tag key does the same thing to every widget that groups by it. Nothing else in
+the build notices either.
+
+A name may appear more than once in `emitted_tag_keys.txt`, because a site that
+omitted a conditional dimension emitted a shorter list — `ws.disconnects` has
+both `reason` and `reason,code`. The declaration covers that by taking an empty
+value for the missing tag, so the test asks that each observed list be an ordered
+*subsequence* of the declared keys rather than equal to them, and separately that
+no declared key is one no call site ever emitted.
+
+The name check is containment, not equality, while the migration is in flight —
+names whose call sites have not moved yet are still emitted from those call
+sites. It becomes an equality check when the last `ddX` shim is deleted.
 
 ## Regenerating
 
@@ -22,9 +34,17 @@ shrinking list.
 
 ```sh
 git archive 513af2381 | tar -x -C /tmp/base    # last commit before the catalog
-python3 coordinator/metrics/testdata/extract_names.py /tmp/base/api dd     > coordinator/metrics/testdata/emitted_names.txt
-python3 coordinator/metrics/testdata/extract_names.py /tmp/base/api mirror > coordinator/metrics/testdata/mirror_names.txt
+cd coordinator/metrics/testdata
+python3 extract_names.py    /tmp/base/coordinator dd     > emitted_names.txt
+python3 extract_names.py    /tmp/base/coordinator mirror > mirror_names.txt
+python3 extract_tag_keys.py /tmp/base/coordinator        > emitted_tag_keys.txt
 ```
 
 A name that legitimately did not exist before (a genuinely new metric) is added
 by hand, with a one-line reason in the commit message.
+
+`extract_tag_keys.py` only sees tag keys written as literals, at the call or in a
+slice variable it can follow back. A site that carried its tags in a struct (the
+MDM scheduler's gauge loop) leaves no evidence, so its name is absent from the
+file and simply not asserted — partial coverage, deliberately, rather than a
+guess. Extending the extractor is preferable to hand-editing the golden.

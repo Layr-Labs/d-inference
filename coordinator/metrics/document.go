@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -26,7 +27,10 @@ type Documented struct {
 	Locked bool
 }
 
-// Document returns every declaration, sorted by name.
+// Document returns every declaration, sorted by name. The label slices are
+// copies: a declaration is immutable once built and read by every goroutine that
+// records a sample, so handing out the live backing array would let a caller
+// rewrite the tag keys of a series under the collectors emitting it.
 func (m *Metrics) Document() []Documented {
 	out := make([]Documented, 0, len(m.declared))
 	for _, d := range m.declared {
@@ -34,15 +38,16 @@ func (m *Metrics) Document() []Documented {
 			Name:   d.name,
 			Mirror: d.mirror,
 			Kind:   d.kind,
-			Labels: d.labelKeys,
+			Labels: slices.Clone(d.labelKeys),
 			Help:   d.help,
 			Locked: d.locked,
 		}
 		if d.mirror != "" {
-			doc.MirrorLabels = d.labelKeys
-			if d.mirrorPrefix > 0 && d.mirrorPrefix < len(d.labelKeys) {
-				doc.MirrorLabels = d.labelKeys[:d.mirrorPrefix]
+			keys := d.labelKeys
+			if d.mirrorPrefix > 0 && d.mirrorPrefix < len(keys) {
+				keys = keys[:d.mirrorPrefix]
 			}
+			doc.MirrorLabels = slices.Clone(keys)
 		}
 		out = append(out, doc)
 	}

@@ -34,10 +34,13 @@ type TrustMetrics struct {
 	// SecurityInfo that arrived after the decision window.
 	MDMVerification *Counter
 	// MDAVerification is Apple device-attestation certificate verification, by
-	// outcome. Its outcomes come from two paths that both mean the same thing:
-	// the reuse shortcut on the provider session, and the scheduler's per-attempt
-	// result (`sent`, `verified`, `invalid`, `binding_mismatch`, `late`,
-	// `reused`).
+	// outcome. The outcomes come from two paths. The queue and callbacks name
+	// theirs directly: `sent`, `invalid`, `binding_mismatch`, `late`, and `reused`
+	// for the cached-proof shortcut. The scheduler's per-attempt forwarder
+	// (observeAttempt) relabels a success as `verified` and otherwise passes the
+	// store's VerificationOutcome through, so every value of that enum can also
+	// appear here — `timeout`, `cancelled`, `transient`, `error`,
+	// `posture_mismatch`. Treat the set as open when writing a query.
 	MDAVerification *Counter
 }
 

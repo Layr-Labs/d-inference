@@ -172,8 +172,8 @@ func (s *mdmVerificationScheduler) CompleteLateSecurityInfo(
 		store.VerificationOutcomeSuccess, now,
 	)
 	cancel()
+	// As in the executor: reuseMDA already counts the reuse.
 	if s.deps.reuseMDA(binding) {
-		s.server.metrics().Trust.MDAVerification.Inc("reused")
 		s.mu.Lock()
 		delete(s.bindings, binding.attestation.PublicKey)
 		s.mu.Unlock()

@@ -316,8 +316,9 @@ func (s *mdmVerificationScheduler) finishAttempt(work mdmSchedulerWork, result m
 		}
 		s.mu.Unlock()
 		if result.granted && work.job.Kind == store.VerificationTaskSecurityInfo {
+			// reuseMDA records mda.verification{outcome:reused} itself
+			// (attachCachedMDAProof); counting it again here is one event twice.
 			if s.deps.reuseMDA(work.binding) {
-				s.server.metrics().Trust.MDAVerification.Inc("reused")
 				s.mu.Lock()
 				delete(s.bindings, work.job.SEPubKey)
 				s.mu.Unlock()

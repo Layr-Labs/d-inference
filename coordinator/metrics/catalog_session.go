@@ -12,9 +12,10 @@ type SessionMetrics struct {
 	// reason.
 	RegistrationRejected *Counter
 	// VersionBelowMinimum counts providers refused for running below the version
-	// floor, at whichever of the three gates caught it. `version` is the
-	// coarse-grained version tag, not an exact patch level — an exact version
-	// here would mint a series per release.
+	// floor, at whichever of the three gates caught it. `version` is the exact
+	// version the provider reported, which is the point — the operator's question
+	// is which stale release is still in the field. It costs one series per such
+	// release, bounded by how many stale versions are still dialling in.
 	VersionBelowMinimum *Counter
 
 	// Disconnects is one session ending. `reason` separates a peer-initiated
@@ -50,7 +51,7 @@ func newSessionMetrics(m *Metrics) *SessionMetrics {
 			"Registrations refused before admission, by reason",
 			"reason"),
 		VersionBelowMinimum: m.counter("provider_version_below_minimum",
-			"Providers below the version floor, by the gate that caught it and coarse version tag",
+			"Providers below the version floor, by the gate that caught it and the exact version they reported",
 			"gate", "version"),
 
 		Disconnects: disconnects,

@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-16 · commit `4eaaf1e4c`
+> Last updated: 2026-09-16 · commit `79e51dafa`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -145,7 +145,7 @@ row below carries the emission condition and this one carries the shape.
 | `mdm.verification` | count | `outcome` | — | MicroMDM SecurityInfo cross-checks by outcome |
 | `provider.enqueue_failed` | count | `msg` | — | Outbound control frames that could not be queued for a provider, by message kind |
 | `provider.oom_suspected` | count | — | provider_oom_suspected_total | Abrupt disconnects under memory pressure with inference in flight (suspected jetsam kill) |
-| `provider_version_below_minimum` | count | `gate`, `version` | — | Providers below the version floor, by the gate that caught it and coarse version tag |
+| `provider_version_below_minimum` | count | `gate`, `version` | — | Providers below the version floor, by the gate that caught it and the exact version they reported |
 | `providers.registration_rejected` | count | `reason` | — | Registrations refused before admission, by reason |
 | `providers.registrations` | count | `trust_level` | provider_registrations_total | Accepted provider registrations by admitted trust level |
 | `store.cache.entries` | gauge | `domain` | — | Entries resident in the read cache now |

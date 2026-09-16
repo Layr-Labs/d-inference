@@ -27,6 +27,9 @@ The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its 
 
 ## Prerequisites
 
+- Start commands from the repository root. Component examples that use
+  `(cd path && command)` run in a subshell and preserve your current directory.
+
 - **Toolchain via [`mise`](https://mise.jdx.dev/).** Every version is pinned in
   [`mise.toml`](../../mise.toml); `mise install` installs them all.
 

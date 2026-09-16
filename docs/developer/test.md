@@ -68,6 +68,10 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 
 ### 2. Coordinator (Go)
 
+The Go module lives at the repository root. Run `go test ./coordinator/...`
+there to select coordinator packages; keep component `cd` commands in separate
+shells when following the repository README examples.
+
 Run prediction telemetry checks from the repository root:
 
 ```bash

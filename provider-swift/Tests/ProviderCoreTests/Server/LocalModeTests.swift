@@ -60,9 +60,14 @@ struct LocalEndpointFileTests {
     private func withTempDir(_ body: (URL) throws -> Void) throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("dbloom-local-\(UUID().uuidString)", isDirectory: true)
-        setenv("DARKBLOOM_LOCAL_DIR", dir.path, 1)
+        let previousDirectory = ProcessInfo.processInfo.environment["DARKBLOOM_LOCAL_DIR"]
+        try #require(setenv("DARKBLOOM_LOCAL_DIR", dir.path, 1) == 0)
         defer {
-            unsetenv("DARKBLOOM_LOCAL_DIR")
+            if let previousDirectory {
+                #expect(setenv("DARKBLOOM_LOCAL_DIR", previousDirectory, 1) == 0)
+            } else {
+                #expect(unsetenv("DARKBLOOM_LOCAL_DIR") == 0)
+            }
             try? FileManager.default.removeItem(at: dir)
         }
         try body(dir)

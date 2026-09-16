@@ -52,11 +52,6 @@ export function TechnicalMode({ trust }: { trust: TrustMetadata }) {
           label="Secure Boot"
           detail={isHardware ? "Full Security" : "Unknown"}
         />
-        <StatusLine
-          ok={isHardware}
-          label="Authenticated Root Volume"
-          detail={isHardware ? "Sealed" : "Unknown"}
-        />
       </div>
 
       <div className="mt-3 space-y-0.5">
@@ -68,7 +63,6 @@ export function TechnicalMode({ trust }: { trust: TrustMetadata }) {
         </div>
         <StatusLine ok={isHardware} label="PT_DENY_ATTACH (anti-debug)" />
         <StatusLine ok={isHardware} label="Hardened Runtime (no task_for_pid)" />
-        <StatusLine ok={isHardware} label="Memory wiping after inference" />
       </div>
 
       {trust.mdaVerified && (

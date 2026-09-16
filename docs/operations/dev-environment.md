@@ -184,6 +184,11 @@ re-runs the installer on every listed Mac.
 
 ## Verification
 
+The fleet updater visits every configured host and exits nonzero if any update
+fails. Authenticated smoke runs use a unique temporary response file and remove
+it when the process exits. Admin login and release-deactivation commands encode
+input as JSON values, preserving quotes and backslashes.
+
 ```bash
 scripts/smoke-dev.sh                              # /health, /v1/stats, /v1/models/catalog, install.sh templating
 API_KEY=<dev api key> scripts/smoke-dev.sh        # + an authenticated chat completion

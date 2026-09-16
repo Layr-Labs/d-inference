@@ -328,3 +328,23 @@ private func quote(
         model: model(weightsGb: 8))
     #expect(cold.rejectionReason == .deadline)
 }
+
+@Test func overflowingDecodedTokenEnvelopeRefusesWithoutTrapping() throws {
+    let data = Data("""
+        {"type":"capacity_probe","quote_id":"oversized","model":"org/model-a",
+         "prompt_tokens_bucket":\(Int.max),"max_output_tokens":1,"deadline_remaining_ms":9000}
+        """.utf8)
+    guard case .capacityProbe(let decoded) = try CoordinatorClientCodec.decodeIncomingMessage(from: data) else {
+        Issue.record("Expected capacity probe")
+        return
+    }
+    let result = quote(probe: decoded, capacity: capacity([slot()]), model: model())
+    #expect(!result.admissibleNow)
+    #expect(result.rejectionReason == .kvHeadroom)
+    #expect(result.quoteId == "oversized")
+    // Existing health and capability precedence still wins before capacity math.
+    #expect(quote(probe: decoded, capacity: capacity([slot(state: "crashed")]), model: model())
+        .rejectionReason == .slotState)
+    #expect(quote(probe: decoded, capacity: capacity([slot()]), model: nil)
+        .rejectionReason == .capability)
+}

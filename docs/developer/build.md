@@ -28,6 +28,10 @@ PR review automation has local
 standard library, Git, Bash and `jq` to validate review input preparation without
 a model API key or a build.
 
+The admin, smoke and fleet helpers use the tools pinned here. Their local fixture
+checks are covered by [script validation](test.md#6-scripts-and-release-integrity);
+the [dev operations runbook](../operations/dev-environment.md) covers invocation.
+
 Profiler wire changes require both coordinator and provider builds; the shared
 Go/Swift fixture and focused checks are described in [test.md](test.md) and
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
@@ -45,6 +49,8 @@ failed restoration retains a recovery backup.
 - The cache soak observer uses macOS Bash 3.2 and stock logging tools. Its
   [offline fixtures](test.md#6-scripts-and-release-integrity) use Python and owned
   command stubs; they require no provider build or running inference service.
+- Start commands from the repository root. Component examples that use
+  `(cd path && command)` run in a subshell and preserve your current directory.
 
 - **Toolchain via [`mise`](https://mise.jdx.dev/).** Every version is pinned in
   [`mise.toml`](../../mise.toml); `mise install` installs them all.
@@ -175,6 +181,20 @@ production prompt vectors against a Linux sidecar binary (CI job "Prompt
 Sidecar Tests").
 
 ### 5. Provider CLI (Swift) with source-matched metallib
+
+Build the test product again after changing fixture helpers or assertions;
+`--skip-build` alone reuses the previous executable. The
+[provider test procedure](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib)
+covers isolated CLI configuration, artifact integrity, SSD authentication,
+paged-preflight diagnostics, and stream ordering. Synthetic MLX fixtures need
+the matched metallib; enabled live-model fixtures also need their documented
+model inputs.
+
+To compile all test targets without executing fixtures:
+
+```bash
+(cd provider-swift && swift build --build-tests)
+```
 
 ```bash
 make provider-build

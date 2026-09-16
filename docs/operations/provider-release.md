@@ -15,6 +15,12 @@ the source for the provider bundle. Publication and coordinator deployment remai
 separate operations; the bump alone does not change the registered release
 returned by `GET /v1/releases/latest`.
 
+Keep `ProviderCore.version` in
+`provider-swift/Sources/ProviderCore/ProviderCore.swift` as the concise release
+identity. Record release history in `CHANGELOG.md`;
+`scripts/check-release-version.sh` checks parity with the coordinator display
+fallback before packaging.
+
 ### App Attest recovery rollout
 
 Follow [the App Attest rollout runbook](app-attest-rollout.md). The release

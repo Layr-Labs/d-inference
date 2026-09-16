@@ -7,6 +7,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/x509"
@@ -202,9 +203,11 @@ func (p *PrivyAuth) InitEmailOTP(email string) error {
 		return errors.New("privy: app_secret required for OTP init")
 	}
 
-	body := fmt.Sprintf(`{"email":"%s"}`, email)
+	body, _ := json.Marshal(struct {
+		Email string `json:"email"`
+	}{Email: email})
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
-		"https://auth.privy.io/api/v1/auth/email/init", strings.NewReader(body))
+		"https://auth.privy.io/api/v1/auth/email/init", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -232,9 +235,12 @@ func (p *PrivyAuth) VerifyEmailOTP(email, code string) (string, error) {
 		return "", errors.New("privy: app_secret required for OTP verify")
 	}
 
-	body := fmt.Sprintf(`{"email":"%s","code":"%s"}`, email, code)
+	body, _ := json.Marshal(struct {
+		Email string `json:"email"`
+		Code  string `json:"code"`
+	}{Email: email, Code: code})
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
-		"https://auth.privy.io/api/v1/auth/email/authenticate", strings.NewReader(body))
+		"https://auth.privy.io/api/v1/auth/email/authenticate", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}

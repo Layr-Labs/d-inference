@@ -32,7 +32,7 @@ export function E2ELockIndicator({ trust, onOpenExplainer }: E2ELockIndicatorPro
         className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs text-teal hover:bg-teal-light/40 transition-colors"
       >
         <Lock size={12} />
-        <span className="font-semibold hidden sm:inline">End-to-end encrypted</span>
+        <span className="font-semibold hidden sm:inline">Encrypted in transit</span>
       </button>
 
       {showPopover && (
@@ -41,14 +41,15 @@ export function E2ELockIndicator({ trust, onOpenExplainer }: E2ELockIndicatorPro
             <div className="flex items-center gap-2">
               <Lock size={14} className="text-teal" />
               <span className="text-sm font-bold text-text-primary">
-                End-to-End Encrypted
+                Encrypted in Transit
               </span>
             </div>
           </div>
           <div className="px-4 py-3 space-y-2">
             <p className="text-xs text-text-secondary leading-relaxed">
-              Messages are secured with end-to-end encryption.
-              Only the verified provider hardware can decrypt your prompts.
+              Requests use encrypted network hops. The coordinator processes
+              plaintext in memory, then encrypts it for the verified provider.
+              Prompt content is not logged or retained by the coordinator.
             </p>
             {trust?.providerChip && (
               <div className="rounded-lg bg-bg-secondary px-3 py-2">

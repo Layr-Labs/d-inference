@@ -53,7 +53,7 @@ export const ENDPOINTS: Endpoint[] = [
     "finish_reason": null
   }]
 }`,
-    notes: "Supports streaming (SSE) and non-streaming responses. All prompts are end-to-end encrypted. Response headers include provider attestation metadata (x-provider-attested, x-provider-trust-level, x-provider-chip).",
+    notes: "Supports streaming (SSE) and non-streaming responses. Requests use encrypted network hops; the coordinator processes plaintext in memory and re-encrypts it to the provider. Response headers include provider attestation metadata (x-provider-attested, x-provider-trust-level, x-provider-chip).",
   },
   {
     method: "POST",

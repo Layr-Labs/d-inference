@@ -229,8 +229,8 @@ public actor CoordinatorClient {
     /// then tear it down. Mirrors the old
     /// `URLSessionWebSocketTask.cancel(with: .goingAway, reason: nil)`: a clean
     /// close lets the coordinator deregister us promptly instead of waiting out a
-    /// ping/pong timeout. `cancel()` runs in the send completion so the close
-    /// frame is handed to the transport first. Used both for permanent shutdown
+    /// ping/pong timeout. Queue the frame and cancel immediately so shutdown does
+    /// not depend on an unreachable peer acknowledging it. Used for permanent shutdown
     /// and for the APNs-refresh forced reconnect (the reconnect loop re-runs
     /// registration while `shutdownRequested` is still false). Fire-and-forget:
     /// the actor is not blocked waiting for the frame to flush.
@@ -290,9 +290,7 @@ public actor CoordinatorClient {
 
 // MARK: - Security Checks Namespace
 
-/// Stub namespace for security checks. The Security module will provide
-/// real implementations; these stubs ensure the coordinator client compiles
-/// and runs independently.
+/// Coordinator-facing access to the provider's live SIP posture check.
 enum SecurityChecks {
     static func isSIPEnabled() -> Bool {
         SIPStatusChecker().isFullyEnabled()

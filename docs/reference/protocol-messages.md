@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-15 · commit `56da3a668`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -107,6 +107,11 @@ There is no `unload` or `unload_model` message; see
 
 Go `RegisterMessage` · Swift `ProviderMessage.Register`. Sent once per
 connection, first.
+
+Before registration, `inference_accepted`, `inference_response_chunk`,
+`inference_complete`, and `inference_error` are ignored: the connection cannot
+own an inference request yet. The same connection can still register
+(`coordinator/api/provider.go`, `providerReadLoop` and inference handlers).
 
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|

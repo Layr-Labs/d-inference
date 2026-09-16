@@ -76,6 +76,10 @@ func (s *Session) Run(ctx context.Context, conn *websocket.Conn, providerID stri
 			chunkMsg := msg.Payload.(*protocol.InferenceResponseChunkMessage)
 			s.deps.Frames.Chunk(s.providerID, s.provider, chunkMsg)
 		case protocol.TypeInferenceComplete:
+			if s.provider == nil {
+				s.deps.Logger().Warn("complete from unregistered provider", "provider_id", s.providerID)
+				continue
+			}
 			completeMsg := msg.Payload.(*protocol.InferenceCompleteMessage)
 			_, receivedAt := s.provider.MarkPendingCompletionIngressNow(completeMsg.RequestID)
 			if receivedAt.IsZero() {

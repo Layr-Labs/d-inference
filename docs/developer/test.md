@@ -390,6 +390,11 @@ The reconnect uses its own session ID so asynchronous registration cannot replac
 the historical record being deleted. Run them with
 `GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run '^TestDeleteMyProvider_'`.
 
+`TestProviderCompletionBeforeRegistrationIsIgnored` sends an early completion
+over a real local WebSocket, then requires a successful registration challenge
+on that same connection. It uses the in-memory store and needs no provider
+binary or model (`coordinator/api/provider_completion_registration_test.go`).
+
 The [admission calibration baseline](../reports/2026-09-06-admission-calibration-baseline.md)
 gives the focused `TestTTFTPendingPrompt` comparison command. Its registry
 cases exercise preflight, reservation, retained-plan revalidation and retained

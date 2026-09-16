@@ -9,7 +9,7 @@ import (
 func TestResponsesStreamReopenedItemsContainOnlyTheirOwnText(t *testing.T) {
 	for _, reasoningTokens := range []int{0, 7} {
 		e, rec := newTestEmitter(t)
-		e.start()
+		e.Start()
 		for _, chunk := range []string{
 			`data: {"choices":[{"delta":{"reasoning":"first plan"}}]}`,
 			`data: {"choices":[{"delta":{"content":"before tool"}}]}`,
@@ -17,9 +17,9 @@ func TestResponsesStreamReopenedItemsContainOnlyTheirOwnText(t *testing.T) {
 			`data: {"choices":[{"delta":{"reasoning_content":"second plan"}}]}`,
 			`data: {"choices":[{"delta":{"content":"after tool"}}]}`,
 		} {
-			e.handleChunk(chunk)
+			e.Chunk(chunk)
 		}
-		e.finish(protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 20, ReasoningTokens: reasoningTokens})
+		e.Finish(protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 20, ReasoningTokens: reasoningTokens})
 
 		deltas := map[string]string{}
 		var completed map[string]any

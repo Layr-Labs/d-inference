@@ -129,6 +129,10 @@ temporary home directories and need no provider build or model.
 The [telemetry read-buffer regression](test.md#bounded-telemetry-reads) uses only
 the Go memory store and a bounded local history fixture.
 
+The early-completion WebSocket regression in the
+[coordinator checks](test.md#2-coordinator-go) also uses only Go and a local
+in-memory coordinator.
+
 ```bash
 make coordinator-build            # cd coordinator && go build ./cmd/coordinator
 make coordinator-build-linux      # GOOS=linux GOARCH=amd64 CGO_ENABLED=0 → coordinator/coordinator-linux

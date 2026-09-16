@@ -33,15 +33,13 @@ type DeviceStore interface {
 	CreateProviderToken(*store.ProviderToken) error
 }
 
-// InviteStore keeps invite redemption and balance operations in their existing
-// persistence implementations; the controller preserves their call ordering.
+// InviteStore owns atomic invite redemption and reads the resulting balance.
 type InviteStore interface {
 	CreateInviteCode(*store.InviteCode) error
 	GetInviteCode(string) (*store.InviteCode, error)
 	ListInviteCodes() []store.InviteCode
 	DeactivateInviteCode(string) error
 	RedeemInviteCode(string, string) error
-	Credit(string, int64, store.LedgerEntryType, string) error
 	GetBalance(string) int64
 }
 

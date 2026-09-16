@@ -214,6 +214,8 @@ Choose **Unlink Stripe account and start over** to remove the destination curren
 
 ## Troubleshooting
 
+If a Connect withdrawal reports that its status changed during submission, refresh withdrawal history before submitting again. A bank update or refund may have arrived while the request was waiting for Stripe. The newer status is preserved; the message does not mean the earlier transfer was canceled (`coordinator/api/billing/connect_retry.go`, `writeWithdrawalStateChanged`).
+
 | Symptom | Cause | Fix |
 |---|---|---|
 | Paid on Stripe, balance unchanged | Webhook not delivered yet, or the coordinator's webhook secret is wrong | Poll the session status; if it stays `pending` for minutes, contact the operator with `stripe_session` |
@@ -228,6 +230,8 @@ Choose **Unlink Stripe account and start over** to remove the destination curren
 | `401` `auth_error` on `POST /v1/keys`, `/v1/referral/register`, `/v1/referral/apply` | Called with an API key | Use the Privy access token |
 | `429` on `create-session`, key mutations, referral or invite calls | The [financial rate limiter](../reference/pricing-model.md#constants) | Back off for `Retry-After` |
 | Balance dropped by more than the response should cost, then recovered | Reservation debited at admission, refund at settlement | Expected; read balance after the response completes |
+| A Connect withdrawal changes from `paid` back to `transferred` | Its automatic bank payout failed and the existing withdrawal was reopened for the next scheduled sweep | Monitor the same withdrawal in history; do not submit a replacement for those funds. Recovery preserves any newer completed payout; see [Connect sweep recovery](../reference/pricing-model.md#connect-sweep-recovery) |
+| Instant payout fails after reporting paid | Funds return to the connected account for the daily sweep; stale failure events preserve any newer settlement | Monitor the existing withdrawal; see [instant payout recovery](../reference/pricing-model.md#instant-payout-failure-recovery) |
 | `503` `billing_error` | Stripe or the referral service is not configured on this coordinator | Operator issue |
 
 Mechanism for each error, including the exact functions, is in
@@ -241,3 +245,9 @@ Mechanism for each error, including the exact functions, is in
 - [`models.md`](models.md) — `GET /v1/models` and its `pricing` block
 - [`../provider/self-route.md`](../provider/self-route.md) — routing to your own machine, which settles free
 - [`../reference/api-contracts.md`](../reference/api-contracts.md) — error envelope and status codes
+
+Invite redemption credits the balance in the same atomic operation that consumes
+the invite. A failed credit leaves the invite available for retry. If a Stripe
+withdrawal returns 409 `withdrawal_state_changed`, check withdrawal history before
+retrying: a concurrent webhook advanced its state, and earlier Stripe calls were
+not rolled back.

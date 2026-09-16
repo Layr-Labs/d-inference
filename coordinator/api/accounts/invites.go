@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -168,16 +169,14 @@ func (s *Controller) RedeemInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Redeem atomically (checks active, expiry, max uses, double-redemption)
+	// Claim and credit together; a failed balance write leaves the invite usable.
 	if err := s.store().RedeemInviteCode(code, accountID); err != nil {
-		httpresponse.WriteJSON(w, http.StatusBadRequest, httpresponse.ErrorBody("invalid_request_error", err.Error()))
-		return
-	}
-
-	// Credit the user's balance
-	if err := s.store().Credit(accountID, ic.AmountMicroUSD, store.LedgerInviteCredit, "invite:"+code); err != nil {
-		s.logger.Error("failed to credit invite balance", "account", accountID, "code", code, "error", err)
-		httpresponse.WriteJSON(w, http.StatusInternalServerError, httpresponse.ErrorBody("internal_error", "failed to credit balance"))
+		if errors.Is(err, store.ErrInviteCredit) {
+			s.logger.Error("failed to credit invite balance", "account", accountID, "code", code, "error", err)
+			httpresponse.WriteJSON(w, http.StatusInternalServerError, httpresponse.ErrorBody("internal_error", "failed to credit balance"))
+		} else {
+			httpresponse.WriteJSON(w, http.StatusBadRequest, httpresponse.ErrorBody("invalid_request_error", err.Error()))
+		}
 		return
 	}
 

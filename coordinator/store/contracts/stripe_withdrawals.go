@@ -60,8 +60,16 @@ type StripeWithdrawalStore interface {
 	// ID (tr_…). Used in transfer.failed webhook handlers.
 	GetStripeWithdrawalByTransferID(transferID string) (*StripeWithdrawal, error)
 
-	// UpdateStripeWithdrawal persists status/transfer/payout/fail-reason changes.
+	// UpdateStripeWithdrawal is an unconditional legacy update. New production
+	// read-modify-write paths must use CompareAndSwapStripeWithdrawal or a
+	// purpose-specific atomic transition.
 	UpdateStripeWithdrawal(withdrawal *StripeWithdrawal) error
+
+	// CompareAndSwapStripeWithdrawal changes mutable progress only while it
+	// matches previous. An exact next state is an idempotent success. Missing
+	// or concurrently changed rows return false; immutable money/account fields
+	// are preserved. Use this for submission and legacy status-only updates.
+	CompareAndSwapStripeWithdrawal(previous, next *StripeWithdrawal) (bool, error)
 
 	// MarkStripeWithdrawalPaid atomically flips a withdrawal to "paid" —
 	// but only from a non-terminal, non-refunded state ("pending" or
@@ -85,10 +93,18 @@ type StripeWithdrawalStore interface {
 	// ReopenStripeWithdrawalAfterPayoutFailure atomically reopens a
 	// withdrawal whose own payout failed: status back to "transferred",
 	// payout ID detached, failure reason recorded, FeeRefunded OR-ed in —
-	// but only while the row is not refunded and not terminally failed
+	// but only while its payout ID equals the non-empty expectedPayoutID,
+	// the row is not refunded and not terminally failed
 	// (a concurrent transfer.reversed wins; its refund must never be
-	// overwritten back to sweep-eligible). Returns whether it was applied.
-	ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason string, feeRefunded bool) (bool, error)
+	// overwritten back to sweep-eligible). A stale failure cannot detach a
+	// newer payout or reopen a later sweep settlement. Returns whether applied.
+	ReopenStripeWithdrawalAfterPayoutFailure(id, expectedPayoutID, failureReason string, feeRefunded bool) (bool, error)
+
+	// ReopenStripeWithdrawalAfterSweepFailure reopens only a paid, non-refunded
+	// row still attributed to expectedSweepPayoutID. The matching sweep stamp
+	// is cleared and the failure reason recorded; every other field is kept.
+	// Returns false for a missing row or a stale/ineligible event.
+	ReopenStripeWithdrawalAfterSweepFailure(id, expectedSweepPayoutID, failureReason string) (bool, error)
 
 	// ListStripeWithdrawalsBySweepPayoutID returns the withdrawals a given
 	// automatic sweep payout claimed (SweepPayoutID stamp). Used to reopen

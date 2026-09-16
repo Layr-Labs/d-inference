@@ -56,6 +56,12 @@ coordinator deployment.
 - Add negotiated App Attest shadow enrollment and fresh connection assertions, with independent certificate/policy verification, durable counters, and coverage/latency observations. APNs and MDM remain authoritative; shadow success or failure changes no routing, trust, payments, or supported OS floor.
 - Keep the CLI and app launch flow; add profile-authorized App Attest signing alongside APNs in release and validation workflows. Actual macOS 27 acceptance requires the final signed app on physical hardware.
 - Accept macOS Developer ID profiles granting only the App Attest CDhash opt-in, including array grants. Preserve existing APNs/keychain entitlements; validate the attested environment on the coordinator even when the optional environment entitlement is absent.
+## Unreleased — sweep payout ownership
+
+- Preserve newer completed payouts when an old automatic sweep failure arrives concurrently. Reopen withdrawals only while the stored paid state still belongs to that exact sweep, without moving ledger funds.
+## Unreleased
+
+- **Withdrawal progress ownership** — Preserve newer Stripe withdrawal payment/refund state when a delayed submission response arrives. Compare progress atomically, recognize an already-applied retry, and ask clients to check history after a concurrent update instead of overwriting it.
 
 - **Remote media recovery** — Release shared byte-budget reservations when a media reader panics, allowing sibling workers to finish and the request to fail instead of hanging.
 
@@ -165,6 +171,9 @@ coordinator and console changes require their own deployments.
 - Credit each Stripe Checkout payment once per account even when its local billing-session metadata is absent or completion bookkeeping fails. Serialize repeated credits across coordinator store connections while preserving non-withdrawable deposits and existing withdrawal refunds. Index ledger identity lookups for large accounts while retaining long-reference support.
 
 ## Unreleased — stats request-flow refresh
+
+- Preserve newer withdrawal settlements when an older instant-payout failure arrives concurrently; payout ownership is rechecked in the store transition.
+- Commit invite redemption and balance credit together, so a failed credit leaves the code available for retry.
 
 - Restore Stats refreshes on large usage windows by aggregating request origins before looking up provider locations. Preserve weighted coordinates, request/token counts, and the top-50 flow limit while avoiding large temporary sorts.
 

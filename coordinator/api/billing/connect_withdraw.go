@@ -220,6 +220,17 @@ func (s *Controller) StripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Keep the last acknowledged state across external Stripe calls so a
+	// webhook transition cannot be overwritten by our older local copy.
+	persisted := *wd
+	persistUpdate := func(stage string) error {
+		err := s.persistWithdrawalUpdate(&persisted, wd, stage)
+		if err == nil {
+			persisted = *wd
+		}
+		return err
+	}
+
 	// markFailedRefund refunds the ledger and marks the row failed
 	// (best-effort — neither store call has rollback). Returns whether the
 	// refund credit is durably applied; the Refunded flag prevents webhook
@@ -231,7 +242,7 @@ func (s *Controller) StripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		}
 		wd.Status = "failed"
 		wd.FailureReason = reason
-		if uerr := s.persistWithdrawalUpdate(wd, "failure"); uerr != nil {
+		if uerr := persistUpdate("failure"); uerr != nil {
 			s.logger.Error("stripe payout: mark failed failed", "error", uerr, "withdrawal_id", withdrawalID)
 		}
 		return refunded
@@ -258,7 +269,12 @@ func (s *Controller) StripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		// alert and completes the row from the Stripe dashboard via the
 		// idempotency key; if it didn't, the same alert drives the refund.
 		wd.FailureReason = "transfer_create_unconfirmed: " + err.Error()
-		if uerr := s.persistWithdrawalUpdate(wd, "ambiguous transfer"); uerr != nil {
+		if uerr := persistUpdate("ambiguous transfer"); uerr != nil {
+			if errors.Is(uerr, errWithdrawalStateChanged) {
+				s.writeWithdrawalStateChanged(w, withdrawalID)
+				return
+			}
+
 			s.logger.Error("stripe payout: persist ambiguous-transfer state failed",
 				"error", uerr, "withdrawal_id", withdrawalID)
 		}
@@ -300,7 +316,12 @@ func (s *Controller) StripeWithdraw(w http.ResponseWriter, r *http.Request) {
 	}
 	wd.TransferID = transfer.ID
 	wd.Status = "transferred"
-	if err := s.persistWithdrawalUpdate(wd, "transfer_id"); err != nil {
+	if err := persistUpdate("transfer_id"); err != nil {
+		if errors.Is(err, errWithdrawalStateChanged) {
+			s.writeWithdrawalStateChanged(w, withdrawalID)
+			return
+		}
+
 		// Transfer succeeded but we lost track of it: the row is stuck
 		// "pending" with no transfer_id, invisible to the webhook matcher and
 		// sweep reconciler. Money is in the connected account and the daily
@@ -364,7 +385,12 @@ func (s *Controller) StripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		// idempotency key. If it didn't land, the daily sweep delivers and
 		// completes the row; ops refunds the fee from the same alert trail.
 		wd.FailureReason = "instant_payout_unconfirmed: " + err.Error()
-		if uerr := s.persistWithdrawalUpdate(wd, "ambiguous payout"); uerr != nil {
+		if uerr := persistUpdate("ambiguous payout"); uerr != nil {
+			if errors.Is(uerr, errWithdrawalStateChanged) {
+				s.writeWithdrawalStateChanged(w, withdrawalID)
+				return
+			}
+
 			s.logger.Error("stripe payout: persist ambiguous-payout state failed",
 				"error", uerr, "withdrawal_id", withdrawalID)
 		}
@@ -400,7 +426,12 @@ func (s *Controller) StripeWithdraw(w http.ResponseWriter, r *http.Request) {
 			wd.FeeRefunded = true
 			wd.FailureReason += " (instant fee refunded)"
 		}
-		if uerr := s.persistWithdrawalUpdate(wd, "payout failure"); uerr != nil {
+		if uerr := persistUpdate("payout failure"); uerr != nil {
+			if errors.Is(uerr, errWithdrawalStateChanged) {
+				s.writeWithdrawalStateChanged(w, withdrawalID)
+				return
+			}
+
 			s.logger.Error("stripe payout: persist payout failure failed",
 				"error", uerr, "withdrawal_id", withdrawalID)
 		}
@@ -424,7 +455,12 @@ func (s *Controller) StripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wd.PayoutID = payout.ID
-	if err := s.persistWithdrawalUpdate(wd, "payout_id"); err != nil {
+	if err := persistUpdate("payout_id"); err != nil {
+		if errors.Is(err, errWithdrawalStateChanged) {
+			s.writeWithdrawalStateChanged(w, withdrawalID)
+			return
+		}
+
 		// Payout succeeded but we couldn't persist the ID. Webhook will
 		// arrive with the payout ID — without the index entry the sweep
 		// matcher will still reconcile it by connected account. Log loudly

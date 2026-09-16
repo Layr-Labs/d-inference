@@ -6,6 +6,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/store/internal/payoutstate"
+
 	"github.com/eigeninference/d-inference/coordinator/store/contracts"
 )
 
@@ -194,9 +196,9 @@ func (s *Store) MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayoutID str
 
 // ReopenStripeWithdrawalAfterPayoutFailure atomically reopens a bounced
 // withdrawal for sweep retry under the store lock (see interface doc).
-func (s *Store) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason string, feeRefunded bool) (bool, error) {
-	if id == "" {
-		return false, errors.New("stripe withdrawal id is required")
+func (s *Store) ReopenStripeWithdrawalAfterPayoutFailure(id, expectedPayoutID, failureReason string, feeRefunded bool) (bool, error) {
+	if id == "" || expectedPayoutID == "" {
+		return false, errors.New("stripe withdrawal id and expected payout id are required")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -204,8 +206,8 @@ func (s *Store) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason strin
 	if !ok {
 		return false, fmt.Errorf("stripe withdrawal %q: %w", id, contracts.ErrNotFound)
 	}
-	if w.Refunded || w.Status == "failed" {
-		return false, nil // a concurrent reversal terminalized it — never reopen
+	if w.Refunded || w.Status == "failed" || w.PayoutID != expectedPayoutID {
+		return false, nil // reversal or a different payout owns the current state
 	}
 	if w.PayoutID != "" {
 		delete(s.stripeWithdrawalsByPayoutID, w.PayoutID)
@@ -275,4 +277,61 @@ func (s *Store) ListStripeWithdrawalsForStripeAccount(stripeAccountID, status st
 		out = out[:contracts.MaxStripeWithdrawalsByStatusLimit]
 	}
 	return out, nil
+}
+
+func (s *Store) ReopenStripeWithdrawalAfterSweepFailure(id, expectedSweepPayoutID, failureReason string) (bool, error) {
+	if id == "" || expectedSweepPayoutID == "" {
+		return false, errors.New("stripe withdrawal and sweep payout ids are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w, ok := s.stripeWithdrawalsByID[id]
+	if !ok || w.Status != "paid" || w.Refunded || w.SweepPayoutID != expectedSweepPayoutID {
+		return false, nil
+	}
+	w.Status = "transferred"
+	w.SweepPayoutID = ""
+	w.FailureReason = failureReason
+	w.UpdatedAt = time.Now()
+	return true, nil
+}
+
+func (s *Store) CompareAndSwapStripeWithdrawal(previous, next *contracts.StripeWithdrawal) (bool, error) {
+	if err := payoutstate.ValidateStripeUpdate(previous, next); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current := s.stripeWithdrawalsByID[next.ID]
+	if current == nil {
+		return false, nil
+	}
+	currentState, nextState := payoutstate.StripeProgressOf(current), payoutstate.StripeProgressOf(next)
+	if currentState == nextState {
+		return true, nil
+	}
+	if currentState != payoutstate.StripeProgressOf(previous) {
+		return false, nil
+	}
+	if current.TransferID != next.TransferID {
+		delete(s.stripeWithdrawalsByTransferID, current.TransferID)
+		if next.TransferID != "" {
+			s.stripeWithdrawalsByTransferID[next.TransferID] = next.ID
+		}
+	}
+	if current.PayoutID != next.PayoutID {
+		delete(s.stripeWithdrawalsByPayoutID, current.PayoutID)
+		if next.PayoutID != "" {
+			s.stripeWithdrawalsByPayoutID[next.PayoutID] = next.ID
+		}
+	}
+	current.TransferID = next.TransferID
+	current.PayoutID = next.PayoutID
+	current.SweepPayoutID = next.SweepPayoutID
+	current.Status = next.Status
+	current.FailureReason = next.FailureReason
+	current.Refunded = next.Refunded
+	current.FeeRefunded = next.FeeRefunded
+	current.UpdatedAt = time.Now()
+	return true, nil
 }

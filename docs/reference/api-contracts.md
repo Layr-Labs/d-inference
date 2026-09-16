@@ -573,6 +573,10 @@ Sealed mode hides request and response bodies from TLS-terminating intermediarie
 
 See the [Device-code flow](#device-code-flow-3) table for the three bodies. `verification_uri` is `<console>/link` when `EIGENINFERENCE_CONSOLE_URL` is set, else `<scheme>://<request host>/link` (`Controller.DeviceCode`).
 
+### Connect withdrawal submission conflicts
+
+`POST /v1/billing/withdraw/stripe` returns 409 `withdrawal_state_changed` when a webhook changes the withdrawal while its Connect submission is awaiting Stripe. The newer row is preserved and the handler stops subsequent submission steps. Check `GET /v1/billing/stripe/withdrawals` before retrying; this response does not mean prior Stripe calls or ledger activity were rolled back (`coordinator/api/billing/connect_retry.go`, `persistWithdrawalUpdate`).
+
 ### International withdrawal confirmation
 
 For `payout_rail=global`, submit `{amount_usd, method:"standard", quote_id}` to the existing withdrawal endpoint. A confirmed quote returns its original withdrawal on retry. The response/history include `payout_rail`, `destination_amount`, `payout_currency` and `refunded`. Global states are `pending`, `processing`, `posted`, `failed`, `canceled` and `returned`; `posted` does not establish bank receipt. Quotes expire before first confirmation; an already-submitted withdrawal can still be checked with the same ID (`coordinator/api/billing/global_withdraw.go`, `maybeGlobalWithdraw`).
@@ -608,3 +612,9 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Drain, state export, telemetry stub | `coordinator/api/readiness/`, `coordinator/api/statearchive/handler.go`, `coordinator/api/telemetry_handlers.go` |
 | Rate-limit bucket consumption | `coordinator/ratelimit/ratelimit.go` (`allowBucket`, `debitBucket`): fixed and per-key rate paths share token consumption and retry calculation while keeping their own admission and clamp rules |
 | Shared types and helpers | `coordinator/api/types/types.go`, `coordinator/api/httputil.go`, `coordinator/ratelimit/ratelimit.go`, `coordinator/modelpolicy/first_content_deadline.go` |
+
+`POST /v1/invite/redeem` commits its claim and non-withdrawable credit together.
+Invalid, expired, exhausted or already-redeemed codes return 400; a balance or
+ledger failure returns 500 without consuming the invite. Ownership is in
+`coordinator/api/accounts/invites.go` (`RedeemInvite`) and the storage contract
+`coordinator/store/contracts/invites.go` (`ErrInviteCredit`, `RedeemInviteCode`).

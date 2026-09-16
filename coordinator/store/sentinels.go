@@ -5,6 +5,7 @@ import (
 )
 
 var (
+	ErrInviteCredit        = contracts.ErrInviteCredit
 	ErrPayoutConflict      = contracts.ErrPayoutConflict
 	ErrPayoutQuoteExpired  = contracts.ErrPayoutQuoteExpired
 	ErrInsufficientBalance = contracts.ErrInsufficientBalance

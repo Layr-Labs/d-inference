@@ -186,7 +186,7 @@ ledger identity in `coordinator/store/memory/ledger_once.go`):
 
 | Primitive | Effect | Used for |
 |---|---|---|
-| `Credit` (`creditBalance`) | raises `balance_micro_usd` only; not reference-idempotent | invite/admin credits, reservation and settlement refunds, platform fee |
+| `Credit` (`creditBalance`) | raises `balance_micro_usd` only; not reference-idempotent | admin credits, reservation and settlement refunds, platform fee |
 | `CreditOnce` | raises `balance_micro_usd` once per `(account_id, entry_type, reference)`; returns whether it applied | Stripe deposits |
 | `CreditWithdrawable` (`creditWithdrawableBalance`) | raises both columns; not reference-idempotent | referral rewards, admin rewards |
 | `CreditWithdrawableOnce` | raises both columns once per `(account_id, entry_type, reference)`; returns whether it applied | withdrawal principal and fee refunds |
@@ -266,6 +266,8 @@ Withdrawal row state machine: `pending → transferred → paid | failed`
 (`StripeWithdraw` comment block). There is no coordinator-side payout
 schedule or threshold beyond `MinWithdrawMicroUSD`.
 
+Submission progress is conditional on the last acknowledged row state. `persistWithdrawalUpdate` calls `CompareAndSwapStripeWithdrawal` (`coordinator/store/postgres/stripe_withdrawals.go`), comparing transfer/payout/sweep IDs, status, failure reason and both refund flags under one memory lock or PostgreSQL update. An exact desired state is an idempotent retry success; another state is preserved. Account, amounts, method and creation time are never overwritten. Legacy already-refunded status flips use the same comparison against their lookup snapshot. A submission conflict stops subsequent steps and returns 409 `withdrawal_state_changed`; it does not undo an external Stripe call or move ledger balance by itself.
+
 ### International bank withdrawals
 
 When Global Payouts is enabled, the server returns its explicit country policy in the existing payout status response. New destinations outside the configured Connect transfer region use Stripe-hosted recipient onboarding. Existing ready Connect destinations remain on Connect (`coordinator/api/billing/global_onboarding.go`, `maybeGlobalOnboard`). With the feature disabled, users without a Global Payouts recipient retain the legacy Connect onboarding and country menu, even when Global Payouts credentials are staged. Transient Stripe bank-lookup failures preserve the last verified destination and return a temporary error. The UI presents bank setup and withdrawal without asking users to select payment infrastructure.
@@ -304,8 +306,11 @@ Admins create (`POST /v1/admin/invite-codes`: `amount_usd`, optional `code`,
 account redeems with `POST /v1/invite/redeem`; `RedeemInviteCode` locks the
 code row and checks active, unexpired, under `max_uses`, then inserts into
 `invite_redemptions` whose primary key `(code, account_id)` blocks a second
-redemption by the same account; the credit is a non-withdrawable
-`invite_credit`. `POST /v1/admin/credit` (`admin_credit`, non-withdrawable)
+redemption by the same account. The use count, redemption, non-withdrawable
+`invite_credit` balance and ledger row commit together; a failed credit rolls
+back the claim so the code can be retried. PostgreSQL uses `creditBalance`
+inside the redemption transaction; memory applies `creditLocked` under the
+same store lock (`coordinator/store/postgres.go`, `coordinator/store/memory.go`). `POST /v1/admin/credit` (`admin_credit`, non-withdrawable)
 and `POST /v1/admin/reward` (`admin_reward`, withdrawable) credit by user
 email. These, plus free self-route, are the only free-credit paths — there is
 no sign-up credit or trial in code. Admin authorization for these routes is
@@ -482,6 +487,16 @@ this release; they do not replace the existing reward inputs or eligibility gate
     (`coordinator/billing/billing.go`;
     `coordinator/store/postgres/ledger_once.go` `creditOnce`).
 
+16. **A sweep failure only reopens withdrawals still owned by that sweep.**
+    `reopenSweepBouncedRows` passes the event's sweep ID to
+    `ReopenStripeWithdrawalAfterSweepFailure`, which atomically requires
+    `paid`, not refunded, and the same stored `SweepPayoutID`. A stale snapshot
+    cannot clear a newer sweep's paid state. A successful reopen clears only
+    the sweep stamp, records its failure reason, refreshes `UpdatedAt`, and
+    returns the row to `transferred`; it moves no ledger money
+    (`coordinator/api/billing/connect_payout_events.go`,
+    `coordinator/store/postgres/stripe_withdrawals.go`).
+
 ## Failure modes
 
 ### Payment-required responses
@@ -615,3 +630,32 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 - [`architecture/request-outcome-observability.md`](request-outcome-observability.md) — how billing outcomes join the request outcome taxonomy
 - [`reference/api-contracts.md`](../reference/api-contracts.md) — error envelope and status codes
 - [`storage.md`](storage.md) — which store backend holds the ledger and what survives a restart
+
+### Atomic Stripe settlement transitions
+
+`coordinator/store/memory/stripe_withdrawals.go` and
+`coordinator/store/postgres/stripe_withdrawals.go`
+(`RefundStripeWithdrawalAfterReversal`) recheck transfer ownership and paid/refunded
+state while holding the withdrawal lock. Principal and fee credits use their
+existing ledger references and commit together with the failed/refunded state.
+Both refund references are locked before the balance write, avoiding a lock cycle
+with an independent instant-fee refund.
+
+`ReopenStripeWithdrawalAfterSweepFailure` in the same owners reopens a row only
+while it remains paid by the exact failed sweep. Stale sweep events preserve a
+newer payout and its settlement state.
+
+`ReopenStripeWithdrawalAfterPayoutFailure` similarly requires the current payout
+ID to match the failed event. Submission and legacy terminal-status writes use
+`CompareAndSwapStripeWithdrawal`: concurrent webhook changes survive a stale
+submission, and an exact desired state is an idempotent retry. A submission that
+loses ownership returns 409 `withdrawal_state_changed`; prior Stripe calls are not
+rolled back. Shared progress fields and identity checks live in
+`coordinator/store/internal/payoutstate/stripe_progress.go`.
+
+Invite redemption in `coordinator/store/memory/invites.go` and
+`coordinator/store/postgres/invites.go` commits the use count, redemption claim,
+non-withdrawable balance and ledger credit atomically. Failed credit writes return
+`ErrInviteCredit` without consuming the invite. The account controller
+(`coordinator/api/accounts/invites.go`, `RedeemInvite`) maps credit failures to 500
+and invalid or already-used invites to 400; it never issues a separate credit.

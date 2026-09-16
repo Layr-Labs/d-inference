@@ -117,3 +117,10 @@ func (f *flakyPayoutStore) RefundStripeWithdrawalAfterReversal(id, transferID st
 	}
 	return f.MemoryStore.RefundStripeWithdrawalAfterReversal(id, transferID)
 }
+
+func (f *flakyPayoutStore) CompareAndSwapStripeWithdrawal(previous, next *store.StripeWithdrawal) (bool, error) {
+	if f.failUpdates {
+		return false, errors.New("connection reset by peer")
+	}
+	return f.MemoryStore.CompareAndSwapStripeWithdrawal(previous, next)
+}

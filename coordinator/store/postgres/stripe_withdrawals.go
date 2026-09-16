@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/store/internal/payoutstate"
+
 	"github.com/eigeninference/d-inference/coordinator/store/contracts"
 	"github.com/jackc/pgx/v5"
 )
@@ -252,9 +254,9 @@ func (s *Store) MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayoutID str
 
 // ReopenStripeWithdrawalAfterPayoutFailure atomically reopens a bounced
 // withdrawal for sweep retry with an in-database guard (see interface doc).
-func (s *Store) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason string, feeRefunded bool) (bool, error) {
-	if id == "" {
-		return false, errors.New("stripe withdrawal id is required")
+func (s *Store) ReopenStripeWithdrawalAfterPayoutFailure(id, expectedPayoutID, failureReason string, feeRefunded bool) (bool, error) {
+	if id == "" || expectedPayoutID == "" {
+		return false, errors.New("stripe withdrawal id and expected payout id are required")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -268,8 +270,9 @@ func (s *Store) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason strin
 		     updated_at = NOW()
 		 WHERE id = $1
 		   AND refunded = FALSE
-		   AND status <> 'failed'`,
-		id, failureReason, feeRefunded,
+		   AND status <> 'failed'
+		   AND payout_id = $4`,
+		id, failureReason, feeRefunded, expectedPayoutID,
 	)
 	if err != nil {
 		return false, fmt.Errorf("store: reopen stripe withdrawal: %w", err)
@@ -363,4 +366,48 @@ func (s *Store) ListStripeWithdrawalsForStripeAccount(stripeAccountID, status st
 		out = append(out, *w)
 	}
 	return out, nil
+}
+
+func (s *Store) ReopenStripeWithdrawalAfterSweepFailure(id, expectedSweepPayoutID, failureReason string) (bool, error) {
+	if id == "" || expectedSweepPayoutID == "" {
+		return false, errors.New("stripe withdrawal and sweep payout ids are required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE stripe_withdrawals
+		SET status = 'transferred', sweep_payout_id = '', failure_reason = $3, updated_at = NOW()
+		WHERE id = $1 AND sweep_payout_id = $2 AND status = 'paid' AND refunded = FALSE`,
+		id, expectedSweepPayoutID, failureReason)
+	if err != nil {
+		return false, fmt.Errorf("store: reopen stripe withdrawal after sweep failure: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+func (s *Store) CompareAndSwapStripeWithdrawal(previous, next *contracts.StripeWithdrawal) (bool, error) {
+	if err := payoutstate.ValidateStripeUpdate(previous, next); err != nil {
+		return false, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// The desired-state arm recognizes a successful write whose acknowledgement
+	// was lost. Only the expected-state arm changes fields or the timestamp.
+	tag, err := s.pool.Exec(ctx, `UPDATE stripe_withdrawals SET
+ transfer_id=$2,payout_id=$3,sweep_payout_id=$4,status=$5,
+ failure_reason=$6,refunded=$7,fee_refunded=$8,
+ updated_at=CASE WHEN ROW(transfer_id,payout_id,sweep_payout_id,status,failure_reason,refunded,fee_refunded)
+ IS NOT DISTINCT FROM ROW($2::text,$3::text,$4::text,$5::text,$6::text,$7::boolean,$8::boolean)
+ THEN updated_at ELSE NOW() END
+ WHERE id=$1 AND (
+ ROW(transfer_id,payout_id,sweep_payout_id,status,failure_reason,refunded,fee_refunded)
+ IS NOT DISTINCT FROM ROW($9::text,$10::text,$11::text,$12::text,$13::text,$14::boolean,$15::boolean)
+ OR ROW(transfer_id,payout_id,sweep_payout_id,status,failure_reason,refunded,fee_refunded)
+ IS NOT DISTINCT FROM ROW($2::text,$3::text,$4::text,$5::text,$6::text,$7::boolean,$8::boolean))`,
+		next.ID, next.TransferID, next.PayoutID, next.SweepPayoutID, next.Status, next.FailureReason, next.Refunded, next.FeeRefunded,
+		previous.TransferID, previous.PayoutID, previous.SweepPayoutID, previous.Status, previous.FailureReason, previous.Refunded, previous.FeeRefunded)
+	if err != nil {
+		return false, fmt.Errorf("store: compare stripe withdrawal progress: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
 }

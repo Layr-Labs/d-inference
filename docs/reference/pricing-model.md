@@ -100,6 +100,12 @@ existing lifetimes. Price resolution order and amounts are unchanged.
 | Withdrawal net | `gross − fee`, transferred as `microUSDToCents(net)`; must be ≥ 1 cent | `coordinator/api/billing/connect_withdraw.go` (`StripeWithdraw`) |
 | Key spend | `Σ usage.cost_micro_usd` for the key since `KeySpendWindowStart(limit_reset, now)`; request rejected when `spend + additional > LimitMicroUSD` | `coordinator/store/postgres/keys.go` (`KeySpendSince`); `coordinator/api/accounts/key_policy.go` (`accounts.CheckKeySpendCap`) |
 
+## Instant payout failure recovery
+
+| Event | Result | Code |
+|---|---|---|
+| Matched instant payout fails or is canceled | The fee refund remains reference-idempotent. Reopening for the daily sweep requires the current, non-empty payout ID to still match the event and the row to remain unrefunded and not failed; a newer settlement is preserved. | `coordinator/api/billing/connect_payout_events.go` (`handlePayoutTerminal`); `coordinator/store/postgres/stripe_withdrawals.go` (`ReopenStripeWithdrawalAfterPayoutFailure`) |
+
 ## Ledger entry types
 
 `LedgerEntryType` (`coordinator/store/contracts/ledger.go`). "Withdrawable" says
@@ -116,7 +122,7 @@ type is in [billing.md](../architecture/billing.md#ledger).
 | `referral_reward` | `LedgerReferralReward` | referrer's share of a platform fee | yes |
 | `stripe_deposit` | `LedgerStripeDeposit` | Stripe Checkout deposit, reference `stripe:<checkout_session_id>` | no |
 | `stripe_payout` | `LedgerStripePayout` | Stripe Connect withdrawal debit, reference `stripe_withdraw:<id>` | debit (both columns) |
-| `invite_credit` | `LedgerInviteCredit` | invite code redemption, reference `invite:<code>` | no |
+| `invite_credit` | `LedgerInviteCredit` | invite claim, use count, balance and ledger commit together; reference `invite:<code>` (`coordinator/store/postgres.go`, `RedeemInviteCode`) | no |
 | `refund` | `LedgerRefund` | reservation/settlement refund; withdrawal principal and fee refunds | reservation/settlement: no; withdrawal refunds: yes |
 | `admin_credit` | `LedgerAdminCredit` | `POST /v1/admin/credit` | no |
 | `admin_reward` | `LedgerAdminReward` | `POST /v1/admin/reward` | yes |
@@ -174,6 +180,8 @@ Connected-account status `users.stripe_account_status`
 (`coordinator/api/billing/connect_status.go`): `""` → `pending` → `ready` \|
 `restricted` \| `rejected`. Service agreements (`coordinator/billing/stripe_regions.go`):
 `full`, `recipient`.
+
+Connect submission and legacy refunded-row progress writes use `CompareAndSwapStripeWithdrawal` in `coordinator/store/postgres/stripe_withdrawals.go`. They require the caller's previous mutable state, preserve newer webhook transitions, and treat the exact desired state as successful retry. Immutable account and money fields stay unchanged. Concurrent progress returns 409 `withdrawal_state_changed` from the submission endpoint; inspect withdrawal history before submitting again.
 
 ## Base rewards
 
@@ -306,6 +314,12 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | `MODEL_REGISTRY_PUBLISHING_KEY` | bootstrap publishing key accepted by `POST /v1/admin/models/register` (`requirePublishingAPIKey`) | [Model registry, releases and R2/CDN](configuration.md#model-registry-releases-and-r2cdn) |
 | `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_RPS`, `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_BURST`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_RPS`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_BURST` | financial and service limiters; compiled defaults under [Constants](#constants) | [Routing, admission and TTFT](configuration.md#routing-admission-and-ttft) |
 
+### Connect sweep recovery
+
+| Transition | Policy | Citation |
+|---|---|---|
+| `paid → transferred` after an automatic sweep fails | Reopen only an unrefunded row still stamped with the failed sweep ID. A newer sweep's paid state is preserved. No ledger credit or new withdrawal is created. | `coordinator/store/postgres/stripe_withdrawals.go` (`ReopenStripeWithdrawalAfterSweepFailure`); [billing invariants](../architecture/billing.md#invariants) |
+
 ## Global Payouts withdrawals
 
 | Quantity | Policy | Citation |
@@ -319,3 +333,8 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | Reconciliation | One-minute loop, up to 200 records per scan; posted records polled for 90 days and later returns handled by events | `coordinator/api/billing/global_reconcile.go` (`StartGlobalPayoutReconciler`); `coordinator/store/postgres/global_payouts.go` (`ListGlobalPayoutsToReconcile`) |
 
 Published recipient bounds are stored in `coordinator/billing/globalpayouts/recipient_limits.go` (`Country.Limits`) from [Stripe's recipient minimums and maximums](https://docs.stripe.com/global-payouts/send-money#recipient-minimums). The API reports the local-currency threshold and validates the credited amount; direct pre-quote comparison is possible for USD destinations. The private payout row retains Stripe's `estimated_fees` as `estimated_stripe_fees` for operator cost review (`coordinator/api/billing/global_quote.go`, `GlobalPayoutQuote`).
+
+Invite use counts, account redemption claims and the `invite_credit` balance and
+ledger entry commit together in `coordinator/store/postgres/invites.go`
+(`RedeemInviteCode`), with equivalent memory-store lock ownership. A failed credit
+neither consumes a use nor makes the funds withdrawable.

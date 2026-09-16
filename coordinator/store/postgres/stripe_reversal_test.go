@@ -3,9 +3,10 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"github.com/eigeninference/d-inference/coordinator/store/contracts"
 	"sync"
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/store/contracts"
 )
 
 func stripeReversalFixture(t *testing.T, s contracts.Store, id string) *contracts.StripeWithdrawal {

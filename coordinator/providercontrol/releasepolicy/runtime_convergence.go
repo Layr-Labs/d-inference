@@ -14,7 +14,10 @@ import (
 // release is accepted too. The next successful sync rebuilds from the exact
 // inventory.
 func (s *Manager) ConvergeCommittedRuntimeRelease(release *store.Release, cause error) {
-	merged := s.knownRuntimeManifest.clone()
+	s.runtimeManifestSyncMu.Lock()
+	defer s.runtimeManifestSyncMu.Unlock()
+
+	merged := s.knownRuntimeManifest.Load().clone()
 	contributed := false
 	if release.PythonHash != "" {
 		merged.PythonHashes[release.PythonHash] = true
@@ -38,7 +41,7 @@ func (s *Manager) ConvergeCommittedRuntimeRelease(release *store.Release, cause 
 		// republish the union of the remaining releases — the current manifest.
 		return
 	}
-	s.knownRuntimeManifest = merged
+	s.knownRuntimeManifest.Store(merged)
 	s.deps.Logger().Warn("release inventory unreadable after registration; converged runtime manifest from the committed release",
 		"version", release.Version,
 		"platform", release.Platform,
@@ -61,6 +64,9 @@ func (s *Manager) ConvergeCommittedRuntimeRelease(release *store.Release, cause 
 // this approximation; the next successful sync rebuilds from the exact
 // inventory.
 func (s *Manager) ConvergeCommittedRuntimeDeactivation(version, platform string, cause error) {
+	s.runtimeManifestSyncMu.Lock()
+	defer s.runtimeManifestSyncMu.Unlock()
+
 	merged := NewRuntimeManifest()
 	hasAny := false
 	if snapshot := s.releaseTrustPolicy.Load(); snapshot != nil {
@@ -96,7 +102,7 @@ func (s *Manager) ConvergeCommittedRuntimeDeactivation(version, platform string,
 		// not keep passing the manifest gate.
 		merged = nil
 	}
-	s.knownRuntimeManifest = merged
+	s.knownRuntimeManifest.Store(merged)
 	s.deps.Logger().Warn("release inventory unreadable after deactivation; converged runtime manifest from the retained policy snapshot",
 		"version", version,
 		"platform", platform,

@@ -187,6 +187,8 @@ format and failure policy are in [Layer 2](../architecture/security/attestation.
 | `code_attested` never passes | No Aqua session / no APNs token / pushes throttled | Log in at the console, enable automatic login, disable auto-logout; check `darkbloom doctor`; a reconnect soon after a proof uses the resume path instead of a push ([Flag — APNs code identity](../architecture/security/attestation.md#flag--apns-code-identity)) |
 | Derouted after missed challenges | Sleep or network blip | Recovers on the next passing challenge; prevent sleep |
 | `status signature verification failed` while the plain challenge signature passes | Invalid status signature or a mismatch between provider and coordinator canonical bytes | Run `darkbloom update` and `darkbloom restart`; if it persists, use the diagnostics below. The coordinator continues to reject mismatching signatures |
+
+| `runtime_status` reports a mismatch | The installed runtime is outside the coordinator’s accepted release policy | Run a released build with `darkbloom update`; see [runtime policy](../architecture/security/attestation.md#runtime-manifest) for accepted hashes and recovery |
 | Binary hash drift warning | Running a build not in the coordinator's release record | `darkbloom update` |
 | `darkbloom enroll` says the Mac is managed by another MDM | Another MDM profile is installed | Remove it (System Settings → General → Device Management) or use another Mac; `hardware` is unavailable while it is present |
 | Every flag lost after an update or reinstall | The Secure Enclave key fell back to ephemeral (warning in `darkbloom logs`) | Reinstall a signed release build so the `keychain-access-groups` entitlement is present |

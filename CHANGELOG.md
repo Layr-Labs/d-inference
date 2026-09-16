@@ -36,6 +36,10 @@ coordinator deployment.
 
 - **API-key mutation consistency** — Prevent delayed authentication lookups from restoring revoked keys, old limits, or stale disabled-key results after a successful local key update. Keep already-authenticated requests and the ordinary cache lifetime for other coordinator processes unchanged.
 
+## Unreleased
+
+- Keep runtime-hash verification and manifest responses consistent during concurrent release-policy updates. Publish owned immutable hash sets, preserve the active-release union, and serialize fallback merges with live-provider revalidation.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

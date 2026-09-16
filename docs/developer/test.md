@@ -343,6 +343,17 @@ and unchanged fragmented message/control ordering.
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/... -run 'TestProviderWrit|TestWriteTextThen|TestSendModelLoadActionsClearsPendingWhenWriterQueueFull|TestUnfragmentedConnWriteStallsPeerPing' -count=1
 ```
 
+Runtime policy changes have CPU regression tests for caller-owned map mutation,
+concurrent verification and JSON responses during publication/withdrawal, and
+concurrent committed-release fallback merges:
+
+```bash
+go test -race ./coordinator/api -run '^Test(RuntimeManifest|SyncRuntimeManifest|VerifyRuntimeHashes)' -count=1
+```
+
+The existing runtime-manifest and release-policy fixtures also cover overlapping
+active releases, inventory failures, deactivation and unchanged process proofs.
+
 Run prediction telemetry checks from the repository root:
 
 ```bash

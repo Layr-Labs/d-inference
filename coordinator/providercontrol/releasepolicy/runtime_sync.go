@@ -7,6 +7,9 @@ import (
 // SyncRuntimeManifest builds the runtime manifest from active releases.
 // Called after a release is registered to auto-update the expected hashes.
 func (s *Manager) SyncRuntimeManifest() error {
+	s.runtimeManifestSyncMu.Lock()
+	defer s.runtimeManifestSyncMu.Unlock()
+
 	releases, err := s.deps.Store().ListReleasesWithError()
 	if err != nil {
 		s.deps.Logger().Warn("SyncRuntimeManifest: release inventory unavailable; keeping existing manifest",
@@ -60,7 +63,7 @@ func (s *Manager) SyncRuntimeManifest() error {
 	}
 
 	if hasAny {
-		s.knownRuntimeManifest = manifest
+		s.knownRuntimeManifest.Store(manifest)
 		s.deps.Logger().Info("runtime manifest synced from releases",
 			"python_hashes", len(manifest.PythonHashes),
 			"runtime_hashes", len(manifest.RuntimeHashes),
@@ -69,17 +72,17 @@ func (s *Manager) SyncRuntimeManifest() error {
 		)
 	} else if len(releases) > 0 {
 		// Explicit empty: releases exist but none have hashes. Clear manifest.
-		s.knownRuntimeManifest = nil
+		s.knownRuntimeManifest.Store(nil)
 		s.deps.Logger().Info("runtime manifest cleared: releases exist but none have runtime hashes")
 	} else {
 		// Empty releases slice (not nil — nil is handled above). No releases
 		// at all, which is only expected on a fresh coordinator. Keep
 		// existing manifest if one exists.
-		if s.knownRuntimeManifest != nil {
+		if s.knownRuntimeManifest.Load() != nil {
 			s.deps.Logger().Warn("SyncRuntimeManifest: zero releases returned, keeping existing manifest")
 			return nil
 		}
-		s.knownRuntimeManifest = nil
+		s.knownRuntimeManifest.Store(nil)
 	}
 
 	s.RevalidateConnectedProviders()

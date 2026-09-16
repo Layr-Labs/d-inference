@@ -81,7 +81,7 @@ gate routing ([Flag — Apple Managed Device Attestation](../architecture/securi
 Public routing applies the coordinator's trust floor (`MinTrustLevel`, set by
 [`EIGENINFERENCE_MIN_TRUST`](../reference/configuration.md#routing-admission-and-ttft))
 plus every privacy gate (encrypted response chunks, coordinator-verified SIP,
-required privacy capabilities, code identity once enforced), so a request you
+required privacy capabilities, an [approved runtime manifest](../architecture/security/attestation.md#runtime-manifest), and code identity once enforced), so a request you
 send without self-routing is served only by a provider that passes all of them
 ([`../architecture/security/attestation.md`](../architecture/security/attestation.md#routing-gate)).
 

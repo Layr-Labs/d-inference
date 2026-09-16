@@ -109,6 +109,11 @@ bindings. They share the Go module and build targets below. Use the
 The adapters in `coordinator/providercontrol/codeidentity/push_fixture_test.go`
 (`tryReservePush`, `clearPushBudget`) compile only into the package's test binary.
 
+Runtime-manifest publication and verification live in
+`coordinator/api/runtime_manifest.go`; the standard coordinator target builds
+these operations with the HTTP server. Their concurrency checks run without a
+provider binary ([test procedure](test.md#2-coordinator-go)).
+
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
 its test binary after helper or lifecycle changes. The CPU-only
 `TestPrepareConnectedInputBindings` check uses the actual fixture input/report

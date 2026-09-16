@@ -2,6 +2,7 @@ package releasepolicy
 
 import (
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 )
@@ -118,5 +119,24 @@ func SortedTemplateHashes(accepted map[string]bool) []string {
 // SetRuntimeManifest configures the known-good runtime manifest for provider
 // verification. Pass nil to disable runtime verification (all providers pass).
 func (s *Manager) SetRuntimeManifest(m *RuntimeManifest) {
-	s.knownRuntimeManifest = m
+	s.runtimeManifestSyncMu.Lock()
+	defer s.runtimeManifestSyncMu.Unlock()
+	s.knownRuntimeManifest.Store(m.snapshot())
+}
+
+// snapshot owns every map while preserving nil sets and membership values.
+// Once published, a manifest is immutable; readers keep one snapshot through
+// verification and the matching provider-state update.
+func (m *RuntimeManifest) snapshot() *RuntimeManifest {
+	if m == nil {
+		return nil
+	}
+	out := *m
+	out.PythonHashes = maps.Clone(m.PythonHashes)
+	out.RuntimeHashes = maps.Clone(m.RuntimeHashes)
+	out.TemplateHashes = maps.Clone(m.TemplateHashes)
+	for name, hashes := range out.TemplateHashes {
+		out.TemplateHashes[name] = maps.Clone(hashes)
+	}
+	return &out
 }

@@ -72,6 +72,9 @@ created: "2026-05-14"
 # commit c8a3f45d0. The non-atomic checkout replay limitation is unchanged.
 # T-025 runtime-manifest cache-reader coverage re-verified 2026-09-14 against
 # commit 9d9c688dc; its shared key and the platform discovery key remain invalidated.
+
+# Runtime-manifest publication re-checked 2026-09-12 against f1ccb8d43.
+# This concurrency check does not re-verify the surrounding threat claims.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
@@ -346,6 +349,10 @@ trust_boundaries:
       a release policy is enforced, CodeAttested once code-attestation enforcement is
       active, and five PrivacyCapabilities fields (text_backend_inprocess,
       text_proxy_disabled, anti_debug_enabled, core_dumps_disabled, env_scrubbed).
+      Runtime hash policy uses immutable coordinator-owned snapshots. A release
+      update serializes inventory read, publication and live-provider revalidation;
+      provider verification applies one snapshot under the provider lock
+      (coordinator/api/runtime_manifest.go and coordinator/api/provider.go).
       The python_runtime_locked and dangerous_modules_blocked fields are
       wire-compatibility only and are not consulted. ChallengeVerifiedSIP is set by
       the coordinator after verifying a signed challenge response — not trusted from

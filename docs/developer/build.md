@@ -25,6 +25,12 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
 
 The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its [shadow packaging and live-validation requirements](../reference/app-attest-shadow.md#packaging-and-live-acceptance) are separate from a successful local compile.
+Installer changes start in `scripts/install.sh`. Regenerate the coordinator's
+embedded copy with `scripts/sync-install-embed.sh`, then run
+`scripts/sync-install-embed.sh check` and the offline installer fixtures in
+[test.md](test.md). The commit helpers prepare executable permissions and bin
+links before replacing live paths; app and bin replacement share rollback so
+failed restoration retains a recovery backup.
 
 ## Prerequisites
 

@@ -21,6 +21,17 @@ jobs:
           ./scripts/sync-install-embed.sh check
           ./scripts/test-prod-env-refresh.sh
           python3 -m unittest discover -s scripts -p test_dev_env_refresh.py
+          python3 -m unittest discover -s scripts -p test_installer_rollback.py
+
+  test-tooling:
+    name: Tooling Tests
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install CPU reference dependency in an isolated environment
+        run: make tooling-install
+      - name: Test tooling against synthetic fixtures and owned process stubs
+        run: make tooling-test
 
   docs:
     name: Docs Lint

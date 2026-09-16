@@ -269,6 +269,13 @@ and retain their hashes with the build's source/dependency inventory. See
 
 #### Prefix-cache benchmark executable
 
+The radix Python replay, wrapper-preflight and process-cleanup fixtures run with the standard
+library alone, without building their native executables
+(`scripts/benchmarks/test_radix_prefix_cache.py`, `ReplayInputTests`;
+`scripts/benchmarks/test_radix_process_cleanup.py`, `ProcessCleanupTests`).
+Use the [prefix-cache benchmark checks](test.md#prefix-cache-benchmark-validation)
+before running an authorized live measurement.
+
 [`scripts/benchmarks/radix-engine`](../../scripts/benchmarks/radix-engine/Package.swift)
 links the real provider factory and MLX packages from an explicitly selected
 worktree. Keep baseline and candidate source worktrees separate, with recursive

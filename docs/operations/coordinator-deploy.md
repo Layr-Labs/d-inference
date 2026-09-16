@@ -228,6 +228,12 @@ routing mode/cohort/QPS setting and does not enable cache routing. New release
 defaults supply blank values; older binaries interpret blanks as their previous
 stock limits, while the backup preserves the exact pre-refresh file.
 
+The M4 Max solo-TPS seed migration replaces only the exact prior stock
+`EIGENINFERENCE_MODEL_SOLO_TPS_SEED` string with the benchmark-backed release
+default. Any added, removed, reordered, or retuned entry is treated as an
+operator override and remains unchanged. Review the seed's `MIGRATE` line
+before applying; the backup preserves the previous value for rollback.
+
 ```bash
 # Every deploy: install the reviewed candidate's refresh script and manifests.
 sudo install -d -m 0755 /usr/local/lib/darkbloom-env

@@ -89,10 +89,18 @@ func TestReleasePolicyZeroServerRetainsSetupContracts(t *testing.T) {
 	if ok, _ := srv.verifyRuntimeHashesForBackend(registry.BackendMLXSwift, "", "", map[string]string{"mlx_metallib": trHashC}); !ok {
 		t.Fatal("configured zero server rejected accepted runtime")
 	}
-	// SetRuntimeManifest's existing setup API retains the supplied manifest.
+	// Publication owns a snapshot. Later caller mutations take effect only
+	// through another explicit publication, including on a zero-value server.
 	manifest.AddTemplateHash("mlx_metallib", trHashD)
+	if ok, _ := srv.verifyRuntimeHashesForBackend(registry.BackendMLXSwift, "", "", map[string]string{"mlx_metallib": trHashD}); ok {
+		t.Fatal("caller mutation changed the published manifest")
+	}
+	if ok, _ := srv.verifyRuntimeHashesForBackend(registry.BackendMLXSwift, "", "", map[string]string{"mlx_metallib": trHashC}); !ok {
+		t.Fatal("caller mutation discarded the published manifest")
+	}
+	srv.SetRuntimeManifest(manifest)
 	if ok, _ := srv.verifyRuntimeHashesForBackend(registry.BackendMLXSwift, "", "", map[string]string{"mlx_metallib": trHashD}); !ok {
-		t.Fatal("setup manifest binding changed")
+		t.Fatal("explicit publication did not update the manifest")
 	}
 	srv.SetRuntimeManifest(nil)
 	if ok, mismatches := srv.verifyRuntimeHashesForBackend("unconfigured-backend", "", "", nil); !ok || len(mismatches) != 0 {

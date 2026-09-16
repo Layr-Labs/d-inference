@@ -1,7 +1,7 @@
-%% MDM enrollment as built at c5c404fca. Source of truth for enrollment-flow.svg;
+%% MDM enrollment as built at d831ee262. Source of truth for enrollment-flow.svg;
 %% re-render after editing: mmdc -i enrollment-flow.mmd -o enrollment-flow.svg
 %% Symbols: coordinator/api/enroll.go, coordinator/api/server.go (HandleMDMWebhook),
-%% coordinator/mdm/mdm.go, provider-swift/Sources/ProviderCore/Auth/Enrollment.swift.
+%% coordinator/mdm/client.go, coordinator/mdm/security_info.go, provider-swift/Sources/ProviderCore/Auth/Enrollment.swift.
 sequenceDiagram
     participant O as Operator (darkbloom enroll)
     participant K as Coordinator
@@ -26,4 +26,4 @@ sequenceDiagram
     M->>D: APNs wake → device connects to /mdm/connect
     D->>M: SecurityInfo result (CommandUUID)
     M->>K: POST /v1/mdm/webhook<br/>X-Webhook-Token or ?token= EIGENINFERENCE_MDM_WEBHOOK_SECRET · body ≤ 1 MiB
-    K-->>K: HandleWebhook: Acknowledged + CommandUUID outstanding (30m TTL)<br/>→ verifyProviderViaMDM → hardware grant · DeviceInformation → MDA flag
+    K-->>K: HandleWebhook: Acknowledged + CommandUUID outstanding (30m TTL)<br/>→ Verifier.VerifySecurityInfo → hardware grant · DeviceInformation → MDA flag

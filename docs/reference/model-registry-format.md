@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-08 · commit `efb5517fc`
+> Last updated: 2026-09-16 · commit `35c6a0f5b`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -13,15 +13,15 @@ the operator procedure is [`../operations/model-migration.md`](../operations/mod
 
 Produced by `darkbloom-publish hash` (`provider-swift/Sources/darkbloom-publish/HashCommand.swift`
 → `ManifestBuilder.build` in `provider-swift/Sources/ProviderCoreFoundation/ManifestBuilder.swift`);
-decoded on the coordinator as `store.ModelManifest` (`coordinator/store/interface.go`)
-and validated by `validateModelManifest` (`coordinator/api/model_registry_handlers.go`).
+decoded on the coordinator as `store.ModelManifest` (`coordinator/store/contracts/models.go`)
+and validated by `validateModelManifest` (`coordinator/api/catalog/manifest_validation.go`).
 
 | Field | Type | Constraint (coordinator) | Notes |
 |---|---|---|---|
 | `schema_version` | integer | must be `1` | `ManifestBuilder.schemaVersion = 1` |
 | `model_id` | string | equals the registration `model_id` | `A-Z a-z 0-9 . _ - /`; no leading `/`; no `..` (`validRegistryIdentifier(_, true)`) |
 | `version` | string | equals the registration `version` | same charset without `/` (`validRegistryIdentifier(_, false)`); e.g. `2026-05-23-r1` |
-| `r2_prefix` | string | equals `modelR2Prefix(model_id, version)` | see [R2 layout](#r2-layout) |
+| `r2_prefix` | string | equals `ModelR2Prefix(model_id, version)` | see [R2 layout](#r2-layout) |
 | `aggregate_sha256` | string | 64 lowercase hex; equals the recomputed aggregate | `isLowerSHA256Hex`, `aggregateManifestFileHashes` |
 | `total_size_bytes` | integer | ≥ 0; equals the sum of `files[].size_bytes` | |
 | `file_count` | integer | equals `len(files)`; `files` non-empty | |
@@ -50,7 +50,7 @@ and validated by `validateModelManifest` (`coordinator/api/model_registry_handle
 
 `aggregate_sha256` = hex(SHA-256(concat(raw 32-byte digest of each file, files
 sorted by `path` ascending))). Implemented identically in
-`aggregateManifestFileHashes` (`coordinator/api/model_registry_handlers.go`),
+`aggregateManifestFileHashes` (`coordinator/api/catalog/manifest_validation.go`),
 `ManifestBuilder.build`, and `WeightHasher.hashFilesWithRelativeKey`
 (`provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift`), which the
 provider runs after download. The same value is the catalog `weight_hash`.
@@ -61,10 +61,10 @@ provider runs after download. The same value is the catalog `weight_hash`.
 |---|---|---|
 | Bucket | `darkbloom-models` (`R2_BUCKET` override) | `scripts/publish-model.sh` |
 | S3 endpoint for uploads | `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com` | `scripts/publish-model.sh` |
-| Object prefix | `v2/<slug>--<first 12 hex of sha256(model_id)>/<version>` | `modelR2Prefix`, `readableModelSlug` (Go); `ManifestBuilder.safeModelID` (Swift) |
+| Object prefix | `v2/<slug>--<first 12 hex of sha256(model_id)>/<version>` | `ModelR2Prefix`, `readableModelSlug` (Go); `ManifestBuilder.safeModelID` (Swift) |
 | `<slug>` | `model_id` with every character outside `A-Z a-z 0-9 . _ -` (including `/`) replaced by `-`, leading/trailing `-` trimmed; `model` if empty | same |
 | Objects under the prefix | every `files[].path`, plus `manifest.json` (uploaded last) | `scripts/publish-model.sh` |
-| Public CDN | `https://models.darkbloom.ai` | `defaultModelRegistryCDNBaseURL` (`coordinator/api/model_registry_handlers.go`); `ModelDownloader.defaultR2CDNURL` (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`) |
+| Public CDN | `https://models.darkbloom.ai` | `defaultModelRegistryCDNBaseURL` (`coordinator/api/catalog/manifest_fetch.go`); `ModelDownloader.defaultR2CDNURL` (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`) |
 | CDN override | coordinator `MODEL_REGISTRY_CDN_BASE_URL`; provider `DARKBLOOM_R2_CDN_URL` | `registryCDNBaseURL`; `ModelDownloader.init` |
 
 Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
@@ -72,8 +72,8 @@ Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
 
 ## Registration
 
-`POST /v1/admin/models/register` — `handleRegisterModel`
-(`coordinator/api/model_registry_handlers.go`). Publishing-key auth
+`POST /v1/admin/models/register` — `RegisterModel`
+(`coordinator/api/catalog/register_model.go`). Publishing-key auth
 ([below](#authentication)). Unknown JSON fields are rejected
 (`DisallowUnknownFields`).
 
@@ -127,7 +127,7 @@ Response `200`:
 
 ## Stored rows
 
-DDL in `coordinator/store/postgres.go`; Go types in `coordinator/store/interface.go`.
+DDL in `coordinator/store/postgres/schema/model_registry.go`; Go types in `coordinator/store/contracts/models.go`.
 
 ### `model_registry` ↔ `ModelRegistryEntry`
 
@@ -169,12 +169,12 @@ DDL in `coordinator/store/postgres.go`; Go types in `coordinator/store/interface
 `activated_at`. A model is **routable** when
 `model_registry.status IN ('active','beta')` and the active version has
 `status = 'ready'` (`activeModelRegistryQuery` in
-`coordinator/store/postgres_model_registry.go`).
+`coordinator/store/postgres/model_registry.go`).
 
 ### Metadata keys
 
 Keys in `model_registry.metadata` the coordinator reads
-(`coordinator/api/openrouter_models.go`, `coordinator/api/model_registry_handlers.go`):
+(`coordinator/api/catalog/marketplace_identity.go`, `coordinator/api/catalog/registry_action.go`):
 
 | Key | Set by | Effect |
 |---|---|---|
@@ -188,7 +188,7 @@ Keys in `model_registry.metadata` the coordinator reads
 `model_versions.hugging_face_artifact` (nullable JSONB) and emitted on each
 public catalog model by `catalogModelFromRegistryRecord`. Its fields are
 validated by `HuggingFaceArtifact.Validate` in
-`coordinator/store/hugging_face_artifact.go`:
+`coordinator/store/contracts/artifact.go`:
 
 | Field | Rule |
 |---|---|
@@ -280,8 +280,8 @@ assistant has been installed in a serving engine.
 
 ## Admin actions
 
-`POST /v1/admin/models/{model_id}/{action}` — `handleAdminModelRegistryAction`
-(`coordinator/api/model_registry_handlers.go`). Publishing-key auth. Every
+`POST /v1/admin/models/{model_id}/{action}` — `AdminModelAction`
+(`coordinator/api/catalog/registry_action.go`). Publishing-key auth. Every
 successful action calls `SyncModelCatalog()`.
 
 | `action` | Body | Effect | Response |
@@ -300,10 +300,10 @@ Unknown action → `404 model action not found`.
 
 A standard alias is a stable public name that resolves to one `desired_build`,
 with an optional still-acceptable `previous_build` during a rollout. Handlers in
-`coordinator/api/model_alias_handlers.go`; stored as `ModelAlias`
-(`coordinator/store/interface.go`) in `model_aliases`.
+`coordinator/api/catalog/aliases.go`; stored as `ModelAlias`
+(`coordinator/store/contracts/models.go`) in `model_aliases`.
 
-### `POST /v1/admin/models/aliases` (`handleModelAliasUpsert`)
+### `POST /v1/admin/models/aliases` (`UpsertAlias`)
 
 Idempotent on `alias_id`; unknown fields rejected.
 
@@ -335,11 +335,11 @@ members no longer pointed to, oldest dropped past `maxRetiredBuilds = 16`;
 `retiredBuildsAfterUpsert`), upserts the row, calls `SyncModelCatalog()` (which
 fans out `desired_models`), and returns `{"status":"ok","alias": <ModelAlias>}`.
 
-### `GET /v1/admin/models/aliases` (`handleModelAliasList`)
+### `GET /v1/admin/models/aliases` (`ListAliases`)
 
 `{"aliases": [<ModelAlias>...]}` — standard aliases only.
 
-### `DELETE /v1/admin/models/aliases/{aliasID}` (`handleModelAliasDelete`)
+### `DELETE /v1/admin/models/aliases/{aliasID}` (`DeleteAlias`)
 
 `{"status":"deleted","alias_id":"..."}`; refuses OpenRouter-only aliases (404).
 
@@ -360,7 +360,7 @@ fans out `desired_models`), and returns `{"status":"ok","alias": <ModelAlias>}`.
 ### Resolution precedence
 
 `ResolveModelConstrainedWithTraits` (`coordinator/registry/model_aliases.go`),
-called from `resolveRequestedModel` (`coordinator/api/consumer.go`):
+called from `resolveRequestedModel` (`coordinator/inference/ingress/aliases.go`):
 
 1. Not an alias → the id is used as a concrete build.
 2. Alias → `desired_build` if an eligible provider can route it; else
@@ -371,14 +371,14 @@ Responses echo the alias; billing and stats store the concrete build.
 ## OpenRouter-only aliases
 
 Marketplace clones of an existing alias or concrete model with their own API
-id. Handlers in `coordinator/api/openrouter_alias_handlers.go`; invariants in
-`coordinator/api/openrouter_alias_invariants.go`.
+id. Handlers in `coordinator/api/catalog/marketplace_aliases.go`; invariants in
+`coordinator/api/catalog/alias_ownership.go`.
 
 | Endpoint | Handler |
 |---|---|
-| `GET /v1/admin/models/openrouter-aliases` | `handleOpenRouterAliasList` |
-| `POST /v1/admin/models/openrouter-aliases` | `handleOpenRouterAliasUpsert` |
-| `DELETE /v1/admin/models/openrouter-aliases/{aliasID}` | `handleOpenRouterAliasDelete` |
+| `GET /v1/admin/models/openrouter-aliases` | `ListOpenRouterAliases` |
+| `POST /v1/admin/models/openrouter-aliases` | `UpsertOpenRouterAlias` |
+| `DELETE /v1/admin/models/openrouter-aliases/{aliasID}` | `DeleteOpenRouterAlias` |
 
 Upsert body (`openRouterAliasUpsertRequest`):
 
@@ -396,7 +396,7 @@ a build's canonical public name (`registry.AliasTarget.OpenRouterOnly`).
 
 ## Provider-facing messages
 
-Defined in `coordinator/protocol/messages.go`; full field tables in
+Defined in `coordinator/protocol/models.go`; full field tables in
 [`protocol-messages.md`](protocol-messages.md).
 
 | `type` | Direction | Shape |
@@ -407,14 +407,16 @@ Defined in `coordinator/protocol/messages.go`; full field tables in
 
 ## Authentication
 
-`requirePublishingAPIKey` (`coordinator/api/model_registry_handlers.go`) guards
-every `/v1/admin/models/...` endpoint on this page. Accepted, in order:
+`requirePublishingAPIKey` (`coordinator/api/catalog/publishing_auth.go`) guards
+every `/v1/admin/models/...` endpoint on this page. It reads
+`X-Darkbloom-Publishing-Key` first, then falls back to a bearer token when the
+header is empty. It checks that value in this order:
 
 | Credential | Where | Actor recorded as |
 |---|---|---|
-| Publishing key | `X-Darkbloom-Publishing-Key: <key>` or `Authorization: Bearer <key>` | key `name` from `publishing_api_keys` |
 | Bootstrap key | env `MODEL_REGISTRY_PUBLISHING_KEY` compared in constant time | `env-bootstrap` |
 | Admin key | env `EIGENINFERENCE_ADMIN_KEY` | `admin` |
+| Publishing key | active matching hash in `publishing_api_keys` | stored key `name` |
 
 Publishing keys are stored as SHA-256 hex (`publishingSHA256Hex`) in
 `publishing_api_keys` (`id`, `name`, `key_hash`, `active`, `created_at`,
@@ -427,9 +429,9 @@ Unauthenticated; used by providers and `scripts/install.sh`.
 
 | Endpoint | Handler | Response |
 |---|---|---|
-| `GET /v1/models/catalog[?type=text][&include_aliases=1]` | `handleModelCatalog` (`coordinator/api/billing_handlers.go`) | `{"models":[<catalog model>...]}`; with `include_aliases`, also `"aliases"`; cached `time.Minute`; `type` other than `text` → 400 |
-| `GET /v1/models/catalog/{id}` | `handleModelCatalogItem` | one catalog model, or 404 |
-| `GET /v1/models/catalog/manifest/{id}` | `handleModelCatalogManifest` | the stored `ModelManifest` for the active version, or 404 |
+| `GET /v1/models/catalog[?type=text][&include_aliases=1]` | `ListInstallCatalog` (`coordinator/api/catalog/install_list.go`) | `{"models":[<catalog model>...]}`; with `include_aliases`, also `"aliases"`; cached `time.Minute`; `type` other than `text` → 400 |
+| `GET /v1/models/catalog/{id}` | `GetInstallModel` | one catalog model, or 404 |
+| `GET /v1/models/catalog/manifest/{id}` | `GetInstallManifest` | the stored `ModelManifest` for the active version, or 404 |
 
 Catalog model fields (`catalogModelFromRegistryRecord`): `id`, `s3_name`
 (= `r2_prefix`), `display_name`, `model_type` (`text`), `size_gb`

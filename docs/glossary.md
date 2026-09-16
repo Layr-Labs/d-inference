@@ -1,6 +1,6 @@
 # Glossary — the one name for each thing
 
-> Last updated: 2026-09-13 · commit `d66a38b77`
+> Last updated: 2026-09-16 · commit `35c6a0f5b`
 
 Canonical terms used across the docs and the code, one line each, with the page
 that owns the full definition. Use these spellings everywhere (including code
@@ -44,7 +44,7 @@ owner page. Terms are grouped by concern and alphabetical within a group.
 |---|---|---|
 | **Activation floor** / **activation reserve** | Memory the engine needs beyond weights and KV: the provider default `defaultActivationReserveBytes`, overridden per model by `measuredActivationFloorsBytes`; mirrored by the coordinator in `servability.go` | [`architecture/hardware-support.md#constants`](architecture/hardware-support.md#constants) |
 | **Budget clamp** | After a capacity 503, a slot is treated as full until a later heartbeat shows headroom and a request is accepted; fails open after a fixed interval | [`architecture/routing.md`](architecture/routing.md) |
-| **Cost model** | The additive penalty score used to rank eligible providers (`coordinator/registry/scheduler.go` constants) | [`architecture/routing.md`](architecture/routing.md) |
+| **Cost model** | The additive penalty score used to rank eligible providers (`coordinator/registry/candidate_cost.go`, `buildCandidateInto`; `coordinator/registry/routingcost/penalties.go`) | [`architecture/routing.md`](architecture/routing.md) |
 | **Drain trigger** | Why a queued request was released to a provider: `heartbeat`, `idle`, `challenge`, `load`, `disconnect`, `kick`, `unknown` | [`architecture/scheduling.md`](architecture/scheduling.md) |
 | **Gate reason** (`GateReason`) | Closed vocabulary naming why a provider was excluded from a route (e.g. `offline`, `untrusted`, `challenge_stale`) | [`architecture/routing.md`](architecture/routing.md) |
 | **Hedged dispatch** | Speculative second dispatch to a backup provider when the first has not produced content by a computed offset | [`architecture/routing.md`](architecture/routing.md) |
@@ -61,7 +61,7 @@ owner page. Terms are grouped by concern and alphabetical within a group.
 
 | Term | Meaning | Owner page |
 |---|---|---|
-| **API key** | Consumer credential starting `sk-db-` (`store.KeyPrefix`), sent as `Authorization: Bearer`; stored only as a hash and cached on lookup for `apiKeyCacheTTL`. How to create and manage one: [`consumer/authentication.md`](consumer/authentication.md) | [`reference/api-contracts.md#api-key-shapes`](reference/api-contracts.md#api-key-shapes) |
+| **API key** | Consumer credential starting `sk-db-` (`store.KeyPrefix`), sent as `Authorization: Bearer`; stored only as a hash and cached on lookup for `keyCacheTTL`. How to create and manage one: [`consumer/authentication.md`](consumer/authentication.md) | [`reference/api-contracts.md#api-key-shapes`](reference/api-contracts.md#api-key-shapes) |
 | **Base rewards** | Additive provider floor income; implemented, gated off by default (`EIGENINFERENCE_BASE_REWARDS`) | [`architecture/billing.md`](architecture/billing.md) |
 | **Ledger** / **LedgerEntryType** | Append-only money movements; a closed enum of entry types | [`architecture/billing.md`](architecture/billing.md) |
 | **micro-USD** | The integer unit of every stored amount; conversion in the owner page | [`reference/pricing-model.md#units`](reference/pricing-model.md#units) |

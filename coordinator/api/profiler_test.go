@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/api/types"
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -26,173 +25,9 @@ func newProfilerTestServer(t *testing.T) *Server {
 	return srv
 }
 
-func TestProfilerSamplingIsDeterministicPerLogicalRequest(t *testing.T) {
-	p := &profiler{enabled: true, sampleRate: 0.5}
-	a, b := p.sampled("coord-abc"), p.sampled("coord-abc")
-	if a != b {
-		t.Fatal("sampling must be deterministic on the coordinator-minted id")
-	}
-	if !(&profiler{sampleRate: 1}).sampled("x") || (&profiler{sampleRate: 0}).sampled("x") {
-		t.Fatal("rate 1 keeps everything, rate 0 keeps nothing")
-	}
-	if !(&profiler{sampleRate: 0}).sampled("") {
-		t.Fatal("a missing id is always kept")
-	}
-	kept := 0
-	for i := 0; i < 2000; i++ {
-		if (&profiler{sampleRate: 0.1}).sampled(newRequestID()) {
-			kept++
-		}
-	}
-	if kept < 120 || kept > 300 {
-		t.Fatalf("10%% sample kept %d of 2000", kept)
-	}
-}
-
-func TestProfilerAlwaysRecordPredicates(t *testing.T) {
-	p := &profiler{enabled: true, sampleRate: 0}
-	slow := int64(6 * time.Second / time.Microsecond)
-	cases := []struct {
-		name string
-		rec  store.RequestProfileRecord
-		want bool
-	}{
-		{"plain success", store.RequestProfileRecord{FinalStatus: finalStatusSuccess, ProviderProfileInvalidReason: providerProfileAbsent}, false},
-		{"error", store.RequestProfileRecord{FinalStatus: "error", ProviderProfileInvalidReason: providerProfileAbsent}, true},
-		{"slow first content", store.RequestProfileRecord{FinalStatus: finalStatusSuccess, FirstContentUS: &slow, ProviderProfileInvalidReason: providerProfileAbsent}, true},
-		{"retried", store.RequestProfileRecord{FinalStatus: finalStatusSuccess, AttemptsTotal: 2, ProviderProfileInvalidReason: providerProfileAbsent}, true},
-		{"backup", store.RequestProfileRecord{FinalStatus: finalStatusSuccess, BackupLaunched: true, ProviderProfileInvalidReason: providerProfileAbsent}, true},
-		{"anomaly", store.RequestProfileRecord{FinalStatus: finalStatusSuccess, TimingAnomaly: true, ProviderProfileInvalidReason: providerProfileAbsent}, true},
-		{"client gone", store.RequestProfileRecord{FinalStatus: finalStatusSuccess, ClientGonePhase: phaseAfterCommit, ProviderProfileInvalidReason: providerProfileAbsent}, true},
-		{"invalid provider profile", store.RequestProfileRecord{FinalStatus: finalStatusSuccess, ProviderProfileInvalidReason: "range"}, true},
-	}
-	for _, tc := range cases {
-		rec := tc.rec
-		if got := p.alwaysRecord(&rec); got != tc.want {
-			t.Errorf("%s: alwaysRecord=%v want %v", tc.name, got, tc.want)
-		}
-	}
-}
-
-func TestBuildProfileRecordFlattensStampsAndDecision(t *testing.T) {
-	srv := newProfilerTestServer(t)
-	t0 := time.Now().Add(-500 * time.Millisecond)
-	rp := registry.NewRequestProfile(t0, "coord-1", nil, 0)
-	rp.Endpoint = "POST-/v1/chat/completions"
-	rp.Stream = true
-	rp.Model = "m"
-	rp.AuthDoneUS = 120
-	rp.Stamp(&rp.HandlerEntryUS)
-	rp.Stamp(&rp.ParsedUS)
-	ap := rp.NewAttempt("attempt-uuid", 0, "")
-	ap.Mark(registry.StampAttemptStart)
-	ap.Mark(registry.StampReserveDone)
-	ap.ProviderID = "prov-1"
-	ap.ProviderVersion = "0.8.13"
-	ap.ChipFamily = "M4"
-	ap.SetDecision(registry.RoutingDecision{
-		ProviderID: "prov-1", TTFTMs: 900, RawTTFTMs: 1000, CandidateSetSize: 3, NearTiePoolSize: 2,
-		RunnerUp: registry.CandidateSummary{Present: true, ProviderID: "prov-2", CostMs: 1234},
-		Top:      [4]registry.CandidateSummary{{Present: true, ProviderID: "prov-1", CostMs: 1000}},
-	})
-	ap.Mark(registry.StampWriteDone)
-	ap.Mark(registry.StampFirstContent)
-	ap.SetOutcome(finalStatusSuccess, "", "", "completed", "")
-	ap.Winning.Store(true)
-
-	rec := srv.buildProfileRecord(rp, ap)
-	if rec == nil {
-		t.Fatal("nil record")
-	}
-	if rec.CoordRequestID != "coord-1" || rec.RequestID != "attempt-uuid" || !rec.Winning {
-		t.Fatalf("identity mismatch: %+v", rec)
-	}
-	if rec.AuthDoneUS == nil || *rec.AuthDoneUS != 120 {
-		t.Fatal("pre-handler stamp not copied")
-	}
-	if rec.ParsedUS == nil || rec.ReservedUS != nil {
-		t.Fatal("unset stamps must be nil, set stamps non-nil")
-	}
-	if rec.ProviderVersion != "0.8.13" || rec.ChipFamily != "m4" {
-		t.Fatalf("provider snapshot not folded: %q %q", rec.ProviderVersion, rec.ChipFamily)
-	}
-	if rec.RunnerUpProviderID != "prov-2" || rec.RunnerUpCostMs != 1234 || rec.PredictedTTFTMs != 900 || rec.RawTTFTMs != 1000 {
-		t.Fatalf("decision context missing: %+v", rec)
-	}
-	var cands []candidateJSON
-	if err := json.Unmarshal(rec.Candidates, &cands); err != nil || len(cands) != 1 || cands[0].ProviderID != "prov-1" {
-		t.Fatalf("candidates JSON: %s (%v)", rec.Candidates, err)
-	}
-	if rec.ProviderProfileValid || rec.ProviderProfileInvalidReason != providerProfileAbsent {
-		t.Fatal("no provider profile must be recorded as absent")
-	}
-	if rec.TimingAnomaly {
-		t.Fatal("monotonic stamps must not flag an anomaly")
-	}
-}
-
-func TestFoldHelpersNeverPassProviderStringsVerbatim(t *testing.T) {
-	if foldChipFamily("M3 Max (evil=1)") != "m3" || foldChipFamily("weird") != profileOther {
-		t.Fatal("chip family fold")
-	}
-	if foldProviderVersion("0.8.13") != "0.8.13" || foldProviderVersion("0.8.13-rc.1") != "0.8.13-rc.1" || foldProviderVersion("v0.8; drop") != "invalid" {
-		t.Fatal("version fold")
-	}
-}
-
-func TestCSVCellGuardsFormulaPrefixes(t *testing.T) {
-	for _, in := range []string{"=HYPERLINK(1)", "+1", "-1", "@x", "\tx", "\rx"} {
-		if got := csvCell(in); got != "'"+in {
-			t.Fatalf("csvCell(%q) = %q", in, got)
-		}
-	}
-	if csvCell("plain") != "plain" || csvCell("") != "" {
-		t.Fatal("plain cells untouched")
-	}
-}
-
-func TestTimingJSONAdditiveKeysAndClamp(t *testing.T) {
-	srv := newProfilerTestServer(t)
-	rp := registry.NewRequestProfile(time.Now().Add(-time.Second), "c", nil, 0)
-	rp.PreflightUS = 300
-	rp.Stamp(&rp.HandlerEntryUS)
-	ap := rp.NewAttempt("a", 0, "")
-	ap.AttemptStartUS.Store(1000)
-	ap.ReserveDoneUS.Store(1500)
-	ap.WriteSubmittedUS.Store(2000)
-	ap.WriteDequeuedUS.Store(2100)
-	ap.WriteDoneUS.Store(2400)
-	ap.AcceptedUS.Store(3400)
-	pr := &registry.PendingRequest{Profile: ap}
-	d := &dispatchState{s: srv, profile: rp}
-	tj := types.RequestTimingDetails{ParseUs: -5, ProviderUs: 10}
-	d.applyProfileTiming(&tj, pr)
-	if tj.ParseUs != 0 || !tj.TimingAnomaly {
-		t.Fatal("negative legacy segment must clamp to 0 and flag anomaly")
-	}
-	if tj.RouteReserveUs != 500 || tj.WriterUs != 100 || tj.SocketUs != 300 || tj.ProviderAckUs != 1000 || tj.PreflightUs != 300 {
-		t.Fatalf("additive keys wrong: %+v", tj)
-	}
-	b, _ := json.Marshal(tj)
-	for _, key := range []string{"parse_us", "provider_us", "route_reserve_us", "writer_us", "socket_us", "provider_ack_us", "preflight_us"} {
-		if !json.Valid(b) || !containsKey(b, key) {
-			t.Fatalf("X-Timing missing %s: %s", key, b)
-		}
-	}
-}
-
-func containsKey(b []byte, key string) bool {
-	var m map[string]any
-	if json.Unmarshal(b, &m) != nil {
-		return false
-	}
-	_, ok := m[key]
-	return ok
-}
-
 func TestProfileSinkBatchesIntoStoreAndAdminEndpointsServeThem(t *testing.T) {
 	srv := newProfilerTestServer(t)
-	if !srv.profilerEnabled() || srv.profiler.sink == nil {
+	if !srv.profilerEnabled() || !srv.profiler.HasSink() {
 		t.Fatal("profiler must be on by default with a store")
 	}
 	for i := 0; i < 100; i++ {
@@ -202,7 +37,7 @@ func TestProfileSinkBatchesIntoStoreAndAdminEndpointsServeThem(t *testing.T) {
 		ap.ProviderID = "prov"
 		ap.Mark(registry.StampWriteSubmitted)
 		ap.SetOutcome("error", "provider_error", "", "error", "")
-		if !srv.profiler.sink.submit(rp, ap) {
+		if !srv.profiler.Submit(rp, ap) {
 			t.Fatal("submit dropped with an empty buffer")
 		}
 	}
@@ -322,66 +157,18 @@ func TestProfilerKillSwitchMakesEverySiteNoOp(t *testing.T) {
 	ap.CompleteHandler()
 	ap.CompleteTerminal()
 	ap.ClaimTerminal()
-	closeUndispatchedAttempt(ap, "e", 503)
 	pr := &registry.PendingRequest{}
-	profileClientGone(pr, phaseAfterCommit)
-	newRelayStamps(pr.Profile.Parent()).flushed(3)
-	d := &dispatchState{s: srv}
-	tj := types.RequestTimingDetails{ParseUs: -5}
-	d.applyProfileTiming(&tj, pr)
-	if tj.ParseUs != -5 || tj.TimingAnomaly {
-		t.Fatal("with the profiler off the legacy X-Timing values must be untouched")
-	}
-	d.finalizeProfile()
-	d.stampFirstContent(pr)
-	d.stampCommitted(pr)
+	// The real relay must keep both write and client-departure stamps nil-safe.
+	relayContext, cancelRelay := context.WithCancel(req.Context())
+	cancelRelay()
+	srv.handleStreamingResponseWithFirstChunkAndError(httptest.NewRecorder(), req.WithContext(relayContext), pr, []string{contentChunkSSE("m", "nil-profile")}, nil)
+
 	h := srv.loggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if requestMetaFromContext(r.Context()) != nil {
 			t.Error("no request meta when the profiler is off")
 		}
 	}))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/health", nil))
-}
-
-func TestBuildProfileRecordDerivesFinalStatusFromTerminal(t *testing.T) {
-	srv := newProfilerTestServer(t)
-	rp := registry.NewRequestProfile(time.Now(), "c", nil, 0)
-	ap := rp.NewAttempt("a", 0, "")
-	ap.SetOutcome("", "", "watchdog", "error", "")
-	rec := srv.buildProfileRecord(rp, ap)
-	if rec.FinalStatus != "error" || rec.TerminalCause != "watchdog" {
-		t.Fatalf("derived status: %+v", rec)
-	}
-	ap2 := rp.NewAttempt("b", 1, "")
-	ap2.SetOutcome("", "", "", "completed", "")
-	if rec := srv.buildProfileRecord(rp, ap2); rec.FinalStatus != finalStatusSuccess {
-		t.Fatalf("completed must derive success, got %q", rec.FinalStatus)
-	}
-}
-
-func TestCloseUndispatchedAttemptCoversWriteFailure(t *testing.T) {
-	var finalized int
-	rp := registry.NewRequestProfile(time.Now(), "c", func(*registry.RequestProfile, *registry.AttemptProfile) { finalized++ }, 0)
-	ap := rp.NewAttempt("a", 0, "")
-	ap.Mark(registry.StampWriteSubmitted) // submitted, but the write failed: WriteDone never set
-	closeUndispatchedAttempt(ap, "failed to send request to provider", 502)
-	if finalized != 0 {
-		t.Fatalf("closing an undispatched attempt must only complete the terminal half (the record is built after the handler returns), finalized=%d", finalized)
-	}
-	ap.CompleteHandler() // what finalizeProfile does once the dispatch loop returns
-	if finalized != 1 {
-		t.Fatalf("write-failed attempt must finalize once the handler half lands, finalized=%d", finalized)
-	}
-	fs, _, _, po, _ := ap.Outcome()
-	if fs != "error" || po != "not_dispatched" {
-		t.Fatalf("outcome %q/%q", fs, po)
-	}
-	ok := rp.NewAttempt("b", 1, "")
-	ok.Mark(registry.StampWriteDone)
-	closeUndispatchedAttempt(ok, "x", 500)
-	if ok.Finalized() {
-		t.Fatal("a dispatched attempt must be left to its provider terminal")
-	}
 }
 
 // TestCompleteHandlerFinalizesTerminalAfterSettlement pins the terminal-half
@@ -486,214 +273,6 @@ func TestCompleteHandlerFinalizesTerminalAfterSettlement(t *testing.T) {
 	}
 }
 
-// TestQueuedAttemptWriteFailureClosesNotDispatched drives the REAL queue
-// path: the request queues, the drain hands over a provider whose socket is
-// gone, and the frame write fails after d.pr was already assigned. The
-// placeholder attempt must close as not_dispatched with the write failure's
-// class — not finalize with an empty provider_outcome because d.pr pointed at
-// it (the old defer keyed on d.pr == queuePR, which is set BEFORE the write).
-// queueDispatchState builds the dispatchState the queue-path tests drive
-// through the real dispatchPrimary: with no routable provider registered,
-// attempt 0 finds none and the request takes the queue path.
-func queueDispatchState(s *Server, model string, rp *registry.RequestProfile, r *http.Request, deadline time.Duration) *dispatchState {
-	return &dispatchState{
-		s:                      s,
-		w:                      httptest.NewRecorder(),
-		r:                      r,
-		model:                  model,
-		publicModel:            model,
-		rawBody:                []byte(`{"model":"` + model + `","messages":[]}`),
-		consumerEndpoint:       completionsEndpoint,
-		timing:                 &registry.RequestTiming{ReceivedAt: time.Now()},
-		deadline:               deadline,
-		speculativeAt:          deadline / 2,
-		refundReservation:      func() {},
-		excludeProviders:       make(map[string]struct{}),
-		requestedMaxTokens:     16,
-		estimatedPromptTokens:  1,
-		parallelToolCalls:      true,
-		requestedStopSequences: []string{"stop"},
-		profile:                rp,
-	}
-}
-
-// queuedPlaceholder returns the attempt the queue path created. Attempt 0's
-// reserve-only profile (no provider available) sits next to it; the
-// placeholder is the one that was enqueued.
-func queuedPlaceholder(t *testing.T, rp *registry.RequestProfile) *registry.AttemptProfile {
-	t.Helper()
-	for _, a := range rp.Attempts() {
-		if a.Get(registry.StampQueued) != 0 {
-			return a
-		}
-	}
-	t.Fatalf("no queued placeholder attempt among %d attempts", len(rp.Attempts()))
-	return nil
-}
-
-func TestQueuedAttemptWriteFailureClosesNotDispatched(t *testing.T) {
-	s := newTestServerForDispatch(t)
-	s.registry.SetQueue(registry.NewRequestQueue(4, 5*time.Second))
-	const model = "queue-write-failure"
-	rp := registry.NewRequestProfile(time.Now(), "coord-queue-write", nil, 0)
-	d := queueDispatchState(s, model, rp, httptest.NewRequest(http.MethodPost, "/v1/completions", nil), 10*time.Second)
-	outcome := make(chan dispatchOutcome, 1)
-	go func() { outcome <- d.dispatchPrimary() }()
-	// Register the provider only once the request is queued, or attempt 0
-	// would reserve it directly and never take the queue path.
-	waitForAdaptiveCondition(t, 3*time.Second, func() bool {
-		return s.registry.Queue().QueueSize(model) >= 1
-	})
-	p := makeRoutableProvider(t, s.registry, "queue-write-failure-provider", model) // nil Conn: the frame write fails
-	s.registry.DrainQueuedRequestsForModel(model)
-
-	select {
-	case got := <-outcome:
-		if got != outcomeRetry {
-			t.Fatalf("dispatchPrimary=%v, want retry after the write failure", got)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("dispatchPrimary did not return")
-	}
-	if d.lastErr != "failed to send request to provider" {
-		t.Fatalf("lastErr=%q, want the write failure", d.lastErr)
-	}
-	ap := queuedPlaceholder(t, rp)
-	if ap.Finalized() || !ap.TerminalRecorded() {
-		t.Fatalf("failure site must close only the terminal half: finalized=%v terminal=%v", ap.Finalized(), ap.TerminalRecorded())
-	}
-	ap.CompleteHandler() // what finalizeProfile does once the dispatch loop returns
-	if !ap.Finalized() {
-		t.Fatal("attempt must finalize once the handler half lands")
-	}
-	rec := s.buildProfileRecord(rp, ap)
-	if rec.ProviderOutcome != "not_dispatched" || rec.FinalStatus != "error" || rec.ErrorReason != "provider_error" {
-		t.Fatalf("outcome = %q/%q/%q, want not_dispatched/error/provider_error", rec.ProviderOutcome, rec.FinalStatus, rec.ErrorReason)
-	}
-	if rec.ProviderID != p.ID || rec.DequeuedUS == nil || rec.WriteSubmittedUS == nil || rec.WriteDoneUS != nil {
-		t.Fatalf("row must show the queue handover and a submitted-but-never-done write: provider=%q dequeued=%v submitted=%v done=%v",
-			rec.ProviderID, rec.DequeuedUS, rec.WriteSubmittedUS, rec.WriteDoneUS)
-	}
-}
-
-// TestCloseQueuedAttemptKeepsRecordedErrorText pins the defaulting rule of the
-// queue-path close: a real error text with no HTTP status keeps its own class
-// (only the code is defaulted); an exit that recorded nothing is classified by
-// how the wait ended; a dispatched attempt is left to its provider terminal.
-func TestCloseQueuedAttemptKeepsRecordedErrorText(t *testing.T) {
-	s := newTestServerForDispatch(t)
-	rp := registry.NewRequestProfile(time.Now(), "c", nil, 0)
-	newReq := func() *http.Request { return httptest.NewRequest(http.MethodPost, "/v1/completions", nil) }
-
-	d := &dispatchState{s: s, r: newReq()}
-	d.setLastError("no provider with E2E encryption", 0)
-	enc := rp.NewAttempt("enc", 0, "")
-	d.closeQueuedAttempt(enc)
-	if _, reason, _, po, _ := enc.Outcome(); reason != "encryption_missing" || po != "not_dispatched" {
-		t.Fatalf("encryption failure recorded as %q/%q, want encryption_missing/not_dispatched", reason, po)
-	}
-
-	d = &dispatchState{s: s, r: newReq()}
-	none := rp.NewAttempt("none", 1, "")
-	d.closeQueuedAttempt(none)
-	if fs, reason, _, po, _ := none.Outcome(); fs != "rejected" || reason != "provider_error" || po != "not_dispatched" {
-		t.Fatalf("queue refusal recorded as %q/%q/%q", fs, reason, po)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	d = &dispatchState{s: s, r: newReq().WithContext(ctx)}
-	gone := rp.NewAttempt("gone", 2, "")
-	d.closeQueuedAttempt(gone)
-	if fs, _, _, po, _ := gone.Outcome(); fs != "cancelled" || po != "not_dispatched" {
-		t.Fatalf("client gone while queued recorded as %q/%q", fs, po)
-	}
-
-	d = &dispatchState{s: s, r: newReq()}
-	d.setLastError("failed to send request to provider", 0)
-	sent := rp.NewAttempt("sent", 3, "")
-	sent.Mark(registry.StampWriteDone)
-	d.closeQueuedAttempt(sent)
-	if fs, _, _, po, _ := sent.Outcome(); fs != "" || po != "" || sent.TerminalRecorded() {
-		t.Fatalf("a dispatched attempt must be left alone: %q/%q terminal=%v", fs, po, sent.TerminalRecorded())
-	}
-}
-
-// TestQueuedAttemptExitsCarryRouteOutcome drives each exit of the queue wait
-// through the real dispatchPrimary and asserts the placeholder attempt carries
-// the same final_status/error_reason the route outcome records there. During
-// the wait d.pr is nil, so updateRoutingOutcome never reaches the attempt
-// profile; before the fix these rows were closed with the code-based default
-// (rejected|cancelled / provider_error) instead of the routes vocabulary.
-// queue_full has no route outcome at all (the routing decision is recorded
-// only after a successful enqueue), so it carries the rejection vocabulary.
-func TestQueuedAttemptExitsCarryRouteOutcome(t *testing.T) {
-	const model = "queue-exit-outcome"
-	failQueued := func(reason error) func(*testing.T, *Server, context.CancelFunc) {
-		return func(t *testing.T, s *Server, _ context.CancelFunc) {
-			req := s.registry.Queue().PopNextFresh(model)
-			if req == nil {
-				t.Fatal("no queued request to fail")
-			}
-			req.FailureReason = reason // nil → ErrQueueTimeout
-			req.ResponseCh <- nil
-		}
-	}
-	cases := []struct {
-		name        string
-		maxSize     int
-		deadline    time.Duration
-		trigger     func(*testing.T, *Server, context.CancelFunc) // nil: the exit fires on its own
-		wantOutcome dispatchOutcome
-		wantStatus  string
-		wantReason  string
-	}{
-		{"queue_full", 0, 10 * time.Second, nil, outcomeResponseWritten, "rejected", "queue_full"},
-		{"client_gone", 4, 10 * time.Second, func(_ *testing.T, _ *Server, cancel context.CancelFunc) { cancel() }, outcomeClientGone, "cancelled", "client_gone"},
-		// The queue-wait first-content expiry is the queue's own terminal
-		// (queue_deadline), kept distinct from a dispatched provider's silence.
-		{"queue_deadline", 4, 200 * time.Millisecond, nil, outcomeFailFast, "timeout", rejectionReasonQueueDeadline},
-		{"ttft_too_slow", 4, 10 * time.Second, failQueued(registry.ErrQueueTTFTTooSlow), outcomeResponseWritten, "error", "ttft_too_slow"},
-		{"model_capability_unsupported", 4, 10 * time.Second, failQueued(registry.ErrQueueToolConstraintUnavailable), outcomeResponseWritten, "error", "model_capability_unsupported"},
-		{"queue_timeout", 4, 10 * time.Second, failQueued(nil), outcomeResponseWritten, "timeout", "queue_timeout"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			s := newTestServerForDispatch(t)
-			s.registry.SetQueue(registry.NewRequestQueue(tc.maxSize, 5*time.Second))
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			rp := registry.NewRequestProfile(time.Now(), "coord-"+tc.name, nil, 0)
-			d := queueDispatchState(s, model, rp, httptest.NewRequest(http.MethodPost, "/v1/completions", nil).WithContext(ctx), tc.deadline)
-			outcome := make(chan dispatchOutcome, 1)
-			go func() { outcome <- d.dispatchPrimary() }()
-			if tc.trigger != nil {
-				waitForAdaptiveCondition(t, 3*time.Second, func() bool {
-					return s.registry.Queue().QueueSize(model) >= 1
-				})
-				tc.trigger(t, s, cancel)
-			}
-			select {
-			case got := <-outcome:
-				if got != tc.wantOutcome {
-					t.Fatalf("dispatchPrimary=%v, want %v", got, tc.wantOutcome)
-				}
-			case <-time.After(10 * time.Second):
-				t.Fatal("dispatchPrimary did not return")
-			}
-			ap := queuedPlaceholder(t, rp)
-			if !ap.TerminalRecorded() || ap.Finalized() {
-				t.Fatalf("queue exit must close only the terminal half: terminal=%v finalized=%v", ap.TerminalRecorded(), ap.Finalized())
-			}
-			ap.CompleteHandler()
-			rec := s.buildProfileRecord(rp, ap)
-			if rec.FinalStatus != tc.wantStatus || rec.ErrorReason != tc.wantReason || rec.ProviderOutcome != "not_dispatched" {
-				t.Fatalf("row = %q/%q/%q, want %s/%s/not_dispatched", rec.FinalStatus, rec.ErrorReason, rec.ProviderOutcome, tc.wantStatus, tc.wantReason)
-			}
-		})
-	}
-}
-
 // TestSpeculativeLoserCompletionKeepsFunnelOutcome pins the provider-side half
 // of a losing speculative racer's empty completion: the read loop records only
 // provider_outcome (completed for a frame that reached the wire, nothing for
@@ -773,9 +352,9 @@ func TestSpeculativeLoserCompletionKeepsFunnelOutcome(t *testing.T) {
 			}
 			dispatchSide := func() {
 				if tc.dispatched {
-					(&dispatchState{s: srv}).markSpeculativeLoser(pr)
+					publishSpeculativeLoserForFrameTest(srv, pr)
 				} else {
-					closeUndispatchedAttempt(ap, "failed to send request to provider", http.StatusBadGateway)
+					publishUnsentFailureForFrameTest(ap)
 				}
 			}
 			release := func() {
@@ -783,7 +362,7 @@ func TestSpeculativeLoserCompletionKeepsFunnelOutcome(t *testing.T) {
 					pr.ResolveSpeculativeEmptyCompletion(false) // what cancelDispatch does for the loser
 					provider.RemovePending(pr.RequestID)
 				} else {
-					srv.releaseUnsentDispatch(provider, pr)
+					releaseRejectedEmptyForFrameTest(srv, provider, pr)
 				}
 			}
 			if tc.readerFirst {
@@ -810,11 +389,11 @@ func TestSpeculativeLoserCompletionKeepsFunnelOutcome(t *testing.T) {
 			}
 			wantReason := tc.wantReason
 			if tc.dispatched {
-				loser := speculativeLoserOutcome(pr)
+				loser := attempt.SpeculativeLoserOutcome(pr)
 				if loser.FinalStatus != tc.wantStatus || loser.ErrorClass != "speculative_loser" || loser.ErrorReason == "" {
 					t.Fatalf("speculativeLoserOutcome = %+v", loser)
 				}
-				wantReason = profileErrorReason(loser) // the routes error_class vocabulary
+				wantReason = attempt.ProfileErrorReason(loser) // the routes error_class vocabulary
 			}
 			if rec.ProviderOutcome != tc.wantOutcome || rec.FinalStatus != tc.wantStatus || rec.ErrorReason != wantReason {
 				t.Fatalf("row = %q/%q/%q, want %s/%s/%s", rec.ProviderOutcome, rec.FinalStatus, rec.ErrorReason, tc.wantOutcome, tc.wantStatus, wantReason)
@@ -962,8 +541,8 @@ func awaitClaimRecord(t *testing.T, f claimFixture) *store.RequestProfileRecord 
 // status/reason and a retained, consistent profile.
 func assertClaimRow(t *testing.T, rec *store.RequestProfileRecord, want *store.InferenceRouteOutcome) {
 	t.Helper()
-	if rec.ProviderOutcome != "completed" || rec.FinalStatus != want.FinalStatus || rec.ErrorReason != profileErrorReason(want) {
-		t.Fatalf("row = %q/%q/%q, want completed/%s/%s", rec.ProviderOutcome, rec.FinalStatus, rec.ErrorReason, want.FinalStatus, profileErrorReason(want))
+	if rec.ProviderOutcome != "completed" || rec.FinalStatus != want.FinalStatus || rec.ErrorReason != attempt.ProfileErrorReason(want) {
+		t.Fatalf("row = %q/%q/%q, want completed/%s/%s", rec.ProviderOutcome, rec.FinalStatus, rec.ErrorReason, want.FinalStatus, attempt.ProfileErrorReason(want))
 	}
 	if !rec.ProviderProfileValid || rec.ProviderProfileInvalidReason != "" || rec.ProviderProfileConsistent == nil || !*rec.ProviderProfileConsistent {
 		t.Fatalf("profile sent with the completion must be retained: valid=%v reason=%q consistent=%v",
@@ -995,11 +574,11 @@ func TestClaimedCompleteFrameFinalizesAfterPendingRemoved(t *testing.T) {
 		if f.provider.RemovePending(id) != f.pr {
 			t.Fatal("pending request was not in the provider's set")
 		}
-		want := clientGoneBeforeResponseOutcome(f.pr)
+		want := attempt.ClientGoneBeforeResponseOutcome(f.pr)
 		f.srv.updateInferenceRouteOutcomeForPending(f.pr, want)
 		f.pr.ResolveSpeculativeEmptyCompletion(true)
 		await(t, done, "released completion frame did not return")
-		if n := f.srv.unknownRequestFrames.Load(); n != 1 {
+		if n := f.srv.inferenceFrames().UnknownRequestFrames(); n != 1 {
 			t.Fatalf("frame must have returned through the unknown-request path, unknown frames=%d", n)
 		}
 		rec := awaitRecord(t, f)
@@ -1031,12 +610,12 @@ func TestClaimedCompleteFrameFinalizesAfterPendingRemoved(t *testing.T) {
 		if !f.ap.TerminalClaimed() {
 			t.Fatal("the frame must own the terminal claim at ingress")
 		}
-		if n := f.srv.unknownRequestFrames.Load(); n != 1 {
+		if n := f.srv.inferenceFrames().UnknownRequestFrames(); n != 1 {
 			t.Fatalf("handleInferenceError must have taken the unknown-request path, unknown frames=%d", n)
 		}
 		// The dispatch side classifies the timeout through the funnel, which
 		// leaves the claimed terminal to the frame.
-		want := preResponseTimeoutOutcome(f.pr, "first_chunk_timeout")
+		want := attempt.PreResponseTimeoutOutcome(f.pr, "first_chunk_timeout")
 		f.srv.updateInferenceRouteOutcomeForPending(f.pr, want)
 		rec := awaitRecord(t, f)
 		assertRow(t, rec, want)
@@ -1076,7 +655,7 @@ func TestDuplicateErrorFrameAfterOwnedCompletionIsDropped(t *testing.T) {
 	if f.provider.GetPending(id) != f.pr {
 		t.Fatal("a duplicate error frame must leave the pending request to the terminal's owner")
 	}
-	if n := f.srv.unknownRequestFrames.Load(); n != 1 {
+	if n := f.srv.inferenceFrames().UnknownRequestFrames(); n != 1 {
 		t.Fatalf("duplicate error must be counted as an unknown-request frame once, got %d", n)
 	}
 	if fs, er, tc, po, co := f.ap.Outcome(); fs != "" || er != "" || tc != "" || po != "" || co != "" {
@@ -1097,7 +676,7 @@ func TestDuplicateErrorFrameAfterOwnedCompletionIsDropped(t *testing.T) {
 		t.Fatal("the owner must have removed the pending request when settling")
 	}
 	rec := awaitClaimRecord(t, f)
-	assertClaimRow(t, rec, &store.InferenceRouteOutcome{FinalStatus: finalStatusSuccess})
+	assertClaimRow(t, rec, &store.InferenceRouteOutcome{FinalStatus: attempt.FinalStatusSuccess})
 	if rec.ProvTotalUS == nil || *rec.ProvTotalUS != 1000 {
 		t.Fatalf("row must carry the completion's profile, not the error frame's: total_us=%v", rec.ProvTotalUS)
 	}
@@ -1127,10 +706,10 @@ func TestRefundWinsCompletionKeepsProviderOutcome(t *testing.T) {
 	awaitClaimed(t, f)
 
 	// What the relay's timer branch does (consumer.go): refund, then classify.
-	if !f.srv.refundReservedBalance(f.pr, "provider_timeout:"+id) {
+	if !f.srv.inferenceSettlement().Refund(f.pr, "provider_timeout:"+id) {
 		t.Fatal("the timeout refund must finalize the reservation before the completion settles")
 	}
-	want := postCommitStreamTimeoutOutcome(f.pr)
+	want := attempt.PostCommitStreamTimeoutOutcome(f.pr)
 	f.srv.updateInferenceRouteOutcomeForPending(f.pr, want)
 	select {
 	case <-done:
@@ -1176,7 +755,7 @@ func TestClaimedErrorFrameFinalizesAfterPendingRemoved(t *testing.T) {
 	for i := 0; i < attempts; i++ {
 		id := "claimed-error-frame-" + strconv.Itoa(i)
 		f := newClaimFixtureOn(t, srv, id, time.Now().Add(time.Minute), 0)
-		before := srv.unknownRequestFrames.Load()
+		before := srv.inferenceFrames().UnknownRequestFrames()
 		mu := f.provider.Mu()
 		mu.Lock()
 		done := make(chan struct{})
@@ -1210,7 +789,7 @@ func TestClaimedErrorFrameFinalizesAfterPendingRemoved(t *testing.T) {
 			continue
 		}
 		t.Logf("remover won the claim→RemovePending window on iteration %d", i)
-		if n := srv.unknownRequestFrames.Load() - before; n != 1 {
+		if n := srv.inferenceFrames().UnknownRequestFrames() - before; n != 1 {
 			t.Fatalf("frame must have returned through the unknown-request path exactly once, got %d", n)
 		}
 		if raw, _ := f.ap.ProviderProfileRaw(); string(raw) != errorProfile {
@@ -1232,95 +811,4 @@ func TestClaimedErrorFrameFinalizesAfterPendingRemoved(t *testing.T) {
 		return
 	}
 	t.Fatalf("the remover never won the claim→RemovePending window in %d attempts", attempts)
-}
-
-// TestRelayStampsCountOnlyWrittenBytes pins the egress accounting contract:
-// only bytes the ResponseWriter accepted are flushed, a failed write marks
-// client_write_err, and a stream whose write failed never claims done.
-func TestRelayStampsCountOnlyWrittenBytes(t *testing.T) {
-	rp := registry.NewRequestProfile(time.Now(), "c", nil, 0)
-	rs := newRelayStamps(rp)
-	rs.wrote(5, nil)
-	rs.wrote(7, nil)
-	if got := rp.BytesOut.Load(); got != 12 || rp.ChunksOut.Load() != 2 || rp.FirstFlushUS.Load() == 0 {
-		t.Fatalf("clean writes: bytes=%d chunks=%d first_flush=%d", got, rp.ChunksOut.Load(), rp.FirstFlushUS.Load())
-	}
-	rs.wrote(0, errors.New("broken pipe"))
-	if rp.BytesOut.Load() != 12 || rp.ChunksOut.Load() != 2 || !rp.ClientWriteErr.Load() {
-		t.Fatalf("failed write must count nothing and flag client_write_err: bytes=%d chunks=%d err=%v", rp.BytesOut.Load(), rp.ChunksOut.Load(), rp.ClientWriteErr.Load())
-	}
-	rs.wrote(3, errors.New("short")) // partial: the 3 accepted bytes count, the error is kept
-	if rp.BytesOut.Load() != 15 || !rp.ClientWriteErr.Load() {
-		t.Fatalf("short write: bytes=%d err=%v", rp.BytesOut.Load(), rp.ClientWriteErr.Load())
-	}
-	rs.done()
-	if rp.DoneFlushedUS.Load() != 0 || rp.LastFlushUS.Load() == 0 {
-		t.Fatalf("done after a failed write must not claim done_flushed (done=%d last=%d)", rp.DoneFlushedUS.Load(), rp.LastFlushUS.Load())
-	}
-	clean := registry.NewRequestProfile(time.Now(), "c", nil, 0)
-	cs := newRelayStamps(clean)
-	cs.wrote(4, nil)
-	cs.done()
-	if clean.DoneFlushedUS.Load() == 0 || clean.ClientWriteErr.Load() {
-		t.Fatal("clean stream must stamp done_flushed")
-	}
-}
-
-// TestRelayStampsCoalescedWriteCountsFrames pins the contract the chat relay's
-// batched flush relies on: one client write carrying several SSE frames
-// advances chunks_out by the frame count (the field keeps meaning "frames
-// delivered" whether or not chunks were coalesced), bytes_out by the accepted
-// bytes only, and a failed write flags client_write_err exactly as wrote does.
-func TestRelayStampsCoalescedWriteCountsFrames(t *testing.T) {
-	rp := registry.NewRequestProfile(time.Now(), "c", nil, 0)
-	rs := newRelayStamps(rp)
-	rs.wroteFrames(3, 100, nil)
-	if rp.ChunksOut.Load() != 3 || rp.BytesOut.Load() != 100 || rp.FirstFlushUS.Load() == 0 {
-		t.Fatalf("coalesced write: chunks=%d bytes=%d first_flush=%d, want 3/100/stamped",
-			rp.ChunksOut.Load(), rp.BytesOut.Load(), rp.FirstFlushUS.Load())
-	}
-	rs.wroteFrames(0, 0, nil) // an empty batch (relay.flush with nothing buffered) counts nothing
-	rs.wroteFrames(2, 0, errors.New("broken pipe"))
-	if rp.ChunksOut.Load() != 3 || rp.BytesOut.Load() != 100 || !rp.ClientWriteErr.Load() {
-		t.Fatalf("failed coalesced write must count nothing and flag client_write_err: chunks=%d bytes=%d err=%v",
-			rp.ChunksOut.Load(), rp.BytesOut.Load(), rp.ClientWriteErr.Load())
-	}
-	rs.wroteFrames(2, 10, errors.New("short")) // partial: the accepted bytes and the frames count, the error is kept
-	if rp.ChunksOut.Load() != 5 || rp.BytesOut.Load() != 110 || !rp.ClientWriteErr.Load() {
-		t.Fatalf("short coalesced write: chunks=%d bytes=%d err=%v",
-			rp.ChunksOut.Load(), rp.BytesOut.Load(), rp.ClientWriteErr.Load())
-	}
-	// wrote stays the one-frame case of the same accounting.
-	rs.wrote(4, nil)
-	if rp.ChunksOut.Load() != 6 || rp.BytesOut.Load() != 114 {
-		t.Fatalf("wrote after wroteFrames: chunks=%d bytes=%d, want 6/114", rp.ChunksOut.Load(), rp.BytesOut.Load())
-	}
-}
-
-// TestChatStreamRelayFlushReportsFramesAndBytes pins the relay side of the
-// same contract: flush records the number of frames in the batch and the bytes
-// the ResponseWriter accepted in the request profile, in one write and one
-// Flush, and an empty batch neither writes nor flushes.
-func TestChatStreamRelayFlushReportsFramesAndBytes(t *testing.T) {
-	w := newCapturingResponseWriter()
-	rp := registry.NewRequestProfile(time.Now(), "c", nil, 0)
-	relay := newChatStreamRelay(&registry.PendingRequest{}, w, w, newRelayStamps(rp))
-	relay.writeFrame(`data: {"a":1}`)
-	relay.writeFrame(`data: {"b":2}`)
-	relay.writeFrame("data: [DONE]")
-	relay.flush()
-	want := "data: {\"a\":1}\n\ndata: {\"b\":2}\n\ndata: [DONE]\n\n"
-	if w.body.String() != want || w.writes != 1 || w.flushes != 1 {
-		t.Fatalf("flush wrote %q in %d write(s) / %d flush(es); want %q in 1 / 1",
-			w.body.String(), w.writes, w.flushes, want)
-	}
-	if rp.ChunksOut.Load() != 3 || rp.BytesOut.Load() != int64(len(want)) || rp.ClientWriteErr.Load() {
-		t.Fatalf("profile chunks_out=%d bytes_out=%d client_write_err=%v; want 3 / %d / false",
-			rp.ChunksOut.Load(), rp.BytesOut.Load(), rp.ClientWriteErr.Load(), len(want))
-	}
-	relay.flush()
-	if w.writes != 1 || w.flushes != 1 || rp.ChunksOut.Load() != 3 || rp.BytesOut.Load() != int64(len(want)) {
-		t.Fatalf("empty flush must neither write nor flush nor count: writes=%d flushes=%d chunks_out=%d bytes_out=%d",
-			w.writes, w.flushes, rp.ChunksOut.Load(), rp.BytesOut.Load())
-	}
 }

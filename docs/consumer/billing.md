@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-16 · commit `35c6a0f5b`
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -19,6 +19,8 @@ route is tabulated in [`reference/pricing-model.md`](../reference/pricing-model.
 - Rates are per token, prepaid, with no subscription. `GET /v1/pricing` (no
   auth) returns the platform price for each model and the fallback rates used
   when a model has none; `GET /v1/models` repeats them in its `pricing` block.
+  After changing a custom rate, use the [price lookup cache reference](../reference/pricing-model.md#price-lookup-cache)
+  to distinguish new lookups from work already in progress and cached model feeds.
 
 ## Steps
 
@@ -51,7 +53,7 @@ Open `url` and pay. The coordinator does not credit on redirect; it credits
 when Stripe delivers `checkout.session.completed` to its webhook, usually
 within seconds. The credit lands as a `stripe_deposit` ledger entry on your
 spendable balance; deposits are never withdrawable
-(`coordinator/api/billing_handlers.go` `handleStripeWebhook`).
+(`coordinator/api/billing/checkout_webhook.go` `StripeWebhook`).
 
 In the console, **Buy Credits** on `/billing` reaches the same endpoint through
 the same-origin relay `/api/payments/stripe/checkout`, which forwards your Privy
@@ -67,7 +69,10 @@ curl "https://api.darkbloom.dev/v1/billing/stripe/session?id=3f0e..." \
 ```
 
 `status` moves from `pending` to `completed` when the webhook has been
-processed (`handleStripeSessionStatus`).
+processed (`StripeSessionStatus`). If the session remains `pending`,
+check your balance before starting another payment. The credit can land before
+the session status is saved; redelivery of the same Checkout payment does not
+add credit again. See [deposit bookkeeping](../architecture/billing.md#stripe-checkout-webhook-incomplete-session-bookkeeping).
 
 ### 3. Read your balance and usage
 
@@ -87,14 +92,16 @@ curl https://api.darkbloom.dev/v1/payments/usage   -H "Authorization: Bearer sk-
 rewards) and can pay out through Stripe Connect; deposits and invite credits
 never count toward it, so a pure consumer sees `0`. `GET /v1/payments/usage` lists settled
 requests with `job_id`, `model`, `prompt_tokens`, `completion_tokens`,
-`cost_micro_usd`, `timestamp` (`coordinator/api/consumer.go` `handleBalance`,
-`handleUsage`). Console users get the same figures from `GET /v1/me/summary`
+`cost_micro_usd`, `timestamp` (`coordinator/api/account_usage.go` `handleBalance`,
+`handleUsage`; usage is recorded by `recordCompletionUsage` in
+`coordinator/inference/settlement/completion_usage.go`). Console users get the
+same figures from `GET /v1/me/summary`
 (**Privy**). Usage is a recent-history view, not a complete billing export;
 the process retains the newest entries up to the [usage history limit](../reference/pricing-model.md#constants).
 Dashboard earnings windows include every row in each window, without the old
 5,000-row truncation. Concurrent tabs share one aggregate per account and may
 lag by the per-account cache interval
-(`coordinator/api/me_summary_cache.go`, `mySummaryWindowsCacheTTL`).
+(`coordinator/api/accountfleet/summary_cache.go`, `mySummaryWindowsCacheTTL`).
 
 ### 4. Understand what a request costs you
 
@@ -128,11 +135,11 @@ curl -X POST https://api.darkbloom.dev/v1/keys \
 
 `limit_usd` is a USD number `>= 0`; `limit_reset` is `none` (lifetime cap),
 `daily`, `weekly`, or `monthly`, aligned to UTC midnight, Monday, and the 1st
-(`coordinator/store/apikey.go` `KeySpendWindowStart`). Change either later with
+(`coordinator/store/contracts/keys.go` `KeySpendWindowStart`). Change either later with
 `PATCH /v1/keys/{id}`. The cap is checked against the key's settled usage in
 the window before each request's reservation; it is a soft sub-cap under your
 account balance, so several in-flight requests can together overshoot it by up
-to their reservations (`coordinator/api/apikey_handlers.go` `checkKeySpendCap`).
+to their reservations (`coordinator/api/accounts/key_policy.go` `accounts.CheckKeySpendCap`).
 `GET /v1/keys` shows `usage_usd`, `limit_usd`, and `remaining_usd` per key.
 
 ### 6. Referral codes
@@ -170,7 +177,7 @@ curl -X POST https://api.darkbloom.dev/v1/invite/redeem \
 Invite codes are created by Darkbloom staff and carry a fixed amount. A
 successful redemption returns `credited_usd` and `balance_usd`; the credit is
 spendable but not withdrawable, and each account can redeem a given code once
-(`coordinator/api/invite_handlers.go` `handleRedeemInviteCode`).
+(`coordinator/api/accounts/invites.go` `Controller.RedeemInvite`).
 
 ### 8. High-volume integrations: service accounts
 
@@ -207,6 +214,8 @@ Choose **Unlink Stripe account and start over** to remove the destination curren
 
 ## Troubleshooting
 
+If a Connect withdrawal reports that its status changed during submission, refresh withdrawal history before submitting again. A bank update or refund may have arrived while the request was waiting for Stripe. The newer status is preserved; the message does not mean the earlier transfer was canceled (`coordinator/api/billing/connect_retry.go`, `writeWithdrawalStateChanged`).
+
 | Symptom | Cause | Fix |
 |---|---|---|
 | Paid on Stripe, balance unchanged | Webhook not delivered yet, or the coordinator's webhook secret is wrong | Poll the session status; if it stays `pending` for minutes, contact the operator with `stripe_session` |
@@ -221,6 +230,8 @@ Choose **Unlink Stripe account and start over** to remove the destination curren
 | `401` `auth_error` on `POST /v1/keys`, `/v1/referral/register`, `/v1/referral/apply` | Called with an API key | Use the Privy access token |
 | `429` on `create-session`, key mutations, referral or invite calls | The [financial rate limiter](../reference/pricing-model.md#constants) | Back off for `Retry-After` |
 | Balance dropped by more than the response should cost, then recovered | Reservation debited at admission, refund at settlement | Expected; read balance after the response completes |
+| A Connect withdrawal changes from `paid` back to `transferred` | Its automatic bank payout failed and the existing withdrawal was reopened for the next scheduled sweep | Monitor the same withdrawal in history; do not submit a replacement for those funds. Recovery preserves any newer completed payout; see [Connect sweep recovery](../reference/pricing-model.md#connect-sweep-recovery) |
+| Instant payout fails after reporting paid | Funds return to the connected account for the daily sweep; stale failure events preserve any newer settlement | Monitor the existing withdrawal; see [instant payout recovery](../reference/pricing-model.md#instant-payout-failure-recovery) |
 | `503` `billing_error` | Stripe or the referral service is not configured on this coordinator | Operator issue |
 
 Mechanism for each error, including the exact functions, is in
@@ -234,3 +245,9 @@ Mechanism for each error, including the exact functions, is in
 - [`models.md`](models.md) — `GET /v1/models` and its `pricing` block
 - [`../provider/self-route.md`](../provider/self-route.md) — routing to your own machine, which settles free
 - [`../reference/api-contracts.md`](../reference/api-contracts.md) — error envelope and status codes
+
+Invite redemption credits the balance in the same atomic operation that consumes
+the invite. A failed credit leaves the invite available for retry. If a Stripe
+withdrawal returns 409 `withdrawal_state_changed`, check withdrawal history before
+retrying: a concurrent webhook advanced its state, and earlier Stripe calls were
+not rolled back.

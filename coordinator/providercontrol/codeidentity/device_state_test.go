@@ -1,0 +1,480 @@
+package codeidentity
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/store"
+)
+
+// TestCodeAttestThrottleBudgetAndReuse covers the per-device push budget + reuse
+// cache with a fake clock: background pushes are blocked within the cooldown, and a
+// recent attestation is reused only within the window and only for the same binary
+// version.
+func TestCodeAttestThrottleBudgetAndReuse(t *testing.T) {
+	cur := time.Unix(1_700_000_000, 0)
+	th := newDeviceState()
+	th.now = func() time.Time { return cur }
+	const se, nodeKey = "se-key-1", "node-key-1"
+	generation := th.beginLoop(se)
+
+	if !th.tryReservePush(context.Background(), se, "token", false, generation) {
+		t.Fatal("first push should be allowed")
+	}
+	if th.reuseAttestation(se, "0.6.0", "token", nodeKey) {
+		t.Fatal("no attestation yet → no reuse")
+	}
+	cur = cur.Add(th.backgroundPushCooldown - time.Minute)
+	if th.tryReservePush(context.Background(), se, "token", false, generation) {
+		t.Fatal("a background push within the cooldown must be blocked (background-push budget)")
+	}
+	cur = cur.Add(2 * time.Minute)
+	if !th.tryReservePush(context.Background(), se, "token", false, generation) {
+		t.Fatal("a background push after the cooldown should be allowed")
+	}
+
+	th.recordAttestedForProcess(se, "0.6.0", "token", nodeKey, "hash-a")
+	if !th.reuseAttestation(se, "0.6.0", "token", nodeKey) {
+		t.Fatal("should reuse a fresh proof bound to the same version, token, and process key")
+	}
+	if th.reuseAttestation(se, "0.6.1", "token", nodeKey) {
+		t.Fatal("must NOT reuse across a binary version change")
+	}
+	cur = cur.Add(th.reuseWindow)
+	if th.reuseAttestation(se, "0.6.0", "token", nodeKey) {
+		t.Fatal("reuse must expire after the window")
+	}
+}
+
+// TestCodeAttestThrottleTokenBinding proves a reusable proof is bound to the
+// exact current non-empty APNs token and process key; rotated, empty, and legacy
+// identity inputs require a real bootstrap challenge.
+func TestCodeAttestThrottleTokenBinding(t *testing.T) {
+	cur := time.Unix(1_700_000_000, 0)
+	th := newDeviceState()
+	th.now = func() time.Time { return cur }
+	const se, nodeKey = "se-key-1", "node-key-1"
+
+	th.recordAttestedForProcess(se, "0.6.0", "tokA", nodeKey, "hash-a")
+	if !th.reuseAttestation(se, "0.6.0", "tokA", nodeKey) {
+		t.Fatal("same token and process key must reuse")
+	}
+	if th.reuseAttestation(se, "0.6.0", "tokB", nodeKey) {
+		t.Fatal("a rotated (different) token must NOT reuse — it must force a real challenge")
+	}
+	if th.reuseAttestation(se, "0.6.0", "tokA", "node-key-2") {
+		t.Fatal("a different process key reused another process's proof")
+	}
+	if th.reuseAttestation(se, "0.6.0", "tokA", "") {
+		t.Fatal("an empty current process key reused a process-bound proof")
+	}
+
+	th.seed([]store.CodeAttestation{{SEPubKey: "se-legacy-token", Version: "0.6.0", AttestedAt: cur}})
+	if th.reuseAttestation("se-legacy-token", "0.6.0", "any-token", nodeKey) {
+		t.Fatal("a legacy token-less record bypassed current-token binding")
+	}
+	legacyNodeLess := newDeviceState()
+	legacyNodeLess.seed([]store.CodeAttestation{{
+		SEPubKey: "se-legacy-node", Version: "0.6.0", APNsToken: "tokA", AttestedAt: time.Now(),
+	}})
+	if legacyNodeLess.reuseAttestation("se-legacy-node", "0.6.0", "tokA", nodeKey) {
+		t.Fatal("a legacy process-key-less record bypassed current process-key binding")
+	}
+}
+
+func TestCodeAttestThrottleProcessKeyBinding(t *testing.T) {
+	th := newDeviceState()
+	th.recordAttestedForProcess("se", "0.8.17", "token", "node-key-A", "hash-a")
+	if !th.reuseAttestation(
+		"se", "0.8.17", "token", "node-key-A",
+	) {
+		t.Fatal("same-process reconnect should reuse exact process-key proof")
+	}
+	if th.reuseAttestation(
+		"se", "0.8.17", "token", "node-key-B",
+	) {
+		t.Fatal("new process key replayed prior code proof")
+	}
+	if th.reuseAttestation(
+		"se", "0.8.18", "token", "node-key-A",
+	) {
+		t.Fatal("cross-version process proof reused")
+	}
+	if th.reuseAttestation(
+		"se", "0.8.17", "rotated-token", "node-key-A",
+	) {
+		t.Fatal("rotated token reused process proof")
+	}
+
+	seeded := newDeviceState()
+	seeded.seed([]store.CodeAttestation{{
+		SEPubKey: "se", Version: "0.8.17", AttestedAt: time.Now(),
+		APNsToken: "token", NodePublicKey: "node-key-A",
+	}})
+	if !seeded.reuseAttestation(
+		"se", "0.8.17", "token", "node-key-A",
+	) {
+		t.Fatal("persisted process-key binding did not survive seed")
+	}
+}
+
+// TestCodeAttestThrottleTransitionProcessKeyBinding: a transition proof is
+// bound to the SE identity, exact APNs token, and the binary identity that
+// earned it — NOT to the current process key, which rotates on every provider
+// restart. Possession of the new key is proven by decrypting the resume
+// challenge, not by this cache lookup. A rotated token, empty inputs, or a
+// legacy record without a process-key or binary-identity binding still refuse.
+func TestCodeAttestThrottleTransitionProcessKeyBinding(t *testing.T) {
+	th := newDeviceState()
+	th.recordAttestedForProcess("se", "0.8.17", "token", "node-key-A", "hash-a")
+
+	if hash, ok := th.reuseAttestationForTransition("se", "token"); !ok || hash != "hash-a" {
+		t.Fatalf("same SE identity + token should authorize a transition resume challenge with the earned identity, got %q ok=%v", hash, ok)
+	}
+	if _, ok := th.reuseAttestationForTransition("se", "rotated-token"); ok {
+		t.Fatal("rotated token reused a transition APNs proof")
+	}
+	if _, ok := th.reuseAttestationForTransition("se", ""); ok {
+		t.Fatal("empty token reused a transition APNs proof")
+	}
+	if _, ok := th.reuseAttestationForTransition("", "token"); ok {
+		t.Fatal("empty SE key reused a transition APNs proof")
+	}
+
+	legacy := newDeviceState()
+	legacy.seed([]store.CodeAttestation{{
+		SEPubKey: "se", Version: "0.8.17", APNsToken: "token", AttestedAt: time.Now(),
+	}})
+	if _, ok := legacy.reuseAttestationForTransition("se", "token"); ok {
+		t.Fatal("proof without a cached process-key binding reused for a transition")
+	}
+
+	identityless := newDeviceState()
+	identityless.recordAttestedForProcess("se", "0.8.17", "token", "node-key-A", "")
+	if _, ok := identityless.reuseAttestationForTransition("se", "token"); ok {
+		t.Fatal("identity-less cached proof authorized a transition resume")
+	}
+	seeded := newDeviceState()
+	seeded.seed([]store.CodeAttestation{{
+		SEPubKey: "se", Version: "0.8.17", AttestedAt: time.Now(),
+		APNsToken: "token", NodePublicKey: "node-key-A",
+	}})
+	if _, ok := seeded.reuseAttestationForTransition("se", "token"); ok {
+		t.Fatal("seeded pre-migration row without a binary identity authorized a transition resume")
+	}
+	seededWithHash := newDeviceState()
+	seededWithHash.seed([]store.CodeAttestation{{
+		SEPubKey: "se", Version: "0.8.17", AttestedAt: time.Now(),
+		APNsToken: "token", NodePublicKey: "node-key-A", BinaryHash: "hash-a",
+	}})
+	if hash, ok := seededWithHash.reuseAttestationForTransition("se", "token"); !ok || hash != "hash-a" {
+		t.Fatalf("persisted binary identity did not survive seed: %q ok=%v", hash, ok)
+	}
+}
+
+func TestCodeAttestResumeChallengeUsesExactResumeDeadline(t *testing.T) {
+	const (
+		nonce      = "nonce"
+		providerID = "provider"
+		nodeKey    = "node"
+		seKey      = "se"
+		token      = "token"
+	)
+	newThrottle := func(now *time.Time) *deviceState {
+		th := newDeviceState()
+		th.now = func() time.Time { return *now }
+		th.recordResumeChallenge(nonce, providerID, nodeKey, seKey, token)
+		return th
+	}
+
+	t.Run("29.9 seconds accepted", func(t *testing.T) {
+		now := time.Unix(1_700_000_000, 0)
+		th := newThrottle(&now)
+		expiresAt, ok := th.resumeChallengeExpiry(
+			nonce, providerID, nodeKey, seKey, token,
+		)
+		if !ok || !expiresAt.Equal(now.Add(30*time.Second)) {
+			t.Fatalf("resume expiry = %v, ok=%v; want exactly 30s", expiresAt, ok)
+		}
+		now = now.Add(29*time.Second + 900*time.Millisecond)
+		if !th.matchResumeChallenge(nonce, providerID, nodeKey, seKey, token) ||
+			!th.consumeResumeChallenge(nonce, providerID, nodeKey, seKey, token) {
+			t.Fatal("resume proof inside the 30s window was rejected")
+		}
+		if th.consumeResumeChallenge(nonce, providerID, nodeKey, seKey, token) {
+			t.Fatal("resume proof replayed")
+		}
+	})
+
+	t.Run("exact deadline rejected and timeout claims nonce", func(t *testing.T) {
+		now := time.Unix(1_700_000_000, 0)
+		th := newThrottle(&now)
+		now = now.Add(30 * time.Second)
+		if th.matchResumeChallenge(nonce, providerID, nodeKey, seKey, token) ||
+			th.consumeResumeChallenge(nonce, providerID, nodeKey, seKey, token) {
+			t.Fatal("resume proof at the exact 30s deadline was accepted")
+		}
+		if !th.expireResumeChallenge(nonce, providerID, nodeKey, seKey, token) {
+			t.Fatal("timeout could not atomically claim nonce at the exact deadline")
+		}
+	})
+
+	t.Run("after deadline rejected and timeout claims nonce", func(t *testing.T) {
+		now := time.Unix(1_700_000_000, 0)
+		th := newThrottle(&now)
+		now = now.Add(30*time.Second + time.Nanosecond)
+		if th.consumeResumeChallenge(nonce, providerID, nodeKey, seKey, token) {
+			t.Fatal("resume proof after the 30s deadline was accepted")
+		}
+		if !th.expireResumeChallenge(nonce, providerID, nodeKey, seKey, token) {
+			t.Fatal("timeout could not claim nonce after the deadline")
+		}
+	})
+
+	t.Run("response and timeout race has one winner", func(t *testing.T) {
+		now := time.Unix(1_700_000_000, 0)
+		th := newThrottle(&now)
+		done, ok := th.resumeChallenges[nonce]
+		if !ok {
+			t.Fatal("recorded resume challenge missing")
+		}
+		now = now.Add(30 * time.Second)
+
+		responseResult := make(chan bool, 1)
+		timeoutResult := make(chan bool, 1)
+		go func() {
+			responseResult <- th.consumeResumeChallenge(
+				nonce, providerID, nodeKey, seKey, token)
+		}()
+		go func() {
+			timeoutResult <- th.expireResumeChallenge(
+				nonce, providerID, nodeKey, seKey, token)
+		}()
+
+		if <-responseResult {
+			t.Fatal("response racing at the exact deadline was accepted")
+		}
+		if !<-timeoutResult {
+			t.Fatal("timeout did not win the exact-deadline race")
+		}
+		select {
+		case <-done.done:
+		default:
+			t.Fatal("winning timeout did not close the challenge")
+		}
+	})
+}
+
+func TestCodeAttestAPNsChallengeBindsTokenAndProcessKey(t *testing.T) {
+	th := newDeviceState()
+	th.recordChallengeForIdentity("se", "nonce", "token", "K1")
+	if th.matchChallengeForIdentity("se", "nonce", "token", "K2") ||
+		th.consumeChallengeForIdentity("se", "nonce", "token", "K2") {
+		t.Fatal("K2 matched APNs challenge encrypted to K1")
+	}
+	if !th.matchChallengeForIdentity("se", "nonce", "token", "K1") ||
+		!th.consumeChallengeForIdentity("se", "nonce", "token", "K1") {
+		t.Fatal("K1 could not consume its own APNs challenge")
+	}
+	if th.consumeChallengeForIdentity("se", "nonce", "token", "K1") {
+		t.Fatal("APNs challenge replayed")
+	}
+}
+
+// TestCodeAttestThrottleModeAwareBudget proves Fix 3: alert pushes use a far
+// shorter per-device budget than background pushes, so a missed alert push retries
+// promptly instead of being pinned to the long background budget.
+func TestCodeAttestThrottleModeAwareBudget(t *testing.T) {
+	for _, alert := range []bool{false, true} {
+		name := "background"
+		if alert {
+			name = "alert"
+		}
+		t.Run(name, func(t *testing.T) {
+			cur := time.Unix(1_700_000_000, 0)
+			th := newDeviceState()
+			th.now = func() time.Time { return cur }
+			const se = "se-key-1"
+			generation := th.beginLoop(se)
+			if th.alertPushCooldown >= th.backgroundPushCooldown {
+				t.Fatal("alert cooldown must be shorter than background")
+			}
+			if !th.tryReservePush(context.Background(), se, "token", alert, generation) {
+				t.Fatal("initial push was not admitted")
+			}
+			cooldown := th.backgroundPushCooldown
+			if alert {
+				cooldown = th.alertPushCooldown
+			}
+			cur = cur.Add(cooldown - time.Nanosecond)
+			if th.tryReservePush(context.Background(), se, "token", alert, generation) {
+				t.Fatal("push admitted before its mode's cooldown elapsed")
+			}
+			cur = cur.Add(time.Nanosecond)
+			if !th.tryReservePush(context.Background(), se, "token", alert, generation) {
+				t.Fatal("push remained blocked at its mode's cooldown boundary")
+			}
+		})
+	}
+}
+
+// TestCodeAttestThrottleClearPushBudget proves Codex #9: clearing the push budget
+// (done on APNs token rotation) lets the next push proceed immediately even though
+// the OLD token's cooldown has not elapsed, so a rotated token is not derouted
+// while it waits out a cooldown that was spent on a different token.
+func TestCodeAttestThrottleClearPushBudget(t *testing.T) {
+	cur := time.Unix(1_700_000_000, 0)
+	th := newDeviceState()
+	th.now = func() time.Time { return cur }
+	const se = "se-key-1"
+	ctx := context.Background()
+	generation := th.beginLoop(se)
+	if !th.tryReservePush(ctx, se, "token-A", false, generation) {
+		t.Fatal("initial push was not admitted")
+	}
+	cur = cur.Add(time.Minute)
+	if th.tryReservePush(ctx, se, "token-A", false, generation) {
+		t.Fatal("a push within the cooldown must be blocked")
+	}
+	generation = th.rotateLoopAndClearPushBudget(ctx, se)
+	if !th.tryReservePush(ctx, se, "token-B", false, generation) {
+		t.Fatal("first rotation must admit the new token immediately")
+	}
+
+	cur = cur.Add(time.Minute)
+	generation = th.rotateLoopAndClearPushBudget(ctx, se)
+	if th.tryReservePush(ctx, se, "token-C", false, generation) {
+		t.Fatal("a repeated rotation bypassed the cooldown")
+	}
+
+	cur = cur.Add(th.budgetClearCooldown)
+	generation = th.rotateLoopAndClearPushBudget(ctx, se)
+	if !th.tryReservePush(ctx, se, "token-D", false, generation) {
+		t.Fatal("rotation remained blocked after the reset cooldown elapsed")
+	}
+}
+
+// TestCodeAttestThrottleOutstandingChallenge covers the per-device pushed-nonce
+// tracking that lets the read-loop delivery path verify a reply on ANY connection
+// (Fix 1), bounded by a validity window consistent with the APNs expiry (Fix 5).
+func TestCodeAttestThrottleOutstandingChallenge(t *testing.T) {
+	cur := time.Unix(1_700_000_000, 0)
+	th := newDeviceState()
+	th.now = func() time.Time { return cur }
+	const se = "se-key-1"
+
+	if th.matchChallengeForIdentity(se, "nonce-A", "token", "node") {
+		t.Fatal("no challenge recorded yet")
+	}
+	th.recordChallengeForIdentity(se, "nonce-A", "token", "node")
+
+	cur = cur.Add(th.challengeValidity - time.Second)
+	if !th.matchChallengeForIdentity(se, "nonce-A", "token", "node") {
+		t.Fatal("challenge should still be valid within the window")
+	}
+
+	th.clearChallengeIf(se, "nonce-WRONG")
+	if !th.matchChallengeForIdentity(se, "nonce-A", "token", "node") {
+		t.Fatal("clearChallengeIf with a non-matching nonce must not drop the challenge")
+	}
+	th.clearChallengeIf(se, "nonce-A")
+	if th.matchChallengeForIdentity(se, "nonce-A", "token", "node") {
+		t.Fatal("clearChallengeIf with the matching nonce must drop the challenge")
+	}
+
+	th.recordChallengeForIdentity(se, "nonce-B", "token", "node")
+	cur = cur.Add(th.challengeValidity)
+	if th.matchChallengeForIdentity(se, "nonce-B", "token", "node") {
+		t.Fatal("challenge must expire after the validity window")
+	}
+}
+
+// TestCodeAttestThrottleMultipleInFlightNonces proves Codex #8: when more than one
+// challenge is pushed within the validity window (alert mode, where the push
+// cooldown is shorter than the validity), a reply to EITHER in-flight nonce is
+// accepted — a delayed first-alert delivery is not rejected just because a second
+// nonce was pushed after it.
+func TestCodeAttestThrottleMultipleInFlightNonces(t *testing.T) {
+	cur := time.Unix(1_700_000_000, 0)
+	th := newDeviceState()
+	th.now = func() time.Time { return cur }
+	const se = "se-key-1"
+
+	th.recordChallengeForIdentity(se, "nonce-A", "token", "node")
+	cur = cur.Add(th.alertPushCooldown + time.Second)
+	th.recordChallengeForIdentity(se, "nonce-B", "token", "node")
+
+	if !th.matchChallengeForIdentity(se, "nonce-A", "token", "node") {
+		t.Fatal("a reply to the FIRST (still-valid) nonce must be accepted, not clobbered by the second")
+	}
+	if !th.matchChallengeForIdentity(se, "nonce-B", "token", "node") {
+		t.Fatal("a reply to the second nonce must be accepted")
+	}
+	if th.matchChallengeForIdentity(se, "nonce-UNKNOWN", "token", "node") {
+		t.Fatal("an unknown nonce must never match")
+	}
+
+	th.clearChallengeIf(se, "nonce-A")
+	if th.matchChallengeForIdentity(se, "nonce-A", "token", "node") {
+		t.Fatal("a cleared nonce must no longer match")
+	}
+	if !th.matchChallengeForIdentity(se, "nonce-B", "token", "node") {
+		t.Fatal("clearing one nonce must not drop the other")
+	}
+
+	cur = cur.Add(th.challengeValidity)
+	if th.matchChallengeForIdentity(se, "nonce-B", "token", "node") {
+		t.Fatal("a nonce must stop matching after the validity window")
+	}
+}
+
+// TestCodeAttestThrottleRetryDelayJitter proves the retry cadence is the base
+// spacing plus injected jitter, and is decoupled from (and much shorter than) the
+// push budget (Fix 3).
+func TestCodeAttestThrottleRetryDelayJitter(t *testing.T) {
+	th := newDeviceState()
+	th.retrySpacing = 10 * time.Second
+	th.retryJitter = 4 * time.Second
+
+	th.jitter = func(time.Duration) time.Duration { return 0 }
+	if got := th.retryDelay(); got != 10*time.Second {
+		t.Fatalf("retryDelay with zero jitter = %s, want 10s", got)
+	}
+	th.jitter = func(max time.Duration) time.Duration { return max - 1 }
+	if got, want := th.retryDelay(), 10*time.Second+(4*time.Second-1); got != want {
+		t.Fatalf("retryDelay with max jitter = %s, want %s", got, want)
+	}
+	if th.retryDelay() >= th.backgroundPushCooldown {
+		t.Fatal("retry cadence must be decoupled from (and shorter than) the push budget")
+	}
+}
+
+// TestCodeAttestThrottleDefaultsConsistent pins the cross-knob invariants:
+// live resume PoP expires at 30s, APNs replies remain valid for 300s, and the
+// alert budget is short while the background budget stays long.
+func TestCodeAttestThrottleDefaultsConsistent(t *testing.T) {
+	th := newDeviceState()
+	if ChallengeResponseTimeout != 30*time.Second {
+		t.Fatalf("ChallengeResponseTimeout = %s, want exact 30s",
+			ChallengeResponseTimeout)
+	}
+	if th.resumeTimeout != ChallengeResponseTimeout {
+		t.Fatalf("resumeTimeout = %s, want ChallengeResponseTimeout %s",
+			th.resumeTimeout, ChallengeResponseTimeout)
+	}
+	if CodeAttestResponseTimeout != 300*time.Second {
+		t.Fatalf("CodeAttestResponseTimeout = %s, want exact 300s",
+			CodeAttestResponseTimeout)
+	}
+	if th.challengeValidity != CodeAttestResponseTimeout {
+		t.Fatalf("APNs challengeValidity = %s, want CodeAttestResponseTimeout %s",
+			th.challengeValidity, CodeAttestResponseTimeout)
+	}
+	if th.retrySpacing >= th.backgroundPushCooldown {
+		t.Fatal("retry spacing must be shorter than the background push budget")
+	}
+	if th.alertPushCooldown >= th.backgroundPushCooldown {
+		t.Fatal("alert budget must be shorter than the background budget")
+	}
+}

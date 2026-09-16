@@ -78,7 +78,7 @@ func (d *cacheDemandTracker) observe(boundaries []cacheDemandBoundary, now time.
 }
 
 func (t *cacheRoutingTracker) observeCacheDemand(plan *CachePlan, routeKey []byte, now time.Time) {
-	if t == nil || plan == nil || plan.generation != t.generation || t.generation.revoked.Load() || !plan.present() {
+	if t == nil || plan == nil || plan.generation != t.generation || t.generation.Revoked() || !plan.present() {
 		return
 	}
 	// Geometric anchors plus the final endpoint bound work and metadata to

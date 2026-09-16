@@ -202,7 +202,7 @@ func (r *Registry) mergeProviderModels(
 		r.mu.RUnlock()
 		if tracker != nil {
 			for modelID := range cacheStateInvalidated {
-				tracker.invalidateProviderModel(
+				tracker.directory.InvalidateProviderModel(
 					providerID, modelID, cacheHolderRemovalCapabilityChange)
 			}
 		}

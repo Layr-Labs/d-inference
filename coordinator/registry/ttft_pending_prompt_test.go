@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/routingcost"
 )
 
 // These are deterministic synthetic workload comparisons, not provider timing
@@ -42,7 +43,7 @@ func TestTTFTPendingPromptComparison(t *testing.T) {
 			p.RemovePending(pr.RequestID)
 			// The existing online calibrator still applies to the corrected raw
 			// work estimate; model/chip hierarchy and thresholds are unchanged.
-			feedObservations(t, model, p.Hardware.ChipFamily, ttftCalibrationWarmupObs, 0.5)
+			feedObservations(t, model, p.Hardware.ChipFamily, routingcost.CalibrationWarmupObservations, 0.5)
 			_, _, _, calibrated, known := reg.QuickCapacityCheckWithTTFTForRequest(model, tc.incoming, 1, RequestTraits{}, false)
 			if !known || math.Abs(float64(calibrated.Microseconds())/1000-tc.want*0.5) > 0.001 {
 				t.Fatalf("calibrated=%v known=%v, want %vms", calibrated, known, tc.want*0.5)
@@ -99,9 +100,9 @@ func TestTTFTPendingPromptSnapshotBoundaries(t *testing.T) {
 }
 
 func TestTTFTPendingPromptProxyAvoidsIntegerOverflow(t *testing.T) {
-	snap := &routingSnapshot{backendWaiting: 2}
+	snap := &routingSnapshot{BackendWaiting: 2}
 	prompt := int(^uint(0) >> 1)
-	if got, want := queuedPrefillTokensAhead(snap, prompt), 2*float64(prompt); got != want {
+	if got, want := routingcost.QueuedPrefillTokensAhead(snap, prompt), 2*float64(prompt); got != want {
 		t.Fatalf("tokens=%v, want %v", got, want)
 	}
 }

@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-14 · commit `b725a72a8`
+> Last updated: 2026-09-16 · commit `35c6a0f5b`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -82,6 +82,9 @@ not enrolled, report timed out) leaves your level unchanged and is retried on
 the scheduler's backoff; only a received report that **contradicts** your blob
 demotes you ([Layer 3](../architecture/security/attestation.md#layer-3--mdm-securityinfo-the-hardware-grant),
 [failure modes](../architecture/security/attestation.md#failure-modes)).
+Late responses must match the current connection generation and the exact
+command the [scheduler](../architecture/security/attestation.md#mdm-scheduler-ownership)
+issued; reconnecting does not make an older command proof for the new connection.
 
 To re-check after fixing something, restart the provider so it re-registers:
 
@@ -89,6 +92,13 @@ To re-check after fixing something, restart the provider so it re-registers:
 darkbloom restart
 darkbloom status
 ```
+
+If you reconnect while the prior connection finishes checking a cached Apple
+proof, your new connection keeps its verification work. The coordinator scopes
+that cleanup to the completed connection ([MDA completion ownership](../architecture/security/attestation.md#flag--apple-managed-device-attestation)).
+An older worker finishing after a reconnect also keeps the replacement's
+claim, cancellation and retry state intact
+([MDM attempt ownership](../architecture/security/attestation.md#layer-3--mdm-securityinfo-the-hardware-grant)).
 
 ### Keeping the level
 
@@ -104,6 +114,8 @@ darkbloom status
   enforcement, un-attested providers receive no private text
   ([Flag — APNs code identity](../architecture/security/attestation.md#flag--apns-code-identity)).
 - **Short coordinator reconnects.** A continuously code-verified process can resume through a fresh encrypted WebSocket challenge within the bounded [code-continuity window](../architecture/security/attestation.md#flag--apns-code-identity). Restarting the provider changes its process key; hardware continuity alone does not substitute for code identity.
+  The coordinator's [code-identity owner](../architecture/security/attestation.md#code-identity-ownership)
+  preserves this process-proof requirement and the existing push budget.
 - **Keep the same identity.** The Secure Enclave signing key is persistent in
   the keychain, so your SE public key survives restarts and is the identity the
   trust-reuse and code-identity caches are keyed on
@@ -112,8 +124,8 @@ darkbloom status
   `keychain-access-groups` entitlement — `ProviderLoop.swift` falls back to an
   ephemeral key with a warning, you appear as a brand-new identity, and you
   re-earn every flag from scratch.
-- **Run a released build.** Binary, metallib and model-hash drift against
-  registration untrusts you; `darkbloom update` returns you to a build in the
+- **Run a released build.** Runtime and model-hash mismatches can exclude
+  your provider from routing; `darkbloom update` returns you to a build in the
   release record ([`cli-reference.md`](./cli-reference.md#darkbloom-update)).
 
 ## Verify
@@ -128,7 +140,18 @@ darkbloom status
 | `self_signed / online`, reason `SE attestation verified, awaiting MDM verification` | Enrolment not complete or the report has not arrived yet — see Troubleshooting |
 | any level `/ untrusted` with a failure reason | The coordinator stopped routing to you — see Troubleshooting |
 
-The reason strings are listed in
+Registration recovery and device checks use the coordinator
+[verification owner](../architecture/security/attestation.md#registration-and-device-verification-ownership).
+A stored MDA chain is only a reuse candidate until it verifies against the current
+connection; enrolment and operator recovery steps stay the same.
+
+The coordinator matches each challenge reply to the current connection; an old
+reply cannot satisfy a new challenge after reconnect. The
+[challenge owner](../architecture/security/attestation.md#layer-2--periodic-challenge)
+keeps those nonces separate. The coordinator evaluates reuse after the fresh
+signed challenge; its
+[evidence lifecycle](../architecture/security/attestation.md#device-evidence-ownership-and-shutdown)
+also retains revocations across coordinator restarts. The reason strings are listed in
 [trust status messages](../architecture/security/attestation.md#trust-status-messages-to-providers).
 
 `darkbloom doctor` shows the local side: MDM enrolment, SIP, the console-session
@@ -144,9 +167,10 @@ What `hardware` does not prove: it says nothing about *which* binary holds your
 key (that is `code_attested`) or *which* Apple device (that is `mda_verified`;
 Apple issues a fresh attestation only about once per device per week, so the
 flag can lag the level — [Flag — Apple Managed Device Attestation](../architecture/security/attestation.md#flag--apple-managed-device-attestation)).
-Neither flag changes the level. Single-node inference is the supported security
-boundary: multi-node RDMA over Thunderbolt bypasses the in-process memory
-protections and is not trusted. The process defences behind the privacy
+Neither flag changes the level. Reporting RDMA status is required; RDMA
+enablement alone does not fail a challenge
+([Layer 2](../architecture/security/attestation.md#layer-2--periodic-challenge)).
+The process defences behind the privacy
 capabilities the routing gate requires, and their known limits, are recorded in
 [`../threat-model.yaml`](../threat-model.yaml) and summarised in
 [`../architecture/components/provider.md#process-boundaries`](../architecture/components/provider.md#process-boundaries);
@@ -172,6 +196,8 @@ format and failure policy are in [Layer 2](../architecture/security/attestation.
 | `code_attested` never passes | No Aqua session / no APNs token / pushes throttled | Log in at the console, enable automatic login, disable auto-logout; check `darkbloom doctor`; a reconnect soon after a proof uses the resume path instead of a push ([Flag — APNs code identity](../architecture/security/attestation.md#flag--apns-code-identity)) |
 | Derouted after missed challenges | Sleep or network blip | Recovers on the next passing challenge; prevent sleep |
 | `status signature verification failed` while the plain challenge signature passes | Invalid status signature or a mismatch between provider and coordinator canonical bytes | Run `darkbloom update` and `darkbloom restart`; if it persists, use the diagnostics below. The coordinator continues to reject mismatching signatures |
+
+| `runtime_status` reports a mismatch | The installed runtime is outside the coordinator’s accepted release policy | Run a released build with `darkbloom update`; see [runtime policy](../architecture/security/attestation.md#runtime-manifest) for accepted hashes and recovery |
 | Binary hash drift warning | Running a build not in the coordinator's release record | `darkbloom update` |
 | `darkbloom enroll` says the Mac is managed by another MDM | Another MDM profile is installed | Remove it (System Settings → General → Device Management) or use another Mac; `hardware` is unavailable while it is present |
 | Every flag lost after an update or reinstall | The Secure Enclave key fell back to ephemeral (warning in `darkbloom logs`) | Reinstall a signed release build so the `keychain-access-groups` entitlement is present |

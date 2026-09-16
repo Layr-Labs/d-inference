@@ -62,7 +62,7 @@ from pathlib import Path
 
 directory, source_id, new_id, version, quant, *values, caps = sys.argv[1:]
 # Match validRegistryIdentifier and positive int64 fields in
-# coordinator/api/model_registry_handlers.go (validateRegisterModelRequest).
+# coordinator/api/catalog/registry_validation.go (validateRegisterModelRequest).
 for name, value, pattern in (("source model id", source_id, r"[A-Za-z0-9._/-]+"),
                              ("new model id", new_id, r"[A-Za-z0-9._/-]+"),
                              ("version", version, r"[A-Za-z0-9._-]+")):
@@ -90,7 +90,7 @@ root = Path(directory)
 (root / "promote.json").write_text(json.dumps({"version": version}), encoding="utf-8")
 PY
 
-# Mirror coordinator/api/model_registry_handlers.go readableModelSlug+modelR2Prefix:
+# Mirror coordinator/api/catalog/manifest_paths.go readableModelSlug+ModelR2Prefix:
 # slug = sanitized id, trimmed of '-', + "--" + first 12 hex of sha256(model_id);
 # prefix = v2/<slug>/<version>
 slug() {

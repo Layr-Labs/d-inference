@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-14 · commit `4676eedbe`
+> Last updated: 2026-09-16 · commit `35c6a0f5b`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -31,7 +31,7 @@
 - [`architecture/data-flow.md`](architecture/data-flow.md): one request from consumer HTTP through routing, encryption, the provider WebSocket, and back as SSE.
 - [`architecture/components/coordinator.md`](architecture/components/coordinator.md): the Go control plane — process layout, HTTP/WebSocket servers, store, background jobs.
 - [`architecture/components/provider.md`](architecture/components/provider.md): the Swift provider process — binaries, `ProviderCore` components, process boundaries, what stays in-process.
-- [`architecture/components/consumer.md`](architecture/components/consumer.md): the coordinator's OpenAI/Anthropic-compatible request pipeline, stage by stage — parsing, admission, routing, sealing, streaming, settlement.
+- [`architecture/components/consumer.md`](architecture/components/consumer.md): the coordinator's OpenAI/Anthropic-compatible request pipeline and ingress owner — parsing, admission, routing, sealing, streaming, settlement.
 - [`architecture/components/console-ui.md`](architecture/components/console-ui.md): the Next.js console — pages, `/api/*` relay handlers, Privy auth, SSE chat.
 - [`architecture/components/admin-ui.md`](architecture/components/admin-ui.md): the internal read-only operator dashboard.
 - [`architecture/components/mlx-swift.md`](architecture/components/mlx-swift.md): the three pinned submodules (`mlx`, `mlx-swift`, `mlx-swift-lm`), what `MLXLMServer` is actually used for, and the source-matched `mlx.metallib`.
@@ -41,9 +41,9 @@
 - [`architecture/inference.md`](architecture/inference.md): the CBv2 engine — request lifecycle and `CBv2RequestTiming`, scheduler and lease defaults, deadlines, MTP, sampling, tool parsers, vision constraints, supported families.
 - [`architecture/prefix-cache.md`](architecture/prefix-cache.md): KV layouts, encrypted SSD checkpoint streaming, exact prefix reuse by model family, and explicit resident-cache modes.
 - [`architecture/prompt-contract-sidecar.md`](architecture/prompt-contract-sidecar.md): the Rust sidecar that derives token boundaries for cache routing, and its failure isolation.
-- [`architecture/model-registry.md`](architecture/model-registry.md): model manifests, aliases, publishing, and provider downloads.
+- [`architecture/model-registry.md`](architecture/model-registry.md): catalog controller ownership, model manifests, aliases, publishing, and provider downloads.
 - [`architecture/storage.md`](architecture/storage.md): coordinator persistence — Postgres schema, memory store, retention.
-- [`architecture/billing.md`](architecture/billing.md): pricing, reservations, ledger, the platform fee (stated only here), Stripe deposits and payouts, referrals, base rewards.
+- [`architecture/billing.md`](architecture/billing.md): pricing, reservations, ledger, the platform fee (stated only here), Stripe deposits and payouts, referrals, base rewards, and billing HTTP controller ownership.
 - [`architecture/telemetry.md`](architecture/telemetry.md): what telemetry exists, how the Go/Swift/TS mirrors stay symmetric, where it goes.
 - [`architecture/request-accounting.md`](architecture/request-accounting.md): unsampled incoming-request evidence, coverage, revision semantics, and normalized codes.
 - [`architecture/request-outcome-observability.md`](architecture/request-outcome-observability.md): the closed outcome taxonomy for client, provider, and billing dimensions.

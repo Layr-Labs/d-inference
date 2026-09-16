@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
@@ -359,7 +360,7 @@ func TestRateLimitMetrics_ConsumerRejectionEmitsCounter(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	ctx := context.WithValue(context.Background(), ctxKeyConsumer, "acct-ratelimit-test")
+	ctx := requestcontext.WithAccountID(context.Background(), "acct-ratelimit-test")
 
 	rec := httptest.NewRecorder()
 	handler(rec, httptest.NewRequest("POST", "/test", nil).WithContext(ctx))
@@ -402,7 +403,7 @@ func TestRateLimitMetrics_FinancialTierTag(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	ctx := context.WithValue(context.Background(), ctxKeyConsumer, "acct-fin-test")
+	ctx := requestcontext.WithAccountID(context.Background(), "acct-fin-test")
 
 	rec := httptest.NewRecorder()
 	handler(rec, httptest.NewRequest("POST", "/test", nil).WithContext(ctx))

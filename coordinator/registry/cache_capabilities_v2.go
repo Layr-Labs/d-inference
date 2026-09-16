@@ -137,18 +137,6 @@ func prefixCacheV2CapabilityMap(
 	return result
 }
 
-func validLowerHex256(value string) bool {
-	if len(value) != 64 {
-		return false
-	}
-	for _, r := range value {
-		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
-			return false
-		}
-	}
-	return true
-}
-
 func validCacheEpoch(value string) bool {
 	if len(value) != 36 {
 		return false

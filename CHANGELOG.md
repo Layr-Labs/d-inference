@@ -19,7 +19,6 @@
 - Capture SDK 27 Apple-signed CodeDirectory measurements and require an exact qualified binary/code-hash pair for prospective build approval. Release builds and their provider tests select SDK 27 / Swift 6.4 and record the full CodeDirectory SHA-256; missing or unsupported measurements stay unknown. macOS can identify the exact code without a bundle-version extension.
 - Forward the latest distinct per-model warm-pool planning snapshot through the coordinator telemetry emitter so Datadog can show target sizing, measured demand, candidate availability and blocker counts. Keep provider identities and request data out of the event.
 
-
 ## v0.9.3 — App Attest shadow rollout and provider reliability (2026-09-14)
 
 Source changes since `v0.9.2`. App Attest remains observational, with APNs and MDM authoritative.
@@ -36,6 +35,13 @@ coordinator deployment.
 
 #### Coordinator
 
+- **Provider retry forecasts** — Preserve the 30-second retry ceiling for very large provider availability forecasts by bounding milliseconds before rounding. Ordinary retry rounding and the two-second floor are unchanged.
+
+- **Speculative terminal ordering** — Keep a healthy speculative attempt running when the other provider fails before content. Closed chunk streams inspect their queued error before cancelling the other attempt, so the primary or backup can still complete within the original first-content budget.
+
+- **Capacity and admission** — Model readiness honors public routing gates while retaining inventory and the fleet-wide health-breaker fallback. Expired capacity probes settle as timeouts; oversized prompt/output sums are rejected without integer wrapping.
+- **Throughput and fleet observations** — Reject overflowing occupancy reports from the solo-rate sample pool, read fleet version gauges under the provider lock, and ignore unusable throughput anomaly measurements. Non-finite anomaly overrides retain their defaults.
+- **Reconnect verification** — Keep the replacement connection's verification binding when an earlier SecurityInfo attempt finishes checking a cached MDA proof or has no MDA UDID.
 - **Qwen prompt parity** — Match the provider's Qwen-family handling of required and named tool calls, including catalog aliases and Qwen3-VL, to avoid mismatched thinking controls in cache proofs.
 - **Repeated-prefix routing** — Prefer a stable cache-capable provider for repeated prefixes only among otherwise equivalent cost, queue and pending-work candidates. Exclude capabilities quarantined after a failed cache proof from this preference, even when heartbeats continue advertising them. Revalidate at reservation and rescan if affinity eligibility changed after selection. Preserve ordinary serving when no unfenced cache candidate is available, along with capacity, deadline, trust and proof gates. Profiler rows identify this preference as `prefix_affinity`.
 - **Cache opportunity diagnostics** — Report per-model reasons and numerical counts for repeated-prefix demand, usable holders and routing selection. These diagnostics distinguish routing opportunities from actual cache hits and measured latency savings. Add a [consumer guide](docs/consumer/prefix-cache.md) for preserving shared prompt prefixes.
@@ -57,23 +63,57 @@ coordinator deployment.
 - Add negotiated App Attest shadow enrollment and fresh connection assertions, with independent certificate/policy verification, durable counters, and coverage/latency observations. APNs and MDM remain authoritative; shadow success or failure changes no routing, trust, payments, or supported OS floor.
 - Keep the CLI and app launch flow; add profile-authorized App Attest signing alongside APNs in release and validation workflows. Actual macOS 27 acceptance requires the final signed app on physical hardware.
 - Accept macOS Developer ID profiles granting only the App Attest CDhash opt-in, including array grants. Preserve existing APNs/keychain entitlements; validate the attested environment on the coordinator even when the optional environment entitlement is absent.
+## Unreleased — sweep payout ownership
+
+- Preserve newer completed payouts when an old automatic sweep failure arrives concurrently. Reopen withdrawals only while the stored paid state still belongs to that exact sweep, without moving ledger funds.
 ## Unreleased
 
+- **Withdrawal progress ownership** — Preserve newer Stripe withdrawal payment/refund state when a delayed submission response arrives. Compare progress atomically, recognize an already-applied retry, and ask clients to check history after a concurrent update instead of overwriting it.
+
+- **Remote media recovery** — Release shared byte-budget reservations when a media reader panics, allowing sibling workers to finish and the request to fail instead of hanging.
+
+- Prevent simultaneous inference requests from exceeding account or API-key token quotas through separate availability checks and charges. Extra output-token reconciliation shares the admission lock, and retry-hint checks no longer consume quota.
+
+- **Coordinator capacity and admission** — Model readiness honors public routing gates while retaining inventory and the fleet-wide health-breaker fallback. Expired capacity probes settle as timeouts; oversized prompt/output sums are rejected without integer wrapping.
+- **Coordinator settings** — Reject non-finite warm-pool and quality-admission values before serving. Ignore non-finite prompt-calibration overrides and bound oversized calibrated estimates before integer conversion.
+
+- **Inclusive metric buckets** — Count latency samples equal to a histogram upper bound in that bucket. A 5 ms observation now contributes to the 5 ms cumulative bucket in JSON and Prometheus output.
+
+- **Geolocation failure logs** — Omit the PRO lookup URL and its API key from transport-error diagnostics while retaining the underlying failure cause.
+
+- Reject generic inference requests with 400 when `n` times the per-choice output token limit exceeds the supported integer range, before token quotas, billing reservations or routing. Ordinary requests retain their existing output limits and admission policy.
+
+- Keep each streamed reasoning and message item limited to its own text when item types alternate. Completed items and the final output no longer repeat text from earlier items; token usage is unchanged.
+
+- Ignore inference completions received before provider registration, keeping the WebSocket available for registration instead of closing it through a nil-pointer panic.
+
+- Return a server error before changing model aliases when namespace, rollout-history or build validation reads fail. Preserve existing alias ownership and retired-build lineage through transient store errors.
+
+- **Prompt artifact provisioning** — Snapshot catalog file lists and the configured download origin, validate every manifest before sharing a download, and remove read-only staging trees after another cache instance wins publication.
+
+- **API-key mutation consistency** — Prevent delayed authentication lookups from restoring revoked keys, old limits, or stale disabled-key results after a successful local key update. Keep already-authenticated requests and the ordinary cache lifetime for other coordinator processes unchanged.
+
+- Keep runtime-hash verification and manifest responses consistent during concurrent release-policy updates. Publish owned immutable hash sets, preserve the active-release union, and serialize fallback merges with live-provider revalidation.
+
+- Return 500 from uncached public model list, retrieve and OpenRouter feeds when the alias inventory cannot be read, instead of caching missing aliases or advertising hidden builds. Successful feed cache lifetimes remain unchanged.
+
+- **Model quantization metadata** — Map decorated labels consistently: `bfloat16-gs64` remains `bf16`. Prefer the earliest recognized format, then the longest spelling at that position (`q4-bfloat16` maps to `int4`), so repeated model-list requests cannot change precision metadata with map iteration order.
+
+- Preserve replacement MDM verification claims, cancellation and retry state when a retired worker finishes after a reconnect. Each attempt now settles only its own claim token, and stale store reads cannot overwrite a newer queued retry.
+- Preserve a provider reconnect's verification binding when the prior connection finishes its cached Apple proof check or a missing-UDID fallback. Live and late SecurityInfo grants now share the same generation-aware MDA follow-up.
+
+- Clear cached prices after a successful local update or deletion, and prevent delayed lookups from restoring the prior rate. Keep existing in-flight work and other coordinator processes' normal cache lifetimes.
+
 - Dev coordinator boot now uses the same validated environment writer as deploys. Failed critical-secret or metadata downloads preserve the existing configuration instead of overwriting it with empty values.
-## Unreleased
 
 - Provider installation retains the previous app or legacy bundle if restoring it after a failed swap also fails. The installer reports the recovery path instead of deleting the only backup or claiming successful restoration.
 - Installer downloads use private temporary files and remove incomplete downloads on failure.
-## Unreleased
 
 - Provider releases use the same profile and signed CLI entitlement checks as signing validation, rejecting unrelated app identities and missing profile expiry before publication. Release registration encodes quoted and multiline tag text as JSON data.
-## Unreleased
 
 - **Contributor guidance** — Issue forms and the PR template reference the current components, provider commands and review requirements. Go dependency update checks use the repository's root module.
-## Unreleased
 
 - Model publishing stops before uploads on failed or empty R2 credential reads. Rollback preparation validates registry inputs before copying objects, cleans its local staging on exit, and reaches promotion on macOS Bash.
-## Unreleased
 
 - The cache soak monitor stops after an interrupt or termination signal and counts cache markers once when log lines arrive across multiple writes.
 
@@ -98,6 +138,7 @@ compatibility checks and outstanding runtime qualification.
 
 ### Companion coordinator and console changes
 
+- **Concurrent duplicate-provider detection** — Read each provider's immutable attestation snapshot under its mutex before comparing device serials, so duplicate scans do not race attestation renewal. Matching duplicates still disconnect through the existing cleanup path.
 - **Warm-pool headroom** — Grow warm replicas from measured headroom before a failed request, using measured occupancy growth, per-model headroom limits and bounded load bursts. Requires a coordinator deployment; the provider release does not activate this policy.
 - **Earnings navigation** — Keep earnings accessible after removing all linked Macs and display the supported payout-coverage notice. Requires a console deployment.
 
@@ -141,7 +182,18 @@ coordinator and console changes require their own deployments.
 - **Incoming request accounting** — Add an unsampled request-outcome ledger and bounded admin inspection with explicit coverage and completion evidence. Record recovered HTTP errors and parsed streaming mode, and distinguish completed, incomplete and error response terminals after successful writes while preserving contradictory evidence and earlier content progress.
 - **Partial network geography** — Keep the stats overview available when request-location or route analytics time out. Refresh geography independently, expose unavailable sections, preserve valid empty maps and restore geography after recovery.
 
+## Unreleased — public model datacenters
+
+- Exclude private-only self-route providers from public model datacenter countries. Model counts and country metadata now share the same provider eligibility check.
+
+- Serialize a full transfer-reversal refund with payout completion. Recheck the current withdrawal under its store lock and commit principal/fee refunds with the terminal state, preventing a stale webhook read from refunding an already-paid withdrawal. A failed transaction leaves both balances and withdrawal state unchanged.
+
+- Credit each Stripe Checkout payment once per account even when its local billing-session metadata is absent or completion bookkeeping fails. Serialize repeated credits across coordinator store connections while preserving non-withdrawable deposits and existing withdrawal refunds. Index ledger identity lookups for large accounts while retaining long-reference support.
+
 ## Unreleased — stats request-flow refresh
+
+- Preserve newer withdrawal settlements when an older instant-payout failure arrives concurrently; payout ownership is rechecked in the store transition.
+- Commit invite redemption and balance credit together, so a failed credit leaves the code available for retry.
 
 - Restore Stats refreshes on large usage windows by aggregating request origins before looking up provider locations. Preserve weighted coordinates, request/token counts, and the top-50 flow limit while avoiding large temporary sorts.
 

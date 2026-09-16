@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-16 · commit `35c6a0f5b`
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -296,11 +296,11 @@ Implementation: `provider-swift/Sources/ProviderCore/Inference/Memory/ProcessMem
 ### Coordinator mirror
 
 The coordinator predicts servability with its own copy of the cap fraction,
-activation floors and per-model table (`coordinator/registry/servability.go`:
+activation floors and per-model table (`coordinator/registry/admission/model_memory.go`:
 `servabilityActivationFloorGB`, `servabilityLegacyActivationFloorGB`,
 `servabilityActivationFloorMinVersion`, `servabilityPerModelFloorMinVersion`,
 `servabilityModelActivationFloorsGB`, `servabilityMeasuredResidentGiB`;
-`coordinator/registry/scheduler.go`, `coldLoadCatalogGBToMemGiB`). The doc
+`coordinator/registry/admission/memory.go`, `coldLoadCatalogGBToMemGiB`). The doc
 comment on `defaultActivationReserveBytes` requires the provider and
 coordinator tables to move in the same commit. The coordinator's arithmetic and
 its use in admission are described once, in
@@ -353,7 +353,7 @@ its use in admission are described once, in
 | MLX soft limits | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
 | Padded weight estimate, quantization | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
 | Platform and hardware gates | `provider-swift/Package.swift`, `provider-swift/Sources/darkbloom/StartCommand+Preflight.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift`, `provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`, `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |
-| Coordinator mirror | `coordinator/registry/servability.go`, `coordinator/registry/scheduler.go` |
+| Coordinator memory policy | `coordinator/registry/admission/model_memory.go` (`Policy.ActivationFloor`, `servabilityModelActivationFloorsGB`); `coordinator/registry/admission/memory.go` (`ModelFitsHardware`) |
 | Measurements behind the floors | `docs/reports/2026-08-30-activation-floor-measurements.md` |
 
 ## Related

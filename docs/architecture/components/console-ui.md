@@ -1,6 +1,6 @@
 # Console UI (`console-ui/`)
 
-> Last updated: 2026-09-13 · commit `f7a3ef1fd`
+> Last updated: 2026-09-16 · commit `35c6a0f5b`
 
 The console at `console.darkbloom.dev` is a Next.js 16 App Router / React 19 application (`console-ui/package.json`) that gives consumers a chat client, model catalog, network stats, billing, API-key management, and provider linking. The browser never calls the coordinator for authenticated work: every page fetches same-origin `/api/*` route handlers, which resolve the coordinator URL server-side and forward the caller's own credential. This page explains how those pieces fit; the coordinator routes they call are specified in [`../../reference/api-contracts.md`](../../reference/api-contracts.md). The internal, read-only operator dashboard is a separate app — see [`admin-ui.md`](admin-ui.md).
 
@@ -133,7 +133,7 @@ The stats page renders a continuous overview without waiting for catalog or capa
 
 | Concern | Contract | Code |
 |---|---|---|
-| Source freshness | The coordinator publishes and retains `snapshot_at` according to the [public stats contract](../../reference/api-contracts.md#public-stats-and-health-5) | `coordinator/api/stats.go` (`handleStats`) |
+| Source freshness | The coordinator publishes and retains `snapshot_at` according to the [public stats contract](../../reference/api-contracts.md#public-stats-and-health-5) | `coordinator/api/network/stats_snapshot.go` (`computeStats`) |
 | Shared proxy cache | `SNAPSHOT_TTL_MS = 30_000`; keyed by configured coordinator URL; concurrent requests share one upstream request. Expiry is the earlier of fetch time plus TTL and valid source time plus TTL, so the proxy does not extend a source snapshot's lifetime | `console-ui/src/app/api/stats/snapshot-cache.ts` (`getStatsSnapshot`, `fetchSnapshot`) |
 | Response timestamps | `X-Stats-Fetched-At` records the upstream fetch start; `X-Stats-Snapshot-At` exists only when upstream publishes a valid RFC 3339 `snapshot_at`; `X-Stats-Expires-At` records cache expiry; `X-Stats-Cache` is `HIT` or `MISS` | `console-ui/src/app/api/stats/snapshot-cache.ts` (`statsSnapshotHeaders`) |
 | Edge cache and errors | `Cache-Control: public, max-age=0, s-maxage=<remaining seconds>, must-revalidate`; no stale extension. `UPSTREAM_TIMEOUT_MS = 20_000` bounds upstream fetch and body reading; timeout returns `504`, other upstream errors retain their status, and network/JSON failures return `502`. Failures use `no-store` and release pending requests for retry | `console-ui/src/app/api/stats/snapshot-cache.ts` (`fetchSnapshot`), `console-ui/src/app/api/stats/route.ts` (`GET`) |

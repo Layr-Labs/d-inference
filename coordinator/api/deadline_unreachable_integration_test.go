@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
+	"github.com/eigeninference/d-inference/coordinator/internal/inferencefixture"
 	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -194,7 +197,7 @@ func TestDeadlineUnreachableFailoverCarriesDecreasingBudgets(t *testing.T) {
 				ctx,
 				req,
 				protocol.FailureCodeCapacity,
-				errorReasonDeadlineUnreachable,
+				attempt.ErrorReasonDeadlineUnreachable,
 				http.StatusServiceUnavailable,
 			)
 			return
@@ -249,7 +252,7 @@ func TestDeadlineUnreachableFailoverCarriesDecreasingBudgets(t *testing.T) {
 
 	routes, _ := waitForDeadlineTelemetryWhere(t, st, 2, 0, func(routes []store.InferenceRouteRecord) bool {
 		for _, route := range routes {
-			if route.ErrorReason == errorReasonDeadlineUnreachable {
+			if route.ErrorReason == attempt.ErrorReasonDeadlineUnreachable {
 				return true
 			}
 		}
@@ -257,12 +260,12 @@ func TestDeadlineUnreachableFailoverCarriesDecreasingBudgets(t *testing.T) {
 	})
 	deadlineRoutes := 0
 	for _, route := range routes {
-		if route.ErrorReason != errorReasonDeadlineUnreachable {
+		if route.ErrorReason != attempt.ErrorReasonDeadlineUnreachable {
 			continue
 		}
 		deadlineRoutes++
-		if route.ErrorClass != errorClassDeadlineUnreachable {
-			t.Errorf("deadline route class = %q, want %q", route.ErrorClass, errorClassDeadlineUnreachable)
+		if route.ErrorClass != attempt.ErrorClassDeadlineUnreachable {
+			t.Errorf("deadline route class = %q, want %q", route.ErrorClass, attempt.ErrorClassDeadlineUnreachable)
 		}
 		if route.AdmittedButFailed {
 			t.Error("pre-content deadline refusal must not be admitted-but-failed")
@@ -318,7 +321,7 @@ func TestModelSpecificFirstContentDeadlineReachesProviderWire(t *testing.T) {
 				t.Fatalf("parse request body: %v", err)
 			}
 			expected := srv.FirstContentDeadline(
-				tt.model, estimatePromptTokens(parsed),
+				tt.model, inferencefixture.PromptTokens(parsed),
 			).Milliseconds()
 			if expected < tt.wantBase.Milliseconds() ||
 				expected >= tt.wantBase.Milliseconds()+time.Second.Milliseconds() {
@@ -368,43 +371,21 @@ func TestDispatchOneProviderUsesPinnedExpiredClockWithoutRecomputing(t *testing.
 		"/v1/chat/completions",
 		strings.NewReader(buildChatBody(t, model, false, nil)),
 	)
-	selected, pending, _, _, dispatchErr, dispatchErrCode := srv.dispatchOneProvider(
-		req,
-		model,
-		model,
-		[]byte(buildChatBody(t, model, false, nil)),
-		"test-key",
-		nil,
-		0,
-		8,
-		10*time.Millisecond,
-		64,
-		registry.TokenAdmission{},
-		false,
-		registry.RequestTraits{},
-		nil,
-		false,
-		selfRoutePolicy{},
-		// The pinned 10ms request clock is expired, while recomputing this
-		// ordinary model from the server's 5s default would still allow a send.
-		&registry.RequestTiming{ReceivedAt: time.Now().Add(-50 * time.Millisecond)},
-		false,
-		registry.CachePlan{},
-		map[string]struct{}{},
-		0,
-		nil,
-		"",
-		nil,
-		nil,
-	)
-	if selected != nil || pending != nil {
-		t.Fatalf("expired dispatch selected provider=%v pending=%v", selected, pending)
+	recorder := httptest.NewRecorder()
+	srv.inferenceDispatch().Run(recorder, req, dispatch.Request{
+		Model: model, PublicModel: model,
+		RawBody:     []byte(buildChatBody(t, model, false, nil)),
+		ConsumerKey: "test-key", EstimatedPromptTokens: 8, RequestedMaxTokens: 64,
+		Deadline: 10 * time.Millisecond,
+		// This pinned clock is expired; the ordinary 5s model default is not.
+		Timing:            &registry.RequestTiming{ReceivedAt: time.Now().Add(-50 * time.Millisecond)},
+		RefundReservation: func() {},
+	})
+	if recorder.Code != http.StatusTooManyRequests || !strings.Contains(recorder.Body.String(), "timeout waiting for first response") {
+		t.Fatalf("expired dispatch HTTP = %d %s, want deadline 429", recorder.Code, recorder.Body.String())
 	}
-	if dispatchErr != errFirstContentDeadlineExpired ||
-		dispatchErrCode != http.StatusGatewayTimeout {
-		t.Fatalf(
-			"expired dispatch = (%q,%d), want (%q,504)",
-			dispatchErr, dispatchErrCode, errFirstContentDeadlineExpired)
+	if p := reg.GetProvider(provider.registryID); p == nil || p.PendingCount() != 0 {
+		t.Fatalf("expired dispatch retained a provider reservation: %v", p)
 	}
 	time.Sleep(50 * time.Millisecond)
 	if got := provider.dispatchCount(); got != 0 {
@@ -434,7 +415,7 @@ func TestDeadlineUnreachableAllProvidersReturnSingle429(t *testing.T) {
 			ctx,
 			req,
 			protocol.FailureCodeCapacity,
-			errorReasonDeadlineUnreachable,
+			attempt.ErrorReasonDeadlineUnreachable,
 			http.StatusServiceUnavailable,
 		)
 	}
@@ -494,7 +475,7 @@ func TestDeadlineUnreachableAllProvidersReturnSingle429(t *testing.T) {
 
 	deadlineRoutes := 0
 	for _, route := range routes {
-		if route.ErrorReason == errorReasonDeadlineUnreachable {
+		if route.ErrorReason == attempt.ErrorReasonDeadlineUnreachable {
 			deadlineRoutes++
 		}
 	}
@@ -609,7 +590,7 @@ func TestDeadlineRefusalDoesNotMaskLaterProvider500(t *testing.T) {
 		if attempts.capture(t, reg, fp, req) == 1 {
 			fp.sendTypedInferenceError(
 				ctx, req, protocol.FailureCodeCapacity,
-				errorReasonDeadlineUnreachable, http.StatusServiceUnavailable)
+				attempt.ErrorReasonDeadlineUnreachable, http.StatusServiceUnavailable)
 			return
 		}
 		fp.sendInferenceError(
@@ -735,7 +716,7 @@ func TestGenericEndpointsShareDeadlineFailover(t *testing.T) {
 					time.Sleep(40 * time.Millisecond)
 					fp.sendTypedInferenceError(
 						ctx, req, protocol.FailureCodeCapacity,
-						errorReasonDeadlineUnreachable,
+						attempt.ErrorReasonDeadlineUnreachable,
 						http.StatusServiceUnavailable)
 					return
 				}
@@ -781,7 +762,7 @@ func TestGenericDeadlineExhaustionReturnsSingle429(t *testing.T) {
 	) {
 		fp.sendTypedInferenceError(
 			ctx, req, protocol.FailureCodeCapacity,
-			errorReasonDeadlineUnreachable, http.StatusServiceUnavailable)
+			attempt.ErrorReasonDeadlineUnreachable, http.StatusServiceUnavailable)
 	}
 	for i := 0; i < 2; i++ {
 		startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{

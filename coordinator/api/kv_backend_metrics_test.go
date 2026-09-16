@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -268,22 +269,17 @@ func TestRequestOutcomeSegmentsByServingSlotBackend(t *testing.T) {
 
 	for _, row := range fleet {
 		p := registerHeartbeatedProvider(t, srv, row.providerID, row.model, row.backend)
-		d := &dispatchState{
-			s:     srv,
-			model: row.model,
-			pr:    &registry.PendingRequest{RequestID: "req-" + row.providerID, ProviderID: p.ID, Model: row.model},
-		}
-		d.noteServingSlot()
-		// Every failover path clears these before the exhaustion ladder runs.
-		d.provider, d.pr = nil, nil
-		srv.recordRequestOutcome(d.model, d.kvBackendAttribution(), orClassProvider5xx)
+		// The dispatch owner separately pins latch survival and race precedence.
+		// This API boundary keeps the real heartbeat-to-UDP tag serialization.
+		attr := srv.inferenceDispatch().KVBackendAttribution(p.ID, row.model)
+		dispatchObserver{server: srv}.RequestOutcome(row.model, attr, orClassProvider5xx)
 	}
 
 	// A pre-dispatch rejection never reached a slot: unattributable, and it must
 	// say so rather than borrow a backend. Named through the constructor, not a
 	// bare zero value — nothing on the emit path coalesces "" any more, so the
 	// "no slot" case has exactly one spelling.
-	srv.recordRequestOutcome(model, newUnknownKVBackendAttribution(), orClassRateLimited)
+	srv.recordRequestOutcome(model, dispatch.NewUnknownKVBackendAttribution(), orClassRateLimited)
 
 	_ = dd.Statsd.Flush()
 	outcomes := findMetrics(collector.drain(), metricRequestOutcome)
@@ -328,39 +324,6 @@ func TestRequestOutcomeSegmentsByServingSlotBackend(t *testing.T) {
 			!strings.Contains(p, kvBackendTagKey+registry.KVBackendUnknown) {
 			t.Errorf("pre-dispatch rejection must be kv_backend:unknown, got %q", p)
 		}
-	}
-}
-
-// TestDispatchKVBackendTagFollowsTheServingSlot pins the two behaviours of the
-// dispatch-side resolver: the latch survives a failover clearing d.pr (the
-// exhaustion ladder still attributes the failure), and a live d.pr WINS over
-// the latch (a speculative backup that takes over is attributed to the backup's
-// slot, not the primary's).
-func TestDispatchKVBackendTagFollowsTheServingSlot(t *testing.T) {
-	srv, _, _ := billingTestServer(t)
-	const model = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
-	paged, contiguous := registry.KVBackendPaged, registry.KVBackendContiguous
-	primary := registerHeartbeatedProvider(t, srv, "g5-latch-primary", model, &paged)
-	backup := registerHeartbeatedProvider(t, srv, "g5-latch-backup", model, &contiguous)
-
-	d := &dispatchState{s: srv, model: model}
-	// Never reached a slot yet.
-	if got := d.kvBackendAttribution().Backend; got != registry.KVBackendUnknown {
-		t.Fatalf("before dispatch = %q, want %q", got, registry.KVBackendUnknown)
-	}
-
-	d.pr = &registry.PendingRequest{RequestID: "req-latch", ProviderID: primary.ID, Model: model}
-	d.noteServingSlot()
-	d.pr = nil
-	if got := d.kvBackendAttribution().Backend; got != registry.KVBackendPaged {
-		t.Errorf("after failover cleared d.pr = %q, want %q (the latch is what keeps a crashed "+
-			"paged slot's 5xx attributable)", got, registry.KVBackendPaged)
-	}
-
-	// Speculative backup takes over: the live pending request wins.
-	d.pr = &registry.PendingRequest{RequestID: "req-latch-backup", ProviderID: backup.ID, Model: model}
-	if got := d.kvBackendAttribution().Backend; got != registry.KVBackendContiguous {
-		t.Errorf("after a backup win = %q, want %q", got, registry.KVBackendContiguous)
 	}
 }
 
@@ -425,7 +388,7 @@ func TestBackendMetricNamesAndSampleGuards(t *testing.T) {
 	// other producer (registry.KVBackendTag / KVBackendFallbackTag, pinned in
 	// registry's own tests) never returns "". An empty tag on a dashboard
 	// means a THIRD producer appeared.
-	unknown := newUnknownKVBackendAttribution()
+	unknown := dispatch.NewUnknownKVBackendAttribution()
 	if unknown.Backend != registry.KVBackendUnknown {
 		t.Errorf("unknown attribution backend = %q, want %q", unknown.Backend, registry.KVBackendUnknown)
 	}
@@ -434,7 +397,7 @@ func TestBackendMetricNamesAndSampleGuards(t *testing.T) {
 	if unknown.Fallback != registry.KVFallbackUnknown {
 		t.Errorf("unknown attribution fallback = %q, want %q", unknown.Fallback, registry.KVFallbackUnknown)
 	}
-	if got := unknown.appendTags(nil); len(got) != 2 ||
+	if got := unknown.AppendTags(nil); len(got) != 2 ||
 		got[0] != kvBackendTagKey+registry.KVBackendUnknown ||
 		got[1] != kvBackendFallbackTagKey+registry.KVFallbackUnknown {
 		t.Errorf("unknown attribution tags = %v", got)
@@ -447,16 +410,16 @@ func TestBackendMetricNamesAndSampleGuards(t *testing.T) {
 
 	// No Datadog client configured: helpers must not panic.
 	srv, _, _ := billingTestServer(t)
-	srv.emitRequestBackendLatency("m", kvBackendAttribution{
+	srv.emitRequestBackendLatency("m", dispatch.KVBackendAttribution{
 		Backend: registry.KVBackendPaged, Fallback: registry.KVFallbackNone,
 	}, 12, 34)
-	if got := srv.kvBackendAttribution("no-such-provider", "m"); got.Backend != registry.KVBackendUnknown ||
+	if got := srv.inferenceDispatch().KVBackendAttribution("no-such-provider", "m"); got.Backend != registry.KVBackendUnknown ||
 		got.Fallback != registry.KVFallbackUnknown {
 		t.Errorf("attribution for an unknown provider = %+v", got)
 	}
 	// Same resolution when the caller already holds the provider, including
 	// the nil case the WebSocket read loop can never actually hit.
-	if got := srv.providerKVBackendAttribution(nil, "m"); got.Backend != registry.KVBackendUnknown ||
+	if got := srv.inferenceDispatch().ProviderKVBackendAttribution(nil, "m"); got.Backend != registry.KVBackendUnknown ||
 		got.Fallback != registry.KVFallbackUnknown {
 		t.Errorf("attribution for a nil provider = %+v", got)
 	}
@@ -473,7 +436,7 @@ func TestUnmeasurableRequestEmitsNoBackendSample(t *testing.T) {
 	defer dd.Close()
 	srv.SetDatadog(dd)
 
-	srv.emitRequestBackendLatency("m", kvBackendAttribution{
+	srv.emitRequestBackendLatency("m", dispatch.KVBackendAttribution{
 		Backend: registry.KVBackendPaged, Fallback: registry.KVFallbackNone,
 	}, 0, 0)
 	_ = dd.Statsd.Flush()

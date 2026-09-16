@@ -1,6 +1,6 @@
 # Coordinator Performance Tier 1 Rollout
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-16 · commit `35c6a0f5b`
 
 Operator companion to the `perf/coordinator-tier1-2026-09-03` branch (the
 code items 1.1, 1.3–1.8 of the 2026-09-03 coordinator performance proposal).
@@ -18,20 +18,20 @@ Canonical code (code wins over this doc; find declarations by symbol):
 | Behavior | Code |
 |---|---|
 | Bounded usage history with lazy allocation | `coordinator/payments/payments.go` (`Ledger.RecordUsage`, `usageHistoryGrowth`) |
-| Shared cache refresh and cold-miss coalescing | `coordinator/api/cache_refresher.go` (`StartCacheRefreshers`, `getCachedEntry`, `refreshCachedEntry`, `computeCachedEntry`) |
-| Stats / network totals computation | `coordinator/api/stats.go` (`computeStats`, `handleStats`); `coordinator/api/network_totals.go` (`computeNetworkTotals`, `handleNetworkTotals`) |
-| Analytics transaction and query errors | `coordinator/store/postgres_analytics.go` (`withAnalyticsTx`, `UsageLocationBuckets`, `UsageFlowBuckets`, `NetworkTotals`) |
-| Verification poller cadence + busy floor | `coordinator/api/mdm_scheduler_exec.go` (`shouldLoadDueRows`, `nextDispatchDelay`) |
-| Dashboard rolling windows | `coordinator/store/postgres_dashboard.go` and `coordinator/store/memory_dashboard.go` (`AccountEarningsWindows`); `coordinator/api/me_summary_cache.go` (`accountEarningsWindows`) |
-| Batched reputation reads | `coordinator/store/postgres_dashboard.go` and `coordinator/store/memory_dashboard.go` (`GetReputations`); `coordinator/api/me_handlers.go` (`attachStoredReputations`) |
-| Capacity accept off the first-byte path | `coordinator/api/dispatch.go` (`commitFirstContent`); `coordinator/registry/capacity_cooldown.go` (`RecordCapacityAcceptObserved`) |
-| Throttled reputation persist | `coordinator/registry/reputation.go` (`RecordJobSuccess`); `coordinator/registry/provider_lifecycle.go` (`Disconnect`); `coordinator/registry/persistence.go` (`persistReputationThrottled`) |
-| Single provider-frame decode | `coordinator/api/provider.go` (`providerReadLoop`) |
-| Cancel only when generation still needs stopping | `coordinator/api/dispatch.go` (`writeCommittedResponse`); `coordinator/api/provider.go` (`handleChunk`, synthesized-error cancellation) |
-| No shed-path fleet walk | `coordinator/api/inference_admission.go` (`runInferenceAdmission`, `skipServability`) |
+| Shared cache refresh and cold-miss coalescing | `coordinator/api/network/refresh.go` (`Controller.StartRefreshers`, `getCachedEntry`, `refreshCachedEntry`, `computeCachedEntry`) |
+| Stats / network totals computation | `coordinator/api/network/stats_snapshot.go` (`computeStats`); `coordinator/api/network/stats.go` (`Controller.Stats`); `coordinator/api/network/totals.go` (`computeNetworkTotals`, `Controller.Totals`) |
+| Analytics transaction and query errors | `coordinator/store/postgres/analytics.go` (`withAnalyticsTx`, `NetworkTotals`, `UsageLocationBuckets`, `UsageFlowBuckets`) |
+| Verification poller cadence + busy floor | `coordinator/providercontrol/mdmscheduler/dispatch.go` (`shouldLoadDueRows`, `nextDispatchDelay`) |
+| Dashboard rolling windows | `coordinator/store/postgres/dashboard.go` and `coordinator/store/memory/dashboard.go` (`AccountEarningsWindows`); `coordinator/api/accountfleet/summary_cache.go` (`accountEarningsWindows`) |
+| Batched reputation reads | `coordinator/store/postgres/dashboard.go` and `coordinator/store/memory/dashboard.go` (`GetReputations`); `coordinator/api/accountfleet/reputation.go` (`attachStoredReputations`) |
+| Capacity accept off the first-byte path | `coordinator/inference/dispatch/commit.go` (`commitFirstContent`); `coordinator/registry/fault_capacity.go` (`RecordCapacityAcceptObserved`); `coordinator/registry/faultstate/capacity_accept.go` (`CapacityAccept.Apply`) |
+| Throttled reputation persist | `coordinator/registry/reputation.go` (`RecordJobSuccess`); `coordinator/registry/provider_disconnect.go` (`Disconnect`); `coordinator/registry/reputation_persistence.go` (`persistReputationThrottled`) |
+| Single provider-frame decode | `coordinator/providercontrol/session/read.go` (`Session.Run`) |
+| Cancel only when generation still needs stopping | `coordinator/inference/dispatch/commit.go` (`writeCommittedResponse`); `coordinator/inference/providerframe/chunk.go` (`Service.Chunk`, synthesized-error cancellation) |
+| No shed-path fleet walk | `coordinator/inference/ingress/admission.go` (`runInferenceAdmission`, `SkipServability`) |
 | Lock-wait histogram by call site | `coordinator/registry/lock_wait.go` (`lockWrite`); `coordinator/api/server.go` (`NewServer`) |
-| Scan counter | `coordinator/registry/scheduler.go` (`RoutingDecision.ScanCount`); `coordinator/api/dispatch.go` (`recordRoutingDecisionFor`) |
-| Contention profiles | `coordinator/cmd/coordinator/main.go` (`enableContentionProfiling`) |
+| Scan counter | `coordinator/registry/routing_decision.go` (`RoutingDecision.ScanCount`); `coordinator/inference/dispatch/route_observation.go` (`recordRoutingDecisionFor`) |
+| Contention profiles | `coordinator/cmd/coordinator/profiling.go` (`enableContentionProfiling`) |
 
 ## Prerequisites
 
@@ -203,8 +203,8 @@ process start.
 | # | Knob | Value | Effect (from the proposal) |
 |---|---|---|---|
 | 0.1 | `EIGENINFERENCE_MIN_PROVIDER_VERSION` | `0.7.5` today → `0.8.12`, then `0.8.15` | Deroutes the ~4 % of the fleet on old builds that produce a large share of `first_chunk_timeout`; staged so no more than that share drops at once. The floor is manual by design (`coordinator/api/server.go`, `SetMinProviderVersion`). |
-| 0.3 | `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES` | `qwen3-vl-30b-a3b-instruct=off` | Removes the hardcoded 4 s first-content cutoff for that model (`0`/`off` deletes the built-in entry so the model uses the global base; parsed by `main` in `coordinator/cmd/coordinator/main.go`). Risk removal for the 2026-08-31 class of incident. |
-| 0.5 | `EIGENINFERENCE_PROFILE_SAMPLE_RATE` | operator decision, `0..1` (default `0.1`) | Today ≈53 % of successes are recorded because every non-success / slow / retried request bypasses sampling (`coordinator/api/profiler.go`, `profiler.sampled`). Decide whether ~9 GB/day of `request_profiles` is intended before touching it; `EIGENINFERENCE_PROFILER=off` is the kill switch. |
+| 0.3 | `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES` | `qwen3-vl-30b-a3b-instruct=off` | Removes the hardcoded 4 s first-content cutoff for that model (`0`/`off` deletes the built-in entry so the model uses the global base; parsed by `coordinator/cmd/coordinator/routing_deadlines.go` (`configureModelDeadlines`)). Risk removal for the 2026-08-31 class of incident. |
+| 0.5 | `EIGENINFERENCE_PROFILE_SAMPLE_RATE` | operator decision, `0..1` (default `0.1`) | Today ≈53 % of successes are recorded because every non-success / slow / retried request bypasses sampling (`coordinator/telemetry/profiler/sampling.go`, `Profiler.sampled`). Decide whether ~9 GB/day of `request_profiles` is intended before touching it; `EIGENINFERENCE_PROFILER=off` is the kill switch. |
 
 Commands for one knob (repeat per key; values are the ones from the table):
 
@@ -277,14 +277,14 @@ flowchart LR
   end
   subgraph After
     direction TB
-    D1[StartCacheRefreshers] --> D2[refreshCachedEntry<br/>coalesced, errors keep last success] --> D3[withAnalyticsTx<br/>SET LOCAL work_mem 1GB] --> D4[Set 5 min]
-    D5[handleStats / handleNetworkTotals] --> D6[readCache.Get; cold miss -> D2]
+    D1[Server.StartCacheRefreshers<br/>network.Controller.StartRefreshers] --> D2[refreshCachedEntry<br/>coalesced, errors keep last success] --> D3[withAnalyticsTx<br/>SET LOCAL work_mem 1GB] --> D4[Set 5 min]
+    D5[network.Controller.Stats / network.Controller.Totals] --> D6[readCache.Get; cold miss -> D2]
     D7[commitFirstContent] --> D8[MarkRateOutcomeCounted<br/>saferun.Go RecordCapacityAccept] --> D9[writeCommittedResponse] --> D10[provider.RecordLatency<br/>p.mu only] --> D11[stream]
     D12[dispatcher loop] --> D13[shouldLoadDueRows: 1 s cadence or empty queue] --> D14[ListDueVerificationJobsPage<br/>make 0,min limit,256]
     D15[RecordJobSuccess] --> D16[persistReputationThrottled; Disconnect flushes]
     D17[providerReadLoop] --> D18[msg.UnmarshalJSON once]
-    D19[handleMySummary] --> D20[AccountEarningsWindows aggregate + 15 s cache]
-    D21[handleMyProviders] --> D22[GetReputations ANY]
+    D19[accountfleet.Controller.Summary] --> D20[AccountEarningsWindows aggregate + 15 s cache]
+    D21[accountfleet.Controller.Providers] --> D22[GetReputations ANY]
     D23[request-path recorders] --> D24[registry.lockWrite site<br/>registry.mu.write_wait_ms histogram]
     D25[reserveProvider] --> D26[RoutingDecision.ScanCount -> routing.scans]
   end

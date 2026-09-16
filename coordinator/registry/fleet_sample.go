@@ -232,7 +232,7 @@ func (r *Registry) appendProviderSample(rows []store.FleetSnapshotRow, p *Provid
 	}
 	gate := r.gateOf(p)
 	nowNS := now.UnixNano()
-	breakerOpen := gate.breakerOpenAt(nowNS)
+	breakerOpen := gate.BreakerOpenAt(nowNS)
 	ejected := r.ejectionOpenFor(gate, stableID, nowNS)
 	if scratch == nil {
 		row := &rows[start]
@@ -256,10 +256,10 @@ func (r *Registry) appendProviderSample(rows []store.FleetSnapshotRow, p *Provid
 		row.BreakerOpen = breakerOpen
 		row.Ejected = ejected
 		row.EffectiveCap = r.effectiveMaxConcurrencyForModelResolvedLocked(p, raw)
-		row.CooldownActive = gate.dispatchLoadCooled(raw, now) ||
-			gate.inferenceErrorCooled(raw, shape, now) ||
-			gate.capacityCooled(raw, now)
-		row.ClampActive = gate.budgetClampActive(r.budgetClampCfg, raw, heartbeatAt, scratch[i].rawRemaining, scratch[i].budgetReported, now)
+		row.CooldownActive = gate.DispatchLoadCooled(raw, now) ||
+			gate.InferenceErrorCooled(raw, shape, now) ||
+			gate.CapacityCooled(raw, now)
+		row.ClampActive = gate.BudgetClampActive(raw, heartbeatAt, scratch[i].rawRemaining, scratch[i].budgetReported, now)
 	}
 	p.mu.Unlock()
 	// Eligibility via the real routing gates (the snapshot helper takes p.mu
@@ -315,7 +315,7 @@ func (r *Registry) slotEligibilityReasonLocked(p *Provider, model string, probe 
 func (r *Registry) providerLevelGateReasonLocked(p *Provider, now time.Time) (bool, GateReason) {
 	g := r.gateOf(p)
 	nowNS := now.UnixNano()
-	if g.breakerOpenAt(nowNS) {
+	if g.BreakerOpenAt(nowNS) {
 		return false, GateBreaker
 	}
 	if healthEjectionEnabled() {

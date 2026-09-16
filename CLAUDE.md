@@ -7,19 +7,28 @@ Darkbloom is a decentralized private inference network for Apple Silicon Macs. C
 ```
 coordinator/          Go control plane (packages live at top level, not internal/)
 ├── cmd/coordinator/  main service entrypoint
-├── api/              HTTP + WebSocket handlers (consumer.go, provider.go, billing_handlers.go, device_auth.go, invite_handlers.go, release_handlers.go, enroll.go, stats.go, server.go, chunk_key_cache.go, types/)
+├── api/              HTTP + WebSocket handlers (consumer.go, provider.go, billing/, billing_controller.go, requestauth/, authentication.go, accounts/, account_controller.go, authorization.go, httprequest/, releases/, statearchive/, readiness/, admin_auth.go, enroll.go, stats.go, server.go, provider_frames.go, operations/, types/)
 ├── apns/             APNs-push code-identity attestation
 ├── attestation/      Secure Enclave + MDA attestation verification
 ├── auth/             Privy JWT verification + user provisioning
 ├── billing/          Stripe (deposits + Connect payouts), referral system
 ├── config/           AppConfig aggregation of per-package configs
 ├── env/              Shared env-var helpers/constants
+├── inference/        toolpolicy/, response/, dispatch/, attempt/, settlement/, providerframe/
+│                     (request policy, response, dispatch, cancellation, accounting, provider frames)
 ├── mdm/              MicroMDM integration for device attestation
 ├── payments/         Internal ledger, pricing tables, base rewards
+├── providercontrol/session/ per-connection frame dispatch, registration, heartbeat and ordered teardown (Session)
+├── providercontrol/challenge/ connection-local nonces, challenge transport and ordered verification (Session, Verifier)
+├── providercontrol/mdmscheduler/ durable MDM/MDA queue, claims, worker budget and exact command ownership (Scheduler)
+├── providercontrol/verification/ signed registration, reconnect recovery and MDM/MDA evidence checks (Verifier)
+├── providercontrol/codeidentity/ per-device code proofs, APNs budgets/nonces and encrypted resume (Manager)
+├── providercontrol/releasepolicy/ active release policy, binary allowlists and runtime manifest (Manager)
 ├── profilesign/      CMS-signing of .mobileconfig enrollment profiles
 ├── protocol/         WebSocket message types shared with provider (type_scan.go: single-parse frame decode)
 ├── ratelimit/        Rate limiting
-├── registry/         Provider registry, queueing, routing, reputation, token-budget admission,
+├── registry/         Provider registry, queueing, routing, reputation, admission/ capacity math,
+│                     providerversion/ interpretation, token-budget admission,
 │                     warm-pool controller, two-lane provider WS writer (provider_writer.go), routingsim/
 ├── saferun/          Panic-safe goroutine runners
 ├── stateexport/      Consistent encrypted archive of MicroMDM (+ legacy step-ca) state (migration)
@@ -77,6 +86,8 @@ docs/                 How-tos, runbooks, reference, architecture, design records
 ### External Dependencies (`.external/`)
 
 The `.external/` directory is reserved for local external checkouts and **must never be committed to d-inference**. The current Swift provider uses in-process MLX, not a vllm-mlx subprocess.
+
+Coordinator startup composition and subsystem setup live in `coordinator/cmd/coordinator/`. `main.go` (`main`) retains resource lifetimes and shutdown; see [the startup sequence and source map](docs/architecture/components/coordinator.md#startup-sequence).
 
 ## Building & Testing
 
@@ -210,7 +221,7 @@ CI (`.github/workflows/release-swift.yml`) builds, signs, notarizes, and uploads
 - **Idle GPU timeout**: Loaded model state is released after 1 hour of no requests to free GPU memory. Lazy-reloaded when the next request arrives. Coordinator can also push `load_model` messages to pre-warm providers.
 - **Hop-by-hop encryption**: consumer → coordinator is TLS plus optional NaCl Box sealing (`application/eigeninference-sealed+json`); coordinator → provider is a mandatory per-request NaCl Box to the provider's attested X25519 key; provider → coordinator response chunks are encrypted back. The coordinator decrypts consumer bodies in confidential-VM memory for routing and billing and does not log or retain them; the sealed request is decrypted only inside the hardened provider process. Do not write "the coordinator never sees plaintext" — see `docs/architecture/security/encryption.md`.
 - **Attestation chain**: Secure Enclave P-256 key (persistent, keychain access group bound) → signs attestation blob → coordinator verifies signature (self_signed) → MDM SecurityInfo cross-check (hardware trust) → Apple Enterprise Attestation Root CA signs device cert chain via MDA (mda_verified). `GET /v1/providers/attestation` exposes only privacy-redacted trust status; hardware serials, UDIDs, and raw Apple certificates stay private to providers and the coordinator.
-- **Protocol symmetry**: `provider-swift/Sources/ProviderCore/Protocol/` and `coordinator/protocol/messages.go` define the same WebSocket message types. Changes to one must be mirrored in the other.
+- **Protocol symmetry**: `provider-swift/Sources/ProviderCore/Protocol/` and `coordinator/protocol/` define the same WebSocket message types. Changes to one must be mirrored in the other.
 - **Model registry**: Coordinator registry data is DB-backed and points to R2 manifests. The Swift provider downloads the files listed in the manifest from `https://models.darkbloom.ai` and verifies per-file plus aggregate SHA-256. Do not reintroduce hardcoded model catalog lists.
 - **Billing**: Stripe Checkout deposits credit an internal micro-USD ledger (`coordinator/payments`); Stripe Connect handles provider payouts/withdrawals. Referral system gives referrers a share of platform fees; base rewards live in `payments/baserewards`. (Solana deposits/payouts were removed; the BIP39 mnemonic env var now only derives the coordinator's X25519 encryption key.)
 - **Request queue**: When all providers are busy, requests queue with 120s timeout. Frontend shows "providers are busy" on 503. 429 with Retry-After returned when fleet is at capacity.
@@ -218,7 +229,7 @@ CI (`.github/workflows/release-swift.yml`) builds, signs, notarizes, and uploads
 - **Challenge timing**: Initial attestation challenge sent immediately on provider registration, then every 5 minutes via ticker.
 - **Model scan performance**: `ModelScanner` does fast discovery without hashing. Weight hash computed on-demand via `WeightHasher.computeHash(for:)` only for models that need attestation/verification.
 - **Vision prefill is per-image**: Qwen3-VL's tower attends over whatever it is handed as one sequence with an N×N intermediate, so `EngineV2VisionTowerRun` drives it once per image and evaluates each before building the next. Batching a request's images made peak device memory quadratic in the image count and asked Metal for buffers many times `MTLDevice.maxBufferLength`, which MLX's default `fatalError` handler turned into a dead daemon. `VisionTowerBudget` predicts that peak from the processor's grids and the model's own vision config (the N² multiple is 1 when MLX fuses the head dim, `numHeads` when it falls back to `[1, H, N, N]` scores); the prefill runs under `MLX.withError`, whose handler records and returns — so every `eval` site checks the box rather than relying on the block-exit check.
-- **Streaming hot path**: provider frames are decoded in a single parse (`coordinator/protocol/type_scan.go`, envelope-decode fallback); per-request X25519 shared keys are memoized for chunk decrypt and forgotten on request terminal (`api/chunk_key_cache.go`); provider WebSocket writes go through a two-lane writer (`registry/provider_writer.go`) — control frames (challenges, cancels) take strict non-preemptive priority over data frames, FIFO within a lane only, `WriteText` blocks to wire completion. A full consumer chunk buffer gets one 250ms grace window, then the request fails with 499 — chunks are never silently dropped.
+- **Streaming hot path**: provider frames are decoded in a single parse (`coordinator/protocol/type_scan.go`, envelope-decode fallback); per-request X25519 shared keys are memoized for chunk decrypt and forgotten on request terminal (`coordinator/inference/providerframe/chunk_keys.go`); provider WebSocket writes go through a two-lane writer (`registry/provider_writer.go`) — control frames (challenges, cancels) take strict non-preemptive priority over data frames, FIFO within a lane only, `WriteText` blocks to wire completion. A full consumer chunk buffer gets one 250ms grace window, then the request fails with 499 — chunks are never silently dropped.
 - **Device auth**: RFC 8628 device code flow for linking provider machines to user accounts. Provider runs `login`, gets a code, user enters it on the web.
 - **CI code signing**: GitHub Actions release workflow signs provider binary with Developer ID Application cert, notarizes with Apple, computes SHA-256 hashes after signing. Provisioning profile embedded in .app bundle for persistent SE key.
 - **Observability**: Datadog DogStatsD metrics for attestation, routing, billing, fleet version, provider capacity. X-Timing JSON header decomposes per-request latency (parse, reserve, route, queue, encrypt, dispatch, provider).
@@ -241,7 +252,7 @@ Always think from first principles. When fixing a bug or designing a feature:
 
 ## Common Pitfalls
 
-- Protocol changes require updating both `provider-swift/Sources/ProviderCore/Protocol/` (Swift) AND `coordinator/protocol/messages.go` (Go). They must stay in sync.
+- Protocol changes require updating both `provider-swift/Sources/ProviderCore/Protocol/` (Swift) AND `coordinator/protocol/` (Go). They must stay in sync.
 - Telemetry wire types are mirrored in three places: `coordinator/protocol/telemetry.go`, `provider-swift/Sources/ProviderCore/Telemetry/`, and `console-ui/src/lib/telemetry-types.ts`. The field allowlist (`coordinator/api/telemetry_handlers.go`) is the privacy backstop — never add prompt/completion fields. See `docs/architecture/telemetry.md`.
 - Attestation minimum-requirement checks (Secure Enclave, SIP, Secure Boot) run sequentially and each overwrites `result.Error` — last failure wins. `AuthenticatedRootEnabled` (ARV) is informational only: logged, not enforced.
 - Store selection (`cmd/coordinator/main.go`): the coordinator uses the **Postgres** store whenever `EIGENINFERENCE_DATABASE_URL` is set (prod does), and refuses to start without it unless `EIGENINFERENCE_ALLOW_MEMORY_STORE=true`. The in-memory store is the dev/test fallback only (state lost on restart). The live provider *registry* (WebSocket connections/attestation) is always in-process and rebuilt on reconnect regardless of store.

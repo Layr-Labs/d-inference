@@ -105,7 +105,7 @@ func TestSyncBinaryHashesInventoryFailureRetainsLastKnownGoodPolicy(t *testing.T
 	if err := srv.SyncBinaryHashes(); err != nil {
 		t.Fatalf("initial SyncBinaryHashes: %v", err)
 	}
-	snapshot := srv.releaseTrustPolicy.Load()
+	snapshot := releasePolicySnapshotForTest(srv)
 	if snapshot == nil || !snapshot.Required || len(snapshot.ByBinaryHash[trHashA]) != 1 {
 		t.Fatalf("initial release policy = %+v", snapshot)
 	}
@@ -121,7 +121,7 @@ func TestSyncBinaryHashesInventoryFailureRetainsLastKnownGoodPolicy(t *testing.T
 	if err := srv.SyncBinaryHashes(); err == nil {
 		t.Fatal("inventory failure must still be surfaced to the caller")
 	}
-	retained := srv.releaseTrustPolicy.Load()
+	retained := releasePolicySnapshotForTest(srv)
 	if retained == nil || !retained.Required ||
 		retained.Generation != snapshot.Generation ||
 		len(retained.ByBinaryHash[trHashA]) != 1 {
@@ -141,7 +141,7 @@ func TestSyncBinaryHashesInventoryFailureRetainsLastKnownGoodPolicy(t *testing.T
 	if err := srv.SyncBinaryHashes(); err != nil {
 		t.Fatalf("recovery SyncBinaryHashes: %v", err)
 	}
-	recovered := srv.releaseTrustPolicy.Load()
+	recovered := releasePolicySnapshotForTest(srv)
 	if recovered == nil || !recovered.Required || len(recovered.ByBinaryHash) != 1 || len(recovered.ByBinaryHash[trHashA]) != 1 {
 		t.Fatalf("recovered release policy did not restore exact active inventory: %+v", recovered)
 	}
@@ -173,7 +173,7 @@ func TestSyncBinaryHashesReleaseRegistrationKeepsApprovedFleetRoutable(t *testin
 	if err := srv.SyncBinaryHashes(); err != nil {
 		t.Fatalf("initial SyncBinaryHashes: %v", err)
 	}
-	snapshot := srv.releaseTrustPolicy.Load()
+	snapshot := releasePolicySnapshotForTest(srv)
 
 	const model = "release-storm-model"
 	provider := makeRoutableProvider(t, reg, "storm-provider", model)
@@ -188,7 +188,7 @@ func TestSyncBinaryHashesReleaseRegistrationKeepsApprovedFleetRoutable(t *testin
 	if err := srv.SyncBinaryHashes(); err != nil {
 		t.Fatalf("SyncBinaryHashes after registration: %v", err)
 	}
-	next := srv.releaseTrustPolicy.Load()
+	next := releasePolicySnapshotForTest(srv)
 	if next.Generation <= snapshot.Generation {
 		t.Fatalf("registration did not advance the generation: %d -> %d", snapshot.Generation, next.Generation)
 	}
@@ -232,7 +232,7 @@ func TestSyncBinaryHashesSuccessfulEmptyInventoryIsOnlyNonRequiredCase(t *testin
 	if err := srv.SyncBinaryHashes(); err != nil {
 		t.Fatalf("SyncBinaryHashes: %v", err)
 	}
-	snapshot := srv.releaseTrustPolicy.Load()
+	snapshot := releasePolicySnapshotForTest(srv)
 	if snapshot == nil || snapshot.Required || len(snapshot.ByBinaryHash) != 0 {
 		t.Fatalf("successful never-configured empty inventory policy = %+v, want non-required empty policy", snapshot)
 	}
@@ -249,7 +249,7 @@ func TestSyncBinaryHashesSuccessfulEmptyInventoryIsOnlyNonRequiredCase(t *testin
 	if err := srv.SyncBinaryHashes(); err != nil {
 		t.Fatalf("post-configuration empty SyncBinaryHashes: %v", err)
 	}
-	if afterConfigured := srv.releaseTrustPolicy.Load(); afterConfigured == nil ||
+	if afterConfigured := releasePolicySnapshotForTest(srv); afterConfigured == nil ||
 		!afterConfigured.Required || len(afterConfigured.ByBinaryHash) != 0 {
 		t.Fatalf("empty inventory disabled a previously configured policy: %+v", afterConfigured)
 	}
@@ -262,7 +262,7 @@ func TestStartupReleaseSyncContractReturnsInventoryReadFailure(t *testing.T) {
 	if err := srv.SyncBinaryHashes(); err == nil {
 		t.Fatal("startup release sync must receive an error for an unreadable inventory")
 	}
-	if snapshot := srv.releaseTrustPolicy.Load(); snapshot == nil || !snapshot.Required || len(snapshot.ByBinaryHash) != 0 {
+	if snapshot := releasePolicySnapshotForTest(srv); snapshot == nil || !snapshot.Required || len(snapshot.ByBinaryHash) != 0 {
 		t.Fatalf("startup failure did not leave deny-all policy: %+v", snapshot)
 	}
 }
@@ -296,7 +296,7 @@ func TestReleaseDeactivationReadFailureConvergesPolicyFromCommittedDeactivation(
 	if err := srv.SyncBinaryHashes(); err != nil {
 		t.Fatalf("initial SyncBinaryHashes: %v", err)
 	}
-	before := srv.releaseTrustPolicy.Load()
+	before := releasePolicySnapshotForTest(srv)
 
 	const compromisedModel = "pulled-release-model"
 	const survivorModel = "survivor-release-model"
@@ -340,7 +340,7 @@ func TestReleaseDeactivationReadFailureConvergesPolicyFromCommittedDeactivation(
 		}
 	}
 
-	converged := srv.releaseTrustPolicy.Load()
+	converged := releasePolicySnapshotForTest(srv)
 	if converged == nil || !converged.Required || converged.Generation <= before.Generation {
 		t.Fatalf("policy did not advance with the committed deactivation: before=%+v after=%+v", before, converged)
 	}
@@ -381,8 +381,8 @@ func TestReleaseDeactivationReadFailureConvergesPolicyFromCommittedDeactivation(
 
 	// The runtime manifest converged from the retained snapshot: the shared
 	// metallib survives via the remaining 2.1.0 release.
-	if srv.knownRuntimeManifest == nil || !srv.knownRuntimeManifest.TemplateHashes["mlx_metallib"][trHashC] {
-		t.Fatalf("runtime manifest did not converge with the committed deactivation: %+v", srv.knownRuntimeManifest)
+	if srv.releasePolicyOwner().RuntimeManifest() == nil || !srv.releasePolicyOwner().RuntimeManifest().TemplateHashes["mlx_metallib"][trHashC] {
+		t.Fatalf("runtime manifest did not converge with the committed deactivation: %+v", srv.releasePolicyOwner().RuntimeManifest())
 	}
 
 	// Recovery rebuilds the identical authorized set from the exact inventory.
@@ -393,7 +393,7 @@ func TestReleaseDeactivationReadFailureConvergesPolicyFromCommittedDeactivation(
 	if err := srv.SyncRuntimeManifest(); err != nil {
 		t.Fatalf("recovery SyncRuntimeManifest: %v", err)
 	}
-	recovered := srv.releaseTrustPolicy.Load()
+	recovered := releasePolicySnapshotForTest(srv)
 	if recovered == nil || len(recovered.ByBinaryHash[trHashA]) != 0 || len(recovered.ByBinaryHash[trHashB]) != 1 {
 		t.Fatalf("recovery did not converge onto the exact inventory: %+v", recovered)
 	}
@@ -447,7 +447,7 @@ func TestRegisterReleaseInventoryFailureConvergesPolicyWithCommittedRelease(t *t
 	if err := srv.SyncBinaryHashes(); err != nil {
 		t.Fatalf("initial SyncBinaryHashes: %v", err)
 	}
-	before := srv.releaseTrustPolicy.Load()
+	before := releasePolicySnapshotForTest(srv)
 
 	const model = "register-converge-model"
 	provider := makeRoutableProvider(t, reg, "register-converge-provider", model)
@@ -483,7 +483,7 @@ func TestRegisterReleaseInventoryFailureConvergesPolicyWithCommittedRelease(t *t
 			response.Code, response.Body.String())
 	}
 
-	converged := srv.releaseTrustPolicy.Load()
+	converged := releasePolicySnapshotForTest(srv)
 	if converged == nil || !converged.Required || converged.Generation <= before.Generation {
 		t.Fatalf("policy did not advance with the committed registration: before=%+v after=%+v", before, converged)
 	}
@@ -513,8 +513,8 @@ func TestRegisterReleaseInventoryFailureConvergesPolicyWithCommittedRelease(t *t
 	}
 
 	// The runtime manifest converged with the committed release too.
-	if srv.knownRuntimeManifest == nil || !srv.knownRuntimeManifest.TemplateHashes["mlx_metallib"][trHashC] {
-		t.Fatalf("runtime manifest did not converge with the committed release: %+v", srv.knownRuntimeManifest)
+	if srv.releasePolicyOwner().RuntimeManifest() == nil || !srv.releasePolicyOwner().RuntimeManifest().TemplateHashes["mlx_metallib"][trHashC] {
+		t.Fatalf("runtime manifest did not converge with the committed release: %+v", srv.releasePolicyOwner().RuntimeManifest())
 	}
 
 	// Routine registration during the outage must not deroute the approved fleet.
@@ -530,7 +530,7 @@ func TestRegisterReleaseInventoryFailureConvergesPolicyWithCommittedRelease(t *t
 	if err := srv.SyncBinaryHashes(); err != nil {
 		t.Fatalf("recovery SyncBinaryHashes: %v", err)
 	}
-	recovered := srv.releaseTrustPolicy.Load()
+	recovered := releasePolicySnapshotForTest(srv)
 	if len(recovered.ByBinaryHash[trHashA]) != 1 || len(recovered.ByBinaryHash[binaryHash]) != 1 {
 		t.Fatalf("recovery did not converge onto the full inventory: %+v", recovered.ByBinaryHash)
 	}
@@ -556,7 +556,7 @@ func TestAdminDeleteReleaseInUseProtectionHoldsUnderEvidenceGating(t *testing.T)
 	if err := srv.SyncBinaryHashes(); err != nil {
 		t.Fatalf("SyncBinaryHashes: %v", err)
 	}
-	if snapshot := srv.releaseTrustPolicy.Load(); snapshot == nil || !snapshot.Required {
+	if snapshot := releasePolicySnapshotForTest(srv); snapshot == nil || !snapshot.Required {
 		t.Fatalf("release policy must be live: %+v", snapshot)
 	}
 

@@ -4,6 +4,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -16,7 +17,7 @@ func (s *Server) emitExactCachePlan(result registry.CachePlanResult) {
 		outcome = string(registry.CachePlanIneligible)
 	}
 	if s.metrics != nil {
-		s.metrics.IncCounter("exact_cache_plan_total", MetricLabel{"outcome", outcome})
+		s.metrics.IncCounter("exact_cache_plan_total", MetricLabel{Name: "outcome", Value: outcome})
 	}
 	s.ddIncr("exact_cache.plan", []string{"outcome:" + outcome})
 	if !result.SidecarCalled {
@@ -28,7 +29,7 @@ func (s *Server) emitExactCachePlan(result registry.CachePlanResult) {
 	}
 	if s.metrics != nil {
 		s.metrics.ObserveHistogram("exact_cache_plan_latency_ms", latencyMs,
-			MetricLabel{"outcome", outcome})
+			MetricLabel{Name: "outcome", Value: outcome})
 	}
 	s.ddHistogram("exact_cache.plan_latency_ms", latencyMs, []string{"outcome:" + outcome})
 }
@@ -37,10 +38,10 @@ func (s *Server) emitExactCacheSSDLookup(protocolVersion, outcome string, stageM
 	tags := []string{"protocol:" + protocolVersion, "outcome:" + outcome, "tier:ssd"}
 	if s.metrics != nil {
 		s.metrics.IncCounter("exact_cache_ssd_lookup_total",
-			MetricLabel{"protocol", protocolVersion},
-			MetricLabel{"outcome", outcome})
+			MetricLabel{Name: "protocol", Value: protocolVersion},
+			MetricLabel{Name: "outcome", Value: outcome})
 		s.metrics.ObserveHistogram("exact_cache_ssd_stage_ms", stageMs,
-			MetricLabel{"event", "lookup"}, MetricLabel{"outcome", outcome})
+			MetricLabel{Name: "event", Value: "lookup"}, MetricLabel{Name: "outcome", Value: outcome})
 	}
 	s.ddIncr("exact_cache.ssd_lookup", tags)
 	s.ddHistogram("exact_cache.ssd_stage_ms", stageMs, append(tags, "event:lookup"))
@@ -50,11 +51,11 @@ func (s *Server) emitExactCacheSSDDonation(protocolVersion string, stageMs float
 	tags := []string{"protocol:" + protocolVersion, "tier:ssd"}
 	if s.metrics != nil {
 		s.metrics.IncCounter("exact_cache_ssd_donation_total",
-			MetricLabel{"protocol", protocolVersion})
+			MetricLabel{Name: "protocol", Value: protocolVersion})
 		s.metrics.AddCounter("exact_cache_ssd_donated_tokens_total", int64(donatedTokens),
-			MetricLabel{"protocol", protocolVersion})
+			MetricLabel{Name: "protocol", Value: protocolVersion})
 		s.metrics.ObserveHistogram("exact_cache_ssd_stage_ms", stageMs,
-			MetricLabel{"event", "donation"})
+			MetricLabel{Name: "event", Value: "donation"})
 	}
 	s.ddIncr("exact_cache.ssd_donation", tags)
 	s.ddCount("exact_cache.ssd_donated_tokens", int64(donatedTokens), tags)
@@ -65,13 +66,13 @@ func (s *Server) emitExactCacheUsage(outcome, tier string, cachedTokens, prefill
 	tags := []string{"outcome:" + outcome, "tier:" + tier}
 	if s.metrics != nil {
 		s.metrics.IncCounter("exact_cache_usage_total",
-			MetricLabel{"outcome", outcome}, MetricLabel{"tier", tier})
+			MetricLabel{Name: "outcome", Value: outcome}, MetricLabel{Name: "tier", Value: tier})
 		s.metrics.AddCounter("exact_cache_cached_tokens_total", int64(cachedTokens),
-			MetricLabel{"tier", tier})
+			MetricLabel{Name: "tier", Value: tier})
 		s.metrics.AddCounter("exact_cache_prefill_tokens_saved_total", int64(prefillTokensSaved),
-			MetricLabel{"tier", tier})
+			MetricLabel{Name: "tier", Value: tier})
 		s.metrics.ObserveHistogram("exact_cache_provider_stage_ms", stageMs,
-			MetricLabel{"outcome", outcome}, MetricLabel{"tier", tier})
+			MetricLabel{Name: "outcome", Value: outcome}, MetricLabel{Name: "tier", Value: tier})
 	}
 	s.ddIncr("exact_cache.usage", tags)
 	s.ddCount("exact_cache.cached_tokens", int64(cachedTokens), tags)
@@ -88,7 +89,7 @@ func (s *Server) emitExactCacheEstimatedTTFTSaved(pr *registry.PendingRequest, t
 	value := pr.CacheSelectionEstimatedTTFTSavedMs
 	if s.metrics != nil {
 		s.metrics.ObserveHistogram("exact_cache_estimated_ttft_saved_ms", value,
-			MetricLabel{"tier", lowCardinalityCacheTier(pr.CacheSelectionTier)})
+			MetricLabel{Name: "tier", Value: dispatch.LowCardinalityCacheTier(pr.CacheSelectionTier)})
 	}
 	s.ddHistogram("exact_cache.estimated_ttft_saved_ms", value, tags)
 }
@@ -101,7 +102,7 @@ func (s *Server) emitCacheReceiptResult(kind string, result registry.CacheReceip
 		outcome = "accepted"
 	}
 	if s.metrics != nil {
-		s.metrics.IncCounter("exact_cache_receipt_total", MetricLabel{"type", kind}, MetricLabel{"outcome", outcome}, MetricLabel{"reason", string(result.Reason)})
+		s.metrics.IncCounter("exact_cache_receipt_total", MetricLabel{Name: "type", Value: kind}, MetricLabel{Name: "outcome", Value: outcome}, MetricLabel{Name: "reason", Value: string(result.Reason)})
 	}
 	s.ddIncr("exact_cache.receipt", []string{"type:" + kind, "outcome:" + outcome, "reason:" + string(result.Reason)})
 }

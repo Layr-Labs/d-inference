@@ -8,7 +8,7 @@ import (
 
 // gate_commit_mode.go — the EIGENINFERENCE_RESERVE_COMMIT_MODE kill switch:
 // how the reservation commit holds the registry lock (shared RLock, or the
-// fleet-wide write lock it replaced). Design and file map: gate_state.go.
+// fleet-wide write lock it replaced). Design and file map: faultstate/state.go.
 
 // --- reservation commit lock mode ---
 

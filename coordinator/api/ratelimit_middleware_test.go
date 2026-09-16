@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 )
 
@@ -21,7 +22,7 @@ func TestRateLimitNilLimiterPassesThrough(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/v1/chat/completions", nil).
-		WithContext(context.WithValue(context.Background(), ctxKeyConsumer, "acct-1"))
+		WithContext(requestcontext.WithAccountID(context.Background(), "acct-1"))
 	h(rec, req)
 
 	if !called {
@@ -43,7 +44,7 @@ func TestRateLimitAdminBypasses(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/v1/chat/completions", nil).
-			WithContext(context.WithValue(context.Background(), ctxKeyConsumer, "admin"))
+			WithContext(requestcontext.WithAccountID(context.Background(), "admin"))
 		h(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("admin request %d got %d, want 200", i, rec.Code)
@@ -60,7 +61,7 @@ func TestRateLimitReturns429AfterBurst(t *testing.T) {
 	makeReq := func() *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("POST", "/v1/chat/completions", nil).
-			WithContext(context.WithValue(context.Background(), ctxKeyConsumer, "acct-burst"))
+			WithContext(requestcontext.WithAccountID(context.Background(), "acct-burst"))
 		h(rec, req)
 		return rec
 	}

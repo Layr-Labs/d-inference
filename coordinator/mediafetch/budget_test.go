@@ -6,6 +6,7 @@ import (
 	"io"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestByteBudgetExactLimitAcrossConcurrentReaders(t *testing.T) {
@@ -72,3 +73,38 @@ func TestByteBudgetBoundsConcurrentOverflow(t *testing.T) {
 		t.Fatalf("inFlight = %d after readers complete, want 0", budget.inFlight)
 	}
 }
+
+// Fetch workers recover reader panics. Their shared byte budget must release
+// the abandoned read so a sibling can finish and fetchAll can join its workers.
+func TestByteBudgetReaderPanicDoesNotStrandSibling(t *testing.T) {
+	budget := newByteBudget(100)
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("expected controlled reader panic")
+			}
+		}()
+		_, _ = budget.reader(panickingBudgetSource{}).Read(make([]byte, 101))
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		got, err := io.ReadAll(budget.reader(bytes.NewBufferString("sibling")))
+		if err == nil && string(got) != "sibling" {
+			err = errors.New("sibling read was incomplete")
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recovered reader panic stranded another read in the shared budget")
+	}
+}
+
+type panickingBudgetSource struct{}
+
+func (panickingBudgetSource) Read([]byte) (int, error) { panic("controlled media reader panic") }

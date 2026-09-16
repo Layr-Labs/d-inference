@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-14 · commit `b725a72a8`
+> Last updated: 2026-09-16 · commit `35c6a0f5b`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -44,11 +44,31 @@ the `code_attested` flag.
 | `self_signed` | The Secure-Enclave-signed attestation verified and the provider is passing the coordinator's periodic challenge, but there is no MDM confirmation yet |
 | `none` | No verified attestation |
 
+On reconnect, a hardware verdict may reuse prior device evidence after a
+fresh signed challenge. The coordinator owns this
+[evidence lifecycle](../architecture/security/attestation.md#device-evidence-ownership-and-shutdown);
+it does not add fields or a per-response attestation receipt.
+
+The coordinator
+[verification owner](../architecture/security/attestation.md#registration-and-device-verification-ownership)
+checks registration and device evidence before the existing grants. This source
+organization adds no public evidence fields or consumer verification step.
+The [MDM scheduler](../architecture/security/attestation.md#mdm-scheduler-ownership)
+keeps delayed replies bound to the current provider generation and exact command
+before the existing trust-grant and MDA attachment paths.
+
 The grant and loss conditions for each level are tabulated in
 [`../architecture/security/attestation.md#trust-levels`](../architecture/security/attestation.md#trust-levels);
 the challenge cadence is in [Layer 2](../architecture/security/attestation.md#layer-2--periodic-challenge)
 and the routing freshness window is
 [`challengeFreshnessMaxAge`](../architecture/routing.md#challenge-freshness).
+Verification attempts keep their own claim tokens across a provider reconnect,
+so an older worker's cleanup preserves the replacement's pending verification
+([MDM attempt ownership](../architecture/security/attestation.md#layer-3--mdm-securityinfo-the-hardware-grant)).
+
+Challenge replies are correlated with pending nonces on the same provider
+connection (`coordinator/providercontrol/challenge/transport.go`, `Session.Deliver`).
+This is a coordinator liveness check; it adds no consumer receipt or public field.
 
 The coordinator verifies `status_signature` by reconstructing the exact signed
 bytes (`coordinator/attestation/attestation.go`, `VerifyStatusSignature`). The
@@ -66,15 +86,15 @@ gate routing ([Flag — Apple Managed Device Attestation](../architecture/securi
 Public routing applies the coordinator's trust floor (`MinTrustLevel`, set by
 [`EIGENINFERENCE_MIN_TRUST`](../reference/configuration.md#routing-admission-and-ttft))
 plus every privacy gate (encrypted response chunks, coordinator-verified SIP,
-required privacy capabilities, code identity once enforced), so a request you
+required privacy capabilities, an [approved runtime manifest](../architecture/security/attestation.md#runtime-manifest), and code identity once enforced), so a request you
 send without self-routing is served only by a provider that passes all of them
 ([`../architecture/security/attestation.md`](../architecture/security/attestation.md#routing-gate)).
 
 ## Per-response signals
 
 Once a provider has been committed to your request, the coordinator writes
-these headers (`writeCommittedProviderHeaders`,
-`coordinator/api/response_metadata.go`):
+these headers (`WriteCommittedProviderHeaders`,
+`coordinator/inference/response/provider_snapshot.go`):
 
 | Header | Value |
 |---|---|
@@ -124,6 +144,12 @@ A coordinator reconnect still requires a fresh process-possession challenge befo
 private routing. Recorded code-verified continuity can avoid another Apple push
 for the same process; it does not grant hardware trust or bypass verification.
 See [APNs code identity](../architecture/security/attestation.md#flag--apns-code-identity).
+Its [coordinator ownership boundary](../architecture/security/attestation.md#code-identity-ownership)
+preserves the same proof checks and exposes no additional consumer fields.
+
+Read the current connection's verdict after a reconnect. An earlier connection's
+Apple proof completion does not cancel verification for its replacement
+([MDA completion ownership](../architecture/security/attestation.md#flag--apple-managed-device-attestation)).
 
 ## Related
 

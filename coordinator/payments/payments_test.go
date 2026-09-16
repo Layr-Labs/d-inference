@@ -12,8 +12,8 @@ func newTestLedger() *Ledger {
 	return NewLedger(store.NewMemory(store.Config{}))
 }
 
-// creditBalance funds a test account the way production does (Stripe webhook →
-// store.Credit); the Ledger has no deposit method of its own.
+// creditBalance seeds spendable test funds directly in the store; production
+// Stripe deposits use billing.Service.CreditDeposit and Store.CreditOnce.
 func creditBalance(t *testing.T, l *Ledger, consumerID string, amountMicroUSD int64) {
 	t.Helper()
 	if err := l.store.Credit(consumerID, amountMicroUSD, store.LedgerDeposit, ""); err != nil {

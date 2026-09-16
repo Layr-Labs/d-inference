@@ -1,12 +1,5 @@
 package api
 
-// Regression tests for the two contracts that bind remote-media inlining to the
-// rest of the request lifecycle: the body actually handed to a provider, and the
-// balance reservation held while that body is in flight. Both were previously
-// unpinned — every media test asserted only that the origin was hit and that the
-// response was not a media-gate 4xx, which a request that fetched the image and
-// then dispatched the original URL passes.
-
 import (
 	"bytes"
 	"context"
@@ -22,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/internal/inferencefixture"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -90,7 +84,7 @@ func TestChatCompletionsDispatchesInlinedMediaBody(t *testing.T) {
 	p.Mu().Unlock()
 
 	var hits int32
-	media := httptest.NewServer(pngHandler(t, &hits))
+	media := httptest.NewServer(inferencefixture.PNGHandler(t, &hits))
 	defer media.Close()
 	imageURL := media.URL + "/cat.png"
 
@@ -146,7 +140,7 @@ func TestChatCompletionsRemoteMediaTopsUpReservationAfterInlining(t *testing.T) 
 	}))
 	defer media.Close()
 
-	_, parsed := chatBodyBytes(t, media.URL+"/noise.png")
+	_, parsed := inferencefixture.ChatBody(t, media.URL+"/noise.png")
 	parsed["max_tokens"] = 1
 	body, err := json.Marshal(parsed)
 	if err != nil {
@@ -155,7 +149,7 @@ func TestChatCompletionsRemoteMediaTopsUpReservationAfterInlining(t *testing.T) 
 
 	// Fund exactly the pre-fetch reservation: enough to clear the balance gate
 	// and drive the fetch, nowhere near the inlined body's byte bound.
-	preFetch := srv.reservationCost("test", max(estimateBillingPromptTokens(parsed), estimatePromptTokens(parsed)), 1)
+	preFetch := srv.inferenceSettlement().Estimate("test", max(inferencefixture.BillingTokens(parsed), inferencefixture.PromptTokens(parsed)), 1)
 	if err := st.Credit(testConsumerID, preFetch, store.LedgerDeposit, "media-topup-floor"); err != nil {
 		t.Fatal(err)
 	}

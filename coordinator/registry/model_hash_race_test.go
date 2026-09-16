@@ -75,7 +75,7 @@ func TestUpdateModelWeightHashesConcurrentReaders(t *testing.T) {
 	// Readers: each must hold p.mu internally; if any ranges p.Models without it,
 	// -race trips against the writer above.
 	readers := []func(){
-		// Mirrors api/stats.go and api/provider.go handleProviderAttestation,
+		// Mirrors api/network/stats_snapshot.go and api/provider.go handleProviderAttestation,
 		// which range p.Models inside a ForEachProvider callback.
 		func() {
 			reg.ForEachProvider(func(p *Provider) {

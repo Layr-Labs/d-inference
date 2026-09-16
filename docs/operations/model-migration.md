@@ -1,6 +1,6 @@
 # Migrate a public model to a new build
 
-> Last updated: 2026-09-16 · commit `fa4e6bdc2`
+> Last updated: 2026-09-16 · commit `35c6a0f5b`
 
 Runbook for moving a public model name (an **alias**, e.g. `gemma-4-26b`) from
 one concrete build to another with no downtime and without consumers ever
@@ -25,7 +25,7 @@ approval for the specific operation.
 Not for: registering a brand-new model (that is just steps 1–2 plus
 `promote`), or changing prices/status of an existing build
 (`POST /v1/admin/models/<id>/status`, `…/promote`, `…/runtime-parameters` in
-`coordinator/api/model_registry_handlers.go`, `handleAdminModelRegistryAction`).
+`coordinator/api/catalog/registry_action.go`, `AdminModelAction`).
 
 ## Prerequisites
 
@@ -35,7 +35,7 @@ Not for: registering a brand-new model (that is just steps 1–2 plus
   `Authorization: Bearer`). The same key authorizes `/v1/admin/models/register`,
   `/v1/admin/models/aliases`, and the per-model actions.
 - **Providers that understand `desired_models`.** `fanOutDesiredModels` in
-  `coordinator/api/model_alias_handlers.go` only pushes to providers passing
+  `coordinator/api/desired_models.go` only pushes to providers passing
   `providerSupportsDesiredModels(backend, version)`, i.e. version ≥
   `minProviderVersionForDesiredModels = "0.5.17"` (`coordinator/api/server.go`).
   Older providers keep serving whatever they advertise and are never migrated.
@@ -51,7 +51,7 @@ Not for: registering a brand-new model (that is just steps 1–2 plus
   calls, and vision if applicable. Disk verification proves bytes, not
   loadability; the hard-swap advertises the build **before** its first load, so
   an unloadable build turns the fleet into 500s until you revert (the
-  `load-failure cool-down started` path in `coordinator/api/provider.go` lets
+  `load-failure cool-down started` path in `coordinator/providercontrol/session/model_status.go` (`loadModelStatus`) lets
   alias resolution fall back to `previous_build`, but treat it as a backstop).
 - **For a takeover migration, pre-position the rollback build first** (step 6).
 - R2 access for publishing: `R2_ACCOUNT_ID`, `GCP_PROJECT`, and the Secret
@@ -135,8 +135,8 @@ curl -fsS -X POST "$COORD/v1/admin/models/register" \
   }'
 ```
 
-`handleRegisterModel` fetches `manifest.json` from the CDN, verifies every
-listed file exists with the declared size and hash, and stores the version;
+`RegisterModel` fetches and validates `manifest.json` from the CDN, checks each
+listed file's size with an HTTP `HEAD`, and stores the version;
 `promote: true` makes it the active version. Prices are micro-USD per 1M tokens
 and required. Confirm both old and new builds are visible:
 
@@ -165,10 +165,10 @@ curl -fsS -X POST "$COORD/v1/admin/models/aliases" \
 ```
 
 `GET /v1/models` now lists `gemma-4-26b` and hides raw builds (pass
-`?include_builds=1` to see them, `coordinator/api/models_endpoints.go`).
+`?include_builds=1` to see them, `coordinator/api/catalog/consumer_list.go`).
 Requests that still send the raw id keep working.
 
-`aliasUpsertRequest` fields (`coordinator/api/model_alias_handlers.go`;
+`aliasUpsertRequest` fields (`coordinator/api/catalog/aliases.go`;
 unknown fields rejected): `alias_id` (letters, digits, `.`, `_`, `-`; ≤128),
 `display_name`, `desired_build` (required, must be a registered build ≠
 `alias_id`), `previous_build`, `active` (default `true`), `takeover`.
@@ -217,7 +217,7 @@ lines to watch: `provider now advertises build (models_update)`,
 started`, and the deroute signature `provider active model hash matches no
 advertised model` (should not be sustained). Prefetch progress is **provider-
 side** only: the coordinator ignores `prefetch_model_status` frames
-(`coordinator/api/provider.go`, `TypePrefetchModelStatus`); look at the
+(`coordinator/providercontrol/session/read.go`, `Session.Run` / `TypePrefetchModelStatus`); look at the
 provider's log for `Scheduling desired-build prefetch retry`.
 
 Failed downloads retry with bounded backoff — `desiredPrefetchRetryDelays` in

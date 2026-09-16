@@ -14,7 +14,7 @@ func serviceCostFixture(prefillTPS float64, queue, pending int) (*Registry, *rou
 	p := &Provider{ID: "warm", PrefixCacheProtocol: 2,
 		PrefixCacheV2Models: map[string]protocol.PrefixCacheV2Capability{"model": capability}}
 	prefill := 10000 / prefillTPS * 1000
-	c := &routingCandidate{provider: p, snapshot: routingSnapshot{prefillTPS: prefillTPS, totalPending: pending},
+	c := &routingCandidate{provider: p, snapshot: routingSnapshot{PrefillTPS: prefillTPS, TotalPending: pending},
 		pricedPromptTokens: 10000, prefillCostMs: prefill, effectiveQueue: queue,
 		breakdown: costBreakdown{ThisReqMs: prefill + 2000, QueueMs: float64(queue) * queueDepthPenaltyMs,
 			PendingMs: float64(pending) * totalPendingPenaltyMs}}
@@ -93,9 +93,9 @@ func TestCacheServiceCostRejectsUnusableOrStaleEvidence(t *testing.T) {
 			r, c, hint := serviceCostFixture(1000, 0, 0)
 			switch action {
 			case "zero_rate":
-				c.snapshot.prefillTPS = 0
+				c.snapshot.PrefillTPS = 0
 			case "nan_rate":
-				c.snapshot.prefillTPS = math.NaN()
+				c.snapshot.PrefillTPS = math.NaN()
 			case "zero_weight":
 				hint.EvidenceWeight = 0
 			case "expired":

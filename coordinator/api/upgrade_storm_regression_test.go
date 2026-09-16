@@ -36,6 +36,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/providercontrol/trustreuse"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -104,7 +105,7 @@ func TestUpgradeStormReconnectReusesEvidenceWithoutMDMStorm(t *testing.T) {
 		Workers: 12, QueueCapacity: 128,
 		InitialSpreadMin: 0, InitialSpreadMax: time.Nanosecond,
 	}, mdmSchedulerDeps{
-		jitter: func(minimum, _ time.Duration) time.Duration { return minimum },
+		Jitter: func(minimum, _ time.Duration) time.Duration { return minimum },
 	})
 	srv.mdmScheduler = sch
 	srv.SetMDMClient(mdm.NewClient(ts.URL, "test-key", logger))
@@ -158,7 +159,7 @@ func TestUpgradeStormReconnectReusesEvidenceWithoutMDMStorm(t *testing.T) {
 			PublicKey: seKey, BinaryHash: trHashB,
 		}
 		p.Mu().Unlock()
-		srv.trustReuseCache.recordTrust(store.ProviderTrustReuse{
+		seedTrustReuseRecord(t, srv, store.ProviderTrustReuse{
 			SEPubKey: seKey, Serial: serial,
 			TrustLevel:             string(registry.TrustHardware),
 			LastVerifiedBinaryHash: trHashA,
@@ -246,9 +247,7 @@ func TestUpgradeStormReconnectReusesEvidenceWithoutMDMStorm(t *testing.T) {
 				fp.id, job.State, job.LastOutcome)
 		}
 	}
-	sch.mu.Lock()
-	queued := len(sch.jobs)
-	sch.mu.Unlock()
+	queued, _ := schedulerQueueCounts(srv)
 	if queued != 0 {
 		t.Fatalf("%d scheduler jobs still queued after fleet-wide fast-skip", queued)
 	}
@@ -304,7 +303,7 @@ func TestUpgradeStormDueVerificationStaysBoundedAndDurable(t *testing.T) {
 		}
 		active.Add(-1)
 		// A timeout proves nothing about posture: transient, never terminal.
-		return mdmSchedulerAttemptResult{outcome: store.VerificationOutcomeTimeout}
+		return mdmSchedulerAttemptResult{Outcome: store.VerificationOutcomeTimeout}
 	}
 	srv, st, sch := newSchedulerTestServer(t, MDMSchedulerConfig{
 		Workers: workerBound, QueueCapacity: 128,
@@ -313,8 +312,8 @@ func TestUpgradeStormDueVerificationStaysBoundedAndDurable(t *testing.T) {
 		// Floor jitter: due rows dispatch immediately; a stage-1 retry lands
 		// a full 2 minutes out, so drained attempts cannot re-dispatch and
 		// spin within the test window.
-		jitter:  func(minimum, _ time.Duration) time.Duration { return minimum },
-		execute: execute,
+		Jitter:  func(minimum, _ time.Duration) time.Duration { return minimum },
+		Execute: execute,
 	})
 	srv.mdmClient = dummyMDMClient() // satisfy the fast-skip "MDM configured" gate
 
@@ -328,7 +327,7 @@ func TestUpgradeStormDueVerificationStaysBoundedAndDurable(t *testing.T) {
 		// Expired device evidence: the record exists but is beyond the reuse
 		// window, so the fast path must decline and fall through to a real,
 		// scheduler-bounded live verification.
-		srv.trustReuseCache.recordTrust(
+		seedTrustReuseRecord(t, srv,
 			hardwareReuseRecord(seKey, serial, trHashA, time.Now().Add(-2*time.Hour)))
 		if srv.tryTrustReuseFastSkip(id, p, goodFastSkipResp(), true) {
 			t.Fatalf("%s: expired device evidence must not grant via fast path", id)
@@ -415,7 +414,7 @@ func seedContinuityFleetAndShutdown(t *testing.T, st store.Store, base time.Time
 	t.Helper()
 	logger := quietLogger()
 	srv1 := NewServer(registry.New(logger), st, ServerConfig{}, logger)
-	srv1.trustReuseCache.now = func() time.Time { return base }
+	setTrustReuseClock(t, srv1, func() time.Time { return base })
 	if err := srv1.SeedTrustReuseCache(context.Background()); err != nil {
 		t.Fatalf("instance 1 seed: %v", err)
 	}
@@ -442,8 +441,8 @@ func seedContinuityFleetAndShutdown(t *testing.T, st store.Store, base time.Time
 		if res, err := st.UpsertProviderTrustReuse(context.Background(), rec, 0); err != nil || !res.Applied {
 			t.Fatalf("%s: persist reuse row: applied=%v err=%v", id, res.Applied, err)
 		}
-		srv1.trustReuseCache.recordTrust(rec)
-		srv1.markTrustCoverage(seKey, id)
+		seedTrustReuseRecord(t, srv1, rec)
+		srv1.trustReuse.MarkCoverage(seKey, id)
 	}
 	srv1.Close() // graceful shutdown → final coverage sweep at base
 
@@ -533,12 +532,12 @@ func TestCoordinatorRestartContinuityReconnectAvoidsMDMStorm(t *testing.T) {
 	// well inside the 90s reconnect allowance, far outside the 5m window.
 	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
 	t.Cleanup(srv.Close)
-	srv.trustReuseCache.now = func() time.Time { return base.Add(60 * time.Second) }
+	setTrustReuseClock(t, srv, func() time.Time { return base.Add(60 * time.Second) })
 	sch := newMDMVerificationScheduler(srv, MDMSchedulerConfig{
 		Workers: 12, QueueCapacity: 128,
 		InitialSpreadMin: 0, InitialSpreadMax: time.Nanosecond,
 	}, mdmSchedulerDeps{
-		jitter: func(minimum, _ time.Duration) time.Duration { return minimum },
+		Jitter: func(minimum, _ time.Duration) time.Duration { return minimum },
 	})
 	srv.mdmScheduler = sch
 	srv.SetMDMClient(mdm.NewClient(ts.URL, "test-key", logger))
@@ -592,11 +591,11 @@ func TestCoordinatorRestartContinuityReconnectAvoidsMDMStorm(t *testing.T) {
 
 	// Both premises observable: with the window stale, the admitting decision
 	// for this fleet is the distinct continuity label.
-	if result := srv.trustReuseCache.decideTrustReuse(trustReuseInput{
+	if result := srv.trustReuse.Assess(trustreuse.Input{
 		SEPubKey: providers[0].seKey, Serial: providers[0].serial,
 		FreshBinaryHash: trHashA,
-	}); result.Decision != trustReuseDecisionContinuity {
-		t.Fatalf("decision = %q, want %q", result.Decision, trustReuseDecisionContinuity)
+	}); result.Decision != trustreuse.DecisionContinuity {
+		t.Fatalf("decision = %q, want %q", result.Decision, trustreuse.DecisionContinuity)
 	}
 
 	for _, fp := range providers {
@@ -656,7 +655,7 @@ func TestCoordinatorRestartBeyondAllowanceFallsBackToSchedulerWave(t *testing.T)
 	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
 	t.Cleanup(srv.Close)
 	reconnectAt := base.Add(5 * time.Minute)
-	srv.trustReuseCache.now = func() time.Time { return reconnectAt }
+	setTrustReuseClock(t, srv, func() time.Time { return reconnectAt })
 	// Wide spread + worst-case jitter: only the failed-fast-skip PROMOTION can
 	// make the declined fleet due quickly; execution stays parked so the wave
 	// itself (bounded workers, retry rows) remains Scenario B's property.
@@ -664,8 +663,8 @@ func TestCoordinatorRestartBeyondAllowanceFallsBackToSchedulerWave(t *testing.T)
 		Workers: 4, QueueCapacity: 128,
 		InitialSpreadMin: time.Hour, InitialSpreadMax: 2 * time.Hour,
 	}, mdmSchedulerDeps{
-		now:    func() time.Time { return reconnectAt },
-		jitter: func(_, maximum time.Duration) time.Duration { return maximum },
+		Now:    func() time.Time { return reconnectAt },
+		Jitter: func(_, maximum time.Duration) time.Duration { return maximum },
 	})
 	srv.mdmScheduler = sch
 	srv.mdmClient = dummyMDMClient() // satisfy the fast-skip "MDM configured" gate
@@ -718,10 +717,10 @@ func TestCoordinatorRestartBeyondAllowanceFallsBackToSchedulerWave(t *testing.T)
 				fp.id, due, mdmFirstVerifySpreadMax)
 		}
 	}
-	if result := srv.trustReuseCache.decideTrustReuse(trustReuseInput{
+	if result := srv.trustReuse.Assess(trustreuse.Input{
 		SEPubKey: providers[0].seKey, Serial: providers[0].serial,
 		FreshBinaryHash: trHashA,
-	}); result.Decision != "" || result.Reason != trustReuseReasonProofExpired {
+	}); result.Decision != "" || result.Reason != trustreuse.ReasonProofExpired {
 		t.Fatalf("decision = %q reason = %q, want expired rejection", result.Decision, result.Reason)
 	}
 }

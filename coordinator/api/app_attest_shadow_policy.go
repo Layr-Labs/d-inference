@@ -7,6 +7,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/appattest"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/providercontrol/releasepolicy"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -20,8 +21,12 @@ func (x *appAttestShadowSession) observeBuildPolicy(status *protocol.AppAttestSt
 		// Enrollment metadata cannot stand in for a current assertion's metadata.
 		evidence.BundleVersion, evidence.ValidationCategory = metadata.BundleVersion, metadata.ValidationCategory
 	}
-	snapshot := x.s.releaseTrustPolicy.Load()
-	evidence.CatalogKnown = snapshot != nil && len(snapshot.ByBinaryHash) > 0
+	snapshot := x.s.releasePolicyOwner().Snapshot()
+	var releases map[string][]releasepolicy.Release
+	if snapshot != nil {
+		releases = snapshot.Releases()
+	}
+	evidence.CatalogKnown = len(releases) > 0
 	if status != nil {
 		evidence.HardwareKnown, evidence.HardwareMatched = appAttestHardwareComparison(x.protocolVersion, status, x.hardware)
 		evidence.VerificationKeyKnown = x.protocolVersion == 3 && x.attestationKey != "" && status.AttestationPublicKey != ""
@@ -30,7 +35,7 @@ func (x *appAttestShadowSession) observeBuildPolicy(status *protocol.AppAttestSt
 		evidence.BuildQualified = qualifiedAppAttestBuild(x.s.appAttestShadow.QualifiedBuildHashes, status.BinaryHash)
 		evidence.CodeMeasurementKnown, evidence.CodeMeasurementMatched = qualifiedAppAttestMeasurement(x.s.appAttestShadow.QualifiedCodeHashes, status.BinaryHash, metadata)
 		if evidence.CatalogKnown {
-			for _, candidate := range snapshot.ByBinaryHash[status.BinaryHash] {
+			for _, candidate := range releases[status.BinaryHash] {
 				if candidate.Platform == "macos-arm64" && candidate.Version == status.AppVersion {
 					evidence.BuildMatched = true
 					break

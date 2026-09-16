@@ -1,8 +1,9 @@
 // User-facing copy for the Stripe payouts flow: maps backend error codes,
 // withdrawal statuses, and withdraw responses to friendly messages.
 //
-// Backend error codes come from coordinator/api/stripe_withdraw.go and
-// stripe_payouts.go via the { error: { type, message, code } } envelope,
+// Backend error codes come from coordinator/api/billing/connect_withdraw.go,
+// connect_onboarding.go and connect_dashboard.go via the
+// { error: { type, message, code } } envelope,
 // which lib/api/errors.ts parses into ApiError. Keep the code list here in
 // sync with the coordinator handlers.
 

@@ -7,6 +7,8 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/faultstate"
+	"github.com/eigeninference/d-inference/coordinator/registry/providerwriter"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"nhooyr.io/websocket"
 )
@@ -70,7 +72,7 @@ type Provider struct {
 	// restoredMDAChain holds the durable Apple-signed MDA cert chain recovered
 	// from the store on reconnect (see RestoreProviderState). It is a CANDIDATE
 	// only: it is surfaced as a verified proof (MDAVerified/MDACertChain/MDAResult)
-	// solely after attachCachedMDAProof re-verifies it against Apple's pinned root
+	// solely after verification.Verifier.AttachCachedMDA re-verifies it against Apple's pinned root
 	// AND re-binds it to this connection's SE key at hardware-grant time. Kept
 	// unexported so it never serializes to the store or the attestation endpoint.
 	restoredMDAChain [][]byte
@@ -90,7 +92,7 @@ type Provider struct {
 	// (drain_state.go). Guarded by p.mu.
 	drainingUntil    time.Time
 	Conn             *websocket.Conn
-	writer           *providerWriter
+	writer           *providerwriter.Writer
 	LastHeartbeat    time.Time
 	Stats            protocol.HeartbeatStats // lifetime counters shown to users
 	lastSessionStats protocol.HeartbeatStats // raw counters from the current provider process
@@ -177,7 +179,7 @@ type Provider struct {
 	// capacitySeq is the highest BackendCapacity.CapacitySeq applied on THIS
 	// connection; capacityQuoteCapable latches true the first time a heartbeat
 	// carries seq > 0 (routing v2 W2: seq-stamping providers also answer
-	// capacity probes — see protocol/messages.go CapacitySeq).
+	// capacity probes — see protocol/backend_capacity.go BackendCapacity.CapacitySeq).
 	//
 	// Per-connection on purpose: the provider process restarts its counter on
 	// every reconnect, and Register creates a fresh *Provider per connection
@@ -288,279 +290,13 @@ type Provider struct {
 	// identity so the fault-tracking state (breakers/cooldowns) keys by identity
 	// and survives reconnect churn. Read-only after Register.
 	registry *Registry
-	// gate is this session's current routing-gate state (gate_state.go): the
-	// session-keyed gate from Register until attestation binds the stable
-	// identity, then the identity's gate. Atomic so the scan (under p.mu) and
-	// the recorders (without p.mu) read it without another lock; written only
-	// under r.gatesMu (attachSessionGate / bindStableFaultKey). nil for a bare
-	// test Provider — every gate read treats nil as "no state".
-	gate                 atomic.Pointer[gateState]
-	gateDisconnectedAtNS atomic.Int64
-}
-
-// AddPending registers a pending request on this provider.
-func (p *Provider) AddPending(pr *PendingRequest) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.addPendingLocked(pr)
-}
-
-// addPendingLocked registers a pending request. Caller must hold p.mu.
-func (p *Provider) addPendingLocked(pr *PendingRequest) {
-	p.pendingReqs[pr.RequestID] = pr
-}
-
-// RemovePending removes and returns a pending request.
-func (p *Provider) RemovePending(requestID string) *PendingRequest {
-	p.mu.Lock()
-	pr := p.removePendingLocked(requestID)
-	p.mu.Unlock()
-	if pr != nil && p.registry != nil {
-		p.registry.MarkCacheAttemptTerminal(pr)
-	}
-	return pr
-}
-
-// RemovePendingForFirstContentTimeout atomically rechecks provider ingress
-// while holding pending ownership. deferred is true when an on-time event won
-// the deadline race and timeout cleanup must wait for its delivery/settlement.
-func (p *Provider) RemovePendingForFirstContentTimeout(
-	requestID string,
-) (pr *PendingRequest, deferred bool) {
-	p.mu.Lock()
-	pr = p.pendingReqs[requestID]
-	if pr != nil && pr.FirstContentIngressArrivedByDeadline() {
-		p.mu.Unlock()
-		return nil, true
-	}
-	if pr != nil {
-		pr = p.removePendingLocked(requestID)
-	}
-	p.mu.Unlock()
-	if pr != nil && p.registry != nil {
-		p.registry.MarkCacheAttemptTerminal(pr)
-	}
-	return pr, false
-}
-
-// removePendingLocked removes and returns a pending request. Caller must hold p.mu.
-func (p *Provider) removePendingLocked(requestID string) *PendingRequest {
-	pr := p.pendingReqs[requestID]
-	delete(p.pendingReqs, requestID)
-	return pr
-}
-
-// GetPending retrieves a pending request without removing it.
-func (p *Provider) GetPending(requestID string) *PendingRequest {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.pendingReqs[requestID]
-}
-
-// BeginPendingChunkIngress atomically resolves pending ownership and publishes
-// the chunk-ingress marker against concurrent RemovePending cleanup.
-func (p *Provider) BeginPendingChunkIngress(requestID string) (*PendingRequest, time.Time) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	pr := p.pendingReqs[requestID]
-	if pr == nil {
-		return nil, time.Time{}
-	}
-	return pr, pr.BeginProviderChunkIngress()
-}
-
-// MarkPendingCompletionIngressNow atomically resolves pending ownership and
-// publishes completion ingress before asynchronous settlement.
-func (p *Provider) MarkPendingCompletionIngressNow(
-	requestID string,
-) (*PendingRequest, time.Time) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	pr := p.pendingReqs[requestID]
-	if pr == nil {
-		return nil, time.Time{}
-	}
-	return pr, pr.MarkCompletionIngressNow()
+	// faultSession is this exact connection generation's opaque identity binding.
+	// It is never copied after registration. The owner publishes all gate pointers.
+	faultSession faultstate.Session[*Provider]
 }
 
 // Mu returns the provider's mutex for external callers that need to read
 // fields like Status atomically. Prefer dedicated getters where available.
 func (p *Provider) Mu() *sync.Mutex {
 	return &p.mu
-}
-
-// pendingCount returns the number of in-flight requests.
-// Caller must hold p.mu.
-func (p *Provider) pendingCount() int {
-	return len(p.pendingReqs)
-}
-
-// PendingCount returns the number of in-flight requests (thread-safe).
-func (p *Provider) PendingCount() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.pendingCount()
-}
-
-// MaxConcurrency returns the dynamic max concurrent request limit.
-// Uses hardware-based estimation when backend capacity is reported.
-// Falls back to DefaultMaxConcurrent for providers without capacity reporting.
-func (p *Provider) MaxConcurrency() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.maxConcurrency()
-}
-
-// MaxConcurrencyForModel returns the concurrency limit for a specific model.
-// A positive provider-reported slot cap wins; zero/missing preserves the
-// legacy provider-level fallback.
-func (p *Provider) MaxConcurrencyForModel(model string) int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.maxConcurrencyForModelLocked(model)
-}
-
-// ReportedTokenBudgetMaxForModel returns the provider's most recently reported
-// live token budget (ActiveTokenBudgetMax) for the given model, or 0 when the
-// provider has reported no per-model token budget. The provider derives this
-// value from live memory headroom (see BatchScheduler+Telemetry.swift
-// tokenBudgetMax = activeTokenBudgetUsed + headroom/kvBytesPerToken, floored at
-// 1024), so it SHRINKS under memory pressure and can fall below the model context
-// window. The dispatch path (classifyRejection) uses it to tell a fleet-wide
-// context overflow (budget >= model context ⇒ the provider's admission cap
-// min(context,budget) was the context, so every provider rejects identically)
-// apart from THIS node's shrunk KV budget (budget < context ⇒ a healthier
-// provider may still serve), which the bare "batch token budget" wire string
-// alone cannot distinguish.
-func (p *Provider) ReportedTokenBudgetMaxForModel(model string) int64 {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.BackendCapacity == nil {
-		return 0
-	}
-	for _, slot := range p.BackendCapacity.Slots {
-		if slot.Model == model {
-			return slot.ActiveTokenBudgetMax
-		}
-	}
-	return 0
-}
-
-// maxConcurrency is the lock-free version (caller must hold p.mu).
-//
-// Tier values were lowered in Phase 2 of the routing-algorithm rework
-// (was 4/8/16/24/32). The old caps were derived from "how many
-// requests can theoretically fit in GPU memory"; the new caps reflect
-// "how many concurrent decodes a single MLX backend can run before
-// per-request TPS collapses". Empirically this is much smaller than
-// the memory-derived ceiling. Pushing past it makes each request slow
-// without increasing fleet throughput.
-func (p *Provider) maxConcurrency() int {
-	if p.BackendCapacity == nil {
-		return DefaultMaxConcurrent
-	}
-
-	// Token-budget providers use budget-based admission; the concurrency
-	// cap is just a safety valve.
-	for _, slot := range p.BackendCapacity.Slots {
-		if slot.ActiveTokenBudgetMax > 0 {
-			return 24
-		}
-	}
-
-	// Hardware-based cap using total memory reported by the provider.
-	memGB := p.BackendCapacity.TotalMemoryGB
-	if memGB <= 0 {
-		memGB = float64(p.Hardware.MemoryGB)
-	}
-	var cap int
-	switch {
-	case memGB <= 24:
-		cap = 2
-	case memGB <= 48:
-		cap = 4
-	case memGB <= 96:
-		cap = 6
-	case memGB <= 128:
-		cap = 8
-	default:
-		cap = 12
-	}
-	return cap
-}
-
-// maxConcurrencyForModelLocked is the lock-free model-aware concurrency cap.
-// Caller must hold p.mu.
-func (p *Provider) maxConcurrencyForModelLocked(model string) int {
-	if p.BackendCapacity != nil {
-		for _, slot := range p.BackendCapacity.Slots {
-			if slot.Model == model && slot.MaxConcurrency > 0 {
-				return slot.MaxConcurrency
-			}
-		}
-	}
-	return p.maxConcurrency()
-}
-
-func (p *Provider) pendingCountForModelLocked(model string) int {
-	count := 0
-	for _, pr := range p.pendingReqs {
-		if pr.Model == model {
-			count++
-		}
-	}
-	return count
-}
-
-func (p *Provider) hasReportedMaxConcurrencyForModelLocked(model string) bool {
-	if p.BackendCapacity == nil {
-		return false
-	}
-	for _, slot := range p.BackendCapacity.Slots {
-		if slot.Model == model && slot.MaxConcurrency > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func (p *Provider) pendingLoadForModelLocked(model string) int {
-	if !p.hasReportedMaxConcurrencyForModelLocked(model) {
-		return p.pendingCount()
-	}
-
-	load := p.pendingCountForModelLocked(model)
-	if p.BackendCapacity != nil {
-		for _, slot := range p.BackendCapacity.Slots {
-			if slot.Model != model {
-				continue
-			}
-			backendLoad := slot.NumRunning + slot.NumWaiting
-			if backendLoad > load {
-				load = backendLoad
-			}
-			break
-		}
-	}
-	return load
-}
-
-// trustMeetsMinimum returns true if the given trust level meets the minimum.
-func (r *Registry) trustMeetsMinimum(level TrustLevel) bool {
-	return trustRank(level) >= trustRank(r.MinTrustLevel)
-}
-
-// trustRank returns a numeric rank for trust levels (higher = more trusted).
-// Returns -1 for unknown/invalid trust levels.
-func trustRank(t TrustLevel) int {
-	switch t {
-	case TrustHardware:
-		return 2
-	case TrustSelfSigned:
-		return 1
-	case TrustNone:
-		return 0
-	default:
-		return -1
-	}
 }

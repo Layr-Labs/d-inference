@@ -52,7 +52,7 @@ func TestTokenlessProviderEarnsEvidenceAndStaysRoutable(t *testing.T) {
 	if err := srv.SyncBinaryHashes(); err != nil {
 		t.Fatalf("SyncBinaryHashes: %v", err)
 	}
-	snapshot := srv.releaseTrustPolicy.Load()
+	snapshot := releasePolicySnapshotForTest(srv)
 
 	const model = "tokenless-release-model"
 	provider := makeRoutableProvider(t, reg, "tokenless-provider", model)
@@ -192,7 +192,7 @@ func TestMetallibRotationInvalidatesCarriedEvidenceAtSweep(t *testing.T) {
 		t.Fatalf("no-op SyncBinaryHashes: %v", err)
 	}
 	carried, ok := provider.ApplicationEvidenceSnapshot()
-	if !ok || carried.PolicyGeneration != srv.releaseTrustPolicy.Load().Generation {
+	if !ok || carried.PolicyGeneration != releasePolicySnapshotForTest(srv).Generation {
 		t.Fatalf("unchanged inventory must carry evidence forward, got %+v ok=%v", carried, ok)
 	}
 	select {

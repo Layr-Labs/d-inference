@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -126,7 +127,7 @@ func TestSoftPredictiveAdmissionDeadlineRefusalKeepsOriginalClock(t *testing.T) 
 			// not restore that time, even though the predictive gate is off.
 			time.Sleep(100 * time.Millisecond)
 			fp.sendTypedInferenceError(ctx, req, protocol.FailureCodeCapacity,
-				errorReasonDeadlineUnreachable, http.StatusServiceUnavailable)
+				attempt.ErrorReasonDeadlineUnreachable, http.StatusServiceUnavailable)
 			return
 		}
 		fp.serveFull(ctx, req, model, "retry-success")

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/providerframe"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -54,7 +55,7 @@ func TestModelCacheCompletionsSeparateModelsAndPreserveUsage(t *testing.T) {
 		srv.handleComplete(provider.ID, provider, &msg)
 		if !tc.parked {
 			got := <-pr.CompleteCh
-			if validCacheUsage(tc.usage) && got.CachedTokens != tc.usage.CachedTokens {
+			if providerframe.ValidCacheUsage(tc.usage) && got.CachedTokens != tc.usage.CachedTokens {
 				t.Fatalf("telemetry changed response cached tokens: %+v", got)
 			}
 		}
@@ -63,14 +64,14 @@ func TestModelCacheCompletionsSeparateModelsAndPreserveUsage(t *testing.T) {
 	for _, tc := range []struct{ model, outcome, tier string }{
 		{a, "hit", "ssd"}, {b, "miss_absent", "ssd"}, {c, "hit", "ssd"}, {a, "invalid", "none"}, {b, "unreported", "none"},
 	} {
-		key := metricKey("cache_model_usage_total", []MetricLabel{{"model", tc.model}, {"outcome", tc.outcome}, {"tier", tc.tier}})
+		key := metricKey("cache_model_usage_total", []MetricLabel{{Name: "model", Value: tc.model}, {Name: "outcome", Value: tc.outcome}, {Name: "tier", Value: tc.tier}})
 		if snap.Counters[key] != 1 {
 			t.Fatalf("%s = %d, want 1", key, snap.Counters[key])
 		}
 	}
 	for _, model := range []string{a, c} {
-		labels := []MetricLabel{{"model", model}, {"tier", "ssd"}}
-		hitLabels := []MetricLabel{{"model", model}, {"outcome", "hit"}, {"tier", "ssd"}}
+		labels := []MetricLabel{{Name: "model", Value: model}, {Name: "tier", Value: "ssd"}}
+		hitLabels := []MetricLabel{{Name: "model", Value: model}, {Name: "outcome", Value: "hit"}, {Name: "tier", Value: "ssd"}}
 		if got := snap.Counters[metricKey("cache_model_usage_prompt_tokens_total", hitLabels)]; got != 4096 {
 			t.Fatalf("hit prompt denominator for %s = %d", model, got)
 		}
@@ -87,7 +88,7 @@ func TestModelCacheCompletionsSeparateModelsAndPreserveUsage(t *testing.T) {
 	if snap.Counters["exact_cache_usage_total{outcome=hit,tier=ssd}"] != 2 || snap.Counters["exact_cache_prefill_tokens_saved_total{tier=ssd}"] != 4096 {
 		t.Fatal("aggregate usage changed or invalid/duplicate usage was counted")
 	}
-	stageLabels := []MetricLabel{{"model", a}, {"tier", "ssd"}, {"outcome", "hit"}}
+	stageLabels := []MetricLabel{{Name: "model", Value: a}, {Name: "tier", Value: "ssd"}, {Name: "outcome", Value: "hit"}}
 	if snap.Counters[metricKey("cache_model_provider_stage_us_total", stageLabels)] != 40250 || snap.Counters[metricKey("cache_model_provider_stage_samples_total", stageLabels)] != 1 {
 		t.Fatal("provider stage sum/sample counters are wrong")
 	}
@@ -227,7 +228,7 @@ func TestModelCacheCoverageSeparatesHitAndNonHitDenominators(t *testing.T) {
 	}{
 		{"hit", 8192, 4096}, {"miss_absent", 16384, 0}, {"invalid", 0, 0}, {"unreported", 0, 0},
 	} {
-		labels := []MetricLabel{{"model", model}, {"outcome", tc.outcome}, {"tier", "ssd"}}
+		labels := []MetricLabel{{Name: "model", Value: model}, {Name: "outcome", Value: tc.outcome}, {Name: "tier", Value: "ssd"}}
 		if got := snap.Counters[metricKey("cache_model_usage_prompt_tokens_total", labels)]; got != tc.prompt {
 			t.Fatalf("%s denominator = %d", tc.outcome, got)
 		}
@@ -250,7 +251,7 @@ func TestModelCacheAcceptedLookupAndSelectedCoverage(t *testing.T) {
 	usage := protocol.UsageInfo{PromptTokens: 8192, CachedTokens: 4096, PrefillTokensSaved: 4096, CacheOutcome: "hit", CacheTier: "ssd"}
 	srv.emitCacheSelectionTerminal(pr, usage, true, true)
 	srv.emitCacheSelectionTerminal(pr, usage, true, true)
-	lookupLabels := []MetricLabel{{"model", model}, {"tier", "ssd"}, {"outcome", "hit"}}
+	lookupLabels := []MetricLabel{{Name: "model", Value: model}, {Name: "tier", Value: "ssd"}, {Name: "outcome", Value: "hit"}}
 	selectionLabels := srv.cacheModelSelectionLabels(model, cacheSelectionTerminalTags(pr, usage, true, true))
 	for _, tc := range []struct {
 		name   string

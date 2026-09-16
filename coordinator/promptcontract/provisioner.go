@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -95,8 +96,10 @@ func (p *Provisioner) Reconcile(manifests []Manifest) error {
 	if len(manifests) > p.maxModels {
 		return p.rejectCatalog(ErrInvalidConfig)
 	}
-	copied := make([]Manifest, len(manifests))
-	copy(copied, manifests)
+	copied := slices.Clone(manifests)
+	for index := range copied {
+		copied[index].Files = slices.Clone(copied[index].Files)
+	}
 	seen := make(map[string]bool, len(copied))
 	statuses := make(map[string]ProvisionStatus, len(copied))
 	for _, manifest := range copied {

@@ -12,6 +12,7 @@ package api
 
 import (
 	"context"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -67,7 +68,7 @@ func (s *Server) StartThroughputAnomalyDetector(ctx context.Context) {
 func throughputAnomalyConfigFromEnv() registry.ThroughputAnomalyConfig {
 	cfg := registry.DefaultThroughputAnomalyConfig()
 	if v := os.Getenv("EIGENINFERENCE_THROUGHPUT_ANOMALY_RATIO"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && !math.IsInf(f, 0) {
 			cfg.RatioThreshold = f
 		}
 	}
@@ -77,7 +78,7 @@ func throughputAnomalyConfigFromEnv() registry.ThroughputAnomalyConfig {
 		}
 	}
 	if v := os.Getenv("EIGENINFERENCE_THROUGHPUT_ANOMALY_EFFICIENCY"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && !math.IsInf(f, 0) {
 			cfg.Efficiency = f
 		}
 	}

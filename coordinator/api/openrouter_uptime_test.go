@@ -1,6 +1,10 @@
 package api
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
+)
 
 // TestClassifyOutcomeByCode pins the HTTP-status → OR-uptime class mapping that
 // implements OpenRouter's denominator rules: 429 is excluded (rate_limited),
@@ -27,7 +31,7 @@ func TestClassifyOutcomeByCode(t *testing.T) {
 		{200, "success"},
 	}
 	for _, tt := range tests {
-		if got := classifyOutcomeByCode(tt.code); got != tt.want {
+		if got := dispatch.ClassifyOutcomeByCode(tt.code); got != tt.want {
 			t.Errorf("classifyOutcomeByCode(%d) = %q, want %q", tt.code, got, tt.want)
 		}
 	}
@@ -37,27 +41,8 @@ func TestClassifyOutcomeByCode(t *testing.T) {
 // status-code classification (it is a thin wrapper over classifyOutcomeByCode).
 func TestOrUptimeClassForRejection(t *testing.T) {
 	for _, code := range []int{429, 503} {
-		if got, want := orUptimeClassForRejection(code), classifyOutcomeByCode(code); got != want {
+		if got, want := orUptimeClassForRejection(code), dispatch.ClassifyOutcomeByCode(code); got != want {
 			t.Errorf("orUptimeClassForRejection(%d) = %q, want %q (classifyOutcomeByCode)", code, got, want)
-		}
-	}
-}
-
-func TestOpenRouterScoredDispatchEndpointExcludesGenericAPIs(t *testing.T) {
-	tests := []struct {
-		endpoint string
-		want     bool
-	}{
-		{"", true},
-		{"/v1/chat/completions", true},
-		{"/v1/responses", true},
-		{completionsEndpoint, false},
-		{messagesEndpoint, false},
-	}
-	for _, tt := range tests {
-		if got := isOpenRouterScoredDispatchEndpoint(tt.endpoint); got != tt.want {
-			t.Errorf("isOpenRouterScoredDispatchEndpoint(%q) = %v, want %v",
-				tt.endpoint, got, tt.want)
 		}
 	}
 }

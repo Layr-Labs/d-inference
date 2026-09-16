@@ -21,7 +21,7 @@ import (
 func TestRestartFreshProcessKeyTransitionsViaResumeWithoutPush(t *testing.T) {
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
-	fastBudgets(srv)
+	srvControls := fastBudgets(srv)
 	srv.minProviderVersion = "0.6.0"
 
 	k1Pub, k1Priv, seKey, sePub := providerKeyMaterial(t)
@@ -37,7 +37,7 @@ func TestRestartFreshProcessKeyTransitionsViaResumeWithoutPush(t *testing.T) {
 	if !k1.GetFreshCodeAttested() {
 		t.Fatal("precondition: K1 did not complete a genuine APNs proof")
 	}
-	if _, ok := srv.codeAttestThrottle.reuseAttestationForTransition(
+	if _, ok := srv.codeIdentity.TransitionBinaryHash(
 		sePub, k1.APNsDeviceToken,
 	); !ok {
 		t.Fatal("precondition: K1 proof was not cached for this SE identity + token")
@@ -54,7 +54,7 @@ func TestRestartFreshProcessKeyTransitionsViaResumeWithoutPush(t *testing.T) {
 		atomic.AddInt32(&pushes, 1)
 		return nil
 	}})
-	srv.codeResumeSender = func(
+	srvControls.resumeSender = func(
 		_ string, message protocol.CodeAttestationResumeChallenge,
 	) error {
 		// completeResumeRoundTrip asserts no code trust was granted before the
@@ -129,16 +129,16 @@ func TestRestartTransitionWithoutCurrentEvidenceForcesFreshAPNsChallenge(t *test
 func TestRestartTransitionRotatedTokenRefused(t *testing.T) {
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
-	fastBudgets(srv)
+	srvControls := fastBudgets(srv)
 	srv.minProviderVersion = "0.6.0"
 
 	kPub, _, _, sePub := providerKeyMaterial(t)
 	provider := crossVersionProvider(kPub, sePub, "0.6.14")
 	provider.APNsDeviceToken = "newtok"
 	// Cached genuine proof was earned under the OLD token (by some process key).
-	seedFreshProcessAttestation(srv, sePub, "0.6.13", "oldtok", "old-process-key", trHashB)
+	seedFreshProcessAttestation(t, srv, sePub, "0.6.13", "oldtok", "old-process-key", trHashB)
 	armCrossVersionApplicationEvidence(t, srv, provider, sePub)
-	srv.codeResumeSender = func(string, protocol.CodeAttestationResumeChallenge) error {
+	srvControls.resumeSender = func(string, protocol.CodeAttestationResumeChallenge) error {
 		t.Error("rotated token must never receive a transition resume challenge")
 		return nil
 	}
@@ -158,7 +158,7 @@ func TestRestartTransitionRotatedTokenRefused(t *testing.T) {
 func TestRestartTransitionWrongSESignatureRefused(t *testing.T) {
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
-	fastBudgets(srv)
+	srvControls := fastBudgets(srv)
 	srv.minProviderVersion = "0.6.0"
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -166,14 +166,14 @@ func TestRestartTransitionWrongSESignatureRefused(t *testing.T) {
 	kPub, kPriv, _, sePub := providerKeyMaterial(t)
 	_, _, wrongSE, _ := providerKeyMaterial(t)
 	provider := crossVersionProvider(kPub, sePub, "0.6.14")
-	seedFreshProcessAttestation(
+	seedFreshProcessAttestation(t,
 		srv, sePub, "0.6.13", provider.APNsDeviceToken, "old-process-key",
 		trHashB)
 	armCrossVersionApplicationEvidence(t, srv, provider, sePub)
 	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, _, _ string) error {
 		return nil
 	}})
-	srv.codeResumeSender = func(
+	srvControls.resumeSender = func(
 		_ string, message protocol.CodeAttestationResumeChallenge,
 	) error {
 		// The genuine process key decrypts, but a WRONG SE key signs.
@@ -199,7 +199,7 @@ func TestRestartTransitionWrongSESignatureRefused(t *testing.T) {
 func TestRestartTransitionDeactivatedReleaseProofForcesFreshAPNsChallenge(t *testing.T) {
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
-	fastBudgets(srv)
+	srvControls := fastBudgets(srv)
 	srv.minProviderVersion = "0.6.0"
 
 	// K1 earns a genuine APNs proof while running release A (trHashB).
@@ -224,7 +224,7 @@ func TestRestartTransitionDeactivatedReleaseProofForcesFreshAPNsChallenge(t *tes
 		map[string][]approvedReleasePolicy{
 			trHashA: {{Version: k2.Version, Platform: "macos-arm64", Backend: k2.Backend}},
 		})
-	srv.codeResumeSender = func(string, protocol.CodeAttestationResumeChallenge) error {
+	srvControls.resumeSender = func(string, protocol.CodeAttestationResumeChallenge) error {
 		t.Error("a proof earned by a deactivated release must never authorize a transition resume")
 		return nil
 	}
@@ -264,13 +264,13 @@ func TestRestartTransitionDeactivatedReleaseProofForcesFreshAPNsChallenge(t *tes
 func TestRestartSameBinaryTransitionsViaResumeWithoutPush(t *testing.T) {
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
-	fastBudgets(srv)
+	srvControls := fastBudgets(srv)
 	srv.minProviderVersion = "0.6.0"
 
 	kPub, kPriv, seKey, sePub := providerKeyMaterial(t)
 	provider := crossVersionProvider(kPub, sePub, "0.6.14")
 	// Cached genuine proof earned under a PRIOR process key by the SAME binary.
-	seedFreshProcessAttestation(
+	seedFreshProcessAttestation(t,
 		srv, sePub, "0.6.14", provider.APNsDeviceToken, "old-process-key", trHashA)
 	armCrossVersionApplicationEvidenceWithPolicy(t, srv, provider, sePub,
 		map[string][]approvedReleasePolicy{
@@ -282,7 +282,7 @@ func TestRestartSameBinaryTransitionsViaResumeWithoutPush(t *testing.T) {
 		atomic.AddInt32(&pushes, 1)
 		return nil
 	}})
-	srv.codeResumeSender = func(
+	srvControls.resumeSender = func(
 		_ string, message protocol.CodeAttestationResumeChallenge,
 	) error {
 		return completeResumeRoundTrip(t, srv, provider, "p1", kPriv, seKey, message)

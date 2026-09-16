@@ -45,8 +45,8 @@ func (s *Server) startMachineInventory(ctx context.Context, p *registry.Provider
 	}}
 	ctx, cancel := context.WithCancel(ctx)
 	stop := func() bool { return false }
-	if s.trustCoverageCtx != nil {
-		stop = context.AfterFunc(s.trustCoverageCtx, cancel)
+	if s.backgroundCtx != nil {
+		stop = context.AfterFunc(s.backgroundCtx, cancel)
 	}
 	saferun.Go(s.logger, "machineInventory", func() {
 		defer cancel()

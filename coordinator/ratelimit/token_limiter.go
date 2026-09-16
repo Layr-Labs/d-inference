@@ -75,15 +75,13 @@ func (t *TokenLimiter) Allow(accountID string, inputTokens, outputTokens int) (a
 	var in, out int
 	if t.input != nil {
 		in = clampCharge(inputTokens, t.input.Burst())
-		if !t.input.CanN(accountID, in) {
-			_, retry := t.input.AllowN(accountID, in) // fails atomically, no debit; yields Retry-After
+		if ok, retry := t.input.CheckN(accountID, in); !ok {
 			return false, "input_tokens", retry
 		}
 	}
 	if t.output != nil {
 		out = clampCharge(outputTokens, t.output.Burst())
-		if !t.output.CanN(accountID, out) {
-			_, retry := t.output.AllowN(accountID, out)
+		if ok, retry := t.output.CheckN(accountID, out); !ok {
 			return false, "output_tokens", retry
 		}
 	}
@@ -111,15 +109,13 @@ func (t *TokenLimiter) Peek(accountID string, inputTokens, outputTokens int) (ok
 
 	if t.input != nil {
 		in := clampCharge(inputTokens, t.input.Burst())
-		if !t.input.CanN(accountID, in) {
-			_, retry := t.input.AllowN(accountID, in) // fails atomically, no debit; yields Retry-After
+		if ok, retry := t.input.CheckN(accountID, in); !ok {
 			return false, "input_tokens", retry
 		}
 	}
 	if t.output != nil {
 		out := clampCharge(outputTokens, t.output.Burst())
-		if !t.output.CanN(accountID, out) {
-			_, retry := t.output.AllowN(accountID, out)
+		if ok, retry := t.output.CheckN(accountID, out); !ok {
 			return false, "output_tokens", retry
 		}
 	}

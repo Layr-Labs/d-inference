@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-14 · commit `b725a72a8`
+> Last updated: 2026-09-16 · commit `35c6a0f5b`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -31,38 +31,38 @@ read once at process start and a restart applies a change.
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `EIGENINFERENCE_PORT` | TCP port | `8080` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Listen port for the HTTP API and the provider WebSocket. |
-| `EIGENINFERENCE_BASE_URL` | URL | unset — derived per request from `Host` and `X-Forwarded-Proto` | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/server.go` (`resolveBaseURL`) | Public origin templated into the served `/install.sh` and other self-referencing URLs. |
-| `EIGENINFERENCE_CONSOLE_URL` | URL | unset — `<scheme>://<Host>/link` is derived per request | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/device_auth.go` | Console origin used to build the device-code `verification_uri` (`<console>/link`). |
-| `CORS_ORIGIN` | origin | `https://console.darkbloom.dev` (applied in `corsMiddleware`) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/server.go` (`corsMiddleware`) | The single origin allowed for credentialed CORS; public read-only GETs stay wildcard. |
-| `EIGENINFERENCE_DRAIN_GRACE` | Go duration | `10m` (`DefaultDrainGrace`) | `coordinator/api/drain.go` (`DrainGraceFromEnv`) | How long shutdown waits for in-flight requests after SIGTERM before `http.Server.Shutdown`; `0` skips the wait. |
-| `EIGENINFERENCE_ROUTING_CONCURRENCY` | integer ≥ 2 | `runtime.NumCPU()` (min 2) | `coordinator/cmd/coordinator/main.go`; `coordinator/api/server.go` (`DefaultRoutingConcurrency`) | Cap on concurrent routing scans. |
-| `EIGENINFERENCE_PPROF_ADDR` | `host:port` | unset (off) | `coordinator/cmd/coordinator/main.go` (`startPprofListener`) | Serves `net/http/pprof` on a separate listener; bind loopback or firewall it. A successful listener enables mutex sampling at fraction `100` and block sampling at rate `1_000_000` ns (`enableContentionProfiling`). |
+| `EIGENINFERENCE_BASE_URL` | URL | unset — derived per request from `Host` and `X-Forwarded-Proto` | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/installer.go` (`resolveBaseURL`) | Public origin templated into the served `/install.sh` and other self-referencing URLs. |
+| `EIGENINFERENCE_CONSOLE_URL` | URL | unset — `<scheme>://<Host>/link` is derived per request | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/accounts/device_codes.go` | Console origin used to build the device-code `verification_uri` (`<console>/link`). |
+| `CORS_ORIGIN` | origin | `https://console.darkbloom.dev` (applied in `corsMiddleware`) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/http_middleware.go` (`corsMiddleware`) | The single origin allowed for credentialed CORS; public read-only GETs stay wildcard. |
+| `EIGENINFERENCE_DRAIN_GRACE` | Go duration | `10m` (`DefaultDrainGrace`) | `coordinator/api/readiness/shutdown.go` (`DrainGraceFromEnv`; API compatibility wrapper in `coordinator/api/drain.go`) | How long shutdown waits for in-flight requests after SIGTERM before `http.Server.Shutdown`; `0` skips the wait. |
+| `EIGENINFERENCE_ROUTING_CONCURRENCY` | integer ≥ 2 | `runtime.NumCPU()` (min 2) | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`); `coordinator/inference/dispatch/scan_admission.go` (`DefaultRoutingConcurrency`) | Cap on concurrent routing scans. |
+| `EIGENINFERENCE_PPROF_ADDR` | `host:port` | unset (off) | `coordinator/cmd/coordinator/profiling.go` (`startPprofListener`) | Serves `net/http/pprof` on a separate listener; bind loopback or firewall it. A successful listener enables mutex sampling at fraction `100` and block sampling at rate `1_000_000` ns (`enableContentionProfiling`). |
 
 ### Database, store and persistent disk
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_DATABASE_URL` | Postgres DSN (secret) | unset | `coordinator/store/config.go` (`ReadConfig`); `coordinator/cmd/coordinator/main.go` | Selects the Postgres store and runs migrations at boot; see [`../architecture/storage.md`](../architecture/storage.md). Required unless the memory store is allowed. |
-| `EIGENINFERENCE_ALLOW_MEMORY_STORE` | `true` | `false` | `coordinator/store/config.go` (`ReadConfig`, `Check`) | Permits the non-durable in-memory store when no DSN is set (tests and local dev only); startup refuses otherwise. |
-| `USER_PERSISTENT_DATA_PATH` | directory | `/mnt/disks/userdata` | `coordinator/deploy/start.sh`; `coordinator/api/trust_reuse_journal.go` (`resolveTrustReuseRevocationJournalPath`); `coordinator/api/admin_state_export.go` (`resolveStateExportRoot`) | Persistent disk root, symlinked to `/data`; parent of the MicroMDM state, the trust-reuse journal and the state-export root. |
-| `EIGENINFERENCE_TRUST_REUSE_REVOCATION_JOURNAL_PATH` | file path | `<persist>/coordinator/trust-reuse-hard-untrust.v1.jsonl` | `coordinator/api/trust_reuse_journal.go` (`resolveTrustReuseRevocationJournalPath`) | Location of the hard-untrust revocation journal; startup refuses when the journal is unusable. |
-| `EIGENINFERENCE_STATE_EXPORT_ENABLED` | `true` | unset (route 404s) | `coordinator/api/admin_state_export.go` (`handleAdminStateExport`) | Master switch for `GET /v1/admin/state-export`; see [`../operations/state-export.md`](../operations/state-export.md). |
-| `EIGENINFERENCE_STATE_EXPORT_RECIPIENT` | `age1…` public recipient | unset | `coordinator/api/admin_state_export.go` (`handleAdminStateExport`) | Encrypts the export to this recipient; without it the route answers 412 unless plaintext is allowed. |
-| `EIGENINFERENCE_STATE_EXPORT_ALLOW_PLAINTEXT` | `true` | `false` | `coordinator/api/admin_state_export.go` (`handleAdminStateExport`) | Allows an unencrypted zip when no recipient is configured. |
-| `EIGENINFERENCE_STATE_EXPORT_ROOT` | directory | `USER_PERSISTENT_DATA_PATH`, else `/mnt/disks/userdata` | `coordinator/api/admin_state_export.go` (`resolveStateExportRoot`) | Overrides the directory that is archived (tests). |
+| `EIGENINFERENCE_DATABASE_URL` | Postgres DSN (secret) | unset | `coordinator/store/contracts/config.go` (`ReadConfig`); `coordinator/cmd/coordinator/main.go` | Selects the Postgres store and runs migrations at boot; see [`../architecture/storage.md`](../architecture/storage.md). Required unless the memory store is allowed. |
+| `EIGENINFERENCE_ALLOW_MEMORY_STORE` | `true` | `false` | `coordinator/store/contracts/config.go` (`ReadConfig`, `Check`) | Permits the non-durable in-memory store when no DSN is set (tests and local dev only); startup refuses otherwise. |
+| `USER_PERSISTENT_DATA_PATH` | directory | `/mnt/disks/userdata` | `coordinator/deploy/start.sh`; `coordinator/providercontrol/trustreuse/journal_config.go` (`JournalPathFromEnv`); `coordinator/api/statearchive/config.go` (`resolveStateExportRoot`) | Persistent disk root, symlinked to `/data`; parent of the MicroMDM state, the trust-reuse journal and the state-export root. |
+| `EIGENINFERENCE_TRUST_REUSE_REVOCATION_JOURNAL_PATH` | file path | `<persist>/coordinator/trust-reuse-hard-untrust.v1.jsonl` | `coordinator/providercontrol/trustreuse/journal_config.go` (`JournalPathFromEnv`) | Location of the hard-untrust revocation journal; startup refuses when the journal is unusable. |
+| `EIGENINFERENCE_STATE_EXPORT_ENABLED` | `true` | unset (route 404s) | `coordinator/api/statearchive/handler.go` (`Controller.Download`) | Master switch for `GET /v1/admin/state-export`; see [`../operations/state-export.md`](../operations/state-export.md). |
+| `EIGENINFERENCE_STATE_EXPORT_RECIPIENT` | `age1…` public recipient | unset | `coordinator/api/statearchive/handler.go` (`Controller.Download`) | Encrypts the export to this recipient; without it the route answers 412 unless plaintext is allowed. |
+| `EIGENINFERENCE_STATE_EXPORT_ALLOW_PLAINTEXT` | `true` | `false` | `coordinator/api/statearchive/handler.go` (`Controller.Download`) | Allows an unencrypted zip when no recipient is configured. |
+| `EIGENINFERENCE_STATE_EXPORT_ROOT` | directory | `USER_PERSISTENT_DATA_PATH`, else `/mnt/disks/userdata` | `coordinator/api/statearchive/config.go` (`resolveStateExportRoot`) | Overrides the directory that is archived (tests). |
 
 ### Auth: admin key, Privy, release key, sender encryption
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_ADMIN_KEY` | secret | unset (warning; no seeded key) | `coordinator/store/config.go` (`ReadConfig`); `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/cmd/coordinator/main.go` (`SeedKey`) | Bootstrap admin API key seeded into `api_keys`; bearer token for `/v1/admin/*`, release registration and state export. |
+| `EIGENINFERENCE_ADMIN_KEY` | secret | unset (warning; no seeded key) | `coordinator/store/contracts/config.go` (`ReadConfig`); `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/cmd/coordinator/main.go` (`SeedKey`) | Bootstrap admin API key seeded into `api_keys`; bearer token for `/v1/admin/*` and state export. Release registration requires `EIGENINFERENCE_RELEASE_KEY`. |
 | `EIGENINFERENCE_ADMIN_EMAILS` | comma-separated emails | unset | `coordinator/api/server_config.go` (`ReadServerConfig`, `ParseCommaList`) | Privy accounts with these emails get admin on console-facing admin routes. |
-| `EIGENINFERENCE_RELEASE_KEY` | secret | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/release_handlers.go` | Bearer token accepted (constant-time) for release registration in addition to the admin key. |
+| `EIGENINFERENCE_RELEASE_KEY` | secret | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/releases/registration.go` | Scoped bearer token accepted with constant-time comparison by `Controller.Register`; an admin key alone does not authorize release registration. |
 | `EIGENINFERENCE_PRIVY_APP_ID` | string | unset (Privy auth off) | `coordinator/auth/config.go` (`ReadConfig`) | Enables Privy JWT verification; also the expected JWT audience. |
 | `EIGENINFERENCE_PRIVY_APP_SECRET` | secret | unset | `coordinator/auth/config.go` (`ReadConfig`) | Basic-auth credential for Privy REST calls. |
 | `EIGENINFERENCE_PRIVY_VERIFICATION_KEY` | PEM ES256 public key | unset; required when the app id is set (`Check`) | `coordinator/auth/config.go` (`ReadConfig`) | Key that Privy access tokens are verified against. |
 | `EIGENINFERENCE_PRIVY_VERIFICATION_KEY_FILE` | file path | unset | `coordinator/auth/config.go` (`ReadConfig`) | Reads the PEM from a file, overriding the inline value. |
-| `MNEMONIC`, `EIGENINFERENCE_MNEMONIC` | BIP39 phrase (secret) | unset (sender→coordinator encryption disabled) | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/cmd/coordinator/main.go` (`e2e.DeriveCoordinatorKey`) | Derives the X25519 key served at `GET /v1/encryption-key`; `MNEMONIC` wins when both are set. See [`../architecture/security/encryption.md`](../architecture/security/encryption.md). |
+| `MNEMONIC`, `EIGENINFERENCE_MNEMONIC` | BIP39 phrase (secret) | unset (sender→coordinator encryption disabled) | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/cmd/coordinator/accounts.go` (`configureAccounts`) | Derives the X25519 key served at `GET /v1/encryption-key`; `MNEMONIC` wins when both are set. See [`../architecture/security/encryption.md`](../architecture/security/encryption.md). |
 
 ### MDM, attestation and APNs
 
@@ -73,32 +73,32 @@ read once at process start and a restart applies a change.
 | `DOMAIN` | hostname | `localhost` | `coordinator/deploy/start.sh` | MicroMDM `-server-url https://$DOMAIN`. |
 | `EIGENINFERENCE_MDM_URL` | URL | unset (MDM verification off) | `coordinator/mdm/config.go` (`ReadConfig`) | Enables the MicroMDM client, the verification scheduler and the webhook; see [`../architecture/security/enrollment.md`](../architecture/security/enrollment.md). |
 | `EIGENINFERENCE_MDM_API_KEY` | secret | compiled placeholder (`defaultMDMApiKey`) | `coordinator/mdm/config.go` (`ReadConfig`) | API key for MicroMDM calls; production sets a real key. |
-| `EIGENINFERENCE_MDM_WEBHOOK_SECRET` | secret | unset (warning; webhook relies on the CommandUUID gate) | `coordinator/cmd/coordinator/main.go`; `coordinator/deploy/start.sh` | Shared secret MicroMDM must present on `/v1/mdm/webhook` (`?token=` or `X-Webhook-Token`); `start.sh` appends it to the webhook URL. |
-| `EIGENINFERENCE_MDM_SCHEDULER_WORKERS` | integer 1–12 | `12` | `coordinator/api/server_config.go` (`readMDMSchedulerConfig`) | Verification worker pool size (values above 12 clamp down). |
-| `EIGENINFERENCE_MDM_SCHEDULER_QUEUE_CAPACITY` | integer 1–4096 | `4096` | `coordinator/api/server_config.go` (`readMDMSchedulerConfig`) | Verification queue capacity (clamped). |
-| `EIGENINFERENCE_MDM_INITIAL_SPREAD_MIN`, `EIGENINFERENCE_MDM_INITIAL_SPREAD_MAX` | Go durations, min ≤ max ≤ 30m | `5s`, `5m` | `coordinator/api/server_config.go` (`readMDMSchedulerConfig`) | Jitter window for a provider's first verification; an invalid pair resets both. |
-| `EIGENINFERENCE_MDM_CLAIM_TTL` | Go duration 2m–15m | `3m` | `coordinator/api/server_config.go` (`readMDMSchedulerConfig`) | Lease on a claimed verification job. |
+| `EIGENINFERENCE_MDM_WEBHOOK_SECRET` | secret | unset (warning; webhook relies on the CommandUUID gate) | `coordinator/cmd/coordinator/provider_trust.go` (`configureProviderTrust`); `coordinator/deploy/start.sh` | Shared secret MicroMDM must present on `/v1/mdm/webhook` (`?token=` or `X-Webhook-Token`); `start.sh` appends it to the webhook URL. |
+| `EIGENINFERENCE_MDM_SCHEDULER_WORKERS` | integer 1–12 | `12` | `coordinator/providercontrol/mdmscheduler/config.go` (`ConfigFromEnv`) | Verification worker pool size (values above 12 clamp down). |
+| `EIGENINFERENCE_MDM_SCHEDULER_QUEUE_CAPACITY` | integer 1–4096 | `4096` | `coordinator/providercontrol/mdmscheduler/config.go` (`ConfigFromEnv`) | Verification queue capacity (clamped). |
+| `EIGENINFERENCE_MDM_INITIAL_SPREAD_MIN`, `EIGENINFERENCE_MDM_INITIAL_SPREAD_MAX` | Go durations, min ≤ max ≤ 30m | `5s`, `5m` | `coordinator/providercontrol/mdmscheduler/config.go` (`ConfigFromEnv`) | Jitter window for a provider's first verification; an invalid pair resets both. |
+| `EIGENINFERENCE_MDM_CLAIM_TTL` | Go duration 2m–15m | `3m` | `coordinator/providercontrol/mdmscheduler/config.go` (`ConfigFromEnv`) | Lease on a claimed verification job. |
 | `PROFILE_SIGNING_P12_B64`, `PROFILE_SIGNING_P12_PATH`, `PROFILE_SIGNING_P12_PASSWORD` | base64 or path to PKCS#12, password (secrets) | unset (profiles served unsigned) | `coordinator/profilesign/signer.go` (`LoadFromEnv`) | CMS-signs the `/v1/enroll` `.mobileconfig`. |
-| `APNS_KEY_ID`, `APNS_TEAM_ID` | Apple key id, team id | unset (code-identity attestation off) | `coordinator/cmd/coordinator/main.go` (`loadAPNsAttestor`) | Both required to construct the APNs attestor; see [`../architecture/security/attestation.md`](../architecture/security/attestation.md). |
-| `APNS_AUTH_KEY_P8_B64`, `APNS_AUTH_KEY_P8_PATH` | base64 or path to the `.p8` (secret) | unset (attestor disabled) | `coordinator/cmd/coordinator/main.go` (`loadAPNsAttestor`) | The APNs auth key; the base64 form wins. |
-| `APNS_TOPIC` | bundle id | `io.darkbloom.provider` | `coordinator/cmd/coordinator/main.go` (`loadAPNsAttestor`) | APNs topic for code-identity pushes. |
-| `APNS_MODE` | `background`, `alert` | `background` | `coordinator/cmd/coordinator/main.go` (`loadAPNsAttestor`) | Push type used for the challenge. |
-| `APNS_ENFORCE_AFTER` | RFC 3339 timestamp | unset (grace: measured, never blocks) | `coordinator/cmd/coordinator/main.go` (`parseAPNsEnforceAfter`) | After this instant un-attested providers are not routed; a malformed value refuses startup. |
-| `EIGENINFERENCE_TRUST_REUSE_WINDOW` | Go duration > 0 | `5m` | `coordinator/api/trust_reuse.go` (`trustReuseWindowFromEnv`) | How long a reconnecting provider may reuse its previous trust decision. |
-| `EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP` | Go duration 0–120s | `90s` (values above 120s clamp down) | `coordinator/api/trust_reuse.go` (`trustReuseReconnectGapFromEnv`) | Maximum contiguous offline gap that still counts as continuity; `0` disables reuse. |
+| `APNS_KEY_ID`, `APNS_TEAM_ID` | Apple key id, team id | unset (code-identity attestation off) | `coordinator/cmd/coordinator/provider_trust.go` (`loadAPNsAttestor`) | Both required to construct the APNs attestor; see [`../architecture/security/attestation.md`](../architecture/security/attestation.md). |
+| `APNS_AUTH_KEY_P8_B64`, `APNS_AUTH_KEY_P8_PATH` | base64 or path to the `.p8` (secret) | unset (attestor disabled) | `coordinator/cmd/coordinator/provider_trust.go` (`loadAPNsAttestor`) | The APNs auth key; the base64 form wins. |
+| `APNS_TOPIC` | bundle id | `io.darkbloom.provider` | `coordinator/cmd/coordinator/provider_trust.go` (`loadAPNsAttestor`) | APNs topic for code-identity pushes. |
+| `APNS_MODE` | `background`, `alert` | `background` | `coordinator/cmd/coordinator/provider_trust.go` (`loadAPNsAttestor`) | Push type used for the challenge. |
+| `APNS_ENFORCE_AFTER` | RFC 3339 timestamp | unset (grace: measured, never blocks) | `coordinator/cmd/coordinator/provider_trust.go` (`parseAPNsEnforceAfter`) | After this instant un-attested providers are not routed when an APNs attestor is configured; a malformed value then refuses startup. |
+| `EIGENINFERENCE_TRUST_REUSE_WINDOW` | Go duration > 0 | `5m` | `coordinator/providercontrol/trustreuse/config.go` (`trustReuseWindowFromEnv`) | How long a reconnecting provider may reuse its previous trust decision. |
+| `EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP` | Go duration 0–120s | `90s` (values above 120s clamp down) | `coordinator/providercontrol/trustreuse/config.go` (`trustReuseReconnectGapFromEnv`) | Maximum contiguous offline gap that still counts as continuity; `0` disables reuse. |
 | `EIGENINFERENCE_TRUST_GEO_HEADERS` | `1` | unset | `coordinator/api/provider_geo.go` (`newProviderGeoResolverFromEnv`) | Trust proxy-supplied client-IP headers when geolocating providers. |
-| `EIGENINFERENCE_IPAPI_KEY` | secret | unset (free ip-api.com tier) | `coordinator/api/provider_geo.go` (`newProviderGeoResolverFromEnv`) | Uses the keyed `pro.ip-api.com` endpoint for provider geolocation. |
+| `EIGENINFERENCE_IPAPI_KEY` | secret | unset (free ip-api.com tier) | `coordinator/api/provider_geo.go` (`newProviderGeoResolverFromEnv`) | Uses the keyed `pro.ip-api.com` endpoint for provider geolocation. Failed lookup diagnostics retain the transport cause and omit the key-bearing request URL (`lookupIPAPI`). |
 
 ### Release policy, version floor and binary hashes
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_MIN_PROVIDER_VERSION` | semver | unset (no floor) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/provider.go` | Providers below this version are refused at registration and excluded from routing; surfaced to operators in `/v1/me`. |
-| `EIGENINFERENCE_RELEASE_POLICY_MODE` | `shadow`, `enforce` | `shadow` | `coordinator/cmd/coordinator/main.go` | Whether missing application evidence blocks routing; see [`../operations/release-policy-rollout.md`](../operations/release-policy-rollout.md). |
-| `EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE` | Go duration ≥ 20m (raise-only) | `20m` | `coordinator/cmd/coordinator/main.go` | Boot grace before enforcement bites; shorter values clamp up to 20m. |
-| `EIGENINFERENCE_BINARYHASH_ENFORCE` | `true` | `false` | `coordinator/cmd/coordinator/main.go` (`SetBinaryHashEnforcement`) | Re-enables legacy derouting on a self-reported `binaryHash` mismatch (rollback only). |
-| `EIGENINFERENCE_KNOWN_BINARY_HASHES` | comma-separated hashes | unset | `coordinator/cmd/coordinator/main.go` (`AddKnownBinaryHashes`) | Extra known-good provider binary hashes beyond the active releases in the store. |
-| `EIGENINFERENCE_KNOWN_TEMPLATE_HASHES` | `name=hash,…`; a repeated name accepts every listed hash | unset | `coordinator/cmd/coordinator/main.go` (`SetRuntimeManifest`) | Replaces the store-built [runtime manifest](../architecture/security/attestation.md#runtime-manifest) at boot; discarded by the next release registration or deactivation, which rebuilds the union from active releases. |
+| `EIGENINFERENCE_MIN_PROVIDER_VERSION` | semver | unset (no floor) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/providercontrol/session/registration.go` (`register`); `coordinator/providercontrol/releasepolicy/runtime_provider.go` (`ApplyChallengeMinVersionPolicy`) | Providers below this version stay connected with runtime verification cleared and are excluded from routing; surfaced to operators in `/v1/me`. |
+| `EIGENINFERENCE_RELEASE_POLICY_MODE` | `shadow`, `enforce` | `shadow` | `coordinator/cmd/coordinator/release_policy.go` (`configureReleasePolicy`) | Whether missing application evidence blocks routing; see [`../operations/release-policy-rollout.md`](../operations/release-policy-rollout.md). |
+| `EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE` | Go duration ≥ 20m (raise-only) | `20m` | `coordinator/cmd/coordinator/release_policy.go` (`configureReleasePolicy`) | Boot grace before enforcement bites; shorter values clamp up to 20m. |
+| `EIGENINFERENCE_BINARYHASH_ENFORCE` | `true` | `false` | `coordinator/cmd/coordinator/release_policy.go` (`configureReleasePolicy`) | Re-enables legacy derouting on a self-reported `binaryHash` mismatch (rollback only). |
+| `EIGENINFERENCE_KNOWN_BINARY_HASHES` | comma-separated hashes | unset | `coordinator/cmd/coordinator/release_policy.go` (`configureReleasePolicy`) | Extra known-good provider binary hashes beyond the active releases in the store. |
+| `EIGENINFERENCE_KNOWN_TEMPLATE_HASHES` | `name=hash,…`; a repeated name accepts every listed hash | unset | `coordinator/cmd/coordinator/release_policy.go` (`configureRuntimeManifest`) | Replaces the store-built [runtime manifest](../architecture/security/attestation.md#runtime-manifest) at boot; discarded by the next release registration or deactivation, which rebuilds the union from active releases. |
 
 ### Routing, admission and TTFT
 
@@ -107,31 +107,31 @@ Trust floor, model routing and per-request quality:
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `EIGENINFERENCE_MIN_TRUST` | `none`, `self_signed`, `hardware` | `hardware` (`registry.New`) | `coordinator/registry/config.go` (`ReadConfig`, `Check`) | Minimum trust level a provider needs to receive public traffic; an unknown value refuses startup. |
-| `EIGENINFERENCE_DEDICATED_MODELS` | comma-separated family patterns, or `none` | `gemma-4` | `coordinator/cmd/coordinator/main.go`; `coordinator/registry/dedicated_models.go` (`ParseDedicatedModels`) | Model families that get dedicated-provider routing; `none` disables. |
-| `EIGENINFERENCE_REJECT_MODELS` | comma-separated model ids | unset | `coordinator/cmd/coordinator/main.go` (`SetRejectModels`) | Sheds the listed models with 429 at admission. |
-| `EIGENINFERENCE_MIN_DECODE_TPS` | float ≥ 0 (`0` disables) | `15` | `coordinator/cmd/coordinator/main.go` (`SetMinDecodeTPS`) | Per-request decode floor (tokens/s) used by admission; see [`../architecture/scheduling.md`](../architecture/scheduling.md). |
-| `EIGENINFERENCE_DECODE_FLOOR_USE_FLEET_MEDIAN` | bool | `true` (*live*) | `coordinator/registry/scheduler.go` (`decodeFloorUseFleetMedian`) | Lets the per-request decode projection fall back to the fleet-median solo rate before the static benchmark. |
-| `EIGENINFERENCE_SERVABILITY_GATE` | bool | `true` (*live*) | `coordinator/cmd/coordinator/main.go`; `coordinator/api/servability_gate.go` (`servabilityGateEnabled`) | Early 429 for requests whose prompt + `max_tokens` fit no provider; only an explicit `false` disables it. |
-| `EIGENINFERENCE_LONG_PROMPT_TOKENS` | integer > 0 | unset (preference off) | `coordinator/cmd/coordinator/main.go` (`SetLongPromptThreshold`) | Prompts above this size prefer the fastest provider tier. |
-| `EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT` | float (values below 1 clamp to neutral) | `2.0` | `coordinator/cmd/coordinator/main.go` (`SetLongPromptPrefillWeight`) | Prefill weight applied to long prompts; read only when the threshold is set. |
-| `EIGENINFERENCE_PREFILL_DECODE_RATIO` | float > 0 | `12.0` | `coordinator/cmd/coordinator/main.go`; `coordinator/registry/scheduler.go` (`SetPrefillToDecodeRatio`) | Prefill-to-decode speed ratio in the TTFT estimate. |
-| `EIGENINFERENCE_PROMPT_CALIBRATION` | `family:factor,…` (factors ≥ 1.0) | built-in table (`gpt-oss:1.3`) | `coordinator/api/prompt_calibration.go` (`SetPromptContextCalibrationFromEnv`) | Replaces the per-family prompt-token calibration used by the context gate. |
+| `EIGENINFERENCE_DEDICATED_MODELS` | comma-separated family patterns, or `none` | `gemma-4` | `coordinator/cmd/coordinator/registry.go` (`configureRegistry`); `coordinator/registry/dedicated_models.go` (`ParseDedicatedModels`) | Model families that get dedicated-provider routing; `none` disables. |
+| `EIGENINFERENCE_REJECT_MODELS` | comma-separated model ids | unset | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`) | Sheds the listed models with 429 at admission. |
+| `EIGENINFERENCE_MIN_DECODE_TPS` | float ≥ 0 (`0` disables) | `15` | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`) | Per-request decode floor (tokens/s) used by admission; see [`../architecture/scheduling.md`](../architecture/scheduling.md). |
+| `EIGENINFERENCE_DECODE_FLOOR_USE_FLEET_MEDIAN` | bool | `true` (*live*) | `coordinator/registry/routingcost/throughput.go` (`DecodeFloorUseFleetMedian`) | Lets the per-request decode projection fall back to the fleet-median solo rate before the static benchmark. |
+| `EIGENINFERENCE_SERVABILITY_GATE` | bool | `true` (*live*) | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`); `coordinator/inference/ingress/servability.go` (`servabilityGateEnabled`) | Early 429 for requests whose prompt + `max_tokens` fit no provider; only an explicit `false` disables it. |
+| `EIGENINFERENCE_LONG_PROMPT_TOKENS` | integer > 0 | unset (preference off) | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`) | Prompts above this size prefer the fastest provider tier. |
+| `EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT` | float (values below 1 clamp to neutral) | `2.0` | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`) | Prefill weight applied to long prompts; read only when the threshold is set. |
+| `EIGENINFERENCE_PREFILL_DECODE_RATIO` | float > 0 | `12.0` | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`); `coordinator/registry/routing_policy.go` (`SetPrefillToDecodeRatio`) | Prefill-to-decode speed ratio in the TTFT estimate. |
+| `EIGENINFERENCE_PROMPT_CALIBRATION` | `family:factor,…` (factors ≥ 1.0) | built-in table (`gpt-oss:1.3`) | `coordinator/inference/ingress/prompt_calibration.go` (`SetPromptContextCalibrationFromEnv`) | Replaces the per-family prompt-token calibration used by the context gate. |
 | `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES` | `model=upstream_ms,…` (`0`/`off` removes) | built-in table | `coordinator/modelpolicy/first_content_deadline.go` (`SetFirstContentBasesFromEnv`) | Overrides exact-model first-content deadline bases. |
-| `EIGENINFERENCE_HEALTH_EJECTION` | `off`/`0`/`false`/`no` disables | on | `coordinator/registry/health_ejection_switch.go` (`healthEjectionSwitch`, parsed once at package init); `coordinator/registry/health_ejection.go` (`healthEjectionEnabled`) | Kill switch for provider health ejection; see [`../architecture/routing.md`](../architecture/routing.md). |
-| `EIGENINFERENCE_DISABLE_CLIENT_ERROR_STOP` | bool | `false` | `coordinator/cmd/coordinator/main.go` (`SetDisableClientErrorStop`) | Lets deterministic provider 4xx errors fail over instead of stopping the dispatch ladder. |
+| `EIGENINFERENCE_HEALTH_EJECTION` | `off`/`0`/`false`/`no` disables | on | `coordinator/registry/health_ejection_switch.go` (`healthEjectionSwitch`, parsed once at package init; `healthEjectionEnabled`) | Kill switch for provider health ejection; see [`../architecture/routing.md`](../architecture/routing.md). |
+| `EIGENINFERENCE_DISABLE_CLIENT_ERROR_STOP` | bool | `false` | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`) | Lets deterministic provider 4xx errors fail over instead of stopping the dispatch ladder. |
 
 TTFT admission and dispatch termination:
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_TTFT_HARD_REJECT` | `true` | `false` (soft preference) | `coordinator/cmd/coordinator/main.go` (`SetTTFTHardReject`) | Restores the legacy 429 when the best estimated TTFT exceeds the model deadline. |
-| `EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS` | 1000–120000 | `5000` (production pins `9000`) | `coordinator/cmd/coordinator/main.go` (`validateTTFTDeadlineBaseMs`) | Live first-content deadline base (`FirstContentDeadlineBase`, plus 1 ms per prompt token); exact-model policy may only tighten it. |
-| `EIGENINFERENCE_TTFT_DEADLINE_BASE_MS` | 1000–120000 | `10000` | `coordinator/cmd/coordinator/main.go`; `coordinator/registry/ttft_shadow.go` | Deadline base for shadow TTFT evaluation. |
-| `EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA` | float 0–1e6 | `0` (term off) | `coordinator/cmd/coordinator/main.go` (`validateTTFTOccupancyAlpha`) | Weight of the occupancy term in the TTFT estimate. |
-| `EIGENINFERENCE_TTFT_ADMISSION_MODE` | `off`, `shadow`, `enforce` | `off` | `coordinator/cmd/coordinator/main.go`; `coordinator/registry/ttft_shadow.go` (`ParseTTFTAdmissionMode`) | Shadow evaluation of TTFT admission that emits `routing.ttft_admission` metrics without changing decisions; `enforce` currently behaves like `shadow`. |
-| `EIGENINFERENCE_TTFT_CALIBRATION` | `off`/`false`/`0` disables | `on` (*live*) | `coordinator/registry/ttft_calibration.go` (`ttftCalibrationEnabled`) | Per-model TTFT calibration from observed samples; off makes the apply path return ratio 1.0. |
-| `EIGENINFERENCE_TTFT_TERMINAL_REJECT` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/dispatch.go` (`ttftTerminalRejectEnabled`) | A TTFT-too-slow rejection ends the dispatch ladder on any attempt. |
-| `EIGENINFERENCE_JINJA_TERMINAL_REJECT` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/dispatch.go` (`jinjaTerminalRejectEnabled`) | A chat-template render failure ends the ladder with one 422 instead of failing over. |
+| `EIGENINFERENCE_TTFT_HARD_REJECT` | `true` | `false` (soft preference) | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`) | Restores the legacy 429 when the best estimated TTFT exceeds the model deadline. |
+| `EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS` | 1000–120000 | `5000` (production pins `9000`) | `coordinator/cmd/coordinator/serving.go` (`serverConfig`) | Live first-content deadline base (`FirstContentDeadlineBase`, plus 1 ms per prompt token); exact-model policy may only tighten it. |
+| `EIGENINFERENCE_TTFT_DEADLINE_BASE_MS` | 1000–120000 | `10000` | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`); `coordinator/registry/routingcost/shadow_config.go` (`Policy.SetTTFTDeadlineBaseMs`) | Deadline base for shadow TTFT evaluation. |
+| `EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA` | float 0–1e6 | `0` (term off) | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`) | Weight of the occupancy term in the diagnostic shadow TTFT estimate. |
+| `EIGENINFERENCE_TTFT_ADMISSION_MODE` | `off`, `shadow`, `enforce` | `off` | `coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`); `coordinator/registry/routingcost/shadow_config.go` (`ParseTTFTAdmissionMode`) | Shadow evaluation of TTFT admission that emits `routing.ttft_admission` metrics without changing decisions; `enforce` currently behaves like `shadow`. |
+| `EIGENINFERENCE_TTFT_CALIBRATION` | `off`/`false`/`0` disables | `on` (*live*) | `coordinator/registry/routingcost/calibration.go` (`ttftCalibrationEnabled`) | Per-model TTFT calibration from observed samples; off makes the apply path return ratio 1.0. |
+| `EIGENINFERENCE_TTFT_TERMINAL_REJECT` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/inference/dispatch/policy.go` (`ttftTerminalRejectEnabled`) | A TTFT-too-slow rejection ends the dispatch ladder on any attempt. |
+| `EIGENINFERENCE_JINJA_TERMINAL_REJECT` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/inference/dispatch/policy.go` (`JinjaTerminalRejectEnabled`) | A chat-template render failure ends the ladder with one 422 instead of failing over. |
 
 Queue and cold dispatch:
 
@@ -139,20 +139,20 @@ Queue and cold dispatch:
 |---|---|---|---|---|
 | `EIGENINFERENCE_QUEUE_MAX_DEPTH` | integer ≥ 1 | `32` | `coordinator/registry/queue.go` (`NewRequestQueueFromEnv`) | Per-model queue depth before 429. |
 | `EIGENINFERENCE_QUEUE_MAX_WAIT` | Go duration > 0 | `120s` | `coordinator/registry/queue.go` (`NewRequestQueueFromEnv`) | Maximum time a request waits in the queue. |
-| `EIGENINFERENCE_QUEUE_BEFORE_SHED` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/cold_dispatch.go` (`queueBeforeShedEnabled`) | Queue `machine_busy` preflight rejections instead of returning 429 immediately. |
-| `EIGENINFERENCE_COLD_DISPATCH` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/api/cold_dispatch.go` (`coldDispatchEnabled`) | Spill `no_provider` requests into the queue when an idle on-disk provider can be warmed, and kick the load. |
+| `EIGENINFERENCE_QUEUE_BEFORE_SHED` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/inference/dispatch/cold.go` (`QueueBeforeShedEnabled`) | Queue `machine_busy` preflight rejections instead of returning 429 immediately. |
+| `EIGENINFERENCE_COLD_DISPATCH` | `0`/`false`/`no`/`off` disables | `true` (*live*) | `coordinator/inference/dispatch/cold.go` (`ColdDispatchEnabled`) | Spill `no_provider` requests into the queue when an idle on-disk provider can be warmed, and kick the load. |
 
 Capacity breakers:
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_BUDGET_CLAMP` | bool | `true` | `coordinator/registry/budget_clamp.go` | Clamp admission to a provider whose reported token budget is stale after a capacity 503. |
-| `EIGENINFERENCE_BUDGET_CLAMP_TTL_SECONDS` | seconds | `300` | `coordinator/registry/budget_clamp.go` | Fail-open bound on how long a clamp can hold. |
-| `EIGENINFERENCE_CAPACITY_COOLDOWN_THRESHOLD` | integer (`0` disables) | `5` | `coordinator/registry/capacity_cooldown.go` | Consecutive capacity rejects before a (provider, model) pair is cooled down. |
-| `EIGENINFERENCE_CAPACITY_COOLDOWN_WINDOW_SECONDS` | seconds | `60` | `coordinator/registry/capacity_cooldown.go` | Window in which rejects count toward the threshold. |
-| `EIGENINFERENCE_CAPACITY_COOLDOWN_TTL_SECONDS` | seconds | `120` | `coordinator/registry/capacity_cooldown.go` | Initial cooldown; doubles on each failed probe. |
-| `EIGENINFERENCE_CAPACITY_COOLDOWN_MAX_TTL_SECONDS` | seconds | `600` | `coordinator/registry/capacity_cooldown.go` | Ceiling of the exponential cooldown. |
-| `EIGENINFERENCE_CAPACITY_RATE_PENALTY_MS` | milliseconds (≤ 0 disables) | `15000` | `coordinator/registry/capacity_rate.go` | Scores a penalty proportional to a provider's recent capacity-reject rate. |
+| `EIGENINFERENCE_BUDGET_CLAMP` | bool | `true` | `coordinator/registry/faultstate/budget_clamp.go` | Clamp admission to a provider whose reported token budget is stale after a capacity 503. |
+| `EIGENINFERENCE_BUDGET_CLAMP_TTL_SECONDS` | seconds | `300` | `coordinator/registry/faultstate/budget_clamp.go` | Fail-open bound on how long a clamp can hold. |
+| `EIGENINFERENCE_CAPACITY_COOLDOWN_THRESHOLD` | integer (`0` disables) | `5` | `coordinator/registry/faultstate/capacity_policy.go` | Consecutive capacity rejects before a (provider, model) pair is cooled down. |
+| `EIGENINFERENCE_CAPACITY_COOLDOWN_WINDOW_SECONDS` | seconds | `60` | `coordinator/registry/faultstate/capacity_policy.go` | Window in which rejects count toward the threshold. |
+| `EIGENINFERENCE_CAPACITY_COOLDOWN_TTL_SECONDS` | seconds | `120` | `coordinator/registry/faultstate/capacity_policy.go` | Initial cooldown; doubles on each failed probe. |
+| `EIGENINFERENCE_CAPACITY_COOLDOWN_MAX_TTL_SECONDS` | seconds | `600` | `coordinator/registry/faultstate/capacity_policy.go` | Ceiling of the exponential cooldown. |
+| `EIGENINFERENCE_CAPACITY_RATE_PENALTY_MS` | milliseconds (≤ 0 disables) | `15000` | `coordinator/registry/faultstate/capacity_rate.go` | Scores a penalty proportional to a provider's recent capacity-reject rate. |
 
 Reservation commit lock:
 
@@ -165,11 +165,11 @@ Quality concurrency cap:
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `EIGENINFERENCE_QUALITY_CONCURRENCY_CAP` | bool | `true` | `coordinator/registry/config.go` (`ReadConfig`) | Per-provider admission cap derived from each model's quality concurrency instead of the flat cap. |
-| `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT` | float ≥ 0 | `1.2` (`defaultQualityCapOvercommit`; the `2.0` fallback in `ReadConfig` is replaced when the variable is unset) | `coordinator/registry/config.go` (`ReadConfig`); `coordinator/registry/concurrency_cap.go` (`SetQualityConcurrencyCap`) | Multiplier on the strict decode-floor batch. |
-| `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT_BY_MODEL` | `model=factor,…` | unset | `coordinator/registry/concurrency_cap.go` (`SetQualityConcurrencyCap`) | Per-model overcommit overrides. |
-| `EIGENINFERENCE_QUALITY_CAP_PER_MODEL_TPS` | bool | `true` | `coordinator/registry/concurrency_cap.go` | Use per-model solo decode rates (not the provider-level rate) for the cap. |
-| `EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES` | integer | `5` | `coordinator/registry/concurrency_cap.go` | Solo samples required before a per-model median is trusted. |
-| `EIGENINFERENCE_MODEL_SOLO_TPS_SEED` | `model[@chip-class]=tok/s,…` | unset | `coordinator/registry/concurrency_cap.go` (`soloTPSSeedForClass`) | Cold-start decode-rate seed until solo samples accumulate. |
+| `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT` | float ≥ 0 | `1.2` (`defaultQualityCapOvercommit`; the `2.0` fallback in `ReadConfig` is replaced when the variable is unset) | `coordinator/registry/config.go` (`ReadConfig`); `coordinator/registry/quality_cap_config.go` (`SetQualityConcurrencyCap`) | Multiplier on the strict decode-floor batch. |
+| `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT_BY_MODEL` | `model=factor,…` | unset | `coordinator/registry/quality_cap_config.go` (`SetQualityConcurrencyCap`) | Per-model overcommit overrides. |
+| `EIGENINFERENCE_QUALITY_CAP_PER_MODEL_TPS` | bool | `true` | `coordinator/registry/quality_cap_config.go` (`SetQualityConcurrencyCap`) | Use per-model solo decode rates (not the provider-level rate) for the cap. |
+| `EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES` | integer | `5` | `coordinator/registry/quality_cap_config.go` (`SetQualityConcurrencyCap`) | Solo samples required before a per-model median is trusted. |
+| `EIGENINFERENCE_MODEL_SOLO_TPS_SEED` | `model[@chip-class]=tok/s,…` | unset | `coordinator/registry/quality_cap_seed.go` (`soloTPSSeedForClass`) | Cold-start decode-rate seed until solo samples accumulate. |
 
 #### Warm pool
 
@@ -185,13 +185,14 @@ they tune is explained in
 | `EIGENINFERENCE_WARM_POOL_MIN_DWELL` | Go duration | `5m` | `coordinator/registry/config.go` | Minimum time a model stays warm before it may be unloaded. |
 | `EIGENINFERENCE_WARM_POOL_QUEUE_AGE_THRESHOLD` | Go duration | `0` | `coordinator/registry/config.go` | Queue age that counts as pressure. |
 | `EIGENINFERENCE_WARM_POOL_CAPACITY_REJECT_THRESHOLD` | integer ≥ 1 | `1` | `coordinator/registry/config.go` | Capacity rejects per tick that count as pressure. |
-| `EIGENINFERENCE_WARM_POOL_WARM_SATURATION_THRESHOLD` | float 0–1 | `0.8` | `coordinator/registry/config.go` | Warm-slot utilisation that counts as pressure. |
+| `EIGENINFERENCE_WARM_POOL_WARM_SATURATION_THRESHOLD` | finite float 0–1 | `0.8` | `coordinator/registry/config.go` | Warm-slot utilisation that counts as pressure. |
 | `EIGENINFERENCE_WARM_POOL_TTFT_MISS_THRESHOLD` | integer ≥ 1 | `1` | `coordinator/registry/config.go` | TTFT misses per tick that count as pressure. |
 | `EIGENINFERENCE_WARM_POOL_SPECULATIVE_START_THRESHOLD` | integer ≥ 1 | `2` | `coordinator/registry/config.go` | Speculative dispatch starts per tick that count as pressure. |
 | `EIGENINFERENCE_WARM_POOL_SPECULATIVE_WIN_THRESHOLD` | integer ≥ 1 | `1` | `coordinator/registry/config.go` | Speculative wins per tick that count as pressure. |
 | `EIGENINFERENCE_WARM_POOL_COLD_DISPATCH_THRESHOLD` | integer ≥ 1 | `1` | `coordinator/registry/config.go` | Cold dispatches per tick that count as pressure. |
 | `EIGENINFERENCE_WARM_POOL_LOAD_DURATION_THRESHOLD` | Go duration | `20s` | `coordinator/registry/config.go` | Load duration above which a load is counted as slow. |
-| `EIGENINFERENCE_WARM_POOL_DECODE_FLOOR_TPS` | float (≤ 0 disables) | `15` | `coordinator/registry/config.go` | Per-request decode floor used to derive quality concurrency for the target. |
+| `EIGENINFERENCE_WARM_POOL_DECODE_FLOOR_TPS` | finite float ≥ 0 (`0` disables) | `15` | `coordinator/registry/config.go` | Per-request decode floor used to derive quality concurrency for the target. |
+| `EIGENINFERENCE_WARM_POOL_HEADROOM_LOAD_WINDOWS` | finite float ≥ 0 (`0` uses one window) | `1.0` | `coordinator/registry/config.go` | Control intervals of demand growth covered by the derived headroom floor. |
 | `EIGENINFERENCE_WARM_POOL_BURST_BUFFER` | integer ≥ 0 | `1` | `coordinator/registry/config.go` | Spare warm providers added to the demand-derived target. |
 | `EIGENINFERENCE_WARM_POOL_FALLBACK_QUALITY_CONCURRENCY` | integer ≥ 1 | `4` | `coordinator/registry/config.go` | Per-provider concurrency assumed when rates are unknown. |
 | `EIGENINFERENCE_WARM_POOL_ASSUMED_PROMPT_TOKENS` | integer ≥ 0 | `512` | `coordinator/registry/config.go` | Representative prompt size for the service-time estimate. |
@@ -199,8 +200,20 @@ they tune is explained in
 | `EIGENINFERENCE_WARM_POOL_MIN_WARM` | `model=count,…` | unset | `coordinator/registry/config.go` (`envModelIntMap`) | Operator floor of warm providers per concrete model id. |
 | `EIGENINFERENCE_WARM_POOL_MAX_LOADS_PER_TICK` | integer ≥ 0 (`0` = observe) | `4` | `coordinator/registry/config.go` | Baseline load burst per tick. |
 | `EIGENINFERENCE_WARM_POOL_MAX_LOADS_PER_TICK_CEILING` | integer ≥ 0 | `16` | `coordinator/registry/config.go` | Hard per-tick maximum after gap scaling. |
-| `EIGENINFERENCE_WARM_POOL_RAMP_GAP_FRACTION` | float ≥ 0 | `0.5` | `coordinator/registry/config.go` | Scales the burst with the remaining target gap. |
+| `EIGENINFERENCE_WARM_POOL_RAMP_GAP_FRACTION` | finite float ≥ 0 | `0.5` | `coordinator/registry/config.go` | Scales the burst with the remaining target gap. |
 | `EIGENINFERENCE_WARM_POOL_MAX_GLOBAL_PENDING_LOADS` | integer ≥ 0 | `16` | `coordinator/registry/config.go` | Fleet-wide cap on in-flight loads. |
+
+`QualityCapConfig.Check` and `WarmPoolConfig.Check` in
+`coordinator/registry/config.go` reject non-finite floating-point tunables at
+startup, including when the warm controller is disabled. Existing finite ranges
+and zero-value disable/fallback semantics remain in effect. Specifically,
+`EIGENINFERENCE_WARM_POOL_ENABLED=false` together with
+`EIGENINFERENCE_WARM_POOL_INTERVAL=0s` bypasses the
+warm-controller range checks after the finite checks. This preserves acceptance
+of a finite negative decode floor in that disabled-controller configuration;
+`coordinator/registry/tps_registry.go` (`qualityConcurrency`) treats a floor
+≤ 0 as disabling the quality cap. The ranges in the warm-pool table apply when
+that disabled, zero-interval exception is not selected.
 
 Cache-aware routing (semantics in [`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md)). `refresh-env.sh` seeds absent keys from `deploy/gcp/prod/release-env-defaults` — production ships `MODE=off`, `PERCENT=1`, `MAX_PLAN_QPS=1` — and never overwrites a value an operator has set:
 
@@ -210,7 +223,7 @@ Cache-aware routing (semantics in [`../architecture/cache-aware-routing.md`](../
 | `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` | JSON array of exact identity triples; at most 64 KiB / 128 entries | unset (unrestricted eligibility) | `coordinator/registry/cache_artifact_allowlist.go` (`readCacheRoutingArtifacts`, `newCacheArtifactAllowlist`) | Restricts network cache participation before cohort/QPS/sidecar work; `[]` denies all. Invalid configuration refuses startup, including while mode is `off`. |
 | `EIGENINFERENCE_CACHE_ROUTING_PERCENT` | float (0, 100] | `100` | `coordinator/registry/config.go` (`envStrictFloat`) | Share of eligible requests that use cache routing; malformed values refuse startup. |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS` | float 0–1,000,000 | `0` (unlimited) | `coordinator/registry/config.go` (`envStrictFloat`) | Rate limit on cache-plan computation. |
-| `EIGENINFERENCE_CACHE_ROUTING_TTL` | Go duration ≥ 0 | `10m` | `coordinator/registry/config.go` | SSD holder lifetime; resident holders use the smaller of this value and `cacheRoutingMemoryTTL = 30 * time.Second` (`coordinator/registry/cache_tiers.go`, `receiptTTL`). |
+| `EIGENINFERENCE_CACHE_ROUTING_TTL` | Go duration ≥ 0 | `10m` | `coordinator/registry/config.go` | SSD holder lifetime; resident holders use the smaller of this value and `MemoryTTL = 30 * time.Second` (`coordinator/registry/cachedirectory/tiers.go`, `receiptTTL`; `coordinator/registry/cachedirectory/limits.go`). |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS` | integer 1–32 | `4` | `coordinator/registry/config.go` | Maximum machines per exact content prefix and tier, across provider epochs. |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS` | optional float 0–10000 | unset/blank | `coordinator/registry/cache_score_config.go` (`optionalCacheScoreLimit`) | Optional millisecond cap on avoidable-prefill score credit; explicit `0` grants no credit. |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION` | optional float 0–1 | unset/blank | `coordinator/registry/cache_score_config.go` (`optionalCacheScoreLimit`) | Optional cap as a fraction of baseline total cost, alongside the prefill-work bound; explicit `0` grants no credit. |
@@ -246,7 +259,7 @@ Rate limits and service-account admission (`coordinator/ratelimit/config.go`, `R
 | `EIGENINFERENCE_SERVICE_RATE_LIMIT_RPS`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_BURST` | float (`0` = bypass), integer | `200`, `600` | `coordinator/ratelimit/config.go` | Request limiter for service accounts. |
 | `EIGENINFERENCE_SERVICE_RATE_LIMIT_ITPM`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_ITPM_BURST` | tokens/min, tokens | `50000000`, `5000000` | `coordinator/ratelimit/config.go` | Service-account input-token limiter. |
 | `EIGENINFERENCE_SERVICE_RATE_LIMIT_OTPM`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_OTPM_BURST` | tokens/min, tokens | `5000000`, `512000` | `coordinator/ratelimit/config.go` | Service-account output-token limiter. |
-| `EIGENINFERENCE_SERVICE_EXPECTED_OUTPUT_ADMISSION_ENABLED` | bool | `false` | `coordinator/ratelimit/config.go`; `coordinator/cmd/coordinator/main.go` (`NewOutputAdmissionEstimator`) | Admit service requests against an expected output-token estimate. |
+| `EIGENINFERENCE_SERVICE_EXPECTED_OUTPUT_ADMISSION_ENABLED` | bool | `false` | `coordinator/ratelimit/config.go`; `coordinator/cmd/coordinator/rate_limits.go` (`configureRateLimits`) | Admit service requests against an expected output-token estimate. |
 | `EIGENINFERENCE_SERVICE_EXPECTED_OUTPUT_ADMISSION_FRACTION` | float | `0.25` | `coordinator/ratelimit/config.go` | Fraction of `max_tokens` assumed as expected output. |
 | `EIGENINFERENCE_SERVICE_EXPECTED_OUTPUT_ADMISSION_FLOOR`, `EIGENINFERENCE_SERVICE_EXPECTED_OUTPUT_ADMISSION_CEILING` | tokens | `512`, `8192` | `coordinator/ratelimit/config.go` | Bounds on the expected-output estimate. |
 
@@ -255,9 +268,13 @@ Throughput anomaly detector:
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `EIGENINFERENCE_THROUGHPUT_ANOMALY_INTERVAL` | Go duration > 0 | `5m` | `coordinator/api/throughput_anomaly.go` (`StartThroughputAnomalyDetector`) | Sweep cadence comparing observed decode rate to expectation per (model, chip class). |
-| `EIGENINFERENCE_THROUGHPUT_ANOMALY_RATIO` | float > 0 | `0.35` | `coordinator/api/throughput_anomaly.go` (`throughputAnomalyConfigFromEnv`) | Observed/expected ratio below which a bucket is anomalous. |
+| `EIGENINFERENCE_THROUGHPUT_ANOMALY_RATIO` | finite float > 0 | `0.35` | `coordinator/api/throughput_anomaly.go` (`throughputAnomalyConfigFromEnv`) | Observed/expected ratio below which a bucket is anomalous. |
 | `EIGENINFERENCE_THROUGHPUT_ANOMALY_MIN_SAMPLES` | integer > 0 | `3` | `coordinator/api/throughput_anomaly.go` (`throughputAnomalyConfigFromEnv`) | Providers required in a bucket before it is judged. |
-| `EIGENINFERENCE_THROUGHPUT_ANOMALY_EFFICIENCY` | float > 0 | `0.80` | `coordinator/api/throughput_anomaly.go` (`throughputAnomalyConfigFromEnv`) | Expected decode efficiency relative to the chip's theoretical rate. |
+| `EIGENINFERENCE_THROUGHPUT_ANOMALY_EFFICIENCY` | finite float > 0 | `0.80` | `coordinator/api/throughput_anomaly.go` (`throughputAnomalyConfigFromEnv`) | Expected decode efficiency relative to the chip's theoretical rate. |
+
+Invalid throughput-detector overrides, including `NaN` and infinity, retain the
+field's default; startup logs report the resulting settings
+(`coordinator/api/throughput_anomaly.go`, `throughputAnomalyConfigFromEnv`).
 
 ### Billing, Stripe and base rewards
 
@@ -265,18 +282,18 @@ Prices, the platform fee and the referral share live in [`../architecture/billin
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `EIGENINFERENCE_BILLING_MOCK` | `true` | `false` | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/cmd/coordinator/main.go` | Bypasses Stripe with an instant-credit mock (dev only). |
+| `EIGENINFERENCE_BILLING_MOCK` | `true` | `false` | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/cmd/coordinator/accounts.go` (`configureAccounts`) | Bypasses Stripe with an instant-credit mock (dev only). |
 | `EIGENINFERENCE_REFERRAL_SHARE_PCT` | integer percent | `20` | `coordinator/billing/config.go` (`ReadConfig`) | Share of the platform fee paid to a consumer's referrer. |
 | `EIGENINFERENCE_STRIPE_SECRET_KEY` | secret | unset (deposits disabled) | `coordinator/billing/config.go` (`ReadConfig`) | Stripe API key for consumer deposits. |
 | `EIGENINFERENCE_STRIPE_WEBHOOK_SECRET` | secret | unset | `coordinator/billing/config.go` (`ReadConfig`) | Verifies Checkout webhooks. |
 | `EIGENINFERENCE_STRIPE_SUCCESS_URL`, `EIGENINFERENCE_STRIPE_CANCEL_URL` | URLs | unset | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/billing/stripe.go` (`NewStripeProcessor`) | Checkout redirect targets. |
 | `EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET` | secret | unset | `coordinator/billing/config.go` (`ReadConfig`) | Verifies Connect account webhooks (provider payouts). |
 | `EIGENINFERENCE_STRIPE_CONNECT_COUNTRY` | ISO 3166-1 alpha-2 | `US` | `coordinator/billing/config.go` (`ReadConfig`) | Country for new Connect express accounts. |
-| `EIGENINFERENCE_STRIPE_CONNECT_RETURN_URL`, `EIGENINFERENCE_STRIPE_CONNECT_REFRESH_URL` | URLs | unset | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/api/stripe_payouts.go` | Connect onboarding redirect targets; caller-supplied URLs are validated against the configured return URL. |
+| `EIGENINFERENCE_STRIPE_CONNECT_RETURN_URL`, `EIGENINFERENCE_STRIPE_CONNECT_REFRESH_URL` | URLs | unset | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/api/billing/connect_redirect.go` (`validateRedirectURL`) | Connect onboarding redirect targets; caller-supplied URLs are validated against the configured return URL. |
 | `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED` | bool | `true` in production release defaults; `false` otherwise | `coordinator/billing/config.go` (`ReadConfig`, `Check`); `deploy/gcp/prod/release-env-defaults` | Enables new international onboarding, quotes and withdrawals. Production refresh preserves an explicit `false` and requires the funding account and webhook secret before activation; runtime validation also requires the base `EIGENINFERENCE_STRIPE_SECRET_KEY` used for Connect. Reconciliation continues with configured credentials even when disabled. |
 | `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_FINANCIAL_ACCOUNT` | ID | unset | `coordinator/billing/config.go` (`Check`) | Funding financial account; required when enabled. |
 | `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_SECRET_KEY` | secret | falls back to `EIGENINFERENCE_STRIPE_SECRET_KEY` | `coordinator/billing/config.go` (`ReadConfig`) | Restricted API key override for Global Payouts; does not replace the required base Connect key. |
-| `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_WEBHOOK_SECRET` | secret | unset | `coordinator/api/global_payouts_reconcile.go` (`handleGlobalPayoutWebhook`) | Verifies the separate Global Payouts event destination; missing secret rejects all events. |
+| `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_WEBHOOK_SECRET` | secret | unset | `coordinator/api/billing/global_webhook.go` (`GlobalPayoutWebhook`) | Verifies the separate Global Payouts event destination; missing secret rejects all events. |
 | `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Reserve balance up front for service-account requests. |
 | `EIGENINFERENCE_BASE_REWARDS` | bool | `false` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Turns on the hourly base-rewards settlement loop. |
 | `EIGENINFERENCE_BASE_REWARDS_K` | float | `0` (additive base income; `1` = legacy max backstop) | `coordinator/api/server_config.go` (`ReadServerConfig`) | Reduction factor applied to earnings before the floor is paid. |
@@ -288,9 +305,9 @@ Prices, the platform fee and the referral share live in [`../architecture/billin
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `MODEL_REGISTRY_PUBLISHING_KEY` | secret | unset | `coordinator/api/model_registry_handlers.go` (`requirePublishingAPIKey`) | Bootstrap bearer token accepted (constant-time) for model-registry publishing in addition to admin keys; see [`../architecture/model-registry.md`](../architecture/model-registry.md). |
-| `MODEL_REGISTRY_CDN_BASE_URL` | URL | unset (registry entries carry no CDN base) | `coordinator/api/model_registry_handlers.go` (`registryCDNBaseURL`) | Base URL providers download published model weights from. |
-| `EIGENINFERENCE_R2_CDN_URL` | URL | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/release_handlers.go` (`trustedReleaseArtifactURL`) | Public R2 bucket URL release binaries are pulled from; release registration is refused (503) until it is set, and every registered artifact URL must live under it. See [`../operations/release-policy-rollout.md`](../operations/release-policy-rollout.md). |
+| `MODEL_REGISTRY_PUBLISHING_KEY` | secret | unset | `coordinator/api/catalog/publishing_auth.go` (`requirePublishingAPIKey`) | Bootstrap bearer token accepted (constant-time) for model-registry publishing in addition to admin keys; see [`../architecture/model-registry.md`](../architecture/model-registry.md). |
+| `MODEL_REGISTRY_CDN_BASE_URL` | URL | unset (registry entries carry no CDN base) | `coordinator/api/catalog/manifest_fetch.go` (`registryCDNBaseURL`) | Base URL providers download published model weights from. |
+| `EIGENINFERENCE_R2_CDN_URL` | URL | unset | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/releases/artifact_origin.go` (`trustedReleaseArtifactURL`) | Public R2 bucket URL release binaries are pulled from; release registration is refused (503) until it is set, and every registered artifact URL must live under it. See [`../operations/release-policy-rollout.md`](../operations/release-policy-rollout.md). |
 
 ### Prompt sidecar and media fetch
 
@@ -335,8 +352,8 @@ Media fetch (`coordinator/mediafetch/config.go`, `ConfigFromEnv`; a set-but-unpa
 | `DD_ENV`, `DD_SERVICE` | strings | `production`, `d-inference-coordinator` | `coordinator/datadog/datadog.go` (`ConfigFromEnv`) | `env:` and `service:` tags on every series, log and trace. |
 | `DD_DOGSTATSD_URL` | `host:port` | `localhost:8125` | `coordinator/datadog/datadog.go` (`ConfigFromEnv`) | DogStatsD agent address. |
 | `DD_HOSTNAME` | hostname | the `DD_SERVICE` value | `coordinator/datadog/datadog.go` (`NewClient`) | `host` attribute on series shipped over the HTTP metrics API. |
-| `EIGENINFERENCE_PROFILER` | `off` disables | `on` | `coordinator/api/profiler.go` (`newProfilerFromEnv`) | Kill switch for the per-request system profiler; see [`../architecture/system-profiler.md`](../architecture/system-profiler.md). |
-| `EIGENINFERENCE_PROFILE_SAMPLE_RATE` | float 0–1 | `0.1` | `coordinator/api/profiler.go` (`newProfilerFromEnv`) | Fraction of successful requests the profiler samples; slow, failed and retried requests are always recorded. |
+| `EIGENINFERENCE_PROFILER` | `off` disables | `on` | `coordinator/telemetry/profiler/config.go` (`ConfigFromEnv`) | Kill switch for the per-request system profiler; see [`../architecture/system-profiler.md`](../architecture/system-profiler.md). |
+| `EIGENINFERENCE_PROFILE_SAMPLE_RATE` | float 0–1 | `0.1` | `coordinator/telemetry/profiler/config.go` (`ConfigFromEnv`) | Fraction of successful requests the profiler samples; slow, failed and retried requests are always recorded. |
 
 ## Provider CLI (`darkbloom`)
 

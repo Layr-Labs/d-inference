@@ -1,6 +1,6 @@
 # Roll out App Attest recovery and qualify MDM retirement
 
-> Last updated: 2026-09-15 · commit `a99ce680a`
+> Last updated: 2026-09-16 · commit `35c6a0f5b`
 
 Use this runbook to qualify provider 0.9.4 alongside authoritative APNs/MDM.
 The [protocol reference](../reference/app-attest-shadow.md) owns configuration,
@@ -82,7 +82,7 @@ physical machine identifier. These platform/product conditions require evidence
 or a deliberate eligibility/accounting decision, not a code toggle.
 
 For a credential revocation, use `RevokeAppAttestKey` in
-`coordinator/store/app_attest_readiness.go` through an approved administrative
+`coordinator/store/postgres/app_attest_readiness.go` through an approved administrative
 operation. It requires the owning account, retains the reason/time, and cannot
 silently revoke another account’s key. This release records the prospective
 result; APNs/MDM continues to decide serving.

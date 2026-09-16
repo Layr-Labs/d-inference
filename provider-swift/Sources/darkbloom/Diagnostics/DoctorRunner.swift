@@ -244,12 +244,19 @@ enum DoctorRunner {
     /// Best-effort read of whether the system is currently being kept awake,
     /// via `pmset -g assertions`. Informational only (the provider
     /// self-caffeinates while serving), so nil/UNKNOWN on any failure is fine.
-    private static func systemSleepPrevented() -> Bool? {
-        guard let data = try? BoundedProcess.runCapturingStandardOutput(
-            URL(fileURLWithPath: "/usr/bin/pmset"), arguments: ["-g", "assertions"],
-            timeout: 5
-        ) else { return nil }
-        guard let text = String(data: data, encoding: .utf8) else { return nil }
+    static func systemSleepPrevented(runner: SecurityCommandRunner? = nil) -> Bool? {
+        let text: String
+        if let runner {
+            guard let result = try? runner.run("/usr/bin/pmset", ["-g", "assertions"]),
+                  result.terminationStatus == 0 else { return nil }
+            text = result.stdout
+        } else {
+            guard let data = try? BoundedProcess.runCapturingStandardOutput(
+                URL(fileURLWithPath: "/usr/bin/pmset"), arguments: ["-g", "assertions"],
+                timeout: 5
+            ), let output = String(data: data, encoding: .utf8) else { return nil }
+            text = output
+        }
         // `PreventUserIdleSystemSleep` / `PreventSystemSleep` report 1 when an
         // assertion (e.g. caffeinate, an active inference) is holding the system
         // awake. Any "1" on those lines ⇒ sleep currently prevented.

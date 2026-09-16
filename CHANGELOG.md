@@ -57,6 +57,9 @@ coordinator deployment.
 
 - Provider installation retains the previous app or legacy bundle if restoring it after a failed swap also fails. The installer reports the recovery path instead of deleting the only backup or claiming successful restoration.
 - Installer downloads use private temporary files and remove incomplete downloads on failure.
+## Unreleased
+
+- Provider releases use the same profile and signed CLI entitlement checks as signing validation, rejecting unrelated app identities and missing profile expiry before publication. Release registration encodes quoted and multiline tag text as JSON data.
 
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 

@@ -1084,6 +1084,11 @@ Run the measurement-helper fixtures without a provider, model, API key or networ
 service:
 With `mise` activated in your shell, prepare and run the CPU tooling checks from
 the repository root:
+`python3 scripts/test-provider-signing-validation.py` checks signing-input
+contracts. `python3 scripts/test_release_workflow.py` runs the release workflow's
+profile and JSON-payload steps against local fixtures, including invalid app
+identities, missing expiry, and quoted multiline tag text. Both run in Release
+Integrity CI without signing, notarizing, publishing or executing a provider.
 
 ```bash
 make tooling-install  # isolated .venv/tooling with pinned NumPy

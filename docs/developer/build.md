@@ -227,6 +227,8 @@ continues to reject divergent copies.
 
 The separate [signing-validation workflow](../operations/provider-release.md#environment-free-signing-validation)
 checks packaging and Apple signing without selecting a deployment environment.
+It shares profile and signed CLI entitlement validators with the release workflow;
+the same authorization checks run before either workflow proceeds to notarization.
 
 Release configuration, as the release workflow builds it:
 

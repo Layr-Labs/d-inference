@@ -665,6 +665,24 @@ Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
 `go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
 the slow WebSocket integration tests; run the full set before merging.
 
+#### Bounded telemetry reads
+
+Run the memory-store allocation and filtered-read regressions from the repository root:
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/store -count=1 \
+  -run '^Test(MemoryTelemetryReadBuffersAreBounded|RequestProfilesSinceFilteredAppliesPredicatesBeforeTheCap)$'
+```
+
+`telemetry_read_allocation_test.go` seeds 50,001 rows per reader and checks
+that route, rejection, request-profile and fleet-snapshot results retain at most
+50,000 rows of buffer capacity, including recent and empty time windows.
+It also checks inclusive filtering, non-nil empty results and newest-first row
+order. The existing profile-filter regression checks that predicates apply
+before the result cap. No provider, model or database is needed for these focused
+checks; use the full store suite with a disposable `DATABASE_URL` to cover both
+storage backends and their existing telemetry contracts.
+
 #### Provider config cleanup
 
 The CPU-only `e2e/testbed/provider_config_cleanup_test.go` tests retain a fixed

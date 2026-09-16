@@ -62,7 +62,7 @@ func (s *Store) RecordRejection(record *contracts.RejectionRecord) error {
 }
 
 // RejectionRecordsSince returns rejection records created at or after the given
-// time. Zero since returns all records.
+// time, newest-first, capped at the shared telemetry read limit. Zero since includes all creation times, subject to the same cap.
 func (s *Store) RejectionRecordsSince(since time.Time) []contracts.RejectionRecord {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -29,7 +29,7 @@ const inferenceRouteSelectColumns = `
 			admitted_but_failed, used_backup, backup_won, error_reason`
 
 // InferenceRouteRecordsSince returns routing records created at or after the
-// given time. Zero since returns all records.
+// given time, newest-first, capped at the shared telemetry read limit. Zero since includes all creation times, subject to the same cap.
 func (s *Store) InferenceRouteRecordsSince(since time.Time) []contracts.InferenceRouteRecord {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

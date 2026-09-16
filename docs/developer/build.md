@@ -126,6 +126,8 @@ The Responses stream fixtures compile in the coordinator API test binary and
 use generated SSE data; they need no provider binary or model artifact.
 The [provider config cleanup tests](test.md#provider-config-cleanup) run with
 temporary home directories and need no provider build or model.
+The [telemetry read-buffer regression](test.md#bounded-telemetry-reads) uses only
+the Go memory store and a bounded local history fixture.
 
 ```bash
 make coordinator-build            # cd coordinator && go build ./cmd/coordinator

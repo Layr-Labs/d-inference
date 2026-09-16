@@ -140,6 +140,17 @@ of the shared frame service through `InferenceFrames`; see
 [provider inference frames](#provider-inference-frames). The session retains no
 second pending-request, accounting or cancellation state.
 
+Registration passes only the freshly authenticated token’s account to
+`StartAppAttestShadow`, bound in `coordinator/api/provider_session.go`. The
+session forwards bounded shadow frames through `ShadowSession.Offer` and counts
+oversized refusals through `Drop`; neither callback performs database work on
+the read loop. The API owns the App Attest worker and machine inventory.
+`Server.Close` cancels the receipt, maintenance, backfill, and reconciliation
+workers’ shared background context before stopping trust coverage. Machine
+inventory observes both server and connection cancellation; the shadow exchange
+uses its connection context. The [App Attest reference](../../reference/app-attest-shadow.md)
+describes these workers.
+
 Teardown cancels the connection context, unbinds its exact scheduler key and
 generation, clears code-resume state, stops device then code coverage, calls
 `Registry.DisconnectWithReason`, and closes the socket, in that order

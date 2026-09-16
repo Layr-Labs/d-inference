@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/providercontrol/challenge"
 	"github.com/eigeninference/d-inference/coordinator/providercontrol/codeidentity"
 	"github.com/eigeninference/d-inference/coordinator/providercontrol/mdmscheduler"
@@ -19,6 +20,13 @@ import (
 func (s *Server) providerSessionDependencies() session.Dependencies {
 	frames := s.inferenceFrames()
 	return session.Dependencies{
+		StartAppAttestShadow: func(ctx context.Context, provider *registry.Provider, reg *protocol.RegisterMessage, accountID string) session.ShadowSession {
+			shadow := s.startAppAttestShadow(ctx, provider, reg, accountID)
+			if shadow == nil {
+				return nil
+			}
+			return shadow
+		},
 		Registry: func() *registry.Registry { return s.registry },
 		Store: func() session.Store {
 			if s.store == nil {
@@ -74,3 +82,7 @@ func (s *Server) newProviderSession() *session.Session {
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
 	s.newProviderSession().Run(ctx, conn, providerID, r)
 }
+
+func (s *appAttestShadowSession) Offer(payload protocol.AppAttestShadowPayload) { s.offer(payload) }
+
+func (s *appAttestShadowSession) Drop() { s.dropped.Add(1) }

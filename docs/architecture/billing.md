@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-15 · commit `0f7b1e611`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -317,7 +317,7 @@ per-epoch base income on top of organic earnings. It is wired in
 model loaded; `MemoryPressure < 0.8` and thermal state not `critical`; a
 provider key; uptime from `provider_sessions` ≥ `MinUptimeFrac` (`0.90`, open
 sessions accrue to `last_seen + defaultGraceSeconds = 90`); hardware model in
-the memory catalog (`mdm.ModelMaxMemoryGB` caps self-reported memory
+the memory catalog (`hardware.ModelMaxMemoryGB` caps self-reported memory
 downward; unknown models are skipped); and a linked payout account:
 
 ```
@@ -342,6 +342,12 @@ serialized by an advisory lock. `GET /v1/admin/base-rewards` returns
 (`coordinator/api/billing/base_rewards.go`). The tier table is in
 [`reference/pricing-model.md`](../reference/pricing-model.md#base-rewards);
 the design record is [`design/base-rewards.md`](../design/base-rewards.md).
+
+The base-reward model memory ceiling lives in `coordinator/hardware/mac_models.go`
+(`ModelMaxMemoryGB`). Moving that static catalog out of MDM does not change any
+cap, eligibility rule, serial/accounting key, or payout. `coordinator/mdm/mac_models.go`
+retains a compatibility wrapper. App Attest hardware claims are observational in
+this release; they do not replace the existing reward inputs or eligibility gates.
 
 ## Invariants
 
@@ -562,7 +568,7 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 | Invite codes and admin credits | `coordinator/api/accounts/invites.go`, `coordinator/api/authorization.go` (`Controller.CreateInvite`, `Controller.ListInvites`, `Controller.DeactivateInvite`, `Controller.RedeemInvite`, `requireAdminKey`); `coordinator/store/postgres/invites.go` (`RedeemInviteCode`); `coordinator/api/billing/admin_adjustment.go` (`AdminCredit`, `AdminReward`) | `POST /v1/admin/invite-codes`, `GET /v1/admin/invite-codes`, `DELETE /v1/admin/invite-codes`, `POST /v1/invite/redeem`, `POST /v1/admin/credit`, `POST /v1/admin/reward` |
 | Roles and fee overrides | `coordinator/api/billing/account_policy.go` (`AdminSetUserRole`, `AdminSetUserPlatformFee`); `coordinator/store/postgres/users.go` (`SetUserRole`, `SetUserPlatformFeePercent`) | `PUT /v1/admin/users/role`, `PUT /v1/admin/users/platform-fee` |
 | Per-key spend caps | `coordinator/api/accounts/key_projection.go`, `coordinator/api/accounts/key_inputs.go`, `coordinator/api/accounts/key_policy.go` (`validateKeyLimitInputs`, `accounts.CheckKeySpendCap`, `apiKeyToResponse`); `coordinator/store/contracts/keys.go` (`KeySpendWindowStart`, `NormalizeResetWindow`); `coordinator/store/postgres/keys.go` (`KeySpendSince`) | `POST /v1/keys`, `PATCH /v1/keys/{id}`, `GET /v1/keys` |
-| Base rewards | `coordinator/payments/baserewards/` (`floor.go`, `alloc.go`, `epoch.go`, `engine.go`); `coordinator/store/postgres/base_rewards.go` (`SettleProviderFloorDraw`, `SumProviderEarningsByKey`); `coordinator/api/billing/base_rewards.go` (`AdminBaseRewards`); `coordinator/api/server_config.go` (`BaseRewards`) | `GET /v1/admin/base-rewards` |
+| Base rewards | `coordinator/hardware/mac_models.go` (`ModelMaxMemoryGB`); `coordinator/payments/baserewards/` (`floor.go`, `alloc.go`, `epoch.go`, `engine.go`); `coordinator/store/postgres/base_rewards.go` (`SettleProviderFloorDraw`, `SumProviderEarningsByKey`); `coordinator/api/billing/base_rewards.go` (`AdminBaseRewards`); `coordinator/api/server_config.go` (`BaseRewards`) | `GET /v1/admin/base-rewards` |
 | Admin auth | `coordinator/api/admin_auth.go` (`isAdminAuthorized`); `coordinator/api/authorization.go` (`requireAdminKey`); `coordinator/api/catalog/publishing_auth.go` (`requirePublishingAPIKey`) | — |
 | Rate limits | `coordinator/ratelimit/config.go` (`Financial`, `Service`) | — |
 

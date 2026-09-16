@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -30,6 +31,12 @@ func (s *Session) Run(ctx context.Context, conn *websocket.Conn, providerID stri
 		var msg protocol.ProviderMessage
 		// Decoder errors can contain provider-controlled data; log no payload detail.
 		if err := protocol.DecodeProviderMessage(data, &msg); err != nil {
+			if errors.Is(err, protocol.ErrAppAttestShadowFrameTooLarge) {
+				if s.appAttestShadow != nil {
+					s.appAttestShadow.Drop()
+				}
+				s.deps.Telemetry.Incr("app_attest.shadow.frames_rejected", []string{"reason:oversized"})
+			}
 			s.deps.Logger().Warn("invalid provider message", "provider_id", s.providerID)
 			continue
 		}
@@ -43,6 +50,10 @@ func (s *Session) Run(ctx context.Context, conn *websocket.Conn, providerID stri
 			}
 			if !s.register(msg.Payload.(*protocol.RegisterMessage)) {
 				return
+			}
+		case protocol.TypeAppAttestShadow:
+			if s.appAttestShadow != nil {
+				s.appAttestShadow.Offer(msg.Payload.(*protocol.AppAttestShadowMessage).Payload)
 			}
 		case protocol.TypeHeartbeat:
 			if s.provider == nil {

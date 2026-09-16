@@ -1,11 +1,13 @@
 # Provider attestation
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-15 · commit `0f7b1e611`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
 the level (`mda_verified`, `code_attested`), the five-minute challenge that
 keeps the verdict fresh, and the single routing gate that consumes all of it.
+
+[App Attest shadow observations](../../reference/app-attest-shadow.md) run alongside this mechanism. A [prospective App Attest authorization policy](../../reference/app-attest-shadow.md#prospective-authorization) records connection-bound freshness, revocation, build and receipt requirements for a later migration. Protocol 3 binds app-measured static hardware to the signed transcript and compares it with registration. These observations grant and remove no trust; the existing APNs/MDM gates described here remain authoritative.
 
 ## Context
 

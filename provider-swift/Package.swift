@@ -55,6 +55,16 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "ProviderAppAttest",
+            path: "Sources/ProviderAppAttest",
+            linkerSettings: [.linkedFramework("DeviceCheck"), .linkedFramework("Security")]
+        ),
+        .testTarget(
+            name: "ProviderAppAttestTests",
+            dependencies: ["ProviderAppAttest"],
+            path: "Tests/ProviderAppAttestTests"
+        ),
+        .target(
             name: "DarkbloomFanCore",
             path: "Sources/DarkbloomFanCore",
             linkerSettings: [.linkedFramework("IOKit")]
@@ -112,6 +122,7 @@ let package = Package(
         .target(
             name: "ProviderCore",
             dependencies: [
+                "ProviderAppAttest",
                 "ProviderCoreFoundation",
                 "ProviderMetallibControl",
                 .product(name: "MLX", package: "mlx-swift"),
@@ -164,6 +175,7 @@ let package = Package(
                 "DarkbloomFanCore",
                 "DarkbloomFanProtocol",
                 "DarkbloomFanService",
+                "ProviderAppAttest",
                 "ProviderCore",
                 "ProviderBenchmark",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
@@ -226,6 +238,7 @@ let package = Package(
         .testTarget(
             name: "ProviderCoreTests",
             dependencies: [
+                "ProviderAppAttest",
                 "ProviderCore",
                 "ProviderBenchmark",
                 .product(name: "MLXNN", package: "mlx-swift"),

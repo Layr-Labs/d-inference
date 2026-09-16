@@ -171,6 +171,12 @@ for navigating these original source snapshots.
 | New model family or engine capability | `architecture/inference.md`, `consumer/models.md`, `provider/hardware-requirements.md` |
 | Anything user-visible | `CHANGELOG.md` |
 
+CI encodes the high-confidence part of this matrix in
+`scripts/docs-impact-rules.json`. `scripts/docs-impact-check.py` evaluates it
+against each pull-request diff before the ordinary documentation lint. Keep the
+matrix and machine-readable rules aligned when adding a documentation-sensitive
+surface.
+
 ## 8. Adding, moving, retiring pages
 
 - New page: pick the directory by type (§1), add it to that directory's

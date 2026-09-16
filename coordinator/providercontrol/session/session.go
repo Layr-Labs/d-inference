@@ -19,6 +19,7 @@ type Session struct {
 	providerID          string
 	request             *http.Request
 	provider            *registry.Provider
+	appAttestShadow     ShadowSession
 	challenges          *challenge.Session
 	schedulerSEKey      string
 	schedulerGeneration uint64

@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-15 · commit `0f7b1e611`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -24,6 +24,8 @@ The coordinator's persistence packages compile through the normal Go build.
 `store/memory`, `store/postgres` and `store/cache`, with shared records in
 `store/contracts`. The [storage code map](../architecture/storage.md#code-map)
 identifies each owner; changing this layout adds no migration or startup flag.
+
+The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its [shadow packaging and live-validation requirements](../reference/app-attest-shadow.md#packaging-and-live-acceptance) are separate from a successful local compile.
 
 ## Prerequisites
 
@@ -517,6 +519,27 @@ ls console-ui/.next
 | `cargo build --locked` fails on lockfile | `Cargo.lock` out of date with `Cargo.toml` | run `cargo update -p <crate>` deliberately and commit the lock; never drop `--locked` in CI |
 | `go build` picks a different Go | `mise` not activated in this shell | `eval "$(mise activate bash)"` (or zsh) then retry |
 | `docker build` fails at `file … statically linked` | sidecar not statically linked (musl target missing) | the Dockerfile adds the target itself; check Docker platform is `linux/amd64` |
+
+## App Attest release qualification
+
+Use the macOS 27 SDK for a candidate that needs Apple code-measurement extensions. The release workflow explicitly selects Command Line Tools 27.0 / Swift 6.4, then runs provider tests under that same SDK; ordinary development retains the Swift 6.3 minimum. Set `SDKROOT` to that SDK for both compilation and linking: a CLT 27 beta 6 Swift probe compiled with `--sdk` alone embedded the deployment target as its SDK; setting `SDKROOT` produced the correct linked SDK. Verify `LC_BUILD_VERSION` with `xcrun vtool -show-build` on the final executable. Confirm the final signed executable produces the current launch category and full CodeDirectory digest on physical macOS 27; SDK 26 builds can collect ordinary shadow proofs but cannot qualify replacement readiness. See the [observed SDK and measurement contract](../reference/app-attest-shadow.md#macos-sdk-and-signed-code-measurements).
+
+Run `go test ./appattest ./api ./store -run 'TestAppAttest|TestAuthorization|TestApple|TestMacCodeMeasurement'`
+from `coordinator/`, using a disposable local `DATABASE_URL` for the store
+contracts (the test harness truncates tables). Add `-race` for concurrency checks.
+Run `swift test --filter ProviderAppAttestTests` from `provider-swift/`.
+The private admin queries have PostgreSQL coverage in
+`admin-ui/src/lib/queries/app-attest.test.ts`.
+
+After the optimized provider is packaged with its resources, run
+`Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`. Require all three markers:
+`app-attest-callback-runtime-smoke: ok`, `gemma-optimizations-runtime-smoke: ok`,
+and `paged-kernel-runtime-smoke: ok`. Callback completion and expiry are exercised
+without Apple service calls or a Keychain item. This linked-binary check catches
+a release-only allocator failure that debug tests missed. Run
+`bash scripts/test-install-atomic.sh` for installer acceptance and rollback cases.
+The [rollout runbook](../operations/app-attest-rollout.md) separates these checks
+from real Apple receipt renewal and final signed-artifact fleet qualification.
 
 ## Related
 

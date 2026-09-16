@@ -49,6 +49,17 @@ If you changed a WebSocket message, an HTTP endpoint, a config key, or a CLI fla
 - [ ] No protocol/interface changes
 - [ ] Yes — described above and matching side updated
 
+## Documentation impact
+
+<!--
+Use docs/AGENTS.md section 7 to identify the canonical documentation for this
+change. CI checks documentation-sensitive source paths. If no documentation
+applies, explain why and ask a maintainer to apply the docs-not-needed label.
+-->
+
+- [ ] Canonical documentation updated
+- [ ] No documentation needed — reason:
+
 ## Notes for reviewers
 
 <!-- Anything non-obvious: tradeoffs taken, edge cases not covered, follow-ups planned. -->

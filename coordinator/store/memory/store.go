@@ -34,6 +34,13 @@ type Store struct {
 	ledgerEntries []contracts.LedgerEntry
 	ledgerSeq     int64 // auto-increment ID
 
+	// Observation-only records stay independent from provider and reward identity.
+	appAttestShadowKeys  map[string]contracts.AppAttestShadowKey
+	appAttestRevocations map[string]bool
+	machineInventory     *memoryMachineInventory
+	appAttestEvidence    map[string]memoryAppAttestEvidence
+	appAttestEnrollments map[string]contracts.AppAttestEnrollment
+
 	// Referral system
 	referrersByCode    map[string]*contracts.Referrer // code → referrer
 	referrersByAccount map[string]*contracts.Referrer // accountID → referrer

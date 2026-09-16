@@ -26,6 +26,7 @@ type Hardware struct {
 
 // RegisterMessage is sent when a provider first connects.
 type RegisterMessage struct {
+	AppAttestProtocol           int                                `json:"app_attest_protocol,omitempty"`
 	Type                        string                             `json:"type"`
 	Hardware                    Hardware                           `json:"hardware"`
 	Models                      []ModelInfo                        `json:"models"`

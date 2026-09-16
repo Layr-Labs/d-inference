@@ -40,7 +40,14 @@ type LoadFailurePolicy struct {
 
 // Resource getters retain current API bindings. The scheduler itself keeps its
 // startup claim store. CodeLoop and CodeRearm preserve the API's nil-owner guards.
+// ShadowSession accepts observation-only App Attest frames without blocking the read loop.
+type ShadowSession interface {
+	Offer(protocol.AppAttestShadowPayload)
+	Drop()
+}
+
 type Dependencies struct {
+	StartAppAttestShadow  func(context.Context, *registry.Provider, *protocol.RegisterMessage, string) ShadowSession
 	Registry              func() *registry.Registry
 	Store                 func() Store
 	Logger                func() *slog.Logger

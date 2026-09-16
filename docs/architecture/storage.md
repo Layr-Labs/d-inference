@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-15 · commit `0f7b1e611`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -17,6 +17,12 @@ the existing model read-through cache; [artifact schema](../reference/model-regi
 Attempt decision fields are additive columns and existing provider JSONB;
 [prediction telemetry](../reference/prediction-decision-telemetry.md#storage-and-rollout)
 defines migration, historical NULLs and the separately applied waterfall view.
+
+App Attest maintenance marks abandoned pending submissions `interrupted` without accepting old assertions or changing counters. Enrollment contexts retain their protocol version so an upgrade does not reinterpret a cached proof. Historical receipt recovery appends new versions; credential revocations are durable and account-scoped. See `coordinator/store/postgres/app_attest_maintenance.go` and `coordinator/store/postgres/app_attest_readiness.go`.
+
+The additive [App Attest inventory and evidence tables](../reference/app-attest-shadow.md#storage-and-complete-evidence-archive) retain stable machine mappings, session/OS history, complete proof bytes, receipt versions, and atomic verification results. They neither restore routing trust nor replace provider accounting identity.
+
+Machine-session reconciliation uses a partial index over open sessions and bounded, row-locked batches to repair missed disconnect writes after contention or restart. Fresh inventory or provider-session heartbeats preserve liveness. Known closures retain their timestamp; inferred stale closures are labelled and can recover when fresh observations resume. Older observations and confirmed disconnects are fenced in `ObserveMachine`. See the [inventory lifecycle](../reference/app-attest-shadow.md#machine-inventory-and-identity) and `coordinator/store/postgres/machine_inventory_reconcile.go`.
 
 ## Context
 
@@ -61,6 +67,15 @@ retain the complete method sets.
 | `ProviderEarningsStore` | Per-node earnings, payouts and the base-rewards settlement rows. |
 | `ProviderStore` | Provider records and sessions, reputation, the APNs code-identity and trust-reuse caches, verification jobs and log reports. |
 
+App Attest and machine inventory use additive capability interfaces under
+`coordinator/store/contracts/`, discovered through `store.As` so the cache
+decorator cannot hide them. `coordinator/store/app_attest.go` keeps the existing
+public type aliases. Both backends own their key, evidence, readiness, and
+inventory operations; receipt renewal, historical backfill, and evidence
+maintenance remain PostgreSQL capabilities. Shared alias and liveness policy
+lives in `coordinator/store/internal/inventoryrecord/` (`Aliases`,
+`ObservationSuperseded`), with no backend state.
+
 Telemetry *events* are not in the store at all: `TelemetryEventRecord` goes to
 Datadog only (see [`telemetry.md`](telemetry.md)).
 
@@ -98,6 +113,9 @@ checks every migration. There is no versioned migration directory for the
 schema. `postgres.Store.migrate` (`coordinator/store/postgres/schema.go`) executes
 `schema.Statements` (`coordinator/store/postgres/schema/statements.go`), an ordered
 slice assembled from domain files with the established statement ordinals intact.
+The App Attest shadow keys, machine inventory, evidence archive, enrollment,
+receipts, and revocation statements are appended in that order, preserving the
+existing statement ordinals and dependencies.
 It runs idempotent statements — `CREATE TABLE IF NOT EXISTS`,
 `ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `DROP TABLE IF EXISTS`
 for retired tables — on every start, followed by:
@@ -328,7 +346,7 @@ KV blocks under a per-model key, not tokens.
 | PostgreSQL domain operations and backfills | `coordinator/store/postgres/`: `ledger.go` (`creditTx`), `provider_read.go` (`scanProviderRecord`), `provider_restore.go` (`GetProviderForRestore`), `usage_read.go` (`readUsageRecords`), `earnings_summary_backfill.go` (`applyNextEarningsSummaryBackfill`), `usage_totals_migration.go` (`migrateUsageTotals`) |
 | Memory backend | `coordinator/store/memory/` (`Store`, `New`, `Prune`); one mutex owns all maps and cross-domain atomic mutations |
 | User/model lookup cache | `coordinator/store/cache/store.go` (`Store`, `New`, `Unwrap`); `coordinator/store/cache/domain.go` (`domainCache`, generation fences); `coordinator/store/cache/clone.go` (copy ownership) |
-| Shared backend-only helpers | `coordinator/store/internal/`: record copies, payout transitions, route merges, release ordering and usage time bounds; helpers do not import a backend or the facade |
+| Shared backend-only helpers | `coordinator/store/internal/`: record copies, inventory alias/liveness policy, payout transitions, route merges, release ordering and usage time bounds; production helpers do not import a backend or the facade |
 | Manual SQL and PostgreSQL test data | `coordinator/store/postgres/migrations/`; `coordinator/store/postgres/testdata/`; neither is automatic startup input |
 | Persistent-disk state outside Postgres (MicroMDM, journals) | `coordinator/deploy/start.sh`, `coordinator/providercontrol/trustreuse/journal_file.go`, [`../operations/state-export.md`](../operations/state-export.md) |
 | Provider files and Keychain | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `provider-swift/Sources/ProviderCore/Service/`, `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` |

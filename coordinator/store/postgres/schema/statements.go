@@ -27,5 +27,6 @@ func Statements(rewardTypesSQL string) []string {
 	statements = append(statements, verification()...)
 	statements = append(statements, providerRewards()...)
 	statements = append(statements, profiles()...)
+	statements = append(statements, appAttestShadowDDL, machineInventoryDDL, appAttestArchiveDDL, appAttestEnrollmentDDL, appAttestReceiptDDL, appAttestRevocationDDL)
 	return statements
 }

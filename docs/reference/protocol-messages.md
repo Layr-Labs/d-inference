@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-15 · commit `0f7b1e611`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -36,6 +36,8 @@ operation that sends or receives them.
 | Attestation and trust feedback | `coordinator/protocol/attestation.go` (`AttestationResponseMessage`, `CodeAttestationResponseMessage`); `coordinator/protocol/runtime_status.go` (`RuntimeStatusMessage`, `TrustStatusMessage`) |
 | Capacity probes and quotes | `coordinator/protocol/capacity.go` (`CapacityProbeMessage`, `CapacityQuoteMessage`) |
 | Request profiles | `coordinator/protocol/profile.go` (`InferenceProfile`, `SlotTelemetry`, `CapacityTelemetry`); field contracts in [system profiler](../architecture/system-profiler.md) |
+
+The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` (with protocol 1 and 2 compatibility) and `app_attest_shadow` frames. Version 3 also binds static hardware and the existing verification key; version 2 account/status binding and lost-enrollment recovery remain compatible. It does not replace the authoritative attestation messages.
 
 ## Envelope and the single-parse rule
 
@@ -706,6 +708,18 @@ set is pinned by `TestCapacityProbeShapeClosed` (`coordinator/protocol/capacity_
 | `requires_vision` | `bool` | opt | |
 | `vision_image_count` | `int` | opt | count only |
 | `deadline_remaining_ms` | `int64` | req | duration on the first-content clock, never a wall clock |
+
+## App Attest protocol 3 hardware binding
+
+`register.app_attest_protocol=3` negotiates the account/endpoint-bound shadow
+exchange plus signed static hardware claims. `AppAttestStatus` adds optional
+string fields `machine_model`, `memory_gb`, `cpu_total`, `cpu_performance`,
+`cpu_efficiency`, `gpu_cores` and `attestation_public_key`; version 3 hashes them after the version 2 status
+fields under its own domain. Old transcripts remain unchanged. Original enrollment
+protocol is retained for cached-response recovery across upgrades. These fields
+are app measurements, not Apple-certified hardware. See
+[the App Attest reference](app-attest-shadow.md) and
+`coordinator/protocol/app_attest_hardware.go` (`AppAttestShadowHashV3`).
 
 ## Shared objects
 

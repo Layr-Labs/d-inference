@@ -713,14 +713,18 @@ private func makeStandaloneFakeHFSnapshot(modelId: String) throws -> URL {
     let estimatedMemoryGb = 0.25
     let expectedBytes = UInt64(estimatedMemoryGb * 1_073_741_824)
         + UnifiedMemoryCap.minimumLoadKVBytes
-    let server = standaloneTestServer(models: [
-        ModelInfo(
-            id: modelId,
-            modelType: "gemma4",
-            quantization: "4bit",
-            sizeBytes: 1,
-            estimatedMemoryGb: estimatedMemoryGb)
-    ])
+    // This checks reservation lifetime, not the host's ability to load a model.
+    // Use the scripted machine so the pre-load observation is reached on small runners.
+    let server = StandaloneServer(
+        models: [
+            ModelInfo(
+                id: modelId,
+                modelType: "gemma4",
+                quantization: "4bit",
+                sizeBytes: 1,
+                estimatedMemoryGb: estimatedMemoryGb)
+        ],
+        kvBudgetForTesting: ScriptedProviderMemory.budget(modelIDs: [modelId]))
     await server.setV2TestHooksForTesting(
         StandaloneServer.V2TestHooks(
             beforeWeightLoad: { _ in

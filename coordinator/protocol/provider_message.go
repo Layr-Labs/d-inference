@@ -60,6 +60,11 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 	switch msgType {
 	case TypeRegister:
 		payload = &RegisterMessage{}
+	case TypeAppAttestShadow:
+		if len(data) > 48*1024 {
+			return ErrAppAttestShadowFrameTooLarge
+		}
+		payload = &AppAttestShadowMessage{}
 	case TypeHeartbeat:
 		payload = &HeartbeatMessage{}
 	case TypeInferenceAccepted:
@@ -95,6 +100,9 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 	}
 
 	if err := json.Unmarshal(data, payload); err != nil {
+		if msgType == TypeAppAttestShadow {
+			return fmt.Errorf("protocol: malformed app attest shadow")
+		}
 		return fmt.Errorf("protocol: failed to unmarshal %s: %w", msgType, err)
 	}
 	pm.Payload = payload

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"io"
 	"log/slog"
@@ -54,7 +55,7 @@ import (
 // assistant support; model-aware MTP defaults remain provider-side policy.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.9.2"
+var LatestProviderVersion = "0.9.4"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -77,6 +78,13 @@ func (s *Server) latestReleasedVersion() string {
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
+	backgroundCtx                 context.Context
+	appAttestShadow               AppAttestShadowConfig
+	appAttestShadowSlots          chan struct{}
+	appAttestStorageOnce          sync.Once
+	appAttestStorageSlots         chan struct{}
+	machineInventorySlots         chan struct{}
+	backgroundCancel              context.CancelFunc
 	registry                      *registry.Registry
 	store                         store.Store
 	ledger                        *payments.Ledger
@@ -347,6 +355,9 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		readCache:                newTTLCache(),
 		geoResolver:              newProviderGeoResolverFromEnv(logger),
 		requestAuth:              requestauth.New(),
+		appAttestShadow:          cfg.AppAttestShadow,
+		appAttestShadowSlots:     make(chan struct{}, 4),
+		machineInventorySlots:    make(chan struct{}, 4),
 		mdmSchedulerConfig:       cfg.MDMScheduler,
 		settlements:              settlement.NewHolder(),
 		attemptTracker:           attempt.NewTracker(),
@@ -369,6 +380,12 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		DurableTrustReuse:     cfg.DurableTrustReuse,
 		TrustReuseJournalPath: cfg.TrustReuseJournalPath,
 	}, s.trustReuseDependencies())
+	backgroundCtx, backgroundCancel := context.WithCancel(context.Background())
+	s.backgroundCtx, s.backgroundCancel = backgroundCtx, backgroundCancel
+	s.startAppAttestReceiptWorker(backgroundCtx)
+	s.startAppAttestMaintenance(backgroundCtx)
+	s.startMachineInventoryBackfill(backgroundCtx)
+	s.startMachineInventoryReconciler(backgroundCtx)
 	reg.SetRuntimeCapabilitiesPromotedHook(s.handleRuntimeCapabilitiesPromoted)
 	// The per-identity gate locks that replaced the request-path registry
 	// write lock (registry/gate_state.go) report any acquisition wait above
@@ -426,6 +443,9 @@ func (s *Server) handleRuntimeCapabilitiesPromoted(providerID string) {
 
 // Close releases background resources owned by the Server.
 func (s *Server) Close() {
+	if s.backgroundCancel != nil {
+		s.backgroundCancel()
+	}
 	// Graceful-shutdown continuity sweep: stop the periodic coverage loop,
 	// then persist the exact shutdown instant for every covered provider so a
 	// short deploy reconnects into the continuity fast-skip on the next

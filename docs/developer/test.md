@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-15 · commit `0f7b1e611`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -36,6 +36,8 @@ preparation seam before tokenization. The shared public corpus covers JSON-objec
 and schema response formats plus multi-system and text/tool/endpoint forms; it compares
 actual Swift tokens and scope-bound hashes with Rust plans. No production
 prompts or model weights are needed (`scripts/verify-prompt-parity.sh`).
+
+The [App Attest shadow validation commands](../reference/app-attest-shadow.md#validation) cover cryptography, protocol symmetry, counter races, unchanged routing, and coexistence signing. Live macOS 27 acceptance remains separate.
 
 ## Prerequisites
 
@@ -1599,6 +1601,27 @@ This prevents task scheduling from silently changing admission order. Sources: `
 
 ### 7. Docs lint
 
+The lightweight Contribution Policy workflow runs before review and again when
+the `docs-not-needed` label is added or removed. Its `Commit Signatures` job
+queries GitHub's pull-request commit list and requires
+`commit.verification.verified = true` for every commit. This covers commits on
+contributor forks, which the protected branch's signed-commit rule does not
+evaluate.
+
+Its `Docs Impact` job runs:
+
+```bash
+make docs-impact-check BASE=origin/master
+```
+
+`scripts/docs-impact-check.py` compares the branch with the merge base and
+applies `scripts/docs-impact-rules.json`. A documentation-sensitive source
+change must update one of that rule's canonical docs. Matching multiple rules
+requires satisfying each rule. Test-only files are ignored. A maintainer can
+apply `docs-not-needed` when a mapped source change does not alter documented
+behavior; the PR must explain the exception in its Documentation impact
+section.
+
 The historical-link regression checks run in isolated temporary Git repositories:
 
 ```bash
@@ -1800,13 +1823,6 @@ token IDs are accepted.
 | provider never registers a model in e2e | checkpoint not in the HF cache, or not CBv2-servable (`gpt_oss`/`gemma4` families only) | download the pinned snapshot; check `DARKBLOOM_TESTBED_MODEL` |
 | nested suite step fails with "executed 0 tests" | swift-testing pass routed at an executable target / wrong filter | rebuild with `swift build --build-tests` in `libs/mlx-swift-lm`; keep suite names exact |
 | paged gate fails immediately with `DARKBLOOM_CBV2_PAGED_KV=… is set` | kill switch in your shell | `unset DARKBLOOM_CBV2_PAGED_KV` |
-
-## Related
-
-- [build.md](build.md) — toolchain and build commands.
-- [`../operations/provider-release.md`](../operations/provider-release.md) — release checks that also run in CI.
-- [`../architecture/components/provider.md`](../architecture/components/provider.md) — what the provider does at runtime.
-- [`../architecture/prompt-contract-sidecar.md`](../architecture/prompt-contract-sidecar.md) — what prompt parity protects.
 
 ## GPT-OSS complete-checkpoint reconstruction
 
@@ -2113,3 +2129,33 @@ with the original fixture (`e2e/connected_cache_http_test.go`,
 production-attestation or persistent-key restart claim. The original measured
 fixture rejects `correctness_only: true`; preserve its schema-2 evidence and use
 a separately reviewed schema-3 comparator for this seven-case pair.
+
+## App Attest release qualification
+
+Run `go test ./appattest ./api ./store -run 'TestAppAttest|TestAuthorization|TestApple'`
+from `coordinator/`, using a disposable local `DATABASE_URL` for the store
+contracts (the test harness truncates tables). Add `-race` for concurrency checks.
+Run `swift test --filter ProviderAppAttestTests` from `provider-swift/`.
+The private admin queries have PostgreSQL coverage in
+`admin-ui/src/lib/queries/app-attest.test.ts`.
+
+After the optimized provider is packaged with its resources, run
+`Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`. Require all three markers:
+`app-attest-callback-runtime-smoke: ok`, `gemma-optimizations-runtime-smoke: ok`,
+and `paged-kernel-runtime-smoke: ok`. Callback completion and expiry are exercised
+without Apple service calls or a Keychain item. This linked-binary check catches
+a release-only allocator failure that debug tests missed. Run
+`bash scripts/test-install-atomic.sh` for installer acceptance and rollback cases.
+The [rollout runbook](../operations/app-attest-rollout.md) separates these checks
+from real Apple receipt renewal and final signed-artifact fleet qualification.
+
+## Provider release toolchain
+
+`python3 scripts/test-provider-release-toolchain.py` checks SDK selection, rejection of older SDK/compiler inputs, wrapper argument boundaries and propagation of `SDKROOT` without installing software. Release Integrity runs these tests. The signed provider workflow runs the provider unit suite and isolated allocator gates with the selected SDK 27 / Swift 6.4 toolchain before packaging; [provider release](../operations/provider-release.md) describes artifact qualification.
+
+## Related
+
+- [build.md](build.md) — toolchain and build commands.
+- [`../operations/provider-release.md`](../operations/provider-release.md) — release checks that also run in CI.
+- [`../architecture/components/provider.md`](../architecture/components/provider.md) — what the provider does at runtime.
+- [`../architecture/prompt-contract-sidecar.md`](../architecture/prompt-contract-sidecar.md) — what prompt parity protects.

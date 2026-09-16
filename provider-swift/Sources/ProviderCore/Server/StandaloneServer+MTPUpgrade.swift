@@ -176,7 +176,8 @@ extension StandaloneServer {
             guard active, KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: replacement.bridge.kvBackendKind,
                 pagedPoolBytes: await replacement.bridge.kvBackendPoolBytes(),
-                activationReserveBytes: resolvedActivationReserveBytes)
+                activationReserveBytes: resolvedActivationReserveBytes,
+                measuredHeadroomBytes: v2TestHooks?.measuredKVHeadroomBytes)
             else { throw CancellationError() }
             standaloneLogger.info("mtp: model=\(modelID) verified replacement prepared in \(String(describing: preparationStarted.duration(to: .now))); ready to drain accepted requests")
             await finishMTPUpgradeLoad()

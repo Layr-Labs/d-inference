@@ -257,7 +257,8 @@ func mtpFloorLoop(
     mtpDrafterPath: String? = nil,
     mtpMode: MTPMode? = nil
 ) throws -> ProviderLoop {
-    try ProviderLoop(
+    let budget = ScriptedProviderMemory.budget(physicalBytes: mtpFloorPhysical, modelIDs: models.map(\.id))
+    return try ProviderLoop(
         config: ProviderLoopConfig(
             coordinatorURL: "ws://127.0.0.1:0/ignored",
             hardware: HardwareInfo(
@@ -277,7 +278,8 @@ func mtpFloorLoop(
                     mtpDrafterPath: mtpDrafterPath),
                 coordinator: .init(heartbeatIntervalSecs: 60))),
         purgeLegacyFiles: false,
-        attestationSigner: nil)
+        attestationSigner: nil,
+        kvBudgetForTesting: budget)
 }
 
 private func mtpFloorTargetOnlyGrants() -> [String: Int] {
@@ -316,6 +318,9 @@ struct MTPResliceFallbackTests {
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(.init(
             physicalMemoryBytes: mtpFloorPhysical,
+            measuredKVHeadroomBytes: UnifiedMemoryCap.liveKVHeadroomBytes(
+                physicalBytes: mtpFloorPhysical, mlxUsedBytes: 0,
+                systemAvailableBytes: mtpFloorPhysical),
             assistantLoader: MTPFloorAssistantLoader(),
             makeEngine: { _, grant in MTPFloorEngine(capacityBytes: grant) }))
 
@@ -377,7 +382,8 @@ struct MTPResliceFallbackTests {
     func standaloneTargetSurvivesAssistantFloor() async throws {
         let artifact = try mtpFloorArtifact()
         defer { try? FileManager.default.removeItem(at: artifact.directory) }
-        let server = StandaloneServer(config: .init(maxCachedModels: 3))
+        let server = StandaloneServer(config: .init(maxCachedModels: 3),
+            kvBudgetForTesting: ScriptedProviderMemory.budget())
         await server.setV2TestHooksForTesting(.init(
             physicalMemoryBytes: mtpFloorPhysical,
             assistantLoader: MTPFloorAssistantLoader(),
@@ -434,6 +440,9 @@ struct MTPResliceFallbackTests {
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(.init(
             physicalMemoryBytes: mtpFloorPhysical,
+            measuredKVHeadroomBytes: UnifiedMemoryCap.liveKVHeadroomBytes(
+                physicalBytes: mtpFloorPhysical, mlxUsedBytes: 0,
+                systemAvailableBytes: mtpFloorPhysical),
             assistantLoader: MTPFloorFailingAssistantLoader(),
             makeEngine: { _, grant in MTPFloorEngine(capacityBytes: grant) }))
 
@@ -473,7 +482,8 @@ struct MTPResliceFallbackTests {
     func standalonePrepareFailOpenReleasesPhantomReservation() async throws {
         let artifact = try mtpFloorArtifact()
         defer { try? FileManager.default.removeItem(at: artifact.directory) }
-        let server = StandaloneServer(config: .init(maxCachedModels: 3))
+        let server = StandaloneServer(config: .init(maxCachedModels: 3),
+            kvBudgetForTesting: ScriptedProviderMemory.budget())
         await server.setV2TestHooksForTesting(.init(
             physicalMemoryBytes: mtpFloorPhysical,
             assistantLoader: MTPFloorFailingAssistantLoader(),
@@ -511,7 +521,8 @@ struct MTPResliceFallbackTests {
             config: .init(maxCachedModels: 3, mtp: true),
             models: [ModelInfo(
                 id: fakeId, modelType: "gemma4", parameters: nil,
-                quantization: nil, sizeBytes: 1, estimatedMemoryGb: 0.01)])
+                quantization: nil, sizeBytes: 1, estimatedMemoryGb: 0.01)],
+            kvBudgetForTesting: ScriptedProviderMemory.budget(modelIDs: [fakeId]))
         let gate = RaceGateCatalog()
         await server.setSpecDecFunnelForTesting(SpecDecArtifactFunnel(
             resolver: SpecDecResolver(), catalog: gate))
@@ -555,6 +566,9 @@ struct MTPResliceFallbackTests {
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(.init(
             physicalMemoryBytes: mtpFloorPhysical,
+            measuredKVHeadroomBytes: UnifiedMemoryCap.liveKVHeadroomBytes(
+                physicalBytes: mtpFloorPhysical, mlxUsedBytes: 0,
+                systemAvailableBytes: mtpFloorPhysical),
             assistantLoader: MTPFloorAssistantLoader(),
             makeEngine: { _, grant in factory.make(grant: grant) }))
 
@@ -621,6 +635,9 @@ struct MTPResliceFallbackTests {
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(.init(
             physicalMemoryBytes: mtpFloorPhysical,
+            measuredKVHeadroomBytes: UnifiedMemoryCap.liveKVHeadroomBytes(
+                physicalBytes: mtpFloorPhysical, mlxUsedBytes: 0,
+                systemAvailableBytes: mtpFloorPhysical),
             assistantLoader: MTPFloorAssistantLoader(counter: counter),
             makeEngine: { _, grant in factory.make(grant: grant) }))
 
@@ -696,6 +713,9 @@ struct MTPResliceFallbackTests {
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(.init(
             physicalMemoryBytes: mtpFloorPhysical,
+            measuredKVHeadroomBytes: UnifiedMemoryCap.liveKVHeadroomBytes(
+                physicalBytes: mtpFloorPhysical, mlxUsedBytes: 0,
+                systemAvailableBytes: mtpFloorPhysical),
             assistantLoader: MTPFloorAssistantLoader(counter: counter),
             makeEngine: { _, grant in factory.make(grant: grant) }))
 

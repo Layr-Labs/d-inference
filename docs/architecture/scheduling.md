@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-15 · commit `0f7b1e611`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -436,8 +436,8 @@ reason (`offline_untrusted_private`, `pending_load_or_cooldown`, `not_idle`,
 `not_serving_catalog`, `dedicated_excluded`, `model_too_large`,
 `no_free_for_load`, `state_restoring`).
 
-**`WarmPoolSnapshot`.** Every tick produces one per model, logged as
-`warm_pool_tick` and retained as the controller's latest state
+**`WarmPoolSnapshot`.** Every tick produces one per model, writes
+`warm_pool_tick` to the process logger, and retains the controller's latest state
 (`Controller.storeSnapshots` / `Controller.LatestSnapshots` in
 `coordinator/registry/warmpool/snapshots.go`):
 `Model`, `TargetWarm`, `WarmProviders`, `EligibleCold`, `QueueDepth`,
@@ -472,6 +472,16 @@ private, including when a snapshot is JSON-encoded. Publication happens before
 command callbacks, so reentrant observers see the tick that issued the command
 (`coordinator/registry/warm_pool_publication_test.go`,
 `TestWarmPoolPublishesSnapshotBeforeReentrantSend`).
+
+When Datadog is configured, `StartWarmPoolTelemetryLoop`
+(`coordinator/api/warm_pool_telemetry.go`) polls the retained snapshot every
+`warmPoolTelemetryPollInterval = 15 * time.Second`. It emits each newly
+observed snapshot timestamp once through the coordinator telemetry emitter as
+info/custom `warm_pool_tick`. Cold disqualifier counts become scalar
+`cold_disq_<reason>` attributes. The registry retains only the newest tick, so
+this is a sampled latest-state feed: multiple hot-trigger ticks between polls
+can collapse into one emitted snapshot. The event contains per-model
+aggregates only and is not written to Postgres.
 
 ### Heartbeat cadence and eviction
 
@@ -669,6 +679,7 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 | Live warm-pool fleet and commands | `coordinator/registry/warm_pool_controller.go` — `newWarmPoolController`, `TriggerWarmPool`; `coordinator/registry/warm_pool_fleet.go` — `warmPoolFleetSnapshot`; `coordinator/registry/warm_pool_eligibility.go` — `warmPoolCandidateReasonLocked` |
 | Warm-pool demand and target math | `coordinator/registry/warmpool/target.go` — `Target`, `ServiceTime`, `LoadsThisTick`; `coordinator/registry/warmpool/state.go` — `State`, `ArrivalEWMAAlpha` |
 | Observed throughput and batch policy | `coordinator/registry/throughput/observations.go` — `Observations`; `coordinator/registry/throughput/batch.go` — `QualityConcurrency`; `coordinator/registry/throughput/anomaly.go` — `EvaluateAnomaly` |
+| Warm-pool telemetry | `coordinator/api/warm_pool_telemetry.go` — `StartWarmPoolTelemetryLoop`, `warmPoolTelemetryFields` |
 | Warm-pool and quality-cap configuration | `coordinator/registry/warmpool/config.go` — `Config`, `Check`, `PerTickCeiling`; `coordinator/registry/config.go` — `WarmPoolConfig` alias, `QualityCapConfig`, `ReadConfig` |
 | Eviction | `coordinator/registry/provider_eviction.go` — `StartEvictionLoop`, `evictStale`, `evictStrikeThreshold`; `coordinator/registry/provider_disconnect.go` — `disconnectProvider`; wired in `coordinator/cmd/coordinator/background.go` (`startBackgroundLoops`) |
 | Provider writer and live binding | `coordinator/registry/providerwriter/writer.go` — `Writer`, `New`, `CloseNow`; `coordinator/registry/provider_writer.go` — `Provider.WriteText`, `WriteTextDeferred`, `WriteTextControl`, `EnqueueText`, `closeWriterNow` |

@@ -71,6 +71,7 @@ func (s *Session) register(regMsg *protocol.RegisterMessage) bool {
 		})
 
 	// Resolve auth token → account linkage.
+	authenticatedAccountID := ""
 	if regMsg.AuthToken != "" {
 		pt, err := s.deps.Store().GetProviderToken(regMsg.AuthToken)
 		if err != nil {
@@ -81,6 +82,7 @@ func (s *Session) register(regMsg *protocol.RegisterMessage) bool {
 		} else {
 			s.provider.Mu().Lock()
 			s.provider.AccountID = pt.AccountID
+			authenticatedAccountID = pt.AccountID
 			s.provider.Mu().Unlock()
 			// Account linkage can be the provider's ONLY stable identity
 			// (Open Mode / invalid attestation → the acct: fallback), and
@@ -233,6 +235,9 @@ func (s *Session) register(regMsg *protocol.RegisterMessage) bool {
 		saferun.Go(s.deps.Logger(), "codeAttest", func() {
 			s.deps.CodeLoop(s.loopCtx, s.providerID, s.provider)
 		})
+	}
+	if s.deps.StartAppAttestShadow != nil {
+		s.appAttestShadow = s.deps.StartAppAttestShadow(s.loopCtx, s.provider, regMsg, authenticatedAccountID)
 	}
 	return true
 }

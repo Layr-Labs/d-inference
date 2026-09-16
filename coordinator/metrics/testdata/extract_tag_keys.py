@@ -8,15 +8,18 @@ metric emitted with two different tag sets (a conditional dimension) produces tw
 lines and the test can require the declaration to cover both.
 
 Tag keys have to be readable from the source, which for the pre-catalog call
-sites means one of two shapes: spelled at the call
-(`[]string{"model:" + model, "mode:service_hold"}`) or hoisted to a slice
-variable a line or two above and possibly appended to
-(`tags := []string{...}` … `append(tags, "reason:early")`). Both are resolved,
-the second by taking the nearest preceding assignment to that name. A site that
-built its tags somewhere this cannot follow (the scheduler's gauge loop, which
-carries them in a struct) leaves no evidence and is simply not asserted. Partial
-coverage is the point — every name it does resolve is one whose declaration
-cannot silently retag it.
+sites means one of three shapes: spelled at the call
+(`[]string{"model:" + model, "mode:service_hold"}`); hoisted to a slice variable
+a line or two above and possibly appended to (`tags := []string{...}` …
+`append(tags, "reason:early")`), resolved by taking the nearest preceding
+assignment to that name *within the same function*; or carried in a composite
+literal beside the name, which is how the MDM scheduler's gauge loop pushes its
+two gauges.
+
+Anything else — a tags slice arriving as a parameter, or built by a call — is
+recorded as `?` and not asserted. Partial coverage is the point: every name it
+does resolve is one whose declaration cannot silently retag it, and a name it
+cannot read is left alone rather than described wrongly.
 """
 import os, re, sys
 
@@ -110,9 +113,23 @@ def keys_in(src, body, before, depth=0):
     return ordered_unique(keys), resolved
 
 
+def func_start(src, at):
+    """Offset of the top-level func declaration enclosing `at`, or 0.
+
+    Go has no name to reach a local in another function with, so an identifier
+    that is not assigned inside this one is a parameter, a package-level symbol,
+    or a call — none of which this script reads. Scanning the whole file instead
+    reached the *previous* function's local `tags` and reported its keys, which is
+    how `exact_cache.estimated_ttft_saved_ms` (whose `tags` is a parameter) came
+    out carrying `outcome,tier` from the function above it.
+    """
+    i = src.rfind("\nfunc ", 0, at)
+    return 0 if i < 0 else i + 1
+
+
 def resolve(src, ident, before, depth):
     at = -1
-    for m in ASSIGN.finditer(src, 0, before):
+    for m in ASSIGN.finditer(src, func_start(src, before), before):
         if m.group(1) == ident:
             at = m.end()
     if at < 0:

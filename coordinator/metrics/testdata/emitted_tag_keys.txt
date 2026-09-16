@@ -71,7 +71,7 @@ exact_cache.eligibility_backend	backend
 exact_cache.eligibility_reason	reason
 exact_cache.eligibility_state	state
 exact_cache.eligibility_strategy	strategy
-exact_cache.estimated_ttft_saved_ms	outcome,tier
+exact_cache.estimated_ttft_saved_ms	?
 exact_cache.excluded_models	?
 exact_cache.holder_added	?
 exact_cache.holder_removed	reason

@@ -147,6 +147,9 @@ The early-completion WebSocket regression in the
 [coordinator checks](test.md#2-coordinator-go) also uses only Go and a local
 in-memory coordinator.
 
+The [analytics aggregation checks](test.md#analytics-aggregation) require only
+Go and a disposable PostgreSQL database.
+
 ```bash
 make coordinator-build            # cd coordinator && go build ./cmd/coordinator
 make coordinator-build-linux      # GOOS=linux GOARCH=amd64 CGO_ENABLED=0 → coordinator/coordinator-linux

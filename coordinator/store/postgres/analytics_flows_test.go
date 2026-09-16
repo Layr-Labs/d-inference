@@ -175,12 +175,13 @@ func assertUsageFlowsMatchOriginal(t *testing.T, s *Store, since time.Time) []co
 	for i, b := range got {
 		expected, ok := want[key(b)]
 		if !ok {
-			t.Fatalf("unexpected flow: %+v", b)
+			t.Fatalf("unexpected or duplicate flow: %+v", b)
 		}
-		if math.Abs(b.ConsumerLatitude-expected.ConsumerLatitude) > 1e-10 ||
-			math.Abs(b.ConsumerLongitude-expected.ConsumerLongitude) > 1e-10 ||
-			math.Abs(b.ProviderLatitude-expected.ProviderLatitude) > 1e-10 ||
-			math.Abs(b.ProviderLongitude-expected.ProviderLongitude) > 1e-10 {
+		delete(want, key(b))
+		if !(math.Abs(b.ConsumerLatitude-expected.ConsumerLatitude) <= 1e-10 &&
+			math.Abs(b.ConsumerLongitude-expected.ConsumerLongitude) <= 1e-10 &&
+			math.Abs(b.ProviderLatitude-expected.ProviderLatitude) <= 1e-10 &&
+			math.Abs(b.ProviderLongitude-expected.ProviderLongitude) <= 1e-10) {
 			t.Fatalf("coordinates differ: got %+v, want %+v", b, expected)
 		}
 		b.ConsumerLatitude, b.ConsumerLongitude = expected.ConsumerLatitude, expected.ConsumerLongitude

@@ -727,6 +727,23 @@ each must dispatch exactly once. Run without model weights or Postgres:
 go test -race ./coordinator/api -run '^TestDispatchRetryAfterPreservesBoundedProviderForecast$' -count=1
 ```
 
+#### Analytics aggregation
+
+Run the geographic aggregation and transaction-scope checks against a disposable
+PostgreSQL database from the repository root:
+
+```bash
+DATABASE_URL='postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable' \
+  go test -race ./coordinator/store -run '^TestUsage(Flow|Location)' -count=1
+```
+
+The fixtures in `coordinator/store/analytics_flows_test.go` and
+`coordinator/store/analytics_locations_test.go` compare the real queries with
+independent historical SQL. They require each geographic key exactly once and
+finite coordinate differences within `1e-10` before normalizing coordinates for
+the remaining field comparison. Weighted totals, descending request counts and
+the flow top-50 limit remain part of the existing fixtures.
+
 #### Provider config cleanup
 
 The CPU-only `e2e/testbed/provider_config_cleanup_test.go` tests retain a fixed

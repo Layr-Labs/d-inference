@@ -84,15 +84,22 @@ func TestDeclaredNamesAlreadyExist(t *testing.T) {
 //   - declare no key that no call site ever emitted, which would silently widen
 //     every series on the name.
 //
-// Names absent from the file are not asserted: it only records tag keys spelled
-// as literals, so a site that passed a slice built elsewhere leaves no evidence.
+// A name is not asserted when it is absent from the file, or when any of its
+// sites is recorded as `?` — the extractor's marker for tags it could not read.
+// Recording those as "no tags" would be a false fact that fails this test with a
+// wrong accusation the first time such a metric is migrated.
+// unresolvedTagKeys is extract_tag_keys.py's UNRESOLVED marker.
+const unresolvedTagKeys = "?"
+
 func TestDeclaredTagKeysMatchWhatWasEmitted(t *testing.T) {
 	observed := readTagKeyLists(t, "testdata/emitted_tag_keys.txt")
+	asserted := 0
 	for _, d := range Noop().Document() {
 		lists, ok := observed[d.Name]
-		if !ok {
+		if !ok || anyListHas(lists, unresolvedTagKeys) {
 			continue
 		}
+		asserted++
 		for _, want := range lists {
 			if !isSubsequence(want, d.Labels) {
 				t.Errorf("%s declares tags %v, which cannot produce the emitted set %v",
@@ -105,6 +112,14 @@ func TestDeclaredTagKeysMatchWhatWasEmitted(t *testing.T) {
 					d.Name, key)
 			}
 		}
+	}
+	// A ratchet, so the skip rules above cannot quietly turn this into a test of
+	// nothing: an extractor change that marked every site unreadable would
+	// otherwise pass silently. It is the count at the first tranche, where every
+	// declaration is covered; raise it as later tranches land.
+	if want := 51; asserted < want {
+		t.Errorf("only %d declarations were checked against the pre-catalog tag keys, want at least %d;"+
+			" regenerate testdata/emitted_tag_keys.txt (see testdata/README.md)", asserted, want)
 	}
 }
 

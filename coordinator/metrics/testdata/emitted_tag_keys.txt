@@ -5,13 +5,13 @@ app_attest.events.storage_failed	reason
 app_attest.inventory.backfill_failed	
 app_attest.inventory.failed	reason
 app_attest.inventory.reconcile_failed	reason
-app_attest.inventory.reconciled	
+app_attest.inventory.reconciled	?
 app_attest.inventory.recorded	
 app_attest.maintenance.failed	
-app_attest.maintenance.interrupted	
-app_attest.maintenance.receipt_recovery	
+app_attest.maintenance.interrupted	?
+app_attest.maintenance.receipt_recovery	?
 app_attest.receipt.archive_failed	
-app_attest.receipt.configured	
+app_attest.receipt.configured	?
 app_attest.receipt.refresh	outcome
 app_attest.receipt.storage_failed	
 app_attest.shadow.duration_ms	stage,outcome,mode
@@ -20,8 +20,8 @@ app_attest.shadow.frames_rejected	reason
 app_attest.shadow.metadata	result
 attestation.challenges	outcome
 attestation.challenges_sent	
-attestation.code_attested	
-attestation.code_enforced	
+attestation.code_attested	?
+attestation.code_enforced	?
 attestation.failures	reason
 attestation.force_reconnect	reason
 billing.cost_clamped	model
@@ -47,10 +47,10 @@ billing.uncollected_zeroed	model,mode
 billing.zero_usage_complete	model
 cache.refresh_failed	key
 cache.refresh_failed	key,section
-capacity.demand_concurrency	
-capacity.serving_capacity	
-capacity.spill_arrival_rate	
-capacity.tps	
+capacity.demand_concurrency	?
+capacity.serving_capacity	?
+capacity.spill_arrival_rate	?
+capacity.tps	?
 code_attest	outcome
 code_attest.coverage_persist	outcome
 code_attest.proof_verified	kind
@@ -59,12 +59,12 @@ coordinator.min_provider_version_set	min_version
 enroll.profile_sign_error	
 enroll.profile_signed	
 enroll.profile_unsigned	
-exact_cache.activation.max_plan_qps	
-exact_cache.activation.percent	
+exact_cache.activation.max_plan_qps	?
+exact_cache.activation.percent	?
 exact_cache.activation.total	outcome
-exact_cache.artifact_allowlist.configured	
-exact_cache.artifact_allowlist.count	
-exact_cache.attempts	
+exact_cache.artifact_allowlist.configured	?
+exact_cache.artifact_allowlist.count	?
+exact_cache.attempts	?
 exact_cache.cached_tokens	outcome,tier
 exact_cache.donation_outcome	outcome
 exact_cache.eligibility_backend	backend
@@ -72,52 +72,52 @@ exact_cache.eligibility_reason	reason
 exact_cache.eligibility_state	state
 exact_cache.eligibility_strategy	strategy
 exact_cache.estimated_ttft_saved_ms	outcome,tier
-exact_cache.excluded_models	
-exact_cache.holder_added	
+exact_cache.excluded_models	?
+exact_cache.holder_added	?
 exact_cache.holder_removed	reason
-exact_cache.holders	
-exact_cache.loaded_models	
-exact_cache.memory_ready_models	
+exact_cache.holders	?
+exact_cache.loaded_models	?
+exact_cache.memory_ready_models	?
 exact_cache.plan	outcome
 exact_cache.plan_latency_ms	outcome
 exact_cache.prefill_tokens_saved	outcome,tier
-exact_cache.preload.contracts	
-exact_cache.preload.failures	
-exact_cache.preload.ready	
+exact_cache.preload.contracts	?
+exact_cache.preload.failures	?
+exact_cache.preload.ready	?
 exact_cache.preload.results	state
-exact_cache.preload.runs	
+exact_cache.preload.runs	?
 exact_cache.prompt_artifacts	state
 exact_cache.provider_protocol	version
 exact_cache.provider_stage_ms	outcome,tier
 exact_cache.receipt	type,outcome,reason
-exact_cache.reported_loaded_models	
+exact_cache.reported_loaded_models	?
 exact_cache.routing_mode	mode
-exact_cache.sidecar.child_generation	
-exact_cache.sidecar.consecutive_health_failures	
+exact_cache.sidecar.child_generation	?
+exact_cache.sidecar.consecutive_health_failures	?
 exact_cache.sidecar.contract_loads	state
-exact_cache.sidecar.enabled	
-exact_cache.sidecar.health_timeouts	
-exact_cache.sidecar.overloads	
+exact_cache.sidecar.enabled	?
+exact_cache.sidecar.health_timeouts	?
+exact_cache.sidecar.overloads	?
 exact_cache.sidecar.plans	outcome
-exact_cache.sidecar.preload_timeouts	
-exact_cache.sidecar.ready	
+exact_cache.sidecar.preload_timeouts	?
+exact_cache.sidecar.ready	?
 exact_cache.sidecar.restart_reason	reason
-exact_cache.sidecar.restart_suppressed	
-exact_cache.sidecar.restarts	
-exact_cache.sidecar.rss_bytes	
-exact_cache.sidecar.running	
-exact_cache.sidecar.timeouts	
+exact_cache.sidecar.restart_suppressed	?
+exact_cache.sidecar.restarts	?
+exact_cache.sidecar.rss_bytes	?
+exact_cache.sidecar.running	?
+exact_cache.sidecar.timeouts	?
 exact_cache.ssd_donated_tokens	protocol,tier
 exact_cache.ssd_donation	protocol,tier
 exact_cache.ssd_lifecycle	event
 exact_cache.ssd_lookup	protocol,outcome,tier
 exact_cache.ssd_stage_ms	protocol,outcome,tier,event
 exact_cache.ssd_stage_ms	protocol,tier,event
-exact_cache.unreported_loaded_models	
+exact_cache.unreported_loaded_models	?
 exact_cache.usage	outcome,tier
-exact_cache.v2_ready_models	
-http.latency_ms	
-http.requests	
+exact_cache.v2_ready_models	?
+http.latency_ms	method,path,status_code
+http.requests	method,path,status_code
 inference.chunk_overflow_abort	
 inference.completion_tokens	model
 inference.completion_tokens_total	model
@@ -127,10 +127,10 @@ inference.first_content_after_deadline
 inference.in_band_error	model,reason
 inference.invalid_failure_code	
 inference.invalid_stop_sequence	
-inference.media_fetch.bytes	
-inference.media_fetch.duration_ms	
-inference.media_fetch.items	
-inference.media_fetch.ok	
+inference.media_fetch.bytes	?
+inference.media_fetch.duration_ms	?
+inference.media_fetch.items	?
+inference.media_fetch.ok	?
 inference.media_fetch.rejected	code,model
 inference.media_remote_url_rejected	model
 inference.prompt_tokens	model
@@ -140,12 +140,14 @@ inference.speculative_win	model
 inference.tool_constraint	mode,outcome
 inference.unknown_request_frames	kind
 mda.verification	outcome
+mdm.scheduler.active_attempts	kind
 mdm.scheduler.attempt_seconds	kind,outcome
 mdm.scheduler.attempts	kind,outcome
 mdm.scheduler.cancelled	reason
 mdm.scheduler.deduplicated	state
 mdm.scheduler.enqueued	reason
 mdm.scheduler.grants	path
+mdm.scheduler.queue_depth	kind,priority
 mdm.scheduler.queue_rejected	priority
 mdm.scheduler.queue_wait_seconds	kind,priority
 mdm.scheduler.retry_delay_seconds	stage
@@ -153,42 +155,39 @@ mdm.scheduler.timeouts	kind
 mdm.verification	outcome
 profiler.fleet_snapshot	status
 profiler.provider_profile	valid,reason
-profiler.pruned_rows	
+profiler.pruned_rows	?
 profiler.records	status
 provider.enqueue_failed	msg
 provider.eval_in_flight_long	
 provider.first_token_wedge_suspected	model
 provider.load_model_status_rejected	reason
-provider.mlx_cache.last_reclaim_duration_ms	
-provider.mlx_cache.last_reclaimed_bytes	
-provider.mlx_cache.limit_bytes	
-provider.mlx_memory.active_gb	
-provider.mlx_memory.cache_gb	
-provider.mlx_memory.peak_gb	
+provider.mlx_cache.last_reclaim_duration_ms	?
+provider.mlx_cache.last_reclaimed_bytes	?
+provider.mlx_cache.limit_bytes	?
+provider.mlx_memory.active_gb	?
+provider.mlx_memory.cache_gb	?
+provider.mlx_memory.peak_gb	?
 provider.oom_suspected	
-provider.paged_storage.	
-provider.paged_storage.sample_age_ms	
-provider.paged_storage.sample_fresh	
-provider.prefix_cache.	cache_kind
-provider.prefix_cache.sample_age_ms	cache_kind
-provider.prefix_cache.sample_fresh	cache_kind
-provider.prefix_cache.staging_peak_bytes	cache_kind
-provider.process_memory.	
-provider.process_memory.sample_age_ms	
-provider.process_memory.sample_fresh	
-provider.process_memory.system_available_bytes	
+provider.paged_storage.sample_age_ms	?
+provider.paged_storage.sample_fresh	?
+provider.prefix_cache.sample_age_ms	?
+provider.prefix_cache.sample_fresh	?
+provider.prefix_cache.staging_peak_bytes	?
+provider.process_memory.sample_age_ms	?
+provider.process_memory.sample_fresh	?
+provider.process_memory.system_available_bytes	?
 provider_version_below_minimum	gate,version
 providers.by_mdm_failure	reason
 providers.by_trust_status	trust_level,status
-providers.online	
+providers.online	?
 providers.per_model	model
 providers.per_version	version
 providers.registration_rejected	reason
 providers.registrations	trust_level
-ratelimit.output_admission.actual_tokens	model
-ratelimit.output_admission.delta_tokens	model
-ratelimit.output_admission.delta_tokens_total	model
-ratelimit.output_admission.estimated_tokens	
+ratelimit.output_admission.actual_tokens	?
+ratelimit.output_admission.delta_tokens	?
+ratelimit.output_admission.delta_tokens_total	?
+ratelimit.output_admission.estimated_tokens	?
 ratelimit.rejections	tier
 ratelimit.rejections	tier,dimension
 registry.gate.wait_ms	site
@@ -198,22 +197,21 @@ release_policy.evidence_invalidated	providers
 release_policy.sync_failure	outcome
 request_outcomes.received	endpoint
 request_outcomes.records	status
-request_queue.depth	
+request_queue.depth	?
 request_queue.timeout	model,model_type
 routing.cache_capability_rejected	source
 routing.cache_evaluation	mode,tier
 routing.cache_lookup_receipt	outcome,tier
 routing.cache_lookup_receipt	protocol,outcome,tier
-routing.cache_model.	
 routing.cache_prefill_tokens_saved	outcome,tier
 routing.cache_ready_receipt	protocol,tier
 routing.cache_ready_receipt	tier
 routing.cache_receipt_rejected	type
 routing.cache_receipt_rejected	type,reason
-routing.cache_selection_discount_ms	
-routing.cache_selection_precision	
-routing.cache_selection_terminal	
-routing.cache_selection_ttft_ms	
+routing.cache_selection_discount_ms	?
+routing.cache_selection_precision	?
+routing.cache_selection_terminal	?
+routing.cache_selection_ttft_ms	?
 routing.cache_stage_ms	outcome,tier
 routing.cache_telemetry_rejected	source
 routing.cache_tokens	outcome,tier
@@ -225,14 +223,14 @@ routing.cooldown_entered	model
 routing.deadline_unreachable_rejected	model,stage
 routing.decisions	model,model_type,outcome
 routing.decisions	model,outcome
+routing.dispatch_client_error_stop	?
 routing.dispatch_client_error_stop	model,code
 routing.dispatch_client_error_stop	model,code,src
-routing.dispatch_client_error_stop	src
 routing.dispatch_to_capacity_503	model,reason
 routing.first_chunk_timeout_ladder_capped	model
 routing.first_chunk_timeout_reclassified	model,reason
 routing.hedge_governor_suppressed	model,verdict
-routing.invalid_ttft	model
+routing.invalid_ttft	?
 routing.load_failure_cooldowns	model
 routing.load_model_rejects	model,reason
 routing.oversized_request_rejected	model,stage
@@ -263,10 +261,10 @@ store.debit.latency_ms	op
 telemetry.sink_depth	sink
 telemetry.sink_dropped	sink
 trust_reuse.decisions	decision,reason
-utilization.bottleneck	
+utilization.bottleneck	?
 utilization.model	model
-utilization.network	
-utilization.token_budget	
-utilization.warm	
+utilization.network	?
+utilization.token_budget	?
+utilization.warm	?
 ws.disconnects	reason
 ws.disconnects	reason,code

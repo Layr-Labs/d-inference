@@ -91,6 +91,20 @@ func hasMetric(packets []string, substr string) bool {
 	return false
 }
 
+// hasMetricWithTag requires one packet to carry both substrings. Two separate
+// hasMetric calls do not: they pass as long as *some* packet has the name and
+// *some* packet has the tag, so a series that never reached the wire is covered
+// by its siblings. The two are threaded by the client's constant tags
+// (`env:`, `service:`), which is why this is not one substring.
+func hasMetricWithTag(packets []string, name, tag string) bool {
+	for _, p := range packets {
+		if strings.Contains(p, name) && strings.Contains(p, tag) {
+			return true
+		}
+	}
+	return false
+}
+
 func findMetrics(packets []string, substr string) []string {
 	var out []string
 	for _, p := range packets {
@@ -446,7 +460,7 @@ func TestAttestationMetrics_AllOutcomes(t *testing.T) {
 	packets := collector.drain()
 
 	for _, outcome := range []string{"passed", "failed", "status_sig_missing"} {
-		if !hasMetric(packets, "attestation.challenges:1|c|#") || !hasMetric(packets, "outcome:"+outcome) {
+		if !hasMetricWithTag(packets, "attestation.challenges:1|c|#", "outcome:"+outcome) {
 			t.Errorf("missing attestation.challenges{outcome:%s}; got packets: %v", outcome, packets)
 		}
 	}

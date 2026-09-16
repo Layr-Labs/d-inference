@@ -15,6 +15,11 @@ dashboard queries; a declaration that keeps the name but adds, drops or reorders
 a tag key does the same thing to every widget that groups by it. Nothing else in
 the build notices either.
 
+All three files pin *identity*, not magnitude: a name, a wire type, a tag key.
+Nothing here checks that a migrated call site still fires as often as it used to,
+or with the same tag *values* — that is what `../wire_test.go` and the
+per-subsystem tests cover.
+
 A name may appear more than once in `emitted_tag_keys.txt`, because a site that
 omitted a conditional dimension emitted a shorter list — `ws.disconnects` has
 both `reason` and `reason,code`. The declaration covers that by taking an empty
@@ -33,7 +38,7 @@ one: migrated call sites no longer contain the literal, so today's tree yields a
 shrinking list.
 
 ```sh
-git archive 513af2381 | tar -x -C /tmp/base    # last commit before the catalog
+git archive 4eaaf1e4c | tar -x -C /tmp/base    # last commit before the catalog
 cd coordinator/metrics/testdata
 python3 extract_names.py    /tmp/base/coordinator dd     > emitted_names.txt
 python3 extract_names.py    /tmp/base/coordinator mirror > mirror_names.txt
@@ -43,8 +48,11 @@ python3 extract_tag_keys.py /tmp/base/coordinator        > emitted_tag_keys.txt
 A name that legitimately did not exist before (a genuinely new metric) is added
 by hand, with a one-line reason in the commit message.
 
-`extract_tag_keys.py` only sees tag keys written as literals, at the call or in a
-slice variable it can follow back. A site that carried its tags in a struct (the
-MDM scheduler's gauge loop) leaves no evidence, so its name is absent from the
-file and simply not asserted — partial coverage, deliberately, rather than a
-guess. Extending the extractor is preferable to hand-editing the golden.
+`extract_tag_keys.py` reads tag keys spelled as literals — at the call, in a slice
+variable it follows back to its nearest preceding assignment (including
+`append(tags, ...)`), or in the `{name: ..., tags: ...}` struct the MDM scheduler's
+gauge loop pushes from. A site it cannot read is recorded as `?` rather than as
+having no tags, and the test skips any name carrying one, because a golden that
+claimed an untagged series would fail the first migration of that metric with a
+wrong accusation. Every declaration in the first tranche resolves; extend the
+extractor rather than hand-editing the golden.

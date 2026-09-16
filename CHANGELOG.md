@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add the `provider-emails` operator command to preview provider software/macOS update audiences, sync owner groups to Resend, render and test notices, and create unsent broadcasts for review. Preserve unsubscribe preferences and remove owners from managed groups when their reported machines meet the target.
+
 ## Release candidate v0.9.4 — App Attest recovery and retirement readiness (not shipped; 2026-09-14)
 
 - Fix the released 0.9.3 App Attest callback-timer abort. Require the callback completion/expiry smoke in the optimized signed bundle, installer and updater; distinguish callback failures from Metal failures.

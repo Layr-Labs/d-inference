@@ -67,7 +67,9 @@ fi
 # Authenticated tests only run if an API key is supplied.
 if [ -n "$API_KEY" ]; then
   step "chat completions (authenticated)"
-  HTTP_CODE=$(curl -sS -o /tmp/smoke-chat.json -w '%{http_code}' \
+  smoke_result=$(mktemp -t darkbloom-smoke.XXXXXX)
+  trap 'rm -f "$smoke_result"' EXIT
+  HTTP_CODE=$(curl -sS -o "$smoke_result" -w '%{http_code}' \
     -H "Authorization: Bearer $API_KEY" \
     -H "Content-Type: application/json" \
     -d '{"model":"auto","messages":[{"role":"user","content":"ping"}],"max_tokens":8,"stream":false}' \
@@ -75,7 +77,7 @@ if [ -n "$API_KEY" ]; then
   if [ "$HTTP_CODE" = "200" ]; then
     green "chat OK"
   else
-    fail "chat returned $HTTP_CODE: $(head -c 400 /tmp/smoke-chat.json)"
+    fail "chat returned $HTTP_CODE: $(head -c 400 "$smoke_result")"
   fi
 else
   echo "(skipping authenticated tests — set API_KEY to enable)"

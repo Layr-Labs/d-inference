@@ -69,7 +69,7 @@ export interface UsageEntry {
 /**
  * A content part in the OpenAI/OpenRouter multimodal format. Either a text
  * part or an image part. The image `url` is a base64 `data:` URI — our
- * provider is end-to-end-encrypted and rejects remote http(s)/file URLs
+ * provider receives a sealed request and rejects remote http(s)/file URLs
  * (the image must ride inside the encrypted prompt). Mirrors the provider's
  * `OpenAIContentPart`.
  */

@@ -795,6 +795,11 @@ For a TTFT shed, `estimateTTFTRetryAfter` uses `ceil(bestTTFT − threshold)`
 in seconds, floored at the base estimate and clamped to [2, 30]. Self-route
 sheds use fixed values.
 
+After dispatch exhaustion, a positive provider `feasible_after_ms` replaces the
+queue estimate in `execution.run` (`coordinator/inference/dispatch/run.go`). Bound the
+milliseconds before rounding up so even the largest signed integer preserves
+the [header contract](../reference/api-contracts.md#set-by-the-coordinator).
+
 ### Routing simulation harness (`routingsim`)
 
 `coordinator/registry/routingsim/` is a Go library that replays arrivals

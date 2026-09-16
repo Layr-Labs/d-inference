@@ -451,6 +451,9 @@ The [startup measurement tool](../operations/coordinator-startup-measurement.md)
 requires Python 3.10+ and no third-party packages or build step. Its tests use
 local stub servers; its default observation mode sends only public GETs.
 
+The [provider retry-hint regression](test.md#2-coordinator-go) uses local Go HTTP
+and WebSocket fixtures; it needs no model runtime, database or external service.
+
 ## `make` targets
 
 | Target | What it runs |

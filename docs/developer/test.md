@@ -651,6 +651,16 @@ Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
 `go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
 the slow WebSocket integration tests; run the full set before merging.
 
+`TestDispatchRetryAfterPreservesBoundedProviderForecast` in
+`coordinator/api/dispatch_retry_hint_test.go` sends real provider capacity refusals
+through the WebSocket handler and checks the resulting HTTP `Retry-After`. The
+cases cover the floor, ceiling rounding, upper bound and signed-integer limit;
+each must dispatch exactly once. Run without model weights or Postgres:
+
+```bash
+go test -race ./coordinator/api -run '^TestDispatchRetryAfterPreservesBoundedProviderForecast$' -count=1
+```
+
 #### Provider config cleanup
 
 The CPU-only `e2e/testbed/provider_config_cleanup_test.go` tests retain a fixed

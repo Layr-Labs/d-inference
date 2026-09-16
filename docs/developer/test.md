@@ -765,6 +765,24 @@ at 95% uptime; summing durations and capping at 100% would overpay. The checks
 exercise the store projections and the actual reward engine's interval union.
 They do not launch providers or simulate a coordinator deployment.
 
+#### Reward allocation determinism
+
+Run the pure allocator and ranking checks without PostgreSQL or providers:
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/payments/baserewards \
+  -run '^Test(AllocateDraws|ValuePerFloorDollar)' -count=1 -timeout=60s
+```
+
+`TestAllocateDraws_Deterministic` in
+`coordinator/payments/baserewards/alloc_test.go` disables the separate account
+cap so candidate demand exceeds the pool. Account names sort in reverse
+`ProviderKey` order, and exact expected grants require `a=18_000_000`,
+`b=7_000_000`, and zero for `c` and `d` (micro-USD). The fixture also requires
+identical payouts after an input shuffle and full use of the pool. This checks
+the actual `ProviderKey` tiebreaker in `AllocateDraws`; dedicated fixtures retain
+the account cap and cumulative cap across settlement runs.
+
 #### Provider config cleanup
 
 The CPU-only `e2e/testbed/provider_config_cleanup_test.go` tests retain a fixed

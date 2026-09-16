@@ -163,6 +163,9 @@ only by the container build (`-ldflags -X …api.BuildVersion/BuildCommit/BuildD
 in `coordinator/Dockerfile`); a local `go build` reports `dev`/`unknown` on
 `GET /health` (`coordinator/api/health.go`, `handleHealth`).
 
+The [reward allocation checks](test.md#reward-allocation-determinism) compile
+only Go and need neither PostgreSQL nor a provider build.
+
 ### 4. Prompt-contract sidecar (Rust)
 
 ```bash

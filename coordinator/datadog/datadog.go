@@ -149,7 +149,11 @@ func NewClient(cfg Config, logger *slog.Logger) (*Client, error) {
 		}),
 	)
 	if err != nil {
-		logger.Warn("datadog: DogStatsD client init failed (metrics disabled)", "error", err, "addr", cfg.StatsdAddr)
+		// c.warn, not logger.Warn: an embedder may construct a Client with no
+		// logger, and a failed statsd connect is the most likely thing to happen
+		// on such a host — a nil dereference here would turn "no agent" into a
+		// startup panic.
+		c.warn("datadog: DogStatsD client init failed (metrics disabled)", "error", err, "addr", cfg.StatsdAddr)
 	} else {
 		c.Statsd = sd
 	}

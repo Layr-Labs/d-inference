@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-16 · commit `e22d49019`
+> Last updated: 2026-09-16 · commit `8e74f2126`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -251,8 +251,9 @@ query resolves — a one-time API call per metric, per organization, scripted in
 `deploy/datadog/enable-distribution-percentiles.sh` (runbook:
 [datadog-dashboard](../operations/datadog-dashboard.md)). It is **not** enabled
 for every histogram the coordinator emits: the script covers the metrics the
-dashboard queries that way plus any name passed on the command line, because a
-percentile-enabled distribution costs roughly 5 custom metrics per timeseries.
+dashboard queries that way plus any name passed on the command line, because
+enabling them roughly doubles what that metric bills (a distribution already
+bills as ~5 custom metrics per timeseries, ~10 with percentiles).
 A histogram outside that set still answers `avg:`/`count:`/`max:`/`min:`/`sum:`
 — the raw values are all there, only the percentile aggregators are off. The
 write sets `exclude_tags_mode: true` with an empty tag list, i.e. exclude

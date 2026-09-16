@@ -47,10 +47,24 @@ func seriesKey(metric string, tags []string) string {
 	return metric + "|" + strings.Join(tags, ",")
 }
 
+// Both writers copy the caller's tag slice on first sight of a series, for the
+// same reason distBuffer.add does: the slice is retained until the next flush
+// (seconds), Gauge and Count are exported, and callers here do reuse a slice —
+// `ddIncr(a, tags)` followed by `ddIncr(b, append(tags, extra))` is a shape the
+// codebase uses. That is safe only while every such literal has no spare
+// capacity, which is not a property to depend on. A stored slice always has the
+// same contents as the caller's (different contents would key differently), so
+// later observations reuse it and the copy is once per series.
 func (b *seriesBuffer) setGauge(metric string, value float64, tags []string, ts int64) {
 	key := seriesKey(metric, tags)
 	b.mu.Lock()
-	b.gauges[key] = seriesPoint{metric: metric, tags: tags, value: value, ts: ts}
+	p, ok := b.gauges[key]
+	if !ok {
+		p = seriesPoint{metric: metric, tags: append([]string(nil), tags...)}
+	}
+	p.value = value
+	p.ts = ts
+	b.gauges[key] = p
 	b.mu.Unlock()
 }
 
@@ -59,7 +73,7 @@ func (b *seriesBuffer) addCount(metric string, value float64, tags []string, ts 
 	b.mu.Lock()
 	p, ok := b.counts[key]
 	if !ok {
-		p = seriesPoint{metric: metric, tags: tags}
+		p = seriesPoint{metric: metric, tags: append([]string(nil), tags...)}
 	}
 	p.value += value
 	p.ts = ts

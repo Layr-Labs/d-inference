@@ -42,20 +42,24 @@ const (
 	// weighs a busy window like a quiet one.)
 	maxDistValuesPerSeries = 2000
 
-	// The intake caps a distribution_points payload at 3.2 MB compressed, and
-	// the coordinator posts uncompressed, so the body itself has to stay under
-	// that. One flush is split across POSTs on whichever of these two bounds
-	// comes first: value count alone is not enough, because 50k values spread
-	// over 50k thin one-value series is ~14 MB of metric names and tags.
+	// The v1 spec documents a 3.2 MB (3200000 B) cap on the request body for
+	// /api/v1/series and states no limit for /api/v1/distribution_points; 3.2 MB
+	// is assumed here as the conservative intake-wide figure. One flush is split
+	// across POSTs on whichever of these two bounds comes first: value count
+	// alone is not enough, because 50k values spread over 50k thin one-value
+	// series is ~14 MB of metric names and tags.
 	maxDistValuesPerRequest = 50000
 	maxDistBytesPerRequest  = 2 << 20 // 2 MB
 
-	// Per-entry cost estimates for that byte bound, measured against real
-	// payloads (~278 B of metric name, tags, host and JSON scaffolding per
-	// entry; ~16 B per encoded float) and rounded up. An estimate rather than a
-	// marshal-and-measure because it only has to be conservative.
+	// Per-entry cost estimates for that byte bound. distEntryBytes covers the
+	// metric name, tags, host and JSON scaffolding (the widest real entry
+	// measures 294 B). distValueBytes is the widest a json.Marshal'd float64
+	// gets — "-1.2345678901234567e-308" plus its comma — not the ~16 B a
+	// latency reading actually takes, so the estimate stays above the real body
+	// even for values that encode in scientific notation. It only has to be
+	// conservative: it decides where to split, nothing else.
 	distEntryBytes = 320
-	distValueBytes = 16
+	distValueBytes = 25
 )
 
 // distBuffer accumulates raw histogram values per (metric, tags) between

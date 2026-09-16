@@ -380,8 +380,9 @@ func TestDistributionChunksManyThinSeries(t *testing.T) {
 // the two paths that report — a rejected batch and a sampled window.
 func TestFlushDistributionsWithoutLogger(t *testing.T) {
 	intake := newDistIntake(t)
-	intake.status = http.StatusForbidden
-	intake.body = `{"errors":["Forbidden"]}`
+	intake.mu.Lock()
+	intake.status, intake.body = http.StatusForbidden, `{"errors":["Forbidden"]}`
+	intake.mu.Unlock()
 
 	c := distClient(intake, "k")
 	c.logger = nil
@@ -476,6 +477,71 @@ func TestHistogramNilSafe(t *testing.T) {
 	(&Client{}).Histogram("x", 1, nil)                                 // nothing configured
 	nilClient.flushDistributions()                                     // nil receiver
 	(&Client{apiKey: "k", logger: quietLogger()}).flushDistributions() // no buffer
+}
+
+// TestNewClientWithoutLogger: a failed DogStatsD connect is the most likely
+// thing to happen on a host with no agent, which is the host this transport
+// exists for. An embedder passing no logger must not have that turn into a
+// startup panic.
+func TestNewClientWithoutLogger(t *testing.T) {
+	c, err := NewClient(Config{
+		StatsdAddr:   "unix:///nonexistent/d-inference-test/dogstatsd.sock",
+		FlushSecs:    5,
+		MaxBatchSize: 10,
+	}, nil) // must not panic on the statsd-failure warning
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer c.Close()
+	if c.Statsd != nil {
+		t.Skip("statsd connected to the nonexistent socket; nothing to assert")
+	}
+}
+
+// TestHistogramOrGaugeNeverBecomesADistribution: these names are gauges by
+// design, and a name already submitted as a gauge cannot be reinterpreted as a
+// distribution without breaking every query on it. A Client with a distribution
+// buffer but no series buffer must therefore still take the gauge path.
+func TestHistogramOrGaugeNeverBecomesADistribution(t *testing.T) {
+	c := &Client{apiKey: "k", dist: newDistBuffer()} // dist only, no series
+	c.HistogramOrGauge("provider.mlx_memory.active_gb", 4.5, []string{"machine_id:m1"})
+
+	if got := c.dist.drain(); len(got) != 0 {
+		t.Errorf("HistogramOrGauge submitted a distribution: %+v", got)
+	}
+}
+
+// TestBuffersCopyCallerTags: the buffers hold a tag slice until the next flush,
+// seconds later, and callers reuse one — `ddIncr(a, tags)` then
+// `ddIncr(b, append(tags, extra))` is a shape this codebase uses. That only
+// happens to be safe while every such literal has zero spare capacity, so both
+// buffers copy on first sight. Reverting either copy fails this.
+func TestBuffersCopyCallerTags(t *testing.T) {
+	// Spare capacity, so append writes in place instead of reallocating — the
+	// case a slice literal hides.
+	tags := make([]string, 0, 4)
+	tags = append(tags, "op:debit")
+
+	dist := newDistBuffer()
+	series := newSeriesBuffer()
+	dist.add("store.debit.latency_ms", 7, tags, 1)
+	series.setGauge("fleet.size", 3, tags, 1)
+	series.addCount("store.debit.total", 1, tags, 1)
+
+	// What a caller reusing the slice does next.
+	tags = append(tags, "extra:1")
+	tags[0] = "op:credit"
+
+	if got := dist.drain(); len(got) != 1 || got[0].tags[0] != "op:debit" {
+		t.Errorf("distBuffer aliased the caller's tags: %+v", got)
+	}
+	gauges, counts := series.drain()
+	if len(gauges) != 1 || gauges[0].tags[0] != "op:debit" {
+		t.Errorf("seriesBuffer gauge aliased the caller's tags: %+v", gauges)
+	}
+	if len(counts) != 1 || counts[0].tags[0] != "op:debit" {
+		t.Errorf("seriesBuffer count aliased the caller's tags: %+v", counts)
+	}
 }
 
 func equalFloats(a, b []float64) bool {

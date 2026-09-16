@@ -15,7 +15,11 @@ func (c *Client) HistogramOrGauge(name string, value float64, tags []string) {
 	if c == nil {
 		return
 	}
-	if c.httpMetrics() {
+	// Either HTTPS leg being live has to route here, not just the series one: a
+	// Client holding a distBuffer but no seriesBuffer would otherwise fall
+	// through to Histogram and submit these names as distributions — exactly the
+	// reinterpretation described above. Gauge then uses whichever leg it has.
+	if c.httpMetrics() || c.httpDistributions() {
 		c.Gauge(name, value, tags)
 		return
 	}

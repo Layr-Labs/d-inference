@@ -1,6 +1,6 @@
 # Datadog dashboard and distribution percentiles
 
-> Last updated: 2026-09-16 · commit `e22d49019`
+> Last updated: 2026-09-16 · commit `8e74f2126`
 
 Apply the observability dashboard and enable the percentile aggregators its
 latency widgets depend on. The two steps are separate scripts and the **order
@@ -51,8 +51,9 @@ something emits it, so a low-traffic metric can take minutes. Wait for the
 metric to exist:
 
 ```bash
+export DD_SITE=datadoghq.com   # the scripts default this; curl does not
 curl -sS "https://api.${DD_SITE}/api/v1/search?q=metrics:d_inference.http.latency_ms" \
-  -H "DD-API-KEY: ${DD_API_KEY}" -H "DD-APPLICATION-KEY: ${DD_APP_KEY}"
+  -H "DD-API-KEY: ${DD_API_KEY}" -H "DD-APPLICATION-KEY: ${DD_APPLICATION_KEY}"
 ```
 
 ### 2. Report what the percentile script would do
@@ -68,6 +69,11 @@ non-zero exit means a GET failed (network, credentials, permissions), not that
 anything is missing.
 
 ### 3. Apply
+
+**Human-only.** This is an org-wide write that changes what production data
+bills as, so it needs the same explicit human approval as a production deploy
+([`coordinator-deploy.md`](coordinator-deploy.md)); agents run `--check` and
+prepare the command.
 
 ```bash
 ./deploy/datadog/enable-distribution-percentiles.sh --apply
@@ -111,8 +117,8 @@ scope by.
 ### 5. To make one more histogram answer `pNN:`
 
 Percentiles are **not** enabled for every histogram the coordinator emits —
-about 35 names — because each percentile-enabled distribution costs roughly 5
-custom metrics per timeseries. Pass the full name:
+about 35 names — because enabling them roughly doubles what that metric bills
+(see [Cost check](#cost-check)). Pass the full name:
 
 ```bash
 ./deploy/datadog/enable-distribution-percentiles.sh --apply d_inference.inference.ttft_ms
@@ -129,7 +135,8 @@ up on its own and no one has to remember the argument.
    one lookback window).
 2. The metric summary page shows the metric as a **distribution** with
    percentiles enabled:
-   `https://app.datadoghq.com/metric/summary?metric=d_inference.http.latency_ms`.
+   `https://app.<DD_SITE>/metric/summary?metric=d_inference.http.latency_ms`
+   (`app.datadoghq.com` for US1).
 3. Re-running `--apply` reports `unchanged` for everything and configures
    nothing.
 4. Tag keys still resolve. On a widget, group `p95:d_inference.http.latency_ms`
@@ -138,27 +145,39 @@ up on its own and no one has to remember the argument.
 
 ## Cost check
 
-This is the step that is easy to skip and expensive to skip. Every histogram the
-coordinator emits becomes a distribution once deployed, whether or not this
-script ever runs, and a distribution bills per timeseries:
+This is the step that is easy to skip and expensive to skip, and the expensive
+part is **not** this script. Every histogram the coordinator emits becomes a
+distribution the moment the build is deployed, whether or not the script ever
+runs, and a distribution is not billed as one custom metric:
 
 | | Custom metrics per timeseries |
 |---|---|
-| Distribution, percentiles off | ~1 |
-| Distribution, percentiles on | ~5 |
+| Distribution, percentiles off | ~5 (count, sum, min, max, avg) |
+| Distribution, percentiles on | ~10 (the above, plus five more for percentiles) |
+
+So the deploy is the 5× step and enabling percentiles is only 2× on top of it.
+In production, where histograms were previously discarded for want of an agent,
+the baseline being compared against is zero: the deploy is where the custom
+metric count appears, not the apply.
 
 Timeseries count is driven by tag cardinality, not by the number of metric
 names. The dominant contributor is `http.latency_ms` (`path` × `method` ×
-`status_code`; `path` is bounded to registered route patterns by
-`httpPathLabel`, so a few hundred series), then the model-tagged inference
-families. Order of magnitude for the whole coordinator: hundreds to low
-thousands of distribution timeseries, of which only the handful this script
-enables carry the 5× multiplier.
+`status_code`; `path` is bounded to the registered route patterns by
+`httpPathLabel`, which already encode the method, so a few hundred series), then
+the model-tagged inference families. Order of magnitude for the whole
+coordinator: hundreds to low thousands of distribution timeseries — call it
+thousands to ~10k custom metrics after the deploy, before anything is
+percentile-enabled.
+
+One nuance in the other direction: under cardinality-based pricing Datadog
+counts *configured* metrics toward ingested custom-metric volume, so writing a
+tag configuration is not perfectly free even when it excludes nothing. It does
+not change what is queryable.
 
 After a deploy plus an apply, read the real number rather than the estimate:
-**Plan & Usage → Usage → Custom Metrics**, or the
-[metrics summary](https://app.datadoghq.com/metric/summary?filter=d_inference.)
-filtered to `d_inference.`. Whoever ran the deploy owns this check. If the count
+**Plan & Usage → Usage → Custom Metrics**, or the metric summary page
+(`https://app.<DD_SITE>/metric/summary?filter=d_inference.`) filtered to
+`d_inference.`. Whoever ran the deploy owns this check. If the count
 jumped more than expected, the lever is tag cardinality on the biggest
 contributors — not turning the transport back off, which would return the
 metrics to being silently dropped.
@@ -184,11 +203,13 @@ Datadog configuration.
 - **Dashboard**: re-`PUT` the previous `deploy/datadog/dev-network-dashboard.json`
   from git.
 - **Percentiles**: `DELETE /api/v2/metrics/{metric}/tags` removes a tag
-  configuration, which turns percentiles back off and drops the 5× multiplier.
+  configuration, which turns percentiles back off and halves what that metric
+  bills.
   The raw distribution data is unaffected, and `avg:`/`count:`/`max:` keep
   working. Deleting does not restore agent-style `.95percentile` gauges — those
   came from a local agent aggregating DogStatsD and stopped when histograms moved
   to HTTPS.
-- **Whole transport**: unset `DD_API_KEY` and every leg falls back to DogStatsD,
-  which on a host with no agent means the metrics are silently discarded again.
-  That is the bug this replaced, not a rollback target.
+- **Whole transport**: unsetting `DD_API_KEY` returns counters, gauges and
+  histograms to DogStatsD — which on a host with no agent means they are silently
+  discarded again — and stops log and event forwarding outright, since those have
+  no UDP leg at all. That is the bug this replaced, not a rollback target.

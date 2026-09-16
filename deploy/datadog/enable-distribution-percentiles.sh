@@ -11,8 +11,9 @@
 # any extra metric names passed on the command line.
 #
 # It does NOT enable percentiles for every histogram the coordinator emits —
-# only the ones something actually queries that way, because a
-# percentile-enabled distribution costs about 5 custom metrics per timeseries.
+# only the ones something actually queries that way, because enabling them
+# roughly doubles what that metric bills (a distribution already bills as ~5
+# custom metrics per timeseries, ~10 with percentiles).
 # To make one more metric answer `pNN:`, pass its full name:
 #
 #   ./enable-distribution-percentiles.sh --apply d_inference.inference.ttft_ms
@@ -117,7 +118,12 @@ with open(sys.argv[1], "r", encoding="utf-8") as f:
 namespace = sys.argv[2]
 
 # p95:d_inference.http.latency_ms{$env,model:$model} by {path}
-QUERY = re.compile(r"p\d+:([a-z0-9_.]+)\{")
+# The scope braces are optional: `p95:metric` with no filter is a valid query and
+# must not be silently uncovered. Both widget query spellings are searched --
+# `query` (formulas) and `q` (the older metric_query shape) -- because a metric
+# this script misses is a widget that reads No data with nothing to explain why.
+QUERY = re.compile(r"p\d+:([a-z0-9_.]+)")
+QUERY_KEYS = ("query", "q")
 
 found = set()
 
@@ -125,7 +131,7 @@ found = set()
 def walk(node):
     if isinstance(node, dict):
         for key, value in node.items():
-            if key == "query" and isinstance(value, str):
+            if key in QUERY_KEYS and isinstance(value, str):
                 found.update(m for m in QUERY.findall(value) if m.startswith(namespace))
             else:
                 walk(value)
@@ -183,9 +189,10 @@ report_body() {
   fi
 }
 
-# parse_config prints "<percentiles> <exclude_mode> <tags>" from a tag
-# configuration response. It never fails the run: an unreadable or unexpected
-# body is a state to report, not a reason to abandon the remaining metrics.
+# parse_config prints "<percentiles> <exclude_mode> <metric_type> <tags>" from a
+# tag configuration response (tags last, since it is the only field that can be
+# long). It never fails the run: an unreadable or unexpected body is a state to
+# report, not a reason to abandon the remaining metrics.
 # (Keep apostrophes out of this heredoc — bash 3.2 mis-parses one inside a
 # command substitution.)
 parse_config() {
@@ -197,7 +204,7 @@ try:
     with open(sys.argv[1], "r", encoding="utf-8") as f:
         attrs = (json.load(f).get("data") or {}).get("attributes") or {}
 except Exception:
-    print("unreadable unreadable -")
+    print("unreadable unreadable unreadable -")
     sys.exit(0)
 
 
@@ -206,7 +213,13 @@ def flag(value):
 
 
 tags = ",".join(sorted(attrs.get("tags") or [])) or "-"
-print("{} {} {}".format(flag(attrs.get("include_percentiles")), flag(attrs.get("exclude_tags_mode")), tags))
+metric_type = attrs.get("metric_type") or "unset"
+print("{} {} {} {}".format(
+    flag(attrs.get("include_percentiles")),
+    flag(attrs.get("exclude_tags_mode")),
+    metric_type,
+    tags,
+))
 PY
 }
 
@@ -256,16 +269,28 @@ while read -r metric; do
   status="$(dd_call GET "$url")"
   case "$status" in
     200)
-      read -r have_pct have_exclude have_tags <<<"$(parse_config)"
-      echo "  ${metric}: existing config (percentiles=${have_pct} exclude_tags_mode=${have_exclude} tags=${have_tags})"
+      read -r have_pct have_exclude have_type have_tags <<<"$(parse_config)"
+      echo "  ${metric}: existing config (percentiles=${have_pct} exclude_tags_mode=${have_exclude} type=${have_type} tags=${have_tags})"
       method="PATCH"
+      # include_percentiles only exists on a distribution. A pNN: widget pointed
+      # at a gauge or count is a dashboard mistake, and Datadog answers it with a
+      # 400 that reads like an API problem — so name it here instead.
+      if [[ "$have_type" != "distribution" && "$have_type" != "unset" && "$have_type" != "unreadable" ]]; then
+        echo "    skipped: ${metric} is a ${have_type}, not a distribution — percentiles do not apply" >&2
+        skipped=$((skipped + 1))
+        continue
+      fi
       if [[ "$have_pct" == "true" && "$have_exclude" == "true" && "$have_tags" == "-" ]]; then
         echo "    already enabled with all tags queryable — no write"
         unchanged=$((unchanged + 1))
         continue
       fi
-      if [[ "$have_tags" != "-" ]]; then
+      # Only an allowlist (exclude mode off) narrows what resolves. A non-empty
+      # list with exclude mode already on is a deny-list, so say what it is.
+      if [[ "$have_tags" != "-" && "$have_exclude" != "true" ]]; then
         echo "    note: replacing a tag allowlist (${have_tags}) with exclude-nothing"
+      elif [[ "$have_tags" != "-" ]]; then
+        echo "    note: dropping an existing tag exclusion (${have_tags}) — all tags become queryable"
       fi
       ;;
     404)
@@ -305,6 +330,14 @@ while read -r metric; do
       # has not flushed it yet — or that nothing emits it at all.
       echo "    skipped: Datadog has no data for ${metric} yet"
       skipped=$((skipped + 1))
+      ;;
+    409)
+      # Something created the configuration between our GET and this POST
+      # (a concurrent run, or the UI). The desired state may already exist, so
+      # this is not a failure — but do not claim we wrote it either.
+      echo "    conflict: a tag configuration already exists for ${metric}; re-run to reconcile" >&2
+      report_body
+      unchanged=$((unchanged + 1))
       ;;
     000)
       echo "    ${method} failed: could not reach https://api.${SITE}" >&2

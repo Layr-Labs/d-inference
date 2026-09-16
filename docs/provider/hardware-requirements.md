@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-16 · commit `84e2799e8`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -17,7 +17,7 @@ and are not repeated here.
 | CPU / GPU | Apple Silicon with Metal; `ChipFamily` recognised: `M1`, `M2`, `M3`, `M4`, `M5` (`Unknown` still runs) | `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift` (`requireMetal`), `provider-swift/Sources/ProviderCore/Protocol/Enums.swift` |
 | Architecture | `arm64` only; the installer refuses Intel Macs | `coordinator/api/install.sh` |
 | RAM | At least 8 GB to start at all ([`../architecture/hardware-support.md#context`](../architecture/hardware-support.md#context)); per-model needs below | `provider-swift/Sources/darkbloom/StartCommand+Preflight.swift` (`hardware.memoryGb < 8`) |
-| macOS | 14 (Sonoma) or later, the build floor; `darkbloom doctor` warns below macOS 26 (`recommendedMacOSMajorVersion`, [`../architecture/hardware-support.md#context`](../architecture/hardware-support.md#context)) but does not block | `provider-swift/Package.swift` (`.macOS(.v14)`), `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |
+| macOS | 14 (Sonoma) or later, the build floor; `darkbloom doctor` warns below macOS 26 (`recommendedMacOSMajorVersion`, [`../architecture/hardware-support.md#context`](../architecture/hardware-support.md#context)) but does not block. Install every macOS security update ([Apple security releases](https://support.apple.com/en-us/100100)): the SIP guarantee assumes no unpatched kernel vulnerability ([`../threat-model.yaml`](../threat-model.yaml), `TB-003`) | `provider-swift/Package.swift` (`.macOS(.v14)`), `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |
 | Storage | Weights per model (catalog `size_gb`) under the Hugging Face hub cache, plus the SSD prefix-cache budget (`ssdDiskBudgetBytes`, [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules)) when that cache is active | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift` (`defaultCacheDirectory`), `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` |
 | Network | Outbound `wss://api.darkbloom.dev/ws/provider` and HTTPS on 443; a heartbeat every `heartbeat_interval_secs` ([`cli-reference.md`](./cli-reference.md#providertoml-keys-read-by-the-cli)); no inbound port | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |
 | Security posture | SIP enabled and Full Security boot; a logged-in GUI session for APNs code-identity attestation | [`attestation.md`](./attestation.md) |

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — SIP immutability caveat
+
+- State the kernel-integrity assumption behind the provider's SIP and Hardened Runtime guarantee: the protections hold while the macOS kernel has no unpatched vulnerability that bypasses SIP, Hardened Runtime or KIP. The README, the threat model and the provider hardware requirements now say so, and the hardware requirements tell operators to install every macOS security update.
+
 ## Release candidate v0.9.4 — App Attest recovery and retirement readiness (not shipped; 2026-09-14)
 
 - Fix the released 0.9.3 App Attest callback-timer abort. Require the callback completion/expiry smoke in the optimized signed bundle, installer and updater; distinguish callback failures from Metal failures.

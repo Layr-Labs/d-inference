@@ -128,6 +128,7 @@ coordinator and console changes require their own deployments.
 ## Unreleased — stats request-flow refresh
 
 - Preserve newer withdrawal settlements when an older instant-payout failure arrives concurrently; payout ownership is rechecked in the store transition.
+- Commit invite redemption and balance credit together, so a failed credit leaves the code available for retry.
 
 - Restore Stats refreshes on large usage windows by aggregating request origins before looking up provider locations. Preserve weighted coordinates, request/token counts, and the top-50 flow limit while avoiding large temporary sorts.
 

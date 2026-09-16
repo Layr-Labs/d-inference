@@ -85,6 +85,7 @@ func (s *Store) RedeemInviteCode(code string, accountID string) error {
 		s.accountRedemptions[accountID] = make(map[string]bool)
 	}
 	s.accountRedemptions[accountID][code] = true
+	s.creditLocked(accountID, ic.AmountMicroUSD, contracts.LedgerInviteCredit, "invite:"+code, time.Now())
 	return nil
 }
 

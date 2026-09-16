@@ -183,7 +183,7 @@ Three credit primitives (`coordinator/store/postgres/ledger.go`):
 
 | Primitive | Effect | Used for |
 |---|---|---|
-| `Credit` (`creditTx`) | raises `balance_micro_usd` only; not reference-idempotent | deposits, invite/admin credits, reservation and settlement refunds, platform fee |
+| `Credit` (`creditTx`) | raises `balance_micro_usd` only; not reference-idempotent | deposits, admin credits, reservation and settlement refunds, platform fee |
 | `CreditWithdrawable` (`creditWithdrawableTx`) | raises both columns; not reference-idempotent | referral rewards, admin rewards |
 | `CreditWithdrawableOnce` | `CreditWithdrawable` guarded by a `pg_advisory_xact_lock` on `entry_type:reference` and an existence check on `(account_id, entry_type, reference)`; returns whether it applied | withdrawal principal and fee refunds |
 
@@ -285,8 +285,11 @@ Admins create (`POST /v1/admin/invite-codes`: `amount_usd`, optional `code`,
 account redeems with `POST /v1/invite/redeem`; `RedeemInviteCode` locks the
 code row and checks active, unexpired, under `max_uses`, then inserts into
 `invite_redemptions` whose primary key `(code, account_id)` blocks a second
-redemption by the same account; the credit is a non-withdrawable
-`invite_credit`. `POST /v1/admin/credit` (`admin_credit`, non-withdrawable)
+redemption by the same account. The use count, redemption, non-withdrawable
+`invite_credit` balance and ledger row commit together; a failed credit rolls
+back the claim so the code can be retried. PostgreSQL uses `creditBalance`
+inside the redemption transaction; memory applies `creditLocked` under the
+same store lock (`coordinator/store/postgres.go`, `coordinator/store/memory.go`). `POST /v1/admin/credit` (`admin_credit`, non-withdrawable)
 and `POST /v1/admin/reward` (`admin_reward`, withdrawable) credit by user
 email. These, plus free self-route, are the only free-credit paths — there is
 no sign-up credit or trial in code. Admin authorization for these routes is

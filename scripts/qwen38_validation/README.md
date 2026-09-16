@@ -1,6 +1,6 @@
 # Qwen 3.8 Next (Flash-Next) reproducible validation
 
-> Last updated: 2026-09-14 · provider runtime `db08d749` · SDK runtime `6445eeb`, fixture follow-up `141e067`
+> Last updated: 2026-09-15 · reproduction guide; bind each run to its exact source and binary
 
 The HTTP harnesses send synthetic requests to an **existing healthy**, explicitly
 configured release CLI. No workstation address, port or credential is embedded.
@@ -43,6 +43,44 @@ its terminal state. Do not overwrite a running executable or another run's
 outputs. Each `--output` directory must be new; preserve failures and partial
 receipts. `api_matrix.call` cannot recover partial response bytes after a read
 exception, so retain server-side diagnostics separately when that occurs.
+
+## Default performance-profile qualification
+
+The current [Qwen4 configuration](../../docs/reference/configuration.md#native-flash-next-candidate)
+defaults to full-KV parallel QSA, 32 value partitions and early layer submission.
+The earlier dated performance checkpoints retain their historical opt-in scope.
+Use three distinct arms: explicit OFF (`DARKBLOOM_QWEN4_QSA_PARALLEL_FULL_KV=0`
+and `DARKBLOOM_QWEN4_LAYER_ASYNC=0`), explicit ON (both `1` and
+`DARKBLOOM_QWEN4_QSA_PARALLEL_VALUE_PARTITIONS=32`), and all three unset.
+An old launcher that omits a variable for OFF is no longer a rollback test.
+These model-specific overrides reach foreground/local serving, not the daemon
+passthrough allowlist. Native source defaults apply in both modes.
+
+Run `Qwen4PerformanceDefaultsTests` normally. Run SDK
+`Qwen4ParallelFullKVParityTests` and `Qwen4LayerSubmissionTests` separately with
+`DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST=1` and all three profile variables unset.
+Require 504 bit-exact native attention cells with actual dispatch, preserved
+wider-prefill fallbacks and deferred-fill/fault/retirement safety. Run actual
+selected-checkpoint state/rollback/output-budget tests and the normal full
+suites independently; targeted parity is not the full qualification gate.
+
+The provider's `Qwen4DefaultProfilePerformanceTests` uses the same 4,207-token
+maintenance-log fixture as the coordinator cache-scope test, with fixed depths
+0, 2 and 4. Enable only in the owned GPU lane using
+`DARKBLOOM_QWEN4_DEFAULT_PROFILE_PERF=1`, the exclusive flag, both prefix-cache
+variables `0`, an approved absolute `DARKBLOOM_QWEN4_REAL_MODEL`, and a new
+absolute `DARKBLOOM_QWEN4_DEFAULT_PROFILE_OUTPUT`. It requires the explicitly
+selected config/index and actual embedded head, identical target token IDs
+and fixed-depth acceptance traces across OFF/ON/unset, plus drained native
+owners. Fresh complete artifact hashes are a separate prerequisite.
+
+Record warmup, exact request/tokens, hardware, cache posture and clock for each
+benchmark. Internal prefill timing, client time to first token and sustained
+decode are different metrics; one-output-token filler probes do not measure
+decode. The new profile targets widths 1–6, not large prefill chunks, and does
+not establish a 1.5K–2K prefill claim. Existing shape-eligible blocked GDN,
+affine QMM and PLE gather defaults remain unchanged. Keep the local API matrices
+as the final compatibility gate after native state/cache/media checks.
 
 ## Local API matrices
 

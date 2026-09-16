@@ -1,4 +1,5 @@
 import Foundation
+import MLXLLM
 import MLXLMCommon
 import Testing
 
@@ -20,11 +21,14 @@ final class FlashNextLifecycleWeakOwners: @unchecked Sendable {
     private let lock = NSLock()
     private weak var container: ModelContainer?
     private weak var target: AnyObject?
+    private weak var textTarget: Qwen4ExpTextModel?
     init(container: ModelContainer, target: AnyObject) {
         self.container = container
         self.target = target
+        self.textTarget = (target as? any Qwen4ExpMTPTargeting)?.qwen4ExpTextTarget
     }
-    var isAlive: Bool { lock.withLock { container != nil || target != nil } }
+    var isAlive: Bool { lock.withLock { container != nil || target != nil || textTarget != nil } }
+    var textTargetIsAlive: Bool { lock.withLock { textTarget != nil } }
 }
 
 extension ProviderLoop {

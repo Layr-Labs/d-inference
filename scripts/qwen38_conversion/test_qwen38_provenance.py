@@ -256,6 +256,97 @@ class SyntheticSourceTests(unittest.TestCase):
         self.assertFalse((output / "conversion-receipt.json").exists())
         self.assertFalse((output / "shard-digests.json").exists())
 
+    def pin_metadata(self, name: str, value: bytes) -> None:
+        (self.source / name).write_bytes(value)
+        self.write_cache_metadata(name, "synthetic-small-file-etag")
+        self.policy = replace(self.policy, metadata_pins={
+            **self.policy.metadata_pins, name: hashlib.sha256(value).hexdigest()})
+
+    def test_converter_freezes_pinned_metadata_during_conversion(self) -> None:
+        originals = {
+            "LICENSE": b"synthetic license fixture\n",
+            "tokenizer.json": b'{"synthetic_tokenizer":"original"}\n',
+            "chat_template.jinja": b"synthetic original template\n",
+        }
+        for name, value in originals.items():
+            self.pin_metadata(name, value)
+        output = self.root / "mutated-metadata-output"
+        with self.stub_conversion() as quantizer:
+            original_quantizer = quantizer.side_effect
+            def mutate_metadata(filename, keys):
+                for name in originals:
+                    (self.source / name).write_bytes(b"CHANGED AFTER PIN VERIFICATION\n")
+                return original_quantizer(filename, keys)
+            quantizer.side_effect = mutate_metadata
+            receipt = converter.convert(self.source, output, self.policy.revision, self.policy.repo)
+        self.assertTrue(receipt["source_payloads_verified"])
+        for name, value in originals.items():
+            with self.subTest(name=name):
+                self.assertNotEqual((self.source / name).read_bytes(), value)
+                self.assertEqual((output / name).read_bytes(), value)
+                self.assertEqual(receipt["output_metadata_sha256"][name], self.policy.metadata_pins[name])
+
+    def test_converter_retains_metadata_removed_during_conversion(self) -> None:
+        original_license = (self.source / "LICENSE").read_bytes()
+        output = self.root / "removed-metadata-output"
+        with self.stub_conversion() as quantizer:
+            original_quantizer = quantizer.side_effect
+            def remove_metadata(filename, keys):
+                (self.source / "LICENSE").unlink(missing_ok=True)
+                return original_quantizer(filename, keys)
+            quantizer.side_effect = remove_metadata
+            converter.convert(self.source, output, self.policy.revision, self.policy.repo)
+        self.assertEqual((output / "LICENSE").read_bytes(), original_license)
+
+    def test_converter_does_not_copy_optional_metadata_added_after_validation(self) -> None:
+        output = self.root / "late-metadata-output"
+        with self.stub_conversion() as quantizer:
+            original_quantizer = quantizer.side_effect
+            def add_metadata(filename, keys):
+                (self.source / ".gitattributes").write_text("late unverified metadata\n")
+                return original_quantizer(filename, keys)
+            quantizer.side_effect = add_metadata
+            receipt = converter.convert(self.source, output, self.policy.revision, self.policy.repo)
+        self.assertNotIn(".gitattributes", receipt["copied_metadata"])
+        self.assertFalse((output / ".gitattributes").exists())
+
+    def test_converter_freezes_optional_metadata_present_before_conversion(self) -> None:
+        original = b"synthetic original merge table\n"
+        (self.source / "merges.txt").write_bytes(original)
+        output = self.root / "optional-metadata-output"
+        with self.stub_conversion() as quantizer:
+            original_quantizer = quantizer.side_effect
+            def change_metadata(filename, keys):
+                (self.source / "merges.txt").write_bytes(b"changed merge table\n")
+                return original_quantizer(filename, keys)
+            quantizer.side_effect = change_metadata
+            receipt = converter.convert(self.source, output, self.policy.revision, self.policy.repo)
+        self.assertEqual((output / "merges.txt").read_bytes(), original)
+        self.assertEqual(receipt["output_metadata_sha256"]["merges.txt"], hashlib.sha256(original).hexdigest())
+
+    def test_converter_rejects_pinned_metadata_changed_between_verify_and_capture(self) -> None:
+        verify_pins = self.policy_verifier()
+        def verify_then_change(*args, **kwargs):
+            evidence = verify_pins(*args, **kwargs)
+            changed = json.loads((self.source / "config.json").read_text())
+            changed["text_config"]["seed"] = 1234
+            self.write_json("config.json", changed)
+            return evidence
+        with patch.object(converter, "verify_source", side_effect=verify_then_change):
+            with self.assertRaisesRegex(ValueError, "metadata changed after pin verification"):
+                converter._validate_source(self.source, self.policy.revision)
+
+    def test_converter_inventory_only_keeps_metadata_snapshot_out_of_json(self) -> None:
+        output = self.root / "inventory-does-not-create-output"
+        stream = io.StringIO()
+        with patch.object(converter, "verify_source", self.policy_verifier()), contextlib.redirect_stdout(stream):
+            self.assertEqual(converter.main(["--source", str(self.source), "--output", str(output), "--inventory-only"]), 0)
+        report = json.loads(stream.getvalue())
+        self.assertTrue(report["ok"])
+        self.assertFalse(report["source_payloads_verified"])
+        self.assertNotIn("synthetic license", stream.getvalue())
+        self.assertFalse(output.exists())
+
     def test_key_coverage_allows_copied_and_complete_quantized_tensors(self) -> None:
         converter.validate_output_key_coverage(
             ["mtp.norm.weight", "mtp.proj.weight"],

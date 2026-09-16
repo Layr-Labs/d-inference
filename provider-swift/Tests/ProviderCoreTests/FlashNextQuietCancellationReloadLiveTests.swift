@@ -42,9 +42,12 @@ struct FlashNextQuietCancellationReloadLiveTests {
         let requestPrefix = "flash-next-lifecycle-\(UUID().uuidString)"
         var requestIDs: [String] = []
         do {
+            await loop.recordFlashNextLifecycleMemory("before_initial_load")
             try await loop.ensureModelLoaded(modelId: modelID, allowEviction: false)
+            await loop.recordFlashNextLifecycleMemory("after_initial_load")
             let firstBridge = try #require(await loop.slotBridgeForTesting(modelId: modelID))
             let firstOwners = try await loop.flashNextLifecycleOwners(modelID)
+            try #require(firstOwners.textTargetIsAlive, "Witness must track the actual inner text model")
             try #require(await firstBridge.kvBackendKind == .paged)
             try #require(await firstBridge.mtpStatusSnapshot().active)
             try #require(Qwen4ExpPLEResourceMetrics.snapshot().mappedFiles > 0)
@@ -73,9 +76,11 @@ struct FlashNextQuietCancellationReloadLiveTests {
                 requestID: quietID, priorSteps: before.stepsExecuted)
             // The profiler derives .prefill from the actual engine-submit and
             // first-delta stamps when cancellation reaches the real handler.
+            await loop.recordFlashNextLifecycleMemory("before_quiet_cancel")
             await loop.handleCancellation(requestId: quietID)
             try await waitForDrain(loop: loop, bridge: firstBridge, recorder: recorder,
                                    requestID: quietID, timeout: .seconds(15))
+            await loop.recordFlashNextLifecycleMemory("after_quiet_cancel_drain")
             let cancelled = try recorder.output(for: quietID)
             let failure = try #require(cancelled.failures.first)
             #expect(cancelled.failures.count == 1 && cancelled.completions == 0)
@@ -94,10 +99,13 @@ struct FlashNextQuietCancellationReloadLiveTests {
                 receiver: receiver, recorder: recorder)
             #expect(readmit == baseline, "Readmission must match the pre-cancel output and usage")
 
+            await loop.recordFlashNextLifecycleMemory("before_unload")
             try #require(await loop.unloadModel(modelID), "Real loaded slot must retire")
             try await requireReleased(loop: loop, bridge: firstBridge, owners: firstOwners, expectedPLE: initialPLE)
 
+            await loop.recordFlashNextLifecycleMemory("after_unload_before_reload")
             try await loop.ensureModelLoaded(modelId: modelID, allowEviction: false)
+            await loop.recordFlashNextLifecycleMemory("after_reload")
             let reloadedBridge = try #require(await loop.slotBridgeForTesting(modelId: modelID))
             let reloadedOwners = try await loop.flashNextLifecycleOwners(modelID)
             #expect(reloadedBridge !== firstBridge, "Reload must construct a fresh bridge")
@@ -112,8 +120,10 @@ struct FlashNextQuietCancellationReloadLiveTests {
             #expect(reloaded == baseline, "Fresh reload must match the original output and usage")
             try #require(await loop.unloadModel(modelID))
             try await requireReleased(loop: loop, bridge: reloadedBridge, owners: reloadedOwners, expectedPLE: initialPLE)
-            print("Flash-Next reload: weak container/target released; PLE gauges restored; baseline/readmit/reload equal")
+            await loop.recordFlashNextLifecycleMemory("after_final_unload")
+            print("Flash-Next reload: weak container/outer and inner target released; PLE gauges restored; baseline/readmit/reload equal")
         } catch {
+            await loop.recordFlashNextLifecycleMemory("failure_before_cleanup")
             for requestID in requestIDs { await loop.handleCancellation(requestId: requestID) }
             _ = await loop.unloadModel(modelID)
             throw error
@@ -220,7 +230,7 @@ struct FlashNextQuietCancellationReloadLiveTests {
             if !owners.isAlive && Qwen4ExpPLEResourceMetrics.snapshot() == expectedPLE { break }
             try await Task.sleep(for: .milliseconds(25))
         }
-        try #require(!owners.isAlive, "Target/container still owned after real unload")
+        try #require(!owners.isAlive, "Container or outer/inner target still owned after real unload")
         try #require(Qwen4ExpPLEResourceMetrics.snapshot() == expectedPLE)
         try #require(await bridge.ownedEngine == nil)
         try #require(await loop.hasEngineV2SlotsForTesting() == false)

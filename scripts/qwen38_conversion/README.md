@@ -10,6 +10,11 @@ They do not retroactively authenticate an older conversion.
 
 - All ten pinned metadata files, exact source index/shard inventory and cached
   source revision must match. Every shard needs a valid expected SHA-256.
+- Conversion captures metadata before processing shards and rechecks the pinned
+  digests against those captured bytes. Config/index parsing and final metadata
+  copies use that same snapshot. Later source edits, removals or additions do
+  not change the output metadata. Optional unpinned files have snapshot hashes
+  recorded separately from upstream-pinned authentication.
 - Metadata-only verification explicitly does not verify payloads. Full
   verification hashes all 131 source shards, with no successful partial coverage.
 - Conversion verifies each source payload before quantization and records every
@@ -22,8 +27,8 @@ They do not retroactively authenticate an older conversion.
   compatible last dimensions such as the 160-wide n-gram table. This is Q4,
   not oQ4e, and is not numerically identical to the original BF16 model.
 - PLE remains 128 separate packed table parts. The converter does not concatenate
-  the full table or strip embedded MTP. It may retain vision tensors; the native
-  provider's text-only serving policy is a separate capability gate.
+  the full table or strip embedded MTP. Retaining vision tensors is not itself
+  native multimodal qualification; serving capability is a separate gate.
 - Output must be a new directory under existing, verified available storage.
   Neither entry point creates a missing source mount or overwrites a receipt.
 
@@ -50,9 +55,10 @@ and reconcile with trusted source/revision evidence before release review.
 python3 -B -m unittest -v test_qwen38_provenance
 ```
 
-The 30 synthetic tests cover pinned identity, complete hash coverage, missing or
+The 36 synthetic tests cover pinned identity, complete hash coverage, missing or
 corrupt files, strict CLI behavior, MTP/output-key completeness, manifest
-integrity and receipt preservation. Converter integration uses a stub quantizer
+integrity, metadata mutation/removal/addition during conversion, the initial
+pin-to-snapshot boundary and receipt preservation. Converter integration uses a stub quantizer
 and serializer; it does not import real MLX, execute tensors or qualify numerical
 conversion correctness.
 

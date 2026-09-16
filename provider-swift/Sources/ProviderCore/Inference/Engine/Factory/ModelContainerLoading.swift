@@ -27,7 +27,7 @@ enum ModelContainerLoading {
         ModelMediaPolicy.advertisesMedia(configuration, modelID: modelID) ? .vision : .text
     }
 
-    private static func factorySelection(at directory: URL, modelID: String?) -> FactorySelection {
+    static func factorySelection(at directory: URL, modelID: String?) -> FactorySelection {
         guard let data = try? Data(contentsOf: directory.appendingPathComponent("config.json")),
             let configuration = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return .text }

@@ -139,7 +139,8 @@ def _validate_source(
     evidence = verify_source(source, require_shards=require_shards)
     if not evidence["ok"]:
         raise ValueError("source identity verification failed: " + "; ".join(evidence["errors"]))
-    config = json.loads((source / "config.json").read_text())
+    metadata_snapshot = _snapshot_metadata(source, evidence["metadata_sha256"])
+    config = json.loads(metadata_snapshot["config.json"])
     if config.get("model_type") != "qwen4_exp":
         raise ValueError(f"unexpected model_type: {config.get('model_type')!r}")
     text = config.get("text_config") or {}
@@ -147,7 +148,7 @@ def _validate_source(
         raise ValueError("expected qwen4_exp_text")
     if int(text.get("mtp_num_hidden_layers") or 0) != 1:
         raise ValueError("expected mtp_num_hidden_layers=1")
-    index = json.loads((source / "model.safetensors.index.json").read_text())
+    index = json.loads(metadata_snapshot["model.safetensors.index.json"])
     inventory = inventory_from_index(index)
     if not inventory["ngram_complete"]:
         raise ValueError(f"incomplete n-gram parts: {inventory['ngram_parts'][:8]}...")
@@ -169,19 +170,43 @@ def _validate_source(
         "inventory": inventory,
         "source_revision": SOURCE_REVISION,
         "source_evidence": evidence,
-        "config_sha256": sha256_file(source / "config.json"),
-        "index_sha256": sha256_file(source / "model.safetensors.index.json"),
+        "metadata_snapshot": metadata_snapshot,
+        "config_sha256": hashlib.sha256(metadata_snapshot["config.json"]).hexdigest(),
+        "index_sha256": hashlib.sha256(metadata_snapshot["model.safetensors.index.json"]).hexdigest(),
     }
 
 
-def _copy_metadata(source: Path, output: Path) -> list[str]:
+def _snapshot_metadata(source: Path, verified_pins: dict[str, str]) -> dict[str, bytes]:
+    """Retain the exact bytes used by parsing and the later metadata copy.
+
+    Recheck pinned digests on the captured bytes, closing the window between
+    initial verification and capture. Optional unpinned files are frozen too,
+    but their snapshot hashes are not claims of upstream pin authentication.
+    """
+    snapshot: dict[str, bytes] = {}
+    for name in ("config.json", "model.safetensors.index.json", *METADATA_NAMES):
+        path = source / name
+        if not path.is_file():
+            if name in verified_pins:
+                raise ValueError(f"metadata changed after pin verification: {name}")
+            continue
+        payload = path.read_bytes()
+        expected = verified_pins.get(name)
+        if expected is not None and hashlib.sha256(payload).hexdigest() != expected:
+            raise ValueError(f"metadata changed after pin verification: {name}")
+        snapshot[name] = payload
+    return snapshot
+
+
+def _copy_metadata(snapshot: dict[str, bytes], output: Path) -> list[str]:
     copied: list[str] = []
     for name in METADATA_NAMES:
-        src = source / name
-        if not src.is_file():
+        payload = snapshot.get(name)
+        if payload is None:
             continue
         dest = output / name
-        shutil.copy2(src, dest)
+        with dest.open("xb") as handle:
+            handle.write(payload)
         os.chmod(dest, 0o600)
         copied.append(name)
     return copied
@@ -450,7 +475,7 @@ def convert(source: Path, output: Path, source_revision: str, source_repo: str) 
     config_path = output / "config.json"
     config_path.write_text(json.dumps(config, indent=2) + "\n")
     os.chmod(config_path, 0o600)
-    copied = _copy_metadata(source, output)
+    copied = _copy_metadata(meta["metadata_snapshot"], output)
     copied_set = set(copied)
 
     out_inventory = inventory_from_index(out_index)
@@ -483,6 +508,11 @@ def convert(source: Path, output: Path, source_revision: str, source_repo: str) 
         SOURCE_REVISION_FIELD: source_revision,
         "source_config_sha256": meta["config_sha256"],
         "source_index_sha256": meta["index_sha256"],
+        "source_metadata_snapshot_sha256": {
+            name: hashlib.sha256(payload).hexdigest()
+            for name, payload in sorted(meta["metadata_snapshot"].items())
+        },
+        "source_metadata_pinned_paths": sorted(meta["source_evidence"]["metadata_sha256"]),
         "source_mtp_tensors": meta["inventory"]["mtp_count"],
         "source_indexed_keys": meta["inventory"]["indexed_keys"],
         "output_indexed_keys": len(weight_map),

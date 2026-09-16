@@ -5,9 +5,10 @@ import XCTest
 @testable import MLXLLM
 
 final class Qwen4SparseParallelProbeTests: XCTestCase {
-    func testFullKVOptInIsSeparateAndClosed() {
-        XCTAssertFalse(Qwen4ExpParallelQSA.fullKVEnabled(environment: [:]))
-        XCTAssertFalse(Qwen4ExpParallelQSA.fullKVEnabled(environment: [Qwen4ExpParallelQSA.flag: "1"]))
+    func testFullKVDefaultRemainsSeparateFromCompactOptIn() {
+        XCTAssertTrue(Qwen4ExpParallelQSA.fullKVEnabled(environment: [:]))
+        XCTAssertTrue(Qwen4ExpParallelQSA.fullKVEnabled(environment: [Qwen4ExpParallelQSA.flag: "1"]))
+        XCTAssertFalse(Qwen4ExpParallelQSA.enabled(environment: [:]))
         XCTAssertTrue(Qwen4ExpParallelQSA.fullKVEnabled(environment: [Qwen4ExpParallelQSA.fullKVFlag: "1"]))
         for value in ["0", "true", "yes", "arbitrary"] {
             XCTAssertFalse(Qwen4ExpParallelQSA.fullKVEnabled(environment: [Qwen4ExpParallelQSA.fullKVFlag: value]))

@@ -52,16 +52,7 @@ func (s *Store) CreditWithdrawable(accountID string, amountMicroUSD int64, entry
 func (s *Store) CreditWithdrawableOnce(accountID string, amountMicroUSD int64, entryType contracts.LedgerEntryType, reference string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := range s.ledgerEntries {
-		if s.ledgerEntries[i].AccountID == accountID &&
-			s.ledgerEntries[i].Type == entryType &&
-			s.ledgerEntries[i].Reference == reference {
-			return false, nil
-		}
-	}
-	s.creditLocked(accountID, amountMicroUSD, entryType, reference, time.Now())
-	s.withdrawable[accountID] += amountMicroUSD
-	return true, nil
+	return s.creditWithdrawableOnceLocked(accountID, amountMicroUSD, entryType, reference), nil
 }
 
 // DebitWithdrawable subtracts micro-USD from both the total balance and
@@ -193,4 +184,17 @@ func (s *Store) creditLocked(accountID string, amountMicroUSD int64, entryType c
 		Reference:      reference,
 		CreatedAt:      createdAt,
 	})
+}
+
+func (s *Store) creditWithdrawableOnceLocked(accountID string, amountMicroUSD int64, entryType contracts.LedgerEntryType, reference string) bool {
+	for i := range s.ledgerEntries {
+		if s.ledgerEntries[i].AccountID == accountID &&
+			s.ledgerEntries[i].Type == entryType &&
+			s.ledgerEntries[i].Reference == reference {
+			return false
+		}
+	}
+	s.creditLocked(accountID, amountMicroUSD, entryType, reference, time.Now())
+	s.withdrawable[accountID] += amountMicroUSD
+	return true
 }

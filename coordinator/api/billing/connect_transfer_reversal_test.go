@@ -214,15 +214,15 @@ func TestConnectWebhookTransferReversedConvergesAcrossPersistFailure(t *testing.
 	})
 	balBefore := flaky.GetBalance(user.AccountID)
 
-	flaky.failUpdates = true
+	flaky.failReversals = true
 	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_conv")); w.Code != http.StatusInternalServerError {
 		t.Fatalf("got %d, want 500 (persist failed — Stripe must redeliver)", w.Code)
 	}
-	if bal := flaky.GetBalance(user.AccountID); bal != balBefore+5_000_000 {
-		t.Fatalf("credit should have landed once: balance = %d", bal)
+	if bal := flaky.GetBalance(user.AccountID); bal != balBefore {
+		t.Fatalf("failed reversal moved balance: %d, want %d", bal, balBefore)
 	}
 
-	flaky.failUpdates = false
+	flaky.failReversals = false
 	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_conv")); w.Code != http.StatusOK {
 		t.Fatalf("redelivery got %d", w.Code)
 	}

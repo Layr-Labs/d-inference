@@ -72,8 +72,9 @@ func accountServingStripe(agreement string) *httptest.Server {
 // failures into specific operations.
 type flakyPayoutStore struct {
 	*store.MemoryStore
-	failLookups bool
-	failUpdates bool
+	failLookups   bool
+	failUpdates   bool
+	failReversals bool
 }
 
 func (f *flakyPayoutStore) GetStripeWithdrawalByPayoutID(payoutID string) (*store.StripeWithdrawal, error) {
@@ -108,4 +109,11 @@ func newFlakyPayoutServer(t *testing.T, fakeStripe *httptest.Server) (*controlle
 		StripeConnectPlatformCountry: "US",
 	}))
 	return srv, flaky
+}
+
+func (f *flakyPayoutStore) RefundStripeWithdrawalAfterReversal(id, transferID string) (bool, error) {
+	if f.failReversals {
+		return false, errors.New("connection reset by peer")
+	}
+	return f.MemoryStore.RefundStripeWithdrawalAfterReversal(id, transferID)
 }

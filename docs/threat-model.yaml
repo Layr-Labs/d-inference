@@ -356,11 +356,13 @@ trust_boundaries:
       CFNETWORK_DIAGNOSTICS).
 
       SIP is checked once at startup by spawning /usr/bin/csrutil status and parsing for
-      "enabled" (SecurityHardening.swift). If disabled the process aborts. The
+      "enabled" (SecurityHardening.swift). If disabled the provider logs a warning and
+      keeps starting; the coordinator decides routing and marks the provider untrusted
+      when a challenge response reports SIP disabled (provider.go). The
       check is not repeated after startup; it is sound because disabling SIP requires a
       reboot into Recovery Mode which kills the process and purges inference data,
-      provided the kernel has no unpatched vulnerability that bypasses SIP (see
-      current_limitations).
+      provided the kernel has no unpatched vulnerability that bypasses SIP, Hardened
+      Runtime or KIP (see current_limitations).
 
       The binary is SHA-256 hashed at startup via _NSGetExecutablePath() with symlink
       resolution, read in 64 KB chunks (BinaryHasher.swift). The hash is included in the
@@ -1286,7 +1288,7 @@ threats:
         status: implemented
       - description: SIP status included in every 5-minute challenge-response; coordinator marks untrusted immediately on false.
         status: implemented
-      - description: Disabling SIP requires reboot into Recovery Mode, which terminates the process and wipes inference data from memory. Assumes no unpatched kernel vulnerability that bypasses SIP without a reboot (TB-003).
+      - description: Disabling SIP requires reboot into Recovery Mode, which terminates the process and wipes inference data from memory. Assumes no unpatched kernel vulnerability that bypasses SIP, Hardened Runtime or KIP (TB-003).
         status: implemented
     open_findings: []
     severity: critical
@@ -2189,7 +2191,7 @@ threats:
     mitigations:
       - description: SIP checked at startup, before every request, and in every 5-minute challenge.
         status: implemented
-      - description: Disabling SIP requires reboot (kills process); practical attack window is extremely narrow. Assumes no unpatched kernel vulnerability that bypasses SIP without a reboot (TB-003).
+      - description: Disabling SIP requires reboot (kills process); practical attack window is extremely narrow. Assumes no unpatched kernel vulnerability that bypasses SIP, Hardened Runtime or KIP (TB-003).
         status: implemented
       - description: MDM SecurityInfo provides independent SIP verification on demand.
         status: implemented

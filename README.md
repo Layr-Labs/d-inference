@@ -9,11 +9,11 @@ Today, AI compute reaches you through a stack of markups — chipmaker to hypers
 The hard part is privacy. The person running a provider node has root and physical custody of the machine doing your inference — yet they must **not** be able to read your prompts or the model's responses. Darkbloom closes every software path to that plaintext:
 
 - **No observation surface.** Inference runs **in-process** via MLX — no subprocess, no local server, no IPC to tap.
-- **Locked-down process.** Debuggers are denied at the kernel level (`PT_DENY_ATTACH`); memory-reading APIs are blocked by Hardened Runtime. These protections are immutable for the process lifetime, because removing them requires disabling SIP, which requires a reboot that kills the process, provided the macOS kernel has no unpatched vulnerability that bypasses SIP ([`docs/threat-model.yaml`](docs/threat-model.yaml), `TB-003`).
+- **Locked-down process.** Debuggers are denied at the kernel level (`PT_DENY_ATTACH`); memory-reading APIs are blocked by Hardened Runtime. These protections are immutable for the process lifetime, because removing them requires disabling SIP, which requires a reboot that kills the process, provided the macOS kernel has no unpatched vulnerability that bypasses SIP, Hardened Runtime or KIP ([`docs/threat-model.yaml`](docs/threat-model.yaml), `TB-003`).
 - **End-to-end encryption.** The coordinator re-seals every request with NaCl Box (X25519 + XSalsa20-Poly1305) to the provider's attested key, so on the provider machine only the hardened process — never its owner — can decrypt it.
 - **Hardware attestation.** A four-layer chain — Secure Enclave signatures, MDM cross-checks, Apple Managed Device Attestation, and APNs code-identity — proves each node's security posture and that it runs a genuine, unmodified binary.
 
-What remains is the same residual threat model Apple accepts for Private Cloud Compute: physically de-soldering and probing memory chips. Everything short of that is engineered out, except an unpatched macOS kernel vulnerability (above).
+What remains is the same residual threat model Apple accepts for Private Cloud Compute: physically de-soldering and probing memory chips. Everything short of that is engineered out, assuming a patched macOS kernel; the other residual risks are listed in [`docs/threat-model.yaml`](docs/threat-model.yaml).
 
 The API is OpenAI- and Anthropic-compatible, so most clients work by changing one base URL.
 
@@ -90,7 +90,7 @@ sequenceDiagram
 | Layer | What it does |
 |-------|--------------|
 | In-process inference | MLX runs inside the provider process — no subprocess, local server, or IPC to observe |
-| Hardened Runtime + SIP | Blocks debugger attachment, memory reads, and code injection; immutable for the process lifetime unless an unpatched kernel vulnerability bypasses SIP |
+| Hardened Runtime + SIP | Blocks debugger attachment, memory reads, and code injection; immutable for the process lifetime unless an unpatched kernel vulnerability bypasses SIP, Hardened Runtime or KIP |
 | `PT_DENY_ATTACH` | Kernel-level denial of debugger attach |
 
 ### Attestation & trust

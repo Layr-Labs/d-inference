@@ -33,7 +33,7 @@ public enum ProviderAuthorizationReadiness {
         }
         if authorization.hasCurrentAppAttestAuthorization(now: now) {
             return "App Attest authorizes this connection. " + (authorization.mdmRemovalReady
-                ? "Darkbloom MDM removal is available: darkbloom unenroll --keep-serving."
+                ? "Darkbloom MDM removal is available: run darkbloom unenroll and choose App Attest."
                 : "Darkbloom MDM removal is not enabled for this machine yet.")
         }
         if authorization.path == "legacy" {

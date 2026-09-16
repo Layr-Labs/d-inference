@@ -6,12 +6,15 @@ import Darwin
 #endif
 
 extension Unenroll {
-    /// Explicit migration action. The existing plain `unenroll` command means
-    /// leaving the network and may purge keys; this path must never invoke it.
-    func prepareMDMRemovalWhileServing() throws {
+    /// Selected from the interactive choice or directly with --keep-serving.
+    /// This path must never invoke full-exit cleanup.
+    func prepareMDMRemovalWhileServing(
+        osMajor: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+    ) throws {
         guard !force else {
             throw ValidationError("--force cannot be combined with --keep-serving; migration retains all local data.")
         }
+        try Self.requireAppAttestOS(osMajor)
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
         let coordinator = snapshot.config.coordinator.url
         let now = Date().timeIntervalSince1970

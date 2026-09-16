@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-15 · commit `82fee0e08`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -15,7 +15,7 @@ Optional [App Attest shadow checks](../reference/app-attest-shadow.md) run in th
 
 A qualified macOS 27 provider can use [App Attest authorization](../reference/provider-authorization.md) when the coordinator explicitly enables it. Start the signed provider and check `darkbloom status` / `darkbloom doctor` for current App Attest authorization. Company-managed Macs keep their employer profile; they do not enroll into Darkbloom MDM for this path.
 
-After the coordinator enables removal and reports readiness, run `darkbloom unenroll --keep-serving`. The command preserves credentials/account data, validates the exact Darkbloom enrollment and guides removal in System Settings. A read-only administrator profile inventory may be required. Do not use ordinary `unenroll` to migrate while keeping provider identity. Unsupported or unqualified Macs still need the complete legacy path below.
+After the coordinator enables removal and reports readiness, run `darkbloom unenroll` and choose the App Attest option. It requires macOS 27 or later; `--keep-serving` remains a direct shortcut. The command preserves credentials/account data, validates the exact Darkbloom enrollment and guides removal in System Settings. A read-only administrator profile inventory may be required. The full-exit option stops the provider and offers identity cleanup, so choose App Attest to retain provider identity. Unsupported or unqualified Macs still need the complete legacy path below.
 
 ## Prerequisites
 

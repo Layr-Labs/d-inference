@@ -1,6 +1,6 @@
 # Roll out MDM-optional providers
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-15 · commit `82fee0e08`
 
 Enable the independent App Attest serving path and, separately, allow providers to remove Darkbloom enrollment. This runbook does not authorize a production change. The [authorization reference](../reference/provider-authorization.md) owns exact controls and deadlines.
 
@@ -24,7 +24,7 @@ Use after the coexistence release has produced retained evidence and the final s
 2. Publish the qualified signed provider. Register its immutable approved hashes only after the qualification evidence exists; do not approve hashes solely to eliminate an unknown policy verdict.
 3. Enable App Attest serving for the chosen account cohort, leaving removal disabled. Verify actual MDM-free serving, full policy decisions, receipt refresh, runtime/capability/model checks and base-reward continuity.
 4. Test expiry, admin revocation, interrupted database refresh, queue backlog, cold dispatch and reconnect during traffic. Check that new handoffs stop, cleanup/accounting completes, and existing delivered requests have an explicit outcome.
-5. Enable removal for the qualified cohort. A provider uses `darkbloom unenroll --keep-serving`; retain all credential, authentication and machine-history data. Verify reconnection and normal serving after removing only Darkbloom enrollment.
+5. Enable removal for the qualified cohort. A provider runs `darkbloom unenroll` and selects the macOS 27+ App Attest option (or uses `--keep-serving` directly); retain all credential, authentication and machine-history data. Verify reconnection and normal serving after removing only Darkbloom enrollment.
 6. Track distinct machines and accounts by authorization path, macOS/provider version, failed qualifications, expiry/revocation reasons, receipt/archive gaps, completed inference and duplicate/base-reward settlement. Keep unsupported providers on the independently verified legacy path.
 
 ## Verification

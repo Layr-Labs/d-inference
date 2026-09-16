@@ -2,6 +2,8 @@
 
 ## Unreleased — MDM-optional provider authorization
 
+- Make plain `darkbloom unenroll` offer full exit or App Attest migration, with an explicit macOS 27+ requirement and fresh coordinator approval for migration. Cancel/EOF makes no changes; full exit stops the provider service before optional cleanup, and the cleanup prompt explicitly lists Secure Enclave signing keys.
+
 - Add independently enabled App Attest serving alongside complete legacy MDM/MDA and APNs verification. Require qualified signed code, current encrypted-endpoint assertions, durable evidence, valid receipts and fresh revocation state; preserve legacy trust flags.
 - Fence every new inference handoff on expiry, revocation, connection/endpoint replacement and policy changes, including queued requests and retries. Durable revocation refresh has a bounded lifetime; database failures cannot extend permission.
 - Preserve verified canonical machine history across reconnects and credential rotation, without allowing a claimed serial to evict another provider. Extend base rewards to qualified App Attest-only machines with canonical duplicate/epoch settlement protection and preserved historical balances.

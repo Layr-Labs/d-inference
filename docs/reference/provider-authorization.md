@@ -1,6 +1,6 @@
 # Provider serving authorization
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-15 · commit `82fee0e08`
 
 The coordinator can authorize private inference through complete legacy verification or a qualified App Attest connection. These are separate evidence paths; App Attest never sets legacy MDA/APNs flags. The [rollout runbook](../operations/mdm-optional-rollout.md) separates code availability from activation qualification.
 
@@ -43,7 +43,7 @@ The additive `trust_status.authorization` object is coordinator-to-provider only
 | `reason` | Operator-facing bounded policy explanation |
 | `session_id`, `machine_id` | Current connection and verified canonical machine; never caller-selected authorization |
 
-`darkbloom status` and `darkbloom doctor` distinguish App Attest authorization from legacy verification. `darkbloom unenroll --keep-serving` requires a fresh running-provider snapshot, matching coordinator and process identity, and an unexpired removal-ready authorization. It preserves account/config/key data and opens System Settings only after identifying the exact Darkbloom enrollment. It never removes a company profile or the app's embedded signing profile. Code: `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift` and `provider-swift/Sources/ProviderCore/Security/DarkbloomMDMRemoval.swift`.
+`darkbloom status` and `darkbloom doctor` distinguish App Attest authorization from legacy verification. `darkbloom unenroll` offers full exit or App Attest migration. The migration option and direct `--keep-serving` shortcut require macOS 27 or later and a fresh running-provider snapshot, matching coordinator and process identity, and an unexpired removal-ready authorization. It preserves account/config/key data and opens System Settings only after identifying the exact Darkbloom enrollment. It never removes a company profile or the app's embedded signing profile. Full exit stops the provider service before offering profile removal and optional cleanup. Enter/EOF cancels; noninteractive use requires an explicit mode flag. Code: `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift` and `provider-swift/Sources/ProviderCore/Security/DarkbloomMDMRemoval.swift`.
 
 ## Machine identity and base rewards
 

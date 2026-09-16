@@ -90,6 +90,11 @@ print(resp.choices[0].message.content)
 
 `client.models.list()` and `client.responses.create(...)` also work: they hit `GET /v1/models` and `POST /v1/responses`, both registered routes. Endpoints the coordinator does not implement (embeddings, moderations, files) return a structured 404 from the `/v1/` catch-all (`handleUnimplementedEndpoint`, `coordinator/api/routes.go`).
 
+For streamed Responses, group text deltas by `item_id`. Each completed
+reasoning or message item contains that item's text; the terminal response
+keeps the items separately in `output`. See the
+[Responses contract](../reference/api-contracts.md#responses-api).
+
 ### 7. Use the Anthropic SDK
 
 The Anthropic clients append `/v1/messages` to the base URL, so point them at the bare host. The coordinator reads credentials only from `Authorization: Bearer` (`BearerToken`, `coordinator/api/requestauth/bearer.go`) and ignores `x-api-key`, so pass the key as the SDK's bearer `auth_token`, not as `api_key`:

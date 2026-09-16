@@ -351,6 +351,12 @@ spent quota controls, and `TestRequestedOutputTokenEstimateRejectsOverflow`
 checks fitting and overflowing products (`coordinator/api/output_token_validation_test.go`,
 `coordinator/api/output_token_overflow_test.go`).
 
+`TestResponsesStreamReopenedItemsContainOnlyTheirOwnText` exercises alternating
+reasoning, message and tool-call items through the real SSE emitter. It compares
+each item's completed text with its own deltas and checks the terminal output
+and both provider-reported and legacy reasoning usage
+(`coordinator/api/responses_item_text_test.go`).
+
 Run prediction telemetry checks from the repository root:
 
 ```bash

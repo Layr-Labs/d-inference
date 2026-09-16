@@ -449,6 +449,13 @@ Requests are decoded into a generic JSON object with `json.Number` preserved (`p
 
 Bodies are lowered into the chat pipeline (`coordinator/promptcontract/endpoint_lower_responses.go`) and the provider's chat output is raised back into `ResponsesResponse` (`coordinator/api/types/types.go`): `id` (`resp_…`), `object`, `created_at`, `status`, `error`, `incomplete_details.reason`, `instructions`, `max_output_tokens`, `model`, `output[]`, `parallel_tool_calls`, `temperature`, `tool_choice`, `tools`, `top_p`, `metadata`, `usage` (`input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`), `se_signature`, `response_hash`. Streams use `event:`-typed frames from `response.created` / `response.in_progress` through the item deltas to `response.completed` (or `response.incomplete` when truncated) and carry **no** `data: [DONE]` (`NewResponsesSink`, `coordinator/inference/response/responses_stream.go`).
 
+Each reasoning or message item owns its text. Its `done` events and final
+`output[]` entry contain only the deltas for that item ID, including when
+reasoning, messages and tool calls alternate. Opening a new item resets its
+builder after the previous item has been saved (`appendReasoning`,
+`ensureMessageOpen`, `coordinator/api/responses_stream.go`). Provider usage
+counts and the legacy reasoning-token fallback remain request-wide.
+
 ### Completions and Messages
 
 `/v1/completions` and `/v1/messages` are lowered to the chat contract (`coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_messages.go`); responses are re-shaped by `coordinator/inference/response/generic_endpoint_response.go` and streams by `NewEndpointSink` (`coordinator/inference/response/generic_stream.go`). Successful Completions streams terminate with `data: [DONE]`; Messages streams terminate with `event: message_stop` (`coordinator/inference/response/completions_stream.go`, `coordinator/inference/response/messages_stream.go`, `Finish`).

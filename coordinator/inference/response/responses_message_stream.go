@@ -16,6 +16,7 @@ func (e *responsesStreamEmitter) ensureMessageOpen() {
 	if !e.messageOpen {
 		e.closeReasoning()
 		e.closeFunctionCalls()
+		e.contentBuf.Reset()
 		e.messageOpen = true
 		e.messageItemID = responseItemID("msg", e.pr.RequestID, e.outputIndex)
 		e.emit("response.output_item.added", map[string]any{

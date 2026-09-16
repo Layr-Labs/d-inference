@@ -130,6 +130,18 @@ migrate_exact_value \
     100 \
     1000
 
+# The September M4 Max benchmark extends the stock solo-TPS seed to four
+# current catalog models. Existing values normally win over release defaults,
+# so migrate only the exact prior stock string. Any operator-added, removed, or
+# retuned entry remains authoritative.
+model_solo_tps_seed=$(awk -F= \
+    '$1 == "EIGENINFERENCE_MODEL_SOLO_TPS_SEED" { print substr($0, index($0, "=") + 1) }' \
+    "$DEFAULTS_FILE")
+migrate_exact_value \
+    EIGENINFERENCE_MODEL_SOLO_TPS_SEED \
+    'gemma-4-26b-qat-4bit=14,gemma-4-26b-qat-4bit@M4|Max=70,gpt-oss-20b=30,gpt-oss-20b@M4|Max=70' \
+    "$model_solo_tps_seed"
+
 # v0.9 prices cache savings within the request's own prefill work. Retire only
 # the complete historical stock pair: a partly customized policy keeps BOTH
 # limits. Empty values mean no optional clipping in the v0.9 binary; explicit

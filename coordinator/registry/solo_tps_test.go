@@ -742,6 +742,38 @@ func TestSoloSeedIsChipClassScoped(t *testing.T) {
 	}
 }
 
+// TestProductionM4MaxSeedsCoverBenchmarkedCatalogModels pins the class-only
+// production entries supported by the 2026-09-16 M4 Max B=1 sweep. A 70 tok/s
+// seed clears the 50.1 tok/s threshold for a reported cap of 8 while retaining
+// at least 35% margin below the slowest measured sample. No unqualified entry
+// is justified by one chip class, so an unmeasured class must report no seed.
+func TestProductionM4MaxSeedsCoverBenchmarkedCatalogModels(t *testing.T) {
+	models := []string{
+		"qwen3.6-35b-a3b-vl-mtp-mxfp8",
+		"qwen3-vl-30b-a3b-instruct",
+		"qwen3.5-35b-a3b",
+		"nvidia-nemotron-3.5-lightning",
+	}
+
+	reg := New(testLogger())
+	enablePerModelQualityCap(t, reg, prodSoloTPSSeed(t), "", "")
+	for _, model := range models {
+		t.Run(model, func(t *testing.T) {
+			p := classProvider(t, reg, "m4-max-"+model, model, "M4", "Max")
+			got := resolveSolo(reg, p, model)
+			if got.tps != 70 || !got.perModel {
+				t.Fatalf("M4|Max resolved %+v, want tps 70 perModel true", got)
+			}
+			if cap := effCapResolved(reg, p, model); cap != 8 {
+				t.Fatalf("M4|Max cap = %d, want 8", cap)
+			}
+			if seed, ok := soloTPSSeedForClass(model, "M3|Max"); ok {
+				t.Fatalf("unmeasured M3|Max inherited seed %v — want no cross-class fallback", seed)
+			}
+		})
+	}
+}
+
 // TestSoloSeedNoMorePermissiveOnSlowerClasses is the other half of the P1: the
 // scoped seed must not merely differ from the fleet-wide one, it must be
 // TIGHTER everywhere except the class the fast rate was measured on.

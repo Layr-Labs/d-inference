@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-15 · commit `0f7b1e611`
+> Last updated: 2026-09-16 · commit `40270d8df`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -247,6 +247,8 @@ Withdrawal row state machine: `pending → transferred → paid | failed`
 (`StripeWithdraw` comment block). There is no coordinator-side payout
 schedule or threshold beyond `MinWithdrawMicroUSD`.
 
+Submission progress is conditional on the last acknowledged row state. `persistWithdrawalUpdate` calls `CompareAndSwapStripeWithdrawal` (`coordinator/store/postgres/stripe_withdrawals.go`), comparing transfer/payout/sweep IDs, status, failure reason and both refund flags under one memory lock or PostgreSQL update. An exact desired state is an idempotent retry success; another state is preserved. Account, amounts, method and creation time are never overwritten. Legacy already-refunded status flips use the same comparison against their lookup snapshot. A submission conflict stops subsequent steps and returns 409 `withdrawal_state_changed`; it does not undo an external Stripe call or move ledger balance by itself.
+
 ### International bank withdrawals
 
 When Global Payouts is enabled, the server returns its explicit country policy in the existing payout status response. New destinations outside the configured Connect transfer region use Stripe-hosted recipient onboarding. Existing ready Connect destinations remain on Connect (`coordinator/api/billing/global_onboarding.go`, `maybeGlobalOnboard`). With the feature disabled, users without a Global Payouts recipient retain the legacy Connect onboarding and country menu, even when Global Payouts credentials are staged. Transient Stripe bank-lookup failures preserve the last verified destination and return a temporary error. The UI presents bank setup and withdrawal without asking users to select payment infrastructure.
@@ -459,7 +461,7 @@ this release; they do not replace the existing reward inputs or eligibility gate
     cannot clear a newer sweep's paid state. A successful reopen clears only
     the sweep stamp, records its failure reason, refreshes `UpdatedAt`, and
     returns the row to `transferred`; it moves no ledger money
-    (`coordinator/api/stripe_payouts_webhooks.go`,
+    (`coordinator/api/billing/connect_payout_events.go`,
     `coordinator/store/postgres/stripe_withdrawals.go`).
 
 ## Failure modes
@@ -608,3 +610,18 @@ with an independent instant-fee refund.
 `ReopenStripeWithdrawalAfterSweepFailure` in the same owners reopens a row only
 while it remains paid by the exact failed sweep. Stale sweep events preserve a
 newer payout and its settlement state.
+
+`ReopenStripeWithdrawalAfterPayoutFailure` similarly requires the current payout
+ID to match the failed event. Submission and legacy terminal-status writes use
+`CompareAndSwapStripeWithdrawal`: concurrent webhook changes survive a stale
+submission, and an exact desired state is an idempotent retry. A submission that
+loses ownership returns 409 `withdrawal_state_changed`; prior Stripe calls are not
+rolled back. Shared progress fields and identity checks live in
+`coordinator/store/internal/payoutstate/stripe_progress.go`.
+
+Invite redemption in `coordinator/store/memory/invites.go` and
+`coordinator/store/postgres/invites.go` commits the use count, redemption claim,
+non-withdrawable balance and ledger credit atomically. Failed credit writes return
+`ErrInviteCredit` without consuming the invite. The account controller
+(`coordinator/api/accounts/invites.go`, `RedeemInvite`) maps credit failures to 500
+and invalid or already-used invites to 400; it never issues a separate credit.

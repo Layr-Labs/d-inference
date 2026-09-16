@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-16 · commit `40270d8df`
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -209,6 +209,8 @@ Choose **Unlink Stripe account and start over** to remove the destination curren
 
 ## Troubleshooting
 
+If a Connect withdrawal reports that its status changed during submission, refresh withdrawal history before submitting again. A bank update or refund may have arrived while the request was waiting for Stripe. The newer status is preserved; the message does not mean the earlier transfer was canceled (`coordinator/api/billing/connect_retry.go`, `writeWithdrawalStateChanged`).
+
 | Symptom | Cause | Fix |
 |---|---|---|
 | Paid on Stripe, balance unchanged | Webhook not delivered yet, or the coordinator's webhook secret is wrong | Poll the session status; if it stays `pending` for minutes, contact the operator with `stripe_session` |
@@ -238,3 +240,9 @@ Mechanism for each error, including the exact functions, is in
 - [`models.md`](models.md) — `GET /v1/models` and its `pricing` block
 - [`../provider/self-route.md`](../provider/self-route.md) — routing to your own machine, which settles free
 - [`../reference/api-contracts.md`](../reference/api-contracts.md) — error envelope and status codes
+
+Invite redemption credits the balance in the same atomic operation that consumes
+the invite. A failed credit leaves the invite available for retry. If a Stripe
+withdrawal returns 409 `withdrawal_state_changed`, check withdrawal history before
+retrying: a concurrent webhook advanced its state, and earlier Stripe calls were
+not rolled back.

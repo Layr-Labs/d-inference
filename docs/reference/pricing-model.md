@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-16 · commit `40270d8df`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -92,7 +92,7 @@ updated_at)`, primary key `(account_id, model)`
 
 | Event | Result | Code |
 |---|---|---|
-| Matched instant payout fails or is canceled | The fee refund remains reference-idempotent. Reopening for the daily sweep requires the current, non-empty payout ID to still match the event and the row to remain unrefunded and not failed; a newer settlement is preserved. | `coordinator/api/stripe_payouts_webhooks.go` (`handlePayoutTerminal`); `coordinator/store/postgres.go` (`ReopenStripeWithdrawalAfterPayoutFailure`) |
+| Matched instant payout fails or is canceled | The fee refund remains reference-idempotent. Reopening for the daily sweep requires the current, non-empty payout ID to still match the event and the row to remain unrefunded and not failed; a newer settlement is preserved. | `coordinator/api/billing/connect_payout_events.go` (`handlePayoutTerminal`); `coordinator/store/postgres/stripe_withdrawals.go` (`ReopenStripeWithdrawalAfterPayoutFailure`) |
 
 ## Ledger entry types
 
@@ -160,6 +160,8 @@ Connected-account status `users.stripe_account_status`
 (`coordinator/api/billing/connect_status.go`): `""` → `pending` → `ready` \|
 `restricted` \| `rejected`. Service agreements (`coordinator/billing/stripe_regions.go`):
 `full`, `recipient`.
+
+Connect submission and legacy refunded-row progress writes use `CompareAndSwapStripeWithdrawal` in `coordinator/store/postgres/stripe_withdrawals.go`. They require the caller's previous mutable state, preserve newer webhook transitions, and treat the exact desired state as successful retry. Immutable account and money fields stay unchanged. Concurrent progress returns 409 `withdrawal_state_changed` from the submission endpoint; inspect withdrawal history before submitting again.
 
 ## Base rewards
 
@@ -311,3 +313,8 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | Reconciliation | One-minute loop, up to 200 records per scan; posted records polled for 90 days and later returns handled by events | `coordinator/api/billing/global_reconcile.go` (`StartGlobalPayoutReconciler`); `coordinator/store/postgres/global_payouts.go` (`ListGlobalPayoutsToReconcile`) |
 
 Published recipient bounds are stored in `coordinator/billing/globalpayouts/recipient_limits.go` (`Country.Limits`) from [Stripe's recipient minimums and maximums](https://docs.stripe.com/global-payouts/send-money#recipient-minimums). The API reports the local-currency threshold and validates the credited amount; direct pre-quote comparison is possible for USD destinations. The private payout row retains Stripe's `estimated_fees` as `estimated_stripe_fees` for operator cost review (`coordinator/api/billing/global_quote.go`, `GlobalPayoutQuote`).
+
+Invite use counts, account redemption claims and the `invite_credit` balance and
+ledger entry commit together in `coordinator/store/postgres/invites.go`
+(`RedeemInviteCode`), with equivalent memory-store lock ownership. A failed credit
+neither consumes a use nor makes the funds withdrawable.

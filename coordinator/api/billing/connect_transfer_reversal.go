@@ -48,8 +48,9 @@ func (s *Controller) handleTransferFailed(event *billingservice.WebhookEvent) er
 		// sweep reconciliation — if it fails, return the error so Stripe
 		// redelivers rather than leaving a refunded row claimable.
 		if wd.Status != "failed" {
-			wd.Status = "failed"
-			if err := s.billing().Store().UpdateStripeWithdrawal(wd); err != nil {
+			next := *wd
+			next.Status = "failed"
+			if _, err := s.billing().Store().CompareAndSwapStripeWithdrawal(wd, &next); err != nil {
 				s.logger.Error("stripe connect webhook: refunded-row status flip failed",
 					"error", err, "withdrawal_id", wd.ID)
 				return err

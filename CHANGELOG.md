@@ -56,6 +56,9 @@ coordinator deployment.
 ## Unreleased — sweep payout ownership
 
 - Preserve newer completed payouts when an old automatic sweep failure arrives concurrently. Reopen withdrawals only while the stored paid state still belongs to that exact sweep, without moving ledger funds.
+## Unreleased
+
+- **Withdrawal progress ownership** — Preserve newer Stripe withdrawal payment/refund state when a delayed submission response arrives. Compare progress atomically, recognize an already-applied retry, and ask clients to check history after a concurrent update instead of overwriting it.
 
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 

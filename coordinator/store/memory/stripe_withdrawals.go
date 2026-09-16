@@ -319,3 +319,43 @@ func (s *Store) ReopenStripeWithdrawalAfterSweepFailure(id, expectedSweepPayoutI
 	w.UpdatedAt = time.Now()
 	return true, nil
 }
+
+func (s *Store) CompareAndSwapStripeWithdrawal(previous, next *contracts.StripeWithdrawal) (bool, error) {
+	if err := payoutstate.ValidateStripeUpdate(previous, next); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current := s.stripeWithdrawalsByID[next.ID]
+	if current == nil {
+		return false, nil
+	}
+	currentState, nextState := payoutstate.StripeProgressOf(current), payoutstate.StripeProgressOf(next)
+	if currentState == nextState {
+		return true, nil
+	}
+	if currentState != payoutstate.StripeProgressOf(previous) {
+		return false, nil
+	}
+	if current.TransferID != next.TransferID {
+		delete(s.stripeWithdrawalsByTransferID, current.TransferID)
+		if next.TransferID != "" {
+			s.stripeWithdrawalsByTransferID[next.TransferID] = next.ID
+		}
+	}
+	if current.PayoutID != next.PayoutID {
+		delete(s.stripeWithdrawalsByPayoutID, current.PayoutID)
+		if next.PayoutID != "" {
+			s.stripeWithdrawalsByPayoutID[next.PayoutID] = next.ID
+		}
+	}
+	current.TransferID = next.TransferID
+	current.PayoutID = next.PayoutID
+	current.SweepPayoutID = next.SweepPayoutID
+	current.Status = next.Status
+	current.FailureReason = next.FailureReason
+	current.Refunded = next.Refunded
+	current.FeeRefunded = next.FeeRefunded
+	current.UpdatedAt = time.Now()
+	return true, nil
+}

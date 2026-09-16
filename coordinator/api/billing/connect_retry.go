@@ -1,8 +1,11 @@
 package billing
 
 import (
+	"errors"
+	"net/http"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/api/httpresponse"
 	billingservice "github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -48,24 +51,38 @@ func (s *Controller) creditRefundOnceWithRetry(accountID string, amountMicroUSD 
 	return false
 }
 
-// persistWithdrawalUpdate retries a withdrawal-row update with short backoff.
+// persistWithdrawalUpdate retries transient errors with the same expected state.
+// A changed row returns immediately; retrying it must not overwrite a webhook.
 // Used after money has moved (transfer/payout created): losing the update
 // strands the row in a state the webhook matcher and sweep reconciler don't
 // look at, so it's worth riding out a transient store blip in-request. Like
 // creditRefundOnceWithRetry, it deliberately ignores request-context
 // cancellation (bounded at 600ms total backoff) — abandoning the persist on
 // client disconnect is exactly how rows get orphaned.
-func (s *Controller) persistWithdrawalUpdate(wd *store.StripeWithdrawal, stage string) error {
+func (s *Controller) persistWithdrawalUpdate(previous, wd *store.StripeWithdrawal, stage string) error {
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
 		}
-		if err = s.billing().Store().UpdateStripeWithdrawal(wd); err == nil {
+		var applied bool
+		applied, err = s.billing().Store().CompareAndSwapStripeWithdrawal(previous, wd)
+		if err == nil {
+			if !applied {
+				return errWithdrawalStateChanged
+			}
 			return nil
 		}
 		s.logger.Warn("stripe payout: persist "+stage+" attempt failed",
 			"attempt", attempt+1, "error", err, "withdrawal_id", wd.ID)
 	}
 	return err
+}
+
+var errWithdrawalStateChanged = errors.New("withdrawal state changed during submission")
+
+func (s *Controller) writeWithdrawalStateChanged(w http.ResponseWriter, withdrawalID string) {
+	s.logger.Warn("stripe payout: submission state changed; preserving webhook state", "withdrawal_id", withdrawalID)
+	httpresponse.WriteJSON(w, http.StatusConflict, httpresponse.ErrorBody("withdrawal_state_changed",
+		"your withdrawal was updated while it was being submitted — check its status before retrying"))
 }

@@ -54,39 +54,27 @@ func (s *Controller) applyTokenRateLimitWithAdmission(w http.ResponseWriter, r *
 		}
 	}
 
-	keyID, inRPS, inBurst, outRPS, outBurst, keyEnforced := s.keyTokenParams(r)
+	keyLimits := s.keyTokenLimits(r)
 	admission.AccountOutputLimited = tl != nil && tl.HasOutputLimit()
-	admission.KeyOutputLimited = keyEnforced && outRPS > 0 && outBurst > 0
-	admission.KeyOutputRPS = outRPS
-	admission.KeyOutputBurst = outBurst
+	if keyLimits != nil {
+		admission.KeyOutputLimited = keyLimits.outputRPS > 0 && keyLimits.outputBurst > 0
+		admission.KeyOutputRPS = keyLimits.outputRPS
+		admission.KeyOutputBurst = keyLimits.outputBurst
+	}
 	if admission.TracksOutput() {
 		s.deps.Metrics.Histogram("ratelimit.output_admission.estimated_tokens", float64(admission.AdmittedOutputTokens), outputAdmissionTags(tier, admission.EstimatedOutput))
 	}
 
-	// Peek BOTH the per-key override and the account-level limiter before
-	// consuming either. Only commit when both have capacity, so a rejection in
-	// one limiter never debits the other (a per-key request that the account
-	// bucket rejects must not drain the key's quota, and vice-versa).
-	if keyEnforced {
-		if ok, dim, retry := s.deps.KeyTokens().Peek(keyID, inputTokens, admission.AdmittedOutputTokens, inRPS, inBurst, outRPS, outBurst); !ok {
-			s.WriteTokenRateLimited(w, "key", dim, retry)
-			return admission, false
-		}
-	}
-	if tl != nil {
-		if ok, dim, retry := tl.Peek(accountID, inputTokens, admission.AdmittedOutputTokens); !ok {
+	deniedTier, dimension, retry := s.admitTokenBuckets(accountID, tl, keyLimits, inputTokens, admission.AdmittedOutputTokens)
+	if dimension != "" {
+		if deniedTier == "account" {
+			deniedTier = tier
 			setTokenRateLimitHeaders(w, tl, accountID)
-			s.WriteTokenRateLimited(w, tier, dim, retry)
-			return admission, false
 		}
-	}
-
-	// Both dimensions have capacity — commit to each.
-	if keyEnforced {
-		s.deps.KeyTokens().Commit(keyID, inputTokens, admission.AdmittedOutputTokens, inRPS, inBurst, outRPS, outBurst)
+		s.WriteTokenRateLimited(w, deniedTier, dimension, retry)
+		return admission, false
 	}
 	if tl != nil {
-		tl.Commit(accountID, inputTokens, admission.AdmittedOutputTokens)
 		setTokenRateLimitHeaders(w, tl, accountID)
 	}
 	return admission, true
@@ -121,21 +109,7 @@ func (s *Controller) ReconcileOutputAdmission(pr *registry.PendingRequest, actua
 	if delta == 0 {
 		return
 	}
-	if admission.AccountOutputLimited {
-		var tl *ratelimit.TokenLimiter
-		switch admission.AccountTier {
-		case "service":
-			tl = s.deps.ServiceTokens()
-		default:
-			tl = s.deps.ConsumerTokens()
-		}
-		if tl != nil {
-			tl.DebitOutput(pr.ConsumerKey, delta)
-		}
-	}
-	if admission.KeyOutputLimited && s.deps.KeyTokens() != nil {
-		s.deps.KeyTokens().DebitOutput(pr.KeyID, delta, admission.KeyOutputRPS, admission.KeyOutputBurst)
-	}
+	s.debitAdmissionOutput(pr, delta)
 	s.deps.Metrics.Count("ratelimit.output_admission.delta_tokens_total", int64(delta), tags)
 }
 
@@ -170,29 +144,4 @@ func setTokenRateLimitHeaders(w http.ResponseWriter, tl *ratelimit.TokenLimiter,
 		h.Set("x-ratelimit-remaining-output-tokens", strconv.Itoa(out.Remaining))
 		h.Set("x-ratelimit-reset-output-tokens", strconv.Itoa(out.ResetSeconds)+"s")
 	}
-}
-
-// keyTokenParams resolves the per-key ITPM/OTPM override for the calling key.
-// enforced is false when no per-key token limit applies (no key, no limiter, or
-// no override set), in which case the other return values are zero.
-func (s *Controller) keyTokenParams(r *http.Request) (keyID string, inRPS float64, inBurst int, outRPS float64, outBurst int, enforced bool) {
-	if s.deps.KeyTokens() == nil {
-		return "", 0, 0, 0, 0, false
-	}
-	k := requestcontext.APIKey(r.Context())
-	if k == nil || k.ID == "" {
-		return "", 0, 0, 0, 0, false
-	}
-	if k.ITPMLimit != nil && *k.ITPMLimit > 0 {
-		inRPS = float64(*k.ITPMLimit) / 60.0
-		inBurst = int(*k.ITPMLimit)
-	}
-	if k.OTPMLimit != nil && *k.OTPMLimit > 0 {
-		outRPS = float64(*k.OTPMLimit) / 60.0
-		outBurst = int(*k.OTPMLimit)
-	}
-	if inRPS <= 0 && outRPS <= 0 {
-		return "", 0, 0, 0, 0, false
-	}
-	return k.ID, inRPS, inBurst, outRPS, outBurst, true
 }

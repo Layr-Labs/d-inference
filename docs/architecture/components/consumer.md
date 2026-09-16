@@ -82,6 +82,8 @@ feedback and outcome services bound by `responseWriter`
 
 8. **Media worker failure releases shared read capacity.** `budgetReader.Read` releases its byte reservation on normal return and panic; `fetchAll` can then recover a failed worker, cancel siblings and join them without leaving readers blocked in the shared budget (`coordinator/mediafetch/budget.go`, `coordinator/mediafetch/resolver.go`).
 
+8. **Concurrent token admissions share one account transaction.** `admitTokenBuckets` checks the key and account input/output buckets before charging any of them, under a bounded account-sharded lock. `debitAdmissionOutput` uses the same lock for extra output-token debt. `CheckN` and `CheckNWithRate` calculate availability and retry hints without consuming tokens; HTTP errors and headers are written after releasing the transaction lock (`coordinator/api/token_admission.go`, `coordinator/ratelimit/bucket_check.go`).
+
 ## Failure modes
 
 | Symptom | Cause | Where |

@@ -448,6 +448,12 @@ blocking CPU steps.
 Rebuild the Go test binary after changing the release-default readiness helper
 or its capacity-quote relay observations; see the
 [release-default procedure](test.md#connected-coordinatorprovider-http-cache-gate).
+The load-driver fixtures also need only Python 3.10+ and the standard library;
+they stub HTTP clients, worker completion and clocks
+(`scripts/test_load_measurements.py`, `SoakTests`, `LightBenchmarkTests`).
+Live `scripts/benchmark-light.py` (`worker`) and `scripts/benchmark-models.py`
+(`call_model`) require `aiohttp` and an authorized API key. Running these live
+scripts sends inference traffic; building or testing their fixtures does not.
 
 ## `make` targets
 

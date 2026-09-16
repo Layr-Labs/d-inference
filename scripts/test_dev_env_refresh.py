@@ -1,6 +1,7 @@
 """Exercise the boot env phase with local metadata and Secret Manager stubs."""
 
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -72,6 +73,64 @@ cp "$REFRESH_SCRIPT" "$out"
     def assert_clean(self):
         self.assertEqual(list(self.scratch.iterdir()), [])
         self.assertEqual(list(self.env_dir.iterdir()), [self.env_file])
+
+    def test_bootstrap_resources_can_be_populated_before_boot_retry(self):
+        resources = self.root / "secrets"
+        resources.mkdir()
+        self.env["FIXTURE_SECRETS"] = str(resources)
+        self.stub("gcloud", '''#!/usr/bin/env python3
+import os
+from pathlib import Path
+import sys
+args = [arg for arg in sys.argv[1:] if arg != "--quiet"]
+root = Path(os.environ["FIXTURE_SECRETS"])
+if args[:2] == ["secrets", "describe"]:
+    sys.exit(0 if (root / args[2]).exists() else 1)
+if args[:2] == ["secrets", "create"]:
+    (root / args[2]).touch(exist_ok=False)
+elif args[:3] == ["secrets", "versions", "add"]:
+    target = root / args[3]
+    if not target.exists():
+        sys.exit(1)
+    target.write_text(sys.stdin.read())
+elif args[:3] == ["secrets", "versions", "access"]:
+    name = next(arg.split("=", 1)[1] for arg in args if arg.startswith("--secret="))
+    target = root / name
+    if not target.exists() or not target.read_text():
+        sys.exit(1)
+    print(target.read_text(), end="")
+else:
+    raise SystemExit("unexpected fixture gcloud invocation: " + repr(args))
+''')
+        # Run the real resource-creation phase, excluding cloud provisioning,
+        # IAM, credentials and VM creation. Every transport call stays local.
+        source = (DEPLOY / "bootstrap.sh").read_text()
+        phase = source.split('echo "==> Creating Secret Manager entries"', 1)[1]
+        phase = phase.split('echo "==> Grant coord SA decrypt', 1)[0]
+        command = ["bash", "-euc", phase]
+        env = {**self.env, "PROJECT": "fixture", "REGION": "fixture",
+               "KMS_RING": "fixture", "KMS_KEY_MDM": "mdm", "KMS_KEY_SOLANA": "mnemonic"}
+        created = subprocess.run(command, env=env, text=True, capture_output=True)
+        self.assertEqual(created.returncode, 0, created.stderr)
+        expected = set(re.findall(r"\$\(fetch ([a-z0-9-]+)\)",
+                                  (DEPLOY / "refresh-env.sh").read_text()))
+        self.assertLessEqual(expected, {path.name for path in resources.iterdir()})
+        self.assertNotEqual(self.run_phase(boot=True).returncode, 0)
+        self.assertFalse(self.env_file.exists())
+        for name in expected:
+            populated = subprocess.run(
+                ["gcloud", "secrets", "versions", "add", name, "--data-file=-"],
+                env=self.env, input="fixture-" + name, text=True, capture_output=True,
+            )
+            self.assertEqual(populated.returncode, 0, populated.stderr)
+        before = {path.name: path.read_bytes() for path in resources.iterdir()}
+        repeated = subprocess.run(command, env=env, text=True, capture_output=True)
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertEqual(before, {path.name: path.read_bytes() for path in resources.iterdir()})
+        boot = self.run_phase(boot=True)
+        self.assertEqual(boot.returncode, 0, boot.stdout + boot.stderr)
+        self.assertIn("EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET=fixture-", self.env_file.read_text())
+        self.assert_clean()
 
     def test_boot_and_deploy_publish_identical_complete_environment(self):
         deploy = self.run_phase(boot=False)

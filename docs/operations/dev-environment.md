@@ -1,6 +1,6 @@
 # Dev environment
 
-> Last updated: 2026-09-16 · commit `4133fc5cf`
+> Last updated: 2026-09-16 · commit `111f1ca9a`
 
 Runbook for the Darkbloom dev environment on Google Cloud (project
 `sepolia-ai`): a GCE VM running the same coordinator container as production,
@@ -64,6 +64,11 @@ as the `darkbloom-refresh-env` metadata value. Publish both together when
 updating startup metadata. It prints the static IP.
 
 ### 2. Populate secrets
+
+Bootstrap creates empty Secret Manager resources for every value read by
+`deploy/gcp/refresh-env.sh`, including the three required Stripe keys and the
+optional settings below. Add versions to those existing resources; rerunning
+bootstrap preserves any populated versions.
 
 ```bash
 echo -n '<value>' | gcloud secrets versions add <secret-name> --data-file=- --project=sepolia-ai

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-16 · commit `fa4e6bdc2`
+> Last updated: 2026-09-16 · commit `4133fc5cf`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1167,34 +1167,8 @@ make landing-test
 
 ### 6. Scripts and release integrity
 
-Run the measurement-helper fixtures without a provider, model, API key or network
-service:
 With `mise` activated in your shell, prepare and run the CPU tooling checks from
 the repository root:
-`python3 scripts/test-provider-signing-validation.py` checks signing-input
-contracts. `python3 scripts/test_release_workflow.py` runs the release workflow's
-profile and JSON-payload steps against local fixtures, including invalid app
-identities, missing expiry, and quoted multiline tag text. Both run in Release
-Integrity CI without signing, notarizing, publishing or executing a provider.
-`python3 scripts/test_review_automation.py` checks review input preparation.
-Synthetic patches cover deleted files, both sides of renames, header-like hunk
-content and complete omission notices under tiny excerpt limits. A real local
-Git diff checks whitespace in filenames. A stubbed `gh` command runs the Codex workflow's
-metadata step through Bash and `jq`, checking that multiline PR bodies containing
-`EOF` survive the GitHub output format. The fixtures make no API or model calls
-and run in Release Integrity CI.
-For changes to [dependency update configuration](../../.github/dependabot.yml),
-confirm that each update directory contains its ecosystem’s manifest, then run
-the relevant component checks in this guide.
-`python3 scripts/test_cache_soak_monitor.py` runs the actual Bash observer with
-owned log, process and sampling stubs. It checks that INT/TERM stop sampling and
-clean up once, split log lines are counted after completion, and successive
-windows preserve marker counts and the latest hit rate. This runs in Release
-Integrity CI and makes no provider or system-log request. See
-[cache rollout observation](../operations/cache-routing-rollout.md#provider-soak-observation).
-`python3 scripts/test_operations_scripts.py` checks admin JSON fields, fleet
-partial-failure exit status and smoke-file ownership using stub transports. It
-makes no network request, writes no login token and updates no host.
 
 ```bash
 make tooling-install  # isolated .venv/tooling with pinned NumPy
@@ -1221,10 +1195,43 @@ or model workload. CI runs the same target in the `Tooling Tests` job.
 committed path list larger than 512 KiB. Both new and updated refs must still
 run component checks and reject the push when those checks fail.
 
+`python3 scripts/test-provider-signing-validation.py` checks signing-input
+contracts. `python3 scripts/test_release_workflow.py` runs the release workflow's
+profile and JSON-payload steps against local fixtures, including invalid app
+identities, missing expiry, and quoted multiline tag text. Both run in Release
+Integrity CI without signing, notarizing, publishing or executing a provider.
+
+`python3 scripts/test_review_automation.py` checks review input preparation.
+Synthetic patches cover deleted files, both sides of renames, header-like hunk
+content and complete omission notices under tiny excerpt limits. A real local
+Git diff checks whitespace in filenames. A stubbed `gh` command runs the Codex workflow's
+metadata step through Bash and `jq`, checking that multiline PR bodies containing
+`EOF` survive the GitHub output format. The fixtures make no API or model calls
+and run in Release Integrity CI.
+
+For changes to [dependency update configuration](../../.github/dependabot.yml),
+confirm that each update directory contains its ecosystem’s manifest, then run
+the relevant component checks in this guide.
+
+`python3 scripts/test_cache_soak_monitor.py` runs the actual Bash observer with
+owned log, process and sampling stubs. It checks that INT/TERM stop sampling and
+clean up once, split log lines are counted after completion, and successive
+windows preserve marker counts and the latest hit rate. This runs in Release
+Integrity CI and makes no provider or system-log request. See
+[cache rollout observation](../operations/cache-routing-rollout.md#provider-soak-observation).
+
+`python3 scripts/test_operations_scripts.py` checks admin JSON fields, fleet
+partial-failure exit status and smoke-file ownership using stub transports. It
+makes no network request, writes no login token and updates no host.
+
+
 The exited-leader fixture in `e2e/testbed/test_provider_host.py` enables a Linux
 child subreaper only in its isolated owner process. It reaps the recorded orphan
 itself, so the test does not depend on container PID 1. The fixture still requires
 a successful terminal cleanup receipt and verifies that the sleeper is gone.
+
+Run the measurement-helper fixtures without a provider, model, API key or network
+service:
 
 ```bash
 PYTHONPATH=scripts python3 -m unittest test_load_measurements startup_measurement.test_http_probe startup_measurement.test_observer

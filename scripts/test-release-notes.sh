@@ -36,8 +36,8 @@ render() {
 SHA=73093957b8f2f7058f9eabab3ab004c3d758ec16
 # Capture first: piping into grep -q would SIGPIPE render once grep exits early,
 # and pipefail would report that as a missing line.
-notes=$(render GITHUB_SHA="$SHA")
-if ! grep -qxF "**Commit:**        \`$SHA\`" <<<"$notes"; then
+notes=$(render GITHUB_SHA="$SHA" GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=Layr-Labs/d-inference)
+if ! grep -qxF "**Commit:**        [\`$SHA\`](https://github.com/Layr-Labs/d-inference/commit/$SHA)" <<<"$notes"; then
     echo "release notes missing the source commit line" >&2
     exit 1
 fi

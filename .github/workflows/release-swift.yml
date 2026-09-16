@@ -972,7 +972,7 @@ jobs:
           cat > /tmp/release-notes.md <<NOTES
           ## Provider v${VERSION} (Swift CLI)
 
-          **Commit:**        \`${GITHUB_SHA}\`
+          **Commit:**        [\`${GITHUB_SHA}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})
           **Binary hash:**   \`${BINARY_HASH}\`
           **CodeDirectory SHA-256:** \`${CODE_DIRECTORY_HASH}\`
           **Bundle hash:**   \`${BUNDLE_HASH}\`

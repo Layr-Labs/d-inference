@@ -227,20 +227,15 @@ export async function streamChat(
       return;
     }
 
-    // Attestation receipt event (sent just before [DONE]).
-    try {
-      const receipt = JSON.parse(payload);
-      if (receipt.se_signature) {
-        trustMeta.seSignature = receipt.se_signature;
-        trustMeta.responseHash = receipt.response_hash;
-        continue;
-      }
-    } catch {
-      // Not a receipt — fall through to normal chunk handling.
-    }
-
     try {
       const chunk = JSON.parse(payload);
+      // Receipts and token deltas share the SSE transport, but each payload
+      // is decoded only once before choosing its destination.
+      if (chunk.se_signature) {
+        trustMeta.seSignature = chunk.se_signature;
+        trustMeta.responseHash = chunk.response_hash;
+        continue;
+      }
       const delta = chunk.choices?.[0]?.delta;
       const content = delta?.content;
       const reasoning = delta?.reasoning_content || delta?.reasoning;

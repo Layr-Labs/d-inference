@@ -161,15 +161,20 @@ struct ChunkSenderTests {
     @Test("batcher delivers every frame exactly once across flushes")
     func batcherDeliversEveryFrameExactlyOnce() {
         let batcher = ChunkBatcher()
+        let recorder = BatchRecorder()
         let count = TestCounter()
         let done = DispatchSemaphore(value: 0)
         let total = 200
+        let expected = (0..<total).map { Data(repeating: UInt8($0), count: 8) }
         batcher.installSinkForTesting { frames in
+            recorder.record(frames)
             if count.add(frames.count) >= total { done.signal() }
         }
-        for _ in 0..<total { batcher.enqueue(Data(count: 8)) }
+        for frame in expected { batcher.enqueue(frame) }
         #expect(done.wait(timeout: .now() + .seconds(5)) == .success)
+        batcher.flush()
         #expect(count.get() == total)
+        #expect(recorder.batches().flatMap { $0 } == expected)
     }
 
     // MARK: - Ordering barrier: terminal never overtakes chunks

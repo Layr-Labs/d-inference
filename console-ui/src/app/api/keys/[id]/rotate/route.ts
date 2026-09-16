@@ -1,18 +1,6 @@
 import { NextRequest } from "next/server";
-import { coordinatorUrl, privyAuth, passthrough, missingPrivyToken } from "@/lib/server/coordinator";
+import { proxyAccount, type AccountResourceContext } from "@/lib/server/account-proxy";
 
-// Proxy for POST /v1/keys/{id}/rotate. Returns a fresh secret exactly once
-// (same shape as create). Privy-only auth with the standard header → cookie
-// fallback. Next 16 dynamic route params are async.
-
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const authHeader = privyAuth(req);
-  if (!authHeader) return missingPrivyToken();
-
-  const { id } = await params;
-  const res = await fetch(`${coordinatorUrl()}/v1/keys/${encodeURIComponent(id)}/rotate`, {
-    method: "POST",
-    headers: { Authorization: authHeader },
-  });
-  return passthrough(res);
+export async function POST(req: NextRequest, { params }: AccountResourceContext) {
+  return proxyAccount(req, async () => `/v1/keys/${encodeURIComponent((await params).id)}/rotate`, { method: "POST" });
 }

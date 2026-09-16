@@ -14,6 +14,23 @@ See [historical source references](historical-references.md) for local setup.
 Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 `scripts/publish-model.sh` to registration. See the
 [model publishing procedure](../operations/model-migration.md).
+Publishing scripts stop on failed or empty R2 credential lookups. The rollback
+helper validates identifiers and numeric registration fields before copying
+objects; its offline checks use command stubs, including Swift, and require no
+provider build. See [the script checks](test.md#model-publishing-script-checks).
+
+For the first dev coordinator deployment, follow the
+[dev bootstrap procedure](../operations/dev-environment.md): populate the required
+secrets and rerun startup before building and deploying the first image. Boot and
+deploy use the same validated environment writer.
+PR review automation has local
+[input fixtures](test.md#6-scripts-and-release-integrity). They use Python's
+standard library, Git, Bash and `jq` to validate review input preparation without
+a model API key or a build.
+
+The admin, smoke and fleet helpers use the tools pinned here. Their local fixture
+checks are covered by [script validation](test.md#6-scripts-and-release-integrity);
+the [dev operations runbook](../operations/dev-environment.md) covers invocation.
 
 Profiler wire changes require both coordinator and provider builds; the shared
 Go/Swift fixture and focused checks are described in [test.md](test.md) and
@@ -26,8 +43,20 @@ The coordinator's persistence packages compile through the normal Go build.
 identifies each owner; changing this layout adds no migration or startup flag.
 
 The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its [shadow packaging and live-validation requirements](../reference/app-attest-shadow.md#packaging-and-live-acceptance) are separate from a successful local compile.
+Installer changes start in `scripts/install.sh`. Regenerate the coordinator's
+embedded copy with `scripts/sync-install-embed.sh`, then run
+`scripts/sync-install-embed.sh check` and the offline installer fixtures in
+[test.md](test.md). The commit helpers prepare executable permissions and bin
+links before replacing live paths; app and bin replacement share rollback so
+failed restoration retains a recovery backup.
 
 ## Prerequisites
+
+- The cache soak observer uses macOS Bash 3.2 and stock logging tools. Its
+  [offline fixtures](test.md#6-scripts-and-release-integrity) use Python and owned
+  command stubs; they require no provider build or running inference service.
+- Start commands from the repository root. Component examples that use
+  `(cd path && command)` run in a subshell and preserve your current directory.
 
 - **Toolchain via [`mise`](https://mise.jdx.dev/).** Every version is pinned in
   [`mise.toml`](../../mise.toml); `mise install` installs them all.
@@ -43,6 +72,8 @@ The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its 
 
 - **macOS on Apple Silicon** for anything under `provider-swift/` (MLX + Metal).
   The coordinator, sidecar, e2e harness, and UIs build on macOS or Linux.
+  The [local process cleanup fixtures](test.md#local-process-cleanup-fixtures)
+  need only Go, Python and harmless child stubs; they do not need a provider build or database.
 - **Xcode Command Line Tools + `cmake`** (`brew install cmake`) — the metallib
   helper compiles MLX's Metal kernels with cmake.
 - **Git submodules** checked out: `libs/mlx-swift`, `libs/mlx-swift-lm`,
@@ -72,6 +103,8 @@ See [finding provider tests](test.md#finding-provider-tests) for the folder map;
 The [inference source map](../architecture/inference.md#code-map) locates engine,
 memory, caching and request-processing code within the same `ProviderCore`
 target; building these folders requires no separate products or commands.
+Dependency update checks in [`.github/dependabot.yml`](../../.github/dependabot.yml)
+use the root Go module and the console UI's package directory.
 
 ## Steps
 
@@ -81,15 +114,25 @@ target; building these folders requires no separate products or commands.
 mise install                          # installs every pin in mise.toml
 git submodule update --init --recursive
 git config core.hooksPath .githooks   # enables pre-commit + pre-push (see "Git hooks")
+make ui-install admin-install tooling-install  # dependencies for aggregate build/test
 ```
 
-`mise` activates the pinned versions per shell; on macOS the system Xcode
-`swift` is also acceptable for `provider-swift`.
+Activate `mise` in your shell to select the pinned versions; on macOS the system Xcode
+`swift` is also acceptable for `provider-swift`. `tooling-install` prepares
+`.venv/tooling` from the pinned attention-packet requirements. `tooling-test`
+prepares it automatically when missing and recreates the environment when the
+requirements file or `mise.toml` changes, using the activated toolchain and removing
+dependencies that are no longer declared.
+See [the tooling checks](test.md#6-scripts-and-release-integrity).
+Use `make tooling-test TOOLING_VENV=.venv/tooling-py312` to select a different
+directory (`Makefile`, `TOOLING_VENV`); nested offline bootstrap fixtures retain
+their own temporary environments. The CPU tooling target supports macOS and
+Linux; its owned-process fixtures manage their own child cleanup.
 
 ### 2. Build everything
 
 ```bash
-make build      # coordinator-build prompt-sidecar-build provider-build ui-build
+make build      # coordinator-build prompt-sidecar-build provider-build ui-build admin-build
 make all        # test + build (see test.md)
 ```
 
@@ -198,6 +241,20 @@ Sidecar Tests").
 
 ### 5. Provider CLI (Swift) with source-matched metallib
 
+Build the test product again after changing fixture helpers or assertions;
+`--skip-build` alone reuses the previous executable. The
+[provider test procedure](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib)
+covers isolated CLI configuration, artifact integrity, SSD authentication,
+paged-preflight diagnostics, and stream ordering. Synthetic MLX fixtures need
+the matched metallib; enabled live-model fixtures also need their documented
+model inputs.
+
+To compile all test targets without executing fixtures:
+
+```bash
+(cd provider-swift && swift build --build-tests)
+```
+
 ```bash
 make provider-build
 # = cd provider-swift && swift build
@@ -263,6 +320,8 @@ continues to reject divergent copies.
 
 The separate [signing-validation workflow](../operations/provider-release.md#environment-free-signing-validation)
 checks packaging and Apple signing without selecting a deployment environment.
+It shares profile and signed CLI entitlement validators with the release workflow;
+the same authorization checks run before either workflow proceeds to notarization.
 
 Release configuration, as the release workflow builds it:
 
@@ -299,6 +358,11 @@ ATTENTION_REPLAY_SOURCE_ROOT="$REPLAY_SOURCE_ROOT" \
 Retain the executable SHA-256, source/dependency inventory, build graph,
 `mlx.metallib` and SwiftPM resource bundles. An executable hash alone does not
 bind external Metal resources. The Python driver never builds or downloads them.
+After building against those reviewed resources, run the host-only input checks
+with the same source-root binding and scratch directory using `swift test`
+and `--filter ReplayHostTests`
+(`scripts/benchmarks/attention-replay/Tests/AttentionReplayTests/ReplayHostTests.swift`,
+`fifoInputIsRejectedWithoutWaitingForAWriter`).
 Use the [offline NumPy environment](#offline-attention-analysis-environment) for
 packet validation and the independent reference. See [replay validation](test.md#attention-operator-replay)
 and the [source/test milestone](../reports/2026-09-06-attention-operator-replay.md).
@@ -320,6 +384,13 @@ and retain their hashes with the build's source/dependency inventory. See
 <a id="resident-prefix-benchmark-executable"></a>
 
 #### Prefix-cache benchmark executable
+
+The radix Python replay, wrapper-preflight and process-cleanup fixtures run with the standard
+library alone, without building their native executables
+(`scripts/benchmarks/test_radix_prefix_cache.py`, `ReplayInputTests`;
+`scripts/benchmarks/test_radix_process_cleanup.py`, `ProcessCleanupTests`).
+Use the [prefix-cache benchmark checks](test.md#prefix-cache-benchmark-validation)
+before running an authorized live measurement.
 
 [`scripts/benchmarks/radix-engine`](../../scripts/benchmarks/radix-engine/Package.swift)
 links the real provider factory and MLX packages from an explicitly selected
@@ -424,6 +495,10 @@ python3 -m venv /tmp/darkbloom-attention-venv
 ```
 
 Use that interpreter for [packet analysis and its tests](test.md#offline-attention-packet-analysis).
+The CPU suite also checks malformed JSON metadata refusals and identical replay
+comparison results without launching the native probe; its mocked execution
+boundary preserves the requirement for an explicitly selected, hashed probe in
+an actual operator replay.
 
 ### 6. Console UI (Next.js)
 
@@ -441,21 +516,22 @@ Local dev server: `cd console-ui && npm run dev`. Bundle budget check:
 
 ### 7. Admin UI (Next.js)
 
-No `make` target. From `admin-ui/`:
+From the repository root:
 
 ```bash
-npm install
-npm run lint     # eslint src/
-npm test         # vitest run
-npm run build    # next build
-npm run dev      # next dev -p 4001
+make admin-install
+make admin-lint admin-typecheck admin-test admin-build
+cd admin-ui && npm run dev   # next dev -p 4001
 ```
+
+`admin-build` supplies a nonconnecting local database URL when `ADMIN_DB_URL`
+is unset, so aggregate builds need no database credentials. The running admin
+service still requires its configured read-only replica URL.
 
 ### 8. Landing page
 
 Static files in `landing/` (`index.html`, `earn-calculator*.js`, `terms.html`,
-`privacy.html`); nothing to build. Run its one test with
-`node --test landing/earn-calculator-core.test.js`.
+`privacy.html`); nothing to build. Run its tests with `make landing-test`.
 
 ### 9. Coordinator container image
 
@@ -494,6 +570,23 @@ local stub servers; its default observation mode sends only public GETs.
 The [provider retry-hint regression](test.md#2-coordinator-go) uses local Go HTTP
 and WebSocket fixtures; it needs no model runtime, database or external service.
 
+The [provider relay checks](test.md) use local Go HTTP/WebSocket servers without
+a provider build or model weights. They check catalog/manifest forwarding,
+rejection of other HTTP routes, upstream errors, shutdown cancellation and bounded
+WS recording before the real-model gates.
+The `test-coordinator` job in `.github/workflows/ci.yml` runs all testbed unit
+packages and the Qwen, workflow, exact-cache and release-policy checks as
+blocking CPU steps.
+Rebuild the Go test binary after changing the release-default readiness helper
+or its capacity-quote relay observations; see the
+[release-default procedure](test.md#connected-coordinatorprovider-http-cache-gate).
+The load-driver fixtures also need only Python 3.10+ and the standard library;
+they stub HTTP clients, worker completion and clocks
+(`scripts/test_load_measurements.py`, `SoakTests`, `LightBenchmarkTests`).
+Live `scripts/benchmark-light.py` (`worker`) and `scripts/benchmark-models.py`
+(`call_model`) require `aiohttp` and an authorized API key. Running these live
+scripts sends inference traffic; building or testing their fixtures does not.
+
 ## `make` targets
 
 | Target | What it runs |
@@ -511,18 +604,21 @@ and WebSocket fixtures; it needs no model runtime, database or external service.
 | `provider-build` | `swift build` + `scripts/fetch-metallib.sh <bin-path>` |
 | `provider-test` | `swift build --build-tests`, stage `mlx.metallib` into the bin dir and every `*PackageTests.xctest/Contents/MacOS`, then `swift test --skip-build` |
 | `provider` | `provider-build` + `provider-test` |
-| `benchmark-wrapper-test` | `cd scripts && python3 -m unittest discover -s gemma_contbatch/tests -t .` |
+| `benchmark-wrapper-test` | Python unittest discovery in `scripts/gemma_contbatch/tests` and `scripts/mtp_benchmark/tests`, including bounded artifact and malformed performance-evidence fixtures |
 | `benchmark-gemma-contbatch` | `python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)` (needs GPU + weights) |
 | `ui-install` / `ui-lint` / `ui-test` / `ui-build` / `ui` | `npm install` / `npx eslint src/` / `npm test` / `npm run build` in `console-ui/` |
+| `admin-install` / `admin-lint` / `admin-typecheck` / `admin-test` / `admin-build` | Locked install, lint, full TypeScript, Vitest and build in `admin-ui/` |
+| `landing-test` | `node --test landing/*.test.js` |
+| `tooling-install` / `tooling-test` | Prepare isolated pinned NumPy environment / run Python script packages, benchmark references, owned-host helpers and release validation fixtures |
 | `e2e-integration` | `go test ./e2e/... -run TestIntegration -v` |
 | `e2e-benchmark` | `go test ./e2e/... -run TestBenchmark -v` |
 | `e2e` | `e2e-integration` |
 | `docs-check` | `scripts/docs-check.sh` (stamps, links, cited paths, orphans; frozen source links require their stamped Git objects when the current path is absent) |
 | `docs-stamp` | `scripts/docs-stamp.sh $(FILES)` — refresh freshness stamps |
-| `test` | `coordinator-test prompt-sidecar-test provider-test ui-test benchmark-wrapper-test docs-check` |
-| `build` | `coordinator-build prompt-sidecar-build provider-build ui-build` |
+| `test` | `coordinator-test prompt-sidecar-test provider-test ui-test admin-test landing-test tooling-test docs-check` |
+| `build` | `coordinator-build prompt-sidecar-build provider-build ui-build admin-build` |
 | `all` | `test build` |
-| `clean` | remove `./coordinator/coordinator{,-linux}`, `./coordinator/promptsidecar/target`, `./provider-swift/.build`, `./console-ui/.next`, `./console-ui/node_modules` |
+| `clean` | remove `./coordinator/coordinator{,-linux}`, `./coordinator/promptsidecar/target`, `./provider-swift/.build`, `./console-ui/.next`, `./console-ui/node_modules`, `./admin-ui/.next`, `./admin-ui/node_modules` |
 
 ## Git hooks
 
@@ -531,10 +627,10 @@ components that changed.
 
 | Hook | Trigger | Checks |
 |---|---|---|
-| [`.githooks/pre-commit`](../../.githooks/pre-commit) | staged `coordinator/**.go` | `gofmt -l` on the staged files (fix: `gofmt -w <file>`) |
+| [`.githooks/pre-commit`](../../.githooks/pre-commit) | staged `coordinator/**.go` or `e2e/**.go` | `git show :<path>` into `gofmt -d`, checking index bytes even for partially staged files; format and restage failures |
 | | staged `console-ui/**.ts{,x}` | `cd console-ui && npx eslint src/` (fix: `npx eslint --fix src/`) |
 | | Swift | skipped — no enforced formatter |
-| [`.githooks/pre-push`](../../.githooks/pre-push) | any `coordinator/` change in the pushed range | `gofmt -l .` over `coordinator/`, then `go test $(go list ./... \| grep -v /internal/api)` from `coordinator/` (the slow WebSocket integration tests run in CI only) |
+| [`.githooks/pre-push`](../../.githooks/pre-push) | any `coordinator/` change in the pushed range | `gofmt -l .` and `go test ./...` from `coordinator/`; inspect every pushed ref, including new branches and large file lists |
 | | any `console-ui/` change | `npx eslint --quiet src/` and `npm run build` |
 
 CI runs the fuller set (`gofmt`, `golangci-lint`, `-race` tests, Swift, Rust,
@@ -549,6 +645,19 @@ ls -l provider-swift/.build/debug/darkbloom provider-swift/.build/debug/mlx.meta
 ./provider-swift/.build/debug/darkbloom --version    # prints ProviderCore.version, e.g. 0.8.16
 ls console-ui/.next
 ```
+
+### Harness assertion checks
+
+The latency and accounting report helpers compile and run with Go alone:
+`go test -race ./e2e/testbed/assert -count=1`. These CPU fixtures use synthetic
+latency samples and stub query rows; they do not build a provider or require a
+Postgres server. See [test.md](test.md#harness-assertion-contracts) for their scope.
+### Model benchmark wrapper fixtures
+
+The Gemma and GPT-OSS report tooling has CPU-only Python checks that need no
+provider build, model snapshot or Metal runtime. Run both package suites from
+[the wrapper verification procedure](test.md#model-benchmark-wrapper-contracts)
+before running a native benchmark with either launcher.
 
 ## Troubleshooting
 
@@ -594,3 +703,13 @@ Candidate native prefix-cache benchmarks must build ProviderCore and
 prompt SPI carries production sampling parameters into each engine request.
 See [native benchmark validation](test.md#resident-prefix-benchmark-validation)
 for sampling scope, regression filters and diagnostic restrictions.
+
+Integration fixture identities differ from the exact release catalog IDs. See
+[the E2E defaults and cache lanes](test.md#8-end-to-end-suite) before interpreting
+a contiguous HF-fixture smoke as release backend/cache qualification.
+The [released-provider artifact fixtures](test.md#8-end-to-end-suite) check
+bundle validation with local temporary files only; they require Go, not a Swift
+build, released binary, SIP probe or GPU workload.
+[Connected capture and evidence fixtures](test.md#connected-coordinatorprovider-http-cache-gate)
+run with Go and owned loopback HTTP stubs; they do not need provider compilation,
+model downloads, Postgres or a sidecar.

@@ -125,10 +125,11 @@ func postConnectedStream(ctx context.Context, url, apiKey string, body []byte, c
 	out.ProviderID = resp.Header.Get("X-Provider-Id")
 	reader := bufio.NewReaderSize(io.LimitReader(resp.Body, (8<<20)+1), 64<<10)
 	var raw bytes.Buffer
+	// Preserve partial evidence on every return without copying every growing prefix.
+	defer func() { out.RawSSE = raw.String() }()
 	for {
 		line, readErr := reader.ReadBytes('\n')
 		raw.Write(line)
-		out.RawSSE = raw.String()
 		if raw.Len() > 8<<20 {
 			return out, fmt.Errorf("SSE evidence exceeds bounded 8 MiB")
 		}

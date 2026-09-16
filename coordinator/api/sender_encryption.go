@@ -189,8 +189,8 @@ func (s *Server) sealedTransport(next http.HandlerFunc) http.HandlerFunc {
 		coordPriv := s.coordinatorKey.PrivateKey
 		plaintext, ok := box.Open(nil, ct2[24:], &nonce, &ephemPub, &coordPriv)
 		if !ok {
-			// Authenticated decryption failed — wrong key, tampered ciphertext,
-			// or replayed nonce. Never silently fall through to plaintext.
+			// Authenticated decryption failed — wrong key or tampered ciphertext.
+			// Never silently fall through to plaintext.
 			writeJSON(w, http.StatusBadRequest, errorResponse("decryption_failed",
 				"sealed request could not be decrypted — verify GET /v1/encryption-key kid and that the body was sealed to it"))
 			return

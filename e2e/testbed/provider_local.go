@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -72,7 +73,7 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 	if err := os.MkdirAll(filepath.Join(p.StateDir, "tmp"), 0700); err != nil {
 		return err
 	}
-	cmd := execCommandContext(ctx, p.BinaryPath, args...)
+	cmd := exec.CommandContext(ctx, p.BinaryPath, args...)
 	cmd.Stdout = &logWriter{logger: p.Logger, prefix: "provider:stdout"}
 	cmd.Stderr = &logWriter{logger: p.Logger, prefix: "provider:stderr"}
 	cmd.Env = os.Environ()
@@ -90,13 +91,13 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 
 	go func(done chan struct{}) {
 		defer close(done)
-		state, err := cmd.Process.Wait()
-		if err != nil {
+		err := cmd.Wait()
+		if err != nil && cmd.ProcessState == nil {
 			p.Logger.Warn("provider process wait failed", "error", err)
 			return
 		}
-		if state != nil && state.ExitCode() >= 0 {
-			p.Logger.Warn("provider process exited", "exit_code", state.ExitCode())
+		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() >= 0 {
+			p.Logger.Warn("provider process exited", "exit_code", cmd.ProcessState.ExitCode())
 		}
 	}(p.done)
 

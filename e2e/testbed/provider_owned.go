@@ -222,6 +222,9 @@ func startOwnedProvider(ctx context.Context, target ProviderTarget, spec Provide
 		}
 		if scanErr != nil {
 			_ = o.stdin.Close()
+			// Stop reading a rejected protocol stream without leaving its writer
+			// blocked on a full pipe while Wait waits for that same helper.
+			_ = stdout.Close()
 		}
 		waitErr := command.Wait()
 		o.mu.Lock()

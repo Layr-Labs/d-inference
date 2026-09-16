@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -103,12 +104,15 @@ def source_fingerprint(path: Path) -> tuple[list[str], str]:
             stdout=subprocess.PIPE,
         ).stdout
         digest.update(tracked_diff)
-        untracked = capture(
-            ["git", "ls-files", "--others", "--exclude-standard"], path
-        ).splitlines()
-        for relative in sorted(untracked):
-            source = path / relative
-            digest.update(relative.encode())
+        # NUL separates raw filenames; line output C-quotes tabs, newlines,
+        # quotes and non-ASCII bytes, which are not paths that can be opened.
+        untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=path, check=True, stdout=subprocess.PIPE,
+        ).stdout.split(b"\0")
+        for relative in sorted(name for name in untracked if name):
+            source = path / os.fsdecode(relative)
+            digest.update(relative)
             if source.is_file():
                 with source.open("rb") as handle:
                     for chunk in iter(lambda: handle.read(1024 * 1024), b""):

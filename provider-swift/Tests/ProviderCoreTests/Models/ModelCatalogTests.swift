@@ -156,6 +156,30 @@ struct ModelCatalogTests {
         #expect(RegistryURLProtocol.lastPath == "/v1/models/catalog/manifest/org%2Fmodel%2Fwith%2Fslash")
     }
 
+    @Test("catalog and manifest preserve HTTP errors before JSON validation",
+          arguments: [true, false])
+    func endpointHTTPErrorPrecedence(manifest: Bool) async {
+        CatalogBodyURLProtocol.payload = Data("not JSON".utf8)
+        CatalogBodyURLProtocol.includeContentLength = true
+        CatalogBodyURLProtocol.statusCode = 503
+        defer { CatalogBodyURLProtocol.statusCode = 200 }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [CatalogBodyURLProtocol.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        let client = ModelCatalogClient(coordinatorURL: "https://coord.example.test", urlSession: session)
+        do {
+            if manifest { _ = try await client.fetchManifest(modelID: "org/model") }
+            else { _ = try await client.fetchCatalog() }
+            Issue.record("HTTP failure was accepted")
+        } catch ModelCatalogError.http(let status, let body) {
+            #expect(status == 503)
+            #expect(body == "not JSON")
+        } catch {
+            Issue.record("HTTP error changed category: \(error)")
+        }
+    }
+
     @Test("catalog streaming accepts the exact response-byte boundary")
     func catalogResponseExactBoundary() async throws {
         let base = Data(#"{"models":[]}"#.utf8)
@@ -534,6 +558,7 @@ private struct CatalogResponseShim: Codable {
 private final class CatalogBodyURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var payload = Data()
     nonisolated(unsafe) static var includeContentLength = true
+    nonisolated(unsafe) static var statusCode = 200
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -544,7 +569,7 @@ private final class CatalogBodyURLProtocol: URLProtocol, @unchecked Sendable {
             headers = ["Content-Length": "\(Self.payload.count)"]
         }
         let response = HTTPURLResponse(
-            url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+            url: request.url!, statusCode: Self.statusCode, httpVersion: "HTTP/1.1",
             headerFields: headers)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         let chunkSize = 16 * 1024

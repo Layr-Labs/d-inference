@@ -3,8 +3,12 @@ package testbed
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -26,9 +30,10 @@ type ProviderWireEvent struct {
 	Fields     map[string]json.RawMessage `json:"fields,omitempty"`
 }
 
-// ProviderWireRelay is a bounded, transparent test-only loopback WS hop. One
-// pump per direction preserves frame order. Neither authentication nor payload
-// encryption is replaced, and no provider frame is synthesized.
+// ProviderWireRelay is a bounded, transparent test-only loopback hop. One pump
+// per direction preserves WS frame order; provider catalog and manifest reads
+// reach the real coordinator without recording. Neither authentication nor
+// payload encryption is replaced, and no provider frame is synthesized.
 type ProviderWireRelay struct {
 	mu          sync.Mutex
 	events      []ProviderWireEvent
@@ -40,12 +45,29 @@ type ProviderWireRelay struct {
 }
 
 func (r *ProviderWireRelay) Start(coordinatorURL string) string {
+	target, err := url.Parse(coordinatorURL)
+	if err != nil {
+		panic(err)
+	}
+	proxy := &httputil.ReverseProxy{Rewrite: func(req *httputil.ProxyRequest) {
+		req.SetURL(target)
+	}}
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
 	upstream := "ws" + strings.TrimPrefix(coordinatorURL, "http") + "/ws/provider"
-	r.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	r.server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != "/ws/provider" {
-			http.NotFound(w, req)
+			const manifestPrefix = "/v1/models/catalog/manifest/"
+			requestPath := req.URL.Path
+			catalog := requestPath == "/v1/models/catalog"
+			manifest := strings.HasPrefix(requestPath, manifestPrefix) && len(requestPath) > len(manifestPrefix)
+			// Owned-host tunnels expose this listener to the provider host;
+			// only the provider's read-only catalog client may cross it.
+			if req.Method != http.MethodGet || (!catalog && !manifest) || path.Clean(requestPath) != requestPath {
+				http.NotFound(w, req)
+				return
+			}
+			proxy.ServeHTTP(w, req)
 			return
 		}
 		// Forward the authentication header; the real server still validates both
@@ -93,6 +115,8 @@ func (r *ProviderWireRelay) Start(coordinatorURL string) string {
 		back.CloseNow()
 		<-done
 	}))
+	r.server.Config.BaseContext = func(net.Listener) context.Context { return ctx }
+	r.server.Start()
 	return r.server.URL
 }
 
@@ -184,6 +208,10 @@ func summarizeProviderFrame(data []byte) (ProviderWireEvent, bool) {
 		copyFields("status_code", "terminal_cause", "failure_code")
 		copyProfileFields(event.Fields, raw)
 	case "cancel", "inference_accepted":
+	case "capacity_probe":
+		copyFields("quote_id", "model")
+	case "capacity_quote":
+		copyFields("quote_id", "capacity_seq", "admissible_now", "rejection_reason")
 	case "register":
 		copyFields("version", "prefix_cache_protocol", "prefix_cache_v2_models", "template_hashes", "encrypted_response_chunks")
 		present("auth_token")

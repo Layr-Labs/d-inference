@@ -58,6 +58,7 @@ async def worker(worker_id: int, model: str, prompt: str):
                         continue
 
                     data = await resp.json()
+                    elapsed = time.monotonic() - t0
                     usage = data.get("usage", {})
                     tokens = usage.get("completion_tokens", 0)
                     tps = round(tokens / elapsed, 1) if elapsed > 0 else 0

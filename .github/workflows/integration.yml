@@ -66,12 +66,9 @@ jobs:
           )
 
       - name: Install Hugging Face client
-        # v0.7.5 one-engine: the testbed default is the smallest
-        # CBv2-servable checkpoint (gpt-oss-20b, ~12 GB — the old tiny
-        # Qwen/gemma-3 fixtures have no CBv2 adapter and can no longer
-        # register). Exact-cache routing additionally uses the small Gemma 4
-        # checkpoint because GPT-OSS's dynamic-date template is cold-only.
-        # A warm HF cache makes these downloads no-ops.
+        # Both lanes use pinned public HF fixtures, not exact production IDs.
+        # GPT-OSS supplies ordinary inference; small Gemma 4 supplies the
+        # separate cache-routing fixture with an explicit SSD opt-in.
         run: |
           python3 -m venv /tmp/mlxvenv
           /tmp/mlxvenv/bin/pip install huggingface_hub
@@ -171,39 +168,16 @@ jobs:
             -run 'TestIntegration|TestProfile' \
             -skip '^TestIntegrationExactCacheRouting$'
 
-      # EXPECTED RED — because of the FIXTURE, not because of the default.
-      # This test runs gemma-4-e2b-it-4bit, and e2b is the one checkpoint
-      # where paged ADOPTION is the inexact arm: an adopted paged slot
-      # answers differently from its own cold run. e2b appears zero times
-      # in the production catalog -- on the two models we do serve, paged
-      # adoption is the EXACT arm and contiguous is the one that diverges.
-      #
-      # STILL RED AFTER THE v0.8.1 FLIP, and deliberately unchanged. The
-      # v0.8.0 comment here predicted this: "promote back to blocking when
-      # the fixture stops being the exception -- NOT on any further `.auto`
-      # change." This lane pins DARKBLOOM_TESTBED_KV_BACKEND=paged
-      # EXPLICITLY, so it never read the default in the first place; it
-      # still runs e2b on paged and still hits the one adoption path that
-      # diverges. `.auto` moving to contiguous changes what the FLEET
-      # serves, not what this lane measures.
-      #
-      # (The v0.8.1 contiguous prefix-cache gate does not reach it either:
-      # that gate skips cache construction only on a RESOLVED-contiguous
-      # slot, and this lane resolves paged.)
-      #
-      # EXPECTED RED until the e2b paged adoption path is fixed or this
-      # fixture moves to a served model. Kept, pinned, and visible rather
-      # than removed: the red IS the finding, and unpinning it would
-      # recreate the "gate that cannot fail" pattern this release fixed
-      # four separate times.
-      #
-      # ISOLATED in its own step (v0.8.0 gate audit) so `continue-on-error`
-      # covers exactly the one expected-red test instead of the entire paged
-      # lane it used to blanket. No DARKBLOOM_TESTBED_EXPECT_KV_BACKEND here:
-      # the expectation pre-warms every slot at suite start, and this test's
-      # cold-vs-adopted routing semantics are exactly what a pre-warm would
-      # perturb — its posture is already pinned by the explicit paged TOML.
-      - name: Run exact-cache routing (paged @ 8 — expected red, informational)
+      # Informational fixture lane: retain the original exact cold/adopted
+      # output gate for the small e2b artifact. Historical adoption mismatch
+      # evidence does not qualify current source. Before the explicit SSD
+      # opt-in, the latest master run stopped at capability advertisement,
+      # because this HF ID is outside the production SSD-default allowlist.
+      # Promote only after a real fixture run reaches and passes every check.
+      # Do not prewarm via EXPECT_KV_BACKEND: that perturbs cold-vs-adopted
+      # routing. The test performs its own controlled loads and this step
+      # pins the requested backend explicitly.
+      - name: Run exact-cache routing (paged @ 8 — informational fixture)
         continue-on-error: true
         env:
           DARKBLOOM_TESTBED_KV_BACKEND: paged
@@ -217,48 +191,23 @@ jobs:
                  "the kill switch degrades paged silently and voids this lane"
             exit 1
           fi
-          echo "Expected-red fixture lane: e2b paged adoption is the known inexact arm."
+          echo "Informational e2b fixture: explicit SSD opt-in; exact adoption checks retained."
           go test ./e2e/ -count=1 -v -timeout 15m -p=1 \
             -run '^TestIntegrationExactCacheRouting$'
 
-      # Default-posture lane. The steps above are the only ones that pin a
-      # backend, so without this NOTHING would still exercise what a stock
-      # install actually does: launch with no `--config` at all, on `.auto`,
-      # at the provider's own memberwise cap. That is a different code path
-      # from the gate — no TOML is written, no `--config` argument is added,
-      # and the config-migration cleanup never engages — so it cannot be
-      # inferred from a green paged run.
-      #
-      # Deliberately UNSET rather than `DARKBLOOM_TESTBED_KV_BACKEND=auto`:
-      # naming `auto` would write a TOML and thereby change the launch path
-      # and drop the cap to the decoder's 4, testing neither default.
-      #
-      # `.auto` resolves CONTIGUOUS as of v0.8.1 — that is the release
-      # posture and what a stock install serves. This is the ONE lane that
-      # reads the default, so it is the one that has to move with it: it was
-      # `contiguous` before v0.8.0, `paged` for v0.8.0, and is `contiguous`
-      # again now. Keep the expectation equal to the shipped default; a lane
-      # that asserts the previous release's default is a lane that fails on
-      # every correct build.
-      #
-      # The expectation is still armed (not dropped) even though contiguous
-      # is now also the DEGRADE target, because it catches the opposite
-      # drift: a build that resolves paged here would mean the flip did not
-      # land in the binary under test. It no longer distinguishes "resolved
-      # contiguous" from "degraded to contiguous" — nothing can, once they
-      # are the same value — so the thing that pins the difference is the
-      # unit gate (`EngineV2KVBackendGateTests`, which asserts a NIL
-      # fallback reason on `.auto`), not this lane.
-      #
-      # COST, honestly: this is a second provider boot plus a second
-      # gpt-oss-20b load (warm HF cache, but the weights still page in) for
-      # two inference round-trips. Same shape as each half of the
-      # reverse-compat lane below, which budgets 15m per `go test` for the
-      # same two tests. The full job arithmetic (95m of test allowances —
-      # the reverse lane counts TWICE, two sequential 15m runs — plus cold
-      # setup overhead) lives on `timeout-minutes` at the top of the job.
-      - name: Run default-posture smoke (.auto = contiguous — BLOCKING gate)
+      # Unqualified-fixture defaults lane. Leave backend/cap unset so the
+      # provider decodes its defaults in the isolated generated TOML (which
+      # always disables auto-update/watchdog). No backend field is written.
+      # The exact HF ID below is outside the production paged/SSD allowlist,
+      # so its .auto backend is contiguous. Exact catalog gpt-oss-20b instead
+      # defaults to paged + SSD; this lane does not qualify that artifact.
+      # Its release-default gate requires explicit pinned runtime/catalog
+      # input in TestIntegrationReleaseDefaultsHTTP.
+      # Keep the engine-reported backend assertion and reject inherited
+      # kill switches; never label a configured fallback as a default result.
+      - name: Run unqualified-fixture defaults (contiguous — BLOCKING gate)
         env:
+          DARKBLOOM_TESTBED_MODEL: mlx-community/gpt-oss-20b-MXFP4-Q8
           DARKBLOOM_TESTBED_EXPECT_KV_BACKEND: contiguous
         run: |
           set -euo pipefail
@@ -269,9 +218,9 @@ jobs:
                  "this lane must measure the DEFAULT, not a killed paged"
             exit 1
           fi
-          echo "KV posture requested: provider default (no testbed override;" \
-               ".auto resolves contiguous as of v0.8.1)"
-          echo "Backend assertion armed: a stock install that resolves paged" \
+          echo "KV posture requested: defaults for the pinned unqualified HF fixture;" \
+               "exact production catalog defaults require the release-default gate"
+          echo "Backend assertion armed: this unqualified fixture resolving paged" \
                "fails this gate via DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=contiguous."
           go test ./e2e/ -count=1 -v -timeout 10m -p=1 \
             -run '^TestIntegration_(NonStreaming|Streaming)Inference$'

@@ -48,6 +48,7 @@ The full map is [`docs/architecture/overview.md`](docs/architecture/overview.md)
 git clone --recurse-submodules git@github.com:Layr-Labs/d-inference.git
 cd d-inference
 mise install
+make ui-install admin-install tooling-install
 git config core.hooksPath .githooks   # enables pre-commit + pre-push checks
 ```
 

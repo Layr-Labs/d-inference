@@ -225,21 +225,10 @@ extension UpdateRecoveryStore {
         _ record: InstalledReleaseRecord,
         layout: VerifiedPredecessor.Layout
     ) throws -> Bool {
+        guard try stagingContainsTarget(installRoot, target: record, layout: layout) else {
+            return false
+        }
         let paths = artifactPaths(root: installRoot, layout: layout)
-        guard fm.fileExists(atPath: paths.binary.path),
-              fm.fileExists(atPath: paths.enclave.path),
-              fm.fileExists(atPath: paths.metallib.path)
-        else {
-            return false
-        }
-        guard try UpdateAtomicFilesystem.sha256(file: paths.binary) == record.binaryHash,
-              try UpdateAtomicFilesystem.sha256(file: paths.enclave) == record.enclaveHash,
-              try UpdateAtomicFilesystem.sha256(file: paths.metallib) == record.metallibHash,
-              try UpdateAtomicFilesystem.treeHash(root: paths.bundle)
-                == record.installedBundleHash
-        else {
-            return false
-        }
         try verifySignature(
             layout: layout,
             bundle: paths.bundle,
@@ -273,17 +262,9 @@ extension UpdateRecoveryStore {
     ) throws {
         try UpdateAtomicFilesystem.removeDurably(stagingRoot)
         try UpdateAtomicFilesystem.createDirectoryDurably(stagingRoot)
-        switch predecessor.layout {
-        case .app:
-            let source = try resolvedRecoveryPath(predecessor.bundlePath)
-            try fm.copyItem(
-                at: source,
-                to: stagingRoot.appendingPathComponent("Darkbloom.app")
-            )
-        case .flat:
-            let source = try resolvedRecoveryPath(predecessor.bundlePath)
-            try fm.copyItem(at: source, to: stagingRoot.appendingPathComponent("bin"))
-        }
+        let source = try resolvedRecoveryPath(predecessor.bundlePath)
+        let destination = artifactPaths(root: stagingRoot, layout: predecessor.layout).bundle
+        try fm.copyItem(at: source, to: destination)
         try UpdateAtomicFilesystem.fsyncTree(stagingRoot)
     }
 
@@ -291,22 +272,8 @@ extension UpdateRecoveryStore {
         _ predecessor: VerifiedPredecessor,
         at stagingRoot: URL
     ) throws {
-        let bundle: URL
-        let binary: URL
-        let enclave: URL
-        let metallib: URL
-        switch predecessor.layout {
-        case .app:
-            bundle = stagingRoot.appendingPathComponent("Darkbloom.app")
-            binary = bundle.appendingPathComponent("Contents/MacOS/darkbloom")
-            enclave = bundle.appendingPathComponent("Contents/MacOS/darkbloom-enclave")
-            metallib = bundle.appendingPathComponent("Contents/MacOS/mlx.metallib")
-        case .flat:
-            bundle = stagingRoot.appendingPathComponent("bin")
-            binary = bundle.appendingPathComponent("darkbloom")
-            enclave = bundle.appendingPathComponent("darkbloom-enclave")
-            metallib = bundle.appendingPathComponent("mlx.metallib")
-        }
+        let (bundle, binary, enclave, metallib) = artifactPaths(
+            root: stagingRoot, layout: predecessor.layout)
         guard try UpdateAtomicFilesystem.treeHash(root: bundle)
                 == predecessor.release.installedBundleHash,
               try UpdateAtomicFilesystem.sha256(file: binary) == predecessor.release.binaryHash,

@@ -97,6 +97,18 @@ class AttentionReplayTests(unittest.TestCase):
             self.assertIn("narrowedQueryCounterfactual", entry)
             self.assertNotIn("pass", entry)
 
+    def test_same_input_counterfactual_is_computed_once_with_independent_reports(self):
+        from attention_packet.reference import attention
+        packet, transfer, digest = self.stage()
+        self.fake_results(packet, transfer, digest)
+        with patch("attention_replay.report.attention", wraps=attention) as reference:
+            report = collect(packet, transfer, digest, self.root / "replay")
+        self.assertEqual(reference.call_count, 2, "one original and one narrowed reference")
+        entries = [entry["narrowedQueryCounterfactual"] for entry in report["arms"].values()]
+        self.assertEqual(entries[0], entries[1])
+        entries[0]["differenceFromOriginalReference"]["global"]["linf"] = -1
+        self.assertGreaterEqual(entries[1]["differenceFromOriginalReference"]["global"]["linf"], 0)
+
     def test_wrong_dispatch_and_input_binding_refuse(self):
         packet, transfer, digest = self.stage(); self.fake_results(packet, transfer, digest)
         path = self.root / "replay/pagedFixed/result.json"

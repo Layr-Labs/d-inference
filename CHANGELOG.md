@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Privacy descriptions** — Describe encrypted network hops and plaintext processing at the coordinator and provider, qualify Apple certificate verification by its separate MDA status, and remove unsupported memory-wiping and recipient-key forward-secrecy guarantees.
+- Operations helpers encode admin JSON fields, return a failure after any fleet host fails while still visiting remaining hosts, and isolate smoke-test response files.
+- **Admin email login** — Encode Privy OTP email/code fields as JSON strings so quoted addresses and escape characters cannot break or reshape the upstream request.
+
 ## Release candidate v0.9.4 — App Attest recovery and retirement readiness (not shipped; 2026-09-14)
 
 - Fix the released 0.9.3 App Attest callback-timer abort. Require the callback completion/expiry smoke in the optimized signed bundle, installer and updater; distinguish callback failures from Metal failures.
@@ -96,6 +102,19 @@ coordinator deployment.
 - Preserve a provider reconnect's verification binding when the prior connection finishes its cached Apple proof check or a missing-UDID fallback. Live and late SecurityInfo grants now share the same generation-aware MDA follow-up.
 
 - Clear cached prices after a successful local update or deletion, and prevent delayed lookups from restoring the prior rate. Keep existing in-flight work and other coordinator processes' normal cache lifetimes.
+
+- Dev coordinator boot now uses the same validated environment writer as deploys. Failed critical-secret or metadata downloads preserve the existing configuration instead of overwriting it with empty values.
+
+- Provider installation retains the previous app or legacy bundle if restoring it after a failed swap also fails. The installer reports the recovery path instead of deleting the only backup or claiming successful restoration.
+- Installer downloads use private temporary files and remove incomplete downloads on failure.
+
+- Provider releases use the same profile and signed CLI entitlement checks as signing validation, rejecting unrelated app identities and missing profile expiry before publication. Release registration encodes quoted and multiline tag text as JSON data.
+
+- **Contributor guidance** — Issue forms and the PR template reference the current components, provider commands and review requirements. Go dependency update checks use the repository's root module.
+
+- Model publishing stops before uploads on failed or empty R2 credential reads. Rollback preparation validates registry inputs before copying objects, cleans its local staging on exit, and reaches promotion on macOS Bash.
+
+- The cache soak monitor stops after an interrupt or termination signal and counts cache markers once when log lines arrive across multiple writes.
 
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 

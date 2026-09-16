@@ -9,6 +9,32 @@ def record(path):
     return {'sha256':host.digest(path),'bytes':path.stat().st_size,'mode':stat.S_IMODE(path.stat().st_mode)}
 
 
+def own_orphan_fixture(command, root, pidfile):
+    """Reap the fixture's orphan on Linux without depending on container PID 1."""
+    reaped = []
+    if sys.platform == 'linux':
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        # PR_SET_CHILD_SUBREAPER applies only to this isolated owner process.
+        if libc.prctl(36, 1, 0, 0, 0) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+
+        def reap_descendant(_signum, _frame):
+            try:
+                child, _ = os.waitpid(int(pidfile.read_text()), os.WNOHANG)
+                if child:
+                    reaped.append(child)
+            except (FileNotFoundError, ChildProcessError):
+                # The leader's SIGCHLD may precede adoption of its live child.
+                pass
+
+        signal.signal(signal.SIGCHLD, reap_descendant)
+    host.run_owner(command, dict(os.environ), root, sys.stdin.buffer, host.send)
+    if sys.platform == 'linux' and reaped != [int(pidfile.read_text())]:
+        raise AssertionError(f'fixture did not reap its own descendant: {reaped}')
+
+
 class HostGuards(unittest.TestCase):
     def test_absent_leaf_protected_alias_and_dangling_paths_refuse(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -189,28 +215,53 @@ class OwnedLifecycle(unittest.TestCase):
         row,code=self.run_case(ask);self.assertEqual(code,0);self.assertTrue(row['stop_requested'])
 
     def test_exited_leader_does_not_leave_its_owned_sleeper(self):
-        with tempfile.TemporaryDirectory()as temporary:
-            root=Path(temporary).resolve();pidfile=root/'descendant.pid'
-            leader="import subprocess,sys;from pathlib import Path;p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(300)']);Path("+repr(str(pidfile))+").write_text(str(p.pid))"
-            command=[sys.executable,'-c',leader]
-            code="import sys;from pathlib import Path;sys.path.insert(0,"+repr(str(Path(host.__file__).parent))+");import provider_host as h;h.run_owner("+repr(command)+",dict(__import__('os').environ),Path("+repr(str(root))+"),sys.stdin.buffer,h.send)"
-            owner=subprocess.Popen([sys.executable,'-u','-c',code],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
-            descendant=None
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            pidfile = root / 'descendant.pid'
+            leader = ("import subprocess,sys;from pathlib import Path;"
+                      "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(300)']);"
+                      f"Path({str(pidfile)!r}).write_text(str(p.pid))")
+            command = [sys.executable, '-c', leader]
+            code = ("import sys;from pathlib import Path;"
+                    f"sys.path.insert(0,{str(Path(__file__).resolve().parent)!r});"
+                    "from test_provider_host import own_orphan_fixture;"
+                    f"own_orphan_fixture({command!r},Path({str(root)!r}),Path({str(pidfile)!r}))")
+            owner = subprocess.Popen([sys.executable, '-u', '-c', code], stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            group = None
             try:
-                started=json.loads(owner.stdout.readline());self.assertEqual(started['event'],'started')
+                started = json.loads(owner.stdout.readline())
+                self.assertEqual(started['event'], 'started')
+                group = started['pgid']
                 owner.wait(timeout=5)
-                descendant=int(pidfile.read_text())
-                receipt=json.loads((root/'terminal.json').read_text())
-                self.assertEqual(receipt['exit_code'],0)
-                self.assertTrue(receipt['group_cleanup_complete'])
-                with self.assertRaises(ProcessLookupError):os.kill(descendant,0)
-                self.assertIn(signal.SIGTERM,receipt['signals_sent'])
+                self.assertEqual(owner.returncode, 0, owner.stderr.read())
+                descendant = int(pidfile.read_text())
+                receipt = json.loads((root / 'terminal.json').read_text())
+                self.assertEqual(receipt['exit_code'], 0)
+                self.assertTrue(receipt['group_cleanup_complete'], receipt)
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(descendant, 0)
+                self.assertIn(signal.SIGTERM, receipt['signals_sent'])
             finally:
-                if owner.poll()is None:owner.kill();owner.wait(timeout=5)
-                if descendant is not None:
-                    try:os.kill(descendant,signal.SIGKILL)
-                    except ProcessLookupError:pass
-                owner.stdin.close();owner.stdout.close();owner.stderr.close()
+                # Retire the known group even if waiting for the owner timed
+                # out before the descendant PID was read. Keep the reaper
+                # alive until its children have been signalled.
+                if group is not None:
+                    try:
+                        os.killpg(group, signal.SIGKILL)
+                    except ProcessLookupError:
+                        # The group may already be gone after the owner's cleanup.
+                        pass
+                if owner.poll() is None:
+                    owner.terminate()
+                    try:
+                        owner.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        owner.kill()
+                        owner.wait(timeout=5)
+                owner.stdin.close()
+                owner.stdout.close()
+                owner.stderr.close()
 
     def test_state_symlink_escape_refuses_and_reaps(self):
         def ask(owner,root):

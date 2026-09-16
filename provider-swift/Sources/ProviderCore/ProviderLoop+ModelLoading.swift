@@ -297,10 +297,7 @@ extension ProviderLoop {
 
         // Re-check slot cap after gate (another load may have consumed a slot)
         if modelSlots.count >= maxModelSlots {
-            let modelsWithInflight = Set(requestToModel.values)
-            let evictable = modelSlots.filter {
-                !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) && !isMTPUpgradeTargetRetained($0.key)
-            }
+            let evictable = evictableModelSlots()
             if evictable.isEmpty || !allowEviction {
                 isLoadingAny = false
                 releaseLoadGateWaiters()
@@ -595,7 +592,7 @@ extension ProviderLoop {
                 // rethrow unchanged so loadErrorStatusCode sees the original.
                 // The unwind ordering (release newcomer weights → clearCache
                 // → restore survivor grants) already ran inside
-                // `resliceAndBuildEngineV2Slot`'s catch, before this one.
+                // `resliceAndBuildEngineV2Bundle`'s catch, before this one.
                 releaseResliceGate()
                 MLX.Memory.clearCache()
                 if case .modelLoadFailed(let message) = error {
@@ -1000,14 +997,23 @@ extension ProviderLoop {
         await kvBudget.setActivationReserveBytes(bytes, epoch: activationReserveEpoch)
     }
 
-    private static func saturatingAdd(_ values: UInt64...) -> UInt64 {
-        var total: UInt64 = 0
-        for value in values {
-            let (sum, overflow) = total.addingReportingOverflow(value)
-            if overflow { return UInt64.max }
-            total = sum
+    /// One actor-local eviction snapshot shared by slot-cap, memory-load and
+    /// pre-accept admission decisions. Callers still recheck after suspension;
+    /// unloadModel(forEviction:) is the authoritative final gate.
+    private func evictableModelSlots() -> [String: ModelSlot] {
+        let modelsWithInflight = Set(requestToModel.values)
+        return modelSlots.filter {
+            !modelsWithInflight.contains($0.key)
+                && !hasLocalReservation($0.key)
+                && !modelsUnloading.contains($0.key)
+                && !isMTPUpgradeTargetRetained($0.key)
         }
-        return total
+    }
+
+    private func reclaimableMemoryGb(from slots: [String: ModelSlot]) -> Double {
+        slots.reduce(0.0) {
+            $0 + Double(max(0, $1.value.sizing.weightsBytes)) / 1_073_741_824.0
+        } + Double(max(0, MLX.GPU.cacheMemory)) / 1_073_741_824.0
     }
 
     /// Evict idle models (LRU order) until `requiredGb` is available or
@@ -1033,18 +1039,14 @@ extension ProviderLoop {
             let requiredGb = ModelLoadAdmission.requiredToLoadGb(
                 weightsGb: weightsGb, headroomGb: loadHeadroomGb)
             if available >= requiredGb { return }
-            let modelsWithInflight = Set(requestToModel.values)
-            let evictable = modelSlots
-                .filter { !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) && !isMTPUpgradeTargetRetained($0.key) }
+            let evictable = evictableModelSlots()
             // Feasibility BEFORE the first eviction: if even evicting every
             // idle model (plus the reclaimable buffer cache) cannot reach the
             // requirement, refuse now rather than unload a model the box can
             // serve for one it cannot — the #653 32 GB report's "a request
             // for a model I can't serve killed the one I could".
             if allowEviction, !evictable.isEmpty {
-                let reclaimableGb = evictable.reduce(0.0) {
-                    $0 + Double(max(0, $1.value.sizing.weightsBytes)) / 1_073_741_824.0
-                } + Double(max(0, MLX.GPU.cacheMemory)) / 1_073_741_824.0
+                let reclaimableGb = reclaimableMemoryGb(from: evictable)
                 if !ModelLoadAdmission.evictionCanReach(
                     availableGb: available, reclaimableGb: reclaimableGb, requiredGb: requiredGb)
                 {
@@ -1138,10 +1140,6 @@ extension ProviderLoop {
         // must not schedule catalog or artifact prefetch work for requests
         // that may be rejected. The accepted load path performs the real
         // preparation (and any prefetch) itself.
-        var requiredGb = ModelLoadAdmission.requiredToLoadGb(
-            weightsGb: modelInfo.estimatedMemoryGb,
-            headroomGb: loadHeadroomGb)
-
         // Sample live memory FIRST — this is the only suspension point in the
         // method (it awaits the KV-budget actor). Reading all the actor-local
         // slot/in-flight state AFTER the await means the decision below is made
@@ -1152,7 +1150,7 @@ extension ProviderLoop {
         // verified prefetch can have RAISED the serving-set floor while we
         // awaited memory (measured-only set + unmeasured advertise), and
         // admitting against the stale lower figure is accepted-then-503.
-        requiredGb = ModelLoadAdmission.requiredToLoadGb(
+        var requiredGb = ModelLoadAdmission.requiredToLoadGb(
             weightsGb: modelInfo.estimatedMemoryGb,
             headroomGb: loadHeadroomGb)
 
@@ -1169,10 +1167,7 @@ extension ProviderLoop {
 
         // An idle slot with no in-flight work, unload, or MTP target retention
         // can be eviction credit; check the resulting headroom before rejecting.
-        let modelsWithInflight = Set(requestToModel.values)
-        let evictable = modelSlots.filter {
-            !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) && !isMTPUpgradeTargetRetained($0.key)
-        }
+        let evictable = evictableModelSlots()
         let hasEvictable = !evictable.isEmpty
         // ...but only if evicting could actually reach the requirement: when
         // even every idle model's weights plus the buffer cache fall short,
@@ -1180,9 +1175,7 @@ extension ProviderLoop {
         // so reject fast here and let the coordinator reroute instead of
         // accepting a request that would only fail after the same check.
         if available < requiredGb, hasEvictable {
-            let reclaimableGb = evictable.reduce(0.0) {
-                $0 + Double(max(0, $1.value.sizing.weightsBytes)) / 1_073_741_824.0
-            } + Double(max(0, MLX.GPU.cacheMemory)) / 1_073_741_824.0
+            let reclaimableGb = reclaimableMemoryGb(from: evictable)
             if !ModelLoadAdmission.evictionCanReach(
                 availableGb: available, reclaimableGb: reclaimableGb, requiredGb: requiredGb)
             {

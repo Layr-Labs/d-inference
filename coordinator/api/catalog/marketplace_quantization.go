@@ -4,12 +4,6 @@ import (
 	"strings"
 )
 
-// openRouterValidQuant is the set of quantization strings OpenRouter accepts.
-var openRouterValidQuant = map[string]bool{
-	"int4": true, "int8": true, "fp4": true, "fp6": true,
-	"fp8": true, "fp16": true, "bf16": true, "fp32": true,
-}
-
 // quantAliases maps common MLX / HuggingFace quantization spellings onto the
 // OpenRouter-accepted vocabulary.
 var quantAliases = map[string]string{
@@ -34,14 +28,16 @@ func mapQuantizationToOpenRouter(q string) string {
 	if mapped, ok := quantAliases[key]; ok {
 		return mapped
 	}
-	if openRouterValidQuant[key] {
-		return key
-	}
-	// Tolerate trailing descriptors like "4bit-gs64" or "mxfp4".
+	// Tolerate descriptors like "4bit-gs64" or "mxfp4". The earliest
+	// recognized format wins, preserving "q4" in "q4-bfloat16" and
+	// "bfloat16" over its later "float16" suffix. At the same position,
+	// prefer the longest spelling.
+	bestAlias, bestMapping, bestIndex := "", "", len(key)
 	for alias, mapped := range quantAliases {
-		if strings.Contains(key, alias) {
-			return mapped
+		if index := strings.Index(key, alias); index >= 0 &&
+			(index < bestIndex || index == bestIndex && len(alias) > len(bestAlias)) {
+			bestAlias, bestMapping, bestIndex = alias, mapped, index
 		}
 	}
-	return ""
+	return bestMapping
 }

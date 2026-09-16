@@ -75,7 +75,9 @@ alias into a 404. Successful snapshots retain their existing cache lifetimes
 (2 s for list/retrieve, 5 s for OpenRouter), including while a later store read
 would fail. The account-owned self-route view has its own lookup path.
 
-### Authentication and API keys (10)
+#Quantization descriptors use the earliest recognized format, breaking a shared position by longest spelling (`coordinator/api/catalog/marketplace_quantization.go`, `mapQuantizationToOpenRouter`).
+
+## Authentication and API keys (10)
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|

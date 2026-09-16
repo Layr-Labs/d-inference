@@ -1354,6 +1354,25 @@ token IDs are accepted.
 - The e2e run logs `postgres started`, one `using configured provider binary`
   or provider build line per provider, and finishes with `ok  github.com/eigeninference/d-inference/e2e`.
 
+### Harness assertion contracts
+
+Run `go test -race ./e2e/testbed/assert -count=1` to check latency evidence and
+accounting report handling without a model, provider process or database.
+`e2e/testbed/assert/assert.go` (`Asserter.Evaluate`) requires a non-nil sample
+with a positive count for every configured segment; missing or empty evidence
+fails the segment's presence assertion. A real sample with zero duration remains
+valid. Enabled mean, p95, p99 and median bounds keep their order, inclusive
+comparison and existing report labels.
+
+`e2e/testbed/assert/accounting_test.go` (`TestAccountingSQLResultContracts`) checks query-row scan failures, zero and
+nonzero results, report ordering and sticky failure. It does not execute SQL or
+prove ledger integrity. The existing `payment_earnings_parity_sql` and
+`earnings_matches_payments_sql` results are informational fee-account counts and
+net-charge sums: successful queries pass regardless of the returned number.
+The other four SQL assertions require zero violations. Live database checks
+still use `PostgresAccountingAsserter.EvaluateAll` in
+`e2e/testbed/assert/accounting.go`.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |

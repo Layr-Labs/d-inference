@@ -501,6 +501,13 @@ ls -l provider-swift/.build/debug/darkbloom provider-swift/.build/debug/mlx.meta
 ls console-ui/.next
 ```
 
+### Harness assertion checks
+
+The latency and accounting report helpers compile and run with Go alone:
+`go test -race ./e2e/testbed/assert -count=1`. These CPU fixtures use synthetic
+latency samples and stub query rows; they do not build a provider or require a
+Postgres server. See [test.md](test.md#harness-assertion-contracts) for their scope.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |

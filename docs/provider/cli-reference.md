@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-29 · commit `3c12f9025`
+> Last updated: 2026-09-29 · commit `f95666d32`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -858,6 +858,14 @@ observed first iteration; subsequent iterations must retain the disarmed counts.
 Report first-use compilation separately from warmed results. An environment value alone does not
 prove shape eligibility or a request-throughput gain. Keep native weights,
 sampling, canvas and output-count oracles identical when comparing either route.
+The standard table measures first-token and total elapsed time with
+`ContinuousClock`. Both values include the complete `Duration` seconds and
+attoseconds components before decode throughput is derived; generations longer
+than one second therefore retain their whole seconds
+(`provider-swift/Sources/ProviderBenchmark/BenchmarkMeasurements.swift`
+(`BenchmarkMeasurements.milliseconds`);
+`provider-swift/Sources/ProviderBenchmark/ModelBenchmark.swift`
+(`ModelBenchmark.iterationResult`)).
 
 ### Teacher-forced scores
 

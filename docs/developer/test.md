@@ -201,6 +201,14 @@ settings. Run these with `RuntimeSnapshotConfigTests` when changing
 `provider-swift/Sources/darkbloom/ConfigMutation.swift` (`withMutableConfig`).
 CLI calls retain default-on migration before the sidecar lock and reload.
 
+`WatchdogCommandTests` fails immediately if writing its temporary TOML fails.
+Config-only assertions supply an empty environment to `Watchdog.settings`, while
+the update opt-out case supplies `DARKBLOOM_NO_UPDATE_CHECK` explicitly.
+`LocalEndpointFileTests` checks its temporary-directory environment override and
+restores the inherited `DARKBLOOM_LOCAL_DIR` value after each fixture. Run both
+suites with `--no-parallel`; suite serialization alone does not isolate other
+suites from process-wide environment changes.
+
 The general provider suite passes `--no-parallel` explicitly to Swift Testing.
 Unrelated cases share process-wide MLX state and executor capacity; overlapping
 thousands of them can starve bounded test handshakes. Concurrency tests retain

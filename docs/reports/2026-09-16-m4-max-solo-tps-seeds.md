@@ -1,6 +1,6 @@
 # M4 Max solo-TPS seed calibration
 
-> Last updated: 2026-09-16 · commit `0f7b1e611`
+> Last updated: 2026-09-16 · commit `4c8e33125`
 
 Production-engine B=1 sweeps on one 64 GB M4 Max support conservative
 `M4|Max=70` cold-start solo-TPS seeds for four current catalog models. The
@@ -80,9 +80,16 @@ median replaces the configured value
 (`coordinator/registry/concurrency_cap.go`
 (`resolvedSoloModelTPSLocked`)).
 
+The reusable capture, validation, threshold, safety-margin, and PR procedure is
+documented in
+[Calibrate cold-start solo-TPS seeds](../provider/solo-tps-calibration.md).
+
 ## Limitations
 
 - This is one machine and one measurement session, not a fleet distribution.
+- The measured machine was the 40-GPU-core M4 Max configuration. The
+  class-qualified value is provisional for lower-core `M4|Max` variants until
+  one of those variants repeats the campaign.
 - The artifacts were the downloaded current-catalog entries selected by
   `darkbloom 0.9.4`; their aggregate hashes were not independently recomputed
   during this run.

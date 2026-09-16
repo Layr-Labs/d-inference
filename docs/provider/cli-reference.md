@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-15 · commit `a4692e70e`
+> Last updated: 2026-09-17 · commit `04bf27d00`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -504,6 +504,15 @@ Iteration/output counts must be positive. The prefill column measures time to
 the first generated token, including prompt preparation; model loading and
 integrity hashing are outside the reported iteration time. An eight-token
 smoke proves entry-point operation, not sustained decode performance.
+
+The standard table measures first-token and total elapsed time with
+`ContinuousClock`. Both values include the complete `Duration` seconds and
+attoseconds components before decode throughput is derived; generations longer
+than one second therefore retain their whole seconds
+(`provider-swift/Sources/ProviderBenchmark/BenchmarkMeasurements.swift`
+(`BenchmarkMeasurements.milliseconds`);
+`provider-swift/Sources/ProviderBenchmark/ModelBenchmark.swift`
+(`ModelBenchmark.iterationResult`)).
 
 ### Teacher-forced scores
 

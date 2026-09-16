@@ -37,6 +37,7 @@
 - Capture SDK 27 Apple-signed CodeDirectory measurements and require an exact qualified binary/code-hash pair for prospective build approval. Release builds and their provider tests select SDK 27 / Swift 6.4 and record the full CodeDirectory SHA-256; missing or unsupported measurements stay unknown. macOS can identify the exact code without a bundle-version extension.
 - Forward the latest distinct per-model warm-pool planning snapshot through the coordinator telemetry emitter so Datadog can show target sizing, measured demand, candidate availability and blocker counts. Keep provider identities and request data out of the event.
 - Stop minting an unrestricted console API key after you create a My Machine only key. Chat adopts the key you just created; `POST /v1/auth/keys` inherits `self_route_only` when every active key on the account is already machine-only. Logout, chat 401, and untracked mint drop a leftover console key id so a stale id cannot pin chat to the untitled secret.
+- Preserve whole seconds in standard `darkbloom benchmark` first-token and total timings so derived decode throughput no longer reports inflated or zero values for generations longer than one second.
 
 
 ## v0.9.3 — App Attest shadow rollout and provider reliability (2026-09-14)

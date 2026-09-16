@@ -36,7 +36,7 @@ extension ModelBenchmark {
     }
 
     static func milliseconds(_ duration: Duration) -> Double {
-        Double(duration.components.seconds) * 1000 + Double(duration.components.attoseconds) / 1e15
+        BenchmarkMeasurements.milliseconds(duration)
     }
 
     /// Target-only uncached baseline, matching the ordinary command's scope.

@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-11 · commit `156843b35`
+> Last updated: 2026-09-16 · commit `84e2799e8`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -14,11 +14,11 @@ and are not repeated here.
 
 | Component | Requirement | Code |
 |---|---|---|
-| CPU / GPU | Apple Silicon with Metal; `ChipFamily` recognised: `M1`, `M2`, `M3`, `M4`, `M5` (`Unknown` still runs) | `provider-swift/Sources/ProviderCore/Inference/GPUEnforcement.swift` (`requireMetal`), `provider-swift/Sources/ProviderCore/Protocol/Enums.swift` |
+| CPU / GPU | Apple Silicon with Metal; `ChipFamily` recognised: `M1`, `M2`, `M3`, `M4`, `M5` (`Unknown` still runs) | `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift` (`requireMetal`), `provider-swift/Sources/ProviderCore/Protocol/Enums.swift` |
 | Architecture | `arm64` only; the installer refuses Intel Macs | `coordinator/api/install.sh` |
 | RAM | At least 8 GB to start at all ([`../architecture/hardware-support.md#context`](../architecture/hardware-support.md#context)); per-model needs below | `provider-swift/Sources/darkbloom/StartCommand+Preflight.swift` (`hardware.memoryGb < 8`) |
 | macOS | 14 (Sonoma) or later, the build floor; `darkbloom doctor` warns below macOS 26 (`recommendedMacOSMajorVersion`, [`../architecture/hardware-support.md#context`](../architecture/hardware-support.md#context)) but does not block. Install every macOS security update ([Apple security releases](https://support.apple.com/en-us/100100)): the SIP guarantee assumes no unpatched kernel vulnerability ([`../threat-model.yaml`](../threat-model.yaml), `TB-003`) | `provider-swift/Package.swift` (`.macOS(.v14)`), `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |
-| Storage | Weights per model (catalog `size_gb`) under the Hugging Face hub cache, plus the SSD prefix-cache budget (`ssdDiskBudgetBytes`, [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules)) when that cache is active | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift` (`defaultCacheDirectory`), `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` |
+| Storage | Weights per model (catalog `size_gb`) under the Hugging Face hub cache, plus the SSD prefix-cache budget (`ssdDiskBudgetBytes`, [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules)) when that cache is active | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift` (`defaultCacheDirectory`), `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` |
 | Network | Outbound `wss://api.darkbloom.dev/ws/provider` and HTTPS on 443; a heartbeat every `heartbeat_interval_secs` ([`cli-reference.md`](./cli-reference.md#providertoml-keys-read-by-the-cli)); no inbound port | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |
 | Security posture | SIP enabled and Full Security boot; a logged-in GUI session for APNs code-identity attestation | [`attestation.md`](./attestation.md) |
 
@@ -26,7 +26,7 @@ and are not repeated here.
 
 | Family | Recognised as | Behaviour that differs |
 |---|---|---|
-| M1, M2 | `ChipFamily.m1`, `.m2` | MTP `maxRectangularTokens = 4` (`provider-swift/Sources/ProviderCore/Inference/MTPAutomaticVerificationPolicy.swift`) |
+| M1, M2 | `ChipFamily.m1`, `.m2` | MTP `maxRectangularTokens = 4` (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`) |
 | M3, M4 | `.m3`, `.m4` | MTP `maxRectangularTokens = 8` |
 | M5 | `.m5` | As M3/M4, plus the provider advertises runtime capability `apple_m5` (and `mlx_nax` when the NAX kernels are available); the catalog's `required_provider_capabilities` uses these to decide eligibility (`provider-swift/Sources/ProviderCore/Models/ModelRuntimeRequirements.swift`, `coordinator/registry/provider_capabilities.go`) |
 | Other | `.unknown` | Treated like M1/M2 for MTP |
@@ -80,7 +80,7 @@ each adds its padded weights, while the activation reserve is charged once at
 the largest floor in the serving set. The KV cache for concurrent requests comes
 out of whatever the cap leaves after weights and activations; a model that loads
 with less than `minimumLoadKVBytes` of KV headroom is unloaded again
-(`provider-swift/Sources/ProviderCore/Inference/KVHeadroomProbe.swift`;
+(`provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift`;
 [after the load](../architecture/hardware-support.md#after-the-load)).
 
 ## Gemma QAT assistant footprint and availability
@@ -93,8 +93,8 @@ not certify space for a concurrently staged assistant replacement.
 | Resource or phase | Operator impact | Source |
 |---|---|---|
 | Assistant download | The pinned catalog assistant adds 236,127,665 bytes (about 236 MB) of files beside the target and SSD cache. This is artifact size, not a promise of loaded memory use; future catalog revisions may differ | [Pinned assistant file sizes](../reports/evidence/2026-09-08-gemma-qat-defaults/hf-assistant-identity-verification.json); `provider-swift/Sources/ProviderCore/SpecDec/SpecDecResolver.swift` (`SpecDecResolver`) |
-| Replacement memory | Before preparation, reserve the assistant's resident-byte estimate plus the minimum serviceable KV grant (1 GiB) while the old engine remains resident. Existing activation/headroom reserves remain enforced; shared target weights are retained and counted once. Insufficient memory defers the optional upgrade without evicting a serving model | `provider-swift/Sources/ProviderCore/ProviderLoop+MTPUpgrade.swift` (`prepareMTPUpgrade`); `provider-swift/Sources/ProviderCore/Inference/EngineV2Reslice.swift` (`EngineV2KVSizing.minimumServiceableGrantBytes`); `provider-swift/Sources/ProviderCore/Inference/MTPStagingReservations.swift` (`extraBytes`) |
-| Download, verification and preparation | The original engine continues serving. Missing or invalid artifacts and preparation failures preserve target-only serving | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` (`prepare`); `provider-swift/Sources/ProviderCore/Inference/MTPIdleUpgrade.swift` (`run`) |
+| Replacement memory | Before preparation, reserve the assistant's resident-byte estimate plus the minimum serviceable KV grant (1 GiB) while the old engine remains resident. Existing activation/headroom reserves remain enforced; shared target weights are retained and counted once. Insufficient memory defers the optional upgrade without evicting a serving model | `provider-swift/Sources/ProviderCore/ProviderLoop+MTPUpgrade.swift` (`prepareMTPUpgrade`); `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift` (`EngineV2KVSizing.minimumServiceableGrantBytes`); `provider-swift/Sources/ProviderCore/Inference/MTP/MTPStagingReservations.swift` (`extraBytes`) |
+| Download, verification and preparation | The original engine continues serving. Missing or invalid artifacts and preparation failures preserve target-only serving | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` (`prepare`); `provider-swift/Sources/ProviderCore/Inference/MTP/MTPIdleUpgrade.swift` (`run`) |
 | Prepared-engine activation | Network serving continues through the configured rollout jitter, then new admissions for this model close until accepted work finishes and the engine swaps. Other models remain eligible. Standalone skips fleet jitter; new acquisitions during either model drain can receive transient 503. Timeout/cancellation discards the candidate and reopens the original engine without force-cancelling accepted work | [Drain bounds, controls and failure behavior](../architecture/inference.md#multi-token-prediction); [`update_jitter_seconds`](cli-reference.md#providertoml-keys-read-by-the-cli) |
 
 Jitter spreads independent network-provider upgrades; it does not reserve spare
@@ -119,7 +119,7 @@ See [engine MTP constraints](../architecture/inference.md#multi-token-prediction
 | Rule | Where it is specified | Code |
 |---|---|---|
 | Location | [`../reference/ssd-kv-cache.md#paths`](../reference/ssd-kv-cache.md#paths) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` |
-| Box-wide budget (`ssdDiskBudgetBytes`, based on currently available space), the `DARKBLOOM_PREFIX_CACHE_DISK_GB` override, LRU eviction | [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules) | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`) |
+| Box-wide budget (`ssdDiskBudgetBytes`, based on currently available space), the `DARKBLOOM_PREFIX_CACHE_DISK_GB` override, LRU eviction | [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules) | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`) |
 | Low-disk write stop (`lowDiskFloorBytes`; reads continue) and the daily write cap (`defaultMaxWriteBytesPerDay`) | [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` |
 | When it is used at all | Exact `gpt-oss-20b` defaults to encrypted complete SSD caching with segmented paged storage; contiguous fallback serves cold. Eligible Qwen and selected Nemotron Lightning use complete SSD on native contiguous or segmented paged target storage; historical GPT-OSS/Gemma complete checkpoints require paged storage. Loaded capability, identity and key gates apply; resident RAM is opt-in | [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md) |
 

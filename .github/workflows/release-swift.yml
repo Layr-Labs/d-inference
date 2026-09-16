@@ -100,8 +100,12 @@ jobs:
   build-and-release:
     name: Build, sign, notarize, optionally publish
     needs: [resolve-env]
-    runs-on: blacksmith-12vcpu-macos-latest
+    # App Attest's current code measurements require SDK 27. The ordinary
+    # Blacksmith image is macOS 26.3 and cannot install Apple's SDK 27 tools.
+    runs-on: xcode-27
     environment: ${{ needs.resolve-env.outputs.environment }}
+    outputs:
+      validation_artifact: ${{ steps.validation_identity.outputs.artifact_name }}
 
     env:
       VERSION: ${{ needs.resolve-env.outputs.version }}
@@ -170,6 +174,18 @@ jobs:
         uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.4.0
         with:
           go-version: '1.25.0'
+
+      - name: Select SDK 27 provider toolchain
+        run: ./scripts/prepare-provider-release-toolchain.sh
+
+      - name: Ensure matching Metal compiler is available
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          if ! xcrun --sdk macosx metal --version; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun --sdk macosx metal --version
 
       - name: Show toolchain versions
         run: |
@@ -290,13 +306,18 @@ jobs:
           key: ${{ steps.mlxkey.outputs.key }}
 
       # ----------------------------------------------------------------------
-      # Build (tests run by CI, not the release workflow).
+      # Build and test with the SDK required for Apple code measurements.
       # ----------------------------------------------------------------------
 
       - name: Build provider-swift (release)
         working-directory: provider-swift
         run: |
           set -euo pipefail
+          # Swift's linker must receive the same SDK selected for compilation.
+          # In CLT 27 beta 6, --sdk alone can leave LC_BUILD_VERSION at the
+          # deployment target; SDKROOT preserves the actual linked SDK version.
+          export SDKROOT="$PROVIDER_SDKROOT"
+          echo "BUILD_SDK_VERSION=$PROVIDER_SDK_VERSION" >> "$GITHUB_ENV"
           swift build -c release --product darkbloom
           swift build -c release --product darkbloom-enclave
           swift build -c release --product darkbloom-fan-helper
@@ -309,6 +330,33 @@ jobs:
           REPORTED=$("$BIN_DIR/$CLI_NAME" --version)
           ../scripts/check-release-version.sh "$VERSION" "$REPORTED"
 
+      - name: Test provider with release SDK
+        working-directory: provider-swift
+        timeout-minutes: 35
+        env:
+          RELEASE_TEST_METALLIB: ${{ steps.metallib.outputs.metallib }}
+        run: |
+          set -euo pipefail
+          swift build --build-tests
+          TEST_BIN_DIR=$(swift build --show-bin-path)
+          cp "$RELEASE_TEST_METALLIB" "$TEST_BIN_DIR/mlx.metallib"
+          while IFS= read -r macos; do
+            cp "$RELEASE_TEST_METALLIB" "$macos/mlx.metallib"
+          done < <(find .build -type d -path '*.xctest/Contents/MacOS' -print)
+          python3 ../scripts/run-provider-test-watchdog.py \
+            --output-dir "$RUNNER_TEMP/provider-sdk-tests" \
+            --diagnostic-after-seconds 480 --timeout-seconds 900 \
+            -- ../scripts/run-provider-tests.sh
+
+      - name: Retain SDK test diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: provider-sdk-test-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/provider-sdk-tests
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Save SwiftPM cache
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         if: always()
@@ -320,9 +368,8 @@ jobs:
             libs/mlx-swift-lm/.build
           key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
 
-      # Unit tests are run by CI (ci.yml + integration.yml) on push to
-      # master. Skipped here to avoid flaky live MLX inference tests
-      # blocking signed releases on CI hardware timing differences.
+      # General PR CI also validates the existing developer toolchain. The
+      # release SDK suite above qualifies the compiler used for these binaries.
 
       # ----------------------------------------------------------------------
       # Stage the app, every SwiftPM runtime bundle, and flat verifier files.
@@ -428,6 +475,7 @@ jobs:
             "$APP/Contents/Resources/darkbloom-runtime-capabilities"
 
           cp "$BIN_DIR/$CLI_NAME" "$APP/Contents/MacOS/"
+          printf '1\n' > "$APP/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1"
           cp "$BIN_DIR/$ENCLAVE_NAME" "$APP/Contents/MacOS/"
           cp "${{ steps.metallib.outputs.metallib }}" "$APP/Contents/MacOS/mlx.metallib"
           install -m 0755 \
@@ -488,6 +536,8 @@ jobs:
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT"
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
             | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
+          printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
+            | grep -Fqx 'app-attest-callback-runtime-smoke: ok'
 
           # Hardened-runtime sign each binary and resource, then the bundle.
           # mlx.metallib must be signed before the bundle or codesign rejects
@@ -514,12 +564,16 @@ jobs:
             --entitlements provider-swift/entitlements-enclave.plist \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/$ENCLAVE_NAME"
+          # Add App Attest beside APNs only with a matching profile grant.
+          python3 scripts/prepare-app-attest-entitlements.py \
+            --base provider-swift/entitlements.plist --profile /tmp/profile.plist \
+            --output /tmp/provider-signing-entitlements.plist
           codesign --force --options runtime --timestamp \
-            --entitlements provider-swift/entitlements.plist \
+            --entitlements /tmp/provider-signing-entitlements.plist \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/$CLI_NAME"
           codesign --force --options runtime --timestamp \
-            --entitlements provider-swift/entitlements.plist \
+            --entitlements /tmp/provider-signing-entitlements.plist \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP"
 
@@ -566,6 +620,9 @@ jobs:
             echo "::error::Failed to extract entitlements from signed CLI for APNs/get-task-allow verification"
             exit 1
           fi
+          python3 scripts/prepare-app-attest-entitlements.py \
+            --base provider-swift/entitlements.plist --profile /tmp/profile.plist \
+            --output /tmp/provider-signing-entitlements.plist --verify /tmp/cli-ents.plist
           APS_ENV=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.aps-environment' /tmp/cli-ents.plist 2>/dev/null || echo "")
           if [ "$APS_ENV" != "production" ]; then
             echo "::error::Signed CLI aps-environment must be 'production' (got '${APS_ENV:-<absent>}'). Regenerate the push provisioning profile + entitlements (v0.6.0 APNs code-identity)."
@@ -730,6 +787,7 @@ jobs:
             fi
           done
           FINAL_FAN_HELPER="$SMOKE_ROOT/Darkbloom.app/Contents/Helpers/$FAN_HELPER_NAME"
+          test -f "$SMOKE_ROOT/Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1"
           FINAL_FAN_MARKER="$SMOKE_ROOT/Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
           test -f "$FINAL_FAN_HELPER"
           test ! -L "$FINAL_FAN_HELPER"
@@ -753,6 +811,8 @@ jobs:
           printf '%s\n' "$FINAL_SMOKE_OUTPUT"
           printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
             | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
+          printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
+            | grep -Fqx 'app-attest-callback-runtime-smoke: ok'
           REPORTED=$("$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" --version)
           ./scripts/check-release-version.sh "$VERSION" "$REPORTED"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
@@ -761,16 +821,37 @@ jobs:
             "$SMOKE_ROOT/Darkbloom.app/Contents/Info.plist")" = "$VERSION"
 
           BINARY_HASH=$(shasum -a 256 "$SMOKE_ROOT/bin/$CLI_NAME" | cut -d' ' -f1)
+          CODE_DIRECTORY_HASH=$(codesign -d --verbose=4 \
+            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" 2>&1 \
+            | sed -n 's/^CandidateCDHashFull sha256=//p')
+          if [[ ! "$CODE_DIRECTORY_HASH" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Expected one full SHA-256 CodeDirectory hash from the final signed provider"
+            exit 1
+          fi
+          LINKED_SDK=$(codesign -d --verbose=4 \
+            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" 2>&1 \
+            | sed -n 's/^VersionSDK=//p')
+          python3 - "$LINKED_SDK" "$BUILD_SDK_VERSION" <<'PY'
+          import sys
+          linked = int(sys.argv[1])
+          expected = [int(p) for p in sys.argv[2].split('.')]
+          expected += [0] * (3 - len(expected))
+          if [linked >> 16, (linked >> 8) & 255, linked & 255] != expected:
+              raise SystemExit('Final executable SDK differs from the selected build SDK')
+          PY
           BUNDLE_HASH=$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
           METALLIB_HASH=$(shasum -a 256 "$FINAL_FLAT_METALLIB" | cut -d' ' -f1)
           echo "BINARY_HASH=$BINARY_HASH" >> "$GITHUB_ENV"
+          echo "CODE_DIRECTORY_HASH=$CODE_DIRECTORY_HASH" >> "$GITHUB_ENV"
           echo "BUNDLE_HASH=$BUNDLE_HASH" >> "$GITHUB_ENV"
           echo "METALLIB_HASH=$METALLIB_HASH" >> "$GITHUB_ENV"
           echo "Binary hash:   $BINARY_HASH"
+          echo "CodeDirectory SHA256: $CODE_DIRECTORY_HASH"
           echo "Bundle hash:   $BUNDLE_HASH"
           echo "Metallib hash: $METALLIB_HASH"
 
       - name: Record signed validation identity
+        id: validation_identity
         if: needs.resolve-env.outputs.publish == 'false'
         run: |
           python3 - <<'PY'
@@ -795,16 +876,19 @@ jobs:
               'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
               'bundle_sha256': digest, 'bundle_bytes': bundle.stat().st_size,
               'binary_sha256': os.environ['BINARY_HASH'], 'metallib_sha256': os.environ['METALLIB_HASH'],
+              'code_directory_sha256': os.environ['CODE_DIRECTORY_HASH'],
+              'build_sdk_version': os.environ['BUILD_SDK_VERSION'],
               'release_published': False,
           }
           pathlib.Path('/tmp/darkbloom-validation-identity.json').write_text(json.dumps(identity, indent=2) + '\n')
           PY
+          echo "artifact_name=darkbloom-signed-validation-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
 
       - name: Retain signed validation bundle
         if: needs.resolve-env.outputs.publish == 'false'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: darkbloom-signed-validation-${{ github.sha }}-${{ github.run_attempt }}
+          name: ${{ steps.validation_identity.outputs.artifact_name }}
           path: |
             /tmp/darkbloom-bundle-macos-arm64.tar.gz
             /tmp/darkbloom-validation-identity.json
@@ -889,6 +973,7 @@ jobs:
           ## Provider v${VERSION} (Swift CLI)
 
           **Binary hash:**   \`${BINARY_HASH}\`
+          **CodeDirectory SHA-256:** \`${CODE_DIRECTORY_HASH}\`
           **Bundle hash:**   \`${BUNDLE_HASH}\`
           **Metallib hash:** \`${METALLIB_HASH}\` (built from mlx \`${{ steps.mlxkey.outputs.mlx_sha_short }}\`)
           **Signed by:**     \`${DEVELOPER_ID}\`
@@ -912,3 +997,47 @@ jobs:
         if: always()
         run: |
           security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+
+  validate-older-macos:
+    name: Signed SDK 27 artifact on older macOS
+    needs: [resolve-env, build-and-release]
+    if: needs.resolve-env.outputs.publish == 'false'
+    runs-on: blacksmith-12vcpu-macos-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Verify and smoke the exact signed validation artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNED_VALIDATION_ARTIFACT: ${{ needs.build-and-release.outputs.validation_artifact }}
+        run: |
+          set -euo pipefail
+          ARTIFACT="$RUNNER_TEMP/signed-provider"
+          test -n "$SIGNED_VALIDATION_ARTIFACT"
+          gh run download "$GITHUB_RUN_ID" \
+            --name "$SIGNED_VALIDATION_ARTIFACT" \
+            --dir "$ARTIFACT"
+          python3 - "$ARTIFACT" <<'PY'
+          import hashlib, json, os, pathlib, subprocess, sys
+          root = pathlib.Path(sys.argv[1])
+          identity = json.loads((root / 'darkbloom-validation-identity.json').read_text())
+          assert identity['source_commit'] == os.environ['GITHUB_SHA']
+          assert identity['release_published'] is False
+          assert identity['build_sdk_version'] == '27.0'
+          assert hashlib.sha256((root / 'darkbloom-bundle-macos-arm64.tar.gz').read_bytes()).hexdigest() == identity['bundle_sha256']
+          major = int(subprocess.check_output(['sw_vers', '-productVersion'], text=True).split('.')[0])
+          assert 14 <= major < 27, 'This compatibility lane must exercise older macOS'
+          PY
+          mkdir "$ARTIFACT/extracted"
+          # Native tar restores the non-Mach-O signing extended attributes.
+          /usr/bin/tar -xzf "$ARTIFACT/darkbloom-bundle-macos-arm64.tar.gz" -C "$ARTIFACT/extracted"
+          APP="$ARTIFACT/extracted/Darkbloom.app"
+          codesign --verify --deep --strict "$APP"
+          xcrun stapler validate "$APP"
+          OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 "$APP/Contents/MacOS/$CLI_NAME" runtime-smoke)
+          printf '%s\n' "$OUTPUT"
+          for marker in app-attest-callback-runtime-smoke gemma-optimizations-runtime-smoke paged-kernel-runtime-smoke; do
+            printf '%s\n' "$OUTPUT" | grep -Fqx "$marker: ok"
+          done

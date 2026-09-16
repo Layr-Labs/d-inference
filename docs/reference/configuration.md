@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-11 · commit `ef7b5a9aa`
+> Last updated: 2026-09-14 · commit `b725a72a8`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -8,6 +8,8 @@ the code that reads it, and its effect. Defaults are the fallbacks at the cited
 symbol; a production or dev host may pin a different value in its environment
 file. Secrets are named, never valued. Unless a row says *live*, the variable is
 read once at process start and a restart applies a change.
+
+[App Attest shadow configuration](app-attest-shadow.md#configuration) lists the observation-only coordinator knobs, including optional dedicated receipt-renewal credentials. Shadow defaults off; rollout requires an explicit percentage and the safe provider version floor. Qualified build hashes are a separate prospective-policy input. Disabling shadow requests keeps the machine census and evidence maintenance running. APNs/MDM configuration remains authoritative.
 
 ## Where values are set
 
@@ -360,36 +362,36 @@ Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative value
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_CBV2_PAGED_KV` | `0` forces contiguous | unset (policy decides) | `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift` | Kill switch for paged KV; beats the `provider.toml` setting. |
-| `DARKBLOOM_CBV2_PAGED_KV_DTYPE` | `float16`, `float32` | unset: observed native per-layer types | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BackendPreparation.swift` | Optional assertion for resolved paged storage; a nonempty value must match every measured native layer. Unsupported values or mismatches refuse explicit paged construction. |
-| `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | tokens | engine default | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Configuration.swift` | Solo-prefill stripe size. |
-| `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | integer (`0` = unlimited) | `1` | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Configuration.swift` | Maximum concurrent partial prefills. |
-| `DARKBLOOM_CBV2_LEGACY_REQUEST_TIMEOUT` | affirmative | off | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Configuration.swift` | Restores the legacy per-request timeout. |
+| `DARKBLOOM_CBV2_PAGED_KV` | `0` forces contiguous | unset (policy decides) | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` | Kill switch for paged KV; beats the `provider.toml` setting. |
+| `DARKBLOOM_CBV2_PAGED_KV_DTYPE` | `float16`, `float32` | unset: observed native per-layer types | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift` | Optional assertion for resolved paged storage; a nonempty value must match every measured native layer. Unsupported values or mismatches refuse explicit paged construction. |
+| `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | tokens | engine default | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` | Solo-prefill stripe size. |
+| `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | integer (`0` = unlimited) | `1` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` | Maximum concurrent partial prefills. |
+| `DARKBLOOM_CBV2_LEGACY_REQUEST_TIMEOUT` | affirmative | off | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` | Restores the legacy per-request timeout. |
 | `DARKBLOOM_CBV2_MTP` | negative disables | unset (beta flag decides) | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift`; `provider-swift/Sources/ProviderCore/Config/BetaFeatures.swift` | Kill switch for MTP speculation; beats the `provider.toml` beta flag. See [`../provider/beta-features.md`](../provider/beta-features.md). |
-| `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | integer | policy default | `provider-swift/Sources/ProviderCore/Inference/MTPAutomaticVerificationPolicy.swift` | Tighten-only cap on rectangular MTP verification tokens. |
+| `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | integer | policy default | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift` | Tighten-only cap on rectangular MTP verification tokens. |
 | `DARKBLOOM_NEMOTRON35_MTP_CAPTURE_VERIFY` | exact `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH35MTP.swift` (`requiredVerificationMode`) | Captured rectangular verification with every-prefix recurrent state; `0` uses serial target verification. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_NEMOTRON35_MTP_BATCHED_M1` | exact `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH35MTPExactRows.swift` (`NemotronMTPExecution`) | Batch-axis projection dispatch that retains matrix M=1. No change to target precision; not forwarded to LaunchAgents. |
 | `DARKBLOOM_NEMOTRON35_MTP_KV_ONLY_HISTORY` | exact `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH35MTP.swift` (`NemotronH35MTPAssistant`) | Trusted-history replay may compute only the embedded assistant's K/V. Prefix save/restore uses the separate typed history codec. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_NEMOTRON35_MTP_MAX_DRAFT_TOKENS` | integer `1`…`7` | `7` | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH35MTP.swift` (`NemotronH35MTPAssistant`) | Upper proposal limit for adaptive depth; invalid selected limits fall back to seven. This is not a fixed proposal count. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_MTP_VERIFICATION_MODE` | `rectangular`, `serial`, `serial_target`, `automatic` | `automatic` | `provider-swift/Sources/ProviderBenchmark/MTPProductionSession.swift` | MTP verification strategy (benchmark session). |
-| `DARKBLOOM_PREFILL_DEADLINE_MODE` | `off`, `enforce` | `off` | `provider-swift/Sources/ProviderCore/Inference/PrefillDeadlineMode.swift` | Prefill-deadline admission on the provider. |
+| `DARKBLOOM_PREFILL_DEADLINE_MODE` | `off`, `enforce` | `off` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` | Prefill-deadline admission on the provider. |
 | `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL` | integer layers | projected from `provider.toml` (`18`) | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift` | Gemma-4 prefill chunk-eval layers; the provider sets it for the engine, `scripts/install.sh` sets `18` for the smoke test. |
-| `DARKBLOOM_ENGINE_V2_VLM_PARITY_CHECK` | `0` skips | on | `provider-swift/Sources/ProviderCore/Inference/EngineV2VLMTextExtraction.swift` | VLM text-extraction parity check. |
+| `DARKBLOOM_ENGINE_V2_VLM_PARITY_CHECK` | `0` skips | on | `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VLMTextExtraction.swift` | VLM text-extraction parity check. |
 
 ### Memory and media budgets
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_MLX_CACHE_LIMIT_GB` | GiB (floor 1) | `8` | `provider-swift/Sources/ProviderCore/Inference/MLXMemoryGuard.swift` | MLX buffer-cache limit. |
-| `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | GiB | `provider.toml` `memory_reserve_gb` | `provider-swift/Sources/ProviderCore/Inference/MLXMemoryGuard.swift` | Overrides the whole-machine memory reserve. |
-| `DARKBLOOM_MEM_CAP_FRACTION` | fraction | `0.90` | `provider-swift/Sources/ProviderCore/Inference/UnifiedMemoryCap.swift` | Share of unified memory the engine may address. |
-| `DARKBLOOM_ACTIVATION_RESERVE_GB` | GiB (raise-only) | `5.5` | `provider-swift/Sources/ProviderCore/Inference/UnifiedMemoryCap.swift` | Activation headroom kept out of the weight budget. |
-| `DARKBLOOM_VISION_MAX_TOWER_PATCHES` | integer (lower-only) | model default | `provider-swift/Sources/ProviderCore/Inference/VisionTowerBudget.swift` | Caps vision-tower patches. |
-| `DARKBLOOM_MAX_IMAGE_MEGAPIXELS`, `DARKBLOOM_MAX_REQUEST_IMAGE_MEGAPIXELS` | megapixels | `100`, `384` | `provider-swift/Sources/ProviderCore/Inference/MediaIngest.swift` | Per-image and per-request pixel caps. |
-| `DARKBLOOM_MAX_MEDIA_MIB` | MiB | `25` | `provider-swift/Sources/ProviderCore/Inference/MediaIngest.swift` | Per-request media bytes. |
-| `DARKBLOOM_MAX_VIDEO_SECONDS` | seconds | `600` | `provider-swift/Sources/ProviderCore/Inference/MediaIngest.swift` | Per-video duration cap. |
-| `DARKBLOOM_MAX_IMAGES_PER_REQUEST`, `DARKBLOOM_MAX_VIDEOS_PER_REQUEST` | integers | `16`, `8` | `provider-swift/Sources/ProviderCore/Inference/MediaIngest.swift` | Attachment count caps. |
-| `DARKBLOOM_MAX_REQUEST_VIDEO_FRAME_MEGAPIXELS` | megapixels | `384` | `provider-swift/Sources/ProviderCore/Inference/MediaIngest.swift` | Per-request decoded video-frame pixel cap. |
+| `DARKBLOOM_MLX_CACHE_LIMIT_GB` | GiB (floor 1) | `8` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` | MLX buffer-cache limit. |
+| `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | GiB | `provider.toml` `memory_reserve_gb` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` | Overrides the whole-machine memory reserve. |
+| `DARKBLOOM_MEM_CAP_FRACTION` | fraction | `0.90` | `provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift` | Share of unified memory the engine may address. |
+| `DARKBLOOM_ACTIVATION_RESERVE_GB` | GiB (raise-only) | `5.5` | `provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift` | Activation headroom kept out of the weight budget. |
+| `DARKBLOOM_VISION_MAX_TOWER_PATCHES` | integer (lower-only) | model default | `provider-swift/Sources/ProviderCore/Inference/Vision/VisionTowerBudget.swift` | Caps vision-tower patches. |
+| `DARKBLOOM_MAX_IMAGE_MEGAPIXELS`, `DARKBLOOM_MAX_REQUEST_IMAGE_MEGAPIXELS` | megapixels | `100`, `384` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` | Per-image and per-request pixel caps. |
+| `DARKBLOOM_MAX_MEDIA_MIB` | MiB | `25` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` | Per-request media bytes. |
+| `DARKBLOOM_MAX_VIDEO_SECONDS` | seconds | `600` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` | Per-video duration cap. |
+| `DARKBLOOM_MAX_IMAGES_PER_REQUEST`, `DARKBLOOM_MAX_VIDEOS_PER_REQUEST` | integers | `16`, `8` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` | Attachment count caps. |
+| `DARKBLOOM_MAX_REQUEST_VIDEO_FRAME_MEGAPIXELS` | megapixels | `384` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` | Per-request decoded video-frame pixel cap. |
 
 ### SSD prefix cache
 
@@ -397,10 +399,10 @@ Internals and file format: [`ssd-kv-cache.md`](ssd-kv-cache.md).
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_PREFIX_CACHE` | affirmative opts in; non-affirmative nonempty disables | on for exact Qwen and Nemotron Lightning cohorts, Gemma 4 26B QAT and GPT-OSS 20B, off otherwise | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Activation.swift` (`isEnabled`) | Unset/empty uses the [model default](../architecture/prefix-cache.md#kv-layouts). Explicit affirmative values permit other models subject to capability/identity gates; resident payloads require the separate memory opt-in. |
-| `DARKBLOOM_PREFIX_CACHE_MEMORY` | affirmative (`1`, `true`, `yes`, `on`) | off | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Activation.swift` (`isMemoryEnabled`) | Explicit opt-in for both paged resident blocks and the recurrent RAM bank; global disable wins. Forwarded by LaunchAgent. |
-| `DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS` | seconds (`0` off) | `120` | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` | Cadence of the local SSD stats line and typed per-store heartbeat observation; `0` omits the observation. Sample age still advances between ticks; see [telemetry](../architecture/telemetry.md#durable-prefix-cache-observations). |
-| `DARKBLOOM_PREFIX_CACHE_DISK_GB` | GiB | Half the currently available space; `20` if space cannot be measured | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`) | Box-wide on-disk budget across all models, with no fixed default ceiling. A valid positive override is used verbatim. The separate 20 GiB free-space write reserve still applies. |
+| `DARKBLOOM_PREFIX_CACHE` | affirmative opts in; non-affirmative nonempty disables | on for exact Qwen and Nemotron Lightning cohorts, Gemma 4 26B QAT and GPT-OSS 20B, off otherwise | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isEnabled`) | Unset/empty uses the [model default](../architecture/prefix-cache.md#kv-layouts). Explicit affirmative values permit other models subject to capability/identity gates; resident payloads require the separate memory opt-in. |
+| `DARKBLOOM_PREFIX_CACHE_MEMORY` | affirmative (`1`, `true`, `yes`, `on`) | off | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isMemoryEnabled`) | Explicit opt-in for both paged resident blocks and the recurrent RAM bank; global disable wins. Forwarded by LaunchAgent. |
+| `DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS` | seconds (`0` off) | `120` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` | Cadence of the local SSD stats line and typed per-store heartbeat observation; `0` omits the observation. Sample age still advances between ticks; see [telemetry](../architecture/telemetry.md#durable-prefix-cache-observations). |
+| `DARKBLOOM_PREFIX_CACHE_DISK_GB` | GiB | Half the currently available space; `20` if space cannot be measured | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`) | Box-wide on-disk budget across all models, with no fixed default ceiling. A valid positive override is used verbatim. The separate 20 GiB free-space write reserve still applies. |
 | `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` | Allows an in-memory KEK fallback and the isolated test root. Ephemeral ciphertext cannot be reused after process exit. |
 | `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` | directory | unset | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` | Isolated payload root, accepted only with `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL`; normally forces an ephemeral key. |
 | `DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY` | exactly `1` | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`forceEphemeralKey`) | Benchmark-only: use the normal persistent KEK path within an accepted test root. Fallback is still possible; the benchmark SPI defaults to requiring actual persistent mode. Not forwarded to LaunchAgents. |
@@ -426,8 +428,8 @@ Provider cache enablement does not enable coordinator preference; the independen
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE` | exact `0` disables | unset (eligible only after memory opt-in) | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Hybrid.swift` (`hybridConfig`) | Disables recurrent checkpoint retention without changing paged/SSD policy or MTP mode. |
-| `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` | integer bytes | `min(1 << 30, max(0, kvBytesCapacity / 8))` | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Hybrid.swift` (`hybridConfig`) | Reservation inside the existing slot KV grant; parsed values outside `0 < bytes < kvBytesCapacity` disable the bank, malformed values use the default. |
+| `DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE` | exact `0` disables | unset (eligible only after memory opt-in) | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Hybrid.swift` (`hybridConfig`) | Disables recurrent checkpoint retention without changing paged/SSD policy or MTP mode. |
+| `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` | integer bytes | `min(1 << 30, max(0, kvBytesCapacity / 8))` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Hybrid.swift` (`hybridConfig`) | Reservation inside the existing slot KV grant; parsed values outside `0 < bytes < kvBytesCapacity` disable the bank, malformed values use the default. |
 
 `CBv2HybridPrefixCacheConfig` defaults to `maximumEntries = 32` and
 `maximumCheckpointsPerRequest = 2`; these have no CLI environment overrides
@@ -445,18 +447,18 @@ variable; its required input and backend are documented in the
 | `DARKBLOOM_ARRIVAL_TOLERANCE_MS` | ms | harness default | `provider-swift/Sources/ProviderBenchmark/ArrivalInvarianceBenchmark.swift` | Arrival-invariance tolerance. |
 | `DARKBLOOM_QWEN_FCFS_LIVE` | `1` | unset | `provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionCLI.swift` | Enables the live Qwen FCFS harness. |
 | `DARKBLOOM_QWEN_FCFS_MODEL_PATH`, `DARKBLOOM_QWEN_FCFS_MODEL_ID`, `DARKBLOOM_QWEN_FCFS_EXPECTED_MODEL_HASH`, `DARKBLOOM_QWEN_FCFS_SOURCE_SHA`, `DARKBLOOM_QWEN_FCFS_ITERATIONS`, `DARKBLOOM_QWEN_FCFS_KV_BACKEND`, `DARKBLOOM_QWEN_FCFS_OUTPUT` | strings | unset | `provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionCLI.swift` | Harness inputs. |
-| `DARKBLOOM_QWEN_MTP_SERIAL` | affirmative | off | `provider-swift/Tests/ProviderCoreTests/Qwen38ProductionCanarySupport.swift` (tests only) | Forces serial MTP verification in the Qwen canary. |
+| `DARKBLOOM_QWEN_MTP_SERIAL` | affirmative | off | `provider-swift/Tests/ProviderCoreTests/Inference/Live/Fixtures/Qwen38ProductionCanarySupport.swift` (tests only) | Forces serial MTP verification in the Qwen canary. |
 
 ### Retired (parsed only to warn)
 
-`provider-swift/Sources/ProviderCore/Inference/EngineV2Config.swift` recognises these and logs a warning; they have no effect: `DARKBLOOM_ENGINE_V2`, `DARKBLOOM_ENGINE_V2_MODELS`, `DARKBLOOM_COMPILED_DECODE`, `DARKBLOOM_GEMMA_B1_FAST_PATH`, `DARKBLOOM_B1_GREEDY_FAST_PATH`, `DARKBLOOM_KV_GPTOSS_KERNEL`, `DARKBLOOM_ADAPTIVE_PREFILL_ALLOW_8192`, `DARKBLOOM_KV_CAPTURE_MAX_INFLIGHT`, `DARKBLOOM_PREFIX_CACHE_MIN_PERSIST_TOKENS`. Six more names appear only in comments because `mlx-swift-lm` reads them, not the provider (`DARKBLOOM_CBV2_ATTN_QUERY_BLOCK`, `DARKBLOOM_CBV2_PAGED_PTOK_TARGET`, `DARKBLOOM_CBV2_COMPILED`, `DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS`, `DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY`, `DARKBLOOM_CBV2_MIXED_PREFILL_CAP`); none is on the LaunchAgent allow-list, so they only apply under `start --foreground`.
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Config.swift` recognises these and logs a warning; they have no effect: `DARKBLOOM_ENGINE_V2`, `DARKBLOOM_ENGINE_V2_MODELS`, `DARKBLOOM_COMPILED_DECODE`, `DARKBLOOM_GEMMA_B1_FAST_PATH`, `DARKBLOOM_B1_GREEDY_FAST_PATH`, `DARKBLOOM_KV_GPTOSS_KERNEL`, `DARKBLOOM_ADAPTIVE_PREFILL_ALLOW_8192`, `DARKBLOOM_KV_CAPTURE_MAX_INFLIGHT`, `DARKBLOOM_PREFIX_CACHE_MIN_PERSIST_TOKENS`. Six more names appear only in comments because `mlx-swift-lm` reads them, not the provider (`DARKBLOOM_CBV2_ATTN_QUERY_BLOCK`, `DARKBLOOM_CBV2_PAGED_PTOK_TARGET`, `DARKBLOOM_CBV2_COMPILED`, `DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS`, `DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY`, `DARKBLOOM_CBV2_MIXED_PREFILL_CAP`); none is on the LaunchAgent allow-list, so they only apply under `start --foreground`.
 
 ### Non-`DARKBLOOM_` variables the provider honours
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `MLX_GEMMA4_FUSED_WEIGHTED_UNSORT` | flag | set by the provider | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift`; `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift` | Provider-set MLX fused-unsort switch for Gemma 4. |
-| `MLX_GATHER_QMM_EXPERT_SLICES` | `1` (drain) or config-backed `0`/`trust` | `trust` | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift`; `provider-swift/Sources/ProviderCore/Inference/PackagedRuntimeSmoke.swift` | Expert-slice route mode; only an exact `1` is persisted into the LaunchAgent plist. |
+| `MLX_GATHER_QMM_EXPERT_SLICES` | `1` (drain) or config-backed `0`/`trust` | `trust` | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift`; `provider-swift/Sources/ProviderCore/Inference/Engine/PackagedRuntimeSmoke.swift` | Expert-slice route mode; only an exact `1` is persisted into the LaunchAgent plist. |
 | `SUDO_UID` | uid | set by `sudo` | `provider-swift/Sources/darkbloom/Fan/FanServiceManager.swift` | Resolves the invoking user when `darkbloom fan` runs under `sudo`. |
 | `GITHUB_SHA` | commit | unset | `provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionCLI.swift` | Fallback source SHA in benchmark reports. |
 | `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `DYLD_FRAMEWORK_PATH`, `LD_PRELOAD`, `MallocStackLogging`, `MallocStackLoggingNoCompact`, `MallocScribble`, `MallocGuardEdges`, `MallocLogFile`, `MallocErrorAbort`, `NSZombieEnabled`, `OBJC_DEBUG_POOL_ALLOCATION`, `CFNETWORK_DIAGNOSTICS` | — | — | `provider-swift/Sources/ProviderCore/Security/EnvironmentScrubber.swift` | Removed from the daemon's environment at start; reported as the `env_scrubbed` capability. |
@@ -470,7 +472,7 @@ All variables are inlined at build time.
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `NEXT_PUBLIC_COORDINATOR_URL` | URL | `https://api.darkbloom.dev` | `console-ui/src/lib/server/coordinator.ts` (`coordinatorUrl`); `console-ui/src/lib/coordinator-url.ts` (`PUBLIC_COORDINATOR_URL`) | Upstream coordinator for every proxy route and for client-side display; a browser can override it via the `darkbloom_coordinator_url` localStorage key. |
-| `NEXT_PUBLIC_PRIVY_APP_ID` | Privy app id | `""` | `console-ui/src/components/providers/PrivyClientProvider.tsx` | Unset or the literal `placeholder` selects mock auth (always authenticated, no token); otherwise the real Privy provider. |
+| `NEXT_PUBLIC_PRIVY_APP_ID` | Privy app id | `""` | `console-ui/src/components/app-providers/PrivyClientProvider.tsx` | Unset or the literal `placeholder` selects mock auth (always authenticated, no token); otherwise the real Privy provider. |
 | `NEXT_PUBLIC_GA_MEASUREMENT_ID` | `G-…` | `G-M65PNVW5TE` (only `undefined` falls back; set `""` to disable) | `console-ui/src/lib/google-analytics.ts` | Google Analytics page-view tracking after consent. |
 | `NEXT_PUBLIC_DD_APPLICATION_ID`, `NEXT_PUBLIC_DD_CLIENT_TOKEN` | Datadog RUM credentials | unset (RUM off) | `console-ui/src/components/DatadogRUM.tsx` | Both must be set for RUM to initialise. |
 | `NEXT_PUBLIC_DD_SITE`, `NEXT_PUBLIC_DD_ENV`, `NEXT_PUBLIC_APP_VERSION` | strings | `datadoghq.com`, `production`, `dev` | `console-ui/src/components/DatadogRUM.tsx` | RUM site, env and version tags. |

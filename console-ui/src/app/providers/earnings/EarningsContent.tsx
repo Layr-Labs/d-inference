@@ -5,7 +5,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { trackEvent } from "@/lib/google-analytics";
 import { useToastStore } from "@/hooks/useToast";
 import { useVisiblePolling } from "@/hooks/useVisiblePolling";
-import { STORAGE_KEYS } from "@/lib/constants";
+import { STORAGE_KEYS } from "@/lib/storage-keys";
 import {
   Loader2,
   DollarSign,
@@ -55,7 +55,7 @@ export default function EarningsContent() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const getAuthHeaders = useCallback(async () => {
+  const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
     const accessToken = await getAccessToken().catch(() => null);
     if (accessToken) {
       return { Authorization: `Bearer ${accessToken}` };

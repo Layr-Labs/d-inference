@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-09 · commit `af7a74126`
+> Last updated: 2026-09-15 · commit `a99ce680a`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -19,6 +19,8 @@ Terminal `profile` objects can include optional schema-1
 [`deadline_decision`](prediction-decision-telemetry.md#provider-fields).
 This does not add a message type or change the public error code.
 
+The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` (with protocol 1 and 2 compatibility) and `app_attest_shadow` frames. Version 3 also binds static hardware and the existing verification key; version 2 account/status binding and lost-enrollment recovery remain compatible. It does not replace the authoritative attestation messages.
+
 ## Envelope and the single-parse rule
 
 | Rule | Go | Swift |
@@ -27,7 +29,7 @@ This does not add a message type or change the public error code.
 | Decode | `DecodeProviderMessage` first tries the single-walk chunk scanner (`coordinator/protocol/chunk_scan.go`, `scanChunkFrame`); unsupported shapes fall back to `ProviderMessage.UnmarshalJSON` (`coordinator/protocol/messages.go`), which reads `type` with `scanTopLevelString` (`coordinator/protocol/type_scan.go`), a byte walk over the top-level keys, then `json.Unmarshal`s the frame **once** into the concrete struct | `ProviderMessage.init(from:)` / `CoordinatorMessage.init(from:)` decode `TypeValue` then switch (`Messages.swift`) |
 | Scanner fallback | escaped string, non-string value, malformed input or missing key → decode a `struct{ Type string }` envelope first (the historic double parse), so error behaviour is unchanged | — |
 | Unknown type | `protocol: unknown message type %q` | `DecodingError` — the decoder **throws**, so the coordinator version-gates `desired_models`, `prefetch_model`, `load_model` and `capacity_probe` sends |
-| Tests | `coordinator/protocol/type_scan_test.go` (`TestProviderMessageUnmarshalScanEquivalence`), `messages_envelope_test.go`, `messages_bench_test.go` | `provider-swift/Tests/ProviderCoreTests/ProtocolTests.swift` |
+| Tests | `coordinator/protocol/type_scan_test.go` (`TestProviderMessageUnmarshalScanEquivalence`), `messages_envelope_test.go`, `messages_bench_test.go` | `provider-swift/Tests/ProviderCoreTests/Protocol/ProtocolTests.swift` |
 
 ## Message inventory
 
@@ -149,7 +151,7 @@ booleans: `text_backend_inprocess`, `text_proxy_disabled`,
 |---|---|
 | `PrefixCacheV2Capability` | Required: `model_id`, `model_aggregate_hash`, `prompt_contract_id`, `block_hash_version` (`string`); `block_size` (`uint32`); `cache_epoch` (`string`); `enabled`, `ready` (`bool`). Optional `ready_boundary_mode` (`string`): absent/empty retains legacy SSD coverage; `checkpoint` permits only explicitly committed input endpoints. Unknown values are rejected; the field is invalid on resident capabilities. `coordinator/registry/cache_capabilities_v2.go`, `validatePrefixCacheCapability` / `validateMemoryPrefixCacheCapabilities` |
 | `PrefixCacheModelStatus` | `model_id`; `backend` ∈ {`contiguous`, `paged`, `unknown`}; `replay_strategy` ∈ {`direct`, `frozen_full`, `tail_replay`, `none`, `unknown`}; `state` ∈ {`ready`, `pending`, `disabled`, `error`}; `reason` ∈ {`ready`, `config_disabled`, `weight_hash_unavailable`, `runtime_identity_unavailable`, `unsupported_layout`, `unsupported_backend`, `paged_hybrid_unsupported`, `scan_pending`, `scan_failed`, `disk_unavailable`, `cache_init_failed`}. Enums validated at the coordinator boundary; Swift `PrefixCacheStatusBackend` / `ReplayStrategy` / `State` / `Reason` (`Messages.swift`) |
-| `PrefixCacheDonationOutcomeCount` | `outcome` ∈ {`donated`, `below_effective_token_floor`, `no_complete_block`, `lossy_snapshot` (pre-0.8.0 compat), `incomplete_layer_state`, `stage_size_exceeded`, `write_rate_limited`, `write_queue_full`, `already_durable`, `already_queued`, `cache_closed`, `disk_unavailable`, `write_failed`, `host_memory_unavailable`, `cache_epoch_changed`, `cache_maintenance_busy`, `disk_space_insufficient`, `unsafe_cache_root`, `write_io_failed`, `existing_cache_unreadable`, `cache_entry_evicted`}; `count` (`uint64`, monotonic per process). Unknown future outcomes are ignored individually by older coordinators. |
+| `PrefixCacheDonationOutcomeCount` | `outcome` ∈ {`donated`, `below_effective_token_floor`, `no_complete_block`, `lossy_snapshot` (pre-0.8.0 compat), `incomplete_layer_state`, `stage_size_exceeded`, `write_rate_limited`, `write_priority_limited`, `write_queue_full`, `already_durable`, `already_queued`, `cache_closed`, `disk_unavailable`, `write_failed`, `host_memory_unavailable`, `cache_epoch_changed`, `cache_maintenance_busy`, `disk_space_insufficient`, `unsafe_cache_root`, `write_io_failed`, `existing_cache_unreadable`, `cache_entry_evicted`}; `count` (`uint64`, monotonic per process). Unknown future outcomes are ignored individually by older coordinators. `coordinator/registry/cache_eligibility.go`, `PrefixCacheDonationOutcomes`; Swift `PrefixCacheDonationOutcome` (`Messages.swift`). |
 | `PrefixCacheAnchor` | `chain_hash` (lowercase SHA-256 hex), `token_count` (block-aligned `int`) |
 
 ### `heartbeat`
@@ -216,7 +218,7 @@ routing on them.
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|
 | `model` | `string` | `String` | req | |
-| `state` | `string` | `String` | req | Coordinator accepts `running`, `idle`, `idle_shutdown`, `crashed`, `reloading`; `registry.SlotStateFold` (`coordinator/registry/gate_reason.go`) folds anything else to `other`. The v0.8.16 provider emits `running`, `idle`, `crashed`, `reloading` (`provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Capacity.swift`); `idle_shutdown` stays accepted for older providers. `idle` means the model **is loaded** (`slotStateModelLoaded`, `coordinator/registry/scheduler.go`); `reloading`/`crashed` make the slot unroutable |
+| `state` | `string` | `String` | req | Coordinator accepts `running`, `idle`, `idle_shutdown`, `crashed`, `reloading`; `registry.SlotStateFold` (`coordinator/registry/gate_reason.go`) folds anything else to `other`. The v0.8.16 provider emits `running`, `idle`, `crashed`, `reloading` (`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Capacity.swift`); `idle_shutdown` stays accepted for older providers. `idle` means the model **is loaded** (`slotStateModelLoaded`, `coordinator/registry/scheduler.go`); `reloading`/`crashed` make the slot unroutable |
 | `num_running`, `num_waiting` | `int` | `UInt32` | req | |
 | `max_concurrency` | `int` | `UInt32` | opt | |
 | `active_tokens` | `int64` | `Int64` | req | Σ (prompt + completion) tokens over running requests |
@@ -417,7 +419,7 @@ these fields: [`../architecture/request-outcome-observability.md`](../architectu
 | `request_id` | `string` | `String` | req | |
 | `error` | `string` | computed `String` (`failureCode.message`) | req | Swift never emits raw error text. The coordinator never reads the provider-authored value: `sanitizeProviderInferenceError` (`coordinator/api/inference_error_sanitize.go`) replaces it with the closed message for `failure_code` before anything downstream sees the frame |
 | `status_code` | `int` | `UInt16` | req | |
-| `error_reason` | `string` | `InferenceErrorReason?` | opt | closed, privacy-safe reason (`provider-swift/Sources/ProviderCore/Inference/InferenceFailure.swift`): `jinja_channel_tags`, `jinja_null_bridge`, `jinja_template`, `model_load`, `capacity_timeout`, `queue_full`, `token_budget_exhausted`, `request_exceeds_context`, `request_exceeds_node`, `request_exceeds_node_budget`, `request_exceeds_batch_token_budget`, `capacity_busy`, `deadline_unreachable`, `draining`, `cancelled`, `client_error`, `tool_noncompliance`. The typed `draining` reason on a 503 marks a transient update drain: no provider-health or capacity penalty, and no capacity retry charge (`coordinator/api/consumer.go`, `noteInferenceError`; `coordinator/api/dispatch.go`, `dispatchState.noteProviderError`). Swift emits it from `rejectIfDrainingForUpdate` (`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`). |
+| `error_reason` | `string` | `InferenceErrorReason?` | opt | closed, privacy-safe reason (`provider-swift/Sources/ProviderCore/Inference/Engine/InferenceFailure.swift`): `jinja_channel_tags`, `jinja_null_bridge`, `jinja_template`, `model_load`, `capacity_timeout`, `queue_full`, `token_budget_exhausted`, `request_exceeds_context`, `request_exceeds_node`, `request_exceeds_node_budget`, `request_exceeds_batch_token_budget`, `capacity_busy`, `deadline_unreachable`, `draining`, `cancelled`, `client_error`, `tool_noncompliance`. The typed `draining` reason on a 503 marks a transient update drain: no provider-health or capacity penalty, and no capacity retry charge (`coordinator/api/consumer.go`, `noteInferenceError`; `coordinator/api/dispatch.go`, `dispatchState.noteProviderError`). Swift emits it from `rejectIfDrainingForUpdate` (`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`). |
 | `failure_code` | `InferenceFailureCode` | `InferenceFailureCode?` | opt | closed enum (`coordinator/protocol/inference_failure.go`): `invalid_request`, `invalid_media`, `media_too_large`, `unsupported_media`, `template_render`, `model_unavailable`, `capacity`, `cancelled`, `encryption_failure`, `generation_failure`, `internal_failure` |
 | `terminal_cause` | `string` | `InferenceTerminalCause?` | opt | closed: `admission_timeout`, `prefill_stall`, `decode_stall`, `safety_deadline`, `backpressure_timeout`, `watchdog`, `cancelled`, `engine_error`. Unknown → treated as absent plus a drift metric (`coordinator/api/terminal_cause.go`); platform-policy terminals never strike health breakers |
 | `attempt_usage` | `*UsageInfo` | `UsageInfo?` | opt | engine-reconciled usage of the failed attempt; observability only, never billing |
@@ -656,6 +658,18 @@ set is pinned by `TestCapacityProbeShapeClosed` (`coordinator/protocol/capacity_
 | `vision_image_count` | `int` | opt | count only |
 | `deadline_remaining_ms` | `int64` | req | duration on the first-content clock, never a wall clock |
 
+## App Attest protocol 3 hardware binding
+
+`register.app_attest_protocol=3` negotiates the account/endpoint-bound shadow
+exchange plus signed static hardware claims. `AppAttestStatus` adds optional
+string fields `machine_model`, `memory_gb`, `cpu_total`, `cpu_performance`,
+`cpu_efficiency`, `gpu_cores` and `attestation_public_key`; version 3 hashes them after the version 2 status
+fields under its own domain. Old transcripts remain unchanged. Original enrollment
+protocol is retained for cached-response recovery across upgrades. These fields
+are app measurements, not Apple-certified hardware. See
+[the App Attest reference](app-attest-shadow.md) and
+`coordinator/protocol/app_attest_hardware.go` (`AppAttestShadowHashV3`).
+
 ## Shared objects
 
 ### `EncryptedPayload`
@@ -693,7 +707,7 @@ comment in `coordinator/registry/capacity_cooldown.go`.
 | Layer | Files |
 |---|---|
 | Go shape and envelope | `coordinator/protocol/messages_register_heartbeat_test.go`, `messages_backend_capacity_test.go`, `messages_inference_test.go`, `messages_terminal_cause_test.go`, `messages_attestation_test.go`, `messages_model_lifecycle_test.go`, `messages_envelope_test.go`, `prefix_cache_v2_test.go`, `prefix_cache_telemetry_test.go`, `capacity_test.go`, `inference_failure_test.go`, `tool_constraints_test.go`, `type_scan_test.go` |
-| Go ↔ Swift key pinning | `coordinator/api/provider_wire_test.go`; `provider-swift/Tests/ProviderCoreTests/ProtocolTests.swift`, `CapacityQuoteProtocolTests.swift` |
+| Go ↔ Swift key pinning | `coordinator/api/provider_wire_test.go`; `provider-swift/Tests/ProviderCoreTests/Protocol/ProtocolTests.swift`, `CapacityQuoteProtocolTests.swift` |
 | `profile` fixture | `coordinator/protocol/testdata/profiler_wire_fixture.json` — written by Go, loaded by Swift |
 
 ## Related

@@ -4,6 +4,7 @@
 #        > Last updated: YYYY-MM-DD · commit `<sha>`
 #      (add or refresh with scripts/docs-stamp.sh)
 #   2. a relative Markdown link whose target file/directory does not exist
+#      (frozen source links may instead exist at the document's stamped commit)
 #   3. an inline-code citation of a repo path that does not exist, e.g.
 #      `coordinator/api/server.go` or `provider-swift/Sources/ProviderCore/`
 #      (line/symbol suffixes such as `file.go:123` or `file.go:Func` are
@@ -88,6 +89,54 @@ normpath() {
     printf '%s\n' "${out[*]}"
 }
 
+# Unlike the orphan check's normalizer, historical lookup must reject paths
+# above the repository root and treat every component literally (no globs).
+historical_repo_path() {
+    local IFS='/' seg parts=() out=()
+    read -r -a parts <<< "$1"
+    for seg in "${parts[@]}"; do
+        case "$seg" in
+            ''|.) ;;
+            ..)
+                [ ${#out[@]} -gt 0 ] || return 1
+                unset 'out[${#out[@]}-1]' ;;
+            *) out+=("$seg") ;;
+        esac
+    done
+    [ ${#out[@]} -gt 0 ] || return 1
+    printf '%s\n' "${out[*]}"
+}
+
+historical_source_exists() {
+    local f=$1 path record stamp commit kind
+    record=$(historical_repo_path "$f") || return 1
+    case "$record" in
+        docs/reports/*|docs/releases/*|docs/design/*) ;;
+        *) return 1 ;;
+    esac
+    path=$(historical_repo_path "$2") || return 1
+    # Only repository source roots can use history. Documentation navigation,
+    # including Markdown pages stored beside source, must keep working today.
+    case "$path" in
+        *.[mM][dD]|*.[mM][aA][rR][kK][dD][oO][wW][nN]) return 1 ;;
+    esac
+    case "$path" in
+        coordinator/*|provider-swift/*|console-ui/*|admin-ui/*|landing/*|scripts/*|deploy/*|e2e/*|.github/*|.githooks/*|libs/*|fixtures/*) ;;
+        *) return 1 ;;
+    esac
+    stamp=$(sed -nE '1,12s/^> Last updated: [0-9]{4}-[0-9]{2}-[0-9]{2} .*commit `([0-9a-f]{7,40})`.*/\1/p' "$f")
+    if [ -z "$stamp" ]; then
+        printf 'docs-check: %s: historical source requires a valid freshness stamp\n' "$f" >&2
+        return 1
+    fi
+    if ! commit=$(git rev-parse --verify "${stamp}^{commit}" 2>/dev/null); then
+        printf 'docs-check: %s: cannot resolve historical commit %s; verify the stamp and fetch complete Git history\n' "$f" "$stamp" >&2
+        return 1
+    fi
+    kind=$(git cat-file -t "$commit:$path" 2>/dev/null) || return 1
+    case "$kind" in blob|tree) return 0 ;; *) return 1 ;; esac
+}
+
 # ---------------------------------------------------------------------------
 # 2. Relative links
 # ---------------------------------------------------------------------------
@@ -111,6 +160,7 @@ check_links() {
             *)  path="$dir/$target" ;;
         esac
         if [ ! -e "$path" ]; then
+            historical_source_exists "$f" "$path" && continue
             fail "$f: broken link -> $target"
         fi
     done < <(

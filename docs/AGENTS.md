@@ -1,6 +1,6 @@
 # Darkbloom docs — how this documentation is organised and maintained
 
-> Last updated: 2026-09-11 · commit `156843b35`
+> Last updated: 2026-09-13 · commit `ec73023e4`
 
 Rules for anyone — human or agent — who reads, writes, or checks a file under
 `docs/`. The code is the source of truth; a doc that disagrees with the code is
@@ -144,6 +144,14 @@ doc links to; and a SIP-immutability claim in `README.md`,
 the "unpatched kernel" qualifier (TB-003). Run it before opening a PR that touches `docs/`. It checks only
 git-tracked files by default; `--all` includes untracked drafts.
 
+For a missing relative source link in a frozen report, release note, or design
+record, the checker can verify the source at that document's exact stamped
+commit. The commit and target must exist in local Git history; current docs
+and relative documentation links still require an existing working-tree
+target. Keep frozen records unchanged and use the
+[historical source procedure](developer/historical-references.md) to navigate
+their original source. Docs Lint checks out full history for this validation.
+
 ## 7. When you change code, change these docs
 
 | Code change | Doc(s) that must move in the same PR |
@@ -161,6 +169,12 @@ git-tracked files by default; `--all` includes untracked drafts.
 | Build, test, CI, or script | `developer/build.md`, `developer/test.md`; `operations/` runbook that invokes it |
 | New model family or engine capability | `architecture/inference.md`, `consumer/models.md`, `provider/hardware-requirements.md` |
 | Anything user-visible | `CHANGELOG.md` |
+
+CI encodes the high-confidence part of this matrix in
+`scripts/docs-impact-rules.json`. `scripts/docs-impact-check.py` evaluates it
+against each pull-request diff before the ordinary documentation lint. Keep the
+matrix and machine-readable rules aligned when adding a documentation-sensitive
+surface.
 
 ## 8. Adding, moving, retiring pages
 

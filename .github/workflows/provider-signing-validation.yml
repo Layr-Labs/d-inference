@@ -131,6 +131,9 @@ jobs:
           printf '%s' "$PROFILE_BASE64" | base64 --decode > "$app/Contents/embedded.provisionprofile"
           security cms -D -i "$app/Contents/embedded.provisionprofile" > "$RUNNER_TEMP/profile.plist"
           python3 tooling/scripts/provider-signing-validation.py profile --profile "$RUNNER_TEMP/profile.plist"
+          python3 tooling/scripts/prepare-app-attest-entitlements.py \
+            --base tooling/provider-swift/entitlements.plist --profile "$RUNNER_TEMP/profile.plist" \
+            --output "$RUNNER_TEMP/provider-signing-entitlements.plist"
       - name: Sign and statically verify the app
         run: |
           set -euo pipefail
@@ -146,14 +149,17 @@ jobs:
             --entitlements tooling/provider-swift/entitlements-enclave.plist \
             --sign "$DEVELOPER_ID" "$app/Contents/MacOS/darkbloom-enclave"
           codesign --force --options runtime --timestamp --keychain "$keychain" \
-            --entitlements tooling/provider-swift/entitlements.plist \
+            --entitlements "$RUNNER_TEMP/provider-signing-entitlements.plist" \
             --sign "$DEVELOPER_ID" "$app/Contents/MacOS/darkbloom"
           codesign --force --options runtime --timestamp --keychain "$keychain" \
-            --entitlements tooling/provider-swift/entitlements.plist --sign "$DEVELOPER_ID" "$app"
+            --entitlements "$RUNNER_TEMP/provider-signing-entitlements.plist" --sign "$DEVELOPER_ID" "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
           codesign --verify --strict --verbose=2 "$app/Contents/MacOS/darkbloom"
           codesign -d --entitlements - --xml "$app/Contents/MacOS/darkbloom" > "$RUNNER_TEMP/cli-entitlements.plist"
           python3 tooling/scripts/provider-signing-validation.py cli-entitlements --plist "$RUNNER_TEMP/cli-entitlements.plist"
+          python3 tooling/scripts/prepare-app-attest-entitlements.py \
+            --base tooling/provider-swift/entitlements.plist --profile "$RUNNER_TEMP/profile.plist" \
+            --output "$RUNNER_TEMP/provider-signing-entitlements.plist" --verify "$RUNNER_TEMP/cli-entitlements.plist"
           ditto -c -k --keepParent "$app" "$RUNNER_TEMP/notarization-input.zip"
       - name: Validate Apple notarization and stapled ticket
         env:

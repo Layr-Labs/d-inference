@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `156843b35`
+> Last updated: 2026-09-15 · commit `1fee36798`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -36,6 +36,8 @@ preparation seam before tokenization. The shared public corpus covers JSON-objec
 and schema response formats plus multi-system and text/tool/endpoint forms; it compares
 actual Swift tokens and scope-bound hashes with Rust plans. No production
 prompts or model weights are needed (`scripts/verify-prompt-parity.sh`).
+
+The [App Attest shadow validation commands](../reference/app-attest-shadow.md#validation) cover cryptography, protocol symmetry, counter races, unchanged routing, and coexistence signing. Live macOS 27 acceptance remains separate.
 
 ## Prerequisites
 
@@ -230,7 +232,7 @@ environment variable does not reset MLX's cached value, and `.serialized`
 does not isolate other suites. See `StartCommandTests.defaultApplyProjectsSettings`
 in `provider-swift/Tests/DarkbloomCLITests/StartCommandTests.swift` and
 `GPUEnforcementTests.requireMetalPinsGPU` in
-`provider-swift/Tests/ProviderCoreTests/GPUEnforcementTests.swift`.
+`provider-swift/Tests/ProviderCoreTests/Inference/Engine/GPUEnforcementTests.swift`.
 
 The standalone resource-release test and the two periodic MTP sampler tests
 also use child processes, giving their real listener/timer tasks an executor
@@ -238,9 +240,9 @@ separate from concurrent MLX tests. Their original deadlines, recurring-sample
 requirements and shutdown/resource assertions remain active. Each helper
 requires `ExitTest.current` so it cannot accidentally run in the parent process.
 See `standaloneServerStopAndWaitReleaseResidentBridgeAndSSDResources` in
-`provider-swift/Tests/ProviderCoreTests/StandaloneServerTests.swift` and
+`provider-swift/Tests/ProviderCoreTests/Server/StandaloneServerTests.swift` and
 `periodicSamplerEmitsForEverySlot` / `shutdownStopsSampler` in
-`provider-swift/Tests/ProviderCoreTests/MTPPostureTelemetryTests.swift`.
+`provider-swift/Tests/ProviderCoreTests/Telemetry/MTPPostureTelemetryTests.swift`.
 
 **Nested `libs/mlx-swift-lm` suites.** The paged-KV correctness gates live in
 the submodule, not in `provider-swift/`. Build them once, stage the metallib,
@@ -260,6 +262,65 @@ for suite in CBv2PagedSafetyTests CBv2PrefixCacheHasherTests CBv2PagedEligibilit
   ../../scripts/run-nested-suite.sh "$suite"
 done
 ```
+
+#### Finding provider tests
+
+Start from the production owner, then look in the matching folder under
+`provider-swift/Tests/ProviderCoreTests/`. These folders remain one SwiftPM
+target (`provider-swift/Package.swift`, `package`), so existing suite/function
+filters still select the same tests. The [inference source map](../architecture/inference.md#code-map)
+locates those owners under `provider-swift/Sources/ProviderCore/Inference/`;
+tests group engine, bridge, factory and scheduler responsibilities together in
+`Inference/Engine`.
+
+| Folder below `ProviderCoreTests` | Responsibility |
+|---|---|
+| `Inference/Engine` | Assembly, admission, cancellation, health, device gates and timing |
+| `Inference/Memory` | Load budgets, KV grants, allocation ownership and memory telemetry |
+| `Inference/PrefixCache` | Reuse eligibility, cache identity, receipts and routing evidence |
+| `KVCacheSSD` | Encrypted SSD storage, checkpoint coordination and persistence |
+| `Inference/MTP` | Assistant activation and inference capacity accounting |
+| `Inference/Prompting`, `Inference/Tools`, `Inference/Streaming`, `Inference/Vision` | Request preparation, tool contracts, streamed output and media handling |
+| `Inference/Kernels` | Synthetic Metal arithmetic and accuracy contracts |
+| `Inference/Live` | Opt-in inference and parity tests using actual local models, with `Gemma`, `GPTOSS` and `Qwen` subfolders |
+
+Other folders follow provider responsibilities: `ProviderLoop`, `Server`,
+`Models`, `SpecDec`, `Auth`, `Security`, `Diagnostics`, `Protocol`, `Coordinator`,
+`Telemetry`, `Update`, and the smaller source subsystems. `Benchmark` tests
+the `ProviderBenchmark` module and its production-engine integration.
+Drain/swap orchestration stays with `ProviderLoop` and `Server`.
+
+Keep model fixtures in `Inference/Live/Fixtures`, synthetic engine support in
+`Inference/Fixtures`, checkpoint support in `KVCacheSSD/Fixtures`, and shared
+HTTP/coordinator fixtures in `Helpers`. Shared input files under `fixtures/`
+and `coordinator/protocol/testdata/` remain canonical; moving a test deeper
+requires checking any lookup based on `#filePath`.
+
+Check each suite's annotations and prerequisites before running it. Tests
+that need no model weights can still execute Metal. The startup decode live
+test stays with its `ProviderLoop` owner, and `LiveInferenceMetallibSourceTests`
+tests the fixture resolver without loading a model. Use the preparation and
+isolated filters above; folder names do not change execution requirements.
+
+#### Doctor capture and attestation canonical bytes
+
+After building the provider test targets, run these focused regressions:
+
+```bash
+(cd provider-swift && swift test --filter 'DoctorCaptureTests|statusCanonical')
+(cd coordinator && go test -race ./attestation -count=1)
+```
+
+`provider-swift/Tests/DarkbloomCLITests/DoctorCaptureTests.swift`
+(`DoctorCaptureTests`) uses real subprocesses with output beyond pipe capacity,
+excluded stderr, nonzero exits, deadline escalation and an inherited stdout
+descriptor. Each child has an independent expiry and fixture-owned cleanup.
+`provider-swift/Tests/ProviderCoreTests/Security/StatusCanonicalTests.swift`
+(`statusCanonicalMatchesCoordinatorNestedMapVectors`) and
+`coordinator/attestation/status_canonical_mixed_case_test.go`
+(`TestBuildStatusCanonicalNestedMapVectors`) retain identical
+golden bytes for nested-map ordering, escaping and optional fields. These cases
+need no model weights, active provider or Secure Enclave key.
 
 #### Strict FP32 unit controls
 
@@ -375,7 +436,7 @@ Explicit Gemma verification, projection, logits and attention diagnostics requir
 untransformed greedy input. Historical baseline binaries retain their greedy
 sampling path; they are not sampled-throughput controls.
 Sampling wiring lives in
-`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkPrompt.swift`
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkPrompt.swift`
 and `scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkSampling.swift`.
 
 Run the CPU wrapper tests first:
@@ -1000,6 +1061,38 @@ This prevents task scheduling from silently changing admission order. Sources: `
 
 ### 7. Docs lint
 
+The lightweight Contribution Policy workflow runs before review and again when
+the `docs-not-needed` label is added or removed. Its `Commit Signatures` job
+queries GitHub's pull-request commit list and requires
+`commit.verification.verified = true` for every commit. This covers commits on
+contributor forks, which the protected branch's signed-commit rule does not
+evaluate.
+
+Its `Docs Impact` job runs:
+
+```bash
+make docs-impact-check BASE=origin/master
+```
+
+`scripts/docs-impact-check.py` compares the branch with the merge base and
+applies `scripts/docs-impact-rules.json`. A documentation-sensitive source
+change must update one of that rule's canonical docs. Matching multiple rules
+requires satisfying each rule. Test-only files are ignored. A maintainer can
+apply `docs-not-needed` when a mapped source change does not alter documented
+behavior; the PR must explain the exception in its Documentation impact
+section.
+
+The historical-link regression checks run in isolated temporary Git repositories:
+
+```bash
+python3 scripts/test-docs-check-historical-links.py
+```
+
+Docs Lint also runs these checks before validating the documentation tree.
+Frozen source references resolve against the exact stamped commit when the
+file has moved; current missing links still fail. See
+[historical source references](historical-references.md).
+
 ```bash
 make docs-check          # scripts/docs-check.sh — stamps, relative links, cited paths, orphans, SIP-claim qualifier
 make docs-stamp FILES="docs/developer/test.md"   # refresh a stamp after editing
@@ -1162,7 +1255,7 @@ token IDs are accepted.
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |
 | [`.github/workflows/provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml) | manual only | Build an exact signed source revision, validate Developer ID signing/provisioning/notarization in a separate job, and retain an Actions artifact; no GitHub environment, deployment, release registration or model execution |
 | [`.github/workflows/register-model.yml`](../../.github/workflows/register-model.yml) | manual | `POST /v1/admin/models/register`; see [`../operations/model-migration.md`](../operations/model-migration.md) |
-| `.github/workflows/threat-model-review.yml`, `.github/workflows/claude.yml`, `.github/workflows/codex.yml` | PR / comment | Review automation; not test gates |
+| `.github/workflows/claude.yml`, `.github/workflows/codex.yml` | PR / comment | Review automation; not test gates |
 
 ## Verify
 
@@ -1183,13 +1276,6 @@ token IDs are accepted.
 | nested suite step fails with "executed 0 tests" | swift-testing pass routed at an executable target / wrong filter | rebuild with `swift build --build-tests` in `libs/mlx-swift-lm`; keep suite names exact |
 | paged gate fails immediately with `DARKBLOOM_CBV2_PAGED_KV=… is set` | kill switch in your shell | `unset DARKBLOOM_CBV2_PAGED_KV` |
 
-## Related
-
-- [build.md](build.md) — toolchain and build commands.
-- [`../operations/provider-release.md`](../operations/provider-release.md) — release checks that also run in CI.
-- [`../architecture/components/provider.md`](../architecture/components/provider.md) — what the provider does at runtime.
-- [`../architecture/prompt-contract-sidecar.md`](../architecture/prompt-contract-sidecar.md) — what prompt parity protects.
-
 ## GPT-OSS complete-checkpoint reconstruction
 
 On an owned idle Apple Silicon host, build the optimized provider tests with the
@@ -1207,7 +1293,7 @@ DARKBLOOM_LIVE_MLX_GPTOSS_MODEL_DIRECTORY=/absolute/verified-gpt-oss-20b \
     --no-parallel --filter GPTOSSCheckpointRestartLiveTests
 ```
 
-`provider-swift/Tests/ProviderCoreTests/GPTOSSCheckpointRestartLiveTests.swift`
+`provider-swift/Tests/ProviderCoreTests/Inference/Live/GPTOSS/GPTOSSCheckpointRestartLiveTests.swift`
 (`sameKeyNewEngineRestoresBranchedPrompt`) donates a complete encrypted historical
 checkpoint, shuts down the engine/store, reconstructs both and requests a branched
 prompt first. It requires disk reads, exact checkpoint-boundary hit accounting,
@@ -1233,11 +1319,11 @@ env -u MLX_ENABLE_TF32 \
 
 The model-directory variable is optional when the exact verified snapshot is
 already discoverable in the local cache.
-`provider-swift/Tests/ProviderCoreTests/GPTOSSMixedPrefixCacheLiveTests.swift`
+`provider-swift/Tests/ProviderCoreTests/Inference/Live/GPTOSS/GPTOSSMixedPrefixCacheLiveTests.swift`
 (`concurrentSuffixesRemainIsolated`) compares cache-off controls with restored
 branches in B2/B4 cohorts, reverses the B2 request order, and submits a four-request
 mixture of matching prefixes, a changed early fact and another tenant.
-`provider-swift/Tests/ProviderCoreTests/GPTOSSMixedPrefixCohort.swift` (`run`)
+`provider-swift/Tests/ProviderCoreTests/Inference/Live/Fixtures/GPTOSSMixedPrefixCohort.swift` (`run`)
 submits through the real bridge and requires completed native target-decode
 observations at widths two and four for the restored B2/B4 cohorts. The cold
 `off-four-submitted` control and mixed four-request cohorts require at least
@@ -1256,7 +1342,7 @@ the gate and does not assert that it passed.
 
 The focused construction and load-policy suites are `GPTOSSDefaultPrefixCacheWiringTests`,
 `PrefixCachePolicyTests` and `PrefixCacheLoadHashTests` in
-`provider-swift/Tests/ProviderCoreTests/`. They cover exact-ID activation, disabled
+`provider-swift/Tests/ProviderCoreTests/Inference/PrefixCache/`. They cover exact-ID activation, disabled
 and unsupported backends, fresh load hashes and identity rejection. A passing
 construction suite does not replace the real-checkpoint fixture above. Live test
 skips must be reported as unrun qualification.
@@ -1495,3 +1581,33 @@ with the original fixture (`e2e/connected_cache_http_test.go`,
 production-attestation or persistent-key restart claim. The original measured
 fixture rejects `correctness_only: true`; preserve its schema-2 evidence and use
 a separately reviewed schema-3 comparator for this seven-case pair.
+
+## App Attest release qualification
+
+Run `go test ./appattest ./api ./store -run 'TestAppAttest|TestAuthorization|TestApple'`
+from `coordinator/`, using a disposable local `DATABASE_URL` for the store
+contracts (the test harness truncates tables). Add `-race` for concurrency checks.
+Run `swift test --filter ProviderAppAttestTests` from `provider-swift/`.
+The private admin queries have PostgreSQL coverage in
+`admin-ui/src/lib/queries/app-attest.test.ts`.
+
+After the optimized provider is packaged with its resources, run
+`Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`. Require all three markers:
+`app-attest-callback-runtime-smoke: ok`, `gemma-optimizations-runtime-smoke: ok`,
+and `paged-kernel-runtime-smoke: ok`. Callback completion and expiry are exercised
+without Apple service calls or a Keychain item. This linked-binary check catches
+a release-only allocator failure that debug tests missed. Run
+`bash scripts/test-install-atomic.sh` for installer acceptance and rollback cases.
+The [rollout runbook](../operations/app-attest-rollout.md) separates these checks
+from real Apple receipt renewal and final signed-artifact fleet qualification.
+
+## Provider release toolchain
+
+`python3 scripts/test-provider-release-toolchain.py` checks SDK selection, rejection of older SDK/compiler inputs, wrapper argument boundaries and propagation of `SDKROOT` without installing software. Release Integrity runs these tests. The signed provider workflow runs the provider unit suite and isolated allocator gates with the selected SDK 27 / Swift 6.4 toolchain before packaging; [provider release](../operations/provider-release.md) describes artifact qualification.
+
+## Related
+
+- [build.md](build.md) — toolchain and build commands.
+- [`../operations/provider-release.md`](../operations/provider-release.md) — release checks that also run in CI.
+- [`../architecture/components/provider.md`](../architecture/components/provider.md) — what the provider does at runtime.
+- [`../architecture/prompt-contract-sidecar.md`](../architecture/prompt-contract-sidecar.md) — what prompt parity protects.

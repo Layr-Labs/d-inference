@@ -17,6 +17,7 @@
 /// real (the encryption helpers run inside `NodeKeyPair`).
 
 import Foundation
+import ProviderAppAttest
 import HTTPTypes
 import Hummingbird
 import HummingbirdCore
@@ -30,6 +31,7 @@ import NIOCore
 /// Captured wire messages received from the provider. Cumulative for the
 /// lifetime of the mock; tests inspect a snapshot after each interaction.
 public struct CapturedMessages: Sendable {
+    public var appAttestShadow: [AppAttestShadowPayload] = []
     public var registers: [ProviderMessage.Register] = []
     public var heartbeats: [ProviderMessage.Heartbeat] = []
     public var attestationResponses: [ProviderMessage.AttestationResponse] = []
@@ -599,6 +601,7 @@ public final class MockCoordinator: @unchecked Sendable {
 
         lock.withLock {
             switch parsed {
+            case .appAttestShadow(let p): captured.appAttestShadow.append(p)
             case .register(let r):           captured.registers.append(r)
             case .heartbeat(let h):          captured.heartbeats.append(h)
             case .attestationResponse(let a): captured.attestationResponses.append(a)

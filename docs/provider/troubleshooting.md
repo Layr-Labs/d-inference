@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-09-06 · commit `615d96328`
+> Last updated: 2026-09-14 · commit `b725a72a8`
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -41,7 +41,8 @@ has started, leaves the previous install untouched.
 | `Staged Darkbloom.app does not satisfy the pinned signature requirement.` / `Legacy flat artifact does not satisfy …` | `codesign --verify --deep --strict -R=…` failed against `identifier "io.darkbloom.provider"`, Team `SLDQ2GJ6TL` | Do not install; the artifact is not the signed release |
 | `Fan-helper CLI capability, marker, and nested helper must be present together.` / `… marker is invalid.` / `Bundled fan helper must be a regular executable …` / `… must have mode 0755.` / `… does not satisfy the pinned helper signature requirement.` | Fan-helper capability triple inconsistent in the staged app | Bad artifact; report it |
 | `Paged-capable staged app is missing its signed capability marker.` / `Staged app advertises paged capability without paged runtime code.` / `Paged runtime capability marker is invalid.` / `… requires exactly one sealed MLXLMCommon pagedattention.metal.` | Paged-kernel marker ⇔ binary ⇔ resource mismatch | Bad artifact; report it |
-| `Packaged paged-kernel runtime smoke failed.` | `darkbloom runtime-smoke` could not load the packaged Metal runtime | Confirm a Metal GPU (`system_profiler SPDisplaysDataType`); retry; report with the macOS version |
+| `Packaged App Attest callback runtime smoke failed.` or missing callback marker | The staged callback runtime failed before Metal validation | Keep the existing installed app; retry with a fixed release and report the provider/macOS versions |
+| `Packaged runtime smoke failed (App Attest, configuration, or Metal).` | One of the staged runtime checks failed | Run the staged app’s `runtime-smoke` to identify the last success marker; report its output and macOS version |
 | `Atomic app swap failed; previous install was restored.` | `mv` into `~/.darkbloom` failed | Check free space and permissions on `~/.darkbloom` |
 | `Secure Enclave ⚠ (not available on this hardware …)` (warning, install continues) | `darkbloom-enclave info` failed | Trust stays below `hardware`; see [attestation](./attestation.md) |
 | `Enrollment ⚠ …` (warning) | Profile not installed, or `POST /v1/enroll` unreachable | `darkbloom enroll`, then install the profile in System Settings |
@@ -76,6 +77,16 @@ attestation readiness, trust, model fit, runtime, billing, version;
 | `up to date` | `SelfUpdater.checkForUpdate`; also reports a quarantined release | See [updates](#updates) |
 
 `darkbloom verify` runs the same set and exits 1 on any ⚠.
+
+The process-table, local-port and sleep probes have a five-second execution
+deadline, followed by bounded child termination. Large output is captured in
+a temporary file, which is removed after the probe. A failed contention probe
+adds no hints; a failed sleep probe reports unavailable. These bounds apply
+to `LocalContentionSnapshot.runCapture` and `DoctorRunner.systemSleepPrevented`
+in `provider-swift/Sources/darkbloom/Diagnostics/CompetingInferenceDiagnostics.swift`
+and `provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swift`, using
+`provider-swift/Sources/ProviderCore/Process/BoundedProcess.swift`
+(`runCapturingStandardOutput`).
 
 ## `darkbloom start` fails
 
@@ -138,7 +149,7 @@ are tabulated in [`cli-reference.md`](./cli-reference.md#runtime-constants).
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `model fit` ✗ / `recent model load` shows admission refused | `ModelLoadAdmission` (`provider-swift/Sources/ProviderCore/Inference/ModelLoadAdmission.swift`) found less free-for-load memory than the model's padded weights plus headroom ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)) | Close other apps; lower `max_model_slots`; pick a smaller quantisation ([hardware requirements](./hardware-requirements.md)) |
+| `model fit` ✗ / `recent model load` shows admission refused | `ModelLoadAdmission` (`provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift`) found less free-for-load memory than the model's padded weights plus headroom ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)) | Close other apps; lower `max_model_slots`; pick a smaller quantisation ([hardware requirements](./hardware-requirements.md)) |
 | Model missing from `darkbloom models list` | Not in `~/.cache/huggingface/hub`, or filtered by `enabled_models` | `darkbloom models download <id>`; `darkbloom models list --all` |
 | Load fails after a catalog update | New build published for the alias | `darkbloom models remove <id>` then `darkbloom models download <id>` |
 | `Skipping <id>: model_type … has no engine-v2 adapter` | Family not served by CBv2 | Use a supported family; the model is never advertised |
@@ -177,7 +188,7 @@ produce a contiguous slot. Read the reported reason. Set `"contiguous"` to pin
 that backend, or `"auto"` to allow model-aware selection and fallback; `"auto"`
 is not a contiguous pin for the cohort. Explicit `"paged"` bypasses the
 automatic crash-loop guard, not the kill switch or capability vetoes
-(`provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift`,
+(`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift`,
 `degradesPagedFailure`; `EngineV2Factory+BackendPreparation.swift`,
 `prepareProductionBackend`).
 

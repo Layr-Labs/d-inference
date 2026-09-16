@@ -2,6 +2,7 @@ package warmpool
 
 import (
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -91,6 +92,12 @@ func (c Config) PerTickCeiling() int {
 }
 
 func (c Config) Check() error {
+	// The decode floor also feeds admission when the warm controller is disabled.
+	for _, value := range []float64{c.WarmSaturationThreshold, c.DecodeFloorTPS, c.RampGapFraction, c.HeadroomLoadWindows} {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("registry: warm pool target tunables must be finite")
+		}
+	}
 	if !c.Enabled && c.Interval == 0 {
 		return nil
 	}

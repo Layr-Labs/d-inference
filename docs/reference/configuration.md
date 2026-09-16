@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-15 · commit `56da3a668`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -183,13 +183,14 @@ they tune is explained in
 | `EIGENINFERENCE_WARM_POOL_MIN_DWELL` | Go duration | `5m` | `coordinator/registry/config.go` | Minimum time a model stays warm before it may be unloaded. |
 | `EIGENINFERENCE_WARM_POOL_QUEUE_AGE_THRESHOLD` | Go duration | `0` | `coordinator/registry/config.go` | Queue age that counts as pressure. |
 | `EIGENINFERENCE_WARM_POOL_CAPACITY_REJECT_THRESHOLD` | integer ≥ 1 | `1` | `coordinator/registry/config.go` | Capacity rejects per tick that count as pressure. |
-| `EIGENINFERENCE_WARM_POOL_WARM_SATURATION_THRESHOLD` | float 0–1 | `0.8` | `coordinator/registry/config.go` | Warm-slot utilisation that counts as pressure. |
+| `EIGENINFERENCE_WARM_POOL_WARM_SATURATION_THRESHOLD` | finite float 0–1 | `0.8` | `coordinator/registry/config.go` | Warm-slot utilisation that counts as pressure. |
 | `EIGENINFERENCE_WARM_POOL_TTFT_MISS_THRESHOLD` | integer ≥ 1 | `1` | `coordinator/registry/config.go` | TTFT misses per tick that count as pressure. |
 | `EIGENINFERENCE_WARM_POOL_SPECULATIVE_START_THRESHOLD` | integer ≥ 1 | `2` | `coordinator/registry/config.go` | Speculative dispatch starts per tick that count as pressure. |
 | `EIGENINFERENCE_WARM_POOL_SPECULATIVE_WIN_THRESHOLD` | integer ≥ 1 | `1` | `coordinator/registry/config.go` | Speculative wins per tick that count as pressure. |
 | `EIGENINFERENCE_WARM_POOL_COLD_DISPATCH_THRESHOLD` | integer ≥ 1 | `1` | `coordinator/registry/config.go` | Cold dispatches per tick that count as pressure. |
 | `EIGENINFERENCE_WARM_POOL_LOAD_DURATION_THRESHOLD` | Go duration | `20s` | `coordinator/registry/config.go` | Load duration above which a load is counted as slow. |
-| `EIGENINFERENCE_WARM_POOL_DECODE_FLOOR_TPS` | float (≤ 0 disables) | `15` | `coordinator/registry/config.go` | Per-request decode floor used to derive quality concurrency for the target. |
+| `EIGENINFERENCE_WARM_POOL_DECODE_FLOOR_TPS` | finite float ≥ 0 (`0` disables) | `15` | `coordinator/registry/config.go` | Per-request decode floor used to derive quality concurrency for the target. |
+| `EIGENINFERENCE_WARM_POOL_HEADROOM_LOAD_WINDOWS` | finite float ≥ 0 (`0` uses one window) | `1.0` | `coordinator/registry/config.go` | Control intervals of demand growth covered by the derived headroom floor. |
 | `EIGENINFERENCE_WARM_POOL_BURST_BUFFER` | integer ≥ 0 | `1` | `coordinator/registry/config.go` | Spare warm providers added to the demand-derived target. |
 | `EIGENINFERENCE_WARM_POOL_FALLBACK_QUALITY_CONCURRENCY` | integer ≥ 1 | `4` | `coordinator/registry/config.go` | Per-provider concurrency assumed when rates are unknown. |
 | `EIGENINFERENCE_WARM_POOL_ASSUMED_PROMPT_TOKENS` | integer ≥ 0 | `512` | `coordinator/registry/config.go` | Representative prompt size for the service-time estimate. |
@@ -197,8 +198,20 @@ they tune is explained in
 | `EIGENINFERENCE_WARM_POOL_MIN_WARM` | `model=count,…` | unset | `coordinator/registry/config.go` (`envModelIntMap`) | Operator floor of warm providers per concrete model id. |
 | `EIGENINFERENCE_WARM_POOL_MAX_LOADS_PER_TICK` | integer ≥ 0 (`0` = observe) | `4` | `coordinator/registry/config.go` | Baseline load burst per tick. |
 | `EIGENINFERENCE_WARM_POOL_MAX_LOADS_PER_TICK_CEILING` | integer ≥ 0 | `16` | `coordinator/registry/config.go` | Hard per-tick maximum after gap scaling. |
-| `EIGENINFERENCE_WARM_POOL_RAMP_GAP_FRACTION` | float ≥ 0 | `0.5` | `coordinator/registry/config.go` | Scales the burst with the remaining target gap. |
+| `EIGENINFERENCE_WARM_POOL_RAMP_GAP_FRACTION` | finite float ≥ 0 | `0.5` | `coordinator/registry/config.go` | Scales the burst with the remaining target gap. |
 | `EIGENINFERENCE_WARM_POOL_MAX_GLOBAL_PENDING_LOADS` | integer ≥ 0 | `16` | `coordinator/registry/config.go` | Fleet-wide cap on in-flight loads. |
+
+`QualityCapConfig.Check` and `WarmPoolConfig.Check` in
+`coordinator/registry/config.go` reject non-finite floating-point tunables at
+startup, including when the warm controller is disabled. Existing finite ranges
+and zero-value disable/fallback semantics remain in effect. Specifically,
+`EIGENINFERENCE_WARM_POOL_ENABLED=false` together with
+`EIGENINFERENCE_WARM_POOL_INTERVAL=0s` bypasses the
+warm-controller range checks after the finite checks. This preserves acceptance
+of a finite negative decode floor in that disabled-controller configuration;
+`coordinator/registry/concurrency_cap.go` (`qualityConcurrency`) treats a floor
+≤ 0 as disabling the quality cap. The ranges in the warm-pool table apply when
+that disabled, zero-interval exception is not selected.
 
 Cache-aware routing (semantics in [`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md)). `refresh-env.sh` seeds absent keys from `deploy/gcp/prod/release-env-defaults` — production ships `MODE=off`, `PERCENT=1`, `MAX_PLAN_QPS=1` — and never overwrites a value an operator has set:
 

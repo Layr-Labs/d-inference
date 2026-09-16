@@ -165,6 +165,9 @@ This checks compilation without executing the fixtures. Use the
 [live-fixture procedure](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib)
 to qualify an enabled model scenario.
 
+The same test product includes the [stream and model-list assertion checks](test.md#stream-and-model-list-assertions);
+those checks use scripted engines and need no downloaded model.
+
 ```bash
 make provider-build
 # = cd provider-swift && swift build

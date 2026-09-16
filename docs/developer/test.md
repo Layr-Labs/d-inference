@@ -578,7 +578,10 @@ checked after evaluation. Paged dispatch is observed through the existing hook;
 the synthetic selection is never marked as a confirmed model sample. Native SDPA
 identifies the API invoked, not an instrumented internal MLX kernel variant.
 
-`ReplayHostTests` covers bounded transfer/IO/options. `ReplayOperatorTests` executes
+`ReplayHostTests` covers bounded transfer/IO/options, including refusing an owned
+FIFO without waiting for a writer
+(`scripts/benchmarks/attention-replay/Tests/AttentionReplayTests/ReplayHostTests.swift`,
+`fifoInputIsRejectedWithoutWaitingForAWriter`). `ReplayOperatorTests` executes
 24 synthetic operator cases plus one host guard, with all three genuine arms in
 each operator case. The existing native reference ceiling `1e-2` and paged bound
 `max(3 * contiguous relativeL2, 1e-2)` remain unchanged. Exact storage bytes and

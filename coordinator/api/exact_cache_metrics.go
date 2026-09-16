@@ -6,7 +6,7 @@ import (
 )
 
 func (s *Server) registerExactCacheGauges() {
-	s.metrics.RegisterSnapshotHook(func() {
+	s.adminMetrics.RegisterSnapshotHook(func() {
 		status := s.cachedExactCacheStatusSnapshot()
 		s.exactCacheGaugeMu.Lock()
 		s.exactCacheGaugeStatus = status
@@ -17,23 +17,23 @@ func (s *Server) registerExactCacheGauges() {
 	}
 	for _, mode := range []string{registry.CacheRoutingOff, registry.CacheRoutingOn} {
 		mode := mode
-		s.metrics.RegisterGaugeLabels("exact_cache_routing_mode", gauge(func(s ExactCacheStatus) float64 {
+		s.adminMetrics.RegisterGaugeLabels("exact_cache_routing_mode", gauge(func(s ExactCacheStatus) float64 {
 			return boolGauge(s.RoutingMode == mode)
 		}), MetricLabel{"mode", mode})
 	}
-	s.metrics.RegisterGauge("exact_cache_artifact_allowlist_configured", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_artifact_allowlist_configured", gauge(func(s ExactCacheStatus) float64 {
 		return boolGauge(s.ArtifactAllowlist.Configured)
 	}))
-	s.metrics.RegisterGauge("exact_cache_artifact_allowlist_count", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_artifact_allowlist_count", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.ArtifactAllowlist.Count)
 	}))
-	s.metrics.RegisterGauge("exact_cache_sidecar_enabled", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_sidecar_enabled", gauge(func(s ExactCacheStatus) float64 {
 		return boolGauge(s.Sidecar.Enabled)
 	}))
-	s.metrics.RegisterGauge("exact_cache_activation_percent", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_activation_percent", gauge(func(s ExactCacheStatus) float64 {
 		return s.Activation.Percent
 	}))
-	s.metrics.RegisterGauge("exact_cache_activation_max_plan_qps", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_activation_max_plan_qps", gauge(func(s ExactCacheStatus) float64 {
 		return s.Activation.MaxPlanQPS
 	}))
 	for _, activationOutcome := range []struct {
@@ -51,17 +51,17 @@ func (s *Server) registerExactCacheGauges() {
 		{name: "plan_failed", value: func(s registry.CacheRoutingActivationStatus) uint64 { return s.PlanFailed }},
 	} {
 		activationOutcome := activationOutcome
-		s.metrics.RegisterGaugeLabels("exact_cache_activation", gauge(func(s ExactCacheStatus) float64 {
+		s.adminMetrics.RegisterGaugeLabels("exact_cache_activation", gauge(func(s ExactCacheStatus) float64 {
 			return float64(activationOutcome.value(s.Activation))
 		}), MetricLabel{"outcome", activationOutcome.name})
 	}
-	s.metrics.RegisterGauge("exact_cache_sidecar_running", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_sidecar_running", gauge(func(s ExactCacheStatus) float64 {
 		return boolGauge(s.Sidecar.Running)
 	}))
-	s.metrics.RegisterGauge("exact_cache_sidecar_ready", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_sidecar_ready", gauge(func(s ExactCacheStatus) float64 {
 		return boolGauge(s.Sidecar.Ready)
 	}))
-	s.metrics.RegisterGauge("exact_cache_sidecar_restarts", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_sidecar_restarts", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Sidecar.Restarts)
 	}))
 	for _, reason := range []string{
@@ -69,7 +69,7 @@ func (s *Server) registerExactCacheGauges() {
 		"health_failure_threshold", "rss_limit", "restart_cooldown",
 	} {
 		reason := reason
-		s.metrics.RegisterGaugeLabels("exact_cache_sidecar_restart_reason", gauge(func(s ExactCacheStatus) float64 {
+		s.adminMetrics.RegisterGaugeLabels("exact_cache_sidecar_restart_reason", gauge(func(s ExactCacheStatus) float64 {
 			current := s.Sidecar.RestartReason
 			if current == "" {
 				current = "none"
@@ -77,46 +77,46 @@ func (s *Server) registerExactCacheGauges() {
 			return boolGauge(current == reason)
 		}), MetricLabel{"reason", reason})
 	}
-	s.metrics.RegisterGauge("exact_cache_sidecar_restart_suppressed", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_sidecar_restart_suppressed", gauge(func(s ExactCacheStatus) float64 {
 		return boolGauge(s.Sidecar.RestartSuppressed)
 	}))
-	s.metrics.RegisterGauge("exact_cache_sidecar_child_generation", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_sidecar_child_generation", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Sidecar.ChildGeneration)
 	}))
-	s.metrics.RegisterGauge("exact_cache_sidecar_consecutive_health_failures", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_sidecar_consecutive_health_failures", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Sidecar.ConsecutiveHealthFailures)
 	}))
-	s.metrics.RegisterGauge("exact_cache_sidecar_timeouts", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_sidecar_timeouts", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Sidecar.Timeouts)
 	}))
-	s.metrics.RegisterGauge("exact_cache_sidecar_health_timeouts", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_sidecar_health_timeouts", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Sidecar.HealthTimeouts)
 	}))
-	s.metrics.RegisterGauge("exact_cache_sidecar_preload_timeouts", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_sidecar_preload_timeouts", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Sidecar.PreloadTimeouts)
 	}))
-	s.metrics.RegisterGauge("exact_cache_sidecar_overloads", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_sidecar_overloads", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Sidecar.Overloads)
 	}))
-	s.metrics.RegisterGauge("exact_cache_sidecar_rss_bytes", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_sidecar_rss_bytes", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Sidecar.RSSBytes)
 	}))
-	s.metrics.RegisterGauge("exact_cache_preload_ready", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_preload_ready", gauge(func(s ExactCacheStatus) float64 {
 		return boolGauge(s.Preload.Ready)
 	}))
-	s.metrics.RegisterGauge("exact_cache_preload_contracts", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_preload_contracts", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Preload.ContractCount)
 	}))
-	s.metrics.RegisterGauge("exact_cache_preload_runs", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_preload_runs", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Preload.Runs)
 	}))
-	s.metrics.RegisterGauge("exact_cache_preload_failures", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_preload_failures", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Preload.Failures)
 	}))
-	s.metrics.RegisterGaugeLabels("exact_cache_preload_results", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGaugeLabels("exact_cache_preload_results", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Preload.Warm)
 	}), MetricLabel{"state", "warm"})
-	s.metrics.RegisterGaugeLabels("exact_cache_preload_results", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGaugeLabels("exact_cache_preload_results", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Preload.Cold)
 	}), MetricLabel{"state", "cold"})
 	for _, plannerOutcome := range []struct {
@@ -132,7 +132,7 @@ func (s *Server) registerExactCacheGauges() {
 		{name: "timeout", value: func(s promptcontract.SidecarPlanMetrics) uint64 { return s.TimedOut }},
 	} {
 		plannerOutcome := plannerOutcome
-		s.metrics.RegisterGaugeLabels("exact_cache_sidecar_plans", gauge(func(s ExactCacheStatus) float64 {
+		s.adminMetrics.RegisterGaugeLabels("exact_cache_sidecar_plans", gauge(func(s ExactCacheStatus) float64 {
 			return float64(plannerOutcome.value(s.Sidecar.Planner.Plans))
 		}), MetricLabel{"outcome", plannerOutcome.name})
 	}
@@ -146,74 +146,74 @@ func (s *Server) registerExactCacheGauges() {
 		{name: "failed", value: func(s promptcontract.SidecarContractMetrics) uint64 { return s.Failed }},
 	} {
 		loadState := loadState
-		s.metrics.RegisterGaugeLabels("exact_cache_sidecar_contract_loads", gauge(func(s ExactCacheStatus) float64 {
+		s.adminMetrics.RegisterGaugeLabels("exact_cache_sidecar_contract_loads", gauge(func(s ExactCacheStatus) float64 {
 			return float64(loadState.value(s.Sidecar.Planner.ContractLoads))
 		}), MetricLabel{"state", loadState.name})
 	}
-	s.metrics.RegisterGaugeLabels("exact_cache_prompt_artifacts", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGaugeLabels("exact_cache_prompt_artifacts", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.PromptArtifacts.Ready)
 	}), MetricLabel{"state", "ready"})
-	s.metrics.RegisterGaugeLabels("exact_cache_prompt_artifacts", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGaugeLabels("exact_cache_prompt_artifacts", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.PromptArtifacts.Pending)
 	}), MetricLabel{"state", "pending"})
-	s.metrics.RegisterGaugeLabels("exact_cache_prompt_artifacts", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGaugeLabels("exact_cache_prompt_artifacts", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.PromptArtifacts.Failed)
 	}), MetricLabel{"state", "failed"})
-	s.metrics.RegisterGaugeLabels("exact_cache_provider_protocol", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGaugeLabels("exact_cache_provider_protocol", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Providers.V0)
 	}), MetricLabel{"version", "0"})
-	s.metrics.RegisterGaugeLabels("exact_cache_provider_protocol", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGaugeLabels("exact_cache_provider_protocol", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Providers.V1)
 	}), MetricLabel{"version", "1"})
-	s.metrics.RegisterGaugeLabels("exact_cache_provider_protocol", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGaugeLabels("exact_cache_provider_protocol", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Providers.V2)
 	}), MetricLabel{"version", "2"})
-	s.metrics.RegisterGauge("exact_cache_v2_ready_models", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_v2_ready_models", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Providers.V2ReadyModels)
 	}))
-	s.metrics.RegisterGauge("exact_cache_memory_ready_models", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_memory_ready_models", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Providers.MemoryReadyModels)
 	}))
-	s.metrics.RegisterGauge("exact_cache_loaded_models", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_loaded_models", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Providers.LoadedModels)
 	}))
-	s.metrics.RegisterGauge("exact_cache_reported_loaded_models", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_reported_loaded_models", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Providers.ReportedLoadedModels)
 	}))
-	s.metrics.RegisterGauge("exact_cache_unreported_loaded_models", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_unreported_loaded_models", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Providers.UnreportedLoadedModels)
 	}))
-	s.metrics.RegisterGauge("exact_cache_excluded_models", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_excluded_models", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Providers.ExcludedModels)
 	}))
 	for _, state := range registry.PrefixCacheStatusStates() {
 		state := state
-		s.metrics.RegisterGaugeLabels("exact_cache_eligibility_state", gauge(func(s ExactCacheStatus) float64 {
+		s.adminMetrics.RegisterGaugeLabels("exact_cache_eligibility_state", gauge(func(s ExactCacheStatus) float64 {
 			return float64(s.Providers.ByState[state])
 		}), MetricLabel{"state", state})
 	}
 	for _, reason := range registry.PrefixCacheStatusReasons() {
 		reason := reason
-		s.metrics.RegisterGaugeLabels("exact_cache_eligibility_reason", gauge(func(s ExactCacheStatus) float64 {
+		s.adminMetrics.RegisterGaugeLabels("exact_cache_eligibility_reason", gauge(func(s ExactCacheStatus) float64 {
 			return float64(s.Providers.ByReason[reason])
 		}), MetricLabel{"reason", reason})
 	}
 	for _, backend := range registry.PrefixCacheStatusBackends() {
 		backend := backend
-		s.metrics.RegisterGaugeLabels("exact_cache_eligibility_backend", gauge(func(s ExactCacheStatus) float64 {
+		s.adminMetrics.RegisterGaugeLabels("exact_cache_eligibility_backend", gauge(func(s ExactCacheStatus) float64 {
 			return float64(s.Providers.ByBackend[backend])
 		}), MetricLabel{"backend", backend})
 	}
 	for _, strategy := range registry.PrefixCacheReplayStrategies() {
 		strategy := strategy
-		s.metrics.RegisterGaugeLabels("exact_cache_eligibility_strategy", gauge(func(s ExactCacheStatus) float64 {
+		s.adminMetrics.RegisterGaugeLabels("exact_cache_eligibility_strategy", gauge(func(s ExactCacheStatus) float64 {
 			return float64(s.Providers.ByReplayStrategy[strategy])
 		}), MetricLabel{"strategy", strategy})
 	}
-	s.metrics.RegisterGauge("exact_cache_holders", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_holders", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Holders)
 	}))
-	s.metrics.RegisterGauge("exact_cache_attempts", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_attempts", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Attempts)
 	}))
 	for _, lifecycle := range []struct {
@@ -226,22 +226,22 @@ func (s *Server) registerExactCacheGauges() {
 		{name: "donation", value: func(s registry.CacheRoutingLifecycleStatus) uint64 { return s.SSDDonations }},
 	} {
 		lifecycle := lifecycle
-		s.metrics.RegisterGaugeLabels("exact_cache_ssd_lifecycle", gauge(func(s ExactCacheStatus) float64 {
+		s.adminMetrics.RegisterGaugeLabels("exact_cache_ssd_lifecycle", gauge(func(s ExactCacheStatus) float64 {
 			return float64(lifecycle.value(s.Lifecycle))
 		}), MetricLabel{"event", lifecycle.name})
 	}
-	s.metrics.RegisterGauge("exact_cache_holder_added", gauge(func(s ExactCacheStatus) float64 {
+	s.adminMetrics.RegisterGauge("exact_cache_holder_added", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Lifecycle.HolderAdded)
 	}))
 	for _, reason := range registry.CacheHolderRemovalReasons() {
 		reason := reason
-		s.metrics.RegisterGaugeLabels("exact_cache_holder_removed", gauge(func(s ExactCacheStatus) float64 {
+		s.adminMetrics.RegisterGaugeLabels("exact_cache_holder_removed", gauge(func(s ExactCacheStatus) float64 {
 			return float64(s.Lifecycle.HolderRemoved[reason])
 		}), MetricLabel{"reason", reason})
 	}
 	for _, outcome := range registry.PrefixCacheDonationOutcomes() {
 		outcome := outcome
-		s.metrics.RegisterGaugeLabels("exact_cache_donation_outcome", gauge(func(s ExactCacheStatus) float64 {
+		s.adminMetrics.RegisterGaugeLabels("exact_cache_donation_outcome", gauge(func(s ExactCacheStatus) float64 {
 			return float64(s.Lifecycle.DonationOutcomes[outcome])
 		}), MetricLabel{"outcome", outcome})
 	}

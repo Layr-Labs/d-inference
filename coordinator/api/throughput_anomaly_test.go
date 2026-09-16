@@ -61,7 +61,7 @@ func TestThroughputAnomalySweep_FlagsGemmaNotGptoss(t *testing.T) {
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.sweepThroughputAnomalies(registry.DefaultThroughputAnomalyConfig())
 
-	counters := srv.metrics.Snapshot().Counters
+	counters := srv.adminMetrics.Snapshot().Counters
 	const (
 		gemmaKey  = "routing.throughput_anomaly{chip_family=M3 Max,model=gemma-4-26b-qat-4bit}"
 		gptossKey = "routing.throughput_anomaly{chip_family=M3 Max,model=gpt-oss-20b}"
@@ -86,7 +86,7 @@ func TestThroughputAnomalySweep_InsufficientSamples(t *testing.T) {
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	srv.sweepThroughputAnomalies(registry.DefaultThroughputAnomalyConfig())
 
-	for k, v := range srv.metrics.Snapshot().Counters {
+	for k, v := range srv.adminMetrics.Snapshot().Counters {
 		if v != 0 && k == "routing.throughput_anomaly{chip_family=M3 Max,model=gemma-4-26b-qat-4bit}" {
 			t.Fatalf("should not flag with a single sample, got %s=%d", k, v)
 		}

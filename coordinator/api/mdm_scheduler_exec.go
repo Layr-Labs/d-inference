@@ -362,8 +362,8 @@ func (s *mdmVerificationScheduler) finishAttempt(work mdmSchedulerWork, result m
 		currentJob.record.ClaimExpiresAt = nil
 	}
 	s.mu.Unlock()
-	if s.server.metrics != nil {
-		s.server.metrics.ObserveHistogram(
+	if s.server.adminMetrics != nil {
+		s.server.adminMetrics.ObserveHistogram(
 			"mdm_scheduler_retry_delay_seconds", delay.Seconds(),
 			MetricLabel{"stage", schedulerRetryStageLabel(stage)},
 		)

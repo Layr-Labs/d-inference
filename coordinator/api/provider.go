@@ -277,8 +277,8 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				// Peer-initiated closes were previously unmetered — only
 				// read_error incremented ws_disconnects_total — so dashboards
 				// could not split graceful closes (update/shutdown) from drops.
-				if s.metrics != nil {
-					s.metrics.IncCounter("ws_disconnects_total",
+				if s.adminMetrics != nil {
+					s.adminMetrics.IncCounter("ws_disconnects_total",
 						MetricLabel{"reason", "peer_close"},
 					)
 				}
@@ -298,8 +298,8 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 						"reason":      readReason,
 						"last_error":  err.Error(),
 					})
-				if s.metrics != nil {
-					s.metrics.IncCounter("ws_disconnects_total",
+				if s.adminMetrics != nil {
+					s.adminMetrics.IncCounter("ws_disconnects_total",
 						MetricLabel{"reason", readReason},
 					)
 				}
@@ -316,8 +316,8 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					memPressure, inFlight := provider.DisconnectDiagnostics()
 					if inFlight > 0 && registry.ClassifyDisconnectReason(true, memPressure, inFlight) == registry.DisconnectReasonOOMSuspected {
 						oomSuspected = true
-						if s.metrics != nil {
-							s.metrics.IncCounter("provider_oom_suspected_total")
+						if s.adminMetrics != nil {
+							s.adminMetrics.IncCounter("provider_oom_suspected_total")
 						}
 						s.ddIncr("provider.oom_suspected", nil)
 						s.emit(context.Background(), protocol.SeverityError, protocol.KindOOM,
@@ -422,8 +422,8 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			}
 
 			// Record registration outcome metrics + telemetry.
-			if s.metrics != nil {
-				s.metrics.IncCounter("provider_registrations_total",
+			if s.adminMetrics != nil {
+				s.adminMetrics.IncCounter("provider_registrations_total",
 					MetricLabel{"trust_level", string(provider.TrustLevel)},
 				)
 			}
@@ -1274,8 +1274,8 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				canonicalB64 = base64.StdEncoding.EncodeToString(canonical)
 			}
 			s.ddIncr("attestation.challenges", []string{"outcome:status_sig_failed"})
-			if s.metrics != nil {
-				s.metrics.IncCounter("attestation_status_sig_failed_total")
+			if s.adminMetrics != nil {
+				s.adminMetrics.IncCounter("attestation_status_sig_failed_total")
 			}
 			s.logger.Error("status signature verification failed — possible tampering or canonical mismatch",
 				"provider_id", providerID,
@@ -1800,8 +1800,8 @@ func (s *Server) handleTransientChallengeFailure(conn *websocket.Conn, providerI
 		"reason", reason,
 	)
 	s.ddIncr("attestation.force_reconnect", []string{"reason:" + reason})
-	if s.metrics != nil {
-		s.metrics.IncCounter("attestation_force_reconnect_total", MetricLabel{"reason", reason})
+	if s.adminMetrics != nil {
+		s.adminMetrics.IncCounter("attestation_force_reconnect_total", MetricLabel{"reason", reason})
 	}
 	// Closing the conn unblocks providerReadLoop's conn.Read, which cancels the
 	// loop context (stopping this challenge loop) and runs registry.Disconnect.
@@ -1843,8 +1843,8 @@ func (s *Server) handleChallengeFailure(providerID string, reason string) int {
 			"reason":          reason,
 			"reconnect_count": failures,
 		})
-	if s.metrics != nil {
-		s.metrics.IncCounter("attestation_failures_total",
+	if s.adminMetrics != nil {
+		s.adminMetrics.IncCounter("attestation_failures_total",
 			MetricLabel{"reason", reason},
 		)
 	}
@@ -3478,8 +3478,8 @@ func (s *Server) ApplyLateSecurityInfo(
 	binding.provider.SetMDMFailureReason("")
 	s.sendTrustStatus(binding.provider, registry.TrustHardware, "online", "MDM verification passed (late SecurityInfo)")
 	s.registry.PersistProvider(binding.provider)
-	if s.metrics != nil {
-		s.metrics.IncCounter("mdm_late_securityinfo_upgrade_total")
+	if s.adminMetrics != nil {
+		s.adminMetrics.IncCounter("mdm_late_securityinfo_upgrade_total")
 	}
 	s.ddIncr("mdm.verification", []string{"outcome:granted-late"})
 	s.mdmScheduler.CompleteLateSecurityInfo(

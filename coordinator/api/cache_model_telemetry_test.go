@@ -59,7 +59,7 @@ func TestModelCacheCompletionsSeparateModelsAndPreserveUsage(t *testing.T) {
 			}
 		}
 	}
-	snap := srv.metrics.Snapshot()
+	snap := srv.adminMetrics.Snapshot()
 	for _, tc := range []struct{ model, outcome, tier string }{
 		{a, "hit", "ssd"}, {b, "miss_absent", "ssd"}, {c, "hit", "ssd"}, {a, "invalid", "none"}, {b, "unreported", "none"},
 	} {
@@ -110,14 +110,14 @@ func TestModelCacheCompletionsSeparateModelsAndPreserveUsage(t *testing.T) {
 }
 
 func TestModelCacheProofAndSelectionPopulationsStaySeparate(t *testing.T) {
-	srv := &Server{registry: registry.New(quietLogger()), metrics: NewMetrics()}
+	srv := &Server{registry: registry.New(quietLogger()), adminMetrics: NewMetrics()}
 	modelCacheTestCatalog(srv)
 	model := "qwen3.5-35b-a3b"
 	lookup := &protocol.PrefixCacheLookupV2Message{ModelID: model, Tier: "ssd", Outcome: "hit", CacheReceiptNonce: "private-nonce"}
 	ready := &protocol.PrefixCacheReadyV2Message{ModelID: model, Tier: "ssd"}
 	srv.emitModelCacheLookup(lookup, registry.CacheReceiptResult{Reason: registry.CacheReceiptPromptMismatch})
 	srv.emitModelCacheDonation(ready, registry.CacheReceiptResult{Reason: registry.CacheReceiptLookupNotSeen})
-	if len(srv.metrics.Snapshot().Counters) != 0 {
+	if len(srv.adminMetrics.Snapshot().Counters) != 0 {
 		t.Fatal("rejected proof counted as accepted")
 	}
 	accepted := registry.CacheReceiptResult{Accepted: true, Reason: registry.CacheReceiptAccepted}
@@ -142,7 +142,7 @@ func TestModelCacheProofAndSelectionPopulationsStaySeparate(t *testing.T) {
 	missing.Model = model
 	srv.emitCacheSelectionTerminal(missing, protocol.UsageInfo{}, false, false)
 	srv.emitCacheSelectionTerminal(missing, hit, true, true)
-	snap := srv.metrics.Snapshot()
+	snap := srv.adminMetrics.Snapshot()
 	counts := map[string]int64{}
 	var estimatedUS, samples, ttftUS, ttftSamples int64
 	for key, value := range snap.Counters {
@@ -182,7 +182,7 @@ func TestModelCacheProofAndSelectionPopulationsStaySeparate(t *testing.T) {
 }
 
 func TestModelCacheLabelsRequireExplicitCatalogMembership(t *testing.T) {
-	srv := &Server{registry: registry.New(quietLogger()), metrics: NewMetrics()}
+	srv := &Server{registry: registry.New(quietLogger()), adminMetrics: NewMetrics()}
 	const secret = "private-off-catalog-model"
 	if srv.cacheModelLabel(secret) != "unknown" {
 		t.Fatal("nil catalog allowed arbitrary labels")
@@ -203,13 +203,13 @@ func TestModelCacheLabelsRequireExplicitCatalogMembership(t *testing.T) {
 	for _, ms := range []float64{math.NaN(), math.Inf(1), -1, math.MaxFloat64} {
 		srv.cacheModelTiming("provider_stage", ms)
 	}
-	if len(srv.metrics.Snapshot().Counters) != 0 {
+	if len(srv.adminMetrics.Snapshot().Counters) != 0 {
 		t.Fatal("invalid timing recorded")
 	}
 }
 
 func TestModelCacheCoverageSeparatesHitAndNonHitDenominators(t *testing.T) {
-	srv := &Server{registry: registry.New(quietLogger()), metrics: NewMetrics()}
+	srv := &Server{registry: registry.New(quietLogger()), adminMetrics: NewMetrics()}
 	modelCacheTestCatalog(srv)
 	const model = "qwen3.5-35b-a3b"
 	pr := &registry.PendingRequest{Model: model}
@@ -220,7 +220,7 @@ func TestModelCacheCoverageSeparatesHitAndNonHitDenominators(t *testing.T) {
 	}
 	srv.emitModelCacheUsage(pr, protocol.UsageInfo{PromptTokens: 8192}, false, false)
 	srv.emitModelCacheUsage(pr, protocol.UsageInfo{PromptTokens: 8192, CacheOutcome: "invalid"}, false, true)
-	snap := srv.metrics.Snapshot()
+	snap := srv.adminMetrics.Snapshot()
 	for _, tc := range []struct {
 		outcome       string
 		prompt, saved int64
@@ -238,7 +238,7 @@ func TestModelCacheCoverageSeparatesHitAndNonHitDenominators(t *testing.T) {
 }
 
 func TestModelCacheAcceptedLookupAndSelectedCoverage(t *testing.T) {
-	srv := &Server{registry: registry.New(quietLogger()), metrics: NewMetrics()}
+	srv := &Server{registry: registry.New(quietLogger()), adminMetrics: NewMetrics()}
 	modelCacheTestCatalog(srv)
 	const model = "qwen3.5-35b-a3b"
 	lookup := &protocol.PrefixCacheLookupV2Message{ModelID: model, Tier: "ssd", Outcome: "hit", ExpectedPrefillTokensSaved: 4096}
@@ -256,7 +256,7 @@ func TestModelCacheAcceptedLookupAndSelectedCoverage(t *testing.T) {
 		name   string
 		labels []MetricLabel
 	}{{"lookup", lookupLabels}, {"selection", selectionLabels}} {
-		snap := srv.metrics.Snapshot()
+		snap := srv.adminMetrics.Snapshot()
 		if got := snap.Counters[metricKey("cache_model_"+tc.name+"_prompt_tokens_total", tc.labels)]; got != 8192 {
 			t.Fatalf("%s denominator=%d", tc.name, got)
 		}
@@ -267,12 +267,12 @@ func TestModelCacheAcceptedLookupAndSelectedCoverage(t *testing.T) {
 }
 
 func TestModelCacheReceiptDiagnosticsUseBoundedLabelsWithoutCountingHits(t *testing.T) {
-	srv := &Server{registry: registry.New(quietLogger()), metrics: NewMetrics()}
+	srv := &Server{registry: registry.New(quietLogger()), adminMetrics: NewMetrics()}
 	modelCacheTestCatalog(srv)
 	srv.emitModelCacheReceipt("private-model|tag", "private-tier", "lookup_v2", registry.CacheReceiptResult{
 		Reason: registry.CacheReceiptPromptMismatch, PromptMismatch: registry.CachePromptHashMismatch,
 	})
-	snap := srv.metrics.Snapshot()
+	snap := srv.adminMetrics.Snapshot()
 	if snap.Counters["cache_model_prompt_mismatch_total{detail=same_length_hash,model=unknown,tier=none}"] != 1 {
 		t.Fatalf("missing bounded diagnostic: %v", snap.Counters)
 	}

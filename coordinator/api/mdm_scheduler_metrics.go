@@ -28,8 +28,8 @@ func schedulerRetryStageLabel(stage int) string {
 }
 
 func (s *mdmVerificationScheduler) metricCounter(name, labelName, labelValue string) {
-	if s.server.metrics != nil {
-		s.server.metrics.IncCounter(name, MetricLabel{labelName, labelValue})
+	if s.server.adminMetrics != nil {
+		s.server.adminMetrics.IncCounter(name, MetricLabel{labelName, labelValue})
 	}
 	ddName := map[string]string{
 		"mdm_scheduler_enqueued_total":       "mdm.scheduler.enqueued",
@@ -52,12 +52,12 @@ func (s *mdmVerificationScheduler) observeAttempt(work mdmSchedulerWork, result 
 	if queueWait < 0 {
 		queueWait = 0
 	}
-	if s.server.metrics != nil {
-		s.server.metrics.IncCounter("mdm_scheduler_attempts_total", MetricLabel{"kind", kind}, MetricLabel{"outcome", outcome})
-		s.server.metrics.ObserveHistogram("mdm_scheduler_attempt_seconds", duration.Seconds(), MetricLabel{"kind", kind}, MetricLabel{"outcome", outcome})
-		s.server.metrics.ObserveHistogram("mdm_scheduler_queue_wait_seconds", queueWait.Seconds(), MetricLabel{"kind", kind}, MetricLabel{"priority", schedulerPriorityLabel(work.job.Priority)})
+	if s.server.adminMetrics != nil {
+		s.server.adminMetrics.IncCounter("mdm_scheduler_attempts_total", MetricLabel{"kind", kind}, MetricLabel{"outcome", outcome})
+		s.server.adminMetrics.ObserveHistogram("mdm_scheduler_attempt_seconds", duration.Seconds(), MetricLabel{"kind", kind}, MetricLabel{"outcome", outcome})
+		s.server.adminMetrics.ObserveHistogram("mdm_scheduler_queue_wait_seconds", queueWait.Seconds(), MetricLabel{"kind", kind}, MetricLabel{"priority", schedulerPriorityLabel(work.job.Priority)})
 		if result.outcome == store.VerificationOutcomeTimeout {
-			s.server.metrics.IncCounter("mdm_scheduler_timeouts_total", MetricLabel{"kind", kind})
+			s.server.adminMetrics.IncCounter("mdm_scheduler_timeouts_total", MetricLabel{"kind", kind})
 		}
 	}
 	s.server.ddIncr("mdm.scheduler.attempts", []string{"kind:" + kind, "outcome:" + outcome})
@@ -123,19 +123,19 @@ func (s *mdmVerificationScheduler) publishDogStatsDGauges() {
 }
 
 func (s *mdmVerificationScheduler) registerMetrics() {
-	if s.server.metrics == nil {
+	if s.server.adminMetrics == nil {
 		return
 	}
 	for _, kind := range []store.VerificationTaskKind{store.VerificationTaskSecurityInfo, store.VerificationTaskMDA} {
 		kind := kind
-		s.server.metrics.RegisterGaugeLabels("mdm_scheduler_active_attempts", func() float64 {
+		s.server.adminMetrics.RegisterGaugeLabels("mdm_scheduler_active_attempts", func() float64 {
 			s.mu.Lock()
 			defer s.mu.Unlock()
 			return float64(s.active[kind])
 		}, MetricLabel{"kind", string(kind)})
 		for _, priority := range []store.VerificationPriority{store.VerificationPriorityFirstOrExpired, store.VerificationPriorityRecovery, store.VerificationPriorityRefresh} {
 			priority := priority
-			s.server.metrics.RegisterGaugeLabels("mdm_scheduler_queue_depth", func() float64 {
+			s.server.adminMetrics.RegisterGaugeLabels("mdm_scheduler_queue_depth", func() float64 {
 				s.mu.Lock()
 				defer s.mu.Unlock()
 				count := 0

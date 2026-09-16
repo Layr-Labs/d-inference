@@ -19,12 +19,12 @@ func (s *Server) emitInvalidTTFT(model, reason string) {
 		tags = append(tags, "model:"+model)
 	}
 	s.ddIncr("routing.invalid_ttft", tags)
-	if s.metrics != nil {
+	if s.adminMetrics != nil {
 		labels := []MetricLabel{{Name: "reason", Value: reason}}
 		if model != "" {
 			labels = append(labels, MetricLabel{Name: "model", Value: model})
 		}
-		s.metrics.IncCounter("routing.invalid_ttft", labels...)
+		s.adminMetrics.IncCounter("routing.invalid_ttft", labels...)
 	}
 }
 
@@ -52,13 +52,13 @@ func (s *Server) emitTTFTShadowMetrics(model string, decision registry.RoutingDe
 
 	s.ddIncr("routing.ttft_admission", []string{"model:" + model, "decision:" + shedTag, "mode:" + decision.ShadowMode})
 	s.ddIncr("routing.ttft_spread", []string{"model:" + model, "would_redirect_to_idle:" + redirectTag, "mode:" + decision.ShadowMode})
-	if s.metrics != nil {
-		s.metrics.IncCounter("routing.ttft_admission",
+	if s.adminMetrics != nil {
+		s.adminMetrics.IncCounter("routing.ttft_admission",
 			MetricLabel{Name: "model", Value: model},
 			MetricLabel{Name: "decision", Value: shedTag},
 			MetricLabel{Name: "mode", Value: decision.ShadowMode},
 		)
-		s.metrics.IncCounter("routing.ttft_spread",
+		s.adminMetrics.IncCounter("routing.ttft_spread",
 			MetricLabel{Name: "model", Value: model},
 			MetricLabel{Name: "would_redirect_to_idle", Value: redirectTag},
 			MetricLabel{Name: "mode", Value: decision.ShadowMode},

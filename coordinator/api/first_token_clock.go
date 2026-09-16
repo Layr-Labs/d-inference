@@ -282,8 +282,8 @@ func (d *dispatchState) abandonInflightForFirstTokenTimeout() bool {
 		routingAttempt(provider, pr, d.requestID, d.attempt),
 		d.errorRoutingOutcomeFor(pr, "timeout", "first_chunk_timeout", http.StatusGatewayTimeout),
 	)
-	if d.s.metrics != nil {
-		d.s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+	if d.s.adminMetrics != nil {
+		d.s.adminMetrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
 	}
 	d.s.ddIncr("inference.dispatches", []string{"status:timeout"})
 	d.provider = nil

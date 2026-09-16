@@ -15,8 +15,8 @@ func (s *Server) emitExactCachePlan(result registry.CachePlanResult) {
 	if outcome == "" {
 		outcome = string(registry.CachePlanIneligible)
 	}
-	if s.metrics != nil {
-		s.metrics.IncCounter("exact_cache_plan_total", MetricLabel{"outcome", outcome})
+	if s.adminMetrics != nil {
+		s.adminMetrics.IncCounter("exact_cache_plan_total", MetricLabel{"outcome", outcome})
 	}
 	s.ddIncr("exact_cache.plan", []string{"outcome:" + outcome})
 	if !result.SidecarCalled {
@@ -26,8 +26,8 @@ func (s *Server) emitExactCachePlan(result registry.CachePlanResult) {
 	if latencyMs < 0 {
 		return
 	}
-	if s.metrics != nil {
-		s.metrics.ObserveHistogram("exact_cache_plan_latency_ms", latencyMs,
+	if s.adminMetrics != nil {
+		s.adminMetrics.ObserveHistogram("exact_cache_plan_latency_ms", latencyMs,
 			MetricLabel{"outcome", outcome})
 	}
 	s.ddHistogram("exact_cache.plan_latency_ms", latencyMs, []string{"outcome:" + outcome})
@@ -35,11 +35,11 @@ func (s *Server) emitExactCachePlan(result registry.CachePlanResult) {
 
 func (s *Server) emitExactCacheSSDLookup(protocolVersion, outcome string, stageMs float64) {
 	tags := []string{"protocol:" + protocolVersion, "outcome:" + outcome, "tier:ssd"}
-	if s.metrics != nil {
-		s.metrics.IncCounter("exact_cache_ssd_lookup_total",
+	if s.adminMetrics != nil {
+		s.adminMetrics.IncCounter("exact_cache_ssd_lookup_total",
 			MetricLabel{"protocol", protocolVersion},
 			MetricLabel{"outcome", outcome})
-		s.metrics.ObserveHistogram("exact_cache_ssd_stage_ms", stageMs,
+		s.adminMetrics.ObserveHistogram("exact_cache_ssd_stage_ms", stageMs,
 			MetricLabel{"event", "lookup"}, MetricLabel{"outcome", outcome})
 	}
 	s.ddIncr("exact_cache.ssd_lookup", tags)
@@ -48,12 +48,12 @@ func (s *Server) emitExactCacheSSDLookup(protocolVersion, outcome string, stageM
 
 func (s *Server) emitExactCacheSSDDonation(protocolVersion string, stageMs float64, donatedTokens int) {
 	tags := []string{"protocol:" + protocolVersion, "tier:ssd"}
-	if s.metrics != nil {
-		s.metrics.IncCounter("exact_cache_ssd_donation_total",
+	if s.adminMetrics != nil {
+		s.adminMetrics.IncCounter("exact_cache_ssd_donation_total",
 			MetricLabel{"protocol", protocolVersion})
-		s.metrics.AddCounter("exact_cache_ssd_donated_tokens_total", int64(donatedTokens),
+		s.adminMetrics.AddCounter("exact_cache_ssd_donated_tokens_total", int64(donatedTokens),
 			MetricLabel{"protocol", protocolVersion})
-		s.metrics.ObserveHistogram("exact_cache_ssd_stage_ms", stageMs,
+		s.adminMetrics.ObserveHistogram("exact_cache_ssd_stage_ms", stageMs,
 			MetricLabel{"event", "donation"})
 	}
 	s.ddIncr("exact_cache.ssd_donation", tags)
@@ -63,14 +63,14 @@ func (s *Server) emitExactCacheSSDDonation(protocolVersion string, stageMs float
 
 func (s *Server) emitExactCacheUsage(outcome, tier string, cachedTokens, prefillTokensSaved int, stageMs float64) {
 	tags := []string{"outcome:" + outcome, "tier:" + tier}
-	if s.metrics != nil {
-		s.metrics.IncCounter("exact_cache_usage_total",
+	if s.adminMetrics != nil {
+		s.adminMetrics.IncCounter("exact_cache_usage_total",
 			MetricLabel{"outcome", outcome}, MetricLabel{"tier", tier})
-		s.metrics.AddCounter("exact_cache_cached_tokens_total", int64(cachedTokens),
+		s.adminMetrics.AddCounter("exact_cache_cached_tokens_total", int64(cachedTokens),
 			MetricLabel{"tier", tier})
-		s.metrics.AddCounter("exact_cache_prefill_tokens_saved_total", int64(prefillTokensSaved),
+		s.adminMetrics.AddCounter("exact_cache_prefill_tokens_saved_total", int64(prefillTokensSaved),
 			MetricLabel{"tier", tier})
-		s.metrics.ObserveHistogram("exact_cache_provider_stage_ms", stageMs,
+		s.adminMetrics.ObserveHistogram("exact_cache_provider_stage_ms", stageMs,
 			MetricLabel{"outcome", outcome}, MetricLabel{"tier", tier})
 	}
 	s.ddIncr("exact_cache.usage", tags)
@@ -86,8 +86,8 @@ func (s *Server) emitExactCacheEstimatedTTFTSaved(pr *registry.PendingRequest, t
 		return
 	}
 	value := pr.CacheSelectionEstimatedTTFTSavedMs
-	if s.metrics != nil {
-		s.metrics.ObserveHistogram("exact_cache_estimated_ttft_saved_ms", value,
+	if s.adminMetrics != nil {
+		s.adminMetrics.ObserveHistogram("exact_cache_estimated_ttft_saved_ms", value,
 			MetricLabel{"tier", lowCardinalityCacheTier(pr.CacheSelectionTier)})
 	}
 	s.ddHistogram("exact_cache.estimated_ttft_saved_ms", value, tags)
@@ -100,8 +100,8 @@ func (s *Server) emitCacheReceiptResult(kind string, result registry.CacheReceip
 	if result.Accepted {
 		outcome = "accepted"
 	}
-	if s.metrics != nil {
-		s.metrics.IncCounter("exact_cache_receipt_total", MetricLabel{"type", kind}, MetricLabel{"outcome", outcome}, MetricLabel{"reason", string(result.Reason)})
+	if s.adminMetrics != nil {
+		s.adminMetrics.IncCounter("exact_cache_receipt_total", MetricLabel{"type", kind}, MetricLabel{"outcome", outcome}, MetricLabel{"reason", string(result.Reason)})
 	}
 	s.ddIncr("exact_cache.receipt", []string{"type:" + kind, "outcome:" + outcome, "reason:" + string(result.Reason)})
 }

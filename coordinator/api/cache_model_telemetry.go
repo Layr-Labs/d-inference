@@ -21,8 +21,8 @@ func (s *Server) cacheModelLabel(model string) string {
 }
 
 func (s *Server) cacheModelCount(name string, value int64, labels ...MetricLabel) {
-	if s.metrics != nil {
-		s.metrics.AddCounter("cache_model_"+name+"_total", value, labels...)
+	if s.adminMetrics != nil {
+		s.adminMetrics.AddCounter("cache_model_"+name+"_total", value, labels...)
 	}
 	tags := make([]string, 0, len(labels))
 	for _, label := range labels {
@@ -40,8 +40,8 @@ func (s *Server) cacheModelTiming(name string, ms float64, labels ...MetricLabel
 	}
 	s.cacheModelCount(name+"_us", int64(math.Round(ms*1000)), labels...)
 	s.cacheModelCount(name+"_samples", 1, labels...)
-	if s.metrics != nil {
-		s.metrics.ObserveHistogram("cache_model_"+name+"_ms", ms, labels...)
+	if s.adminMetrics != nil {
+		s.adminMetrics.ObserveHistogram("cache_model_"+name+"_ms", ms, labels...)
 	}
 }
 
@@ -128,8 +128,8 @@ func (s *Server) emitModelCacheCoverage(population string, usage protocol.UsageI
 	}
 	s.cacheModelCount(population+"_prompt_tokens", int64(usage.PromptTokens), labels...)
 	s.cacheModelCount(population+"_prefill_tokens_saved", int64(usage.PrefillTokensSaved), labels...)
-	if s.metrics != nil {
-		s.metrics.ObserveHistogram("cache_model_"+population+"_prefill_saved_percent", 100*float64(usage.PrefillTokensSaved)/float64(usage.PromptTokens), labels...)
+	if s.adminMetrics != nil {
+		s.adminMetrics.ObserveHistogram("cache_model_"+population+"_prefill_saved_percent", 100*float64(usage.PrefillTokensSaved)/float64(usage.PromptTokens), labels...)
 	}
 }
 

@@ -1521,7 +1521,7 @@ func TestMDMSchedulerMetricsUseFixedLowCardinalityEnums(t *testing.T) {
 	sch.observeAttempt(work, mdmSchedulerAttemptResult{
 		outcome: store.VerificationOutcomeTimeout,
 	}, time.Second)
-	rendered := srv.metrics.Snapshot().RenderProm()
+	rendered := srv.adminMetrics.Snapshot().RenderProm()
 	for _, name := range []string{
 		"mdm_scheduler_queue_depth", "mdm_scheduler_active_attempts",
 		"mdm_scheduler_enqueued_total", "mdm_scheduler_deduplicated_total",

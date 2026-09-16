@@ -13,7 +13,7 @@ func TestRecoverMiddlewareCatchesPanic(t *testing.T) {
 	srv.SetAdminKey("admin-key")
 
 	// Emitter wired for metric side-effects (Datadog forwarding is no-op in tests).
-	srv.SetEmitter(telemetry.NewEmitter(srv.logger, srv.metrics, "test"))
+	srv.SetEmitter(telemetry.NewEmitter(srv.logger, srv.adminMetrics, "test"))
 
 	// Mount a panicking handler onto the internal mux directly.
 	srv.mux.HandleFunc("GET /v1/test/boom", func(w http.ResponseWriter, r *http.Request) {

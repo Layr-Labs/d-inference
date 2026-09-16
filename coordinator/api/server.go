@@ -409,9 +409,9 @@ type Server struct {
 	// by chunkKeyCacheMax.
 	chunkKeys chunkKeyCache
 
-	// metrics is the in-process metrics registry exposed via /v1/admin/metrics
+	// adminMetrics is the in-process metrics registry exposed via /v1/admin/metrics
 	// and used by internal counters/histograms. Never nil.
-	metrics *Metrics
+	adminMetrics *Metrics
 
 	// readCache memoizes pre-serialized JSON for read-heavy aggregation
 	// endpoints (stats, leaderboard, model catalog, etc.). TTLs are
@@ -824,7 +824,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		logger:                   logger,
 		mux:                      http.NewServeMux(),
 		knownRuntimeManifest:     &RuntimeManifest{},
-		metrics:                  NewMetrics(),
+		adminMetrics:             NewMetrics(),
 		readCache:                newTTLCache(),
 		geoResolver:              newProviderGeoResolverFromEnv(logger),
 		apiKeyCache:              make(map[string]apiKeyCacheEntry),
@@ -1038,7 +1038,7 @@ func (s *Server) Datadog() *datadog.Client {
 // Metrics returns the in-process metrics registry so cmd/coordinator can
 // expose it to the telemetry emitter and other integrations.
 func (s *Server) Metrics() *Metrics {
-	return s.metrics
+	return s.adminMetrics
 }
 
 // emit is an internal convenience that funnels events through the emitter if
@@ -2920,10 +2920,10 @@ func (s *Server) routes() {
 // registerDefaultGauges wires live-computed gauges (fleet size, etc.) into
 // the metrics registry at construction time.
 func (s *Server) registerDefaultGauges() {
-	s.metrics.RegisterGauge("providers_online", func() float64 {
+	s.adminMetrics.RegisterGauge("providers_online", func() float64 {
 		return float64(s.registry.ProviderCount())
 	})
-	s.metrics.RegisterGauge("min_provider_version_set", func() float64 {
+	s.adminMetrics.RegisterGauge("min_provider_version_set", func() float64 {
 		if s.minProviderVersion != "" {
 			return 1
 		}
@@ -3036,7 +3036,7 @@ func (s *Server) handleAdminMetrics(w http.ResponseWriter, r *http.Request) {
 	if !s.isAdminAuthorized(w, r) {
 		return
 	}
-	snap := s.metrics.Snapshot()
+	snap := s.adminMetrics.Snapshot()
 	if r.URL.Query().Get("format") == "prom" {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		w.WriteHeader(http.StatusOK)
@@ -3558,13 +3558,13 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		pathLabel := httpPathLabel(route)
 		statusStr := strconvItoa(sw.status)
 
-		if s.metrics != nil {
-			s.metrics.IncCounter("http_requests_total",
+		if s.adminMetrics != nil {
+			s.adminMetrics.IncCounter("http_requests_total",
 				MetricLabel{"method", r.Method},
 				MetricLabel{"path", pathLabel},
 				MetricLabel{"status", statusStr},
 			)
-			s.metrics.ObserveHistogram("http_request_duration_ms",
+			s.adminMetrics.ObserveHistogram("http_request_duration_ms",
 				float64(dur.Milliseconds()),
 				MetricLabel{"method", r.Method},
 				MetricLabel{"path", pathLabel},

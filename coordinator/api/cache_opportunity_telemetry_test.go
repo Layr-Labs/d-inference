@@ -21,7 +21,7 @@ func TestCacheOpportunityTelemetryIsTerminalOnceAndContainsNoPrivateIdentity(t *
 	usage := protocol.UsageInfo{PromptTokens: 4096, CacheTier: "ssd", CacheOutcome: "miss_absent"}
 	srv.emitCacheSelectionTerminal(pr, usage, true, true)
 	srv.emitCacheSelectionTerminal(pr, usage, true, true)
-	snap := srv.metrics.Snapshot()
+	snap := srv.adminMetrics.Snapshot()
 	labels := []MetricLabel{{"model", pr.Model}, {"reason", "repeat_without_holder"}}
 	if snap.Counters[metricKey("cache_model_opportunity_total", labels)] != 1 {
 		t.Fatal("duplicate terminal counted or opportunity missing")

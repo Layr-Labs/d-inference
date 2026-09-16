@@ -223,8 +223,8 @@ func (s *Server) emitAttemptOutcomeMetric(model string, outcome *store.Inference
 	if model == "" {
 		model = "unknown"
 	}
-	if s.metrics != nil {
-		s.metrics.IncCounter(metricAttemptOutcomeCounter,
+	if s.adminMetrics != nil {
+		s.adminMetrics.IncCounter(metricAttemptOutcomeCounter,
 			MetricLabel{"model", model}, MetricLabel{"class", class})
 	}
 	if s.dd == nil {
@@ -243,8 +243,8 @@ func (s *Server) emitQueueOutcomeMetric(model string, outcome *store.InferenceRo
 	if model == "" {
 		model = "unknown"
 	}
-	if s.metrics != nil {
-		s.metrics.IncCounter(metricQueueOutcomeCounter,
+	if s.adminMetrics != nil {
+		s.adminMetrics.IncCounter(metricQueueOutcomeCounter,
 			MetricLabel{"model", model}, MetricLabel{"class", class})
 	}
 	if s.dd == nil {
@@ -300,8 +300,8 @@ func (s *Server) recordRequestOutcomeORView(model, class string) {
 	if model == "" {
 		model = "unknown"
 	}
-	if s.metrics != nil {
-		s.metrics.IncCounter(metricRequestOutcomeORViewCounter,
+	if s.adminMetrics != nil {
+		s.adminMetrics.IncCounter(metricRequestOutcomeORViewCounter,
 			MetricLabel{"model", model}, MetricLabel{"class", class})
 	}
 	if s.dd == nil {

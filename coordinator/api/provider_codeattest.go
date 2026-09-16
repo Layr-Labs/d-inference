@@ -34,7 +34,7 @@ import (
 // re-arm). Metadata only — no provider identifiers in the metric.
 func (s *Server) codeAttestMetric(outcome string) {
 	s.ddIncr("code_attest", []string{"outcome:" + outcome})
-	s.metrics.IncCounter("code_attest_total", MetricLabel{"outcome", outcome})
+	s.adminMetrics.IncCounter("code_attest_total", MetricLabel{"outcome", outcome})
 }
 
 // codeAttestLoop drives the APNs code-identity challenge for one connection.

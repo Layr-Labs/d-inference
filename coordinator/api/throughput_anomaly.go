@@ -163,8 +163,8 @@ func (s *Server) emitThroughputAnomaly(res registry.ThroughputAnomalyResult) {
 		"model:" + res.Model,
 		"chip_family:" + res.ChipClass,
 	})
-	if s.metrics != nil {
-		s.metrics.IncCounter("routing.throughput_anomaly",
+	if s.adminMetrics != nil {
+		s.adminMetrics.IncCounter("routing.throughput_anomaly",
 			MetricLabel{Name: "model", Value: res.Model},
 			MetricLabel{Name: "chip_family", Value: res.ChipClass},
 		)

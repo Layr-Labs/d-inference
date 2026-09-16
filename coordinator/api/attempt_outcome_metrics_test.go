@@ -204,7 +204,7 @@ func waitForCounters(t *testing.T, srv *Server, timeout time.Duration, pred func
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for {
-		snap := srv.metrics.Snapshot()
+		snap := srv.adminMetrics.Snapshot()
 		if pred(snap) || time.Now().After(deadline) {
 			return snap
 		}
@@ -369,7 +369,7 @@ func TestDispatch_ClientGoneBetweenAttempts_RecordsClientGone(t *testing.T) {
 		t.Errorf("ladder stopped at attempt %d, want the client-gone exit at attempt 1", d.attempt)
 	}
 
-	snap := srv.metrics.Snapshot()
+	snap := srv.adminMetrics.Snapshot()
 	if got := snap.Counters[counterKey(metricRequestOutcomeORViewCounter,
 		MetricLabel{"model", model}, MetricLabel{"class", orClassClientGone})]; got != 1 {
 		t.Errorf("request_outcome_or_view{client_gone} = %d, want 1; counters=%v", got, snap.Counters)
@@ -591,7 +591,7 @@ func TestEmitAttemptOutcomeMetric_QueueExitIsNotAnAttempt(t *testing.T) {
 
 	queued := &store.InferenceRouteOutcome{FinalStatus: finalStatusTimeout, ErrorClass: rejectionReasonQueueDeadline, ErrorCode: http.StatusGatewayTimeout, QueueExit: true}
 	srv.emitAttemptOutcomeMetric(model, queued)
-	snap := srv.metrics.Snapshot()
+	snap := srv.adminMetrics.Snapshot()
 	if got := attemptTotal(snap); got != 0 {
 		t.Fatalf("attempt_outcome after a queue exit = %d, want 0; counters=%v", got, snap.Counters)
 	}
@@ -606,7 +606,7 @@ func TestEmitAttemptOutcomeMetric_QueueExitIsNotAnAttempt(t *testing.T) {
 	// The same class from a DISPATCHED attempt still counts as an attempt.
 	dispatched := &store.InferenceRouteOutcome{FinalStatus: finalStatusTimeout, ErrorClass: rejectionReasonQueueDeadline, ErrorCode: http.StatusGatewayTimeout}
 	srv.emitAttemptOutcomeMetric(model, dispatched)
-	snap = srv.metrics.Snapshot()
+	snap = srv.adminMetrics.Snapshot()
 	if got := attemptTotal(snap); got != 1 {
 		t.Fatalf("attempt_outcome after a dispatched terminal = %d, want 1; counters=%v", got, snap.Counters)
 	}

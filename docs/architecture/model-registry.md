@@ -260,11 +260,11 @@ the budget.
    `handleOpenRouterAliasUpsert` abort on namespace lookup errors other than
    `store.ErrNotFound`; a failed desired/previous build lookup returns 500,
    while a confirmed missing member remains 400
-   (`coordinator/api/model_alias_handlers.go`,
-   `coordinator/api/openrouter_alias_handlers.go`). The reverse guard in
-   `handleRegisterModel` returns 500 when its alias lookup fails, before
+   (`coordinator/api/catalog/aliases.go`,
+   `coordinator/api/catalog/marketplace_aliases.go`). The reverse guard in
+   `RegisterModel` returns 500 when its alias lookup fails, before
    fetching artifacts or writing a concrete model
-   (`coordinator/api/model_registry_handlers.go`).
+   (`coordinator/api/catalog/register_model.go`).
 
 ## Failure modes
 

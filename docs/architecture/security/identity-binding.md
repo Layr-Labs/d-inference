@@ -109,7 +109,7 @@ only if that generation still matches under the cache mutex. Key update,
 delete and rotation invalidate before and after their store mutation; legacy
 raw-token revocation invalidates after success. A delayed old lookup cannot
 restore a disabled key, obsolete limits, or a negative result for a re-enabled
-key (`coordinator/api/api_key_cache.go`, `coordinator/api/apikey_handlers.go`).
+key (`coordinator/api/requestauth/key_cache.go`, `coordinator/api/accounts/keys_legacy.go`).
 
 An already-running request may finish with the key record it read before the
 mutation. Invalidation is local to the coordinator handling the mutation;
@@ -155,7 +155,7 @@ device-login token lookups remain uncached (`requireAuth`).
 | Account linking | `coordinator/api/accounts/device_codes.go`, `coordinator/api/accounts/device_tokens.go`, `coordinator/api/accounts/device_approval.go` (`Controller.DeviceCode`, `Controller.DeviceToken`, `Controller.ApproveDevice`, `DeviceCodeExpiry`, `DeviceCodePollInterval`); `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` (`AuthTokenStore`) |
 | Consumer identity | `coordinator/auth/privy.go` (`NewPrivyAuth`, `VerifyToken`, `GetOrCreateUser`); `coordinator/auth/config.go`; `coordinator/api/requestauth/privy_session.go` (`RequirePrivyAuth`) |
 
-| API-key cache publication | `coordinator/api/api_key_cache.go` (`lookupAPIKeyCache`, `storeAPIKeyCache`, `invalidateAllAPIKeyCache`); `coordinator/api/server.go` (`requireAuth`) |
+| API-key cache publication | `coordinator/api/requestauth/key_cache.go` (`lookup`, `store`, `invalidateAll`); `coordinator/api/requestauth/middleware.go` (`RequireAuth`) |
 
 ## Related
 

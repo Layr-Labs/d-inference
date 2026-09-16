@@ -354,7 +354,7 @@ go test -race ./coordinator/api -run '^Test(RuntimeManifest|SyncRuntimeManifest|
 The existing runtime-manifest and release-policy fixtures also cover overlapping
 active releases, inventory failures, deactivation and unchanged process proofs.
 
-`TestMapQuantizationToOpenRouter` (`coordinator/api/openrouter_models_test.go`)
+`TestMapQuantizationToOpenRouter` (`coordinator/api/catalog/marketplace_fields_test.go`)
 repeats overlapping decorated-label cases to detect map-order-dependent precision
 metadata. Run the focused check from the repository root:
 

@@ -110,7 +110,7 @@ The adapters in `coordinator/providercontrol/codeidentity/push_fixture_test.go`
 (`tryReservePush`, `clearPushBudget`) compile only into the package's test binary.
 
 Runtime-manifest publication and verification live in
-`coordinator/api/runtime_manifest.go`; the standard coordinator target builds
+`coordinator/providercontrol/releasepolicy/runtime_manifest.go`; the standard coordinator target builds
 these operations with the HTTP server. Their concurrency checks run without a
 provider binary ([test procedure](test.md#2-coordinator-go)).
 

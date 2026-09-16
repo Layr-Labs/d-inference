@@ -88,7 +88,7 @@ func (s *Scheduler) Submit(ctx context.Context, providerID string, provider *reg
 		return generation
 	}
 	if record.State == store.VerificationStateRunning &&
-		record.ClaimOwner != "" && record.ClaimOwner != s.owner {
+		record.ClaimOwner != "" && !s.ownsClaim(record.ClaimOwner) {
 		s.mu.Unlock()
 		s.metricCounter("mdm_scheduler_deduplicated_total", "state", string(record.State))
 		s.signal()

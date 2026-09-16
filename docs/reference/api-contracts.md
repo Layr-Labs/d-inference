@@ -43,7 +43,7 @@ Both tiers set `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, `
 
 Inference token-quota checks and charges are serialized per account across
 key and account buckets by `admitTokenBuckets`
-(`coordinator/api/token_admission.go`). A rejected charge consumes no tokens;
+(`coordinator/inference/ingress/token_admission.go`). A rejected charge consumes no tokens;
 429 responses keep their existing tier, dimension and `Retry-After` fields.
 The mechanism is described in the [consumer invariants](../architecture/components/consumer.md#invariants).
 
@@ -74,7 +74,16 @@ All four share the chain `readiness.Controller.Gate → requireAuth → rateLimi
 | GET | `/v1/runtime/manifest` | `Controller.RuntimeManifest` (`coordinator/api/releases/runtime_manifest.go`), reading `releasepolicy.Manager.RuntimeManifest` (`coordinator/providercontrol/releasepolicy/manager.go`) | `—` | — | Hashes the coordinator accepts from provider runtimes: `{"configured":false}` or `{"configured":true,"python_hashes":{…},"runtime_hashes":{…},"template_hashes":{"<name>":[<sorted hashes accepted across active releases>]}}`; cached 1 min ([runtime manifest](../architecture/security/attestation.md#runtime-manifest)) |
 | GET | `/v1/cache/status` | `handleExactCacheStatus` (`coordinator/api/exact_cache_status.go`) | `—` | — | Exact-cache status, cached for [`exactCacheStatusCacheTTL`](#timeouts-and-constants) |
 
-### Authentication and API keys (10)
+The public model list, retrieve-by-ID and OpenRouter feed return 500
+`internal_error` when an uncached alias-inventory read fails. The failed read
+does not cache an empty list, advertise hidden builds, or turn an existing
+alias into a 404. Successful snapshots retain their existing cache lifetimes
+(2 s for list/retrieve, 5 s for OpenRouter), including while a later store read
+would fail. The account-owned self-route view has its own lookup path.
+
+#Quantization descriptors use the earliest recognized format, breaking a shared position by longest spelling (`coordinator/api/catalog/marketplace_quantization.go`, `mapQuantizationToOpenRouter`).
+
+## Authentication and API keys (10)
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
@@ -89,7 +98,11 @@ All four share the chain `readiness.Controller.Gate → requireAuth → rateLimi
 | GET | `/v1/key` | `Controller.GetCallingKey` (`coordinator/api/accounts/keys.go`) | `key` | — | The calling key's own `APIKeyResponse` |
 | GET | `/v1/encryption-key` | `handleEncryptionKey` (`coordinator/api/sender_encryption.go`) | `—` | — | `{kid, public_key, algorithm: "x25519-nacl-box"}`, `Cache-Control: public, max-age=300`; 503 `encryption_unavailable` when sealing is not configured |
 
-Lifecycle semantics: [`../consumer/authentication.md`](../consumer/authentication.md).
+Successful key updates, revocations and rotations invalidate the local
+coordinator auth cache, including pending writes from older database lookups
+(`coordinator/api/requestauth/key_cache.go`). Requests already authenticated may finish;
+other coordinator processes retain their ordinary cache TTL. Lifecycle
+semantics: [`../consumer/authentication.md`](../consumer/authentication.md).
 
 ### Device-code flow (3)
 
@@ -218,11 +231,11 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | PUT | `/v1/admin/pricing` | `AdminPricing` (`coordinator/api/billing/pricing.go`) | `admin` | Platform default price table |
 | PUT | `/v1/admin/users/role` | `AdminSetUserRole` (`coordinator/api/billing/account_policy.go`) | `admin` | Role selects the consumer or service limiter |
 | PUT | `/v1/admin/users/platform-fee` | `AdminSetUserPlatformFee` (`coordinator/api/billing/account_policy.go`) | `admin` | Per-user fee override; fee policy in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants) |
-| POST | `/v1/admin/models/register` | `RegisterModel` (`coordinator/api/catalog/register_model.go`) | `publishing` | Publish a model build |
+| POST | `/v1/admin/models/register` | `RegisterModel` (`coordinator/api/catalog/register_model.go`) | `publishing` | Publish a model build; failed alias namespace reads return 500 before artifact fetches or writes |
 | POST | `/v1/admin/models/` | `AdminModelAction` (`coordinator/api/catalog/registry_action.go`) | `publishing` | Registry actions selected by path suffix |
-| GET / POST | `/v1/admin/models/aliases` | `ListAliases`, `UpsertAlias` (`coordinator/api/catalog/aliases.go`) | `publishing` | Two registrations; upserts fan out `desired_models` (see [Version gating](#version-gating)) |
+| GET / POST | `/v1/admin/models/aliases` | `ListAliases`, `UpsertAlias` (`coordinator/api/catalog/aliases.go`) | `publishing` | Two registrations; upserts fan out `desired_models` (see [Version gating](#version-gating)); failed namespace, prior-alias or member reads return 500 before writes |
 | DELETE | `/v1/admin/models/aliases/{aliasID}` | `DeleteAlias` (`coordinator/api/catalog/aliases.go`) | `publishing` | |
-| GET / POST | `/v1/admin/models/openrouter-aliases` | `ListOpenRouterAliases`, `UpsertOpenRouterAlias` (`coordinator/api/catalog/marketplace_aliases.go`) | `publishing` | Two registrations |
+| GET / POST | `/v1/admin/models/openrouter-aliases` | `ListOpenRouterAliases`, `UpsertOpenRouterAlias` (`coordinator/api/catalog/marketplace_aliases.go`) | `publishing` | Two registrations; failed namespace reads return 500 before writes |
 | DELETE | `/v1/admin/models/openrouter-aliases/{aliasID}` | `DeleteOpenRouterAlias` (`coordinator/api/catalog/marketplace_aliases.go`) | `publishing` | |
 | GET / DELETE | `/v1/admin/releases` | `Controller.List` (`coordinator/api/releases/inventory.go`), `Controller.Delete` (`coordinator/api/releases/deactivation.go`) | `admin-key` | Two registrations |
 | GET | `/v1/admin/state-export` | `Controller.Download` (`coordinator/api/statearchive/handler.go`) | `admin-key` | 404 unless `EIGENINFERENCE_STATE_EXPORT_ENABLED=true`; 412 `precondition_failed` without an encryption recipient unless plaintext is explicitly allowed. See [`../operations/state-export.md`](../operations/state-export.md) |
@@ -453,7 +466,8 @@ Each reasoning or message item owns its text. Its `done` events and final
 `output[]` entry contain only the deltas for that item ID, including when
 reasoning, messages and tool calls alternate. Opening a new item resets its
 builder after the previous item has been saved (`appendReasoning`,
-`ensureMessageOpen`, `coordinator/api/responses_stream.go`). Provider usage
+`ensureMessageOpen`, `coordinator/inference/response/responses_reasoning_stream.go`,
+`coordinator/inference/response/responses_message_stream.go`). Provider usage
 counts and the legacy reasoning-token fallback remain request-wide.
 
 ### Completions and Messages

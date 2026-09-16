@@ -25,6 +25,7 @@ func (s *Manager) RevalidateConnectedProviders() {
 		}
 
 		provider.Mu().Lock()
+		manifest := s.knownRuntimeManifest.Load()
 		pythonHash := provider.PythonHash
 		runtimeHash := provider.RuntimeHash
 		templateHashes := registry.CloneStringMap(provider.TemplateHashes)
@@ -41,7 +42,7 @@ func (s *Manager) RevalidateConnectedProviders() {
 		provider.MetallibVerified = false
 		provider.RuntimeCapabilities = nil
 
-		if s.knownRuntimeManifest == nil {
+		if manifest == nil {
 			// Manifest was withdrawn — keep the process proof, but deroute the
 			// provider until policy once again approves its reported runtime.
 		} else if s.deps.MinimumVersion() != "" &&
@@ -49,8 +50,8 @@ func (s *Manager) RevalidateConnectedProviders() {
 			VersionLess(version, s.deps.MinimumVersion()) {
 			s.deps.Incr("provider_version_below_minimum", []string{"gate:manifest_sync", "version:" + version})
 		} else {
-			runtimeOK, _ := s.VerifyRuntimeHashesForBackend(
-				backend,
+			runtimeOK, _ := s.VerifyRuntimeHashesForBackendWithManifest(
+				manifest, backend,
 				pythonHash,
 				runtimeHash,
 				templateHashes,
@@ -59,7 +60,7 @@ func (s *Manager) RevalidateConnectedProviders() {
 			provider.RuntimeManifestChecked = runtimeOK
 			provider.MetallibVerified = runtimeOK &&
 				RuntimeManifestApprovesMetallib(
-					s.knownRuntimeManifest, templateHashes)
+					manifest, templateHashes)
 		}
 		provider.Mu().Unlock()
 		if err := fleet.ReconcileAttestedRuntimeCapabilities(providerID); err != nil {
@@ -81,16 +82,16 @@ func (s *Manager) ApplyChallengeRuntimePolicy(
 	provider *registry.Provider,
 	resp *protocol.AttestationResponseMessage,
 ) (bool, bool, []protocol.RuntimeMismatch) {
-	manifest := s.knownRuntimeManifest
+	provider.Mu().Lock()
+	manifest := s.knownRuntimeManifest.Load()
 	policyActive := manifest != nil
 	runtimeOK := false
 	var mismatches []protocol.RuntimeMismatch
 	if policyActive {
-		runtimeOK, mismatches = s.VerifyRuntimeHashesForBackend(
-			provider.Backend, resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
+		runtimeOK, mismatches = s.VerifyRuntimeHashesForBackendWithManifest(
+			manifest, provider.Backend, resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
 	}
 
-	provider.Mu().Lock()
 	runtimeIdentityChanged :=
 		resp.PythonHash != provider.PythonHash ||
 			resp.RuntimeHash != provider.RuntimeHash ||

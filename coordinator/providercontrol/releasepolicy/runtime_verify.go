@@ -18,7 +18,11 @@ func RuntimeManifestApprovesMetallib(
 }
 
 func (s *Manager) VerifyRuntimeHashesForBackend(backend, pythonHash, runtimeHash string, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
-	if s.knownRuntimeManifest == nil {
+	return s.VerifyRuntimeHashesForBackendWithManifest(s.knownRuntimeManifest.Load(), backend, pythonHash, runtimeHash, templateHashes)
+}
+
+func (s *Manager) VerifyRuntimeHashesForBackendWithManifest(manifest *RuntimeManifest, backend, pythonHash, runtimeHash string, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
+	if manifest == nil {
 		return true, nil
 	}
 
@@ -32,7 +36,6 @@ func (s *Manager) VerifyRuntimeHashesForBackend(backend, pythonHash, runtimeHash
 		}}
 	}
 
-	manifest := s.knownRuntimeManifest
 	scoped := NewRuntimeManifest()
 	scopedReportedTemplates := make(map[string]string)
 

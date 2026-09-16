@@ -89,7 +89,7 @@ func (s *Scheduler) loadDueRows() {
 			claimExpired := rec.State == store.VerificationStateRunning &&
 				rec.ClaimExpiresAt != nil && !rec.ClaimExpiresAt.After(now)
 			stalePlaceholder := !existing.running &&
-				rec.ClaimOwner != s.owner &&
+				!s.ownsClaim(rec.ClaimOwner) &&
 				claimExpired
 			if !stalePlaceholder {
 				continue
@@ -116,13 +116,22 @@ func (s *Scheduler) loadDueRows() {
 	s.mu.Unlock()
 }
 
-// refreshReleasedJob reconciles a rebound live job with durable state after the
+// refreshReboundJob reconciles a rebound live job with durable state after the
 // prior connection generation releases its claim. Reconnect submission can race
 // an in-flight attempt and therefore observe the durable row while it is still
 // running. The release is authoritative: copy its preserved retry stage and due
 // time into the new generation before redispatching. Never synthesize an
 // immediate retry or reuse the stale generation's in-memory state.
-func (s *Scheduler) refreshReleasedJob(work workItem) {
+func (s *Scheduler) refreshReboundJob(work workItem) {
+	s.mu.Lock()
+	expected := s.jobs[work.key]
+	if expected == nil || expected.running {
+		s.mu.Unlock()
+		return
+	}
+	record, generation := expected.record, expected.bindingGen
+	s.mu.Unlock()
+
 	rec, err := s.store.GetVerificationJob(
 		s.ctx, work.job.SEPubKey, work.job.Kind,
 	)
@@ -136,7 +145,7 @@ func (s *Scheduler) refreshReleasedJob(work workItem) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	job := s.jobs[work.key]
-	if job == nil {
+	if job != expected || job.running || job.bindingGen != generation || job.record != record {
 		return
 	}
 	binding := s.bindings[work.job.SEPubKey]

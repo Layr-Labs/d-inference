@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -92,6 +93,15 @@ func exerciseVerificationJobStore(t *testing.T, st verificationJobStore, prefix 
 	gotPtr, err := st.GetVerificationJob(ctx, seRecovery, contracts.VerificationTaskSecurityInfo)
 	if err != nil || gotPtr == nil || gotPtr.State != contracts.VerificationStateBackoff || gotPtr.RetryStage != 3 || !gotPtr.NextAttemptAt.Equal(next) || gotPtr.ClaimOwner != "" {
 		t.Fatalf("reschedule state = %+v, err=%v", gotPtr, err)
+	}
+	// A retired worker must not complete a row after its claim was cleared.
+	// A current late callback can still settle an unclaimed row with owner "".
+	if err := st.CompleteVerificationJob(ctx, seRecovery, contracts.VerificationTaskSecurityInfo, "owner-b", contracts.VerificationOutcomeSuccess, now.Add(90*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	afterRetired, err := st.GetVerificationJob(ctx, seRecovery, contracts.VerificationTaskSecurityInfo)
+	if err != nil || !reflect.DeepEqual(afterRetired, gotPtr) {
+		t.Fatalf("retired owner changed unclaimed verification: before=%+v after=%+v err=%v", gotPtr, afterRetired, err)
 	}
 	if err := st.CompleteVerificationJob(ctx, seRecovery, contracts.VerificationTaskSecurityInfo, "", contracts.VerificationOutcomeSuccess, now.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)

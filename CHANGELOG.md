@@ -12,7 +12,6 @@
 - Capture SDK 27 Apple-signed CodeDirectory measurements and require an exact qualified binary/code-hash pair for prospective build approval. Release builds and their provider tests select SDK 27 / Swift 6.4 and record the full CodeDirectory SHA-256; missing or unsupported measurements stay unknown. macOS can identify the exact code without a bundle-version extension.
 - Forward the latest distinct per-model warm-pool planning snapshot through the coordinator telemetry emitter so Datadog can show target sizing, measured demand, candidate availability and blocker counts. Keep provider identities and request data out of the event.
 
-
 ## v0.9.3 — App Attest shadow rollout and provider reliability (2026-09-14)
 
 Source changes since `v0.9.2`. App Attest remains observational, with APNs and MDM authoritative.
@@ -70,6 +69,21 @@ coordinator deployment.
 - Keep each streamed reasoning and message item limited to its own text when item types alternate. Completed items and the final output no longer repeat text from earlier items; token usage is unchanged.
 
 - Ignore inference completions received before provider registration, keeping the WebSocket available for registration instead of closing it through a nil-pointer panic.
+
+- Return a server error before changing model aliases when namespace, rollout-history or build validation reads fail. Preserve existing alias ownership and retired-build lineage through transient store errors.
+
+- **Prompt artifact provisioning** — Snapshot catalog file lists and the configured download origin, validate every manifest before sharing a download, and remove read-only staging trees after another cache instance wins publication.
+
+- **API-key mutation consistency** — Prevent delayed authentication lookups from restoring revoked keys, old limits, or stale disabled-key results after a successful local key update. Keep already-authenticated requests and the ordinary cache lifetime for other coordinator processes unchanged.
+
+- Keep runtime-hash verification and manifest responses consistent during concurrent release-policy updates. Publish owned immutable hash sets, preserve the active-release union, and serialize fallback merges with live-provider revalidation.
+
+- Return 500 from uncached public model list, retrieve and OpenRouter feeds when the alias inventory cannot be read, instead of caching missing aliases or advertising hidden builds. Successful feed cache lifetimes remain unchanged.
+
+- **Model quantization metadata** — Map decorated labels consistently: `bfloat16-gs64` remains `bf16`. Prefer the earliest recognized format, then the longest spelling at that position (`q4-bfloat16` maps to `int4`), so repeated model-list requests cannot change precision metadata with map iteration order.
+
+- Preserve replacement MDM verification claims, cancellation and retry state when a retired worker finishes after a reconnect. Each attempt now settles only its own claim token, and stale store reads cannot overwrite a newer queued retry.
+- Preserve a provider reconnect's verification binding when the prior connection finishes its cached Apple proof check or a missing-UDID fallback. Live and late SecurityInfo grants now share the same generation-aware MDA follow-up.
 
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 

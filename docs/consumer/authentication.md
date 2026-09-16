@@ -51,7 +51,7 @@ All management routes require a Privy JWT (`requirePrivyAuth`); calling them wit
 | Revoke | `DELETE /v1/keys/{id}` |
 | Inspect the key you are calling with | `GET /v1/key` — this one accepts the API key itself (`Controller.GetCallingKey`) |
 
-`POST /v1/auth/keys` and `DELETE /v1/auth/keys` are the older one-key-per-account endpoints (`Controller.CreateLegacyKey`, `Controller.RevokeLegacyKey`); they still work but the `/v1/keys` family is the managed surface. The coordinator caches key lookups in `coordinator/api/requestauth/key_cache.go`. Management routes invalidate the local cache when keys change; another coordinator instance can keep its own result until [`keyCacheTTL`](../reference/api-contracts.md#timeouts-and-constants) expires. Provider device tokens are checked in persistence on each request.
+`POST /v1/auth/keys` and `DELETE /v1/auth/keys` are the older one-key-per-account endpoints (`Controller.CreateLegacyKey`, `Controller.RevokeLegacyKey`); they still work but the `/v1/keys` family is the managed surface. A successful update, revocation or rotation invalidates cached key lookups in the coordinator handling the change. Delayed lookups cannot restore the old permissions. Requests already authenticated may finish; other coordinator processes and direct store edits rely on [`keyCacheTTL`](../reference/api-contracts.md#timeouts-and-constants). See [API-key snapshots](../architecture/security/identity-binding.md#consumer-api-key-snapshots) for the exact scope.
 
 ### 4. Sign in with Privy and use the session JWT
 

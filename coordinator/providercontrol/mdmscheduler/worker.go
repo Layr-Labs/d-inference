@@ -38,11 +38,12 @@ func (s *Scheduler) finishAttempt(work workItem, result AttemptResult) {
 	if isUrgentVerification(work.job) && s.activeUrgent > 0 {
 		s.activeUrgent--
 	}
-	if job != nil {
+	ownsAttempt := job != nil && job.record.ClaimOwner == work.job.ClaimOwner
+	if ownsAttempt {
 		job.running = false
 		job.attemptCancel = nil
 	}
-	current := job != nil && binding != nil &&
+	current := ownsAttempt && binding != nil &&
 		binding.generation == work.binding.generation &&
 		job.bindingGen == work.binding.generation
 	s.mu.Unlock()
@@ -50,7 +51,7 @@ func (s *Scheduler) finishAttempt(work workItem, result AttemptResult) {
 	if !current || work.ctx.Err() != nil {
 		cleanupCtx, cancel := cleanupContext()
 		err := s.store.ReleaseVerificationJob(
-			cleanupCtx, work.job.SEPubKey, work.job.Kind, s.owner, now,
+			cleanupCtx, work.job.SEPubKey, work.job.Kind, work.job.ClaimOwner, now,
 		)
 		cancel()
 		if err != nil {
@@ -58,7 +59,8 @@ func (s *Scheduler) finishAttempt(work workItem, result AttemptResult) {
 			s.mu.Lock()
 			orphan := s.jobs[work.key]
 			if s.bindings[work.job.SEPubKey] == nil && orphan != nil &&
-				orphan.bindingGen == work.binding.generation {
+				orphan.bindingGen == work.binding.generation &&
+				orphan.record.ClaimOwner == work.job.ClaimOwner {
 				if orphan.record.UDID != "" && s.byUDID[orphan.record.UDID] == work.key {
 					delete(s.byUDID, orphan.record.UDID)
 				}
@@ -66,7 +68,7 @@ func (s *Scheduler) finishAttempt(work workItem, result AttemptResult) {
 			}
 			s.mu.Unlock()
 		} else if s.ctx.Err() == nil {
-			s.refreshReleasedJob(work)
+			s.refreshReboundJob(work)
 		}
 		s.signal()
 		return
@@ -75,12 +77,13 @@ func (s *Scheduler) finishAttempt(work workItem, result AttemptResult) {
 	if result.UDID != "" {
 		work.job.UDID = result.UDID
 		work.job.UpdatedAt = now
-		if updated, err := s.store.UpsertVerificationJob(s.ctx, work.job); err == nil {
-			work.job = updated
-		}
+		// Retain this attempt's claim token even if a concurrent reconnect
+		// changed the durable record returned by the metadata update.
+		_, _ = s.store.UpsertVerificationJob(s.ctx, work.job)
 		s.mu.Lock()
 		if currentJob := s.jobs[work.key]; currentJob != nil &&
-			currentJob.bindingGen == work.binding.generation {
+			currentJob.bindingGen == work.binding.generation &&
+			currentJob.record.ClaimOwner == work.job.ClaimOwner {
 			currentJob.record.UDID = result.UDID
 			if currentJob.callbackGen == work.binding.generation &&
 				currentJob.callbackUUID != "" {
@@ -94,18 +97,28 @@ func (s *Scheduler) finishAttempt(work workItem, result AttemptResult) {
 		cleanupCtx, cancel := cleanupContext()
 		err := s.store.CompleteVerificationJob(
 			cleanupCtx, work.job.SEPubKey, work.job.Kind,
-			s.owner, result.Outcome, now,
+			work.job.ClaimOwner, result.Outcome, now,
 		)
 		cancel()
 		if err != nil {
 			s.deps.Logger().Error("failed to complete MDM scheduler job", "error", err)
 		}
 		s.mu.Lock()
-		delete(s.jobs, work.key)
-		if work.job.UDID != "" && s.byUDID[work.job.UDID] == work.key {
-			delete(s.byUDID, work.job.UDID)
+		currentJob := s.jobs[work.key]
+		completedCurrent := currentJob != nil && currentJob.bindingGen == work.binding.generation &&
+			currentJob.record.ClaimOwner == work.job.ClaimOwner
+		if completedCurrent {
+			delete(s.jobs, work.key)
+			if work.job.UDID != "" && s.byUDID[work.job.UDID] == work.key {
+				delete(s.byUDID, work.job.UDID)
+			}
 		}
 		s.mu.Unlock()
+		if !completedCurrent {
+			s.refreshReboundJob(work)
+			s.signal()
+			return
+		}
 		if result.Granted && work.job.Kind == store.VerificationTaskSecurityInfo {
 			s.finishSecurityInfo(work.binding, result.UDID)
 		} else {
@@ -124,7 +137,7 @@ func (s *Scheduler) finishAttempt(work workItem, result AttemptResult) {
 	next := now.Add(delay)
 	cleanupCtx, cancel := cleanupContext()
 	err := s.store.RescheduleVerificationJob(
-		cleanupCtx, work.job.SEPubKey, work.job.Kind, s.owner, priority, stage,
+		cleanupCtx, work.job.SEPubKey, work.job.Kind, work.job.ClaimOwner, priority, stage,
 		delay, next, result.Outcome, now,
 	)
 	cancel()
@@ -132,8 +145,11 @@ func (s *Scheduler) finishAttempt(work workItem, result AttemptResult) {
 		s.deps.Logger().Error("failed to reschedule MDM scheduler job", "error", err)
 	}
 	s.mu.Lock()
-	if currentJob := s.jobs[work.key]; currentJob != nil &&
-		currentJob.bindingGen == work.binding.generation {
+	currentJob := s.jobs[work.key]
+	rebound := currentJob != nil && currentJob.bindingGen != work.binding.generation
+	if currentJob != nil &&
+		currentJob.bindingGen == work.binding.generation &&
+		currentJob.record.ClaimOwner == work.job.ClaimOwner {
 		currentJob.record.State = store.VerificationStateBackoff
 		currentJob.record.Priority = priority
 		currentJob.record.RetryStage = stage
@@ -144,6 +160,9 @@ func (s *Scheduler) finishAttempt(work workItem, result AttemptResult) {
 		currentJob.record.ClaimExpiresAt = nil
 	}
 	s.mu.Unlock()
+	if rebound {
+		s.refreshReboundJob(work)
+	}
 	if s.deps.Metrics() != nil {
 		s.deps.Metrics().ObserveHistogram(
 			"mdm_scheduler_retry_delay_seconds", delay.Seconds(),

@@ -7,25 +7,40 @@ import (
 
 func TestMapQuantizationToOpenRouter(t *testing.T) {
 	cases := map[string]string{
-		"4bit":         "int4",
-		"4-bit":        "int4",
-		"8bit":         "int8",
-		"6bit":         "fp6",
-		"3bit":         "int4",
-		"2bit":         "int4",
-		"bf16":         "bf16",
-		"fp16":         "fp16",
-		"float16":      "fp16",
-		"bfloat16":     "bf16",
-		"int8":         "int8",
-		"4bit-gs64":    "int4", // tolerate descriptor suffixes
-		"":             "",
-		"weird-format": "",
+		"4bit":              "int4",
+		"4-bit":             "int4",
+		"8bit":              "int8",
+		"6bit":              "fp6",
+		"3bit":              "int4",
+		"2bit":              "int4",
+		"bf16":              "bf16",
+		"fp16":              "fp16",
+		"float16":           "fp16",
+		"bfloat16":          "bf16",
+		"int8":              "int8",
+		"4bit-gs64":         "int4", // tolerate descriptor suffixes
+		"mxfp4":             "fp4",
+		"bfloat16-gs64":     "bf16",
+		"  BFLOAT16-GS64  ": "bf16",
+		"float16-gs64":      "fp16",
+		"q4-bfloat16":       "int4", // leading weight format wins over compute dtype
+		"4bit-float16":      "int4",
+		"bfloat16-q4":       "bf16",
+		"float16-4bit":      "fp16",
+		"int8-4bit":         "int8", // independent spellings prefer the first
+		"4bit-int8":         "int4",
+		"":                  "",
+		"weird-format":      "",
 	}
 	for in, want := range cases {
-		if got := mapQuantizationToOpenRouter(in); got != want {
-			t.Errorf("mapQuantizationToOpenRouter(%q) = %q, want %q", in, got, want)
-		}
+		t.Run(in, func(t *testing.T) {
+			// Repeated calls must not depend on randomized map iteration.
+			for range 128 {
+				if got := mapQuantizationToOpenRouter(in); got != want {
+					t.Fatalf("mapQuantizationToOpenRouter(%q) = %q, want %q", in, got, want)
+				}
+			}
+		})
 	}
 }
 

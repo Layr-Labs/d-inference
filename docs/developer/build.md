@@ -115,6 +115,14 @@ Output-bound validation builds with the normal coordinator target. Its
 [HTTP and billing regressions](test.md#2-coordinator-go) run in process and
 require no provider binary or external service.
 
+Runtime-manifest publication and verification live in
+`coordinator/providercontrol/releasepolicy/runtime_manifest.go`; the standard coordinator target builds
+these operations with the HTTP server. Their concurrency checks run without a
+provider binary ([test procedure](test.md#2-coordinator-go)).
+
+Model metadata normalization and its [Go regression test](test.md#2-coordinator-go)
+build with the coordinator; no provider build or model weights are required.
+
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
 its test binary after helper or lifecycle changes. The CPU-only
 `TestPrepareConnectedInputBindings` check uses the actual fixture input/report

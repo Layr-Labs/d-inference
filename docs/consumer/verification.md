@@ -62,6 +62,9 @@ The grant and loss conditions for each level are tabulated in
 the challenge cadence is in [Layer 2](../architecture/security/attestation.md#layer-2--periodic-challenge)
 and the routing freshness window is
 [`challengeFreshnessMaxAge`](../architecture/routing.md#challenge-freshness).
+Verification attempts keep their own claim tokens across a provider reconnect,
+so an older worker's cleanup preserves the replacement's pending verification
+([MDM attempt ownership](../architecture/security/attestation.md#layer-3--mdm-securityinfo-the-hardware-grant)).
 
 Challenge replies are correlated with pending nonces on the same provider
 connection (`coordinator/providercontrol/challenge/transport.go`, `Session.Deliver`).
@@ -83,7 +86,7 @@ gate routing ([Flag — Apple Managed Device Attestation](../architecture/securi
 Public routing applies the coordinator's trust floor (`MinTrustLevel`, set by
 [`EIGENINFERENCE_MIN_TRUST`](../reference/configuration.md#routing-admission-and-ttft))
 plus every privacy gate (encrypted response chunks, coordinator-verified SIP,
-required privacy capabilities, code identity once enforced), so a request you
+required privacy capabilities, an [approved runtime manifest](../architecture/security/attestation.md#runtime-manifest), and code identity once enforced), so a request you
 send without self-routing is served only by a provider that passes all of them
 ([`../architecture/security/attestation.md`](../architecture/security/attestation.md#routing-gate)).
 
@@ -143,6 +146,10 @@ for the same process; it does not grant hardware trust or bypass verification.
 See [APNs code identity](../architecture/security/attestation.md#flag--apns-code-identity).
 Its [coordinator ownership boundary](../architecture/security/attestation.md#code-identity-ownership)
 preserves the same proof checks and exposes no additional consumer fields.
+
+Read the current connection's verdict after a reconnect. An earlier connection's
+Apple proof completion does not cancel verification for its replacement
+([MDA completion ownership](../architecture/security/attestation.md#flag--apple-managed-device-attestation)).
 
 ## Related
 

@@ -109,15 +109,16 @@ func (s *Session) register(regMsg *protocol.RegisterMessage) bool {
 	// Verify runtime integrity against the known-good manifest. Swift
 	// providers omit Python/vllm hashes, but they still report external
 	// runtime assets such as mlx.metallib under template_hashes.
-	if s.deps.ReleasePolicy().RuntimeManifest() != nil {
-		runtimeOK, mismatches := s.deps.ReleasePolicy().VerifyRuntimeHashesForBackend(
-			regMsg.Backend, regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes)
-		s.provider.Mu().Lock()
+	s.provider.Mu().Lock()
+	manifest := s.deps.ReleasePolicy().RuntimeManifest()
+	if manifest != nil {
+		runtimeOK, mismatches := s.deps.ReleasePolicy().VerifyRuntimeHashesForBackendWithManifest(
+			manifest, regMsg.Backend, regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes)
 		s.provider.RuntimeVerified = runtimeOK
 		s.provider.RuntimeManifestChecked = runtimeOK
 		s.provider.MetallibVerified = runtimeOK &&
 			releasepolicy.RuntimeManifestApprovesMetallib(
-				s.deps.ReleasePolicy().RuntimeManifest(), regMsg.TemplateHashes)
+				manifest, regMsg.TemplateHashes)
 		if !runtimeOK || !s.provider.MetallibVerified {
 			s.provider.RuntimeCapabilities = nil
 			s.provider.FreshCodeAttested = false
@@ -156,7 +157,6 @@ func (s *Session) register(regMsg *protocol.RegisterMessage) bool {
 		}
 	} else {
 		// No manifest configured — fail-closed for routing.
-		s.provider.Mu().Lock()
 		s.provider.RuntimeVerified = true
 		s.provider.RuntimeManifestChecked = false
 		s.provider.MetallibVerified = false

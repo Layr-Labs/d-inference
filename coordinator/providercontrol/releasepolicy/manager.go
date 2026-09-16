@@ -24,7 +24,8 @@ type Manager struct {
 	releaseTrustPolicyGeneration      atomic.Uint64
 	releaseInventoryEverConfigured    atomic.Bool
 
-	knownRuntimeManifest *RuntimeManifest
+	knownRuntimeManifest  atomic.Pointer[RuntimeManifest]
+	runtimeManifestSyncMu sync.Mutex
 }
 
 func New(deps Dependencies) *Manager { return &Manager{deps: deps} }
@@ -32,6 +33,6 @@ func New(deps Dependencies) *Manager { return &Manager{deps: deps} }
 // Snapshot returns the currently published immutable policy, or nil before sync.
 func (s *Manager) Snapshot() *Snapshot { return s.releaseTrustPolicy.Load() }
 
-// RuntimeManifest returns the current configuration. Treat published maps as
-// read-only; SetRuntimeManifest preserves the existing caller-owned setup API.
-func (s *Manager) RuntimeManifest() *RuntimeManifest { return s.knownRuntimeManifest }
+// RuntimeManifest returns the immutable published policy. Callers retain one
+// snapshot across verification and its corresponding provider-state update.
+func (s *Manager) RuntimeManifest() *RuntimeManifest { return s.knownRuntimeManifest.Load() }

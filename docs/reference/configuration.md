@@ -211,7 +211,7 @@ and zero-value disable/fallback semantics remain in effect. Specifically,
 `EIGENINFERENCE_WARM_POOL_INTERVAL=0s` bypasses the
 warm-controller range checks after the finite checks. This preserves acceptance
 of a finite negative decode floor in that disabled-controller configuration;
-`coordinator/registry/concurrency_cap.go` (`qualityConcurrency`) treats a floor
+`coordinator/registry/tps_registry.go` (`qualityConcurrency`) treats a floor
 ≤ 0 as disabling the quality cap. The ranges in the warm-pool table apply when
 that disabled, zero-interval exception is not selected.
 

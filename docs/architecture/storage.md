@@ -242,6 +242,16 @@ Roughly forty tables; grouped by what would be lost if the family vanished.
 | Models and releases | `model_registry`, `model_versions`, `model_version_files`, `model_active_versions`, `model_aliases`, `releases` | The catalog the registry syncs at boot; see [`model-registry.md`](model-registry.md). |
 | Bookkeeping | `schema_migrations`, `earnings_summary_backfill_pending` | Completion/plan markers and resumable per-key historical deltas. |
 
+### Verification job ownership
+
+`CompleteVerificationJob` compares the supplied claim owner with the stored
+owner exactly in both `MemoryStore` and `PostgresStore`. A stale nonempty
+attempt token cannot complete a replacement job whose claim is empty. A late
+callback can still complete an unclaimed job by supplying the empty owner
+(`coordinator/store/memory.go`, `coordinator/store/postgres.go`). See
+[MDM attempt ownership](security/attestation.md#layer-3--mdm-securityinfo-the-hardware-grant)
+for how scheduler attempts retain their tokens across reconnects.
+
 ### Global Payouts state
 
 Claims, result application and definitive-rejection records use one locked PostgreSQL mutation boundary (`coordinator/store/postgres/global_payouts.go`, `mutateGlobalPayout`). Operation-specific checks run under the withdrawal row lock; any refund ledger entry and payout update commit together. A no-op claim rolls back without changing the lease or dispatch count.

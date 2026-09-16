@@ -254,6 +254,18 @@ the budget.
    `DesiredModelsForProvider` (already a member of the alias, capable of the
    build) gate every send.
 
+9. **Namespace validation reads must succeed before registration or an alias upsert.**
+   `handleModelAliasUpsert` preserves stored rollout lineage and endpoint
+   ownership when `GetModelAlias` fails. Both it and
+   `handleOpenRouterAliasUpsert` abort on namespace lookup errors other than
+   `store.ErrNotFound`; a failed desired/previous build lookup returns 500,
+   while a confirmed missing member remains 400
+   (`coordinator/api/catalog/aliases.go`,
+   `coordinator/api/catalog/marketplace_aliases.go`). The reverse guard in
+   `RegisterModel` returns 500 when its alias lookup fails, before
+   fetching artifacts or writing a concrete model
+   (`coordinator/api/catalog/register_model.go`).
+
 ## Failure modes
 
 | Symptom | Cause | Where to look |

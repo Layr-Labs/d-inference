@@ -8,17 +8,6 @@ import (
 // are dropped first once a (pathologically) churned alias exceeds it.
 const maxRetiredBuilds = 16
 
-// priorAlias fetches the existing alias definition, or nil when none exists
-// (or the store errored — treated as "no prior" since upsert will surface real
-// store failures itself).
-func (s *Controller) priorAlias(aliasID string) *store.ModelAlias {
-	prior, found, err := s.store().GetModelAlias(aliasID)
-	if err != nil || !found {
-		return nil
-	}
-	return prior
-}
-
 // retiredBuildsAfterUpsert computes the alias's lineage after an upsert: prior
 // retired builds, plus any prior desired/previous member rotated out by the new
 // pointers, minus any build the new pointers re-promote to membership. Bounded

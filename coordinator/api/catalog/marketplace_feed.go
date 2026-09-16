@@ -69,7 +69,10 @@ func (s *Controller) openRouterFeedEntries() ([]types.OpenRouterModel, error) {
 	// purchasable entry and its member builds are hidden, so the marketplace
 	// never lists a raw quant build that a migration will later retire (a
 	// retired build would otherwise stay listed and black-hole requests).
-	aliasEntries, hiddenBuilds := s.openRouterAliasEntries(catalogByID, registryByID, aggTypeByID)
+	aliasEntries, hiddenBuilds, err := s.openRouterAliasEntries(catalogByID, registryByID, aggTypeByID)
+	if err != nil {
+		return nil, err
+	}
 
 	// Stable output order.
 	ids := make([]string, 0, len(catalogByID))

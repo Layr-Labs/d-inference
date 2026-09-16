@@ -357,7 +357,26 @@ checks fitting and overflowing products (`coordinator/api/output_token_validatio
 reasoning, message and tool-call items through the real SSE emitter. It compares
 each item's completed text with its own deltas and checks the terminal output
 and both provider-reported and legacy reasoning usage
-(`coordinator/api/responses_item_text_test.go`).
+(`coordinator/inference/response/responses_item_text_test.go`).
+
+Runtime policy changes have CPU regression tests for caller-owned map mutation,
+concurrent verification and JSON responses during publication/withdrawal, and
+concurrent committed-release fallback merges:
+
+```bash
+go test -race ./coordinator/api -run '^Test(RuntimeManifest|SyncRuntimeManifest|VerifyRuntimeHashes)' -count=1
+```
+
+The existing runtime-manifest and release-policy fixtures also cover overlapping
+active releases, inventory failures, deactivation and unchanged process proofs.
+
+`TestMapQuantizationToOpenRouter` (`coordinator/api/catalog/marketplace_fields_test.go`)
+repeats overlapping decorated-label cases to detect map-order-dependent precision
+metadata. Run the focused check from the repository root:
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api/catalog -run '^TestMapQuantizationToOpenRouter$' -count=1
+```
 
 Run prediction telemetry checks from the repository root:
 

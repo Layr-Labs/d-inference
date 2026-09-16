@@ -23,12 +23,11 @@ func (s *Controller) aliasModelEntries(
 	capByModel map[string]*registry.ModelCapacity,
 	catalogByID map[string]store.SupportedModel,
 	registryByID map[string]store.ModelRegistryEntry,
-) ([]types.ModelEntry, map[string]struct{}) {
+) ([]types.ModelEntry, map[string]struct{}, error) {
 	hidden := make(map[string]struct{})
 	aliases, err := s.store().ListModelAliases()
 	if err != nil {
-		s.logger.Error("model registry: failed to list aliases", "error", err)
-		return nil, hidden
+		return nil, nil, err
 	}
 
 	entries := make([]types.ModelEntry, 0, len(aliases))
@@ -122,5 +121,5 @@ func (s *Controller) aliasModelEntries(
 		entries = append(entries, entry)
 	}
 
-	return entries, hidden
+	return entries, hidden, nil
 }

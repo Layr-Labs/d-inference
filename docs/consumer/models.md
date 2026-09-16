@@ -29,6 +29,12 @@ What is listed (`listModelEntries`, `aliasModelEntries`):
 - OpenRouter-only aliases are excluded; they appear only in `GET /v1/models/openrouter` (`ListOpenRouterModels`, `coordinator/api/catalog/marketplace_feed.go`).
 - With `X-Darkbloom-Route: self`, or on a key created with `self_route_only`, the list is instead the account's own machines' models, filtered by the key's `allowed_models` (`OwnedModelEntries`, `filterEntriesByKeyAllowList`). See [`../provider/self-route.md`](../provider/self-route.md).
 
+Public catalog reads return 500 `internal_error` if the catalog or alias store
+cannot be read. This includes `?include_builds=1` and
+`GET /v1/models/openrouter`. Failed reads are not cached; an existing successful
+cached response can still be served while valid (`handleListModels`,
+`cachedModelListBody`, `handleListModelsOpenRouter`).
+
 ### `ModelEntry` fields
 
 | Field | Type | Meaning | Source |
@@ -42,7 +48,7 @@ What is listed (`listModelEntries`, `aliasModelEntries`):
 | `description` | string | From the registry entry | |
 | `input_modalities` | string[] | `["text"]` plus `"image"`, `"audio"`, `"video"` when the build's capabilities include them; embedding models report `["text"]` → `["embedding"]` | `deriveModalities` (`coordinator/api/catalog/marketplace_modalities.go`) |
 | `output_modalities` | string[] | `["text"]` (or `["embedding"]`) | `deriveModalities` |
-| `quantization` | string | Quantization of a concrete build; empty on alias entries because an alias spans quants | `mapQuantizationToOpenRouter` |
+| `quantization` | string | Quantization of a concrete build; empty on alias entries because an alias spans quants. Decorated labels use the earliest recognized format, preferring the longest spelling at that position: `bfloat16-gs64` maps to `bf16`, while `q4-bfloat16` maps to `int4`. Unrecognized labels are omitted in the public fleet projection. Self-route model lists preserve the provider-reported label verbatim, including decorated or unrecognized values (`ownedModelEntry`). | `mapQuantizationToOpenRouter` (`coordinator/api/catalog/marketplace_quantization.go`); `ownedModelEntry` (`coordinator/api/catalog/owned_models.go`) |
 | `context_length` | int | Maximum prompt+completion context of the primary build | registry `MaxContextLength` |
 | `max_output_length` | int | Default output bound when the request supplies no positive max-tokens field; explicit bounds are preserved (`ensureMaxTokensBound`, `coordinator/inference/ingress/output_bound.go`) | registry `MaxOutputLength` |
 | `pricing` | object | `prompt`, `completion`, `image`, `request`, `input_cache_read` — USD per unit as decimal strings, from the platform price table | `buildModelPricing`, `resolvePlatformPricing`; see [`../reference/pricing-model.md`](../reference/pricing-model.md) |
@@ -70,7 +76,11 @@ What is listed (`listModelEntries`, `aliasModelEntries`):
 
 ## `GET /v1/models/{id}`
 
-Handler `GetModel`. Returns one `ModelEntry` for a listed id, a hidden build id, or an alias; 404 `model_not_found` with `param: "model"` otherwise. Self-route requests retrieve from the owned-model view so list and retrieve always agree.
+Handler `GetModel` (`coordinator/api/catalog/consumer_get.go`). Returns one
+`ModelEntry` for a listed id, a hidden build id, or an alias. A successful catalog
+read with no matching id returns 404 `model_not_found` with `param: "model"`;
+a catalog or alias store read failure returns 500 `internal_error`. Self-route
+requests retrieve from the owned-model view so list and retrieve always agree.
 
 ## How `model` is resolved on inference
 

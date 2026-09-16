@@ -16,21 +16,22 @@ func (s *Controller) RuntimeManifest(w http.ResponseWriter, r *http.Request) {
 		httpresponse.WriteCachedJSON(w, cached)
 		return
 	}
+	manifest := s.policy().RuntimeManifest()
 	var resp map[string]any
-	if s.policy().RuntimeManifest() == nil {
+	if manifest == nil {
 		resp = map[string]any{"configured": false}
 	} else {
 		// template_hashes is rendered as name -> sorted list of every hash
 		// accepted across the active releases: the manifest is a union, not a
 		// single expected value per template.
-		templates := make(map[string][]string, len(s.policy().RuntimeManifest().TemplateHashes))
-		for name, accepted := range s.policy().RuntimeManifest().TemplateHashes {
+		templates := make(map[string][]string, len(manifest.TemplateHashes))
+		for name, accepted := range manifest.TemplateHashes {
 			templates[name] = releasepolicy.SortedTemplateHashes(accepted)
 		}
 		resp = map[string]any{
 			"configured":      true,
-			"python_hashes":   s.policy().RuntimeManifest().PythonHashes,
-			"runtime_hashes":  s.policy().RuntimeManifest().RuntimeHashes,
+			"python_hashes":   manifest.PythonHashes,
+			"runtime_hashes":  manifest.RuntimeHashes,
 			"template_hashes": templates,
 		}
 	}

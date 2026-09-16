@@ -89,6 +89,16 @@ created: "2026-05-14"
 # prospective mismatches against registration. The app also binds its existing
 # verification public key, preventing substitution of model/runtime signature
 # credentials during the later trust transition. Reward rules are unchanged.
+
+# Runtime-manifest publication re-checked 2026-09-12 against f1ccb8d43.
+# This concurrency check does not re-verify the surrounding threat claims.
+
+# MDA handoff cleanup re-checked 2026-09-12 against f87bd0e77: only the completing
+# connection generation is removed. Other TB-005 claims were not re-verified.
+# MDM worker settlement re-checked 2026-09-12 against db418ae70: claims carry
+# unique attempt tokens; stores require exact completion-owner equality; queue
+# cleanup and rebound reads retain replacement ownership. This does not
+# re-verify other TB-005 claims or the complete late-callback lifecycle.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
@@ -364,6 +374,10 @@ trust_boundaries:
       a release policy is enforced, CodeAttested once code-attestation enforcement is
       active, and five PrivacyCapabilities fields (text_backend_inprocess,
       text_proxy_disabled, anti_debug_enabled, core_dumps_disabled, env_scrubbed).
+      Runtime hash policy uses immutable coordinator-owned snapshots. A release
+      update serializes inventory read, publication and live-provider revalidation;
+      provider verification applies one snapshot under the provider lock
+      (coordinator/api/runtime_manifest.go and coordinator/api/provider.go).
       The python_runtime_locked and dangerous_modules_blocked fields are
       wire-compatibility only and are not consulted. ChallengeVerifiedSIP is set by
       the coordinator after verifying a signed challenge response — not trusted from
@@ -610,6 +624,11 @@ trust_boundaries:
       (.8.9.2), OS version (.8.10.1), SepOS version (.8.10.2), Secure Boot level
       (.8.13.2), and freshness code (.8.11.1). The freshness code is compared against
       sha256(SE_public_key_bytes) byte-for-byte (provider.go).
+
+      Live and late SecurityInfo grants share finishSecurityInfo in
+      coordinator/api/mdm_scheduler_completion.go. Its forgetBinding cleanup
+      checks the original connection generation, preserving a replacement
+      connection that arrives during cached proof reuse or missing-UDID fallback.
 
       The SE attestation blob (attestation.go) is a JSON structure
       containing: SE public key (raw 64-byte P-256 X||Y in base64), hardware info, SIP

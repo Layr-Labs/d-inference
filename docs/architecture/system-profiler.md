@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-16 · commit `e22d49019`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -339,9 +339,12 @@ with types and tags, in
 their tags never include a request id, a provider id or a provider-authored
 string.
 
-Percentiles come from Postgres, never from Datadog: the prod VM may run no
-DogStatsD agent, and histograms do not survive the HTTPS series path
-([`telemetry.md`](telemetry.md)).
+Percentiles here come from Postgres, not from Datadog. The profiler's own
+percentiles are computed over `request_profiles` rows so they are exact,
+reproducible from the database, and independent of retention or aggregator
+configuration on the Datadog side. Coordinator histograms do reach Datadog
+without an agent, as distributions ([`telemetry.md`](telemetry.md#datadog-transport)),
+but that is a separate surface with its own rollup.
 
 Migration window (DMS / Cloud SQL): both tables are created with
 `CREATE TABLE IF NOT EXISTS` and carry a primary key, so logical replication

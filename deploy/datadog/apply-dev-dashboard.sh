@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+#
+# Apply deploy/datadog/dev-network-dashboard.json and validate that the log
+# queries its widgets scope by still return events.
+#
+# The dashboard's `pNN:` latency widgets need percentile aggregators enabled on
+# each distribution metric, which is a separate one-time API call per metric:
+# ./enable-distribution-percentiles.sh. Applying this dashboard alone leaves
+# those widgets empty. Order and verification: docs/operations/datadog-dashboard.md.
+#
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

@@ -24,7 +24,7 @@
     {
       "definition": {
         "type": "note",
-        "content": "## Darkbloom Observability\nMetrics: `d_inference.*` via DogStatsD (agent on 8125) | Logs: journald + direct Logs API | Traces: APM agent on 8126 | System: host-level DD agent checks\n\nTemplate vars: `$env`, `$service`, `$model`. Provider telemetry = `source:provider`; coordinator events = `source:coordinator`.",
+        "content": "## Darkbloom Observability\nMetrics: `d_inference.*` direct to the Datadog API (series + distribution_points, no agent) | Logs: journald + direct Logs API | Traces: APM agent on 8126 | System: host-level DD agent checks\n\nTemplate vars: `$env`, `$service`, `$model`. Provider telemetry = `source:provider`; coordinator events = `source:coordinator`.",
         "background_color": "blue",
         "font_size": "14",
         "text_align": "left",
@@ -224,17 +224,17 @@
                     {
                       "name": "p50",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.http.latency_ms.50percentile{$env} by {path}"
+                      "query": "p50:d_inference.http.latency_ms{$env} by {path}"
                     },
                     {
                       "name": "p95",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.http.latency_ms.95percentile{$env} by {path}"
+                      "query": "p95:d_inference.http.latency_ms{$env} by {path}"
                     },
                     {
                       "name": "p99",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.http.latency_ms.99percentile{$env} by {path}"
+                      "query": "p99:d_inference.http.latency_ms{$env} by {path}"
                     }
                   ],
                   "formulas": [
@@ -545,7 +545,7 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.routing.cost_ms.95percentile{$env,model:$model} by {provider_id}"
+                      "query": "p95:d_inference.routing.cost_ms{$env,model:$model} by {provider_id}"
                     }
                   ],
                   "formulas": [
@@ -746,7 +746,7 @@
                     {
                       "name": "p95",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.inference.media_fetch.duration_ms.95percentile{$env,model:$model} by {model}"
+                      "query": "p95:d_inference.inference.media_fetch.duration_ms{$env,model:$model} by {model}"
                     }
                   ],
                   "formulas": [
@@ -1345,17 +1345,17 @@
                     {
                       "name": "p50",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.billing.reserved_micro_usd.50percentile{$env,model:$model} by {model}"
+                      "query": "p50:d_inference.billing.reserved_micro_usd{$env,model:$model} by {model}"
                     },
                     {
                       "name": "p95",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.billing.reserved_micro_usd.95percentile{$env,model:$model} by {model}"
+                      "query": "p95:d_inference.billing.reserved_micro_usd{$env,model:$model} by {model}"
                     },
                     {
                       "name": "p99",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.billing.reserved_micro_usd.99percentile{$env,model:$model} by {model}"
+                      "query": "p99:d_inference.billing.reserved_micro_usd{$env,model:$model} by {model}"
                     }
                   ],
                   "formulas": [
@@ -1381,17 +1381,17 @@
                     {
                       "name": "p50",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.billing.settlement_refund_micro_usd.50percentile{$env,model:$model} by {model}"
+                      "query": "p50:d_inference.billing.settlement_refund_micro_usd{$env,model:$model} by {model}"
                     },
                     {
                       "name": "p95",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.billing.settlement_refund_micro_usd.95percentile{$env,model:$model} by {model}"
+                      "query": "p95:d_inference.billing.settlement_refund_micro_usd{$env,model:$model} by {model}"
                     },
                     {
                       "name": "p99",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.billing.settlement_refund_micro_usd.99percentile{$env,model:$model} by {model}"
+                      "query": "p99:d_inference.billing.settlement_refund_micro_usd{$env,model:$model} by {model}"
                     }
                   ],
                   "formulas": [
@@ -1513,32 +1513,32 @@
                     {
                       "name": "p50",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.store.debit.latency_ms.50percentile{$env} by {op}"
+                      "query": "p50:d_inference.store.debit.latency_ms{$env} by {op}"
                     },
                     {
                       "name": "p95",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.store.debit.latency_ms.95percentile{$env} by {op}"
+                      "query": "p95:d_inference.store.debit.latency_ms{$env} by {op}"
                     },
                     {
                       "name": "p99",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.store.debit.latency_ms.99percentile{$env} by {op}"
+                      "query": "p99:d_inference.store.debit.latency_ms{$env} by {op}"
                     },
                     {
                       "name": "c50",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.store.credit.latency_ms.50percentile{$env} by {op}"
+                      "query": "p50:d_inference.store.credit.latency_ms{$env} by {op}"
                     },
                     {
                       "name": "c95",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.store.credit.latency_ms.95percentile{$env} by {op}"
+                      "query": "p95:d_inference.store.credit.latency_ms{$env} by {op}"
                     },
                     {
                       "name": "c99",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.store.credit.latency_ms.99percentile{$env} by {op}"
+                      "query": "p99:d_inference.store.credit.latency_ms{$env} by {op}"
                     }
                   ],
                   "formulas": [
@@ -1566,13 +1566,13 @@
                     {
                       "name": "debit",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.store.debit.latency_ms.99percentile{$env} by {op}",
+                      "query": "p99:d_inference.store.debit.latency_ms{$env} by {op}",
                       "aggregator": "last"
                     },
                     {
                       "name": "credit",
                       "data_source": "metrics",
-                      "query": "avg:d_inference.store.credit.latency_ms.99percentile{$env} by {op}",
+                      "query": "p99:d_inference.store.credit.latency_ms{$env} by {op}",
                       "aggregator": "last"
                     }
                   ],

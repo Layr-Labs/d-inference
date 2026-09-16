@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-13 · commit `de4e28825`
+> Last updated: 2026-09-16 · commit `e22d49019`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -15,7 +15,7 @@ design and failure modes are in [`../architecture/telemetry.md`](../architecture
 | Provider heartbeat → registry → Datadog gauges/counters | live; the only provider-diagnostic channel |
 | Coordinator-emitted telemetry events → slog + in-process counter + Datadog Logs API | live |
 | Per-request rows (`inference_routes`, `request_rejections`, `usage`, `request_profiles`) and 60 s `fleet_snapshots` | live |
-| DogStatsD / HTTPS series metrics from request handling, routing, billing, cache | live |
+| DogStatsD / HTTPS series and distribution metrics from request handling, routing, billing, cache | live |
 | Provider or console client telemetry events (`POST /v1/telemetry/events`) | retired — `telemetry_ingest_disabled`, body never read ([retired paths](#retired-paths-that-emit-nothing)); provider and console facades are no-ops |
 | `telemetry_events` table | removed |
 | Datadog APM spans | tracer is started (`ddtracer.Start`) but no code creates spans; `dd.trace_id`/`dd.span_id` therefore never appear in logs |
@@ -59,6 +59,16 @@ All names carry the `d_inference.` namespace and the constant tags `env:`
 [`configuration.md#telemetry-datadog-and-profiling`](configuration.md#telemetry-datadog-and-profiling)).
 Transport and fallback rules:
 [`../architecture/telemetry.md#mechanism`](../architecture/telemetry.md#mechanism).
+A metric typed `histogram` here arrives as a Datadog **distribution** whenever
+`DD_API_KEY` is set (every deployed environment), so query it as
+`avg:<metric>` / `count:<metric>` / `max:<metric>` — not as an agent-aggregated
+`<metric>.95percentile` series. `pNN:<metric>` additionally needs percentile
+aggregators enabled on that metric, which is a per-metric opt-in and is **not**
+on by default: `deploy/datadog/enable-distribution-percentiles.sh` covers the
+metrics the dashboard queries that way and accepts extra names as arguments
+(runbook: [`../operations/datadog-dashboard.md`](../operations/datadog-dashboard.md)).
+A `pNN:` query against a distribution without them returns no data rather than
+an error.
 This table covers the metrics that derive from provider telemetry, request
 outcomes and the telemetry pipeline itself; billing, exact-cache, MDM and
 rate-limit families are emitted from their own subsystems (`rg 'dd(Incr|Count|Gauge|Histogram)\(' coordinator/api`
@@ -103,7 +113,7 @@ lists every name).
 |---|---|---|---|
 | `inference.request_outcome` | count | `model`, `class` (`success`, `provider_5xx`, `timeout`, `rate_limited`, `client_error`; `mid_stream` declared, never produced), `kv_backend`, `kv_backend_fallback` | once per chat/responses request (`coordinator/api/openrouter_uptime.go`); `/v1/completions` and `/v1/messages` dispatches excluded, their pre-dispatch rejections included |
 | `inference.request_outcome_or_view` | count | `model`, `class` (`success`, `provider_5xx`, `timeout`, `mid_stream`, `rate_limited`, `client_error`, `client_gone`) | request-level terminal view: pre-dispatch rejection, dispatch terminal (including attempt-zero TTFT rejection), client departure, or committed route outcome; `client_gone` excludes early/post-commit client aborts while pre-content aborts at the deadline count as `timeout` (`coordinator/api/attempt_outcome_metrics.go`, `recordRequestOutcomeORView`) |
-| `routing.route_latency_ms` | histogram (DogStatsD only) | `model` | attempt-zero non-queued provider selection: `RoutedAt` minus `MediaFetchedAt` when set, otherwise `ReservedAt`; requires valid timing anchors (`coordinator/api/attempt_outcome_metrics.go`, `emitRouteLatency`). No in-process mirror. |
+| `routing.route_latency_ms` | histogram | `model` | attempt-zero non-queued provider selection: `RoutedAt` minus `MediaFetchedAt` when set, otherwise `ReservedAt`; requires valid timing anchors (`coordinator/api/attempt_outcome_metrics.go`, `emitRouteLatency`). No in-process mirror. |
 | `routing.provider_draining` | count | `model` | transition into draining announced by a validated error terminal, before releasing pending capacity (`coordinator/api/provider_drain.go`, `noteProviderDraining`). No in-process mirror. |
 | `inference.completions` | count | `model` | each `inference_complete` |
 | `inference.dispatches` | count | `status:success`, `failure`, `timeout`, `retry`, `retry_precontent` | each attempt |
@@ -116,7 +126,7 @@ lists every name).
 | `inference.invalid_failure_code`, `inference.in_band_error`, `inference.first_content_after_deadline`, `inference.speculative_dispatch`, `inference.speculative_win`, `inference.zombie_stream_cancel`, `inference.chunk_overflow_abort` | count | various | dispatch edge cases (`coordinator/api/dispatch.go`, `provider.go`) |
 | `inference.prompt_tokens`, `inference.completion_tokens` (histogram); `inference.prompt_tokens_total`, `inference.completion_tokens_total` (count) | — | `model` | each completion |
 | `registry.mu.write_wait_ms` | histogram | `site` | Registry write-lock acquisition wait, emitted after unlock (`coordinator/registry/lock_wait.go`, `lockWrite`); dispatch-load failure and recovery are separate sites. |
-| `registry.gate.wait_ms` | histogram (DogStatsD only) | `site` | per-identity recorder gate waits over `gateWaitReportThreshold`, emitted after release (`coordinator/registry/gate_lock.go`, `SetGateWaitObserver`; `coordinator/api/server.go`). No in-process mirror. |
+| `registry.gate.wait_ms` | histogram | `site` | per-identity recorder gate waits over `gateWaitReportThreshold`, emitted after release (`coordinator/registry/gate_lock.go`, `SetGateWaitObserver`; `coordinator/api/server.go`). No in-process mirror. |
 | `routing.scans` | count | `model`, `outcome` | Full reservation scans including retries (`coordinator/api/dispatch.go`, `recordRoutingDecisionFor`). |
 | `routing.decisions` | count | `model`, `model_type`, `outcome` (`selected`, `queued`, `model_shed`, `ttft_429`, `model_too_large`, `over_capacity`, `routing_saturated`, `capacity_queue_spill`, `capacity_429`, `cold_dispatch_spill`, `dedicated_capacity_429`, `no_eligible_provider`, `ttft_soft_served`, `unservable_429`) | each admission decision |
 | `inference.attempt_outcome`, `inference.queue_outcome` | count | `model`, `class` | dispatched-attempt and queue-only outcomes kept separate (`coordinator/api/attempt_outcome_metrics.go`, `emitAttemptOutcomeMetric`) |

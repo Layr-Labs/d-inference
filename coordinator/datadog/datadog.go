@@ -7,20 +7,23 @@
 //   - DD_SERVICE: service name override (default "d-inference-coordinator")
 //   - DD_DOGSTATSD_URL: DogStatsD address (default "localhost:8125")
 //
-// The DD agent sidecar handles trace intake (default localhost:8126) and
-// DogStatsD aggregation. The coordinator pushes directly to the Logs API for
-// telemetry event forwarding, and to the series API for gauges and counters
-// (metrics_http.go) when DD_API_KEY is set.
+// When DD_API_KEY is set the coordinator submits everything over HTTPS and
+// needs no agent on the host: logs and events to the Logs API, gauges and
+// counters to the series API (metrics_http.go), histograms to the
+// distribution_points API (metrics_distribution.go). Each of those is a
+// replacement for the DogStatsD leg rather than a tee, so an agent appearing
+// later cannot double-count. Without an API key, DogStatsD is the only leg and
+// an agent is required for anything to arrive at all.
 //
 // Everything the coordinator submits itself carries env and service, because
 // on a host with no agent there is nothing else to add them: an agent tags the
 // log stream it collects itself (the dev agent reads the coordinator unit over
 // journald and stamps env:development), the intake does not. The dashboards
 // scope every query by that pair, so an untagged submission is invisible.
-// Tagging cannot rescue the Histogram method, which has no HTTPS leg at all
-// and needs an agent on the host; HistogramOrGauge (metrics_snapshot.go) is
-// the one histogram-shaped call that does survive without one, by submitting
-// a gauge instead.
+//
+// A DD agent sidecar, where one exists, still owns trace intake (default
+// localhost:8126) and host-level system metrics. It is not on the path for any
+// metric or log the coordinator records about itself.
 package datadog
 
 import (
@@ -62,9 +65,12 @@ type Client struct {
 	logDone    chan struct{}
 	logFlushWg sync.WaitGroup
 
-	// HTTP metric submission (no agent needed). See metrics_http.go.
+	// HTTP metric submission (no agent needed). See metrics_http.go for gauges
+	// and counters, metrics_distribution.go for histograms.
 	series            *seriesBuffer
 	seriesURL         string
+	dist              *distBuffer
+	distURL           string
 	metricsHost       string
 	metricsTags       []string
 	flushIntervalSecs int64
@@ -124,7 +130,9 @@ func NewClient(cfg Config, logger *slog.Logger) (*Client, error) {
 	c.logsURL = fmt.Sprintf("https://http-intake.logs.%s/api/v2/logs", site)
 	c.eventsURL = fmt.Sprintf("https://api.%s/api/v1/events", site)
 	c.seriesURL = fmt.Sprintf("https://api.%s/api/v1/series", site)
+	c.distURL = fmt.Sprintf("https://api.%s/api/v1/distribution_points", site)
 	c.series = newSeriesBuffer()
+	c.dist = newDistBuffer()
 	c.env = cfg.Env
 	c.service = cfg.Service
 	c.metricsTags = []string{"env:" + cfg.Env, "service:" + cfg.Service}
@@ -163,9 +171,20 @@ func (c *Client) Close() {
 	c.logFlushWg.Wait()
 	c.flushLogs()
 	c.flushSeries()
+	c.flushDistributions()
 	if c.Statsd != nil {
 		_ = c.Statsd.Close()
 	}
+}
+
+// warn logs a submission problem. Every caller is on a best-effort telemetry
+// path, and a Client can be assembled by hand (tests, embedders) without a
+// logger, so a missing logger must not turn a dropped metric into a panic.
+func (c *Client) warn(msg string, args ...any) {
+	if c == nil || c.logger == nil {
+		return
+	}
+	c.logger.Warn(msg, args...)
 }
 
 // ---------------------------------------------------------------------------
@@ -178,6 +197,15 @@ func (c *Client) Close() {
 // metrics_http.go.
 func (c *Client) httpMetrics() bool {
 	return c.apiKey != "" && c.series != nil
+}
+
+// httpDistributions reports whether histograms go via the HTTPS
+// distribution_points API, on the same replace-not-tee rule as httpMetrics.
+// It is a separate predicate because the two buffers are independent: a Client
+// assembled by hand with only a seriesBuffer must fall back to DogStatsD for
+// histograms rather than dereference a nil buffer. See metrics_distribution.go.
+func (c *Client) httpDistributions() bool {
+	return c.apiKey != "" && c.dist != nil
 }
 
 // Incr increments a counter.
@@ -199,13 +227,23 @@ func (c *Client) Count(name string, value int64, tags []string) {
 	}
 }
 
-// Histogram records a histogram value. DogStatsD-only: percentile aggregation
-// happens agent-side and isn't replicated by the HTTP path.
+// Histogram records a histogram value. With an API key the value is buffered
+// and POSTed to the HTTPS distribution_points API and the DogStatsD leg is
+// skipped, matching Count and Gauge; without one, DogStatsD is the only leg and
+// a local agent aggregates it into `.avg`/`.count`/`.median`/`.max`/
+// `.95percentile` series. The two legs therefore produce differently named
+// metrics — see metrics_distribution.go and the dashboard's `p95:` queries.
 func (c *Client) Histogram(name string, value float64, tags []string) {
-	if c == nil || c.Statsd == nil {
+	if c == nil {
 		return
 	}
-	_ = c.Statsd.Histogram(name, value, tags, 1)
+	if c.httpDistributions() {
+		c.dist.add(name, value, tags, time.Now().Unix())
+		return
+	}
+	if c.Statsd != nil {
+		_ = c.Statsd.Histogram(name, value, tags, 1)
+	}
 }
 
 // Gauge sets a gauge value.
@@ -354,6 +392,7 @@ func (c *Client) logFlushLoop() {
 		case <-c.logTicker.C:
 			c.flushLogs()
 			c.flushSeries()
+			c.flushDistributions()
 		case <-c.logDone:
 			return
 		}
@@ -372,13 +411,13 @@ func (c *Client) flushLogs() {
 
 	body, err := json.Marshal(batch)
 	if err != nil {
-		c.logger.Warn("datadog: failed to marshal log batch", "error", err)
+		c.warn("datadog: failed to marshal log batch", "error", err)
 		return
 	}
 
 	req, err := http.NewRequest(http.MethodPost, c.logsURL, bytes.NewReader(body))
 	if err != nil {
-		c.logger.Warn("datadog: failed to create log request", "error", err)
+		c.warn("datadog: failed to create log request", "error", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -386,7 +425,7 @@ func (c *Client) flushLogs() {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		c.logger.Warn("datadog: logs API request failed", "error", err, "batch_size", len(batch))
+		c.warn("datadog: logs API request failed", "error", err, "batch_size", len(batch))
 		return
 	}
 	// The status alone does not say why: 403 is a bad key, 413 an oversized
@@ -395,7 +434,7 @@ func (c *Client) flushLogs() {
 	respBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		c.logger.Warn("datadog: logs API returned error",
+		c.warn("datadog: logs API returned error",
 			"status", resp.StatusCode, "batch_size", len(batch),
 			"body", truncate(string(respBody), 200))
 	}
@@ -439,13 +478,13 @@ func (c *Client) emitDDEvent(entry TelemetryLogEntry) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		c.logger.Warn("datadog: events API request failed", "error", err)
+		c.warn("datadog: events API request failed", "error", err)
 		return
 	}
 	respBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		c.logger.Warn("datadog: events API returned error",
+		c.warn("datadog: events API returned error",
 			"status", resp.StatusCode, "body", truncate(string(respBody), 200))
 	}
 }

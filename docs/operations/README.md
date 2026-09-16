@@ -1,6 +1,6 @@
 # Operations runbooks
 
-> Last updated: 2026-09-14 · commit `b725a72a8`
+> Last updated: 2026-09-16 · commit `e22d49019`
 
 Procedures for deploying, migrating, and operating Darkbloom production
 infrastructure. Every runbook has the same shape — when to use, prerequisites,
@@ -19,6 +19,7 @@ shapes under [`../reference/README.md`](../reference/README.md).
 | [`release-policy-rollout.md`](release-policy-rollout.md) | Deploy the release-policy routing gate in shadow, then flip it to enforce |
 | [`routing-v2-rollout.md`](routing-v2-rollout.md) | Kill switches and flag flips for the shipped routing-v2 behaviours (TTFT gate, queue-before-shed, cold dispatch, warm pool, budget clamp, anomaly detector) |
 | [`cache-routing-rollout.md`](cache-routing-rollout.md) | Turn exact prefix-cache routing on in production, widen the activation percent and plan-QPS bounds one at a time, verify with `GET /v1/cache/status`, roll back to `off` |
+| [`datadog-dashboard.md`](datadog-dashboard.md) | Apply the observability dashboard and enable distribution percentile aggregators, in the order the widgets need |
 | [`profiler-queries.md`](profiler-queries.md) | Read-only SQL recipes against the profiler tables (`request_profiles`, `fleet_snapshots`) for latency, fleet and outcome questions |
 | [`model-migration.md`](model-migration.md) | Publish a model build and move a public alias to it with zero downtime |
 | [`state-export.md`](state-export.md) | Extract and rehydrate sealed coordinator state (`DAR-70`) |

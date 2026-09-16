@@ -17,8 +17,8 @@ import (
 // same way. When DD_API_KEY is set the HTTP path is authoritative and the
 // DogStatsD leg is skipped (teeing would double-count if an agent ever
 // appears, with divergent host tags); without an API key, DogStatsD is the
-// only leg. Histograms remain DogStatsD-only: their percentile aggregation
-// happens agent-side and isn't replicated here.
+// only leg. Histograms take the same shape on a separate intake, because they
+// cannot be pre-aggregated into a point — see metrics_distribution.go.
 
 // seriesBuffer accumulates metric points between flushes: gauges are
 // last-write-wins per (metric, tags) series; counters sum per series over the
@@ -125,12 +125,12 @@ func (c *Client) flushSeries() {
 
 	body, err := json.Marshal(map[string]any{"series": series})
 	if err != nil {
-		c.logger.Warn("datadog: failed to marshal series batch", "error", err)
+		c.warn("datadog: failed to marshal series batch", "error", err)
 		return
 	}
 	req, err := http.NewRequest(http.MethodPost, c.seriesURL, bytes.NewReader(body))
 	if err != nil {
-		c.logger.Warn("datadog: failed to create series request", "error", err)
+		c.warn("datadog: failed to create series request", "error", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -138,13 +138,13 @@ func (c *Client) flushSeries() {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		c.logger.Warn("datadog: series API request failed", "error", err, "batch_size", len(series))
+		c.warn("datadog: series API request failed", "error", err, "batch_size", len(series))
 		return
 	}
 	respBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		c.logger.Warn("datadog: series API returned error",
+		c.warn("datadog: series API returned error",
 			"status", resp.StatusCode, "batch_size", len(series),
 			"body", truncate(string(respBody), 200))
 	}

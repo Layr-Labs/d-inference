@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-14 · commit `b725a72a8`
+> Last updated: 2026-09-16 · commit `e22d49019`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -329,7 +329,7 @@ Media fetch (`coordinator/mediafetch/config.go`, `ConfigFromEnv`; a set-but-unpa
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DD_API_KEY` | secret | unset (no metric or log shipping) | `coordinator/datadog/datadog.go` (`ConfigFromEnv`); `coordinator/cmd/coordinator/main.go` | Enables the Datadog client (metrics over the HTTP API, Logs API forwarding) and the APM tracer; see [`../architecture/telemetry.md`](../architecture/telemetry.md). |
+| `DD_API_KEY` | secret | unset (no metric or log shipping) | `coordinator/datadog/datadog.go` (`ConfigFromEnv`); `coordinator/cmd/coordinator/main.go` | Enables the Datadog client (counters/gauges to the series API, histograms to the distribution-points API, Logs API forwarding) and the APM tracer; see [`../architecture/telemetry.md`](../architecture/telemetry.md). |
 | `DD_AGENT_HOST` | hostname | unset | `coordinator/cmd/coordinator/main.go` | Also starts the APM tracer and trace-context log handler when set (agent-based deployments without an API key). |
 | `DD_SITE` | Datadog site | `datadoghq.com` | `coordinator/datadog/datadog.go` (`ConfigFromEnv`) | Intake endpoint. |
 | `DD_ENV`, `DD_SERVICE` | strings | `production`, `d-inference-coordinator` | `coordinator/datadog/datadog.go` (`ConfigFromEnv`) | `env:` and `service:` tags on every series, log and trace. |

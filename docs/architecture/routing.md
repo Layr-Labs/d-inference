@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-13 · commit `f6b5e111c`
+> Last updated: 2026-09-16 · commit `e22d49019`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -587,8 +587,8 @@ after activity, disconnect or reset (`coordinator/registry/version_reset.go`);
 see [disconnect and reconnect](scheduling.md#disconnect). Half-open trip memory
 of a live gate is never pruned.
 
-**Observability.** `registry.gate.wait_ms` (DogStatsD histogram tagged
-`site:`, via `SetGateWaitObserver`) records a recorder's `gate.mu`
+**Observability.** `registry.gate.wait_ms` (histogram tagged `site:`, via
+`SetGateWaitObserver`) records a recorder's `gate.mu`
 acquisition wait when it exceeds `gateWaitReportThreshold = time.Millisecond`.
 
 ### Reputation

@@ -154,6 +154,17 @@ checks described in that procedure; their tiny MLX fixtures require the matched 
 The same staged product runs the paged-preflight child diagnostic assertions
 described in that procedure.
 
+Compile the provider test targets after changing live-fixture collectors or
+assertions:
+
+```bash
+(cd provider-swift && swift build --build-tests)
+```
+
+This checks compilation without executing the fixtures. Use the
+[live-fixture procedure](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib)
+to qualify an enabled model scenario.
+
 ```bash
 make provider-build
 # = cd provider-swift && swift build

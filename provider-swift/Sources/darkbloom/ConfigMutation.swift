@@ -7,11 +7,13 @@ import Darwin
 /// Resolve migrations before taking the stable sidecar lock, then reload inside
 /// the lock so concurrent beta/idle changes cannot overwrite each other. Callers
 /// own their key-presence/no-op check and save, preserving explicit pin semantics.
+/// Fixture callers disable migration to keep temporary configs out of the user home.
 func withMutableConfig<Result>(
     configPath: String?,
+    migrateOnDisk: Bool = true,
     _ body: (URL, inout ProviderConfig) throws -> Result
 ) throws -> Result {
-    let snapshot = try loadRuntimeSnapshot(configPath: configPath)
+    let snapshot = try loadRuntimeSnapshot(configPath: configPath, migrateOnDisk: migrateOnDisk)
     // Default-path lookup must happen after a possible legacy migration.
     let savePath = try configPath != nil ? snapshot.configPath : ConfigManager.defaultConfigPath()
     return try withExclusiveConfigLock(at: savePath) {

@@ -139,6 +139,9 @@ Sidecar Tests").
 
 ### 5. Provider CLI (Swift) with source-matched metallib
 
+Config-mutation test builds use the same CLI helpers with migration disabled
+for temporary fixtures; see [the provider test procedure](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib).
+
 ```bash
 make provider-build
 # = cd provider-swift && swift build

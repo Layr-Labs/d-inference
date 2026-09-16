@@ -94,8 +94,10 @@ func (s *Service) Status(p *registry.Provider) *protocol.ProviderServingAuthoriz
 	return s.providerServingAuthorizationStatus(p)
 }
 
-func (s *Service) IdentityCandidate(r *protocol.RegisterMessage) bool {
-	return s.appAttestIdentityCandidate(r)
+// IdentityCandidate accepts only the API's validated token account, never an
+// account string supplied in registration hardware/status fields.
+func (s *Service) IdentityCandidate(r *protocol.RegisterMessage, account string) bool {
+	return s.appAttestIdentityCandidate(r, account)
 }
 
 func (s *Service) currentReleasePolicySnapshot() *ReleasePolicy {

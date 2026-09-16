@@ -145,7 +145,7 @@ func (r *Registry) RevokeAppAttestCredential(credentialID string) []string {
 	var affected []string
 	for id, p := range r.providers {
 		p.mu.Lock()
-		if p.appAttestCredentialID == credentialID {
+		if p.appAttestCredentialID == credentialID || p.appAttestPresenterID == credentialID {
 			p.appAttestAuthorization = AppAttestServingAuthorization{}
 			p.appAttestSecurityDenied = true
 			p.RuntimeCapabilities = nil
@@ -239,6 +239,9 @@ func (r *Registry) ProviderServingDenialReason(p *Provider) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if _, revoked := r.appAttestRevokedCredentials[p.appAttestCredentialID]; revoked {
+		return "credential_revoked"
+	}
+	if _, revoked := r.appAttestRevokedCredentials[p.appAttestPresenterID]; revoked {
 		return "credential_revoked"
 	}
 	if p.appAttestSecurityDenied || (p.Status == StatusUntrusted && !p.untrustedRecoverable) {

@@ -2,6 +2,7 @@ package baserewards
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sort"
 	"time"
@@ -22,6 +23,10 @@ type machineRewardGroup struct {
 // inventory retain their existing key; App Attest providers fail closed without
 // a matching durable binding. App Attest does not certify physical uniqueness.
 func (e *Engine) buildCandidates(ctx context.Context, start, end time.Time) ([]candidate, error) {
+	return e.buildCandidatesWithBindings(ctx, start, end, nil)
+}
+
+func (e *Engine) buildCandidatesWithBindings(ctx context.Context, start, end time.Time, verifiedBindings map[string]store.MachineRewardBinding) ([]candidate, error) {
 	grace := time.Duration(e.cfg.GraceSeconds) * time.Second
 	sessions, err := e.store.ListProviderSessionsOverlapping(ctx, start, end, grace)
 	if err != nil {
@@ -32,6 +37,15 @@ func (e *Engine) buildCandidates(ctx context.Context, start, end time.Time) ([]c
 	if err != nil {
 		return nil, err
 	}
+	// A batch can discover a pending-inventory session's canonical endpoint
+	// association. Keep its healthy aliases together on retry, while current
+	// durable session bindings take precedence over earlier retry snapshots.
+	for session, binding := range verifiedBindings {
+		if _, current := bindings[session]; !current {
+			bindings[session] = binding
+		}
+	}
+	normalizeRewardBindings(bindings)
 	accountByKey := latestAccountByProviderKey(sessions)
 	groups := make(map[string]*machineRewardGroup)
 	for _, p := range live {
@@ -103,7 +117,10 @@ func (e *Engine) buildCandidates(ctx context.Context, start, end time.Time) ([]c
 		if g.machineID == "" {
 			g.c.Earned, err = e.store.SumProviderEarningsByKey(ctx, g.c.ProviderKey, start, end)
 		} else {
-			st, _ := store.As[store.MachineRewardStore](e.store)
+			st, ok := store.As[store.MachineRewardStore](e.store)
+			if !ok {
+				return nil, errors.New("base rewards: verified machine accounting store unavailable")
+			}
 			g.c.Earned, err = st.SumProviderEarningsByKeysForAccount(ctx, g.c.AccountID, g.previousKeys, start, end)
 		}
 		if err != nil {
@@ -143,6 +160,10 @@ func (e *Engine) machineRewardBindings(ctx context.Context, sessions []store.Pro
 		}
 		ids = ids[n:]
 	}
+	return bindings, nil
+}
+
+func normalizeRewardBindings(bindings map[string]store.MachineRewardBinding) {
 	// A merge between batches can yield both an old and new canonical ID.
 	// Follow only non-self aliases so input order cannot split the machine.
 	forward := make(map[string]string)
@@ -160,7 +181,6 @@ func (e *Engine) machineRewardBindings(ctx context.Context, sessions []store.Pro
 		b.MachineAliases = compactRewardKeys(append(b.MachineAliases, b.MachineID))
 		bindings[id] = b
 	}
-	return bindings, nil
 }
 
 func rewardSnapshotEligible(p registry.ProviderSnapshot) bool {
@@ -207,14 +227,24 @@ func candidatePreviouslySettled(c candidate, settled map[string]bool) bool {
 
 func (e *Engine) eligibleCandidateSession(c candidate) (string, bool) {
 	for _, original := range c.live {
-		p, ok := e.reg.GetProviderRewardSnapshot(original.ID)
-		if !ok || !rewardSnapshotEligible(p) || p.ProviderKey != original.ProviderKey || p.AccountID != original.AccountID || p.MachineID != original.MachineID || p.HardwareModel != original.HardwareModel {
-			continue
-		}
-		mem, known := rewardMemoryGB(p)
-		if known && mem >= c.c.MemGB {
-			return p.ID, true
+		if e.candidateSessionAuthorized(c, original.ID) {
+			return original.ID, true
 		}
 	}
 	return "", false
+}
+
+func (e *Engine) candidateSessionAuthorized(c candidate, session string) bool {
+	for _, original := range c.live {
+		if original.ID != session {
+			continue
+		}
+		p, ok := e.reg.GetProviderRewardSnapshot(original.ID)
+		if !ok || !rewardSnapshotEligible(p) || p.ProviderKey != original.ProviderKey || p.AccountID != original.AccountID || p.MachineID != original.MachineID || p.HardwareModel != original.HardwareModel {
+			return false
+		}
+		mem, known := rewardMemoryGB(p)
+		return known && mem >= c.c.MemGB
+	}
+	return false
 }

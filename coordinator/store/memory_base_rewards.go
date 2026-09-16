@@ -163,9 +163,3 @@ func sessionLess(a, b ProviderSession) bool {
 	}
 	return a.ConnectedAt.Before(b.ConnectedAt)
 }
-
-// WithEpochSettlementLock runs fn directly: the memory store is single-process,
-// so there is no cross-instance contention to guard against.
-func (s *MemoryStore) WithEpochSettlementLock(_ context.Context, _ string, fn func() error) error {
-	return fn()
-}

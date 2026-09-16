@@ -33,6 +33,14 @@ func (s *PostgresStore) SettleMachineFloorDraw(ctx context.Context, machine stri
 }
 
 func settleMachineFloorDraw(ctx context.Context, tx pgx.Tx, machine string, draw *ProviderFloorDraw) (bool, error) {
+	resolved, already, err := resolveMachineFloorDraw(ctx, tx, machine, draw)
+	if err != nil || already {
+		return false, err
+	}
+	return settleProviderFloorDraw(ctx, tx, &resolved)
+}
+
+func resolveMachineFloorDraw(ctx context.Context, tx pgx.Tx, machine string, draw *ProviderFloorDraw) (ProviderFloorDraw, bool, error) {
 	var canonical string
 	err := tx.QueryRow(ctx, `WITH RECURSIVE chain AS (
 	 SELECT id,merged_into,assurance,0 AS depth FROM darkbloom_machines WHERE id=$1
@@ -40,10 +48,10 @@ func settleMachineFloorDraw(ctx context.Context, tx pgx.Tx, machine string, draw
 	 SELECT id FROM chain WHERE merged_into IS NULL AND assurance<>'provisional'
 	 AND EXISTS(SELECT 1 FROM darkbloom_machine_sessions s WHERE s.machine_id=chain.id AND s.account_id=$2)`, machine, draw.AccountID).Scan(&canonical)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, ErrMachineContinuityUnverified
+		return ProviderFloorDraw{}, false, ErrMachineContinuityUnverified
 	}
 	if err != nil {
-		return false, err
+		return ProviderFloorDraw{}, false, err
 	}
 	var alreadySettled bool
 	err = tx.QueryRow(ctx, `WITH RECURSIVE ancestors AS (
@@ -53,14 +61,16 @@ func settleMachineFloorDraw(ctx context.Context, tx pgx.Tx, machine string, draw
 	 d.provider_key IN (SELECT 'machine:'||id FROM ancestors)
 	 OR d.provider_key IN (SELECT p.provider_key FROM provider_sessions p JOIN darkbloom_machine_sessions s ON s.session_id=p.session_id WHERE s.machine_id=$1 AND p.provider_key<>'')))`, canonical, draw.EpochID).Scan(&alreadySettled)
 	if err != nil {
-		return false, err
+		return ProviderFloorDraw{}, false, err
 	}
 	if alreadySettled {
-		return false, nil
+		copy := *draw
+		copy.ProviderKey = MachineFloorKey(canonical)
+		return copy, true, nil
 	}
 	copy := *draw
 	copy.ProviderKey = MachineFloorKey(canonical)
-	return settleProviderFloorDraw(ctx, tx, &copy)
+	return copy, false, nil
 }
 
 // A legacy candidate may become canonically associated while waiting for the
@@ -80,20 +90,11 @@ func (s *PostgresStore) SettleProviderFloorDrawForSession(ctx context.Context, s
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(9952701)`); err != nil {
 		return false, err
 	}
-	var account, machine, assurance string
-	err = tx.QueryRow(ctx, `SELECT s.account_id,s.machine_id,m.assurance FROM darkbloom_machine_sessions s JOIN darkbloom_machines m ON m.id=s.machine_id WHERE s.session_id=$1`, sessionID).Scan(&account, &machine, &assurance)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	resolved, already, err := resolveSessionFloorDraw(ctx, tx, sessionID, draw)
+	if err != nil || already {
 		return false, err
 	}
-	if err == nil && account != "" && account != draw.AccountID {
-		return false, ErrMachineContinuityUnverified
-	}
-	var credited bool
-	if machine != "" && assurance != "provisional" {
-		credited, err = settleMachineFloorDraw(ctx, tx, machine, draw)
-	} else {
-		credited, err = settleProviderFloorDraw(ctx, tx, draw)
-	}
+	credited, err := settleProviderFloorDraw(ctx, tx, &resolved)
 	if err != nil {
 		return false, err
 	}
@@ -101,4 +102,37 @@ func (s *PostgresStore) SettleProviderFloorDrawForSession(ctx context.Context, s
 		return false, err
 	}
 	return credited, nil
+}
+
+func resolveSessionFloorDraw(ctx context.Context, tx pgx.Tx, sessionID string, draw *ProviderFloorDraw) (ProviderFloorDraw, bool, error) {
+	var account, machine, assurance string
+	err := tx.QueryRow(ctx, `SELECT s.account_id,s.machine_id,m.assurance FROM darkbloom_machine_sessions s JOIN darkbloom_machines m ON m.id=s.machine_id WHERE s.session_id=$1`, sessionID).Scan(&account, &machine, &assurance)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return ProviderFloorDraw{}, false, err
+	}
+	if err == nil && account != "" && account != draw.AccountID {
+		return ProviderFloorDraw{}, false, ErrMachineContinuityUnverified
+	}
+	if machine != "" && assurance != "provisional" {
+		return resolveMachineFloorDraw(ctx, tx, machine, draw)
+	}
+	// A new session's inventory may lag its authenticated endpoint-key proof.
+	// Reuse only a unique, same-account durable association for that key.
+	var machines []string
+	err = tx.QueryRow(ctx, `SELECT ARRAY(SELECT DISTINCT s.machine_id FROM provider_sessions p
+	 JOIN darkbloom_machine_sessions s ON s.session_id=p.session_id AND s.account_id=$2
+	 JOIN darkbloom_machines m ON m.id=s.machine_id AND m.merged_into IS NULL AND m.assurance<>'provisional'
+	 WHERE p.provider_key=$1 AND p.provider_key<>'' AND p.account_id=$2 LIMIT 2)`, draw.ProviderKey, draw.AccountID).Scan(&machines)
+	if err != nil {
+		return ProviderFloorDraw{}, false, err
+	}
+	if len(machines) > 1 {
+		return ProviderFloorDraw{}, false, ErrMachineContinuityUnverified
+	}
+	if len(machines) == 1 {
+		return resolveMachineFloorDraw(ctx, tx, machines[0], draw)
+	}
+	var already bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM provider_floor_draws WHERE provider_key=$1 AND epoch_id=$2)`, draw.ProviderKey, draw.EpochID).Scan(&already)
+	return *draw, already, err
 }

@@ -13,11 +13,21 @@ import (
 const appAttestSafeProviderVersion = "0.9.4"
 
 func appAttestRolloutDecision(version, account, machine string, percent int) string {
-	v := "v" + strings.TrimPrefix(version, "v")
-	if !semver.IsValid(v) || semver.Compare(v, "v"+appAttestSafeProviderVersion) < 0 {
+	decision := appAttestAccountRolloutDecision(version, account, percent)
+	if decision != "provider_upgrade_required" && machine == "" {
+		return "identity_required"
+	}
+	return decision
+}
+
+// Account membership is known at authenticated registration, before a canonical
+// machine ID exists. Both identity admission and the later exchange use this
+// exact cohort decision; a claimed serial or provisional ID never chooses it.
+func appAttestAccountRolloutDecision(version, account string, percent int) string {
+	if !appAttestProviderVersionSafe(version) {
 		return "provider_upgrade_required"
 	}
-	if account == "" || machine == "" {
+	if account == "" {
 		return "identity_required"
 	}
 	if percent < 0 || percent > 100 {
@@ -31,4 +41,9 @@ func appAttestRolloutDecision(version, account, machine string, percent int) str
 		return "cohort_excluded"
 	}
 	return "enabled"
+}
+
+func appAttestProviderVersionSafe(version string) bool {
+	v := "v" + strings.TrimPrefix(version, "v")
+	return semver.IsValid(v) && semver.Compare(v, "v"+appAttestSafeProviderVersion) >= 0
 }

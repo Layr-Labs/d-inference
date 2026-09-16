@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/appattest"
@@ -14,9 +15,26 @@ func (x *Session) updateServingAuthorization(status *protocol.AppAttestStatus, e
 	if a == nil || status == nil || x.protocolVersion != 3 {
 		return
 	}
-	if evidence.RevocationKnown && evidence.Revoked {
+	current, revoked := x.s.registry.RecordVerifiedAppAttestPresenter(x.provider,
+		evidence.Binding.Credential, evidence.Binding.Account, evidence.Binding.Endpoint)
+	if !current {
+		return
+	}
+	if revoked {
+		// A local revocation may have won after the durable readiness read.
+		// The registry already fenced this exact pointer atomically.
 		a.forget(x.provider)
-		x.s.registry.RevokeAppAttestCredential(evidence.Binding.Credential)
+		x.s.sendAppAttestAuthorizationStatus(x.provider)
+		return
+	}
+	if evidence.RevocationKnown && evidence.Revoked {
+		x.fenceRevokedCredential(evidence.Binding.Credential)
+		return
+	}
+	if verdict.Outcome == "unknown" {
+		// The previous proof remains usable only within its existing deadlines.
+		// Keep its refresh record so recovery does not require another assertion;
+		// unknown evidence neither replaces the proof nor extends its lease.
 		x.s.sendAppAttestAuthorizationStatus(x.provider)
 		return
 	}
@@ -40,10 +58,11 @@ func (x *Session) updateServingAuthorization(status *protocol.AppAttestStatus, e
 		if err != nil || continuity.Machine.ID != evidence.Binding.Machine {
 			return
 		}
-		// An audited canonical merge may change the machine ID on the same
-		// live connection. Rebind it without overwriting work earned since the
-		// original restoration.
-		if !x.servingIdentityReady && continuity.Previous != nil {
+		// A first authorization can have no history; a later canonical merge
+		// may discover the historical baseline. The registry applies one
+		// baseline only, preserving live deltas and avoiding double counting
+		// overlapping cumulative snapshots on repeated alias changes.
+		if continuity.Previous != nil {
 			if err := x.s.registry.MergeVerifiedMachineHistory(ctx, x.provider, continuity.Previous); err != nil {
 				return
 			}
@@ -64,17 +83,32 @@ func (x *Session) updateServingAuthorization(status *protocol.AppAttestStatus, e
 		state, err := st.GetAppAttestReadiness(ctx, x.key.KeyID)
 		cancel()
 		if err == nil {
+			revoked := false
 			a.mu.Lock()
 			if a.current[x.provider] == record {
 				if state.Revoked {
-					x.s.registry.RevokeAppAttestCredential(x.key.KeyID)
+					revoked = true
 				} else {
 					a.apply(x.provider, record, state, observedAt)
 				}
 			}
 			a.mu.Unlock()
+			if revoked {
+				x.fenceRevokedCredential(x.key.KeyID)
+				return
+			}
 		}
 	}
+	x.s.sendAppAttestAuthorizationStatus(x.provider)
+}
+
+// The current connection has just proven possession of this credential. It
+// may have no previous serving grant, so credential-index invalidation alone
+// cannot find it. A hard denial also prevents fallback through legacy trust.
+func (x *Session) fenceRevokedCredential(key string) {
+	x.s.authorizer.forget(x.provider)
+	x.s.registry.RevokeAppAttestCredential(key)
+	x.s.registry.DenyAppAttestProvider(x.provider)
 	x.s.sendAppAttestAuthorizationStatus(x.provider)
 }
 
@@ -94,7 +128,30 @@ func confirmedAppAttestPolicyViolation(verdict appattest.AuthorizationVerdict) b
 	return false
 }
 
-func (s *Service) appAttestIdentityCandidate(r *protocol.RegisterMessage) bool {
-	return s.config.ServingEnabled && r.AppAttestProtocol == 3 &&
-		appAttestRolloutDecision(r.Version, "validated-later", "validated-later", 100) == "enabled"
+func (s *Service) appAttestIdentityCandidate(r *protocol.RegisterMessage, account string) bool {
+	return s.NeedsIdentityAccount(r) && appAttestAccountRolloutDecision(r.Version, account, s.config.RolloutPercent) == "enabled"
+}
+
+// NeedsIdentityAccount is only the structural prerequisite for an early token
+// lookup. It does not choose the account cohort or grant a serving identity.
+// Legacy-only registrations can retain their post-attestation token lookup.
+func (s *Service) NeedsIdentityAccount(r *protocol.RegisterMessage) bool {
+	return s.config.ServingEnabled && s.config.Environment == "production" && r != nil && r.AppAttestProtocol == 3 &&
+		s.config.RolloutPercent > 0 && s.config.RolloutPercent <= 100 && appAttestCandidateOSSupported(r) &&
+		appAttestProviderVersionSafe(r.Version)
+}
+
+// A protocol-v3 build also runs on older macOS. An explicit older OS report
+// preserves legacy identity recovery instead of waiting for unsupported App
+// Attest. Unknown reports grant nothing and remain subject to qualification.
+// This compatibility decision never replaces verification of signed evidence.
+func appAttestCandidateOSSupported(r *protocol.RegisterMessage) bool {
+	var report struct {
+		Attestation struct {
+			OSVersion string `json:"osVersion"`
+		} `json:"attestation"`
+	}
+	_ = json.Unmarshal(r.Attestation, &report)
+	major := reportedOSMajor(report.Attestation.OSVersion)
+	return major == 0 || major >= 27
 }

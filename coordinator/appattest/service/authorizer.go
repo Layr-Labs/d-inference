@@ -128,6 +128,16 @@ func (a *authorizer) refresh(ctx context.Context) {
 		}
 	}
 	a.mu.Unlock()
+	// Presenter-only evidence carries no grantable record, but a newly revoked
+	// credential must still fence its legacy-authorized current connection.
+	for _, credentials := range a.s.registry.VerifiedAppAttestPresenters() {
+		for _, key := range credentials {
+			if !seen[key] {
+				keys = append(keys, key)
+				seen[key] = true
+			}
+		}
+	}
 	for start := 0; start < len(keys); start += 1000 {
 		end := min(start+1000, len(keys))
 		observedAt := time.Now().UTC() // Start time bounds even a slow query.
@@ -141,6 +151,9 @@ func (a *authorizer) refresh(ctx context.Context) {
 		batch := make(map[string]bool, end-start)
 		for _, key := range keys[start:end] {
 			batch[key] = true
+			if states[key].Revoked {
+				a.s.RevokeCredential(key)
+			}
 		}
 		for p, record := range records {
 			key := record.evidence.Binding.Credential
@@ -158,13 +171,19 @@ func (a *authorizer) refresh(ctx context.Context) {
 				delete(a.current, p)
 				a.queuePostLocked(p)
 			} else if !exists {
-				a.s.registry.ClearAppAttestServingAuthorization(p)
+				// Missing readiness is unknown, not a revocation. Keep the
+				// existing lease deadline and record; no grant occurs here.
 				a.queuePostLocked(p)
 			} else {
 				a.apply(p, record, state, observedAt)
 			}
+			a.queuePostLocked(p)
 			a.mu.Unlock()
-			a.s.sendAppAttestAuthorizationStatus(p)
+			if state.Revoked {
+				// A verified record may precede the first successful grant.
+				// Fence that current connection even if it has no credential index.
+				a.s.registry.DenyAppAttestProvider(p)
+			}
 		}
 	}
 }
@@ -182,7 +201,9 @@ func (a *authorizer) apply(p *registry.Provider, record *appAttestAuthorizationR
 	e.BuildMatched = appAttestReleaseApproved(snapshot, p, &record.status)
 	verdict := appattest.EvaluateAuthorization(e, time.Now().UTC())
 	if verdict.Outcome != "eligible" || snapshot == nil {
-		a.s.registry.ClearAppAttestServingAuthorization(p)
+		if verdict.Outcome != "unknown" {
+			a.s.registry.ClearAppAttestServingAuthorization(p)
+		}
 		a.queuePostLocked(p)
 		return false
 	}

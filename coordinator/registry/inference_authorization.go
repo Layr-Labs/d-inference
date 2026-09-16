@@ -24,6 +24,8 @@ func providerRequestAuthorizationBindingLocked(p *Provider) providerRequestAutho
 // in-flight dispatch under registry/provider locks. Locks are then released
 // before any network I/O. A later invalidation fences subsequent handoffs; it
 // cannot recall this already committed frame or plaintext already delivered.
+// onHandoff acknowledges preparation only; callers publish dispatch accounting
+// from the returned metadata.Committed, never from that provisional callback.
 // Control/recovery traffic continues through the ordinary writer methods.
 func (p *Provider) WriteInferenceTextDeferred(
 	ctx context.Context, pending *PendingRequest,

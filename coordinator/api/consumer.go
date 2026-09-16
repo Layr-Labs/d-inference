@@ -212,19 +212,6 @@ func (s *Server) sendProviderCancel(provider *registry.Provider, requestID strin
 	return true
 }
 
-func writeProviderInferenceRequestDeferred(
-	ctx context.Context,
-	provider *registry.Provider,
-	pending *registry.PendingRequest,
-	builder registry.TextFrameBuilder,
-	onHandoff registry.TextFrameHandoff,
-) (registry.TextFrameWriteMetadata, error) {
-	if provider == nil || provider.Conn == nil {
-		return registry.TextFrameWriteMetadata{}, errors.New("provider websocket is not connected")
-	}
-	return provider.WriteInferenceTextDeferred(ctx, pending, builder, onHandoff)
-}
-
 // cancelDispatch abandons a dispatch attempt that may still be generating
 // (hedge loser, client gone before content): removes the pending request,
 // marks the provider idle, sends a cancel over WebSocket so the provider stops,
@@ -989,10 +976,9 @@ func (s *Server) dispatchOneProvider(
 // provider dispatch: pending construction and admission stamps, the pluggable
 // reservation, the billing surcharge, E2E encryption, and the
 // deadline-bounded provider write, with releaseUnsentDispatch cleanup on every
-// failure path. onDispatched (nil-safe) fires inside the write handoff
-// callback — the same instant Timing.DispatchedAt is stamped — so
-// providerDispatches counts frames that actually reached a provider, never
-// loop attempts.
+// failure path. onDispatched (nil-safe) fires only after the writer confirms
+// final authorization and socket handoff. Rejected preparations neither retain
+// DispatchedAt nor increment providerDispatches or dispatched profile attempts.
 func (s *Server) dispatchWithReserver(
 	r *http.Request,
 	model string,
@@ -1332,9 +1318,6 @@ func (s *Server) dispatchWithReserver(
 		providerInferenceFrameBuilder(
 			requestID, encrypted.EphemeralPublicKey, encrypted.Ciphertext, pr),
 		func(metadata registry.TextFrameWriteMetadata) {
-			if pr.Timing != nil {
-				pr.Timing.DispatchedAt = metadata.DequeuedAt
-			}
 			if onDispatched != nil {
 				onDispatched()
 			}

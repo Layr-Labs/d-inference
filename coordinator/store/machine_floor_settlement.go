@@ -21,16 +21,24 @@ func (s *MemoryStore) SettleMachineFloorDraw(ctx context.Context, machine string
 }
 
 func (s *MemoryStore) settleMachineFloorDrawLocked(machine string, draw *ProviderFloorDraw) (bool, error) {
+	resolved, already, err := s.resolveMachineFloorDrawLocked(machine, draw)
+	if err != nil || already {
+		return false, err
+	}
+	return s.settleProviderFloorDrawLocked(&resolved)
+}
+
+func (s *MemoryStore) resolveMachineFloorDrawLocked(machine string, draw *ProviderFloorDraw) (ProviderFloorDraw, bool, error) {
 	m := s.machineInventory
 	if m == nil {
-		return false, ErrMachineContinuityUnverified
+		return ProviderFloorDraw{}, false, ErrMachineContinuityUnverified
 	}
 	canonical := machine
 	for i := 0; i < 100 && m.merged[canonical] != ""; i++ {
 		canonical = m.merged[canonical]
 	}
 	if identity, ok := m.machines[canonical]; !ok || identity.Assurance == "provisional" {
-		return false, ErrMachineContinuityUnverified
+		return ProviderFloorDraw{}, false, ErrMachineContinuityUnverified
 	}
 	previousKeys := map[string]bool{MachineFloorKey(canonical): true}
 	for source := range m.merged {
@@ -58,16 +66,18 @@ func (s *MemoryStore) settleMachineFloorDrawLocked(machine string, draw *Provide
 		}
 	}
 	if !accountKnown {
-		return false, ErrMachineContinuityUnverified
+		return ProviderFloorDraw{}, false, ErrMachineContinuityUnverified
 	}
 	for key := range previousKeys {
 		if _, settled := s.floorDrawKeys[floorDrawKey(key, draw.EpochID)]; settled {
-			return false, nil
+			copy := *draw
+			copy.ProviderKey = MachineFloorKey(canonical)
+			return copy, true, nil
 		}
 	}
 	copy := *draw
 	copy.ProviderKey = MachineFloorKey(canonical)
-	return s.settleProviderFloorDrawLocked(&copy)
+	return copy, false, nil
 }
 
 // Even a candidate built before inventory binding appeared must resolve that
@@ -82,16 +92,46 @@ func (s *MemoryStore) SettleProviderFloorDrawForSession(ctx context.Context, ses
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	resolved, already, err := s.resolveSessionFloorDrawLocked(sessionID, draw)
+	if err != nil || already {
+		return false, err
+	}
+	return s.settleProviderFloorDrawLocked(&resolved)
+}
+
+func (s *MemoryStore) resolveSessionFloorDrawLocked(sessionID string, draw *ProviderFloorDraw) (ProviderFloorDraw, bool, error) {
 	if m := s.machineInventory; m != nil {
 		if o, exists := m.sessions[sessionID]; exists {
 			if o.AccountID != "" && o.AccountID != draw.AccountID {
-				return false, ErrMachineContinuityUnverified
+				return ProviderFloorDraw{}, false, ErrMachineContinuityUnverified
 			}
 			id := m.sessionMachines[sessionID]
 			if identity, known := m.machines[id]; known && identity.Assurance != "provisional" {
-				return s.settleMachineFloorDrawLocked(id, draw)
+				return s.resolveMachineFloorDrawLocked(id, draw)
 			}
 		}
+		// A reconnect can be publicly authorized before its first inventory
+		// write lands. The live caller already proved this endpoint key; reuse
+		// only its same-account durable association, never a claimed serial.
+		machine := ""
+		for _, prior := range s.providerSessions {
+			if prior.ProviderKey != draw.ProviderKey || prior.AccountID != draw.AccountID || m.sessions[prior.SessionID].AccountID != draw.AccountID {
+				continue
+			}
+			id := m.sessionMachines[prior.SessionID]
+			identity, known := m.machines[id]
+			if !known || identity.Assurance == "provisional" {
+				continue
+			}
+			if machine != "" && machine != id {
+				return ProviderFloorDraw{}, false, ErrMachineContinuityUnverified
+			}
+			machine = id
+		}
+		if machine != "" {
+			return s.resolveMachineFloorDrawLocked(machine, draw)
+		}
 	}
-	return s.settleProviderFloorDrawLocked(draw)
+	_, already := s.floorDrawKeys[floorDrawKey(draw.ProviderKey, draw.EpochID)]
+	return *draw, already, nil
 }

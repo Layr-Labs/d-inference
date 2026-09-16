@@ -70,10 +70,14 @@ type Provider struct {
 	// App Attest is an independent, expiring serving authorization, never a
 	// synthetic hardware-trust or APNs flag. All fields are guarded by mu.
 	appAttestAuthorization  AppAttestServingAuthorization
-	appAttestCredentialID   string // latest verified credential, retained after lease expiry/clear
+	appAttestCredentialID   string // last granted credential, retained after lease expiry/clear
 	appAttestSecurityDenied bool
-	verifiedMachineID       string
-	verifiedMachineAccount  string
+	// Latest durably verified presenter, including evidence whose readiness is
+	// still unknown. Separate from a granted credential so neither hides the
+	// other from revocation when a newer assertion cannot yet authorize serving.
+	appAttestPresenterID   string
+	verifiedMachineID      string
+	verifiedMachineAccount string
 	// Enabled before registration attestation is attached for a connection
 	// using MDM-optional onboarding. Claimed serials cannot seed fault history.
 	requireVerifiedMachineIdentity   bool

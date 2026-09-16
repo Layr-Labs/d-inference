@@ -2,7 +2,6 @@ package baserewards
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"sort"
 	"time"
@@ -13,7 +12,8 @@ import (
 
 // The engine orchestrates settlement from machine_candidates.go's durable
 // identity/earnings inputs and current registry authorization, runs the pure
-// floor/alloc math, and settles each draw through an idempotent store write.
+// floor/alloc math, and atomically settles the pending allocation plan. Late
+// rejection rolls that plan back before reallocating its unspent budget.
 
 // settlementGrace is the window an open session keeps accruing uptime past its
 // last heartbeat (design §8: open sessions accrue to min(epoch_end, last_seen+90s)).
@@ -130,97 +130,9 @@ func (e *Engine) SettleEpoch(ctx context.Context, epochID EpochID) (SettleResult
 
 	// Serialize settlement of this period across coordinator instances: two
 	// settlers must not each allocate the full pool and overshoot FLOOR_POOL_B.
-	// The memory store runs fn directly; postgres holds an advisory lock.
+	// Memory uses a separate epoch lock; PostgreSQL holds an advisory lock.
 	lockErr := e.store.WithEpochSettlementLock(ctx, epochID, func() error {
-		// Respect the hard pool cap across re-runs of the same closed period. A
-		// machine settled on an earlier run keeps its frozen row; we subtract
-		// those draws from the budget and drop those keys from this run's
-		// candidates. Without this, a fleet that changed between two runs of one
-		// period could settle a second cohort against the full period budget and
-		// breach FLOOR_POOL_B.
-		settled, err := e.store.ListFloorDrawsForEpoch(ctx, epochID)
-		if err != nil {
-			return err
-		}
-		settledKeys := make(map[string]bool, len(settled))
-		priorByAccount := make(map[string]int64)
-		var settledSum int64
-		for _, d := range settled {
-			settledKeys[d.ProviderKey] = true
-			priorByAccount[d.AccountID] += d.AmountMicroUSD
-			settledSum += d.AmountMicroUSD
-		}
-
-		pureCands := make([]Candidate, 0, len(cands))
-		for i := range cands {
-			if candidatePreviouslySettled(cands[i], settledKeys) {
-				res.AlreadySettled++ // frozen row from a prior run this period
-				continue
-			}
-			pureCands = append(pureCands, cands[i].c)
-		}
-		if len(pureCands) == 0 {
-			return nil
-		}
-
-		periodBudget := PeriodBudget(e.cfg.PoolBudgetMicroUSD, start, end)
-		remainingBudget := periodBudget - settledSum
-		if remainingBudget < 0 {
-			remainingBudget = 0
-		}
-		allocs := AllocateDraws(pureCands, remainingBudget, periodBudget, e.cfg.WorkhorseReserveFrac, e.cfg.PerAccountCapFrac, priorByAccount)
-
-		// Index audit context by provider key so we can carry
-		// floor/earned/uptime/mem into the settlement row.
-		byKey := make(map[string]candidate, len(cands))
-		for i := range cands {
-			byKey[cands[i].c.ProviderKey] = cands[i]
-		}
-
-		for _, a := range allocs {
-			cd := byKey[a.ProviderKey]
-			draw := &store.ProviderFloorDraw{
-				ProviderKey:    a.ProviderKey,
-				AccountID:      a.AccountID,
-				EpochID:        epochID,
-				AmountMicroUSD: a.Granted,
-				FloorMicroUSD:  cd.c.Floor,
-				EarnedMicroUSD: cd.c.Earned,
-				UptimeFrac:     cd.uptimeFrac,
-				MemoryGB:       cd.c.MemGB,
-			}
-			// Recheck the original live connection immediately before the money
-			// handoff; an earlier fleet snapshot cannot outlive a revoked lease.
-			sessionID, eligible := e.eligibleCandidateSession(cd)
-			if !eligible {
-				continue
-			}
-			var credited bool
-			var err error
-			if cd.machineID != "" {
-				st, ok := store.As[store.MachineRewardStore](e.store)
-				if !ok {
-					return errors.New("base rewards: machine settlement store unavailable")
-				}
-				credited, err = st.SettleMachineFloorDraw(ctx, cd.machineID, draw)
-			} else if st, ok := store.As[store.MachineRewardStore](e.store); ok {
-				credited, err = st.SettleProviderFloorDrawForSession(ctx, sessionID, draw)
-			} else {
-				credited, err = e.store.SettleProviderFloorDraw(ctx, draw)
-			}
-			if err != nil {
-				e.logger.Error("base rewards: settle draw failed",
-					"epoch", epochID, "provider_key", a.ProviderKey, "error", err)
-				return err // abort so the failed provider's allocation is preserved for retry
-			}
-			if credited {
-				res.Settled++
-				res.TotalDrawMicroUSD += a.Granted
-			} else {
-				res.AlreadySettled++
-			}
-		}
-		return nil
+		return e.settleCandidatePlan(ctx, epochID, start, end, cands, &res)
 	})
 	if lockErr != nil {
 		return res, lockErr

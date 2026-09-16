@@ -3,10 +3,11 @@ package api
 import (
 	"context"
 	"encoding/json"
-	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"net/http"
 	"time"
+
+	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 func (s *Server) handleAdminAppAttestRevoke(w http.ResponseWriter, r *http.Request) {
@@ -32,13 +33,9 @@ func (s *Server) handleAdminAppAttestRevoke(w http.ResponseWriter, r *http.Reque
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	changed, err := st.RevokeAppAttestKey(ctx, body.KeyID, body.AccountID, body.Reason)
-	if err != nil {
-		http.Error(w, "revocation storage unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	// An idempotent repeat still fences local leases. Verify account ownership
-	// even when the INSERT did not create a row; never revoke an unrelated key.
+	// Check immutable credential ownership before the write, including on an
+	// idempotent repeat. Once the write succeeds, local fencing must not depend
+	// on another storage call or on the request's remaining deadline.
 	keys, ok := store.As[store.AppAttestShadowStore](s.store)
 	if !ok {
 		http.Error(w, "credential storage unavailable", http.StatusServiceUnavailable)
@@ -51,6 +48,11 @@ func (s *Server) handleAdminAppAttestRevoke(w http.ResponseWriter, r *http.Reque
 	}
 	if key == nil || key.AccountID != body.AccountID {
 		http.Error(w, "credential not found", http.StatusNotFound)
+		return
+	}
+	changed, err := st.RevokeAppAttestKey(ctx, body.KeyID, body.AccountID, body.Reason)
+	if err != nil {
+		http.Error(w, "revocation storage unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	s.appAttestFeature().RevokeCredential(body.KeyID)

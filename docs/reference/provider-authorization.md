@@ -1,6 +1,6 @@
 # Provider serving authorization
 
-> Last updated: 2026-09-15 · commit `b61d32a38`
+> Last updated: 2026-09-15 · commit `2cda8a221`
 
 The coordinator can authorize private inference through complete legacy verification or a qualified App Attest connection. These are separate evidence paths; App Attest never sets legacy MDA/APNs flags. The [rollout runbook](../operations/mdm-optional-rollout.md) separates code availability from activation qualification.
 
@@ -13,6 +13,7 @@ The [App Attest module map](../../coordinator/appattest/README.md) explains the 
 | `EIGENINFERENCE_APP_ATTEST_SERVING` | `false`; enable the independent App Attest serving path and its proof/receipt refresh worker | `coordinator/appattest/service/config.go` (`ConfigFromEnvironment`) |
 | `EIGENINFERENCE_APP_ATTEST_MDM_REMOVAL` | `false`; allow qualified live providers to receive removal readiness; disabling this does not disable existing App Attest serving | Same |
 | Existing shadow cohort and build qualification | Existing cohort, safe-version floor, production environment and exact qualified binary/CodeDirectory mappings still apply; a serving switch alone cannot qualify a build | `coordinator/appattest/service/rollout.go` (`appAttestRolloutDecision`); `coordinator/appattest/service/build_policy.go` (`qualifiedAppAttestMeasurement`) |
+| Registration identity cohort | Use the authenticated token account and configured percentage in production; providers outside that cohort, including explicit macOS versions below 27, retain legacy history/MDA recovery and duplicate handling | `coordinator/appattest/service/authorization_identity.go` (`appAttestIdentityCandidate`) |
 | Assertion freshness | `AssertionFreshness = 15 * time.Minute`; receipt and revocation deadlines may shorten it | `coordinator/appattest/authorization.go` (`EvaluateAuthorization`) |
 | Durable revocation/receipt refresh | `appAttestAuthorizationRefresh = 5 * time.Second`, batched at most 1000 distinct keys per query | `coordinator/appattest/service/authorizer.go` (`refresh`) |
 | Revocation freshness ceiling | `appAttestRevocationFreshness = 30 * time.Second` from the query start; a failed read cannot renew it | Same (`apply`) |
@@ -23,13 +24,15 @@ The [App Attest module map](../../coordinator/appattest/README.md) explains the 
 |---|---|---|
 | Complete legacy verification | Legacy behavior remains eligible, subject to existing common runtime/routing gates | `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextModeAtLocked`) |
 | Qualified App Attest assertion | Expiring authorization bound to authenticated account, verified machine, credential, connection, endpoint, approved policy and signed hardware | `coordinator/appattest/service/authorization_identity.go` (`updateServingAuthorization`); `coordinator/registry/app_attest_authorization.go` (`GrantAppAttestServingAuthorization`) |
+| Verified credential before serving qualification | Track the current presenter and retained last-granted key for local and periodic revocation checks. This bounded connection state grants no permission and cannot replace a qualified proof record | `coordinator/registry/app_attest_presenter.go` (`RecordVerifiedAppAttestPresenter`, `VerifiedAppAttestPresenters`) |
 | Expired authorization | No new App Attest-only dispatch; diagnostics and recovery remain possible | `coordinator/registry/inference_authorization.go` (`authorizeInferenceHandoff`) |
-| Explicit credential revocation | Both paths are fenced for matching live connections; late verifier results cannot restore the revoked credential | `coordinator/registry/app_attest_authorization.go` (`RevokeAppAttestCredential`) |
+| Explicit credential revocation | Both paths are fenced for matching live connections, including a connection presenting a freshly verified revoked key before its first grant; late verifier results cannot restore the revoked credential | `coordinator/registry/app_attest_authorization.go` (`RevokeAppAttestCredential`); `coordinator/appattest/service/authorization_identity.go` (`updateServingAuthorization`) |
 | Reconnect, endpoint/account change or policy generation change | Old authorization cannot be reused; cryptographic evidence is bound to the current connection and re-evaluated policy | Same |
 | Transient Apple/key recovery failure | No extra permission or lifetime; an independently valid legacy path or existing unexpired authorization can remain available | `coordinator/appattest/service/policy.go` (`confirmedAppAttestViolation`) |
+| Transient readiness lookup failure after a valid assertion | Preserve the prior bounded lease and refresh record; the next durable refresh can recover without waiting for another assertion. The failure itself cannot extend authorization | `coordinator/appattest/service/authorization_identity.go` (`updateServingAuthorization`); `coordinator/appattest/service/authorizer.go` (`refresh`) |
 | Archive gap or missing required code/receipt evidence | Unknown/ineligible, never permission to remove MDM | `coordinator/appattest/authorization.go` (`EvaluateAuthorization`) |
 
-The final write check occurs after frame construction and owner handoff, before the socket write. That check is the dispatch linearization point. Invalidation fences later handoffs; a frame already committed to the writer is in flight and cannot be recalled. Registry locks are not held over network I/O. All direct, retry, cold and queued dispatches use `coordinator/api/consumer.go` (`writeProviderInferenceRequestDeferred`).
+The final write check occurs after frame construction and owner handoff, before the socket write. That check is the dispatch linearization point. Invalidation fences later handoffs; a frame already committed to the writer is in flight and cannot be recalled. Registry locks are not held over network I/O. All direct, retry, cold and queued dispatches use `coordinator/api/provider_dispatch_write.go` (`writeProviderInferenceRequestDeferred`). Preparation sets provisional owner timing, but only a committed handoff publishes dispatch counts/profile stamps; a rejected frame clears that provisional timestamp. Cancellation while waiting for final authorization does not close a healthy provider socket.
 
 ## Provider diagnostics
 
@@ -51,11 +54,13 @@ The additive `trust_status.authorization` object is coordinator-to-provider only
 
 | Behavior | Contract | Code |
 |---|---|---|
-| Canonical history | Fresh verified account/credential association; late history reconciliation preserves live trust and current-session work | `coordinator/store/machine_continuity.go` (`MachineOperationalStore`); `coordinator/registry/machine_history.go` (`MergeVerifiedMachineHistory`) |
+| Canonical history | Fresh verified account/credential association; a later canonical merge can supply a previously missing historical baseline. Apply the baseline once, preserving live trust and current-session work without adding overlapping cumulative snapshots twice | `coordinator/store/machine_continuity.go` (`MachineOperationalStore`); `coordinator/registry/machine_history.go` (`MergeVerifiedMachineHistory`) |
 | Base-reward eligibility | Current complete serving authorization, public model readiness and hardware measured inside the qualified signed app; existing memory caps, uptime and pool/account limits continue | `coordinator/payments/baserewards/machine_candidates.go` (`rewardSnapshotEligible`, `rewardMemoryGB`) |
 | Duplicate sessions | Union overlapping uptime and sum only matching-account organic earnings across original encryption keys | Same (`buildCandidates`) |
 | Settlement identity | New canonical floors use `machine:<canonical ID>`; original ledger rows/balances remain intact | `coordinator/store/machine_floor_settlement.go` (`MachineFloorKey`) |
 | Rotation and merge races | Resolve canonical aliases inside the settlement transaction, including previously raw candidates, before checking same-epoch floors | `coordinator/store/postgres_machine_floor_settlement.go` (`SettleMachineFloorDraw`); `coordinator/store/machine_floor_settlement.go` (`SettleProviderFloorDrawForSession`) |
+| Authorization changes during allocation | Commit the remaining plan atomically, including partial and zero-value rows. A late rejection rolls back that plan and reallocates its unspent budget; prior finalized rows and account/pool caps remain intact | `coordinator/payments/baserewards/settlement_plan.go` (`settleCandidatePlan`); `coordinator/store/floor_draw_batch.go` (`FloorDrawBatchStore`) |
+| Pending session inventory | A same-account durable endpoint association can resolve the canonical reward identity; ambiguous associations cannot authorize a credit | `coordinator/store/machine_floor_settlement.go` (`resolveSessionFloorDrawLocked`); `coordinator/store/postgres_machine_floor_settlement.go` (`resolveSessionFloorDraw`) |
 
 Canonical identities deduplicate verified known associations. They do not prove physical uniqueness across deliberate reinstalls/new accounts, and App Attest does not independently certify RAM. These remain abuse-policy limits; the receipt fraud metric is a signal rather than a unique device identifier. Existing account/pool caps are retained.
 
@@ -63,6 +68,6 @@ Owned/self-route traffic retains the existing authenticated-owner policy. Every 
 
 ## Admin revocation
 
-`POST /v1/admin/app-attest/revoke` requires existing admin authentication. Body: `{"key_id":"…","account_id":"…","reason":"operator_revoked"}`. Unknown/mismatched account keys return 404; malformed input returns 400; unavailable durable storage returns 503. An accepted/idempotent revocation returns `{"revoked":true,"changed":true,"max_propagation_seconds":30}` (`changed` is false for a repeat). The accepting coordinator fences before responding. Other coordinators converge through the bounded durable refresh. Code: `coordinator/api/app_attest_revocation.go` (`handleAdminAppAttestRevoke`).
+`POST /v1/admin/app-attest/revoke` requires existing admin authentication. Body: `{"key_id":"…","account_id":"…","reason":"operator_revoked"}`. Unknown/mismatched account keys return 404; malformed input returns 400; unavailable durable storage returns 503. An accepted/idempotent revocation returns `{"revoked":true,"changed":true,"max_propagation_seconds":30}` (`changed` is false for a repeat). The accepting coordinator checks credential ownership before the durable write and fences locally immediately after it succeeds, even if the request deadline is then exhausted. Other coordinators converge through the bounded durable refresh. Code: `coordinator/api/app_attest_revocation.go` (`handleAdminAppAttestRevoke`).
 
 Proofs, original/renewed receipts, machine associations and assertion counters retain the [existing private archive](app-attest-shadow.md#storage-and-complete-evidence-archive). A refreshed serving lease is a current policy decision, not a new Apple signature. DeviceCheck's two-bit API remains unused.

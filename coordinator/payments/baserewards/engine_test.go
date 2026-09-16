@@ -76,6 +76,9 @@ func (s *engineStore) WithEpochSettlementLock(_ context.Context, _ string, fn fu
 func (s *engineStore) SettleProviderFloorDraw(ctx context.Context, draw *store.ProviderFloorDraw) (bool, error) {
 	return s.inner.SettleProviderFloorDraw(ctx, draw)
 }
+func (s *engineStore) SettleProviderFloorDrawBatch(ctx context.Context, items []store.FloorDrawBatchItem, authorize func(int) bool) (store.FloorDrawBatchResult, error) {
+	return s.inner.SettleProviderFloorDrawBatch(ctx, items, authorize)
+}
 func (s *engineStore) SumFloorDrawsForEpoch(ctx context.Context, epochID string) (int64, error) {
 	return s.inner.SumFloorDrawsForEpoch(ctx, epochID)
 }

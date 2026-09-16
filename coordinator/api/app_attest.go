@@ -38,8 +38,8 @@ func (s *Server) startAppAttestShadow(ctx context.Context, p *registry.Provider,
 	return s.appAttestFeature().StartSession(ctx, p, r, authenticated)
 }
 
-func (s *Server) appAttestIdentityCandidate(r *protocol.RegisterMessage) bool {
-	return s.appAttestFeature().IdentityCandidate(r)
+func (s *Server) appAttestIdentityCandidate(r *protocol.RegisterMessage, account string) bool {
+	return s.appAttestFeature().IdentityCandidate(r, account)
 }
 
 func (s *Server) providerServingAuthorizationStatus(p *registry.Provider) *protocol.ProviderServingAuthorization {

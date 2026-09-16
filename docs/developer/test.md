@@ -709,6 +709,16 @@ before the result cap. No provider, model or database is needed for these focuse
 checks; use the full store suite with a disposable `DATABASE_URL` to cover both
 storage backends and their existing telemetry contracts.
 
+`TestDispatchRetryAfterPreservesBoundedProviderForecast` in
+`coordinator/api/dispatch_retry_hint_test.go` sends real provider capacity refusals
+through the WebSocket handler and checks the resulting HTTP `Retry-After`. The
+cases cover the floor, ceiling rounding, upper bound and signed-integer limit;
+each must dispatch exactly once. Run without model weights or Postgres:
+
+```bash
+go test -race ./coordinator/api -run '^TestDispatchRetryAfterPreservesBoundedProviderForecast$' -count=1
+```
+
 #### Provider config cleanup
 
 The CPU-only `e2e/testbed/provider_config_cleanup_test.go` tests retain a fixed

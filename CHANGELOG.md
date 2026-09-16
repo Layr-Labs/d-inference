@@ -28,6 +28,10 @@ coordinator deployment.
 
 #### Coordinator
 
+- **Provider retry forecasts** — Preserve the 30-second retry ceiling for very large provider availability forecasts by bounding milliseconds before rounding. Ordinary retry rounding and the two-second floor are unchanged.
+
+- **Speculative terminal ordering** — Keep a healthy speculative attempt running when the other provider fails before content. Closed chunk streams inspect their queued error before cancelling the other attempt, so the primary or backup can still complete within the original first-content budget.
+
 - **Capacity and admission** — Model readiness honors public routing gates while retaining inventory and the fleet-wide health-breaker fallback. Expired capacity probes settle as timeouts; oversized prompt/output sums are rejected without integer wrapping.
 - **Throughput and fleet observations** — Reject overflowing occupancy reports from the solo-rate sample pool, read fleet version gauges under the provider lock, and ignore unusable throughput anomaly measurements. Non-finite anomaly overrides retain their defaults.
 - **Reconnect verification** — Keep the replacement connection's verification binding when an earlier SecurityInfo attempt finishes checking a cached MDA proof or has no MDA UDID.

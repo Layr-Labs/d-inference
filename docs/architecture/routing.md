@@ -516,6 +516,14 @@ excludes them from TTFT calibration (`observeTTFTCalibration`,
 `coordinator/inference/dispatch/calibration.go`). The acquired governor slot is released
 exactly once on every exit path (`noteHedgeResolved`).
 
+A closed chunk stream can also mean that the provider failed before producing
+content. `resolvePrimaryRaceChunk` and `resolveBackupRaceChunk`
+(`coordinator/inference/dispatch/race_terminal.go`) inspect its queued error before
+cancelling the other attempt. Closed-stream and direct error events share the
+same failure transition: retire the failed attempt, preserve the live survivor,
+and wait within its remaining first-content budget. Content buffered before an
+error still commits that attempt and retains the error for the response relay.
+
 ### Early-429 servability predictor
 
 Before a request is queued or dispatched, `PredictServable`
@@ -823,6 +831,11 @@ For a TTFT shed, `estimateTTFTRetryAfter` uses `ceil(bestTTFT − threshold)`
 in seconds, floored at the base estimate and clamped to [2, 30]. Self-route
 sheds use fixed values.
 
+After dispatch exhaustion, a positive provider `feasible_after_ms` replaces the
+queue estimate in `execution.run` (`coordinator/inference/dispatch/run.go`). Bound the
+milliseconds before rounding up so even the largest signed integer preserves
+the [header contract](../reference/api-contracts.md#set-by-the-coordinator).
+
 ### Routing simulation harness (`routingsim`)
 
 `coordinator/registry/routingsim/` is a Go library that replays arrivals
@@ -881,8 +894,10 @@ must not run in parallel with other scheduler tests in the same process.
    exceeds the fleet-wide hedge budget** — `hedgeGovernorVerdict`;
    acquisition and release are exactly-once (`tryAcquireHedge`,
    `noteHedgeResolved`).
-9. **Exactly one attempt of a race commits; the other is cancelled** —
-   `runRace` calls `attempt.Service.Cancel` on the loser before committing.
+9. **At most one attempt of a race commits; failure alone never cancels its
+   live survivor** — `runRace` and the terminal operations in
+   `coordinator/inference/dispatch/race_terminal.go` cancel the other attempt when
+   committing a winner and use `attempt.Service.CancelAfterTerminal` for a failed racer.
 10. **Fault memory survives reconnects** — `Disconnect` preserves breaker,
     cooldown and ejection state keyed by stable identity
     (`Manager.Detach`, `coordinator/registry/faultstate/session_lifecycle.go`; `detachSessionGate`, `coordinator/registry/fault_binding.go`).
@@ -949,6 +964,7 @@ must not run in parallel with other scheduler tests in the same process.
 | Reputation | `coordinator/registry/reputation.go` — `Score`, `RecordLatency` |
 | Shared latency policy and calibration | `coordinator/registry/routingcost/policy.go` — `Policy`, `New`; `coordinator/registry/routingcost/calibration.go` — `Policy.RecordTTFTObservation`; `coordinator/registry/routingcost/calibration_pending.go` — pending joins and expiry; `coordinator/registry/routing_policy.go` — process-wide bindings; fed by `observeTTFTCalibration` in `coordinator/inference/dispatch/calibration.go` |
 | Hedge timing, governor, race | `coordinator/inference/dispatch/hedge_schedule.go`, `coordinator/inference/dispatch/hedge_governor.go`, `coordinator/inference/dispatch/speculative.go`, `coordinator/inference/dispatch/race.go` (`runSpeculative`, `runRace`), `coordinator/inference/dispatch/first_content_clock.go` |
+| Race terminal selection and survivor ownership | `coordinator/inference/dispatch/race_terminal.go` — `resolvePrimaryRaceChunk`, `resolveBackupRaceChunk`, `resolvePrimaryRaceError`, `resolveBackupRaceError` |
 | Dispatch controller and API bindings | `coordinator/inference/dispatch/request.go` — `Controller.Run`; `coordinator/inference/dispatch/run.go` — `execution.run`; `coordinator/api/inference_dispatch.go` — `initializeInferenceDispatch`, `dispatchObserver` |
 | Probes and plan wiring | `coordinator/inference/dispatch/plan.go` |
 | `Retry-After`, speculative ratio, route EWMA | `coordinator/inference/dispatch/capacity.go`, `coordinator/inference/dispatch/retry_pressure.go`, `coordinator/inference/dispatch/limits.go` — `EstimateRetryAfter`, `estimateTTFTRetryAfter`, `SpeculativeTimerRatio` |

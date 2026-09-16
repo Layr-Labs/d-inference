@@ -223,14 +223,8 @@ exhausted:
 				// — an honest Retry-After beats the queue-depth heuristic.
 				// Clamped to the heuristic's own [2,30]s band so a
 				// provider-authored value can neither hammer nor park clients.
-				hinted := int((d.lastErrFeasibleAfterMS + 999) / 1000)
-				if hinted < 2 {
-					hinted = 2
-				}
-				if hinted > 30 {
-					hinted = 30
-				}
-				retryAfter = hinted
+				// Bound milliseconds before rounding so even MaxInt64 cannot wrap.
+				retryAfter = max(2, int((min(d.lastErrFeasibleAfterMS, 30_000)+999)/1000))
 			}
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			info := d.rejection("dispatch", reason, statusCode, retryAfter*1000)

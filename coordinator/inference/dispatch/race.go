@@ -105,32 +105,8 @@ func (d *execution) runRace(backupProvider *registry.Provider, backupPR *registr
 						provider, pr, backupProvider, backupPR, backupHeld)
 				}
 			}
-			// Primary wins!
 			raceDeadline.Stop()
-			s.deps.Attempts().Cancel(backupProvider, backupPR, attemptpolicy.CancelCauseHedgeLoser)
-			if ok {
-				d.markSpeculativeLoser(backupPR)
-				d.commitFirstContent(pr, chunk.Data)
-				d.committed = true
-			} else {
-				select {
-				case errMsg := <-pr.ErrorCh:
-					// Primary failed but we already cancelled backup.
-					d.markSpeculativeLoser(backupPR)
-					d.excludeProviders[provider.ID] = struct{}{}
-					s.deps.Attempts().CancelAfterTerminal(provider, pr)
-					d.setLastInferenceError(provider, errMsg)
-					d.lastFailedVersion = failedProviderVersion(provider)
-					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks, errMsg.CoordinatorCause)
-					d.provider = nil
-					d.pr = nil
-					return outcomeRetry
-				default:
-					d.markSpeculativeLoser(backupPR)
-					d.committed = true
-				}
-			}
-			return outcomeCommitted
+			return d.resolvePrimaryRaceChunk(chunk, ok, backupProvider, backupPR, backupHeld)
 
 		case chunk, ok := <-backupPR.ChunkCh:
 			if ok && holdPreContentBoilerplate(backupPR, chunk, &backupHeld) {
@@ -154,51 +130,8 @@ func (d *execution) runRace(backupProvider *registry.Provider, backupPR *registr
 					return d.awaitPrimaryEmptyCompletion(backupProvider, backupPR)
 				}
 			}
-			// Backup wins!
 			raceDeadline.Stop()
-			s.deps.Attempts().Cancel(provider, pr, attemptpolicy.CancelCauseHedgeLoser)
-			s.deps.Counters.Incr("inference.speculative_win", []string{"model:" + d.model})
-			s.deps.Registry().RecordWarmPoolSpeculativeWon(d.model)
-			if ok {
-				d.markSpeculativeLoser(pr)
-				backupPR.BackupWon.Store(true)
-				d.provider = backupProvider
-				d.pr = backupPR
-				d.requestID = d.pr.RequestID
-				d.heldChunks = backupHeld
-				// The backup is now the serving slot; re-latch so a
-				// post-commit failure books under ITS backend, not the
-				// cancelled primary's.
-				d.noteServingSlot()
-				d.commitFirstContent(d.pr, chunk.Data)
-				d.committed = true
-			} else {
-				select {
-				case errMsg := <-backupPR.ErrorCh:
-					// Backup failed too. Keep primary context for retry.
-					d.excludeProviders[backupProvider.ID] = struct{}{}
-					d.lastFailedVersion = failedProviderVersion(backupProvider)
-					d.updateSpeculativeFailure(backupPR, errMsg)
-					d.noteProviderError(backupProvider, backupPR, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &backupHeld, errMsg.CoordinatorCause)
-					// Preserve a deterministic-unservable verdict from this loser so the
-					// surviving primary's error can't mask it (see latchDeterministicLoser).
-					d.latchDeterministicLoser(backupProvider, errMsg)
-					// Wait remaining deadline for primary.
-					return d.raceBackupChunkClosedWaitPrimary(provider, pr)
-				default:
-					// Backup channel closed with no error — treat as committed.
-					s.deps.Attempts().Cancel(provider, pr, attemptpolicy.CancelCauseHedgeLoser)
-					d.markSpeculativeLoser(pr)
-					backupPR.BackupWon.Store(true)
-					d.provider = backupProvider
-					d.pr = backupPR
-					d.requestID = d.pr.RequestID
-					d.heldChunks = backupHeld
-					d.noteServingSlot()
-					d.committed = true
-				}
-			}
-			return outcomeCommitted
+			return d.resolveBackupRaceChunk(chunk, ok, backupProvider, backupPR, backupHeld)
 
 		case <-primaryCompletion:
 			primaryCompletion = nil
@@ -237,64 +170,12 @@ func (d *execution) runRace(backupProvider *registry.Provider, backupPR *registr
 			continue
 
 		case errMsg := <-pr.ErrorCh:
-			// Primary failed. Keep waiting for backup.
 			raceDeadline.Stop()
-			if chunk, ok := drainReadyFirstContent(pr, &d.heldChunks); ok {
-				if emptyCompletionPrecedesChunk(backupPR, chunk) {
-					return d.awaitBackupEmptyCompletion(
-						provider, pr, backupProvider, backupPR, backupHeld)
-				}
-				s.deps.Attempts().Cancel(backupProvider, backupPR, attemptpolicy.CancelCauseHedgeLoser)
-				d.markSpeculativeLoser(backupPR)
-				d.commitFirstContent(pr, chunk.Data)
-				d.committed = true
-				d.initialError = &errMsg
-				return outcomeCommitted
-			}
-			d.excludeProviders[provider.ID] = struct{}{}
-			s.deps.Attempts().CancelAfterTerminal(provider, pr)
-			d.lastFailedVersion = failedProviderVersion(provider)
-			d.updateSpeculativeFailure(pr, errMsg)
-			d.noteProviderError(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks, errMsg.CoordinatorCause)
-			// Preserve a deterministic-unservable verdict from this loser so the
-			// surviving backup's error can't mask it (see latchDeterministicLoser).
-			d.latchDeterministicLoser(provider, errMsg)
-			d.requestID = ""
-			d.provider = nil
-			d.pr = nil
-			backupPR.ResolveSpeculativeEmptyCompletion(true)
-			return d.racePrimaryFailedWaitBackup(backupProvider, backupPR, backupHeld)
+			return d.resolvePrimaryRaceError(errMsg, backupProvider, backupPR, backupHeld)
 
 		case errMsg := <-backupPR.ErrorCh:
-			// Backup failed. Keep waiting for primary.
 			raceDeadline.Stop()
-			if chunk, ok := drainReadyFirstContent(backupPR, &backupHeld); ok {
-				if emptyCompletionPrecedesChunk(pr, chunk) {
-					return d.awaitPrimaryEmptyCompletion(backupProvider, backupPR)
-				}
-				s.deps.Attempts().Cancel(provider, pr, attemptpolicy.CancelCauseHedgeLoser)
-				d.markSpeculativeLoser(pr)
-				backupPR.BackupWon.Store(true)
-				d.provider = backupProvider
-				d.pr = backupPR
-				d.requestID = backupPR.RequestID
-				d.heldChunks = backupHeld
-				d.noteServingSlot()
-				d.commitFirstContent(backupPR, chunk.Data)
-				d.committed = true
-				d.initialError = &errMsg
-				return outcomeCommitted
-			}
-			d.excludeProviders[backupProvider.ID] = struct{}{}
-			s.deps.Attempts().CancelAfterTerminal(backupProvider, backupPR)
-			d.lastFailedVersion = failedProviderVersion(backupProvider)
-			d.updateSpeculativeFailure(backupPR, errMsg)
-			d.noteProviderError(backupProvider, backupPR, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &backupHeld, errMsg.CoordinatorCause)
-			// Preserve a deterministic-unservable verdict from this loser so the
-			// surviving primary's error can't mask it (see latchDeterministicLoser).
-			d.latchDeterministicLoser(backupProvider, errMsg)
-			pr.ResolveSpeculativeEmptyCompletion(true)
-			return d.raceBackupErrWaitPrimary(provider, pr)
+			return d.resolveBackupRaceError(errMsg, backupProvider, backupPR, backupHeld)
 
 		case <-raceDeadline.C:
 			// A token that is already buffered beats the timer: the backup is

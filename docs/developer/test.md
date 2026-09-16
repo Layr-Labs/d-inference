@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-16 · commit `35c6a0f5b`
+> Last updated: 2026-09-16 · commit `2b5edda07`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -777,7 +777,7 @@ PostgreSQL database from the repository root:
 
 ```bash
 DATABASE_URL='postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable' \
-  go test -race ./coordinator/store -run '^TestUsage(Flow|Location)' -count=1
+  go test -race ./coordinator/store/postgres -run '^TestUsage(Flow|Location)' -count=1
 ```
 
 The fixtures in `coordinator/store/postgres/analytics_flows_test.go` and
@@ -793,7 +793,7 @@ Use an explicitly disposable `DATABASE_URL`; the store harness truncates its
 tables. From the repository root:
 
 ```bash
-GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/store ./coordinator/payments/baserewards \
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/store/postgres ./coordinator/payments/baserewards \
   -run '^(TestListProviderSessionsOverlapping|TestSettleEpoch|TestUptimeByProviderKey|TestPeriod|TestEpoch)' \
   -count=1 -timeout=90s
 ```
@@ -834,7 +834,7 @@ the store command; without it, only the memory cases run.
 
 ```bash
 go test -race ./coordinator/api -run '^TestStripeCheckoutWebhookCreditsEachSessionOnce$' -count=1
-go test -race ./coordinator/store -run '^Test(LedgerCreditOnceAcrossConcurrentHandles|CreditOnceRecognizesPriorLedgerAndIndependentIdentities)$' -count=1
+go test -race ./coordinator/store/postgres -run '^Test(LedgerCreditOnceAcrossConcurrentHandles|CreditOnceRecognizesPriorLedgerAndIndependentIdentities)$' -count=1
 ```
 
 `coordinator/api/stripe_deposit_replay_test.go` sends real signed webhook
@@ -851,7 +851,7 @@ replay, a different long reference and the same index OID after repeat startup.
 These PostgreSQL-only cases skip without a disposable `DATABASE_URL`:
 
 ```bash
-go test -race ./coordinator/store -run '^TestPostgresLedgerOnce' -count=1
+go test -race ./coordinator/store/postgres -run '^TestPostgresLedgerOnce' -count=1
 ```
 
 The fixtures use no external Stripe service. Query-plan assertions establish

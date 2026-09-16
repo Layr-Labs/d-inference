@@ -50,8 +50,8 @@ func TestTelemetryIngestIsGoneWithoutReadingOrForwardingBody(t *testing.T) {
 		t.Fatalf("request data reflected in response: %s", rr.Body.String())
 	}
 
-	if srv.metrics != nil {
-		for key, value := range srv.metrics.Snapshot().Counters {
+	if srv.adminMetrics != nil {
+		for key, value := range srv.adminMetrics.Snapshot().Counters {
 			if strings.HasPrefix(key, "telemetry_events_total") && value != 0 {
 				t.Fatalf("ingest counter changed despite disabled sink: %s=%d", key, value)
 			}

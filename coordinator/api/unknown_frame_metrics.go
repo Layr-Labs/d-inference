@@ -40,8 +40,8 @@ func (s *Server) emitUnknownFrame(kind string, provider *registry.Provider) {
 		return
 	}
 	version := providerVersionTag(provider)
-	if s.metrics != nil {
-		s.metrics.IncCounter(metricUnknownFramesCounter,
+	if s.adminMetrics != nil {
+		s.adminMetrics.IncCounter(metricUnknownFramesCounter,
 			MetricLabel{"kind", kind}, MetricLabel{"provider_version", version})
 	}
 	if s.dd == nil {

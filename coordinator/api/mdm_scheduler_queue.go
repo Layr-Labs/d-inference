@@ -27,7 +27,7 @@ func (s *mdmVerificationScheduler) Submit(ctx context.Context, providerID string
 	})
 	if err != nil {
 		s.server.logger.Error("failed to persist MDM scheduler submission", "error", err)
-		s.metricCounter("mdm_scheduler_queue_rejected_total", "priority", schedulerPriorityLabel(priority))
+		s.server.metrics().MDMScheduler.QueueRejected.Inc(schedulerPriorityLabel(priority))
 		return 0
 	}
 
@@ -65,26 +65,26 @@ func (s *mdmVerificationScheduler) Submit(ctx context.Context, providerID string
 		existing.callbackUUID = ""
 		existing.enqueuedAt = now
 		s.mu.Unlock()
-		s.metricCounter("mdm_scheduler_deduplicated_total", "state", string(record.State))
+		s.server.metrics().MDMScheduler.Deduplicated.Inc(string(record.State))
 		s.signal()
 		return generation
 	}
 	if record.State == store.VerificationStateRunning &&
 		record.ClaimOwner != "" && record.ClaimOwner != s.owner {
 		s.mu.Unlock()
-		s.metricCounter("mdm_scheduler_deduplicated_total", "state", string(record.State))
+		s.server.metrics().MDMScheduler.Deduplicated.Inc(string(record.State))
 		s.signal()
 		return generation
 	}
 	if !s.makeQueueRoomLocked(priority) {
 		s.mu.Unlock()
-		s.metricCounter("mdm_scheduler_queue_rejected_total", "priority", schedulerPriorityLabel(priority))
+		s.server.metrics().MDMScheduler.QueueRejected.Inc(schedulerPriorityLabel(priority))
 		s.signal()
 		return generation
 	}
 	s.jobs[key] = &mdmScheduledJob{record: record, bindingGen: generation, enqueuedAt: now}
 	s.mu.Unlock()
-	s.metricCounter("mdm_scheduler_enqueued_total", "reason", "registration")
+	s.server.metrics().MDMScheduler.Enqueued.Inc("registration")
 	s.signal()
 	return generation
 }
@@ -176,8 +176,8 @@ func (s *mdmVerificationScheduler) ChallengeSettled(provider *registry.Provider,
 		if err != nil {
 			s.server.logger.Error("failed to complete fast-skip scheduler job", "error", err)
 		}
-		s.metricCounter("mdm_scheduler_cancelled_total", "reason", "fast_skip")
-		s.metricCounter("mdm_scheduler_grants_total", "path", "reuse")
+		s.server.metrics().MDMScheduler.Cancelled.Inc("fast_skip")
+		s.server.metrics().MDMScheduler.Grants.Inc("reuse")
 		s.signal()
 		return
 	}
@@ -283,7 +283,7 @@ func (s *mdmVerificationScheduler) Unbind(seKey string, generation uint64) {
 		}
 	}
 	s.mu.Unlock()
-	s.metricCounter("mdm_scheduler_cancelled_total", "reason", "disconnect")
+	s.server.metrics().MDMScheduler.Cancelled.Inc("disconnect")
 	s.signal()
 }
 
@@ -424,7 +424,7 @@ func (s *mdmVerificationScheduler) refreshReleasedJob(work mdmSchedulerWork) {
 
 func (s *mdmVerificationScheduler) enqueueMDA(binding mdmLiveBinding, udid string) {
 	if udid == "" {
-		s.metricCounter("mda_verification_total", "outcome", "invalid")
+		s.server.metrics().Trust.MDAVerification.Inc("invalid")
 		s.mu.Lock()
 		delete(s.bindings, binding.attestation.PublicKey)
 		s.mu.Unlock()
@@ -458,16 +458,16 @@ func (s *mdmVerificationScheduler) enqueueMDA(binding mdmLiveBinding, udid strin
 		existing.callbackGen = 0
 		existing.callbackUUID = ""
 		s.mu.Unlock()
-		s.metricCounter("mdm_scheduler_deduplicated_total", "state", string(rec.State))
+		s.server.metrics().MDMScheduler.Deduplicated.Inc(string(rec.State))
 		return
 	}
 	if !s.makeQueueRoomLocked(rec.Priority) {
 		s.mu.Unlock()
-		s.metricCounter("mdm_scheduler_queue_rejected_total", "priority", "refresh")
+		s.server.metrics().MDMScheduler.QueueRejected.Inc("refresh")
 		return
 	}
 	s.jobs[key] = &mdmScheduledJob{record: rec, bindingGen: binding.generation, enqueuedAt: now}
 	s.mu.Unlock()
-	s.metricCounter("mdm_scheduler_enqueued_total", "reason", "mda_followup")
+	s.server.metrics().MDMScheduler.Enqueued.Inc("mda_followup")
 	s.signal()
 }

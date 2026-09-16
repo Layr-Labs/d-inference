@@ -49,7 +49,7 @@ func TestEmitTTFTShadowMetrics(t *testing.T) {
 		ShadowDeadlineMs:            11000,
 		ShadowOccupancy:             5,
 	})
-	counters := srv.metrics.Snapshot().Counters
+	counters := srv.adminMetrics.Snapshot().Counters
 	if !counterMatches(counters, "routing.ttft_admission", "decision=would_shed", "model=gpt-oss-20b", "mode=shadow") {
 		t.Fatalf("missing routing.ttft_admission{would_shed}; counters=%v", counters)
 	}
@@ -65,7 +65,7 @@ func TestEmitTTFTShadowMetricsServeAndNoRedirect(t *testing.T) {
 		ShadowEvaluated: true,
 		ShadowMode:      "shadow",
 	})
-	counters := srv.metrics.Snapshot().Counters
+	counters := srv.adminMetrics.Snapshot().Counters
 	if !counterMatches(counters, "routing.ttft_admission", "decision=would_serve") {
 		t.Fatalf("missing routing.ttft_admission{would_serve}; counters=%v", counters)
 	}
@@ -79,7 +79,7 @@ func TestEmitTTFTShadowMetricsServeAndNoRedirect(t *testing.T) {
 func TestEmitTTFTShadowMetricsNoopWhenNotEvaluated(t *testing.T) {
 	srv := newTTFTTestServer(t)
 	srv.emitTTFTShadowMetrics("gpt-oss-20b", registry.RoutingDecision{ShadowEvaluated: false})
-	if got := len(srv.metrics.Snapshot().Counters); got != 0 {
+	if got := len(srv.adminMetrics.Snapshot().Counters); got != 0 {
 		t.Fatalf("no shadow metrics expected when not evaluated, got %d counters", got)
 	}
 }
@@ -134,7 +134,7 @@ func TestRetriedRequestTTFTClampedAndMetered(t *testing.T) {
 
 	srv := newTTFTTestServer(t)
 	srv.updateInferenceRouteOutcomeWithModel("req-retry-neg", 0, "gpt-oss-20b", out)
-	counters := srv.metrics.Snapshot().Counters
+	counters := srv.adminMetrics.Snapshot().Counters
 	if !counterMatches(counters, "routing.invalid_ttft", "reason=negative", "model=gpt-oss-20b") {
 		t.Fatalf("routing.invalid_ttft{reason=negative,model=gpt-oss-20b} not emitted; counters=%v", counters)
 	}

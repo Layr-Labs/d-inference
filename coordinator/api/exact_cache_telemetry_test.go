@@ -12,7 +12,7 @@ import (
 )
 
 func TestExactCacheOperationalMetricsAreCompleteAndPrivacySafe(t *testing.T) {
-	server := &Server{metrics: NewMetrics()}
+	server := &Server{adminMetrics: NewMetrics()}
 	server.emitExactCachePlan(registry.CachePlanResult{Outcome: registry.CachePlanSampledOut})
 	server.emitExactCachePlan(registry.CachePlanResult{
 		Outcome: registry.CachePlanColdOnly, PlanLatency: 4 * time.Millisecond, SidecarCalled: true,
@@ -42,7 +42,7 @@ func TestExactCacheOperationalMetricsAreCompleteAndPrivacySafe(t *testing.T) {
 	request.CacheSelectionEstimatedTTFTSavedMs = math.Inf(1)
 	server.emitExactCacheEstimatedTTFTSaved(request, []string{"tier:ssd"})
 
-	snapshot := server.metrics.Snapshot()
+	snapshot := server.adminMetrics.Snapshot()
 	for _, key := range []string{
 		"exact_cache_plan_total{outcome=sampled_out}",
 		"exact_cache_plan_total{outcome=cold_only}",
@@ -87,11 +87,11 @@ func TestExactCacheOperationalMetricsAreCompleteAndPrivacySafe(t *testing.T) {
 }
 
 func TestCacheReceiptDiagnosticsDistinguishProofAndProviderUsage(t *testing.T) {
-	s := &Server{metrics: NewMetrics()}
+	s := &Server{adminMetrics: NewMetrics()}
 	s.emitCacheReceiptResult("lookup_v2", registry.CacheReceiptResult{Reason: registry.CacheReceiptPromptMismatch})
 	s.emitCacheReceiptResult("ready_v2", registry.CacheReceiptResult{Accepted: true, Reason: registry.CacheReceiptAccepted})
 	s.emitExactCacheUsage("hit", "ssd", 4096, 4096, 50)
-	snap := s.metrics.Snapshot()
+	snap := s.adminMetrics.Snapshot()
 	for _, key := range []string{"exact_cache_receipt_total{outcome=rejected,reason=prompt_anchor_mismatch,type=lookup_v2}", "exact_cache_receipt_total{outcome=accepted,reason=accepted,type=ready_v2}"} {
 		if snap.Counters[key] != 1 {
 			t.Fatalf("missing receipt diagnostic %s: %+v", key, snap.Counters)

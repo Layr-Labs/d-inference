@@ -277,15 +277,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				// Peer-initiated closes were previously unmetered — only
 				// read_error incremented ws_disconnects_total — so dashboards
 				// could not split graceful closes (update/shutdown) from drops.
-				if s.metrics != nil {
-					s.metrics.IncCounter("ws_disconnects_total",
-						MetricLabel{"reason", "peer_close"},
-					)
-				}
-				s.ddIncr("ws.disconnects", []string{
-					"reason:peer_close",
-					"code:" + strconv.Itoa(int(closeStatus)),
-				})
+				// The close code is a Datadog-only dimension; the in-process
+				// mirror stays keyed by reason alone (see SessionMetrics).
+				s.metrics().Session.Disconnects.Inc("peer_close", strconv.Itoa(int(closeStatus)))
 			} else {
 				readReason = readErrorDisconnectReason(err)
 				s.logger.Error("provider websocket read error",
@@ -298,12 +292,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 						"reason":      readReason,
 						"last_error":  err.Error(),
 					})
-				if s.metrics != nil {
-					s.metrics.IncCounter("ws_disconnects_total",
-						MetricLabel{"reason", readReason},
-					)
-				}
-				s.ddIncr("ws.disconnects", []string{"reason:" + readReason})
+				// No close code on a read error: the empty value omits the tag
+				// rather than minting a `code:` series with no code in it.
+				s.metrics().Session.Disconnects.Inc(readReason, "")
 
 				// An abrupt read_error under high last-known memory pressure with
 				// active inference is very likely a jetsam OOM (the kill leaves no
@@ -316,10 +307,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					memPressure, inFlight := provider.DisconnectDiagnostics()
 					if inFlight > 0 && registry.ClassifyDisconnectReason(true, memPressure, inFlight) == registry.DisconnectReasonOOMSuspected {
 						oomSuspected = true
-						if s.metrics != nil {
-							s.metrics.IncCounter("provider_oom_suspected_total")
-						}
-						s.ddIncr("provider.oom_suspected", nil)
+						s.metrics().Session.OOMSuspected.Inc()
 						s.emit(context.Background(), protocol.SeverityError, protocol.KindOOM,
 							"provider disconnected under memory pressure (suspected OOM)",
 							map[string]any{
@@ -399,7 +387,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			if len(regMsg.Version) > maxProviderVersionLength {
 				s.logger.Warn("rejecting provider registration with oversized version",
 					"provider_id", providerID, "version_len", len(regMsg.Version))
-				s.ddIncr("providers.registration_rejected", []string{"reason:oversized_version"})
+				s.metrics().Session.RegistrationRejected.Inc("oversized_version")
 				_ = conn.Close(websocket.StatusPolicyViolation, "version string too long")
 				return
 			}
@@ -422,12 +410,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			}
 
 			// Record registration outcome metrics + telemetry.
-			if s.metrics != nil {
-				s.metrics.IncCounter("provider_registrations_total",
-					MetricLabel{"trust_level", string(provider.TrustLevel)},
-				)
-			}
-			s.ddIncr("providers.registrations", []string{"trust_level:" + string(provider.TrustLevel)})
+			s.metrics().Session.Registrations.Inc(string(provider.TrustLevel))
 			s.emit(context.Background(), protocol.SeverityInfo, protocol.KindLog,
 				"provider registered",
 				map[string]any{
@@ -506,7 +489,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					if err == nil {
 						if err := provider.EnqueueText(loopCtx, statusData); err != nil {
 							s.logger.Debug("failed to enqueue runtime status to provider", "provider_id", provider.ID, "error", err)
-							s.ddIncr("provider.enqueue_failed", []string{"msg:runtime_status"})
+							s.metrics().Session.EnqueueFailed.Inc("runtime_status")
 						}
 					}
 					s.logger.Warn("provider runtime integrity mismatch — excluded from routing",
@@ -539,7 +522,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					"version", regMsg.Version,
 					"min_version", s.minProviderVersion,
 				)
-				s.ddIncr("provider_version_below_minimum", []string{"gate:registration", "version:" + regMsg.Version})
+				s.metrics().Session.VersionBelowMinimum.Inc("registration", regMsg.Version)
 				provider.Mu().Lock()
 				provider.RuntimeVerified = false
 				provider.RuntimeManifestChecked = false
@@ -1127,7 +1110,7 @@ func (s *Server) sendChallenge(ctx context.Context, providerID string, provider 
 		tracker.remove(nonce)
 		return
 	}
-	s.ddIncr("attestation.challenges_sent", nil)
+	s.metrics().Trust.ChallengesSent.Inc()
 
 	s.logger.Debug("sent attestation challenge", "provider_id", providerID, "nonce", nonce[:8]+"...")
 
@@ -1256,7 +1239,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		case nil:
 			statusFieldsTrusted = true
 		case attestation.ErrStatusSignatureMissing:
-			s.ddIncr("attestation.challenges", []string{"outcome:status_sig_missing"})
+			s.metrics().Trust.Challenges.Inc("status_sig_missing")
 			s.logger.Warn("provider sent no status_signature — status fields are advisory; upgrade provider to bind them",
 				"provider_id", providerID,
 			)
@@ -1273,9 +1256,9 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			if cerr == nil {
 				canonicalB64 = base64.StdEncoding.EncodeToString(canonical)
 			}
-			s.ddIncr("attestation.challenges", []string{"outcome:status_sig_failed"})
-			if s.metrics != nil {
-				s.metrics.IncCounter("attestation_status_sig_failed_total")
+			s.metrics().Trust.Challenges.Inc("status_sig_failed")
+			if s.adminMetrics != nil {
+				s.adminMetrics.IncCounter("attestation_status_sig_failed_total")
 			}
 			s.logger.Error("status signature verification failed — possible tampering or canonical mismatch",
 				"provider_id", providerID,
@@ -1554,7 +1537,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			if err == nil {
 				if err := provider.EnqueueText(context.Background(), statusData); err != nil {
 					s.logger.Debug("failed to enqueue runtime status to provider", "provider_id", provider.ID, "error", err)
-					s.ddIncr("provider.enqueue_failed", []string{"msg:runtime_status"})
+					s.metrics().Session.EnqueueFailed.Inc("runtime_status")
 				}
 			}
 		}
@@ -1569,7 +1552,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			"version", version,
 			"min_version", s.minProviderVersion,
 		)
-		s.ddIncr("provider_version_below_minimum", []string{"gate:challenge_revalidation", "version:" + version})
+		s.metrics().Session.VersionBelowMinimum.Inc("challenge_revalidation", version)
 		_ = s.registry.ReconcileAttestedRuntimeCapabilities(providerID)
 		return
 	}
@@ -1632,7 +1615,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		provider.Mu().Unlock()
 		s.sendTrustStatus(provider, trustLevel, "online", "recovered after transient deroute")
 	}
-	s.ddIncr("attestation.challenges", []string{"outcome:passed"})
+	s.metrics().Trust.Challenges.Inc("passed")
 	s.logger.Info("attestation challenge verified",
 		"provider_id", providerID,
 		"sip_enabled", resp.SIPEnabled,
@@ -1799,10 +1782,7 @@ func (s *Server) handleTransientChallengeFailure(conn *websocket.Conn, providerI
 		"consecutive_failures", failures,
 		"reason", reason,
 	)
-	s.ddIncr("attestation.force_reconnect", []string{"reason:" + reason})
-	if s.metrics != nil {
-		s.metrics.IncCounter("attestation_force_reconnect_total", MetricLabel{"reason", reason})
-	}
+	s.metrics().Trust.ForceReconnect.Inc(reason)
 	// Closing the conn unblocks providerReadLoop's conn.Read, which cancels the
 	// loop context (stopping this challenge loop) and runs registry.Disconnect.
 	_ = conn.Close(websocket.StatusPolicyViolation, "attestation unresponsive — reconnect required")
@@ -1814,7 +1794,7 @@ func (s *Server) handleTransientChallengeFailure(conn *websocket.Conn, providerI
 func (s *Server) handleChallengeFailure(providerID string, reason string) int {
 	transient := reason == "timeout" || reason == "no response"
 	failures := s.registry.RecordChallengeFailure(providerID, transient)
-	s.ddIncr("attestation.challenges", []string{"outcome:failed"})
+	s.metrics().Trust.Challenges.Inc("failed")
 	s.logger.Warn("attestation challenge failed",
 		"provider_id", providerID,
 		"reason", reason,
@@ -1843,12 +1823,7 @@ func (s *Server) handleChallengeFailure(providerID string, reason string) int {
 			"reason":          reason,
 			"reconnect_count": failures,
 		})
-	if s.metrics != nil {
-		s.metrics.IncCounter("attestation_failures_total",
-			MetricLabel{"reason", reason},
-		)
-	}
-	s.ddIncr("attestation.failures", []string{"reason:" + reason})
+	s.metrics().Trust.Failures.Inc(reason)
 	return failures
 }
 
@@ -2311,7 +2286,7 @@ func (s *Server) handleCompleteAt(
 	// max + content-frame floor) should prevent this, but emit a metric so any
 	// residual leak is visible on the dashboard rather than silent.
 	if msg.Usage.CompletionTokens == 0 {
-		s.ddIncr("billing.zero_usage_complete", []string{"model:" + pr.Model})
+		s.metrics().Billing.ZeroUsageComplete.Inc(pr.Model)
 		s.logger.Warn("completed request reported zero completion tokens — billed $0",
 			"provider_id", providerID,
 			"request_id", msg.RequestID,
@@ -2442,7 +2417,7 @@ func (s *Server) handleCompleteAt(
 			if totalCost > 0 {
 				start := time.Now()
 				chargeErr = s.ledger.Charge(pr.ConsumerKey, totalCost, msg.RequestID)
-				s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:service_reservation_settle"})
+				s.metrics().Store.DebitLatencyMs.Observe(float64(time.Since(start).Milliseconds()), "service_reservation_settle")
 			}
 			s.releaseServiceReservation(pr, "finalize")
 			return nil
@@ -2468,10 +2443,10 @@ func (s *Server) handleCompleteAt(
 			}
 			totalCost = 0
 			providerPayout = 0
-			s.ddIncr("billing.uncollected_zeroed", []string{"model:" + pr.Model, "mode:service_hold"})
+			s.metrics().Billing.UncollectedZeroed.Inc(pr.Model, "service_hold")
 		} else {
-			s.ddIncr("billing.reservation_finalize", []string{"model:" + pr.Model, "mode:service_hold", "outcome:charged"})
-			s.ddHistogram("billing.service_settlement_micro_usd", float64(totalCost), []string{"model:" + pr.Model})
+			s.metrics().Billing.ReservationFinalize.Inc(pr.Model, "service_hold", "charged")
+			s.metrics().Billing.ServiceSettlementMicroUSD.Observe(float64(totalCost), pr.Model)
 		}
 	} else if pr.ReservedMicroUSD > 0 {
 		if !pr.MarkReservationFinalized() {
@@ -2495,7 +2470,7 @@ func (s *Server) handleCompleteAt(
 					"reserved_micro_usd", pr.ReservedMicroUSD,
 					"uncapped_overage_micro_usd", overage,
 				)
-				s.ddIncr("billing.cost_clamped", []string{"model:" + pr.Model})
+				s.metrics().Billing.CostClamped.Inc(pr.Model)
 				overage = pr.ReservedMicroUSD
 				totalCost = pr.ReservedMicroUSD * 2
 			}
@@ -2520,7 +2495,7 @@ func (s *Server) handleCompleteAt(
 						"error", err,
 					)
 				}
-				s.ddIncr("billing.cost_clamped", []string{"model:" + pr.Model})
+				s.metrics().Billing.CostClamped.Inc(pr.Model)
 				totalCost = pr.ReservedMicroUSD
 			} else {
 				s.logger.Info("overage charged to consumer",
@@ -2529,8 +2504,8 @@ func (s *Server) handleCompleteAt(
 					"overage_micro_usd", overage,
 					"total_cost_micro_usd", totalCost,
 				)
-				s.ddIncr("billing.overage_charged", []string{"model:" + pr.Model})
-				s.ddHistogram("billing.overage_micro_usd", float64(overage), []string{"model:" + pr.Model})
+				s.metrics().Billing.OverageCharged.Inc(pr.Model)
+				s.metrics().Billing.OverageMicroUSD.Observe(float64(overage), pr.Model)
 				pr.ReservedMicroUSD = totalCost
 			}
 			// Recompute payout after potential clamp.
@@ -2542,10 +2517,10 @@ func (s *Server) handleCompleteAt(
 			if err := s.store.Credit(pr.ConsumerKey, refund, store.LedgerRefund, msg.RequestID); err != nil {
 				s.logger.Error("failed to credit settlement refund to consumer",
 					"request_id", msg.RequestID, "refund_micro_usd", refund, "error", err)
-				s.ddIncr("billing.credit_failed", []string{"op:settlement_refund"})
+				s.metrics().Billing.CreditFailed.Inc("settlement_refund")
 			}
-			s.ddHistogram("billing.settlement_refund_micro_usd", float64(refund), []string{"model:" + pr.Model})
-			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:settlement_refund"})
+			s.metrics().Billing.SettlementRefundMicroUSD.Observe(float64(refund), pr.Model)
+			s.metrics().Store.CreditLatencyMs.Observe(float64(time.Since(start).Milliseconds()), "settlement_refund")
 		}
 	} else if !freeSelfRoute {
 		start := time.Now()
@@ -2572,10 +2547,10 @@ func (s *Server) handleCompleteAt(
 			if pr.FreeSelfRoute {
 				totalCost = 0
 				providerPayout = 0
-				s.ddIncr("billing.uncollected_zeroed", []string{"model:" + pr.Model})
+				s.metrics().Billing.UncollectedZeroed.Inc(pr.Model, "")
 			}
 		}
-		s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:charge"})
+		s.metrics().Store.DebitLatencyMs.Observe(float64(time.Since(start).Milliseconds()), "charge")
 	}
 
 	if billingFinalized {
@@ -2748,8 +2723,8 @@ func (s *Server) handleCompleteAt(
 							"error", err,
 						)
 					}
-					s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:provider_account_credit"})
-					s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:account"})
+					s.metrics().Store.CreditLatencyMs.Observe(float64(time.Since(start).Milliseconds()), "provider_account_credit")
+					s.metrics().Billing.ProviderCreditsMicroUSD.Add(providerPayout, pr.Model, "account")
 				}()
 			}
 		}
@@ -2764,10 +2739,10 @@ func (s *Server) handleCompleteAt(
 				if err := s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID); err != nil {
 					s.logger.Error("failed to credit platform fee",
 						"request_id", msg.RequestID, "platform_fee_micro_usd", platformFee, "error", err)
-					s.ddIncr("billing.credit_failed", []string{"op:platform_fee"})
+					s.metrics().Billing.CreditFailed.Inc("platform_fee")
 				}
-				s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:platform_fee"})
-				s.ddCount("billing.platform_fees_micro_usd", platformFee, []string{"model:" + pr.Model})
+				s.metrics().Store.CreditLatencyMs.Observe(float64(time.Since(start).Milliseconds()), "platform_fee")
+				s.metrics().Billing.PlatformFeesMicroUSD.Add(platformFee, pr.Model)
 			}()
 		}
 
@@ -3326,7 +3301,7 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 	if err != nil {
 		s.logger.Error("MDM verification error", "error", err)
 		provider.SetMDMFailureReason("error")
-		s.ddIncr("mdm.verification", []string{"outcome:error"})
+		s.metrics().Trust.MDMVerification.Inc("error")
 		return mdmVerifyTransient
 	}
 
@@ -3350,7 +3325,7 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 			"error", mdmResult.Error,
 		)
 		provider.SetMDMFailureReason(reason)
-		s.ddIncr("mdm.verification", []string{"outcome:" + reason})
+		s.metrics().Trust.MDMVerification.Inc(reason)
 		return mdmVerifyTransient
 	}
 
@@ -3373,7 +3348,7 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 				"error", mdmResult.Error,
 			)
 			provider.SetMDMFailureReason(reason)
-			s.ddIncr("mdm.verification", []string{"outcome:" + reason})
+			s.metrics().Trust.MDMVerification.Inc(reason)
 			return mdmVerifyTransient
 		}
 		// A real posture mismatch (SIP disabled, Secure Boot not full, attestation
@@ -3386,7 +3361,7 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 			"secure_boot_match", mdmResult.SecureBootMatch,
 		)
 		provider.SetMDMFailureReason("posture-mismatch")
-		s.ddIncr("mdm.verification", []string{"outcome:posture-mismatch"})
+		s.metrics().Trust.MDMVerification.Inc("posture-mismatch")
 		s.registry.MarkUntrusted(providerID)
 		return mdmVerifyTerminal
 	}
@@ -3415,12 +3390,12 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 		mdmResult.MDMSecureBootFull,
 		mdmResult.UDID,
 	) {
-		s.ddIncr("mdm.verification", []string{"outcome:deferred-revocation-cas"})
+		s.metrics().Trust.MDMVerification.Inc("deferred-revocation-cas")
 		return mdmVerifyTransient
 	}
 	provider.SetMDMFailureReason("")
 	s.sendTrustStatus(provider, registry.TrustHardware, "online", "MDM verification passed")
-	s.ddIncr("mdm.verification", []string{"outcome:granted"})
+	s.metrics().Trust.MDMVerification.Inc("granted")
 	s.logger.Info("MDM verification passed; upgraded live provider to hardware trust",
 		"mdm_sip", mdmResult.MDMSIPEnabled,
 		"mdm_secure_boot", mdmResult.MDMSecureBootFull,
@@ -3478,10 +3453,10 @@ func (s *Server) ApplyLateSecurityInfo(
 	binding.provider.SetMDMFailureReason("")
 	s.sendTrustStatus(binding.provider, registry.TrustHardware, "online", "MDM verification passed (late SecurityInfo)")
 	s.registry.PersistProvider(binding.provider)
-	if s.metrics != nil {
-		s.metrics.IncCounter("mdm_late_securityinfo_upgrade_total")
+	if s.adminMetrics != nil {
+		s.adminMetrics.IncCounter("mdm_late_securityinfo_upgrade_total")
 	}
-	s.ddIncr("mdm.verification", []string{"outcome:granted-late"})
+	s.metrics().Trust.MDMVerification.Inc("granted-late")
 	s.mdmScheduler.CompleteLateSecurityInfo(
 		*binding, udid, commandUUID,
 	)
@@ -3571,7 +3546,7 @@ func (s *Server) attachCachedMDAProof(providerID string, provider *registry.Prov
 	// next reconnect. Mirrors the fresh-MDA path's immediate persist.
 	s.registry.PersistProvider(provider)
 	s.logger.Info("MDA reused from durable SE-key-bound certificate chain")
-	s.ddIncr("mda.verification", []string{"outcome:reused"})
+	s.metrics().Trust.MDAVerification.Inc("reused")
 	return true
 }
 
@@ -3830,6 +3805,6 @@ func (s *Server) sendTrustStatus(provider *registry.Provider, trustLevel registr
 	}
 	if err := provider.EnqueueText(context.Background(), data); err != nil {
 		s.logger.Debug("failed to enqueue trust status to provider", "provider_id", provider.ID, "error", err)
-		s.ddIncr("provider.enqueue_failed", []string{"msg:trust_status"})
+		s.metrics().Session.EnqueueFailed.Inc("trust_status")
 	}
 }

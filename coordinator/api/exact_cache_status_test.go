@@ -103,7 +103,7 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 		}
 	}
 
-	gauges := srv.Metrics().Snapshot().Gauges
+	gauges := srv.AdminMetrics().Snapshot().Gauges
 	for _, key := range []string{
 		"exact_cache_routing_mode{mode=off}",
 		"exact_cache_routing_mode{mode=on}",

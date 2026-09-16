@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-16 · commit `4595d7e65`
+> Last updated: 2026-09-16 · commit `79e51dafa`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -79,10 +79,84 @@ gauge would keep one arbitrary provider's value per flush window. The
 stored in Datadog as gauges and a name cannot change type
 (`Client.LockedGauge`, `coordinator/datadog/metrics_snapshot.go`); read them as
 one provider's reading, not a fleet average.
-This table covers the metrics that derive from provider telemetry, request
-outcomes and the telemetry pipeline itself; billing, exact-cache, MDM and
-rate-limit families are emitted from their own subsystems (`rg 'dd(Incr|Count|Gauge|Histogram)\(' coordinator/api`
-lists every name).
+The tables that follow cover the metrics deriving from provider telemetry,
+request outcomes and the telemetry pipeline itself, with the emission conditions
+a declaration cannot carry. Names, types, tag keys and in-process mirrors come
+from the declarations in `coordinator/metrics` for every family migrated to the
+catalog (below); the families still spelled out at their call sites are found
+with `rg 'dd(Incr|Count|Gauge|Histogram)\(' coordinator/api`.
+
+### Declared in the catalog
+
+These are the declarations in `coordinator/metrics` — the names, wire types, tag
+keys and in-process mirrors of every family migrated off string-literal call
+sites so far (billing, the store read-through cache, attestation, MDM/MDA
+verification and its scheduler, provider sessions). The table is what
+`Metrics.DocumentTable()` renders, so it is checked against the code rather than
+maintained beside it:
+
+```sh
+cd coordinator && go run ./metrics/cmd/metricdoc   # prints this table
+```
+
+A metric's tag keys are fixed by its declaration; a tag whose value is empty at
+the call site is omitted rather than sent empty (`ws.disconnects` carries `code`
+only for a peer-initiated close). Where a row also appears in a table below, the
+row below carries the emission condition and this one carries the shape.
+
+| Metric | Type | Tags | Mirror | Help |
+|---|---|---|---|---|
+| `attestation.challenges` | count | `outcome` | — | Challenges that resolved, by outcome (passed, failed, status_sig_missing, status_sig_failed) |
+| `attestation.challenges_sent` | count | — | — | Secure Enclave challenges issued to providers |
+| `attestation.failures` | count | `reason` | attestation_failures_total | Failed challenges by reason; the untrust threshold is counted off this |
+| `attestation.force_reconnect` | count | `reason` | attestation_force_reconnect_total | Providers closed out for consecutive challenge timeouts |
+| `billing.cost_clamped` | count | `model` | — | Computed cost hit a sanity bound; each one is a pricing or usage-reporting bug |
+| `billing.credit_failed` | count | `op` | — | Credits the store refused, by operation; money believed returned that was not |
+| `billing.media_reservation_topup` | count | `model`, `outcome` | — | Additional reservation for remote media, by outcome |
+| `billing.overage_charged` | count | `model` | — | Requests that cost more than was reserved |
+| `billing.overage_micro_usd` | distribution | `model` | — | Micro-USD charged beyond the reservation |
+| `billing.platform_fees_micro_usd` | count | `model` | — | Micro-USD retained as platform fee |
+| `billing.provider_credits_micro_usd` | count | `model`, `type` | — | Micro-USD credited to providers, by credit type |
+| `billing.referral_apply_failed` | count | — | — | Referral bonuses that failed to apply |
+| `billing.reservation_extra_refunds` | count | `model` | — | A second refund against one reservation; a rate here means a release path runs twice |
+| `billing.reservation_finalize` | count | `model`, `mode`, `outcome` | — | Service holds finalized at settlement |
+| `billing.reservation_refunds` | count | `model`, `mode` | — | Releases that credited money back to the account |
+| `billing.reservation_releases` | count | `model`, `mode`, `reason` | — | Holds released, by reason: early (never dispatched) or refund (after settlement) |
+| `billing.reservations` | count | `model`, `mode`, `outcome` | — | Reservation attempts, by outcome (reserved or rejected for insufficient balance) |
+| `billing.reserved_micro_usd` | distribution | `model`, `mode` | — | Micro-USD held by a successful reservation |
+| `billing.service_settlement_micro_usd` | distribution | `model` | — | Micro-USD a settled service hold cost |
+| `billing.session_complete_failed` | count | — | — | Stripe Checkout sessions the coordinator could not finish crediting |
+| `billing.settlement_refund_micro_usd` | distribution | `model` | — | Micro-USD returned when settlement came in under the reservation |
+| `billing.uncollected_zeroed` | count | `model`, `mode` | — | Holds released without collecting because the amount owed could not be established |
+| `billing.zero_usage_complete` | count | `model` | — | Completions that reported no tokens, so nothing could be charged |
+| `mda.verification` | count | `outcome` | mda_verification_total | Apple device-attestation verifications by outcome |
+| `mdm.scheduler.active_attempts` | gauge | `kind` | — | Verification attempts running right now, by task kind |
+| `mdm.scheduler.attempt_seconds` | distribution | `kind`, `outcome` | mdm_scheduler_attempt_seconds | Verification attempt duration in seconds, by kind and outcome |
+| `mdm.scheduler.attempts` | count | `kind`, `outcome` | mdm_scheduler_attempts_total | Verification attempts that finished, by task kind and outcome |
+| `mdm.scheduler.cancelled` | count | `reason` | mdm_scheduler_cancelled_total | Queued jobs dropped before running, by reason |
+| `mdm.scheduler.deduplicated` | count | `state` | mdm_scheduler_deduplicated_total | Enqueues collapsed into an in-flight job, by that job's state |
+| `mdm.scheduler.enqueued` | count | `reason` | mdm_scheduler_enqueued_total | Verification jobs accepted onto the queue, by reason |
+| `mdm.scheduler.grants` | count | `path` | mdm_scheduler_grants_total | Hardware trust granted, by path (live, late, reuse) |
+| `mdm.scheduler.queue_depth` | gauge | `kind`, `priority` | — | Queued jobs not yet running, by task kind and priority |
+| `mdm.scheduler.queue_rejected` | count | `priority` | mdm_scheduler_queue_rejected_total | Enqueues refused because the queue was full, by the priority that lost |
+| `mdm.scheduler.queue_wait_seconds` | distribution | `kind`, `priority` | mdm_scheduler_queue_wait_seconds | Time a job waited before running, in seconds, by kind and queued priority |
+| `mdm.scheduler.retry_delay_seconds` | distribution | `stage` | mdm_scheduler_retry_delay_seconds | Backoff applied after a failed attempt, in seconds, by retry stage |
+| `mdm.scheduler.timeouts` | count | `kind` | mdm_scheduler_timeouts_total | Verification attempts that timed out, by task kind |
+| `mdm.verification` | count | `outcome` | — | MicroMDM SecurityInfo cross-checks by outcome |
+| `provider.enqueue_failed` | count | `msg` | — | Outbound control frames that could not be queued for a provider, by message kind |
+| `provider.oom_suspected` | count | — | provider_oom_suspected_total | Abrupt disconnects under memory pressure with inference in flight (suspected jetsam kill) |
+| `provider_version_below_minimum` | count | `gate`, `version` | — | Providers below the version floor, by the gate that caught it and the exact version they reported |
+| `providers.registration_rejected` | count | `reason` | — | Registrations refused before admission, by reason |
+| `providers.registrations` | count | `trust_level` | provider_registrations_total | Accepted provider registrations by admitted trust level |
+| `store.cache.entries` | gauge | `domain` | — | Entries resident in the read cache now |
+| `store.cache.evictions` | gauge | `domain` | — | Cumulative entries evicted for capacity |
+| `store.cache.hits` | gauge | `domain` | — | Cumulative read-cache hits reported by the store wrapper |
+| `store.cache.invalidations` | gauge | `domain` | — | Cumulative explicit invalidations after a write |
+| `store.cache.misses` | gauge | `domain` | — | Cumulative read-cache misses |
+| `store.cache.negative_hits` | gauge | `domain` | — | Cumulative hits on a cached not-found |
+| `store.credit.latency_ms` | distribution | `op` | — | Store round trip for a credit, by operation |
+| `store.debit.latency_ms` | distribution | `op` | — | Store round trip for a debit, by operation |
+| `ws.disconnects` | count | `reason`, `code` | ws_disconnects_total | Provider WebSocket sessions ending, by reason and (for a peer close) close code |
 
 ### From provider heartbeats and sessions
 
@@ -219,7 +293,7 @@ Prometheus text (`?format=prom`). Reset on restart.
 | `inference_queue_outcome_total` | `model`, `class` | `inference.queue_outcome`; queue exits that dispatched no attempt (`coordinator/api/attempt_outcome_metrics.go`, `emitQueueOutcomeMetric`) |
 | `inference_request_outcome_or_view_total` | `model`, `class` | `inference.request_outcome_or_view`; the same request-terminal classes and counting boundaries (`coordinator/api/attempt_outcome_metrics.go`, `recordRequestOutcomeORView`) |
 | `inference_unknown_frames_total` | `kind`, `provider_version` | `inference.unknown_frames`; unrecognized chunk/complete/error frames (`coordinator/api/unknown_frame_metrics.go`, `emitUnknownFrame`) |
-| `ws_disconnects_total` | `reason`, plus `code` for `peer_close` | `ws.disconnects`; `reason` is `peer_close`, `read_error`, or `read_error_control_frame` (`coordinator/api/provider.go`, `providerReadLoop`) |
+| `ws_disconnects_total` | `reason` only | `ws.disconnects`, which additionally splits by `code` on a peer close; the mirror predates that split and is deliberately not widened (`SessionMetrics.Disconnects`, `mirrorPrefix`). `reason` is `peer_close`, `read_error`, or `read_error_control_frame` (`coordinator/api/provider.go`, `providerReadLoop`) |
 
 
 ## Coordinator-emitted events

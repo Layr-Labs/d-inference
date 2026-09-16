@@ -91,6 +91,20 @@ func hasMetric(packets []string, substr string) bool {
 	return false
 }
 
+// hasMetricWithTag requires one packet to carry both substrings. Two separate
+// hasMetric calls do not: they pass as long as *some* packet has the name and
+// *some* packet has the tag, so a series that never reached the wire is covered
+// by its siblings. The two are threaded by the client's constant tags
+// (`env:`, `service:`), which is why this is not one substring.
+func hasMetricWithTag(packets []string, name, tag string) bool {
+	for _, p := range packets {
+		if strings.Contains(p, name) && strings.Contains(p, tag) {
+			return true
+		}
+	}
+	return false
+}
+
 func findMetrics(packets []string, substr string) []string {
 	var out []string
 	for _, p := range packets {
@@ -433,20 +447,24 @@ func TestAttestationMetrics_AllOutcomes(t *testing.T) {
 	defer ddClient.Close()
 	srv.SetDatadog(ddClient)
 
+	// Recorded through the declared catalog rather than the ddIncr shim, because
+	// the shim is not what production uses for these two names any more: going
+	// through s.metrics() is what proves the declaration's name and tag key and
+	// the sink's late binding to SetDatadog all agree on the wire.
 	for _, outcome := range []string{"passed", "failed", "status_sig_missing"} {
-		srv.ddIncr("attestation.challenges", []string{"outcome:" + outcome})
+		srv.metrics().Trust.Challenges.Inc(outcome)
 	}
-	srv.ddIncr("attestation.challenges_sent", nil)
+	srv.metrics().Trust.ChallengesSent.Inc()
 
 	_ = ddClient.Statsd.Flush()
 	packets := collector.drain()
 
 	for _, outcome := range []string{"passed", "failed", "status_sig_missing"} {
-		if !hasMetric(packets, "outcome:"+outcome) {
+		if !hasMetricWithTag(packets, "attestation.challenges:1|c|#", "outcome:"+outcome) {
 			t.Errorf("missing attestation.challenges{outcome:%s}; got packets: %v", outcome, packets)
 		}
 	}
-	if !hasMetric(packets, "attestation.challenges_sent") {
+	if !hasMetric(packets, "attestation.challenges_sent:1|c|") {
 		t.Errorf("missing attestation.challenges_sent; got packets: %v", packets)
 	}
 }

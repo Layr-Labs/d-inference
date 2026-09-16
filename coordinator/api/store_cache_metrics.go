@@ -29,11 +29,11 @@ func (s *Server) emitStoreCacheGauges() {
 }
 
 func (s *Server) emitStoreCacheDomainGauges(domain string, c store.CacheCounters) {
-	tags := []string{"domain:" + domain}
-	s.ddGauge("store.cache.hits", float64(c.Hits), tags)
-	s.ddGauge("store.cache.misses", float64(c.Misses), tags)
-	s.ddGauge("store.cache.negative_hits", float64(c.NegativeHits), tags)
-	s.ddGauge("store.cache.evictions", float64(c.Evictions), tags)
-	s.ddGauge("store.cache.invalidations", float64(c.Invalidations), tags)
-	s.ddGauge("store.cache.entries", float64(c.Entries), tags)
+	m := s.metrics().Store
+	m.CacheHits.Set(float64(c.Hits), domain)
+	m.CacheMisses.Set(float64(c.Misses), domain)
+	m.CacheNegativeHits.Set(float64(c.NegativeHits), domain)
+	m.CacheEvictions.Set(float64(c.Evictions), domain)
+	m.CacheInvalidations.Set(float64(c.Invalidations), domain)
+	m.CacheEntries.Set(float64(c.Entries), domain)
 }

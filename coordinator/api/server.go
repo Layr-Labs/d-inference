@@ -43,6 +43,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
+	"github.com/eigeninference/d-inference/coordinator/metrics"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
@@ -409,9 +410,16 @@ type Server struct {
 	// by chunkKeyCacheMax.
 	chunkKeys chunkKeyCache
 
-	// metrics is the in-process metrics registry exposed via /v1/admin/metrics
+	// adminMetrics is the in-process metrics registry exposed via /v1/admin/metrics
 	// and used by internal counters/histograms. Never nil.
-	metrics *Metrics
+	adminMetrics *Metrics
+
+	// catalog is the declared metric catalog (coordinator/metrics): every
+	// DogStatsD name, type and tag-key set this coordinator emits, declared in
+	// one place instead of spelled out at the call site. Read it through
+	// s.metrics(), which substitutes a catalog that records nowhere for the
+	// hand-built Server literals in tests.
+	catalog *metrics.Metrics
 
 	// readCache memoizes pre-serialized JSON for read-heavy aggregation
 	// endpoints (stats, leaderboard, model catalog, etc.). TTLs are
@@ -824,7 +832,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		logger:                   logger,
 		mux:                      http.NewServeMux(),
 		knownRuntimeManifest:     &RuntimeManifest{},
-		metrics:                  NewMetrics(),
+		adminMetrics:             NewMetrics(),
 		readCache:                newTTLCache(),
 		geoResolver:              newProviderGeoResolverFromEnv(logger),
 		apiKeyCache:              make(map[string]apiKeyCacheEntry),
@@ -843,6 +851,10 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		firstContentDeadlineBase: firstContentDeadlineBase,
 		routingScanSem:           make(chan struct{}, DefaultRoutingConcurrency()),
 	}
+	// The catalog is built here rather than in SetDatadog because its sink
+	// resolves s.dd per sample: a server that gets its Datadog client later
+	// still records through the same declarations.
+	s.catalog = s.newCatalog()
 	if _, clampedDown := trustReuseReconnectGapFromEnv(); clampedDown {
 		logger.Warn("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP exceeds the 120s security ceiling; clamping DOWN",
 			"requested", os.Getenv("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP"),
@@ -1035,10 +1047,12 @@ func (s *Server) Datadog() *datadog.Client {
 	return s.dd
 }
 
-// Metrics returns the in-process metrics registry so cmd/coordinator can
-// expose it to the telemetry emitter and other integrations.
-func (s *Server) Metrics() *Metrics {
-	return s.metrics
+// AdminMetrics returns the in-process metrics registry behind
+// GET /v1/admin/metrics so cmd/coordinator can expose it to the telemetry
+// emitter and other integrations. The declared DogStatsD catalog is a separate
+// thing — see Server.metrics.
+func (s *Server) AdminMetrics() *Metrics {
+	return s.adminMetrics
 }
 
 // emit is an internal convenience that funnels events through the emitter if
@@ -2215,7 +2229,7 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 		} else if s.minProviderVersion != "" &&
 			version != "" &&
 			semverLess(version, s.minProviderVersion) {
-			s.ddIncr("provider_version_below_minimum", []string{"gate:manifest_sync", "version:" + version})
+			s.metrics().Session.VersionBelowMinimum.Inc("manifest_sync", version)
 		} else {
 			runtimeOK, _ := s.verifyRuntimeHashesForBackend(
 				backend,
@@ -2920,10 +2934,10 @@ func (s *Server) routes() {
 // registerDefaultGauges wires live-computed gauges (fleet size, etc.) into
 // the metrics registry at construction time.
 func (s *Server) registerDefaultGauges() {
-	s.metrics.RegisterGauge("providers_online", func() float64 {
+	s.adminMetrics.RegisterGauge("providers_online", func() float64 {
 		return float64(s.registry.ProviderCount())
 	})
-	s.metrics.RegisterGauge("min_provider_version_set", func() float64 {
+	s.adminMetrics.RegisterGauge("min_provider_version_set", func() float64 {
 		if s.minProviderVersion != "" {
 			return 1
 		}
@@ -3036,7 +3050,7 @@ func (s *Server) handleAdminMetrics(w http.ResponseWriter, r *http.Request) {
 	if !s.isAdminAuthorized(w, r) {
 		return
 	}
-	snap := s.metrics.Snapshot()
+	snap := s.adminMetrics.Snapshot()
 	if r.URL.Query().Get("format") == "prom" {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		w.WriteHeader(http.StatusOK)
@@ -3558,13 +3572,13 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		pathLabel := httpPathLabel(route)
 		statusStr := strconvItoa(sw.status)
 
-		if s.metrics != nil {
-			s.metrics.IncCounter("http_requests_total",
+		if s.adminMetrics != nil {
+			s.adminMetrics.IncCounter("http_requests_total",
 				MetricLabel{"method", r.Method},
 				MetricLabel{"path", pathLabel},
 				MetricLabel{"status", statusStr},
 			)
-			s.metrics.ObserveHistogram("http_request_duration_ms",
+			s.adminMetrics.ObserveHistogram("http_request_duration_ms",
 				float64(dur.Milliseconds()),
 				MetricLabel{"method", r.Method},
 				MetricLabel{"path", pathLabel},

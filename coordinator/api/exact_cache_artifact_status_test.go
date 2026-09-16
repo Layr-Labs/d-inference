@@ -45,7 +45,7 @@ func TestExactCacheArtifactStatusPreservesEmptyWithoutExposingIdentities(t *test
 					t.Fatalf("status exposed %q", sensitive)
 				}
 			}
-			gauges := srv.metrics.Snapshot().Gauges
+			gauges := srv.adminMetrics.Snapshot().Gauges
 			if gauges["exact_cache_artifact_allowlist_configured"] != boolGauge(tc.configured) ||
 				gauges["exact_cache_artifact_allowlist_count"] != float64(len(tc.artifacts)) {
 				t.Fatalf("artifact gauges=%v", gauges)

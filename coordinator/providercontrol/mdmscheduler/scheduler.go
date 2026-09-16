@@ -3,6 +3,7 @@ package mdmscheduler
 import (
 	"context"
 	rand "math/rand/v2"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -71,7 +72,7 @@ func (s *Scheduler) Close() {
 		claimed := make([]store.VerificationJob, 0, s.cfg.Workers)
 		for _, job := range s.jobs {
 			if job.record.State == store.VerificationStateRunning &&
-				job.record.ClaimOwner == s.owner {
+				s.ownsClaim(job.record.ClaimOwner) {
 				claimed = append(claimed, job.record)
 			}
 		}
@@ -84,7 +85,7 @@ func (s *Scheduler) Close() {
 		now := s.deps.Now().UTC()
 		for _, rec := range claimed {
 			if err := s.store.ReleaseVerificationJob(
-				cleanupCtx, rec.SEPubKey, rec.Kind, s.owner, now,
+				cleanupCtx, rec.SEPubKey, rec.Kind, rec.ClaimOwner, now,
 			); err != nil {
 				s.deps.Logger().Error(
 					"failed to release MDM scheduler claim during shutdown",
@@ -143,4 +144,8 @@ func New(cfg Config, deps Dependencies) *Scheduler {
 	}
 	sch.registerMetrics()
 	return sch
+}
+
+func (s *Scheduler) ownsClaim(owner string) bool {
+	return owner == s.owner || strings.HasPrefix(owner, s.owner+"/")
 }

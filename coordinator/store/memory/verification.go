@@ -177,7 +177,7 @@ func (s *Store) CompleteVerificationJob(_ context.Context, seKey string, kind co
 	if !ok {
 		return nil
 	}
-	if rec.ClaimOwner != "" && rec.ClaimOwner != owner {
+	if rec.ClaimOwner != owner {
 		return nil
 	}
 	if rec.ReopenPending {

@@ -2,6 +2,7 @@ package mdmscheduler
 
 import (
 	"context"
+	"github.com/google/uuid"
 	"sort"
 	"time"
 
@@ -180,7 +181,8 @@ func (s *Scheduler) claimAndDispatch(key string, now time.Time) {
 	}
 	rec := job.record
 	s.mu.Unlock()
-	claimed, ok, err := s.store.ClaimVerificationJob(s.ctx, rec.SEPubKey, rec.Kind, s.owner, now, now.Add(s.cfg.ClaimTTL))
+	owner := s.owner + "/" + uuid.NewString()
+	claimed, ok, err := s.store.ClaimVerificationJob(s.ctx, rec.SEPubKey, rec.Kind, owner, now, now.Add(s.cfg.ClaimTTL))
 	if err != nil || !ok {
 		if err != nil && s.ctx.Err() == nil {
 			s.deps.Logger().Error("failed to claim MDM scheduler job", "error", err)
@@ -195,7 +197,7 @@ func (s *Scheduler) claimAndDispatch(key string, now time.Time) {
 		s.mu.Unlock()
 		cleanupCtx, cancel := cleanupContext()
 		_ = s.store.ReleaseVerificationJob(
-			cleanupCtx, rec.SEPubKey, rec.Kind, s.owner, s.deps.Now().UTC(),
+			cleanupCtx, rec.SEPubKey, rec.Kind, owner, s.deps.Now().UTC(),
 		)
 		cancel()
 		return

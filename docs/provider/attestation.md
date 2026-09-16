@@ -91,6 +91,13 @@ darkbloom restart
 darkbloom status
 ```
 
+If you reconnect while the prior connection finishes checking a cached Apple
+proof, your new connection keeps its verification work. The coordinator scopes
+that cleanup to the completed connection ([MDA completion ownership](../architecture/security/attestation.md#flag--apple-managed-device-attestation)).
+An older worker finishing after a reconnect also keeps the replacement's
+claim, cancellation and retry state intact
+([MDM attempt ownership](../architecture/security/attestation.md#layer-3--mdm-securityinfo-the-hardware-grant)).
+
 ### Keeping the level
 
 - **Stay online and awake.** Trust is per connection: a reconnect caps a

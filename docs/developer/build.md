@@ -37,6 +37,8 @@ The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its 
 
 - **macOS on Apple Silicon** for anything under `provider-swift/` (MLX + Metal).
   The coordinator, sidecar, e2e harness, and UIs build on macOS or Linux.
+  The [local process cleanup fixtures](test.md#local-process-cleanup-fixtures)
+  need only Go, Python and harmless child stubs; they do not need a provider build or database.
 - **Xcode Command Line Tools + `cmake`** (`brew install cmake`) — the metallib
   helper compiles MLX's Metal kernels with cmake.
 - **Git submodules** checked out: `libs/mlx-swift`, `libs/mlx-swift-lm`,

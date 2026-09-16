@@ -132,6 +132,25 @@ latencies are not comparable to this corrected end-to-end measurement.
 ```bash
 go test -race -short ./e2e/testbed/...
 ```
+#### Local process cleanup fixtures
+
+The testbed's local-provider and native-Postgres lifecycle checks use harmless
+child executables and PATH stubs. They verify output draining before provider
+completion, retained child ownership, graceful shutdown and forced termination,
+temporary-data cleanup after initialization/readiness failures, and rejected
+helper-stream cleanup before waiting for its process. They start
+no Swift provider, database, Docker daemon or remote connection.
+
+```bash
+go test -race ./e2e/testbed ./e2e/testbed/deps -short -run 'TestLocalProviderWait|TestNativePostgres|TestPostgres|TestOwnedMalformedStream' -count=1
+```
+
+`e2e/testbed/provider_local.go` waits through `exec.Cmd.Wait` so command output
+and context cleanup finish before completion. `e2e/testbed/deps/postgres.go`
+retains its native child command, waits for it to be reaped and only then removes
+its owned data directory. Unconfirmed termination retains that directory for
+inspection. The [owned-host helper](../../e2e/testbed/OWNED_HOSTS.md) keeps its
+separate process-group, control-lease and receipt contract.
 
 #### Provider config cleanup
 

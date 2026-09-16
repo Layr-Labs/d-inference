@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-15 · commit `0f7b1e611`
+> Last updated: 2026-09-15 · commit `56da3a668`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -103,6 +103,7 @@ finalization remains guarded by `PendingRequest.FinalizeReservation`.
 | Platform price writers | `PUT /v1/admin/pricing` (`coordinator/api/billing/pricing.go` `AdminPricing`) and model registration, which requires positive `input_price`/`output_price` and writes them as the platform row (`coordinator/api/catalog/register_model.go` `RegisterModel` → `SetModelPrice("platform", …)`). |
 | Provider custom price | `PUT /v1/pricing` / `DELETE /v1/pricing` for the caller's own account; a resolved linked user is required (`coordinator/api/billing/pricing.go` `SetPricing`, `DeletePricing`). The only validation is `> 0`; there is no floor or ceiling relative to the platform price. |
 | Resolution at settlement | provider custom → platform → `DefaultInputPricePerMillion` / `DefaultOutputPricePerMillion` (`coordinator/inference/settlement/completion_price.go` `priceCompletion`). Service consumers skip the first step. The reservation uses the same order with the provider chosen at dispatch (`coordinator/inference/settlement/reservation_price.go` `providerEstimate`, `Estimate`). |
+| Lookup consistency | Both successful PostgreSQL price mutations invalidate the local cached value and fence older cache fills. In-flight reads and other coordinator processes retain the [price lookup cache semantics](../reference/pricing-model.md#price-lookup-cache) (`coordinator/store/postgres_model_prices.go`). |
 | Cost | `calculateCost` bills `promptTokens × in / 1M + completionTokens × out / 1M`. `CalculateCostWithOverrides` then applies `minimumChargeMicroUSD`; `CalculateCostWithOverridesNoMinimum` (service traffic) floors non-zero usage at 1 µUSD instead (`coordinator/payments/pricing.go`). Cached tokens: invariant 5. |
 | Public read | `GET /v1/pricing` returns the `platform` rows plus the fallback defaults (`GetPricing`); the OpenRouter model feed renders µUSD/1M as USD-per-token strings via `coordinator/payments/pricing.go` `FormatPerTokenUSD`. |
 

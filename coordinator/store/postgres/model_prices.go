@@ -23,11 +23,7 @@ func (s *Store) SetModelPrice(accountID, model string, inputPrice, outputPrice i
 		return fmt.Errorf("store: set model price: %w", err)
 	}
 
-	// Invalidate cache.
-	key := accountID + ":" + model
-	s.priceCacheMu.Lock()
-	delete(s.priceCache, key)
-	s.priceCacheMu.Unlock()
+	s.invalidateModelPrice(accountID, model)
 
 	return nil
 }
@@ -41,6 +37,7 @@ func (s *Store) GetModelPrice(accountID, model string) (int64, int64, bool) {
 		s.priceCacheMu.RUnlock()
 		return cached.input, cached.output, true
 	}
+	generation := s.priceCacheGeneration
 	s.priceCacheMu.RUnlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -55,9 +52,12 @@ func (s *Store) GetModelPrice(accountID, model string) (int64, int64, bool) {
 		return 0, 0, false
 	}
 
-	// Populate cache.
+	// An in-flight caller keeps its SQL result, but a completed local write
+	// prevents that older result from becoming the next caller's cache hit.
 	s.priceCacheMu.Lock()
-	s.priceCache[key] = cachedPrice{input: input, output: output, at: time.Now()}
+	if generation == s.priceCacheGeneration {
+		s.priceCache[key] = cachedPrice{input: input, output: output, at: time.Now()}
+	}
 	s.priceCacheMu.Unlock()
 
 	return input, output, true
@@ -101,5 +101,16 @@ func (s *Store) DeleteModelPrice(accountID, model string) error {
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("no custom price for model %q", model)
 	}
+	s.invalidateModelPrice(accountID, model)
 	return nil
+}
+
+// invalidateModelPrice fences delayed reads after either successful mutation.
+// One generation covers the cache: writes are rare, and unrelated reads may
+// safely skip a fill without retaining a generation entry for every price key.
+func (s *Store) invalidateModelPrice(accountID, model string) {
+	s.priceCacheMu.Lock()
+	s.priceCacheGeneration++
+	delete(s.priceCache, accountID+":"+model)
+	s.priceCacheMu.Unlock()
 }

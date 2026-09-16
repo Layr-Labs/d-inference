@@ -379,6 +379,13 @@ metadata. Run the focused check from the repository root:
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api/catalog -run '^TestMapQuantizationToOpenRouter$' -count=1
 ```
 
+`TestModelPriceMutationsAreVisible` checks set, update, delete and recreation
+through both store backends. `TestPostgresPriceMutationRejectsDelayedCacheFill`
+holds a completed real SQL read while an update or delete finishes, then checks
+later prices and cache hits (`coordinator/store/model_price_cache_test.go`,
+`coordinator/store/postgres_model_price_cache_test.go`). Run these with the
+disposable `DATABASE_URL` below to include PostgreSQL.
+
 Run prediction telemetry checks from the repository root:
 
 ```bash

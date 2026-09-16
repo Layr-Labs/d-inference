@@ -123,6 +123,10 @@ provider binary ([test procedure](test.md#2-coordinator-go)).
 Model metadata normalization and its [Go regression test](test.md#2-coordinator-go)
 build with the coordinator; no provider build or model weights are required.
 
+PostgreSQL model-price operations live in `coordinator/store/postgres_model_prices.go`
+and build with the coordinator target. Their [cache regression tests](test.md#2-coordinator-go)
+use the standard disposable PostgreSQL test database.
+
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
 its test binary after helper or lifecycle changes. The CPU-only
 `TestPrepareConnectedInputBindings` check uses the actual fixture input/report

@@ -20,8 +20,9 @@ type Store struct {
 	// In-memory cache for model prices. Keyed by "accountID:model".
 	// Eliminates a DB round trip on every inference request for
 	// platform pricing lookups (which change rarely).
-	priceCacheMu sync.RWMutex
-	priceCache   map[string]cachedPrice
+	priceCacheMu         sync.RWMutex
+	priceCache           map[string]cachedPrice
+	priceCacheGeneration uint64
 }
 
 type cachedPrice struct {

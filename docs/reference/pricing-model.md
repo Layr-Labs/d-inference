@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-15 · commit `56da3a668`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -65,6 +65,18 @@ Settlement: `coordinator/inference/settlement/completion_price.go`
 Storage: `model_prices(account_id, model, input_price, output_price,
 updated_at)`, primary key `(account_id, model)`
 (`coordinator/store/postgres/schema/billing.go`).
+
+### Price lookup cache
+
+`PostgresStore.GetModelPrice` caches successful lookups for `30 * time.Second`.
+Successful `SetModelPrice` and `DeleteModelPrice` calls remove the matching cached
+value and prevent earlier SQL reads from republishing it afterward. A lookup
+already in progress may return its original SQL result. Missing rows and read
+errors remain uncached (`coordinator/store/postgres_model_prices.go`).
+
+This consistency boundary is one store instance. Other coordinator processes
+retain their normal lookup TTL; serialized model-feed response caches keep their
+existing lifetimes. Price resolution order and amounts are unchanged.
 
 ## Formulas
 

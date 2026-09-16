@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-15 · commit `56da3a668`
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -19,6 +19,8 @@ route is tabulated in [`reference/pricing-model.md`](../reference/pricing-model.
 - Rates are per token, prepaid, with no subscription. `GET /v1/pricing` (no
   auth) returns the platform price for each model and the fallback rates used
   when a model has none; `GET /v1/models` repeats them in its `pricing` block.
+  After changing a custom rate, use the [price lookup cache reference](../reference/pricing-model.md#price-lookup-cache)
+  to distinguish new lookups from work already in progress and cached model feeds.
 
 ## Steps
 

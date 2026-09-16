@@ -31,6 +31,8 @@ coordinator deployment.
 - **Coordinator capacity and admission** — Model readiness honors public routing gates while retaining inventory and the fleet-wide health-breaker fallback. Expired capacity probes settle as timeouts; oversized prompt/output sums are rejected without integer wrapping.
 - **Coordinator settings** — Reject non-finite warm-pool and quality-admission values before serving. Ignore non-finite prompt-calibration overrides and bound oversized calibrated estimates before integer conversion.
 
+- **Inclusive metric buckets** — Count latency samples equal to a histogram upper bound in that bucket. A 5 ms observation now contributes to the 5 ms cumulative bucket in JSON and Prometheus output.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

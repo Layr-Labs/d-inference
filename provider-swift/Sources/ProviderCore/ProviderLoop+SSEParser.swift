@@ -175,27 +175,9 @@ extension ProviderLoop {
     internal static func injectReasoningTokens(
         into frame: String, reasoningTokens: Int
     ) -> String {
-        guard reasoningTokens > 0,
-              let payload = joinedDataPayload(frame),
-              let bytes = payload.data(using: .utf8),
-              var obj = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
-              var usage = obj["usage"] as? [String: Any]
-        else {
-            return frame
-        }
-        // Merge into any existing details object rather than clobbering it.
-        var details = usage["completion_tokens_details"] as? [String: Any] ?? [:]
-        details["reasoning_tokens"] = reasoningTokens
-        usage["completion_tokens_details"] = details
-        obj["usage"] = usage
-        guard let out = try? JSONSerialization.data(
-                withJSONObject: obj, options: [.sortedKeys, .withoutEscapingSlashes]
-              ),
-              let json = String(data: out, encoding: .utf8)
-        else {
-            return frame
-        }
-        return "data: \(json)\n\n"
+        injectUsageTokenDetail(
+            into: frame, count: reasoningTokens,
+            detailsKey: "completion_tokens_details", tokenKey: "reasoning_tokens")
     }
 
     /// Inject `usage.prompt_tokens_details.cached_tokens` into a final SSE
@@ -214,7 +196,17 @@ extension ProviderLoop {
     internal static func injectCachedTokens(
         into frame: String, cachedTokens: Int
     ) -> String {
-        guard cachedTokens > 0,
+        injectUsageTokenDetail(
+            into: frame, count: cachedTokens,
+            detailsKey: "prompt_tokens_details", tokenKey: "cached_tokens")
+    }
+
+    /// Both counters share the same merge and serialization contract. Keep the
+    /// public helpers explicit about the OpenAI field each counter represents.
+    private static func injectUsageTokenDetail(
+        into frame: String, count: Int, detailsKey: String, tokenKey: String
+    ) -> String {
+        guard count > 0,
               let payload = joinedDataPayload(frame),
               let bytes = payload.data(using: .utf8),
               var obj = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
@@ -222,9 +214,9 @@ extension ProviderLoop {
         else {
             return frame
         }
-        var details = usage["prompt_tokens_details"] as? [String: Any] ?? [:]
-        details["cached_tokens"] = cachedTokens
-        usage["prompt_tokens_details"] = details
+        var details = usage[detailsKey] as? [String: Any] ?? [:]
+        details[tokenKey] = count
+        usage[detailsKey] = details
         obj["usage"] = usage
         guard let out = try? JSONSerialization.data(
                 withJSONObject: obj, options: [.sortedKeys, .withoutEscapingSlashes]

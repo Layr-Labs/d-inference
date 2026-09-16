@@ -193,6 +193,8 @@ extension EngineV2SlotFactory {
     ) async throws -> EngineV2PreparedModel {
         let snapshot = await modelSnapshot(container: container)
 
+        var fallbackStatus = previousStatus.active
+            ? previousStatus.fallingBack(.engineInactive) : previousStatus
         if previousStatus.active,
             let previousArtifact,
             let assistant,
@@ -218,22 +220,9 @@ extension EngineV2SlotFactory {
             logWarning(
                 "mtp: model=\(modelId) recovery fallback reason=\(reason.rawValue) detail="
                     + (revalidation.detail ?? "installed assistant binding is not reusable"))
-            let target = try servingModel(
-                modelId: modelId,
-                isVLM: isVLM,
-                modelDirectory: modelDirectory,
-                snapshot: snapshot,
-                emitTelemetry: emitTelemetry,
-                logInfo: logInfo)
-            return EngineV2PreparedModel(
-                snapshot: snapshot,
-                servingModel: target,
-                assistant: nil,
-                mtpStatus: previousStatus.fallingBack(reason),
-                mtpArtifact: nil)
+            fallbackStatus = previousStatus.fallingBack(reason)
         }
 
-        let reason: MTPFallbackReason? = previousStatus.active ? .engineInactive : nil
         let target = try servingModel(
             modelId: modelId,
             isVLM: isVLM,
@@ -245,7 +234,7 @@ extension EngineV2SlotFactory {
             snapshot: snapshot,
             servingModel: target,
             assistant: nil,
-            mtpStatus: reason.map(previousStatus.fallingBack) ?? previousStatus,
+            mtpStatus: fallbackStatus,
             mtpArtifact: nil)
     }
 }

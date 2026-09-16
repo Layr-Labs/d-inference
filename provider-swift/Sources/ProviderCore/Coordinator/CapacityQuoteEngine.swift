@@ -3,7 +3,7 @@
 // Capacity-probe → capacity-quote computation (routing v2, Phase 2).
 //
 // The quote path answers "could this bucketed request shape start here right
-// now, and how long to first token?" from the LOCK-FREE published capacity
+// now, and how long to first token?" from the lock-backed published capacity
 // snapshot — one unfair-lock read, no hop to the inference-engine actor, no
 // inference, no model load, no KV allocation, no prompt inspection. Probe
 // storms therefore cannot starve admission or decode: quoting reads values
@@ -140,7 +140,12 @@ enum CapacityQuoteEngine {
             return reject(.slotState)
         }
 
-        let needed = Int64(max(0, probe.promptTokensBucket) + max(0, probe.maxOutputTokens))
+        let (tokenCount, overflow) = max(0, probe.promptTokensBucket)
+            .addingReportingOverflow(max(0, probe.maxOutputTokens))
+        // Probe fields are decoded integers, not an allocation authority. An
+        // unrepresentable envelope cannot fit a slot and must not trap quoting.
+        guard !overflow else { return reject(.kvHeadroom) }
+        let needed = Int64(tokenCount)
         if slot.activeTokenBudgetMax > 0 {
             // Can never fit, even into an empty batch: the whole KV grant is
             // smaller than the request's token envelope.

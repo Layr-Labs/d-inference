@@ -314,6 +314,28 @@ struct SSDCacheEpochStoreTests {
         #expect(current != originalEpoch)
     }
 
+    @Test("epoch record accepts its size limit and rejects one extra byte")
+    func boundedRecord() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cache-epoch-bounded-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let binding = binding(contract: String(repeating: "b", count: 64))
+        let original = try SSDCacheEpochStore(root: root, binding: binding)
+        let epoch = try #require(original.current)
+        let record = root.appendingPathComponent("cache-epoch.json")
+        var bytes = try Data(contentsOf: record)
+        bytes.append(Data(repeating: 0x20, count: 64 * 1024 - bytes.count))
+        try bytes.write(to: record)
+        #expect(try SSDCacheEpochStore(root: root, binding: binding).current == epoch)
+        bytes.append(0x20)
+        try bytes.write(to: record)
+        #expect(throws: SSDBlockStoreError.self) {
+            _ = try SSDCacheEpochStore(root: root, binding: binding)
+        }
+        #expect(try Data(contentsOf: record) == bytes)
+    }
+
     private func binding(
         contract: String,
         layout: String = "layout"

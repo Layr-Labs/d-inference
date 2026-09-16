@@ -990,9 +990,11 @@ struct EngineV2EventFramingTests {
         let bridge = makeBridge(engine: engine, tokenizer: tokenizer)
         let (events, _) = await record(await bridge.submit(request: makeRequest()))
         #expect(events.count == 1)
-        if case .error(let message)? = events.first {
-            #expect(message.hasPrefix("Failed to tokenize:"))
+        guard case .error(let message)? = events.first else {
+            Issue.record("expected a tokenization error, got \(events)")
+            return
         }
+        #expect(message.hasPrefix("Failed to tokenize:"))
         #expect(engine.submitted.isEmpty)
     }
 }

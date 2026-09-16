@@ -56,8 +56,8 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
         budgetBytes: @escaping @Sendable () -> Int
     ) {
         let key = root.standardizedFileURL.path
-        let shouldStart = tasksLock.withLock { () -> Bool in
-            guard periodicTasks[key] == nil else { return false }
+        tasksLock.withLock {
+            guard periodicTasks[key] == nil else { return }
             periodicTasks[key] = Task.detached(priority: .utility) { [weak self] in
                 while !Task.isCancelled {
                     _ = self?.maintain(
@@ -69,9 +69,7 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                     try? await taskSleep(.seconds(max(1, intervalSeconds)))
                 }
             }
-            return true
         }
-        if !shouldStart { return }
     }
 
     @discardableResult

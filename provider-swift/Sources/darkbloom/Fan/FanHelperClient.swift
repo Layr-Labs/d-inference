@@ -18,33 +18,23 @@ enum FanHelperClientError: Error, CustomStringConvertible {
 
 struct FanHelperClient {
     func status() throws -> FanServiceStatus {
-        let data = try request { proxy, reply in
+        try request { proxy, reply in
             proxy.status(withReply: reply)
-        }
-        do {
-            return try FanIPCCoding.decode(FanServiceStatus.self, from: data)
-        } catch {
-            throw FanHelperClientError.invalidReply(String(describing: error))
         }
     }
 
     func restoreAutomatic() throws -> FanIPCReply {
-        let data = try request { proxy, reply in
+        try request { proxy, reply in
             proxy.restoreAutomatic(withReply: reply)
-        }
-        do {
-            return try FanIPCCoding.decode(FanIPCReply.self, from: data)
-        } catch {
-            throw FanHelperClientError.invalidReply(String(describing: error))
         }
     }
 
-    private func request(
+    private func request<Reply: Decodable>(
         _ send: (
             DarkbloomFanHelperProtocol,
             @escaping @Sendable (Data) -> Void
         ) -> Void
-    ) throws -> Data {
+    ) throws -> Reply {
         let connection = NSXPCConnection(
             machServiceName: FanIPC.machServiceName,
             options: .privileged
@@ -64,11 +54,11 @@ struct FanHelperClient {
             reply.finish(.failure(.unavailable("connection invalidated")))
         }
         connection.resume()
+        defer { connection.invalidate() }
 
         guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
             reply.finish(.failure(.unavailable(error.localizedDescription)))
         }) as? DarkbloomFanHelperProtocol else {
-            connection.invalidate()
             throw FanHelperClientError.unavailable("could not create XPC proxy")
         }
 
@@ -76,11 +66,14 @@ struct FanHelperClient {
             reply.finish(.success(data))
         }
         guard reply.wait(timeout: 2) else {
-            connection.invalidate()
             throw FanHelperClientError.timedOut
         }
-        connection.invalidate()
-        return try reply.result().get()
+        let data = try reply.result().get()
+        do {
+            return try FanIPCCoding.decode(Reply.self, from: data)
+        } catch {
+            throw FanHelperClientError.invalidReply(String(describing: error))
+        }
     }
 }
 

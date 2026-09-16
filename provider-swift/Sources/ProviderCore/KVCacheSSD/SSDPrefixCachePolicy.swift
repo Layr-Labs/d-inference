@@ -80,12 +80,10 @@ enum SSDPrefixCachePolicy {
 
     /// Persist and restore the sliding window alongside the full-attention
     /// blocks. **Default OFF.** WS-4.2 lands the format, the write/read paths
-    /// and the residency plumbing; turning it on moves gemma-4's donation
-    /// floor from 27,137 tokens to `blockSize + minEffectiveTokens`, which is
-    /// a separate, deliberate step that also needs WS-4.1's
-    /// `restoreWindow(_:at:)` on the paged row. Until that consumer exists
-    /// `PrefixCachePolicy.windowResidency` stays `.replayed`, so this knob
-    /// switches the sidecar FORMAT on without collapsing any replay bound.
+    /// and staging plumbing. Reducing the donation floor would additionally
+    /// require an engine row that can install the restored window. Until that
+    /// consumer exists this knob exercises the sidecar format without changing
+    /// the conservative replay bound or donation floor.
     ///
     /// Costs it turns on, measured against gemma-4's real geometry (25
     /// sliding layers × 8 KV heads × 256 head dim vs 5 full layers × 2 × 512,

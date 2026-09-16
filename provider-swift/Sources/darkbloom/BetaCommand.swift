@@ -1,9 +1,6 @@
 import Foundation
 import ArgumentParser
 import ProviderCore
-#if canImport(Darwin)
-import Darwin
-#endif
 
 struct Beta: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -198,33 +195,7 @@ func setBetaFeature(
         throw unknownFeatureError(id)
     }
 
-    let snapshot = try loadRuntimeSnapshot(configPath: configPath)
-
-    // Persist to the path the daemon will actually read. With no explicit
-    // --config, loadRuntimeSnapshot may have just migrated a legacy config to
-    // the canonical ~/.config/darkbloom/provider.toml; `darkbloom restart` and
-    // the launchd daemon resolve that canonical path first, so writing back to
-    // the (legacy) snapshot.configPath would leave the restarted daemon on the
-    // stale value. Re-resolving the default returns the post-migration canonical.
-    let savePath: URL
-    if configPath != nil {
-        savePath = snapshot.configPath
-    } else {
-        savePath = try ConfigManager.defaultConfigPath()
-    }
-
-    // Serialize the load → modify → save window with an exclusive flock, and
-    // RELOAD inside the lock: the snapshot above and any concurrent `beta`
-    // process's write can interleave, and using the pre-lock snapshot would be
-    // a classic lost-update RMW race.
-    try withExclusiveConfigLock(at: savePath) {
-        var config: ProviderConfig
-        if FileManager.default.fileExists(atPath: savePath.path) {
-            config = try ConfigManager.load(from: savePath)
-        } else {
-            config = snapshot.config
-        }
-
+    try withMutableConfig(configPath: configPath) { savePath, config in
         // No-op only when the file already PINS the requested value. An absent
         // key (or absent [section]) can decode to the same effective value via
         // the default, but an explicit enable/disable means "make it so,
@@ -248,61 +219,4 @@ func setBetaFeature(
         }
         print("  Config: \(savePath.path)")
     }
-}
-
-/// Guards one config-file mutation window with an exclusive `flock(2)` on a
-/// stable `<config-name>.lock` sidecar next to the config file. The lock must
-/// NOT be taken out on provider.toml itself: `ConfigManager.save` writes
-/// atomically via temp-file + rename, so the config file's inode changes on
-/// every save and concurrent writers would be locking DIFFERENT inodes (no
-/// mutual exclusion). The sidecar path is never renamed, so every contending
-/// process locks the same inode. Closing the fd (the defer) also releases the
-/// kernel lock if the explicit LOCK_UN is ever skipped by a throw.
-@discardableResult
-func withExclusiveConfigLock<T>(at configPath: URL, _ body: () throws -> T) throws -> T {
-    let directory = configPath.deletingLastPathComponent()
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    let lockURL = directory.appendingPathComponent(configPath.lastPathComponent + ".lock")
-
-    let fd = open(lockURL.path, O_RDWR | O_CREAT, 0o644)
-    guard fd >= 0 else {
-        throw ConfigError.writeFailed(
-            path: lockURL.path,
-            underlying: NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-        )
-    }
-    defer { close(fd) }
-
-    guard flock(fd, LOCK_EX) == 0 else {
-        throw ConfigError.writeFailed(
-            path: lockURL.path,
-            underlying: NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-        )
-    }
-    defer { _ = flock(fd, LOCK_UN) }
-
-    return try body()
-}
-
-/// Whether TOML `content` materially sets `key` inside `[section]`.
-///
-/// Line-oriented: tracks the current table header and matches `key = ...`
-/// assignments. Only needs to be correct for the flat
-/// `[section]\nkey = value` shape `ConfigManager.save` serializes (and that
-/// operators hand-edit). A miss here is fail-safe for the caller: unsure
-/// means WRITE the key, which is idempotent.
-func tomlKeyPresent(_ content: String, section: String, key: String) -> Bool {
-    var inSection = false
-    for rawLine in content.split(separator: "\n", omittingEmptySubsequences: false) {
-        let line = rawLine.trimmingCharacters(in: .whitespaces)
-        if line.hasPrefix("[") {
-            inSection = line == "[\(section)]"
-            continue
-        }
-        guard inSection, !line.hasPrefix("#"),
-              let eqIndex = line.firstIndex(of: "=") else { continue }
-        let name = line[..<eqIndex].trimmingCharacters(in: .whitespaces)
-        if name == key { return true }
-    }
-    return false
 }

@@ -127,40 +127,21 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             var response = try await inner.respond(to: request, context: context)
             response.headers[.accessControlAllowOrigin] = "*"
             return response
-        } catch let error as MultiModelBatchSchedulerEngineError {
-            // P2 #4 + P2 #6: render engine errors with the same
-            // status mapping the ProviderLoop path uses. The upstream
-            // router does NOT know about
-            // `MultiModelBatchSchedulerEngineError`, so without this
-            // catch the error escapes as an opaque 500.
-            return Self.openAIErrorResponse(
-                status: HTTPResponse.Status(
-                    code: Int(ProviderLoop.mapInferenceErrorToStatus(error))
-                ),
-                message: ProviderLoop.sanitizedInferenceFailure(
-                    from: error, phase: .generation).message
-            )
         } catch let error as MLXOpenAIServiceError {
+            // Keep the upstream service's generic message policy distinct from
+            // provider engine/media failures, which have bounded public codes.
             return Self.openAIErrorResponse(
                 status: HTTPResponse.Status(
-                    code: Int(ProviderLoop.mapInferenceErrorToStatus(error))
-                ),
-                message: InferenceFailureCode.internalFailure.message
-            )
-        } catch let error as MediaIngest.MediaError {
-            // Local HTTP (`darkbloom start --local`) must give the same
-            // status contract as the coordinator WebSocket path: an
-            // oversized/malformed/non-`data:` inline-media payload is a client
-            // fault (400), not a provider 500. Without this catch a MediaError
-            // raised by the VLM media-cap path escapes as the framework's
-            // generic 500. Mapping reuses mapInferenceErrorToStatus.
+                    code: Int(ProviderLoop.mapInferenceErrorToStatus(error))),
+                message: InferenceFailureCode.internalFailure.message)
+        } catch let error where error is MultiModelBatchSchedulerEngineError
+            || error is MediaIngest.MediaError
+        {
+            let failure = ProviderLoop.sanitizedInferenceFailure(
+                from: error, phase: .generation)
             return Self.openAIErrorResponse(
-                status: HTTPResponse.Status(
-                    code: Int(ProviderLoop.mapInferenceErrorToStatus(error))
-                ),
-                message: ProviderLoop.sanitizedInferenceFailure(
-                    from: error, phase: .generation).message
-            )
+                status: HTTPResponse.Status(code: Int(failure.statusCode)),
+                message: failure.message)
         }
     }
 

@@ -274,6 +274,7 @@ public struct SpecDecResolver: Sendable {
 
         let fm = FileManager.default
         try fm.createDirectory(at: staging, withIntermediateDirectories: false)
+        try ModelDownloader.validateChunkedManifest(manifest)
         let jobs = manifest.files.map { file in
             (
                 file: file,

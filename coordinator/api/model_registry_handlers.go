@@ -113,6 +113,10 @@ func (s *Server) handleRegisterModel(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 		return
 	}
+	if err := validateChunkCapability(manifest, req.RequiredProviderCapabilities); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
+		return
+	}
 	if err := verifyManifestFiles(r.Context(), registryCDNBaseURL(), manifest, s.logger); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "manifest file verification failed: "+err.Error()))
 		return
@@ -152,7 +156,7 @@ func (s *Server) handleRegisterModel(w http.ResponseWriter, r *http.Request) {
 	}
 	files := make([]store.ModelVersionFile, len(manifest.Files))
 	for i, f := range manifest.Files {
-		files[i] = store.ModelVersionFile{Path: f.Path, SizeBytes: f.SizeBytes, SHA256: f.SHA256, Role: f.Role}
+		files[i] = store.ModelVersionFile{Path: f.Path, SizeBytes: f.SizeBytes, SHA256: f.SHA256, Role: f.Role, R2Chunks: f.R2Chunks}
 	}
 	if err := s.store.SetModelVersion(entry, version, files); err != nil {
 		s.logger.Error("model registry: register failed", "model_id", req.ModelID, "version", req.Version, "error", err)
@@ -621,7 +625,7 @@ func validateRequiredProviderCapabilities(modelID string, capabilities []string)
 			return fmt.Errorf("required_provider_capabilities contains a malformed capability name")
 		}
 		switch capability {
-		case registry.ProviderCapabilityAppleM5, registry.ProviderCapabilityMLXNAX:
+		case registry.ProviderCapabilityAppleM5, registry.ProviderCapabilityMLXNAX, registry.ProviderCapabilityR2Chunks:
 		default:
 			return fmt.Errorf("required_provider_capabilities contains unknown capability %q", capability)
 		}
@@ -665,6 +669,9 @@ func validateModelManifest(manifest *store.ModelManifest, modelID, version, r2Pr
 	}
 	if len(manifest.Files) == 0 {
 		return fmt.Errorf("manifest must contain at least one file")
+	}
+	if err := validateManifestChunks(manifest); err != nil {
+		return err
 	}
 	var totalSize int64
 	seenPaths := make(map[string]bool, len(manifest.Files))
@@ -802,7 +809,7 @@ func verifyManifestFiles(ctx context.Context, baseURL string, manifest *store.Mo
 		go func() {
 			defer wg.Done()
 			for file := range fileCh {
-				if err := verifyManifestFileHEAD(ctx, client, baseURL, manifest.R2Prefix, file, logger); err != nil {
+				if err := verifyManifestTransportHEAD(ctx, client, baseURL, manifest.R2Prefix, file, logger); err != nil {
 					errCh <- err
 				}
 			}
@@ -860,26 +867,25 @@ func catalogModelFromRegistryRecord(rec *store.ModelRegistryRecord) map[string]a
 	version := rec.ActiveVersion
 	inputModalities, outputModalities := deriveModalities(supported.ModelType, rec.Capabilities)
 	model := map[string]any{
-		"id":                 supported.ID,
-		"s3_name":            supported.S3Name,
-		"display_name":       supported.DisplayName,
-		"model_type":         supported.ModelType,
-		"size_gb":            supported.SizeGB,
-		"architecture":       supported.Architecture,
-		"description":        supported.Description,
-		"min_ram_gb":         supported.MinRAMGB,
-		"active":             supported.Active,
-		"weight_hash":        supported.WeightHash,
-		"family":             rec.Family,
-		"quantization":       rec.Quantization,
-		"max_context_length": rec.MaxContextLength,
-		"max_output_length":  rec.MaxOutputLength,
-		"capabilities":       rec.Capabilities,
-		"required_provider_capabilities": append(
-			[]string{}, rec.RequiredProviderCapabilities...),
-		"runtime_parameters": rec.RuntimeParameters,
-		"metadata":           rec.Metadata,
-		"status":             rec.Status,
+		"id":                             supported.ID,
+		"s3_name":                        supported.S3Name,
+		"display_name":                   supported.DisplayName,
+		"model_type":                     supported.ModelType,
+		"size_gb":                        supported.SizeGB,
+		"architecture":                   supported.Architecture,
+		"description":                    supported.Description,
+		"min_ram_gb":                     supported.MinRAMGB,
+		"active":                         supported.Active,
+		"weight_hash":                    supported.WeightHash,
+		"family":                         rec.Family,
+		"quantization":                   rec.Quantization,
+		"max_context_length":             rec.MaxContextLength,
+		"max_output_length":              rec.MaxOutputLength,
+		"capabilities":                   rec.Capabilities,
+		"required_provider_capabilities": modelTransportCapabilities(rec),
+		"runtime_parameters":             rec.RuntimeParameters,
+		"metadata":                       rec.Metadata,
+		"status":                         rec.Status,
 
 		// OpenRouter-shaped fields (mirrors /v1/models) for UI consistency.
 		"name":                          supported.DisplayName,
@@ -953,15 +959,14 @@ func catalogAliasesForResponse(models []map[string]any, aliases []store.ModelAli
 func supportedModelFromRegistryRecord(rec *store.ModelRegistryRecord) store.SupportedModel {
 	active := rec.Status == "active" || rec.Status == "beta"
 	model := store.SupportedModel{
-		ID:           rec.ID,
-		DisplayName:  rec.DisplayName,
-		ModelType:    "text",
-		Architecture: rec.Architecture,
-		Description:  rec.Description,
-		MinRAMGB:     rec.MinRAMGB,
-		Active:       active,
-		RequiredProviderCapabilities: append(
-			[]string{}, rec.RequiredProviderCapabilities...),
+		ID:                           rec.ID,
+		DisplayName:                  rec.DisplayName,
+		ModelType:                    "text",
+		Architecture:                 rec.Architecture,
+		Description:                  rec.Description,
+		MinRAMGB:                     rec.MinRAMGB,
+		Active:                       active,
+		RequiredProviderCapabilities: modelTransportCapabilities(rec),
 	}
 	if rec.ActiveVersion != nil {
 		model.S3Name = rec.ActiveVersion.R2Prefix

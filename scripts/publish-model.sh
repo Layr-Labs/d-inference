@@ -110,7 +110,8 @@ PYHF
 )"
 
 MANIFEST="$(mktemp -t darkbloom-model-manifest.XXXXXX.json)"
-trap 'rm -f "$MANIFEST"' EXIT
+PACKAGE_ROOT="$(mktemp -d -t darkbloom-model-chunks.XXXXXX)"
+trap 'rm -f "$MANIFEST"; rm -rf "$PACKAGE_ROOT"' EXIT
 
 printf 'Hashing model into manifest...\n'
 (cd "$ROOT_DIR/provider-swift" && swift run -c release darkbloom-publish hash "$MODEL_DIR" --id "$MODEL_ID" --version "$VERSION" -o "$MANIFEST")
@@ -122,6 +123,25 @@ with open(sys.argv[1], 'r', encoding='utf-8') as f:
 PY
 )"
 
+# Chunking is opt-in: existing publishers retain original-file transport until
+# their coordinator and provider releases support the new manifest metadata.
+MODEL_UPLOAD_DIR="$MODEL_DIR"
+if [[ -n "${R2_CHUNK_BYTES:-}" ]]; then
+  python3 "$ROOT_DIR/scripts/chunk-model.py" --manifest "$MANIFEST" \
+    --model-dir "$MODEL_DIR" --output-dir "$PACKAGE_ROOT/objects" \
+    --chunk-bytes "$R2_CHUNK_BYTES"
+  cp "$PACKAGE_ROOT/objects/manifest.json" "$MANIFEST"
+  MODEL_UPLOAD_DIR="$PACKAGE_ROOT/objects"
+fi
+if python3 - "$MANIFEST" <<'PYCHUNKS'
+import json, sys
+with open(sys.argv[1]) as f:
+    raise SystemExit(0 if any(x.get("r2_chunks") for x in json.load(f)["files"]) else 1)
+PYCHUNKS
+then
+  REQUIRED_PROVIDER_CAPABILITIES="$(normalize_required_provider_capabilities "${REQUIRED_PROVIDER_CAPABILITIES:+$REQUIRED_PROVIDER_CAPABILITIES,}r2_chunked_downloads")"
+fi
+
 printf 'Fetching R2 credentials from GCP Secret Manager...\n'
 export AWS_ACCESS_KEY_ID="$(gcloud secrets versions access latest --project "$GCP_PROJECT" --secret "$R2_ACCESS_KEY_SECRET")"
 export AWS_SECRET_ACCESS_KEY="$(gcloud secrets versions access latest --project "$GCP_PROJECT" --secret "$R2_SECRET_KEY_SECRET")"
@@ -129,7 +149,7 @@ export AWS_DEFAULT_REGION="auto"
 export R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
 printf 'Uploading model files to s3://%s/%s with concurrency 8...\n' "$R2_BUCKET" "$R2_PREFIX"
-python3 - "$MANIFEST" "$MODEL_DIR" "$R2_BUCKET" "$R2_PREFIX" <<'PY'
+python3 - "$MANIFEST" "$MODEL_UPLOAD_DIR" "$R2_BUCKET" "$R2_PREFIX" <<'PY'
 import concurrent.futures
 import json
 import os
@@ -144,10 +164,21 @@ def upload(item):
     rel = item['path']
     src = os.path.join(model_dir, rel)
     dst = f"s3://{bucket}/{prefix}/{rel}"
-    subprocess.run(["aws", "s3", "cp", src, dst, "--endpoint-url", endpoint, "--only-show-errors"], check=True)
+    command = ["aws", "s3", "cp", src, dst, "--endpoint-url", endpoint,
+               "--only-show-errors", "--cache-control", "public,max-age=31536000,immutable"]
+    if rel.endswith(".bin"):
+        command.extend(["--content-type", "application/octet-stream"])
+    subprocess.run(command, check=True)
 
 with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-    list(executor.map(upload, manifest['files']))
+    objects = []
+    for item in manifest['files']:
+        if item.get('r2_chunks'):
+            objects.extend({'path': f"{item['path']}.chunks/{i:06d}.bin"}
+                           for i in range(len(item['r2_chunks'])))
+        else:
+            objects.append(item)
+    list(executor.map(upload, objects))
 PY
 
 printf 'Uploading manifest last...\n'

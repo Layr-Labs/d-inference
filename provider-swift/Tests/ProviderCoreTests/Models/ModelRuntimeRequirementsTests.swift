@@ -69,15 +69,15 @@ struct ProviderRuntimeCapabilityTests {
     @Test("detector uses structured M5, live NAX, and non-empty metallib hash")
     func detectorMatrix() {
         #expect(ProviderRuntimeCapabilityDetector.detect(
-            chipFamily: .m5, naxAvailable: { true }, liveMetallibHash: { "abc" }) == qwen38Caps)
+            chipFamily: .m5, naxAvailable: { true }, liveMetallibHash: { "abc" }) == qwen38Caps.union([.r2Chunks]))
         #expect(ProviderRuntimeCapabilityDetector.detect(
-            chipFamily: .m5, naxAvailable: { false }, liveMetallibHash: { "abc" }) == [.appleM5])
+            chipFamily: .m5, naxAvailable: { false }, liveMetallibHash: { "abc" }) == [.appleM5, .r2Chunks])
         #expect(ProviderRuntimeCapabilityDetector.detect(
-            chipFamily: .m5, naxAvailable: { true }, liveMetallibHash: { nil }) == [.appleM5])
+            chipFamily: .m5, naxAvailable: { true }, liveMetallibHash: { nil }) == [.appleM5, .r2Chunks])
         #expect(ProviderRuntimeCapabilityDetector.detect(
-            chipFamily: .m4, naxAvailable: { true }, liveMetallibHash: { "abc" }) == [.mlxNAX])
+            chipFamily: .m4, naxAvailable: { true }, liveMetallibHash: { "abc" }) == [.mlxNAX, .r2Chunks])
         #expect(ProviderRuntimeCapabilityDetector.detect(
-            chipFamily: .unknown, naxAvailable: { false }, liveMetallibHash: { nil }).isEmpty)
+            chipFamily: .unknown, naxAvailable: { false }, liveMetallibHash: { nil }) == [.r2Chunks])
         for family in [ChipFamily.m1, .m2, .m3, .m4] {
             let capabilities = ProviderRuntimeCapabilityDetector.detect(
                 chipFamily: family,
@@ -108,7 +108,7 @@ struct ProviderRuntimeCapabilityTests {
             }
         )
         #expect(success.events == ["bind", "nax-diagnostic"])
-        #expect(capabilities == qwen38Caps)
+        #expect(capabilities == qwen38Caps.union([.r2Chunks]))
 
         let failedBinding = RuntimeDetectionRecorder()
         let failedCapabilities = ProviderRuntimeCapabilityDetector.detectLive(
@@ -124,7 +124,7 @@ struct ProviderRuntimeCapabilityTests {
             }
         )
         #expect(failedBinding.events == ["bind"])
-        #expect(failedCapabilities == [.appleM5])
+        #expect(failedCapabilities == [.appleM5, .r2Chunks])
     }
 
     @Test("exact embedded rule survives an old catalog while lookalikes stay compatible")

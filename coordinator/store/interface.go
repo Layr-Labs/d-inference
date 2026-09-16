@@ -665,12 +665,13 @@ type ModelVersion struct {
 
 // ModelVersionFile is one file in a model version manifest.
 type ModelVersionFile struct {
-	ID             int64  `json:"id"`
-	ModelVersionID int64  `json:"model_version_id"`
-	Path           string `json:"path"`
-	SizeBytes      int64  `json:"size_bytes"`
-	SHA256         string `json:"sha256"`
-	Role           string `json:"role"`
+	R2Chunks       []ManifestChunk `json:"r2_chunks,omitempty"`
+	ID             int64           `json:"id"`
+	ModelVersionID int64           `json:"model_version_id"`
+	Path           string          `json:"path"`
+	SizeBytes      int64           `json:"size_bytes"`
+	SHA256         string          `json:"sha256"`
+	Role           string          `json:"role"`
 }
 
 // ModelRegistryRecord combines a model with its active version and files.
@@ -732,12 +733,19 @@ type ModelManifest struct {
 	CreatedAt       time.Time      `json:"created_at"`
 }
 
-// ManifestFile mirrors a file entry in a model manifest.
-type ManifestFile struct {
-	Path      string `json:"path"`
+// ManifestChunk describes one ordered R2 transport object.
+type ManifestChunk struct {
 	SizeBytes int64  `json:"size_bytes"`
 	SHA256    string `json:"sha256"`
-	Role      string `json:"role"`
+}
+
+// ManifestFile mirrors a logical file entry in a model manifest.
+type ManifestFile struct {
+	R2Chunks  []ManifestChunk `json:"r2_chunks,omitempty"`
+	Path      string          `json:"path"`
+	SizeBytes int64           `json:"size_bytes"`
+	SHA256    string          `json:"sha256"`
+	Role      string          `json:"role"`
 }
 
 // PublishingAPIKey stores a hashed key allowed to publish model manifests.

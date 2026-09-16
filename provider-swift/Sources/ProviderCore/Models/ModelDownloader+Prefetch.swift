@@ -44,6 +44,7 @@ extension ModelDownloader {
             throw ModelCatalogError.ineligible(
                 ModelRuntimeIneligibleError(eligibility: eligibility).localizedDescription)
         }
+        try Self.validateChunkedManifest(manifest)
         guard manifest.modelID == model.id else {
             throw ModelCatalogError.downloadFailed("manifest model_id \(manifest.modelID) does not match catalog id \(model.id)")
         }

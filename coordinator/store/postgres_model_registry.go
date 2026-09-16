@@ -92,9 +92,9 @@ func (s *PostgresStore) SetModelVersion(entry *ModelRegistryEntry, version *Mode
 	}
 	for _, file := range files {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO model_version_files (model_version_id, path, size_bytes, sha256, role)
-			VALUES ($1, $2, $3, $4, $5)`,
-			version.ID, file.Path, file.SizeBytes, file.SHA256, file.Role); err != nil {
+			INSERT INTO model_version_files (model_version_id, path, size_bytes, sha256, role, r2_chunks)
+			VALUES ($1, $2, $3, $4, $5, $6)`,
+			version.ID, file.Path, file.SizeBytes, file.SHA256, file.Role, file.R2Chunks); err != nil {
 			return fmt.Errorf("store: insert model version file %q: %w", file.Path, err)
 		}
 	}
@@ -325,7 +325,7 @@ func (s *PostgresStore) loadModelRegistryFiles(ctx context.Context, rec *ModelRe
 	if rec == nil || rec.ActiveVersion == nil {
 		return nil
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id, model_version_id, path, size_bytes, sha256, role FROM model_version_files WHERE model_version_id = $1 ORDER BY path ASC`, rec.ActiveVersion.ID)
+	rows, err := s.pool.Query(ctx, `SELECT id, model_version_id, path, size_bytes, sha256, role, r2_chunks FROM model_version_files WHERE model_version_id = $1 ORDER BY path ASC`, rec.ActiveVersion.ID)
 	if err != nil {
 		return fmt.Errorf("store: list model version files: %w", err)
 	}
@@ -333,7 +333,7 @@ func (s *PostgresStore) loadModelRegistryFiles(ctx context.Context, rec *ModelRe
 
 	for rows.Next() {
 		var file ModelVersionFile
-		if err := rows.Scan(&file.ID, &file.ModelVersionID, &file.Path, &file.SizeBytes, &file.SHA256, &file.Role); err != nil {
+		if err := rows.Scan(&file.ID, &file.ModelVersionID, &file.Path, &file.SizeBytes, &file.SHA256, &file.Role, &file.R2Chunks); err != nil {
 			return fmt.Errorf("store: scan model version file: %w", err)
 		}
 		rec.Files = append(rec.Files, file)
@@ -351,7 +351,7 @@ func (s *PostgresStore) loadModelRegistryFiles(ctx context.Context, rec *ModelRe
 // single query, returning them grouped by model_version_id.
 func (s *PostgresStore) loadModelRegistryFilesBatch(ctx context.Context, versionIDs []int64) (map[int64][]ModelVersionFile, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, model_version_id, path, size_bytes, sha256, role
+		`SELECT id, model_version_id, path, size_bytes, sha256, role, r2_chunks
 		 FROM model_version_files
 		 WHERE model_version_id = ANY($1)
 		 ORDER BY model_version_id, path ASC`, versionIDs)
@@ -363,7 +363,7 @@ func (s *PostgresStore) loadModelRegistryFilesBatch(ctx context.Context, version
 	result := make(map[int64][]ModelVersionFile, len(versionIDs))
 	for rows.Next() {
 		var file ModelVersionFile
-		if err := rows.Scan(&file.ID, &file.ModelVersionID, &file.Path, &file.SizeBytes, &file.SHA256, &file.Role); err != nil {
+		if err := rows.Scan(&file.ID, &file.ModelVersionID, &file.Path, &file.SizeBytes, &file.SHA256, &file.Role, &file.R2Chunks); err != nil {
 			return nil, fmt.Errorf("store: scan batch model version file: %w", err)
 		}
 		result[file.ModelVersionID] = append(result[file.ModelVersionID], file)

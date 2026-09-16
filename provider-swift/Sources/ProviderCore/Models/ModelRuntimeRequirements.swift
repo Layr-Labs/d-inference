@@ -30,6 +30,7 @@ public struct ProviderRuntimeCapability: RawRepresentable, Codable, Hashable, Se
 
     public static let appleM5 = Self(rawValue: "apple_m5")
     public static let mlxNAX = Self(rawValue: "mlx_nax")
+    public static let r2Chunks = Self(rawValue: "r2_chunked_downloads")
 }
 
 /// Pure, dependency-injected capability detection. Production supplies the
@@ -42,7 +43,7 @@ public enum ProviderRuntimeCapabilityDetector {
         naxAvailable: @Sendable () -> Bool,
         liveMetallibHash: @Sendable () -> String?
     ) -> Set<ProviderRuntimeCapability> {
-        var capabilities = Set<ProviderRuntimeCapability>()
+        var capabilities: Set<ProviderRuntimeCapability> = [.r2Chunks]
         if chipFamily == .m5 {
             capabilities.insert(.appleM5)
         }

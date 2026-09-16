@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-08 · commit `efb5517fc`
+> Last updated: 2026-09-16 · commit `0f7b1e611`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -33,8 +33,9 @@ and validated by `validateModelManifest` (`coordinator/api/model_registry_handle
 | Field | Type | Constraint | Notes |
 |---|---|---|---|
 | `path` | string | relative, `/`-separated, no empty/`.`/`..` segments, no `\` | `validManifestRelativePath` |
-| `size_bytes` | integer | ≥ 0; must equal the CDN `Content-Length` at registration | `verifyManifestFileHEAD` |
+| `size_bytes` | integer | ≥ 0; original size, or sum of chunk sizes when chunked | `verifyManifestFileHEAD` |
 | `sha256` | string | 64 lowercase hex | `isLowerSHA256Hex` |
+| `r2_chunks` | optional array | ordered positive sizes below 500000000 bytes, SHA-256 per chunk | `validateManifestChunks` |
 | `role` | string | closed set below | assigned by `ModelScanner.roleFor` (`provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift`); not validated by the coordinator |
 
 `role` values: `weight` (`*.safetensors`, `*.npz`, `*.bin`), `index`
@@ -63,7 +64,7 @@ provider runs after download. The same value is the catalog `weight_hash`.
 | S3 endpoint for uploads | `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com` | `scripts/publish-model.sh` |
 | Object prefix | `v2/<slug>--<first 12 hex of sha256(model_id)>/<version>` | `modelR2Prefix`, `readableModelSlug` (Go); `ManifestBuilder.safeModelID` (Swift) |
 | `<slug>` | `model_id` with every character outside `A-Z a-z 0-9 . _ -` (including `/`) replaced by `-`, leading/trailing `-` trimmed; `model` if empty | same |
-| Objects under the prefix | every `files[].path`, plus `manifest.json` (uploaded last) | `scripts/publish-model.sh` |
+| Objects under the prefix | original paths for small files; derived `.chunks/*.bin` paths for chunked files; `manifest.json` last | `scripts/publish-model.sh` |
 | Public CDN | `https://models.darkbloom.ai` | `defaultModelRegistryCDNBaseURL` (`coordinator/api/model_registry_handlers.go`); `ModelDownloader.defaultR2CDNURL` (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`) |
 | CDN override | coordinator `MODEL_REGISTRY_CDN_BASE_URL`; provider `DARKBLOOM_R2_CDN_URL` | `registryCDNBaseURL`; `ModelDownloader.init` |
 
@@ -89,7 +90,7 @@ Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
 | `max_output_length` | integer | yes | > 0 |
 | `min_ram_gb` | integer | yes | > 0 |
 | `capabilities` | array of string | no | free-form OpenRouter-style feature names (`tools`, `reasoning`, …) |
-| `required_provider_capabilities` | array of string | no | each must be `apple_m5` or `mlx_nax`, trimmed, unique (`validateRequiredProviderCapabilities`); `EigenLabs/Qwen3.8-27B-4bit` must list both |
+| `required_provider_capabilities` | array of string | no | each must be `apple_m5`, `mlx_nax`, or `r2_chunked_downloads`, trimmed, unique (`validateRequiredProviderCapabilities`); `EigenLabs/Qwen3.8-27B-4bit` must list the first two; chunked manifests require the third |
 | `description` | string | no | |
 | `runtime_parameters` | object | no | merged into provider requests at dispatch |
 | `metadata` | object | no | opaque; see [metadata keys](#metadata-keys) |
@@ -102,8 +103,10 @@ Server-side sequence, in order; any failure before step 5 persists nothing:
 1. Alias-collision guard: `GetModelAlias(model_id)` found → `409`.
 2. `GET <cdn>/<r2_prefix>/manifest.json` (30 s timeout, 10 MiB limit) →
    `400 failed to fetch manifest` on any non-2xx.
-3. `validateModelManifest` (table above) → `400`.
-4. `HEAD` every file with 8 workers, comparing `Content-Length` to `size_bytes`
+3. `validateModelManifest` and `validateChunkCapability` (chunked builds require
+   `r2_chunked_downloads`) → `400`.
+4. `HEAD` every transport object with 8 workers, comparing `Content-Length` to
+   its `size_bytes` (chunk objects replace large originals)
    (`verifyManifestFiles`) → `400 manifest file verification failed`.
 5. `SetModelVersion` writes the entry (`status = "beta"`), version
    (`status = "ready"`, `uploaded_by` = key name), and file rows in one
@@ -218,7 +221,8 @@ aggregate hash (`provider-swift/Sources/ProviderCore/Models/ModelDownloader+Sour
 is performed. The manifest and checksum authority remain the coordinator/R2.
 
 Omitting the field or sending `null` on re-registration clears the source for
-that version. Existing entries and older providers continue using R2. Adding or
+that version. Existing unchunked entries and older providers continue using R2.
+Older providers are excluded from builds requiring `r2_chunked_downloads`. Adding or
 clearing it on an existing version uses the normal registration endpoint;
 production registration still requires approval.
 
@@ -463,3 +467,36 @@ build; aliases with neither are omitted).
 - [`api-contracts.md`](api-contracts.md) — consumer-facing `GET /v1/models`.
 - [`protocol-messages.md`](protocol-messages.md) — `desired_models`, `models_update`, `prefetch_model_status` field tables.
 - [`configuration.md`](configuration.md) — `MODEL_REGISTRY_CDN_BASE_URL`, `MODEL_REGISTRY_PUBLISHING_KEY`, `DARKBLOOM_R2_CDN_URL`.
+
+## Cacheable R2 transport chunks
+
+`ManifestFile.r2_chunks` is an optional ordered array of `{size_bytes, sha256}`
+objects. Each chunk is positive and strictly smaller than `500000000` bytes;
+chunk sizes sum to the original file size. A manifest contains at most 4096
+chunks. Object paths are derived, not supplied: for logical path `P`, chunk
+index `i` lives at `P.chunks/` followed by six decimal digits and `.bin`.
+`P.chunks` and `P.r2-transfer` are reserved against logical-file collisions.
+
+File paths, file hashes, aggregate hash, file count and total size still describe
+the reconstructed model. HF uses the original logical paths. R2 uses the chunk
+objects when present; no original large R2 object is required. Registration
+checks chunk object lengths and requires `r2_chunked_downloads` in
+`required_provider_capabilities`. The existing provider capability gate excludes
+older binaries. Catalog and scheduling requirements also derive the capability
+from active-version files, so registering an unchunked replacement cannot remove
+the gate before promotion (`modelTransportCapabilities`). Explicitly configured
+requirements are retained. Schema version remains 1 because the field is additive and the
+capability requirement controls compatibility.
+
+`coordinator/api/model_manifest_chunks.go` (`validateManifestChunks`,
+`validateChunkCapability`, `modelTransportCapabilities`, `verifyManifestTransportHEAD`)
+implements validation and the active transport gate.
+`coordinator/store/postgres_model_registry.go` persists the ordered metadata in
+`model_version_files.r2_chunks` (nullable JSONB); memory and cached manifests
+retain defensive copies. `provider-swift/Sources/ProviderCore/Models/ModelDownloader+Chunks.swift`
+(`downloadR2Chunks`) streams chunks, rechecks saved prefix chunks after interruption,
+truncates interrupted appends, and verifies the original file hash before promotion.
+An assembly needs the remaining file bytes plus one temporary chunk. Foreground
+workers can each hold one temporary chunk; prefetch processes one file at a time.
+
+See [the R2 chunk publishing runbook](../operations/model-r2-chunks.md).

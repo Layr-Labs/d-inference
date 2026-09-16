@@ -488,6 +488,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			role TEXT NOT NULL,
 			UNIQUE(model_version_id, path)
 		)`,
+		`ALTER TABLE model_version_files ADD COLUMN IF NOT EXISTS r2_chunks JSONB`,
 		`CREATE INDEX IF NOT EXISTS idx_model_version_files_version ON model_version_files(model_version_id)`,
 		`CREATE TABLE IF NOT EXISTS model_active_versions (
 			model_id TEXT PRIMARY KEY REFERENCES model_registry(id) ON DELETE CASCADE,

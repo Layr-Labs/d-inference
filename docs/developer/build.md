@@ -552,3 +552,6 @@ a contiguous HF-fixture smoke as release backend/cache qualification.
 The [released-provider artifact fixtures](test.md#8-end-to-end-suite) check
 bundle validation with local temporary files only; they require Go, not a Swift
 build, released binary, SIP probe or GPU workload.
+[Connected capture and evidence fixtures](test.md#connected-coordinatorprovider-http-cache-gate)
+run with Go and owned loopback HTTP stubs; they do not need provider compilation,
+model downloads, Postgres or a sidecar.

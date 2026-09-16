@@ -150,6 +150,9 @@ in-memory coordinator.
 The [analytics aggregation checks](test.md#analytics-aggregation) require only
 Go and a disposable PostgreSQL database.
 
+The [blue-green session assertions](test.md#blue-green-session-and-uptime-assertions)
+compile only Go; a disposable `DATABASE_URL` includes PostgreSQL alongside Memory.
+
 ```bash
 make coordinator-build            # cd coordinator && go build ./cmd/coordinator
 make coordinator-build-linux      # GOOS=linux GOARCH=amd64 CGO_ENABLED=0 → coordinator/coordinator-linux

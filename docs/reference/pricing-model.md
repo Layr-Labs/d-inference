@@ -88,6 +88,12 @@ updated_at)`, primary key `(account_id, model)`
 | Withdrawal net | `gross − fee`, transferred as `microUSDToCents(net)`; must be ≥ 1 cent | `coordinator/api/billing/connect_withdraw.go` (`StripeWithdraw`) |
 | Key spend | `Σ usage.cost_micro_usd` for the key since `KeySpendWindowStart(limit_reset, now)`; request rejected when `spend + additional > LimitMicroUSD` | `coordinator/store/postgres/keys.go` (`KeySpendSince`); `coordinator/api/accounts/key_policy.go` (`accounts.CheckKeySpendCap`) |
 
+## Instant payout failure recovery
+
+| Event | Result | Code |
+|---|---|---|
+| Matched instant payout fails or is canceled | The fee refund remains reference-idempotent. Reopening for the daily sweep requires the current, non-empty payout ID to still match the event and the row to remain unrefunded and not failed; a newer settlement is preserved. | `coordinator/api/stripe_payouts_webhooks.go` (`handlePayoutTerminal`); `coordinator/store/postgres.go` (`ReopenStripeWithdrawalAfterPayoutFailure`) |
+
 ## Ledger entry types
 
 `LedgerEntryType` (`coordinator/store/contracts/ledger.go`). "Withdrawable" says

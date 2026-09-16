@@ -254,9 +254,9 @@ func (s *Store) MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayoutID str
 
 // ReopenStripeWithdrawalAfterPayoutFailure atomically reopens a bounced
 // withdrawal for sweep retry with an in-database guard (see interface doc).
-func (s *Store) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason string, feeRefunded bool) (bool, error) {
-	if id == "" {
-		return false, errors.New("stripe withdrawal id is required")
+func (s *Store) ReopenStripeWithdrawalAfterPayoutFailure(id, expectedPayoutID, failureReason string, feeRefunded bool) (bool, error) {
+	if id == "" || expectedPayoutID == "" {
+		return false, errors.New("stripe withdrawal id and expected payout id are required")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -270,8 +270,9 @@ func (s *Store) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason strin
 		     updated_at = NOW()
 		 WHERE id = $1
 		   AND refunded = FALSE
-		   AND status <> 'failed'`,
-		id, failureReason, feeRefunded,
+		   AND status <> 'failed'
+		   AND payout_id = $4`,
+		id, failureReason, feeRefunded, expectedPayoutID,
 	)
 	if err != nil {
 		return false, fmt.Errorf("store: reopen stripe withdrawal: %w", err)

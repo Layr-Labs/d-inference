@@ -224,6 +224,7 @@ Choose **Unlink Stripe account and start over** to remove the destination curren
 | `429` on `create-session`, key mutations, referral or invite calls | The [financial rate limiter](../reference/pricing-model.md#constants) | Back off for `Retry-After` |
 | Balance dropped by more than the response should cost, then recovered | Reservation debited at admission, refund at settlement | Expected; read balance after the response completes |
 | A Connect withdrawal changes from `paid` back to `transferred` | Its automatic bank payout failed and the existing withdrawal was reopened for the next scheduled sweep | Monitor the same withdrawal in history; do not submit a replacement for those funds. Recovery preserves any newer completed payout; see [Connect sweep recovery](../reference/pricing-model.md#connect-sweep-recovery) |
+| Instant payout fails after reporting paid | Funds return to the connected account for the daily sweep; stale failure events preserve any newer settlement | Monitor the existing withdrawal; see [instant payout recovery](../reference/pricing-model.md#instant-payout-failure-recovery) |
 | `503` `billing_error` | Stripe or the referral service is not configured on this coordinator | Operator issue |
 
 Mechanism for each error, including the exact functions, is in

@@ -31,6 +31,7 @@ func TestDispatchRetryAfterPreservesBoundedProviderForecast(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			const model = "retry-hint-model"
+			writeResult := make(chan error, 1)
 			provider := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
 				Name: "retry-hint-provider", Version: "0.9.0", DecodeTPS: 100,
 				Models: []failoverModelSpec{{ID: model}},
@@ -40,12 +41,12 @@ func TestDispatchRetryAfterPreservesBoundedProviderForecast(t *testing.T) {
 						StatusCode: http.StatusServiceUnavailable, FailureCode: protocol.FailureCodeCapacity,
 						ErrorReason: attempt.ErrorReasonRequestExceedsContext, FeasibleAfterMS: tc.ms,
 					})
-					if err != nil {
-						t.Error(err)
-						return
+					if err == nil {
+						err = fp.conn.Write(ctx, websocket.MessageText, data)
 					}
-					if err := fp.conn.Write(ctx, websocket.MessageText, data); err != nil {
-						t.Error(err)
+					select {
+					case writeResult <- err:
+					case <-ctx.Done():
 					}
 				},
 			})
@@ -61,6 +62,16 @@ func TestDispatchRetryAfterPreservesBoundedProviderForecast(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer response.Body.Close()
+			// Receiving the HTTP response can precede the provider's Write return.
+			// Wait for it before canceling the shared context during teardown.
+			select {
+			case err := <-writeResult:
+				if err != nil {
+					t.Fatalf("provider refusal write: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatalf("waiting for provider refusal write: %v", ctx.Err())
+			}
 			if response.StatusCode != http.StatusTooManyRequests || provider.dispatchCount() != 1 {
 				t.Fatalf("status=%d, dispatches=%d; expected one provider refusal and 429", response.StatusCode, provider.dispatchCount())
 			}

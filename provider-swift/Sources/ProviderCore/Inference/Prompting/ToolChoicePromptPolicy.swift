@@ -145,15 +145,7 @@ enum ToolChoicePromptPolicy {
         guard let userIndex = messages.lastIndex(where: { $0.role == .user }) else {
             return messages
         }
-        switch messages[userIndex].content {
-        case .text(let content):
-            messages[userIndex].content = .text(content + "\n\n" + instruction)
-        case .parts(var parts):
-            parts.append(.text(instruction))
-            messages[userIndex].content = .parts(parts)
-        case .null:
-            messages[userIndex].content = .text(instruction)
-        }
+        appendInstruction(instruction, to: &messages[userIndex])
         return messages
     }
 
@@ -163,20 +155,24 @@ enum ToolChoicePromptPolicy {
     ) -> [OpenAIChatMessage] {
         var messages = messages
         if messages.first?.role == .system {
-            switch messages[0].content {
-            case .text(let content):
-                messages[0].content = .text(content + "\n\n" + instruction)
-            case .parts(var parts):
-                parts.append(.text(instruction))
-                messages[0].content = .parts(parts)
-            case .null:
-                messages[0].content = .text(instruction)
-            }
+            appendInstruction(instruction, to: &messages[0])
         } else {
             messages.insert(
                 OpenAIChatMessage(role: .system, content: .text(instruction)),
                 at: 0)
         }
         return messages
+    }
+
+    private static func appendInstruction(_ instruction: String, to message: inout OpenAIChatMessage) {
+        switch message.content {
+        case .text(let content):
+            message.content = .text(content + "\n\n" + instruction)
+        case .parts(var parts):
+            parts.append(.text(instruction))
+            message.content = .parts(parts)
+        case .null:
+            message.content = .text(instruction)
+        }
     }
 }

@@ -50,6 +50,28 @@ struct Qwen35TemplateFixesTests {
         messages.compactMap { $0["role"] as? String }
     }
 
+    @Test("system folding keeps first-message metadata and empty-content semantics in both representations")
+    func sharedFoldPreservesMetadataAndEmptyContent() {
+        let dictionaryMessages: [[String: any Sendable]] = [
+            ["role": "user", "content": "question"],
+            ["role": "system", "name": "first", "content": ""],
+            ["role": "assistant", "content": "answer"],
+            ["role": "system", "name": "second", "content": "new policy"],
+        ]
+        let dictionaries = LeadingSystemMessageNormalizer.normalize(dictionaryMessages)
+        #expect(dictionaries.compactMap { $0["role"] as? String } == ["system", "user", "assistant"])
+        #expect(dictionaries[0]["name"] as? String == "first")
+        #expect(dictionaries[0]["content"] as? String == "new policy")
+        let typed = Qwen35TemplateFix.normalizeMessages([
+            OpenAIChatMessage(role: .user, content: .text("question")),
+            .init(role: .system, content: .null),
+            .init(role: .assistant, content: .text("answer")),
+            .init(role: .system, content: .text("new policy")),
+        ])
+        #expect(typed.map(\.role) == [.system, .user, .assistant])
+        #expect(typed.map(\.content) == [.text("new policy"), .text("question"), .text("answer")])
+    }
+
     @Test func appliesOnlyToQwen35Family() {
         #expect(Qwen35TemplateFix.applies(to: qwenContext))
         #expect(Qwen35TemplateFix.applies(

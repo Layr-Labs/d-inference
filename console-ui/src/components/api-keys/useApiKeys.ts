@@ -17,6 +17,7 @@ import {
 } from "@/lib/api";
 import { API_KEY_STORAGE, CONSOLE_KEY_ID_STORAGE } from "./constants";
 import { adoptCreatedKeyIfUntracked } from "./adoptConsoleKey";
+import { clearConsoleApiKey } from "@/lib/console-api-key";
 
 export interface UseApiKeys {
   authenticated: boolean;
@@ -262,8 +263,7 @@ export function useApiKeys({ onConsoleKeyChange }: { onConsoleKeyChange?: (key: 
         await deleteApiKey(token, key.id);
         trackEvent("key_delete");
         if (consoleKeyId === key.id && typeof window !== "undefined") {
-          localStorage.removeItem(API_KEY_STORAGE);
-          localStorage.removeItem(CONSOLE_KEY_ID_STORAGE);
+          clearConsoleApiKey();
           setConsoleKeyId(null);
           onConsoleKeyChange?.("");
           window.dispatchEvent(new Event("darkbloom-key-expired"));

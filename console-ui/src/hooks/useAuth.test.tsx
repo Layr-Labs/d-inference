@@ -130,4 +130,57 @@ describe("useAuth console-key provisioning", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(localStorage.getItem(STORAGE_KEYS.apiKey)).toBeNull();
   });
+
+  it("drops a leftover console key id when minting an untracked secret", async () => {
+    localStorage.setItem(STORAGE_KEYS.consoleKeyId, "key_from_previous_session");
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ api_key: "sk-db-untitled" }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderHook(() => useAuth());
+
+    await waitFor(() =>
+      expect(localStorage.getItem(STORAGE_KEYS.apiKey)).toBe("sk-db-untitled"),
+    );
+    expect(localStorage.getItem(STORAGE_KEYS.consoleKeyId)).toBeNull();
+  });
+
+  it("clears the leftover console key id on logout", async () => {
+    localStorage.setItem(STORAGE_KEYS.apiKey, "sk-db-mine");
+    localStorage.setItem(STORAGE_KEYS.consoleKeyId, "key_mine");
+    const { result } = renderHook(() => useAuth());
+
+    await result.current.logout();
+
+    expect(localStorage.getItem(STORAGE_KEYS.apiKey)).toBeNull();
+    expect(localStorage.getItem(STORAGE_KEYS.consoleKeyId)).toBeNull();
+    expect(h.auth.logout).toHaveBeenCalled();
+  });
+
+  it("re-provisions without keeping the leftover id after a 401 expiry", async () => {
+    localStorage.setItem(STORAGE_KEYS.apiKey, "sk-db-expired");
+    localStorage.setItem(STORAGE_KEYS.consoleKeyId, "key_expired");
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ api_key: "sk-db-untitled" }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderHook(() => useAuth());
+    await flush();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    window.dispatchEvent(new Event("darkbloom-key-expired"));
+
+    await waitFor(() =>
+      expect(localStorage.getItem(STORAGE_KEYS.apiKey)).toBe("sk-db-untitled"),
+    );
+    expect(localStorage.getItem(STORAGE_KEYS.consoleKeyId)).toBeNull();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/auth/keys",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
 });

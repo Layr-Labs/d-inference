@@ -5,6 +5,9 @@ import { API_KEY_STORAGE, CONSOLE_KEY_ID_STORAGE } from "./constants";
 // Auto-provision writes the secret but not the console key id. A key the user
 // just created should replace that untracked mint so chat does not keep an
 // unrestricted "Untitled key" after they made a My Machine only key.
+//
+// writeUntrackedConsoleApiKey / clearConsoleApiKey must drop leftover ids:
+// secret + stale id is treated as an explicit console-key choice.
 export function adoptCreatedKeyIfUntracked(
   created: CreatedKey,
   token: string,

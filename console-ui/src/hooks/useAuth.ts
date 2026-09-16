@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuthContext } from "@/components/app-providers/PrivyClientProvider";
 import { trackEvent } from "@/lib/google-analytics";
 import { STORAGE_KEYS } from "@/lib/storage-keys";
+import { clearConsoleApiKey, writeUntrackedConsoleApiKey } from "@/lib/console-api-key";
 import { revokeLegacyApiKey } from "@/lib/api/keys";
 
 const API_KEY_STORAGE = STORAGE_KEYS.apiKey;
@@ -72,7 +73,7 @@ async function provisionConsoleKey(
           revokeLegacyApiKey(token, data.api_key);
           return adopted;
         }
-        localStorage.setItem(API_KEY_STORAGE, data.api_key);
+        writeUntrackedConsoleApiKey(data.api_key);
         return data.api_key;
       }
       // Rate-limited / error / keyless response: arm the cooldown so a
@@ -130,6 +131,9 @@ export function useAuth() {
   useEffect(() => {
     if (!authenticated) return;
     const handleExpired = () => {
+      // 401 / revoke drop the secret first. Also drop the leftover id so a
+      // newly minted untitled key cannot look like a tracked console key.
+      clearConsoleApiKey();
       setApiKeyReady(false);
       provisionApiKey();
     };
@@ -163,8 +167,7 @@ export function useAuth() {
 
   const logout = useCallback(async () => {
     if (typeof window !== "undefined") {
-      localStorage.removeItem(API_KEY_STORAGE);
-      localStorage.removeItem(OLD_API_KEY_STORAGE);
+      clearConsoleApiKey();
       localStorage.removeItem(COORD_URL_STORAGE);
     }
     // Drop any provision cooldown/in-flight so a re-login provisions promptly.

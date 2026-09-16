@@ -53,6 +53,13 @@ describe("adoptCreatedKeyIfUntracked", () => {
     );
   });
 
+  it("adopts when only a leftover console key id remains", () => {
+    localStorage.setItem(STORAGE_KEYS.consoleKeyId, "key_from_previous_session");
+    const point = vi.fn();
+    expect(adoptCreatedKeyIfUntracked(created, "privy-token", point)).toBe(true);
+    expect(point).toHaveBeenCalledWith(created);
+  });
+
   it("does not replace a tracked console key", () => {
     localStorage.setItem(STORAGE_KEYS.apiKey, "sk-db-existing");
     localStorage.setItem(STORAGE_KEYS.consoleKeyId, "key_existing");

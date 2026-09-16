@@ -60,6 +60,21 @@ describe("useAuth console-key provisioning", () => {
     );
   });
 
+  it("migrates a legacy secret without keeping a leftover console key id", async () => {
+    localStorage.setItem(STORAGE_KEYS.legacyApiKey, "sk-db-legacy");
+    localStorage.setItem(STORAGE_KEYS.consoleKeyId, "key_from_previous_session");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderHook(() => useAuth());
+    await flush();
+
+    expect(localStorage.getItem(STORAGE_KEYS.apiKey)).toBe("sk-db-legacy");
+    expect(localStorage.getItem(STORAGE_KEYS.legacyApiKey)).toBeNull();
+    expect(localStorage.getItem(STORAGE_KEYS.consoleKeyId)).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("does not call the endpoint when a key already exists", async () => {
     localStorage.setItem(STORAGE_KEYS.apiKey, "sk-db-existing");
     const fetchMock = vi.fn();

@@ -115,7 +115,7 @@ export function useAuth() {
 
     const oldKey = localStorage.getItem(OLD_API_KEY_STORAGE);
     if (oldKey && !localStorage.getItem(API_KEY_STORAGE)) {
-      localStorage.setItem(API_KEY_STORAGE, oldKey);
+      writeUntrackedConsoleApiKey(oldKey);
       localStorage.removeItem(OLD_API_KEY_STORAGE);
     }
 

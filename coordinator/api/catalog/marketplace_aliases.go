@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -98,7 +99,10 @@ func (s *Controller) UpsertOpenRouterAlias(w http.ResponseWriter, r *http.Reques
 		httpresponse.WriteJSON(w, http.StatusBadRequest, httpresponse.ErrorBody("invalid_request_error", "source_model must be an active standard alias or concrete catalog model", httpresponse.WithParam("source_model")))
 		return
 	}
-	if rec, _ := s.store().GetModelRegistryRecord(req.ID); rec != nil {
+	if rec, err := s.store().GetModelRegistryRecord(req.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
+		httpresponse.WriteJSON(w, http.StatusInternalServerError, httpresponse.ErrorBody("internal_error", "failed to check model namespace"))
+		return
+	} else if rec != nil {
 		httpresponse.WriteJSON(w, http.StatusConflict, httpresponse.ErrorBody("invalid_request_error", "id collides with an existing model id", httpresponse.WithParam("id")))
 		return
 	}

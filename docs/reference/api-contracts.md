@@ -212,11 +212,11 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | PUT | `/v1/admin/pricing` | `AdminPricing` (`coordinator/api/billing/pricing.go`) | `admin` | Platform default price table |
 | PUT | `/v1/admin/users/role` | `AdminSetUserRole` (`coordinator/api/billing/account_policy.go`) | `admin` | Role selects the consumer or service limiter |
 | PUT | `/v1/admin/users/platform-fee` | `AdminSetUserPlatformFee` (`coordinator/api/billing/account_policy.go`) | `admin` | Per-user fee override; fee policy in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants) |
-| POST | `/v1/admin/models/register` | `RegisterModel` (`coordinator/api/catalog/register_model.go`) | `publishing` | Publish a model build |
+| POST | `/v1/admin/models/register` | `RegisterModel` (`coordinator/api/catalog/register_model.go`) | `publishing` | Publish a model build; failed alias namespace reads return 500 before artifact fetches or writes |
 | POST | `/v1/admin/models/` | `AdminModelAction` (`coordinator/api/catalog/registry_action.go`) | `publishing` | Registry actions selected by path suffix |
-| GET / POST | `/v1/admin/models/aliases` | `ListAliases`, `UpsertAlias` (`coordinator/api/catalog/aliases.go`) | `publishing` | Two registrations; upserts fan out `desired_models` (see [Version gating](#version-gating)) |
+| GET / POST | `/v1/admin/models/aliases` | `ListAliases`, `UpsertAlias` (`coordinator/api/catalog/aliases.go`) | `publishing` | Two registrations; upserts fan out `desired_models` (see [Version gating](#version-gating)); failed namespace, prior-alias or member reads return 500 before writes |
 | DELETE | `/v1/admin/models/aliases/{aliasID}` | `DeleteAlias` (`coordinator/api/catalog/aliases.go`) | `publishing` | |
-| GET / POST | `/v1/admin/models/openrouter-aliases` | `ListOpenRouterAliases`, `UpsertOpenRouterAlias` (`coordinator/api/catalog/marketplace_aliases.go`) | `publishing` | Two registrations |
+| GET / POST | `/v1/admin/models/openrouter-aliases` | `ListOpenRouterAliases`, `UpsertOpenRouterAlias` (`coordinator/api/catalog/marketplace_aliases.go`) | `publishing` | Two registrations; failed namespace reads return 500 before writes |
 | DELETE | `/v1/admin/models/openrouter-aliases/{aliasID}` | `DeleteOpenRouterAlias` (`coordinator/api/catalog/marketplace_aliases.go`) | `publishing` | |
 | GET / DELETE | `/v1/admin/releases` | `Controller.List` (`coordinator/api/releases/inventory.go`), `Controller.Delete` (`coordinator/api/releases/deactivation.go`) | `admin-key` | Two registrations |
 | GET | `/v1/admin/state-export` | `Controller.Download` (`coordinator/api/statearchive/handler.go`) | `admin-key` | 404 unless `EIGENINFERENCE_STATE_EXPORT_ENABLED=true`; 412 `precondition_failed` without an encryption recipient unless plaintext is explicitly allowed. See [`../operations/state-export.md`](../operations/state-export.md) |

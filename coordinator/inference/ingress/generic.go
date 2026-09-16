@@ -162,7 +162,10 @@ func (s *Controller) handleGenericInference(w http.ResponseWriter, r *http.Reque
 	stream, _ := parsed["stream"].(bool)
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	billingPromptTokens := estimateBillingPromptTokens(parsed)
-	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
+	requestedMaxTokens, ok := s.validateRequestedMaxTokens(w, r, parsed, model, publicModel)
+	if !ok {
+		return
+	}
 	genericDeadline := s.FirstContentDeadline(model, estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
 	rp.Mark(registry.StampReqParsed)

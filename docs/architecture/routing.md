@@ -81,6 +81,13 @@ flowchart LR
 
 ### Entry points
 
+Before token quotas, balance reservation or routing, the API validates that the
+selected per-choice output bound times `n` fits in its integer estimate
+(`validateRequestedMaxTokens`, `coordinator/inference/ingress/output_tokens.go`).
+An overflowing product returns 400 `invalid_request_error`; it never enters
+downstream cost or capacity calculations as a saturated token count. See the
+[request limits](../reference/api-contracts.md#limits-and-validation).
+
 `ReserveProviderWithPlan` (`coordinator/registry/plan_reservation.go`) is the
 dispatch-time entry point. It scans the fleet
 (`scanCandidatesLocked`), gates each provider

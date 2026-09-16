@@ -493,6 +493,12 @@ SSE orchestration lives in `Writer.Stream` (`coordinator/inference/response/stre
 | Token rate limits | Per-account input and output tokens per minute → 429 with `Retry-After` | `applyTokenRateLimitWithAdmission`, `WriteTokenRateLimited` |
 | Model shedding | A model currently rejecting → 429 with `Retry-After` from `EstimateRetryAfter` | `shedIfModelRejected` |
 
+Output-estimate overflow is rejected before token admission, balance reservation
+or capacity routing, including when token quotas are full or unlimited. The
+coordinator never substitutes a maximum-integer token count for this invalid
+product. Representable estimates retain the existing one-burst admission policy
+and provider-bound output limits.
+
 ## Timeouts and constants
 
 | Constant | Value | Where | Effect |

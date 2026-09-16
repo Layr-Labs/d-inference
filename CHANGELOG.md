@@ -35,6 +35,8 @@ coordinator deployment.
 
 - **Geolocation failure logs** — Omit the PRO lookup URL and its API key from transport-error diagnostics while retaining the underlying failure cause.
 
+- Reject generic inference requests with 400 when `n` times the per-choice output token limit exceeds the supported integer range, before token quotas, billing reservations or routing. Ordinary requests retain their existing output limits and admission policy.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

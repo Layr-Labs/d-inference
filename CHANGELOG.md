@@ -66,6 +66,9 @@ coordinator deployment.
 ## Unreleased
 
 - Model publishing stops before uploads on failed or empty R2 credential reads. Rollback preparation validates registry inputs before copying objects, cleans its local staging on exit, and reaches promotion on macOS Bash.
+## Unreleased
+
+- The cache soak monitor stops after an interrupt or termination signal and counts cache markers once when log lines arrive across multiple writes.
 
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 

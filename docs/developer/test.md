@@ -1099,6 +1099,12 @@ and run in Release Integrity CI.
 For changes to [dependency update configuration](../../.github/dependabot.yml),
 confirm that each update directory contains its ecosystem’s manifest, then run
 the relevant component checks in this guide.
+`python3 scripts/test_cache_soak_monitor.py` runs the actual Bash observer with
+owned log, process and sampling stubs. It checks that INT/TERM stop sampling and
+clean up once, split log lines are counted after completion, and successive
+windows preserve marker counts and the latest hit rate. This runs in Release
+Integrity CI and makes no provider or system-log request. See
+[cache rollout observation](../operations/cache-routing-rollout.md#provider-soak-observation).
 
 ```bash
 make tooling-install  # isolated .venv/tooling with pinned NumPy

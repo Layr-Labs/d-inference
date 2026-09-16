@@ -42,6 +42,10 @@ failed restoration retains a recovery backup.
 
 ## Prerequisites
 
+- The cache soak observer uses macOS Bash 3.2 and stock logging tools. Its
+  [offline fixtures](test.md#6-scripts-and-release-integrity) use Python and owned
+  command stubs; they require no provider build or running inference service.
+
 - **Toolchain via [`mise`](https://mise.jdx.dev/).** Every version is pinned in
   [`mise.toml`](../../mise.toml); `mise install` installs them all.
 

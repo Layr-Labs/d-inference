@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-14 · commit `46299ff78`
+> Last updated: 2026-09-16 · commit `0f7b1e611`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -336,3 +336,12 @@ KV blocks under a per-model key, not tokens.
 - [`prefix-cache.md`](prefix-cache.md) and [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) — the provider's on-disk cache
 - [`../operations/state-export.md`](../operations/state-export.md) — exporting the non-Postgres state on the persistent disk
 - [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md) — where the DSN is set
+
+### Model transport metadata
+
+`model_version_files.r2_chunks` is nullable JSONB containing ordered R2 chunk sizes
+and hashes. The additive migration runs after table creation in
+`coordinator/store/postgres.go`. `coordinator/store/postgres_model_registry.go`
+reads/writes it in both individual and batched file queries; `manifestFromRecord`
+in `coordinator/store/memory.go` returns the metadata with original file identities.
+See [the manifest format](../reference/model-registry-format.md#cacheable-r2-transport-chunks).

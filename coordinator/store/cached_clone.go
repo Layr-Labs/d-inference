@@ -26,6 +26,9 @@ func cloneModelRegistryRecord(rec *ModelRegistryRecord) *ModelRegistryRecord {
 	if rec.Files != nil {
 		cp.Files = make([]ModelVersionFile, len(rec.Files))
 		copy(cp.Files, rec.Files)
+		for i := range cp.Files {
+			cp.Files[i].R2Chunks = append([]ManifestChunk(nil), rec.Files[i].R2Chunks...)
+		}
 	}
 	return cp
 }

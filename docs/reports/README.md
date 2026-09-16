@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-16 · commit `0f7b1e611`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -12,6 +12,7 @@ File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
 - [Security reports](security/README.md) — focused security reviews, including the macOS 27 App Attest enforcement gaps that remain after enforcement is enabled.
+- [Qwen3.8 Flash-Next R2 publication](2026-09-16-qwen38-r2-chunk-publication.md) — immutable chunk package, checksum verification, observed CDN cache hit and native inference dependency.
 - [App Attest 0.9.4 recovery qualification](2026-09-14-app-attest-recovery-validation.md) — recovery/identity tests, real Apple renewal format and current qualification limits.
 - [App Attest release-build disconnect investigation](2026-09-14-app-attest-release-disconnects.md) — reproduced 0.9.3 callback timer crash, retained evidence, containment and fixed-build validation.
 - [Physical macOS 27 App Attest validation](2026-09-14-app-attest-macos27-validation.md) — real Apple attestations/assertions, user-session launch behavior, full provider negotiation, and verifier/serializer corrections.

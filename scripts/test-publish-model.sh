@@ -16,6 +16,7 @@ require_cmd() {
 
 require_cmd jq
 require_cmd python3
+unset R2_CHUNK_BYTES
 
 grep -Fq 'required_provider_capabilities:' "$WORKFLOW"
 grep -Fq 'REQUIRED_PROVIDER_CAPABILITIES: ${{ inputs.required_provider_capabilities }}' "$WORKFLOW"
@@ -76,6 +77,8 @@ fi
 FAKE_BIN="$TEST_ROOT/bin"
 MODEL_DIR="$TEST_ROOT/model"
 mkdir -p "$FAKE_BIN" "$MODEL_DIR"
+printf '{}' > "$MODEL_DIR/config.json"
+export FAKE_AWS_LOG="$TEST_ROOT/aws-args"
 export FAKE_SWIFT_MARKER="$TEST_ROOT/swift-ran"
 
 cat > "$FAKE_BIN/swift" <<'SH'
@@ -90,9 +93,14 @@ while [[ $# -gt 0 ]]; do
   fi
   shift
 done
-cat > "$output" <<'JSON'
-{"r2_prefix":"v2/test/v1","files":[]}
-JSON
+python3 - "$output" <<'PYFIXTURE'
+import hashlib, json, sys
+h=hashlib.sha256(b'{}').hexdigest()
+with open(sys.argv[1], 'w') as f:
+    json.dump({'schema_version':1, 'r2_prefix':'v2/test/v1', 'file_count':1,
+      'total_size_bytes':2, 'aggregate_sha256':hashlib.sha256(bytes.fromhex(h)).hexdigest(),
+      'files':[{'path':'config.json','size_bytes':2,'sha256':h,'role':'config'}]}, f)
+PYFIXTURE
 SH
 cat > "$FAKE_BIN/gcloud" <<'SH'
 #!/usr/bin/env bash
@@ -100,6 +108,7 @@ printf 'test-secret\n'
 SH
 cat > "$FAKE_BIN/aws" <<'SH'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_AWS_LOG"
 exit 0
 SH
 chmod +x "$FAKE_BIN/swift" "$FAKE_BIN/gcloud" "$FAKE_BIN/aws"
@@ -124,9 +133,15 @@ legacy_qwen_output="$(run_publish 'qwen3.6-35b-a3b-vl-mtp-mxfp8' '')"
 printf '%s\n' "$legacy_qwen_output" \
   | grep -Fq -- '-f required_provider_capabilities=""'
 
+: > "$FAKE_AWS_LOG"
 generic_output="$(run_publish 'generic-model' '')"
 printf '%s\n' "$generic_output" \
   | grep -Fq -- '-f required_provider_capabilities=""'
+grep -Fq 's3://darkbloom-models/v2/test/v1/config.json ' "$FAKE_AWS_LOG"
+if grep -Fq '.chunks/' "$FAKE_AWS_LOG"; then
+  echo 'Default publishing unexpectedly enabled chunk transport.' >&2
+  exit 1
+fi
 
 normalized_output="$(run_publish 'generic-model' ' apple_m5, mlx_nax,apple_m5 ')"
 printf '%s\n' "$normalized_output" \
@@ -159,3 +174,16 @@ unset HUGGING_FACE_ARTIFACT_JSON
 build_payload '' "$TEST_ROOT/hf-legacy"
 jq -e '.hugging_face_artifact == null' "$TEST_ROOT/hf-legacy/payload.json" >/dev/null
 printf 'Hugging Face publish payload tests passed.\n'
+
+: > "$FAKE_AWS_LOG"
+chunk_output="$(R2_CHUNK_BYTES=1 run_publish 'generic-model' '')"
+printf '%s\n' "$chunk_output" | grep -Fq -- '-f required_provider_capabilities="r2_chunked_downloads"'
+grep -Fq 'config.json.chunks/000000.bin' "$FAKE_AWS_LOG"
+grep -Fq 'config.json.chunks/000001.bin' "$FAKE_AWS_LOG"
+grep -Fq -- '--cache-control public,max-age=31536000,immutable' "$FAKE_AWS_LOG"
+if grep -Fq 's3://darkbloom-models/v2/test/v1/config.json ' "$FAKE_AWS_LOG"; then
+  echo 'Chunked publisher uploaded the original file.' >&2
+  exit 1
+fi
+tail -1 "$FAKE_AWS_LOG" | grep -Fq '/manifest.json'
+printf 'R2 chunk publish tests passed.\n'

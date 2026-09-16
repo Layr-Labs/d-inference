@@ -4,54 +4,6 @@ import Testing
 @testable import ProviderCore
 import ProviderCoreFoundation
 
-private final class HFDownloadProtocol: URLProtocol, @unchecked Sendable {
-    nonisolated(unsafe) static var bodies: [String: Data] = [:]
-    nonisolated(unsafe) static var requests: [URLRequest] = []
-    nonisolated(unsafe) static var failure: URLError.Code?
-    private static let lock = NSLock()
-
-    static func reset(bodies: [String: Data], failure: URLError.Code? = nil) {
-        lock.lock(); defer { lock.unlock() }
-        self.bodies = bodies; self.failure = failure; requests = []
-    }
-
-    static func captured() -> [URLRequest] {
-        lock.lock(); defer { lock.unlock() }; return requests
-    }
-
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-    override func startLoading() {
-        let url = request.url!
-        Self.lock.lock()
-        Self.requests.append(request)
-        let body = Self.bodies[url.host!]
-        let failure = url.host == "huggingface.co" ? Self.failure : nil
-        Self.lock.unlock()
-        if let failure {
-            client?.urlProtocol(self, didFailWithError: URLError(failure))
-            return
-        }
-        var status = body == nil ? 404 : 200
-        var payload = body
-        var headers = ["Content-Length": "\(body?.count ?? 0)"]
-        if let body, let range = request.value(forHTTPHeaderField: "Range"),
-           range.hasPrefix("bytes="), let offset = Int(range.dropFirst(6).dropLast()),
-           offset < body.count {
-            payload = Data(body.dropFirst(offset))
-            status = 206
-            headers["Content-Range"] = "bytes \(offset)-\(body.count - 1)/\(body.count)"
-            headers["Content-Length"] = "\(body.count - offset)"
-        }
-        let response = HTTPURLResponse(url: url, statusCode: status,
-            httpVersion: "HTTP/1.1", headerFields: headers)!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        if let payload { client?.urlProtocol(self, didLoad: payload) }
-        client?.urlProtocolDidFinishLoading(self)
-    }
-    override func stopLoading() {}
-}
-
 @Suite("Hugging Face verified downloads", .serialized)
 struct HuggingFaceDownloadTests {
     private let revision = String(repeating: "a", count: 40)
@@ -64,7 +16,7 @@ struct HuggingFaceDownloadTests {
     }
     private func downloader() -> ModelDownloader {
         let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [HFDownloadProtocol.self]
+        config.protocolClasses = [ModelDownloadURLProtocol.self]
         return ModelDownloader(r2CDNURL: "https://r2.test", urlSession: URLSession(configuration: config))
     }
     private func job(_ destination: URL) -> (file: ManifestFile, destination: URL, url: String) {
@@ -103,7 +55,7 @@ struct HuggingFaceDownloadTests {
 
     @Test("HF resumes a saved prefix with Range and verifies the completed file")
     func resume() async throws {
-        HFDownloadProtocol.reset(bodies: ["huggingface.co": bytes])
+        ModelDownloadURLProtocol.reset(bodies: ["huggingface.co": bytes])
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: dir) }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -111,19 +63,19 @@ struct HuggingFaceDownloadTests {
         try Data(bytes.prefix(4)).write(to: destination.appendingPathExtension("part"))
         try await downloader().downloadManifestFileWithResume(job(destination), huggingFaceArtifact: artifact)
         #expect(try Data(contentsOf: destination) == bytes)
-        #expect(HFDownloadProtocol.captured().count == 1)
-        #expect(HFDownloadProtocol.captured().first?.value(forHTTPHeaderField: "Range") == "bytes=4-")
+        #expect(ModelDownloadURLProtocol.captured().count == 1)
+        #expect(ModelDownloadURLProtocol.captured().first?.value(forHTTPHeaderField: "Range") == "bytes=4-")
     }
 
     @Test("HF is preferred and verified without touching R2")
     func prefersHF() async throws {
-        HFDownloadProtocol.reset(bodies: ["huggingface.co": bytes])
+        ModelDownloadURLProtocol.reset(bodies: ["huggingface.co": bytes])
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: dir) }
         let destination = dir.appendingPathComponent("model.safetensors")
         try await downloader().downloadManifestFileWithResume(job(destination), huggingFaceArtifact: artifact)
         #expect(try Data(contentsOf: destination) == bytes)
-        let requests = HFDownloadProtocol.captured()
+        let requests = ModelDownloadURLProtocol.captured()
         #expect(requests.count == 1)
         #expect(requests.first?.url?.host == "huggingface.co")
         #expect(requests.first?.timeoutInterval == 30)
@@ -135,7 +87,7 @@ struct HuggingFaceDownloadTests {
         var bodies = ["r2.test": bytes]
         if reason == "corrupt" { bodies["huggingface.co"] = Data(repeating: 0, count: bytes.count) }
         let failure: URLError.Code? = reason == "offline" ? .networkConnectionLost : (reason == "timeout" ? .timedOut : nil)
-        HFDownloadProtocol.reset(bodies: bodies, failure: failure)
+        ModelDownloadURLProtocol.reset(bodies: bodies, failure: failure)
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: dir) }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -144,14 +96,14 @@ struct HuggingFaceDownloadTests {
         try Data([0, 1]).write(to: destination.appendingPathExtension("part"))
         try await downloader().downloadManifestFileWithResume(job(destination), huggingFaceArtifact: artifact)
         #expect(try Data(contentsOf: destination) == bytes)
-        let requests = HFDownloadProtocol.captured()
+        let requests = ModelDownloadURLProtocol.captured()
         #expect(requests.map { $0.url!.host! } == ["huggingface.co", "r2.test"])
         #expect(requests.last?.value(forHTTPHeaderField: "Range") == nil)
     }
 
     @Test("cancellation does not retry on R2 or delete resumable bytes")
     func cancellation() async throws {
-        HFDownloadProtocol.reset(bodies: ["r2.test": bytes], failure: .cancelled)
+        ModelDownloadURLProtocol.reset(bodies: ["r2.test": bytes], failure: .cancelled)
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: dir) }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -161,22 +113,22 @@ struct HuggingFaceDownloadTests {
         await #expect(throws: (any Error).self) {
             try await downloader().downloadManifestFileWithResume(job(destination), huggingFaceArtifact: artifact)
         }
-        #expect(HFDownloadProtocol.captured().count == 1)
+        #expect(ModelDownloadURLProtocol.captured().count == 1)
         #expect(try Data(contentsOf: partial) == Data([1, 2]))
     }
 
     @Test("legacy entry downloads only from R2")
     func legacy() async throws {
-        HFDownloadProtocol.reset(bodies: ["r2.test": bytes])
+        ModelDownloadURLProtocol.reset(bodies: ["r2.test": bytes])
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: dir) }
         try await downloader().downloadManifestFileWithResume(job(dir.appendingPathComponent("model.safetensors")))
-        #expect(HFDownloadProtocol.captured().map { $0.url!.host! } == ["r2.test"])
+        #expect(ModelDownloadURLProtocol.captured().map { $0.url!.host! } == ["r2.test"])
     }
 
     @Test("foreground and prefetch publish only verified HF bytes", arguments: [false, true])
     func publication(prefetch: Bool) async throws {
-        HFDownloadProtocol.reset(bodies: ["huggingface.co": bytes])
+        ModelDownloadURLProtocol.reset(bodies: ["huggingface.co": bytes])
         let id = "test-hf/\(UUID().uuidString)"
         let modelDir = ModelDownloader.cacheModelDirectory(for: id)
         defer { try? FileManager.default.removeItem(at: modelDir) }
@@ -195,12 +147,12 @@ struct HuggingFaceDownloadTests {
         let snapshot = ModelDownloader.cacheSnapshotDirectory(for: id)
         #expect(try Data(contentsOf: snapshot.appendingPathComponent(file.path)) == bytes)
         #expect(try String(contentsOf: modelDir.appendingPathComponent("refs/main"), encoding: .utf8) == "local")
-        #expect(HFDownloadProtocol.captured().map { $0.url!.host! } == ["huggingface.co"])
+        #expect(ModelDownloadURLProtocol.captured().map { $0.url!.host! } == ["huggingface.co"])
     }
 
     @Test("corruption on both sources never publishes a snapshot")
     func rejectsBothCorrupt() async throws {
-        HFDownloadProtocol.reset(bodies: ["huggingface.co": Data([0]), "r2.test": Data([0])])
+        ModelDownloadURLProtocol.reset(bodies: ["huggingface.co": Data([0]), "r2.test": Data([0])])
         let id = "test-hf/\(UUID().uuidString)"
         let modelDir = ModelDownloader.cacheModelDirectory(for: id)
         defer { try? FileManager.default.removeItem(at: modelDir) }

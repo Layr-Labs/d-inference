@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-15 · commit `1fee36798`
+> Last updated: 2026-09-16 · commit `0f7b1e611`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1611,3 +1611,14 @@ from real Apple receipt renewal and final signed-artifact fleet qualification.
 - [`../operations/provider-release.md`](../operations/provider-release.md) — release checks that also run in CI.
 - [`../architecture/components/provider.md`](../architecture/components/provider.md) — what the provider does at runtime.
 - [`../architecture/prompt-contract-sidecar.md`](../architecture/prompt-contract-sidecar.md) — what prompt parity protects.
+
+### R2 chunk transport
+
+Run `python3 scripts/test-chunk-model.py` and `bash scripts/test-publish-model.sh`
+for byte reconstruction, checksum failures, size limits, upload paths, headers,
+and manifest-last publication. Run `go test ./coordinator/api ./coordinator/store
+./coordinator/registry -run 'Manifest|ModelChunks|ModelRegistry|HuggingFace|RuntimeCapabilit|ProviderCapabilit'`
+from the repository root. PostgreSQL tests use the existing test database setup
+and skip when unavailable. Run `swift test --filter HuggingFaceDownloadTests` from
+`provider-swift/` for HF preference, chunk fallback, corruption rejection, resumed
+assembly and foreground/background snapshot publication.

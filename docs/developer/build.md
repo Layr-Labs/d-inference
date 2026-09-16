@@ -507,6 +507,12 @@ The latency and accounting report helpers compile and run with Go alone:
 `go test -race ./e2e/testbed/assert -count=1`. These CPU fixtures use synthetic
 latency samples and stub query rows; they do not build a provider or require a
 Postgres server. See [test.md](test.md#harness-assertion-contracts) for their scope.
+### Model benchmark wrapper fixtures
+
+The Gemma and GPT-OSS report tooling has CPU-only Python checks that need no
+provider build, model snapshot or Metal runtime. Run both package suites from
+[the wrapper verification procedure](test.md#model-benchmark-wrapper-contracts)
+before running a native benchmark with either launcher.
 
 ## Troubleshooting
 

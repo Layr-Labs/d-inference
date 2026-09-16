@@ -1372,6 +1372,36 @@ net-charge sums: successful queries pass regardless of the returned number.
 The other four SQL assertions require zero violations. Live database checks
 still use `PostgresAccountingAsserter.EvaluateAll` in
 `e2e/testbed/assert/accounting.go`.
+### Model benchmark wrapper contracts
+
+From the repository root, with Python 3.10 or later:
+
+```bash
+PYTHONPATH=scripts:. python3 -m unittest discover -s scripts/gemma_contbatch/tests -t scripts
+PYTHONPATH=scripts:. python3 -m unittest discover -s scripts/gptoss_profile/tests -t scripts
+```
+
+These fixtures use synthetic reports, mocked benchmark launches and host
+observations, temporary Git repositories, and owned Python children. They do not
+execute Swift, load a model, or measure a GPU.
+
+`scripts/gemma_contbatch/results.py` (`compare`) keeps the existing ordered
+phase/metric schema and rejects missing or duplicate comparison rows before
+computing deltas. `scripts/gemma_contbatch/process.py` (`source_fingerprint`)
+uses NUL-separated Git filename bytes so quoted or non-ASCII untracked kernel
+names still contribute their actual contents to the Metal source identity.
+
+`scripts/gptoss_profile/config.py` (`instrumentation_controls`) shares the
+existing diagnostic-knob policy between CLI measurement and ABBA designs.
+`scripts/gptoss_profile/summary.py` (`decode_intervals`) computes each
+repetition's common-window bounds once and retains only intervals wholly inside
+that window for its common-window percentiles; ordinary percentiles still
+include every row interval. `scripts/gptoss_profile/validation.py` (`positive`)
+rejects JSON booleans as measured positive numbers.
+
+These checks preserve benchmark schemas, backend controls, raw-output retention,
+power requirements and timing definitions. They do not establish model speed,
+output quality, live artifact provenance, or thermal equivalence.
 
 ## Troubleshooting
 

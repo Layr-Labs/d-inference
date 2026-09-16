@@ -21,7 +21,7 @@ export const SECRET_WARNING =
 export const SHARED_BALANCE_NOTE =
   "All keys draw from your shared account balance. A key's spend cap is a sub-limit on that balance, not extra funds.";
 export const CONSOLE_KEY_NOTE =
-  "This console uses one active key (saved in this browser) for its own chat and test calls. It's provisioned automatically; you can also point it at a new key below.";
+  "This console uses one active key (saved in this browser) for its own chat and test calls. Creating a key adopts it when none is set, including when only an auto-provisioned key is present. You can also point it at a new key below.";
 
 export const RESET_OPTIONS: { value: KeyResetWindow; label: string }[] = [
   { value: "none", label: "Lifetime (no reset)" },

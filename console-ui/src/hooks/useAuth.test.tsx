@@ -71,6 +71,44 @@ describe("useAuth console-key provisioning", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("does not clobber a key adopted while provision is in flight", async () => {
+    let release!: (value: { ok: boolean; json: () => Promise<{ api_key: string }> }) => void;
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        return Promise.resolve({ ok: true, json: async () => ({ status: "revoked" }) });
+      }
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderHook(() => useAuth());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    // User created a My Machine only key and it became the console key
+    // while POST /api/auth/keys was still outstanding.
+    localStorage.setItem(STORAGE_KEYS.apiKey, "sk-db-mine");
+    localStorage.setItem(STORAGE_KEYS.consoleKeyId, "key_mine");
+
+    release({ ok: true, json: async () => ({ api_key: "sk-db-untitled" }) });
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/auth/keys",
+        expect.objectContaining({ method: "DELETE" }),
+      ),
+    );
+    expect(localStorage.getItem(STORAGE_KEYS.apiKey)).toBe("sk-db-mine");
+    const deleteCall = fetchMock.mock.calls.find((c) => (c[1] as RequestInit | undefined)?.method === "DELETE");
+    expect(deleteCall?.[1]).toEqual(
+      expect.objectContaining({
+        method: "DELETE",
+        body: JSON.stringify({ key: "sk-db-untitled" }),
+      }),
+    );
+  });
+
   it("backs off after a rate-limited response instead of storming", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: false,

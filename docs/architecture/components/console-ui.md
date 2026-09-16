@@ -95,7 +95,7 @@ Credential column: **Privy (required)** = `privyAuth()` must be non-empty or the
 |---|---|---|---|---|
 | `/api/admin/base-rewards` | GET | `GET /v1/admin/base-rewards` | Privy (required) | No cache; no UI caller |
 | `/api/attestation` | GET | `GET /v1/providers/attestation` | none | `?summary=1` → `{count, last_verified}` of `trust_level === "hardware"` providers, `cacheControl(15, 60)`; full mode projects to the whitelisted `AttestationProvider` fields (`projectProvider`), uncached |
-| `/api/auth/keys` | POST | `POST /v1/auth/keys` (no body) | Privy (if present) | Used by `provisionConsoleKey` (`console-ui/src/hooks/useAuth.ts`) to obtain the console's inference key |
+| `/api/auth/keys` | POST, DELETE | `POST`/`DELETE /v1/auth/keys` | Privy (if present) | Used by `provisionConsoleKey` (`console-ui/src/hooks/useAuth.ts`) to obtain the console's inference key; DELETE drops a spare mint that lost a race with a user-created key |
 | `/api/chat` | POST | `POST /v1/chat/completions` | API key → Bearer | `runtime = "nodejs"`, `dynamic = "force-dynamic"`; forwards `X-Darkbloom-Route`; a body with `Content-Type: application/eigeninference-sealed+json` is forwarded byte-verbatim; streams the upstream body; copies `x-provider-attested`, `x-provider-trust-level`, `x-provider-secure-enclave`, `x-provider-mda-verified`, `x-provider-chip`, `x-provider-model`, `x-request-id`, `x-attestation-se-public-key`, `x-eigen-sealed`, `x-eigen-sealed-kid`; SSE gets `Cache-Control: no-cache, no-transform` |
 | `/api/device/approve` | POST | `POST /v1/device/approve` | Privy (required) | `passthrough` |
 | `/api/encryption-key` | GET | `GET /v1/encryption-key` | none | Upstream 503 → `503 {"error":"encryption_unavailable"}`; success gets `Cache-Control: public, max-age=300` |
@@ -149,7 +149,7 @@ The stats page renders a continuous overview without waiting for catalog or capa
 | Privy access token | `Authorization: Bearer <JWT>` (`managementHeaders`, `console-ui/src/lib/http/proxy-client.ts`); the Privy SDK's `privy-token` cookie is the fallback read by `privyAuth()` | Header verbatim | Keys, fleet, earnings, device approval, Stripe Connect, base-rewards admin |
 | Console API key | `x-api-key: sk-db-…` (`proxyHeaders`; value from localStorage `darkbloom_api_key`) | `Authorization: Bearer sk-db-…` | Chat, `/api/models` (keyed path), balance, usage, invite redeem |
 
-The console key is provisioned by `provisionConsoleKey` (`console-ui/src/hooks/useAuth.ts`): on `authenticated`, it calls `getAccessToken()` and `POST /api/auth/keys` with the Privy Bearer, stores `api_key` under `darkbloom_api_key`, migrates the pre-rebrand `eigeninference_api_key`, coalesces concurrent callers into one in-flight promise, and arms a `PROVISION_FAILURE_COOLDOWN_MS` = `30_000` ms cooldown after a failed or keyless response. `apiKeyReady` gates sending in chat.
+The console key is provisioned by `provisionConsoleKey` (`console-ui/src/hooks/useAuth.ts`): on `authenticated`, it calls `getAccessToken()` and `POST /api/auth/keys` with the Privy Bearer, stores `api_key` under `darkbloom_api_key`, migrates the pre-rebrand `eigeninference_api_key`, coalesces concurrent callers into one in-flight promise, and arms a `PROVISION_FAILURE_COOLDOWN_MS` = `30_000` ms cooldown after a failed or keyless response. If localStorage already holds a secret when the mint returns (the user created/adopted a named key while the request was in flight), the spare is `DELETE`d via `/api/auth/keys` and is not stored. Creating a named key (`useApiKeys.createKey`) adopts it as the console key when none is tracked — including when only an untracked auto-provisioned secret is present — and revokes that previous secret. `apiKeyReady` gates sending in chat. The coordinator's `POST /v1/auth/keys` inherits `self_route_only` when every active key on the account is already machine-only (`consoleKeyInheritsSelfRouteOnly`).
 
 ### Coordinator URL resolution
 
@@ -236,7 +236,7 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 7. **`/api/*` is outside the interceptor.** The `matcher` in `console-ui/src/proxy.ts` excludes `api/`.
 8. **No client telemetry leaves the page.** `emit` and `installGlobalHandlers` are empty (`console-ui/src/lib/telemetry.ts`); `POST` in `console-ui/src/app/api/telemetry/route.ts` returns `telemetry_ingest_disabled` unconditionally ([api-contracts](../../reference/api-contracts.md#telemetry-1)).
 9. **Persisted chat state carries no image bytes or live flags.** `partialize` in `console-ui/src/lib/store.ts` sets `images: undefined` and `streaming: false`.
-10. **Key provisioning is bounded.** One in-flight `POST /api/auth/keys` per tab (`provisionInFlight`) and a `PROVISION_FAILURE_COOLDOWN_MS` back-off after failure (`console-ui/src/hooks/useAuth.ts`).
+10. **Key provisioning is bounded and does not clobber a user-created key.** One in-flight `POST /api/auth/keys` per tab (`provisionInFlight`) and a `PROVISION_FAILURE_COOLDOWN_MS` back-off after failure (`console-ui/src/hooks/useAuth.ts`). A mint that loses a race with a stored secret is revoked (`DELETE /api/auth/keys`) rather than overwriting localStorage. Creating a named key adopts it when the console key is missing or untracked (`adoptCreatedKeyIfUntracked`, `console-ui/src/components/api-keys/adoptConsoleKey.ts`).
 
 ## Failure modes
 

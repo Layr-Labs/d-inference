@@ -72,7 +72,7 @@ All four share the chain `drainGate → requireAuth → rateLimitConsumer → se
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
-| POST | `/v1/auth/keys` | `handleCreateKey` (`coordinator/api/apikey_handlers.go`) | `privy` | `fin` | Legacy mint: `CreateKeyResponse` `{api_key, account_id}` |
+| POST | `/v1/auth/keys` | `handleCreateKey` (`coordinator/api/apikey_handlers.go`) | `privy` | `fin` | Legacy mint: `CreateKeyResponse` `{api_key, account_id}`. If every active (not disabled, not expired) key on the account is already `self_route_only`, the minted key inherits that ceiling (`consoleKeyInheritsSelfRouteOnly`) so console auto-provision cannot escalate a machine-only account onto the paid public fleet |
 | DELETE | `/v1/auth/keys` | `handleRevokeKey` (`coordinator/api/apikey_handlers.go`) | `privy` | — | Body `{"key": "<api key>"}`; 400 `bad_request` otherwise; `RevokeKeyResponse` `{status}` |
 | GET | `/v1/keys` | `handleListAPIKeys` (`coordinator/api/apikey_handlers.go`) | `privy` | — | `APIKeyListResponse` `{object: "list", data: [APIKeyResponse]}` |
 | POST | `/v1/keys` | `handleCreateAPIKey` (`coordinator/api/apikey_handlers.go`) | `privy` | `fin` | `CreateAPIKeyResponse` `{key, data}`; `key` is the plaintext secret ([API key shapes](#api-key-shapes)) |

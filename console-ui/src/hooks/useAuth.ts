@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuthContext } from "@/components/app-providers/PrivyClientProvider";
 import { trackEvent } from "@/lib/google-analytics";
 import { STORAGE_KEYS } from "@/lib/storage-keys";
+import { revokeLegacyApiKey } from "@/lib/api/keys";
 
 const API_KEY_STORAGE = STORAGE_KEYS.apiKey;
 const OLD_API_KEY_STORAGE = STORAGE_KEYS.legacyApiKey;
@@ -63,6 +64,14 @@ async function provisionConsoleKey(
       });
       const data = (await res.json().catch(() => ({}))) as { api_key?: string };
       if (res.ok && data.api_key) {
+        // The user may have created/adopted a named key (e.g. My Machine only)
+        // while this mint was in flight. Never clobber that secret with an
+        // auto-provisioned unrestricted key — drop the spare instead.
+        const adopted = localStorage.getItem(API_KEY_STORAGE);
+        if (adopted) {
+          revokeLegacyApiKey(token, data.api_key);
+          return adopted;
+        }
         localStorage.setItem(API_KEY_STORAGE, data.api_key);
         return data.api_key;
       }

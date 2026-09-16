@@ -74,7 +74,12 @@ fleet traffic whose scheduler is told which machine may serve it.
 5. In the console, the chat "Use my machine" toggle sends `prefer`
    (`console-ui/src/lib/chat/stream.ts`, forwarded upstream by
    `console-ui/src/app/api/chat/route.ts`); free-only routing there is the
-   per-key `self_route_only` ceiling.
+   per-key `self_route_only` ceiling. Creating a My Machine only key in the
+   API console adopts it as this browser's chat key when none is tracked;
+   `POST /v1/auth/keys` (console auto-provision) also inherits
+   `self_route_only` when every active key on the account is already
+   machine-only, so it cannot mint an unrestricted "use everything" key
+   beside a machine-only one.
 
 ## What the coordinator relaxes — and what it does not
 

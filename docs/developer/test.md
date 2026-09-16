@@ -351,7 +351,8 @@ It requires a 400 for overflowing output estimates and no charge/refund ledger
 entries. `TestGenericOutputTokenOverflowCannotBypassKeyQuota` keeps the partially
 spent quota controls, and `TestRequestedOutputTokenEstimateRejectsOverflow`
 checks fitting and overflowing products (`coordinator/api/output_token_validation_test.go`,
-`coordinator/api/output_token_overflow_test.go`).
+`coordinator/api/output_token_overflow_test.go`,
+`coordinator/inference/ingress/output_tokens_test.go`).
 
 `TestResponsesStreamReopenedItemsContainOnlyTheirOwnText` exercises alternating
 reasoning, message and tool-call items through the real SSE emitter. It compares
@@ -696,11 +697,11 @@ the slow WebSocket integration tests; run the full set before merging.
 Run the memory-store allocation and filtered-read regressions from the repository root:
 
 ```bash
-GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/store -count=1 \
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/store/memory -count=1 \
   -run '^Test(MemoryTelemetryReadBuffersAreBounded|RequestProfilesSinceFilteredAppliesPredicatesBeforeTheCap)$'
 ```
 
-`telemetry_read_allocation_test.go` seeds 50,001 rows per reader and checks
+`coordinator/store/memory/telemetry_read_allocation_test.go` seeds 50,001 rows per reader and checks
 that route, rejection, request-profile and fleet-snapshot results retain at most
 50,000 rows of buffer capacity, including recent and empty time windows.
 It also checks inclusive filtering, non-nil empty results and newest-first row

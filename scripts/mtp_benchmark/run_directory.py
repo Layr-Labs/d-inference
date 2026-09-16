@@ -211,5 +211,3 @@ def read_bounded(descriptor: int, maximum_bytes: int) -> bytes:
     if len(data) > maximum_bytes:
         raise ValueError(f"file exceeds {maximum_bytes} bytes")
     return data
-
-

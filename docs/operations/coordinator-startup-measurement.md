@@ -1,6 +1,6 @@
 # Measure coordinator startup after the old process stops
 
-> Last updated: 2026-09-12 · commit `04fec721a`
+> Last updated: 2026-09-16 · commit `fa4e6bdc2`
 
 Use `scripts/measure-coordinator-startup.py` to observe the interval after the
 old coordinator stops. The preceding drain is outside this measurement. The

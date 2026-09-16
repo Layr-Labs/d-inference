@@ -275,4 +275,3 @@ def validate_case_metrics(
             for item in metrics.get("costInputs", []) if isinstance(item, dict))
         if not has_cost:
             raise ValueError(f"{label} lacks positive-depth cost evidence for its requested bucket")
-

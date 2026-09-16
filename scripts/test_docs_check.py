@@ -31,6 +31,52 @@ class DocsCheckTests(unittest.TestCase):
         return subprocess.run(["bash", "scripts/docs-check.sh", *([] if tracked else ["--all"])],
                               cwd=self.root, capture_output=True, text=True, env=env)
 
+    def test_footnote_labels_do_not_create_reference_navigation(self):
+        for usage in (
+            "[^note]\n\n[^note]: Page.md\n",
+            "[guide][^note]\n\n[^note]: Page.md\n",
+            "[^note]\n\n[^note]: Missing.md\n",
+        ):
+            with self.subTest(usage=usage):
+                result = self.check(usage)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("orphan", result.stderr)
+                self.assertNotIn("broken link", result.stderr)
+
+    def test_footnote_body_preserves_real_links(self):
+        result = self.check("[^note]\n\n[^note]: [Guide](Page.md)\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.check("[Guide](Page.md)\n\n[^note]: [Missing](Missing.md)\n")
+        self.assertIn("broken link -> Missing.md", result.stderr)
+
+    def test_table_cells_cannot_join_link_fragments(self):
+        for usage in (
+            "| [not | link](Page.md) |\n| --- | --- |\n",
+            "| first | second |\n| --- | --- |\n| [not | link](Page.md) |\n",
+            "| first |\n| --- |\n| text | [ignored](Page.md) |\n",
+            "| [not | link](Missing.md) |\n| --- | --- |\n",
+        ):
+            with self.subTest(usage=usage):
+                result = self.check(usage)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("orphan", result.stderr)
+                self.assertNotIn("broken link", result.stderr)
+
+    def test_table_cells_preserve_links_and_escaped_pipes(self):
+        for usage in (
+            "| [Guide](Page.md) | other |\n| --- | --- |\n",
+            "| first | second |\n| :---: | ---: |\n| [Guide](Page.md) | text |\n",
+            "| first | second |\n| --- | --- |\n| [with \\| pipe](Page.md) | text |\n",
+            "| first | second |\n| --- | --- |\n[Guide](Page.md)\n",
+            "first | second\n--- | ---\n[not | link][guide]\n\n[guide]: Page.md\n",
+            "ordinary [label | text](Page.md)\n",
+        ):
+            with self.subTest(usage=usage):
+                result = self.check(usage)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.check("| [Guide](Page.md) | [Missing](Missing.md) |\n| --- | --- |\n")
+        self.assertIn("broken link -> Missing.md", result.stderr)
+
     def test_all_documents_share_one_parser_process(self):
         launcher = self.root / "bin"
         launcher.mkdir()

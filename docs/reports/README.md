@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-16 · commit `fa4e6bdc2`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none

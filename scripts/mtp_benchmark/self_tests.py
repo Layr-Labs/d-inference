@@ -89,5 +89,3 @@ def self_test_artifact_provenance() -> int:
             raise RuntimeError("weight symlink drift was not detected")
     print("artifact provenance symlink self-test passed")
     return 0
-
-

@@ -339,5 +339,3 @@ def validate_report(
     for field, expected in expected_coverage(report).items():
         if coverage.get(field) != expected:
             raise ValueError(f"coverage.{field} is not dynamically labeled {expected}")
-
-

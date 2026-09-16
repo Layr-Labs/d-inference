@@ -320,5 +320,3 @@ def artifact_facts(model_id: str, snapshot: Path) -> dict[str, Any]:
         "weightFiles": weights,
         "artifactFingerprint": hashlib.sha256(payload).hexdigest(),
     }
-
-

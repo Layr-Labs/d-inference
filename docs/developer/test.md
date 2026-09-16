@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-15 · commit `1fee36798`
+> Last updated: 2026-09-16 · commit `fa4e6bdc2`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1314,7 +1314,10 @@ destinations stay empty, and backslash pairs preserve link/image meaning.
 Indented code is excluded while paragraph continuations and list navigation
 remain visible. Inner links take precedence over enclosing link syntax;
 clickable images retain the outer link without promoting alt text to navigation.
-Unused definitions and image targets do not hide orphan pages.
+Footnote labels do not enter the reference-link map; actual links in footnote
+bodies remain visible. GFM table links stay inside their cells, with escaped
+pipes preserved and excess cells excluded. Unused definitions and image targets
+do not hide orphan pages.
 Navigation must reach a page from `docs/README.md`, `docs/AGENTS.md`, or the root
 `README.md`, `CONTRIBUTING.md` or `AGENTS.md`. Self-links and disconnected cycles
 do not satisfy this check; nested indexes must also be reachable. Private docs

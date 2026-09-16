@@ -282,7 +282,7 @@ def read_definition(lines, start, first, containers):
             break
         offset += 2 if char == "\\" and text[offset + 1:offset + 2] in ("[", "]", "\\") else 1
     identifier = label(text[label_start:offset])
-    if not identifier or text[offset + 1:offset + 2] != ":":
+    if not identifier or identifier.startswith("^") or text[offset + 1:offset + 2] != ":":
         return None
     offset += 2
     offset = definition_space.match(text, offset).end()
@@ -470,6 +470,44 @@ def project_containers(content, containers):
     return content, len(containers)
 
 
+def table_cells(line):
+    """Split GFM cells at unescaped pipes, including pipes inside code spans."""
+    cells, start, escaped = [], 0, False
+    for offset, char in enumerate(line):
+        if char == "|" and not escaped:
+            cells.append(line[start:offset])
+            start = offset + 1
+        escaped = char == "\\" and not escaped
+    cells.append(line[start:])
+    if len(cells) > 1 and not cells[0].strip():
+        cells.pop(0)
+    if len(cells) > 1 and not cells[-1].strip():
+        cells.pop()
+    return cells
+
+
+def table_boundaries(body):
+    """Keep inline parsing within rendered cells and discard excess row cells."""
+    result, index = [], 0
+    while index < len(body):
+        header = table_cells(body[index])
+        delimiter = table_cells(body[index + 1]) if index + 1 < len(body) else []
+        if not (header and len(header) == len(delimiter)
+                and "|" in body[index] + body[index + 1]
+                and all(re.fullmatch(r"\s*:?-+:?\s*", cell) for cell in delimiter)):
+            result.append(body[index])
+            index += 1
+            continue
+        result.extend(["", "\n\n".join(header), ""])
+        index += 2
+        while index < len(body) and body[index].strip() and not re.match(
+            rf"(?:{block_start}|{marker_line}|{html_start})", body[index]
+        ):
+            result.extend(["\n\n".join(table_cells(body[index])[:len(header)]), ""])
+            index += 1
+    return result
+
+
 def parse(source):
     body, navigation, all_targets = [], [], []
     definitions = {}
@@ -602,7 +640,7 @@ def parse(source):
 
     # Inline code and HTML are skipped during scanning, preserving their raw
     # bytes inside an enclosing label instead of joining unrelated syntax.
-    text = "\n".join(body)
+    text = "\n".join(table_boundaries(body))
     for target, navigates in rendered_targets(text, definitions):
         all_targets.append(target)
         if navigates:

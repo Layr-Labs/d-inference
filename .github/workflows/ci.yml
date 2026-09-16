@@ -23,6 +23,7 @@ jobs:
           python3 scripts/test_review_automation.py
           ./scripts/sync-install-embed.sh check
           ./scripts/test-prod-env-refresh.sh
+          python3 scripts/test_model_publishing.py
           python3 -m unittest discover -s scripts -p test_dev_env_refresh.py
           python3 -m unittest discover -s scripts -p test_installer_rollback.py
 

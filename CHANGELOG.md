@@ -63,6 +63,9 @@ coordinator deployment.
 ## Unreleased
 
 - **Contributor guidance** — Issue forms and the PR template reference the current components, provider commands and review requirements. Go dependency update checks use the repository's root module.
+## Unreleased
+
+- Model publishing stops before uploads on failed or empty R2 credential reads. Rollback preparation validates registry inputs before copying objects, cleans its local staging on exit, and reaches promotion on macOS Bash.
 
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 

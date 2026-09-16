@@ -14,6 +14,10 @@ See [historical source references](historical-references.md) for local setup.
 Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 `scripts/publish-model.sh` to registration. See the
 [model publishing procedure](../operations/model-migration.md).
+Publishing scripts stop on failed or empty R2 credential lookups. The rollback
+helper validates identifiers and numeric registration fields before copying
+objects; its offline checks use command stubs, including Swift, and require no
+provider build. See [the script checks](test.md#model-publishing-script-checks).
 
 For the first dev coordinator deployment, follow the
 [dev bootstrap procedure](../operations/dev-environment.md): populate the required

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-15 · commit `dfe556c13`
+> Last updated: 2026-09-15 · commit `0f7b1e611`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1205,6 +1205,27 @@ This prevents task scheduling from silently changing admission order. Sources: `
 (`measureDecode`). See [GPT-OSS optimization results](../reports/2026-09-05-gptoss20b-optimization-results.md).
 
 ### 7. Docs lint
+
+The lightweight Contribution Policy workflow runs before review and again when
+the `docs-not-needed` label is added or removed. Its `Commit Signatures` job
+queries GitHub's pull-request commit list and requires
+`commit.verification.verified = true` for every commit. This covers commits on
+contributor forks, which the protected branch's signed-commit rule does not
+evaluate.
+
+Its `Docs Impact` job runs:
+
+```bash
+make docs-impact-check BASE=origin/master
+```
+
+`scripts/docs-impact-check.py` compares the branch with the merge base and
+applies `scripts/docs-impact-rules.json`. A documentation-sensitive source
+change must update one of that rule's canonical docs. Matching multiple rules
+requires satisfying each rule. Test-only files are ignored. A maintainer can
+apply `docs-not-needed` when a mapped source change does not alter documented
+behavior; the PR must explain the exception in its Documentation impact
+section.
 
 The historical-link regression checks run in isolated temporary Git repositories:
 

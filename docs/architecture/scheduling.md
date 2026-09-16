@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-15 · commit `a4692e70`
+> Last updated: 2026-09-15 · commit `0f7b1e611`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -374,9 +374,9 @@ reason (`offline_untrusted_private`, `pending_load_or_cooldown`, `not_idle`,
 `not_serving_catalog`, `dedicated_excluded`, `model_too_large`,
 `no_free_for_load`, `state_restoring`).
 
-**`WarmPoolSnapshot`.** Every tick produces one per model, logged as
-`warm_pool_tick` and retained as the controller's latest state
-(`storeSnapshots` / `latestSnapshots`):
+**`WarmPoolSnapshot`.** Every tick produces one per model, writes
+`warm_pool_tick` to the process logger, and retains the controller's latest
+state (`storeSnapshots` / `latestSnapshots`):
 `Model`, `TargetWarm`, `WarmProviders`, `EligibleCold`, `QueueDepth`,
 `OldestQueueAge`, `CapacityRejects`, `TTFTMisses`, `SpeculativeStarted`,
 `SpeculativeWon`, `ColdDispatches`, `LoadDurationEWMA`, `ObserveOnly`,
@@ -385,6 +385,16 @@ reason (`offline_untrusted_private`, `pending_load_or_cooldown`, `not_idle`,
 `ColdDisqualifiers`. With `ObserveOnly` the snapshot is produced but no
 `load_model` is sent; `MaxLoadsPerTick = 0` or `MaxGlobalPendingLoads = 0`
 has the same effect (`plan`).
+
+When Datadog is configured, `StartWarmPoolTelemetryLoop`
+(`coordinator/api/warm_pool_telemetry.go`) polls the retained snapshot every
+`warmPoolTelemetryPollInterval = 15 * time.Second`. It emits each newly
+observed snapshot timestamp once through the coordinator telemetry emitter as
+info/custom `warm_pool_tick`. Cold disqualifier counts become scalar
+`cold_disq_<reason>` attributes. The registry retains only the newest tick, so
+this is a sampled latest-state feed: multiple hot-trigger ticks between polls
+can collapse into one emitted snapshot. The event contains per-model
+aggregates only and is not written to Postgres.
 
 ### Heartbeat cadence and eviction
 
@@ -543,7 +553,7 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 | Token-budget and memory admission | `coordinator/registry/scheduler.go` — `freeMemoryAdmits`, `pooledBudgetAdmits`, `knownZeroTokenBudget`, `committedTokenBudget` |
 | Concurrency caps | `coordinator/registry/provider.go` — `maxConcurrency`, `maxConcurrencyForModelLocked`; `coordinator/registry/config.go` — `DefaultMaxConcurrent`; `coordinator/registry/concurrency_cap.go` — `SetQualityConcurrencyCap`, `effectiveMaxConcurrencyForModelRateLocked`, `hasConcurrencyHeadroomForModelCapResolvedLocked` |
 | Pending loads and swaps | `coordinator/registry/model_loading.go` — `pendingModelLoadTTL`, `TriggerModelSwaps`, `bestModelLoadProviderLocked`; `coordinator/registry/model_commands.go` — `SendLoadModel`; `coordinator/registry/model_swap_coalesce.go` — `modelSwapPlanInterval`, `modelSwapPlanGate`, `triggerModelSwapsFromHeartbeat` |
-| Warm pool | `coordinator/registry/warm_pool_controller.go` — `tick`, `plan`, `hasDemandPressure`, `targetWarm`, `WarmPoolSnapshot`; `coordinator/registry/warm_pool_target.go` — `warmTarget`, `qualityConcurrency`, `estimateServiceTime`, `rampLoadsThisTick`; `coordinator/registry/warm_pool_state.go` — `warmPoolArrivalEWMAAlpha` |
+| Warm pool | `coordinator/registry/warm_pool_controller.go` — `tick`, `plan`, `hasDemandPressure`, `targetWarm`, `WarmPoolSnapshot`; `coordinator/registry/warm_pool_target.go` — `warmTarget`, `qualityConcurrency`, `estimateServiceTime`, `rampLoadsThisTick`; `coordinator/registry/warm_pool_state.go` — `warmPoolArrivalEWMAAlpha`; `coordinator/api/warm_pool_telemetry.go` — `StartWarmPoolTelemetryLoop`, `warmPoolTelemetryFields` |
 | Warm-pool and quality-cap configuration | `coordinator/registry/config.go` — `WarmPoolConfig`, `QualityCapConfig`, `ReadConfig` |
 | Eviction | `coordinator/registry/provider_lifecycle.go` — `StartEvictionLoop`, `evictStale`, `disconnectProvider`, `evictStrikeThreshold`; wired in `coordinator/cmd/coordinator/main.go` |
 | Provider writer | `coordinator/registry/provider_writer.go` — `providerWriter`, `providerWriteTimeout`, `watchWrites` |

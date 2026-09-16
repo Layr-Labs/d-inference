@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-15 · commit `56da3a668`
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -179,7 +179,10 @@ initial planning transaction fails, that marker makes subsequent
 startup fail closed rather than silently replan against newly created partial
 counters. Follow the recovery procedure below; a committed plan's per-key
 progress instead resumes automatically. New
-provider-recovery indexes are built concurrently and checked for validity. An
+provider-recovery and [ledger identity indexes](../architecture/storage.md#migrations-run-inside-the-process-at-every-boot)
+are built concurrently and checked for validity. Complete their initial builds
+during this preparation: construction permits ongoing writes but can wait for
+older transactions, and ordinary startup waits for a valid, ready index. An
 interrupted build that leaves an invalid index fails closed with its index name;
 repair it under a separate approved operation. Ordinary startup still applies
 schema checks, and this preparation does not prove a five-second handoff.

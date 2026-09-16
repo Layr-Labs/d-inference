@@ -69,7 +69,10 @@ curl "https://api.darkbloom.dev/v1/billing/stripe/session?id=3f0e..." \
 ```
 
 `status` moves from `pending` to `completed` when the webhook has been
-processed (`StripeSessionStatus`).
+processed (`StripeSessionStatus`). If the session remains `pending`,
+check your balance before starting another payment. The credit can land before
+the session status is saved; redelivery of the same Checkout payment does not
+add credit again. See [deposit bookkeeping](../architecture/billing.md#stripe-checkout-webhook-incomplete-session-bookkeeping).
 
 ### 3. Read your balance and usage
 

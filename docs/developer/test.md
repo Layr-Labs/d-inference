@@ -382,8 +382,8 @@ GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api/catalog -run '^TestMapQuant
 `TestModelPriceMutationsAreVisible` checks set, update, delete and recreation
 through both store backends. `TestPostgresPriceMutationRejectsDelayedCacheFill`
 holds a completed real SQL read while an update or delete finishes, then checks
-later prices and cache hits (`coordinator/store/model_price_cache_test.go`,
-`coordinator/store/postgres_model_price_cache_test.go`). Run these with the
+later prices and cache hits (`coordinator/store/postgres/model_price_mutations_test.go`,
+`coordinator/store/postgres/model_price_cache_test.go`). Run these with the
 disposable `DATABASE_URL` below to include PostgreSQL.
 
 Run prediction telemetry checks from the repository root:
@@ -737,8 +737,8 @@ DATABASE_URL='postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable'
   go test -race ./coordinator/store -run '^TestUsage(Flow|Location)' -count=1
 ```
 
-The fixtures in `coordinator/store/analytics_flows_test.go` and
-`coordinator/store/analytics_locations_test.go` compare the real queries with
+The fixtures in `coordinator/store/postgres/analytics_flows_test.go` and
+`coordinator/store/postgres/analytics_locations_test.go` compare the real queries with
 independent historical SQL. They require each geographic key exactly once and
 finite coordinate differences within `1e-10` before normalizing coordinates for
 the remaining field comparison. Weighted totals, descending request counts and
@@ -756,7 +756,7 @@ GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/store ./coordinator/payments/ba
 ```
 
 `TestListProviderSessionsOverlapping_BlueGreenDoubleOpen` in
-`coordinator/store/base_rewards_test.go` requires both open session IDs exactly
+`coordinator/store/postgres/base_rewards_test.go` requires both open session IDs exactly
 once, with their original heartbeat and account/provider identity, on Memory
 and PostgreSQL. `TestSettleEpoch_BlueGreenDoubleOpen` in
 `coordinator/payments/baserewards/engine_test.go` settles intervals covering
@@ -782,6 +782,37 @@ cap so candidate demand exceeds the pool. Account names sort in reverse
 identical payouts after an input shuffle and full use of the pool. This checks
 the actual `ProviderKey` tiebreaker in `AllocateDraws`; dedicated fixtures retain
 the account cap and cumulative cap across settlement runs.
+
+#### Stripe deposit replay
+
+Run the signed HTTP regression and shared ledger contract from the repository
+root. Set `DATABASE_URL` only to an owned disposable PostgreSQL database for
+the store command; without it, only the memory cases run.
+
+```bash
+go test -race ./coordinator/api -run '^TestStripeCheckoutWebhookCreditsEachSessionOnce$' -count=1
+go test -race ./coordinator/store -run '^Test(LedgerCreditOnceAcrossConcurrentHandles|CreditOnceRecognizesPriorLedgerAndIndependentIdentities)$' -count=1
+```
+
+`coordinator/api/stripe_deposit_replay_test.go` sends real signed webhook
+requests through an isolated HTTP server and MemoryStore. It checks missing
+session metadata, a missing row, a failed completion write, and completed
+session replay. `coordinator/store/postgres/ledger_once_test.go` checks simultaneous
+credits through independent PostgreSQL pools, deposits versus withdrawable
+refunds, prior ledger entries, and independent account/type/reference keys.
+`coordinator/store/postgres/ledger_identity_index_test.go` captures the query executed by
+`CreditOnce` and verifies that its plan indexes the account/type/reference
+digest while retaining exact reference equality. It rebuilds the concurrent
+index over long references and duplicate historical ledger rows, then checks
+replay, a different long reference and the same index OID after repeat startup.
+These PostgreSQL-only cases skip without a disposable `DATABASE_URL`:
+
+```bash
+go test -race ./coordinator/store -run '^TestPostgresLedgerOnce' -count=1
+```
+
+The fixtures use no external Stripe service. Query-plan assertions establish
+index applicability, not a production latency measurement.
 
 #### Provider config cleanup
 

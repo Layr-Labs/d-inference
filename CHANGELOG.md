@@ -160,6 +160,10 @@ coordinator and console changes require their own deployments.
 
 - Exclude private-only self-route providers from public model datacenter countries. Model counts and country metadata now share the same provider eligibility check.
 
+- Serialize a full transfer-reversal refund with payout completion. Recheck the current withdrawal under its store lock and commit principal/fee refunds with the terminal state, preventing a stale webhook read from refunding an already-paid withdrawal. A failed transaction leaves both balances and withdrawal state unchanged.
+
+- Credit each Stripe Checkout payment once per account even when its local billing-session metadata is absent or completion bookkeeping fails. Serialize repeated credits across coordinator store connections while preserving non-withdrawable deposits and existing withdrawal refunds. Index ledger identity lookups for large accounts while retaining long-reference support.
+
 ## Unreleased — stats request-flow refresh
 
 - Restore Stats refreshes on large usage windows by aggregating request origins before looking up provider locations. Preserve weighted coordinates, request/token counts, and the top-50 flow limit while avoiding large temporary sorts.

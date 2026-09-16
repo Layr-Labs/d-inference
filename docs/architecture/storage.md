@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-16 · commit `ccd969470`
+> Last updated: 2026-09-15 · commit `56da3a668`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -120,7 +120,7 @@ It runs idempotent statements — `CREATE TABLE IF NOT EXISTS`,
 `ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `DROP TABLE IF EXISTS`
 for retired tables — on every start, followed by:
 `migrateEarningsSummary` (`coordinator/store/postgres/earnings_summary_migration.go`),
-`ensureProviderRestoreIndexes` (`coordinator/store/postgres/startup.go`),
+`ensureConcurrentIndexes` (`coordinator/store/postgres/startup.go`),
 `migrateUsageTotals` (`coordinator/store/postgres/usage_totals_migration.go`),
 `migrateWithdrawableBalance` (`coordinator/store/postgres/withdrawable_migration.go`) and
 `ensureProviderEarningsJobIndex`. One-shot *data* migrations are gated by a row
@@ -134,6 +134,24 @@ table and kept the coordinator from binding its port) and
 behind a long query's lock). `coordinator/deploy/start.sh` does not touch the
 database; it only prepares the persistent disk and MicroMDM before `exec
 coordinator`.
+
+`ensureConcurrentIndexes` checks the current schema for valid, ready provider
+restore indexes and `idx_ledger_once_identity`. The ledger index is non-unique on
+`(account_id, entry_type, md5(reference))`; it accepts existing duplicate rows
+and arbitrary-length reference text, including admin notes. `creditOnceTx`
+uses the same digest predicate to narrow the lookup and retains `reference = $3`
+as its authoritative equality check. A digest collision therefore cannot make
+a different reference count as already credited
+(`coordinator/store/postgres/ledger_once.go`).
+
+Missing indexes are built with `CREATE INDEX CONCURRENTLY` through a dedicated
+connection outside a transaction. Construction permits ledger/provider writes
+but can wait for older transactions; startup waits until the index is valid
+and ready. An existing valid index takes the inspection fast path. An invalid
+index left by an interrupted build stops startup with its name for repair;
+startup does not delete ledger rows or silently accept an unfinished index
+(`coordinator/store/postgres/startup.go` `ensureConcurrentIndex`). The existing
+`--migrate-only` preparation path can complete this work before the cutover.
 
 The earnings-summary backfill pins a `REPEATABLE READ` snapshot before publishing
 its attempted-plan marker on a separate, bounded database connection. Missing

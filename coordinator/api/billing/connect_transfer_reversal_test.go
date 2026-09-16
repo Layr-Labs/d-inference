@@ -197,10 +197,8 @@ func TestConnectWebhookTransferReversedOnPaidRowNeedsHuman(t *testing.T) {
 	}
 }
 
-// TestConnectWebhookTransferReversedConvergesAcrossPersistFailure: the credit
-// lands but the row persist fails → 500 → Stripe redelivers → the
-// reference-deduped credit no-ops and the persist completes. Exactly one
-// refund, terminal row.
+// A failed reversal transaction returns 500 without changing the balance;
+// webhook redelivery settles it once with both the refund and terminal state.
 func TestConnectWebhookTransferReversedConvergesAcrossPersistFailure(t *testing.T) {
 	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer fakeStripe.Close()
@@ -214,15 +212,15 @@ func TestConnectWebhookTransferReversedConvergesAcrossPersistFailure(t *testing.
 	})
 	balBefore := flaky.GetBalance(user.AccountID)
 
-	flaky.failUpdates = true
+	flaky.failReversals = true
 	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_conv")); w.Code != http.StatusInternalServerError {
 		t.Fatalf("got %d, want 500 (persist failed — Stripe must redeliver)", w.Code)
 	}
-	if bal := flaky.GetBalance(user.AccountID); bal != balBefore+5_000_000 {
-		t.Fatalf("credit should have landed once: balance = %d", bal)
+	if bal := flaky.GetBalance(user.AccountID); bal != balBefore {
+		t.Fatalf("failed reversal moved balance: %d, want %d", bal, balBefore)
 	}
 
-	flaky.failUpdates = false
+	flaky.failReversals = false
 	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_conv")); w.Code != http.StatusOK {
 		t.Fatalf("redelivery got %d", w.Code)
 	}
@@ -235,10 +233,10 @@ func TestConnectWebhookTransferReversedConvergesAcrossPersistFailure(t *testing.
 	}
 }
 
-// TestConnectWebhookRefundedRowFlipRedelivers: the failed-status flip on an
-// already-refunded row is what keeps it out of sweep reconciliation — a
-// transient persist failure must 500 (so Stripe redelivers) instead of
-// acking and leaving the refunded row claimable.
+// TestConnectWebhookTransientLookupErrorReturns500: a transient store failure
+// on the payout lookup must NOT fall through to account-wide sweep
+// reconciliation (which could claim unrelated rows) — it responds non-2xx so
+// Stripe redelivers.
 func TestConnectWebhookRefundedRowFlipRedelivers(t *testing.T) {
 	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer fakeStripe.Close()

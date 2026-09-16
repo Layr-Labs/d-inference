@@ -103,7 +103,7 @@ finalization remains guarded by `PendingRequest.FinalizeReservation`.
 | Platform price writers | `PUT /v1/admin/pricing` (`coordinator/api/billing/pricing.go` `AdminPricing`) and model registration, which requires positive `input_price`/`output_price` and writes them as the platform row (`coordinator/api/catalog/register_model.go` `RegisterModel` → `SetModelPrice("platform", …)`). |
 | Provider custom price | `PUT /v1/pricing` / `DELETE /v1/pricing` for the caller's own account; a resolved linked user is required (`coordinator/api/billing/pricing.go` `SetPricing`, `DeletePricing`). The only validation is `> 0`; there is no floor or ceiling relative to the platform price. |
 | Resolution at settlement | provider custom → platform → `DefaultInputPricePerMillion` / `DefaultOutputPricePerMillion` (`coordinator/inference/settlement/completion_price.go` `priceCompletion`). Service consumers skip the first step. The reservation uses the same order with the provider chosen at dispatch (`coordinator/inference/settlement/reservation_price.go` `providerEstimate`, `Estimate`). |
-| Lookup consistency | Both successful PostgreSQL price mutations invalidate the local cached value and fence older cache fills. In-flight reads and other coordinator processes retain the [price lookup cache semantics](../reference/pricing-model.md#price-lookup-cache) (`coordinator/store/postgres_model_prices.go`). |
+| Lookup consistency | Both successful PostgreSQL price mutations invalidate the local cached value and fence older cache fills. In-flight reads and other coordinator processes retain the [price lookup cache semantics](../reference/pricing-model.md#price-lookup-cache) (`coordinator/store/postgres/model_prices.go`). |
 | Cost | `calculateCost` bills `promptTokens × in / 1M + completionTokens × out / 1M`. `CalculateCostWithOverrides` then applies `minimumChargeMicroUSD`; `CalculateCostWithOverridesNoMinimum` (service traffic) floors non-zero usage at 1 µUSD instead (`coordinator/payments/pricing.go`). Cached tokens: invariant 5. |
 | Public read | `GET /v1/pricing` returns the `platform` rows plus the fallback defaults (`GetPricing`); the OpenRouter model feed renders µUSD/1M as USD-per-token strings via `coordinator/payments/pricing.go` `FormatPerTokenUSD`. |
 
@@ -180,13 +180,29 @@ leaderboard and `GET /v1/me/summary` count as "reward" rather than "work"
 earnings (`coordinator/store/contracts/ledger.go` `IsRewardLedgerType`;
 `coordinator/api/accountfleet/summary.go` `Controller.Summary`).
 
-Three credit primitives (`coordinator/store/postgres/ledger.go`):
+Credit primitives (`coordinator/store/postgres/ledger.go` and
+`coordinator/store/postgres/ledger_once.go`; memory equivalents use the same
+ledger identity in `coordinator/store/memory/ledger_once.go`):
 
 | Primitive | Effect | Used for |
 |---|---|---|
-| `Credit` (`creditTx`) | raises `balance_micro_usd` only; not reference-idempotent | deposits, invite/admin credits, reservation and settlement refunds, platform fee |
-| `CreditWithdrawable` (`creditWithdrawableTx`) | raises both columns; not reference-idempotent | referral rewards, admin rewards |
-| `CreditWithdrawableOnce` | `CreditWithdrawable` guarded by a `pg_advisory_xact_lock` on `entry_type:reference` and an existence check on `(account_id, entry_type, reference)`; returns whether it applied | withdrawal principal and fee refunds |
+| `Credit` (`creditBalance`) | raises `balance_micro_usd` only; not reference-idempotent | invite/admin credits, reservation and settlement refunds, platform fee |
+| `CreditOnce` | raises `balance_micro_usd` once per `(account_id, entry_type, reference)`; returns whether it applied | Stripe deposits |
+| `CreditWithdrawable` (`creditWithdrawableBalance`) | raises both columns; not reference-idempotent | referral rewards, admin rewards |
+| `CreditWithdrawableOnce` | raises both columns once per `(account_id, entry_type, reference)`; returns whether it applied | withdrawal principal and fee refunds |
+
+Both `Once` methods share `creditOnce`. In Postgres it takes a
+`pg_advisory_xact_lock` on `entry_type:reference`, checks existing ledger rows,
+and commits the balance and ledger credit in the same transaction. The
+[ledger identity index](storage.md#migrations-run-inside-the-process-at-every-boot)
+narrows this lookup while preserving exact reference equality and support for
+long references. The memory
+store holds its mutex across the same check and credit. Existing rows written
+before adoption of these methods also suppress a matching replay. Reversal
+refunds retain the caller-owned lock or transaction through
+`creditWithdrawableOnceLocked` and `creditWithdrawableOnceTx`, which delegate
+to the same ledger check and credit without acquiring another store mutex or
+committing the enclosing withdrawal update.
 
 `CreditProviderAccount` and `SettleProviderFloorDraw` are single-statement
 CTEs whose first `INSERT … ON CONFLICT DO NOTHING` gates every downstream
@@ -220,17 +236,19 @@ The platform fee follows the same per-user override as everyone else.
    `checkout.session.completed` is processed; every other event type is
    acknowledged with 200 and ignored.
 3. If `metadata.billing_session_id` names a session already `completed`, the
-   handler returns 200 without crediting. Otherwise it credits
-   `AmountTotal × 10_000` µUSD (`CreditDeposit` → `store.Credit`, entry
-   `stripe_deposit`, reference `stripe:<checkout_session_id>`), then marks the
-   session complete and applies the referral code — both best-effort (metrics
+   handler returns 200 without crediting. Otherwise `CreditDeposit` calls
+   `store.CreditOnce` with `AmountTotal × 10_000` µUSD, entry `stripe_deposit`,
+   and reference `stripe:<checkout_session_id>`. The account, entry type and
+   reference identify the credit independently of local session metadata.
+   After the first credit or a duplicate no-op, the handler marks the session
+   complete and applies the referral code — both best-effort (metrics
    `billing.session_complete_failed`, `billing.referral_apply_failed`).
 4. `GET /v1/billing/stripe/session?id=<session_id>` polls the row;
    `GET /v1/billing/methods` (public) lists configured methods — Stripe only
    (`coordinator/billing/billing.go` `SupportedMethods`).
 
-Deposits are **not withdrawable** (they use `Credit`). The dedup gap in this
-sequence is stated under Failure modes.
+Deposits are **not withdrawable** (`CreditOnce` changes only the spendable
+balance). Session bookkeeping can lag the credit; see Failure modes.
 
 ### Provider payouts (Stripe Connect Express)
 
@@ -394,14 +412,15 @@ this release; they do not replace the existing reward inputs or eligibility gate
    withdrawable credit, so a re-settled job is a no-op instead of a second
    payout (`coordinator/store/postgres/earnings.go`).
 8. **`withdrawable_micro_usd ≤ balance_micro_usd`.** `Debit` lowers
-   withdrawable to `LEAST(withdrawable, balance − amount)`; `Credit` raises
-   only `balance`; `CreditWithdrawable`, `CreditWithdrawableOnce`, and
+   withdrawable to `LEAST(withdrawable, balance − amount)`; `Credit` and
+   `CreditOnce` raise only `balance`; `CreditWithdrawable`,
+   `CreditWithdrawableOnce`, and
    `CreditProviderAccount` raise both by the same amount;
    `CreateStripeWithdrawalWithDebit` debits both and fails unless
    `withdrawable ≥ amount` (`coordinator/store/postgres/ledger.go`, `coordinator/store/postgres/stripe_withdrawals.go`).
-9. **Only earned money is withdrawable.** `stripe_deposit`, `invite_credit`,
-   `admin_credit`, and reservation or settlement `refund` entries go through
-   `Credit`; `payout`, `referral_reward`, `admin_reward`,
+9. **Only earned money is withdrawable.** `stripe_deposit` entries use
+   `CreditOnce`; `invite_credit`, `admin_credit`, and reservation or settlement
+   `refund` entries use `Credit`; `payout`, `referral_reward`, `admin_reward`,
    `provider_floor_draw`, and withdrawal refunds go through the withdrawable
    primitives (`coordinator/api/billing/checkout_webhook.go` `StripeWebhook`;
    `coordinator/api/billing/admin_adjustment.go` `AdminCredit`, `AdminReward`; `coordinator/api/accounts/invites.go`
@@ -415,8 +434,14 @@ this release; they do not replace the existing reward inputs or eligibility gate
     redelivered webhook or a reconciler pass cannot refund twice
     (`coordinator/api/billing/connect_retry.go` `creditRefundOnceWithRetry`;
     `coordinator/api/billing/connect_payout_events.go` `handlePayoutTerminal`;
-    `coordinator/api/billing/connect_transfer_reversal.go` `handleTransferFailed`; `coordinator/store/postgres/ledger.go`
-    `CreditWithdrawableOnce`).
+    `coordinator/api/billing/connect_transfer_reversal.go` `handleTransferFailed`; `coordinator/store/postgres/ledger_once.go`
+    `CreditWithdrawableOnce`). Full transfer reversals call
+    `RefundStripeWithdrawalAfterReversal` in `coordinator/store/postgres/stripe_reversal.go`:
+    the current withdrawal is locked, a paid/refunded row or changed transfer ID
+    is rejected, and both reference-idempotent credits commit with the failed/
+    refunded state. A payout completion that wins the row lock receives no
+    automatic reversal refund. Both refund references are locked before balance
+    writes to avoid a lock cycle with an independent instant-fee refund.
 11. **A capped key never debits.** `accounts.CheckKeySpendCap` runs before the `Debit`
     in `reserveInferenceBalance` and `topUpReservationForInlinedMedia`;
     `Service.ReserveForProvider` performs the same cap comparison before its
@@ -449,6 +474,13 @@ this release; they do not replace the existing reward inputs or eligibility gate
     `provider_earnings` row with `model = 'base_reward'` that
     `SumProviderEarningsByKey` excludes from the next epoch's `earned`
     (`coordinator/store/postgres/base_rewards.go`).
+16. **A Stripe deposit credits an account once per Checkout reference.**
+    `CreditDeposit` uses `CreditOnce` with the account, `LedgerStripeDeposit`,
+    and `stripe:<checkout_session_id>`. Concurrent calls through independent
+    Postgres stores serialize under the same transaction lock; absent or
+    incomplete local billing-session state does not bypass the ledger check
+    (`coordinator/billing/billing.go`;
+    `coordinator/store/postgres/ledger_once.go` `creditOnce`).
 
 ## Failure modes
 
@@ -487,16 +519,17 @@ balance still serves free self-route.
 | Endpoint requires a linked user but the request context has none | 401 | `auth_error` | `RequirePrivyUser` (`coordinator/api/requestauth/identity.go`) |
 | Privy-only route called with an API key | 403 | `forbidden` | `requirePrivyAuth` (`coordinator/api/authentication.go`) |
 
-### Stripe Checkout webhook: deposit dedup gap
+### Stripe Checkout webhook: incomplete session bookkeeping
 
-`StripeWebhook` checks `billing_sessions.status == "completed"`
-**before** crediting and marks the session complete **after** crediting, and
-`store.Credit` is not reference-idempotent. A redelivered
-`checkout.session.completed` that arrives between the credit and the mark, or
-after a failed `CompleteBillingSession`, credits the deposit twice. A session
-without `billing_session_id` metadata has no dedup at all. `IsExternalIDProcessed`
-(`coordinator/billing/billing.go`; `coordinator/store/postgres/billing_sessions.go`) exists
-but is not called by the webhook.
+`StripeWebhook` returns 500 if `CreditDeposit` fails. After a successful
+credit, a failed `CompleteBillingSession` increments
+`billing.session_complete_failed` and the webhook still returns 200. The
+spendable balance may therefore be credited while the local session remains
+`pending`. A later redelivery retries the bookkeeping after `CreditOnce`
+recognizes the existing ledger row; it does not add the deposit again.
+Missing session metadata or a missing session row follows the same ledger
+check (`coordinator/api/billing/checkout_webhook.go` `StripeWebhook`;
+`coordinator/store/postgres/ledger_once.go` `creditOnce`).
 
 ### Stripe Connect webhook semantics
 
@@ -509,7 +542,7 @@ help (`coordinator/api/billing/connect_webhook.go`).
 | `account.updated` | `handleAccountUpdated` mirrors Stripe's view into `users.stripe_*` (`stripeStatusForAccount`: `pending`, `ready`, `restricted`, or `rejected`). Best-effort; the status endpoint re-syncs on page load. |
 | `payout.paid` | `handlePayoutTerminal(success=true)`: matched by payout id → `MarkStripeWithdrawalPaid` (no-op on an already `paid` row; a refunded/terminal row is logged for manual review, never overwritten). Unmatched → `reconcileUnmatchedPayout`: only automatic sweep payouts reconcile; they mark every `transferred` row of that connected account whose funds had become available (`stripeRecipientTransferDelay = 24 * time.Hour` for `recipient` accounts, immediate for `full`) and that has no in-flight payout of its own as `paid`. Amounts are ignored (FX-converted). |
 | `payout.failed`, `payout.canceled` | `handlePayoutTerminal(success=false)`: refund the instant fee via `CreditWithdrawableOnce(stripe_withdraw_fee:<id>)`, detach the payout id, reopen the row as `transferred` so the sweep retries. A refunded+paid row is logged for manual review. |
-| `transfer.reversed` | `handleTransferFailed`: refund the net principal (`stripe_withdraw:<id>`) and the fee (`stripe_withdraw_fee:<id>`) once each via `CreditWithdrawableOnce`, mark the row `failed`. |
+| `transfer.reversed` | `handleTransferFailed`: full reversals call `RefundStripeWithdrawalAfterReversal` to check the current row, refund net principal (`stripe_withdraw:<id>`) and fee (`stripe_withdraw_fee:<id>`) once, and mark it `failed`/refunded in one transaction. Paid rows remain for manual review; partial reversals do not refund automatically. |
 | anything else | acknowledged, ignored |
 
 ### Settlement anomalies

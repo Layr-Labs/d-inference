@@ -72,7 +72,7 @@ updated_at)`, primary key `(account_id, model)`
 Successful `SetModelPrice` and `DeleteModelPrice` calls remove the matching cached
 value and prevent earlier SQL reads from republishing it afterward. A lookup
 already in progress may return its original SQL result. Missing rows and read
-errors remain uncached (`coordinator/store/postgres_model_prices.go`).
+errors remain uncached (`coordinator/store/postgres/model_prices.go`).
 
 This consistency boundary is one store instance. Other coordinator processes
 retain their normal lookup TTL; serialized model-feed response caches keep their
@@ -134,10 +134,18 @@ rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
 | `Credit` | + | — | no | `coordinator/store/postgres/ledger.go` (`creditTx`) |
 | `CreditWithdrawable` | + | + | no | `creditWithdrawableTx` |
 | `CreditWithdrawableOnce` | + | + | on `(account_id, entry_type, reference)` under `pg_advisory_xact_lock` | `CreditWithdrawableOnce` |
+| `CreditOnce` | + | — | on `(account_id, entry_type, reference)` under `pg_advisory_xact_lock` | `coordinator/store/postgres/ledger_once.go` (`CreditOnce`) |
 | `Debit` | − (fails with `ErrInsufficientBalance` if `balance < amount`) | `LEAST(withdrawable, balance − amount)` | no | `Debit` |
 | `CreateStripeWithdrawalWithDebit` | − | − (fails unless `withdrawable >= amount`) | row insert in the same transaction | `CreateStripeWithdrawalWithDebit` |
 | `CreditProviderAccount` | + | + | on `provider_earnings.job_id` | `CreditProviderAccount`; index `idx_provider_earnings_job` |
 | `SettleProviderFloorDraw` | + | + | on `(provider_key, epoch_id)` | `coordinator/store/postgres/base_rewards.go` |
+
+`CreditOnce` and `CreditWithdrawableOnce` return whether a credit was applied.
+A matching pre-existing ledger row returns `false` without changing either
+balance. The memory implementation applies the same identity check while
+holding its store mutex (`coordinator/store/memory/ledger_once.go` `creditOnce`).
+PostgreSQL lookup/index behavior and concurrent startup preparation are defined
+in [Storage](../architecture/storage.md#migrations-run-inside-the-process-at-every-boot).
 
 ## Per-key spend caps
 

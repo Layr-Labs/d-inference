@@ -123,7 +123,7 @@ provider binary ([test procedure](test.md#2-coordinator-go)).
 Model metadata normalization and its [Go regression test](test.md#2-coordinator-go)
 build with the coordinator; no provider build or model weights are required.
 
-PostgreSQL model-price operations live in `coordinator/store/postgres_model_prices.go`
+PostgreSQL model-price operations live in `coordinator/store/postgres/model_prices.go`
 and build with the coordinator target. Their [cache regression tests](test.md#2-coordinator-go)
 use the standard disposable PostgreSQL test database.
 
@@ -152,6 +152,11 @@ Go and a disposable PostgreSQL database.
 
 The [blue-green session assertions](test.md#blue-green-session-and-uptime-assertions)
 compile only Go; a disposable `DATABASE_URL` includes PostgreSQL alongside Memory.
+
+The [deposit replay checks](test.md#stripe-deposit-replay) need only Go and a
+disposable PostgreSQL 16 database; they use fixture webhook signatures and
+make no Stripe network calls. They also cover the concurrent ledger lookup
+index and require rebuilding the Go test binary after index or query changes.
 
 ```bash
 make coordinator-build            # cd coordinator && go build ./cmd/coordinator

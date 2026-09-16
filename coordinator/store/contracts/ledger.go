@@ -58,6 +58,11 @@ type LedgerStore interface {
 	// Credit adds micro-USD to an account and records the ledger entry.
 	Credit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error
 
+	// CreditOnce atomically credits a ledger identity at most once. The identity
+	// is (accountID, entryType, reference); existing matching ledger entries also
+	// suppress a replay. It does not increase the withdrawable balance.
+	CreditOnce(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) (applied bool, err error)
+
 	// Debit subtracts micro-USD from an account. Returns error if insufficient funds.
 	Debit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error
 
@@ -75,8 +80,8 @@ type LedgerStore interface {
 	CreditWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error
 
 	// CreditWithdrawableOnce is CreditWithdrawable made idempotent on
-	// (entryType, reference): if a ledger entry with the same type and
-	// reference already exists, the credit is skipped and applied=false.
+	// (accountID, entryType, reference): if a matching ledger entry already
+	// exists, the credit is skipped and applied=false.
 	// Use for refunds driven by Stripe webhooks, where redelivery (or a
 	// crash between the credit and the row persist) must never credit the
 	// same refund twice.

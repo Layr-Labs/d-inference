@@ -47,23 +47,6 @@ func (s *Store) CreditWithdrawable(accountID string, amountMicroUSD int64, entry
 	return nil
 }
 
-// CreditWithdrawableOnce credits only if no ledger entry with the same
-// (entryType, reference) exists yet.
-func (s *Store) CreditWithdrawableOnce(accountID string, amountMicroUSD int64, entryType contracts.LedgerEntryType, reference string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := range s.ledgerEntries {
-		if s.ledgerEntries[i].AccountID == accountID &&
-			s.ledgerEntries[i].Type == entryType &&
-			s.ledgerEntries[i].Reference == reference {
-			return false, nil
-		}
-	}
-	s.creditLocked(accountID, amountMicroUSD, entryType, reference, time.Now())
-	s.withdrawable[accountID] += amountMicroUSD
-	return true, nil
-}
-
 // DebitWithdrawable subtracts micro-USD from both the total balance and
 // the withdrawable balance. Returns error if withdrawable is insufficient.
 func (s *Store) DebitWithdrawable(accountID string, amountMicroUSD int64, entryType contracts.LedgerEntryType, reference string) error {

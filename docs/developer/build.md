@@ -139,34 +139,19 @@ Sidecar Tests").
 
 ### 5. Provider CLI (Swift) with source-matched metallib
 
-Config-mutation test builds use the same CLI helpers with migration disabled
-for temporary fixtures. Rebuild the test bundle after changing fixture helpers;
-`--skip-build` alone reuses the previous assertions. See
-[the provider test procedure](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib).
+Build the test product again after changing fixture helpers or assertions;
+`--skip-build` alone reuses the previous executable. The
+[provider test procedure](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib)
+covers isolated CLI configuration, artifact integrity, SSD authentication,
+paged-preflight diagnostics, and stream ordering. Synthetic MLX fixtures need
+the matched metallib; enabled live-model fixtures also need their documented
+model inputs.
 
-The artifact integrity assertions use synthetic snapshot files and an in-memory
-cache encryption key. They need the provider test build, without model downloads
-or Secure Enclave provisioning; see the focused checks in [test.md](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib).
-
-The same test product includes the SSD authentication and write-completion
-checks described in that procedure; their tiny MLX fixtures require the matched metallib.
-
-The same staged product runs the paged-preflight child diagnostic assertions
-described in that procedure.
-
-Compile the provider test targets after changing live-fixture collectors or
-assertions:
+To compile all test targets without executing fixtures:
 
 ```bash
 (cd provider-swift && swift build --build-tests)
 ```
-
-This checks compilation without executing the fixtures. Use the
-[live-fixture procedure](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib)
-to qualify an enabled model scenario.
-
-The same test product includes the [stream and model-list assertion checks](test.md#stream-and-model-list-assertions);
-those checks use scripted engines and need no downloaded model.
 
 ```bash
 make provider-build

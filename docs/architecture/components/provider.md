@@ -113,6 +113,10 @@ flowchart LR
 | Core library | `provider-swift/Sources/ProviderCore/` |
 | Foundation-only library | `provider-swift/Sources/ProviderCoreFoundation/` |
 | Fan control | `provider-swift/Sources/DarkbloomFanCore/`, `provider-swift/Sources/DarkbloomFanProtocol/`, `provider-swift/Sources/DarkbloomFanService/`, `provider-swift/Sources/DarkbloomFanHelper/` |
+| Cache setup and outcomes | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+AttentionPrefixCache.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2RequestUsageSignal.swift` |
+| Download publication and catalog bounds | `provider-swift/Sources/ProviderCore/Models/ModelDownloader+Manifest.swift`, `provider-swift/Sources/ProviderCore/Models/ModelCatalogClient+Bounds.swift` |
+| Shared system command execution | `provider-swift/Sources/ProviderCore/Process/SecurityCommandRunner.swift`; doctor probes retain deadlines through `provider-swift/Sources/ProviderCore/Process/BoundedProcess.swift` |
+| CLI config mutations | `provider-swift/Sources/darkbloom/ConfigMutation.swift` (`withMutableConfig`) |
 | Tests | `provider-swift/Tests/` |
 
 ## Related

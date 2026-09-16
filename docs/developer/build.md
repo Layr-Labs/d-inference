@@ -549,3 +549,6 @@ for sampling scope, regression filters and diagnostic restrictions.
 Integration fixture identities differ from the exact release catalog IDs. See
 [the E2E defaults and cache lanes](test.md#8-end-to-end-suite) before interpreting
 a contiguous HF-fixture smoke as release backend/cache qualification.
+The [released-provider artifact fixtures](test.md#8-end-to-end-suite) check
+bundle validation with local temporary files only; they require Go, not a Swift
+build, released binary, SIP probe or GPU workload.

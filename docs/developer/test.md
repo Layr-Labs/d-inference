@@ -1139,6 +1139,19 @@ make docs-stamp FILES="docs/developer/test.md"   # refresh a stamp after editing
 
 ### 8. End-to-end suite
 
+The released-provider artifact gate has CPU-only fixtures that do not launch a
+provider, inspect SIP, or download a release:
+
+```bash
+go test -race ./e2e -short -run 'TestIntegrationMixedVersion(GateContract|Artifact)' -count=1
+```
+
+`e2e/mixed_version_artifacts_test.go` verifies both bundle hashes, executable
+permission and regular-file input before hashing; directories and FIFOs fail
+promptly. The live compatibility endpoint and SIP-tier checks remain in
+`e2e/mixed_version_test.go`. Passing these fixtures does not qualify a real
+released-provider session.
+
 The e2e package (`e2e/`, harness in `e2e/testbed/`) boots ephemeral Postgres,
 a coordinator from the current tree, and one or more **real** `darkbloom`
 provider processes serving MLX checkpoints, then drives the OpenAI-compatible

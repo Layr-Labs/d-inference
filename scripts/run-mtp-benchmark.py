@@ -25,35 +25,35 @@ _SCRIPT_DIRECTORY = str(Path(__file__).resolve().parent)
 if _SCRIPT_DIRECTORY not in sys.path:
     sys.path.insert(0, _SCRIPT_DIRECTORY)
 
+# Keep the three explicit re-exports used by saved-launcher characterization
+# callers; the CLI imports only the operations it executes.
 from mtp_benchmark.constants import (
-    REPO_ROOT, PACKAGE_ROOT, DEFAULT_TARGET_ID, DEFAULT_ASSISTANT_ID, DEFAULT_TEST_FILTER,
-    REPORT_SCHEMA_VERSION, REPORT_NAME, LOG_NAME, SUPERVISOR_CONTRACT,
-    LEGACY_M5_INACTIVE_REASON_PREFIX, MAX_CACHE_ROOTS, MAX_FALLBACK_REPOSITORY_ENTRIES,
-    MAX_FALLBACK_REPOSITORIES, MAX_SNAPSHOT_ENTRIES, MAX_REF_BYTES, MAX_REPORT_BYTES,
-    PERFORMANCE_KEYS, HEX_DIGITS,
+    REPO_ROOT,
+    PACKAGE_ROOT,
+    DEFAULT_TARGET_ID,
+    DEFAULT_ASSISTANT_ID,
+    DEFAULT_TEST_FILTER,
+    REPORT_NAME,
+    LOG_NAME,
+    SUPERVISOR_CONTRACT,
+    LEGACY_M5_INACTIVE_REASON_PREFIX as LEGACY_M5_INACTIVE_REASON_PREFIX,
 )
 from mtp_benchmark.artifacts import (
-    repo_cache_name, bounded_scandir, cache_roots, confined_regular_file,
-    repository_snapshot, resolve_cached_snapshot, validate_snapshot,
-    infer_huggingface_model_id, resolve_model_snapshot, sha256_file,
-    append_fingerprint_field, collect_nested_bit_overrides,
-    launch_effective_quantization_bits, artifact_facts,
+    resolve_model_snapshot,
+    artifact_facts,
 )
-from mtp_benchmark.run_directory import (
-    open_directory, SecureRunDirectory, validate_leaf_name, write_all, read_bounded,
-)
+from mtp_benchmark.run_directory import SecureRunDirectory
 from mtp_benchmark.metrics import (
-    observed_bucket, expected_mtp_expectation, inactive_reason_matches,
-    validate_zero_speculative_work, automatic_rectangular_cap, positive_cost_inputs,
-    positive_costs_within_cap, validate_automatic_fixed_fallback,
-    validate_automatic_adaptive_within_cap,
+    expected_mtp_expectation,
+    validate_automatic_fixed_fallback as validate_automatic_fixed_fallback,
 )
 from mtp_benchmark.report import (
-    parse_timestamp, recursively_present_keys, effective_quantization_bits,
-    expected_coverage, validate_report_artifact, validate_report,
+    validate_report,
+    expected_coverage as expected_coverage,
 )
 from mtp_benchmark.self_tests import (
-    self_test_output_safety, self_test_artifact_provenance,
+    self_test_output_safety,
+    self_test_artifact_provenance,
 )
 
 def terminate_group(process: subprocess.Popen[Any]) -> None:

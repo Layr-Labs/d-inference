@@ -1,18 +1,20 @@
 # Provider serving authorization
 
-> Last updated: 2026-09-15 · commit `82fee0e08`
+> Last updated: 2026-09-15 · commit `b61d32a38`
 
 The coordinator can authorize private inference through complete legacy verification or a qualified App Attest connection. These are separate evidence paths; App Attest never sets legacy MDA/APNs flags. The [rollout runbook](../operations/mdm-optional-rollout.md) separates code availability from activation qualification.
+
+The [App Attest module map](../../coordinator/appattest/README.md) explains the verifier/service folders, thin integration adapters and package-local tests.
 
 ## Controls
 
 | Control | Default and behavior | Code |
 |---|---|---|
-| `EIGENINFERENCE_APP_ATTEST_SERVING` | `false`; enable the independent App Attest serving path and its proof/receipt refresh worker | `coordinator/api/app_attest_shadow_config.go` (`readAppAttestShadowConfig`) |
+| `EIGENINFERENCE_APP_ATTEST_SERVING` | `false`; enable the independent App Attest serving path and its proof/receipt refresh worker | `coordinator/appattest/service/config.go` (`ConfigFromEnvironment`) |
 | `EIGENINFERENCE_APP_ATTEST_MDM_REMOVAL` | `false`; allow qualified live providers to receive removal readiness; disabling this does not disable existing App Attest serving | Same |
-| Existing shadow cohort and build qualification | Existing cohort, safe-version floor, production environment and exact qualified binary/CodeDirectory mappings still apply; a serving switch alone cannot qualify a build | `coordinator/api/app_attest_rollout.go` (`appAttestRolloutDecision`); `coordinator/api/app_attest_build_policy.go` (`qualifiedAppAttestMeasurement`) |
+| Existing shadow cohort and build qualification | Existing cohort, safe-version floor, production environment and exact qualified binary/CodeDirectory mappings still apply; a serving switch alone cannot qualify a build | `coordinator/appattest/service/rollout.go` (`appAttestRolloutDecision`); `coordinator/appattest/service/build_policy.go` (`qualifiedAppAttestMeasurement`) |
 | Assertion freshness | `AssertionFreshness = 15 * time.Minute`; receipt and revocation deadlines may shorten it | `coordinator/appattest/authorization.go` (`EvaluateAuthorization`) |
-| Durable revocation/receipt refresh | `appAttestAuthorizationRefresh = 5 * time.Second`, batched at most 1000 distinct keys per query | `coordinator/api/app_attest_authorizer.go` (`refresh`) |
+| Durable revocation/receipt refresh | `appAttestAuthorizationRefresh = 5 * time.Second`, batched at most 1000 distinct keys per query | `coordinator/appattest/service/authorizer.go` (`refresh`) |
 | Revocation freshness ceiling | `appAttestRevocationFreshness = 30 * time.Second` from the query start; a failed read cannot renew it | Same (`apply`) |
 
 ## Serving decisions
@@ -20,11 +22,11 @@ The coordinator can authorize private inference through complete legacy verifica
 | Condition | Result | Code |
 |---|---|---|
 | Complete legacy verification | Legacy behavior remains eligible, subject to existing common runtime/routing gates | `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextModeAtLocked`) |
-| Qualified App Attest assertion | Expiring authorization bound to authenticated account, verified machine, credential, connection, endpoint, approved policy and signed hardware | `coordinator/api/app_attest_authorization_identity.go` (`updateServingAuthorization`); `coordinator/registry/app_attest_authorization.go` (`GrantAppAttestServingAuthorization`) |
+| Qualified App Attest assertion | Expiring authorization bound to authenticated account, verified machine, credential, connection, endpoint, approved policy and signed hardware | `coordinator/appattest/service/authorization_identity.go` (`updateServingAuthorization`); `coordinator/registry/app_attest_authorization.go` (`GrantAppAttestServingAuthorization`) |
 | Expired authorization | No new App Attest-only dispatch; diagnostics and recovery remain possible | `coordinator/registry/inference_authorization.go` (`authorizeInferenceHandoff`) |
 | Explicit credential revocation | Both paths are fenced for matching live connections; late verifier results cannot restore the revoked credential | `coordinator/registry/app_attest_authorization.go` (`RevokeAppAttestCredential`) |
 | Reconnect, endpoint/account change or policy generation change | Old authorization cannot be reused; cryptographic evidence is bound to the current connection and re-evaluated policy | Same |
-| Transient Apple/key recovery failure | No extra permission or lifetime; an independently valid legacy path or existing unexpired authorization can remain available | `coordinator/api/app_attest_shadow_policy.go` (`confirmedAppAttestViolation`) |
+| Transient Apple/key recovery failure | No extra permission or lifetime; an independently valid legacy path or existing unexpired authorization can remain available | `coordinator/appattest/service/policy.go` (`confirmedAppAttestViolation`) |
 | Archive gap or missing required code/receipt evidence | Unknown/ineligible, never permission to remove MDM | `coordinator/appattest/authorization.go` (`EvaluateAuthorization`) |
 
 The final write check occurs after frame construction and owner handoff, before the socket write. That check is the dispatch linearization point. Invalidation fences later handoffs; a frame already committed to the writer is in flight and cannot be recalled. Registry locks are not held over network I/O. All direct, retry, cold and queued dispatches use `coordinator/api/consumer.go` (`writeProviderInferenceRequestDeferred`).

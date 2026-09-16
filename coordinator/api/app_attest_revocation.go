@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"net/http"
 	"time"
@@ -52,20 +53,7 @@ func (s *Server) handleAdminAppAttestRevoke(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "credential not found", http.StatusNotFound)
 		return
 	}
-	affected := s.registry.RevokeAppAttestCredential(body.KeyID)
-	if s.appAttestAuthorizer != nil {
-		a := s.appAttestAuthorizer
-		a.mu.Lock()
-		for p, record := range a.current {
-			if record.evidence.Binding.Credential == body.KeyID {
-				delete(a.current, p)
-			}
-		}
-		a.mu.Unlock()
-	}
-	for _, id := range affected {
-		s.sendAppAttestAuthorizationStatus(s.registry.GetProvider(id))
-	}
+	s.appAttestFeature().RevokeCredential(body.KeyID)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"revoked": true, "changed": changed, "max_propagation_seconds": int(appAttestRevocationFreshness.Seconds())})
+	_ = json.NewEncoder(w).Encode(map[string]any{"revoked": true, "changed": changed, "max_propagation_seconds": int(attestservice.RevocationFreshness.Seconds())})
 }

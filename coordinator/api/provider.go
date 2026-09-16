@@ -37,6 +37,7 @@ import (
 	"sync"
 	"time"
 
+	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
@@ -233,7 +234,7 @@ func (s *Server) closeSessionWithReason(providerID, reason string) {
 // them. It runs until the connection closes or the context is cancelled.
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
 	var provider *registry.Provider
-	var appAttestShadow *appAttestShadowSession
+	var appAttestShadow *attestservice.Session
 	tracker := newChallengeTracker()
 	var schedulerSEKey string
 	var schedulerGeneration uint64
@@ -373,7 +374,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				if appAttestShadow != nil {
 					// Inventory periodically persists this same atomic counter,
 					// including on disconnect. No proof or database work here.
-					appAttestShadow.dropped.Add(1)
+					appAttestShadow.RejectOversized()
 				}
 				s.ddIncr("app_attest.shadow.frames_rejected", []string{"reason:oversized"})
 			}
@@ -610,7 +611,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypeAppAttestShadow:
 			if appAttestShadow != nil {
-				appAttestShadow.offer(msg.Payload.(*protocol.AppAttestShadowMessage).Payload)
+				appAttestShadow.Offer(msg.Payload.(*protocol.AppAttestShadowMessage).Payload)
 			}
 
 		case protocol.TypeHeartbeat:

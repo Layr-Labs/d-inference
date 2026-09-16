@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/apns"
+	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/datadog"
@@ -199,11 +200,8 @@ type releaseTrustPolicySnapshot struct {
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
 	appAttestShadow               AppAttestShadowConfig
-	appAttestAuthorizer           *appAttestAuthorizer
-	appAttestShadowSlots          chan struct{}
-	appAttestStorageOnce          sync.Once
-	appAttestStorageSlots         chan struct{}
-	machineInventorySlots         chan struct{}
+	appAttest                     *attestservice.Service
+	appAttestOnce                 sync.Once
 	registry                      *registry.Registry
 	store                         store.Store
 	ledger                        *payments.Ledger
@@ -834,8 +832,6 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		apiKeyCache:              make(map[string]apiKeyCacheEntry),
 		codeAttestThrottle:       newCodeAttestThrottle(),
 		appAttestShadow:          cfg.AppAttestShadow,
-		appAttestShadowSlots:     make(chan struct{}, 4),
-		machineInventorySlots:    make(chan struct{}, 4),
 		trustReuseCache:          newTrustReuseCache(),
 		mdmSchedulerConfig:       cfg.MDMScheduler,
 		settlements:              newSettlementHolder(),
@@ -863,11 +859,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	s.trustCoverage = make(map[string]string)
 	s.trustCoverageCtx, s.trustCoverageCancel = context.WithCancel(context.Background())
 	saferun.Go(logger, "trustCoverageLoop", s.trustCoverageLoop)
-	s.startAppAttestReceiptWorker(s.trustCoverageCtx)
-	s.startAppAttestMaintenance(s.trustCoverageCtx)
-	s.startAppAttestAuthorizer(s.trustCoverageCtx)
-	s.startMachineInventoryBackfill(s.trustCoverageCtx)
-	s.startMachineInventoryReconciler(s.trustCoverageCtx)
+	s.appAttestFeature().Start()
 	if cfg.DurableTrustReuse {
 		journalPath := cfg.TrustReuseJournalPath
 		if strings.TrimSpace(journalPath) == "" {

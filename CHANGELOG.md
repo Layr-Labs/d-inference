@@ -4,6 +4,7 @@
 
 - Persist independently approved App Attest builds and revocations; refresh qualification without per-release coordinator restarts, with bounded failure/expiry and stale-grant fencing.
 - Stage immutable signed provider artifacts before publication. Block unqualified releases before updater/latest aliases advance; retry the separate publication job using the same signed bytes, without rebuilding or notarizing again.
+- Report on `GET /v1/me/providers`, per model a connected machine advertises, whether the coordinator would pre-load it there and, when it would not, which gate refuses, whether that refusal is permanent, and the memory figures the gate compared. Decompose cold providers into eligible and ineligible counts with a per-reason tally on `GET /v1/admin/utilization`, and keep a model whose every provider is unroutable visible as a snapshot-only row outside the network-wide aggregates. Retire the dedicated-model-only ineligibility log line that withheld those reasons from every other model.
 
 ## Release candidate v0.9.7 — MDM-optional providers and account-scoped SLAs (not shipped; 2026-09-20)
 

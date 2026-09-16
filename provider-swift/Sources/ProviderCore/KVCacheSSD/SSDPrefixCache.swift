@@ -1,8 +1,8 @@
 // Copyright © 2026 Eigen Labs.
 //
 // SSDPrefixCache — the encrypted SSD KV-offload prefix cache (v0.7.5).
-// Conforms to the engine's frozen `CBv2PrefixCache` protocol and is the only
-// reusable prefix-cache implementation wired into production `EngineV2`:
+// Implements attention-only reuse through `CBv2PrefixCache`. Complete model
+// checkpoints have a separate `SSDHybridCheckpointStore` implementation:
 //
 //   * DONATION (engine donation queue → write-behind): `donate` chain-hashes
 //     the finished request's tokens, dedupes against the index + in-flight
@@ -520,9 +520,9 @@ public final class SSDPrefixCache:
             guard !closed, !destructiveChangeInProgress, !stagedEntries.isEmpty else { return 0 }
             let epoch = config.epochStore?.current
             guard config.epochStore == nil || epoch != nil else { return 0 }
-            return stagedEntries.values
+            return stagedEntries.values.lazy
                 .filter { $0.cacheEpoch == epoch }
-                .map { $0.matched / config.blockSize }
+                .map { $0.matched / self.config.blockSize }
                 .max() ?? 0
         }
         guard maxStagedBlocks > 0 else {

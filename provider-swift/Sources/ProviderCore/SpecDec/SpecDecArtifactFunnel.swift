@@ -214,7 +214,7 @@ actor SpecDecArtifactFunnel {
 
         guard let model = await catalog.cachedModel(id: request.modelId) else {
             if request.allowDownload {
-                schedulePrefetch(modelId: request.modelId, catalog: catalog)
+                scheduleCatalogPrefetch(modelId: request.modelId, catalog: catalog, refresh: false)
             }
             return .init(
                 artifact: nil,
@@ -234,7 +234,7 @@ actor SpecDecArtifactFunnel {
             // The cached catalog entry exists but carries no usable spec_dec.
             // The coordinator may have added it after this cache filled, so
             // refresh (cooldown-gated) instead of staying stuck until restart.
-            scheduleCatalogRefresh(modelId: request.modelId, catalog: catalog)
+            scheduleCatalogPrefetch(modelId: request.modelId, catalog: catalog, refresh: true)
         }
         guard let artifact = resolution.artifact else {
             return .init(
@@ -263,9 +263,13 @@ actor SpecDecArtifactFunnel {
         shutdownTasks.removeAll()
     }
 
-    private func schedulePrefetch(
+    /// Both a cache miss and a suspected stale entry fetch catalog metadata,
+    /// then use the same owned artifact transfer. Forced refreshes additionally
+    /// consume the catalog cooldown before scheduling their task.
+    private func scheduleCatalogPrefetch(
         modelId: String,
-        catalog: any SpecDecCatalogLooking
+        catalog: any SpecDecCatalogLooking,
+        refresh: Bool
     ) {
         guard !isShutdown,
             prefetches[modelId] == nil,
@@ -274,54 +278,21 @@ actor SpecDecArtifactFunnel {
         else {
             return
         }
-        let id = UUID()
-        let resolver = self.resolver
-        let task = Task {
-            let reason: MTPFallbackReason?
-            do {
-                guard let model = try await catalog.model(id: modelId) else {
-                    self.finishPrefetch(
-                        modelId: modelId, id: id, reason: .catalogModelMissing)
-                    return
-                }
-                guard self.prefetchMayContinue(modelId: modelId, id: id) else {
-                    return
-                }
-                let result = await resolver.prefetch(model: model)
-                reason = result.artifact == nil ? result.reason : nil
-            } catch {
-                reason = .catalogUnavailable
+        if refresh {
+            let now = ContinuousClock.now
+            if let last = catalogRefreshedAt[modelId], now - last < catalogRefreshCooldown {
+                return
             }
-            self.finishPrefetch(modelId: modelId, id: id, reason: reason)
+            catalogRefreshedAt[modelId] = now
         }
-        prefetches[modelId] = Prefetch(id: id, task: task)
-    }
-
-    /// Refresh a suspected-stale cached catalog entry, then prefetch the
-    /// artifact if the refreshed metadata now resolves. Reuses the prefetch
-    /// ledger for dedupe/shutdown and is additionally cooldown-gated.
-    private func scheduleCatalogRefresh(
-        modelId: String,
-        catalog: any SpecDecCatalogLooking
-    ) {
-        guard !isShutdown,
-            prefetches[modelId] == nil,
-            prefetchRetryAfter[modelId].map({ retryClock() >= $0 }) ?? true,
-            prefetches.count < maximumPrefetches
-        else {
-            return
-        }
-        let now = ContinuousClock.now
-        if let last = catalogRefreshedAt[modelId], now - last < catalogRefreshCooldown {
-            return
-        }
-        catalogRefreshedAt[modelId] = now
         let id = UUID()
         let resolver = self.resolver
         let task = Task {
             let reason: MTPFallbackReason?
             do {
-                guard let model = try await catalog.freshModel(id: modelId) else {
+                let model = try await (refresh
+                    ? catalog.freshModel(id: modelId) : catalog.model(id: modelId))
+                guard let model else {
                     self.finishPrefetch(
                         modelId: modelId, id: id, reason: .catalogModelMissing)
                     return

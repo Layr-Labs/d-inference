@@ -315,13 +315,8 @@ extension CoordinatorClient {
             // the failure-stream child would block until connectAndRun's defer
             // finishes the stream — but defer runs AFTER sessionLoop returns,
             // creating a deadlock.
-            do {
-                try await group.next()
-                group.cancelAll()
-            } catch {
-                group.cancelAll()
-                throw error
-            }
+            defer { group.cancelAll() }
+            try await group.next()
         }
     }
 

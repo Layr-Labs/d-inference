@@ -189,9 +189,11 @@ extension EngineV2Bridge {
         continuation: AsyncStream<GenerationEvent>.Continuation,
         lastDeltaAt: SuspendingClock.Instant? = nil
     ) {
+        let final = recordFinish(
+            id: id, usage: usage, success: reason == .stop || reason == .length,
+            lastDeltaAt: lastDeltaAt, finishReason: reason)
         switch reason {
         case .stop, .length:
-            let final = recordFinish(id: id, usage: usage, success: true, lastDeltaAt: lastDeltaAt, finishReason: reason)
             // Preserve the v2 engine's truncation signal: `.length` must
             // reach the client as finish_reason "length", not be flattened
             // to "stop" (max_tokens truncation was invisible on v2).
@@ -202,9 +204,6 @@ extension EngineV2Bridge {
                 finishReason: reason == .length ? "length" : "stop"
             ))
         case .cancelled:
-            let final = recordFinish(
-                id: id, usage: usage, success: false, lastDeltaAt: lastDeltaAt,
-                finishReason: reason)
             // A cancel that did real work emits its usage BEFORE the error
             // so a listener can still bill delivered tokens (legacy abort
             // framing).
@@ -223,9 +222,6 @@ extension EngineV2Bridge {
             // non-natural finish, then carry BOTH the machine-readable cause
             // AND that usage through — instead of flattening the deadline into
             // a generic string with zero usage (the incident behavior).
-            let final = recordFinish(
-                id: id, usage: usage, success: false, lastDeltaAt: lastDeltaAt,
-                finishReason: reason)
             emitInferenceErrorTelemetry(requestId: id)
             if let wireCause = Self.wireTerminalCause(cbCause) {
                 continuation.yield(.terminal(
@@ -240,9 +236,6 @@ extension EngineV2Bridge {
                 continuation.yield(.error(message))
             }
         case .error(let message):
-            _ = recordFinish(
-                id: id, usage: usage, success: false, lastDeltaAt: lastDeltaAt,
-                finishReason: reason)
             emitInferenceErrorTelemetry(requestId: id)
             if message.hasPrefix(CBv2KVError.capacityExhaustedFinishPrefix) {
                 // Engine-side TERMINAL capacity exhaustion (the paged pool

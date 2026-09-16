@@ -146,6 +146,20 @@ Sidecar Tests").
 
 ### 5. Provider CLI (Swift) with source-matched metallib
 
+Build the test product again after changing fixture helpers or assertions;
+`--skip-build` alone reuses the previous executable. The
+[provider test procedure](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib)
+covers isolated CLI configuration, artifact integrity, SSD authentication,
+paged-preflight diagnostics, and stream ordering. Synthetic MLX fixtures need
+the matched metallib; enabled live-model fixtures also need their documented
+model inputs.
+
+To compile all test targets without executing fixtures:
+
+```bash
+(cd provider-swift && swift build --build-tests)
+```
+
 ```bash
 make provider-build
 # = cd provider-swift && swift build

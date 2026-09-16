@@ -24,8 +24,6 @@ enum DiagnosticReportRenderer {
 
     /// Overall verdict: any fail → fail; with `strict`, any warn also → fail.
     static func hasFailure(_ diagnostics: [Diagnostic], strict: Bool) -> Bool {
-        if diagnostics.contains(where: { $0.level == .fail }) { return true }
-        if strict && diagnostics.contains(where: { $0.level == .warn }) { return true }
-        return false
+        diagnostics.contains { $0.level.isFailure(strict: strict) }
     }
 }

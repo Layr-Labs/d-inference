@@ -113,6 +113,26 @@ Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
 `go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
 the slow WebSocket integration tests; run the full set before merging.
 
+#### Load and event reports
+
+`e2e/testbed/load_report.go` owns load-result statistics and the stable text/Markdown
+segment order. Its percentile convention remains the load harness's existing
+integer index; the event profiler keeps its separate nearest-rank convention.
+`e2e/testbed/profile/profile.go` indexes one event snapshot while preserving
+request-start order, repeated starts and individual error counts. Reports should
+be built after event producers have finished.
+
+`LoadGenerator.Run` measures each request through completion of the response body.
+An incomplete body counts as a failed request even when its HTTP status is 200;
+failed reads do not enter successful latency percentiles. The local HTTP fixtures
+in `e2e/testbed/load_response_test.go` cover delayed and truncated bodies without
+a provider or model. Earlier load reports measured response headers only; their
+latencies are not comparable to this corrected end-to-end measurement.
+
+```bash
+go test -race -short ./e2e/testbed/...
+```
+
 #### Provider config cleanup
 
 The CPU-only `e2e/testbed/provider_config_cleanup_test.go` tests retain a fixed

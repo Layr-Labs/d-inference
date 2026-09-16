@@ -197,6 +197,7 @@ CI (`.github/workflows/release-swift.yml`) builds, signs, notarizes, and uploads
 | Database | AWS RDS PostgreSQL (managed) | Cloud SQL Postgres 16 `d-inference-dev-db` via cloud-sql-proxy sidecar |
 | Persistent storage | GCE persistent disk at `/mnt/disks/userdata` | GCE persistent disk `d-inference-dev-data`, 30 GB, mounted at `/mnt/disks/userdata` |
 | Logs | Docker JSON logs + hourly host archival/direct Datadog submission | `gcloud logging read ...` (VM + Cloud SQL in Cloud Logging) |
+| Metrics + traces | Host Datadog Agent (DogStatsD `:8125`, APM `:8126`), installed by `deploy/gcp/prod/install-datadog-agent.sh` — the coordinator's only metric path, no HTTPS fallback ([runbook](docs/operations/datadog-agent.md)) | Host Datadog Agent installed by `deploy/gcp/vm-startup.sh` |
 | Release bucket | R2 `d-inf-app` | R2 `d-inf-app-dev` |
 | Trust level | `hardware` (MDM enrollment required) | `hardware` (same — full MDM stack) |
 | Provider install | `curl -fsSL https://api.darkbloom.dev/install.sh \| bash` | `curl -fsSL https://api.dev.darkbloom.xyz/install.sh \| bash` |

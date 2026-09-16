@@ -182,38 +182,57 @@ for pair in 1000:0.35 1000:0.5 2000:0.35 0:0.35 1000:0 1000.0:0.350; do
     printf '%s' "$after" | grep -Fq 'prod env refresh: no changes'
 done
 
-# v0.9's warm-pool headroom keys are REQUIRED and are new, so they must bootstrap
-# on an existing host whose /etc/d-inference/env predates them — same contract as
-# seed_key above. Without a release default the post-merge required-value check
-# hard-fails on every such host, and darkbloom-env-refresh.service is ordered
-# before Docker, so a failed refresh blocks the coordinator from starting on the
-# next refresh or reboot. deploy/environments/prod.env is a sanitized reference
-# that is never copied to the host, so it cannot bootstrap anything.
-headroom_keys="EIGENINFERENCE_WARM_POOL_HEADROOM
-EIGENINFERENCE_WARM_POOL_HEADROOM_MAX_PROVIDERS
+# A REQUIRED key that is NEW must bootstrap on an existing host whose
+# /etc/d-inference/env predates it — same contract as seed_key above. Without a
+# release default the post-merge required-value check hard-fails on every such
+# host, and darkbloom-env-refresh.service is ordered before Docker, so a failed
+# refresh blocks the coordinator from starting on the next refresh or reboot.
+# deploy/environments/prod.env is a sanitized reference that is never copied to
+# the host, so it cannot bootstrap anything.
+#
+# Key lists are space-separated: BSD awk rejects a -v value containing a newline,
+# and this suite should run on a developer's machine as well as in CI.
+assert_bootstraps() {
+    local label=$1 keys=$2 key
+    local predating="$ENV_DIR/predating-$label.env"
+    awk -v keys="$keys" '
+        BEGIN { n = split(keys, a); for (i = 1; i <= n; i++) drop[a[i]] = 1 }
+        { k = $0; sub(/=.*/, "", k); if (!(k in drop)) print }
+    ' "$ENV_FILE" > "$predating"
+    chmod 0600 "$predating"
+    for key in $keys; do
+        grep -Fxq "$key" "$REQUIRED" || { echo "$key is not required; drop it from this check" >&2; exit 1; }
+        if grep -q "^$key=" "$predating"; then
+            echo "setup bug: $key should be absent from the predating host" >&2
+            exit 1
+        fi
+    done
+    SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$predating" \
+        REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply >/dev/null
+    for key in $keys; do
+        awk -F= -v key="$key" '$1 == key && length(substr($0, index($0, "=") + 1)) > 0 { found=1 } END { exit !found }' \
+            "$predating" || {
+            echo "required key $key was not bootstrapped on a host that predates it ($label)" >&2
+            exit 1
+        }
+    done
+}
+
+# v0.9 proactive warm-pool headroom.
+assert_bootstraps warm-pool-headroom "EIGENINFERENCE_WARM_POOL_HEADROOM \
+EIGENINFERENCE_WARM_POOL_HEADROOM_MAX_PROVIDERS \
 EIGENINFERENCE_WARM_POOL_HEADROOM_LOAD_WINDOWS"
-predating="$ENV_DIR/predating-host.env"
-awk -v keys="$headroom_keys" '
-    BEGIN { n = split(keys, a, "\n"); for (i = 1; i <= n; i++) drop[a[i]] = 1 }
-    { k = $0; sub(/=.*/, "", k); if (!(k in drop)) print }
-' "$ENV_FILE" > "$predating"
-chmod 0600 "$predating"
-printf '%s\n' "$headroom_keys" | while IFS= read -r key; do
-    grep -Fxq "$key" "$REQUIRED" || { echo "$key is not required; drop it from this check" >&2; exit 1; }
-    if grep -q "^$key=" "$predating"; then
-        echo "setup bug: $key should be absent from the predating host" >&2
-        exit 1
-    fi
-done
-SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$predating" \
-    REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply >/dev/null
-printf '%s\n' "$headroom_keys" | while IFS= read -r key; do
-    awk -F= -v key="$key" '$1 == key && length(substr($0, index($0, "=") + 1)) > 0 { found=1 } END { exit !found }' \
-        "$predating" || {
-        echo "required key $key was not bootstrapped on a host that predates it" >&2
-        exit 1
-    }
-done
+
+# Datadog metric identity. Every dashboard widget scopes its query by env AND
+# service, so a metric missing either tag matches no widget; DD_AGENT_HOST is
+# what tells the coordinator an agent is there to receive DogStatsD at all.
+# DD_API_KEY and DD_SITE are deliberately absent from required-env-keys.txt — a
+# missing telemetry secret must not be able to block the coordinator's start.
+assert_bootstraps datadog "DD_ENV DD_SERVICE DD_AGENT_HOST"
+if grep -Fxq DD_API_KEY "$REQUIRED"; then
+    echo "DD_API_KEY must not be required: a missing telemetry secret would fail the pre-Docker refresh" >&2
+    exit 1
+fi
 
 marker="$TEST_ROOT/path-injection-ran"
 if SKIP_PERSISTENCE_CHECK=1 \

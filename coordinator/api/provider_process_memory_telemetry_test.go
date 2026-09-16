@@ -34,7 +34,7 @@ func TestProcessMemoryTelemetryAcceptedHeartbeatMetrics(t *testing.T) {
 		return flush()
 	}
 	first := apply(sample(1, 1, 0))
-	for _, want := range []string{"charged_bytes:250|h", "materialized_bytes:200|h", "unmaterialized_bytes:50|h", "closing_owner_count:1|h"} {
+	for _, want := range []string{"charged_bytes:250|d", "materialized_bytes:200|d", "unmaterialized_bytes:50|d", "closing_owner_count:1|d"} {
 		if !hasMetric(first, want) {
 			t.Fatalf("missing %s in %v", want, first)
 		}
@@ -48,14 +48,14 @@ func TestProcessMemoryTelemetryAcceptedHeartbeatMetrics(t *testing.T) {
 		t.Fatal("unknown OS availability reported zero")
 	}
 	repeat := apply(sample(1, 1, 90000))
-	if hasMetric(repeat, "charged_bytes:") || !hasMetric(repeat, "sample_age_ms:90000|h") {
+	if hasMetric(repeat, "charged_bytes:") || !hasMetric(repeat, "sample_age_ms:90000|d") {
 		t.Fatalf("repeated sample: %v", repeat)
 	}
 	stale := apply(sample(1, 2, capacitySampleFreshMS+1))
-	if hasMetric(stale, "charged_bytes:") || !hasMetric(stale, "sample_fresh:0|h") {
+	if hasMetric(stale, "charged_bytes:") || !hasMetric(stale, "sample_fresh:0|d") {
 		t.Fatalf("stale sample: %v", stale)
 	}
-	if packets := apply(sample(2, 1, 0)); !hasMetric(packets, "charged_bytes:250|h") {
+	if packets := apply(sample(2, 1, 0)); !hasMetric(packets, "charged_bytes:250|d") {
 		t.Fatalf("new generation: %v", packets)
 	}
 	if packets := apply(nil); len(packets) != 0 {

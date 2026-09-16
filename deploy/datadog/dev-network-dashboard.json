@@ -24,7 +24,7 @@
     {
       "definition": {
         "type": "note",
-        "content": "## Darkbloom Observability\nMetrics: `d_inference.*` direct to the Datadog API (series + distribution_points, no agent) | Logs: journald + direct Logs API | Traces: APM agent on 8126 | System: host-level DD agent checks\n\nTemplate vars: `$env`, `$service`, `$model`. Provider telemetry = `source:provider`; coordinator events = `source:coordinator`.",
+        "content": "## Darkbloom Observability\nMetrics: `d_inference.*` over DogStatsD to the host agent (counters, gauges, distributions — no HTTPS fallback) | Logs: journald + direct Logs API | Traces: APM agent on 8126 | System: host-level DD agent checks\n\nTemplate vars: `$env`, `$service`, `$model`. Provider telemetry = `source:provider`; coordinator events = `source:coordinator`.",
         "background_color": "blue",
         "font_size": "14",
         "text_align": "left",

@@ -16,9 +16,9 @@ func (s *Server) recordPrefixCacheTelemetry(provider *registry.Provider, prev, c
 			continue
 		}
 		tags := append(append([]string(nil), baseTags...), "cache_kind:"+cur.Kind)
-		s.dd.HistogramOrGauge("provider.prefix_cache.sample_age_ms", float64(cur.SampleAgeMS), tags)
+		s.dd.Histogram("provider.prefix_cache.sample_age_ms", float64(cur.SampleAgeMS), tags)
 		fresh := cur.SampleAgeMS <= capacitySampleFreshMS
-		s.dd.HistogramOrGauge("provider.prefix_cache.sample_fresh", boolGauge(fresh), tags)
+		s.dd.Histogram("provider.prefix_cache.sample_fresh", boolGauge(fresh), tags)
 		var old *protocol.PrefixCacheTelemetry
 		if prev != nil {
 			for _, previousSlot := range prev.Slots {
@@ -35,10 +35,10 @@ func (s *Server) recordPrefixCacheTelemetry(provider *registry.Provider, prev, c
 		for name, value := range map[string]uint64{
 			"entries": cur.Entries, "disk_bytes": cur.DiskBytes, "staging_bytes": cur.StagingBytes,
 		} {
-			s.dd.HistogramOrGauge("provider.prefix_cache."+name, float64(value), tags)
+			s.dd.Histogram("provider.prefix_cache."+name, float64(value), tags)
 		}
 		if cur.IO != nil {
-			s.dd.HistogramOrGauge("provider.prefix_cache.staging_peak_bytes", float64(cur.IO.StagingPeakBytes), tags)
+			s.dd.Histogram("provider.prefix_cache.staging_peak_bytes", float64(cur.IO.StagingPeakBytes), tags)
 		}
 		if !same {
 			continue

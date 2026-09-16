@@ -14,9 +14,9 @@ func (s *Server) recordProcessMemoryTelemetry(provider *registry.Provider, prev,
 		return
 	}
 	tags := mlxTelemetryTags(provider)
-	s.dd.HistogramOrGauge("provider.process_memory.sample_age_ms", float64(cur.SampleAgeMS), tags)
+	s.dd.Histogram("provider.process_memory.sample_age_ms", float64(cur.SampleAgeMS), tags)
 	fresh := cur.SampleAgeMS <= capacitySampleFreshMS
-	s.dd.HistogramOrGauge("provider.process_memory.sample_fresh", boolGauge(fresh), tags)
+	s.dd.Histogram("provider.process_memory.sample_fresh", boolGauge(fresh), tags)
 	if !fresh {
 		return
 	}
@@ -42,9 +42,9 @@ func (s *Server) recordProcessMemoryTelemetry(provider *registry.Provider, prev,
 		{"owner_count", cur.OwnerCount},
 		{"closing_owner_count", cur.ClosingOwnerCount},
 	} {
-		s.dd.HistogramOrGauge("provider.process_memory."+metric.name, float64(metric.value), tags)
+		s.dd.Histogram("provider.process_memory."+metric.name, float64(metric.value), tags)
 	}
 	if cur.SystemAvailableBytes != nil {
-		s.dd.HistogramOrGauge("provider.process_memory.system_available_bytes", float64(*cur.SystemAvailableBytes), tags)
+		s.dd.Histogram("provider.process_memory.system_available_bytes", float64(*cur.SystemAvailableBytes), tags)
 	}
 }

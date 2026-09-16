@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-14 · commit `4676eedbe`
+> Last updated: 2026-09-16 · commit `4595d7e65`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -109,6 +109,7 @@
 - [`operations/README.md`](operations/README.md): index and the two rules that apply to every runbook.
 - [`operations/coordinator-deploy.md`](operations/coordinator-deploy.md): swap the production coordinator to a reviewed build, verify, roll back.
 - [`operations/dev-environment.md`](operations/dev-environment.md): the GCP dev environment.
+- [`operations/datadog-agent.md`](operations/datadog-agent.md): install the host Datadog Agent on the prod coordinator VM, prove DogStatsD is receiving, then deploy the build whose only metric path is that agent.
 - [`operations/provider-release.md`](operations/provider-release.md): cut a provider release — version bump, signing, notarization, hashing, registration, `latest/` publish, rollback.
 - [`operations/cache-routing-rollout.md`](operations/cache-routing-rollout.md): turn cache-aware routing on in production — percent ramp, verification, kill switch back to `off`.
 - [`operations/profiler-queries.md`](operations/profiler-queries.md): read-only SQL recipes against the profiler tables for latency, fleet and outcome questions.

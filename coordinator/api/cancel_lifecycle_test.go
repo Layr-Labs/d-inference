@@ -299,7 +299,7 @@ func TestCancelLatencyUsesFirstSuccessfulSend(t *testing.T) {
 		_ = dd.Statsd.Flush()
 		packets := collector.drain()
 		got := requireMetricWithTags(t, packets, metricCancelToTerminalMs, "terminal:"+terminal)
-		if len(got) != 1 || !strings.Contains(got[0], metricCancelToTerminalMs+":2000|h") {
+		if len(got) != 1 || !strings.Contains(got[0], metricCancelToTerminalMs+":2000|d") {
 			t.Fatalf("latency must exclude the failed-send delay: %v", got)
 		}
 	}

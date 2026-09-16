@@ -51,8 +51,8 @@ func TestPagedStorageTelemetryFlowsThroughAcceptedHeartbeat(t *testing.T) {
 		}
 	}
 	first := apply(sample(1, 1, 0, 10))
-	expect(first, "paged_storage.committed_bytes:900|h", "paged_storage.nominal_kv_bytes:800|h", "paged_storage.physical_floor_overhead_bytes:100|h")
-	expect(first, "paged_storage.allocator_padding_bytes:50|h", "paged_storage.last_allocation_allowance_bytes:77|h")
+	expect(first, "paged_storage.committed_bytes:900|d", "paged_storage.nominal_kv_bytes:800|d", "paged_storage.physical_floor_overhead_bytes:100|d")
+	expect(first, "paged_storage.allocator_padding_bytes:50|d", "paged_storage.last_allocation_allowance_bytes:77|d")
 	noCounts(first)
 	for _, packet := range first {
 		if !containsTag(packet, "chip_family:M3") || !containsTag(packet, "provider_version:0.9.x") {
@@ -66,14 +66,14 @@ func TestPagedStorageTelemetryFlowsThroughAcceptedHeartbeat(t *testing.T) {
 	expect(second, "paged_storage.allocation_failures:2|c", "paged_storage.admission_refusals:2|c", "paged_storage.grant_refusals:2|c", "paged_storage.grant_epoch_retries:2|c")
 	repeat := apply(sample(1, 2, 90000, 99))
 	noCounts(repeat)
-	expect(repeat, "paged_storage.sample_age_ms:90000|h")
+	expect(repeat, "paged_storage.sample_age_ms:90000|d")
 	if hasMetric(repeat, "paged_storage.committed_bytes:") || hasMetric(repeat, "paged_storage.allocator_padding_bytes:") || hasMetric(repeat, "paged_storage.last_allocation_allowance_bytes:") {
 		t.Fatal("unchanged sample emitted current ownership")
 	}
 	noCounts(apply(sample(1, 1, 0, 0)))
 	expect(apply(sample(1, 3, 0, 13)), "paged_storage.allocation_failures:1|c")
 	stale := apply(sample(1, 4, capacitySampleFreshMS+1, 20))
-	expect(stale, "paged_storage.sample_fresh:0|h")
+	expect(stale, "paged_storage.sample_fresh:0|d")
 	if hasMetric(stale, "paged_storage.committed_bytes:") || hasMetric(stale, "paged_storage.allocator_padding_bytes:") || hasMetric(stale, "paged_storage.last_allocation_allowance_bytes:") {
 		t.Fatal("stale ownership sampled as current")
 	}

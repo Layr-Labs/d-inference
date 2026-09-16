@@ -1,6 +1,6 @@
 # Darkbloom docs — how this documentation is organised and maintained
 
-> Last updated: 2026-09-13 · commit `ec73023e4`
+> Last updated: 2026-09-16 · commit `4595d7e65`
 
 Rules for anyone — human or agent — who reads, writes, or checks a file under
 `docs/`. The code is the source of truth; a doc that disagrees with the code is
@@ -157,6 +157,7 @@ their original source. Docs Lint checks out full history for this validation.
 | HTTP route, header, status code, JSON shape (`coordinator/api/`) | `reference/api-contracts.md`; the relevant `consumer/` how-to |
 | WebSocket message or field (`coordinator/protocol/messages.go` ↔ `provider-swift/Sources/ProviderCore/Protocol/`) | `reference/protocol-messages.md` |
 | Telemetry wire type or allowlist (Go / Swift / TS mirrors) | `reference/telemetry-schema.md`, `architecture/telemetry.md` |
+| Datadog metric type or transport (`coordinator/datadog/`), or the host agent's provisioning (`deploy/gcp/prod/install-datadog-agent.sh`, `deploy/gcp/vm-startup.sh`) | `architecture/telemetry.md`, `reference/telemetry-inventory.md`, `operations/datadog-agent.md`, `architecture/components/coordinator.md` (the package's one-line summary), `reference/telemetry-schema.md` |
 | Coordinator env var or config default | `reference/configuration.md`; `operations/coordinator-deploy.md` if prod sets it |
 | Provider CLI command, flag, env var | `provider/cli-reference.md`; `reference/configuration.md` |
 | Routing / admission / scheduling constant or gate | `architecture/routing.md` or `architecture/scheduling.md` |

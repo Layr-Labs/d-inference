@@ -1,6 +1,6 @@
 # Dev environment
 
-> Last updated: 2026-09-16 · commit `e22d49019`
+> Last updated: 2026-09-16 · commit `4595d7e65`
 
 Runbook for the Darkbloom dev environment on Google Cloud (project
 `sepolia-ai`): a GCE VM running the same coordinator container as production,
@@ -38,7 +38,7 @@ production (`darkbloom-mainnet`); that is
 | Persistent disk | `d-inference-dev-data` mounted at `/mnt/disks/userdata` (MicroMDM BoltDB, prompt artifacts) — same path as prod so `start.sh` is unchanged | |
 | Database | Cloud SQL Postgres 16 `d-inference-dev-db` (`db-f1-micro`), reached via `cloud-sql-proxy.service` on `127.0.0.1:5432` | `EIGENINFERENCE_DATABASE_URL` |
 | Ingress | Host Caddy (systemd) terminates TLS and proxies to `:8080` | `DOMAIN=api.dev.darkbloom.xyz` |
-| Telemetry | Host Datadog Agent (`DD_ENV=development`, `DD_SERVICE=d-inference-coordinator`); metrics and logs go straight to the API, the agent only serves trace intake and host checks | secrets `eigeninference-dd-api-key`, `eigeninference-dd-site`; dashboard and percentile procedure: [`datadog-dashboard.md`](datadog-dashboard.md) |
+| Telemetry | Host Datadog Agent (`DD_ENV=development`, `DD_SERVICE=d-inference-coordinator`) carries every metric over DogStatsD on `localhost:8125`, plus trace intake, journald log collection and host checks; only the coordinator's own telemetry events go straight to the Logs API | secrets `eigeninference-dd-api-key`, `eigeninference-dd-site`; agent shape: [`datadog-agent.md`](datadog-agent.md); dashboard and percentile procedure: [`datadog-dashboard.md`](datadog-dashboard.md) |
 | Console UI | Vercel project `darkbloom-console-dev` from `console-ui/` | `https://console.dev.darkbloom.xyz` |
 | Release bucket | Cloudflare R2 `d-inf-app-dev`; its public URL is secret `eigeninference-r2-cdn-url` → `EIGENINFERENCE_R2_CDN_URL` | |
 | Mac fleet | [`deploy/provider-fleet/dev-inventory.txt`](../../deploy/provider-fleet/dev-inventory.txt) | `deploy/provider-fleet/update-fleet.sh dev` |

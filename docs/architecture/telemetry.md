@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-16 · commit `8e74f2126`
+> Last updated: 2026-09-16 · commit `4595d7e65`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -66,14 +66,20 @@ platform gauges (`providers.online`, `utilization.*`, `capacity.*`,
 `request_queue.depth`). How the scheduler reads the capacity fields:
 [`scheduling.md`](scheduling.md); the gate vocabulary: [`routing.md`](routing.md).
 
-`recordMLXCacheTelemetry` emits allocator snapshots as histograms with a
-DogStatsD-only client, or as latest-value gauges through HTTPS when
-`DD_API_KEY` is configured (`coordinator/datadog/metrics_snapshot.go`,
-`HistogramOrGauge`). This is a deliberate choice of type, not a workaround for a
-missing transport — histograms have their own HTTPS leg. A gauge is what a
-heartbeat snapshot is: the question is what the allocator reads *now*, not how
-that reading is distributed, and a metric name already stored as a gauge cannot
-be reinterpreted as a distribution without breaking every query on it. It emits
+`recordMLXCacheTelemetry` emits allocator snapshots as latest-value **gauges**
+(`coordinator/datadog/metrics_snapshot.go`, `LockedGauge`). That is a
+compatibility constraint, not the better model, and it is the only reason the
+entry point exists: `provider.mlx_*` shipped as gauges, and a name Datadog has
+already typed cannot be reinterpreted as a distribution — the submission is
+rejected for that name and every existing query on it breaks. Read those series
+as one arbitrary provider's reading per flush window, because datadog-go
+aggregates gauges client-side per (name, tag set) and the tags here are only chip
+family and provider version. The newer snapshot families
+(`provider.process_memory.*`, `provider.paged_storage.*`,
+`provider.prefix_cache.*`) were never stored under any type, so they submit
+distributions (`Client.Histogram`) and their fleet average, maximum and
+percentiles are real. New snapshot metrics go the same way; nothing else joins
+`LockedGauge`. `recordMLXCacheTelemetry` emits
 cumulative reclaimer counters as nonnegative deltas from the previous accepted
 heartbeat. The first observation has no counter baseline; a reset contributes
 no negative delta (`coordinator/api/provider_mlx_cache_telemetry.go`).
@@ -217,34 +223,61 @@ evidence and service cost.
 `coordinator/cmd/coordinator/main.go` only when `DD_API_KEY` or `DD_AGENT_HOST`
 is set; otherwise `s.dd` is nil and every `ddIncr`/`ddGauge`/`ddHistogram`
 (`coordinator/api/server.go`) is a no-op. Configuration is environment only —
-`DD_API_KEY`, `DD_AGENT_HOST`, `DD_DOGSTATSD_URL`, `DD_SITE`, `DD_ENV`, `DD_SERVICE`,
-`DD_HOSTNAME` — with defaults under [configuration](../reference/configuration.md#telemetry-datadog-and-profiling).
-`DD_API_KEY` enables the HTTPS paths (series, distribution points, logs, events);
-`DD_AGENT_HOST` alone still constructs the client and starts the tracer.
+`DD_API_KEY`, `DD_AGENT_HOST`, `DD_DOGSTATSD_URL`, `DD_SITE`, `DD_ENV`,
+`DD_SERVICE` — with defaults under [configuration](../reference/configuration.md#telemetry-datadog-and-profiling).
+The `host` tag is no longer the coordinator's concern: the agent stamps it from
+`hostname:` in `/etc/datadog-agent/datadog.yaml`.
+`DD_API_KEY` enables the Logs API path (logs, events); `DD_AGENT_HOST` alone
+still constructs the client and starts the tracer.
+
+**Metrics require a local Datadog Agent.** Every counter, gauge and histogram
+leaves the process as a DogStatsD datagram and the agent owns everything after
+that: aggregation, batching, compression, retries, back-pressure. The
+coordinator implements none of it, deliberately. An earlier revision buffered
+and POSTed to the v1 `series` and `distribution_points` intakes from inside the
+process — ~400 lines of reservoir sampling and payload chunking in a service
+whose job is inference routing — and that code is gone. The agent is a
+deployment step, not a Go problem: `deploy/gcp/vm-startup.sh` installs it on
+dev, `deploy/gcp/prod/install-datadog-agent.sh` on prod (runbook, including the
+mandatory ordering against an image deploy:
+[datadog-agent](../operations/datadog-agent.md)). Both environments run the
+coordinator container with `--network host`, so the agent is reachable on
+`localhost:8125` with no container change and no `dogstatsd_non_local_traffic`.
 
 Metric names in this page omit the Datadog namespace prefix (`statsd.WithNamespace`;
 owner: [telemetry-inventory](../reference/telemetry-inventory.md#coordinator-derived-datadog-metrics)).
-Which leg carries a metric depends on kind and on whether an API key is set
-(`httpMetrics` for counters and gauges, `httpDistributions` for histograms):
 
-| Kind | `DD_API_KEY` unset | `DD_API_KEY` set |
+| Kind | Transport | Wire type |
 |---|---|---|
-| counter, gauge | DogStatsD UDP, best effort | buffered in `seriesBuffer` and POSTed to `https://api.<site>/api/v1/series` every 5 s (`metrics_http.go`); the DogStatsD leg is skipped so an agent appearing later cannot double-count |
-| histogram | DogStatsD UDP; a local agent aggregates it into `.avg`/`.count`/`.median`/`.max`/`.95percentile` gauges | raw values buffered in `distBuffer` and POSTed to `https://api.<site>/api/v1/distribution_points` every 5 s as a **distribution** (`metrics_distribution.go`); the DogStatsD leg is skipped |
-| telemetry event log | dropped | batched (100 or 5 s) to `https://http-intake.logs.<site>/api/v2/logs`; `fatal` also posts a Datadog Event (`emitDDEvent`) for monitors |
+| counter | DogStatsD → agent → Datadog | `c` |
+| gauge | DogStatsD → agent → Datadog | `g` |
+| histogram | DogStatsD → agent → Datadog, as a **distribution** | `d` |
+| trace span | agent APM intake on `localhost:8126` | — (no code creates spans yet) |
+| telemetry event log | HTTPS, straight to `https://http-intake.logs.<site>/api/v2/logs`, batched (100 or 5 s) | `fatal` also posts a Datadog Event (`emitDDEvent`) for monitors |
 
-The HTTPS paths are therefore a **replacement** for the UDP leg when a key is
-present, not a fallback behind it.
+There is one path per kind. No fallback, no tee: a metric either reaches the
+agent or is dropped and reported (see below).
 
-The two histogram legs produce differently named metrics, and a dashboard can
-only query one of them. An agent submits per-window percentiles as gauges named
+Histograms are submitted as DogStatsD **distributions** (`d`), not histograms
+(`h`), and the distinction decides what a dashboard can ask. With `h` the agent
+aggregates locally and submits per-window percentiles as plain gauges named
 `<metric>.95percentile`; those cannot be re-aggregated, so a widget asking
 `avg:<metric>.95percentile{...}` averages percentiles and gets more wrong as the
-time range widens. A distribution carries the raw values and Datadog computes
-percentiles over whatever range is queried, so the dashboard queries `pNN:<metric>`
-(`deploy/datadog/dev-network-dashboard.json`). Consequence in an environment that
-does have an agent (dev): the `.95percentile` series stop advancing and the bare
-distribution starts.
+time range widens (and `.50percentile` does not exist at all — the agent names
+that one `.median`). With `d` the agent forwards the raw values and Datadog
+computes percentiles over whatever range is queried, so the dashboard queries
+`pNN:<metric>` (`deploy/datadog/dev-network-dashboard.json`).
+
+Delivery failures are reported rather than assumed away. Opening a UDP socket
+succeeds with nothing listening, the statsd client is asynchronous so every call
+returns nil regardless, and the library's default error handler is
+`func(error) {}` — which is how a host with no agent discarded every metric and
+said nothing. A *connected* UDP socket does learn about the dead listener (the
+previous write's ICMP port-unreachable surfaces as `ECONNREFUSED` on the next
+one); `NewClient` installs `statsd.WithErrorHandler`, so that condition becomes
+a log line naming the address. The report is rate-limited to one line a minute
+with a count of what it swallowed, because a dead agent refuses roughly every
+other datagram.
 
 Percentile aggregators must be enabled per distribution metric before a `pNN:`
 query resolves — a one-time API call per metric, per organization, scripted in
@@ -261,17 +294,19 @@ nothing: the alternative form of a tag configuration is an allowlist that
 silently stops resolving every key not on it, and `http.latency_ms` alone is
 emitted with `method`, `path` and `status_code`.
 
-Everything the coordinator submits itself carries `env:<DD_ENV>` and
-`service:<DD_SERVICE>` — `metricsTags` on series points, `WithTags` on the
-DogStatsD client, and `ddtags` on forwarded logs (`logTags`, which appends the
-per-entry `kind` and `severity` and omits either when empty). The log payload's
-`service` field is the configured service, not a literal. This matters because
-the dashboards scope every query by that pair (`deploy/datadog/dev-network-dashboard.json`
-expands the `env`/`service` template variables into each widget's query), and on
-a host with no agent nothing else can add them: an agent tags the log stream it
-collects itself (the dev agent reads `d-inference-coordinator.service` over
-journald and stamps `env:development`, `deploy/gcp/vm-startup.sh`), the HTTPS
-intake does not.
+Everything the coordinator submits carries `env:<DD_ENV>` and
+`service:<DD_SERVICE>` — `WithTags` on the DogStatsD client, and `ddtags` on
+forwarded logs (`logTags`, which appends the per-entry `kind` and `severity` and
+omits either when empty). The log payload's `service` field is the configured
+service, not a literal. This matters because the dashboards scope every query by
+that pair (`deploy/datadog/dev-network-dashboard.json` expands the `env`/`service`
+template variables into each widget's query). Metrics get the pair from the
+statsd client's default tags; forwarded logs have to carry it themselves,
+because the Logs API intake adds nothing (an agent stamps the log stream *it*
+collects — the dev agent reads `d-inference-coordinator.service` over journald
+and stamps `env:development`, `deploy/gcp/vm-startup.sh` — but these logs do not
+go through the agent). Prod supplies the pair from `/etc/d-inference/env`, which
+`deploy/gcp/prod/release-env-defaults` seeds with `DD_ENV=production`.
 
 ### Coordinator events and logs
 
@@ -342,12 +377,13 @@ and the `inference.timing.*` histograms are built from the same
 | Condition | Effect | Where to look |
 |---|---|---|
 | Neither `DD_API_KEY` nor `DD_AGENT_HOST` set | no Datadog client; every metric and forwarded event is dropped; `slog` mirror and in-process counters still work | startup log lacks `datadog integration enabled` |
-| `DD_API_KEY` set, no local agent | counters, gauges and histograms all arrive via HTTPS; no metric or log depends on a sidecar (an agent, where one exists, still owns trace intake on 8126 and host-level checks) | — |
-| `DD_API_KEY` unset and no agent listening | every metric is lost silently: connecting a UDP socket succeeds with nothing on the other end, so each send returns nil and the kernel discards the datagram — there is no dropped-packet counter | nothing; compare an expected metric against Datadog directly |
+| No agent listening on the DogStatsD address | every metric is dropped — the agent is the only metric path — but the drop is now reported, at most one line a minute with a count of what it swallowed | `datadog: DogStatsD delivery failing`, carrying `addr` and `errors_since_last_report`; then `deploy/gcp/prod/install-datadog-agent.sh --check` |
+| Agent restarted or briefly down | the metrics emitted during the gap are lost; nothing is buffered on either side; the coordinator recovers on its own the moment the agent answers again (stateless UDP, no reconnect) | the same warning, which stops |
+| `statsd.New` itself failed at startup (malformed `DD_DOGSTATSD_URL`, no sockets) | `Client.Statsd` stays nil, so every metric is dropped for the life of the process and no reconnect is attempted | one `datadog: DogStatsD client init failed (metrics disabled)` at startup, then the *same* rate-limited `datadog: DogStatsD delivery failing` line as a dead agent, distinguished by `never initialized` in the error — so one grep covers both drop modes |
+| Agent accepts datagrams but cannot ship them (rotated or truncated `DD_API_KEY`, blocked egress) | metrics leave the coordinator, are counted by the agent, and are dropped upstream; the coordinator cannot see this and logs nothing | `datadog-agent status` (API key + forwarder sections); `install-datadog-agent.sh --apply` checks both, which is why the probe is not the whole test |
 | Distribution metric has no percentile aggregators enabled | the raw values arrive, but `pNN:` queries on it return no data while `avg:`/`max:` work | `deploy/datadog/enable-distribution-percentiles.sh` (reports current state without `--apply`) |
-| More than 2000 values for one series in one 5 s window | the window is reservoir-sampled: percentiles over that window stay unbiased, `count`/`sum` under-report, and a wide time range weighs the sampled window like a quiet one | `datadog: distribution window sampled` (carries observed vs submitted) |
-| Series, distribution or Logs intake returns ≥ 400 or times out (10 s) | batch dropped; one `Warn` per batch, carrying the status and the intake's own reason (first 200 bytes of the body) | `datadog: series API returned error`, `datadog: distribution API returned error`, `datadog: logs API returned error`, `datadog: logs API request failed` |
-| A widget scopes by `env`/`service` that the submission does not carry | the series or log exists in Datadog but no dashboard query matches it, and nothing anywhere reports a problem | compare `logTags`/`metricsTags` against the dashboard's template variables |
+| Logs intake returns ≥ 400 or times out (10 s) | batch dropped; one `Warn` per batch, carrying the status and the intake's own reason (first 200 bytes of the body) | `datadog: logs API returned error`, `datadog: logs API request failed` |
+| A widget scopes by `env`/`service` that the submission does not carry | the series or log exists in Datadog but no dashboard query matches it, and nothing anywhere reports a problem | compare `logTags` and the statsd client's `WithTags` against the dashboard's template variables |
 | Profile or route sink full | write dropped and counted; request unaffected | `telemetry.sink_dropped{sink:profile}`, `route_sink_dropped_total` in `fleet_snapshots` |
 | Stale or reordered `capacity_seq` | frame ignored except `LastHeartbeat`; metrics not re-emitted | registry debug log |
 | Heartbeat prefix-cache telemetry fails validation | dropped for that frame | `routing.cache_telemetry_rejected{source:heartbeat}` |
@@ -369,8 +405,7 @@ Per-model cache reporting is a separate internal `routing.cache_model.*`
 family, mirrored by `cache_model_*` admin metrics. It distinguishes reported
 usage, accepted proofs and cache-selected terminals without altering the public
 aggregate cache response. Model IDs must be present in the active catalog;
-other IDs use `unknown`. Timing sums and sample counts work over HTTPS as well
-as DogStatsD. See the [metric inventory](../reference/telemetry-inventory.md#cache-results-by-model-internal)
+other IDs use `unknown`. See the [metric inventory](../reference/telemetry-inventory.md#cache-results-by-model-internal)
 for populations, labels and reset semantics (`coordinator/api/cache_model_telemetry.go`).
 
 ## Code map
@@ -380,8 +415,11 @@ for populations, labels and reset semantics (`coordinator/api/cache_model_teleme
 | Heartbeat ingest and metric emission | `coordinator/api/provider.go` (`providerReadLoop`), `coordinator/api/provider_wedge_telemetry.go`, `coordinator/api/provider_mlx_cache_telemetry.go` |
 | Clamping and canonical snapshot | `coordinator/registry/heartbeat.go` (`Registry.Heartbeat`, `clampBackendCapacity`), `coordinator/registry/heartbeat.go` |
 | Persistence throttle | `coordinator/registry/persistence.go` |
-| Datadog client, HTTPS series, HTTPS distributions, trace-aware slog | `coordinator/datadog/datadog.go`, `coordinator/datadog/metrics_http.go`, `coordinator/datadog/metrics_distribution.go`, `coordinator/datadog/slog.go` |
-| Wiring and env | `coordinator/cmd/coordinator/main.go` |
+| Datadog client: construction and lifecycle | `coordinator/datadog/datadog.go` |
+| DogStatsD submission and the delivery-error handler | `coordinator/datadog/metrics.go`; the type-locked `provider.mlx_*` gauges in `coordinator/datadog/metrics_snapshot.go` |
+| Logs API and Events API forwarding, trace-aware slog | `coordinator/datadog/logs.go`, `coordinator/datadog/slog.go` |
+| Agent provisioning | `deploy/gcp/vm-startup.sh` (dev), `deploy/gcp/prod/install-datadog-agent.sh` + `docs/operations/datadog-agent.md` (prod) |
+| Wiring and env | `coordinator/cmd/coordinator/main.go`, `deploy/gcp/prod/release-env-defaults` |
 | Dashboard and percentile enablement | `deploy/datadog/dev-network-dashboard.json`, `deploy/datadog/apply-dev-dashboard.sh`, `deploy/datadog/enable-distribution-percentiles.sh` |
 | Coordinator event emitter | `coordinator/telemetry/emitter.go`; helpers and gauge loop in `coordinator/api/server.go` |
 | In-process metrics registry | `coordinator/api/metrics.go`; `handleAdminMetrics` in `coordinator/api/server.go` |
@@ -389,7 +427,7 @@ for populations, labels and reset semantics (`coordinator/api/cache_model_teleme
 | Sinks | `coordinator/api/telemetry_sink.go`, `coordinator/api/profiler_sink.go`, `coordinator/api/profiler_fleet.go` |
 | Disconnect classification | `coordinator/registry/disconnect_classify.go` |
 | Provider side | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift` (`buildHeartbeatJSON`), `provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Capacity.swift`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift` (no-op facade) |
-| Tests | `coordinator/api/telemetry_allowlist_parity_test.go`, `coordinator/api/telemetry_handlers_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/logs_wire_test.go`, `coordinator/datadog/metrics_http_test.go`, `coordinator/datadog/metrics_distribution_test.go`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` |
+| Tests | `coordinator/api/telemetry_allowlist_parity_test.go`, `coordinator/api/telemetry_handlers_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/logs_wire_test.go`, `coordinator/datadog/metrics_test.go`, `scripts/test-prod-env-refresh.sh`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` |
 
 ## Related
 

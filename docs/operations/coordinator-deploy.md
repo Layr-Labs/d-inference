@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-08 · commit `0c162cdae`
+> Last updated: 2026-09-16 · commit `4595d7e65`
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -43,6 +43,16 @@ For international payout configuration and validation, also follow [Global Payou
   [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) job "Release
   Integrity" passed (`scripts/check-release-version.sh`,
   `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh`).
+- The host runs a healthy Datadog Agent. The coordinator's only metric path is
+  DogStatsD to `localhost:8125` — there is no HTTPS fallback — and nothing on
+  this host orders the agent before the container, so it is a prerequisite of
+  the deploy rather than something the deploy sets up. Confirm with
+  `sudo deploy/gcp/prod/install-datadog-agent.sh --check` — it must report the
+  service active and the API key valid; the packet count it prints is cumulative,
+  so run it twice if you want to watch it climb. If the agent is missing, do
+  [`datadog-agent.md`](datadog-agent.md) **first**. Metrics are the only thing
+  affected: a swap without an agent still serves traffic, and the coordinator
+  logs `DogStatsD delivery failing` once a minute while they are dropped.
 
 ### Infrastructure
 
@@ -404,7 +414,8 @@ and appends any `release-env-defaults` key that is absent (existing values win).
 **Required keys** (`deploy/gcp/prod/required-env-keys.txt`): `DOMAIN`,
 `APNS_AUTH_KEY_P8_B64`, `APNS_ENFORCE_AFTER`, `APNS_KEY_ID`, `APNS_MODE`,
 `APNS_TEAM_ID`, `APNS_TOPIC`, `MICROMDM_API_KEY`, `MDM_PUSH_P12_B64`,
-`MNEMONIC`, `MODEL_REGISTRY_PUBLISHING_KEY`, and these `EIGENINFERENCE_*`
+`MNEMONIC`, `MODEL_REGISTRY_PUBLISHING_KEY`, `DD_ENV`, `DD_SERVICE`,
+`DD_AGENT_HOST`, and these `EIGENINFERENCE_*`
 keys: `ADMIN_KEY`, `BASE_URL`, `COLD_DISPATCH`, `CONSOLE_URL`, `DATABASE_URL`,
 `DEDICATED_MODELS`, `HEALTH_EJECTION`, `MDM_API_KEY` (must be byte-identical
 to `MICROMDM_API_KEY`), `MIN_DECODE_TPS`, `MIN_PROVIDER_VERSION`,
@@ -430,8 +441,16 @@ to `MICROMDM_API_KEY`), `MIN_DECODE_TPS`, `MIN_PROVIDER_VERSION`,
 the `EIGENINFERENCE_PROMPT_SIDECAR_*` set (`ENABLED`, `BINARY`, `SOCKET`,
 `ARTIFACT_ROOT`, `ARTIFACT_BASE_URL`, timeouts, restart policy, resource
 bounds), `EIGENINFERENCE_MEDIA_FETCH_ENABLED`,
-`EIGENINFERENCE_MODEL_SOLO_TPS_SEED`, and
-`EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=true`.
+`EIGENINFERENCE_MODEL_SOLO_TPS_SEED`,
+`EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=true`, and the Datadog identity
+block `DD_ENV=production`, `DD_SERVICE=d-inference-coordinator`,
+`DD_AGENT_HOST=localhost`, `DD_SITE=datadoghq.com`.
+
+`DD_API_KEY` is in neither list. It is a secret, and
+`darkbloom-env-refresh.service` runs `Before=docker.service`, so making a
+telemetry credential required would let a missing key stop the coordinator from
+booting at all. The agent installer reads it straight off the live env file
+instead — see [`datadog-agent.md`](datadog-agent.md).
 
 Global Payouts activation additionally requires the financial-account ID and
 separate webhook secret. The refresh validates them before replacing the env
@@ -461,6 +480,7 @@ reference copy; editing it changes nothing on the host.
 ## Related
 
 - [dev-environment.md](dev-environment.md) — the dev coordinator (`sepolia-ai`), which auto-deploys from Cloud Build.
+- [`datadog-agent.md`](datadog-agent.md) — the host Datadog Agent this deploy depends on for every metric.
 - [`provider-release.md`](provider-release.md) — provider CLI release runbook.
 - [`../developer/build.md`](../developer/build.md) — what the Dockerfile builds.
 - [`../reference/configuration.md`](../reference/configuration.md) — every environment variable.

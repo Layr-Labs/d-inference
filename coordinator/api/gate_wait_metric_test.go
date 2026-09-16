@@ -59,7 +59,7 @@ func TestRegistryGateWaitHistogramTaggedBySite(t *testing.T) {
 	if !strings.Contains(packet, "site:breaker") {
 		t.Fatalf("gate-wait histogram missing the site tag: %s", packet)
 	}
-	if !strings.Contains(packet, "|h|") {
-		t.Fatalf("gate-wait metric is not a histogram: %s", packet)
+	if !strings.Contains(packet, "|d|") {
+		t.Fatalf("gate-wait metric is not a distribution: %s", packet)
 	}
 }

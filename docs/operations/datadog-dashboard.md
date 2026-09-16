@@ -1,22 +1,24 @@
 # Datadog dashboard and distribution percentiles
 
-> Last updated: 2026-09-16 · commit `8e74f2126`
+> Last updated: 2026-09-16 · commit `4595d7e65`
 
 Apply the observability dashboard and enable the percentile aggregators its
 latency widgets depend on. The two steps are separate scripts and the **order
 matters**: a `pNN:` widget stays empty until both the coordinator has submitted
 the metric and the metric has percentiles enabled.
 
-Transport background — why histograms are distributions and what the agent no
-longer does — is in
+Transport background — why the coordinator submits histograms as DogStatsD
+distributions (`|d|`) rather than agent-aggregated histograms (`|h|`) — is in
 [`../architecture/telemetry.md#mechanism`](../architecture/telemetry.md#mechanism).
+The agent that carries them has to exist first:
+[`datadog-agent.md`](datadog-agent.md).
 
 ## When to use
 
 - A dashboard widget was added, removed or re-queried in
   `deploy/datadog/dev-network-dashboard.json`.
-- A coordinator deploy changed which metrics are emitted, or moved a metric
-  between legs (DogStatsD ↔ HTTPS).
+- A coordinator deploy changed which metrics are emitted, or changed a metric's
+  type (a counter or gauge does not answer `pNN:` at all).
 - A latency widget reads "No data" while `avg:` on the same metric works — that
   is exactly the missing-percentile-aggregator signature.
 - A histogram not on the dashboard needs `pNN:` for an ad-hoc query.
@@ -31,8 +33,11 @@ longer does — is in
   a metric.
 - `python3` and `curl`.
 - The coordinator build carrying the metric is already deployed to the
-  environment you are configuring. **Production deploys and Secret Manager
-  access are human-only** — see the deploy gate in
+  environment you are configuring, **and that host runs a Datadog Agent** —
+  metrics have no other path. In production that is
+  [`datadog-agent.md`](datadog-agent.md), which must be complete before this
+  runbook does anything useful. **Production deploys and Secret Manager access
+  are human-only** — see the deploy gate in
   [`coordinator-deploy.md`](coordinator-deploy.md).
 
 A tag configuration is **per metric, per organization**, not per environment.
@@ -46,9 +51,10 @@ where a wrong metric name shows up as a skip rather than as a wrong widget.
 
 Datadog derives a metric's type from submitted data, so a metric it has never
 received cannot be configured — the write returns 404 and the script reports it
-as `skipped`. The coordinator flushes every 5 s, but a metric only appears once
-something emits it, so a low-traffic metric can take minutes. Wait for the
-metric to exist:
+as `skipped`. The coordinator hands each value to the local agent immediately and
+the agent flushes on its own interval (~10 s), but a metric only appears once
+something emits it, so a low-traffic metric can take minutes. Wait for the metric
+to exist:
 
 ```bash
 export DD_SITE=datadoghq.com   # the scripts default this; curl does not
@@ -156,9 +162,9 @@ runs, and a distribution is not billed as one custom metric:
 | Distribution, percentiles on | ~10 (the above, plus five more for percentiles) |
 
 So the deploy is the 5× step and enabling percentiles is only 2× on top of it.
-In production, where histograms were previously discarded for want of an agent,
-the baseline being compared against is zero: the deploy is where the custom
-metric count appears, not the apply.
+In production, where histograms were handed to a DogStatsD socket nobody was
+listening on, the baseline being compared against is zero: the agent install plus
+the deploy is where the custom metric count appears, not the apply.
 
 Timeseries count is driven by tag cardinality, not by the number of metric
 names. The dominant contributor is `http.latency_ms` (`path` × `method` ×
@@ -190,7 +196,7 @@ emits them, and no dashboard or percentile change fixes that:
 | Widget | Why | Fix |
 |---|---|---|
 | `routing.cost_ms` percentiles | The only `ddHistogram("routing.cost_ms", …)` calls are in `coordinator/api/routing_metrics_test.go`. No production code emits it. | Emit it from the scheduler's cost computation, or drop the widget. |
-| `trace.http.request.latency.*` (APM) | `ddtracer.Start()` runs whenever `DD_API_KEY` is set, but no coordinator code creates spans. Needs instrumentation, not a sidecar. | Add spans, or drop the widgets. |
+| `trace.http.request.latency.*` (APM) | `ddtracer.Start()` runs whenever `DD_API_KEY` or `DD_AGENT_HOST` is set and the host agent now accepts traces on `:8126`, but no coordinator code creates spans. Missing instrumentation, not missing transport. | Add spans, or drop the widgets. |
 
 The percentile script will report these as `skipped`, which is correct and does
 not fail the run.
@@ -206,10 +212,13 @@ Datadog configuration.
   configuration, which turns percentiles back off and halves what that metric
   bills.
   The raw distribution data is unaffected, and `avg:`/`count:`/`max:` keep
-  working. Deleting does not restore agent-style `.95percentile` gauges — those
-  came from a local agent aggregating DogStatsD and stopped when histograms moved
-  to HTTPS.
-- **Whole transport**: unsetting `DD_API_KEY` returns counters, gauges and
-  histograms to DogStatsD — which on a host with no agent means they are silently
-  discarded again — and stops log and event forwarding outright, since those have
-  no UDP leg at all. That is the bug this replaced, not a rollback target.
+  working. Deleting does not produce agent-style `.95percentile` gauges: those
+  only exist for metrics submitted as `|h|`, and nothing submits `|h|` — see
+  [`../architecture/telemetry.md#mechanism`](../architecture/telemetry.md#mechanism)
+  for why per-flush-window percentiles cannot answer a `pNN:` query over a range.
+- **Whole transport**: there is no switch here that changes it. Metrics stop only
+  if the agent stops ([`datadog-agent.md`](datadog-agent.md#rollback)), and the
+  coordinator logs that it is dropping them. Unsetting `DD_API_KEY` stops log and
+  event forwarding — those go straight to the Logs API — but leaves metrics
+  flowing as long as `DD_AGENT_HOST` is set; unsetting both disables the client
+  entirely.

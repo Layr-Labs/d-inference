@@ -2,9 +2,9 @@
 #
 # Enable percentile aggregators on the coordinator's distribution metrics.
 #
-# The coordinator submits histograms to the v1 distribution_points intake
-# (coordinator/datadog/metrics_distribution.go) so they arrive on hosts with no
-# Datadog agent. Datadog stores the raw values, but a distribution metric only
+# The coordinator submits histograms as DogStatsD distributions (`d`), which the
+# local agent forwards as raw values (coordinator/datadog/metrics.go, Histogram).
+# Datadog stores those raw values, but a distribution metric only
 # answers avg/sum/min/max/count until percentiles are explicitly enabled on it:
 # a `p95:` query against a distribution without that flag returns no data. This
 # script flips the flag for every metric the dashboard queries with `pNN:`, plus

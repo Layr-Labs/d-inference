@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-16 · commit `4595d7e65`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -63,7 +63,7 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/promptcontract` | Supervisor, client and artifact provisioner for the prompt-contract sidecar. |
 | `coordinator/promptsidecar` | The Rust sidecar itself. |
 | `coordinator/stateexport` | Snapshot, zip and age encryption for the admin state export. |
-| `coordinator/datadog` | Metrics (HTTP API and DogStatsD), Logs API forwarding, trace handler. |
+| `coordinator/datadog` | Metrics over DogStatsD to the local agent (no HTTP metric path), Logs API forwarding, trace handler. |
 | `coordinator/telemetry` | Structured telemetry emitter. |
 | `coordinator/saferun` | Panic-safe goroutine launcher used by every background loop. |
 | `coordinator/deploy` | `start.sh` container entrypoint (persistent disk, MicroMDM). |

@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"github.com/eigeninference/d-inference/coordinator/api/catalog"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -94,7 +95,7 @@ func TestRegisterModelAliasReadFailurePreservesNamespace(t *testing.T) {
 		t.Fatal(err)
 	}
 	var fetches atomic.Int64
-	prefix := modelR2Prefix(id, "v1")
+	prefix := catalog.ModelR2Prefix(id, "v1")
 	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fetches.Add(1)
 		switch r.URL.Path {

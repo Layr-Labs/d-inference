@@ -84,7 +84,7 @@ func TestRuntimeManifestConcurrentPublicationAndVerification(t *testing.T) {
 			for i := 0; i < 100; i++ {
 				srv.verifyRuntimeHashesForBackend("mlx-swift", "", "", map[string]string{"mlx_metallib": a})
 				srv.applyChallengeRuntimePolicy(provider, &protocol.AttestationResponseMessage{TemplateHashes: map[string]string{"mlx_metallib": a}})
-				srv.readCache.Invalidate(runtimeManifestCacheKey)
+				srv.readCache.Invalidate("runtime_manifest:v1")
 				w := httptest.NewRecorder()
 				srv.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/runtime/manifest", nil))
 				var response struct {

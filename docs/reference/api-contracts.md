@@ -68,6 +68,13 @@ All four share the chain `readiness.Controller.Gate → requireAuth → rateLimi
 | GET | `/v1/runtime/manifest` | `Controller.RuntimeManifest` (`coordinator/api/releases/runtime_manifest.go`), reading `releasepolicy.Manager.RuntimeManifest` (`coordinator/providercontrol/releasepolicy/manager.go`) | `—` | — | Hashes the coordinator accepts from provider runtimes: `{"configured":false}` or `{"configured":true,"python_hashes":{…},"runtime_hashes":{…},"template_hashes":{"<name>":[<sorted hashes accepted across active releases>]}}`; cached 1 min ([runtime manifest](../architecture/security/attestation.md#runtime-manifest)) |
 | GET | `/v1/cache/status` | `handleExactCacheStatus` (`coordinator/api/exact_cache_status.go`) | `—` | — | Exact-cache status, cached for [`exactCacheStatusCacheTTL`](#timeouts-and-constants) |
 
+The public model list, retrieve-by-ID and OpenRouter feed return 500
+`internal_error` when an uncached alias-inventory read fails. The failed read
+does not cache an empty list, advertise hidden builds, or turn an existing
+alias into a 404. Successful snapshots retain their existing cache lifetimes
+(2 s for list/retrieve, 5 s for OpenRouter), including while a later store read
+would fail. The account-owned self-route view has its own lookup path.
+
 ### Authentication and API keys (10)
 
 | Method | Path | Handler | Auth | Limiter | Notes |

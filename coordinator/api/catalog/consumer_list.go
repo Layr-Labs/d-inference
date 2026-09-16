@@ -48,7 +48,10 @@ func (s *Controller) listModelEntries(includeBuilds bool) ([]types.ModelEntry, e
 		concreteOrder = append(concreteOrder, model.ID)
 	}
 
-	aliasEntries, hiddenBuilds := s.aliasModelEntries(capByModel, catalogByID, registryByID)
+	aliasEntries, hiddenBuilds, err := s.aliasModelEntries(capByModel, catalogByID, registryByID)
+	if err != nil {
+		return nil, err
+	}
 	data := make([]types.ModelEntry, 0, len(concreteEntries)+len(aliasEntries))
 	data = append(data, aliasEntries...)
 	for _, modelID := range concreteOrder {

@@ -22,6 +22,8 @@ type PostgresLifecycle struct {
 
 	dataDir string
 	native  bool
+	command *exec.Cmd
+	done    chan struct{}
 }
 
 func NewPostgresLifecycle(logger *slog.Logger, port int) *PostgresLifecycle {
@@ -38,14 +40,22 @@ func (p *PostgresLifecycle) Start(ctx context.Context) error {
 	return p.startNative(ctx)
 }
 
+func (p *PostgresLifecycle) resolvePort() error {
+	if p.Port != 0 {
+		return nil
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return fmt.Errorf("testbed/deps: find free port: %w", err)
+	}
+	defer listener.Close()
+	p.Port = listener.Addr().(*net.TCPAddr).Port
+	return nil
+}
+
 func (p *PostgresLifecycle) startDocker(ctx context.Context) error {
-	if p.Port == 0 {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			return fmt.Errorf("testbed/deps: find free port: %w", err)
-		}
-		p.Port = listener.Addr().(*net.TCPAddr).Port
-		listener.Close()
+	if err := p.resolvePort(); err != nil {
+		return err
 	}
 
 	p.DatabaseURL = fmt.Sprintf("postgres://testbed:testbed@127.0.0.1:%d/testbed?sslmode=disable", p.Port)
@@ -85,19 +95,21 @@ func (p *PostgresLifecycle) startNative(ctx context.Context) error {
 		return fmt.Errorf("testbed/deps: neither docker nor postgres found in PATH (need one for ephemeral Postgres)")
 	}
 
-	if p.Port == 0 {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			return fmt.Errorf("testbed/deps: find free port: %w", err)
-		}
-		p.Port = listener.Addr().(*net.TCPAddr).Port
-		listener.Close()
+	if err := p.resolvePort(); err != nil {
+		return err
 	}
 
-	p.dataDir = filepath.Join(os.TempDir(), fmt.Sprintf("testbed-pg-%d-%04d", time.Now().UnixMilli(), rand.Intn(10000)))
-	if err := os.MkdirAll(p.dataDir, 0755); err != nil {
+	p.dataDir, err = os.MkdirTemp("", "testbed-pg-")
+	if err != nil {
 		return fmt.Errorf("testbed/deps: create data dir: %w", err)
 	}
+	p.native = true
+	started := false
+	defer func() {
+		if !started {
+			p.stopNative()
+		}
+	}()
 
 	initdb, _ := exec.LookPath("initdb")
 	if initdb == "" {
@@ -124,10 +136,14 @@ func (p *PostgresLifecycle) startNative(ctx context.Context) error {
 	}
 
 	p.ContainerID = fmt.Sprintf("native:%d", cmd.Process.Pid)
-	p.native = true
+	p.command = cmd
+	p.done = make(chan struct{})
+	go func(command *exec.Cmd, done chan struct{}) {
+		defer close(done)
+		_ = command.Wait()
+	}(cmd, p.done)
 
 	if err := p.waitForReadyNative(ctx); err != nil {
-		p.Stop()
 		return fmt.Errorf("testbed/deps: postgres readiness: %w", err)
 	}
 
@@ -145,24 +161,17 @@ func (p *PostgresLifecycle) startNative(ctx context.Context) error {
 		p.Logger.Warn("createdb failed (may already exist)", "error", string(out))
 	}
 
+	started = true
 	p.Logger.Info("ephemeral postgres started (native)", "port", p.Port, "dataDir", p.dataDir)
 	return nil
 }
 
 func (p *PostgresLifecycle) waitForReadyDocker(ctx context.Context) error {
-	for i := 0; i < 30; i++ {
+	return waitForPostgres(ctx, func() bool {
 		cmd := exec.CommandContext(ctx, "docker", "exec", p.ContainerID,
 			"pg_isready", "-U", "testbed", "-d", "testbed")
-		if err := cmd.Run(); err == nil && p.hostDatabaseReady(ctx) {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(500 * time.Millisecond):
-		}
-	}
-	return fmt.Errorf("testbed/deps: postgres did not become ready within 15s")
+		return cmd.Run() == nil && p.hostDatabaseReady(ctx)
+	})
 }
 
 func (p *PostgresLifecycle) hostDatabaseReady(ctx context.Context) bool {
@@ -177,13 +186,16 @@ func (p *PostgresLifecycle) hostDatabaseReady(ctx context.Context) bool {
 }
 
 func (p *PostgresLifecycle) waitForReadyNative(ctx context.Context) error {
-	for i := 0; i < 30; i++ {
+	return waitForPostgres(ctx, func() bool {
 		cmd := exec.CommandContext(ctx, "pg_isready",
-			"-h", "127.0.0.1",
-			"-p", fmt.Sprintf("%d", p.Port),
-			"-U", "testbed",
-		)
-		if err := cmd.Run(); err == nil {
+			"-h", "127.0.0.1", "-p", fmt.Sprintf("%d", p.Port), "-U", "testbed")
+		return cmd.Run() == nil
+	})
+}
+
+func waitForPostgres(ctx context.Context, ready func() bool) error {
+	for i := 0; i < 30; i++ {
+		if ready() {
 			return nil
 		}
 		select {
@@ -217,25 +229,30 @@ func (p *PostgresLifecycle) stopDocker() {
 }
 
 func (p *PostgresLifecycle) stopNative() {
-	if p.ContainerID == "" {
-		return
-	}
-	var pid int
-	fmt.Sscanf(p.ContainerID, "native:%d", &pid)
-	if pid > 0 {
-		proc, err := os.FindProcess(pid)
-		if err == nil {
-			proc.Signal(os.Interrupt)
-			time.Sleep(500 * time.Millisecond)
-			proc.Kill()
+	if p.command != nil {
+		// Retain the actual child handle: a display PID must never authorize a kill.
+		_ = p.command.Process.Signal(os.Interrupt)
+		select {
+		case <-p.done:
+		case <-time.After(500 * time.Millisecond):
+			_ = p.command.Process.Kill()
+			select {
+			case <-p.done:
+			case <-time.After(5 * time.Second):
+				p.Logger.Error("postgres termination unconfirmed; retaining owned data", "dataDir", p.dataDir)
+				return
+			}
 		}
+		p.command, p.done = nil, nil
 	}
 	if p.dataDir != "" {
-		os.RemoveAll(p.dataDir)
+		if err := os.RemoveAll(p.dataDir); err != nil {
+			p.Logger.Error("failed to remove postgres data", "dataDir", p.dataDir, "error", err)
+			return
+		}
+		p.Logger.Info("ephemeral postgres removed (native)", "dataDir", p.dataDir)
 	}
-	p.Logger.Info("ephemeral postgres removed (native)", "dataDir", p.dataDir)
-	p.ContainerID = ""
-	p.dataDir = ""
+	p.ContainerID, p.dataDir = "", ""
 }
 
 func (p *PostgresLifecycle) SetEnv() {

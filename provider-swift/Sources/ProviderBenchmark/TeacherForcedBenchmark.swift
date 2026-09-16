@@ -103,14 +103,8 @@ public enum TeacherForcedBenchmark {
             throw Failure.runtimeIdentityUnavailable
         }
         let isVLM = declaration.visionConfig != nil
-        let container: ModelContainer
-        if isVLM {
-            container = try await VLMModelFactory.shared.loadContainer(
-                from: modelDirectory, using: LocalTokenizerLoader())
-        } else {
-            container = try await LLMModelFactory.shared.loadContainer(
-                from: modelDirectory, using: LocalTokenizerLoader())
-        }
+        let container = try await BenchmarkModelLoader.load(
+            directory: modelDirectory, isVLM: isVLM)
         guard WeightHasher.computeHash(snapshotDir: modelDirectory, modelID: modelID) == verified else {
             throw Failure.modelHashMismatch
         }

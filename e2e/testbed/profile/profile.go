@@ -57,26 +57,27 @@ func (p *Profiler) Consume(event testbed.Event) {
 }
 
 func (p *Profiler) BuildProfile() *ProfileRun {
-	events := p.buffer.Events()
-
 	run := &ProfileRun{
 		Config:    p.config,
 		Timestamp: time.Now(),
 	}
 
-	_ = events
-
-	requestEvents := p.buffer.ByKind(testbed.EventRequestStart)
-	requestIDs := make([]string, 0, len(requestEvents))
-	for _, e := range requestEvents {
-		requestIDs = append(requestIDs, e.RequestID)
+	// Index one snapshot instead of rescanning the entire buffer for each request.
+	// Preserve start-event order (including repeated starts) and per-request order.
+	var requestIDs []string
+	byRequest := make(map[string][]testbed.Event)
+	for _, event := range p.buffer.Events() {
+		byRequest[event.RequestID] = append(byRequest[event.RequestID], event)
+		if event.Kind == testbed.EventRequestStart {
+			requestIDs = append(requestIDs, event.RequestID)
+		}
 	}
 
 	allDurations := make(map[testbed.Segment][]time.Duration)
 
 	for _, rid := range requestIDs {
 		summary := RequestSummary{RequestID: rid}
-		reqEvents := p.buffer.ByRequest(rid)
+		reqEvents := byRequest[rid]
 
 		for _, e := range reqEvents {
 			if e.Kind == testbed.EventError {
@@ -230,7 +231,6 @@ func (r *ProfileRun) SummaryTable() string {
 		testbed.SegmentTTFT,
 		testbed.SegmentDecodeTPS,
 		testbed.SegmentProviderToCoordinator,
-		testbed.SegmentTotalE2E,
 	} {
 		if stats, ok := r.Aggregated[seg]; ok {
 			s += fmt.Sprintf("%-30s %8d %10s %10s %10s %10s\n",

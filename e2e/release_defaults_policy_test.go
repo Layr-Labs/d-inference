@@ -17,11 +17,10 @@ type releaseDefaultExpectation struct{ cache, mtp string }
 func releaseDefaultSelection(in connectedCacheInput) (releaseDefaultExpectation, error) {
 	expected := releaseDefaultExpectation{cache: "off", mtp: "off"}
 	switch in.Artifact.ModelID {
-	case "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8", "EigenLabs/Qwen3.8-27B-4bit-mtp":
+	case "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8", "EigenLabs/Qwen3.8-27B-4bit-mtp", "gemma-4-26b-qat-4bit":
 		expected = releaseDefaultExpectation{cache: "ssd", mtp: "on"}
 	case "gpt-oss-20b":
 		expected = releaseDefaultExpectation{cache: "ssd", mtp: "off"}
-	case "gemma-4-26b-qat-4bit":
 	default:
 		return expected, fmt.Errorf("exact release target required")
 	}
@@ -85,9 +84,6 @@ func validateReleaseDefaultSlots(slots []connectedSlot, in connectedCacheInput, 
 func TestReleaseDefaultSelectionSeparatesRequestedAndObservedPolicy(t *testing.T) {
 	for _, model := range []string{"qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8", "EigenLabs/Qwen3.8-27B-4bit-mtp", "gpt-oss-20b", "gemma-4-26b-qat-4bit"} {
 		cache := "ssd"
-		if model == "gemma-4-26b-qat-4bit" {
-			cache = "off"
-		}
 		in := connectedCacheInput{Backend: "auto", MTPMode: "auto", CacheMode: cache, MaxConcurrent: 1}
 		in.Artifact.ModelID = model
 		got, err := releaseDefaultSelection(in)
@@ -146,12 +142,8 @@ func TestReleaseDefaultSlotsRejectFallbackAndWrongCacheState(t *testing.T) {
 		in.Artifact.ModelID = model
 		in.Artifact.ModelAggregateSHA256 = "hash"
 		in.Artifact.PromptContractID = "contract"
-		want := releaseDefaultExpectation{cache: "off"}
-		state := "disabled"
-		if model != "gemma-4-26b-qat-4bit" {
-			want.cache = "ssd"
-			state = "ready"
-		}
+		want := releaseDefaultExpectation{cache: "ssd"}
+		state := "ready"
 		makeSlot := func() connectedSlot {
 			slot := connectedSlot{Model: model, Aggregate: "hash", CacheStatus: &protocol.PrefixCacheModelStatus{ModelID: model, Backend: "paged", State: state, Reason: map[string]string{"ready": "ready", "disabled": "config_disabled"}[state]}, Capacity: &protocol.BackendCapacity{Slots: []protocol.BackendSlotCapacity{{Model: model, KVBackend: &paged}}}}
 			if want.cache == "ssd" {
@@ -246,4 +238,15 @@ func TestReleaseDefaultRepeatRequiresCompleteOutputAndTokenAccounting(t *testing
 		mutate(&bad)
 		require.Error(t, validateReleaseDefaultRepeat(a, bad))
 	}
+}
+
+func TestReleaseDefaultGemmaRequiresSSDAndAutomaticMTP(t *testing.T) {
+	in := connectedCacheInput{Backend: "auto", MTPMode: "auto", CacheMode: "ssd", MaxConcurrent: 1}
+	in.Artifact.ModelID = "gemma-4-26b-qat-4bit"
+	got, err := releaseDefaultSelection(in)
+	require.NoError(t, err)
+	require.Equal(t, releaseDefaultExpectation{cache: "ssd", mtp: "on"}, got)
+	in.CacheMode = "off"
+	_, err = releaseDefaultSelection(in)
+	require.Error(t, err, "the historical cache-disabled input cannot qualify the current release")
 }

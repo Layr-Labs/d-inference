@@ -14,6 +14,8 @@ SYNTHETIC_ANSWER = "STARTUP_OK"
 
 
 def validate_base_url(value):
+    if not isinstance(value, str):
+        raise ValueError("base URL must be a string")
     parsed = urllib.parse.urlsplit(value)
     if (parsed.scheme not in {"http", "https"} or not parsed.hostname
             or parsed.username or parsed.password or parsed.query or parsed.fragment
@@ -109,7 +111,7 @@ class TestProbe:
         if hostname in {"api.darkbloom.dev", "api.darkbloom.ai", "console.darkbloom.dev"}:
             raise ValueError("synthetic startup inference is refused for known production origins")
         key_env = config.get("api_key_env", "")
-        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,95}", key_env):
+        if not isinstance(key_env, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,95}", key_env):
             raise ValueError("inference config requires an API-key environment variable name")
         api_key = os.environ.get(key_env, "")
         if not api_key or not all(33 <= ord(char) <= 126 for char in api_key):
@@ -128,7 +130,7 @@ class TestProbe:
         message = first.get("message")
         content = message.get("content") if isinstance(message, dict) else None
         available = (result.status == 200 and "error" not in body and body.get("model") == model
-                     and first.get("finish_reason") in {"stop", "length"}
+                     and first.get("finish_reason") in ("stop", "length")
                      and isinstance(content, str) and bool(content.strip()))
         return {**result.public(), "duration_ms": round((time.monotonic() - started) * 1000, 3),
                 "availability_success": available, "response_model_matches": body.get("model") == model,

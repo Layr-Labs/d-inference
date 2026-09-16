@@ -68,14 +68,8 @@ public final class MTPProductionModelBundle: @unchecked Sendable {
         let assistantFacts = try MTPBenchmarkModelFacts.inspect(
             modelID: assistantID, directory: assistantDirectory)
         let isVLM = hasVisionConfig(directory: targetDirectory)
-        let container: ModelContainer
-        if isVLM {
-            container = try await VLMModelFactory.shared.loadContainer(
-                from: targetDirectory, using: LocalTokenizerLoader())
-        } else {
-            container = try await LLMModelFactory.shared.loadContainer(
-                from: targetDirectory, using: LocalTokenizerLoader())
-        }
+        let container = try await BenchmarkModelLoader.load(
+            directory: targetDirectory, isVLM: isVLM)
 
         struct Snapshot: @unchecked Sendable {
             let model: any LanguageModel

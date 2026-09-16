@@ -34,11 +34,7 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 		t.Skip("requires the real Swift provider and local MLX checkpoint")
 	}
 	model := exactCacheRoutingTestModelID()
-	suite := testbed.NewSuite(testbed.SuiteConfig{
-		ModelSpecs:                 []testbed.ModelSpec{{ModelID: model, NumProviders: 2}},
-		NumUsers:                   2,
-		EnableEphemeralPrefixCache: true,
-	})
+	suite := testbed.NewSuite(exactCacheRoutingSuiteConfig(model))
 	require.NoError(t, suite.Start(context.Background()))
 	t.Cleanup(suite.Stop)
 
@@ -72,7 +68,7 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 		}
 		return true
 	}, 30*time.Second, 100*time.Millisecond,
-		"contiguous frozen-full hybrid slots did not advertise after SSD scan readiness")
+		"exact-cache fixture slots did not advertise after SSD scan readiness")
 
 	fixture := loadExactCacheArtifacts(t, model, firstModel.WeightHash)
 	contractArtifacts, err := promptcontract.PromptArtifacts(fixture.manifest.Files)
@@ -226,10 +222,30 @@ func exactCacheRoutingTestModelID() string {
 	if modelID := os.Getenv("DARKBLOOM_EXACT_CACHE_TEST_MODEL"); modelID != "" {
 		return modelID
 	}
-	// The ordinary testbed checkpoint (GPT-OSS) deliberately renders the
-	// current date and is therefore cold-only. Exact routing needs a stable,
-	// CBv2-supported prompt contract.
+	// Keep the small pinned fixture distinct from release artifact qualification.
+	// Its explicit SSD opt-in below remains subject to normal capability gates.
 	return "mlx-community/gemma-4-e2b-it-4bit"
+}
+
+func exactCacheRoutingSuiteConfig(model string) testbed.SuiteConfig {
+	return testbed.SuiteConfig{
+		ModelSpecs:                 []testbed.ModelSpec{{ModelID: model, NumProviders: 2}},
+		NumUsers:                   2,
+		EnableEphemeralPrefixCache: true,
+		// The fixture is not in the exact production SSD-default allowlist.
+		PrefixCacheMode: "ssd",
+	}
+}
+
+func TestExactCacheRoutingFixtureExplicitlyRequestsSSD(t *testing.T) {
+	t.Setenv("DARKBLOOM_EXACT_CACHE_TEST_MODEL", "")
+	cfg := exactCacheRoutingSuiteConfig(exactCacheRoutingTestModelID())
+	require.Equal(t, "mlx-community/gemma-4-e2b-it-4bit", cfg.ModelSpecs[0].ModelID)
+	require.Equal(t, 2, cfg.ModelSpecs[0].NumProviders)
+	require.Equal(t, 2, cfg.NumUsers)
+	require.Equal(t, "ssd", cfg.PrefixCacheMode, "an unqualified fixture otherwise defaults to cache-disabled")
+	require.True(t, cfg.EnableEphemeralPrefixCache)
+	require.Empty(t, cfg.ExpectKVBackend, "global prewarming would perturb the cold request")
 }
 
 type exactCacheResponse struct {

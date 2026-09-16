@@ -10,7 +10,7 @@ def require(condition, message):
 
 
 def positive(value):
-    return isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0
 
 
 def validate(report, spec, manifest):

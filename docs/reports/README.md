@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-16 · commit `fa4e6bdc2`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -16,6 +16,7 @@ freshness stamp carries its own date, not the current one.
 - [App Attest release-build disconnect investigation](2026-09-14-app-attest-release-disconnects.md) — reproduced 0.9.3 callback timer crash, retained evidence, containment and fixed-build validation.
 - [Physical macOS 27 App Attest validation](2026-09-14-app-attest-macos27-validation.md) — real Apple attestations/assertions, user-session launch behavior, full provider negotiation, and verifier/serializer corrections.
 - [App Attest specification and draft review](2026-09-14-app-attest-spec-review.md) — Apple example compatibility, parser correction, credential/receipt gaps, and the proposed path to APNs/MDM retirement.
+- [Codebase operation boundaries and refactor decisions](2026-09-11-codebase-refactor.md) — provider, coordinator, console and testbed responsibilities, selected simplifications and validation scope.
 - [GPT-OSS 20B default SSD prefix-cache qualification](2026-09-11-gptoss-default-prefix-cache.md) — authenticated reconstruction, mixed suffixes and B1/B2/B4 task checks pass; 86–91% median warm-hit TTFT reductions, with standalone transport and ephemeral-key limits retained.
 - [0.9.2 provider-only rollout review](2026-09-10-provider-092-rollout-review.md) — verified 0.9.1 coordinator compatibility, shared inference interactions and remaining fleet-release gates.
 - [Final cache routing checks](2026-09-07-final-cache-routing.md) — twenty cache-off/SSD cases pass with two isolated providers, including holder selection, tenant isolation, cancellation and cold fallback.

@@ -10,6 +10,25 @@ created: "2026-05-14"
 # default available-disk/2 without a fixed ceiling, 20 GiB unknown-space
 # budget fallback, and a fixed 20 GiB pre-write reserve including the pending
 # donation payload. This does not re-verify the surrounding cache threat claims.
+# Status-signature canonicalization in TB-009 re-verified 2026-09-13 against
+# commit 1f52a71fb: provider byte compatibility, with signature/trust policy
+# unchanged. This does not re-verify the remaining threat entries.
+
+# App Attest coexistence added 2026-09-12: observation only; no trust/routing
+# mutation. The app-owned X25519 endpoint is bound into a fresh shadow transcript;
+# Apple API failures and malformed proofs are bounded and do not replace APNs/MDM.
+# Physical macOS 27 enrollment/assertions were observed; security-transition
+# qualification remains outstanding. The 0.9.3 in-process callback timer crash
+# showed that shadow policy alone does not isolate runtime failures. The 0.9.4
+# candidate adds a fixed-version/cohort gate, bounded uncancellable operations,
+# release callback smoke, historical-receipt renewal recovery, credential
+# revocation, and a non-enforcing prospective connection policy. Unknown build
+# metadata/qualification never becomes eligibility. App Attest aliases prove
+# credential continuity, not one physical Mac or certified RAM. Protocol 3
+# binds model/RAM/CPU/GPU app measurements to the current assertion and rejects
+# prospective mismatches against registration. The app also binds its existing
+# verification public key, preventing substitution of model/runtime signature
+# credentials during the later trust transition. Reward rules are unchanged.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
@@ -31,6 +50,7 @@ scope:
     - Optional provider → privileged fan-helper XPC boundary and AppleSMC writes
     - Coordinator → Stripe payment network
     - Apple attestation trust chain (cross-cutting)
+    - Optional App Attest shadow evidence exchange (observation only; APNs/MDM still authoritative)
   out_of_scope:
     - Dev / staging environment (api.dev.darkbloom.xyz)
     - GitHub Actions / R2 release supply chain
@@ -750,13 +770,25 @@ trust_boundaries:
       and the next fully passing challenge restores it to online (RecordChallengeSuccess).
       Signature/SIP/hash failures are never auto-recovered and still require a reconnect.
 
-      Status signature (attestation.go): an extended canonical JSON payload
-      covering nonce, timestamp, and all security status fields is signed separately.
-      VerifyStatusSignature() checks this signature. If the status_signature field is
-      absent, ErrStatusSignatureMissing is returned; the caller treats this as advisory
-      (not a failure) for compatibility with providers older than v0.3.11. Negative
-      status reports (SIP=false) are always acted on immediately regardless of whether
-      the status_signature is present.
+      Status signature: nonce, timestamp and the reported fields in
+      StatusCanonicalInput are signed separately. StatusCanonical.build in
+      provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift uses a
+      typed JSONEncoder payload with sorted keys, including mixed-case keys inside
+      model_hashes and template_hashes, to match BuildStatusCanonical in
+      coordinator/attestation/attestation.go byte-for-byte. Actual U+2028/U+2029
+      scalars are escaped as \u2028/\u2029; literal backslash-u text stays distinct.
+      Nonce and timestamp remain present; absent optional flags, empty optional hash
+      strings and empty maps are omitted, while explicit false remains signed.
+
+      VerifyStatusSignature in coordinator/attestation/attestation.go checks the
+      P-256 DER signature over SHA-256 of those canonical bytes. Byte compatibility
+      fixes false signature failures without changing the signed field set or trust
+      policy. Malformed or mismatching signatures remain challenge failures in
+      coordinator/api/provider.go (verifyChallengeResponse). If status_signature is
+      absent, ErrStatusSignatureMissing is returned; the caller treats the fields as
+      advisory for compatibility with providers older than v0.3.11. Negative status
+      reports (SIP=false) are still acted on regardless of whether the status_signature
+      is present. Canonical mechanism: docs/architecture/security/attestation.md.
     current_limitations:
       - "status_signature is optional for pre-v0.3.11 providers. A compromised provider
         running OS-level code can report a valid (nonce, timestamp) signature from the
@@ -1366,7 +1398,7 @@ threats:
     adversaries: [ADV-003]
     affected_assets: [A-007]
     affected_files:
-      - console-ui/src/components/providers/PrivyClientProvider.tsx
+      - console-ui/src/components/app-providers/PrivyClientProvider.tsx
     mitigations:
       - description: Mock auth only intended for local development.
         status: open
@@ -1589,8 +1621,8 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-001]
     affected_files:
-      - provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift
-      - provider-swift/Sources/ProviderCore/Inference/EngineV2Runtime.swift
+      - provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift
+      - provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2Runtime.swift
       - libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVBackend.swift
     mitigations:
       - description: CPU-side inference buffers are zeroed after each request.
@@ -1623,7 +1655,7 @@ threats:
     adversaries: [ADV-002]
     affected_assets: []
     affected_files:
-      - provider-swift/Sources/ProviderCore/Inference/IdleTimeoutPolicy.swift
+      - provider-swift/Sources/ProviderCore/Inference/Engine/IdleTimeoutPolicy.swift
     mitigations:
       - description: IdleTimeoutPolicy unloads model after 1 hour of no requests.
         status: implemented
@@ -1749,10 +1781,10 @@ threats:
       - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBehind.swift
       - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift
       - provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift
-      - provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift
-      - provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift
-      - provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift
-      - provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift
+      - provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift
+      - provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift
+      - provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift
+      - provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift
       - provider-swift/Sources/ProviderCore/ProviderLoop+EngineV2.swift
     mitigations:
       - description: >
@@ -1765,7 +1797,7 @@ threats:
           explicit affirmative value enables encrypted SSD; any explicit
           non-affirmative value disables it. Production never constructs or
           funds the upstream resident-RAM PrefixCacheV2 implementation
-          (ProviderCore/Inference/PrefixCachePolicy.swift and
+          (ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift and
           EngineV2SlotFactory.swift).
         status: implemented
       - description: >
@@ -2782,8 +2814,8 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-001]
     affected_files:
-      - provider-swift/Sources/ProviderCore/Inference/MediaIngest.swift
-      - provider-swift/Sources/ProviderCore/Inference/EngineV2VisionPrefill.swift
+      - provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift
+      - provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VisionPrefill.swift
       - provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift
       - provider-swift/Sources/darkbloom/StartCommand+Modes.swift
       - libs/mlx-swift-lm/Libraries/MLXLMCommon/MemoryBackedVideoAsset.swift

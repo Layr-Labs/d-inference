@@ -66,55 +66,6 @@ enum SSDDonationSubmitResult: Sendable, Equatable {
     case closed
 }
 
-// MARK: - Endurance rate limiter
-
-/// Continuous-refill token bucket over encrypted bytes written
-/// (default cap 150 GB/day — protects the 512 GB hot-box worst case;
-/// at expected fleet volumes it never binds). Capacity 0 ⇒ unlimited.
-final class SSDWriteRateLimiter: @unchecked Sendable {
-    private let capBytesPerDay: Double
-    private var tokens: Double
-    private var lastRefill: Double
-    private let nowSeconds: @Sendable () -> Double
-    private let lock = NSLock()
-
-    init(
-        capBytesPerDay: Int,
-        nowSeconds: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }
-    ) {
-        self.capBytesPerDay = Double(max(0, capBytesPerDay))
-        self.tokens = Double(max(0, capBytesPerDay))
-        self.nowSeconds = nowSeconds
-        self.lastRefill = nowSeconds()
-    }
-
-    /// Consume `bytes` if the bucket allows; false ⇒ the write is dropped.
-    func tryConsume(bytes: Int) -> Bool {
-        guard capBytesPerDay > 0 else { return true }
-        return lock.withLock {
-            let now = nowSeconds()
-            let elapsed = max(0, now - lastRefill)
-            tokens = min(capBytesPerDay, tokens + elapsed * capBytesPerDay / 86_400.0)
-            lastRefill = now
-            guard tokens >= Double(bytes) else { return false }
-            tokens -= Double(bytes)
-            return true
-        }
-    }
-
-    /// Cheap pre-check (no consumption) so `donate` can skip extraction
-    /// work when the bucket is already empty.
-    func mightAccept(bytes: Int) -> Bool {
-        guard capBytesPerDay > 0 else { return true }
-        return lock.withLock {
-            let now = nowSeconds()
-            let refilled = min(
-                capBytesPerDay, tokens + max(0, now - lastRefill) * capBytesPerDay / 86_400.0)
-            return refilled >= Double(bytes)
-        }
-    }
-}
-
 // MARK: - Write-behind
 
 final class SSDWriteBehind: @unchecked Sendable {

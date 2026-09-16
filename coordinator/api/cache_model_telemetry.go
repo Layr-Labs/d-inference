@@ -100,6 +100,7 @@ func (s *Server) emitModelCacheDonation(msg *protocol.PrefixCacheReadyV2Message,
 func (s *Server) emitModelCacheSelection(pr *registry.PendingRequest, tags []string, usage protocol.UsageInfo, valid bool) {
 	labels := s.cacheModelSelectionLabels(pr.Model, tags)
 	s.cacheModelCount("selection", 1, labels...)
+	s.emitCacheOpportunity(pr)
 	if valid {
 		s.emitModelCacheCoverage("selection", usage, labels)
 	}

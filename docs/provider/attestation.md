@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-07 · commit `efcde6334`
+> Last updated: 2026-09-14 · commit `b725a72a8`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -8,6 +8,8 @@ mechanism — what each layer proves, the grant and loss conditions, the routing
 gate, and the code map — is in
 [`../architecture/security/attestation.md`](../architecture/security/attestation.md)
 and is not restated here.
+
+Optional [App Attest shadow checks](../reference/app-attest-shadow.md) run in the background. Shadow results do not change these enrollment requirements or your existing trust eligibility. Version/cohort controls protect older clients; see the [rollout procedure](../operations/app-attest-rollout.md).
 
 ## Prerequisites
 
@@ -153,6 +155,14 @@ what the provider can and cannot see is in
 
 ## Troubleshooting
 
+The provider's `status_signature` must cover the same canonical bytes the
+coordinator reconstructs. `StatusCanonical.build` in
+`provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift` matches
+the coordinator's ordering of mixed-case `model_hashes` and `template_hashes`
+keys and its escaping of U+2028/U+2029. This encoding correction leaves
+enrolment, signature verification and trust requirements unchanged; the byte
+format and failure policy are in [Layer 2](../architecture/security/attestation.md#layer-2--periodic-challenge).
+
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `trust_level: self_signed` persists | MDM verification not completed | `darkbloom enroll`, install the profile, approve MDM in System Settings → Device Management; the scheduler retries on its own |
@@ -161,6 +171,7 @@ what the provider can and cannot see is in
 | `trust_status` reason `posture-mismatch` / status `untrusted` | MDM says SIP or Secure Boot differs from your blob | Fix the posture in Recovery (`csrutil enable`, Full Security), reboot, restart the provider |
 | `code_attested` never passes | No Aqua session / no APNs token / pushes throttled | Log in at the console, enable automatic login, disable auto-logout; check `darkbloom doctor`; a reconnect soon after a proof uses the resume path instead of a push ([Flag — APNs code identity](../architecture/security/attestation.md#flag--apns-code-identity)) |
 | Derouted after missed challenges | Sleep or network blip | Recovers on the next passing challenge; prevent sleep |
+| `status signature verification failed` while the plain challenge signature passes | Invalid status signature or a mismatch between provider and coordinator canonical bytes | Run `darkbloom update` and `darkbloom restart`; if it persists, use the diagnostics below. The coordinator continues to reject mismatching signatures |
 | Binary hash drift warning | Running a build not in the coordinator's release record | `darkbloom update` |
 | `darkbloom enroll` says the Mac is managed by another MDM | Another MDM profile is installed | Remove it (System Settings → General → Device Management) or use another Mac; `hardware` is unavailable while it is present |
 | Every flag lost after an update or reinstall | The Secure Enclave key fell back to ephemeral (warning in `darkbloom logs`) | Reinstall a signed release build so the `keychain-access-groups` entitlement is present |

@@ -71,7 +71,7 @@ console-ui/           Next.js 16 / React 19 frontend
 ├── src/app/api/      chat, auth/keys, keys, payments/*, invite, models, health, pricing, stats,
 │                     telemetry, attestation, device, encryption-key, leaderboard, me, network, admin
 ├── src/components/   chat UI, sidebar, top bar, trust badge, verification panel, invite banner
-├── src/components/providers/
+├── src/components/app-providers/
 │   ├── PrivyClientProvider.tsx
 │   └── ThemeProvider.tsx
 ├── src/lib/          API client (src/lib/api/) + Zustand store (store.ts)
@@ -98,7 +98,7 @@ deploy/               infra config: gcp/ (Cloud Build + VM bootstrap), environme
 docs/                 how-tos, runbooks, reference, architecture, design records, dated reports
                       (map: docs/README.md · rules + freshness stamps: docs/AGENTS.md · lint: make docs-check)
 .github/workflows/    CI (ci.yml), integration tests (integration.yml), Swift release (release-swift.yml),
-                      model registration (register-model.yml), threat model review (threat-model-review.yml)
+                      model registration (register-model.yml)
 ```
 
 ## Current Surface Area
@@ -234,7 +234,7 @@ Provider state lives in several fields that are read by different code paths wit
 - `pendingModelLoads` is checked by `TriggerModelSwaps` planning, cold-spill eligibility (`registry/cold_dispatch.go`), and the warm-pool controller's target math. It is NOT checked by `QuickCapacityCheck`, `ReserveProviderEx`, or `freeMemoryAdmits` — do not assume pending-load state affects routing admission.
 - Provider-reported slot states include `"running"` (active requests), `"idle"` (loaded, no requests), `"crashed"`, `"reloading"`, and `"idle_shutdown"`. The `"idle"` state means the model IS loaded — treat it the same as `"running"` for warm detection, not as `"unknown"`.
 - Providers can hold up to `maxModelSlots` models simultaneously (default 3). Do not assume a model swap evicts all other models.
-- The provider's memory model is `UnifiedMemoryCap` (`provider-swift/Sources/ProviderCore/Inference/UnifiedMemoryCap.swift`): hard cap = 0.90 × physical RAM (always leaving ≥ 2 GiB for the OS; `DARKBLOOM_MEM_CAP_FRACTION` override). The model-load gate requires resident weights + incoming weights + headroom (the resolved activation reserve plus 1 GiB minimum KV) ≤ the cap, and a post-load guard unloads a freshly-loaded model whose measured live KV headroom is below the minimum serveable KV. The weights figure at EVERY admit-time gate (load gate, pending-load reservation, startup preload, doctor, and the coordinator's `reportedFreeForLoadAdmits`) is the scanner's padded estimate (disk × 1.2) for every model — the padding covers the LOAD TRANSIENT (shard staging exceeds steady residency). Measured post-load residency lives only in the coordinator's `servabilityMeasuredResidentGiB` (text-only artifacts; canonical values re-measured per engine release, see docs/reports/2026-08-30-activation-floor-measurements.md) and feeds only `coldTokenBudgetEstimate` — the POST-load token-budget arithmetic that converges to warm reports. The `DARKBLOOM_ACTIVATION_RESERVE_GB` env override is **raise-only against the resolved floor**; only programmatic `activationReserveBytes` values (tests) are honored as given.
+- The provider's memory model is `UnifiedMemoryCap` (`provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift`): hard cap = 0.90 × physical RAM (always leaving ≥ 2 GiB for the OS; `DARKBLOOM_MEM_CAP_FRACTION` override). The model-load gate requires resident weights + incoming weights + headroom (the resolved activation reserve plus 1 GiB minimum KV) ≤ the cap, and a post-load guard unloads a freshly-loaded model whose measured live KV headroom is below the minimum serveable KV. The weights figure at EVERY admit-time gate (load gate, pending-load reservation, startup preload, doctor, and the coordinator's `reportedFreeForLoadAdmits`) is the scanner's padded estimate (disk × 1.2) for every model — the padding covers the LOAD TRANSIENT (shard staging exceeds steady residency). Measured post-load residency lives only in the coordinator's `servabilityMeasuredResidentGiB` (text-only artifacts; canonical values re-measured per engine release, see docs/reports/2026-08-30-activation-floor-measurements.md) and feeds only `coldTokenBudgetEstimate` — the POST-load token-budget arithmetic that converges to warm reports. The `DARKBLOOM_ACTIVATION_RESERVE_GB` env override is **raise-only against the resolved floor**; only programmatic `activationReserveBytes` values (tests) are honored as given.
 - The activation reserve inside that cap resolves **per serving set** (≥ the per-model release): `resolvedActivationReserveBytes(modelIDs:)` takes the max over advertised ∪ resident ∪ loading models of each member's **measured floor** (`measuredActivationFloorsBytes`, exact catalog-id match) with the flat 5.5 GiB default for any unmeasured member — so one unmeasured model pins the default, and vision-capable models deliberately have NO measured floor until a vision-inclusive peak is measured (the tower transient rides this reserve; text-decode evidence alone must not lower it). The resolved reserve threads through the load gate, `KVHeadroomProbe`, `GlobalKVCacheBudget` (epoch-stamped pushes — cross-actor delivery is not FIFO), engine KV grants, the heartbeat clamp, `free_for_load_gb`, and doctor **in lockstep**; a consumer left on the flat figure re-creates the admit-then-fail class this design removed. `coordinator/registry/servability.go` mirrors both tables (`servabilityActivationFloorGB` default + `servabilityModelActivationFloorsGB`, selected per (version, model) by `servabilityActivationFloor`; regimes: 3 GiB pre-0.8.0/unknown, flat 5.5 for 0.8.0 ≤ v < `servabilityPerModelFloorMinVersion`, per-model table above it — fail-open toward the larger legacy budget). **The provider table and the coordinator mirror must move in the same commit**, floors and measured weights alike; retuning either side alone silently desyncs admission (the historical score-tensor surcharge incident). A per-SHAPE/formula reserve remains banned on both sides — floors are measured constants, never modelled; the measurement convention must include a ≥ 4k-token B=8 cell (short-prompt cells under-measure the saturated envelope — see `docs/reports/2026-08-30-activation-floor-measurements.md`).
 
 ### Coordinator Mutation Checklist
@@ -255,9 +255,22 @@ Keep the codebase modular, never monolithic.
 - Prefer small, single-responsibility files over large catch-all ones. Split by concern: types, pure helpers, data/IO hooks, UI pieces, and a thin orchestrator that wires them together.
 - Group a feature's files into a dedicated module/folder with a thin entry point. Examples: the coordinator's top-level Go packages (`registry/`, `billing/`, `store/`), and `console-ui/src/components/api-keys/` (`constants`, `format`, `limits`, `Modal`, `KeyForm`, `KeyCard`, a `useApiKeys` data hook, and a thin `ApiKeysManager` orchestrator).
 - One file/component should do one thing. If a file mixes several concerns or grows past a few hundred lines, that's a signal to split it.
+- Name files for their responsibility or the behavior they verify. Avoid work-wave, ticket, priority, and follow-up labels such as `w5fix2` or `p1`; keep meaningful model, engine, and protocol version identifiers. Name shared test helpers for their domain. Keep Go tests in their owning package; group Swift and UI files by subsystem without changing their target or imports unnecessarily. See [the repository navigation guide](docs/developer/navigation.md).
 - **At the end of every large piece of work, do a refactor pass to make it modular before calling it done.** Extract helpers/types/hooks into focused files, delete dead code, and keep the public entry point thin. The refactor must be behavior-preserving — build, lint, and tests stay green.
 
 ## Pull Requests
+
+The canonical agent workflow for repository contributions is
+`.agents/skills/darkbloom-contributor/SKILL.md`. Before finalizing any PR,
+evaluate documentation impact using `docs/AGENTS.md` section 7 and run
+`make docs-impact-check BASE=<target-branch>` plus `make docs-check`. CI applies
+the same source-to-doc mapping; a non-applicable mapping requires the
+maintainer-applied `docs-not-needed` label.
+
+Every PR commit must be signed and display as Verified on GitHub. The protected
+branch's signed-commit rule does not validate commits hosted on a contributor
+fork, so the `Commit Signatures` contribution-policy check enforces this before
+merge.
 
 **Every PR MUST include a before-and-after diagram (Mermaid) in its description** that details what changed — covering BOTH:
 

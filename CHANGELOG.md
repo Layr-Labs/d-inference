@@ -4,6 +4,57 @@
 
 - Name the source commit each prod provider bundle was built from in its GitHub Release notes, next to the binary, bundle and metallib hashes.
 
+## Release candidate v0.9.4 — App Attest recovery and retirement readiness (not shipped; 2026-09-14)
+
+- Fix the released 0.9.3 App Attest callback-timer abort. Require the callback completion/expiry smoke in the optimized signed bundle, installer and updater; distinguish callback failures from Metal failures.
+- Keep App Attest off by default, require an explicit stable account cohort and provider 0.9.4 or newer. Existing APNs/MDM serving and the supported macOS floor remain unchanged. Production App Attest remains paused until a separately approved rollout.
+- Retry transient shadow failures, including temporarily saturated control-lane sends, without disconnecting serving providers; bound actual uncancellable Apple operations and fence late callbacks.
+- Recover cached enrollment receipts through a separately validated renewal path, retain original failure records, and reconcile interrupted evidence without advancing counters. Receipt renewal requires the dedicated server credentials.
+- Associate machine identities through fresh account-bound App Attest assertions, including reconnects after legacy-key rotation. This does not rewrite balances or certify physical-device uniqueness.
+- Negotiate App Attest protocol 3 to bind app-measured machine model, RAM, CPU/GPU counts and the existing verification key to the signed transcript. Preserve old transcripts and cached enrollment recovery across upgrades; move the unchanged base-reward memory-cap catalog out of the MDM package.
+- Record versioned prospective authorization outcomes, revocation, current-connection freshness, qualified builds and receipt/risk readiness. The private dashboard shows exact cohort denominators and blockers for a later MDM retirement.
+- Capture SDK 27 Apple-signed CodeDirectory measurements and require an exact qualified binary/code-hash pair for prospective build approval. Release builds and their provider tests select SDK 27 / Swift 6.4 and record the full CodeDirectory SHA-256; missing or unsupported measurements stay unknown. macOS can identify the exact code without a bundle-version extension.
+- Forward the latest distinct per-model warm-pool planning snapshot through the coordinator telemetry emitter so Datadog can show target sizing, measured demand, candidate availability and blocker counts. Keep provider identities and request data out of the event.
+
+
+## v0.9.3 — App Attest shadow rollout and provider reliability (2026-09-14)
+
+Source changes since `v0.9.2`. App Attest remains observational, with APNs and MDM authoritative.
+
+### Prefix-cache reuse and routing
+
+Provider changes require a new signed bundle; coordinator changes require a
+coordinator deployment.
+
+#### Provider
+
+- **Checkpoint write priority** — Limit first-seen checkpoint writes to a continuously refilling 90% share of the existing write budget, reserving capacity for prefixes observed again within the cache TTL. Every write still consumes the original total budget; authenticated durable duplicates consume no additional write budget. Novel-share exhaustion reports `write_priority_limited`, while total-budget exhaustion remains `write_rate_limited`. TTL, disk-space reserves and the overall write cap remain unchanged.
+- **Maintenance recovery** — Reconcile removed checkpoint index entries inside the destructive epoch barrier for whole-root external mutations so later reconciliation does not rotate the model epoch again solely for those removed entries. Single-entry eviction and corrupt-file removal update only their known index entries, avoiding a full filesystem scan after each victim during budget reduction. Surviving valid checkpoints remain reusable.
+
+#### Coordinator
+
+- **Qwen prompt parity** — Match the provider's Qwen-family handling of required and named tool calls, including catalog aliases and Qwen3-VL, to avoid mismatched thinking controls in cache proofs.
+- **Repeated-prefix routing** — Prefer a stable cache-capable provider for repeated prefixes only among otherwise equivalent cost, queue and pending-work candidates. Exclude capabilities quarantined after a failed cache proof from this preference, even when heartbeats continue advertising them. Revalidate at reservation and rescan if affinity eligibility changed after selection. Preserve ordinary serving when no unfenced cache candidate is available, along with capacity, deadline, trust and proof gates. Profiler rows identify this preference as `prefix_affinity`.
+- **Cache opportunity diagnostics** — Report per-model reasons and numerical counts for repeated-prefix demand, usable holders and routing selection. These diagnostics distinguish routing opportunities from actual cache hits and measured latency savings. Add a [consumer guide](docs/consumer/prefix-cache.md) for preserving shared prompt prefixes.
+
+### Doctor and attestation reliability
+
+- Prevent large process lists from blocking `doctor` and `verify`. Capture contention and sleep-probe output without pipe backpressure and apply an execution deadline; preserve diagnostic output and failure handling.
+- Match the coordinator's canonical status bytes for mixed-case model IDs and template names, including Unicode separators. Preserve signed fields, omission rules and signature verification.
+
+### App Attest coexistence
+
+- Add stable server-assigned machine identities, verified legacy aliases, historical backfill and macOS adoption inventory. Keep existing operational serial, routing, and accounting rules.
+- Retain complete attestation and assertion submissions, initial and renewed receipts, verification context and outcomes in a private durable archive. Add an authenticated admin dashboard and complete-record downloads.
+- Bind account scope and locally derived OS/build status with protocol 2. Recover lost enrollment responses, cap key generation across accounts, and bound Apple callback waits. DeviceCheck's separate device-bit service stays deferred.
+- Bound shadow archive, rejection, and disconnect work against the shared database pool; count saturation as a coverage gap. Recover after missing Apple callbacks without restarting the provider. Continue renewing existing receipts when new shadow exchanges are disabled.
+- Repair missed inventory disconnect records from durable liveness history after contention or restart. Use only bounded, validated endpoint keys for shadow enrollment, and label original-field and decoded-proof checksums explicitly.
+- Include App Attest frames rejected by the 48 KiB decoder limit in refusal telemetry and the machine-inventory census, without retaining oversized proof payloads or blocking normal provider messages.
+
+- Add negotiated App Attest shadow enrollment and fresh connection assertions, with independent certificate/policy verification, durable counters, and coverage/latency observations. APNs and MDM remain authoritative; shadow success or failure changes no routing, trust, payments, or supported OS floor.
+- Keep the CLI and app launch flow; add profile-authorized App Attest signing alongside APNs in release and validation workflows. Actual macOS 27 acceptance requires the final signed app on physical hardware.
+- Accept macOS Developer ID profiles granting only the App Attest CDhash opt-in, including array grants. Preserve existing APNs/keychain entitlements; validate the attested environment on the coordinator even when the optional environment entitlement is absent.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.
@@ -14,7 +65,8 @@ compatibility checks and outstanding runtime qualification.
 
 ### Provider
 
-- **Gemma QAT SSD prefix caching** — Enable authenticated complete paged checkpoints by default for exact `gemma-4-26b-qat-4bit`. Preserve tenant, model, prompt, binary, metallib and numerical-state identity checks, the global cache disable and cold fallback. Other Gemma artifacts and GPT-OSS caching remain opt-in. A new binary starts a new checkpoint identity; existing 0.9.1 checkpoints are not reused across the upgrade.
+- **Gemma QAT SSD prefix caching** — Enable authenticated complete paged checkpoints by default for exact `gemma-4-26b-qat-4bit`. Preserve tenant, model, prompt, binary, metallib and numerical-state identity checks, the global cache disable and cold fallback. Other Gemma artifacts remain opt-in. A new binary starts a new checkpoint identity; existing 0.9.1 checkpoints are not reused across the upgrade.
+- **GPT-OSS 20B SSD prefix caching** — Enable authenticated complete paged checkpoints by default for exact `gpt-oss-20b`. Restore native full-attention rows and sliding-window state under the existing tenant, model, prompt and runtime identity gates. Keep resident retention opt-in; global cache disable and contiguous fallback serve cold. Other GPT-OSS IDs remain opt-in.
 - **Adaptive Gemma MTP** — Automatically resolve the catalog assistant for that exact QAT target and select ordinary decode or one draft token from measured committed output and elapsed time. Include seed work, reset workload learning when requests finish or IDs are reused, and track compilation warmup by exact verification shape. Support target-prefix sampling for temperature/top-p/top-k/min-p, with ordinary decode for unsupported transforms and explicit diagnostic verification controls retained.
 - **Assistant activation while serving** — Download and verify the optional assistant while the current engine serves. Reserve staging memory and retain its target against eviction; publish reduced capacity immediately and restore survivor KV grants after discarded preparation. After network rollout jitter, close only that model's new admissions, advertise `reloading`, and finish accepted work before swapping. Racing requests receive transient 503 `slot_state` refusals. Timeout or cancellation discards the candidate and reopens the original engine without cancelling accepted requests. Standalone follows the same bounded drain without fleet jitter; insufficient memory preserves target-only serving.
 - **Assistant download sources** — Honor catalog-declared immutable Hugging Face assistant revisions with checksum-verified R2 fallback and jittered fetch retries. Existing R2-only metadata remains valid; shipping this binary does not apply the separate catalog patch. Standalone uses its configured coordinator catalog authority.

@@ -32,6 +32,7 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, @unchecked
     let kvBudget: GlobalKVCacheBudget?
     let diskBudget: SSDDiskBudget
     let rateLimiter: SSDWriteRateLimiter
+    let writeDemand: SSDCheckpointDemand
     let donationRecorder: any PrefixCacheDonationRecording
     let index = SSDBlockIndex()
     let lock = NSLock()
@@ -67,7 +68,8 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, @unchecked
 
     init(config: Config, kekKey: SymmetricKey, kvBudget: GlobalKVCacheBudget?,
          diskBudget: SSDDiskBudget = .shared, maxWriteBytesPerDay: Int, usesEphemeralKey: Bool = true,
-         donationRecorder: any PrefixCacheDonationRecording = PrefixCacheDonationTelemetry.shared) {
+         donationRecorder: any PrefixCacheDonationRecording = PrefixCacheDonationTelemetry.shared,
+         writeNowSeconds: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }) {
         self.config = config
         self.identity = config.identity
         self.usesEphemeralKey = usesEphemeralKey
@@ -76,7 +78,9 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, @unchecked
         self.kvBudget = kvBudget
         self.diskBudget = diskBudget
         self.donationRecorder = donationRecorder
-        self.rateLimiter = SSDWriteRateLimiter(capBytesPerDay: maxWriteBytesPerDay)
+        self.rateLimiter = SSDWriteRateLimiter(capBytesPerDay: maxWriteBytesPerDay,
+            repeatReserveFraction: SSDCheckpointDemand.repeatReserveFraction, nowSeconds: writeNowSeconds)
+        self.writeDemand = SSDCheckpointDemand(ttlSeconds: config.ttlSeconds)
         self.pipeline = BoundedSingleConsumerPipeline(
             capacity: 1,
             onDropped: { [weak self] job in self?.settle(job, positions: []) ?? job.finish([]) },

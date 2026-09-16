@@ -113,15 +113,18 @@ const (
 	// SelectionRandom: several queue/pending-equivalent candidates (and no
 	// decisive cache discount); one was chosen uniformly at random.
 	SelectionRandom
+	// Stable prefix affinity among otherwise equivalent ordinary candidates.
+	SelectionPrefixAffinity
 	selectionPathCount
 )
 
 var selectionPathNames = [selectionPathCount]string{
-	SelectionNone:       "none",
-	SelectionUniqueMin:  "unique_min",
-	SelectionTieQueue:   "tie_queue",
-	SelectionTiePending: "tie_pending",
-	SelectionRandom:     "random",
+	SelectionNone:           "none",
+	SelectionUniqueMin:      "unique_min",
+	SelectionTieQueue:       "tie_queue",
+	SelectionTiePending:     "tie_pending",
+	SelectionRandom:         "random",
+	SelectionPrefixAffinity: "prefix_affinity",
 }
 
 // String returns the snake_case name of the path.

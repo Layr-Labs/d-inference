@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/mdm"
+	"github.com/eigeninference/d-inference/coordinator/hardware"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -255,7 +255,7 @@ func (e *Engine) buildCandidates(ctx context.Context, start, end time.Time) ([]c
 		// tier than its model can physically hold (a self-reported number may only
 		// lower the floor, never raise it). Unknown models are unpaid until catalogued.
 		memGB := p.MemoryGB
-		if capGB, known := mdm.ModelMaxMemoryGB(p.HardwareModel); known {
+		if capGB, known := hardware.ModelMaxMemoryGB(p.HardwareModel); known {
 			if capGB > 0 && memGB > capGB {
 				memGB = capGB
 			}

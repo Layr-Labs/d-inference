@@ -151,6 +151,9 @@ or Secure Enclave provisioning; see the focused checks in [test.md](test.md#4-pr
 The same test product includes the SSD authentication and write-completion
 checks described in that procedure; their tiny MLX fixtures require the matched metallib.
 
+The same staged product runs the paged-preflight child diagnostic assertions
+described in that procedure.
+
 ```bash
 make provider-build
 # = cd provider-swift && swift build

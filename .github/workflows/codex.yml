@@ -51,18 +51,11 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
-          json=$(gh api "repos/$REPO/pulls/$PR_NUMBER")
-          echo "head_sha=$(echo "$json" | jq -r '.head.sha')" >> "$GITHUB_OUTPUT"
-          echo "base_sha=$(echo "$json" | jq -r '.base.sha')" >> "$GITHUB_OUTPUT"
-          echo "base_ref=$(echo "$json" | jq -r '.base.ref')" >> "$GITHUB_OUTPUT"
-          {
-            echo "title<<EOF"
-            echo "$json" | jq -r '.title // ""'
-            echo "EOF"
-            echo "body<<EOF"
-            echo "$json" | jq -r '.body // ""'
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+          metadata=$(gh api "repos/$REPO/pulls/$PR_NUMBER" | jq -c '{
+            head_sha: .head.sha, base_sha: .base.sha, base_ref: .base.ref,
+            title: (.title // ""), body: (.body // "")
+          }')
+          printf 'metadata=%s\n' "$metadata" >> "$GITHUB_OUTPUT"
 
       - name: Checkout PR merge commit
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -72,7 +65,7 @@ jobs:
 
       - name: Pre-fetch base and head refs
         env:
-          PR_BASE_REF: ${{ steps.meta.outputs.base_ref }}
+          PR_BASE_REF: ${{ fromJSON(steps.meta.outputs.metadata).base_ref }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
           git fetch --no-tags origin \
@@ -89,8 +82,8 @@ jobs:
             You are reviewing PR #${{ steps.pr.outputs.number }} for ${{ github.repository }} — the Darkbloom / d-inference decentralized inference project.
 
             Review ONLY the changes introduced by this PR. Inspect the diff with:
-              git log --oneline ${{ steps.meta.outputs.base_sha }}...${{ steps.meta.outputs.head_sha }}
-              git diff ${{ steps.meta.outputs.base_sha }}...${{ steps.meta.outputs.head_sha }}
+              git log --oneline ${{ fromJSON(steps.meta.outputs.metadata).base_sha }}...${{ fromJSON(steps.meta.outputs.metadata).head_sha }}
+              git diff ${{ fromJSON(steps.meta.outputs.metadata).base_sha }}...${{ fromJSON(steps.meta.outputs.metadata).head_sha }}
 
             Focus on, in order of importance:
             1. Correctness and regressions — broken imports, missing protocol symmetry between `provider-swift/Sources/ProviderCore/Protocol/Messages.swift` (Swift) and `coordinator/protocol/messages.go` (Go), release-bundle consistency across `.github/workflows/release-swift.yml` / `scripts/install.sh` / `LatestProviderVersion`, untested edge cases.
@@ -101,10 +94,10 @@ jobs:
             Be concise and specific. Reference exact file paths and line numbers. Keep feedback under ~400 words. If the PR is clean, say so briefly.
 
             PR title:
-            ${{ steps.meta.outputs.title }}
+            ${{ fromJSON(steps.meta.outputs.metadata).title }}
 
             PR body:
-            ${{ steps.meta.outputs.body }}
+            ${{ fromJSON(steps.meta.outputs.metadata).body }}
 
   post_feedback:
     runs-on: blacksmith-4vcpu-ubuntu-2404

@@ -1089,6 +1089,13 @@ contracts. `python3 scripts/test_release_workflow.py` runs the release workflow'
 profile and JSON-payload steps against local fixtures, including invalid app
 identities, missing expiry, and quoted multiline tag text. Both run in Release
 Integrity CI without signing, notarizing, publishing or executing a provider.
+`python3 scripts/test_review_automation.py` checks review input preparation.
+Synthetic patches cover deleted files, both sides of renames, header-like hunk
+content and complete omission notices under tiny excerpt limits. A real local
+Git diff checks whitespace in filenames. A stubbed `gh` command runs the Codex workflow's
+metadata step through Bash and `jq`, checking that multiline PR bodies containing
+`EOF` survive the GitHub output format. The fixtures make no API or model calls
+and run in Release Integrity CI.
 
 ```bash
 make tooling-install  # isolated .venv/tooling with pinned NumPy

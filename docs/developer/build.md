@@ -19,6 +19,10 @@ For the first dev coordinator deployment, follow the
 [dev bootstrap procedure](../operations/dev-environment.md): populate the required
 secrets and rerun startup before building and deploying the first image. Boot and
 deploy use the same validated environment writer.
+PR review automation has local
+[input fixtures](test.md#6-scripts-and-release-integrity). They use Python's
+standard library, Git, Bash and `jq` to validate review input preparation without
+a model API key or a build.
 
 Profiler wire changes require both coordinator and provider builds; the shared
 Go/Swift fixture and focused checks are described in [test.md](test.md) and

@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-15 · commit `56da3a668`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -198,6 +198,12 @@ Two request policies relax the gate for the caller's **own** machines only:
 `providerServesRoutableModelReasonLocked` waives dedicated-catalog isolation.
 Every other gate — runtime verification, private-text attestation, challenge
 freshness, slot state, memory — still applies to owned machines.
+
+Public model counts and OpenRouter datacenter countries share
+`publicModelProviderEligibleLocked` in `coordinator/registry/model_views.go`.
+It excludes private-only providers before either view aggregates them; public
+country metadata therefore describes the public fleet, while owner self-route
+continues to use the separate owner eligibility path.
 
 ### Challenge freshness
 
@@ -867,6 +873,9 @@ must not run in parallel with other scheduler tests in the same process.
     `tryClaimCapacityProbeLocked` is check-and-claim under `gate.mu`: a
     second commit within `capacityProbeOutcomeWindow` of an outstanding claim
     is rejected instead of leaking a second probe.
+15. **Private-only providers contribute neither public model counts nor
+    datacenter countries** — `ListModels` and `ModelCountryCodes` share
+    `publicModelProviderEligibleLocked` under the registry and provider locks.
 
 ## Failure modes
 

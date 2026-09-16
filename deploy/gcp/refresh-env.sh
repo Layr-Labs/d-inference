@@ -8,12 +8,13 @@
 # Manager fetch will never blank the existing env file.
 set -euo pipefail
 
-ENV_DIR="/etc/d-inference"
+ENV_DIR="${ENV_DIR:-/etc/d-inference}"
 ENV_FILE="${ENV_DIR}/env"
-ENV_TMP="${ENV_FILE}.tmp.$$"
 
 mkdir -p "$ENV_DIR"
 chmod 700 "$ENV_DIR"
+ENV_TMP=$(mktemp "$ENV_DIR/.env.XXXXXX")
+trap 'rm -f "$ENV_TMP"' EXIT
 
 fetch() {
   gcloud --quiet secrets versions access latest --secret="$1" 2>/dev/null || true

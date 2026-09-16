@@ -179,6 +179,14 @@ They run in the `Tooling Tests` CI job and make no external inference calls:
 python3 -m unittest discover -s scripts/startup_measurement -t scripts -p 'test_*.py'
 ```
 
+Dev environment boot/deploy parity and critical-secret preservation use local
+metadata and Secret Manager stubs in Release Integrity CI. The fixtures execute
+only the environment phase, without cloud access or host service changes:
+
+```bash
+python3 -m unittest discover -s scripts -p test_dev_env_refresh.py
+```
+
 
 Use a disposable local PostgreSQL database for the startup regressions. Store
 tests truncate tables and create/drop isolated databases; never point

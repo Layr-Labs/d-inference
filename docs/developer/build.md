@@ -15,6 +15,11 @@ Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 `scripts/publish-model.sh` to registration. See the
 [model publishing procedure](../operations/model-migration.md).
 
+For the first dev coordinator deployment, follow the
+[dev bootstrap procedure](../operations/dev-environment.md): populate the required
+secrets and rerun startup before building and deploying the first image. Boot and
+deploy use the same validated environment writer.
+
 Profiler wire changes require both coordinator and provider builds; the shared
 Go/Swift fixture and focused checks are described in [test.md](test.md) and
 [prediction telemetry](../reference/prediction-decision-telemetry.md).

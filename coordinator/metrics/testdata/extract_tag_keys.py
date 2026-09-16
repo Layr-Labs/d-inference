@@ -65,11 +65,17 @@ UNRESOLVED = "?"
 
 
 def args_after(src, open_paren):
-    """Text between open_paren and its match, ignoring parens inside strings."""
-    depth, i, in_str = 0, open_paren, False
+    """Text between open_paren and its match, ignoring parens inside strings.
+
+    Both Go string forms count: a raw literal takes no escapes and ends at the
+    next backtick, so its content — a URL, a SQL fragment — is skipped whole.
+    """
+    depth, i, in_str, in_raw = 0, open_paren, False, False
     while i < len(src):
         ch = src[i]
-        if in_str:
+        if in_raw:
+            in_raw = ch != "`"
+        elif in_str:
             if ch == '\\':
                 i += 2
                 continue
@@ -77,6 +83,8 @@ def args_after(src, open_paren):
                 in_str = False
         elif ch == '"':
             in_str = True
+        elif ch == "`":
+            in_raw = True
         elif ch == '(':
             depth += 1
         elif ch == ')':
@@ -135,12 +143,16 @@ def top_level_args(body):
     for the same reason — these calls wrap, so a comment between two arguments is
     ordinary, and a prose comma in one would split an argument in half. They are
     dropped from the text as well as from the split, so `nil, // untagged` still
-    compares equal to `nil`.
+    compares equal to `nil`. Raw literals are tracked for the same reason the
+    comment skip needs them: the `//` in a backquoted URL is not a comment, and
+    reading it as one swallows every argument after it.
     """
-    out, arg, depth, i, in_str = [], [], 0, 0, False
+    out, arg, depth, i, in_str, in_raw = [], [], 0, 0, False, False
     while i < len(body):
         ch = body[i]
-        if in_str:
+        if in_raw:
+            in_raw = ch != "`"
+        elif in_str:
             if ch == "\\":
                 arg.append(body[i:i + 2])
                 i += 2
@@ -149,6 +161,8 @@ def top_level_args(body):
                 in_str = False
         elif ch == '"':
             in_str = True
+        elif ch == "`":
+            in_raw = True
         elif body.startswith("//", i):
             nl = body.find("\n", i)
             i = len(body) if nl < 0 else nl

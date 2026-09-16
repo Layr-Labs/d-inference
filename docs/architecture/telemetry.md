@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-16 · commit `bc8378aec`
+> Last updated: 2026-09-16 · commit `cd57868be`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -348,7 +348,7 @@ scrape, and a pull cannot be expressed as a push sample.
 | Sinks (DogStatsD, in-process mirror, discard) | `coordinator/metrics/sink.go`; the late-bound server sink in `coordinator/api/metrics_catalog.go` |
 | Generated documentation | `coordinator/metrics/document.go`, `coordinator/metrics/cmd/metricdoc` → the [inventory's declared table](../reference/telemetry-inventory.md#declared-in-the-catalog) |
 
-Three test files hold it in place. `wire_test.go` asserts against real datagram bytes
+The tests hold it in place a layer at a time. `wire_test.go` asserts against real datagram bytes
 off a UDP socket (`|c|`, `|g|`, `|d|`) rather than against the `Sink` interface,
 because the interface is exactly the layer that can be right while the wire is
 wrong. `catalog_test.go` pins both halves of a series' identity to what the
@@ -362,9 +362,11 @@ ordered subsequence of the declared keys — that is what lets one declaration c
 a metric emitted with two different key sets, since an empty value omits its tag —
 and separately that no declared key is one no call site ever emitted. Together
 those two arms force the declared key set to equal the union of the observed ones
-while still catching a reorder. `document_test.go` covers the rendering an
-operator reads, and `catalog_test.go` also checks that the inventory page still
-contains the generated table, so tags that change in code change in the docs.
+while still catching a reorder. `collector_test.go` covers the handle semantics
+underneath all of that — arity, the omitted tag for an empty value, mirror
+prefixes — and `document_test.go` the rendering an operator reads. `catalog_test.go`
+also checks that the inventory page still contains the generated table, so tags
+that change in code change in the docs.
 
 The goldens are extracted by the scripts beside them, not hand-written; a call
 site whose tags they cannot read is recorded as `?` and skipped rather than

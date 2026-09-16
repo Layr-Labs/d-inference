@@ -76,8 +76,9 @@ provider-test: ## Build and run Swift provider tests with source-matched metalli
 
 provider: provider-build provider-test ## Build + test provider
 
-benchmark-wrapper-test: ## Unit-test the Gemma benchmark wrapper (no GPU or weights)
+benchmark-wrapper-test: ## Unit-test benchmark wrappers (no GPU or weights)
 	cd scripts && python3 -m unittest discover -s gemma_contbatch/tests -t .
+	cd scripts && python3 -m unittest discover -s mtp_benchmark/tests -t .
 
 benchmark-gemma-contbatch: ## Build and benchmark Gemma 4 26B continuous batching
 	python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)

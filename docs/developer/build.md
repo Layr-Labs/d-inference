@@ -484,7 +484,7 @@ scripts sends inference traffic; building or testing their fixtures does not.
 | `provider-build` | `swift build` + `scripts/fetch-metallib.sh <bin-path>` |
 | `provider-test` | `swift build --build-tests`, stage `mlx.metallib` into the bin dir and every `*PackageTests.xctest/Contents/MacOS`, then `swift test --skip-build` |
 | `provider` | `provider-build` + `provider-test` |
-| `benchmark-wrapper-test` | `cd scripts && python3 -m unittest discover -s gemma_contbatch/tests -t .` |
+| `benchmark-wrapper-test` | Python unittest discovery in `scripts/gemma_contbatch/tests` and `scripts/mtp_benchmark/tests`, including bounded artifact and malformed performance-evidence fixtures |
 | `benchmark-gemma-contbatch` | `python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)` (needs GPU + weights) |
 | `ui-install` / `ui-lint` / `ui-test` / `ui-build` / `ui` | `npm install` / `npx eslint src/` / `npm test` / `npm run build` in `console-ui/` |
 | `e2e-integration` | `go test ./e2e/... -run TestIntegration -v` |

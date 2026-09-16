@@ -1,6 +1,6 @@
 # Dev environment
 
-> Last updated: 2026-09-11 · commit `cb8c6ebf9`
+> Last updated: 2026-09-16 · commit `b080f1a1a`
 
 Runbook for the Darkbloom dev environment on Google Cloud (project
 `sepolia-ai`): a GCE VM running the same coordinator container as production,

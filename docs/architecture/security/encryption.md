@@ -1,6 +1,6 @@
 # Encryption and privacy model
 
-> Last updated: 2026-09-12 · commit `4fcbb9f3a`
+> Last updated: 2026-09-16 · commit `b080f1a1a`
 
 An inference request crosses three NaCl Box hops: consumer → coordinator
 (optional), coordinator → provider (mandatory), provider → coordinator

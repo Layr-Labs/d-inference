@@ -286,6 +286,12 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | `MODEL_REGISTRY_PUBLISHING_KEY` | bootstrap publishing key accepted by `POST /v1/admin/models/register` (`requirePublishingAPIKey`) | [Model registry, releases and R2/CDN](configuration.md#model-registry-releases-and-r2cdn) |
 | `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_RPS`, `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_BURST`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_RPS`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_BURST` | financial and service limiters; compiled defaults under [Constants](#constants) | [Routing, admission and TTFT](configuration.md#routing-admission-and-ttft) |
 
+### Connect sweep recovery
+
+| Transition | Policy | Citation |
+|---|---|---|
+| `paid → transferred` after an automatic sweep fails | Reopen only an unrefunded row still stamped with the failed sweep ID. A newer sweep's paid state is preserved. No ledger credit or new withdrawal is created. | `coordinator/store/postgres/stripe_withdrawals.go` (`ReopenStripeWithdrawalAfterSweepFailure`); [billing invariants](../architecture/billing.md#invariants) |
+
 ## Global Payouts withdrawals
 
 | Quantity | Policy | Citation |

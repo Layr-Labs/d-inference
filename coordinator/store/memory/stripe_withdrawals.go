@@ -302,3 +302,20 @@ func (s *Store) RefundStripeWithdrawalAfterReversal(id, expectedTransferID strin
 	wd.FailureReason, wd.UpdatedAt = "transfer_reversed", time.Now()
 	return true, nil
 }
+
+func (s *Store) ReopenStripeWithdrawalAfterSweepFailure(id, expectedSweepPayoutID, failureReason string) (bool, error) {
+	if id == "" || expectedSweepPayoutID == "" {
+		return false, errors.New("stripe withdrawal and sweep payout ids are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w, ok := s.stripeWithdrawalsByID[id]
+	if !ok || w.Status != "paid" || w.Refunded || w.SweepPayoutID != expectedSweepPayoutID {
+		return false, nil
+	}
+	w.Status = "transferred"
+	w.SweepPayoutID = ""
+	w.FailureReason = failureReason
+	w.UpdatedAt = time.Now()
+	return true, nil
+}

@@ -241,7 +241,7 @@ export function computeWarnings(
         id: "low_success_rate",
         severity: "degrading",
         title: `Job success rate low (${(successRate * 100).toFixed(0)}%)`,
-        detail: `Reputation score: ${p.reputation.score.toFixed(2)}. Investigate failed jobs in the logs to recover routing priority.`,
+        detail: `${p.reputation.failed_jobs} failed jobs out of ${p.reputation.total_jobs}. Check the provider logs for request errors.`,
       });
     }
   }

@@ -1,6 +1,6 @@
 # Roll out the release-policy routing gate (shadow → enforce)
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-16 · commit `35c6a0f5b`
 
 Runbook for the two production changes that involve the coordinator's
 release-policy routing gate: (1) deploying a coordinator that contains the gate

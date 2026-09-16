@@ -1,6 +1,6 @@
 # Authentication
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-16 · commit `35c6a0f5b`
 
 How to obtain and manage each credential the coordinator accepts, and which routes take it. Every request authenticates with one header, `Authorization: Bearer <token>` (`BearerToken`, `coordinator/api/requestauth/bearer.go`); the token is an API key, a Privy session JWT, a device-flow provider token, or the operator's admin key, and `RequireAuth` (`coordinator/api/requestauth/middleware.go`) checks configured Privy JWTs first, then the admin key, then API keys and active provider tokens. For API consumers and console users; the per-route auth column is in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 

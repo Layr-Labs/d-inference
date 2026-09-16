@@ -1,6 +1,6 @@
 # Profiler queries
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-16 · commit `35c6a0f5b`
 
 How to answer the recurring latency, routing and fleet questions from the
 system profiler's two Postgres tables, `request_profiles` and

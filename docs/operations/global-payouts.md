@@ -1,6 +1,6 @@
 # Enable and operate international bank withdrawals
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-16 · commit `35c6a0f5b`
 
 This runbook enables Stripe Global Payouts alongside existing Connect withdrawals. Providers use one bank setup and withdrawal flow. Country selection chooses the payout product; international withdrawals include a local-currency estimate before confirmation.
 

@@ -1,6 +1,6 @@
 # Routing flags: kill switches and flag flips
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-16 · commit `35c6a0f5b`
 
 The routing-v2 rollout is complete: every behaviour it introduced ships in the
 coordinator binary and is **on by default**. This runbook is what remains

@@ -116,7 +116,7 @@ func (s *Scheduler) loadDueRows() {
 	s.mu.Unlock()
 }
 
-// refreshReleasedJob reconciles a rebound live job with durable state after the
+// refreshReboundJob reconciles a rebound live job with durable state after the
 // prior connection generation releases its claim. Reconnect submission can race
 // an in-flight attempt and therefore observe the durable row while it is still
 // running. The release is authoritative: copy its preserved retry stage and due

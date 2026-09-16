@@ -2,11 +2,11 @@ package mdmscheduler
 
 import (
 	"context"
-	"github.com/google/uuid"
 	"sort"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/google/uuid"
 )
 
 type workItem struct {

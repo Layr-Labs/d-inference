@@ -412,6 +412,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				return
 			}
 			provider = s.registry.Register(providerID, conn, regMsg)
+			if s.appAttestIdentityCandidate(regMsg) {
+				provider.RequireVerifiedMachineIdentity()
+			}
 			s.attachProviderLocation(providerID, provider, r)
 			if err := s.verifyProviderAttestation(loopCtx, providerID, provider, regMsg); err != nil {
 				// No duplicate eviction or account/MDM continuation after failed
@@ -3203,20 +3206,33 @@ func (s *Server) verifyProviderAttestation(ctx context.Context, providerID strin
 	// Resolve only this freshly verified identity, rather than loading all historical
 	// sessions before startup. Exclude every live session and keep incomplete
 	// registrations' identities unpublished across asynchronous persistence.
-	if err := s.restorePersistedProviderState(ctx, provider, result.SerialNumber, result.PublicKey); err != nil {
+	restoreSerial := result.SerialNumber
+	var expectedAccount []string
+	if s.appAttestIdentityCandidate(regMsg) {
+		restoreSerial = ""
+		expectedAccount = []string{""}
+		if regMsg.AuthToken != "" && s.store != nil {
+			if token, err := s.store.GetProviderToken(regMsg.AuthToken); err == nil {
+				expectedAccount[0] = token.AccountID
+			}
+		}
+	}
+	if err := s.restorePersistedProviderState(ctx, provider, restoreSerial, result.PublicKey, expectedAccount...); err != nil {
 		return err
 	}
 
 	// Independently recover the newest non-empty durable MDA chain. A newer
 	// empty record must not shadow a chain earned by an earlier session. The
 	// hardware-grant path still re-verifies the certificate and SE-key binding.
-	s.stageDurableMDAChain(provider, result.SerialNumber)
+	if !s.appAttestIdentityCandidate(regMsg) {
+		s.stageDurableMDAChain(provider, result.SerialNumber)
+	}
 
 	// Deduplicate: if another provider connection exists from the same physical
 	// device (same serial number), disconnect it. This prevents multiple
 	// provider processes on the same machine from registering independently
 	// and competing for a single shared vllm-mlx backend.
-	if result.SerialNumber != "" && !s.allowDuplicateProviderSerials {
+	if !s.appAttestIdentityCandidate(regMsg) && result.SerialNumber != "" && !s.allowDuplicateProviderSerials {
 		s.registry.DisconnectDuplicatesBySerial(providerID, result.SerialNumber)
 	}
 
@@ -3677,11 +3693,13 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	type providerAttestation struct {
-		ProviderID    string `json:"provider_id"`
-		ChipName      string `json:"chip_name"`
-		HardwareModel string `json:"hardware_model"`
-		TrustLevel    string `json:"trust_level"`
-		Status        string `json:"status"`
+		ProviderID             string `json:"provider_id"`
+		ChipName               string `json:"chip_name"`
+		HardwareModel          string `json:"hardware_model"`
+		TrustLevel             string `json:"trust_level"`
+		Status                 string `json:"status"`
+		AppAttestAuthorized    bool   `json:"app_attest_authorized"`
+		AuthorizationExpiresAt int64  `json:"authorization_expires_at,omitempty"`
 
 		// Hardware specs
 		MemoryGB int      `json:"memory_gb"`
@@ -3715,6 +3733,14 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 	var providers []providerAttestation
 
 	publicProviderModels := s.registry.PublicProviderModels()
+	// Read current authorization outside ForEachProvider's registry lock.
+	// Never publish account, credential or canonical machine identifiers here.
+	appAttestLeases := make(map[string]registry.AppAttestServingAuthorization)
+	for _, id := range s.registry.ProviderIDs() {
+		if lease, ok := s.registry.ProviderServingAuthorization(s.registry.GetProvider(id)); ok {
+			appAttestLeases[id] = lease
+		}
+	}
 	s.registry.ForEachProvider(func(p *registry.Provider) {
 		// Snapshot mutable fields under provider lock to avoid racing
 		// with background MDA verification and challenge goroutines.
@@ -3745,6 +3771,9 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		}
 
 		pa.Models = append(pa.Models, publicProviderModels[p.ID].Models...)
+		if lease, ok := appAttestLeases[p.ID]; ok {
+			pa.AppAttestAuthorized, pa.AuthorizationExpiresAt = true, lease.ValidUntil.Unix()
+		}
 
 		if attestResult != nil {
 			pa.ChipName = attestResult.ChipName
@@ -3783,10 +3812,11 @@ func (s *Server) sendTrustStatus(provider *registry.Provider, trustLevel registr
 		return
 	}
 	msg := protocol.TrustStatusMessage{
-		Type:       protocol.TypeTrustStatus,
-		TrustLevel: string(trustLevel),
-		Status:     status,
-		Reason:     reason,
+		Type:          protocol.TypeTrustStatus,
+		TrustLevel:    string(trustLevel),
+		Status:        status,
+		Reason:        reason,
+		Authorization: s.providerServingAuthorizationStatus(provider),
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {

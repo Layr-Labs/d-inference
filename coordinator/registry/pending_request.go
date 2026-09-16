@@ -34,6 +34,9 @@ type PendingRequest struct {
 	// ceilings from this timestamp; zero preserves legacy relative behavior.
 	FirstContentDeadline time.Time
 	ProviderID           string
+	// Captured atomically with this provider's pending debit. A later lease
+	// cannot transfer already-queued work onto a changed endpoint or identity.
+	providerAuthorizationBinding providerRequestAuthorizationBinding
 	// Model is the CONCRETE build id used for routing, admission, billing, and
 	// warm-model matching (e.g. "mlx-community/gemma-4-26B-A4B-it-qat-4bit").
 	Model string

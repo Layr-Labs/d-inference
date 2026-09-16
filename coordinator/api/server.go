@@ -199,6 +199,7 @@ type releaseTrustPolicySnapshot struct {
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
 	appAttestShadow               AppAttestShadowConfig
+	appAttestAuthorizer           *appAttestAuthorizer
 	appAttestShadowSlots          chan struct{}
 	appAttestStorageOnce          sync.Once
 	appAttestStorageSlots         chan struct{}
@@ -864,6 +865,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	saferun.Go(logger, "trustCoverageLoop", s.trustCoverageLoop)
 	s.startAppAttestReceiptWorker(s.trustCoverageCtx)
 	s.startAppAttestMaintenance(s.trustCoverageCtx)
+	s.startAppAttestAuthorizer(s.trustCoverageCtx)
 	s.startMachineInventoryBackfill(s.trustCoverageCtx)
 	s.startMachineInventoryReconciler(s.trustCoverageCtx)
 	if cfg.DurableTrustReuse {
@@ -2827,7 +2829,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/admin/models/aliases", s.handleModelAliasUpsert)
 	s.mux.HandleFunc("DELETE /v1/admin/models/aliases/{aliasID}", s.handleModelAliasDelete)
 	s.mux.HandleFunc("POST /v1/admin/models/", s.handleAdminModelRegistryAction)
-	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases)     // admin key or Privy admin
+	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases) // admin key or Privy admin
+	s.mux.HandleFunc("POST /v1/admin/app-attest/revoke", s.handleAdminAppAttestRevoke)
 	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease) // admin key or Privy admin
 
 	// Historical admin state export (DAR-70) — streams the TEE-sealed /data

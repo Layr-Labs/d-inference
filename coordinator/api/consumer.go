@@ -215,13 +215,14 @@ func (s *Server) sendProviderCancel(provider *registry.Provider, requestID strin
 func writeProviderInferenceRequestDeferred(
 	ctx context.Context,
 	provider *registry.Provider,
+	pending *registry.PendingRequest,
 	builder registry.TextFrameBuilder,
 	onHandoff registry.TextFrameHandoff,
 ) (registry.TextFrameWriteMetadata, error) {
 	if provider == nil || provider.Conn == nil {
 		return registry.TextFrameWriteMetadata{}, errors.New("provider websocket is not connected")
 	}
-	return provider.WriteTextDeferred(ctx, builder, onHandoff)
+	return provider.WriteInferenceTextDeferred(ctx, pending, builder, onHandoff)
 }
 
 // cancelDispatch abandons a dispatch attempt that may still be generating
@@ -1327,6 +1328,7 @@ func (s *Server) dispatchWithReserver(
 	_, writeErr := writeProviderInferenceRequestDeferred(
 		writeCtx,
 		provider,
+		pr,
 		providerInferenceFrameBuilder(
 			requestID, encrypted.EphemeralPublicKey, encrypted.Ciphertext, pr),
 		func(metadata registry.TextFrameWriteMetadata) {

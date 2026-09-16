@@ -14,6 +14,13 @@ Admin request-profile records expose additive
 [prediction decision fields](prediction-decision-telemetry.md). Public inference
 responses and error codes are unchanged.
 
+## App Attest authorization additions
+
+| Surface | Contract | Code |
+|---|---|---|
+| `POST /v1/admin/app-attest/revoke` | Admin authenticated; account/key/reason body, durable idempotent revocation and immediate local dispatch fencing; [exact response and errors](provider-authorization.md#admin-revocation) | `coordinator/api/app_attest_revocation.go` (`handleAdminAppAttestRevoke`) |
+| `GET /v1/providers/attestation` | Additive `app_attest_authorized` boolean and `authorization_expires_at` Unix deadline; no account, credential, canonical machine IDs or raw evidence exposed | `coordinator/api/provider.go` (`handleProviderAttestation`) |
+
 ## Conventions used in the route tables
 
 **Auth column** — how the handler chain establishes identity. The only credential header is `Authorization: Bearer <token>` (`extractBearerToken`); the coordinator never reads `x-api-key`.

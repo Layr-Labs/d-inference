@@ -67,6 +67,18 @@ type Provider struct {
 	ApplicationEvidence           ApplicationEvidence
 	applicationEvidenceGeneration uint64
 
+	// App Attest is an independent, expiring serving authorization, never a
+	// synthetic hardware-trust or APNs flag. All fields are guarded by mu.
+	appAttestAuthorization  AppAttestServingAuthorization
+	appAttestCredentialID   string // latest verified credential, retained after lease expiry/clear
+	appAttestSecurityDenied bool
+	verifiedMachineID       string
+	verifiedMachineAccount  string
+	// Enabled before registration attestation is attached for a connection
+	// using MDM-optional onboarding. Claimed serials cannot seed fault history.
+	requireVerifiedMachineIdentity   bool
+	runtimeCapabilitiesFromAppAttest bool
+
 	// restoredMDAChain holds the durable Apple-signed MDA cert chain recovered
 	// from the store on reconnect (see RestoreProviderState). It is a CANDIDATE
 	// only: it is surfaced as a verified proof (MDAVerified/MDACertChain/MDAResult)
@@ -92,6 +104,7 @@ type Provider struct {
 	Conn             *websocket.Conn
 	writer           *providerWriter
 	LastHeartbeat    time.Time
+	registeredAt     time.Time               // immutable connection creation order for verified duplicate arbitration
 	Stats            protocol.HeartbeatStats // lifetime counters shown to users
 	lastSessionStats protocol.HeartbeatStats // raw counters from the current provider process
 
@@ -99,6 +112,7 @@ type Provider struct {
 	// records must not advertise a reusable serial/SE identity. Includes
 	// disconnected registrations whose IO finishes late.
 	stateRestorePending bool
+	historyRestored     bool       // a historical baseline has already been applied on this connection
 	persistMu           sync.Mutex // serialize snapshots/writes so an older partial snapshot cannot land last
 
 	// Account linkage (set when provider authenticates via device auth token)
@@ -307,6 +321,7 @@ func (p *Provider) AddPending(pr *PendingRequest) {
 
 // addPendingLocked registers a pending request. Caller must hold p.mu.
 func (p *Provider) addPendingLocked(pr *PendingRequest) {
+	pr.providerAuthorizationBinding = providerRequestAuthorizationBindingLocked(p)
 	p.pendingReqs[pr.RequestID] = pr
 }
 

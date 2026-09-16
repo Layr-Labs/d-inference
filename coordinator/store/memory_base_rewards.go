@@ -61,7 +61,10 @@ func (s *MemoryStore) SettleProviderFloorDraw(_ context.Context, draw *ProviderF
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.settleProviderFloorDrawLocked(draw)
+}
 
+func (s *MemoryStore) settleProviderFloorDrawLocked(draw *ProviderFloorDraw) (bool, error) {
 	key := floorDrawKey(draw.ProviderKey, draw.EpochID)
 	if _, exists := s.floorDrawKeys[key]; exists {
 		return false, nil // already settled this epoch

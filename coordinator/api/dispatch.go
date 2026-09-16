@@ -1709,6 +1709,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		_, writeErr := writeProviderInferenceRequestDeferred(
 			writeCtx,
 			d.provider,
+			d.pr,
 			providerInferenceFrameBuilder(
 				d.requestID, encrypted.EphemeralPublicKey, encrypted.Ciphertext, d.pr),
 			func(metadata registry.TextFrameWriteMetadata) {

@@ -211,6 +211,7 @@ See [installation → Update](./installation.md#update).
 | `enroll` | `--no-open` | flag | `false` | Save the `.mobileconfig`; do not open System Settings |
 | `unenroll` | `--force` | flag | `false` | Delete config dir, `auth_token` and legacy keys without asking |
 | `unenroll` | `--no-open` | flag | `false` | Do not open System Settings |
+| `unenroll` | `--keep-serving` | flag | `false` | Require fresh coordinator App Attest removal readiness, preserve identity/account data and guide removal of only Darkbloom enrollment |
 
 ### `darkbloom logs`
 
@@ -668,6 +669,7 @@ local data.
 
 ```bash
 darkbloom unenroll [--force] [--no-open]
+darkbloom unenroll --keep-serving [--no-open]
 ```
 
 | Flag | Description |

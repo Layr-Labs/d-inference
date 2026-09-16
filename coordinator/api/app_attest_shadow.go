@@ -22,7 +22,7 @@ const shadowResponseTimeout = 90 * time.Second
 const shadowAssertionInterval = 10 * time.Minute
 
 // One bounded inbox/worker per negotiated connection; the read loop never waits
-// for Apple, database, or cryptography. No method on this type changes trust.
+// for Apple, database, or cryptography. Serving authorization is a separate opt-in.
 type appAttestShadowSession struct {
 	attestationKey                                 string
 	hardware                                       protocol.Hardware
@@ -49,6 +49,7 @@ type appAttestShadowSession struct {
 	lastOutcome                                    string
 	assertionAt                                    time.Time
 	policyFields                                   map[string]any
+	servingIdentityReady                           bool
 }
 
 func (s *Server) startAppAttestShadow(ctx context.Context, provider *registry.Provider, registration *protocol.RegisterMessage, authenticatedAccount ...string) *appAttestShadowSession {
@@ -57,7 +58,7 @@ func (s *Server) startAppAttestShadow(ctx context.Context, provider *registry.Pr
 		account = authenticatedAccount[0]
 	}
 	inventory := s.startMachineInventory(ctx, provider, registration, account)
-	if !s.appAttestShadow.Enabled {
+	if !s.appAttestShadow.Enabled && !s.appAttestShadow.ServingEnabled {
 		return nil
 	}
 	var nonce [32]byte
@@ -148,6 +149,7 @@ func (s *Server) startAppAttestShadow(ctx context.Context, provider *registry.Pr
 		}
 		x.run(ctx)
 	})
+	s.sendAppAttestAuthorizationStatus(provider)
 	return x
 }
 

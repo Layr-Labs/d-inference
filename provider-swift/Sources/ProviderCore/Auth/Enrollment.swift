@@ -36,9 +36,9 @@ public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
         case .managedByOtherMDM(let serverURL):
             return "This Mac is already managed by another MDM (server: \(serverURL)). "
                 + "macOS allows only one MDM enrollment per device, so Darkbloom "
-                + "enrollment is unavailable here. If that profile is yours to "
-                + "remove: System Settings → General → Device Management, then "
-                + "re-run `darkbloom enroll`."
+                + "enrollment is unavailable here. Keep your organization's profile installed. "
+                + "Start the current provider and check `darkbloom status` for "
+                + "coordinator-qualified App Attest serving."
         }
     }
 }

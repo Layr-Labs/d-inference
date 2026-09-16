@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS darkbloom_machines (
  id TEXT PRIMARY KEY, assurance TEXT NOT NULL, merged_into TEXT REFERENCES darkbloom_machines(id),
  first_seen TIMESTAMPTZ NOT NULL, last_seen TIMESTAMPTZ NOT NULL
 );
+CREATE INDEX IF NOT EXISTS darkbloom_machines_merged_into ON darkbloom_machines(merged_into) WHERE merged_into IS NOT NULL;
 CREATE TABLE IF NOT EXISTS darkbloom_machine_aliases (
  kind TEXT NOT NULL, scope TEXT NOT NULL, digest TEXT NOT NULL,
  machine_id TEXT NOT NULL REFERENCES darkbloom_machines(id), verified_at TIMESTAMPTZ NOT NULL,

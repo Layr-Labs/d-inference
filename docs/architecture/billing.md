@@ -11,6 +11,8 @@ routes, and env vars are tabulated in
 [`reference/pricing-model.md`](../reference/pricing-model.md); the consumer
 how-to is [`consumer/billing.md`](../consumer/billing.md).
 
+Qualified App Attest-only providers can receive base rewards through the [canonical machine settlement contract](../reference/provider-authorization.md#machine-identity-and-base-rewards). `coordinator/payments/baserewards/machine_candidates.go` unions known-machine uptime, aggregates account-matching organic earnings and rechecks current serving authorization before credit. Historical balances and organic-earning keys remain unchanged; neither a fresh connection nor a credential rotation creates another same-epoch floor.
+
 ## Context
 
 - **Prepaid, reservation-first.** There is no post-paid billing. A request is

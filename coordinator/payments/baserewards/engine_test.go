@@ -107,6 +107,11 @@ func addProvider(reg *registry.Registry, id, providerKey, serial, hardwareModel 
 	p.PublicKey = providerKey
 	p.Attested = true
 	p.TrustLevel = registry.TrustHardware
+	p.RuntimeVerified = true
+	p.RuntimeManifestChecked = true
+	p.ChallengeVerifiedSIP = true
+	p.LastChallengeVerified = time.Now()
+	p.PrivacyCapabilities = &protocol.PrivacyCapabilities{TextBackendInprocess: true, TextProxyDisabled: true, AntiDebugEnabled: true, CoreDumpsDisabled: true, EnvScrubbed: true}
 	p.CurrentModel = "test-model" // model loaded for routing (gate 4)
 	p.SystemMetrics = protocol.SystemMetrics{MemoryPressure: 0.1, ThermalState: "nominal"}
 	return p

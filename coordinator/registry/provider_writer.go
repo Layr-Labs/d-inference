@@ -67,8 +67,14 @@ type providerWriteRequest struct {
 	done       chan error
 	handoff    chan TextFrameWriteMetadata
 	handoffAck chan struct{}
+	// beforeWrite is a fast authorization check after building and owner ack,
+	// at the final handoff to the socket. It never holds locks across I/O.
+	beforeWrite func() error
+	// Written before publishing rejected state 6 and then immutable. The
+	// result waiter reads it only after observing that atomic state.
+	rejection error
 	// 0 queued, 1 canceled, 2 building, 3 awaiting owner ack, 4 writing,
-	// 5 write completed.
+	// 5 write completed, 6 authorization rejected without a socket write.
 	state atomic.Int32
 }
 
@@ -122,6 +128,7 @@ type providerWriter struct {
 	// afterWriteCompleteForTest pauses after the 4→5 ownership transition and
 	// before publishing done, for deterministic completion/cancellation races.
 	afterWriteCompleteForTest func()
+	afterWriteRejectedForTest func()
 }
 
 func newProviderWriter(conn *websocket.Conn) *providerWriter {
@@ -319,6 +326,9 @@ func (w *providerWriter) writeRequest(
 					// result. Request-context cancellation is handled by the
 					// dispatch owner after it takes ownership of the sent frame.
 					return metadata, nil
+				case 6:
+					// Rejection is terminal but does not mean bytes were written.
+					return metadata, req.rejection
 				default:
 					return metadata, ctx.Err()
 				}
@@ -342,8 +352,10 @@ func writeResultAfterWriterStop(
 		return err
 	default:
 	}
-	if req.state.Load() == 5 {
+	if state := req.state.Load(); state == 5 {
 		return nil
+	} else if state == 6 {
+		return req.rejection
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -481,6 +493,19 @@ func (w *providerWriter) serve(req *providerWriteRequest) bool {
 				} else {
 					req.done <- context.Canceled
 				}
+			}
+			return true
+		}
+	}
+	if req.beforeWrite != nil {
+		if err := req.beforeWrite(); err != nil {
+			req.rejection = err
+			req.state.CompareAndSwap(4, 6)
+			if w.afterWriteRejectedForTest != nil {
+				w.afterWriteRejectedForTest()
+			}
+			if req.done != nil {
+				req.done <- err
 			}
 			return true
 		}

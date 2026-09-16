@@ -1,8 +1,8 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-09-15 · commit `a99ce680a`
+> Last updated: 2026-09-15 · commit `605651bb9`
 
-App Attest runs alongside authoritative APNs and MDM verification. The coordinator records stable machine identities, fleet adoption, complete submitted proofs, and receipts. These records do not change routing, rewards, trust, or the supported OS floor. DeviceCheck's separate two-bit API is deferred.
+App Attest shadow collection records stable machine identities, fleet adoption, submitted proofs and receipts alongside legacy verification. Shadow alone changes no routing, rewards or trust. The separately enabled [provider authorization path](provider-authorization.md) uses qualified evidence for MDM-optional serving and rewards. DeviceCheck's separate two-bit API remains deferred.
 
 ## Configuration
 
@@ -17,7 +17,7 @@ App Attest runs alongside authoritative APNs and MDM verification. The coordinat
 | `EIGENINFERENCE_APP_ATTEST_RECEIPT_KEY_PATH` | unset | Private server-side ES256 key file with DeviceCheck service authorization, used only for App Attest receipt renewal. Unset disables renewal. |
 | `EIGENINFERENCE_APP_ATTEST_RECEIPT_KEY_ID` | unset | Apple key identifier for receipt renewal. Both credential settings are required. |
 
-Code: `coordinator/api/app_attest_shadow_config.go` (`readAppAttestShadowConfig`) and `coordinator/api/app_attest_rollout.go` (`appAttestRolloutDecision`). All machines on one authenticated account share the cohort; the percentage is of accounts, not an exact fraction of machines. A provisional machine ID or lost legacy key cannot reroll it. Direct `ServerConfig{}` construction keeps shadow disabled. There is no enforcement setting. Receipt renewal does not generate DCDevice tokens, read or write DeviceCheck bits, or send APNs pushes.
+Code: `coordinator/api/app_attest_shadow_config.go` (`readAppAttestShadowConfig`) and `coordinator/api/app_attest_rollout.go` (`appAttestRolloutDecision`). All machines on one authenticated account share the cohort; the percentage is of accounts, not an exact fraction of machines. A provisional machine ID or lost legacy key cannot reroll it. Direct `ServerConfig{}` construction keeps shadow disabled. Serving and MDM-removal controls are specified separately in [provider authorization](provider-authorization.md). Receipt renewal does not generate DCDevice tokens, read or write DeviceCheck bits, or send APNs pushes.
 
 ## Wire exchange
 

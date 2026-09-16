@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-14 · commit `b725a72a8`
+> Last updated: 2026-09-15 · commit `605651bb9`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -11,6 +11,12 @@ and is not restated here.
 
 Optional [App Attest shadow checks](../reference/app-attest-shadow.md) run in the background. Shadow results do not change these enrollment requirements or your existing trust eligibility. Version/cohort controls protect older clients; see the [rollout procedure](../operations/app-attest-rollout.md).
 
+## App Attest without Darkbloom MDM
+
+A qualified macOS 27 provider can use [App Attest authorization](../reference/provider-authorization.md) when the coordinator explicitly enables it. Start the signed provider and check `darkbloom status` / `darkbloom doctor` for current App Attest authorization. Company-managed Macs keep their employer profile; they do not enroll into Darkbloom MDM for this path.
+
+After the coordinator enables removal and reports readiness, run `darkbloom unenroll --keep-serving`. The command preserves credentials/account data, validates the exact Darkbloom enrollment and guides removal in System Settings. A read-only administrator profile inventory may be required. Do not use ordinary `unenroll` to migrate while keeping provider identity. Unsupported or unqualified Macs still need the complete legacy path below.
+
 ## Prerequisites
 
 - A supported Apple silicon Mac with SIP on and Secure Boot at **Full
@@ -18,7 +24,7 @@ Optional [App Attest shadow checks](../reference/app-attest-shadow.md) run in th
   [`hardware-requirements.md`](./hardware-requirements.md)). Both settings are
   changed only in Recovery; the coordinator checks them independently of your
   self-report ([Layer 3](../architecture/security/attestation.md#layer-3--mdm-securityinfo-the-hardware-grant)).
-- The Mac must not be enrolled in another MDM. `darkbloom enroll` refuses
+- For the legacy path below, the Mac must not be enrolled in another MDM. `darkbloom enroll` refuses
   (`managedByOtherMDM`) and `darkbloom doctor` reports "enrolled in another
   MDM … hardware trust unavailable on this Mac"
   ([`../architecture/security/enrollment.md#failure-modes`](../architecture/security/enrollment.md#failure-modes)).

@@ -75,8 +75,8 @@ public enum MDMTrustDiagnosis {
         case .enrolledOtherMDM(let serverURL):
             return Diagnostic(
                 section: .trust, name: "mdm enrollment", level: .warn,
-                message: "this Mac is managed by another MDM (\(serverURL)) — macOS allows one MDM per device, so Darkbloom hardware trust can't be granted here.",
-                fix: "remove that profile in System Settings → Device Management (if it's yours to remove), then run `darkbloom enroll`.")
+                message: "this Mac is managed by another MDM (\(serverURL)); Darkbloom's legacy MDM path is unavailable. App Attest serving requires a qualified connection on a coordinator that supports it.",
+                fix: "keep your organization's profile installed. Start the current Darkbloom provider and check its serving authorization with `darkbloom status`.")
         case .notEnrolled:
             return Diagnostic(
                 section: .trust, name: "mdm enrollment", level: .warn,

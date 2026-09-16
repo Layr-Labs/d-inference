@@ -22,12 +22,17 @@ func (x *appAttestShadowSession) observe(stage, outcome string, metadata *appatt
 	fields := map[string]any{"inbox_dropped": x.dropped.Load(), "event": "app_attest_shadow", "provider_id": x.provider.ID, "shadow_session": x.id,
 		"stage": stage, "outcome": outcome, "mode": "shadow", "reported_version": boundedShadowLabel(x.version),
 		"reported_os": boundedShadowLabel(x.osVersion), "reported_chip": boundedShadowLabel(x.chip)}
+	mode := "shadow"
+	if x.s.appAttestAuthorizer != nil {
+		mode = "serving"
+		fields["mode"] = mode
+	}
 	x.provider.Mu().Lock()
 	fields["legacy_trust"] = string(x.provider.TrustLevel)
 	fields["legacy_code_attested"] = x.provider.CodeAttested
 	fields["legacy_mda_verified"] = x.provider.MDAVerified
 	x.provider.Mu().Unlock()
-	tags := []string{"stage:" + stage, "outcome:" + outcome, "mode:shadow"}
+	tags := []string{"stage:" + stage, "outcome:" + outcome, "mode:" + mode}
 	if !x.started.IsZero() {
 		elapsed := float64(time.Since(x.started)) / float64(time.Millisecond)
 		fields["duration_ms"] = elapsed

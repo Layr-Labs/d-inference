@@ -29,14 +29,7 @@ func (x *appAttestShadowSession) observeBuildPolicy(status *protocol.AppAttestSt
 		evidence.ReportedVersion = status.AppVersion
 		evidence.BuildQualified = qualifiedAppAttestBuild(x.s.appAttestShadow.QualifiedBuildHashes, status.BinaryHash)
 		evidence.CodeMeasurementKnown, evidence.CodeMeasurementMatched = qualifiedAppAttestMeasurement(x.s.appAttestShadow.QualifiedCodeHashes, status.BinaryHash, metadata)
-		if evidence.CatalogKnown {
-			for _, candidate := range snapshot.ByBinaryHash[status.BinaryHash] {
-				if candidate.Platform == "macos-arm64" && candidate.Version == status.AppVersion {
-					evidence.BuildMatched = true
-					break
-				}
-			}
-		}
+		evidence.BuildMatched = appAttestReleaseApproved(snapshot, x.provider, status)
 	}
 	if st, ok := store.As[store.AppAttestReadinessStore](x.s.store); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -69,6 +62,7 @@ func (x *appAttestShadowSession) observeBuildPolicy(status *protocol.AppAttestSt
 		evidence.Expected.Machine = x.machineID()
 	}
 	verdict := appattest.EvaluateAuthorization(evidence, time.Now().UTC())
+	x.updateServingAuthorization(status, evidence, verdict)
 	x.policyFields = map[string]any{"policy_version": verdict.PolicyVersion, "reasons": verdict.Reasons,
 		"valid_until": verdict.ValidUntil, "assertion_at": x.assertionAt, "credential_id": x.key.KeyID,
 		"release_matched": evidence.BuildMatched, "build_qualified": evidence.BuildQualified,
@@ -83,6 +77,11 @@ func (x *appAttestShadowSession) observeBuildPolicy(status *protocol.AppAttestSt
 // A failed exchange supersedes the prior prospective verdict immediately.
 // The provider's legacy trust and connection are never changed here.
 func (x *appAttestShadowSession) observeFailedPolicy(reason string) {
+	if a := x.s.appAttestAuthorizer; a != nil && confirmedAppAttestViolation(reason) {
+		a.forget(x.provider)
+		x.s.registry.MarkUntrusted(x.provider.ID)
+		x.s.sendAppAttestAuthorizationStatus(x.provider)
+	}
 	outcome := "ineligible"
 	if retryableAppAttestOutcome(reason) || reason == "unsupported" || reason == "not_configured" || reason == "" {
 		outcome = "unknown"
@@ -95,4 +94,15 @@ func (x *appAttestShadowSession) observeFailedPolicy(reason string) {
 		"reasons": []string{"exchange_" + reason}, "valid_until": time.Time{}, "credential_id": keyID, "assertion_at": x.assertionAt}
 	x.observe("prospective_policy", outcome, nil)
 	x.policyFields = nil
+}
+
+// Infrastructure/key-recovery/format-compatibility failures are not a reason to
+// ban an independently verified legacy path. Cryptographic substitution and
+// observed unsafe Mac policy are hard evidence and fence both paths.
+func confirmedAppAttestViolation(reason string) bool {
+	switch reason {
+	case "signature", "nonce", "mac_acl", "app_identity", "credential_key", "challenge_mismatch":
+		return true
+	}
+	return false
 }

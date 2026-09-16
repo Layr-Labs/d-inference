@@ -9,6 +9,10 @@ struct Unenroll: AsyncParsableCommand {
         macOS only allows the user (not an unprivileged binary) to remove
         an MDM profile, so this command opens System Settings → Device
         Management for you and prompts before deleting any local data.
+
+        To migrate to App Attest and keep serving, use --keep-serving.
+        That mode requires fresh coordinator confirmation, identifies only
+        the Darkbloom enrollment, and retains your account, keys, and data.
         """
     )
 
@@ -18,7 +22,16 @@ struct Unenroll: AsyncParsableCommand {
     @Flag(help: "Don't open System Settings.")
     var noOpen = false
 
+    @OptionGroup var configOptions: ConfigOptions
+
+    @Flag(help: "Keep serving using qualified App Attest; retain account, keys, and local data.")
+    var keepServing = false
+
     mutating func run() async throws {
+        if keepServing {
+            try prepareMDMRemovalWhileServing()
+            return
+        }
         print("Darkbloom Unenrollment")
         print()
 

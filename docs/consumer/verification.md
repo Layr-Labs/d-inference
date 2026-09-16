@@ -7,7 +7,7 @@ served a request, and what that verdict does and does not prove. The verdict is
 computed by the coordinator; consumers receive its result, never the
 identity-bearing evidence behind it.
 
-[App Attest shadow measurements](../reference/app-attest-shadow.md) and prospective retirement-readiness verdicts are not part of this public trust verdict and do not establish an additional privacy guarantee.
+[App Attest shadow measurements](../reference/app-attest-shadow.md) do not authorize serving. When separately enabled and qualified, the [App Attest serving path](../reference/provider-authorization.md) appears as `app_attest_authorized` and an exclusive Unix-seconds `authorization_expires_at` deadline in the public listing. The existing `trust_level`, MDM and MDA fields still describe legacy evidence; they are not rewritten to represent App Attest. The listing has its existing short cache window and is diagnostic, not a reusable serving credential.
 
 ## Public attestation endpoint
 

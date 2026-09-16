@@ -86,7 +86,7 @@ extension Fan {
                     gpuTemperatures: temperatures.map {
                         FanTemperatureStatus(key: $0.key.rawValue, celsius: $0.celsius)
                     },
-                    fans: fans.map(Self.fanStatus),
+                    fans: fans.map { FanServiceFanStatus(reading: $0) },
                     error: nil
                 )
             } catch {
@@ -97,26 +97,6 @@ extension Fan {
                     fans: [],
                     error: String(describing: error)
                 )
-            }
-        }
-
-        static func fanStatus(_ reading: FanReading) -> FanServiceFanStatus {
-            FanServiceFanStatus(
-                index: reading.capability.index,
-                actualRPM: reading.actualRPM,
-                targetRPM: reading.targetRPM,
-                minimumRPM: reading.minimumRPM,
-                maximumRPM: reading.maximumRPM,
-                mode: describe(reading.mode)
-            )
-        }
-
-        static func describe(_ mode: FanMode) -> String {
-            switch mode {
-            case .automatic: return "auto"
-            case .manual: return "manual"
-            case .system: return "system"
-            case .unknown(let raw): return "unknown(\(raw))"
             }
         }
 

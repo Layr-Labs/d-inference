@@ -209,6 +209,25 @@ restores the inherited `DARKBLOOM_LOCAL_DIR` value after each fixture. Run both
 suites with `--no-parallel`; suite serialization alone does not isolate other
 suites from process-wide environment changes.
 
+`HiddenFileSkippingTest` includes hidden allowlisted weights and configuration,
+so removing hidden-entry skipping changes the manifest. `TemplateRenderCheckTests`
+uses templates that reject an incorrect BOS value for both tokenizer-config
+forms and require the empty default when the config is absent.
+`storeRejectsTamperedMetadata` in
+`provider-swift/Tests/ProviderCoreTests/KVCache/EncryptedKVStoreTests.swift`
+keeps changed metadata valid JSON and requires a `KVCacheKEKError` from the
+authenticated read; it separately retains malformed-metadata rejection.
+Run these after building and staging the test product as described below:
+
+```bash
+cd provider-swift
+swift test --skip-build --no-parallel \
+  --filter 'HiddenFileSkippingTest|TemplateRenderCheckTests|storeRejectsTamperedMetadata'
+```
+
+These fixtures use temporary files and an in-memory KEK. They do not exercise
+model inference or a hardware-backed encryption key.
+
 The general provider suite passes `--no-parallel` explicitly to Swift Testing.
 Unrelated cases share process-wide MLX state and executor capacity; overlapping
 thousands of them can starve bounded test handshakes. Concurrency tests retain

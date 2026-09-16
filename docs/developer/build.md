@@ -434,6 +434,17 @@ The [startup measurement tool](../operations/coordinator-startup-measurement.md)
 requires Python 3.10+ and no third-party packages or build step. Its tests use
 local stub servers; its default observation mode sends only public GETs.
 
+The [provider relay checks](test.md) use local Go HTTP/WebSocket servers without
+a provider build or model weights. They check catalog/manifest forwarding,
+rejection of other HTTP routes, upstream errors, shutdown cancellation and bounded
+WS recording before the real-model gates.
+The `test-coordinator` job in `.github/workflows/ci.yml` runs all testbed unit
+packages and the Qwen, workflow, exact-cache and release-policy checks as
+blocking CPU steps.
+Rebuild the Go test binary after changing the release-default readiness helper
+or its capacity-quote relay observations; see the
+[release-default procedure](test.md#connected-coordinatorprovider-http-cache-gate).
+
 ## `make` targets
 
 | Target | What it runs |
@@ -534,3 +545,7 @@ Candidate native prefix-cache benchmarks must build ProviderCore and
 prompt SPI carries production sampling parameters into each engine request.
 See [native benchmark validation](test.md#resident-prefix-benchmark-validation)
 for sampling scope, regression filters and diagnostic restrictions.
+
+Integration fixture identities differ from the exact release catalog IDs. See
+[the E2E defaults and cache lanes](test.md#8-end-to-end-suite) before interpreting
+a contiguous HF-fixture smoke as release backend/cache qualification.

@@ -65,6 +65,10 @@ jobs:
           # and Go package paths contain no spaces.
           # shellcheck disable=SC2046
           go test -race $(go list ./... | grep -v /e2e)
+      - name: Run testbed unit tests (CPU only)
+        run: go test -race ./e2e/testbed/... -count=1
+      - name: Check integration fixture policy (CPU only)
+        run: go test -race ./e2e/ -run '^Test(Qwen38|IntegrationWorkflow|ExactCacheRoutingFixture|ReleaseDefault|ReleaseCapability)' -count=1
       - name: Check formatting
         run: |
           set -o pipefail

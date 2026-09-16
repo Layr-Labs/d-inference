@@ -1155,6 +1155,13 @@ a model or provider process:
 
 ```bash
 go test -race -short ./e2e/testbed/...
+The `test-coordinator` job in `.github/workflows/ci.yml` runs the full testbed
+unit packages and the fixture-policy tests as blocking CPU checks. They require
+no provider build or model weights:
+
+```bash
+go test -race ./e2e/testbed/... -count=1
+go test -race ./e2e/ -run '^Test(Qwen38|IntegrationWorkflow|ExactCacheRoutingFixture|ReleaseDefault|ReleaseCapability)' -count=1
 ```
 
 ```bash
@@ -1164,13 +1171,31 @@ DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=paged \
 go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
   -run 'TestIntegration|TestProfile' -skip '^TestIntegrationExactCacheRouting$'
 
-# Default posture (no TOML written; .auto resolves contiguous as of v0.8.1):
+# Unqualified HF fixture defaults (isolated TOML; no backend/cap override):
+DARKBLOOM_TESTBED_MODEL=mlx-community/gpt-oss-20b-MXFP4-Q8 \
 DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=contiguous \
 go test ./e2e/ -count=1 -v -timeout 10m -p=1 -run '^TestIntegration_(NonStreaming|Streaming)Inference$'
 
 make e2e-integration     # go test ./e2e/... -run TestIntegration -v   (no posture pins)
 make e2e-benchmark       # go test ./e2e/... -run TestBenchmark -v
 ```
+
+The HF fixture ID above is outside the exact production backend/cache allowlist,
+so contiguous is the expected automatic backend for that fixture. Exact catalog
+`gpt-oss-20b`, Gemma QAT and Qwen artifacts select paged; use the
+[release-default gate](#connected-coordinatorprovider-http-cache-gate) to qualify
+those defaults. The small e2b cache-routing fixture explicitly opts into SSD;
+its informational status remains until a real run passes the full gate. It is
+not evidence of a current output mismatch if setup fails before adoption.
+
+The Qwen3.8 tools/video fixture in `e2e/integration_test.go`
+(`qwen38ConcreteModel`, `qwen38ExpectedBuiltKVBackend`) pins
+`EigenLabs/Qwen3.8-27B-4bit` at revision
+`301e9e2767fd0efcfab7883004720ba3c9a552a1`. Its automatic backend is contiguous;
+an explicit paged request still requires paged. The qualified
+`EigenLabs/Qwen3.8-27B-4bit-mtp` publication is a separate artifact covered by
+the exact-catalog release-default gate. The tools/video fixture does not rename
+or substitute that publication.
 
 The harness builds the provider itself (`e2e/testbed/provider.go`,
 `BuildProvider`): `swift build -c release` (or `TESTBED_PROVIDER_CONFIG=debug`)
@@ -1199,9 +1224,9 @@ binary that already has `mlx.metallib` beside it.
 
 | File | Tests |
 |---|---|
-| `e2e/integration_test.go` | `TestIntegration_NonStreamingInference`, `_StreamingInference`, `_GreedyDeterminism`, `_MultipleRequestsAccounting`, `_E2EEncryptionCorrectness`, `_BillingBalanceDeduction`, `_ProviderPayoutSplit`, `_InsufficientBalance`, `_InvalidModel`, `_StreamingContentValidation`, `_ConcurrentRequests`, `_AttestationHeaders`, `_SwiftProviderRealRoutingGates`, `_FullNetworkSingleSwiftProviderMultiModelRouting`, `_ReferralRewardDistribution`, `_Qwen38RealProcessToolsAndVideo`; plus `TestQwen38GatePolicy`, `TestQwen38ExpectedBuiltKVBackend` |
+| `e2e/integration_test.go` | `TestIntegration_NonStreamingInference`, `_StreamingInference`, `_GreedyDeterminism`, `_MultipleRequestsAccounting`, `_E2EEncryptionCorrectness`, `_BillingBalanceDeduction`, `_ProviderPayoutSplit`, `_InsufficientBalance`, `_InvalidModel`, `_StreamingContentValidation`, `_ConcurrentRequests`, `_AttestationHeaders`, `_SwiftProviderRealRoutingGates`, `_FullNetworkSingleSwiftProviderMultiModelRouting`, `_ReferralRewardDistribution`, `_Qwen38RealProcessToolsAndVideo`; plus `TestQwen38GatePolicy`, `TestQwen38BaseArtifactBackendSelection` |
 | `e2e/profile_test.go` | `TestProfile_SingleProviderNonStreaming`, `TestProfile_RequestProfilesRecorded` |
-| `e2e/exact_cache_routing_test.go` | `TestIntegrationExactCacheRouting` (expected red on paged with the e2b fixture; informational step in CI) |
+| `e2e/exact_cache_routing_test.go` | `TestIntegrationExactCacheRouting` (small e2b fixture with explicit SSD opt-in; exact cold/adopted checks retained in the informational CI step) |
 | `e2e/mixed_version_test.go` | `TestIntegrationMixedVersionReleasedV0712Provider`, `TestIntegrationMixedVersionGateContract` |
 | `e2e/benchmark_test.go` | `TestBenchmark_SingleProviderStreaming`, `_SingleProviderNonStreaming`, `_MultiModelMultiProvider`, `_HighConcurrency`, `_QueueSaturation`, `_ManyUsers`, `_SingleModelScaling`, `_HeavyLoad_100Concurrent_10KB`; config tests `TestBenchmarkSuiteConfig*`, `TestBenchmarkControlSuiteIsIsolatedAndMatchesPosture`, `TestBenchmarkCapacitySaturationPolicy` |
 
@@ -1301,7 +1326,7 @@ token IDs are accepted.
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
 | [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh` · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm run build` |
-| [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 120 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) → current coordinator vs released v0.7.12 provider (`scripts/fetch-v0712-provider.sh`, `DARKBLOOM_MIXED_VERSION_EXPECT=artifact`, fails unless `MIXED_VERSION_TIER_ARTIFACT_OK` appears) → released v0.7.12 coordinator (`git worktree add … v0.7.12`) vs candidate provider (`NonStreamingInference`, `StreamingInference`) |
+| [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 120 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (explicit fixture SSD opt-in, informational `continue-on-error`) → unqualified HF-fixture defaults (`EXPECT_KV_BACKEND=contiguous`; does not qualify exact catalog defaults) → current coordinator vs released v0.7.12 provider (`scripts/fetch-v0712-provider.sh`, `DARKBLOOM_MIXED_VERSION_EXPECT=artifact`, fails unless `MIXED_VERSION_TIER_ARTIFACT_OK` appears) → released v0.7.12 coordinator (`git worktree add … v0.7.12`) vs candidate provider (`NonStreamingInference`, `StreamingInference`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |
 | [`.github/workflows/provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml) | manual only | Build an exact signed source revision, validate Developer ID signing/provisioning/notarization in a separate job, and retain an Actions artifact; no GitHub environment, deployment, release registration or model execution |
@@ -1414,13 +1439,26 @@ DARKBLOOM_RELEASE_DEFAULT_OUTPUT=/absolute/new-defaults-output \
 
 The two B1 requests check actual paged activation, automatic MTP selection,
 complete cold/repeat output and token accounting, and model-scoped cache
-capability. Qwen and exact `gpt-oss-20b` require a ready SSD capability and an
+capability. Qwen, Gemma QAT and exact `gpt-oss-20b` require a ready SSD capability and an
 accepted repeat hit; GPT-OSS still requires MTP inactivity under automatic
-selection. The older Gemma QAT helper retains its cache-inactive expectation and
-does not qualify the current Gemma default. The report retains the actual
+selection. Gemma QAT requires active automatic MTP with its catalog-declared
+assistant available; a cache-disabled historical input now fails validation. The report retains the actual
 generated provider configuration. This smoke does not establish raw token-ID
 parity, concurrent widths, cancellation, restart, or selection between providers;
-run the corresponding native and connected gates separately. CPU helper checks:
+run the corresponding native and connected gates separately.
+
+Before the first request, `e2e/release_defaults_readiness_test.go`
+(`waitForReleaseDefaultReadiness`) waits for fresh daemon evidence of active MTP
+when the artifact requires it. The existing `capacity_probe` control exchange
+then checks current admission, and the coordinator must consume idle capacity
+at least as new as the successful quote. These checks perform no inference and
+leave the cold prefix untouched. The wait permits up to ten minutes for normal
+assistant download, preparation, rollout jitter and swap, capped at one minute
+before the test deadline for cleanup. A timeout retains the last readiness failure.
+This is a readiness prerequisite, not a measurement of download availability or
+fleet rollout behavior.
+
+CPU helper checks:
 
 ```bash
 go test -short ./e2e ./e2e/testbed \
@@ -1556,6 +1594,13 @@ counts; timing-dependent cancellation partial lengths are retained separately.
 The runner fences UTC rollover and preserves failed, running and unrun cells in
 an atomically replaced partial JSON report. Keep the `go test` log beside it for
 setup failures and interrupted process evidence.
+
+The loopback relay forwards only `GET /v1/models/catalog` and
+`GET /v1/models/catalog/manifest/{id}` for the normal provider catalog client.
+Other HTTP paths/methods and traversal paths return 404 without reaching the
+coordinator, including through owned-host SSH tunnels. Allowed reads preserve
+upstream status, headers and body without recording them; shutdown cancels
+active reads (`e2e/testbed/provider_wire_relay.go`, `ProviderWireRelay.Start`).
 
 A bounded transparent loopback relay records negotiation, checkpoint echo,
 receipt positions, cancellation and typed terminal usage/profile without keys,

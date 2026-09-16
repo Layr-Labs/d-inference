@@ -1094,7 +1094,7 @@ file has moved; current missing links still fail. See
 [historical source references](historical-references.md).
 
 ```bash
-make docs-check          # scripts/docs-check.sh — stamps, relative links, cited paths, orphans, SIP-claim qualifier
+make docs-check          # scripts/docs-check.sh — stamps, relative links, cited paths, orphans
 make docs-stamp FILES="docs/developer/test.md"   # refresh a stamp after editing
 ```
 

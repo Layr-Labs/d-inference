@@ -111,7 +111,7 @@ e2e: e2e-integration ## Run the integration suite
 
 # ---- Docs -------------------------------------------------------------------
 
-docs-check: ## Lint docs/: freshness stamps, relative links, cited code paths, orphans, SIP-claim qualifier
+docs-check: ## Lint docs/: freshness stamps, relative links, cited code paths, orphans
 	./scripts/docs-check.sh
 
 docs-impact-check: ## Check source changes have their mapped canonical docs (BASE=origin/master)

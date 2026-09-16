@@ -138,10 +138,8 @@ Line 3 of every doc:
 
 `scripts/docs-check.sh` fails on: a missing stamp; a relative link to a
 missing file; an inline-code citation of a repo path that does not exist
-(exempt: `reports/`, `releases/`, `design/`); an orphan page that no other
-doc links to; and a SIP-immutability claim in `README.md`,
-`docs/threat-model.yaml` or `docs/provider/hardware-requirements.md` that drops
-the "unpatched kernel" qualifier (TB-003). Run it before opening a PR that touches `docs/`. It checks only
+(exempt: `reports/`, `releases/`, `design/`); and an orphan page that no other
+doc links to. Run it before opening a PR that touches `docs/`. It checks only
 git-tracked files by default; `--all` includes untracked drafts.
 
 For a missing relative source link in a frozen report, release note, or design

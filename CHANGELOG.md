@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Create the complete dev Secret Manager resource set before boot validation so fresh projects can populate Stripe keys and rerun startup successfully.
 - **Privacy descriptions** — Describe encrypted network hops and plaintext processing at the coordinator and provider, qualify Apple certificate verification by its separate MDA status, and remove unsupported memory-wiping and recipient-key forward-secrecy guarantees.
 - Operations helpers encode admin JSON fields, return a failure after any fleet host fails while still visiting remaining hosts, and isolate smoke-test response files.
 - **Admin email login** — Encode Privy OTP email/code fields as JSON strings so quoted addresses and escape characters cannot break or reshape the upstream request.

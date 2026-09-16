@@ -22,6 +22,9 @@
 #   - eigeninference-privy-app-id            (dev Privy app)
 #   - eigeninference-privy-app-secret        (dev Privy app)
 #   - eigeninference-privy-verification-key  (dev Privy app)
+#   - eigeninference-stripe-secret-key       (dev Stripe API key)
+#   - eigeninference-stripe-webhook-secret   (dev Checkout webhook signing secret)
+#   - eigeninference-stripe-connect-webhook-secret (dev Connect signing secret)
 #   - eigeninference-micromdm-api-key        (openssl rand -hex 32)
 #   - eigeninference-mdm-push-p12-b64        (base64url-encoded MDM push PKCS#12)
 
@@ -194,6 +197,20 @@ create_secret eigeninference-database-url
 create_secret eigeninference-micromdm-api-key
 create_secret eigeninference-mdm-push-p12-b64 "$CMEK_MDM"
 create_secret eigeninference-r2-cdn-url
+# Create empty resources for every value read by refresh-env.sh. Required values
+# still need versions before boot can proceed; optional resources may stay empty.
+create_secret eigeninference-profile-signing-p12-b64
+create_secret eigeninference-profile-signing-p12-password
+create_secret eigeninference-stripe-secret-key
+create_secret eigeninference-stripe-webhook-secret
+create_secret eigeninference-stripe-connect-webhook-secret
+create_secret eigeninference-stripe-success-url
+create_secret eigeninference-stripe-cancel-url
+create_secret eigeninference-stripe-connect-return-url
+create_secret eigeninference-stripe-connect-refresh-url
+create_secret eigeninference-dd-api-key
+create_secret eigeninference-dd-site
+create_secret eigeninference-ipapi-key
 
 echo "==> Grant coord SA decrypt on the CMEK keys (scoped to the two keys only)"
 for K in "$KMS_KEY_MDM" "$KMS_KEY_SOLANA"; do

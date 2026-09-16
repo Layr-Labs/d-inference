@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased — release provenance
+## Unreleased (2026-09-16) — release provenance
 
-- Name the source commit each prod provider bundle was built from in its GitHub Release notes, next to the binary, bundle and metallib hashes.
+- **Release notes source commit** — Name the source commit (`GITHUB_SHA`) each prod provider bundle was built from in its GitHub Release notes, next to the binary, bundle, metallib and CodeDirectory hashes.
 
 ## Release candidate v0.9.4 — App Attest recovery and retirement readiness (not shipped; 2026-09-14)
 

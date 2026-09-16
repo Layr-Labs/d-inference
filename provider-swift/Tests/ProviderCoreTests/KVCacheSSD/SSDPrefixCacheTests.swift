@@ -338,18 +338,28 @@ struct SSDBlockStoreTests {
         try body.write(to: url)
         #expect(throws: (any Error).self) { _ = try SSDBlockStore.read(from: url, kekKey: kek) }
 
-        // Flip one metadata byte (plaintext JSON region — it is the AAD, so
-        // the DEK unwrap and every chunk must fail even though the JSON
-        // still parses). Locate a metadata byte: header prefix is 24 bytes
-        // + wrapped DEK; the metadata JSON contains the schema string.
+        // Change a valid metadata field so header parsing succeeds and only
+        // the AAD binding can reject the file during DEK unwrap.
         var meta = original
-        if let range = meta.range(of: Data("darkbloom.kv.v3".utf8)) {
-            meta[range.lowerBound] ^= 0x01
-            try meta.write(to: url)
-            #expect(throws: (any Error).self) { _ = try SSDBlockStore.read(from: url, kekKey: kek) }
-        } else {
-            Issue.record("metadata marker not found in encoded file")
-        }
+        let field = try #require(meta.range(of: Data(#""weightHash":"w-hash""#.utf8)))
+        meta.replaceSubrange(field, with: Data(#""weightHash":"x-hash""#.utf8))
+        try meta.write(to: url)
+        #expect(try SSDBlockStore.readMetadataOnly(from: url).weightHash == "x-hash")
+        do {
+            _ = try SSDBlockStore.read(from: url, kekKey: kek)
+            Issue.record("authenticated read accepted modified metadata")
+        } catch SSDBlockStoreError.authenticationFailed(_) { }
+
+        // Preserve the separate schema-validation rejection; it happens
+        // before authentication and must not stand in for the AAD check.
+        var schema = original
+        let marker = try #require(schema.range(of: Data("darkbloom.kv.v3".utf8)))
+        schema[marker.lowerBound] ^= 0x01
+        try schema.write(to: url)
+        do {
+            _ = try SSDBlockStore.read(from: url, kekKey: kek)
+            Issue.record("read accepted an unsupported metadata schema")
+        } catch SSDBlockStoreError.malformedHeader(_) { }
     }
 
     @Test("layout epoch: layer-kind changes produce a different epoch (fail-closed binding)")
@@ -806,6 +816,7 @@ struct SSDPrefixCacheLifecycleTests {
         let tokens = Array(0 ..< tokenCount)
         donateFixture(cache, tokens: tokens)
         #expect(await waitForIndexCount(cache, atLeast: 8), "write-behind never landed")
+        await cache.waitForWritesForTesting()
         #expect(cache.index.count == 8)
         let files = dbk3Files(under: dir)
         #expect(files.count == 8)
@@ -825,7 +836,7 @@ struct SSDPrefixCacheLifecycleTests {
         // Re-donating the identical prefix writes nothing new.
         let written = cache.stats().blocksWritten
         donateFixture(cache, tokens: tokens)
-        try? await Task.sleep(for: .milliseconds(300))
+        await cache.waitForWritesForTesting()
         #expect(cache.stats().blocksWritten == written)
         #expect(dbk3Files(under: dir).count == 8)
 
@@ -1432,7 +1443,7 @@ struct SSDPrefixCacheReadyReceiptTests {
         // Re-donation of the same terminal prefix is durable but must not
         // emit a duplicate/non-increasing receipt.
         correlatedDonate(cache, requestID: requestID, tokenCount: 72)
-        try? await Task.sleep(for: .milliseconds(200))
+        await cache.waitForWritesForTesting()
         #expect(box.snapshot.count == 2)
     }
 
@@ -1454,7 +1465,7 @@ struct SSDPrefixCacheReadyReceiptTests {
             if closeBeforeDonate { cache.close() }
             correlatedDonate(cache, requestID: id, tokenCount: 64)
             mutate?(dir)
-            try? await Task.sleep(for: .milliseconds(500))
+            await cache.waitForWritesForTesting()
             cache.close()
             return box.snapshot
         }
@@ -1470,7 +1481,7 @@ struct SSDPrefixCacheReadyReceiptTests {
         let tooShortBox = ReadyReceiptBox()
         tooShort.registerReadyReceipt(requestID: CBv2RequestID(50), callback: tooShortBox.append)
         correlatedDonate(tooShort, requestID: CBv2RequestID(50), tokenCount: 64)
-        try? await Task.sleep(for: .milliseconds(200))
+        await tooShort.waitForWritesForTesting()
         #expect(tooShortBox.snapshot.isEmpty)
         tooShort.close()
 
@@ -1511,7 +1522,7 @@ struct SSDPrefixCacheReadyReceiptTests {
         let corruptBox = ReadyReceiptBox()
         corrupt.registerReadyReceipt(requestID: CBv2RequestID(52), callback: corruptBox.append)
         correlatedDonate(corrupt, requestID: CBv2RequestID(52), tokenCount: 64)
-        try? await Task.sleep(for: .milliseconds(500))
+        await corrupt.waitForWritesForTesting()
         #expect(corruptBox.snapshot.isEmpty)
         corrupt.close()
     }
@@ -1527,6 +1538,7 @@ struct SSDPrefixCacheReadyReceiptTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         let entered = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
+        let returned = DispatchSemaphore(value: 0)
         let cache = makeCache(
             dir: dir,
             kek: SymmetricKey(size: .bits256),
@@ -1534,19 +1546,23 @@ struct SSDPrefixCacheReadyReceiptTests {
             minEffectiveTokens: fixtureBlockSize,
             maintainWholeRoot: {
                 entered.signal()
-                _ = release.wait(timeout: .now() + 5)
+                release.wait()
             })
-        defer { cache.close(); release.signal() }
+        defer { release.signal(); cache.close() }
         let id = CBv2RequestID(61)
         cache.registerReadyReceipt(requestID: id, callback: { _ in })
-        let returned = Task {
+        let donation = Task {
             correlatedDonate(cache, requestID: id, tokenCount: 64)
-            return true
+            returned.signal()
         }
-        #expect(await returned.value)
         let enteredResult = await waitForSemaphore(entered, timeout: .now() + 5)
         #expect(enteredResult == .success)
+        // Maintenance stays blocked until after this assertion. An inline
+        // donation cannot pass by waiting for the maintenance hook to time out.
+        #expect(await waitForSemaphore(returned, timeout: .now() + 5) == .success)
         release.signal()
+        await donation.value
+        await cache.waitForWritesForTesting()
     }
 }
 
@@ -2910,9 +2926,9 @@ struct SSDWholeRootMaintenanceTests {
 @Suite("SSD prefix cache: per-donation gate", .serialized)
 struct SSDPrefixCacheDonationGateTests {
 
-    /// Poll briefly and assert NOTHING was written (negative settling).
+    /// Wait for accepted writes to settle before asserting nothing was written.
     private func expectNoWrites(_ cache: SSDPrefixCache, dir: URL) async {
-        try? await Task.sleep(for: .milliseconds(300))
+        await cache.waitForWritesForTesting()
         #expect(cache.stats().blocksWritten == 0)
         #expect(cache.index.count == 0)
         #expect(dbk3Files(under: dir).isEmpty)
@@ -3013,7 +3029,7 @@ struct SSDPrefixCacheDonationGateTests {
             layerKinds: fixtureLayerKinds,
             cacheSalt: nil)
         #expect(await waitForIndexCount(writer, atLeast: 3))
-        try? await Task.sleep(for: .milliseconds(200))
+        await writer.waitForWritesForTesting()
         #expect(writer.index.count == 3)
         #expect(dbk3Files(under: dir).count == 3)
         writer.close()

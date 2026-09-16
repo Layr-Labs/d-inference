@@ -148,6 +148,9 @@ The artifact integrity assertions use synthetic snapshot files and an in-memory
 cache encryption key. They need the provider test build, without model downloads
 or Secure Enclave provisioning; see the focused checks in [test.md](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib).
 
+The same test product includes the SSD authentication and write-completion
+checks described in that procedure; their tiny MLX fixtures require the matched metallib.
+
 ```bash
 make provider-build
 # = cd provider-swift && swift build

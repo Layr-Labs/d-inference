@@ -1,6 +1,6 @@
 # Provider process
 
-> Last updated: 2026-09-11 · base commit `7c394fa2b`
+> Last updated: 2026-09-15 · commit `40e1bc5b6`
 
 The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
 It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,

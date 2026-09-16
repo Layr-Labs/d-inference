@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-15 · commit `1fee36798`
+> Last updated: 2026-09-15 · commit `40e1bc5b6`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -230,7 +230,7 @@ model inference or a hardware-backed encryption key.
 
 For SSD authentication and donation changes, run the filter
 `SSDBlockStoreTests|SSDPrefixCacheLifecycleTests|SSDPrefixCacheReadyReceiptTests|SSDPrefixCacheDonationGateTests`
-with `--no-parallel`. In `provider-swift/Tests/ProviderCoreTests/SSDPrefixCacheTests.swift`,
+with `--no-parallel`. In `provider-swift/Tests/ProviderCoreTests/KVCacheSSD/SSDPrefixCacheTests.swift`,
 `tamperFailsClosed` distinguishes valid metadata rejected by DEK authentication
 from invalid schemas rejected by header parsing. `responsePathNotDelayed`
 requires donation to return while maintenance is held; negative write and ready
@@ -280,9 +280,9 @@ before replacing the runner copy; a runner-local file alone is insufficient.
 
 Live-fixture result collection must retain both ordinary errors and typed
 terminal failures. The loop-path arms in
-`provider-swift/Tests/ProviderCoreTests/EngineV2PagedParityLiveTests.swift`
+`provider-swift/Tests/ProviderCoreTests/Inference/Live/EngineV2PagedParityLiveTests.swift`
 reuse `collect` and require completion usage as well as output.
-`provider-swift/Tests/ProviderCoreTests/GemmaToolCallLiveTests.swift`
+`provider-swift/Tests/ProviderCoreTests/Inference/Live/Gemma/GemmaToolCallLiveTests.swift`
 uses `LiveInferenceFixtures.swift`'s shared `collect` result before parsing a
 tool call. The video mixed-media and standalone response fixtures use throwing
 requirements before accessing a required image span or response choice. Run
@@ -317,13 +317,13 @@ swift test --skip-build --no-parallel \
   --filter 'batcherDeliversEveryFrameExactlyOnce|multiModelEngineReturnsSortedIDs|tokenizeFailure'
 ```
 
-`provider-swift/Tests/ProviderCoreTests/ChunkSenderTests.swift`
+`provider-swift/Tests/ProviderCoreTests/Coordinator/ChunkSenderTests.swift`
 (`batcherDeliversEveryFrameExactlyOnce`) requires the complete sequence of unique
 eight-byte frames after the existing delivery deadline and flush barrier.
-`provider-swift/Tests/ProviderCoreTests/MultiModelBatchSchedulerEngineTests.swift`
+`provider-swift/Tests/ProviderCoreTests/Inference/Engine/MultiModelBatchSchedulerEngineTests.swift`
 (`multiModelEngineReturnsSortedIDs`) checks nonempty registry and advertised
 model lists; the advertised input is deliberately out of order.
-`provider-swift/Tests/ProviderCoreTests/EngineV2BridgeTests.swift`
+`provider-swift/Tests/ProviderCoreTests/Inference/Engine/EngineV2BridgeTests.swift`
 (`tokenizeFailure`) requires an error event before checking its message.
 These use the real batcher and adapter with scripted dependencies, not model inference.
 

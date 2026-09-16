@@ -1,6 +1,6 @@
 # Swift provider package
 
-> Last updated: 2026-09-11 · commit `645d22c6d`
+> Last updated: 2026-09-15 · commit `40e1bc5b6`
 
 The Apple Silicon provider runs inference through MLX-Swift and exposes the
 `darkbloom` CLI. Release packaging places the provider and its runtime resources

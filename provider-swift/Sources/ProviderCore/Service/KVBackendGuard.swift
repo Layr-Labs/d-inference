@@ -230,8 +230,8 @@ public enum KVBackendGuardStore {
 /// `trippedAt`, so the guard's reported age stays the age of the trip.
 ///
 /// The compatibility event hook remains injectable for ordering tests.
-/// Production telemetry emission and overflow persistence are disabled;
-/// the on-disk guard record and local recovery log carry the live effect.
+/// Production trips enqueue telemetry through `TelemetryOverflowQueue`;
+/// the on-disk guard record and local recovery log also retain the live effect.
 public enum KVBackendCrashLoopGuard {
 
     /// A trip whose RECORD write already happened but whose remaining side
@@ -310,8 +310,8 @@ public enum KVBackendCrashLoopGuard {
             // trip event and the resulting degrade join on one value.
             kvBackend: nil,
             extra: ["reason": .string("crash_loop_guard")])
-        // Preserve guarded-version attribution for injected event consumers;
-        // the default production sink is a no-op.
+        // Preserve guarded-version attribution in both injected consumers and
+        // the production overflow queue.
         event.version = guardedVersion
         let stagedEvent = event
         let sink = emitTelemetry ?? { TelemetryOverflowQueue.shared.push($0) }

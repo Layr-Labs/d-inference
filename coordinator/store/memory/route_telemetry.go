@@ -120,7 +120,7 @@ func (s *Store) InferenceRouteRecordsSince(since time.Time) []contracts.Inferenc
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	out := make([]contracts.InferenceRouteRecord, 0, len(s.inferenceRoutes))
+	out := make([]contracts.InferenceRouteRecord, 0, min(len(s.inferenceRoutes), routerecord.MaxTelemetryReadRows))
 	for i := len(s.inferenceRoutes) - 1; i >= 0; i-- {
 		r := s.inferenceRoutes[i]
 		if !since.IsZero() && r.CreatedAt.Before(since) {

@@ -7,6 +7,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/accounts"
@@ -70,7 +71,10 @@ type Dependencies struct {
 	Observer                 Observer
 }
 
-type Controller struct{ deps Dependencies }
+type Controller struct {
+	deps             Dependencies
+	tokenAdmissionMu [64]sync.Mutex // account-wide admission and output reconciliation
+}
 
 func New(deps Dependencies) *Controller {
 	deps.Registry = optionalBinding(deps.Registry)

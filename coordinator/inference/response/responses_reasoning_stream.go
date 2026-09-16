@@ -3,6 +3,7 @@ package response
 func (e *responsesStreamEmitter) appendReasoning(delta string) {
 	if !e.reasoningOpen {
 		e.closeOpenItems()
+		e.reasoningBuf.Reset()
 		e.reasoningOpen = true
 		e.reasoningItemID = responseItemID("rs", e.pr.RequestID, e.outputIndex)
 		e.emit("response.output_item.added", map[string]any{

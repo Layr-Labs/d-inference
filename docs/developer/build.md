@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-15 · commit `0f7b1e611`
+> Last updated: 2026-09-15 · commit `56da3a668`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -111,6 +111,10 @@ bindings. They share the Go module and build targets below. Use the
 The adapters in `coordinator/providercontrol/codeidentity/push_fixture_test.go`
 (`tryReservePush`, `clearPushBudget`) compile only into the package's test binary.
 
+Output-bound validation builds with the normal coordinator target. Its
+[HTTP and billing regressions](test.md#2-coordinator-go) run in process and
+require no provider binary or external service.
+
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
 its test binary after helper or lifecycle changes. The CPU-only
 `TestPrepareConnectedInputBindings` check uses the actual fixture input/report
@@ -120,8 +124,16 @@ lease used after launch. See the [test procedure](test.md#connected-coordinatorp
 
 CI checks formatting of tracked Go source while preserving frozen report
 evidence bytes; see the [coordinator checks](test.md#2-coordinator-go).
+The Responses stream fixtures compile in the coordinator API test binary and
+use generated SSE data; they need no provider binary or model artifact.
 The [provider config cleanup tests](test.md#provider-config-cleanup) run with
 temporary home directories and need no provider build or model.
+The [telemetry read-buffer regression](test.md#bounded-telemetry-reads) uses only
+the Go memory store and a bounded local history fixture.
+
+The early-completion WebSocket regression in the
+[coordinator checks](test.md#2-coordinator-go) also uses only Go and a local
+in-memory coordinator.
 
 ```bash
 make coordinator-build            # cd coordinator && go build ./cmd/coordinator

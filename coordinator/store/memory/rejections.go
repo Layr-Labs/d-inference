@@ -27,12 +27,12 @@ func (s *Store) RecordRejection(record *contracts.RejectionRecord) error {
 }
 
 // RejectionRecordsSince returns rejection records created at or after the
-// given time. Zero since returns all records.
+// given time, newest-first, capped at the shared telemetry read limit. Zero since includes all creation times, subject to the same cap.
 func (s *Store) RejectionRecordsSince(since time.Time) []contracts.RejectionRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	out := make([]contracts.RejectionRecord, 0, len(s.inferenceRejections))
+	out := make([]contracts.RejectionRecord, 0, min(len(s.inferenceRejections), routerecord.MaxTelemetryReadRows))
 	for i := len(s.inferenceRejections) - 1; i >= 0; i-- {
 		r := s.inferenceRejections[i]
 		if !since.IsZero() && r.CreatedAt.Before(since) {

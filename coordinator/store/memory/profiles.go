@@ -71,7 +71,7 @@ func (s *Store) RequestProfilesSinceFiltered(since time.Time, filter contracts.R
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	out := make([]contracts.RequestProfileRecord, 0, len(s.requestProfiles))
+	out := make([]contracts.RequestProfileRecord, 0, min(len(s.requestProfiles), routerecord.MaxTelemetryReadRows))
 	for i := len(s.requestProfiles) - 1; i >= 0; i-- {
 		r := s.requestProfiles[i]
 		if !since.IsZero() && r.CreatedAt.Before(since) {
@@ -115,7 +115,7 @@ func (s *Store) FleetSnapshotsSince(since time.Time) []contracts.FleetSnapshotRo
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	out := make([]contracts.FleetSnapshotRow, 0, len(s.fleetSnapshots))
+	out := make([]contracts.FleetSnapshotRow, 0, min(len(s.fleetSnapshots), routerecord.MaxTelemetryReadRows))
 	for i := len(s.fleetSnapshots) - 1; i >= 0; i-- {
 		r := s.fleetSnapshots[i]
 		if !since.IsZero() && r.SampledAt.Before(since) {

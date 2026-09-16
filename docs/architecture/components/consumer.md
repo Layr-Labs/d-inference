@@ -1,6 +1,6 @@
 # Consumer surface
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-15 · commit `56da3a668`
 
 The consumer surface is the coordinator's OpenAI- and Anthropic-compatible request pipeline. `coordinator/inference/ingress/controller.go` (`Controller`) owns request preparation and admission: `ChatCompletions` serves Chat Completions and Responses, while `Completions` and `Messages` share `handleGenericInference`. These entry points use the same live routing, billing and quota services before handing off to dispatch. The API binding in `coordinator/api/inference_ingress.go` (`inferenceIngress`) constructs one controller and supplies the current store, registry, resolver, limiters, profiler and shared dispatch/settlement services. Readiness, authentication, RPM limits and sender-sealed transport remain in the route middleware; provider completion still reconciles against the same token limiter handles. This page explains the compatibility contract, stages and failure modes. The exact routes, headers and JSON shapes are in [`../../reference/api-contracts.md`](../../reference/api-contracts.md).
 
@@ -80,6 +80,10 @@ feedback and outcome services bound by `responseWriter`
 6. **Providers never see the caller.** They receive an encrypted job carrying the build id and the prompt, not the API key or account.
 7. **A departed client cancels the job.** Client disconnect before commit is recorded as 499 and sends `cancel` to the provider (`emitClientGone`, `attempt.Service.SendCancel`).
 
+8. **Media worker failure releases shared read capacity.** `budgetReader.Read` releases its byte reservation on normal return and panic; `fetchAll` can then recover a failed worker, cancel siblings and join them without leaving readers blocked in the shared budget (`coordinator/mediafetch/budget.go`, `coordinator/mediafetch/resolver.go`).
+
+8. **Concurrent token admissions share one account transaction.** `admitTokenBuckets` checks the key and account input/output buckets before charging any of them, under a bounded account-sharded lock. `debitAdmissionOutput` uses the same lock for extra output-token debt. `CheckN` and `CheckNWithRate` calculate availability and retry hints without consuming tokens; HTTP errors and headers are written after releasing the transaction lock (`coordinator/api/token_admission.go`, `coordinator/ratelimit/bucket_check.go`).
+
 ## Failure modes
 
 | Symptom | Cause | Where |
@@ -120,6 +124,7 @@ feedback and outcome services bound by `responseWriter`
 | Provider metadata, timing header | `coordinator/inference/response/provider_snapshot.go`, `coordinator/inference/dispatch/profile.go` |
 | Tools and media | `coordinator/inference/toolpolicy/`, `coordinator/inference/ingress/tools.go`, `coordinator/inference/ingress/media_resolve.go` |
 | Self-route policy | `coordinator/inference/ingress/self_route.go` |
+| Remote media reads and worker cleanup | `coordinator/mediafetch/budget.go` (`budgetReader.Read`, `byteBudget.finish`), `coordinator/mediafetch/resolver.go` (`fetchAll`) |
 | Sealed client transport | `coordinator/api/sender_encryption.go` |
 | Provider WebSocket, completion and settlement | `coordinator/api/provider.go` (`handleProviderWS`); `coordinator/inference/providerframe/complete.go` (`Service.CompleteAt`); `coordinator/protocol/inference.go` |
 | Wire types | `coordinator/api/types/types.go` |

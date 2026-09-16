@@ -75,7 +75,7 @@ type budgetReader struct {
 	budget *byteBudget
 }
 
-func (r *budgetReader) Read(p []byte) (int, error) {
+func (r *budgetReader) Read(p []byte) (n int, err error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
@@ -83,7 +83,8 @@ func (r *budgetReader) Read(p []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	n, readErr := r.source.Read(p[:reserved])
-	r.budget.finish(reserved, n)
-	return n, readErr
+	// A worker may recover a source-reader panic. Release its reservation even
+	// then, or siblings can remain in reserve's Cond.Wait after cancellation.
+	defer func() { r.budget.finish(reserved, n) }()
+	return r.source.Read(p[:reserved])
 }

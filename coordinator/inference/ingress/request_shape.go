@@ -225,21 +225,6 @@ func requestHasTools(parsed map[string]any) bool {
 	return ok && len(tools) > 0
 }
 
-func estimateRequestedMaxTokens(parsed map[string]any) int {
-	for _, key := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
-		if n, ok := intFromRequestValue(parsed[key]); ok && n > 0 {
-			if copies, ok := intFromRequestValue(parsed["n"]); ok && copies > 1 {
-				return n * copies
-			}
-			return n
-		}
-	}
-	if copies, ok := intFromRequestValue(parsed["n"]); ok && copies > 1 {
-		return 256 * copies
-	}
-	return 256
-}
-
 // stripProviderRoutingFields drops the retired consumer-side serial allowlist.
 // Stable hardware identity is coordinator-private and must never be forwarded
 // to a provider in the encrypted inference payload.

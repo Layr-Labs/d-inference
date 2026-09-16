@@ -54,6 +54,23 @@ coordinator deployment.
 - Keep the CLI and app launch flow; add profile-authorized App Attest signing alongside APNs in release and validation workflows. Actual macOS 27 acceptance requires the final signed app on physical hardware.
 - Accept macOS Developer ID profiles granting only the App Attest CDhash opt-in, including array grants. Preserve existing APNs/keychain entitlements; validate the attested environment on the coordinator even when the optional environment entitlement is absent.
 
+- **Remote media recovery** — Release shared byte-budget reservations when a media reader panics, allowing sibling workers to finish and the request to fail instead of hanging.
+
+- Prevent simultaneous inference requests from exceeding account or API-key token quotas through separate availability checks and charges. Extra output-token reconciliation shares the admission lock, and retry-hint checks no longer consume quota.
+
+- **Coordinator capacity and admission** — Model readiness honors public routing gates while retaining inventory and the fleet-wide health-breaker fallback. Expired capacity probes settle as timeouts; oversized prompt/output sums are rejected without integer wrapping.
+- **Coordinator settings** — Reject non-finite warm-pool and quality-admission values before serving. Ignore non-finite prompt-calibration overrides and bound oversized calibrated estimates before integer conversion.
+
+- **Inclusive metric buckets** — Count latency samples equal to a histogram upper bound in that bucket. A 5 ms observation now contributes to the 5 ms cumulative bucket in JSON and Prometheus output.
+
+- **Geolocation failure logs** — Omit the PRO lookup URL and its API key from transport-error diagnostics while retaining the underlying failure cause.
+
+- Reject generic inference requests with 400 when `n` times the per-choice output token limit exceeds the supported integer range, before token quotas, billing reservations or routing. Ordinary requests retain their existing output limits and admission policy.
+
+- Keep each streamed reasoning and message item limited to its own text when item types alternate. Completed items and the final output no longer repeat text from earlier items; token usage is unchanged.
+
+- Ignore inference completions received before provider registration, keeping the WebSocket available for registration instead of closing it through a nil-pointer panic.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.
@@ -75,6 +92,7 @@ compatibility checks and outstanding runtime qualification.
 
 ### Companion coordinator and console changes
 
+- **Concurrent duplicate-provider detection** — Read each provider's immutable attestation snapshot under its mutex before comparing device serials, so duplicate scans do not race attestation renewal. Matching duplicates still disconnect through the existing cleanup path.
 - **Warm-pool headroom** — Grow warm replicas from measured headroom before a failed request, using measured occupancy growth, per-model headroom limits and bounded load bursts. Requires a coordinator deployment; the provider release does not activate this policy.
 - **Earnings navigation** — Keep earnings accessible after removing all linked Macs and display the supported payout-coverage notice. Requires a console deployment.
 
@@ -117,6 +135,10 @@ coordinator and console changes require their own deployments.
 - **Routing deadlines and admission** — Refresh remaining time after registry/provider lock waits before reserving a retained backup, skip expired reservations and shrink an enabled prediction ceiling. Estimate unreflected pending prefill from each request's own prompt size, excluding requests that already produced content, while preserving the proxy for unknown cache work and reflected queues.
 - **Incoming request accounting** — Add an unsampled request-outcome ledger and bounded admin inspection with explicit coverage and completion evidence. Record recovered HTTP errors and parsed streaming mode, and distinguish completed, incomplete and error response terminals after successful writes while preserving contradictory evidence and earlier content progress.
 - **Partial network geography** — Keep the stats overview available when request-location or route analytics time out. Refresh geography independently, expose unavailable sections, preserve valid empty maps and restore geography after recovery.
+
+## Unreleased — public model datacenters
+
+- Exclude private-only self-route providers from public model datacenter countries. Model counts and country metadata now share the same provider eligibility check.
 
 ## Unreleased — stats request-flow refresh
 

@@ -199,8 +199,8 @@ func (c CacheRoutingConfig) Check() error {
 }
 
 func (c QualityCapConfig) Check() error {
-	if c.Overcommit < 0 {
-		return fmt.Errorf("registry: quality concurrency overcommit must be >= 0")
+	if math.IsNaN(c.Overcommit) || math.IsInf(c.Overcommit, 0) || c.Overcommit < 0 {
+		return fmt.Errorf("registry: quality concurrency overcommit must be finite and >= 0")
 	}
 	return nil
 }

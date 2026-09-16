@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-14 · commit `5f2c53f32`
+> Last updated: 2026-09-15 · commit `56da3a668`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -80,6 +80,13 @@ flowchart LR
 ```
 
 ### Entry points
+
+Before token quotas, balance reservation or routing, the API validates that the
+selected per-choice output bound times `n` fits in its integer estimate
+(`validateRequestedMaxTokens`, `coordinator/inference/ingress/output_tokens.go`).
+An overflowing product returns 400 `invalid_request_error`; it never enters
+downstream cost or capacity calculations as a saturated token count. See the
+[request limits](../reference/api-contracts.md#limits-and-validation).
 
 `ReserveProviderWithPlan` (`coordinator/registry/plan_reservation.go`) is the
 dispatch-time entry point. It scans the fleet
@@ -198,6 +205,12 @@ Two request policies relax the gate for the caller's **own** machines only:
 `providerServesRoutableModelReasonLocked` waives dedicated-catalog isolation.
 Every other gate — runtime verification, private-text attestation, challenge
 freshness, slot state, memory — still applies to owned machines.
+
+Public model counts and OpenRouter datacenter countries share
+`publicModelProviderEligibleLocked` in `coordinator/registry/model_views.go`.
+It excludes private-only providers before either view aggregates them; public
+country metadata therefore describes the public fleet, while owner self-route
+continues to use the separate owner eligibility path.
 
 ### Challenge freshness
 
@@ -334,6 +347,15 @@ Useful reuse subtracts a bounded credit; excess restore cost increases
 and their flag are the subject of
 [`cache-aware-routing.md`](cache-aware-routing.md).
 
+Capacity readiness preserves the same fleet-wide health-breaker fallback. If a
+model has an observed breaker/ejection rejection, `modelCapacityBreakerFallbackLocked`
+in `coordinator/registry/model_capacity.go` uses the shared candidate scan and
+`shouldBypassBreakerFailOpen` before admitting last-resort providers. A healthy
+but busy peer suppresses that fallback. The read-only probe represents the
+smallest positive text reservation (one output token, no TTFT ceiling); it does
+not commit a reservation. Structural, thermal, memory and cooldown gates remain
+in force, and inventory totals stay separate from readiness.
+
 ### Selection paths
 
 The public capacity snapshot (`coordinator/registry/model_capacity.go`,
@@ -430,12 +452,26 @@ leaf lock, then invokes the original live scan. The fresh plan is marked used
 before it is returned. No owner callback acquires registry or provider locks
 while either owner mutex is held.
 
+The public capacity snapshot (`coordinator/registry/model_capacity.go`,
+`ModelCapacitySnapshot`) applies the same model routing gates before counting a
+provider as ready, together with the existing concurrency and token headroom
+checks. A broken template, mixed dedicated-family catalog or active routing
+cooldown therefore cannot advertise immediate readiness. Warm/cold inventory
+counts still describe the advertised models independently of readiness.
+
 ### Hedged (speculative) dispatch
 
 A request that has not produced first content by its **speculative point**
 launches a backup and races the two. The mechanics live in
 `coordinator/inference/dispatch/speculative.go`, `coordinator/inference/dispatch/race.go` (`runSpeculative`, `runRace`) with timing in
 `coordinator/inference/dispatch/hedge_schedule.go` and `coordinator/inference/dispatch/first_content_clock.go`.
+
+Capacity probes settle exactly once through `quoteTracker` in
+`coordinator/registry/capacity_quotes.go`. A quote, send failure, disconnect or
+expiry claims the pending entry. Opportunistic expiry sweeps deliver a timeout
+to the owning collector as well as removing the entry; otherwise a collector
+could wait indefinitely for a delivery that no longer has an owner. The
+collector demotes an expired alternate before publishing its timeout outcome.
 
 **Launch offset.** The initial speculative point is
 `deadline × SpeculativeTimerRatio`, `SpeculativeTimerRatio = 0.5`
@@ -867,6 +903,9 @@ must not run in parallel with other scheduler tests in the same process.
     `tryClaimCapacityProbeLocked` is check-and-claim under `gate.mu`: a
     second commit within `capacityProbeOutcomeWindow` of an outstanding claim
     is rejected instead of leaking a second probe.
+15. **Private-only providers contribute neither public model counts nor
+    datacenter countries** — `ListModels` and `ModelCountryCodes` share
+    `publicModelProviderEligibleLocked` under the registry and provider locks.
 
 ## Failure modes
 

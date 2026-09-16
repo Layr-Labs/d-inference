@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-15 · commit `0f7b1e611`
+> Last updated: 2026-09-15 · commit `56da3a668`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -345,6 +345,20 @@ and unchanged fragmented message/control ordering.
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/... -run 'TestProviderWrit|TestWriteTextThen|TestSendModelLoadActionsClearsPendingWhenWriterQueueFull|TestUnfragmentedConnWriteStallsPeerPing' -count=1
 ```
 
+`TestGenericOutputTokenOverflowRejectedBeforeAdmission` exercises both generic
+HTTP routes with full and unlimited output quotas and real in-process billing.
+It requires a 400 for overflowing output estimates and no charge/refund ledger
+entries. `TestGenericOutputTokenOverflowCannotBypassKeyQuota` keeps the partially
+spent quota controls, and `TestRequestedOutputTokenEstimateRejectsOverflow`
+checks fitting and overflowing products (`coordinator/api/output_token_validation_test.go`,
+`coordinator/api/output_token_overflow_test.go`).
+
+`TestResponsesStreamReopenedItemsContainOnlyTheirOwnText` exercises alternating
+reasoning, message and tool-call items through the real SSE emitter. It compares
+each item's completed text with its own deltas and checks the terminal output
+and both provider-reported and legacy reasoning usage
+(`coordinator/api/responses_item_text_test.go`).
+
 Run prediction telemetry checks from the repository root:
 
 ```bash
@@ -377,6 +391,11 @@ offline removal and refusal while a reconnect with the same serial remains live.
 The reconnect uses its own session ID so asynchronous registration cannot replace
 the historical record being deleted. Run them with
 `GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run '^TestDeleteMyProvider_'`.
+
+`TestProviderCompletionBeforeRegistrationIsIgnored` sends an early completion
+over a real local WebSocket, then requires a successful registration challenge
+on that same connection. It uses the in-memory store and needs no provider
+binary or model (`coordinator/api/provider_completion_registration_test.go`).
 
 The [admission calibration baseline](../reports/2026-09-06-admission-calibration-baseline.md)
 gives the focused `TestTTFTPendingPrompt` comparison command. Its registry
@@ -652,6 +671,24 @@ Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
 `postgres:16` service with user/password/db `testbed`. The pre-push hook runs
 `go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
 the slow WebSocket integration tests; run the full set before merging.
+
+#### Bounded telemetry reads
+
+Run the memory-store allocation and filtered-read regressions from the repository root:
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/store -count=1 \
+  -run '^Test(MemoryTelemetryReadBuffersAreBounded|RequestProfilesSinceFilteredAppliesPredicatesBeforeTheCap)$'
+```
+
+`telemetry_read_allocation_test.go` seeds 50,001 rows per reader and checks
+that route, rejection, request-profile and fleet-snapshot results retain at most
+50,000 rows of buffer capacity, including recent and empty time windows.
+It also checks inclusive filtering, non-nil empty results and newest-first row
+order. The existing profile-filter regression checks that predicates apply
+before the result cap. No provider, model or database is needed for these focused
+checks; use the full store suite with a disposable `DATABASE_URL` to cover both
+storage backends and their existing telemetry contracts.
 
 #### Provider config cleanup
 

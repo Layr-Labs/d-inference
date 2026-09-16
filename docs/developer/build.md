@@ -15,6 +15,10 @@ Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 `scripts/publish-model.sh` to registration. See the
 [model publishing procedure](../operations/model-migration.md).
 
+The admin, smoke and fleet helpers use the tools pinned here. Their local fixture
+checks are covered by [script validation](test.md#6-scripts-and-release-integrity);
+the [dev operations runbook](../operations/dev-environment.md) covers invocation.
+
 Profiler wire changes require both coordinator and provider builds; the shared
 Go/Swift fixture and focused checks are described in [test.md](test.md) and
 [prediction telemetry](../reference/prediction-decision-telemetry.md).

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased (2026-09-16) — release provenance
+
+- **Release notes source commit** — Name the source commit (`GITHUB_SHA`) each prod provider bundle was built from in its GitHub Release notes, next to the binary, bundle, metallib and CodeDirectory hashes.
+
 ## Release candidate v0.9.4 — App Attest recovery and retirement readiness (not shipped; 2026-09-14)
 
 - Fix the released 0.9.3 App Attest callback-timer abort. Require the callback completion/expiry smoke in the optimized signed bundle, installer and updater; distinguish callback failures from Metal failures.

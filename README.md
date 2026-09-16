@@ -225,6 +225,8 @@ curl -fsSL https://api.darkbloom.dev/install.sh | bash
 
 Zero prerequisites and no `sudo`. The installer fetches the latest signed release, verifies the bundle / binary / `mlx.metallib` SHA-256 against the coordinator's release record, checks the Apple Developer ID code signature, provisions the Secure Enclave helper, and offers to install the MDM enrollment profile for hardware trust. See [`docs/provider/installation.md`](docs/provider/installation.md).
 
+Tagged production provider releases are also published as [GitHub Releases](https://github.com/Layr-Labs/d-inference/releases) on this repository, with the signed bundle, its SHA-256 hashes and the source commit it was built from.
+
 ### First run
 
 ```bash

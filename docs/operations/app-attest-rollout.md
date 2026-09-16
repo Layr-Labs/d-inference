@@ -1,6 +1,6 @@
 # Roll out App Attest recovery and qualify MDM retirement
 
-> Last updated: 2026-09-15 · commit `a99ce680a`
+> Last updated: 2026-09-16 · commit `ccd969470`
 
 Use this runbook to qualify provider 0.9.4 alongside authoritative APNs/MDM.
 The [protocol reference](../reference/app-attest-shadow.md) owns configuration,

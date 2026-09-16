@@ -13,7 +13,7 @@ import (
 type keyEntry struct {
 	key      *store.APIKey
 	cachedAt time.Time
-	gen      uint64 // cache generation this entry was stored under
+	gen      uint64 // cache generation captured before the store read
 }
 
 const (
@@ -28,9 +28,8 @@ type keyCache struct {
 	generation uint64
 }
 
-// lookup returns a cached AuthenticateKey result if present and
-// not expired. Returns false on miss or expiry.
-func (c *keyCache) lookup(token string) (keyEntry, bool) {
+// lookup returns a cached result and the generation to retain across a store read.
+func (c *keyCache) lookup(token string) (keyEntry, uint64, bool) {
 	c.mu.RLock()
 	entry, ok := c.entries[token]
 	gen := c.generation
@@ -38,17 +37,19 @@ func (c *keyCache) lookup(token string) (keyEntry, bool) {
 	// Miss on absence, TTL expiry, or a stale generation (a key mutation has
 	// occurred since the entry was cached).
 	if !ok || entry.gen != gen || time.Since(entry.cachedAt) > keyCacheTTL {
-		return keyEntry{}, false
+		return keyEntry{}, gen, false
 	}
-	return entry, true
+	return entry, gen, true
 }
 
-// store inserts an auth result into the cache, stamped with the
-// current generation. If the cache is at capacity, the oldest entry is evicted.
+// store publishes an auth result only if its captured generation is still current.
+// If the cache is at capacity, the oldest entry is evicted.
 func (c *keyCache) store(token string, entry keyEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	entry.gen = c.generation
+	if entry.gen != c.generation {
+		return
+	}
 	if len(c.entries) >= keyCacheMaxSize {
 		var oldest string
 		var oldestTime time.Time
@@ -63,13 +64,8 @@ func (c *keyCache) store(token string, entry keyEntry) {
 	c.entries[token] = entry
 }
 
-// invalidate removes a single key from the API key cache. Called
-// when a key is revoked so stale positive results don't grant access.
-func (c *keyCache) invalidate(token string) {
-	c.mu.Lock()
-	delete(c.entries, token)
-	c.mu.Unlock()
-}
+// invalidate fences late reads as well as previously cached raw-token results.
+func (c *keyCache) invalidate(_ string) { c.invalidateAll() }
 
 // invalidateAll atomically invalidates every cached auth result by
 // bumping the cache generation (entries cached under an older generation are

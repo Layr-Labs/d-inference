@@ -83,7 +83,11 @@ All four share the chain `readiness.Controller.Gate → requireAuth → rateLimi
 | GET | `/v1/key` | `Controller.GetCallingKey` (`coordinator/api/accounts/keys.go`) | `key` | — | The calling key's own `APIKeyResponse` |
 | GET | `/v1/encryption-key` | `handleEncryptionKey` (`coordinator/api/sender_encryption.go`) | `—` | — | `{kid, public_key, algorithm: "x25519-nacl-box"}`, `Cache-Control: public, max-age=300`; 503 `encryption_unavailable` when sealing is not configured |
 
-Lifecycle semantics: [`../consumer/authentication.md`](../consumer/authentication.md).
+Successful key updates, revocations and rotations invalidate the local
+coordinator auth cache, including pending writes from older database lookups
+(`coordinator/api/requestauth/key_cache.go`). Requests already authenticated may finish;
+other coordinator processes retain their ordinary cache TTL. Lifecycle
+semantics: [`../consumer/authentication.md`](../consumer/authentication.md).
 
 ### Device-code flow (3)
 

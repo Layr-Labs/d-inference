@@ -101,6 +101,21 @@ RFC 8628-style flow owned by `Controller` in `coordinator/api/accounts/` and
 | Result | `sub` is the Privy DID (`did:privy:…`); `GetOrCreateUser` looks it up or creates `User{AccountID: uuid, PrivyUserID, Email}` after fetching details from `https://auth.privy.io/api/v1/users/<did>` with Basic auth `app_id:app_secret` and `Privy-App-Id` | `coordinator/auth/privy.go` (`GetOrCreateUser`, `fetchUserDetails`) |
 | Failure | Missing header → `401 authentication_error "missing credentials"`; bad token → `401 authentication_error "invalid Privy token"` | `coordinator/api/requestauth/privy_session.go` (`RequirePrivyAuth`) |
 
+### Consumer API-key snapshots
+
+`requireAuth` captures the local auth-cache generation before calling
+`AuthenticateKey`. `storeAPIKeyCache` publishes the positive or negative result
+only if that generation still matches under the cache mutex. Key update,
+delete and rotation invalidate before and after their store mutation; legacy
+raw-token revocation invalidates after success. A delayed old lookup cannot
+restore a disabled key, obsolete limits, or a negative result for a re-enabled
+key (`coordinator/api/api_key_cache.go`, `coordinator/api/apikey_handlers.go`).
+
+An already-running request may finish with the key record it read before the
+mutation. Invalidation is local to the coordinator handling the mutation;
+other processes and direct store edits rely on the ordinary cache TTL. Provider
+device-login token lookups remain uncached (`requireAuth`).
+
 ## Invariants
 
 1. The provider's X25519 key is accepted only if the SE-signed blob names it as `encryptionPublicKey` — `coordinator/providercontrol/verification/registration.go` (`Verifier.VerifyRegistration`).
@@ -139,6 +154,8 @@ RFC 8628-style flow owned by `Controller` in `coordinator/api/accounts/` and
 | Stable identity | `coordinator/registry/fault_identity.go` (`stableProviderIdentityLocked`); `coordinator/registry/provider_attestation.go` (`RebindStableFaultKey`); `coordinator/registry/provider_restore.go` (`RestoreProviderState`) |
 | Account linking | `coordinator/api/accounts/device_codes.go`, `coordinator/api/accounts/device_tokens.go`, `coordinator/api/accounts/device_approval.go` (`Controller.DeviceCode`, `Controller.DeviceToken`, `Controller.ApproveDevice`, `DeviceCodeExpiry`, `DeviceCodePollInterval`); `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` (`AuthTokenStore`) |
 | Consumer identity | `coordinator/auth/privy.go` (`NewPrivyAuth`, `VerifyToken`, `GetOrCreateUser`); `coordinator/auth/config.go`; `coordinator/api/requestauth/privy_session.go` (`RequirePrivyAuth`) |
+
+| API-key cache publication | `coordinator/api/api_key_cache.go` (`lookupAPIKeyCache`, `storeAPIKeyCache`, `invalidateAllAPIKeyCache`); `coordinator/api/server.go` (`requireAuth`) |
 
 ## Related
 

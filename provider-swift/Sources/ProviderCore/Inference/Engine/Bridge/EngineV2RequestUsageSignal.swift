@@ -238,4 +238,3 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
         lock.withLock { _lookupResult }
     }
 }
-

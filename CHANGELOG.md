@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Centralize benchmark duration conversion and regression-test standard iteration timing across whole-second boundaries, including the generation prompt-time fallback when no first chunk arrives.
+
 - Persist independently approved App Attest builds and revocations; refresh qualification without per-release coordinator restarts, with bounded failure/expiry and stale-grant fencing.
 - Stage immutable signed provider artifacts before publication. Block unqualified releases before updater/latest aliases advance; retry the separate publication job using the same signed bytes, without rebuilding or notarizing again.
 

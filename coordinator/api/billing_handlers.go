@@ -178,7 +178,7 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		if err := s.billing.Store().CompleteBillingSession(billingSessionID); err != nil {
 			s.logger.Error("stripe: failed to mark billing session complete",
 				"billing_session_id", billingSessionID, "error", err)
-			s.ddIncr("billing.session_complete_failed", nil)
+			s.metrics().Billing.SessionCompleteFailed.Inc()
 		}
 	}
 	if referralCode != "" {
@@ -186,7 +186,7 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		// deposit; never silently swallow it.
 		if err := s.billing.Referral().Apply(consumerKey, referralCode); err != nil {
 			s.logger.Error("stripe: failed to apply referral credit", "error", err)
-			s.ddIncr("billing.referral_apply_failed", nil)
+			s.metrics().Billing.ReferralApplyFailed.Inc()
 		}
 	}
 

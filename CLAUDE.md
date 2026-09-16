@@ -15,6 +15,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── config/           AppConfig aggregation of per-package configs
 ├── env/              Shared env-var helpers/constants
 ├── mdm/              MicroMDM integration for device attestation
+├── metrics/          Declared metric catalog (names, types, tag keys) — call sites record through typed handles, never string literals
 ├── payments/         Internal ledger, pricing tables, base rewards
 ├── profilesign/      CMS-signing of .mobileconfig enrollment profiles
 ├── protocol/         WebSocket message types shared with provider (type_scan.go: single-parse frame decode)

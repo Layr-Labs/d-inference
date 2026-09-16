@@ -1508,12 +1508,13 @@ func TestMDMSchedulerOldMDAResponseCannotBindReplacementConnection(t *testing.T)
 
 func TestMDMSchedulerMetricsUseFixedLowCardinalityEnums(t *testing.T) {
 	srv, _, sch := newSchedulerTestServer(t, MDMSchedulerConfig{}, mdmSchedulerDeps{})
-	sch.metricCounter("mdm_scheduler_enqueued_total", "reason", "registration")
-	sch.metricCounter("mdm_scheduler_deduplicated_total", "state", string(store.VerificationStateBackoff))
-	sch.metricCounter("mdm_scheduler_cancelled_total", "reason", "disconnect")
-	sch.metricCounter("mdm_scheduler_queue_rejected_total", "priority", "refresh")
-	sch.metricCounter("mdm_scheduler_grants_total", "path", "reuse")
-	sch.metricCounter("mda_verification_total", "outcome", "binding_mismatch")
+	m := srv.metrics().MDMScheduler
+	m.Enqueued.Inc("registration")
+	m.Deduplicated.Inc(string(store.VerificationStateBackoff))
+	m.Cancelled.Inc("disconnect")
+	m.QueueRejected.Inc("refresh")
+	m.Grants.Inc("reuse")
+	srv.metrics().Trust.MDAVerification.Inc("binding_mismatch")
 	work := mdmSchedulerWork{job: store.VerificationJob{
 		SEPubKey: "secret-se-key", Kind: store.VerificationTaskSecurityInfo,
 		Priority: store.VerificationPriorityRecovery, UpdatedAt: time.Now(),

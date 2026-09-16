@@ -43,6 +43,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
+	"github.com/eigeninference/d-inference/coordinator/metrics"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
@@ -412,6 +413,13 @@ type Server struct {
 	// adminMetrics is the in-process metrics registry exposed via /v1/admin/metrics
 	// and used by internal counters/histograms. Never nil.
 	adminMetrics *Metrics
+
+	// catalog is the declared metric catalog (coordinator/metrics): every
+	// DogStatsD name, type and tag-key set this coordinator emits, declared in
+	// one place instead of spelled out at the call site. Read it through
+	// s.metrics(), which substitutes a catalog that records nowhere for the
+	// hand-built Server literals in tests.
+	catalog *metrics.Metrics
 
 	// readCache memoizes pre-serialized JSON for read-heavy aggregation
 	// endpoints (stats, leaderboard, model catalog, etc.). TTLs are
@@ -843,6 +851,10 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		firstContentDeadlineBase: firstContentDeadlineBase,
 		routingScanSem:           make(chan struct{}, DefaultRoutingConcurrency()),
 	}
+	// The catalog is built here rather than in SetDatadog because its sink
+	// resolves s.dd per sample: a server that gets its Datadog client later
+	// still records through the same declarations.
+	s.catalog = s.newCatalog()
 	if _, clampedDown := trustReuseReconnectGapFromEnv(); clampedDown {
 		logger.Warn("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP exceeds the 120s security ceiling; clamping DOWN",
 			"requested", os.Getenv("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP"),
@@ -1035,9 +1047,11 @@ func (s *Server) Datadog() *datadog.Client {
 	return s.dd
 }
 
-// Metrics returns the in-process metrics registry so cmd/coordinator can
-// expose it to the telemetry emitter and other integrations.
-func (s *Server) Metrics() *Metrics {
+// AdminMetrics returns the in-process metrics registry behind
+// GET /v1/admin/metrics so cmd/coordinator can expose it to the telemetry
+// emitter and other integrations. The declared DogStatsD catalog is a separate
+// thing — see Server.metrics.
+func (s *Server) AdminMetrics() *Metrics {
 	return s.adminMetrics
 }
 
@@ -2215,7 +2229,7 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 		} else if s.minProviderVersion != "" &&
 			version != "" &&
 			semverLess(version, s.minProviderVersion) {
-			s.ddIncr("provider_version_below_minimum", []string{"gate:manifest_sync", "version:" + version})
+			s.metrics().Session.VersionBelowMinimum.Inc("manifest_sync", version)
 		} else {
 			runtimeOK, _ := s.verifyRuntimeHashesForBackend(
 				backend,

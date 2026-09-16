@@ -164,7 +164,7 @@ func (s *Server) topUpReservationForInlinedMedia(w http.ResponseWriter, r *http.
 			hasTools:              p.hasTools,
 			params:                rejectionSamplingParams(parsed),
 		})
-		s.ddIncr("billing.media_reservation_topup", []string{"model:" + p.model, "outcome:rejected"})
+		s.metrics().Billing.MediaReservationTopup.Inc(p.model, "rejected")
 		writeJSON(w, http.StatusPaymentRequired, errorResponse(code, msg, withCode("insufficient_quota")))
 	}
 	// Cap check against the new TOTAL, matching reserveAdditionalForProvider.
@@ -181,12 +181,12 @@ func (s *Server) topUpReservationForInlinedMedia(w http.ResponseWriter, r *http.
 				"your balance is too low for this request once the linked media is included — add funds at /billing, use smaller media, or lower max_tokens")
 		} else {
 			s.logger.Error("media reservation top-up failed (DB error)", "consumer_key", consumerKey, "error", err)
-			s.ddIncr("billing.media_reservation_topup", []string{"model:" + p.model, "outcome:error"})
+			s.metrics().Billing.MediaReservationTopup.Inc(p.model, "error")
 			s.writeServiceUnavailable(w, p.model)
 		}
 		return currentMicroUSD, true
 	}
-	s.ddIncr("billing.media_reservation_topup", []string{"model:" + p.model, "outcome:reserved"})
+	s.metrics().Billing.MediaReservationTopup.Inc(p.model, "reserved")
 	return want, false
 }
 

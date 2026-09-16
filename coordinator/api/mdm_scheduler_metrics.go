@@ -27,24 +27,6 @@ func schedulerRetryStageLabel(stage int) string {
 	return "steady"
 }
 
-func (s *mdmVerificationScheduler) metricCounter(name, labelName, labelValue string) {
-	if s.server.adminMetrics != nil {
-		s.server.adminMetrics.IncCounter(name, MetricLabel{labelName, labelValue})
-	}
-	ddName := map[string]string{
-		"mdm_scheduler_enqueued_total":       "mdm.scheduler.enqueued",
-		"mdm_scheduler_deduplicated_total":   "mdm.scheduler.deduplicated",
-		"mdm_scheduler_cancelled_total":      "mdm.scheduler.cancelled",
-		"mdm_scheduler_queue_rejected_total": "mdm.scheduler.queue_rejected",
-		"mdm_scheduler_grants_total":         "mdm.scheduler.grants",
-		"mda_verification_total":             "mda.verification",
-	}[name]
-	if ddName == "" {
-		ddName = name
-	}
-	s.server.ddIncr(ddName, []string{labelName + ":" + labelValue})
-}
-
 func (s *mdmVerificationScheduler) observeAttempt(work mdmSchedulerWork, result mdmSchedulerAttemptResult, duration time.Duration) {
 	kind := string(work.job.Kind)
 	outcome := string(result.outcome)
@@ -52,48 +34,44 @@ func (s *mdmVerificationScheduler) observeAttempt(work mdmSchedulerWork, result 
 	if queueWait < 0 {
 		queueWait = 0
 	}
-	if s.server.adminMetrics != nil {
-		s.server.adminMetrics.IncCounter("mdm_scheduler_attempts_total", MetricLabel{"kind", kind}, MetricLabel{"outcome", outcome})
-		s.server.adminMetrics.ObserveHistogram("mdm_scheduler_attempt_seconds", duration.Seconds(), MetricLabel{"kind", kind}, MetricLabel{"outcome", outcome})
-		s.server.adminMetrics.ObserveHistogram("mdm_scheduler_queue_wait_seconds", queueWait.Seconds(), MetricLabel{"kind", kind}, MetricLabel{"priority", schedulerPriorityLabel(work.job.Priority)})
-		if result.outcome == store.VerificationOutcomeTimeout {
-			s.server.adminMetrics.IncCounter("mdm_scheduler_timeouts_total", MetricLabel{"kind", kind})
-		}
-	}
-	s.server.ddIncr("mdm.scheduler.attempts", []string{"kind:" + kind, "outcome:" + outcome})
-	s.server.ddHistogram("mdm.scheduler.attempt_seconds", duration.Seconds(), []string{"kind:" + kind, "outcome:" + outcome})
-	s.server.ddHistogram("mdm.scheduler.queue_wait_seconds", queueWait.Seconds(),
-		[]string{"kind:" + kind, "priority:" + schedulerPriorityLabel(work.job.Priority)})
+	m := s.server.metrics().MDMScheduler
+	m.Attempts.Inc(kind, outcome)
+	m.AttemptSeconds.Observe(duration.Seconds(), kind, outcome)
+	m.QueueWaitSeconds.Observe(queueWait.Seconds(), kind, schedulerPriorityLabel(work.job.Priority))
 	if result.outcome == store.VerificationOutcomeTimeout {
-		s.server.ddIncr("mdm.scheduler.timeouts", []string{"kind:" + kind})
+		m.Timeouts.Inc(kind)
 	}
 	if result.granted && work.job.Kind == store.VerificationTaskSecurityInfo {
-		s.metricCounter("mdm_scheduler_grants_total", "path", "live")
+		m.Grants.Inc("live")
 	}
 	if work.job.Kind == store.VerificationTaskMDA {
 		mdaOutcome := outcome
 		if result.outcome == store.VerificationOutcomeSuccess {
 			mdaOutcome = "verified"
 		}
-		s.metricCounter("mda_verification_total", "outcome", mdaOutcome)
+		s.server.metrics().Trust.MDAVerification.Inc(mdaOutcome)
 	}
 }
 
+// publishDogStatsDGauges pushes the queue's current shape. A pushed gauge is
+// only remembered for the flush window it was sent in, which is why this runs on
+// the gauge loop rather than at the events that change these numbers.
 func (s *mdmVerificationScheduler) publishDogStatsDGauges() {
 	type gauge struct {
-		name  string
+		set   func(float64, ...string)
 		value float64
 		tags  []string
 	}
+	m := s.server.metrics().MDMScheduler
 	values := make([]gauge, 0, 8)
 	s.mu.Lock()
 	for _, kind := range []store.VerificationTaskKind{
 		store.VerificationTaskSecurityInfo, store.VerificationTaskMDA,
 	} {
 		values = append(values, gauge{
-			name:  "mdm.scheduler.active_attempts",
+			set:   m.ActiveAttempts.Set,
 			value: float64(s.active[kind]),
-			tags:  []string{"kind:" + string(kind)},
+			tags:  []string{string(kind)},
 		})
 		for _, priority := range []store.VerificationPriority{
 			store.VerificationPriorityFirstOrExpired,
@@ -108,17 +86,17 @@ func (s *mdmVerificationScheduler) publishDogStatsDGauges() {
 				}
 			}
 			values = append(values, gauge{
-				name: "mdm.scheduler.queue_depth", value: float64(count),
+				set: m.QueueDepth.Set, value: float64(count),
 				tags: []string{
-					"kind:" + string(kind),
-					"priority:" + schedulerPriorityLabel(priority),
+					string(kind),
+					schedulerPriorityLabel(priority),
 				},
 			})
 		}
 	}
 	s.mu.Unlock()
 	for _, value := range values {
-		s.server.ddGauge(value.name, value.value, value.tags)
+		value.set(value.value, value.tags...)
 	}
 }
 

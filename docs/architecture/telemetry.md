@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-16 · commit `4595d7e65`
+> Last updated: 2026-09-16 · commit `4eaaf1e4c`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -221,8 +221,9 @@ evidence and service cost.
 
 `datadog.Client` (`coordinator/datadog/datadog.go`) is constructed in
 `coordinator/cmd/coordinator/main.go` only when `DD_API_KEY` or `DD_AGENT_HOST`
-is set; otherwise `s.dd` is nil and every `ddIncr`/`ddGauge`/`ddHistogram`
-(`coordinator/api/server.go`) is a no-op. Configuration is environment only —
+is set; otherwise `s.dd` is nil and both the declared catalog
+(`coordinator/metrics`, below) and the remaining `ddIncr`/`ddGauge`/`ddHistogram`
+shims (`coordinator/api/server.go`) are no-ops. Configuration is environment only —
 `DD_API_KEY`, `DD_AGENT_HOST`, `DD_DOGSTATSD_URL`, `DD_SITE`, `DD_ENV`,
 `DD_SERVICE` — with defaults under [configuration](../reference/configuration.md#telemetry-datadog-and-profiling).
 The `host` tag is no longer the coordinator's concern: the agent stamps it from
@@ -307,6 +308,62 @@ collects — the dev agent reads `d-inference-coordinator.service` over journald
 and stamps `env:development`, `deploy/gcp/vm-startup.sh` — but these logs do not
 go through the agent). Prod supplies the pair from `/etc/d-inference/env`, which
 `deploy/gcp/prod/release-env-defaults` seeds with `DD_ENV=production`.
+
+### The declared catalog
+
+`coordinator/metrics` is where a metric's name, type, help text and tag keys are
+declared, once, as Go values. A call site records through a typed handle —
+`m.Billing.Reservations.Inc(model, mode, outcome)`, `m.Store.CacheHits.Set(v, domain)`,
+`m.MDMScheduler.AttemptSeconds.Observe(secs, kind, outcome)` — and never spells a
+metric name or a tag key. `Counter` has `Inc`/`Add`, `Gauge` has `Set`,
+`Distribution` has `Observe`, and nothing else, so a name cannot pick up a second
+wire type from a second call site. The catalog is built once in
+`NewServer` and reachable as `s.metrics()`; a `Metrics` built without a Datadog
+client (`metrics.Noop()`) discards its samples but still runs the same code path,
+which is what tests get.
+
+The problem it solves is the one the previous shape had: a name was a string
+literal at every place that emitted it, and `mda.verification` with
+tags `{outcome}` in one file and `{outcome, reason}` in another are two series
+that look like one on a dashboard. A declaration fixes the tag *keys* and every
+recording call supplies values positionally, so arity is checked against the
+declaration; a mismatch is logged once per metric and the sample is still
+recorded (telemetry does not get to break a request path). An empty value omits
+its tag rather than emitting `code:` — that is what keeps a migrated metric
+byte-identical to the series it shipped as.
+
+Some counters have a second identity in the in-process registry behind
+`GET /v1/admin/metrics`, under a differently-spelled `_total` name. Those are
+declared as one thing (`mirroredCounter`, `mirroredDistribution`) with both names
+side by side, and one recording call feeds both sinks. Before the catalog that
+pairing lived in a name-translation map inside the MDM scheduler, which was the
+only record that two names were one series and was checked by nothing. Gauges are
+not mirrored: the registry serves its gauges from functions it evaluates on
+scrape, and a pull cannot be expressed as a push sample.
+
+| Concern | Where |
+|---|---|
+| Declarations, grouped by subsystem | `coordinator/metrics/catalog_billing.go`, `catalog_store.go`, `catalog_trust.go`, `catalog_session.go`, `catalog_mdm.go` |
+| Collector types and label rendering | `coordinator/metrics/collector.go` |
+| Sinks (DogStatsD, in-process mirror, discard) | `coordinator/metrics/sink.go`; the late-bound server sink in `coordinator/api/metrics_catalog.go` |
+| Generated documentation | `coordinator/metrics/document.go`, `coordinator/metrics/cmd/metricdoc` → the [inventory's declared table](../reference/telemetry-inventory.md#declared-in-the-catalog) |
+
+Three tests hold it in place. `wire_test.go` asserts against real datagram bytes
+off a UDP socket (`|c|`, `|g|`, `|d|`) rather than against the `Sink` interface,
+because the interface is exactly the layer that can be right while the wire is
+wrong. `catalog_test.go` checks every declared name against
+`testdata/emitted_names.txt` — a snapshot of the names the coordinator emitted
+*before* the catalog existed — so a typo in a declaration cannot quietly retire a
+dashboard's series and start a new one. And it checks that the inventory page
+still contains the generated table, so tags that change in code change in the
+docs.
+
+The migration is incremental and both mechanisms are live: a subsystem moves to
+declarations in one change, and the `ddIncr`/`ddCount`/`ddGauge`/`ddHistogram`
+shims remain for everything not yet moved. Nothing is emitted from both at once —
+that is why the unit of migration is a subsystem and not a file. The name check
+is containment for the same reason, and becomes an equality check when the last
+shim is deleted (`coordinator/metrics/testdata/README.md`).
 
 ### Coordinator events and logs
 
@@ -422,12 +479,13 @@ for populations, labels and reset semantics (`coordinator/api/cache_model_teleme
 | Wiring and env | `coordinator/cmd/coordinator/main.go`, `deploy/gcp/prod/release-env-defaults` |
 | Dashboard and percentile enablement | `deploy/datadog/dev-network-dashboard.json`, `deploy/datadog/apply-dev-dashboard.sh`, `deploy/datadog/enable-distribution-percentiles.sh` |
 | Coordinator event emitter | `coordinator/telemetry/emitter.go`; helpers and gauge loop in `coordinator/api/server.go` |
+| Declared metric catalog | `coordinator/metrics/` (declarations in `catalog_*.go`, collectors in `collector.go`, sinks in `sink.go`, table generator in `cmd/metricdoc`); server wiring in `coordinator/api/metrics_catalog.go` |
 | In-process metrics registry | `coordinator/api/metrics.go`; `handleAdminMetrics` in `coordinator/api/server.go` |
 | Event shape, allowlist, retired ingest | `coordinator/protocol/telemetry.go`, `coordinator/api/telemetry_handlers.go` |
 | Sinks | `coordinator/api/telemetry_sink.go`, `coordinator/api/profiler_sink.go`, `coordinator/api/profiler_fleet.go` |
 | Disconnect classification | `coordinator/registry/disconnect_classify.go` |
 | Provider side | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift` (`buildHeartbeatJSON`), `provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Capacity.swift`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift` (no-op facade) |
-| Tests | `coordinator/api/telemetry_allowlist_parity_test.go`, `coordinator/api/telemetry_handlers_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/logs_wire_test.go`, `coordinator/datadog/metrics_test.go`, `scripts/test-prod-env-refresh.sh`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` |
+| Tests | `coordinator/metrics/wire_test.go` (real datagram bytes), `coordinator/metrics/catalog_test.go` (name/type/tag and docs drift), `coordinator/metrics/collector_test.go`, `coordinator/api/telemetry_allowlist_parity_test.go`, `coordinator/api/telemetry_handlers_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/logs_wire_test.go`, `coordinator/datadog/metrics_test.go`, `scripts/test-prod-env-refresh.sh`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` |
 
 ## Related
 

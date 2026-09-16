@@ -173,14 +173,14 @@ func (s *mdmVerificationScheduler) CompleteLateSecurityInfo(
 	)
 	cancel()
 	if s.deps.reuseMDA(binding) {
-		s.metricCounter("mda_verification_total", "outcome", "reused")
+		s.server.metrics().Trust.MDAVerification.Inc("reused")
 		s.mu.Lock()
 		delete(s.bindings, binding.attestation.PublicKey)
 		s.mu.Unlock()
 	} else {
 		s.enqueueMDA(binding, udid)
 	}
-	s.metricCounter("mdm_scheduler_grants_total", "path", "late")
+	s.server.metrics().MDMScheduler.Grants.Inc("late")
 	s.signal()
 }
 
@@ -273,7 +273,7 @@ func (s *mdmVerificationScheduler) applyLateMDA(
 
 	mdaResult, err := attestation.VerifyMDADeviceAttestation(certChain)
 	if err != nil || mdaResult == nil || !mdaResult.Valid {
-		s.metricCounter("mda_verification_total", "outcome", "invalid")
+		s.server.metrics().Trust.MDAVerification.Inc("invalid")
 		return true
 	}
 	wantFreshness := sha256.Sum256([]byte(bound.attestation.PublicKey))
@@ -282,7 +282,7 @@ func (s *mdmVerificationScheduler) applyLateMDA(
 		(mdaResult.DeviceSerial != "" &&
 			mdaResult.DeviceSerial != bound.attestation.SerialNumber) ||
 		(mdaResult.DeviceUDID != "" && mdaResult.DeviceUDID != udid) {
-		s.metricCounter("mda_verification_total", "outcome", "binding_mismatch")
+		s.server.metrics().Trust.MDAVerification.Inc("binding_mismatch")
 		return true
 	}
 
@@ -329,7 +329,7 @@ func (s *mdmVerificationScheduler) applyLateMDA(
 		}
 	}
 	s.mu.Unlock()
-	s.metricCounter("mda_verification_total", "outcome", "late")
+	s.server.metrics().Trust.MDAVerification.Inc("late")
 	s.signal()
 	return true
 }

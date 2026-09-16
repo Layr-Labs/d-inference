@@ -317,7 +317,7 @@ func (s *mdmVerificationScheduler) finishAttempt(work mdmSchedulerWork, result m
 		s.mu.Unlock()
 		if result.granted && work.job.Kind == store.VerificationTaskSecurityInfo {
 			if s.deps.reuseMDA(work.binding) {
-				s.metricCounter("mda_verification_total", "outcome", "reused")
+				s.server.metrics().Trust.MDAVerification.Inc("reused")
 				s.mu.Lock()
 				delete(s.bindings, work.job.SEPubKey)
 				s.mu.Unlock()
@@ -362,13 +362,7 @@ func (s *mdmVerificationScheduler) finishAttempt(work mdmSchedulerWork, result m
 		currentJob.record.ClaimExpiresAt = nil
 	}
 	s.mu.Unlock()
-	if s.server.adminMetrics != nil {
-		s.server.adminMetrics.ObserveHistogram(
-			"mdm_scheduler_retry_delay_seconds", delay.Seconds(),
-			MetricLabel{"stage", schedulerRetryStageLabel(stage)},
-		)
-	}
-	s.server.ddHistogram("mdm.scheduler.retry_delay_seconds", delay.Seconds(), []string{"stage:" + schedulerRetryStageLabel(stage)})
+	s.server.metrics().MDMScheduler.RetryDelaySeconds.Observe(delay.Seconds(), schedulerRetryStageLabel(stage))
 	s.signal()
 }
 
@@ -413,7 +407,7 @@ func (s *Server) executeScheduledVerification(ctx context.Context, binding mdmLi
 	if udid == "" {
 		return mdmSchedulerAttemptResult{outcome: store.VerificationOutcomeInvalid, terminal: true}
 	}
-	s.mdmScheduler.metricCounter("mda_verification_total", "outcome", "sent")
+	s.metrics().Trust.MDAVerification.Inc("sent")
 	s.verifyAppleDeviceAttestation(ctx, binding.providerID, binding.provider, binding.attestation, udid)
 	if ctx.Err() != nil {
 		return mdmSchedulerAttemptResult{outcome: store.VerificationOutcomeCancelled}

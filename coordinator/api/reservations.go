@@ -69,20 +69,20 @@ func (s *Server) reserveInitialBalance(accountID, model string, amount int64) (b
 	start := time.Now()
 	if serviceMode {
 		if err := s.serviceReservations.Reserve(accountID, amount); err != nil {
-			s.ddIncr("billing.reservations", []string{"model:" + model, "mode:service_hold", "outcome:rejected"})
+			s.metrics().Billing.Reservations.Inc(model, "service_hold", "rejected")
 			return true, err
 		}
-		s.ddIncr("billing.reservations", []string{"model:" + model, "mode:service_hold", "outcome:reserved"})
-		s.ddHistogram("billing.reserved_micro_usd", float64(amount), []string{"model:" + model, "mode:service_hold"})
+		s.metrics().Billing.Reservations.Inc(model, "service_hold", "reserved")
+		s.metrics().Billing.ReservedMicroUSD.Observe(float64(amount), model, "service_hold")
 		return true, nil
 	}
 	if err := s.ledger.Charge(accountID, amount, "reserve:"+accountID); err != nil {
-		s.ddIncr("billing.reservations", []string{"model:" + model, "mode:ledger", "outcome:rejected"})
+		s.metrics().Billing.Reservations.Inc(model, "ledger", "rejected")
 		return false, err
 	}
-	s.ddIncr("billing.reservations", []string{"model:" + model, "mode:ledger", "outcome:reserved"})
-	s.ddHistogram("billing.reserved_micro_usd", float64(amount), []string{"model:" + model, "mode:ledger"})
-	s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reserve"})
+	s.metrics().Billing.Reservations.Inc(model, "ledger", "reserved")
+	s.metrics().Billing.ReservedMicroUSD.Observe(float64(amount), model, "ledger")
+	s.metrics().Store.DebitLatencyMs.Observe(float64(time.Since(start).Milliseconds()), "reserve")
 	return false, nil
 }
 
@@ -90,17 +90,17 @@ func (s *Server) releaseInitialReservation(accountID, model string, amount int64
 	if amount <= 0 {
 		return
 	}
-	tags := []string{"model:" + model, "mode:" + reservationMetricMode(serviceMode)}
+	mode := reservationMetricMode(serviceMode)
 	if serviceMode {
 		s.serviceReservations.Release(accountID, amount)
-		s.ddIncr("billing.reservation_releases", append(tags, "reason:early"))
+		s.metrics().Billing.ReservationReleases.Inc(model, mode, "early")
 		return
 	}
 	start := time.Now()
 	_ = s.store.Credit(accountID, amount, store.LedgerRefund, "reservation_refund")
-	s.ddIncr("billing.reservation_refunds", tags)
-	s.ddIncr("billing.reservation_releases", append(tags, "reason:early"))
-	s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_refund"})
+	s.metrics().Billing.ReservationRefunds.Inc(model, mode)
+	s.metrics().Billing.ReservationReleases.Inc(model, mode, "early")
+	s.metrics().Store.CreditLatencyMs.Observe(float64(time.Since(start).Milliseconds()), "reservation_refund")
 }
 
 func (s *Server) releaseServiceReservation(pr *registry.PendingRequest, reason string) {
@@ -111,5 +111,5 @@ func (s *Server) releaseServiceReservation(pr *registry.PendingRequest, reason s
 	if reason == "" {
 		reason = "unknown"
 	}
-	s.ddIncr("billing.reservation_releases", []string{"model:" + pr.Model, "mode:service_hold", "reason:" + reason})
+	s.metrics().Billing.ReservationReleases.Inc(pr.Model, "service_hold", reason)
 }

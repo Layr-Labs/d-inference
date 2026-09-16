@@ -384,7 +384,7 @@ func main() {
 	logger.Info("per-key rate limiters enabled (RPM + ITPM/OTPM overrides)")
 
 	// Coordinator self-telemetry emitter.
-	telemetryEmitter := telemetry.NewEmitter(logger, srv.Metrics(), telemetry.CoordinatorVersion)
+	telemetryEmitter := telemetry.NewEmitter(logger, srv.AdminMetrics(), telemetry.CoordinatorVersion)
 	srv.SetEmitter(telemetryEmitter)
 
 	// --- Datadog APM + DogStatsD + Logs API ---

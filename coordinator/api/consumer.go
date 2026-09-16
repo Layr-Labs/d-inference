@@ -328,7 +328,7 @@ func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
 	}
 	_ = s.store.Credit(pr.ConsumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+pr.RequestID)
 	pr.ReservedMicroUSD = pr.BaseReservedMicroUSD
-	s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + pr.Model})
+	s.metrics().Billing.ReservationExtraRefunds.Inc(pr.Model)
 }
 
 // writeGenericProviderError writes the terminal HTTP body for a provider error
@@ -1247,8 +1247,8 @@ func (s *Server) dispatchWithReserver(
 		if extra > 0 {
 			start := time.Now()
 			_ = s.store.Credit(consumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+requestID)
-			s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + model})
-			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_extra_refund"})
+			s.metrics().Billing.ReservationExtraRefunds.Inc(model)
+			s.metrics().Store.CreditLatencyMs.Observe(float64(time.Since(start).Milliseconds()), "reservation_extra_refund")
 			pr.ReservedMicroUSD = reservedMicroUSD
 		}
 	}
@@ -1584,11 +1584,11 @@ func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference st
 	if !finalized {
 		return false
 	}
-	tags := []string{"model:" + pr.Model, "mode:" + reservationMetricMode(pr.ServiceReservation)}
-	s.ddIncr("billing.reservation_refunds", tags)
+	mode := reservationMetricMode(pr.ServiceReservation)
+	s.metrics().Billing.ReservationRefunds.Inc(pr.Model, mode)
 	if !pr.ServiceReservation {
-		s.ddIncr("billing.reservation_releases", append(tags, "reason:refund"))
-		s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_refund"})
+		s.metrics().Billing.ReservationReleases.Inc(pr.Model, mode, "refund")
+		s.metrics().Store.CreditLatencyMs.Observe(float64(time.Since(start).Milliseconds()), "reservation_refund")
 	}
 	return true
 }
@@ -1750,7 +1750,7 @@ func (s *Server) reserveAdditionalForProvider(pr *registry.PendingRequest, provi
 		return pr.ReservedMicroUSD, err
 	}
 	pr.ReservedMicroUSD = required
-	s.ddHistogram("billing.reserved_micro_usd", float64(required), []string{"model:" + pr.Model})
+	s.metrics().Billing.ReservedMicroUSD.Observe(float64(required), pr.Model, "")
 	return required, nil
 }
 

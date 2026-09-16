@@ -81,6 +81,8 @@ See [finding provider tests](test.md#finding-provider-tests) for the folder map;
 The [inference source map](../architecture/inference.md#code-map) locates engine,
 memory, caching and request-processing code within the same `ProviderCore`
 target; building these folders requires no separate products or commands.
+Dependency update checks in [`.github/dependabot.yml`](../../.github/dependabot.yml)
+use the root Go module and the console UI's package directory.
 
 ## Steps
 

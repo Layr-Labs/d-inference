@@ -60,6 +60,9 @@ coordinator deployment.
 ## Unreleased
 
 - Provider releases use the same profile and signed CLI entitlement checks as signing validation, rejecting unrelated app identities and missing profile expiry before publication. Release registration encodes quoted and multiline tag text as JSON data.
+## Unreleased
+
+- **Contributor guidance** — Issue forms and the PR template reference the current components, provider commands and review requirements. Go dependency update checks use the repository's root module.
 
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 

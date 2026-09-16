@@ -1096,6 +1096,9 @@ Git diff checks whitespace in filenames. A stubbed `gh` command runs the Codex w
 metadata step through Bash and `jq`, checking that multiline PR bodies containing
 `EOF` survive the GitHub output format. The fixtures make no API or model calls
 and run in Release Integrity CI.
+For changes to [dependency update configuration](../../.github/dependabot.yml),
+confirm that each update directory contains its ecosystem’s manifest, then run
+the relevant component checks in this guide.
 
 ```bash
 make tooling-install  # isolated .venv/tooling with pinned NumPy

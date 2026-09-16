@@ -1,0 +1,241 @@
+import Foundation
+import MLXLMCommon
+
+// MARK: - Per-request usage signal
+
+/// Thread-safe, set-once-read-late box for a request's terminal usage detail,
+/// exact matched stop sequence, and final lookup receipt. One instance per request
+/// (created by the coordinator inference handler only when the slot serves
+/// via the v2 engine); finalized by terminal usage or by the precise
+/// pre-terminal failure path. On success the pump records BEFORE yielding
+/// terminal events, so the trailing usage frame always observes the write.
+public final class EngineV2RequestUsageSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _matchedStopSequence: String?
+    private var _prefixCacheHitTokens: Int?
+    private var _prefixCachePrefillTokensSaved: Int?
+    private var _stageResult: SSDPrefixCacheStageResult?
+    private var _lookupResult: PrefixCacheLookupResult?
+    private var _cacheDisabled = false
+    /// A positive, advisory resident probe caused the bridge to skip SSD
+    /// staging. If the page claim later races with allocator reuse, classify
+    /// the cold fallback as memory rather than inventing an SSD miss.
+    private var _residentCandidateSeen = false
+    private var didEmitLookup = false
+    /// Armed before the pump task can run; only the pump may resolve it.
+    /// Waiters exist only on canceled settlement, never on ordinary decode.
+    private var terminalObservationStarted = false
+    private var terminalObservationPending = false
+    private var terminalWaiters: [CheckedContinuation<Void, Never>] = []
+    private var residentProof: ResidentPrefixCachePromptProof?
+    private let onLookupResolved: (@Sendable (PrefixCacheLookupResult) -> Void)?
+    let onCacheReady: (@Sendable (PrefixCacheReadyResult) -> Void)?
+
+    public init(
+        onLookupResolved: (@Sendable (PrefixCacheLookupResult) -> Void)? = nil,
+        onCacheReady: (@Sendable (PrefixCacheReadyResult) -> Void)? = nil
+    ) {
+        self.onLookupResolved = onLookupResolved
+        self.onCacheReady = onCacheReady
+    }
+
+    func beginTerminalObservation() {
+        lock.withLock {
+            precondition(!terminalObservationStarted, "usage signal belongs to one request")
+            terminalObservationStarted = true
+            terminalObservationPending = true
+        }
+    }
+
+    /// Called after lookup delivery and the pump's resource cleanup, including
+    /// teardown without a native terminal. Resume outside the signal lock.
+    func completeTerminalObservation() {
+        let waiters = lock.withLock {
+            terminalObservationPending = false
+            let pending = terminalWaiters
+            terminalWaiters.removeAll(keepingCapacity: false)
+            return pending
+        }
+        for waiter in waiters { waiter.resume() }
+    }
+
+    /// Cancellation of the consumer must not skip native settlement. The
+    /// owning pump is independent of that task and resolves on native finish
+    /// or shutdown/stream teardown. A request that never reached a pump has
+    /// no observation to await. First content cannot precede pump registration.
+    func waitForTerminalObservation() async {
+        await withCheckedContinuation { continuation in
+            let waiting = lock.withLock {
+                guard terminalObservationPending else { return false }
+                terminalWaiters.append(continuation)
+                return true
+            }
+            if !waiting { continuation.resume() }
+        }
+    }
+
+    /// Record the engine-reported prefix-cache hit tokens for this request.
+    func record(
+        usage: CBv2Usage,
+        fallbackTier: PrefixCacheTier = .memory
+    ) {
+        let resolved: PrefixCacheLookupResult? = lock.withLock {
+            // `prefixCacheHitTokens` is the pre-v1 compatibility alias. Old
+            // scripted engines may set only that field, so let it raise (never
+            // lower) the richer counts.
+            let matched = max(0, usage.prefixCacheMatchedTokens, usage.prefixCacheHitTokens)
+            let saved = max(0, usage.prefixCachePrefillTokensSaved, usage.prefixCacheHitTokens)
+            let engineOutcome: CBv2PrefixCacheOutcome =
+                usage.prefixCacheOutcome == .disabled && usage.prefixCacheHitTokens > 0
+                ? .hit : usage.prefixCacheOutcome
+            // EngineV2 reports the tier that ACTUALLY won adoption. This is
+            // essential when resident L1 and staged SSD L2 both match: SSD
+            // may have completed its pre-submit read, but a zero-copy L1 win
+            // must be billed/telemetried as memory and must not mint a durable
+            // holder receipt. nil preserves scripted/older-engine fallback.
+            let engineTier: PrefixCacheTier? = switch usage.prefixCacheTier {
+            case .resident: .memory
+            case .snapshot: .ssd
+            case nil: nil
+            }
+            _prefixCacheHitTokens = matched
+            _prefixCachePrefillTokensSaved = saved
+            if _cacheDisabled { return nil }
+            let unresolvedTier: PrefixCacheTier =
+                _residentCandidateSeen ? .memory : fallbackTier
+            switch engineOutcome {
+            case .hit:
+                if engineTier == .memory {
+                    _lookupResult = PrefixCacheLookupResult(
+                        outcome: .hit,
+                        tier: .memory,
+                        cachedTokens: matched,
+                        prefillTokensSaved: saved,
+                        requiredRecomputeTokens: max(0, matched - saved))
+                } else if let stage = _stageResult {
+                    _lookupResult = stage.resolved(
+                        actualCachedTokens: matched,
+                        actualPrefillTokensSaved: saved)
+                } else {
+                    _lookupResult = PrefixCacheLookupResult(
+                        outcome: .hit,
+                        tier: engineTier ?? unresolvedTier,
+                        cachedTokens: matched,
+                        prefillTokensSaved: saved)
+                }
+            case .miss:
+                if let stage = _stageResult {
+                    _lookupResult = stage.resolved(actualCachedTokens: 0)
+                } else {
+                    _lookupResult = PrefixCacheLookupResult(
+                        outcome: .missAbsent, tier: unresolvedTier)
+                }
+            case .skippedCapacity:
+                _lookupResult = _stageResult?.resolved(failure: .capacity)
+                    ?? PrefixCacheLookupResult(
+                        outcome: .skippedCapacity, tier: unresolvedTier)
+            case .skippedPolicy, .disabled, .adoptionFailed:
+                _lookupResult = _stageResult?.resolved(failure: .policy)
+                    ?? PrefixCacheLookupResult(
+                        outcome: .skippedPolicy, tier: unresolvedTier)
+            }
+            if let result = _lookupResult, result.tier == .memory, let residentProof {
+                _lookupResult = residentProof.resolve(result)
+            }
+            guard !didEmitLookup, let result = _lookupResult else { return nil }
+            didEmitLookup = true
+            return result
+        }
+        if let resolved { onLookupResolved?(resolved) }
+    }
+
+    /// Compatibility helper for scripted tests/older callers whose usage did
+    /// not yet expose the richer engine outcome.
+    func record(prefixCacheHitTokens: Int) {
+        let tokens = max(0, prefixCacheHitTokens)
+        record(
+            usage: CBv2Usage(
+                promptTokens: 0,
+                completionTokens: 0,
+                prefixCacheHitTokens: tokens,
+                prefixCacheOutcome: tokens > 0 ? .hit : .miss,
+                prefixCacheMatchedTokens: tokens,
+                prefixCachePrefillTokensSaved: tokens))
+    }
+
+    func record(stageResult: SSDPrefixCacheStageResult) {
+        lock.withLock { _stageResult = stageResult }
+    }
+
+    func recordResidentPrompt(_ proof: ResidentPrefixCachePromptProof) {
+        lock.withLock { residentProof = proof }
+    }
+
+    func recordResidentPublication(checkpointTokens: [Int]) {
+        let proof = lock.withLock { residentProof }
+        if let ready = proof?.publication(checkpointTokens: checkpointTokens) {
+            onCacheReady?(ready)
+        }
+    }
+
+    func recordResidentPrefixCandidate() {
+        lock.withLock { _residentCandidateSeen = true }
+    }
+
+    func finalizeLookup(
+        failure: PrefixCacheLookupFailureClass,
+        fallbackTier: PrefixCacheTier
+    ) {
+        let resolved: PrefixCacheLookupResult? = lock.withLock {
+            guard !didEmitLookup else { return nil }
+            let unresolvedTier: PrefixCacheTier =
+                _residentCandidateSeen ? .memory : fallbackTier
+            let result = _stageResult?.resolved(failure: failure)
+                ?? PrefixCacheLookupResult(
+                    outcome: failure == .capacity ? .skippedCapacity : .skippedPolicy,
+                    tier: unresolvedTier)
+            let resolved = result.tier == .memory
+                ? (residentProof?.resolve(result) ?? result) : result
+            _lookupResult = resolved
+            didEmitLookup = true
+            return resolved
+        }
+        if let resolved { onLookupResolved?(resolved) }
+    }
+
+    func recordCacheDisabled(tier: PrefixCacheTier?) {
+        let resolved: PrefixCacheLookupResult? = lock.withLock {
+            _cacheDisabled = true
+            _lookupResult = PrefixCacheLookupResult(
+                outcome: .skippedPolicy, tier: tier)
+            guard !didEmitLookup, let result = _lookupResult else { return nil }
+            didEmitLookup = true
+            return result
+        }
+        if let resolved { onLookupResolved?(resolved) }
+    }
+
+    func record(matchedStopSequence: String?) {
+        guard let matchedStopSequence, !matchedStopSequence.isEmpty else { return }
+        lock.withLock { _matchedStopSequence = matchedStopSequence }
+    }
+
+    public var matchedStopSequence: String? {
+        lock.withLock { _matchedStopSequence }
+    }
+
+    /// Engine-reported prompt tokens whose KV was adopted from the prefix
+    /// cache (0 on a miss). nil until the request reached its terminal.
+    public var prefixCacheHitTokens: Int? {
+        lock.withLock { _prefixCacheHitTokens }
+    }
+
+    public var prefixCachePrefillTokensSaved: Int? {
+        lock.withLock { _prefixCachePrefillTokensSaved }
+    }
+
+    public var lookupResult: PrefixCacheLookupResult? {
+        lock.withLock { _lookupResult }
+    }
+}
+

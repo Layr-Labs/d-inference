@@ -25,119 +25,6 @@ import MLXLLM
 import MLXLMCommon
 import ProviderCoreFoundation
 
-enum GemmaOptimizationReason: String, Sendable, Equatable {
-    case disabled
-    case modelIneligible = "model_ineligible"
-    case aotUnavailable = "aot_unavailable"
-    case naxPrecedence = "nax_precedence"
-    case effective
-}
-
-struct GemmaOptimizationState: Sendable, Equatable {
-    let name: String
-    let requested: Bool
-    let effective: Bool
-    let reason: GemmaOptimizationReason
-
-    var compactDescription: String {
-        "\(name)(requested=\(requested),effective=\(effective),reason=\(reason.rawValue))"
-    }
-}
-
-/// Pure requested/effective resolution for the three retained Gemma controls.
-/// Safe R1 is inferred from one unarmed device snapshot; this type never
-/// resets, arms, or samples route counters.
-struct GemmaOptimizationReport: Sendable, Equatable {
-    let layer18: GemmaOptimizationState
-    let weightedUnsort: GemmaOptimizationState
-    let safeR1: GemmaOptimizationState
-
-    init(
-        layer18Requested: Bool,
-        layer18Effective: Bool,
-        weightedUnsortRequested: Bool,
-        weightedUnsortEffective: Bool,
-        safeR1Requested: Bool,
-        safeR1GeometryEligible: Bool,
-        safeR1AOTAvailable: Bool,
-        safeR1NAXAvailable: Bool
-    ) {
-        layer18 = Self.resolve(
-            name: "layer18",
-            requested: layer18Requested,
-            modelEligible: layer18Effective)
-        weightedUnsort = Self.resolve(
-            name: "weighted_unsort",
-            requested: weightedUnsortRequested,
-            modelEligible: weightedUnsortEffective)
-        safeR1 = Self.resolve(
-            name: "safe_r1",
-            requested: safeR1Requested,
-            modelEligible: safeR1GeometryEligible,
-            aotAvailable: safeR1AOTAvailable,
-            naxAvailable: safeR1NAXAvailable)
-    }
-
-    var states: [GemmaOptimizationState] {
-        [layer18, weightedUnsort, safeR1]
-    }
-
-    func logLine(modelId: String) -> String {
-        "engine_v2: \(modelId) gemma optimizations "
-            + states.map(\.compactDescription).joined(separator: " ")
-    }
-
-    func telemetryEvents(modelId: String) -> [TelemetryEvent] {
-        states.map { state in
-            var event = TelemetryEvent(
-                source: .provider,
-                severity: .info,
-                kind: .engineHealth,
-                message: "engine_v2: gemma optimization "
-                    + state.compactDescription)
-            event.fields = TelemetryFieldFilter.filter([
-                "component": .string("engine"),
-                "operation": .string("gemma_optimization_\(state.name)"),
-                "backend": .string("engine_v2"),
-                "model": .string(modelId),
-                // Existing allowlisted field, carrying the bounded 2-bit
-                // requested/effective state without a telemetry schema change.
-                "target": .string(
-                    "requested_\(state.requested ? 1 : 0)_effective_"
-                        + "\(state.effective ? 1 : 0)"),
-                "reason": .string(state.reason.rawValue),
-            ])
-            return event
-        }
-    }
-
-    private static func resolve(
-        name: String,
-        requested: Bool,
-        modelEligible: Bool,
-        aotAvailable: Bool? = nil,
-        naxAvailable: Bool = false
-    ) -> GemmaOptimizationState {
-        let reason: GemmaOptimizationReason
-        if !requested {
-            reason = .disabled
-        } else if !modelEligible {
-            reason = .modelIneligible
-        } else if aotAvailable == false {
-            reason = .aotUnavailable
-        } else if naxAvailable {
-            reason = .naxPrecedence
-        } else {
-            reason = .effective
-        }
-        return GemmaOptimizationState(
-            name: name,
-            requested: requested,
-            effective: reason == .effective,
-            reason: reason)
-    }
-}
-
 enum EngineV2SlotFactory {
 
     static func shouldLogPrefillDeadlineProjectionBypass(
@@ -300,26 +187,9 @@ enum EngineV2SlotFactory {
         logWarning: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> ProviderEngineBundle {
         try persistentTestNamespace?.validate(environment: environment)
-        // KV-backend gate, slot-veto layer (`EngineV2KVBackendPolicy`):
-        // parse the operator selection (per-model override wins; typo →
-        // WARN + auto), then force contiguous for slots the paged cache
-        // cannot serve. That is a VLM slot whose paged cache does not
-        // vouch for multimodal span masks — media would 4xx at submit.
-        // The claim comes from the cache itself
-        // (`PagedLayerCache.honorsSpanMaskContextsByConstruction`, the same
-        // constant the engine's own submit-time gate resolves to), never
-        // from a belief held here: the decision has to be made before any
-        // pool exists, so it cannot ask a live instance, but it must still
-        // ASK rather than assume. A veto is policy, so it is silent even
-        // for an explicit paged request. kv_quant is gone from the product
-        // entirely — it is no longer a veto, no longer a parameter, and no
-        // longer warned about. `auto` uses the exact candidate model ID;
-        // that resolution, the fleet kill switch, physical-capacity
-        // planning, and the degrade-or-REFUSE decision for an explicit
-        // paged request all live in
-        // `EngineV2Factory.prepareProductionBackend`. The RESOLVED backend
-        // that comes back also decides whether this slot gets an SSD
-        // prefix cache at all — see the construction gate below.
+        // Per-model selection wins. Apply multimodal vetoes before allocation;
+        // prepareProductionBackend then resolves auto, the fleet kill switch,
+        // and degrade-or-refuse policy. Cache construction uses that final kind.
         let parsedKVBackend = EngineV2KVBackendPolicy.parseSelection(
             global: kvBackendConfig, byModel: kvBackendConfigByModel, modelID: modelId)
         if let unrecognized = parsedKVBackend.unrecognized {
@@ -340,26 +210,16 @@ enum EngineV2SlotFactory {
         let prepared: EngineV2PreparedModel
         if let preparedModel {
             prepared = preparedModel
-        } else if makeEngineOverride != nil {
-            // Scripted engines intentionally do not construct real assistants.
-            prepared = try await prepareProductionModel(
-                modelId: modelId,
-                isVLM: isVLM,
-                modelDirectory: modelDirectory,
-                container: container,
-                specDecPreparation: SpecDecPreparation(
-                    artifact: nil, status: specDecPreparation.status),
-                assistantLoader: assistantLoader,
-                emitTelemetry: emitTelemetry,
-                logInfo: logInfo,
-                logWarning: logWarning)
         } else {
+            // Scripted engines retain the configured status but never load an assistant.
+            let preparation = makeEngineOverride == nil ? specDecPreparation
+                : SpecDecPreparation(artifact: nil, status: specDecPreparation.status)
             prepared = try await prepareProductionModel(
                 modelId: modelId,
                 isVLM: isVLM,
                 modelDirectory: modelDirectory,
                 container: container,
-                specDecPreparation: specDecPreparation,
+                specDecPreparation: preparation,
                 assistantLoader: assistantLoader,
                 emitTelemetry: emitTelemetry,
                 logInfo: logInfo,
@@ -461,148 +321,29 @@ enum EngineV2SlotFactory {
             persistentTestNamespace: persistentTestNamespace,
             identityOverride: assemblyOverrides.completeCheckpointIdentity)
         let ssdHybridCheckpointStore = completePreparation?.cache
-        var ssdPrefixCache: SSDPrefixCache?
-        var cacheCapability: CBv2PrefixReuseCapability?
-        var cacheConstructionStatus = PrefixCacheConstructionStatus.configDisabled
-        let cacheConstructionStatusBox = PrefixCacheConstructionStatusBox()
+        let attentionPreparation: AttentionPrefixCachePreparation
         if let completePreparation {
-            cacheConstructionStatus = completePreparation.status
-        } else if makeEngineOverride != nil {
-            cacheConstructionStatus = PrefixCacheConstructionStatus(
-                state: .disabled, reason: .unsupportedBackend)
-        } else if let preparedBackend,
-            !preparedBackend.modelCapabilities.supportsPrefixReuse
-        {
-            // Recurrent targets require more than attention KV to restore a
-            // request. Do not construct a cache the engine will later strip:
-            // the bridge must never retain or stage an incomplete snapshot.
-            cacheConstructionStatus = PrefixCacheConstructionStatus(
-                state: .disabled, reason: .unsupportedLayout)
-        } else if PrefixCachePolicy.isEnabled(modelId: modelId, environment: environment) {
-            if let preparedBackend,
-                !PrefixCachePolicy.adoptionIsExact(
-                    onResolvedBackend: preparedBackend.kind)
-            {
-                // v0.8.1: no cache object at all for a resolved-contiguous
-                // slot, because on both production checkpoints a contiguous
-                // adoption answers differently from the same prompt's cold
-                // run (see `PrefixCachePolicy.adoptionIsExact` for the
-                // measurement and for why this gates CONSTRUCTION rather
-                // than lookup). Nil here is the single switch that disarms
-                // the whole tier: the engine gets no `CBv2PrefixCache`, the
-                // bridge's pre-submit `stage` never runs, nothing is
-                // donated, and no stats logger starts.
-                //
-                // Keyed on the RESOLVED kind, which is the only correct
-                // input — a slot that asked for paged and degraded under
-                // the kill switch is serving contiguous and diverges with
-                // the contiguous rows.
-                //
-                // POLICY, so no construction-failure telemetry: this is the
-                // `.disabled` shape the `DARKBLOOM_PREFIX_CACHE=0` path
-                // already reports, not a failure to build something that
-                // should have built.
-                cacheCapability = PrefixCachePolicy.adoptionDisabledCapability(
-                    layerKinds: preparedBackend.layerKinds)
-                cacheConstructionStatus = PrefixCacheConstructionStatus(
-                    state: .disabled, reason: .unsupportedBackend)
-                logInfo(
-                    "engine_v2: SSD prefix cache skipped for \(modelId) — "
-                        + "prefix adoption is not bit-exact on the contiguous "
-                        + "KV backend (v0.8.1); paged slots keep the cache")
-            } else if let preparedBackend {
-                let ssdLayerKinds = preparedBackend.layerKinds
-                // Hoisted: `ProductionBackendPreparation` is non-Sendable, so
-                // the @Sendable construction-failure closure below must
-                // capture the resolved kind, not the preparation.
-                let preparedKVBackendKind = preparedBackend.kind
-                let resolvedSelection: EngineV2KVBackendSelection =
-                    preparedBackend.kind == .paged ? .paged : .contiguous
-                let prefixReuseCapability = PrefixCachePolicy.prefixReuseCapability(
-                    layerKinds: ssdLayerKinds,
-                    backendSelection: resolvedSelection)
-                cacheCapability = prefixReuseCapability
-                if let promptContractID {
-                    if let makePrefixCache = assemblyOverrides.makePrefixCache {
-                        ssdPrefixCache = await makePrefixCache(
-                            ssdLayerKinds, prefixReuseCapability)
-                        cacheConstructionStatus = ssdPrefixCache == nil
-                            ? PrefixCacheConstructionStatus(
-                                state: .error, reason: .cacheInitFailed)
-                            : .scanPending
-                    } else {
-                        ssdPrefixCache = await SSDPrefixCacheFactory.make(
-                            modelId: modelId,
-                            promptContractID: promptContractID,
-                            weightHash: weightHash,
-                            layerKinds: ssdLayerKinds,
-                            prefixReuseCapability: prefixReuseCapability,
-                            kvBudget: kvBudget,
-                            environment: environment,
-                            persistentTestNamespace: persistentTestNamespace,
-                            onConstructionFailure: { failure in
-                                cacheConstructionStatusBox.record(
-                                    failure: failure, capability: prefixReuseCapability)
-                                Self.emitPrefixCacheConstructionFailure(
-                                    modelId: modelId,
-                                    kvBackendKind: preparedKVBackendKind,
-                                    capability: prefixReuseCapability,
-                                    failure: failure,
-                                    emitTelemetry: emitTelemetry)
-                            })
-                        cacheConstructionStatus = ssdPrefixCache == nil
-                            ? (cacheConstructionStatusBox.snapshot
-                                ?? PrefixCacheConstructionStatus(
-                                    state: .error, reason: .cacheInitFailed))
-                            : .scanPending
-                    }
-                } else {
-                    cacheConstructionStatus = PrefixCacheConstructionStatus(
-                        state: .error, reason: .cacheInitFailed)
-                    Self.emitPrefixCacheConstructionFailure(
-                        modelId: modelId,
-                        kvBackendKind: preparedKVBackendKind,
-                        capability: prefixReuseCapability,
-                        failure: .promptContractUnavailable,
-                        emitTelemetry: emitTelemetry)
-                    logWarning(
-                        "engine_v2: SSD prefix cache skipped for \(modelId) — "
-                            + "prompt contract could not be computed from local artifacts")
-                }
-            } else {
-                let unavailableCapability = PrefixCachePolicy.prefixReuseCapability(
-                    layerKinds: [],
-                    backendSelection: .contiguous)
-                cacheCapability = unavailableCapability
-                cacheConstructionStatus = PrefixCacheConstructionStatus(
-                    state: .disabled, reason: .unsupportedLayout)
-                Self.emitPrefixCacheConstructionFailure(
-                    modelId: modelId,
-                    // No prepared backend in this branch, so the KV kind was
-                    // never resolved — the same reason `cacheBackend` below
-                    // reports `.unknown`. Omitted, never guessed.
-                    kvBackendKind: nil,
-                    capability: unavailableCapability,
-                    failure: .layoutUnavailable,
-                    emitTelemetry: emitTelemetry)
-                logInfo(
-                    "engine_v2: SSD prefix cache skipped for \(modelId) — no "
-                        + "derivable CBv2 layer kinds (non-adapted family)")
-            }
-        }
-
-        let cacheBackend: PrefixCacheStatusBackend
-        if let preparedBackend {
-            cacheBackend = preparedBackend.kind == .paged ? .paged : .contiguous
+            // A complete-checkpoint target must never fall through to incomplete
+            // attention-only storage, including when construction is disabled.
+            attentionPreparation = .init(status: completePreparation.status)
         } else {
-            cacheBackend = .unknown
+            attentionPreparation = await prepareAttentionPrefixCache(
+                modelId: modelId, preparedBackend: preparedBackend,
+                scriptedEngine: makeEngineOverride != nil,
+                weightHash: weightHash, promptContractID: promptContractID,
+                kvBudget: kvBudget, environment: environment,
+                persistentTestNamespace: persistentTestNamespace,
+                makePrefixCache: assemblyOverrides.makePrefixCache,
+                emitTelemetry: emitTelemetry, logInfo: logInfo, logWarning: logWarning)
         }
+        let ssdPrefixCache = attentionPreparation.cache
         let prefixCacheStatus = PrefixCacheModelStatus(
             modelId: modelId,
-            backend: cacheBackend,
-            replayStrategy: ssdHybridCheckpointStore == nil ? PrefixCacheReplayStrategy(cacheCapability) : .direct,
-            state: cacheConstructionStatus.state,
-            reason: cacheConstructionStatus.reason)
+            backend: preparedBackend.map { PrefixCacheStatusBackend($0.kind) } ?? .unknown,
+            replayStrategy: ssdHybridCheckpointStore == nil
+                ? PrefixCacheReplayStrategy(attentionPreparation.capability) : .direct,
+            state: attentionPreparation.status.state,
+            reason: attentionPreparation.status.reason)
         let enginePrefixCache: (any CBv2PrefixCache)? = ssdPrefixCache
 
         let makeEngine: () throws -> EngineV2Factory.ProductionBuild
@@ -708,31 +449,9 @@ enum EngineV2SlotFactory {
         if startServingTelemetry { await bridge.startSSDPrefixCacheStatsLogger() }
         await bridge.configureMTPStatus(mtpStatus,
             metricsInterval: startServingTelemetry ? .seconds(60) : .zero)
-        if let gemmaModel = servingModel as? Gemma4TextModel {
-            // One load-time snapshot only. Never arm the benchmark counters in
-            // production: the QMM hot path remains free of counter atomics.
-            let r1 = GPU.gemma4ExpertQMMDiagnostics()
-            let layerInterval = gemmaModel.cbv2PrefillChunkEvalInterval
-            let report = GemmaOptimizationReport(
-                layer18Requested: layerInterval > 0,
-                layer18Effective:
-                    layerInterval > 0
-                    && gemmaModel.cbv2LayerKinds.count >= layerInterval,
-                weightedUnsortRequested: gemmaModel.weightedExpertUnsortRequested,
-                weightedUnsortEffective: gemmaModel.weightedExpertUnsortEffective,
-                safeR1Requested: r1.requested,
-                safeR1GeometryEligible: gemmaModel.expertQMMGeometryEligible,
-                safeR1AOTAvailable: r1.aotAvailable,
-                safeR1NAXAvailable: r1.naxAvailable)
-            logInfo(report.logLine(modelId: modelId))
-            for event in report.telemetryEvents(modelId: modelId) {
-                if let emitTelemetry {
-                    emitTelemetry(event)
-                } else {
-                    TelemetryClient.shared.emit(event)
-                }
-            }
-        }
+        reportGemmaOptimizations(
+            model: servingModel, modelId: modelId,
+            emitTelemetry: emitTelemetry, logInfo: logInfo)
         logInfo(
             "engine_v2: \(modelId) prefix cache "
                 + prefixCacheStateDescription(
@@ -786,42 +505,5 @@ enum EngineV2SlotFactory {
             // Only a resolved PAGED backend has pages whose dtype can
             // widen the rate; a contiguous build ignores the knob.
             pagedPoolDType: resolvedKind == .paged ? pagedPoolDType : nil)
-    }
-
-    private static func emitPrefixCacheConstructionFailure(
-        modelId: String,
-        kvBackendKind: EngineV2KVBackendKind?,
-        capability: CBv2PrefixReuseCapability,
-        failure: SSDPrefixCacheConstructionFailure,
-        emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
-    ) {
-        // `prefix_reuse_backend` keeps its own key alongside the shared
-        // `backend` / `kv_backend` pair: it is the finer prefix-reuse ROW
-        // identity, and contiguous_quantized vs contiguous_unquantized is a
-        // distinction "contiguous" cannot express. Folding any of the three
-        // together silently mis-buckets every `group by backend` dashboard.
-        //
-        // `kv_backend` is nil-ABLE here and that is the whole reason
-        // EngineHealthEvent.make takes an optional. ABSENT ⇒ UNKNOWN, the same
-        // contract as BackendSlotCapacity.KVBackend (`*string` + omitempty) on
-        // the heartbeat wire: a slot whose backend was never resolved omits
-        // the key. Do NOT substitute a third vocabulary value such as
-        // "unknown" — omission must stay distinguishable from an observation,
-        // and any value here would be read as one.
-        emitEngineHealth(
-            EngineHealthEvent.make(
-                severity: .warn,
-                message: "engine_v2: SSD prefix cache construction failed",
-                operation: "prefix_cache_construction",
-                model: modelId,
-                kvBackend: kvBackendKind?.rawValue,
-                extra: [
-                    "prefix_reuse_backend": .string(capability.backend.rawValue),
-                    "prefix_reuse_strategy": .string(
-                        capability.strategy?.rawValue ?? "none"),
-                    "prefix_construction_failure": .string(failure.rawValue),
-                    "prefix_cold_fallback": .bool(true),
-                ]),
-            sink: emitTelemetry)
     }
 }

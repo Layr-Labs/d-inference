@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-05
 
 ## Reservation storage and scan benchmarks
 
@@ -838,6 +838,14 @@ source/dependency/binary/metallib/artifact tuple:
 ## App Attest validation
 
 The [App Attest shadow validation commands](../reference/app-attest-shadow.md#validation) cover cryptography, protocol symmetry, counter races, unchanged routing, and coexistence signing. Live macOS 27 acceptance remains separate.
+
+The provider email command and Resend adapter tests run with
+`go test -race ./coordinator/provideremail/... ./coordinator/cmd/provider-emails`.
+With a disposable `DATABASE_URL`, `TestReadSnapshotPostgres` uses an isolated
+schema to verify owner changes, merged identities and inventory exclusions.
+API contract tests use a local HTTP server; no tests send live email. The
+[provider email runbook](../operations/provider-emails.md) separates live
+self-addressed delivery verification from these checks.
 
 ## Prerequisites
 

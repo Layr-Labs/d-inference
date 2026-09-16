@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-15 · commit `53e537e4f`
+> Last updated: 2026-09-16 · commit `00bf87be3`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -20,6 +20,10 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
 
 The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its [shadow packaging and live-validation requirements](../reference/app-attest-shadow.md#packaging-and-live-acceptance) are separate from a successful local compile.
+
+The provider email operator command builds separately with
+`go build -o /tmp/provider-emails ./coordinator/cmd/provider-emails`. It is not
+part of the coordinator server process. See the [provider email runbook](../operations/provider-emails.md).
 
 ## Prerequisites
 

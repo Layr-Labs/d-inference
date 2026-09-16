@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-15 · commit `1fee36798`
+> Last updated: 2026-09-16 · commit `00bf87be3`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -38,6 +38,14 @@ actual Swift tokens and scope-bound hashes with Rust plans. No production
 prompts or model weights are needed (`scripts/verify-prompt-parity.sh`).
 
 The [App Attest shadow validation commands](../reference/app-attest-shadow.md#validation) cover cryptography, protocol symmetry, counter races, unchanged routing, and coexistence signing. Live macOS 27 acceptance remains separate.
+
+The provider email command and Resend adapter tests run with
+`go test -race ./coordinator/provideremail/... ./coordinator/cmd/provider-emails`.
+With a disposable `DATABASE_URL`, `TestReadSnapshotPostgres` uses an isolated
+schema to verify owner changes, merged identities and inventory exclusions.
+API contract tests use a local HTTP server; no tests send live email. The
+[provider email runbook](../operations/provider-emails.md) separates live
+self-addressed delivery verification from these checks.
 
 ## Prerequisites
 

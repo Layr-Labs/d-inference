@@ -1,0 +1,15 @@
+{
+  "id": "provider-update-example",
+  "audience": "provider_update",
+  "minimum_version": "0.9.4",
+  "active_within_days": 30,
+  "os_max_age_days": 7,
+  "message": {
+    "from": "Darkbloom <providers@darkbloom.ai>",
+    "reply_to": "support@example.com",
+    "subject": "Please update your Darkbloom provider",
+    "severity": "recommended",
+    "body": "A supported provider update is available for your Mac. Update each affected machine, then reconnect the provider and check its status in the console.\n\nBefore sending this example, replace this paragraph with the release-specific reason and exact update instructions. Confirm that the target release is published and qualified.",
+    "instructions_url": "https://console.darkbloom.dev/providers"
+  }
+}

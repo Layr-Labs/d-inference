@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-16 · commit `4eaaf1e4c`
+> Last updated: 2026-09-16 · commit `bc8378aec`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -348,15 +348,29 @@ scrape, and a pull cannot be expressed as a push sample.
 | Sinks (DogStatsD, in-process mirror, discard) | `coordinator/metrics/sink.go`; the late-bound server sink in `coordinator/api/metrics_catalog.go` |
 | Generated documentation | `coordinator/metrics/document.go`, `coordinator/metrics/cmd/metricdoc` → the [inventory's declared table](../reference/telemetry-inventory.md#declared-in-the-catalog) |
 
-Three tests hold it in place. `wire_test.go` asserts against real datagram bytes
+Three test files hold it in place. `wire_test.go` asserts against real datagram bytes
 off a UDP socket (`|c|`, `|g|`, `|d|`) rather than against the `Sink` interface,
 because the interface is exactly the layer that can be right while the wire is
-wrong. `catalog_test.go` checks every declared name against
-`testdata/emitted_names.txt` — a snapshot of the names the coordinator emitted
-*before* the catalog existed — so a typo in a declaration cannot quietly retire a
-dashboard's series and start a new one. And it checks that the inventory page
-still contains the generated table, so tags that change in code change in the
-docs.
+wrong. `catalog_test.go` pins both halves of a series' identity to what the
+coordinator emitted *before* the catalog existed, because a rename and a retag are
+equally invisible to the compiler and equally fatal to a dashboard: every declared
+name against `testdata/emitted_names.txt` (and every mirror name against
+`mirror_names.txt`), and every declared tag-key set against
+`testdata/emitted_tag_keys.txt`, which records each distinct *ordered* key list a
+pre-catalog call site emitted. The tag check asks that each observed list be an
+ordered subsequence of the declared keys — that is what lets one declaration cover
+a metric emitted with two different key sets, since an empty value omits its tag —
+and separately that no declared key is one no call site ever emitted. Together
+those two arms force the declared key set to equal the union of the observed ones
+while still catching a reorder. `document_test.go` covers the rendering an
+operator reads, and `catalog_test.go` also checks that the inventory page still
+contains the generated table, so tags that change in code change in the docs.
+
+The goldens are extracted by the scripts beside them, not hand-written; a call
+site whose tags they cannot read is recorded as `?` and skipped rather than
+described wrongly, and a ratchet on how many declarations were actually asserted
+keeps that escape hatch from quietly emptying the test
+(`coordinator/metrics/testdata/README.md`).
 
 The migration is incremental and both mechanisms are live: a subsystem moves to
 declarations in one change, and the `ddIncr`/`ddCount`/`ddGauge`/`ddHistogram`

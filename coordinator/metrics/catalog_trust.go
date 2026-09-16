@@ -35,13 +35,16 @@ type TrustMetrics struct {
 	MDMVerification *Counter
 	// MDAVerification is Apple device-attestation certificate verification, by
 	// outcome. Most call sites name their outcome literally: `sent` from the
-	// scheduler's executor, `invalid` from the queue and the callback, plus
-	// `binding_mismatch` and `late` from the callback, and `reused` from the
-	// cached-proof shortcut. The scheduler's per-attempt forwarder
-	// (observeAttempt) is the exception: it relabels a success as `verified` and
-	// otherwise passes the store's VerificationOutcome through, so every value of
-	// that enum can also appear here — `timeout`, `cancelled`, `transient`,
-	// `error`, `posture_mismatch`. Treat the set as open when writing a query.
+	// scheduler's executor as it dispatches the attempt, `invalid` from the queue
+	// and the callback, plus `binding_mismatch` and `late` from the callback, and
+	// `reused` from the cached-proof shortcut. The scheduler's per-attempt
+	// forwarder (observeAttempt) is the exception: it relabels a success as
+	// `verified` and otherwise forwards the attempt's VerificationOutcome, which
+	// for an MDA job is one of `posture_mismatch`, `invalid`, `timeout`,
+	// `transient` or `cancelled` — so ten labels in all. Note that the forwarded
+	// half is bounded by what executeScheduledVerification returns, not by the
+	// store's enum: `error`, `none` and `success` are values of that type that
+	// never reach this metric.
 	MDAVerification *Counter
 }
 

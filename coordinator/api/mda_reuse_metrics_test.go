@@ -11,17 +11,45 @@ import (
 
 // One reuse event is one Datadog sample and one in-process increment.
 //
-// The cached-proof shortcut is the only mda.verification outcome recorded by the
-// function the scheduler calls (attachCachedMDAProof) rather than by the
-// scheduler itself, so both of the scheduler's reuseMDA call sites are a place
-// where the same event can be counted a second time — which is what this branch
-// fixed, and what an edit to either side would silently reintroduce. There is one
-// test per call site: the executor's completion path and the late-SecurityInfo
-// callback.
+// mda.verification{outcome:reused} is the only outcome recorded by the function
+// the scheduler calls (attachCachedMDAProof) rather than by the scheduler itself,
+// which makes the count a two-sided contract and each side a way to break it.
+// One test per side:
 //
-// Both assert the magnitude, not just the presence. The Datadog client aggregates
-// a counter per (name, tag set) inside a flush window, so a double count arrives
-// as `...:2|c|` on a single packet that a presence check would happily accept.
+//   - the callee records exactly one (TestMDAReuseIsCountedByTheCachedProofPath).
+//     Deleting that increment would take the series to zero, and the two tests
+//     below would not notice, because they stand a stub in for it.
+//   - neither caller records a second one, at either reuseMDA call site: the
+//     executor's completion path and the late-SecurityInfo callback. Both counted
+//     it again before this branch.
+//
+// The caller tests assert the magnitude, not just the presence. The Datadog
+// client aggregates a counter per (name, tag set) inside a flush window, so a
+// double count arrives as `...:2|c|` on a single packet that a presence check
+// would happily accept.
+
+// TestMDAReuseIsCountedByTheCachedProofPath pins the callee side against the real
+// attachCachedMDAProof — a genuine durable chain, re-verified and re-bound to the
+// SE key, with no MicroMDM round-trip.
+func TestMDAReuseIsCountedByTheCachedProofPath(t *testing.T) {
+	srv, provider, restore := reconnectWithStagedChain(t, "SERIAL-REUSE-COUNT", "se-reuse-count")
+	defer restore()
+	// reconnectWithStagedChain builds its Server field-by-field, so neither sink
+	// exists and s.metrics() is the noop catalog. Both adapters resolve their
+	// destination per sample, so installing them now is enough.
+	srv.adminMetrics = NewMetrics()
+	srv.catalog = srv.newCatalog()
+
+	if !srv.attachCachedMDAProof("prov-mda", provider, *provider.GetAttestationResult()) {
+		t.Fatal("expected the cached MDA proof to be reused")
+	}
+
+	mirrorKey := counterKey("mda_verification_total", MetricLabel{"outcome", "reused"})
+	if got := srv.adminMetrics.Snapshot().Counters[mirrorKey]; got != 1 {
+		t.Errorf("mda_verification_total{outcome:reused} = %d, want 1: the cached-proof path owns"+
+			" this count, and both of the scheduler's reuseMDA callers rely on it doing so", got)
+	}
+}
 
 // TestMDAReuseCountsOnceFromSchedulerCompletion drives the executor's granted +
 // terminal path, which calls reuseMDA after completing the SecurityInfo job.

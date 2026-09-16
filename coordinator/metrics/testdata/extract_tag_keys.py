@@ -4,8 +4,13 @@ Usage: python3 extract_tag_keys.py <tree-root>
 
 Run it against a tree from before the catalog migration — see README.md. It
 prints one `name<TAB>key,key,key` line per *distinct* key list observed, so a
-metric emitted with two different tag sets (a conditional dimension) produces two
-lines and the test can require the declaration to cover both.
+metric emitted from two call sites with two different tag sets produces two lines
+and the test can require the declaration to cover both. A conditional dimension
+*within* one call site is a different case: `append` under an `if` is read
+statically, so both branches collapse into one line carrying the union. That is
+safe under the subsequence rule — the shorter branch is a subsequence of the
+union — but it means a line here is the widest set a site can emit, not
+necessarily one it always emits.
 
 Tag keys have to be readable from the source, which for the pre-catalog call
 sites means one of three shapes: spelled at the call
@@ -107,10 +112,60 @@ def keys_in(src, body, before, depth=0):
             resolved = resolved and ok
         else:
             resolved = False
-    if not keys and body.strip(" ,\t\n") not in UNTAGGED:
-        # Something is there and none of it was legible.
-        resolved = False
+    if not keys:
+        # Nothing legible. Whether that is a fact or a failure is decided by the
+        # last argument alone: ddGauge/ddCount/ddHistogram put a value between the
+        # name and the tags, so testing the whole remaining body would read
+        # `ddGauge(name, v, nil)` as illegible rather than as genuinely untagged.
+        # A resolution that already failed still loses: `ddGauge(name, v, tags)`
+        # with an unreadable `tags` must not be called untagged because some other
+        # argument is nil — that is the one false fact this golden must never
+        # carry.
+        args = top_level_args(body)
+        resolved = resolved and (not args or args[-1].strip() in UNTAGGED)
     return ordered_unique(keys), resolved
+
+
+def top_level_args(body):
+    """body split on the commas that separate arguments, ignoring nested ones.
+
+    A backslash consumes the character after it, as in args_after: looking back
+    one character instead would read the closing quote of `"c:\\\\"` as escaped
+    and treat the rest of the argument list as string. Line comments are skipped
+    for the same reason — these calls wrap, so a comment between two arguments is
+    ordinary, and a prose comma in one would split an argument in half. They are
+    dropped from the text as well as from the split, so `nil, // untagged` still
+    compares equal to `nil`.
+    """
+    out, arg, depth, i, in_str = [], [], 0, 0, False
+    while i < len(body):
+        ch = body[i]
+        if in_str:
+            if ch == "\\":
+                arg.append(body[i:i + 2])
+                i += 2
+                continue
+            if ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif body.startswith("//", i):
+            nl = body.find("\n", i)
+            i = len(body) if nl < 0 else nl
+            continue
+        elif ch in "{([":
+            depth += 1
+        elif ch in "})]":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            out.append("".join(arg))
+            arg = []
+            i += 1
+            continue
+        arg.append(ch)
+        i += 1
+    out.append("".join(arg))
+    return [a for a in out if a.strip()]
 
 
 def func_start(src, at):
@@ -122,19 +177,30 @@ def func_start(src, at):
     reached the *previous* function's local `tags` and reported its keys, which is
     how `exact_cache.estimated_ttft_saved_ms` (whose `tags` is a parameter) came
     out carrying `outcome,tier` from the function above it.
+
+    The boundary is the enclosing *top-level* func, not the enclosing lexical
+    scope: a `tags` local to one closure stays visible to a reference in a sibling
+    closure of the same func. No pre-catalog call site has that shape — an AST walk
+    over the tree finds no reference whose nearest preceding assignment belongs to
+    a different object — and reading true scopes means parsing Go, which is more
+    machinery than a golden extractor should carry.
     """
     i = src.rfind("\nfunc ", 0, at)
     return 0 if i < 0 else i + 1
 
 
 def resolve(src, ident, before, depth):
-    at = -1
+    at, begin = -1, -1
     for m in ASSIGN.finditer(src, func_start(src, before), before):
         if m.group(1) == ident:
-            at = m.end()
+            at, begin = m.end(), m.start()
     if at < 0:
         return [], False
-    return keys_in(src, rhs_extent(src, at), at, depth)
+    # References inside the right-hand side resolve against what came before
+    # *this* assignment, not before the reference: `tags = append(tags, ...)`
+    # otherwise matches itself, recurses to the depth cap and reports the site
+    # unreadable, when the keys are right there on the line above.
+    return keys_in(src, rhs_extent(src, at), begin, depth)
 
 
 def literal_remainder(src, at):

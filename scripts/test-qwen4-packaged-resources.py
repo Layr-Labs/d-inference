@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import plistlib
+import platform
 import shutil
 import subprocess
 import tempfile
@@ -42,8 +43,14 @@ do {
         cls.binary = cls.root / "built-probe"
         swift = os.environ.get("PROVIDER_SWIFT")
         compiler = str(Path(swift).with_name("swiftc")) if swift else "swiftc"
+        # The release toolchain exports its SDK for SwiftPM's wrapper. A direct
+        # swiftc invocation must bind it explicitly as well; the host default
+        # SDK can belong to a different Xcode than the selected CLT compiler.
+        sdk = os.environ.get("PROVIDER_SDKROOT") or subprocess.check_output(
+            ["xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True).strip()
         subprocess.run([
-            compiler, "-O",
+            compiler, "-O", "-sdk", sdk,
+            "-target", f"{platform.machine()}-apple-macosx14.0",
             str(COMMON / "ContinuousBatchingV2/Paged/PagedAttentionResources.swift"),
             str(COMMON / "Qwen4ExpMetalResources.swift"),
             str(COMMON / "Qwen4ExpMetalHeaders.swift"), str(main),

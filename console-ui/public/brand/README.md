@@ -9,5 +9,7 @@
 - `qwen-logo.png` is the square Qwen mark published on the
   [official Qwen site](https://qwenlm.github.io/). Qwen and its mark are
   trademarks of Alibaba Cloud.
+- `nvidia-logo.svg` is the NVIDIA eye mark already used by Darkbloom's
+  landing page. NVIDIA and its mark are trademarks of NVIDIA Corporation.
 
 The files are intentionally served without recoloring or geometric edits.

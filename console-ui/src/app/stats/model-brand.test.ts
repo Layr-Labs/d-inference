@@ -31,6 +31,28 @@ describe("modelBrand", () => {
     });
   });
 
+  it("uses the official NVIDIA mark for Nemotron 3.5 Lightning aliases", () => {
+    const nemotronAliases = [
+      "nvidia-nemotron-3.5-lightning",
+      "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit",
+      "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+    ];
+
+    for (const modelId of nemotronAliases) {
+      expect(modelBrand(modelId)).toMatchObject({
+        maker: "nvidia",
+        makerLabel: "NVIDIA",
+        logoSrc: "/brand/nvidia-logo.svg",
+        logoAlt: "NVIDIA logo",
+      });
+    }
+
+    expect(modelBrand("custom-build", "nemotron_h")).toMatchObject({
+      maker: "nvidia",
+      logoSrc: "/brand/nvidia-logo.svg",
+    });
+  });
+
   it("falls back safely for unknown model families", () => {
     expect(modelBrand("custom-model")).toMatchObject({ maker: "unknown", makerLabel: "Model" });
   });
@@ -47,6 +69,8 @@ describe("modelBrand", () => {
     ["qwen3.6-35b-a3b-vl-mtp-mxfp8", "Qwen3.6", "qwen"],
     ["qwen3.5-35b-a3b", "Qwen3.5", "qwen"],
     ["qwen3-vl-30b-a3b-instruct", "Qwen3-VL", "qwen"],
+    ["nvidia-nemotron-3.5-lightning", "nemotron_h", "nvidia"],
+    ["mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit", "nemotron_h", "nvidia"],
   ];
 
   it.each(CATALOG)("brands %s (family %s) as %s", (id, family, maker) => {

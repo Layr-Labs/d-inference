@@ -33,7 +33,7 @@ The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its 
 ## SDK 27 release builds and caches
 
 The release pipeline runs optimized products and SDK qualification on separate
-`xcode-27` runners. Both call `.github/actions/provider-release-build/action.yml`;
+`xcode-27-xlarge` runners. Both call `.github/actions/provider-release-build/action.yml`;
 only the optimized lane transfers an unsigned app and its file inventory to
 signing. All binaries, SwiftPM resource bundles and the source-matched Metal
 library travel together. Signing verifies the same-run artifact's source commit,

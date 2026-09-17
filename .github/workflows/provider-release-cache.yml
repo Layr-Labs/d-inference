@@ -47,7 +47,7 @@ jobs:
   warm:
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
     name: SDK 27 ${{ matrix.lane }}
-    runs-on: xcode-27
+    runs-on: xcode-27-xlarge
     timeout-minutes: 60
     strategy:
       fail-fast: false

@@ -101,7 +101,7 @@ jobs:
   build-provider:
     name: Build optimized SDK 27 provider
     needs: resolve-env
-    runs-on: xcode-27
+    runs-on: xcode-27-xlarge
     timeout-minutes: 60
     permissions:
       contents: read
@@ -147,7 +147,7 @@ jobs:
   qualify-sdk:
     name: Qualify provider with SDK 27
     needs: resolve-env
-    runs-on: xcode-27
+    runs-on: xcode-27-xlarge
     timeout-minutes: 60
     permissions:
       contents: read

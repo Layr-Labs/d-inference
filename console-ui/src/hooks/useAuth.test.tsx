@@ -60,6 +60,21 @@ describe("useAuth console-key provisioning", () => {
     );
   });
 
+  it("migrates a legacy secret without keeping a leftover console key id", async () => {
+    localStorage.setItem(STORAGE_KEYS.legacyApiKey, "sk-db-legacy");
+    localStorage.setItem(STORAGE_KEYS.consoleKeyId, "key_from_previous_session");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderHook(() => useAuth());
+    await flush();
+
+    expect(localStorage.getItem(STORAGE_KEYS.apiKey)).toBe("sk-db-legacy");
+    expect(localStorage.getItem(STORAGE_KEYS.legacyApiKey)).toBeNull();
+    expect(localStorage.getItem(STORAGE_KEYS.consoleKeyId)).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("does not call the endpoint when a key already exists", async () => {
     localStorage.setItem(STORAGE_KEYS.apiKey, "sk-db-existing");
     const fetchMock = vi.fn();
@@ -69,6 +84,44 @@ describe("useAuth console-key provisioning", () => {
     await flush();
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not clobber a key adopted while provision is in flight", async () => {
+    let release!: (value: { ok: boolean; json: () => Promise<{ api_key: string }> }) => void;
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        return Promise.resolve({ ok: true, json: async () => ({ status: "revoked" }) });
+      }
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderHook(() => useAuth());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    // User created a My Machine only key and it became the console key
+    // while POST /api/auth/keys was still outstanding.
+    localStorage.setItem(STORAGE_KEYS.apiKey, "sk-db-mine");
+    localStorage.setItem(STORAGE_KEYS.consoleKeyId, "key_mine");
+
+    release({ ok: true, json: async () => ({ api_key: "sk-db-untitled" }) });
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/auth/keys",
+        expect.objectContaining({ method: "DELETE" }),
+      ),
+    );
+    expect(localStorage.getItem(STORAGE_KEYS.apiKey)).toBe("sk-db-mine");
+    const deleteCall = fetchMock.mock.calls.find((c) => (c[1] as RequestInit | undefined)?.method === "DELETE");
+    expect(deleteCall?.[1]).toEqual(
+      expect.objectContaining({
+        method: "DELETE",
+        body: JSON.stringify({ key: "sk-db-untitled" }),
+      }),
+    );
   });
 
   it("backs off after a rate-limited response instead of storming", async () => {
@@ -91,5 +144,58 @@ describe("useAuth console-key provisioning", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(localStorage.getItem(STORAGE_KEYS.apiKey)).toBeNull();
+  });
+
+  it("drops a leftover console key id when minting an untracked secret", async () => {
+    localStorage.setItem(STORAGE_KEYS.consoleKeyId, "key_from_previous_session");
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ api_key: "sk-db-untitled" }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderHook(() => useAuth());
+
+    await waitFor(() =>
+      expect(localStorage.getItem(STORAGE_KEYS.apiKey)).toBe("sk-db-untitled"),
+    );
+    expect(localStorage.getItem(STORAGE_KEYS.consoleKeyId)).toBeNull();
+  });
+
+  it("clears the leftover console key id on logout", async () => {
+    localStorage.setItem(STORAGE_KEYS.apiKey, "sk-db-mine");
+    localStorage.setItem(STORAGE_KEYS.consoleKeyId, "key_mine");
+    const { result } = renderHook(() => useAuth());
+
+    await result.current.logout();
+
+    expect(localStorage.getItem(STORAGE_KEYS.apiKey)).toBeNull();
+    expect(localStorage.getItem(STORAGE_KEYS.consoleKeyId)).toBeNull();
+    expect(h.auth.logout).toHaveBeenCalled();
+  });
+
+  it("re-provisions without keeping the leftover id after a 401 expiry", async () => {
+    localStorage.setItem(STORAGE_KEYS.apiKey, "sk-db-expired");
+    localStorage.setItem(STORAGE_KEYS.consoleKeyId, "key_expired");
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ api_key: "sk-db-untitled" }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderHook(() => useAuth());
+    await flush();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    window.dispatchEvent(new Event("darkbloom-key-expired"));
+
+    await waitFor(() =>
+      expect(localStorage.getItem(STORAGE_KEYS.apiKey)).toBe("sk-db-untitled"),
+    );
+    expect(localStorage.getItem(STORAGE_KEYS.consoleKeyId)).toBeNull();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/auth/keys",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 });

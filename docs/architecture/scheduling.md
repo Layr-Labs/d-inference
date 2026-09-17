@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-15 · commit `0f7b1e611`
+> Last updated: 2026-09-16 · commit `75c7d5d94`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -186,7 +186,9 @@ For an explicitly advertised native Qwen4 SSD weight-offload declaration,
 `advertisedOffloadedMemoryGBLocked` validates the model family, matching ID,
 positive total/offloaded bytes and finite estimated memory before cold-load
 accounting uses it. The estimate cannot undercut the remaining resident weight
-bytes with the existing 1.2 load-transient padding. Missing, invalid or unrelated-
+bytes plus its valid explicit `native_load_transient_bytes` allowance; missing
+or invalid allowances retain the existing 1.2 load-transient padding. Missing,
+invalid or unrelated-
 family declarations retain catalog-based accounting; a model name alone grants
 no reduction (`coordinator/registry/offloaded_weights.go`).
 `reportedFreeForLoadAdmitsWithOffload` is shared by routing, the model-load

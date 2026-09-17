@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import MLX
+import Metal
 
 @testable import ProviderCore
 
@@ -24,9 +25,20 @@ extension ProviderLoop {
             "system_available_bytes": sample.systemAvailableBytes,
             "runtime_remaining_bytes": sample.runtimeRemainingBytes,
             "unmaterialized_bytes": sample.unmaterializedCommittedBytes,
+            "native_charge_bytes": sample.totalOwnedBytes,
+            "materialized_bytes": sample.materializedBytes,
+            "cap_bytes": sample.capBytes,
+            "activation_reserve_bytes": sample.activationReserveBytes,
+            "memory_policy_epoch": sample.policyEpoch,
             "owner_count": sample.ownerCount, "closing_owner_count": sample.closingOwnerCount,
         ]
-        if result == KERN_SUCCESS { fields["process_footprint_bytes"] = info.phys_footprint }
+        if let device = MTLCreateSystemDefaultDevice() {
+            fields["metal_allocated_bytes"] = device.currentAllocatedSize
+        }
+        if result == KERN_SUCCESS {
+            fields["process_footprint_bytes"] = info.phys_footprint
+            fields["process_footprint_peak_bytes"] = info.ledger_phys_footprint_peak
+        }
         if let data = try? JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]) {
             print(String(decoding: data, as: UTF8.self))
         }

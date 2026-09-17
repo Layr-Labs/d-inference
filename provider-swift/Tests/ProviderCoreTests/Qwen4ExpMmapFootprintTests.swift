@@ -137,13 +137,18 @@ struct Qwen4ExpMmapFootprintTests {
                 snapshotDir: Self.flashNext, modelName: "Qwen/Qwen3.8-Flash-Next"))
         let onDiskGb = Double(info.sizeBytes) / 1_073_741_824
         #expect(info.ssdOffloadedWeightBytes == excluded)
-        print("qwen4 footprint: disk_bytes=\(info.sizeBytes) mapped_ple_bytes=\(excluded) padded_compute_gib=\(info.estimatedMemoryGb)")
+        print("qwen4 footprint: disk_bytes=\(info.sizeBytes) mapped_ple_bytes=\(excluded) load_estimate_gib=\(info.estimatedMemoryGb) native_transient_bytes=\(info.nativeLoadTransientBytes ?? 0)")
         #expect(info.sizeBytes > excluded)
-        let expected = Double(info.sizeBytes - excluded) / 1_073_741_824 * 1.2
+        let native = try #require(Qwen4ExpLoadFootprint.estimate(
+            snapshotDir: Self.flashNext, modelType: "qwen4_exp", sizeBytes: info.sizeBytes,
+            offloadedBytes: excluded, offloadEnabled: true))
+        let expected = Double(native.totalBytes) / 1_073_741_824
+        #expect(info.nativeLoadTransientBytes == native.transientBytes)
         #expect(abs(info.estimatedMemoryGb - expected) < 0.000_001)
         #expect(
-            info.estimatedMemoryGb > 80 && info.estimatedMemoryGb < 86,
+            info.estimatedMemoryGb > 74 && info.estimatedMemoryGb < 78,
             "estimate \(info.estimatedMemoryGb) GB")
+        #expect(info.estimatedMemoryGb < Double(info.sizeBytes - excluded) / 1_073_741_824 * 1.2)
         // Arithmetic eligibility, not a physical 128-GiB qualification. Keep
         // the existing OS reserve, activation/KV headroom and outstanding C-M.
         let physical: UInt64 = 128 << 30

@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-15 · commit `2a843bb2c`
+> Last updated: 2026-09-16 · commit `75c7d5d94`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -95,12 +95,14 @@ flowchart TD
 ### SSD-offloaded model weights
 
 Native Qwen4 can advertise a validated immutable offloaded payload alongside
-its padded native-weight estimate. `advertisedOffloadedMemoryGBLocked`
+its native-weight loading estimate. `advertisedOffloadedMemoryGBLocked`
 (`coordinator/registry/offloaded_weights.go`) requires matching model ID and
 native Qwen4 type, finite positive memory, and an offloaded byte count strictly
 between zero and total artifact bytes. It uses the larger of the reported
-estimate and the remaining weight bytes with the provider's load-transient
-padding. Missing/invalid or other-family declarations keep the existing
+estimate and the remaining weight bytes plus a valid explicit
+`native_load_transient_bytes` allowance (at least 1 GiB, without overflow).
+Missing/invalid allowance declarations retain the 1.2 load-transient padding.
+Missing/invalid offload or other-family declarations keep the existing
 catalog/measured-weight policy.
 
 `coordinator/registry/scheduler.go` carries this estimate into cold snapshots.

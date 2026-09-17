@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-16 · commit `75c7d5d94`
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -45,7 +45,7 @@ byte-level invariant: `Σ resident weights + KV + activations ≤ hardCapBytes`
 | `defaultActivationReserveBytes` | `11 * 1024 * 1024 * 1024 / 2` = 5.5 GiB (since v0.8.0; basis gemma-4 qat-4bit B=8: 5.05 GiB eager / 5.34 compiled + slack) | `UnifiedMemoryCap.swift` |
 | `measuredActivationFloorsBytes` | `["gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2]` = 3.5 GiB; exact catalog-id match only; per-model floors since v0.8.16 | `UnifiedMemoryCap.swift` |
 | `minimumLoadKVBytes` | `1 * 1024 * 1024 * 1024` (1 GiB) | `UnifiedMemoryCap.swift` |
-| `memoryOverheadFactor` | `1.2`; `estimatedMemoryGb = (sizeBytes / 2^30) * 1.2` | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
+| `memoryOverheadFactor` | `1.2` fallback loading allowance; eligible native Qwen4 uses the header-derived copy bound below | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
 | `memory_reserve_gb` | operator config reserve (`memoryReserveGB`); default in [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |
 | `MLXMemoryGuard.defaultReserveGB` / `defaultCacheLimitGB` | `6` / `8` (soft MLX limits; `cacheFraction = 0.75`, `minimumLimitBytes` 2 GiB) | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
 
@@ -124,14 +124,32 @@ fitsAtAllocation(availableNetOfLedger, ownReservation, required) = availableNetO
 canLoad(...) = requiredToLoadGb ≤ freeForLoadGb
 ```
 
-`weightsGb` is the scanner's padded estimate (`sizeBytes / 2^30 ×
-memoryOverheadFactor`), so a load needs `weights × memoryOverheadFactor +
-activationReserve + minimumLoadKVBytes` of free-for-load memory. The worked
+`weightsGb` is the scanner's loading estimate, not bare steady residency.
+Ordinary models retain `sizeBytes / 2^30 × memoryOverheadFactor`. Eligible native
+Qwen4 with SSD PLE offload uses all non-offloaded weight bytes plus
+`Qwen4ExpLoadFootprint.estimate`'s bound: the larger of one complete shard or
+the largest target gate/up copy plus complete vision/assistant copies and
+page-rounding allowance, then 1 GiB for loader metadata/small objects. Complete
+index/header coverage, bounded headers and native non-FP16 layouts are required;
+unknown layouts retain ordinary padding. Every load still adds
+`activationReserve + minimumLoadKVBytes` and passes the same real-OS clamp and
+atomic pending-load permit.
+Native declarations are revalidated after hashing/hooks and before allocation;
+changed geometry or an obsolete smaller allowance fails closed and requires a
+rescan rather than loading against stale accounting. The worked
 example in the source comment
 (`provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift`)
 shows gpt-oss-20b's requirement falling by exactly `defaultActivationReserveBytes
 − measuredActivationFloorsBytes["gpt-oss-20b"]` once its measured floor
 applies. There is no `× 3.0` headroom rule anywhere in the load path.
+
+After an owned Qwen4 retirement, the provider and standalone loader can recheck
+insufficient real headroom every 25 ms for at most two seconds from retirement
+(`NativeMemoryRetirementWindow`). A load that already fits proceeds immediately;
+cancellation interrupts the wait. Zero MLX/Metal allocation counters do not
+prove macOS has reclaimed physical pages. This window grants no memory credit,
+does not extend on each retry and does not bypass the final atomic load permit.
+An unresolved shortage still fails normally.
 
 ```mermaid
 flowchart TD

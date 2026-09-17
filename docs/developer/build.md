@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-15 · commit `dfe556c13`
+> Last updated: 2026-09-16 · commit `75c7d5d94`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -9,6 +9,10 @@ of it; the per-component steps below explain what each target runs.
 
 Docs Lint needs Git history to validate moved source links in frozen records;
 its checkout uses `fetch-depth: 0` (`.github/workflows/ci.yml`, `docs` job).
+
+Changes to native loading estimates and retirement require a rebuilt provider
+test product, not only a new CLI. Bind both products and the SDK/metallib to the
+same checkout before running the [memory and lifecycle gates](test.md).
 See [historical source references](historical-references.md) for local setup.
 
 Native CI test isolation reuses these built test products and their staged
@@ -80,6 +84,20 @@ Before describing the candidate as reproducible:
 
 Current source and validation limits are in the
 [candidate reference](../reference/qwen4-next-support.md#validation-status-and-next-gates).
+
+SwiftPM may mark generated resource bundles hidden on macOS. The SDK's
+`PagedAttentionResources.locate` must still discover their readable Metal
+source inside its existing search roots. Do not clear filesystem flags or
+disable paged eligibility to hide a failed preflight; keep sealed-app lookup
+and conflicting-resource rejection intact. Stage and verify resources for
+both the test host and any separately invoked CLI child.
+
+Private prefill experiments, including packed-read lookahead and ordered NAX, remain opt-in in
+the pinned SDK. Rebuild and rebind both the SDK tests and provider when its
+gitlink changes; an earlier executable cannot qualify the new source merely
+because the core metallib hash is unchanged.
+Record the actual compiled NAX capability and precision posture; a hardware
+product name does not prove which kernels or arithmetic were used.
 
 The connected Go API matrix can reuse an independently hashed production
 provider via `DARKBLOOM_PROVIDER_BINARY`; it does not build or substitute a

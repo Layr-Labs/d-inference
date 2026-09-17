@@ -12,6 +12,7 @@ import {
   updateApiKey,
   deleteApiKey,
   rotateApiKey,
+  revokeLegacyApiKey,
 } from "@/lib/api";
 import { jsonResponse, stubClientFetch } from "./helpers/client-harness";
 
@@ -396,6 +397,18 @@ describe("API key management client", () => {
     expect(opts.method).toBe("POST");
     expect(opts.headers.Authorization).toBe("Bearer t");
     expect(result.key).toBe("sk-db-rot");
+  });
+
+  it("revokeLegacyApiKey DELETEs /api/auth/keys with the raw secret", async () => {
+    client.fetch.mockResolvedValueOnce(jsonResponse({ status: "revoked" }));
+
+    await revokeLegacyApiKey("t", "sk-db-untitled");
+
+    const [url, opts] = client.fetch.mock.calls[0];
+    expect(url).toBe("/api/auth/keys");
+    expect(opts.method).toBe("DELETE");
+    expect(opts.headers.Authorization).toBe("Bearer t");
+    expect(JSON.parse(opts.body)).toEqual({ key: "sk-db-untitled" });
   });
 
   it("URL-encodes the key id in management routes", async () => {

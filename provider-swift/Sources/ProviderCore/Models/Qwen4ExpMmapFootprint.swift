@@ -72,9 +72,11 @@ enum Qwen4ExpMmapFootprint {
         return total
     }
 
-    private struct Header {
+    struct Header {
         let tensors: [String: Any]
         let payloadBytes: UInt64
+        let fileBytes: UInt64
+        var headerBytes: UInt64 { fileBytes - payloadBytes }
     }
 
     private static func byteOffset(_ number: NSNumber) -> UInt64? {
@@ -84,7 +86,7 @@ enum Qwen4ExpMmapFootprint {
         return UInt64(number.stringValue)
     }
 
-    private static func readHeader(_ url: URL) -> Header? {
+    static func readHeader(_ url: URL) -> Header? {
         guard let handle = regularHandle(url) else { return nil }
         defer { try? handle.close() }
         guard let lengthData = try? handle.read(upToCount: 8), lengthData.count == 8 else {
@@ -105,10 +107,10 @@ enum Qwen4ExpMmapFootprint {
         // not disguise compute bytes as offloaded PLE through overlap or an
         // inflated range inconsistent with its shape/dtype.
         guard validTensorRanges(object, payloadBytes: payloadBytes) else { return nil }
-        return Header(tensors: object, payloadBytes: payloadBytes)
+        return Header(tensors: object, payloadBytes: payloadBytes, fileBytes: fileBytes)
     }
 
-    private static func boundedIndex(_ url: URL) -> Data? {
+    static func boundedIndex(_ url: URL) -> Data? {
         guard let handle = regularHandle(url) else { return nil }
         defer { try? handle.close() }
         guard let size = try? handle.seekToEnd(), size > 0, size <= maximumIndexBytes,

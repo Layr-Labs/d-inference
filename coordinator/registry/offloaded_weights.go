@@ -12,7 +12,8 @@ func finitePositiveMemory(value float64) bool {
 // Caller holds p.mu. No offload declaration means no change to the existing
 // catalog/measurement policy, even though older Swift providers already send
 // estimated_memory_gb. The estimate cannot undercut the remaining weight bytes
-// with the native provider's existing 1.2 load-transient padding.
+// plus the native provider's declared, checkpoint-derived loading allowance.
+// Missing/invalid declarations retain the existing 1.2 load-transient padding.
 // Only the native Qwen4 family currently implements this declaration. A model
 // name alone must not opt an unrelated loader into reduced admission accounting.
 func advertisedOffloadedMemoryGBLocked(p *Provider, model string) float64 {
@@ -25,7 +26,15 @@ func advertisedOffloadedMemoryGBLocked(p *Provider, model string) float64 {
 			info.SSDOffloadedWeightBytes >= info.SizeBytes || !finitePositiveMemory(info.EstimatedMemoryGB) {
 			continue
 		}
-		minimum := float64(info.SizeBytes-info.SSDOffloadedWeightBytes) / float64(uint64(1)<<30) * 1.2
+		resident := info.SizeBytes - info.SSDOffloadedWeightBytes
+		minimum := float64(resident) / float64(uint64(1)<<30) * 1.2
+		// The native contract includes at least 1 GiB of metadata/host headroom
+		// above its copy envelope. Overflow, zero and sub-floor declarations
+		// cannot opt a legacy provider into the smaller accounting path.
+		if transient := info.NativeLoadTransientBytes; transient >= 1<<30 &&
+			transient <= math.MaxInt64-resident {
+			minimum = float64(resident+transient) / float64(uint64(1)<<30)
+		}
 		return math.Max(info.EstimatedMemoryGB, minimum)
 	}
 	return 0

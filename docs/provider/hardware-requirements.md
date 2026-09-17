@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-15 · commit `2a843bb2c`
+> Last updated: 2026-09-16 · commit `75c7d5d94`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -88,9 +88,13 @@ with less than `minimumLoadKVBytes` of KV headroom is unloaded again
 The [Flash-Next candidate](../reference/qwen4-next-support.md)
 keeps learned PLE tables SSD-backed even when request prefix caching is off.
 `Qwen4ExpMmapFootprint.excludedBytes` validates safetensor payload ranges before
-subtracting offloaded bytes from the scanner's padded native-weight estimate
+subtracting offloaded bytes from the scanner's native-weight loading estimate
 (`provider-swift/Sources/ProviderCore/Models/Qwen4ExpMmapFootprint.swift`).
-Malformed metadata retains the conservative estimate. The coordinator applies
+Eligible native non-FP16 layouts also receive a header-derived load-copy
+allowance through `Qwen4ExpLoadFootprint.estimate`; all vision and MTP weights
+remain counted. Malformed or unsupported metadata retains the conservative
+padding. See the [loading bound and retirement window](../architecture/hardware-support.md#mechanism).
+The coordinator applies
 the separate [offload declaration gate](../architecture/routing.md#ssd-offloaded-model-weights).
 
 Mapped pages can still occupy reclaimable OS cache. Target KV, QSA index,

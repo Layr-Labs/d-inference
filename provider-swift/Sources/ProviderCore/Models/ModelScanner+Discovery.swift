@@ -15,7 +15,7 @@ extension ModelScanner {
 
     private static let discoveryLogger = Logger(label: "darkbloom.ModelScanner.Discovery")
 
-    /// Memory overhead multiplier for KV cache, activation buffers, etc.
+    /// Fallback load-transient padding; runtime KV/activation reserves are separate.
     private static var memoryOverheadFactor: Double { 1.2 }
 
     /// Scan for locally cached MLX models, filtering to those that fit in available memory.
@@ -132,7 +132,11 @@ extension ModelScanner {
         // process/OS memory and per-request admission independent of this estimate.
         let mmapExcluded = Qwen4ExpMmapFootprint.excludedBytes(snapshotDir: snapshotDir, modelType: modelType)
         let residentBytes = sizeBytes > mmapExcluded ? sizeBytes - mmapExcluded : sizeBytes
-        let estimatedMemoryGb = (Double(residentBytes) / (1024.0 * 1024.0 * 1024.0)) * memoryOverheadFactor
+        let nativeLoad = Qwen4ExpLoadFootprint.estimate(
+            snapshotDir: snapshotDir, modelType: modelType, sizeBytes: sizeBytes,
+            offloadedBytes: mmapExcluded)
+        let estimatedMemoryGb = nativeLoad.map { Double($0.totalBytes) / 1_073_741_824 }
+            ?? (Double(residentBytes) / 1_073_741_824) * memoryOverheadFactor
 
         // Advertise whether this build can serve image/video input so the
         // coordinator only routes media requests to a vision-capable provider.
@@ -163,7 +167,8 @@ extension ModelScanner {
             isVision: isVision ? true : nil,
             templateRenderOK: templateRenderOK,
             toolConstraintTemplateHash: toolConstraintTemplateHash,
-            ssdOffloadedWeightBytes: mmapExcluded > 0 && mmapExcluded < sizeBytes ? mmapExcluded : nil
+            ssdOffloadedWeightBytes: mmapExcluded > 0 && mmapExcluded < sizeBytes ? mmapExcluded : nil,
+            nativeLoadTransientBytes: nativeLoad?.transientBytes
         )
     }
 

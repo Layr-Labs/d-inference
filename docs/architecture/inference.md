@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-15 · commit `2a843bb2c`
+> Last updated: 2026-09-17 · commit `f55c2a95a`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -430,10 +430,19 @@ Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 `quantize_config.json` `bits`; else `nil`
 (`provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift`,
 `detectQuantization`). KV quantization was retired in v0.8.0. Memory sizing
-(the `1.2` padded estimate and the load gate) is in
+(native Qwen4's validated loading envelope, fallback padding and the load gate) is in
 [`hardware-support.md`](hardware-support.md).
 
 ### Native Flash-Next ownership and admission
+
+Native Qwen4 bounds assistant catch-up to2048tokens by default and initializes
+an unprimed head from the trusted carry consistently across cold and restored
+target histories. Already-primed caches are preserved. Eligible singleton sparse requests read only selected paged KV rows,
+binding up to17 segments per pass, with the existing ordered attention math.
+The exact switches, explicit zero rollback and numerical/ownership tests live
+in `libs/mlx-swift-lm/docs/qwen4/qualification.md`. Target weights, native
+architecture and the target's prefill chunk policy remain unchanged; assistant
+proposals and their cost must be qualified separately from committed outputs.
 
 `ModelContainerLoading.factorySelection` selects the native VLM factory for the
 canonical Qwen4 artifact with validated vision geometry and explicit

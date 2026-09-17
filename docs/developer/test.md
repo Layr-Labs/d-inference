@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-15 · commit `0f7b1e611`
+> Last updated: 2026-09-16 · commit `96ca22b55`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -51,6 +51,58 @@ isolated ephemeral complete-cache lifecycle checks. The same page gives the
 separate real-state and quiet-cancellation/reload Swift opt-ins and their limits.
 These local fixtures do not qualify a hosted OpenRouter route or authorize
 model uploads, signing or production changes.
+
+Build release test targets with testable imports enabled where the toolchain
+requires it (`-Xswiftc -enable-testing`); do not exclude those tests to bypass a
+test-build configuration error.
+
+The SDK's `CBv2HiddenResourceTests` covers hidden generated bundles and retained
+byte-conflict refusal. Run it together with the existing `CBv2PagedSafetyTests`
+and actual layer-submission safety tests on the target hardware; file presence
+and build success do not establish resource eligibility in the running process.
+The original128-GiB reload gate must retain its normal required headroom even
+when background applications prevent the first load. Record that refusal,
+resolve the actual machine conditions and keep any separately labelled
+diagnostic distinct from the unchanged gate.
+
+Keep all precision controls in receipts. A diagnostic `MLX_ENABLE_TF32=0`
+run on NAX hardware is not the default posture and cannot erase an earlier
+default-run failure or authorize changing other models' serving behavior.
+Unqualified prefill experiments are excluded from this support update.
+
+`FlashNextReclaimDiagnostics` is a separately selected, opt-in observation of
+Metal allocation, MLX active/cache, complete native charge/coverage and OS
+footprint after the real quiet-prefill lifecycle. It requires
+`DARKBLOOM_FLASH_NEXT_RECLAIM_DIAGNOSTIC=1`, exclusive GPU ownership and the same
+artifact/offload/cache configuration as the ordinary lifecycle fixture. Its
+observation interval is not a fix or a release gate: the original
+`FlashNextQuietCancellationReloadLiveTests` still retries immediately, with no
+callback/delay or lowered memory requirement. Keep both outcomes separately.
+
+`NativeMemoryReclamationTests` defaults to real 1 GiB MLX backing in an isolated wired
+ticket and checks that cache retirement drops Metal allocation ownership while
+preserving an independently live array. Select `DARKBLOOM_NATIVE_RECLAIM_TEST=1`
+and the exclusive GPU opt-in; `DARKBLOOM_NATIVE_RECLAIM_MODE=direct` retains the
+old unscoped control, while `scoped` compares a test-only autorelease pool.
+This native resource test does not replace the full-artifact immediate-reload,
+prefill/decode, memory-tier or numerical gates.
+Explicit `DARKBLOOM_NATIVE_RECLAIM_GIB=8|64` repeats the same resource/liveness
+assertions at larger scale, requiring 24 GiB of OS-available headroom beyond the
+declared probe size. Post-release footprint observations are diagnostics, not a
+delay added to the model's immediate-reload gate.
+
+`Qwen4ExpLoadFootprintTests` checks complete header/index coverage, retention of
+MTP/vision payloads, FP16/unknown-layout fallbacks and the additive native-load
+allowance. `NativeMemoryRetirementWindowTests` checks expiry and cancellation;
+these do not replace the actual model reload gate. When the loading policy
+changes, retain the old requirement/result separately and record the new
+checkpoint-derived allowance, full load peak and actual reload outcome.
+
+For the paired SDK MTP/read-profile candidate, run the SDK's
+`Qwen4SelectedPageCopiesTests` and `Qwen4ExpMTPPrimingTests`, the original real
+Qwen4 state/output-budget oracles, then native OFF/ON and cold/warm-prefix API
+qualification. Read copies compare exact bytes against the original ordered
+attention path; assistant closeness tests are not a target-losslessness gate.
 
 `TestIntegration_FlashNextConnectedMatrices` in
 `e2e/flash_next_connected_matrix_test.go` is an explicit opt-in for the same API

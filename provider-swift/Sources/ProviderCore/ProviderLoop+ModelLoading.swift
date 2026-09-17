@@ -350,16 +350,16 @@ extension ProviderLoop {
             // load a model it could actually serve. `availableMemoryGb` now
             // clamps to real OS-available memory and subtracts in-flight KV
             // reservations, so dropping the multiplier here is still OOM-safe.
-            // Deliberately the PADDED estimate (disk×1.2), not the measured
-            // steady residency: the ADMIT decision covers the LOAD TRANSIENT
-            // (shard staging exceeds the post-load figure), which is exactly
-            // what the padding was sized for. Measured residency informs only
-            // the coordinator's POST-load token-budget estimate.
+            // The scanner includes the load transient, not just steady weights:
+            // eligible native Qwen4 uses its validated incremental-copy envelope;
+            // other layouts retain disk×1.2. Activation/minimum KV are additional.
             let targetWeightsGb = Self.loadGateWeightsGb(
                 estimatedWeightsGb: modelInfo.estimatedMemoryGb,
                 extraWeightBytes: 0)
             do {
-                try await evictUntilAvailable(weightsGb: targetWeightsGb, allowEviction: allowEviction)
+                try await evictUntilAvailable(
+                    weightsGb: targetWeightsGb, allowEviction: allowEviction,
+                    waitForQwen4Retirement: Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType))
             } catch let InferenceError.modelLoadFailed(message) {
                 // Record for diagnostics so `doctor` shows the operator the exact
                 // "Insufficient memory …" reason, then rethrow unchanged.
@@ -430,6 +430,10 @@ extension ProviderLoop {
             guard await kvBudget.recheckPendingLoad(acceptedLoad) else {
                 throw InferenceError.modelLoadFailed(
                     "Insufficient memory for '\(modelId)' at allocation: load headroom changed")
+            }
+            guard Qwen4ExpLoadFootprint.isCurrent(modelInfo, directory: modelPath) else {
+                throw InferenceError.modelLoadFailed(
+                    "Native Qwen4 loading footprint changed after admission; rescan the model")
             }
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
@@ -848,6 +852,8 @@ extension ProviderLoop {
             !modelsUnloading.contains(modelId)
         else { return false }
         let engineV2 = engineBundle.bridge
+        let isQwen4 = Qwen4SupportPolicy.isQwen4ModelType(advertisedModels[modelId]?.modelType)
+            || Qwen4SupportPolicy.isOwnedModelID(modelId)
         modelsUnloading.insert(modelId)
         // Retire the slot's v2 bridge: unregister so heartbeats/cancellation
         // stop fanning out to it, then drain the engine gracefully (running
@@ -864,6 +870,7 @@ extension ProviderLoop {
         // load-admission counts as used — without this the box 503s every load
         // until restart.
         MLX.Memory.clearCache()
+        if isQwen4 { qwen4MemoryRetirement = NativeMemoryRetirementWindow() }
         // The unloaded model can no longer run a step: the serving-set floor
         // (advertised ∪ resident) may relax now — BEFORE the survivors regrow,
         // so their new grants are sized against the reserve they'll live under.
@@ -1025,8 +1032,13 @@ extension ProviderLoop {
     /// can RAISE the serving-set floor meanwhile — comparing against a
     /// requirement captured before the wait would admit a load the post-load
     /// guard then rejects (accepted-then-503). Resolve the headroom live.
-    internal func evictUntilAvailable(weightsGb: Double, allowEviction: Bool = true) async throws {
+    internal func evictUntilAvailable(
+        weightsGb: Double, allowEviction: Bool = true,
+        waitForQwen4Retirement: Bool = false
+    ) async throws {
         while true {
+            try Task.checkCancellation()
+            if isShuttingDown { throw CancellationError() }
             // Sample FIRST, resolve the requirement AFTER that suspension:
             // the exit decision must compare against the floor as it stands
             // when the sample returns, not as it stood before the await.
@@ -1034,6 +1046,12 @@ extension ProviderLoop {
             let requiredGb = ModelLoadAdmission.requiredToLoadGb(
                 weightsGb: weightsGb, headroomGb: loadHeadroomGb)
             if available >= requiredGb { return }
+            // Metal can drop all allocation ownership before macOS returns
+            // the physical pages (observed at full-model scale). Only a recent
+            // owned Qwen4 retirement enables this bounded retry. Never add
+            // guessed reclaimable bytes to the OS sample or relax the gate.
+            if waitForQwen4Retirement, let retirement = qwen4MemoryRetirement,
+                try await retirement.pauseForRecheck() { continue }
             let modelsWithInflight = Set(requestToModel.values)
             let evictable = modelSlots
                 .filter { !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) && !isMTPUpgradeTargetRetained($0.key) }
@@ -1175,6 +1193,8 @@ extension ProviderLoop {
             !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) && !isMTPUpgradeTargetRetained($0.key)
         }
         let hasEvictable = !evictable.isEmpty
+        let mayStillReclaim = Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType)
+            && qwen4MemoryRetirement?.nextDelay() != nil
         // ...but only if evicting could actually reach the requirement: when
         // even every idle model's weights plus the buffer cache fall short,
         // the load path refuses without evicting (see evictUntilAvailable),
@@ -1187,7 +1207,7 @@ extension ProviderLoop {
             if !ModelLoadAdmission.evictionCanReach(
                 availableGb: available, reclaimableGb: reclaimableGb, requiredGb: requiredGb)
             {
-                return true
+                if !mayStillReclaim { return true }
             }
         }
 
@@ -1208,7 +1228,8 @@ extension ProviderLoop {
             if modelSlots[modelId] != nil {  // a concurrent load won the race
                 return false
             }
-            if retried < requiredGb {
+            if retried < requiredGb && !(Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType)
+                && qwen4MemoryRetirement?.nextDelay() != nil) {
                 return true
             }
         }

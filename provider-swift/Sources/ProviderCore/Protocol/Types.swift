@@ -94,6 +94,10 @@ public struct ModelInfo: Codable, Sendable, Equatable {
     /// Validated immutable payload excluded from native weight allocation.
     /// Omitted for ordinary models; mapped OS pages still consume real memory.
     public var ssdOffloadedWeightBytes: UInt64?
+    /// Explicit native load-copy allowance derived from validated checkpoint
+    /// headers. Only eligible Qwen4 SSD-offload loads declare this; nil retains
+    /// the legacy padded estimate. Not an activation/KV reserve or cache credit.
+    public var nativeLoadTransientBytes: UInt64?
     public var weightHash: String?
     /// True when this build can serve image/video (VLM) input. Encoded only when
     /// true (matches the coordinator's `is_vision,omitempty`), so pre-0.6.0
@@ -120,6 +124,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         case sizeBytes = "size_bytes"
         case estimatedMemoryGb = "estimated_memory_gb"
         case ssdOffloadedWeightBytes = "ssd_offloaded_weight_bytes"
+        case nativeLoadTransientBytes = "native_load_transient_bytes"
         case weightHash = "weight_hash"
         case isVision = "is_vision"
         case templateRenderOK = "template_render_ok"
@@ -137,7 +142,8 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         isVision: Bool? = nil,
         templateRenderOK: Bool? = nil,
         toolConstraintTemplateHash: String? = nil,
-        ssdOffloadedWeightBytes: UInt64? = nil
+        ssdOffloadedWeightBytes: UInt64? = nil,
+        nativeLoadTransientBytes: UInt64? = nil
     ) {
         self.id = id
         self.modelType = modelType
@@ -146,6 +152,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         self.sizeBytes = sizeBytes
         self.estimatedMemoryGb = estimatedMemoryGb
         self.ssdOffloadedWeightBytes = ssdOffloadedWeightBytes
+        self.nativeLoadTransientBytes = nativeLoadTransientBytes
         self.weightHash = weightHash
         self.isVision = isVision
         self.templateRenderOK = templateRenderOK
@@ -162,6 +169,9 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         try container.encode(estimatedMemoryGb, forKey: .estimatedMemoryGb)
         if let bytes = ssdOffloadedWeightBytes, bytes > 0 {
             try container.encode(bytes, forKey: .ssdOffloadedWeightBytes)
+        }
+        if let bytes = nativeLoadTransientBytes, bytes > 0 {
+            try container.encode(bytes, forKey: .nativeLoadTransientBytes)
         }
         try container.encodeIfPresent(weightHash, forKey: .weightHash)
         // Encode only when true so text-only builds stay byte-compatible on the wire.

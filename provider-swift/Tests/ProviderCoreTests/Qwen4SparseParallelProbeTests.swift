@@ -5,14 +5,21 @@ import XCTest
 @testable import MLXLLM
 
 final class Qwen4SparseParallelProbeTests: XCTestCase {
-    func testFullKVDefaultRemainsSeparateFromCompactOptIn() {
+    func testFullKVAndCompactDefaultsKeepIndependentExplicitOptOuts() {
         XCTAssertTrue(Qwen4ExpParallelQSA.fullKVEnabled(environment: [:]))
         XCTAssertTrue(Qwen4ExpParallelQSA.fullKVEnabled(environment: [Qwen4ExpParallelQSA.flag: "1"]))
-        XCTAssertFalse(Qwen4ExpParallelQSA.enabled(environment: [:]))
+        XCTAssertTrue(Qwen4ExpParallelQSA.enabled(environment: [:]))
         XCTAssertTrue(Qwen4ExpParallelQSA.fullKVEnabled(environment: [Qwen4ExpParallelQSA.fullKVFlag: "1"]))
-        for value in ["0", "true", "yes", "arbitrary"] {
+        for value in ["0", "false", "off", "", "true", "yes", "arbitrary"] {
             XCTAssertFalse(Qwen4ExpParallelQSA.fullKVEnabled(environment: [Qwen4ExpParallelQSA.fullKVFlag: value]))
+            XCTAssertFalse(Qwen4ExpParallelQSA.enabled(environment: [Qwen4ExpParallelQSA.flag: value]))
         }
+        XCTAssertTrue(Qwen4ExpParallelQSA.fullKVEnabled(environment: [Qwen4ExpParallelQSA.flag: "0"]))
+        XCTAssertTrue(Qwen4ExpParallelQSA.enabled(environment: [Qwen4ExpParallelQSA.fullKVFlag: "0"]))
+        XCTAssertEqual(Qwen4ExpParallelQSA.valuePartitions(
+            requested: nil, fallback: 1, compactKV: true, environment: [:]), 32)
+        XCTAssertEqual(Qwen4ExpParallelQSA.valuePartitions(
+            requested: nil, fallback: 1, compactKV: false, environment: [:]), 32)
     }
 
     func testFullKVTwoPassMatchesOrderedSteelBits() throws {

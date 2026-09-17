@@ -230,6 +230,7 @@ public actor StandaloneServer {
     /// when constructing the Hummingbird application.
     let config: StandaloneServerConfig
     var slots: [String: CachedSlot] = [:]
+    private var qwen4MemoryRetirement: NativeMemoryRetirementWindow?
     private var modelsLoading: Set<String> = []
     private var pendingLoadLeases: [String: PendingModelLoadLease] = [:]
     /// A `setModels` update that arrived while a load was in flight: the
@@ -1194,6 +1195,7 @@ public actor StandaloneServer {
         }
         let evictKey = selected.key
         let bridge = selected.bridge
+        let isQwen4 = Qwen4SupportPolicy.isQwen4ModelType(slots[evictKey]?.modelType)
 
         let active = await bridge.activeRequestCount()
         guard slots[evictKey]?.bridge === bridge,
@@ -1223,6 +1225,7 @@ public actor StandaloneServer {
         } else {
             MLX.Memory.clearCache()
         }
+        if isQwen4 { qwen4MemoryRetirement = NativeMemoryRetirementWindow() }
         // The evicted slot may have been the last carrier of a higher floor
         // (a model `setModels` already removed from the list): the live
         // reserve relaxes with it, and the KV budget actor must follow
@@ -1247,10 +1250,15 @@ public actor StandaloneServer {
         }
     }
 
-    private func ensureMemoryHeadroomForLoad(requiredGb: Double) async throws {
+    private func ensureMemoryHeadroomForLoad(
+        requiredGb: Double, waitForQwen4Retirement: Bool = false
+    ) async throws {
         guard requiredGb.isFinite, requiredGb > 0 else { return }
 
         while await availableMemoryGb() < requiredGb {
+            try Task.checkCancellation()
+            if waitForQwen4Retirement, let retirement = qwen4MemoryRetirement,
+                try await retirement.pauseForRecheck() { continue }
             guard await evictLRUIdleSlot() else {
                 throw StandaloneServerError.capacityUnavailable(
                     String(format: "Insufficient memory headroom to load model (needs %.1f GB available)", requiredGb)
@@ -1530,9 +1538,8 @@ public actor StandaloneServer {
             try Task.checkCancellation()
             try await evictIfNeededForLoad()
             let targetRequiredGb = ModelLoadAdmission.requiredToLoadGb(
-                    // PADDED estimate on purpose: the admit decision covers
-                    // the load transient (shard staging), which measured
-                    // steady residency does not.
+                    // Includes the validated native load-copy envelope or
+                    // legacy padding; never substitute bare steady residency.
                     weightsGb: modelInfo.estimatedMemoryGb,
                     // Cap-aware: activation reserve + min serveable KV, so a model
                     // that loads can actually serve (matches the runtime KV gate).
@@ -1540,7 +1547,9 @@ public actor StandaloneServer {
                         UnifiedMemoryCap.loadHeadroomBytes(
                             activationReserveBytes: resolvedActivationReserveBytes))
                         / (1024.0 * 1024.0 * 1024.0))
-            try await ensureMemoryHeadroomForLoad(requiredGb: targetRequiredGb)
+            try await ensureMemoryHeadroomForLoad(
+                requiredGb: targetRequiredGb,
+                waitForQwen4Retirement: Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType))
             // Inline assistants ride the target checkpoint's own shards,
             // already counted in estimatedMemoryGb -> targetRequiredGb; only
             // separately staged assistants add bytes on top
@@ -1594,6 +1603,10 @@ public actor StandaloneServer {
             guard await kvBudget.recheckPendingLoad(acceptedLoad) else {
                 throw StandaloneServerError.capacityUnavailable(
                     "Insufficient memory for '\(modelId)' at allocation: load headroom changed")
+            }
+            guard Qwen4ExpLoadFootprint.isCurrent(modelInfo, directory: modelPath) else {
+                throw StandaloneServerError.capacityUnavailable(
+                    "Native Qwen4 loading footprint changed after admission; rescan the model")
             }
             try Task.checkCancellation()
             // Ownership box (Codex-review unwind ordering): every later

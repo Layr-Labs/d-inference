@@ -13,7 +13,7 @@ import {
   unsealResponse,
   unsealSseEvent,
 } from "../encryption";
-import { STORAGE_KEYS } from "../storage-keys";
+import { clearConsoleApiKey } from "../console-api-key";
 import { proxyHeaders } from "../http/proxy-client";
 import type {
   ChatMessage,
@@ -167,7 +167,7 @@ export async function streamChat(
 
   if (!res.ok) {
     if (res.status === 401) {
-      localStorage.removeItem(STORAGE_KEYS.apiKey);
+      clearConsoleApiKey();
       window.dispatchEvent(new Event("darkbloom-key-expired"));
       callbacks.onError("Session expired — please try again");
       return;

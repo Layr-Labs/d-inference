@@ -1,6 +1,6 @@
 # Qwen 3.8 Next (Flash-Next) native support reference
 
-> Last updated: 2026-09-15 · commit `2a843bb2c`
+> Last updated: 2026-09-17 · commit `f55c2a95a`
 
 Reference for the native Qwen4 support candidate and its remaining qualification gates. These source defaults do not publish a model, approve a catalog entry, qualify a hardware tier or establish a production release. The composed SDK's `libs/mlx-swift-lm/docs/qwen4/composition.md` records source selection and excluded experiments.
 
@@ -19,6 +19,21 @@ Reference for the native Qwen4 support candidate and its remaining qualification
 | Capacity and errors | Model offload reduces only validated native weight-allocation estimates, not artifact size or actual OS page residency. The context rejection maps to bounded HTTP 400 / `invalid_request` / `client_error`; catalog and fleet-level capacity policy remain independent | [Offloaded-weight admission](../architecture/routing.md#ssd-offloaded-model-weights); `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift` (`sanitizedInferenceFailure`) |
 
 ## State and resource ownership
+
+The SDK's paired default candidate bounds MTP catch-up, initializes cold and
+restored unprimed heads from the same trusted carry and uses grouped selected-page reads where the
+existing sparse geometry permits. Frozen/shared/unsupported layouts retain
+their safe fallback. Default activation, actual dispatch and completed
+model/state qualification are distinct; see
+`libs/mlx-swift-lm/docs/qwen4/qualification.md` for controls and rollback.
+
+The loading allowance for eligible native non-FP16, SSD-offloaded checkpoints
+is derived from complete safetensor headers, with all MTP/vision bytes retained.
+It is not bare steady residency. Provider and coordinator share that explicit
+allowance; unknown layouts retain generic padding. A recent owned Qwen4 unload
+allows a bounded real-headroom recheck, never speculative reclaim credit. See
+the [memory contract](../architecture/hardware-support.md#mechanism); original
+failed requirements and new physical qualification evidence remain distinct.
 
 | Boundary | Required behavior | Source |
 |---|---|---|

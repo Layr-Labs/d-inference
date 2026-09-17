@@ -99,6 +99,34 @@ func TestOffloadedColdAdmissionPreservesKnownFullAndLegacyPolicy(t *testing.T) {
 	}
 }
 
+func TestNativeLoadAllowanceRequiresExplicitValidDeclaration(t *testing.T) {
+	info := protocol.ModelInfo{ID: "qwen", ModelType: "qwen4_exp", SizeBytes: 100 << 30,
+		SSDOffloadedWeightBytes: 30 << 30, EstimatedMemoryGB: 76, NativeLoadTransientBytes: 6 << 30}
+	read := func(value protocol.ModelInfo) float64 {
+		return advertisedOffloadedMemoryGBLocked(&Provider{Models: []protocol.ModelInfo{value}}, "qwen")
+	}
+	if got := read(info); got != 76 {
+		t.Fatalf("native load allowance lost: %v", got)
+	}
+	understated := info
+	understated.EstimatedMemoryGB = 1
+	if got := read(understated); got != 76 {
+		t.Fatalf("understated native estimate accepted: %v", got)
+	}
+	for _, invalid := range []int64{0, -1, 1<<30 - 1, math.MaxInt64} {
+		legacy := info
+		legacy.NativeLoadTransientBytes = invalid
+		if got := read(legacy); got != 84 {
+			t.Fatalf("invalid allowance %d bypassed fallback: %v", invalid, got)
+		}
+	}
+	other := info
+	other.ModelType = "nemotron_h"
+	if read(other) != 0 {
+		t.Fatal("native allowance changed another family")
+	}
+}
+
 func TestModelsUpdateRetainsOffloadDeclaration(t *testing.T) {
 	reg := New(testLogger())
 	reg.SetModelCatalog([]CatalogEntry{{ID: "qwen"}})

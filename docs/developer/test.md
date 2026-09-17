@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-17 · commit `6b313942f`
+> Last updated: 2026-09-17 · commit `53e135e9e`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -36,6 +36,44 @@ preparation seam before tokenization. The shared public corpus covers JSON-objec
 and schema response formats plus multi-system and text/tool/endpoint forms; it compares
 actual Swift tokens and scope-bound hashes with Rust plans. No production
 prompts or model weights are needed (`scripts/verify-prompt-parity.sh`).
+
+## SDK 27 release qualification
+
+The `qualify-sdk` job in `.github/workflows/release-swift.yml` runs production
+prompt parity and `scripts/run-provider-tests.sh` through the same SDK 27 / Swift
+6.4 wrapper used by optimized compilation. The two jobs run concurrently on
+separate runners; the signing job requires both to succeed. Native GPU tests keep
+their existing serial execution and exclusive-process isolation within the
+qualification job. A cache hit never skips a test or authorizes publication.
+
+`Qwen4StandaloneAdmissionTests` uses `ScriptedProviderMemory` through
+`StandaloneServer`'s `kvBudgetForTesting` initializer. Its synthetic models test
+architecture admission, pending-load reservations and cleanup without depending
+on the runner's available RAM. The low-headroom case still executes the real
+admission check, refuses before weight loading, verifies cleanup, then restores
+simulated headroom and retries on the same server. Physical memory and native
+allocator tests retain real measurements; fixture success does not qualify the
+full Flash-Next model.
+
+Run the focused fixture and the CPU-only pipeline checks before a release:
+
+```bash
+cd provider-swift
+swift test --filter Qwen4StandaloneAdmissionTests --no-parallel
+cd ..
+python3 scripts/test-provider-release-cache.py
+python3 scripts/test-provider-release-pipeline.py
+python3 scripts/test-provider-signing-validation.py
+```
+
+The cache tests cover compatibility boundaries and content-checked source
+mtime replay. The pipeline checks pin independent build/test dependencies,
+signing approval, same-run source-bound artifact transfer, and checks that still
+run on cache hits. The existing archive tests reject changed inventory, wrong
+source, unsafe members and mismatched entitlements. CI's Release Integrity job
+runs these CPU-only checks; the SDK 27 release preparation workflow additionally
+runs both native lanes on release-plumbing PRs and round-trips the real unsigned
+archive through the same source/inventory verifier used before signing.
 
 ## Native Flash-Next candidate
 

@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-15 · commit `a4692e70e`
+> Last updated: 2026-09-17 · commit `53e135e9e`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -66,6 +66,48 @@ coordinator `build_commit`; its build `version` can remain 0.9.1 while
 provider auto-update; it is not a limited canary rollout by itself.
 
 For App Attest coexistence, both signing workflows prepare optional profile-authorized grants while retaining APNs. Follow the [shadow packaging contract](../reference/app-attest-shadow.md#packaging-and-qualification); a missing grant is an explicit coverage gap, not permission to remove existing verification.
+
+## Prepare and check release caches
+
+1. After merging release inputs, let **SDK 27 release preparation** complete on
+   `master`, or dispatch `.github/workflows/provider-release-cache.yml` on
+   `master`. It runs optimized compilation and SDK qualification on separate
+   `xcode-27` runners, with no signing secrets or publication steps. This seeds
+   caches in the default branch's scope, which release tags can restore. PR
+   validation caches stay isolated to their PR and do not seed `master`.
+2. Inspect each lane's **SDK 27 build cache** summary. It reports exact hits and
+   the actual Swift restore key; a compatible prefix restore is useful even when
+   the exact-hit output is false. Swift and Rust caches are toolchain-specific;
+   the Metal helper separately validates source and compiler identity. A compiler,
+   SDK, dependency, checkout-path or build-recipe change requires a cold rebuild.
+3. Run the authorized release from the reviewed fixed source. Its optimized and
+   qualification jobs run concurrently. Only their successful completion permits
+   the environment-protected signing job to download and validate the unsigned
+   artifact from that same run. Signing, package smoke, notarization, final hashes,
+   upload and coordinator registration remain mandatory.
+4. Compare observed lane durations and cache restore/save time in Actions. The
+   first cache warm is a cold build, and runner concurrency limits can serialize
+   jobs. Cache warming reduces subsequent compilation; it does not make tests,
+   notarization or runner scheduling instantaneous. No fixed release duration is
+   guaranteed by this workflow change.
+
+GitHub caches are immutable and scoped to their branch or tag; one tag cannot
+restore another tag's cache. The previous release cache therefore could exist
+while a new tag still rebuilt everything. See [GitHub's cache access rules](https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows#restrictions-for-accessing-a-cache).
+The new build cache writes after successful compilation even if later test
+assertions fail, preserving reusable objects for a retry while publication stays
+blocked. A failed compilation does not certify source timestamps for reuse.
+
+Rerunning a failed workflow uses its original source. To include a merged fix,
+start the release from that fixed commit using the existing version/tag policy;
+do not assume **Re-run failed jobs** picks up changes from `master`. This procedure
+never moves an existing tag or retries publication automatically.
+
+Implementation: `.github/actions/provider-release-build/action.yml`,
+`scripts/provider-release-cache.py`, `.github/workflows/release-swift.yml` and
+`scripts/provider-signing-validation.py` (`stage`, `unpack`). See the
+[build cache contract](../developer/build.md#sdk-27-release-builds-and-caches) and
+[SDK qualification checks](../developer/test.md#sdk-27-release-qualification).
 
 ## Environment-free signing validation
 

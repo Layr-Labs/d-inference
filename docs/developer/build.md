@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-17 · commit `6b313942f`
+> Last updated: 2026-09-17 · commit `53e135e9e`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -29,6 +29,43 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
 
 The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its [shadow packaging and live-validation requirements](../reference/app-attest-shadow.md#packaging-and-live-acceptance) are separate from a successful local compile.
+
+## SDK 27 release builds and caches
+
+The release pipeline runs optimized products and SDK qualification on separate
+`xcode-27` runners. Both call `.github/actions/provider-release-build/action.yml`;
+only the optimized lane transfers an unsigned app and its file inventory to
+signing. All binaries, SwiftPM resource bundles and the source-matched Metal
+library travel together. Signing verifies the same-run artifact's source commit,
+version, inventory and entitlements before importing its certificate.
+
+`.github/workflows/provider-release-cache.yml` runs the same two lanes after
+relevant `master` changes. Release tags can restore those default-branch caches;
+they cannot reuse another tag's cache. Release-plumbing PRs run these lanes with
+PR-scoped caches and no signing or publishing secrets. Two concurrent SDK 27
+runners are needed for the parallel wall-time benefit; a smaller runner quota
+queues the jobs without changing their gates.
+
+`scripts/provider-release-cache.py` (`keys`) separates optimized and qualification
+Swift caches by selected compiler/SDK identity, machine architecture, absolute
+checkout/toolchain paths, dependencies and build recipe. A source commit names an
+immutable generation; restore prefixes stay inside that compatibility boundary.
+The qualification lane separately caches Rust 1.88.0 dependencies and target
+objects. It always cleans and recompiles the local `promptsidecar` package while
+retaining third-party objects: independently restored Swift and Rust caches must
+not combine source timestamps with a different generation of local Rust outputs.
+The Metal helper retains its exact source/toolchain contract.
+
+The helper's `snapshot-mtimes` and `restore-mtimes` commands retain timestamps for
+tracked files whose contents are unchanged. Changed/new files retain their fresh
+timestamps and rebuild. Cached metadata never restores source contents or touches
+untracked files, links, Git metadata or paths outside the checkout. These commands
+make compilation incremental; every restored build still runs its build and
+qualification commands. Only unsigned build directories are cached, never signing
+keys or notarized bundles.
+
+See the [release cache procedure](../operations/provider-release.md#prepare-and-check-release-caches)
+for first-run costs and rerun behavior.
 
 ## Prerequisites
 

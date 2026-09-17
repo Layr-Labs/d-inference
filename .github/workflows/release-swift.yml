@@ -62,6 +62,7 @@ on:
 
 permissions:
   contents: write   # gh release create
+  actions: read     # download the unsigned artifact from this run
 
 env:
   DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'
@@ -97,9 +98,71 @@ jobs:
           RELEASE_VALIDATION_ONLY: ${{ inputs.validation_only || false }}
         run: ./scripts/resolve-provider-release.sh
 
+  build-provider:
+    name: Build optimized SDK 27 provider
+    needs: resolve-env
+    runs-on: xcode-27
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.input.outputs.artifact_name }}
+      build_sdk_version: ${{ steps.build.outputs.build-sdk-version }}
+      mlx_sha_short: ${{ steps.build.outputs.mlx-sha-short }}
+    env:
+      VERSION: ${{ needs.resolve-env.outputs.version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - run: ./scripts/check-release-version.sh "$VERSION"
+      - uses: ./.github/actions/provider-release-build
+        id: build
+        with:
+          lane: release
+      - name: Bind unsigned bundle to this source and version
+        id: input
+        env:
+          BIN_DIR: ${{ steps.build.outputs.bin-dir }}
+          METALLIB: ${{ steps.build.outputs.metallib }}
+        run: |
+          set -euo pipefail
+          ./scripts/check-release-version.sh "$VERSION" "$("$BIN_DIR/$CLI_NAME" --version)"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 scripts/provider-signing-validation.py stage \
+            --source "$GITHUB_WORKSPACE" --bin "$BIN_DIR" --metallib "$METALLIB" \
+            --output "$RUNNER_TEMP/unsigned-provider" --version "$VERSION"
+          COPYFILE_DISABLE=1 tar czf "$RUNNER_TEMP/unsigned-provider.tar.gz" -C "$RUNNER_TEMP/unsigned-provider" .
+          echo "artifact_name=unsigned-provider-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - name: Transfer only unsigned products and resources
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.input.outputs.artifact_name }}
+          path: ${{ runner.temp }}/unsigned-provider.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3
+
+  qualify-sdk:
+    name: Qualify provider with SDK 27
+    needs: resolve-env
+    runs-on: xcode-27
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: ./.github/actions/provider-release-build
+        with:
+          lane: qualification
+
   build-and-release:
-    name: Build, sign, notarize, optionally publish
-    needs: [resolve-env]
+    name: Sign, notarize, optionally publish
+    needs: [resolve-env, build-provider, qualify-sdk]
     # App Attest's current code measurements require SDK 27. The ordinary
     # Blacksmith image is macOS 26.3 and cannot install Apple's SDK 27 tools.
     runs-on: xcode-27
@@ -170,31 +233,34 @@ jobs:
       - name: Validate release version integrity
         run: ./scripts/check-release-version.sh "$VERSION"
 
-      - name: Set up Go for prompt parity
-        uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.4.0
-        with:
-          go-version: '1.25.0'
-
-      - name: Select SDK 27 provider toolchain
+      - name: Select SDK 27 signing toolchain
         run: ./scripts/prepare-provider-release-toolchain.sh
 
       - name: Ensure matching Metal compiler is available
         timeout-minutes: 20
         run: |
-          set -euo pipefail
           if ! xcrun --sdk macosx metal --version; then
             xcodebuild -downloadComponent MetalToolchain
           fi
           xcrun --sdk macosx metal --version
 
-      - name: Show toolchain versions
+      - name: Fetch and verify this run's unsigned build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_ARTIFACT: ${{ needs.build-provider.outputs.artifact_name }}
+          EXPECTED_SOURCE: ${{ github.sha }}
+          BUILD_SDK_VERSION: ${{ needs.build-provider.outputs.build_sdk_version }}
         run: |
           set -euo pipefail
-          go version
-          xcodebuild -version
-          swift --version
-          xcrun --sdk macosx --show-sdk-version
-          uname -a
+          test "$BUILD_SDK_VERSION" = "$PROVIDER_SDK_VERSION"
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "$EXPECTED_ARTIFACT" --dir "$RUNNER_TEMP/unsigned-download"
+          python3 scripts/provider-signing-validation.py unpack \
+            --archive "$RUNNER_TEMP/unsigned-download/unsigned-provider.tar.gz" \
+            --output "$RUNNER_TEMP/qualified-unsigned" \
+            --source-sha "$EXPECTED_SOURCE" --version "$VERSION"
+          echo "UNSIGNED_ROOT=$RUNNER_TEMP/qualified-unsigned" >> "$GITHUB_ENV"
+          echo "BUILD_SDK_VERSION=$BUILD_SDK_VERSION" >> "$GITHUB_ENV"
 
       - name: Import Developer ID certificate
         env:
@@ -225,155 +291,6 @@ jobs:
             brew install awscli >/dev/null 2>&1 || true
           fi
           aws --version
-
-      - name: Restore SwiftPM cache
-        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: |
-            ~/Library/Caches/org.swift.swiftpm
-            ~/Library/org.swift.swiftpm
-            provider-swift/.build
-            libs/mlx-swift-lm/.build
-          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
-          restore-keys: |
-            spm-v3-${{ runner.os }}-
-      - name: Discard metallibs restored by the generic SwiftPM cache
-        run: |
-          for root in provider-swift/.build libs/mlx-swift-lm/.build; do
-            [ ! -d "$root" ] || find "$root" -type f -name mlx.metallib -delete
-          done
-
-      - name: Verify production prompt parity
-        run: |
-          rustup toolchain install 1.88.0 --profile minimal
-          rustup override set 1.88.0
-          ./scripts/verify-prompt-parity.sh
-
-      # The root helper is the sole metallib builder. The Actions cache stores
-      # its private cache directory; the helper still runs on every release and
-      # authorizes the exact source/toolchain/deployment/JIT contract itself.
-      - name: Resolve source-matched metallib cache namespace
-        id: mlxkey
-        run: |
-          set -euo pipefail
-          MLX_SRC="libs/mlx-swift/Source/Cmlx/mlx"
-          test -f "$MLX_SRC/mlx/version.h" || { echo "::error::mlx submodule not checked out at $MLX_SRC"; exit 1; }
-          SOURCE_STATUS=$(git -C "$MLX_SRC" status --porcelain=v1 --untracked-files=all)
-          if [ -n "$SOURCE_STATUS" ]; then
-            echo "::error::release metallib source checkout is dirty"
-            printf '%s\n' "$SOURCE_STATUS"
-            exit 1
-          fi
-          MLX_SHA=$(git -C "$MLX_SRC" rev-parse HEAD)
-          HELPER_SHA=$(shasum -a 256 scripts/fetch-metallib.sh | cut -d' ' -f1)
-          SDK=$(xcrun --sdk macosx --show-sdk-version)
-          XCODE=$(xcodebuild -version | tr -cs '[:alnum:].' '-')
-          KEY="metallib-helper-v1-${MLX_SHA}-${HELPER_SHA}-${XCODE}-sdk${SDK}-dt${MLX_METALLIB_DEPLOYMENT_TARGET}-jitoff"
-          echo "key=$KEY" >> "$GITHUB_OUTPUT"
-          echo "mlx_sha_short=${MLX_SHA:0:12}" >> "$GITHUB_OUTPUT"
-          echo "Metallib cache namespace: $KEY"
-
-      - name: Restore source-matched metallib cache
-        id: metallib-cache
-        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: ${{ runner.temp }}/metallib-cache
-          key: ${{ steps.mlxkey.outputs.key }}
-
-      - name: Build source-matched mlx.metallib through root helper
-        id: metallib
-        env:
-          METALLIB_CACHE_DIR: ${{ runner.temp }}/metallib-cache
-        run: |
-          set -euo pipefail
-          command -v cmake >/dev/null 2>&1 || brew install cmake
-          MLX_SRC="libs/mlx-swift/Source/Cmlx/mlx"
-          test -z "$(git -C "$MLX_SRC" status --porcelain=v1 --untracked-files=all)"
-          ./scripts/fetch-metallib.sh "$RUNNER_TEMP/metallib"
-          test -z "$(git -C "$MLX_SRC" status --porcelain=v1 --untracked-files=all)" || {
-            echo "::error::metallib helper modified the release source checkout"
-            exit 1
-          }
-          MLIB="$RUNNER_TEMP/metallib/mlx.metallib"
-          test -s "$MLIB" || { echo "::error::metallib missing at $MLIB"; exit 1; }
-          echo "metallib=$MLIB" >> "$GITHUB_OUTPUT"
-
-      - name: Save source-matched metallib cache
-        if: steps.metallib-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: ${{ runner.temp }}/metallib-cache
-          key: ${{ steps.mlxkey.outputs.key }}
-
-      # ----------------------------------------------------------------------
-      # Build and test with the SDK required for Apple code measurements.
-      # ----------------------------------------------------------------------
-
-      - name: Build provider-swift (release)
-        working-directory: provider-swift
-        run: |
-          set -euo pipefail
-          # Swift's linker must receive the same SDK selected for compilation.
-          # In CLT 27 beta 6, --sdk alone can leave LC_BUILD_VERSION at the
-          # deployment target; SDKROOT preserves the actual linked SDK version.
-          export SDKROOT="$PROVIDER_SDKROOT"
-          echo "BUILD_SDK_VERSION=$PROVIDER_SDK_VERSION" >> "$GITHUB_ENV"
-          swift build -c release --product darkbloom
-          swift build -c release --product darkbloom-enclave
-          swift build -c release --product darkbloom-fan-helper
-          BIN_DIR=$(swift build -c release --show-bin-path)
-          test -x "$BIN_DIR/$CLI_NAME"
-          test -x "$BIN_DIR/$ENCLAVE_NAME"
-          test -x "$BIN_DIR/$FAN_HELPER_NAME"
-          echo "BIN_DIR=$BIN_DIR" >> "$GITHUB_ENV"
-          ls -la "$BIN_DIR" | head -50
-          REPORTED=$("$BIN_DIR/$CLI_NAME" --version)
-          ../scripts/check-release-version.sh "$VERSION" "$REPORTED"
-
-      - name: Test provider with release SDK
-        working-directory: provider-swift
-        timeout-minutes: 35
-        env:
-          RELEASE_TEST_METALLIB: ${{ steps.metallib.outputs.metallib }}
-        run: |
-          set -euo pipefail
-          swift build --build-tests
-          TEST_BIN_DIR=$(swift build --show-bin-path)
-          cp "$RELEASE_TEST_METALLIB" "$TEST_BIN_DIR/mlx.metallib"
-          while IFS= read -r macos; do
-            cp "$RELEASE_TEST_METALLIB" "$macos/mlx.metallib"
-          done < <(find .build -type d -path '*.xctest/Contents/MacOS' -print)
-          python3 ../scripts/run-provider-test-watchdog.py \
-            --output-dir "$RUNNER_TEMP/provider-sdk-tests" \
-            --diagnostic-after-seconds 480 --timeout-seconds 900 \
-            -- ../scripts/run-provider-tests.sh
-
-      - name: Retain SDK test diagnostics
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: provider-sdk-test-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/provider-sdk-tests
-          if-no-files-found: ignore
-          retention-days: 14
-
-      - name: Save SwiftPM cache
-        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        if: always()
-        with:
-          path: |
-            ~/Library/Caches/org.swift.swiftpm
-            ~/Library/org.swift.swiftpm
-            provider-swift/.build
-            libs/mlx-swift-lm/.build
-          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
-
-      # General PR CI also validates the existing developer toolchain. The
-      # release SDK suite above qualifies the compiler used for these binaries.
-
-      # ----------------------------------------------------------------------
-      # Stage the app, every SwiftPM runtime bundle, and flat verifier files.
-      # ----------------------------------------------------------------------
 
       - name: Embed provisioning profile
         env:
@@ -469,20 +386,9 @@ jobs:
           # Wrap the CLI in a minimal .app bundle so the provisioning profile
           # authorizes keychain-access-groups for the persistent SE key.
           APP="$STAGE/Darkbloom.app"
-          mkdir -p \
-            "$APP/Contents/MacOS" \
-            "$APP/Contents/Helpers" \
-            "$APP/Contents/Resources/darkbloom-runtime-capabilities"
-
-          cp "$BIN_DIR/$CLI_NAME" "$APP/Contents/MacOS/"
+          mkdir -p "$STAGE"
+          cp -R "$UNSIGNED_ROOT/Darkbloom.app" "$APP"
           printf '1\n' > "$APP/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1"
-          cp "$BIN_DIR/$ENCLAVE_NAME" "$APP/Contents/MacOS/"
-          cp "${{ steps.metallib.outputs.metallib }}" "$APP/Contents/MacOS/mlx.metallib"
-          install -m 0755 \
-            "$BIN_DIR/$FAN_HELPER_NAME" \
-            "$APP/Contents/Helpers/$FAN_HELPER_NAME"
-          printf '1\n' \
-            > "$APP/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
 
           cat > "$APP/Contents/Info.plist" << PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -519,8 +425,7 @@ jobs:
           # mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal and future
           # dependency resource bundles.
           RESOURCE_MANIFEST=/tmp/darkbloom-swiftpm-resource-bundles.txt
-          scripts/stage-swiftpm-resource-bundles.sh \
-            "$BIN_DIR" "$APP" "$RESOURCE_MANIFEST"
+          cp "$UNSIGNED_ROOT/validation-inputs/resource-bundles.txt" "$RESOURCE_MANIFEST"
 
           # Package-real runtime gate. Before its first GPU access the staged
           # child decodes the retained Gemma config, proves authoritative
@@ -975,7 +880,7 @@ jobs:
           **Binary hash:**   \`${BINARY_HASH}\`
           **CodeDirectory SHA-256:** \`${CODE_DIRECTORY_HASH}\`
           **Bundle hash:**   \`${BUNDLE_HASH}\`
-          **Metallib hash:** \`${METALLIB_HASH}\` (built from mlx \`${{ steps.mlxkey.outputs.mlx_sha_short }}\`)
+          **Metallib hash:** \`${METALLIB_HASH}\` (built from mlx \`${{ needs.build-provider.outputs.mlx_sha_short }}\`)
           **Signed by:**     \`${DEVELOPER_ID}\`
           **Notarized:**     yes
           **Min macOS:**     ${MIN_MACOS}

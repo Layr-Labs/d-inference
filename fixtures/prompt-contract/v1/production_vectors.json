@@ -4,7 +4,7 @@
     {
       "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
       "model_type": null,
-      "prompt_contract_id": "6f41e0eb02db88b2cd01a071edb5cd0e6debebc0962c0530ae50630dca8e4834",
+      "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
       "cache_routing_eligible": true,
       "cases": [
         {
@@ -42,7 +42,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "6f41e0eb02db88b2cd01a071edb5cd0e6debebc0962c0530ae50630dca8e4834",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 54,
             "block_boundaries": []
           },
@@ -133,7 +133,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "6f41e0eb02db88b2cd01a071edb5cd0e6debebc0962c0530ae50630dca8e4834",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 54,
             "block_boundaries": []
           },
@@ -245,7 +245,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "6f41e0eb02db88b2cd01a071edb5cd0e6debebc0962c0530ae50630dca8e4834",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 58,
             "block_boundaries": []
           },
@@ -510,15 +510,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "6f41e0eb02db88b2cd01a071edb5cd0e6debebc0962c0530ae50630dca8e4834",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 377,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "cb044e95a68831520866a4e41f3351082419a2cf1dac1820c22d131eaa32adf0"
+                "chain_hash": "74a55835205002ed77f80fa429245a974f09ad53a9896ecbe4b2011bc60d97a9"
               }
             ],
-            "last_complete_block_hash": "cb044e95a68831520866a4e41f3351082419a2cf1dac1820c22d131eaa32adf0"
+            "last_complete_block_hash": "74a55835205002ed77f80fa429245a974f09ad53a9896ecbe4b2011bc60d97a9"
           },
           "token_ids": [
             248045,
@@ -942,7 +942,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "6f41e0eb02db88b2cd01a071edb5cd0e6debebc0962c0530ae50630dca8e4834",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 54,
             "block_boundaries": []
           },
@@ -1038,7 +1038,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "6f41e0eb02db88b2cd01a071edb5cd0e6debebc0962c0530ae50630dca8e4834",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 256,
             "block_boundaries": []
           },
@@ -1348,7 +1348,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "6f41e0eb02db88b2cd01a071edb5cd0e6debebc0962c0530ae50630dca8e4834",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 59,
             "block_boundaries": []
           },
@@ -1734,19 +1734,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "6f41e0eb02db88b2cd01a071edb5cd0e6debebc0962c0530ae50630dca8e4834",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 600,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "0a916bf4f38ec189df4982aafe7af8d5242f605ab33366572ec27395d2ebe13f"
+                "chain_hash": "23f7103c84779a3f84d4ffb92a0c565d3365b6d94f0c8db56481ad15e4851dba"
               },
               {
                 "token_count": 512,
-                "chain_hash": "f8e54c652664e4dcfa0966ce737fcd50f45ffce2aaeef1c84bf641722945f2eb"
+                "chain_hash": "dd8d25bcc22cedc1bea8650f44f46073fabe3ad8a4173e5f9d19cd062239d4dd"
               }
             ],
-            "last_complete_block_hash": "f8e54c652664e4dcfa0966ce737fcd50f45ffce2aaeef1c84bf641722945f2eb"
+            "last_complete_block_hash": "dd8d25bcc22cedc1bea8650f44f46073fabe3ad8a4173e5f9d19cd062239d4dd"
           },
           "token_ids": [
             248045,
@@ -2489,7 +2489,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "6f41e0eb02db88b2cd01a071edb5cd0e6debebc0962c0530ae50630dca8e4834",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 142,
             "block_boundaries": []
           },
@@ -2691,23 +2691,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "6f41e0eb02db88b2cd01a071edb5cd0e6debebc0962c0530ae50630dca8e4834",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 803,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "59d97d9bfd9509a7112148703c243a7ea342e7b0768743645999e46643b792ee"
+                "chain_hash": "3d1ff2df5fae1751f86a0d7f6144f1f76f0198a00756187de4763dff4bd614a0"
               },
               {
                 "token_count": 512,
-                "chain_hash": "f5f6f339f2531df373fc3167a5addc751d3c6a41f125254e9a64242f91f4208d"
+                "chain_hash": "ddb911f277a6494ee2fafe78b7d549460f25215f14c2cadf3f0405306c339a29"
               },
               {
                 "token_count": 768,
-                "chain_hash": "01e9657c80bb7e4591bf53ffa40181fe0221144b24fa71cf56fa575e914a8492"
+                "chain_hash": "abe1eed9fbd1dc5a66e2325f4682e10a39da4d48f740d8d9915241e03996a105"
               }
             ],
-            "last_complete_block_hash": "01e9657c80bb7e4591bf53ffa40181fe0221144b24fa71cf56fa575e914a8492"
+            "last_complete_block_hash": "abe1eed9fbd1dc5a66e2325f4682e10a39da4d48f740d8d9915241e03996a105"
           },
           "token_ids": [
             248045,
@@ -3612,23 +3612,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "6f41e0eb02db88b2cd01a071edb5cd0e6debebc0962c0530ae50630dca8e4834",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 862,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "a1eebce65137b0c6f68932c4c2c7d1cee5fd4752632fb9464f51ba741ef4f316"
+                "chain_hash": "c14265ea75fdabbfd24add413417f9b77a039b225e81e7a017f98f41025c4cec"
               },
               {
                 "token_count": 512,
-                "chain_hash": "a646ca016fcc2b95afc5577985819446730b3b73d6aa63496d27e9e9db81d790"
+                "chain_hash": "f0aae5abd3cbc533de8d0b187cde3b8aa76e228c5f5d81f8d6d3baec1c402c52"
               },
               {
                 "token_count": 768,
-                "chain_hash": "19c170d226a05374c69d097988c3f3d8e4ccdf660a1fdf0e5e3f6bfe96448a1d"
+                "chain_hash": "709ff8456bb1e7a1fb8bd9b45b6ec6abac197437a4799197017855f0c93a1b59"
               }
             ],
-            "last_complete_block_hash": "19c170d226a05374c69d097988c3f3d8e4ccdf660a1fdf0e5e3f6bfe96448a1d"
+            "last_complete_block_hash": "709ff8456bb1e7a1fb8bd9b45b6ec6abac197437a4799197017855f0c93a1b59"
           },
           "token_ids": [
             248045,
@@ -4530,27 +4530,27 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "6f41e0eb02db88b2cd01a071edb5cd0e6debebc0962c0530ae50630dca8e4834",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 1025,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "d13bd7b5a2a90c57cc07f2f55095feb2571c685db46e3c5616385e12c2d8255a"
+                "chain_hash": "61df6b8dd3c62d32c8a25bdf3034fa15fb93e9164d496e2f48ccf08dfb9ff19d"
               },
               {
                 "token_count": 512,
-                "chain_hash": "9fa5269962b5fcbb95ae3970820cc5491dc955a14549bc660e187624c8a86a36"
+                "chain_hash": "b2c0583689a5b213550ca9084f8afdfbcdeda84bd69de8a6592d3f195caae758"
               },
               {
                 "token_count": 768,
-                "chain_hash": "754f15f9f08bc2dd3689729c692aaa8d64e85ea98d4ae18368fc141b88b747d1"
+                "chain_hash": "fc13c3534dba3e952a8c1c1239423a0e95bb9a0c2af76691f77ea9d8b9017eea"
               },
               {
                 "token_count": 1024,
-                "chain_hash": "0b81191a25df131e3c6b290934cbf3ef099fd0aefc95ef7e006433afb3d84f66"
+                "chain_hash": "354ebd17726bac8d46e11c4911db0c74057a6bccc09e9771575dad8caf77c5b9"
               }
             ],
-            "last_complete_block_hash": "0b81191a25df131e3c6b290934cbf3ef099fd0aefc95ef7e006433afb3d84f66"
+            "last_complete_block_hash": "354ebd17726bac8d46e11c4911db0c74057a6bccc09e9771575dad8caf77c5b9"
           },
           "token_ids": [
             248045,
@@ -5667,15 +5667,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "6f41e0eb02db88b2cd01a071edb5cd0e6debebc0962c0530ae50630dca8e4834",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 484,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "c5877436e2d938b3364744266d03ab0da94195034c58d64a5ce1314dd99150b9"
+                "chain_hash": "5011134104e385d4833d92faa31fe089fd900e4c904c7d997c1a30085cefae1b"
               }
             ],
-            "last_complete_block_hash": "c5877436e2d938b3364744266d03ab0da94195034c58d64a5ce1314dd99150b9"
+            "last_complete_block_hash": "5011134104e385d4833d92faa31fe089fd900e4c904c7d997c1a30085cefae1b"
           },
           "token_ids": [
             248045,
@@ -6205,7 +6205,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "6f41e0eb02db88b2cd01a071edb5cd0e6debebc0962c0530ae50630dca8e4834",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 56,
             "block_boundaries": []
           },
@@ -6308,7 +6308,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "6f41e0eb02db88b2cd01a071edb5cd0e6debebc0962c0530ae50630dca8e4834",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 13,
             "block_boundaries": []
           },
@@ -6381,19 +6381,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "6f41e0eb02db88b2cd01a071edb5cd0e6debebc0962c0530ae50630dca8e4834",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 756,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "d3c879b3f8f2cc6dab8d6e1a65759faed680afa2299a9fb7457e2a7beb89f35c"
+                "chain_hash": "9987e9772e9049ca1a826cba1fea2399187813967108f7889f234a6d9aa8605b"
               },
               {
                 "token_count": 512,
-                "chain_hash": "8cb581c7dc68a6b51412f05df21bd61309ea021da2ddcc8f9d4040f3e8db83fc"
+                "chain_hash": "4aeb0d3b41c2f2f3914c5af5a57ae19856f6e29ff1f2862b941c401bd9243b45"
               }
             ],
-            "last_complete_block_hash": "8cb581c7dc68a6b51412f05df21bd61309ea021da2ddcc8f9d4040f3e8db83fc"
+            "last_complete_block_hash": "4aeb0d3b41c2f2f3914c5af5a57ae19856f6e29ff1f2862b941c401bd9243b45"
           },
           "token_ids": [
             248045,
@@ -7269,15 +7269,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "6f41e0eb02db88b2cd01a071edb5cd0e6debebc0962c0530ae50630dca8e4834",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 465,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "f7de3b9d49edd684c97ab4354930a5ba43c3320c639a57bfbcff8c876feb7d4f"
+                "chain_hash": "c7a67bf2a9b4495503e23b8236047b0142aa78da79d23c7867fc2a401e9f57ba"
               }
             ],
-            "last_complete_block_hash": "f7de3b9d49edd684c97ab4354930a5ba43c3320c639a57bfbcff8c876feb7d4f"
+            "last_complete_block_hash": "c7a67bf2a9b4495503e23b8236047b0142aa78da79d23c7867fc2a401e9f57ba"
           },
           "token_ids": [
             248045,
@@ -7782,7 +7782,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "6f41e0eb02db88b2cd01a071edb5cd0e6debebc0962c0530ae50630dca8e4834",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 69,
             "block_boundaries": []
           },
@@ -7863,7 +7863,7 @@
     {
       "model_id": "gemma-4-26b",
       "model_type": null,
-      "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+      "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
       "cache_routing_eligible": true,
       "cases": [
         {
@@ -7901,7 +7901,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -7953,7 +7953,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -8026,7 +8026,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 23,
             "block_boundaries": []
           },
@@ -8256,7 +8256,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 106,
             "block_boundaries": []
           },
@@ -8411,7 +8411,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -8468,7 +8468,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 256,
             "block_boundaries": []
           },
@@ -8778,7 +8778,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 24,
             "block_boundaries": []
           },
@@ -9125,19 +9125,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 600,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "81dc294229a4b44202cc47c6e617c25c1d4bf39b6f2afaf31a2d46c678cb62fc"
+                "chain_hash": "d61995bc61fbe39b82b8ccca51903e37ba0fca17bba179d467426f7f3dffe678"
               },
               {
                 "token_count": 512,
-                "chain_hash": "57028342ce9629955c9abafea26e80823936f8702a1ccb15c44f43030deadb16"
+                "chain_hash": "e15bc3361916565094c3dadd9fe375343612530e05e22872894433d73d13a8b0"
               }
             ],
-            "last_complete_block_hash": "57028342ce9629955c9abafea26e80823936f8702a1ccb15c44f43030deadb16"
+            "last_complete_block_hash": "e15bc3361916565094c3dadd9fe375343612530e05e22872894433d73d13a8b0"
           },
           "token_ids": [
             2,
@@ -9880,7 +9880,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 74,
             "block_boundaries": []
           },
@@ -10018,23 +10018,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 773,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "48f76acb16ab884a4800a307192347d463d785225f230693985e56cf65e2c1cd"
+                "chain_hash": "50314d9c1757902502e2edcb117bbb75270cf58479704c1939d55c52bb864917"
               },
               {
                 "token_count": 512,
-                "chain_hash": "57d314b2fc6139ee4c5b803ff6c3f370d1968786fda4ae1e8d1598b584c68f18"
+                "chain_hash": "ce0186a0be0952f9179fee311f56f37e40f948f822d01828ef7295d2c2e7407b"
               },
               {
                 "token_count": 768,
-                "chain_hash": "4b18e40076912515c8293a2a647f64aa8d6784b2b2c81539fea095f9e50b10f3"
+                "chain_hash": "1968fa9986a3c93f2954672d9067468b1b748e2525259044312bad0e595c0fae"
               }
             ],
-            "last_complete_block_hash": "4b18e40076912515c8293a2a647f64aa8d6784b2b2c81539fea095f9e50b10f3"
+            "last_complete_block_hash": "1968fa9986a3c93f2954672d9067468b1b748e2525259044312bad0e595c0fae"
           },
           "token_ids": [
             2,
@@ -10913,23 +10913,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 833,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "498494a6994fa3f6f930cb80bfa3cb8926b6f4df21d7454e9118035bd545b007"
+                "chain_hash": "b1173b4a7f780f0e066ae0b9383a0f2c09c840a8d5a69d7d9c2590c3ded0d294"
               },
               {
                 "token_count": 512,
-                "chain_hash": "da4d6c05a0290d6f4f28122187b34318b3bf382c6429a560122da99d5f378d93"
+                "chain_hash": "e30d2b96ebfa37ce321476ba18bb74aa496ca8d32922369f05ab6c44d5955eaf"
               },
               {
                 "token_count": 768,
-                "chain_hash": "114ef087cff11db49cbccf2ca9d4439204fac8e1209026b12ec394ee74d9add4"
+                "chain_hash": "bd4b2e2d2fa9d6ef3c85bd2bf2aba9dc9e3069d18888bc2e062cc20845bdbaec"
               }
             ],
-            "last_complete_block_hash": "114ef087cff11db49cbccf2ca9d4439204fac8e1209026b12ec394ee74d9add4"
+            "last_complete_block_hash": "bd4b2e2d2fa9d6ef3c85bd2bf2aba9dc9e3069d18888bc2e062cc20845bdbaec"
           },
           "token_ids": [
             2,
@@ -11802,27 +11802,27 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 1025,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "ed634c7e4598880f4f7962de1135a6de5a72fc65d35bbafad63174eed9cf1c38"
+                "chain_hash": "782875325bf5e9246b4e71432afc65898a852b8b6e602e169cd13ff018fa4e72"
               },
               {
                 "token_count": 512,
-                "chain_hash": "efcb892a533009cd199032fe64af57c0aa16ad10e07a00842c0ececf25e4b8c1"
+                "chain_hash": "d93b2d93b824eaf0ef1a1180c221e0bb742fc9ecbc96186e544882c7baeec989"
               },
               {
                 "token_count": 768,
-                "chain_hash": "08b7cb30156c0dc8d9f26ec7741e788166f0d46ae583fd95feadadfcbef51ddd"
+                "chain_hash": "62474fe9cdf10de2d650dafc988dffff69987b9154d56418aac09143b7a27184"
               },
               {
                 "token_count": 1024,
-                "chain_hash": "f32d298cabf54db58fa7d4ee142dee1350bf35be89b7428b42c149791c975b0c"
+                "chain_hash": "20456b9594f57e1f6c7d86d9e49bb7c4277b2f2908ca2e44b90ebb3ef2b2111b"
               }
             ],
-            "last_complete_block_hash": "f32d298cabf54db58fa7d4ee142dee1350bf35be89b7428b42c149791c975b0c"
+            "last_complete_block_hash": "20456b9594f57e1f6c7d86d9e49bb7c4277b2f2908ca2e44b90ebb3ef2b2111b"
           },
           "token_ids": [
             2,
@@ -12947,15 +12947,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 354,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "566e6e343362c189e858c45cc8890e62046fe3b751cd9ce64b8de38c8ea09386"
+                "chain_hash": "7ab98403d0bf07a1d1513b14f04ad5cc80e191cb93c4f4bb01140e5a5858ddce"
               }
             ],
-            "last_complete_block_hash": "566e6e343362c189e858c45cc8890e62046fe3b751cd9ce64b8de38c8ea09386"
+            "last_complete_block_hash": "7ab98403d0bf07a1d1513b14f04ad5cc80e191cb93c4f4bb01140e5a5858ddce"
           },
           "token_ids": [
             2,
@@ -13355,7 +13355,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 17,
             "block_boundaries": []
           },
@@ -13419,7 +13419,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 16,
             "block_boundaries": []
           },
@@ -13495,19 +13495,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 721,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "169da3131234c22ba27cceb99f4b68eada252d3986e9a7357e8636e7ce942a07"
+                "chain_hash": "2207a842261a10fe57517d4351807370a2ccf884a9633522cd5c8fae6da1a5a9"
               },
               {
                 "token_count": 512,
-                "chain_hash": "9e2a74c7e7def9e64e99c64a1110aadc30c09e3c60ae05fca65e75b344de2d7f"
+                "chain_hash": "a17add104815bc08311d94473e668422262f38fd4bfc53115ca68a4895d0f9b6"
               }
             ],
-            "last_complete_block_hash": "9e2a74c7e7def9e64e99c64a1110aadc30c09e3c60ae05fca65e75b344de2d7f"
+            "last_complete_block_hash": "a17add104815bc08311d94473e668422262f38fd4bfc53115ca68a4895d0f9b6"
           },
           "token_ids": [
             2,
@@ -14345,15 +14345,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 273,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "8d22ac771701b9a433a6425cae84d995bdc61145cf2e9bc8d545445648d820bb"
+                "chain_hash": "bbc49d0abbbed74bd1c05c0282c452596bf7a5e64fea16cd2fa56bea5906ad2a"
               }
             ],
-            "last_complete_block_hash": "8d22ac771701b9a433a6425cae84d995bdc61145cf2e9bc8d545445648d820bb"
+            "last_complete_block_hash": "bbc49d0abbbed74bd1c05c0282c452596bf7a5e64fea16cd2fa56bea5906ad2a"
           },
           "token_ids": [
             2,
@@ -14666,7 +14666,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 24,
             "block_boundaries": []
           },
@@ -14702,7 +14702,7 @@
     {
       "model_id": "gemma-4-26b-8bit",
       "model_type": null,
-      "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+      "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
       "cache_routing_eligible": true,
       "cases": [
         {
@@ -14740,7 +14740,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -14792,7 +14792,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -14865,7 +14865,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 23,
             "block_boundaries": []
           },
@@ -15095,7 +15095,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 106,
             "block_boundaries": []
           },
@@ -15250,7 +15250,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -15307,7 +15307,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 256,
             "block_boundaries": []
           },
@@ -15617,7 +15617,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 24,
             "block_boundaries": []
           },
@@ -15964,19 +15964,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 600,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "81dc294229a4b44202cc47c6e617c25c1d4bf39b6f2afaf31a2d46c678cb62fc"
+                "chain_hash": "d61995bc61fbe39b82b8ccca51903e37ba0fca17bba179d467426f7f3dffe678"
               },
               {
                 "token_count": 512,
-                "chain_hash": "57028342ce9629955c9abafea26e80823936f8702a1ccb15c44f43030deadb16"
+                "chain_hash": "e15bc3361916565094c3dadd9fe375343612530e05e22872894433d73d13a8b0"
               }
             ],
-            "last_complete_block_hash": "57028342ce9629955c9abafea26e80823936f8702a1ccb15c44f43030deadb16"
+            "last_complete_block_hash": "e15bc3361916565094c3dadd9fe375343612530e05e22872894433d73d13a8b0"
           },
           "token_ids": [
             2,
@@ -16719,7 +16719,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 74,
             "block_boundaries": []
           },
@@ -16857,23 +16857,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 773,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "48f76acb16ab884a4800a307192347d463d785225f230693985e56cf65e2c1cd"
+                "chain_hash": "50314d9c1757902502e2edcb117bbb75270cf58479704c1939d55c52bb864917"
               },
               {
                 "token_count": 512,
-                "chain_hash": "57d314b2fc6139ee4c5b803ff6c3f370d1968786fda4ae1e8d1598b584c68f18"
+                "chain_hash": "ce0186a0be0952f9179fee311f56f37e40f948f822d01828ef7295d2c2e7407b"
               },
               {
                 "token_count": 768,
-                "chain_hash": "4b18e40076912515c8293a2a647f64aa8d6784b2b2c81539fea095f9e50b10f3"
+                "chain_hash": "1968fa9986a3c93f2954672d9067468b1b748e2525259044312bad0e595c0fae"
               }
             ],
-            "last_complete_block_hash": "4b18e40076912515c8293a2a647f64aa8d6784b2b2c81539fea095f9e50b10f3"
+            "last_complete_block_hash": "1968fa9986a3c93f2954672d9067468b1b748e2525259044312bad0e595c0fae"
           },
           "token_ids": [
             2,
@@ -17752,23 +17752,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 833,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "498494a6994fa3f6f930cb80bfa3cb8926b6f4df21d7454e9118035bd545b007"
+                "chain_hash": "b1173b4a7f780f0e066ae0b9383a0f2c09c840a8d5a69d7d9c2590c3ded0d294"
               },
               {
                 "token_count": 512,
-                "chain_hash": "da4d6c05a0290d6f4f28122187b34318b3bf382c6429a560122da99d5f378d93"
+                "chain_hash": "e30d2b96ebfa37ce321476ba18bb74aa496ca8d32922369f05ab6c44d5955eaf"
               },
               {
                 "token_count": 768,
-                "chain_hash": "114ef087cff11db49cbccf2ca9d4439204fac8e1209026b12ec394ee74d9add4"
+                "chain_hash": "bd4b2e2d2fa9d6ef3c85bd2bf2aba9dc9e3069d18888bc2e062cc20845bdbaec"
               }
             ],
-            "last_complete_block_hash": "114ef087cff11db49cbccf2ca9d4439204fac8e1209026b12ec394ee74d9add4"
+            "last_complete_block_hash": "bd4b2e2d2fa9d6ef3c85bd2bf2aba9dc9e3069d18888bc2e062cc20845bdbaec"
           },
           "token_ids": [
             2,
@@ -18641,27 +18641,27 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 1025,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "ed634c7e4598880f4f7962de1135a6de5a72fc65d35bbafad63174eed9cf1c38"
+                "chain_hash": "782875325bf5e9246b4e71432afc65898a852b8b6e602e169cd13ff018fa4e72"
               },
               {
                 "token_count": 512,
-                "chain_hash": "efcb892a533009cd199032fe64af57c0aa16ad10e07a00842c0ececf25e4b8c1"
+                "chain_hash": "d93b2d93b824eaf0ef1a1180c221e0bb742fc9ecbc96186e544882c7baeec989"
               },
               {
                 "token_count": 768,
-                "chain_hash": "08b7cb30156c0dc8d9f26ec7741e788166f0d46ae583fd95feadadfcbef51ddd"
+                "chain_hash": "62474fe9cdf10de2d650dafc988dffff69987b9154d56418aac09143b7a27184"
               },
               {
                 "token_count": 1024,
-                "chain_hash": "f32d298cabf54db58fa7d4ee142dee1350bf35be89b7428b42c149791c975b0c"
+                "chain_hash": "20456b9594f57e1f6c7d86d9e49bb7c4277b2f2908ca2e44b90ebb3ef2b2111b"
               }
             ],
-            "last_complete_block_hash": "f32d298cabf54db58fa7d4ee142dee1350bf35be89b7428b42c149791c975b0c"
+            "last_complete_block_hash": "20456b9594f57e1f6c7d86d9e49bb7c4277b2f2908ca2e44b90ebb3ef2b2111b"
           },
           "token_ids": [
             2,
@@ -19786,15 +19786,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 354,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "566e6e343362c189e858c45cc8890e62046fe3b751cd9ce64b8de38c8ea09386"
+                "chain_hash": "7ab98403d0bf07a1d1513b14f04ad5cc80e191cb93c4f4bb01140e5a5858ddce"
               }
             ],
-            "last_complete_block_hash": "566e6e343362c189e858c45cc8890e62046fe3b751cd9ce64b8de38c8ea09386"
+            "last_complete_block_hash": "7ab98403d0bf07a1d1513b14f04ad5cc80e191cb93c4f4bb01140e5a5858ddce"
           },
           "token_ids": [
             2,
@@ -20194,7 +20194,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 17,
             "block_boundaries": []
           },
@@ -20258,7 +20258,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 16,
             "block_boundaries": []
           },
@@ -20334,19 +20334,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 721,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "169da3131234c22ba27cceb99f4b68eada252d3986e9a7357e8636e7ce942a07"
+                "chain_hash": "2207a842261a10fe57517d4351807370a2ccf884a9633522cd5c8fae6da1a5a9"
               },
               {
                 "token_count": 512,
-                "chain_hash": "9e2a74c7e7def9e64e99c64a1110aadc30c09e3c60ae05fca65e75b344de2d7f"
+                "chain_hash": "a17add104815bc08311d94473e668422262f38fd4bfc53115ca68a4895d0f9b6"
               }
             ],
-            "last_complete_block_hash": "9e2a74c7e7def9e64e99c64a1110aadc30c09e3c60ae05fca65e75b344de2d7f"
+            "last_complete_block_hash": "a17add104815bc08311d94473e668422262f38fd4bfc53115ca68a4895d0f9b6"
           },
           "token_ids": [
             2,
@@ -21184,15 +21184,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 273,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "8d22ac771701b9a433a6425cae84d995bdc61145cf2e9bc8d545445648d820bb"
+                "chain_hash": "bbc49d0abbbed74bd1c05c0282c452596bf7a5e64fea16cd2fa56bea5906ad2a"
               }
             ],
-            "last_complete_block_hash": "8d22ac771701b9a433a6425cae84d995bdc61145cf2e9bc8d545445648d820bb"
+            "last_complete_block_hash": "bbc49d0abbbed74bd1c05c0282c452596bf7a5e64fea16cd2fa56bea5906ad2a"
           },
           "token_ids": [
             2,
@@ -21505,7 +21505,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "65b0f5c7421fc4a6ae3d514738830a0b45212a46773c407bffe7cda06b074425",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 24,
             "block_boundaries": []
           },
@@ -21541,7 +21541,7 @@
     {
       "model_id": "gemma-4-26b-qat-4bit",
       "model_type": null,
-      "prompt_contract_id": "e9be2da0ae23f89f458e00d3bc79babfa0946afff97dc2ba7da388ae75d90052",
+      "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
       "cache_routing_eligible": true,
       "cases": [
         {
@@ -21579,7 +21579,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e9be2da0ae23f89f458e00d3bc79babfa0946afff97dc2ba7da388ae75d90052",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -21631,7 +21631,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e9be2da0ae23f89f458e00d3bc79babfa0946afff97dc2ba7da388ae75d90052",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -21704,7 +21704,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e9be2da0ae23f89f458e00d3bc79babfa0946afff97dc2ba7da388ae75d90052",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 23,
             "block_boundaries": []
           },
@@ -21934,7 +21934,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e9be2da0ae23f89f458e00d3bc79babfa0946afff97dc2ba7da388ae75d90052",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 106,
             "block_boundaries": []
           },
@@ -22089,7 +22089,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e9be2da0ae23f89f458e00d3bc79babfa0946afff97dc2ba7da388ae75d90052",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -22146,7 +22146,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e9be2da0ae23f89f458e00d3bc79babfa0946afff97dc2ba7da388ae75d90052",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 256,
             "block_boundaries": []
           },
@@ -22456,7 +22456,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e9be2da0ae23f89f458e00d3bc79babfa0946afff97dc2ba7da388ae75d90052",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 24,
             "block_boundaries": []
           },
@@ -22803,19 +22803,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e9be2da0ae23f89f458e00d3bc79babfa0946afff97dc2ba7da388ae75d90052",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 600,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "d18b4776b52154eb20e5be92f2ec5d4d0aeef0398d4aa274605635d028898419"
+                "chain_hash": "be11f6ffe2e168f6faf0fa5ff8e932d3d3f38b5deb24c6189210333d714f2d5b"
               },
               {
                 "token_count": 512,
-                "chain_hash": "67649e509936a12a78e50be8fc504e647eea5b16117d7ac24d984131d2f3fa9f"
+                "chain_hash": "2f7451354e3257ca583e06b53f99e1754504eecc504271cf7b094cd57255a0cc"
               }
             ],
-            "last_complete_block_hash": "67649e509936a12a78e50be8fc504e647eea5b16117d7ac24d984131d2f3fa9f"
+            "last_complete_block_hash": "2f7451354e3257ca583e06b53f99e1754504eecc504271cf7b094cd57255a0cc"
           },
           "token_ids": [
             2,
@@ -23558,7 +23558,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e9be2da0ae23f89f458e00d3bc79babfa0946afff97dc2ba7da388ae75d90052",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 74,
             "block_boundaries": []
           },
@@ -23696,23 +23696,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e9be2da0ae23f89f458e00d3bc79babfa0946afff97dc2ba7da388ae75d90052",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 773,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "7444230755b19ed5ceb01bf254abd2bfec0257456f0f0f21f5094f1045e26639"
+                "chain_hash": "c5a9bf5f0e01161fe8c67e3b91aea62c955cd052fa5e479be3cab4a00e8b65cb"
               },
               {
                 "token_count": 512,
-                "chain_hash": "47adb392e5f94333c2d1782a54ec040e5506ffaf614faccec06dda430c30c66b"
+                "chain_hash": "4da2aab7f4e857acf11123c6a25a25c1ac5e996da8b54a77581621fc87a92f06"
               },
               {
                 "token_count": 768,
-                "chain_hash": "829995296a5686ffb7608cdc8c7380eef2c6954a0feade53570a54ad065cdf99"
+                "chain_hash": "276e1460645ead8a6191750b51f31afa7304d3ee5a51d6134adeb157aaa741a8"
               }
             ],
-            "last_complete_block_hash": "829995296a5686ffb7608cdc8c7380eef2c6954a0feade53570a54ad065cdf99"
+            "last_complete_block_hash": "276e1460645ead8a6191750b51f31afa7304d3ee5a51d6134adeb157aaa741a8"
           },
           "token_ids": [
             2,
@@ -24591,23 +24591,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e9be2da0ae23f89f458e00d3bc79babfa0946afff97dc2ba7da388ae75d90052",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 833,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "2cd42dffb14cbdd65fe3959ef817b83565028712d29f89c14c7a68c6bb731dda"
+                "chain_hash": "58389c1b8812e337aafe517fa08e171ead83402dd764c3af8bc01375fb398553"
               },
               {
                 "token_count": 512,
-                "chain_hash": "d175e76c30a01db5e45b968b50c88b890a78584eea1991d0f6e288d26d112be0"
+                "chain_hash": "e30dd378c6c8e032aafab17de3cb0fc912a30ef080b603dde91813d218884f90"
               },
               {
                 "token_count": 768,
-                "chain_hash": "7110beaf01f370e02301efa0599ad18014946c839a766137ca872ca9a409b21d"
+                "chain_hash": "cdc99332d40e24612ea46c83d7b0961d87f675ee3ae75b87b50ebe0b8907d98b"
               }
             ],
-            "last_complete_block_hash": "7110beaf01f370e02301efa0599ad18014946c839a766137ca872ca9a409b21d"
+            "last_complete_block_hash": "cdc99332d40e24612ea46c83d7b0961d87f675ee3ae75b87b50ebe0b8907d98b"
           },
           "token_ids": [
             2,
@@ -25480,27 +25480,27 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e9be2da0ae23f89f458e00d3bc79babfa0946afff97dc2ba7da388ae75d90052",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 1025,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "dece1ea7e6a167f9f678c0eabfd7df873e8e5b46e79de9f9ec9a9b56f5626fd1"
+                "chain_hash": "37edc07386d03b7ca8704f31319f13a4450c5b7856718d9fb1130b7f9489eec6"
               },
               {
                 "token_count": 512,
-                "chain_hash": "442506adc5b7bb06e3eafc2b182d23d8a859025a47a52f91a36ff7d3edd3ace2"
+                "chain_hash": "27def91574e4d0f371eb5cde713ca92e501dcdd5c6180b435374c8aea3a87271"
               },
               {
                 "token_count": 768,
-                "chain_hash": "2e1dbffcb5167cc58323fd54763a2dae3482e2d88d7c085745a6f36e8564cadf"
+                "chain_hash": "66ce6cdbaccdcc950006a9734e9818771acaf4aa952d50f24f39734d21e8bff3"
               },
               {
                 "token_count": 1024,
-                "chain_hash": "68c7c4ce52bb108cd92aaab0cfbe44ee1fbf9ba2551fac52184bd84156240fc4"
+                "chain_hash": "5780131835e744ec0219f5f5e08f25788ef93ba8a7216aed448d66731f1dad7a"
               }
             ],
-            "last_complete_block_hash": "68c7c4ce52bb108cd92aaab0cfbe44ee1fbf9ba2551fac52184bd84156240fc4"
+            "last_complete_block_hash": "5780131835e744ec0219f5f5e08f25788ef93ba8a7216aed448d66731f1dad7a"
           },
           "token_ids": [
             2,
@@ -26625,15 +26625,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e9be2da0ae23f89f458e00d3bc79babfa0946afff97dc2ba7da388ae75d90052",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 354,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "44df82b6d9943931db9376692a6343e351abf8cb81642d915f140004dac40dd4"
+                "chain_hash": "8a2459a86120538bfb85f3c1b904c330ffdc6a9d9dc3f4ca0b23f8e7c0e8775a"
               }
             ],
-            "last_complete_block_hash": "44df82b6d9943931db9376692a6343e351abf8cb81642d915f140004dac40dd4"
+            "last_complete_block_hash": "8a2459a86120538bfb85f3c1b904c330ffdc6a9d9dc3f4ca0b23f8e7c0e8775a"
           },
           "token_ids": [
             2,
@@ -27033,7 +27033,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e9be2da0ae23f89f458e00d3bc79babfa0946afff97dc2ba7da388ae75d90052",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 17,
             "block_boundaries": []
           },
@@ -27097,7 +27097,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e9be2da0ae23f89f458e00d3bc79babfa0946afff97dc2ba7da388ae75d90052",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 16,
             "block_boundaries": []
           },
@@ -27173,19 +27173,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e9be2da0ae23f89f458e00d3bc79babfa0946afff97dc2ba7da388ae75d90052",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 721,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "3225d712b1282ddf2d650ad98dc187fb6f481829acabfa8b4b703b503cc1024c"
+                "chain_hash": "3c01c76125fec935e81276a914e88b44418583b9d0417c472bb8aee74d95cdb9"
               },
               {
                 "token_count": 512,
-                "chain_hash": "fe4690dc9ee0f50ffd299f0e3b68d642b6b4f8a763ce2c7701cc22517a5bbbad"
+                "chain_hash": "4163928b3197c3b14df1097cda4bb219feffe2400a940ec5eb7ec7d276f753eb"
               }
             ],
-            "last_complete_block_hash": "fe4690dc9ee0f50ffd299f0e3b68d642b6b4f8a763ce2c7701cc22517a5bbbad"
+            "last_complete_block_hash": "4163928b3197c3b14df1097cda4bb219feffe2400a940ec5eb7ec7d276f753eb"
           },
           "token_ids": [
             2,
@@ -28023,15 +28023,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e9be2da0ae23f89f458e00d3bc79babfa0946afff97dc2ba7da388ae75d90052",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 273,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "043ee8114947f4c03294b5a24476fb52df5926167f1e3c5efa9a985868519940"
+                "chain_hash": "9dfa20e574c05b8027bf9b551de9bb3b8be0926d260caaac9765c897218260f2"
               }
             ],
-            "last_complete_block_hash": "043ee8114947f4c03294b5a24476fb52df5926167f1e3c5efa9a985868519940"
+            "last_complete_block_hash": "9dfa20e574c05b8027bf9b551de9bb3b8be0926d260caaac9765c897218260f2"
           },
           "token_ids": [
             2,
@@ -28344,7 +28344,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e9be2da0ae23f89f458e00d3bc79babfa0946afff97dc2ba7da388ae75d90052",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 24,
             "block_boundaries": []
           },
@@ -28380,7 +28380,7 @@
     {
       "model_id": "gpt-oss-20b",
       "model_type": null,
-      "prompt_contract_id": "98ba968acf1cde5a25882cfbbc0240f2c3b67cb513ce6b0490d467156a74391c",
+      "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
       "cache_routing_eligible": true,
       "cases": [
         {
@@ -28418,7 +28418,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "98ba968acf1cde5a25882cfbbc0240f2c3b67cb513ce6b0490d467156a74391c",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 69,
             "block_boundaries": []
           },
@@ -28524,7 +28524,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "98ba968acf1cde5a25882cfbbc0240f2c3b67cb513ce6b0490d467156a74391c",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 69,
             "block_boundaries": []
           },
@@ -28651,7 +28651,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "98ba968acf1cde5a25882cfbbc0240f2c3b67cb513ce6b0490d467156a74391c",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 79,
             "block_boundaries": []
           },
@@ -28937,7 +28937,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "98ba968acf1cde5a25882cfbbc0240f2c3b67cb513ce6b0490d467156a74391c",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 173,
             "block_boundaries": []
           },
@@ -29159,7 +29159,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "98ba968acf1cde5a25882cfbbc0240f2c3b67cb513ce6b0490d467156a74391c",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 69,
             "block_boundaries": []
           },
@@ -29270,7 +29270,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "98ba968acf1cde5a25882cfbbc0240f2c3b67cb513ce6b0490d467156a74391c",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 256,
             "block_boundaries": []
           },
@@ -29580,7 +29580,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "98ba968acf1cde5a25882cfbbc0240f2c3b67cb513ce6b0490d467156a74391c",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 80,
             "block_boundaries": []
           },
@@ -29988,19 +29988,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "98ba968acf1cde5a25882cfbbc0240f2c3b67cb513ce6b0490d467156a74391c",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 600,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "f8964ddf0865f689175fa6bf6fc14a62f9ad204661647085701a5f99fea2a092"
+                "chain_hash": "c6d9f45b422b3feae90377d0805307f4bc40a6c353fdbe607055e74fd58fc769"
               },
               {
                 "token_count": 512,
-                "chain_hash": "7f187630674c1534f698ecfec021de5330eff15152056e0e385f1f4e23cc51d0"
+                "chain_hash": "793575b83d977ab2160960467dccc422014bf81448821542b5e30499e7188946"
               }
             ],
-            "last_complete_block_hash": "7f187630674c1534f698ecfec021de5330eff15152056e0e385f1f4e23cc51d0"
+            "last_complete_block_hash": "793575b83d977ab2160960467dccc422014bf81448821542b5e30499e7188946"
           },
           "token_ids": [
             200006,
@@ -30752,7 +30752,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "98ba968acf1cde5a25882cfbbc0240f2c3b67cb513ce6b0490d467156a74391c",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 152,
             "block_boundaries": []
           },
@@ -30964,23 +30964,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "98ba968acf1cde5a25882cfbbc0240f2c3b67cb513ce6b0490d467156a74391c",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 825,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "edae0487edd22c4f22eb50f004730535e27966cf26a2c54206d30e77dbe4c520"
+                "chain_hash": "fb954dba74caf512a2bfee02513348bfff7190f91517f4df1b5288fdd61918cb"
               },
               {
                 "token_count": 512,
-                "chain_hash": "fede9bdcc932c1a2fed6a3d02cda97cf5e36463c30070fe8f8c1acae440e746b"
+                "chain_hash": "20709af97f569cdefd2cbd99b55bb22bcf75e965303e12ce4f44e1eefe7ad84f"
               },
               {
                 "token_count": 768,
-                "chain_hash": "4221414e8c7ff9452285da7215a74124d658503d0e0b68310c344c7ca07227c4"
+                "chain_hash": "d8286991297eb9eae67a8dedd008b63640836981b5fecf6a0c3117b38df4a35d"
               }
             ],
-            "last_complete_block_hash": "4221414e8c7ff9452285da7215a74124d658503d0e0b68310c344c7ca07227c4"
+            "last_complete_block_hash": "d8286991297eb9eae67a8dedd008b63640836981b5fecf6a0c3117b38df4a35d"
           },
           "token_ids": [
             200006,
@@ -31907,23 +31907,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "98ba968acf1cde5a25882cfbbc0240f2c3b67cb513ce6b0490d467156a74391c",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 882,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "31430bdad8ba46938e8e3aeb98cc766f9b15410d73080128f7aba1a47dafa69c"
+                "chain_hash": "07d30c28778cbb2b78ce4517a08a7750e7e49c6dcd51c9b92151c6e08f602085"
               },
               {
                 "token_count": 512,
-                "chain_hash": "9768ce1cf152878cb1320da49759b4499f78816617f883aee1f6ac45223b600a"
+                "chain_hash": "0bfa665466a67aaa06677f8896415e812edf8420dea76a20d763f638e11b98bd"
               },
               {
                 "token_count": 768,
-                "chain_hash": "26ec66ab2dc037360918d8be37a9e4d04e8db4d02f5819cbd1eb23c8104da14c"
+                "chain_hash": "74883e1d3da045a9d472ffbfdabbe39790337b5ff750091c311f759c5785ed6d"
               }
             ],
-            "last_complete_block_hash": "26ec66ab2dc037360918d8be37a9e4d04e8db4d02f5819cbd1eb23c8104da14c"
+            "last_complete_block_hash": "74883e1d3da045a9d472ffbfdabbe39790337b5ff750091c311f759c5785ed6d"
           },
           "token_ids": [
             200006,
@@ -32845,27 +32845,27 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "98ba968acf1cde5a25882cfbbc0240f2c3b67cb513ce6b0490d467156a74391c",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 1025,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "0ce70366e4d587d0be6be1cdaef2365567f17c69272494cc0dd9eaa252d6bcd8"
+                "chain_hash": "e12d90935059215c03dc357386d5128411d3ab464159e3864df9e706d1048d94"
               },
               {
                 "token_count": 512,
-                "chain_hash": "1b1901a372995b383c5cec2fc42a4f52db00e41259edd558ad8378d4f0d72ed2"
+                "chain_hash": "d5ddb3460a975e6dbc213482558b0cb8d2152f23816c3032815c8d3d3685352f"
               },
               {
                 "token_count": 768,
-                "chain_hash": "0597121f2c4ef9c3db9e9085bb2683502d7265df2a15d7b614d50b86fe4c1c45"
+                "chain_hash": "7d85e71ed57cc71a15e58c3a066741364f7081c5de53746294d4ba91593cdef2"
               },
               {
                 "token_count": 1024,
-                "chain_hash": "1c8b238cbb567256a442be65bae7e959ececd219698f480321414c74bf3237d9"
+                "chain_hash": "69cb7ac84d6cc70a84e1231fe3aa9ea7f90ce58c07bf9523243ecbdc8c57b98c"
               }
             ],
-            "last_complete_block_hash": "1c8b238cbb567256a442be65bae7e959ececd219698f480321414c74bf3237d9"
+            "last_complete_block_hash": "69cb7ac84d6cc70a84e1231fe3aa9ea7f90ce58c07bf9523243ecbdc8c57b98c"
           },
           "token_ids": [
             200006,
@@ -33982,15 +33982,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "98ba968acf1cde5a25882cfbbc0240f2c3b67cb513ce6b0490d467156a74391c",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 501,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "c819a63a9e15a65e173696414b0c150e769564cb9b14795367e73c11544abbc3"
+                "chain_hash": "e364e4f2f40ac254c1299c61da0f590277f6cdd2dcbca15aa00b4e52847d63ea"
               }
             ],
-            "last_complete_block_hash": "c819a63a9e15a65e173696414b0c150e769564cb9b14795367e73c11544abbc3"
+            "last_complete_block_hash": "e364e4f2f40ac254c1299c61da0f590277f6cdd2dcbca15aa00b4e52847d63ea"
           },
           "token_ids": [
             200006,
@@ -34537,7 +34537,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "98ba968acf1cde5a25882cfbbc0240f2c3b67cb513ce6b0490d467156a74391c",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 71,
             "block_boundaries": []
           },
@@ -34655,7 +34655,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "98ba968acf1cde5a25882cfbbc0240f2c3b67cb513ce6b0490d467156a74391c",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 70,
             "block_boundaries": []
           },
@@ -34785,23 +34785,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "98ba968acf1cde5a25882cfbbc0240f2c3b67cb513ce6b0490d467156a74391c",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 778,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "b8531f7bba947b20eba0c4b52118a26c6ca93519325aed2e146d36314196ad97"
+                "chain_hash": "899b35ebfd9c9f79b45997c3c4e43fa243b89772e2db4b44356168c2d707f22c"
               },
               {
                 "token_count": 512,
-                "chain_hash": "bbbd15f619bbc122599fe0a6fb5537ddb53caaa425ff5f2d957f1488fa0c7604"
+                "chain_hash": "0155c52757a2b99bb224f93efa23b8c4c918d625927d3f95224cab3157d3c13c"
               },
               {
                 "token_count": 768,
-                "chain_hash": "a7acd4a94a50afa108be4d7cb3e307c2c3ad32019dbbff5d700db704c5b521c2"
+                "chain_hash": "263361d189d07a7f5ccdb6a4d32371fcbe7b8286cdb45e9a2d6127630b69cd31"
               }
             ],
-            "last_complete_block_hash": "a7acd4a94a50afa108be4d7cb3e307c2c3ad32019dbbff5d700db704c5b521c2"
+            "last_complete_block_hash": "263361d189d07a7f5ccdb6a4d32371fcbe7b8286cdb45e9a2d6127630b69cd31"
           },
           "token_ids": [
             200006,
@@ -35696,15 +35696,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "98ba968acf1cde5a25882cfbbc0240f2c3b67cb513ce6b0490d467156a74391c",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 327,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "71f1b6775f29b87f5e3a8d30fbae96725a295dd09478fc8c5c2e8b57e3805c45"
+                "chain_hash": "ad439365c35b957565ae78511a4eebe8f34bce3f3a7d3cbaeb3c53ebc6ddc675"
               }
             ],
-            "last_complete_block_hash": "71f1b6775f29b87f5e3a8d30fbae96725a295dd09478fc8c5c2e8b57e3805c45"
+            "last_complete_block_hash": "ad439365c35b957565ae78511a4eebe8f34bce3f3a7d3cbaeb3c53ebc6ddc675"
           },
           "token_ids": [
             200006,
@@ -36071,7 +36071,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "98ba968acf1cde5a25882cfbbc0240f2c3b67cb513ce6b0490d467156a74391c",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 81,
             "block_boundaries": []
           },
@@ -36164,7 +36164,7 @@
     {
       "model_id": "qwen3.5-35b-a3b",
       "model_type": null,
-      "prompt_contract_id": "af043d076a6aedcd1aed605fe3441e36ea297f6fb22ce9b27bb5abad56fcf214",
+      "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
       "cache_routing_eligible": true,
       "cases": [
         {
@@ -36202,7 +36202,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "af043d076a6aedcd1aed605fe3441e36ea297f6fb22ce9b27bb5abad56fcf214",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 12,
             "block_boundaries": []
           },
@@ -36251,7 +36251,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "af043d076a6aedcd1aed605fe3441e36ea297f6fb22ce9b27bb5abad56fcf214",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 12,
             "block_boundaries": []
           },
@@ -36321,7 +36321,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "af043d076a6aedcd1aed605fe3441e36ea297f6fb22ce9b27bb5abad56fcf214",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 20,
             "block_boundaries": []
           },
@@ -36548,15 +36548,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "af043d076a6aedcd1aed605fe3441e36ea297f6fb22ce9b27bb5abad56fcf214",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 335,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "f78d6f31574b0c7d9822c8028652b1f85a3526a7eb45f86f2036e34e430dc115"
+                "chain_hash": "5b6fc8ec1ff0f94ba65f0fe9c263e5862de6dc12e5c6b1a6c4e658861ad775e4"
               }
             ],
-            "last_complete_block_hash": "f78d6f31574b0c7d9822c8028652b1f85a3526a7eb45f86f2036e34e430dc115"
+            "last_complete_block_hash": "5b6fc8ec1ff0f94ba65f0fe9c263e5862de6dc12e5c6b1a6c4e658861ad775e4"
           },
           "token_ids": [
             248045,
@@ -36938,7 +36938,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "af043d076a6aedcd1aed605fe3441e36ea297f6fb22ce9b27bb5abad56fcf214",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 12,
             "block_boundaries": []
           },
@@ -36992,7 +36992,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "af043d076a6aedcd1aed605fe3441e36ea297f6fb22ce9b27bb5abad56fcf214",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 256,
             "block_boundaries": []
           },
@@ -37302,7 +37302,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "af043d076a6aedcd1aed605fe3441e36ea297f6fb22ce9b27bb5abad56fcf214",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 21,
             "block_boundaries": []
           },
@@ -37650,19 +37650,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "af043d076a6aedcd1aed605fe3441e36ea297f6fb22ce9b27bb5abad56fcf214",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 600,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "786bb5ea8a4eaac8855b6d0c674ab8b5b21c58e794ef9be316290abed1d56cfa"
+                "chain_hash": "9472ef8436437524ca446f4010deddfc1804023ff38cc54aaaabe54e5de44845"
               },
               {
                 "token_count": 512,
-                "chain_hash": "390e04161af9ab49f07e6b8a3ffd7178e40752a897f38ab866d1149d316c2018"
+                "chain_hash": "415d82877ae2819cda13e92d85d093930c6ff9e38b6414a496a5cee4580247de"
               }
             ],
-            "last_complete_block_hash": "390e04161af9ab49f07e6b8a3ffd7178e40752a897f38ab866d1149d316c2018"
+            "last_complete_block_hash": "415d82877ae2819cda13e92d85d093930c6ff9e38b6414a496a5cee4580247de"
           },
           "token_ids": [
             248045,
@@ -38405,7 +38405,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "af043d076a6aedcd1aed605fe3441e36ea297f6fb22ce9b27bb5abad56fcf214",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 100,
             "block_boundaries": []
           },
@@ -38565,19 +38565,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "af043d076a6aedcd1aed605fe3441e36ea297f6fb22ce9b27bb5abad56fcf214",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 765,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "4741b199258b5cc8a3e9e1f7a05110ea6aeb1d75a72b4709eb80499594c21abf"
+                "chain_hash": "1679d1f8ccecca52eae957dd549a94e30039dd3579d1993d79c9bd15e3a4e6e0"
               },
               {
                 "token_count": 512,
-                "chain_hash": "287e3c8e4e807c9f0e6ab59a72ae860885aa6977cc0f5df9234cf8ce7f9a6dca"
+                "chain_hash": "60d14a9c6a13d824eb916836d21aad8e8a1ccbb5f4e1d96327b5319c79524a69"
               }
             ],
-            "last_complete_block_hash": "287e3c8e4e807c9f0e6ab59a72ae860885aa6977cc0f5df9234cf8ce7f9a6dca"
+            "last_complete_block_hash": "60d14a9c6a13d824eb916836d21aad8e8a1ccbb5f4e1d96327b5319c79524a69"
           },
           "token_ids": [
             248045,
@@ -39444,23 +39444,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "af043d076a6aedcd1aed605fe3441e36ea297f6fb22ce9b27bb5abad56fcf214",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 824,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "48449dfd10a4381a996b730dd4fcd31e2d3c1de528312c4320b747850199c011"
+                "chain_hash": "b32f87cb71988d0f0558077b492c3291fb3280c35977faf5c196be1172e75e44"
               },
               {
                 "token_count": 512,
-                "chain_hash": "f181e7a971300950b9e8f50c5f5e06d818879ec44a0ecff6b385f84e76bb9b1d"
+                "chain_hash": "14e07e98c7637c9df62294a88271c15abe7e1b493e7e24b8851e77f6e7778b91"
               },
               {
                 "token_count": 768,
-                "chain_hash": "5367fc36908cde280b4301adf63308aaf22621d69574278b366eb32510f772e9"
+                "chain_hash": "f517447e26442a744d80f46e1232293452a7cc8b740e5001bec7346c5392295e"
               }
             ],
-            "last_complete_block_hash": "5367fc36908cde280b4301adf63308aaf22621d69574278b366eb32510f772e9"
+            "last_complete_block_hash": "f517447e26442a744d80f46e1232293452a7cc8b740e5001bec7346c5392295e"
           },
           "token_ids": [
             248045,
@@ -40324,27 +40324,27 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "af043d076a6aedcd1aed605fe3441e36ea297f6fb22ce9b27bb5abad56fcf214",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 1025,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "1f11f439c1a4050fd68670775a5d0b22351030e9a4f60369b54e28b18676b4ec"
+                "chain_hash": "2a487ccc33ffc38644dfa6250be1267187df4072a4ea8e2f9c029b17d1522b08"
               },
               {
                 "token_count": 512,
-                "chain_hash": "aec8cbb616fac21a5f477e4e3f7f493566f1b664aa85788d5e0ebc2fa592ffb3"
+                "chain_hash": "2608e8e6d96e2f93b8680aaa9eb24edbc3e06936097d4109363b0c356d4b699e"
               },
               {
                 "token_count": 768,
-                "chain_hash": "cb7c497613f4b8cfcd6cbae6df6197b020c674506a0677f44e7fa87d07e48f6c"
+                "chain_hash": "e2b81e4b0095bfedd522f765aa804c53cc8e1f5e08b9e3fe4eefb11cef00d1d9"
               },
               {
                 "token_count": 1024,
-                "chain_hash": "9c5253fc374524d6119f959a07a8cb1648e978ea7f257891571384b09a5031a5"
+                "chain_hash": "79f54e25a05b421886b4e72d1d9c5d27a9272366319d4110233cb3760ba67177"
               }
             ],
-            "last_complete_block_hash": "9c5253fc374524d6119f959a07a8cb1648e978ea7f257891571384b09a5031a5"
+            "last_complete_block_hash": "79f54e25a05b421886b4e72d1d9c5d27a9272366319d4110233cb3760ba67177"
           },
           "token_ids": [
             248045,
@@ -41461,15 +41461,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "af043d076a6aedcd1aed605fe3441e36ea297f6fb22ce9b27bb5abad56fcf214",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 442,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "9efcf188fa00ed93c3a139819a2ad368da5cd1c410794aa11d0a59c2bcb80a72"
+                "chain_hash": "64bed2191e9bb480e06865dcd30d3279322c17557ad4fa1e56c6aac53b1c268a"
               }
             ],
-            "last_complete_block_hash": "9efcf188fa00ed93c3a139819a2ad368da5cd1c410794aa11d0a59c2bcb80a72"
+            "last_complete_block_hash": "64bed2191e9bb480e06865dcd30d3279322c17557ad4fa1e56c6aac53b1c268a"
           },
           "token_ids": [
             248045,
@@ -41957,7 +41957,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "af043d076a6aedcd1aed605fe3441e36ea297f6fb22ce9b27bb5abad56fcf214",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 14,
             "block_boundaries": []
           },
@@ -42018,7 +42018,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "af043d076a6aedcd1aed605fe3441e36ea297f6fb22ce9b27bb5abad56fcf214",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 13,
             "block_boundaries": []
           },
@@ -42091,19 +42091,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "af043d076a6aedcd1aed605fe3441e36ea297f6fb22ce9b27bb5abad56fcf214",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 718,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "5517960f1b854fe8591ac42468b745e5c34016318f3d924f8d02175d0da73bf1"
+                "chain_hash": "dae040299d06d1a8b3bce7f152da1c2b6a99af3209e4743efe00c2c824282d57"
               },
               {
                 "token_count": 512,
-                "chain_hash": "75c27f4041595e0782890afbb41d6a53e59e9a8ecd972bd510e6de2e16235211"
+                "chain_hash": "94c7d2fbf15e09b10c03a079bcf65406718eb2da0b11806cb4cd107e7f8cbc7b"
               }
             ],
-            "last_complete_block_hash": "75c27f4041595e0782890afbb41d6a53e59e9a8ecd972bd510e6de2e16235211"
+            "last_complete_block_hash": "94c7d2fbf15e09b10c03a079bcf65406718eb2da0b11806cb4cd107e7f8cbc7b"
           },
           "token_ids": [
             248045,
@@ -42941,15 +42941,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "af043d076a6aedcd1aed605fe3441e36ea297f6fb22ce9b27bb5abad56fcf214",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 465,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "39cacfa673f2b6c9c77b79dd6e9ba6216b41066ec96cb80a09dd534861bffc5b"
+                "chain_hash": "79309865c9c78af2318127f1e0552c0e42956f1036a6a1e82f49b6dec108a91a"
               }
             ],
-            "last_complete_block_hash": "39cacfa673f2b6c9c77b79dd6e9ba6216b41066ec96cb80a09dd534861bffc5b"
+            "last_complete_block_hash": "79309865c9c78af2318127f1e0552c0e42956f1036a6a1e82f49b6dec108a91a"
           },
           "token_ids": [
             248045,
@@ -43454,7 +43454,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "af043d076a6aedcd1aed605fe3441e36ea297f6fb22ce9b27bb5abad56fcf214",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 27,
             "block_boundaries": []
           },
@@ -43493,7 +43493,7 @@
     {
       "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
       "model_type": null,
-      "prompt_contract_id": "631471aa478b255d0e8928587813e3fbcebf5c4a4446600cc94a7e0e5f74eccf",
+      "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
       "cache_routing_eligible": true,
       "cases": [
         {
@@ -43531,7 +43531,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "631471aa478b255d0e8928587813e3fbcebf5c4a4446600cc94a7e0e5f74eccf",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 12,
             "block_boundaries": []
           },
@@ -43580,7 +43580,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "631471aa478b255d0e8928587813e3fbcebf5c4a4446600cc94a7e0e5f74eccf",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 12,
             "block_boundaries": []
           },
@@ -43650,7 +43650,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "631471aa478b255d0e8928587813e3fbcebf5c4a4446600cc94a7e0e5f74eccf",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 20,
             "block_boundaries": []
           },
@@ -43877,15 +43877,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "631471aa478b255d0e8928587813e3fbcebf5c4a4446600cc94a7e0e5f74eccf",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 335,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "6609136b0587b686c7e8a19435fb05749c6e9df9b17658db3c8569ca4ed564b6"
+                "chain_hash": "b578a8d702ab3bd38a461e1b9dc17986127f0411a4f5a8d3367dfeed150d3000"
               }
             ],
-            "last_complete_block_hash": "6609136b0587b686c7e8a19435fb05749c6e9df9b17658db3c8569ca4ed564b6"
+            "last_complete_block_hash": "b578a8d702ab3bd38a461e1b9dc17986127f0411a4f5a8d3367dfeed150d3000"
           },
           "token_ids": [
             248045,
@@ -44267,7 +44267,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "631471aa478b255d0e8928587813e3fbcebf5c4a4446600cc94a7e0e5f74eccf",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 12,
             "block_boundaries": []
           },
@@ -44321,7 +44321,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "631471aa478b255d0e8928587813e3fbcebf5c4a4446600cc94a7e0e5f74eccf",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 256,
             "block_boundaries": []
           },
@@ -44631,7 +44631,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "631471aa478b255d0e8928587813e3fbcebf5c4a4446600cc94a7e0e5f74eccf",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 21,
             "block_boundaries": []
           },
@@ -44979,19 +44979,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "631471aa478b255d0e8928587813e3fbcebf5c4a4446600cc94a7e0e5f74eccf",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 600,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "8e1570ae4a7bc1fdb05878051ddf9ac14b7818c80a8171f0d4c08123db67f1ce"
+                "chain_hash": "9bff7b71fccb63a3aa6b0af4fd9ea0c07c5c3a31d4f0a0b9767b745e41e85cfa"
               },
               {
                 "token_count": 512,
-                "chain_hash": "fcd7a6e408021cf05c8f7a4bc340f801eb5d79a35cd16fbd29d0649c1f574d58"
+                "chain_hash": "f59f8b96a69ce0199a2e6f7db320a9d3d6dcd56f0afc680d4d23d81a0083ee06"
               }
             ],
-            "last_complete_block_hash": "fcd7a6e408021cf05c8f7a4bc340f801eb5d79a35cd16fbd29d0649c1f574d58"
+            "last_complete_block_hash": "f59f8b96a69ce0199a2e6f7db320a9d3d6dcd56f0afc680d4d23d81a0083ee06"
           },
           "token_ids": [
             248045,
@@ -45734,7 +45734,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "631471aa478b255d0e8928587813e3fbcebf5c4a4446600cc94a7e0e5f74eccf",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 100,
             "block_boundaries": []
           },
@@ -45894,19 +45894,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "631471aa478b255d0e8928587813e3fbcebf5c4a4446600cc94a7e0e5f74eccf",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 765,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "8fcc9cf6e91c8066cf6db6f980b7c745484af974c93649e441a847071f59acdc"
+                "chain_hash": "49d7f30001bc37d2975cddfae2f7a914632ea51edd1bba36feaef9ba50ab6ae4"
               },
               {
                 "token_count": 512,
-                "chain_hash": "dc5a2856b4e0d51e71a424be955f2022ffdcae29135546993ac977613ed280de"
+                "chain_hash": "a1787c9c9b82127402a1a94fc8683b6a71aab094a0f0d014a80749aa20247673"
               }
             ],
-            "last_complete_block_hash": "dc5a2856b4e0d51e71a424be955f2022ffdcae29135546993ac977613ed280de"
+            "last_complete_block_hash": "a1787c9c9b82127402a1a94fc8683b6a71aab094a0f0d014a80749aa20247673"
           },
           "token_ids": [
             248045,
@@ -46773,23 +46773,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "631471aa478b255d0e8928587813e3fbcebf5c4a4446600cc94a7e0e5f74eccf",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 824,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "226db13adef7a2c56a93ee734ef9c6e23046d92cb89e984ae997bf3905c70296"
+                "chain_hash": "1733faf875881fa46dcfe685e0b98308653c7c5f3e6b064cddfa23f270cf2a61"
               },
               {
                 "token_count": 512,
-                "chain_hash": "d0f6a11cbbc7a92c9aeaf024f065e57a382e4ff15bbde5fc5c409eb6c5e8814e"
+                "chain_hash": "f113c8817992d2515b1d32a49b4b692b78096183ecf3f60a7831428168991e48"
               },
               {
                 "token_count": 768,
-                "chain_hash": "9423dad149288dcce49afe7cabdf35b60b883bb2ea44675e9c3b379c10e6ff3a"
+                "chain_hash": "a13b621779423050f15dda441e01ab9df48df3651c3fc5887e7995a68e84c498"
               }
             ],
-            "last_complete_block_hash": "9423dad149288dcce49afe7cabdf35b60b883bb2ea44675e9c3b379c10e6ff3a"
+            "last_complete_block_hash": "a13b621779423050f15dda441e01ab9df48df3651c3fc5887e7995a68e84c498"
           },
           "token_ids": [
             248045,
@@ -47653,27 +47653,27 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "631471aa478b255d0e8928587813e3fbcebf5c4a4446600cc94a7e0e5f74eccf",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 1025,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "6006a4a0e53f9fd5b5497578e857cb78ae57a938c52168ef2d8365926503ea04"
+                "chain_hash": "4483b1522118df34753dca6aac148341f4839b93adba349812dc9e88a66113a4"
               },
               {
                 "token_count": 512,
-                "chain_hash": "188a179b6f4f2082b9a52118c7403dc5fe2ad553dbfa0c4c7a3c5f0a2a6cc298"
+                "chain_hash": "57ad25b9026e24799b0c5395e7e84dff59077c4ae4bb557847db73de3954c627"
               },
               {
                 "token_count": 768,
-                "chain_hash": "159189d7573932b72583c2817bf266b1fe16ca3f2ca3a1a63fca12041f662761"
+                "chain_hash": "89c214856f88ab4f1d112151fdd86c03eaac7622439464f6b2db89b4498d61a9"
               },
               {
                 "token_count": 1024,
-                "chain_hash": "7d23ad775683375acc6ee046e8cad57d1554d351d1f49027baefc36f4770b5ef"
+                "chain_hash": "dae86581cd182275690c089f80975568fc69ebc9b103b9b4eae50fd5e9c5636c"
               }
             ],
-            "last_complete_block_hash": "7d23ad775683375acc6ee046e8cad57d1554d351d1f49027baefc36f4770b5ef"
+            "last_complete_block_hash": "dae86581cd182275690c089f80975568fc69ebc9b103b9b4eae50fd5e9c5636c"
           },
           "token_ids": [
             248045,
@@ -48790,15 +48790,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "631471aa478b255d0e8928587813e3fbcebf5c4a4446600cc94a7e0e5f74eccf",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 442,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "f6cbd87ebd4e6e6e658efc0bea530c2fcb83aae46d152e21722c1dd2a27f48ed"
+                "chain_hash": "26673dca1b88bc1f07ecbcbb4113c9340a9a0838616ca683412544c73d172ef1"
               }
             ],
-            "last_complete_block_hash": "f6cbd87ebd4e6e6e658efc0bea530c2fcb83aae46d152e21722c1dd2a27f48ed"
+            "last_complete_block_hash": "26673dca1b88bc1f07ecbcbb4113c9340a9a0838616ca683412544c73d172ef1"
           },
           "token_ids": [
             248045,
@@ -49286,7 +49286,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "631471aa478b255d0e8928587813e3fbcebf5c4a4446600cc94a7e0e5f74eccf",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 14,
             "block_boundaries": []
           },
@@ -49347,7 +49347,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "631471aa478b255d0e8928587813e3fbcebf5c4a4446600cc94a7e0e5f74eccf",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 13,
             "block_boundaries": []
           },
@@ -49420,19 +49420,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "631471aa478b255d0e8928587813e3fbcebf5c4a4446600cc94a7e0e5f74eccf",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 718,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "1965beb437f250440b56d3094cf75918f09a867f0a6126874308d84a88bc4d15"
+                "chain_hash": "d093966bf19e058f6ca4fe13927623d19008fc147f714612ccddd1bd8865fbed"
               },
               {
                 "token_count": 512,
-                "chain_hash": "623ef3db289f5be634212571005d82e952b7f572905e0efa07daee08a13a005a"
+                "chain_hash": "0881fa462ce6f470b6038fa77c0dd8d80ce1e61f42cf19875b67559a938d06b9"
               }
             ],
-            "last_complete_block_hash": "623ef3db289f5be634212571005d82e952b7f572905e0efa07daee08a13a005a"
+            "last_complete_block_hash": "0881fa462ce6f470b6038fa77c0dd8d80ce1e61f42cf19875b67559a938d06b9"
           },
           "token_ids": [
             248045,
@@ -50270,15 +50270,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "631471aa478b255d0e8928587813e3fbcebf5c4a4446600cc94a7e0e5f74eccf",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 465,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "ec7fbc4b8d0927cc6f44880a4de76f4bd957def37d1b48b860c8ebb02e3f7352"
+                "chain_hash": "dedaa3472010162b108415bbb27583924967fbe1e4dbeba9075d1aa942f021cd"
               }
             ],
-            "last_complete_block_hash": "ec7fbc4b8d0927cc6f44880a4de76f4bd957def37d1b48b860c8ebb02e3f7352"
+            "last_complete_block_hash": "dedaa3472010162b108415bbb27583924967fbe1e4dbeba9075d1aa942f021cd"
           },
           "token_ids": [
             248045,
@@ -50783,7 +50783,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "631471aa478b255d0e8928587813e3fbcebf5c4a4446600cc94a7e0e5f74eccf",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 27,
             "block_boundaries": []
           },

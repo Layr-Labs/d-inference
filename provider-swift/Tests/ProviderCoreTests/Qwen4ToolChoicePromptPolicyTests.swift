@@ -7,11 +7,13 @@ import Testing
 
 @Suite("Native Qwen4 tool prompt ownership")
 struct Qwen4ToolChoicePromptPolicyTests {
-    @Test func requiredAndNamedPreserveMessagesAndEnforcement() throws {
+    @Test(arguments: [Qwen4SupportPolicy.ownedModelID, Qwen4SupportPolicy.registryModelID])
+    func requiredAndNamedPreserveMessagesAndEnforcement(modelID: String) throws {
         for choice in [OpenAIToolChoice.mode(.required), .function(name: "second")] {
             for parallel: Bool? in [nil, false, true] {
                 for thinking in [false, true] {
                     var input = request(choice)
+                    input.model = modelID
                     input.parallelToolCalls = parallel
                     input.reasoning = .init(enabled: thinking)
                     let native = try ToolChoicePromptPolicy.prepare(input, modelType: "qwen4_exp")
@@ -55,9 +57,10 @@ struct Qwen4ToolChoicePromptPolicyTests {
         }
     }
 
-    @Test func autoNoneAndInvalidChoicesRetainTheirContracts() throws {
+    @Test(arguments: [Qwen4SupportPolicy.ownedModelID, Qwen4SupportPolicy.registryModelID])
+    func autoNoneAndInvalidChoicesRetainTheirContracts(modelID: String) throws {
         for choice in [OpenAIToolChoice.mode(.auto), .mode(.none)] {
-            let input = request(choice)
+            let input = request(choice, modelID: modelID)
             let legacy = try ToolChoicePromptPolicy.prepare(input)
             let actual = try ToolChoicePromptPolicy.prepare(input, modelType: "qwen4_exp")
             #expect(actual.messages == legacy.messages)
@@ -65,17 +68,17 @@ struct Qwen4ToolChoicePromptPolicyTests {
             #expect(actual.mode == legacy.mode)
         }
         #expect(throws: MultiModelBatchSchedulerEngineError.self) {
-            try ToolChoicePromptPolicy.prepare(request(.function(name: "missing")), modelType: "qwen4_exp")
+            try ToolChoicePromptPolicy.prepare(request(.function(name: "missing"), modelID: modelID), modelType: "qwen4_exp")
         }
-        var missing = request(.mode(.required))
+        var missing = request(.mode(.required), modelID: modelID)
         missing.tools = nil
         #expect(throws: MultiModelBatchSchedulerEngineError.self) {
             try ToolChoicePromptPolicy.prepare(missing, modelType: "qwen4_exp")
         }
     }
 
-    private func request(_ choice: OpenAIToolChoice) -> OpenAIChatCompletionRequest {
-        OpenAIChatCompletionRequest(model: Qwen4SupportPolicy.ownedModelID,
+    private func request(_ choice: OpenAIToolChoice, modelID: String = Qwen4SupportPolicy.ownedModelID) -> OpenAIChatCompletionRequest {
+        OpenAIChatCompletionRequest(model: modelID,
             messages: [.init(role: .system, content: .text("Keep the original policy.")),
                 .init(role: .user, content: .text("Copy literal <think>data</think> and backslash \\ exactly."))],
             tools: ["first", "second"].map { OpenAITool(function: .init(name: $0)) }, toolChoice: choice)

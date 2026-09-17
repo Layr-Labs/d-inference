@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-17 · commit `77d1d1d86`
+> Last updated: 2026-09-17 · commit `53e135e9e`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -456,7 +456,15 @@ the same owned external resources
 `ModelMediaPolicy.advertisesMedia` keeps scanner/template/loader media policy
 consistent (`provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift`).
 
-The slot factory passes the bounded candidate context into the bridge.
+The registry and legacy serving IDs share exact native policies through
+`provider-swift/Sources/ProviderCoreFoundation/Qwen4ModelIdentity.swift`.
+HF source/download identifiers are not substituted for the registry ID, and
+the developer-only model-path override remains limited to the legacy ID.
+
+The slot factory passes native context (or an explicitly lower operator limit)
+into the bridge; the generic bridge does not impose a second Qwen-sized cap
+on this or other model families. Coordinator admission owns SLA policy, while
+provider context and physical-memory checks remain mandatory.
 `EngineV2Bridge.submitTokenized` checks prompt plus the translated output
 reservation with overflow-safe arithmetic before cache probes or tickets.
 `advertisedContextExceeded` stays a content-free client error through both

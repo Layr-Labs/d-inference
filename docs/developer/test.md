@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-17 · commit `6b313942f`
+> Last updated: 2026-09-17 · commit `53e135e9e`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1358,6 +1358,21 @@ binary that already has `mlx.metallib` beside it.
 | `e2e/benchmark_test.go` | `TestBenchmark_SingleProviderStreaming`, `_SingleProviderNonStreaming`, `_MultiModelMultiProvider`, `_HighConcurrency`, `_QueueSaturation`, `_ManyUsers`, `_SingleModelScaling`, `_HeavyLoad_100Concurrent_10KB`; config tests `TestBenchmarkSuiteConfig*`, `TestBenchmarkControlSuiteIsIsolatedAndMatchesPosture`, `TestBenchmarkCapacitySaturationPolicy` |
 
 ### 9. Prompt-contract parity fixtures and vectors
+
+For the registry-ID/native-context follow-up, run `Qwen4SupportPolicyTests`,
+`Qwen4OwnedVLMRoutingTests`, `Qwen4ToolChoicePromptPolicyTests`,
+`Qwen4ReasoningEffortValidationTests` and `PromptContractIdentityTests` against
+the freshly built provider test product. These cover both exact serving IDs,
+foreign-ID rejection, native prompt-plus-output boundaries, no second clamp on
+other models, media factory selection and native tool/reasoning policy. Rust
+`qwen4_native_tool_prompt` and Go `TestQwen4Catalog` tests cover the mirrors and
+mixed-fleet version floor. Require nonzero executed counts and no hidden skips.
+
+Normalization v6 requires regenerated contract/cache hashes; compare all
+existing production vectors' request/provider bodies, template inputs and token
+arrays against v5 before accepting the update. The shared corpus does not
+include the full Flash-Next artifact: these checks are not full-model API,
+262K memory, multimodal or MTP qualification. Record those gates separately.
 
 `fixtures/prompt-contract/v1` is shared by the Rust, Go and Swift
 prompt-contract tests: `contract_vectors.json` and `block_hash_vectors.json`

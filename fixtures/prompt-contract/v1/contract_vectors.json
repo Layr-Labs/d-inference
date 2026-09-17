@@ -22,7 +22,8 @@
           "sha256": "0303030303030303030303030303030303030303030303030303030303030303"
         }
       ],
-      "expected_prompt_contract_id": "0c6cc9c9c8aa9a4855522a3b8dad8cc585bd603e2af6f0901062b3dece6bcba3",
+      "expected_prompt_contract_id": "920ce448f3b854f8be26ff56bec2c17d0fcdcff750925b0a9282282783b83dbc",
+      "legacy_v5_prompt_contract_id": "0c6cc9c9c8aa9a4855522a3b8dad8cc585bd603e2af6f0901062b3dece6bcba3",
       "legacy_v4_prompt_contract_id": "c27fc82f457858092e111d34d185d3309d4d5dd5772d2bfa0deee16cbbfbdade",
       "legacy_v3_prompt_contract_id": "5ad939859eefd380ecd155fcc74e4d03a39d3284251dad0304bd1cf695a7e16b",
       "name": "sorted-manifest-artifacts"

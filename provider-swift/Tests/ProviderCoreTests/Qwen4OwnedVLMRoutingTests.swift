@@ -18,7 +18,8 @@ struct Qwen4OwnedVLMRoutingTests {
             "patch_size":16,"spatial_merge_size":2,"temporal_patch_size":2,"deepstack_visual_indexes":[]]]
     }
 
-    @Test func ownedFullDeclarationSelectsVisionWhileOtherContractsRemainClosed() throws {
+    @Test(arguments: [ModelMediaPolicy.ownedQwen4ModelID, Qwen4SupportPolicy.registryModelID])
+    func ownedFullDeclarationSelectsVisionWhileOtherContractsRemainClosed(owned: String) throws {
         let full = configuration
         #expect(ModelMediaPolicy.advertisesMedia(full, modelID: owned))
         #expect(ModelContainerLoading.factorySelection(for: full, modelID: owned) == .vision)

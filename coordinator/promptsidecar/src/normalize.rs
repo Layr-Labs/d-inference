@@ -69,7 +69,7 @@ pub fn normalize(
         && crate::leading_system::qwen_applies(&model_id, model_type)
         && !native_structured_target(&model_id, model_type);
     let mut additional_context = template_additional_context(&body, forced_qwen_tool)?;
-    if model_id == "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp"
+    if crate::qwen4_identity::is_qualified(Some(&model_id))
         && matches!(
             model_type
                 .map(str::trim)
@@ -965,7 +965,7 @@ fn apply_tool_choice_policy(
 // Exact mirror of ToolChoicePromptPolicy's native-framing predicate. Other
 // artifacts, missing metadata and image/video requests retain legacy shaping.
 fn native_qwen4_tool_prompt(body: &Map<String, Value>, model_type: Option<&str>) -> bool {
-    body.get("model").and_then(Value::as_str) == Some("DarkBloom/Qwen3.8-Flash-Next-Q4-mtp")
+    crate::qwen4_identity::is_qualified(body.get("model").and_then(Value::as_str))
         && model_type == Some("qwen4_exp")
         && !body
             .get("messages")

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-14 · commit `b725a72a8`
+> Last updated: 2026-09-15 · commit `a4692e70`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -362,7 +362,7 @@ Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative value
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_CBV2_PAGED_KV` | `0` forces contiguous | unset (policy decides) | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` | Kill switch for paged KV; beats the `provider.toml` setting. |
+| `DARKBLOOM_CBV2_PAGED_KV` | `0` forces contiguous | unset (policy decides) | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` (`preferredBackend`, `killSwitchDisabled`) | Kill switch for paged KV; beats the `provider.toml` setting. The [owned Flash-Next candidate](qwen4-next-support.md#identity-and-serving-policy) joins the exact automatic policy; a default is not runtime qualification. |
 | `DARKBLOOM_CBV2_PAGED_KV_DTYPE` | `float16`, `float32` | unset: observed native per-layer types | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift` | Optional assertion for resolved paged storage; a nonempty value must match every measured native layer. Unsupported values or mismatches refuse explicit paged construction. |
 | `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | tokens | engine default | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` | Solo-prefill stripe size. |
 | `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | integer (`0` = unlimited) | `1` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` | Maximum concurrent partial prefills. |
@@ -377,6 +377,22 @@ Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative value
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `off`, `enforce` | `off` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` | Prefill-deadline admission on the provider. |
 | `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL` | integer layers | projected from `provider.toml` (`18`) | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift` | Gemma-4 prefill chunk-eval layers; the provider sets it for the engine, `scripts/install.sh` sets `18` for the smoke test. |
 | `DARKBLOOM_ENGINE_V2_VLM_PARITY_CHECK` | `0` skips | on | `provider-swift/Sources/ProviderCore/Inference/Vision/EngineV2VLMTextExtraction.swift` | VLM text-extraction parity check. |
+
+### Native Flash-Next candidate
+
+These controls belong to the [private candidate contract](qwen4-next-support.md),
+not a public catalog activation. They are read in foreground/local processes;
+these model-specific controls are not forwarded by `LaunchAgent.inferencePassthroughEnvKeys`.
+Installed processes still use the source defaults.
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `DARKBLOOM_QWEN4_MODEL_PATH` | absolute existing native Qwen4 snapshot directory with config and weight index | unset; normal HF cache resolution | `provider-swift/Sources/ProviderCoreFoundation/Qwen4LocalModelPath.swift` (`directory`); `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift` (`resolveLocalPath`); `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` (`scanAllModels`) | Selects an isolated directory only for exact `DarkBloom/Qwen3.8-Flash-Next-Q4-mtp`. Scanner and load resolution agree. An invalid explicit override hides/refuses this model instead of using its old cached snapshot; other IDs are unchanged. Normal artifact hashing, admission and runtime checks remain active. No HOME or cache mutation. |
+| `DARKBLOOM_QWEN4_LISTING_CONTEXT` | positive integer, lower-only | `82_000` tokens | `provider-swift/Sources/ProviderCore/Inference/Qwen4SupportPolicy.swift` (`configuredContextTokens`, `contextLimit`) | Bounds prompt plus resolved output reservation; values above the default clamp to it. Unset, empty, invalid, zero and negative values retain the default. A smaller positive native model limit also wins. No card-context escape. |
+| `DARKBLOOM_QWEN4_PLE_SSD_OFFLOAD` | negative spellings disable the SDK mmap path | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4Exp.swift` (`Qwen4ExpPLEResidency.mmapFlag`, `useMmap`) | Immutable learned PLE weights remain SSD-backed independently of request prefix caching. Keep this enabled for candidate qualification; disabling request caching does not disable PLE. |
+| `DARKBLOOM_QWEN4_QSA_PARALLEL_FULL_KV` | unset or exact `1` enables; explicit `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpParallelQSA.swift` (`fullKVEnabled`) | Existing parallel QK/ordered-PV path for eligible native full-KV widths 1–6. Larger prefill retains existing dispatch. Other explicit spellings stay disabled. Separate compact-KV experiments remain opt-in. |
+| `DARKBLOOM_QWEN4_QSA_PARALLEL_VALUE_PARTITIONS` | `1`, `2`, `4`, `8`, `16`, `32` | `32` for full KV; caller fallback for compact KV | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpParallelQSA.swift` (`valuePartitions`) | A valid explicit caller argument wins over the environment. Invalid explicit values retain the caller fallback. This changes scheduling, not arithmetic order, precision or MTP depth. |
+| `DARKBLOOM_QWEN4_LAYER_ASYNC` | unset or exact `1` enables; explicit `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpLayerSubmission.swift` (`enabled`, `plan`) | Early singleton text layer submission on valid native paged caches at widths 1–6. Media/explicit positions, wider/batched shapes and faulted or unknown caches retain the existing scheduling. Other explicit spellings stay disabled. |
 
 ### Memory and media budgets
 
@@ -399,7 +415,7 @@ Internals and file format: [`ssd-kv-cache.md`](ssd-kv-cache.md).
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_PREFIX_CACHE` | affirmative opts in; non-affirmative nonempty disables | on for exact Qwen and Nemotron Lightning cohorts, Gemma 4 26B QAT and GPT-OSS 20B, off otherwise | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isEnabled`) | Unset/empty uses the [model default](../architecture/prefix-cache.md#kv-layouts). Explicit affirmative values permit other models subject to capability/identity gates; resident payloads require the separate memory opt-in. |
+| `DARKBLOOM_PREFIX_CACHE` | affirmative opts in; non-affirmative nonempty disables | on for the exact cohorts in the [backend/default table](../architecture/prefix-cache.md#kv-layouts), including the owned Flash-Next candidate; off otherwise | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isEnabled`) | Unset/empty uses the model default. Explicit affirmative values permit other models subject to capability/identity gates; resident payloads require the separate memory opt-in. Source enablement does not prove cache restoration. |
 | `DARKBLOOM_PREFIX_CACHE_MEMORY` | affirmative (`1`, `true`, `yes`, `on`) | off | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isMemoryEnabled`) | Explicit opt-in for both paged resident blocks and the recurrent RAM bank; global disable wins. Forwarded by LaunchAgent. |
 | `DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS` | seconds (`0` off) | `120` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` | Cadence of the local SSD stats line and typed per-store heartbeat observation; `0` omits the observation. Sample age still advances between ticks; see [telemetry](../architecture/telemetry.md#durable-prefix-cache-observations). |
 | `DARKBLOOM_PREFIX_CACHE_DISK_GB` | GiB | Half the currently available space; `20` if space cannot be measured | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`) | Box-wide on-disk budget across all models, with no fixed default ceiling. A valid positive override is used verbatim. The separate 20 GiB free-space write reserve still applies. |

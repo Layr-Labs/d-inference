@@ -22,6 +22,8 @@ jobs:
           ./scripts/test-prod-env-refresh.sh
       - name: Test startup observer against local stubs
         run: python3 -m unittest discover -s scripts/startup_measurement -t scripts -p 'test_*.py'
+      - name: Test native GPU CI routing without a GPU
+        run: python3 scripts/test-native-gpu-ci.py
 
   docs:
     name: Docs Lint
@@ -299,7 +301,9 @@ jobs:
         # Dispatches the JIT-compiled Metal kernels, exactly as
         # CBv2PagedSafetyTests' runtimeSmoke already does in this job.
         timeout-minutes: 20
-        run: ../../scripts/run-nested-suite.sh CBv2PagedKernelTests
+        # The composition assertion opts in only in its own test process;
+        # both invocations retain the nonempty/no-skips tripwires.
+        run: ../../scripts/run-paged-kernel-tests.sh
       - name: Run nested KV-sharing contiguous/paged parity tests
         if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm

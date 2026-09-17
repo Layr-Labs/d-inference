@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-17 · commit `77d1d1d86`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -82,6 +82,27 @@ out of whatever the cap leaves after weights and activations; a model that loads
 with less than `minimumLoadKVBytes` of KV headroom is unloaded again
 (`provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift`;
 [after the load](../architecture/hardware-support.md#after-the-load)).
+
+## Qwen4 learned-table offload
+
+The [Flash-Next candidate](../reference/qwen4-next-support.md)
+keeps learned PLE tables SSD-backed even when request prefix caching is off.
+`Qwen4ExpMmapFootprint.excludedBytes` validates safetensor payload ranges before
+subtracting offloaded bytes from the scanner's native-weight loading estimate
+(`provider-swift/Sources/ProviderCore/Models/Qwen4ExpMmapFootprint.swift`).
+Eligible native non-FP16 layouts also receive a header-derived load-copy
+allowance through `Qwen4ExpLoadFootprint.estimate`; all vision and MTP weights
+remain counted. Malformed or unsupported metadata retains the conservative
+padding. See the [loading bound and retirement window](../architecture/hardware-support.md#mechanism).
+The coordinator applies
+the separate [offload declaration gate](../architecture/routing.md#ssd-offloaded-model-weights).
+
+Mapped pages can still occupy reclaimable OS cache. Target KV, QSA index,
+GDN/PLE state, MTP history, restore scratch and concurrent requests add live
+allocations with their own owners. Arithmetic weight fit is not hardware
+qualification: this text-only private candidate does not establish 128 GB
+support or its full native-context ceiling. Existing catalog minimum RAM,
+runtime headroom and actual capacity gates remain in force.
 
 ## Gemma QAT assistant footprint and availability
 

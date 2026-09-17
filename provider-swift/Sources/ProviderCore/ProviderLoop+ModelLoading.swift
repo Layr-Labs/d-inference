@@ -171,7 +171,7 @@ extension ProviderLoop {
             await markWeightHashUnavailable(modelId: modelId)
             return nil
         case .changed:
-            newcomer.release()
+            await newcomer.releaseAfterExternalResources()
             MLX.Memory.clearCache()
             let message =
                 "Model '\(modelId)' changed while loading reusable SSD cache state — unloaded"
@@ -350,16 +350,16 @@ extension ProviderLoop {
             // load a model it could actually serve. `availableMemoryGb` now
             // clamps to real OS-available memory and subtracts in-flight KV
             // reservations, so dropping the multiplier here is still OOM-safe.
-            // Deliberately the PADDED estimate (disk×1.2), not the measured
-            // steady residency: the ADMIT decision covers the LOAD TRANSIENT
-            // (shard staging exceeds the post-load figure), which is exactly
-            // what the padding was sized for. Measured residency informs only
-            // the coordinator's POST-load token-budget estimate.
+            // The scanner includes the load transient, not just steady weights:
+            // eligible native Qwen4 uses its validated incremental-copy envelope;
+            // other layouts retain disk×1.2. Activation/minimum KV are additional.
             let targetWeightsGb = Self.loadGateWeightsGb(
                 estimatedWeightsGb: modelInfo.estimatedMemoryGb,
                 extraWeightBytes: 0)
             do {
-                try await evictUntilAvailable(weightsGb: targetWeightsGb, allowEviction: allowEviction)
+                try await evictUntilAvailable(
+                    weightsGb: targetWeightsGb, allowEviction: allowEviction,
+                    waitForQwen4Retirement: Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType))
             } catch let InferenceError.modelLoadFailed(message) {
                 // Record for diagnostics so `doctor` shows the operator the exact
                 // "Insufficient memory …" reason, then rethrow unchanged.
@@ -431,6 +431,10 @@ extension ProviderLoop {
                 throw InferenceError.modelLoadFailed(
                     "Insufficient memory for '\(modelId)' at allocation: load headroom changed")
             }
+            guard Qwen4ExpLoadFootprint.isCurrent(modelInfo, directory: modelPath) else {
+                throw InferenceError.modelLoadFailed(
+                    "Native Qwen4 loading footprint changed after admission; rescan the model")
+            }
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
             // Ownership box (Codex-review unwind ordering): every later
@@ -439,7 +443,7 @@ extension ProviderLoop {
             // weights BEFORE survivor grants are restored/regrown. Never
             // bind `borrow()` to a long-lived local — that would keep the
             // weights alive past `release()`.
-            let newcomer = EngineV2NewcomerBox(try await loadModelContainer(from: modelPath))
+            let newcomer = EngineV2NewcomerBox(try await loadModelContainer(from: modelPath, modelID: modelId))
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 
@@ -511,11 +515,11 @@ extension ProviderLoop {
             guard await kvBudget.reducePendingLoad(
                 acceptedLoad, remainingWeightBytes: extraWeightBytes)
             else {
-                newcomer.release()
+                await newcomer.releaseAfterExternalResources()
                 throw InferenceError.modelLoadFailed("Model load ownership changed during setup")
             }
             if isShuttingDown || Task.isCancelled {
-                newcomer.release()
+                await newcomer.releaseAfterExternalResources()
                 MLX.Memory.clearCache()
                 throw CancellationError()
             }
@@ -544,7 +548,7 @@ extension ProviderLoop {
                     format: "%.1f", Double(UnifiedMemoryCap.minimumLoadKVBytes) / (1024.0 * 1024.0 * 1024.0))
                 // Pre-shrink failure: no grants were mutated, so ordering is
                 // moot — but drop the weights promptly all the same.
-                newcomer.release()
+                await newcomer.releaseAfterExternalResources()
                 MLX.Memory.clearCache()
                 let message = "Model '\(modelId)' loaded but has insufficient KV headroom "
                     + "under the memory cap (\(headroomGb) GB free, need \(minGb) GB to serve) — unloaded"
@@ -569,7 +573,7 @@ extension ProviderLoop {
             // maps it to a 503 so the coordinator reroutes (and coordinator
             // pushes get `load_model_status: failed`). There is no legacy
             // fallback: a model that cannot build a v2 engine does not load.
-            let slotIsVLM = Self.modelIsVLM(at: modelPath)
+            let slotIsVLM = Self.modelIsVLM(at: modelPath, modelID: modelId)
             // The re-slice gate is held across the WHOLE shrink → build →
             // guard → install-slot sequence: a concurrent idle-timeout
             // unload's regrow parked on the gate must not run in the gap
@@ -848,6 +852,8 @@ extension ProviderLoop {
             !modelsUnloading.contains(modelId)
         else { return false }
         let engineV2 = engineBundle.bridge
+        let isQwen4 = Qwen4SupportPolicy.isQwen4ModelType(advertisedModels[modelId]?.modelType)
+            || Qwen4SupportPolicy.isOwnedModelID(modelId)
         modelsUnloading.insert(modelId)
         // Retire the slot's v2 bridge: unregister so heartbeats/cancellation
         // stop fanning out to it, then drain the engine gracefully (running
@@ -855,6 +861,7 @@ extension ProviderLoop {
         await engineV2Runtime.unregister(modelId: modelId)
         await engineV2.shutdown()
         engineBundle.releaseAssistant()
+        await ModelContainerLoading.releaseExternalResources(in: modelSlots[modelId]?.container)
         // Drops the slot's container and MTP drafter references with the
         // target (the drafter is slot-owned — plan D5 teardown).
         modelSlots.removeValue(forKey: modelId)
@@ -863,6 +870,7 @@ extension ProviderLoop {
         // load-admission counts as used — without this the box 503s every load
         // until restart.
         MLX.Memory.clearCache()
+        if isQwen4 { qwen4MemoryRetirement = NativeMemoryRetirementWindow() }
         // The unloaded model can no longer run a step: the serving-set floor
         // (advertised ∪ resident) may relax now — BEFORE the survivors regrow,
         // so their new grants are sized against the reserve they'll live under.
@@ -1024,8 +1032,13 @@ extension ProviderLoop {
     /// can RAISE the serving-set floor meanwhile — comparing against a
     /// requirement captured before the wait would admit a load the post-load
     /// guard then rejects (accepted-then-503). Resolve the headroom live.
-    internal func evictUntilAvailable(weightsGb: Double, allowEviction: Bool = true) async throws {
+    internal func evictUntilAvailable(
+        weightsGb: Double, allowEviction: Bool = true,
+        waitForQwen4Retirement: Bool = false
+    ) async throws {
         while true {
+            try Task.checkCancellation()
+            if isShuttingDown { throw CancellationError() }
             // Sample FIRST, resolve the requirement AFTER that suspension:
             // the exit decision must compare against the floor as it stands
             // when the sample returns, not as it stood before the await.
@@ -1033,6 +1046,12 @@ extension ProviderLoop {
             let requiredGb = ModelLoadAdmission.requiredToLoadGb(
                 weightsGb: weightsGb, headroomGb: loadHeadroomGb)
             if available >= requiredGb { return }
+            // Metal can drop all allocation ownership before macOS returns
+            // the physical pages (observed at full-model scale). Only a recent
+            // owned Qwen4 retirement enables this bounded retry. Never add
+            // guessed reclaimable bytes to the OS sample or relax the gate.
+            if waitForQwen4Retirement, let retirement = qwen4MemoryRetirement,
+                try await retirement.pauseForRecheck() { continue }
             let modelsWithInflight = Set(requestToModel.values)
             let evictable = modelSlots
                 .filter { !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) && !isMTPUpgradeTargetRetained($0.key) }
@@ -1174,6 +1193,8 @@ extension ProviderLoop {
             !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) && !isMTPUpgradeTargetRetained($0.key)
         }
         let hasEvictable = !evictable.isEmpty
+        let mayStillReclaim = Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType)
+            && qwen4MemoryRetirement?.nextDelay() != nil
         // ...but only if evicting could actually reach the requirement: when
         // even every idle model's weights plus the buffer cache fall short,
         // the load path refuses without evicting (see evictUntilAvailable),
@@ -1186,7 +1207,7 @@ extension ProviderLoop {
             if !ModelLoadAdmission.evictionCanReach(
                 availableGb: available, reclaimableGb: reclaimableGb, requiredGb: requiredGb)
             {
-                return true
+                if !mayStillReclaim { return true }
             }
         }
 
@@ -1207,7 +1228,8 @@ extension ProviderLoop {
             if modelSlots[modelId] != nil {  // a concurrent load won the race
                 return false
             }
-            if retried < requiredGb {
+            if retried < requiredGb && !(Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType)
+                && qwen4MemoryRetirement?.nextDelay() != nil) {
                 return true
             }
         }
@@ -1271,24 +1293,21 @@ extension ProviderLoop {
             errorReason: .modelLoad)
     }
 
-    private func loadModelContainer(from directory: URL) async throws -> MLXLMCommon.ModelContainer {
+    private func loadModelContainer(from directory: URL, modelID: String) async throws -> MLXLMCommon.ModelContainer {
         // Vision-language models (config declares `vision_config`) load via
         // VLMModelFactory so image/video requests can run the container's
         // prepare/generate vision path. Their text path still works through the
         // batched engine since VLMModel refines LanguageModel. Shared with the
         // standalone server via `ModelContainerLoading`.
-        try await ModelContainerLoading.loadContainer(from: directory)
+        try await ModelContainerLoading.loadContainer(from: directory, modelID: modelID)
     }
 
     /// A model is a vision-language model when its `config.json` declares a
-    /// `vision_config`. Cheap, dependency-free check used to pick the model
-    /// factory and to route multimodal requests.
-    static func modelIsVLM(at directory: URL) -> Bool {
-        let configURL = directory.appendingPathComponent("config.json")
-        guard let data = try? Data(contentsOf: configURL),
-            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return false }
-        return json["vision_config"] != nil
+    /// `vision_config` and does not opt out with `language_model_only`.
+    /// The loader and advertised media capability share one predicate.
+    static func modelIsVLM(at directory: URL, modelID: String? = nil) -> Bool {
+        ModelScanner.configDeclaresVision(
+            at: directory.appendingPathComponent("config.json"), modelID: modelID)
     }
 
 }

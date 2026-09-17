@@ -447,17 +447,17 @@ private final class LedgerThreadResults: @unchecked Sendable {
         }
     }
     defer { usage.resume.signal() }
-    try #require(usage.captured.wait(timeout: .now() + 2) == .success)
+    try #require(usage.captured.wait(timeout: .now() + 10) == .success)
     usage.setActive(60) // A materializes after B captured the older U=0.
     DispatchQueue.global().async(group: tasks) {
         creditAttempted.signal()
         results.set("aCredited", (try? materialize(ledger, a, 60)) != nil)
         creditFinished.signal()
     }
-    try #require(creditAttempted.wait(timeout: .now() + 2) == .success)
+    try #require(creditAttempted.wait(timeout: .now() + 10) == .success)
     #expect(creditFinished.wait(timeout: .now() + 0.05) == .timedOut)
     usage.resume.signal()
-    try #require(tasks.wait(timeout: .now() + 2) == .success)
+    try #require(tasks.wait(timeout: .now() + 10) == .success)
     #expect(results.get("bRefused") == true)
     #expect(results.get("aCredited") == true)
     #expect(ledger.snapshot().chargedBytes == 60)

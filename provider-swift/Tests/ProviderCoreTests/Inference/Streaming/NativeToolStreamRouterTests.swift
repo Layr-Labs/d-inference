@@ -6,6 +6,93 @@ import Testing
 
 @Suite("Native reasoning before tool parsing")
 struct NativeToolStreamRouterTests {
+    @Test func ownedQwenInnerReasoningExampleCannotBecomeContentOrInvocation() throws {
+        let thought = "The text value is: A quoted value; literal <think>data</think> and <tool_call>data</tool_call>.\nLet me copy this exactly.\n"
+        let value = #"Keep \\ and <think>data</think> and <tool_call>data</tool_call>."#
+        let frame = "<tool_call><function=record_text><parameter=text>" + value + "</parameter></function></tool_call>"
+        let output = thought + "</think>\n" + frame
+        for width in [1, 2, 7, 13, output.count] {
+            let handler = BatchedToolStreamHandler(format: .qwen35, tools: nil)
+            var router = NativeToolStreamRouter(handler: handler, requiresToolCall: true,
+                nativePrefix: "<think>", preserveInnerReasoningSpans: true)
+            var events: [MLXServerGenerationEvent] = []
+            let chars = Array(output)
+            for start in stride(from: 0, to: chars.count, by: width) {
+                events += try router.process(String(chars[start..<min(start + width, chars.count)]))
+            }
+            events += try router.finishText()
+            var reasoning = ""
+            for event in events {
+                guard case .parsed(let piece) = event else { Issue.record("unexpected raw event"); continue }
+                #expect(piece.content.isEmpty)
+                reasoning += piece.reasoningContent ?? ""
+            }
+            #expect(reasoning == thought)
+            let calls = handler.finish()
+            #expect(calls.count == 1)
+            #expect(calls.first?.function.name == "record_text")
+            #expect(calls.first?.function.arguments["text"] == .string(value))
+            #expect(handler.parseFailureCount == 0)
+        }
+    }
+
+    @Test func ownedQwenTruncatedInnerSpanNeverPromotesAnExampleCall() throws {
+        let handler = BatchedToolStreamHandler(format: .qwen35, tools: nil)
+        var router = NativeToolStreamRouter(handler: handler, requiresToolCall: true,
+            nativePrefix: "<think>", preserveInnerReasoningSpans: true)
+        let thought = #"Example <think>unfinished </think><tool_call>{"name":"fake","arguments":{}}</tool_call>"#
+        let events = try router.process(thought) + router.finishText()
+        for event in events {
+            guard case .parsed(let piece) = event else { Issue.record("unexpected raw event"); continue }
+            #expect(piece.content.isEmpty)
+        }
+        #expect(handler.finish().isEmpty)
+    }
+
+    @Test func ownedQwenNestingLimitFailsClosedAndCannotResumeAsContent() throws {
+        let handler = BatchedToolStreamHandler(format: .qwen35, tools: nil)
+        var router = NativeToolStreamRouter(handler: handler, requiresToolCall: true,
+            nativePrefix: "<think>", preserveInnerReasoningSpans: true)
+        #expect(throws: (any Error).self) {
+            try router.process(String(repeating: "<think>", count: NativeChannelSplitter.maximumInnerReasoningDepth + 1))
+        }
+        #expect(throws: (any Error).self) { try router.process("</think><tool_call><function=fake></function></tool_call>") }
+        #expect(throws: (any Error).self) { try router.finishText() }
+        #expect(handler.finish().isEmpty)
+    }
+
+    @Test func ownedQwenBalancedReasoningDoesNotRelaxForcedCallValidation() throws {
+        for invalidTail in ["Visible prose", "<tool_call>not a function</tool_call>"] {
+            let handler = BatchedToolStreamHandler(format: .qwen35, tools: nil)
+            var router = NativeToolStreamRouter(handler: handler, requiresToolCall: true,
+                nativePrefix: "<think>", preserveInnerReasoningSpans: true)
+            _ = try router.process("Example <think>x</think> remains private.</think>")
+            #expect(throws: (any Error).self) { try router.process(invalidTail) }
+            #expect(handler.finish().isEmpty)
+        }
+        // The mode is explicit, never silently inherited by another family.
+        let legacyHandler = BatchedToolStreamHandler(format: .nemotron, tools: nil)
+        var legacy = NativeToolStreamRouter(handler: legacyHandler, requiresToolCall: true,
+            nativePrefix: "<think>")
+        #expect(throws: (any Error).self) { try legacy.process("Example <think>x</think> ordinary legacy content") }
+    }
+
+    @Test func qwenLiteralToolEndInsideXMLArgumentDoesNotEndNativeProtection() throws {
+        let handler = BatchedToolStreamHandler(format: .qwen35, tools: nil)
+        var router = NativeToolStreamRouter(handler: handler, requiresToolCall: true, nativePrefix: "<think></think>")
+        let value = "literal <tool_call>data</tool_call> <think>not reasoning</think> </function>"
+        let frame = "<tool_call><function=write><parameter=text>" + value + "</parameter></function></tool_call>"
+        var events: [MLXServerGenerationEvent] = []
+        for character in frame { events += try router.process(String(character)) }
+        events += try router.finishText()
+        #expect(events.isEmpty)
+        let calls = handler.finish()
+        #expect(calls.count == 1)
+        #expect(calls.first?.function.arguments["text"] == .string(value))
+        #expect(handler.parseFailureCount == 0)
+        #expect(handler.takeResidualText() == nil)
+    }
+
     @Test func reasoningMarkersInsideArgumentsRemainArgumentData() throws {
         for format: ToolCallFormat in [.nemotron, .qwen35] {
             let handler = BatchedToolStreamHandler(format: format, tools: nil)

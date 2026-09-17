@@ -60,8 +60,8 @@ extension ProviderLoop {
         switch engineError {
         case .modelNotLoaded, .noModelLoadedForTokenization:
             return .modelLoad
-        case .invalidRole, .invalidToolPayload, .mediaUnsupportedByModel,
-            .multimodalRejected:
+        case .invalidRole, .invalidToolPayload, .unsupportedReasoningEffort, .mediaUnsupportedByModel,
+            .multimodalRejected, .advertisedContextExceeded:
             return .clientError
         case .toolChoiceViolation:
             return .toolNoncompliance
@@ -159,7 +159,7 @@ extension ProviderLoop {
             switch engineError {
             case .modelNotLoaded, .noModelLoadedForTokenization:
                 return .modelUnavailable
-            case .invalidRole, .invalidToolPayload:
+            case .invalidRole, .invalidToolPayload, .unsupportedReasoningEffort, .advertisedContextExceeded:
                 return .invalidRequest
             case .toolChoiceViolation, .generationFailed:
                 return .generationFailure
@@ -256,6 +256,10 @@ extension ProviderLoop {
             case .invalidRole:
                 return 400
             case .invalidToolPayload:
+                return 400
+            case .unsupportedReasoningEffort:
+                return 400
+            case .advertisedContextExceeded:
                 return 400
             case .toolChoiceViolation:
                 // The MODEL failed the forced tool_choice contract — output-

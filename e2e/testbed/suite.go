@@ -191,6 +191,9 @@ func (s *Suite) PrimaryModelID() string {
 
 func (s *Suite) Start(ctx context.Context) (err error) {
 	s.Ctx = ctx
+	if err := validateLocalEndpointSelection(s.Config.LocalEndpointPort, s.Config.TotalProviders(), s.Config.ProviderTargets != nil); err != nil {
+		return err
+	}
 	if err := validateProviderTargets(s.Config.ProviderTargets, s.Config.TotalProviders()); err != nil {
 		return err
 	}
@@ -388,6 +391,7 @@ func (s *Suite) startProviders() error {
 				s.providerAttempts = append(s.providerAttempts, p)
 			}
 			if err := p.Start(s.Ctx, providerURL, ProviderConfig{
+				LocalEndpointPort:          s.Config.LocalEndpointPort,
 				ModelIDs:                   modelIDs,
 				PrefixCacheMode:            s.Config.PrefixCacheMode,
 				TrustLevel:                 TrustNone,

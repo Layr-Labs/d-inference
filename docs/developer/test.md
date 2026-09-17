@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-15 · commit `1fee36798`
+> Last updated: 2026-09-17 · commit `6b313942f`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -36,6 +36,183 @@ preparation seam before tokenization. The shared public corpus covers JSON-objec
 and schema response formats plus multi-system and text/tool/endpoint forms; it compares
 actual Swift tokens and scope-bound hashes with Rust plans. No production
 prompts or model weights are needed (`scripts/verify-prompt-parity.sh`).
+
+## Native Flash-Next candidate
+
+The [candidate reference](../reference/qwen4-next-support.md#validation-status-and-next-gates)
+records completed local checks and remaining gates. The following are commands
+for a prepared checkout, not claims that this composed candidate has passed
+them. Use the [exact dependency/build prerequisites](build.md#native-flash-next-candidate).
+
+For a merge-only dependency repin, verify the merged commit contains the
+approved head and compare their complete Git trees. Record the locked consumer
+build and documentation checks separately from model execution. Identical
+source does not turn an earlier model receipt into a new binary or hardware
+run, and it does not close an outstanding performance or lifecycle finding.
+
+The [Qwen 3.8 Next reproducibility scripts](../../scripts/qwen38_validation/README.md)
+exercise an existing loopback release server across MTP OFF/ON, reasoning
+OFF/ON, Chat/Responses tools/history, unsupported-effort HTTP 400 boundaries and
+isolated ephemeral complete-cache lifecycle checks. The same page gives the
+separate real-state and quiet-cancellation/reload Swift opt-ins and their limits.
+These local fixtures do not qualify a hosted OpenRouter route or authorize
+model uploads, signing or production changes.
+
+Build release test targets with testable imports enabled where the toolchain
+requires it (`-Xswiftc -enable-testing`); do not exclude those tests to bypass a
+test-build configuration error.
+
+The SDK's `CBv2HiddenResourceTests` covers hidden generated bundles and retained
+byte-conflict refusal. Run it together with the existing `CBv2PagedSafetyTests`
+and actual layer-submission safety tests on the target hardware; file presence
+and build success do not establish resource eligibility in the running process.
+The original128-GiB reload gate must retain its normal required headroom even
+when background applications prevent the first load. Record that refusal,
+resolve the actual machine conditions and keep any separately labelled
+diagnostic distinct from the unchanged gate.
+
+Keep all precision controls in receipts. A diagnostic `MLX_ENABLE_TF32=0`
+run on NAX hardware is not the default posture and cannot erase an earlier
+default-run failure or authorize changing other models' serving behavior.
+Unqualified prefill experiments are excluded from this support update.
+
+`FlashNextReclaimDiagnostics` is a separately selected, opt-in observation of
+Metal allocation, MLX active/cache, complete native charge/coverage and OS
+footprint after the real quiet-prefill lifecycle. It requires
+`DARKBLOOM_FLASH_NEXT_RECLAIM_DIAGNOSTIC=1`, exclusive GPU ownership and the same
+artifact/offload/cache configuration as the ordinary lifecycle fixture. Its
+observation interval is not a fix or a release gate: the original
+`FlashNextQuietCancellationReloadLiveTests` still retries immediately, with no
+callback/delay or lowered memory requirement. Keep both outcomes separately.
+
+`NativeMemoryReclamationTests` defaults to real 1 GiB MLX backing in an isolated wired
+ticket and checks that cache retirement drops Metal allocation ownership while
+preserving an independently live array. Select `DARKBLOOM_NATIVE_RECLAIM_TEST=1`
+and the exclusive GPU opt-in; `DARKBLOOM_NATIVE_RECLAIM_MODE=direct` retains the
+old unscoped control, while `scoped` compares a test-only autorelease pool.
+This native resource test does not replace the full-artifact immediate-reload,
+prefill/decode, memory-tier or numerical gates.
+Explicit `DARKBLOOM_NATIVE_RECLAIM_GIB=8|64` repeats the same resource/liveness
+assertions at larger scale, requiring 24 GiB of OS-available headroom beyond the
+declared probe size. Post-release footprint observations are diagnostics, not a
+delay added to the model's immediate-reload gate.
+
+`Qwen4ExpLoadFootprintTests` checks complete header/index coverage, retention of
+MTP/vision payloads, FP16/unknown-layout fallbacks and the additive native-load
+allowance. `NativeMemoryRetirementWindowTests` checks expiry and cancellation;
+these do not replace the actual model reload gate. When the loading policy
+changes, retain the old requirement/result separately and record the new
+checkpoint-derived allowance, full load peak and actual reload outcome.
+
+For the paired SDK MTP/read-profile candidate, run the SDK's
+`Qwen4SelectedPageCopiesTests` and `Qwen4ExpMTPPrimingTests`, the original real
+Qwen4 state/output-budget oracles, then native OFF/ON and cold/warm-prefix API
+qualification. Read copies compare exact bytes against the original ordered
+attention path; assistant closeness tests are not a target-losslessness gate.
+
+`TestIntegration_FlashNextConnectedMatrices` in
+`e2e/flash_next_connected_matrix_test.go` is an explicit opt-in for the same API
+oracles through a real local Go coordinator. Reserve one owned model/GPU lane
+first. Supply `DARKBLOOM_FLASH_NEXT_CONNECTED_MATRIX=1`, the exact native Next
+model ID through `DARKBLOOM_TESTBED_MODEL` and `TESTBED_MODEL_ID`, a matching
+`DARKBLOOM_QWEN4_MODEL_PATH`, and a verified `DARKBLOOM_PROVIDER_BINARY` with its
+adjacent resources. The pinned checkpoint hash is checked before startup;
+similarly named Qwen3.8 27B/M5/NAX fixtures are not substitutes.
+
+Set `DARKBLOOM_FLASH_NEXT_MATRIX_MTP` to `off` or `auto`,
+`DARKBLOOM_FLASH_NEXT_MATRIX_PYTHON` to the approved Python executable,
+`DARKBLOOM_FLASH_NEXT_MATRIX_SCRIPT` to the absolute path of
+`scripts/qwen38_validation/connected_matrix_runner.py`, and
+`DARKBLOOM_FLASH_NEXT_MATRIX_OUTPUT` to a new private output directory. The
+testbed's optional `LocalEndpointPort` uses the native authenticated unified
+mode on one locally launched provider. API calls go to the coordinator; metrics
+and the original four-field drain checks go to the same provider's loopback
+listener. No second model is loaded and neither key is printed or copied from
+an operator credential store. Default launches are unchanged.
+
+Retain failures, the one unsupported-high observation, per-suite native metrics
+and bounded wire-profile receipts. Synthetic auth, `TrustNone`, skipped
+challenges and mock payment services do not qualify production trust or hosted
+routing. Audit persistent-key access separately before using a signed runtime.
+
+`TestIntegration_FlashNextExtendedMatrices` is separately opted in with
+`DARKBLOOM_FLASH_NEXT_EXTENDED_MATRIX=1`. It keeps the same native/Go setup but
+selects the approved runner's `weather`, `fidelity`, `heldout` and `multimodal`
+suites. Supply the retained original private fixtures and their verified runner;
+do not substitute new prompts, bias special tokens or weaken failed oracles.
+These selections report known quality failures and dependency skips separately
+from actual request/page retirement and MTP-policy checks. The core 59-cell
+matrix remains unchanged.
+
+For single-provider account-cache checks, first run the CPU-only opt-ins in
+`e2e/flash_next_cache_manifest_test.go` and
+`e2e/flash_next_cache_planner_test.go`. Set
+`DARKBLOOM_FLASH_NEXT_CACHE_MANIFEST_CHECK=1`, an absolute
+`DARKBLOOM_FLASH_NEXT_ARTIFACT_MANIFEST`, the selected
+`DARKBLOOM_QWEN4_MODEL_PATH`, and a source-verified
+`DARKBLOOM_PROMPT_SIDECAR_BINARY`. The manifest contains `model_id`,
+`model_type`, `model_aggregate_sha256` and the complete integrity-file `files`
+array (`path`, `role`, `size_bytes`, `sha256`), including weights and video
+processor metadata. Provisioning checks that full aggregate but downloads only
+prompt-role files. The planner check starts only the Rust sidecar, not MLX:
+
+```bash
+go test ./e2e -count=1 -run '^TestFlashNextCache(ManifestProvisioning|PlannerBindings)$'
+```
+
+After that preflight, an owned maintenance wrapper may select
+`DARKBLOOM_FLASH_NEXT_CACHE_SCOPE=1` and run
+`TestIntegration_FlashNextCacheScope` in `e2e/flash_next_cache_scope_test.go`,
+with the same model/binary/output/MTP bindings described above. It recomputes
+the actual loaded model identity, binds the local catalog's weight hash, and
+compares two authenticated synthetic accounts with identical caller cache
+labels. Retain native drain checks, HTTP equivalence and accepted SSD receipts
+for both `off` and `auto`. Sidecar outage and re-preload are separate from
+provider-process restart: the ordinary testbed stop helper deletes its temporary
+cache directory and cannot establish persistence. These fixtures do not qualify
+multi-host routing, signed key durability, raw logits or hosted account trust.
+
+The cache fixture also compares consumer-visible cached/reasoning counts with
+the native terminal (`e2e/flash_next_cache_usage_test.go`); observed SSD activity
+alone cannot pass this check. `TestStreamingCombinedFinishUsage` in
+`coordinator/api/chat_combined_terminal_usage_test.go` covers combined and
+separate terminal shapes, absent usage, untrusted cache details, unchanged
+totals/content, public identity, signature pairing and a single `[DONE]`.
+
+```bash
+python3 -B -m unittest discover -s scripts/qwen38_conversion -p 'test_qwen38_provenance.py' -v
+go test ./coordinator/protocol ./coordinator/registry
+swift test --package-path provider-swift --filter Qwen4SupportPolicyTests
+```
+
+The conversion suite uses synthetic files and a stub quantizer/serializer; it
+does not execute MLX or establish numerical conversion parity. Provider source
+coverage also includes `Qwen4EmbeddedMTPTests`, `Qwen4FactorySelectionTests`,
+`Qwen4ExpMmapFootprintTests`, `Qwen4ReasoningControlTests` and Foundation
+`Qwen4MediaPolicyTests`. Run relevant tests without skips after the matching
+resources/build are available; a syntax-only SDK pass is not a unit-suite pass.
+
+For actual model qualification, keep PLE enabled and bind every result to one
+source/dependency/binary/metallib/artifact tuple:
+
+1. Exercise the real default standalone load guard before weights, qualified
+   identity and same-type/name-collision negatives, reservation cleanup, then
+   ordinary cold CLI first generation and unload/reload. Exercise the coordinator
+   path independently; a preloaded engine or listing is not cold-start evidence.
+2. Compare target-only with actual embedded MTP on native paging, prefix cache
+   off: target/state/output checks, widths and output boundaries, rejection and
+   rollback, PLE first-use/sparse-threshold crossing and exact row gathers.
+3. Turn complete prefix caching on separately: cold miss, hot repeat, real suffix,
+   SSD-only file-read restore, mixed hit/miss, signed persistent restart,
+   tenant/model/template/numerical identity and corrupt/stale-state rejection.
+   Confirm native dtypes, ownership and truthful cached-token accounting.
+4. Cover disconnect versus legal half-close, cancellation during prefill/decode/
+   cache I/O, readmission, model switches, pressure and actual admitted concurrency.
+   Check Chat/Responses reasoning/tools/usage/finish behavior and capability-bound
+   media acceptance/rejection. Preserve failed cells and distinguish natural stops from full output
+   budget tests. Speed targets remain deferred.
+
+## App Attest validation
 
 The [App Attest shadow validation commands](../reference/app-attest-shadow.md#validation) cover cryptography, protocol symmetry, counter races, unchanged routing, and coexistence signing. Live macOS 27 acceptance remains separate.
 
@@ -198,13 +375,29 @@ thousands of them can starve bounded test handshakes. Concurrency tests retain
 their own tasks, barriers and interleavings. This does not serialize provider
 inference or the separate model-concurrency benchmarks.
 
-`scripts/run-provider-tests.sh` runs exact allocator integration, the controlled
-ledger interleaving, the real process-environment projection test and the SSD
-sidecar stage-deadline test in separate processes. The general suite excludes
-those cases; each isolated invocation uses the existing nonempty/no-skips guard.
+`scripts/run-provider-tests.sh` runs each native allocator assertion, the
+controlled ledger interleaving, the real process-environment projection test
+and the SSD sidecar stage-deadline test in separate processes. The general
+suite excludes those cases; each isolated invocation uses the existing
+nonempty/no-skips guard.
 A general-suite failure does not silence the isolated gates. Isolation keeps the
 stage-deadline assertion at the production budget without unrelated suite load;
 it does not change an assertion or runtime resource-selection rule.
+
+`scripts/run-exclusive-native-gpu-test.sh` accepts only the reviewed allocator
+and batch-composition test functions. It sets
+`DARKBLOOM_EXCLUSIVE_NATIVE_GPU_TEST=1` for that one child process and passes
+`--no-parallel`. Ordinary invocations explicitly remove inherited opt-in state.
+`scripts/run-paged-kernel-tests.sh` runs the remaining kernel suite and then
+the composition assertion separately, preserving both results if either fails.
+Run these helpers only on an owned GPU test lane with the matched metallib;
+they do not download model weights or manage an inference endpoint.
+
+To check this CI wiring without invoking Swift or using a GPU, run
+`python3 scripts/test-native-gpu-ci.py`. Its temporary fake `swift` executable
+checks selector/opt-in isolation and verifies that failed assertions, actual
+skips and zero executed tests still fail the existing tripwires. The same
+CPU-only check runs in the Release Integrity job; it is not GPU qualification.
 
 ```bash
 make provider-test
@@ -225,6 +418,12 @@ For a custom SwiftPM `--scratch-path`, stage the authoritative `mlx.metallib`
 in the active `debug` or `release` directory containing the `.xctest` bundle.
 `LiveInferenceFixtures.findSourceMetallib` uses that same-configuration source
 before replacing the runner copy; a runner-local file alone is insufficient.
+
+`LiveInferenceFixtures.buildProduct` likewise anchors updater child executables,
+fan helpers and resource bundles to the running test bundle's configuration.
+Release tests do not require or borrow a separate `.build/debug` tree. Missing
+active-configuration products remain failures; no peer-configuration fallback is
+used. This is test-fixture discovery, not release signing or deployment evidence.
 
 Tests that change process-wide MLX settings must use Swift Testing's
 `#expect(processExitsWith: .success)` child-process boundary. Restoring an
@@ -295,6 +494,10 @@ Keep model fixtures in `Inference/Live/Fixtures`, synthetic engine support in
 HTTP/coordinator fixtures in `Helpers`. Shared input files under `fixtures/`
 and `coordinator/protocol/testdata/` remain canonical; moving a test deeper
 requires checking any lookup based on `#filePath`.
+`CachePromptParityTests.vectorFile` locates the owning repository using its
+provider and coordinator manifests instead of assuming a fixed source-folder
+depth. Its three suites still read the canonical shared vectors; a missing
+fixture fails the test and is never replaced by a skip or copied test data.
 
 Check each suite's annotations and prerequisites before running it. Tests
 that need no model weights can still execute Metal. The startup decode live
@@ -1162,6 +1365,14 @@ prompt-contract tests: `contract_vectors.json` and `block_hash_vectors.json`
 sanitization, Harmony and Gemma normalization, reasoning effort, Unicode, all
 four endpoints, exact block multiples, long prompts, response formats and
 multiple system turns),
+`tool_choice_parallel_vectors.json` (16 exact required/named/auto/none
+instruction cases across omitted/null/true/false parallel controls, consumed by
+`CachePromptParityTests.parallelToolInstructionVectors` and Rust
+`tool_choice_parallel.rs`),
+`native_reasoning_vectors.json` (25 shared context/error cases for native
+Qwen4 reasoning ON/OFF, typed effort precedence and legacy-model preservation,
+consumed by `CachePromptParityTests.nativeReasoningContextVectors` and Rust
+`cache_prompt_parity.rs`),
 `production_vectors.json` (per-model normalized bodies, token IDs and
 boundaries) and `manifests/` (the catalog snapshot the vectors were generated
 from). Production tokenizer/template/config artifacts are **not** in the

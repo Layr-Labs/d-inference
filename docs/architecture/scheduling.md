@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-15 · commit `dfe0260c6`
+> Last updated: 2026-09-17 · commit `77d1d1d86`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -181,6 +181,22 @@ its reported `FreeForLoadGB` when present, otherwise against
 The **absolute hardware-fit gate** (`modelFitsHardware`,
 `modelMemoryHeadroomFactor`) precedes both paths for non-resident models
 and is described with the other gates in [`routing.md`](routing.md#eligibility-gates-and-the-gatereason-vocabulary).
+
+For an explicitly advertised native Qwen4 SSD weight-offload declaration,
+`advertisedOffloadedMemoryGBLocked` validates the model family, matching ID,
+positive total/offloaded bytes and finite estimated memory before cold-load
+accounting uses it. The estimate cannot undercut the remaining resident weight
+bytes plus its valid explicit `native_load_transient_bytes` allowance; missing
+or invalid allowances retain the existing 1.2 load-transient padding. Missing,
+invalid or unrelated-
+family declarations retain catalog-based accounting; a model name alone grants
+no reduction (`coordinator/registry/offloaded_weights.go`).
+`reportedFreeForLoadAdmitsWithOffload` is shared by routing, the model-load
+planner and the warm pool, so none independently discounts the same weights.
+This is weight-residency accounting, not prefix-cache credit, a lower activation
+reserve or proof that a physical RAM tier passes cold load and reload. The
+[native support reference](../reference/qwen4-next-support.md) records those
+separate model/resource qualification boundaries.
 
 Optional MTP preparation retains its target across asynchronous work, so the
 provider excludes that target from eviction feasibility and refreshes its

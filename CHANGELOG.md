@@ -1,5 +1,20 @@
 # Changelog
 
+## Release candidate v0.9.5 — Qwen 3.8 Next / native Qwen4 follow-up (not shipped; 2026-09-15)
+
+- Pin the native Qwen4 SDK to merged upstream PR #149. The approved SDK source tree is unchanged; this dependency update introduces no new model, numerical or performance changes.
+- Stage native Qwen4's bounded MTP catch-up, consistent carry-only initialization of cold/restored unprimed heads and grouped selected-page KV reads as a paired SDK/provider default candidate. Preserve already-primed caches, target parameters, ordered attention arithmetic and explicit rollback controls; full default-posture qualification is required before promotion.
+- Derive eligible Qwen4 SSD-offload load estimates from validated native copy bounds instead of generic 20% padding. Preserve all compute/MTP/vision payloads and the existing OS, activation and KV safeguards; other layouts retain their previous policy. Recheck actual headroom for at most two seconds after owned Qwen4 retirement, without granting speculative reclaim credit. Physical full-model qualification remains required.
+- Discover hidden SwiftPM resource bundles during paged-backend preflight while retaining sealed-app boundaries and rejection of conflicting source bytes. No model arithmetic or weights change.
+- Preserve reasoning with its following function calls when the standalone Responses API replays prior output as input. Keep explicit message/tool-result boundaries, argument bytes and media unchanged; no model, MTP, sampling or cache-algorithm change.
+- Preserve both upstream Hugging Face mock isolation and the Qwen native-GPU test gates when composing the provider CI runner.
+- Snapshot verified converter metadata before shard conversion so later license, tokenizer or template mutations cannot enter a successful pinned conversion.
+- Preserve all semantic Qwen4 configuration fields across Codable round-trips. Bind and validate PLE resources in both model factories, keep legacy request state in each cache, and reject unsupported generic generation recoverably.
+- Run the ordinary Qwen4 benchmark through native CBv2, with normal EOS handling, explicit target-only/cache-off scope and complete duration accounting. Preserve other models' JSON5 configuration support.
+- Materialize Qwen4 fused expert weights through the existing bounded loader hook after relinquishing staging owners. Retain explicit physical-memory, reload and deadline qualification gates.
+- Keep unsupported generic SDK sampling controls explicit without changing native provider support. Align the provider version and coordinator display fallback at 0.9.5; publication and rollout remain separate approvals.
+- Enable the existing Qwen4 full-KV parallel attention, 32 value partitions and early layer submission by default for eligible decode/MTP verification. Preserve explicit `0` rollback, compact-KV opt-in, wider-prefill fallbacks and unchanged model weights, arithmetic and MTP policy.
+
 ## Release candidate v0.9.4 — App Attest recovery and retirement readiness (not shipped; 2026-09-14)
 
 - Fix the released 0.9.3 App Attest callback-timer abort. Require the callback completion/expiry smoke in the optimized signed bundle, installer and updater; distinguish callback failures from Metal failures.
@@ -30,6 +45,7 @@ coordinator deployment.
 
 #### Coordinator
 
+- **Combined streaming usage** — Preserve validated cached-token and reasoning-token details when a Chat stream carries usage on its finish event. When a dedicated usage event follows, enrich only that event; do not duplicate details, invent usage, or change content, token totals, signatures or terminal identity.
 - **Qwen prompt parity** — Match the provider's Qwen-family handling of required and named tool calls, including catalog aliases and Qwen3-VL, to avoid mismatched thinking controls in cache proofs.
 - **Repeated-prefix routing** — Prefer a stable cache-capable provider for repeated prefixes only among otherwise equivalent cost, queue and pending-work candidates. Exclude capabilities quarantined after a failed cache proof from this preference, even when heartbeats continue advertising them. Revalidate at reservation and rescan if affinity eligibility changed after selection. Preserve ordinary serving when no unfenced cache candidate is available, along with capacity, deadline, trust and proof gates. Profiler rows identify this preference as `prefix_affinity`.
 - **Cache opportunity diagnostics** — Report per-model reasons and numerical counts for repeated-prefix demand, usable holders and routing selection. These diagnostics distinguish routing opportunities from actual cache hits and measured latency savings. Add a [consumer guide](docs/consumer/prefix-cache.md) for preserving shared prompt prefixes.
@@ -51,6 +67,75 @@ coordinator deployment.
 - Add negotiated App Attest shadow enrollment and fresh connection assertions, with independent certificate/policy verification, durable counters, and coverage/latency observations. APNs and MDM remain authoritative; shadow success or failure changes no routing, trust, payments, or supported OS floor.
 - Keep the CLI and app launch flow; add profile-authorized App Attest signing alongside APNs in release and validation workflows. Actual macOS 27 acceptance requires the final signed app on physical hardware.
 - Accept macOS Developer ID profiles granting only the App Attest CDhash opt-in, including array grants. Preserve existing APNs/keychain entitlements; validate the attested environment on the coordinator even when the optional environment entitlement is absent.
+
+## Unreleased — Qwen 3.8 Next (Flash-Next) support candidate
+
+- Record the human-reviewed candidate and final 118-cell local API pass,
+  account-scoped cache/usage fixes, default long-prefix cache qualification,
+  full affected-suite results and matched speed checks in the
+  [native API/cache qualification report](docs/reports/2026-09-15-qwen38-native-api-qualification.md).
+  Existing opt-in multirow and semantic-quality limitations remain explicit.
+
+- Align final non-streaming reasoning-item status with streaming Responses;
+  preserve the root incomplete/complete status, original text, usage and
+  provider attestation fields.
+- Preserve the Chat stream's response ID and creation timestamp on terminal
+  coordinator metadata while retaining signature/hash values and the distinct
+  job ID. Include `input_tokens + output_tokens` as Responses `total_tokens`;
+  cached/reasoning details are not counted again and billing is unchanged.
+- Add a real-coordinator/native-unified API matrix with authenticated metrics
+  from the same provider. Replace the generic plaintext test's ASCII-density
+  heuristic with an exact known-answer/UTF-8 check, preserving normal surrounding
+  whitespace without rewriting engine output.
+- Require a declared native function header or framed JSON at each forced-tool
+  frame opening. Reject prose in that header boundary while preserving literal
+  argument content and mandatory final validation; no output repair is added.
+- Preserve original messages for exact owned native Qwen4 text required/named
+  calls through Swift serving/accounting and the Rust prompt sidecar. Advance
+  normalization to v5; previous identities fail cold for exact-cache credit.
+- Preserve per-request rotary position semantics in mixed text/image batches,
+  including hidden-returning MTP history paths. Keep singleton admission and
+  speculative caps unchanged; longer-prefix batching qualification remains open.
+- Add qualified opt-in full-KV parallel attention and early layer submission,
+  plus canonical media-prefix positions for appended-text reuse. Preserve
+  native state, PLE fill/fault ownership, MTP and existing fallback behavior.
+- Require native tool framing after the rendered reasoning boundary for
+  required/named Qwen4 text calls. Keep argument values model-generated and
+  retain strict postvalidation and target-only constraint safety gates.
+- Record bounded speed gains and unresolved quality/release gates in the
+  [September 15 draft update](docs/reports/2026-09-15-qwen38-performance-stability.md).
+- Mirror parallel-aware required/named tool instructions for other paths in
+  the coordinator's prompt sidecar. Regenerate immutable prompt vectors and
+  preserve ordinary serving across mixed prompt-contract versions.
+- Preserve non-reasoning Qwen 3.8 Next function-call history on the standalone
+  Responses endpoint and emit Responses SSE lifecycle/item events, including
+  incomplete and failed terminals. Add actual cold-load admission regressions
+  covering the Nemotron standalone-guard lesson.
+- Drain native completion before the final empty-pool memory refund; retain
+  strict allocator and scoped-stream ordering tests.
+- Reject unsupported thinking efforts for the owned Next artifact with a
+  typed HTTP 400 before template rendering. Preserve native low/medium/xhigh
+  controls, disabled-thinking precedence and other models' templates.
+- Make required/named tool instructions respect allowed parallel calls. Retain
+  the singular contract when parallel calls are disabled; do not contradict
+  a request for several independent calls with singular forcing instructions.
+
+No provider version bump, model publication, catalog activation, release or
+deployment is implied by this support update.
+
+- Add native Qwen4 text serving with retained embedded MTP, SSD-backed learned
+  PLE tables, native paged state and complete-checkpoint support. Scope automatic
+  paging/cache defaults to the exact owned serving identity; preserve artifact,
+  runtime, dtype and cache-identity gates.
+- Enforce a lower-only local context limit over prompt plus reserved completion,
+  reject overflow with a sanitized client error, keep unsupported media out of
+  the text path and preserve request-owned cache usage and connection cancellation.
+- Carry validated SSD-offloaded weight declarations through provider/coordinator
+  admission and add repository-owned pinned conversion/provenance tooling.
+- Record current component/synthetic checks and remaining fresh-build, real-model,
+  cache/restart, API and hardware qualification in the
+  [native support reference](docs/reference/qwen4-next-support.md).
+  Full production qualification remains separate from the reviewed support update.
 
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 

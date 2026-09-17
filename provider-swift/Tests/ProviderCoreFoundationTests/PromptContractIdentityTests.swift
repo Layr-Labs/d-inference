@@ -11,10 +11,14 @@ struct PromptContractIdentityTests {
     private struct Vector: Decodable {
         let artifacts: [ManifestFile]
         let expectedPromptContractId: String
+        let legacyV3PromptContractId: String
+        let legacyV4PromptContractId: String
 
         enum CodingKeys: String, CodingKey {
             case artifacts
             case expectedPromptContractId = "expected_prompt_contract_id"
+            case legacyV3PromptContractId = "legacy_v3_prompt_contract_id"
+            case legacyV4PromptContractId = "legacy_v4_prompt_contract_id"
         }
     }
 
@@ -29,6 +33,9 @@ struct PromptContractIdentityTests {
             #expect(
                 try PromptContractIdentity.compute(files: vector.artifacts)
                     == vector.expectedPromptContractId)
+            #expect(vector.expectedPromptContractId != vector.legacyV3PromptContractId)
+            #expect(vector.expectedPromptContractId != vector.legacyV4PromptContractId)
+            #expect(PromptContractIdentity.normalizationVersion == "darkbloom-request-normalization-v5")
         }
     }
 

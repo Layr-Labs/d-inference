@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-15 · commit `53e537e4f`
+> Last updated: 2026-09-17 · commit `6b313942f`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -9,7 +9,16 @@ of it; the per-component steps below explain what each target runs.
 
 Docs Lint needs Git history to validate moved source links in frozen records;
 its checkout uses `fetch-depth: 0` (`.github/workflows/ci.yml`, `docs` job).
+
+Changes to native loading estimates and retirement require a rebuilt provider
+test product, not only a new CLI. Bind both products and the SDK/metallib to the
+same checkout before running the [memory and lifecycle gates](test.md).
 See [historical source references](historical-references.md) for local setup.
+
+Native CI test isolation reuses these built test products and their staged
+metallib; it does not rebuild or download a model. Follow the
+[provider test procedure](test.md) to run GPU-global assertions in separate
+processes with the exclusive opt-in scoped to the named test.
 
 Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 `scripts/publish-model.sh` to registration. See the
@@ -44,6 +53,64 @@ The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its 
   `git submodule update --init --recursive`). `provider-swift/Package.swift`
   depends on `../libs/mlx-swift` and `../libs/mlx-swift-lm` by local path.
 - **Docker** only for the coordinator container image (step 9).
+
+### Native Flash-Next candidate
+
+The Qwen 3.8 Next integration pins `libs/mlx-swift-lm` to the merged
+[SDK PR #149](https://github.com/Layr-Labs/mlx-swift-lm/pull/149) commit
+`729fa45c67a8b1cb26b1debeacf7f1d16ef3a21e`. Its complete Git tree is identical
+to the approved review head `ae3ecdc835a895091f8929749fdb3e14383295a9`.
+Use the recorded gitlink, not a floating branch or a private experiment.
+
+Use the repository-owned [conversion tools](../../scripts/qwen38_conversion/README.md)
+for the pinned official source. Metadata verification is distinct from full
+payload hashing; conversion validates each source shard and writes a new
+output/manifest while retaining the trained assistant and packed PLE table.
+Inspect the tool's storage requirements before full hashing or conversion and
+coordinate the model/GPU operator. Never create a missing mount path or reuse
+an existing output directory. These commands do not publish an artifact.
+
+Before describing the candidate as reproducible:
+
+1. Record the selected source trees/patch digests and approved immutable core,
+   C, Swift, SDK and provider pins. Inspect the composed SDK's
+   `libs/mlx-swift-lm/docs/qwen4/composition.md` for required source selection and
+   excluded experiments.
+2. Resolve CMake/package revisions and nested gitlinks in a fresh recursive
+   private checkout. A machine-specific dependency symlink, local package
+   override or unrecorded core patch does not close this gate. After each
+   dependency merge, record the resulting approved commit, update its consumers
+   and repeat affected checks; a review-head pin is not a final merged pin.
+3. Build the provider with the source-matched metallib and required SwiftPM
+   resources using the procedures below; record actual binary/library/resource
+   identities. Source parsing alone is not a build or runtime test.
+4. Complete the [candidate test matrix](test.md#native-flash-next-candidate)
+   on that final artifact. Keep private draft staging, signing/release, model
+   publication, catalog activation and deployment as distinct outcomes.
+
+Current source and validation limits are in the
+[candidate reference](../reference/qwen4-next-support.md#validation-status-and-next-gates).
+
+SwiftPM may mark generated resource bundles hidden on macOS. The SDK's
+`PagedAttentionResources.locate` must still discover their readable Metal
+source inside its existing search roots. Do not clear filesystem flags or
+disable paged eligibility to hide a failed preflight; keep sealed-app lookup
+and conflicting-resource rejection intact. Stage and verify resources for
+both the test host and any separately invoked CLI child.
+
+Private prefill experiments, including packed-read lookahead and ordered NAX,
+are excluded from this publication pin. Rebuild and rebind both the SDK tests and provider when its
+gitlink changes; an earlier executable cannot qualify the new source merely
+because the core metallib hash is unchanged.
+Record the actual compiled NAX capability and precision posture; a hardware
+product name does not prove which kernels or arithmetic were used.
+
+The connected Go API matrix can reuse an independently hashed production
+provider via `DARKBLOOM_PROVIDER_BINARY`; it does not build or substitute a
+different native runtime. Record the Go coordinator/test source separately.
+The [connected qualification instructions](test.md#native-flash-next-candidate)
+bind coordinator traffic and native metrics to one authenticated unified
+provider, with the Python runner and original oracles owned by this repository.
 
 ### Repository layout for builders
 

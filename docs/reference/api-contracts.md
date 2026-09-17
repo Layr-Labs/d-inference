@@ -352,7 +352,7 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `withCode` in `coo
 }
 ```
 
-`code` mirrors `type` unless a handler overrides it (`withCode`, e.g. `payload_too_large`, `model_capability_unsupported`); `param` is present only when a handler names the offending field (`withParam`, e.g. `"model"` on `model_not_found`). Errors raised *after* a stream has committed cannot change the status line; they surface as a terminal SSE `error` event followed by `data: [DONE]` (`writeChatStreamTerminalError`, `coordinator/api/chat_metadata_stream.go`; `writeChatStreamProviderError`, `coordinator/api/consumer_stream.go`).
+`code` mirrors `type` unless a handler overrides it (`withCode`, e.g. `payload_too_large`, `model_capability_unsupported`); `param` is present only when a handler names the offending field (`withParam`, e.g. `"model"` on `model_not_found`). Chat errors raised *after* a stream has committed cannot change the status line; they surface as a terminal SSE `error` event, without a normal-completion `[DONE]` (`writeChatStreamTerminalError`, `coordinator/api/chat_metadata_stream.go`; `writeChatStreamProviderError`, `coordinator/api/consumer_stream.go`).
 
 | Status | `type` values | Raised by |
 |---|---|---|
@@ -423,6 +423,14 @@ Requests are decoded into a generic JSON object with `json.Number` preserved (`p
 }
 ```
 
+In Chat streams, usage may accompany the finish event or arrive in a separate
+usage-only event. Validated cache and reasoning details are added to the
+combined event only when no separate usage event follows; otherwise the
+dedicated event owns those details. No usage object is invented when the
+provider sends none (`handleStreamingResponseWithFirstChunkAndError`,
+`coordinator/api/consumer_stream.go`; `finalizeUsageChunk`,
+`coordinator/api/chat_stream_terminal.go`).
+
 `model` echoes the requested string, alias included (`buildNonStreamingResponse`, `coordinator/api/chat_response.go`). `se_signature` and `response_hash` are present when the provider signed the response; verification is described in [`../consumer/verification.md`](../consumer/verification.md). `metadata` is `ChatCompletionMetadata`:
 
 | Field | Type | Meaning |
@@ -441,6 +449,18 @@ Requests are decoded into a generic JSON object with `json.Number` preserved (`p
 
 Bodies are lowered into the chat pipeline (`coordinator/promptcontract/endpoint_lower_responses.go`) and the provider's chat output is raised back into `ResponsesResponse` (`coordinator/api/types/types.go`): `id` (`resp_…`), `object`, `created_at`, `status`, `error`, `incomplete_details.reason`, `instructions`, `max_output_tokens`, `model`, `output[]`, `parallel_tool_calls`, `temperature`, `tool_choice`, `tools`, `top_p`, `metadata`, `usage` (`input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`), `se_signature`, `response_hash`. Streams use `event:`-typed frames from `response.created` / `response.in_progress` through the item deltas to `response.completed` (or `response.incomplete` when truncated) and carry **no** `data: [DONE]` (`newResponsesStreamEmitter`, `coordinator/api/responses_stream.go`).
 
+`usage.total_tokens` is always emitted as `input_tokens + output_tokens`, including
+zero. Cached and reasoning token details are subsets, not additional tokens;
+the same `buildResponsesUsage` constructor supplies direct, converted and
+streamed responses (`coordinator/api/responses_response.go`). This field changes
+neither the underlying usage counts nor billing.
+
+Final non-streaming reasoning output items carry `status: completed`, matching
+the streaming emitter's closed reasoning items (`appendResponsesOutputItems`,
+`coordinator/api/responses_response.go`; `responsesStreamEmitter.closeReasoning`,
+`coordinator/api/responses_stream.go`). This item status does not override a
+root response marked `incomplete` because generation reached its output limit.
+
 ### Completions and Messages
 
 `/v1/completions` and `/v1/messages` are lowered to the chat contract (`coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_messages.go`); responses are re-shaped by `coordinator/api/generic_endpoint_response.go` and streams by `coordinator/api/generic_endpoint_stream.go`, which terminates with `data: [DONE]`.
@@ -453,9 +473,17 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 2. **Headers at commit**: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Inference-Job-ID` (`writeSSEResponseHeader`), plus `X-Timing` and the `X-Provider-*` headers.
 3. **Each provider chunk** is forwarded as one `data: <json>\n\n` event after `normalizeSSEChunk` (`coordinator/api/sse_normalize.go`); the coordinator does not re-tokenise or coalesce content. Chunks that arrive before commit are buffered (`chunkBufferSize` = 256).
 4. **Usage and finish chunks are held.** A chunk that only carries `usage` (`parseUsageOnlyStreamChunk`) is held so the reasoning-token breakdown can be spliced in; the chunk carrying the terminal `finish_reason` (`parseFinishStreamChunk`) is held so it can be corrected to `length` against the authoritative token counts. Both are written after every content delta. `se_signature`, `response_hash` and opt-in `metadata` ride on the held usage chunk; when there is none they are emitted as one additional fully-shaped `chat.completion.chunk` (`newChatCompletionExtrasEvent`) immediately before termination. Every chunk's `model` is rewritten to the alias you sent (`rewriteChunkModel`).
+
+   Coordinator-authored extras, including metadata before an in-band error,
+   reuse the first observed Chat response `id` and its valid `created` timestamp
+   (`chatStreamIdentity.observe`, `coordinator/api/chat_stream_identity.go`).
+   Provider frames are not rewritten for this purpose; signature/hash values
+   are preserved. The coordinator's job identity stays in `X-Inference-Job-ID`
+   and `metadata.job_id`, not in a new response ID. If no valid provider ID has
+   been observed, the existing `chatcmpl-<job-id>` fallback is used.
 5. **Termination**: exactly one `data: [DONE]\n\n`, written by the coordinator after every coordinator-appended event. Any `[DONE]` from the provider is stripped first (`stripSSEDoneEvents`). Responses streams end with `response.completed` / `response.incomplete` instead.
 6. **No keepalives.** The coordinator never writes comment frames or pings; a silent stream means the provider has not produced a token. Before commit the first-content deadline bounds the silence (a miss is answered with 429 + `Retry-After`, see the status table); after commit `inferenceTimeout` bounds it (a terminal `error` event of type `timeout`).
-7. **Errors after commit** are one `data: {"error": {...}}` event followed by `data: [DONE]`.
+7. **Chat errors after commit** are one terminal `data: {"error": {...}}` event, without `[DONE]`; optional authoritative metadata precedes it.
 8. **Sealed mode** seals each SSE event individually (see below).
 
 ## Limits and validation

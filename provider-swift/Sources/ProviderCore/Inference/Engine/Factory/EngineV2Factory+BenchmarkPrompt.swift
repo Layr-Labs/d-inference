@@ -23,7 +23,7 @@ extension EngineV2Factory {
         }
         let supplied = ProviderLoop.extractChatTemplateControls(from: body)
         let controls = supplied.promptDate == nil ? supplied.withPromptDate(defaultDate) : supplied
-        let prepared = try ToolChoicePromptPolicy.prepare(request)
+        let prepared = try ToolChoicePromptPolicy.prepare(request, modelType: modelType)
         let overrides = ProviderLoop.extractSamplingOverrides(from: body)
         let logprobs = ProviderLoop.extractLogprobsSpec(from: body)
         let translated = MultiModelBatchSchedulerEngine.translate(

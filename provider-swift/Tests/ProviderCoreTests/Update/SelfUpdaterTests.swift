@@ -384,22 +384,8 @@ struct SelfUpdaterTests {
         return (tarball, release, install)
     }
 
-    private func debugBuildProduct(_ name: String) throws -> URL {
-        var packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        while !FileManager.default.fileExists(
-            atPath: packageRoot.appendingPathComponent("Package.swift").path)
-        {
-            let parent = packageRoot.deletingLastPathComponent()
-            guard parent.path != packageRoot.path else {
-                throw CocoaError(.fileNoSuchFile)
-            }
-            packageRoot = parent
-        }
-        let product = packageRoot.appendingPathComponent(".build/debug/\(name)")
-        guard FileManager.default.fileExists(atPath: product.path) else {
-            throw CocoaError(.fileNoSuchFile)
-        }
-        return product
+    private func activeBuildProduct(_ name: String) throws -> URL {
+        try LiveInferenceFixtures.buildProduct(name)
     }
 
     private func makeSignedRuntimeFixture(
@@ -421,9 +407,9 @@ struct SelfUpdaterTests {
         try fm.createDirectory(at: bin, withIntermediateDirectories: true)
         try fm.createDirectory(at: install, withIntermediateDirectories: true)
 
-        let darkbloom = try debugBuildProduct("darkbloom")
-        let fanHelper = try debugBuildProduct("darkbloom-fan-helper")
-        let metallib = try debugBuildProduct("mlx.metallib")
+        let darkbloom = try activeBuildProduct("darkbloom")
+        let fanHelper = try activeBuildProduct("darkbloom-fan-helper")
+        let metallib = try activeBuildProduct("mlx.metallib")
         try fm.copyItem(
             at: darkbloom,
             to: appMacOS.appendingPathComponent("darkbloom"))
@@ -460,7 +446,7 @@ struct SelfUpdaterTests {
         try Data("1\n".utf8).write(
             to: capability.appendingPathComponent("fan-helper-v1"))
         if includeResource {
-            let builtBundle = try debugBuildProduct(
+            let builtBundle = try activeBuildProduct(
                 PackagedRuntimeSmoke.mlxLMCommonBundleName)
             try fm.copyItem(
                 at: builtBundle,
@@ -517,7 +503,7 @@ struct SelfUpdaterTests {
     @Test("v0.8.9 parent can bootstrap a v0.8.10 runtime-smoke child")
     func oldParentBootstrapsCandidateSmoke() throws {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
-        let executable = try debugBuildProduct("darkbloom")
+        let executable = try activeBuildProduct("darkbloom")
         let output = try BoundedProcess.runCapturingStandardOutput(
             executable,
             arguments: ["runtime-smoke"],

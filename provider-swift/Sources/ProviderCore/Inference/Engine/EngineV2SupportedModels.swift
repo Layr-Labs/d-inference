@@ -17,6 +17,8 @@
 //   * `qwen3_5_moe`   — Qwen 3.5/3.6 MoE VLM target with recurrent state
 //   * `qwen3_vl_moe`  — Qwen3-VL MoE wrapper, served directly through its
 //                       CBv2 language-model adapter and vision prefill
+//   * `qwen4_exp`, `qwen4_exp_text` — native Flash-Next target architecture;
+//                       automatic paging/cache policy is separately scoped
 //
 // Everything else (gemma3, dense/other qwen families, llama, …) is
 // dropped from the advertised set at startup and at prefetch-verify time
@@ -45,6 +47,12 @@ public enum EngineV2SupportedModels {
         }
     }
 
+    /// Exact owned private candidate ID, not a family-name or substring grant.
+    /// Loaded artifact/capability checks still apply to paging and prefix reuse.
+    public static func isQwen4ExpListingModelID(_ modelID: String?) -> Bool {
+        Qwen4SupportPolicy.isOwnedModelID(modelID)
+    }
+
     /// Nano and Lightning share a model_type but have different checkpoint
     /// contracts. Only the selected Lightning artifact is onboarded here.
     public static func isSupported(model: ModelInfo) -> Bool {
@@ -70,6 +78,7 @@ public enum EngineV2SupportedModels {
         if raw == "gpt_oss" { return true }
         if raw == "qwen3_5" || raw == "qwen3_5_moe" { return true }
         if raw == "qwen3_vl_moe" { return true }
+        if raw == "qwen4_exp" || raw == "qwen4_exp_text" { return true }
         return gemma4TargetTypes.contains(raw)
     }
 

@@ -3,6 +3,7 @@
 
 from copy import deepcopy
 from contextlib import redirect_stderr
+import errno
 import hashlib
 import io
 import json
@@ -15,7 +16,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from provider_release_cache import identity, mtimes
+from provider_release_cache import descriptors, identity, mtimes, tracked
 from provider_release_cache.tracked import inventory
 
 
@@ -278,6 +279,94 @@ class SelectedToolchainTests(unittest.TestCase):
         (self.sdk / "SDKSettings.plist").write_text("broken plist")
         with self.assertRaises(plistlib.InvalidFileException):
             identity.sdk_metadata(self.sdk)
+
+
+class DescriptorOwnershipTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="provider-cache-descriptors-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        (self.root / "provider-swift/Sources").mkdir(parents=True)
+        (self.root / "provider-swift/Sources/main.swift").write_text("// source\n")
+        self.opened = []
+        self.real_open, self.real_close = os.open, os.close
+
+    def record_open(self, *args, **kwargs):
+        descriptor = self.real_open(*args, **kwargs)
+        self.opened.append(descriptor)
+        return descriptor
+
+    def assert_all_closed(self):
+        self.assertTrue(self.opened)
+        for descriptor in self.opened:
+            with self.assertRaises(OSError) as error:
+                os.fstat(descriptor)
+            self.assertEqual(error.exception.errno, errno.EBADF)
+
+    def test_failed_nested_open_closes_previously_opened_directories(self):
+        contexts = (
+            lambda: tracked.open_file(self.root, "provider-swift/Sources/missing.swift"),
+            lambda: mtimes.manifest_directory(self.root),
+        )
+        for context in contexts:
+            self.opened.clear()
+            with patch.object(descriptors.os, "open", side_effect=self.record_open):
+                with self.assertRaises(FileNotFoundError), context():
+                    self.fail("Missing nested path unexpectedly opened")
+            self.assertGreaterEqual(len(self.opened), 2)
+            self.assert_all_closed()
+
+    def test_failed_tracking_closes_new_descriptor_and_earlier_directories(self):
+        real_push = descriptors.ExitStack.push
+        registrations = 0
+
+        def fail_second_registration(stack, scope):
+            nonlocal registrations
+            registrations += 1
+            if registrations == 2:
+                raise MemoryError("fixture tracking failure")
+            return real_push(stack, scope)
+
+        with patch.object(descriptors.os, "open", side_effect=self.record_open):
+            with patch.object(descriptors.ExitStack, "push", fail_second_registration):
+                with self.assertRaisesRegex(MemoryError, "tracking failure"):
+                    with tracked.open_file(self.root, "provider-swift/Sources/main.swift"):
+                        self.fail("Tracking failure did not interrupt acquisition")
+        self.assertEqual(len(self.opened), 2)
+        self.assert_all_closed()
+
+    def test_close_error_does_not_prevent_other_descriptors_from_closing(self):
+        closed = []
+
+        def close_then_fail_once(descriptor):
+            self.real_close(descriptor)
+            closed.append(descriptor)
+            if len(closed) == 1:
+                raise OSError(errno.EIO, "fixture close failure")
+
+        with patch.object(descriptors.os, "open", side_effect=self.record_open):
+            with patch.object(descriptors.os, "close", side_effect=close_then_fail_once):
+                with self.assertRaisesRegex(OSError, "close failure"):
+                    with tracked.open_file(self.root, "provider-swift/Sources/main.swift"):
+                        self.assertEqual(len(self.opened), 4)
+        self.assertEqual(closed, list(reversed(self.opened)))
+        self.assert_all_closed()
+
+    def test_failed_stream_creation_closes_manifest_fd_and_preserves_prior_snapshot(self):
+        directory = self.root / "provider-swift/.build"
+        directory.mkdir()
+        manifest = directory / mtimes.MANIFEST
+        manifest.write_text("prior snapshot")
+        for operation in (mtimes.read_manifest, mtimes.snapshot):
+            self.opened.clear()
+            with patch.object(mtimes, "inventory", return_value=tracked.Inventory(set(), {})):
+                with patch.object(descriptors.os, "open", side_effect=self.record_open):
+                    with patch.object(mtimes.os, "fdopen", side_effect=OSError("fixture stream failure")):
+                        with self.assertRaisesRegex(OSError, "stream failure"):
+                            operation(self.root)
+            self.assert_all_closed()
+            self.assertEqual(manifest.read_text(), "prior snapshot")
+            self.assertEqual(list(directory.iterdir()), [manifest])
 
 
 class SourceTimestampTests(RepositoryFixture):

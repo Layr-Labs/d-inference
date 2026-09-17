@@ -1,12 +1,14 @@
 """Read the Git index without trusting cache-supplied filesystem paths."""
 
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from dataclasses import dataclass
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import stat
 import subprocess
+
+from .descriptors import own_descriptor
 
 
 EXCLUDED_PARTS = {".git", ".build", "target", "__pycache__"}
@@ -28,25 +30,22 @@ def open_file(root: Path, relative: str):
     """Use directory descriptors so a symlink cannot redirect a hash or utime."""
     if not safe_relative(relative):
         raise ValueError(f"Unsafe source path: {relative!r}")
-    descriptors = [os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
-    try:
+    with ExitStack() as resources:
+        descriptor = own_descriptor(resources, root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         parts = relative.split("/")
         for part in parts[:-1]:
-            descriptors.append(os.open(
-                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                dir_fd=descriptors[-1],
-            ))
-        descriptors.append(os.open(
-            parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-            dir_fd=descriptors[-1],
-        ))
-        info = os.fstat(descriptors[-1])
+            descriptor = own_descriptor(
+                resources, part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+        descriptor = own_descriptor(
+            resources, parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=descriptor,
+        )
+        info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise ValueError("Source is not a single-link regular file")
-        yield descriptors[-1]
-    finally:
-        for descriptor in reversed(descriptors):
-            os.close(descriptor)
+        yield descriptor
 
 
 def hash_descriptor(descriptor: int) -> str:

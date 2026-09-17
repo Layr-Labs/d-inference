@@ -1,6 +1,6 @@
 """Restore timestamps only for current tracked files with identical contents."""
 
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import json
 import os
 from pathlib import Path
@@ -9,6 +9,7 @@ import secrets
 import stat
 import sys
 
+from .descriptors import open_descriptor, own_descriptor
 from .tracked import hash_descriptor, inventory, open_file, safe_relative
 
 
@@ -20,22 +21,20 @@ MAX_ENTRIES = 100_000
 
 @contextmanager
 def manifest_directory(root: Path, create: bool = False):
-    descriptors = [os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
-    try:
+    with ExitStack() as resources:
+        descriptor = own_descriptor(resources, root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         for component in ("provider-swift", ".build"):
             if create and component == ".build":
                 try:
-                    os.mkdir(component, dir_fd=descriptors[-1])
+                    os.mkdir(component, dir_fd=descriptor)
                 except FileExistsError:
+                    # A restored Swift cache normally already has this directory.
                     pass
-            descriptors.append(os.open(
-                component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                dir_fd=descriptors[-1],
-            ))
-        yield descriptors[-1]
-    finally:
-        for descriptor in reversed(descriptors):
-            os.close(descriptor)
+            descriptor = own_descriptor(
+                resources, component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+        yield descriptor
 
 
 def stable_stat(before: os.stat_result, after: os.stat_result) -> bool:
@@ -67,17 +66,18 @@ def snapshot(root: Path) -> dict[str, int]:
         raise ValueError("Source timestamp snapshot exceeds the safety limit")
     with manifest_directory(root, create=True) as directory:
         temporary = f".{MANIFEST}.{secrets.token_hex(8)}"
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                             0o600, dir_fd=directory)
-        try:
-            with os.fdopen(descriptor, "wb") as output:
-                output.write(payload)
-            os.replace(temporary, MANIFEST, src_dir_fd=directory, dst_dir_fd=directory)
-        finally:
+        with open_descriptor(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=directory) as descriptor:
             try:
-                os.unlink(temporary, dir_fd=directory)
-            except FileNotFoundError:
-                pass
+                with os.fdopen(descriptor, "wb", closefd=False) as output:
+                    output.write(payload)
+                os.replace(temporary, MANIFEST, src_dir_fd=directory, dst_dir_fd=directory)
+            finally:
+                try:
+                    os.unlink(temporary, dir_fd=directory)
+                except FileNotFoundError:
+                    # Atomic replacement already moved the owned temporary file.
+                    pass
     return {"snapshotted": len(files), "skipped": skipped}
 
 
@@ -108,15 +108,15 @@ def validate_manifest(payload: object, root: Path) -> list[dict]:
 
 def read_manifest(root: Path) -> list[dict]:
     with manifest_directory(root) as directory:
-        descriptor = os.open(MANIFEST, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                             dir_fd=directory)
-        with os.fdopen(descriptor, "rb") as source:
-            info = os.fstat(source.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_MANIFEST_BYTES:
-                raise ValueError("Unsafe timestamp manifest file")
-            raw = source.read(MAX_MANIFEST_BYTES + 1)
-            if len(raw) > MAX_MANIFEST_BYTES:
-                raise ValueError("Timestamp manifest exceeds the safety limit")
+        with open_descriptor(MANIFEST, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=directory) as descriptor:
+            with os.fdopen(descriptor, "rb", closefd=False) as source:
+                info = os.fstat(descriptor)
+                if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_MANIFEST_BYTES:
+                    raise ValueError("Unsafe timestamp manifest file")
+                raw = source.read(MAX_MANIFEST_BYTES + 1)
+                if len(raw) > MAX_MANIFEST_BYTES:
+                    raise ValueError("Timestamp manifest exceeds the safety limit")
     return validate_manifest(json.loads(raw), root)
 
 

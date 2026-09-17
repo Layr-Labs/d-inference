@@ -55,6 +55,11 @@ objects. It always cleans and recompiles the local `promptsidecar` package while
 retaining third-party objects: independently restored Swift and Rust caches must
 not combine source timestamps with a different generation of local Rust outputs.
 The Metal helper retains its exact source/toolchain contract.
+`scripts/prepare-metal-toolchain.py` requires the selected Xcode's Metal compiler
+to execute successfully. A successful component download alone is insufficient:
+it clears stale lookup state, waits a bounded interval for registration, and uses
+Apple's explicit component export/import path if registration remains incomplete.
+It never switches to an older Xcode or silently accepts an unavailable compiler.
 
 The helper's `snapshot-mtimes` and `restore-mtimes` commands retain timestamps for
 tracked files whose contents are unchanged. Changed/new files retain their fresh

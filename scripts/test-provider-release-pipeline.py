@@ -51,6 +51,13 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('test "$BUILD_SDK_VERSION" = "$PROVIDER_SDK_VERSION"', sign)
         self.assertIn('Final executable SDK differs from the selected build SDK', sign)
 
+    def test_compilation_and_signing_require_ready_metal_toolchain(self):
+        self.assertIn('python3 scripts/prepare-metal-toolchain.py', ACTION)
+        signing = job(RELEASE, 'build-and-release')
+        self.assertIn('python3 scripts/prepare-metal-toolchain.py', signing)
+        self.assertLess(signing.index('python3 scripts/prepare-metal-toolchain.py'),
+                        signing.index('Stage and sign bundle'))
+
     def test_checks_run_even_on_exact_cache_hits(self):
         for name in ['Verify production prompt parity', 'Test provider with release SDK',
                      'Build optimized provider products', 'Build or validate source-matched metallib']:

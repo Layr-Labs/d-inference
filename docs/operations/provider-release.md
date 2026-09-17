@@ -80,6 +80,9 @@ For App Attest coexistence, both signing workflows prepare optional profile-auth
    the exact-hit output is false. Swift and Rust caches are toolchain-specific;
    the Metal helper separately validates source and compiler identity. A compiler,
    SDK, dependency, checkout-path or build-recipe change requires a cold rebuild.
+   Metal setup must reach a working compiler probe: an asset download may finish
+   before the tool is registered. The bounded setup helper retries discovery and
+   uses Apple's component export/import fallback before failing the job.
 3. Run the authorized release from the reviewed fixed source. Its optimized and
    qualification jobs run concurrently. Only their successful completion permits
    the environment-protected signing job to download and validate the unsigned

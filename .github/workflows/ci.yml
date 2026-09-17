@@ -17,6 +17,7 @@ jobs:
           python3 scripts/test-provider-release-resolution.py
           python3 scripts/test-provider-release-toolchain.py
           python3 scripts/test-provider-release-cache.py
+          python3 scripts/test-prepare-metal-toolchain.py
           python3 scripts/test-provider-release-pipeline.py
           python3 scripts/test-provider-signing-validation.py
           python3 scripts/test-provider-test-watchdog.py

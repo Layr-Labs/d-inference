@@ -28,6 +28,8 @@ on:
       - 'scripts/test-provider-release-pipeline.py'
       - 'scripts/provider-release-swift.sh'
       - 'scripts/prepare-provider-release-toolchain.sh'
+      - 'scripts/prepare-metal-toolchain.py'
+      - 'scripts/test-prepare-metal-toolchain.py'
       - 'scripts/fetch-metallib.sh'
       - 'scripts/verify-prompt-parity.sh'
       - 'scripts/run-provider-tests.sh'

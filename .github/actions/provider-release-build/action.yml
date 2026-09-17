@@ -98,11 +98,7 @@ runs:
         done
     - name: Ensure matching Metal compiler is available
       shell: bash
-      run: |
-        if ! xcrun --sdk macosx metal --version; then
-          xcodebuild -downloadComponent MetalToolchain
-        fi
-        xcrun --sdk macosx metal --version
+      run: python3 scripts/prepare-metal-toolchain.py
     - name: Resolve source-matched metallib cache namespace
       id: mlxkey
       shell: bash

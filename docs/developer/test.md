@@ -62,12 +62,14 @@ cd provider-swift
 swift test --filter Qwen4StandaloneAdmissionTests --no-parallel
 cd ..
 python3 scripts/test-provider-release-cache.py
+python3 scripts/test-prepare-metal-toolchain.py
 python3 scripts/test-provider-release-pipeline.py
 python3 scripts/test-provider-signing-validation.py
 ```
 
 The cache tests cover compatibility boundaries and content-checked source
-mtime replay. The pipeline checks pin independent build/test dependencies,
+mtime replay. Metal setup tests simulate delayed registration, explicit import,
+command failure and timeout without installing components. The pipeline checks pin independent build/test dependencies,
 signing approval, same-run source-bound artifact transfer, and checks that still
 run on cache hits. The existing archive tests reject changed inventory, wrong
 source, unsafe members and mismatched entitlements. CI's Release Integrity job

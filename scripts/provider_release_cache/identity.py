@@ -18,6 +18,7 @@ RECIPE_PATHS = (
     "scripts/provider-release-cache.py",
     "scripts/provider-release-swift.sh",
     "scripts/prepare-provider-release-toolchain.sh",
+    "scripts/prepare-metal-toolchain.py",
     "scripts/run-provider-tests.sh",
     "scripts/run-provider-test-watchdog.py",
     "scripts/verify-prompt-parity.sh",

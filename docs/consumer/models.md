@@ -1,6 +1,6 @@
 # Models reference
 
-> Last updated: 2026-09-15 · commit `2a843bb2c`
+> Last updated: 2026-09-17 · commit `53e135e9e`
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
@@ -133,19 +133,21 @@ these defaults.
 ## Native Flash-Next candidate
 
 The [native Flash-Next candidate](../reference/qwen4-next-support.md)
-adds a private provider serving identity, not a public catalog entry. It serves
-text only; retained vision configuration/tensors do not advertise media, and
-unsupported image/video requests are rejected rather than silently reduced to
-text (`provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift`,
-`advertisesMedia`). Its local listing and bridge apply the
+recognizes the registry ID and legacy developer ID listed in that reference.
+Native image/video routing requires the validated full vision declaration and
+explicit non-language-only configuration; unsupported media is rejected rather
+than silently reduced to text
+(`provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift`,
+`advertisesMedia`). Its local listing and bridge apply the native
 [candidate context policy](../reference/configuration.md#native-flash-next-candidate)
-to prompt plus reserved completion tokens. That local policy does not edit the
+to prompt plus reserved completion tokens. Coordinator SLA and device capacity
+may still reject a request within native context. This source change does not edit the
 coordinator's catalog limits, aliases, prices or marketplace feed.
 
 Paging/cache defaults and embedded-MTP source support do not certify a cache
 hit, device tier or answer quality. Final same-artifact build, serving and
-restart qualification remain pending; no 128 GB, vision or production-readiness
-claim is made by this source addition.
+restart qualification remain distinct; unit-level ID/context checks do not
+certify full native-context operation on the minimum-RAM device.
 
 ## Related
 

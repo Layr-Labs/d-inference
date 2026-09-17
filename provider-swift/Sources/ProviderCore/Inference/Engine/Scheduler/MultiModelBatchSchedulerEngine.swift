@@ -27,6 +27,7 @@
 //     owns the typed error surface and the scheduler-message parser.
 
 import Foundation
+import ProviderCoreFoundation
 import MLXLMCommon
 import MLXLMServer
 import MLXVLM
@@ -521,7 +522,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
                                 tokenizer.inner.decode(tokenIds: Array(visionPrepared.promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                                        skipSpecialTokens: false)) ?? "<think></think>") : nil,
-                        preserveInnerReasoningSpans: modelId == ModelMediaPolicy.ownedQwen4ModelID
+                        preserveInnerReasoningSpans: Qwen4ModelIdentity.isQualified(modelId)
                             && modelType == "qwen4_exp"
                     )
                 } catch let failure as PreContentDeadlineFailure {
@@ -770,7 +771,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
                     tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                            skipSpecialTokens: false)) ?? "<think></think>") : nil,
-            preserveInnerReasoningSpans: modelId == ModelMediaPolicy.ownedQwen4ModelID
+            preserveInnerReasoningSpans: Qwen4ModelIdentity.isQualified(modelId)
                 && modelType == "qwen4_exp"
         )
     }

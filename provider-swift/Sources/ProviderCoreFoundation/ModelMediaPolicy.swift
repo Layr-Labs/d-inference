@@ -5,7 +5,7 @@ import CoreFoundation
 /// vision configuration or its tensors in a checkpoint. Keep this pure so
 /// discovery and template validation can share it without importing MLX.
 public enum ModelMediaPolicy {
-    public static let ownedQwen4ModelID = "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp"
+    public static let ownedQwen4ModelID = Qwen4ModelIdentity.legacyModelID
 
     public static func isNativeQwen4Type(_ modelType: String?) -> Bool {
         guard let modelType = modelType?
@@ -19,7 +19,7 @@ public enum ModelMediaPolicy {
             // Restore only the owned full Flash-Next tower. Bare text types,
             // unknown identities, and missing/true text-only overlays stay cold
             // for media; retaining tensors alone does not qualify a checkpoint.
-            guard modelID == ownedQwen4ModelID,
+            guard Qwen4ModelIdentity.isQualified(modelID),
                 (configuration["model_type"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "qwen4_exp",
                 let overlay = configuration["language_model_only"] as? NSNumber,
                 CFGetTypeID(overlay) == CFBooleanGetTypeID(), !overlay.boolValue,

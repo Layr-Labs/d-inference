@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-17 · commit `77d1d1d86`
+> Last updated: 2026-09-17 · commit `43c7b1c32`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -300,6 +300,24 @@ Useful reuse subtracts a bounded credit; excess restore cost increases
 `ThisReqMs`. Queue, load, decode and admission costs remain intact. The rules
 and their flag are the subject of
 [`cache-aware-routing.md`](cache-aware-routing.md).
+
+### Native model capacity and registry identity
+
+Native model context describes a capability, not an SLA promise. The provider
+enforces prompt plus reserved output against the native window and retains
+physical-memory safeguards. Coordinator token budgets, queueing, TTFT and
+throughput policies decide which eligible requests can be routed; historical
+test sizes must not become hidden provider context ceilings. The native
+Flash-Next policy is defined in [the support reference](../reference/qwen4-next-support.md).
+
+`providerEligibleForTraitsLocked` applies the exact registry-ID compatibility
+floor before request-shape gates. `qwen3.8-flash-next` requires `0.9.5` or newer;
+unknown/older versions are ineligible even for plain text. This prevents an
+older provider from accepting that ID without its qualified native policies.
+Other IDs, including the legacy developer ID, retain existing version rules.
+Sources: `coordinator/registry/qwen4_model_policy.go`
+(`providerMeetsQwen4CatalogPolicyLocked`) and
+`coordinator/registry/request_traits.go` (`providerEligibleForTraitsLocked`).
 
 ### Selection paths
 

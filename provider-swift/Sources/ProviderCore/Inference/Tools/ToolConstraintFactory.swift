@@ -6,6 +6,7 @@
 // boundary and opaque framed arguments; Gemma keeps its own schema automaton.
 
 import Foundation
+import ProviderCoreFoundation
 import MLXLMCommon
 import MLXLMServer
 
@@ -34,7 +35,7 @@ enum ToolConstraintFactory {
             let strategy = try ToolChoiceEnforcementPolicy.forcedStrategy(
                 mode: prepared.mode, modelContext: modelContext)
             if strategy == .structuredPostValidation {
-                if modelContext.modelId == ModelMediaPolicy.ownedQwen4ModelID,
+                if Qwen4ModelIdentity.isQualified(modelContext.modelId),
                    modelContext.modelType == "qwen4_exp" {
                     guard let nativePromptTokens, !nativePromptTokens.isEmpty,
                           let prefix = ReasoningPromptProbe.streamingPrefix(forPromptTail:

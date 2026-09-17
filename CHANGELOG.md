@@ -1,6 +1,12 @@
 # Changelog
 
-## Release candidate v0.9.5 — Qwen 3.8 Next / native Qwen4 follow-up (not shipped; 2026-09-15)
+## Release candidate v0.9.5 — Qwen 3.8 Next / native Qwen4 follow-up (not shipped; 2026-09-17)
+
+- Recognize the exact `qwen3.8-flash-next` registry ID alongside the legacy developer ID for native Qwen4 media, paging/prefix, tool and reasoning policies. Keep artifact/configuration checks and developer-only path overrides intact.
+- Use native model context in listing and runtime policy, with a 262144 fallback only for the known artifact identities. Remove the extra 82K bridge clamp; retain lower-only operator overrides, checked prompt-plus-output budgets, physical-memory safeguards and coordinator SLA admission.
+- Mirror the registry-ID prompt semantics in Rust and bump the shared Swift/Go/Rust normalization contract to v6. Old contracts fail cold rather than receiving cache credit under different semantics.
+- Gate the registry ID on provider 0.9.5 or newer across request shapes; legacy and other models keep existing version floors. Align the provider version and coordinator display fallback without retagging 0.9.5 or deploying this draft.
+- Leave SDK, model weights, quantization, embedded MTP and numerical kernels unchanged. Physical full-context and composed API qualification remain separate from policy-level tests.
 
 ### Release reliability and build reuse
 

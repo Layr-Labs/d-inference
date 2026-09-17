@@ -2,17 +2,22 @@
 import Foundation
 import ProviderCoreFoundation
 
-/// Local serving policy for the owned Flash-Next candidate. These defaults
+/// Native capacity and identity policy for the qualified Flash-Next artifact.
+/// Coordinator SLA admission is separate from the model's native window.
+/// These defaults
 /// neither register a catalog model nor establish artifact/runtime qualification.
 /// Architecture support remains separate from automatic paging/cache activation.
 enum Qwen4SupportPolicy {
     static let ownedModelID = ModelMediaPolicy.ownedQwen4ModelID
-    static let defaultContextTokens = 82_000
+    static let registryModelID = Qwen4ModelIdentity.registryModelID
+    /// Metadata-only fallback for the two known artifact identities. Loaded
+    /// native configuration takes precedence; never derive this from test size.
+    static let defaultContextTokens = 262_144
     static let contextEnvironmentKey = "DARKBLOOM_QWEN4_LISTING_CONTEXT"
     static let contextRejectionMessage = "advertised_context_exceeded"
 
     static func isOwnedModelID(_ modelID: String?) -> Bool {
-        modelID == ownedModelID
+        Qwen4ModelIdentity.isQualified(modelID)
     }
 
     static func isQwen4ModelType(_ modelType: String?) -> Bool {
@@ -42,16 +47,18 @@ enum Qwen4SupportPolicy {
         }
     }
 
-    /// A configured limit may only narrow the candidate's serving window.
-    /// Missing, zero, negative and malformed values cannot restore the card limit.
+    /// An explicit operator limit can narrow the native window. Unset or
+    /// invalid controls preserve native capacity, not a qualification ceiling.
     static func configuredContextTokens(
+        nativeContextTokens: Int = defaultContextTokens,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Int {
+        let nativeLimit = nativeContextTokens > 0 ? nativeContextTokens : defaultContextTokens
         guard let raw = environment[contextEnvironmentKey],
             let value = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
             value > 0
-        else { return defaultContextTokens }
-        return min(defaultContextTokens, value)
+        else { return nativeLimit }
+        return min(nativeLimit, value)
     }
 
     static func contextLimit(
@@ -61,14 +68,20 @@ enum Qwen4SupportPolicy {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Int? {
         guard isOwnedModelID(modelID) || isQwen4ModelType(modelType) else { return nil }
-        let limit = configuredContextTokens(environment: environment)
-        guard let nativeContextTokens, nativeContextTokens > 0 else { return limit }
-        return min(limit, nativeContextTokens)
+        if let nativeContextTokens, nativeContextTokens > 0 {
+            return configuredContextTokens(nativeContextTokens: nativeContextTokens,
+                environment: environment)
+        }
+        // An unknown artifact without native metadata has no proven capacity.
+        guard isOwnedModelID(modelID) else { return nil }
+        return configuredContextTokens(environment: environment)
     }
 
-    /// Keep programmatic/test plumbing bounded as well as the environment path.
-    static func boundedContextTokens(_ proposed: Int?) -> Int? {
-        guard let proposed else { return nil }
-        return proposed > 0 ? min(defaultContextTokens, proposed) : defaultContextTokens
+    /// The factory already resolved this trusted value from model metadata and
+    /// operator policy. The generic bridge must not apply a Qwen-sized cap to
+    /// other models or clamp a larger native configuration a second time.
+    static func validatedContextTokens(_ proposed: Int?) -> Int? {
+        guard let proposed, proposed > 0 else { return nil }
+        return proposed
     }
 }

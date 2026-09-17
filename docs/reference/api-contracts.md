@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-16 · commit `c547b8788`
+> Last updated: 2026-09-17 · commit `43c7b1c32`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -528,12 +528,17 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 
 Three distinct version values govern providers:
 
-- `LatestProviderVersion = "0.8.16"` (`coordinator/api/server.go`) is the newest provider build the coordinator knows about. `handleVersion` (`/api/version`) and `/v1/me/summary` report the highest active release in the store and fall back to this constant when none is registered.
+- `LatestProviderVersion = "0.9.5"` (`coordinator/api/server.go`) is the source's provider-version display fallback. `handleVersion` (`/api/version`) and `/v1/me/summary` report the highest active release in the store and fall back to this constant when none is registered. Preparing a source bump does not create a release row or alter `/v1/releases/latest`.
 - `minProviderVersionForDesiredModels = "0.5.17"` (`coordinator/api/server.go`) is a **feature floor for the WebSocket `desired_models` message**: only Swift-runtime providers at or above it receive the message (`providerSupportsDesiredModels`, `fanOutDesiredModels` in `coordinator/api/model_alias_handlers.go`), because older decoders disconnect on unknown message types. It does not affect HTTP routes.
 - `EIGENINFERENCE_MIN_PROVIDER_VERSION` (`MinProviderVersion`, `coordinator/api/server_config.go`; `SetMinProviderVersion`) is the **routing floor**: a provider that registers or re-attests below it stays connected but is marked not runtime-verified and excluded from routing (`coordinator/api/provider.go`, registration and `applyChallengeMinVersionPolicy`), and its log uploads get 426 `upgrade_required`.
 - **Feature floors** exclude too-old providers from serving specific request traits rather than the whole model: tools require providers ≥ `0.6.3` (`capabilityVersionFloors`, `coordinator/registry/request_traits.go`); vision requests strip repetition-penalty fields for providers below `penaltySafeProviderVersion` = `0.6.7` (`coordinator/api/consumer.go`); reconnect attestation needs `minProviderVersionForReconnectAttestation` = `0.8.15` (`coordinator/api/provider.go`); servability gating uses `servabilityActivationFloorMinVersion` = `0.8.0` and `servabilityPerModelFloorMinVersion` = `0.8.16` (`coordinator/registry/servability.go`); private slot grants need `privateSlotGrantsMinVersion` = `0.7.5` (`coordinator/registry/pooled_admission.go`). When no provider clears the floor for a request, the client sees 503 `model_unavailable` (or 400 `param: tool_choice` when the fleet serves the model but no provider advertises the tool-constraint protocol).
 
 A consumer never sees a version error directly; an under-served model surfaces as 503 `model_unavailable`.
+
+The exact Flash-Next registry ID also has an all-request compatibility floor,
+separate from tool-only capability floors. See the
+[native identity routing gate](../architecture/routing.md#native-model-capacity-and-registry-identity);
+a catalog listing alone does not grant an older provider the matching policy.
 
 ## Sealed transport wire shape
 

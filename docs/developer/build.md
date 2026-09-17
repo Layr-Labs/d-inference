@@ -7,6 +7,12 @@ coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
 source-matched `mlx.metallib`), and the two Next.js UIs. `make build` does all
 of it; the per-component steps below explain what each target runs.
 
+Registry-ID support changes Swift provider policy and Rust prompt normalization
+together. Build the paired coordinator/sidecar/provider candidate; the v6
+prompt contract cannot reuse a v5 cache identity. The follow-up retains the
+merged native SDK pin and does not require new model weights. See
+[prompt parity](test.md#9-prompt-contract-parity-fixtures-and-vectors) for the validation procedure.
+
 Docs Lint needs Git history to validate moved source links in frozen records;
 its checkout uses `fetch-depth: 0` (`.github/workflows/ci.yml`, `docs` job).
 

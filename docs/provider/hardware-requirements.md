@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-17 · commit `77d1d1d86`
+> Last updated: 2026-09-17 · commit `53e135e9e`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -100,8 +100,8 @@ the separate [offload declaration gate](../architecture/routing.md#ssd-offloaded
 Mapped pages can still occupy reclaimable OS cache. Target KV, QSA index,
 GDN/PLE state, MTP history, restore scratch and concurrent requests add live
 allocations with their own owners. Arithmetic weight fit is not hardware
-qualification: this text-only private candidate does not establish 128 GB
-support or its full native-context ceiling. Existing catalog minimum RAM,
+qualification: retaining native multimodal support and listing full native
+context does not establish full-window operation on 128 GiB hardware. Existing catalog minimum RAM,
 runtime headroom and actual capacity gates remain in force.
 
 ## Gemma QAT assistant footprint and availability

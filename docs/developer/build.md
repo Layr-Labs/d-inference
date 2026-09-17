@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-17 · commit `77d1d1d86`
+> Last updated: 2026-09-17 · commit `6b313942f`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -55,6 +55,12 @@ The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its 
 - **Docker** only for the coordinator container image (step 9).
 
 ### Native Flash-Next candidate
+
+The Qwen 3.8 Next integration pins `libs/mlx-swift-lm` to the merged
+[SDK PR #149](https://github.com/Layr-Labs/mlx-swift-lm/pull/149) commit
+`729fa45c67a8b1cb26b1debeacf7f1d16ef3a21e`. Its complete Git tree is identical
+to the approved review head `ae3ecdc835a895091f8929749fdb3e14383295a9`.
+Use the recorded gitlink, not a floating branch or a private experiment.
 
 Use the repository-owned [conversion tools](../../scripts/qwen38_conversion/README.md)
 for the pinned official source. Metadata verification is distinct from full

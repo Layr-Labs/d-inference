@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-17 · commit `77d1d1d86`
+> Last updated: 2026-09-17 · commit `6b313942f`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -43,6 +43,12 @@ The [candidate reference](../reference/qwen4-next-support.md#validation-status-a
 records completed local checks and remaining gates. The following are commands
 for a prepared checkout, not claims that this composed candidate has passed
 them. Use the [exact dependency/build prerequisites](build.md#native-flash-next-candidate).
+
+For a merge-only dependency repin, verify the merged commit contains the
+approved head and compare their complete Git trees. Record the locked consumer
+build and documentation checks separately from model execution. Identical
+source does not turn an earlier model receipt into a new binary or hardware
+run, and it does not close an outstanding performance or lifecycle finding.
 
 The [Qwen 3.8 Next reproducibility scripts](../../scripts/qwen38_validation/README.md)
 exercise an existing loopback release server across MTP OFF/ON, reasoning

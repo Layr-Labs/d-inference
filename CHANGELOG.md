@@ -2,6 +2,7 @@
 
 ## Release candidate v0.9.5 — Qwen 3.8 Next / native Qwen4 follow-up (not shipped; 2026-09-15)
 
+- Pin the native Qwen4 SDK to merged upstream PR #149. The approved SDK source tree is unchanged; this dependency update introduces no new model, numerical or performance changes.
 - Stage native Qwen4's bounded MTP catch-up, consistent carry-only initialization of cold/restored unprimed heads and grouped selected-page KV reads as a paired SDK/provider default candidate. Preserve already-primed caches, target parameters, ordered attention arithmetic and explicit rollback controls; full default-posture qualification is required before promotion.
 - Derive eligible Qwen4 SSD-offload load estimates from validated native copy bounds instead of generic 20% padding. Preserve all compute/MTP/vision payloads and the existing OS, activation and KV safeguards; other layouts retain their previous policy. Recheck actual headroom for at most two seconds after owned Qwen4 retirement, without granting speculative reclaim credit. Physical full-model qualification remains required.
 - Discover hidden SwiftPM resource bundles during paged-backend preflight while retaining sealed-app boundaries and rejection of conflicting source bytes. No model arithmetic or weights change.

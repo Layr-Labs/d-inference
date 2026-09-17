@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-17 · commit `04dadef3b`
+> Last updated: 2026-09-17 · commit `b86445a0a`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -81,6 +81,9 @@ For App Attest coexistence, both signing workflows prepare optional profile-auth
    `xcode-27-xlarge` runners, with no signing secrets or publication steps. This seeds
    caches in the default branch's scope, which release tags can restore. PR
    validation caches stay isolated to their PR and do not seed `master`.
+   Pipeline shutdown changes run these lanes on their PR as well; the
+   [shutdown drain regression](../developer/test.md#sdk-27-release-qualification)
+   must pass before retrying a release that failed that assertion.
 2. Inspect each lane's **SDK 27 build cache** summary. It reports exact hits and
    the actual Swift restore key; a compatible prefix restore is useful even when
    the exact-hit output is false. Swift and Rust caches are toolchain-specific;

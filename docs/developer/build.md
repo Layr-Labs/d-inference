@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-17 · commit `04dadef3b`
+> Last updated: 2026-09-17 · commit `b86445a0a`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -48,7 +48,9 @@ version, inventory and entitlements before importing its certificate.
 `.github/workflows/provider-release-cache.yml` runs the same two lanes after
 relevant `master` changes. Release tags can restore those default-branch caches;
 they cannot reuse another tag's cache. Release-plumbing PRs run these lanes with
-PR-scoped caches and no signing or publishing secrets. Two concurrent SDK 27
+PR-scoped caches and no signing or publishing secrets. Changes to
+`BoundedSingleConsumerPipeline.swift` or its tests also run both lanes to catch
+shutdown lifetime regressions with the release compiler. Two concurrent SDK 27
 runners are needed for the parallel wall-time benefit; a smaller runner quota
 queues the jobs without changing their gates.
 

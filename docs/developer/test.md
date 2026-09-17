@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-17 · commit `04dadef3b`
+> Last updated: 2026-09-17 · commit `b86445a0a`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -55,11 +55,21 @@ simulated headroom and retries on the same server. Physical memory and native
 allocator tests retain real measurements; fixture success does not qualify the
 full Flash-Next model.
 
-Run the focused fixture and the CPU-only pipeline checks before a release:
+The SSD write-behind pipeline tests in
+`provider-swift/Tests/ProviderCoreTests/KVCacheSSD/BoundedSingleConsumerPipelineTests.swift`
+cover reusable drains, bounded retention, overflow, cancellation and shutdown.
+`pipelineShutdownDrainReleasesLastPayload` repeats the final-payload handoff
+10,000 times: after shutdown, drain must wait for the consumer task to finish,
+not just for its pending count to reach zero. This catches the payload-release
+race that failed the 0.9.6 SDK qualification run. These pipeline source/test
+changes also trigger both SDK 27 PR lanes.
+
+Run the focused fixtures and the CPU-only pipeline checks before a release:
 
 ```bash
 cd provider-swift
 swift test --filter Qwen4StandaloneAdmissionTests --no-parallel
+swift test --filter pipeline --no-parallel
 cd ..
 python3 scripts/test-provider-release-cache.py
 python3 scripts/test-prepare-metal-toolchain.py

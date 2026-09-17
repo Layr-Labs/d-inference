@@ -34,6 +34,8 @@ on:
       - 'scripts/verify-prompt-parity.sh'
       - 'scripts/run-provider-tests.sh'
       - 'provider-swift/Tests/ProviderCoreTests/Qwen4StandaloneAdmissionTests.swift'
+      - 'provider-swift/Sources/ProviderCore/KVCacheSSD/BoundedSingleConsumerPipeline.swift'
+      - 'provider-swift/Tests/ProviderCoreTests/KVCacheSSD/BoundedSingleConsumerPipelineTests.swift'
   workflow_dispatch:
 
 permissions:

@@ -4,7 +4,7 @@ package registry
 // context in this provider release. A mixed fleet must not route that identity
 // to an older provider that accepts the architecture with different policies.
 const qwen4RegistryModelID = "qwen3.8-flash-next"
-const qwen4RegistryMinimumProviderVersion = "0.9.6"
+const qwen4RegistryMinimumProviderVersion = "0.9.5"
 
 func providerMeetsQwen4CatalogPolicyLocked(p *Provider, model string) bool {
 	if model != qwen4RegistryModelID {

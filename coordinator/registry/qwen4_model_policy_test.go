@@ -8,8 +8,8 @@ func TestQwen4CatalogIdentityRequiresCompatibleProvider(t *testing.T) {
 		version string
 		allowed bool
 	}{
-		{"", false}, {"invalid", false}, {"0.9.5", false}, {"0.9.6-rc1", false},
-		{"0.9.6", true}, {"v0.9.6", true}, {"0.10.0", true},
+		{"", false}, {"invalid", false}, {"0.9.4", false}, {"0.9.5-rc1", false},
+		{"0.9.5", true}, {"v0.9.5", true}, {"0.9.6", true}, {"0.10.0", true},
 	} {
 		p := &Provider{Version: test.version}
 		for _, traits := range []RequestTraits{{}, {HasTools: true}, {HasTools: true, ToolChoiceMode: "none"}} {

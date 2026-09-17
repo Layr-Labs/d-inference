@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-17 · commit `53e135e9e`
+> Last updated: 2026-09-17 · commit `43c7b1c32`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -311,7 +311,7 @@ test sizes must not become hidden provider context ceilings. The native
 Flash-Next policy is defined in [the support reference](../reference/qwen4-next-support.md).
 
 `providerEligibleForTraitsLocked` applies the exact registry-ID compatibility
-floor before request-shape gates. `qwen3.8-flash-next` requires `0.9.6` or newer;
+floor before request-shape gates. `qwen3.8-flash-next` requires `0.9.5` or newer;
 unknown/older versions are ineligible even for plain text. This prevents an
 older provider from accepting that ID without its qualified native policies.
 Other IDs, including the legacy developer ID, retain existing version rules.

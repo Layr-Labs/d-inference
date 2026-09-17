@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-16 · commit `75c7d5d94`
+> Last updated: 2026-09-17 · commit `77d1d1d86`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -92,8 +92,8 @@ disable paged eligibility to hide a failed preflight; keep sealed-app lookup
 and conflicting-resource rejection intact. Stage and verify resources for
 both the test host and any separately invoked CLI child.
 
-Private prefill experiments, including packed-read lookahead and ordered NAX, remain opt-in in
-the pinned SDK. Rebuild and rebind both the SDK tests and provider when its
+Private prefill experiments, including packed-read lookahead and ordered NAX,
+are excluded from this publication pin. Rebuild and rebind both the SDK tests and provider when its
 gitlink changes; an earlier executable cannot qualify the new source merely
 because the core metallib hash is unchanged.
 Record the actual compiled NAX capability and precision posture; a hardware

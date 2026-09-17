@@ -1,6 +1,6 @@
 # Qwen 3.8 Next (Flash-Next) native support reference
 
-> Last updated: 2026-09-17 · commit `f55c2a95a`
+> Last updated: 2026-09-17 · commit `77d1d1d86`
 
 Reference for the native Qwen4 support candidate and its remaining qualification gates. These source defaults do not publish a model, approve a catalog entry, qualify a hardware tier or establish a production release. The composed SDK's `libs/mlx-swift-lm/docs/qwen4/composition.md` records source selection and excluded experiments.
 
@@ -44,6 +44,10 @@ failed requirements and new physical qualification evidence remain distinct.
 | Local request lifecycle | Cache usage belongs to one request and reaches Chat/Responses serialization from engine accounting. Complete connection closure cancels the owned upstream row and removes its registration when forwarding ends. Legal half-close has a bounded release-binary pass; quiet cancellation and full loaded retirement require separate evidence | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` (`streamChatCompletion`, `makeEventStream`); `provider-swift/Sources/ProviderCore/Server/LocalRequestCancellation.swift`; `provider-swift/Sources/ProviderCore/Server/LocalHTTPConnectionCancellation.swift` |
 
 ## Validation status and next gates
+
+The [loading/MTP memory review](../reports/2026-09-17-qwen38-memory-mtp-review.md)
+records the M5 follow-up, exact publication inputs, passing API/state checks
+and the still-open repeated-request cache qualification failure.
 
 The [native API/cache qualification](../reports/2026-09-15-qwen38-native-api-qualification.md)
 records the latest source-bound tests and remaining deployment gates. The

@@ -77,7 +77,7 @@ class MetalSetupTests(unittest.TestCase):
     def test_ready_compiler_needs_no_download_or_wait(self):
         fake = FakeAppleTools(initially_ready=True)
         self.setup_for(fake).prepare()
-        self.assertEqual([call[0] for call in fake.calls], [METAL.PROBE])
+        self.assertEqual([call[0] for call in fake.calls], [METAL.PROBE, ["xcrun", "--kill-cache"]])
         self.assertEqual(fake.sleeps, [])
         self.assertEqual(list(self.temporary.iterdir()), [])
 

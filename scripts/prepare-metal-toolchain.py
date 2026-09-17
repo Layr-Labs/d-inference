@@ -95,6 +95,9 @@ class MetalSetup:
 
     def prepare(self):
         if self.probe():
+            # Downstream CMake uses ordinary xcrun lookups. The uncached probe
+            # can succeed while their earlier negative lookup remains cached.
+            self.checked(["xcrun", "--kill-cache"])
             return
         self.log("Downloading the selected Xcode Metal component")
         self.checked(DOWNLOAD)

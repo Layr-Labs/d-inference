@@ -1,0 +1,232 @@
+name: SDK 27 provider build
+description: Cache and build one unsigned release or SDK qualification lane.
+inputs:
+  lane:
+    description: release or qualification; compiled outputs never cross lanes
+    required: true
+outputs:
+  bin-dir:
+    description: Optimized Swift products (release lane only)
+    value: ${{ steps.products.outputs.bin_dir }}
+  metallib:
+    description: Source-validated Metal library
+    value: ${{ steps.metallib.outputs.metallib }}
+  build-sdk-version:
+    description: SDK selected for Swift compilation
+    value: ${{ steps.identity.outputs.sdk_version }}
+  mlx-sha-short:
+    description: Exact native MLX source revision
+    value: ${{ steps.mlxkey.outputs.mlx_sha_short }}
+runs:
+  using: composite
+  steps:
+    - name: Validate lane
+      shell: bash
+      env:
+        LANE: ${{ inputs.lane }}
+      run: |
+        case "$LANE" in release|qualification) ;; *) exit 2 ;; esac
+    - name: Verify checked-out source
+      shell: bash
+      run: |
+        test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+        git diff --exit-code HEAD --ignore-submodules=none
+        if git submodule status --recursive | grep -qE '^[-+U]'; then
+          echo 'Recursive submodules differ from committed source' >&2
+          exit 1
+        fi
+    - name: Select SDK 27 provider toolchain
+      shell: bash
+      run: ./scripts/prepare-provider-release-toolchain.sh
+    - name: Record build identity
+      id: identity
+      shell: bash
+      run: |
+        echo "sdk_version=$PROVIDER_SDK_VERSION" >> "$GITHUB_OUTPUT"
+        swift --version
+        xcodebuild -version
+        sysctl -n hw.logicalcpu hw.memsize
+    - name: Set up Go for prompt parity
+      if: inputs.lane == 'qualification'
+      uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34
+      with:
+        go-version-file: go.mod
+    - name: Install pinned Rust for prompt parity
+      if: inputs.lane == 'qualification'
+      shell: bash
+      run: rustup toolchain install 1.88.0 --profile minimal
+    - name: Resolve compatible build cache keys
+      id: keys
+      shell: bash
+      env:
+        LANE: ${{ inputs.lane }}
+      run: python3 scripts/provider-release-cache.py keys --lane "$LANE" >> "$GITHUB_OUTPUT"
+    - name: Restore SDK-specific Swift build cache
+      id: swift-cache
+      uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57
+      with:
+        path: |
+          provider-swift/.build
+          libs/mlx-swift-lm/.build
+        key: ${{ steps.keys.outputs.swift-key }}
+        restore-keys: ${{ steps.keys.outputs.swift-prefix }}
+    - name: Restore Rust parity build cache
+      if: inputs.lane == 'qualification'
+      id: rust-cache
+      uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git/db
+          coordinator/promptsidecar/target
+        key: ${{ steps.keys.outputs.rust-key }}
+        restore-keys: ${{ steps.keys.outputs.rust-prefix }}
+    - name: Invalidate workspace Rust outputs
+      if: inputs.lane == 'qualification'
+      shell: bash
+      run: |
+        # Swift and Cargo fallback caches may come from different commits.
+        # Rebuild this local package every time; retain third-party dependencies.
+        cargo +1.88.0 clean --manifest-path coordinator/promptsidecar/Cargo.toml -p promptsidecar
+    - name: Restore unchanged source timestamps
+      shell: bash
+      run: |
+        python3 scripts/provider-release-cache.py restore-mtimes
+        # A generic Swift cache cannot authorize a runtime Metal library.
+        for root in provider-swift/.build libs/mlx-swift-lm/.build; do
+          [ ! -d "$root" ] || find "$root" -type f -name mlx.metallib -delete
+        done
+    - name: Ensure matching Metal compiler is available
+      shell: bash
+      run: python3 scripts/prepare-metal-toolchain.py
+    - name: Resolve source-matched metallib cache namespace
+      id: mlxkey
+      shell: bash
+      run: |
+        set -euo pipefail
+        MLX_SRC="libs/mlx-swift/Source/Cmlx/mlx"
+        test -f "$MLX_SRC/mlx/version.h"
+        test -z "$(git -C "$MLX_SRC" status --porcelain=v1 --untracked-files=all)"
+        MLX_SHA=$(git -C "$MLX_SRC" rev-parse HEAD)
+        HELPER_SHA=$(shasum -a 256 scripts/fetch-metallib.sh | cut -d' ' -f1)
+        SDK=$(xcrun --sdk macosx --show-sdk-version)
+        XCODE=$(xcodebuild -version | tr -cs '[:alnum:].' '-')
+        echo "key=metallib-helper-v1-${MLX_SHA}-${HELPER_SHA}-${XCODE}-sdk${SDK}-dt${MLX_METALLIB_DEPLOYMENT_TARGET}-jitoff" >> "$GITHUB_OUTPUT"
+        echo "mlx_sha_short=${MLX_SHA:0:12}" >> "$GITHUB_OUTPUT"
+    - name: Restore source-matched metallib cache
+      id: metallib-cache
+      uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57
+      with:
+        path: ${{ runner.temp }}/metallib-cache
+        key: ${{ steps.mlxkey.outputs.key }}
+    - name: Build or validate source-matched metallib
+      id: metallib
+      shell: bash
+      env:
+        METALLIB_CACHE_DIR: ${{ runner.temp }}/metallib-cache
+      run: |
+        set -euo pipefail
+        command -v cmake >/dev/null 2>&1 || brew install cmake
+        MLX_SRC="libs/mlx-swift/Source/Cmlx/mlx"
+        ./scripts/fetch-metallib.sh "$RUNNER_TEMP/metallib"
+        test -z "$(git -C "$MLX_SRC" status --porcelain=v1 --untracked-files=all)"
+        test -s "$RUNNER_TEMP/metallib/mlx.metallib"
+        echo "metallib=$RUNNER_TEMP/metallib/mlx.metallib" >> "$GITHUB_OUTPUT"
+    - name: Save source-matched metallib cache
+      if: steps.metallib-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57
+      with:
+        path: ${{ runner.temp }}/metallib-cache
+        key: ${{ steps.mlxkey.outputs.key }}
+    - name: Verify production prompt parity
+      if: inputs.lane == 'qualification'
+      id: parity
+      shell: bash
+      run: ./scripts/verify-prompt-parity.sh
+    - name: Build SDK test products and stage Metal library
+      if: inputs.lane == 'qualification'
+      id: test-build
+      shell: bash
+      working-directory: provider-swift
+      env:
+        RELEASE_TEST_METALLIB: ${{ steps.metallib.outputs.metallib }}
+      run: |
+        set -euo pipefail
+        swift build --build-tests
+        TEST_BIN_DIR=$(swift build --show-bin-path)
+        cp "$RELEASE_TEST_METALLIB" "$TEST_BIN_DIR/mlx.metallib"
+        while IFS= read -r macos; do
+          cp "$RELEASE_TEST_METALLIB" "$macos/mlx.metallib"
+        done < <(find .build -type d -path '*.xctest/Contents/MacOS' -print)
+    - name: Test provider with release SDK
+      if: inputs.lane == 'qualification'
+      shell: bash
+      working-directory: provider-swift
+      run: |
+        python3 ../scripts/run-provider-test-watchdog.py \
+          --output-dir "$RUNNER_TEMP/provider-sdk-tests" \
+          --diagnostic-after-seconds 480 --timeout-seconds 900 \
+          -- ../scripts/run-provider-tests.sh
+    - name: Build optimized provider products
+      if: inputs.lane == 'release'
+      id: products
+      shell: bash
+      working-directory: provider-swift
+      run: |
+        set -euo pipefail
+        swift build -c release --product darkbloom
+        swift build -c release --product darkbloom-enclave
+        swift build -c release --product darkbloom-fan-helper
+        BIN_DIR=$(swift build -c release --show-bin-path)
+        for product in darkbloom darkbloom-enclave darkbloom-fan-helper; do
+          test -x "$BIN_DIR/$product"
+        done
+        echo "bin_dir=$BIN_DIR" >> "$GITHUB_OUTPUT"
+    - name: Retain SDK test diagnostics
+      if: always() && inputs.lane == 'qualification'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: provider-sdk-test-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/provider-sdk-tests
+        if-no-files-found: ignore
+        retention-days: 14
+    - name: Record timestamps for successfully compiled sources
+      # Failed assertions do not invalidate successfully built objects. Never
+      # certify source timestamps for an incomplete compilation.
+      if: always() && !cancelled() && (steps.products.outcome == 'success' || steps.test-build.outcome == 'success')
+      id: timestamps
+      shell: bash
+      run: python3 scripts/provider-release-cache.py snapshot-mtimes
+    - name: Save SDK-specific Swift build cache
+      if: always() && !cancelled() && steps.timestamps.outcome == 'success' && steps.swift-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57
+      with:
+        path: |
+          provider-swift/.build
+          libs/mlx-swift-lm/.build
+        key: ${{ steps.keys.outputs.swift-key }}
+    - name: Save Rust parity build cache
+      if: always() && !cancelled() && steps.parity.outcome == 'success' && steps.rust-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git/db
+          coordinator/promptsidecar/target
+        key: ${{ steps.keys.outputs.rust-key }}
+    - name: Summarize cache reuse
+      if: always()
+      shell: bash
+      env:
+        LANE: ${{ inputs.lane }}
+        SWIFT_HIT: ${{ steps.swift-cache.outputs.cache-hit }}
+        RUST_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+        METAL_HIT: ${{ steps.metallib-cache.outputs.cache-hit }}
+        SWIFT_MATCH: ${{ steps.swift-cache.outputs.cache-matched-key }}
+      run: |
+        {
+          echo "### SDK 27 $LANE build cache"
+          echo "Swift exact hit: ${SWIFT_HIT:-false}; restored key: ${SWIFT_MATCH:-none}"
+          echo "Rust exact hit: ${RUST_HIT:-not used}; Metal exact hit: ${METAL_HIT:-false}"
+          echo 'A cache hit reuses compilation; it never skips qualification or signing.'
+        } >> "$GITHUB_STEP_SUMMARY"

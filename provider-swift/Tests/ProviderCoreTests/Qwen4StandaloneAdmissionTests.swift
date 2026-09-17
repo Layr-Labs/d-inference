@@ -46,6 +46,31 @@ struct Qwen4StandaloneAdmissionTests {
         try await requireLoadHookAndCleanup(server, modelID: modelID)
     }
 
+    @Test("Low headroom refuses before weight loading and can retry after recovery",
+          arguments: ["qwen4_exp", "qwen4_exp_text"])
+    func lowHeadroomRejectsAndRecovers(modelType: String) async throws {
+        let modelID = uniqueID()
+        let snapshot = try Snapshot(modelID: modelID)
+        defer { snapshot.removeOwnedFiles() }
+        let memory = LoadMemory(systemAvailable: 1 << 30)
+        let budget = GlobalKVCacheBudget(
+            activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(modelIDs: [modelID]),
+            memorySnapshot: { memory.snapshot() })
+        let server = await makeServer(models: [info(modelID, modelType)], budget: budget)
+
+        do {
+            try await server.ensureModelLoaded(modelID)
+            Issue.record("Low-headroom cold load returned without refusing")
+        } catch StandaloneServerError.capacityUnavailable(let reason) {
+            #expect(reason.contains("Insufficient memory headroom to load model"))
+        }
+        // Reaching the weight hook instead would throw ReachedWeightLoad and
+        // fail this test. The refused attempt must also release its load gate.
+        await requireClean(server, modelID: modelID)
+        memory.restoreHeadroom()
+        try await requireLoadHookAndCleanup(server, modelID: modelID)
+    }
+
     @Test("A local snapshot outside the advertised set cannot enter loading")
     func unknownModelIsRejectedDespiteLocalSnapshot() async throws {
         let modelID = uniqueID()
@@ -114,8 +139,14 @@ struct Qwen4StandaloneAdmissionTests {
         try await requireNotFoundAndCleanup(server, modelID: modelID)
     }
 
-    private func makeServer(models: [ModelInfo]) async -> StandaloneServer {
-        let server = StandaloneServer(config: .init(mtpMode: .off), models: models)
+    private func makeServer(
+        models: [ModelInfo], budget: GlobalKVCacheBudget? = nil
+    ) async -> StandaloneServer {
+        // These fixtures allocate no weights. Exercise the real load gate and
+        // reservation lifecycle against a fixed machine, independent of CI RAM.
+        let server = StandaloneServer(
+            config: .init(mtpMode: .off), models: models,
+            kvBudgetForTesting: budget ?? ScriptedProviderMemory.budget(modelIDs: models.map(\.id)))
         await server.setV2TestHooksForTesting(.init(
             beforeWeightLoad: { [weak server] modelID in
                 let server = try #require(server)
@@ -166,6 +197,26 @@ struct Qwen4StandaloneAdmissionTests {
     }
 
     private func uniqueID() -> String { "qwen4-admission-fixture/\(UUID().uuidString)" }
+
+    private final class LoadMemory: @unchecked Sendable {
+        private let lock = NSLock()
+        private var systemAvailable: UInt64
+
+        init(systemAvailable: UInt64) {
+            self.systemAvailable = systemAvailable
+        }
+
+        func snapshot() -> GlobalKVCacheBudget.MemorySnapshot {
+            lock.withLock {
+                .init(total: ScriptedProviderMemory.physicalBytes, active: 0, cache: 0,
+                      systemAvailable: systemAvailable)
+            }
+        }
+
+        func restoreHeadroom() {
+            lock.withLock { systemAvailable = ScriptedProviderMemory.physicalBytes }
+        }
+    }
 
     private struct Snapshot {
         let directory: URL

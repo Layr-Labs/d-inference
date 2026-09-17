@@ -1,6 +1,12 @@
 # Changelog
 
-## Release candidate v0.9.5 — Qwen 3.8 Next / native Qwen4 follow-up (not shipped; 2026-09-17)
+## Release candidate v0.9.6 — Flash-Next signed-app resource recovery (not shipped; 2026-09-17)
+
+- Resolve native Qwen Metal preambles from the signed app’s `Contents/Resources`, including installer symlinks; prevent developer build paths from hiding missing packaged files. Model weights and kernel bytes are unchanged.
+- Exercise all Qwen Metal preambles in `runtime-smoke` before signing, after notarization, and through the existing installer/updater smoke. Add relocated-app, missing-resource, symlink-escape, and standalone-development regression checks.
+- Require provider 0.9.6 or newer for `qwen3.8-flash-next`, excluding the crashing 0.9.5 bundle without changing other models. Keep the 262144-token native context and memory safeguards. Cold SSD-offload accounting requires the separately deployed coordinator.
+
+## v0.9.5 — Qwen 3.8 Next / native Qwen4 follow-up (shipped; 2026-09-17)
 
 - Recognize the exact `qwen3.8-flash-next` registry ID alongside the legacy developer ID for native Qwen4 media, paging/prefix, tool and reasoning policies. Keep artifact/configuration checks and developer-only path overrides intact.
 - Use native model context in listing and runtime policy, with a 262144 fallback only for the known artifact identities. Remove the extra 82K bridge clamp; retain lower-only operator overrides, checked prompt-plus-output budgets, physical-memory safeguards and coordinator SLA admission.

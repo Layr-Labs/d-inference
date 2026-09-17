@@ -16,6 +16,8 @@ struct RuntimeSmoke: AsyncParsableCommand {
     mutating func run() async throws {
         try await AppAttestRuntimeSmoke.run()
         print(AppAttestRuntimeSmoke.successMarker)
+        try PackagedRuntimeSmoke.verifyQwen4MetalResources()
+        print(PackagedRuntimeSmoke.qwen4MetalSuccessMarker)
         try PackagedRuntimeSmoke.verifyGemmaOptimizations()
         print(PackagedRuntimeSmoke.gemmaOptimizationSuccessMarker)
         try PackagedRuntimeSmoke.runPagedKernel(arguments: shapes)

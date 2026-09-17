@@ -93,11 +93,17 @@ class ReleasePipelineTests(unittest.TestCase):
 
     def test_signing_and_runtime_qualification_are_retained(self):
         for expected in ['app-attest-callback-runtime-smoke: ok',
+                         'qwen4-metal-resources-runtime-smoke: ok',
                          'gemma-optimizations-runtime-smoke: ok',
                          'codesign --verify --deep --strict', 'xcrun notarytool submit',
                          'BINARY_HASH=$(shasum -a 256',
                          'Register release with coordinator']:
             self.assertIn(expected, RELEASE)
+
+    def test_qwen_resource_regression_runs_without_a_cache_hit_bypass(self):
+        step = ACTION.split('- name: Test Qwen resources in a relocated app\n', 1)[1].split('\n    - name:', 1)[0]
+        self.assertIn('python3 scripts/test-qwen4-packaged-resources.py', step)
+        self.assertNotIn('if:', step)
 
 
 if __name__ == '__main__':

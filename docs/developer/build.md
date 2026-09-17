@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-17 · commit `53e135e9e`
+> Last updated: 2026-09-17 · commit `04dadef3b`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -626,9 +626,9 @@ The private admin queries have PostgreSQL coverage in
 `admin-ui/src/lib/queries/app-attest.test.ts`.
 
 After the optimized provider is packaged with its resources, run
-`Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`. Require all three markers:
+`Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`. Require all four markers:
 `app-attest-callback-runtime-smoke: ok`, `gemma-optimizations-runtime-smoke: ok`,
-and `paged-kernel-runtime-smoke: ok`. Callback completion and expiry are exercised
+`paged-kernel-runtime-smoke: ok`, and `qwen4-metal-resources-runtime-smoke: ok`. Callback completion and expiry are exercised
 without Apple service calls or a Keychain item. This linked-binary check catches
 a release-only allocator failure that debug tests missed. Run
 `bash scripts/test-install-atomic.sh` for installer acceptance and rollback cases.
@@ -647,3 +647,7 @@ Candidate native prefix-cache benchmarks must build ProviderCore and
 prompt SPI carries production sampling parameters into each engine request.
 See [native benchmark validation](test.md#resident-prefix-benchmark-validation)
 for sampling scope, regression filters and diagnostic restrictions.
+
+### Qwen packaged resource regression
+
+`python3 scripts/test-qwen4-packaged-resources.py` compiles the actual Qwen Metal resource accessor into a small optimized app, then runs it from a relocated app and an installer-style executable symlink. It checks all three preamble hashes, rejects missing or empty files and resource links outside the app, and proves that developer/cwd copies cannot mask a broken packaged resource. It needs Swift on macOS, but no model weights or GPU. Both SDK 27 release lanes and Provider Tests run this check. The full provider `runtime-smoke` exercises the same accessor before publication, installation, and update.

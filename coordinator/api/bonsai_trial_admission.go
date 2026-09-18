@@ -27,6 +27,9 @@ type trialPriceSnapshot struct {
 }
 
 func trialFromRequest(r *http.Request) *trialRequest {
+	if r == nil {
+		return nil
+	}
 	t, _ := r.Context().Value(ctxKeyTrial).(*trialRequest)
 	return t
 }

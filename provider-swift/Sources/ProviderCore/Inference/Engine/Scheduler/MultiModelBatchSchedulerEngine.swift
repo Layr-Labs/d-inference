@@ -301,7 +301,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         do {
             try checkFirstContentDeadline()
             if isVLM, let container, MediaIngest.hasMedia(request) {
-                nativeMediaTools = await container.perform { ctx in ctx.model is MLXVLM.Qwen4Exp }
+                nativeMediaTools = await container.perform { ctx in
+                    ctx.model is MLXVLM.Qwen4Exp || ctx.model is MLXVLM.PrismHadamardQwen35
+                }
             }
             if !MediaIngest.hasMedia(request) || nativeMediaTools {
                 toolHandler = try ToolStreamPreparation.makeHandler(
@@ -336,9 +338,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             try await checkFirstContentDeadline(releasing: releaseBox)
             // `.auto` constrains nothing and `.none` hides the tools outright
             // (post-generation validation rejects any emitted call), so both
-            // ride the media path unchanged. `.required`/`.named` need the
-            // token automaton this path cannot install.
-            guard prepared.mode == .auto || prepared.mode == .none else {
+            // ride the media path unchanged. Bonsai's native parser withholds
+            // and validates required/named frames exactly as on its text path;
+            // other families retain their existing grammar-dependent refusal.
+            guard prepared.mode == .auto || prepared.mode == .none
+                || ToolChoiceEnforcementPolicy.supportsForcedMedia(
+                    context: .init(modelId: modelId, modelType: modelType),
+                    nativeWrapperLoaded: nativeMediaTools)
+            else {
                 await releaseBox.fire()
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
                     "inference-enforced tool_choice is not supported for multimodal requests")

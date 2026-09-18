@@ -147,6 +147,8 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
                 rate = fp16KVBytesPerToken(layerKinds: qwen.cbv2LayerKinds)
             case let qwen as MLXVLM.Qwen4Exp:
                 rate = fp16KVBytesPerToken(layerKinds: qwen.cbv2LayerKinds)
+            case let prism as MLXVLM.PrismHadamardQwen35:
+                rate = fp16KVBytesPerToken(layerKinds: prism.cbv2LayerKinds)
             case is MLXVLM.Qwen35MoE:
                 return ModuleFacts(
                     bytes: bytes,

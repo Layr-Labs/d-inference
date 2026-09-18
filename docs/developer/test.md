@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-17 · commit `b86445a0a`
+> Last updated: 2026-09-18 · commit `2fb16f79d`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1313,6 +1313,13 @@ This prevents task scheduling from silently changing admission order. Sources: `
 (`measureDecode`). See [GPT-OSS optimization results](../reports/2026-09-05-gptoss20b-optimization-results.md).
 
 ### 7. Docs lint
+
+Long-prompt throughput qualification must retain both MLX active/cache counters
+and an independent OS process-footprint sample. The sweep applies the serving
+allocator guard before loading (`provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift`,
+`run`); `MLXMemoryGuardTests` cover the shared limit policy. A large unbounded
+reuse pool is not live KV. Rerun identical prompt/token budgets and compare token
+IDs when changing allocation policy; do not reduce state precision to hide growth.
 
 The lightweight Contribution Policy workflow runs before review and again when
 the `docs-not-needed` label is added or removed. Its `Commit Signatures` job

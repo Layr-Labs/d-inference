@@ -137,6 +137,12 @@ fn native_structured_target(model_id: &str, model_type: Option<&str>) -> bool {
         .as_deref()
     {
         Some("qwen4_exp" | "qwen4_exp_text") => true,
+        Some("prism_hadamard_qwen35") => matches!(
+            model_id,
+            "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
+                | "EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit"
+                | "ternary-bonsai-2-27b"
+        ),
         Some("nemotron_h") => matches!(
             model_id,
             "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit"

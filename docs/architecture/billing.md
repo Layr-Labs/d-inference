@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-15 · commit `a99ce680a`
+> Last updated: 2026-09-18 · commit `954f570d1`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -511,3 +511,7 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 - [`architecture/request-outcome-observability.md`](request-outcome-observability.md) — how billing outcomes join the request outcome taxonomy
 - [`reference/api-contracts.md`](../reference/api-contracts.md) — error envelope and status codes
 - [`storage.md`](storage.md) — which store backend holds the ledger and what survives a restart
+
+## Sponsored inference policy foundation
+
+`coordinator/trial/policy.go` defines the account-scoped Bonsai campaign and exact session/model/endpoint eligibility. `coordinator/trial/pricing.go` separates model work value from the consumer payer: sponsored inference keeps positive model rates while planning a zero consumer debit and a platform-funded provider earning. The library is disabled by default and has no HTTP or ledger side effects by itself. See the [pricing contract](../reference/pricing-model.md#bonsai-sponsored-pricing-policy) and [implementation design](../design/bonsai-session-trial.md).

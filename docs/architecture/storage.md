@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-14 · commit `46299ff78`
+> Last updated: 2026-09-18 · commit `cb1eacbfb`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -336,3 +336,30 @@ KV blocks under a per-model key, not tokens.
 - [`prefix-cache.md`](prefix-cache.md) and [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) — the provider's on-disk cache
 - [`../operations/state-export.md`](../operations/state-export.md) — exporting the non-Postgres state on the persistent disk
 - [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md) — where the DSN is set
+
+## Durable trial allowances
+
+The optional `store.TrialStore` capability is resolved through `store.As`, so decorators preserve access without caching allowance state. MemoryStore and PostgresStore implement identical reserve, dispatch, release, settle, and read contracts (`coordinator/store/trial.go`). These methods do not mutate the cached users or model registry domains.
+
+| Table | Identity and purpose | Source |
+|---|---|---|
+| `trial_allowances` | `(account_id, campaign_id)`; lifetime limit, used tokens and outstanding reservations | `coordinator/store/postgres_trial_schema.go` (`trialDDL`) |
+| `trial_reservations` | Logical request ID; account/model, immutable pricing JSON, reserved/used tokens and durable state | `trialDDL` |
+| `trial_subsidies` | One row per reservation; actual serving request ID, subsidy expense and provider credit | `trialDDL` |
+
+```mermaid
+stateDiagram-v2
+    [*] --> reserved: ReserveTrial
+    reserved --> dispatched: MarkTrialDispatched before send
+    reserved --> released: no dispatch
+    dispatched --> released: confirmed unused
+    dispatched --> unresolved: ambiguous terminal or invalid usage
+    dispatched --> settled: validated completion
+    unresolved --> settled: validated recovery completion
+```
+
+Reservation serializes on the account/campaign row and enforces `used + reserved <= limit` inside the database transaction. Unique identities make duplicate operations idempotent; a reused ID with different inputs is a conflict. Checks cover multiple database pools, not only an in-process lock (`coordinator/store/postgres_trial.go`).
+
+Settlement writes actual quota usage, a zero-cost consumer usage record, the subsidy row, provider earning, payout ledger entry, balance, withdrawable balance and earnings summary in one transaction. It reuses the ordinary provider-credit transaction helper. Any write failure rolls the transaction back. Earning/subsidy identity and token validation prevent cross-account or duplicate credits (`coordinator/store/postgres_trial_settlement.go`).
+
+Unresolved holds do not expire. Ordinary release cannot clear an unresolved hold, even when its caller claims unused work. A valid recovery completion can settle it. There is no automatic recovery worker or admin release endpoint in this implementation; an operator must investigate durable serving evidence before any separately reviewed repair. Never reset the campaign to work around a hold. The schema migration is additive and rerunnable; disabling a campaign must retain these rows.

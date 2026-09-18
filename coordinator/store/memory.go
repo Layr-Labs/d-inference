@@ -39,6 +39,10 @@ const keySpendRetentionDays = 40
 
 // MemoryStore manages API keys, usage records, payments, and balances in memory.
 type MemoryStore struct {
+	trialAllowances   map[trialAllowanceKey]TrialAllowance
+	trialReservations map[string]TrialReservation
+	trialSettlements  map[string]TrialSettlement
+
 	mu            sync.RWMutex
 	keyRecords    map[string]*APIKey // raw key → record (metadata + limits)
 	keysByID      map[string]string  // public key ID → raw key
@@ -2912,6 +2916,10 @@ func (s *MemoryStore) CreditProviderAccount(earning *ProviderEarning) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.creditProviderAccountLocked(earning)
+}
+
+func (s *MemoryStore) creditProviderAccountLocked(earning *ProviderEarning) error {
 	// Idempotency guard mirroring the postgres ON CONFLICT (job_id) DO NOTHING:
 	// a retried settlement with the same non-empty job_id must not double-credit
 	// the balance, the withdrawable subset, the ledger, or the earnings summary.

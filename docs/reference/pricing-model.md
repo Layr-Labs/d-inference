@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-18 · commit `954f570d1`
+> Last updated: 2026-09-18 · commit `cb1eacbfb`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -312,3 +312,13 @@ The policy library is initially inactive; admission and durable settlement are s
 | Reservation math | Checked prompt-plus-output sum and multiplicity; integration must supply a safe prompt bound | `coordinator/trial/tokens.go` (`ReservationTokens`) |
 
 The one-tenth ratio applies to rates. Currency rounding and the minimum request charge mean tiny requests need not settle at exactly one-tenth the corresponding Qwen request cost.
+
+### Sponsored settlement storage
+
+| Operation | Monetary effect | Citation |
+|---|---|---|
+| `ReserveTrial` / `ReleaseTrial` | Token allowance only; no customer balance credit or debit | `coordinator/store/postgres_trial.go` |
+| `SettleTrial` | Consumer usage cost zero; atomic provider earning and withdrawable balance; separate subsidy expense | `coordinator/store/postgres_trial_settlement.go` |
+| Duplicate settlement | No second quota debit, earning, ledger credit, or subsidy row | `coordinator/store/trial.go`; `coordinator/store/postgres_trial_settlement.go` |
+
+Provider withdrawals continue through the existing eligibility and Stripe withdrawal paths. Recording a withdrawable earning is not proof of an external transfer.

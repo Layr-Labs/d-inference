@@ -1175,7 +1175,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 	}
 
 	migrations = append(migrations, appAttestShadowDDL, machineInventoryDDL, appAttestArchiveDDL, appAttestEnrollmentDDL, appAttestReceiptDDL)
-	migrations = append(migrations, appAttestRevocationDDL)
+	migrations = append(migrations, appAttestRevocationDDL, trialDDL)
 	for i, m := range migrations {
 		started := time.Now()
 		_, err := s.pool.Exec(ctx, m)
@@ -4076,13 +4076,18 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	return creditProviderAccount(ctx, s.pool, earning, false)
+}
+
+func creditProviderAccount(ctx context.Context, q pgQuerier, earning *ProviderEarning, requireNew bool) error {
 	// The earning CTE is the idempotency gate: ON CONFLICT (job_id) DO NOTHING
 	// means a retried settlement (same job_id) inserts nothing and RETURNS no
 	// row, so every downstream CTE (which selects FROM earning) is a pure no-op
 	// — no balance bump, no ledger row, no summary bump. The outer COALESCE keeps
 	// the query returning exactly one row even on a duplicate.
 	var balanceAfter int64
-	err := s.pool.QueryRow(ctx, `
+	var inserted bool
+	err := q.QueryRow(ctx, `
 		WITH earning AS (
 			INSERT INTO provider_earnings (
 				account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
@@ -4125,7 +4130,7 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 			  total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
 			  updated_at = NOW()
 		)
-		SELECT COALESCE((SELECT balance_micro_usd FROM credit), 0)`,
+		SELECT COALESCE((SELECT balance_micro_usd FROM credit), 0), EXISTS(SELECT 1 FROM earning)`,
 		earning.AccountID,                    // $1
 		earning.AmountMicroUSD,               // $2
 		string(LedgerPayout),                 // $3
@@ -4136,9 +4141,12 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 		earning.Model,                        // $8
 		earning.PromptTokens,                 // $9
 		earning.CompletionTokens,             // $10
-	).Scan(&balanceAfter)
+	).Scan(&balanceAfter, &inserted)
 	if err != nil {
 		return fmt.Errorf("store: credit provider account: %w", err)
+	}
+	if requireNew && !inserted {
+		return ErrTrialConflict
 	}
 	return nil
 }

@@ -568,6 +568,25 @@ func main() {
 		}
 	}
 
+	// Routing: request-proportional near-tie window.
+	//   - EIGENINFERENCE_NEAR_TIE_WINDOW_FRACTION (default 0, off): widens the
+	//     near-tie load-spreading window to a fraction of the winning
+	//     candidate's own cost, floored at the absolute nearTieCostWindowMs.
+	//     The absolute window is a fixed 3s while the dominant cost term scales
+	//     with max_tokens, so on long requests the spread collapses onto the
+	//     fastest hardware and slower nodes are excluded from every long
+	//     request. 0 keeps selection byte-for-byte unchanged.
+	if v := os.Getenv("EIGENINFERENCE_NEAR_TIE_WINDOW_FRACTION"); v != "" {
+		if fraction, ok := registry.ValidateNearTieWindowFraction(v); ok {
+			registry.SetNearTieCostWindowFraction(fraction)
+			logger.Info("near-tie widened band configured via EIGENINFERENCE_NEAR_TIE_WINDOW_FRACTION",
+				"fraction", fraction, "behavior_neutral", fraction == 0)
+		} else {
+			logger.Warn("invalid or out-of-range EIGENINFERENCE_NEAR_TIE_WINDOW_FRACTION; keeping default 0 (absolute window only)",
+				"value", v, "max", 1.0)
+		}
+	}
+
 	// Routing: long-prompt fastest-tier preference. Very long prompts
 	// have a long prefill window that drives pre-first-token client cancellations
 	// (client_gone). When EIGENINFERENCE_LONG_PROMPT_TOKENS is set, the scheduler

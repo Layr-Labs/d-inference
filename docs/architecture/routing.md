@@ -226,7 +226,8 @@ and stores every term in `costBreakdown` with `Total = cost`
 | `thermalPenaltyFairMs` | `2_000.0` | Added when `ThermalState == "fair"`. |
 | `thermalPenaltySeriousMs` | `8_000.0` | Added when `ThermalState == "serious"` (`critical` is a gate, not a penalty). |
 | `defaultCapacityRatePenaltyMs` | `15_000.0` | × windowed capacity-503 rate (`capacity_rate.go`, [below](#gray-box-capacity-signals)). |
-| `nearTieCostWindowMs` | `3_000.0` | Width of the near-tie band in `selectRoutingCandidate`. |
+| `nearTieCostWindowMs` | `3_000.0` | Width of the near-tie band in `selectRoutingCandidate`. Absolute, so it narrows in relative terms as the request's work term grows with `max_tokens`. |
+| `nearTieCostWindowFraction` | `0` (off) | Optional band proportional to the cheapest candidate's `thisReqMs`, floored at `nearTieCostWindowMs` (`near_tie_window.go`, `EIGENINFERENCE_NEAR_TIE_WINDOW_FRACTION`). |
 | `defaultRequestedMaxTokens` | `256` | Used for `max_tokens` when the request does not set one. |
 | `effectiveTPSLoadFactor` | `0.39` | Per-concurrent-decode TPS derating (`effectiveDecodeTPS`). |
 | `kvCacheBytesPerToken` | `400_000` | Fallback KV bytes per token when the slot does not report `KVBytesPerToken`. |
@@ -343,7 +344,11 @@ leaves at least one candidate (`scanCandidatesLocked`):
 2. **Cost ties.** When any candidate has a cache credit or restore penalty, keep only
    exact minimum-cost candidates. Otherwise keep every candidate within
    `nearTieCostWindowMs` ([cost model](#cost-model)), preserving ordinary load
-   spreading. Among the retained candidates choose the lowest `effectiveQueue`,
+   spreading. When `nearTieCostWindowFraction` is set, also keep candidates within
+   `fraction × thisReqMs` of the minimum — the band scales on the request's own
+   work term, never on total cost, and excludes any candidate carrying a health,
+   capacity-rate or cold-state penalty so a derated provider is never re-admitted.
+   Among the retained candidates choose the lowest `effectiveQueue`,
    then the lowest `totalPending`.
 3. **Equivalents.** More than one candidate sharing the retained cost range,
    queue and pending count normally resolves uniformly by `random`. With active

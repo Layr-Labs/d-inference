@@ -49,12 +49,22 @@ func selectRoutingCandidateWithAffinity(pool []*routingCandidate, affinity strin
 			second = candidate
 		}
 	}
+	// The absolute window is unchanged. The widened band (near_tie_window.go) is
+	// proportional to the cheapest candidate's WORK term only, never to its total
+	// cost, and admits only candidates no derater has sunk. At the default
+	// fraction the band equals the window, so this is byte-for-byte the previous
+	// behavior.
 	window := nearTieCostWindowMs
+	band := nearTieBandMs(best.breakdown.ThisReqMs)
 	if hasCacheAdjustment {
-		window = 0
+		window, band = 0, 0
 	}
 	isNear := func(c *routingCandidate) bool {
-		return math.Abs(c.costMs-best.costMs) <= window
+		delta := math.Abs(c.costMs - best.costMs)
+		if delta <= window {
+			return true
+		}
+		return delta <= band && eligibleForWidenedBand(c)
 	}
 
 	// Find the least busy near-cost candidate. Count queue ties independently

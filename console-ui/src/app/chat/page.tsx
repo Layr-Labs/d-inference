@@ -7,6 +7,8 @@ import { fetchModels } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
 import { useChatStream } from "@/hooks/useChatStream";
 import { ChatMessage } from "@/components/chat/ChatMessage";
+import { ModelTokenClaims } from "@/components/chat/ModelTokenClaims";
+import { ModelTokenAllowance } from "@/components/chat/ModelTokenAllowance";
 import { ChatWelcome, ChatStarters } from "@/components/chat/ChatWelcome";
 import { ChatInput, type SuggestedDraft } from "@/components/ChatInput";
 import { TopBar } from "@/components/TopBar";
@@ -129,6 +131,8 @@ export default function ChatPage() {
           {authenticated && !hasMessages && (
             <ChatStarters onSelect={(text) => setSuggestedDraft((draft) => ({ text, revision: (draft?.revision ?? 0) + 1 }))} />
           )}
+          {authenticated && <ModelTokenClaims />}
+          {authenticated && <ModelTokenAllowance />}
           <PreSendTrustBanner visible={authenticated && !hasMessages} />
           {authenticated && !hasMessages && <InviteCodeBanner />}
         </div>

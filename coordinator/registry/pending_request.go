@@ -42,6 +42,10 @@ type PendingRequest struct {
 	// Model. Responses echo PublicModel so consumers never see the quant/build.
 	PublicModel string
 	ConsumerKey string
+	// Durable logical-request grant reservation, shared by retries and queued attempts.
+	ModelTokenReservationID string
+	PromotionModelID        string
+	PromotionFreeTokens     int64
 	// KeyID is the public ID of the API key that originated the request, used
 	// for per-key usage and spend attribution. Empty for account-scoped/legacy
 	// callers (Privy JWT, admin, provider tokens, unlinked keys without an ID).

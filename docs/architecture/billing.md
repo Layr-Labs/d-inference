@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-15 · commit `a99ce680a`
+> Last updated: 2026-09-18 · commit `e64b9df42`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -511,3 +511,11 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 - [`architecture/request-outcome-observability.md`](request-outcome-observability.md) — how billing outcomes join the request outcome taxonomy
 - [`reference/api-contracts.md`](../reference/api-contracts.md) — error envelope and status codes
 - [`storage.md`](storage.md) — which store backend holds the ledger and what survives a restart
+
+## Model token promotions
+
+A model promotion gives each qualifying individual account one durable, non-expiring input-plus-output token grant. Users explicitly claim an offer; login only lists offers. A persisted account-signup cutoff, bounded claim window and atomic campaign claim cap restrict eligibility and allocation. Immutable grant terms prevent repeat claims or configuration retries from replenishing it. Model IDs can be configured before registration. The account, not an API key or browser, owns the grant. See the [promotion runbook](../operations/model-token-promotions.md).
+
+`coordinator/api/model_token_admission.go` (`reserveModelTokenPromotion`) reserves free tokens and any required paid balance atomically through `store.ModelTokenPromotionStore`. Free tokens cover input before output; uncovered usage is paid. At completion, `coordinator/api/model_token_settlement.go` (`settleModelTokenPromotion`) atomically consumes actual free tokens, returns unused holds, settles paid credit and credits the provider. Durable reservation identities make completion/refund races and ambiguous-commit retries idempotent. Fully sponsored requests have zero consumer cost; sponsored provider earnings use exact platform token prices without a per-request payout minimum. `coordinator/api/model_token_pricing.go` (`priceModelTokens`) separates paid tokens (ordinary request minimum) from sponsored tokens. Sponsored earnings retain fractional micro-dollars after the provider fee share; `coordinator/store/model_token_earnings.go` (`carryModelTokenEarning`) carries them per provider account, atomically with quota consumption, balance credit and the terminal reservation record. Dividing the same sponsored token usage among more requests cannot increase its aggregate payout. Whole-micro-dollar gross quotes round up only as reservation/validation bounds; they never fund the sponsored payout. An owned sponsored route refunds the grant and pays no provider earnings, preventing conversion of a free grant into the same account's withdrawable balance.
+
+`coordinator/api/model_token_maintenance.go` (`maintainModelTokens`) renews active reservations, retries failed financial finalization/refunds, and reclaims orphan holds. Grants do not expire when the claim window closes. Money and quota settlement are transactional; usage telemetry remains on the existing recording path. After a transient failure or lost commit acknowledgement, reconciliation recovers the persisted consumer charge and invokes `coordinator/api/completion_accounting.go` (`completionAccounting`) once for usage, per-key spend, referral distribution and platform fees. The callback snapshots accounting metadata and does not replay provider payouts or routing latency metrics. Invalid settlements and insufficient cash terminate settlement retries, stop lease renewal and release token/cash holds; a failed release enters the refund retry queue. Zero-token completions cannot carry a charge or provider payout; zero-cost owned requests may still return their holds.

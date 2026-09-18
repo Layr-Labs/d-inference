@@ -29,6 +29,9 @@ func testPostgresStore(t testing.TB) *PostgresStore {
 
 	// Clean tables for test isolation.
 	for _, table := range []string{
+		"trial_subsidies",
+		"trial_reservations",
+		"trial_allowances",
 		"usage",
 		"payments",
 		"api_keys",
@@ -43,6 +46,7 @@ func testPostgresStore(t testing.TB) *PostgresStore {
 		"referrals",
 		"referrers",
 		"provider_earnings",
+		"earnings_summary",
 		"provider_payouts",
 		"providers",
 		"stripe_withdrawals",

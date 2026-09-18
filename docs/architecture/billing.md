@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-18 · commit `954f570d1`
+> Last updated: 2026-09-18 · commit `cb1eacbfb`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -515,3 +515,9 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 ## Sponsored inference policy foundation
 
 `coordinator/trial/policy.go` defines the account-scoped Bonsai campaign and exact session/model/endpoint eligibility. `coordinator/trial/pricing.go` separates model work value from the consumer payer: sponsored inference keeps positive model rates while planning a zero consumer debit and a platform-funded provider earning. The library is disabled by default and has no HTTP or ledger side effects by itself. See the [pricing contract](../reference/pricing-model.md#bonsai-sponsored-pricing-policy) and [implementation design](../design/bonsai-session-trial.md).
+
+## Atomic sponsored accounting
+
+`store.TrialStore.SettleTrial` records consumer cost as zero and provider earnings as real withdrawable income. The provider-credit helper is shared with normal paid settlement. `trial_subsidies` records platform funding separately from consumer revenue; no consumer debit, platform-fee revenue credit, or referral reward is created by the trial transaction. The provider credit may be below the subsidy cost when the integration applies its existing fee policy.
+
+The [durable trial tables](storage.md#durable-trial-allowances) preserve the logical request identity across retries and restarts. A committed settlement is idempotent, and an interrupted transaction leaves no partial payout or consumed quota. Store methods are available before HTTP integration is enabled.

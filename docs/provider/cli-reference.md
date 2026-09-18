@@ -1,16 +1,26 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-18 · commit `397b4d902`
+> Last updated: 2026-09-18 · commit `6050cc4d4`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
 defaults, the environment variables it forwards to the daemon, and its runtime
 constants, as declared in `provider-swift/Sources/darkbloom/` (`Darkbloom`,
-version `ProviderCore.version` = `0.9.5` in
+version `ProviderCore.version` = `0.9.6` in
 `provider-swift/Sources/ProviderCore/ProviderCore.swift`). For operators; types
 and defaults are the ArgumentParser declarations; `—` means required.
 
 ## Global options
+
+Every `darkbloom` invocation on macOS below 27 prints an informational upgrade
+warning to stderr before command parsing or AppKit hosting, including help,
+version and background commands. `MacOSUpgradeNotice.emit` in
+`provider-swift/Sources/darkbloom/MacOSUpgradeNotice.swift` names the local OS,
+upcoming Darkbloom MDM deactivation, continued legacy verification during the
+transition and the need to retain the profile until App Attest migration is
+approved. The warning performs no network/config/profile operations and does
+not change command execution, exit codes or stdout/JSON. macOS 27+ prints no
+upgrade warning. It is independent of `DARKBLOOM_NO_UPDATE_CHECK`.
 
 | Option | Type | Default | Effect | Source |
 |---|---|---|---|---|

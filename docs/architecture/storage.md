@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-18 · commit `e64b9df42`
+> Last updated: 2026-09-18 · commit `6050cc4d4`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -25,6 +25,12 @@ The additive [App Attest inventory and evidence tables](../reference/app-attest-
 Machine-session reconciliation uses a partial index over open sessions and bounded, row-locked batches to repair missed disconnect writes after contention or restart. Fresh inventory or provider-session heartbeats preserve liveness. Known closures retain their timestamp; inferred stale closures are labelled and can recover when fresh observations resume. Older observations and confirmed disconnects are fenced in `ObserveMachine`. See the [inventory lifecycle](../reference/app-attest-shadow.md#machine-inventory-and-identity) and `coordinator/store/machine_inventory_reconcile.go`.
 
 Canonical history and reward queries use the existing inventory tables. `coordinator/store/machine_inventory_schema.go` adds the reverse-merge index `darkbloom_machines_merged_into`; include it in additive migration preflight. `coordinator/store/postgres_machine_floor_settlement.go` serializes canonical/raw-session settlement with inventory merges, preventing duplicate same-epoch floors without rewriting existing balances. Serving leases remain in memory and are re-established after reconnect.
+
+Provider `attestation_result` JSON additively retains `OSVersion` from the signed
+registration blob (`coordinator/attestation/attestation.go`, `VerificationResult`).
+Existing rows without it decode as unknown. This app-reported metadata supports
+owner upgrade notices; it does not certify an OS or alter trust gates, and needs
+no SQL migration.
 
 ## Context
 

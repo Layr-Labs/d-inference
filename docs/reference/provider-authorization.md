@@ -1,6 +1,6 @@
 # Provider serving authorization
 
-> Last updated: 2026-09-18 · commit `d43a5cea0`
+> Last updated: 2026-09-18 · commit `6050cc4d4`
 
 The coordinator can authorize private inference through complete legacy verification or a qualified App Attest connection. These are separate evidence paths; App Attest never sets legacy MDA/APNs flags. The [rollout runbook](../operations/mdm-optional-rollout.md) separates code availability from activation qualification.
 
@@ -64,6 +64,26 @@ The additive `trust_status.authorization` object is coordinator-to-provider only
 | `session_id`, `machine_id` | Current connection and verified canonical machine; never caller-selected authorization |
 
 `darkbloom status` and `darkbloom doctor` distinguish App Attest authorization from legacy verification. `darkbloom unenroll` offers full exit or App Attest migration. The migration option and direct `--keep-serving` shortcut require macOS 27 or later and a fresh running-provider snapshot, matching coordinator and process identity, and an unexpired removal-ready authorization. Both the state-file write and receipt of the coordinator decision must be at most `snapshotMaxAge = 10` seconds old (`provider-swift/Sources/ProviderCore/Diagnostics/ProviderAuthorizationReadiness.swift`, `currentStatus`); periodic local writes cannot refresh an old removal decision. It preserves account/config/key data and opens System Settings only after identifying the exact Darkbloom enrollment. It never removes a company profile or the app's embedded signing profile. Full exit stops the provider service before offering profile removal and optional cleanup. Enter/EOF cancels; noninteractive use requires an explicit mode flag. Code: `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift` and `provider-swift/Sources/ProviderCore/Security/DarkbloomMDMRemoval.swift`.
+
+## Owner dashboard and upgrade guidance
+
+The setup page prominently explains macOS 27 and planned MDM deactivation.
+The provider dashboard warns machines whose `os_version` reports an older OS,
+separates unknown versions, and identifies reports retained for offline Macs.
+The upgrade warning is informational: it does not make an otherwise eligible
+legacy machine unroutable. Every CLI invocation on older macOS also warns on
+stderr; see the [CLI reference](../provider/cli-reference.md#global-options).
+
+`coordinator/api/me_authorization.go` supplies the owner dashboard with a
+current App Attest verdict and expiry, independently of legacy trust fields.
+The UI uses `console-ui/src/app/providers/authorization.ts`
+(`hasCurrentAppAttestAuthorization`) to suppress legacy-only trust/challenge
+warnings for a currently authorized connection. Runtime failure, offline and
+untrusted states remain blocking. The expiry timer in
+`console-ui/src/app/providers/dashboard/useCurrentAuthorizations.ts` removes
+cached authorization even if a fleet poll fails. These are display decisions;
+backend dispatch authorization remains authoritative, and profile removal still
+requires the CLI's separate fresh readiness check.
 
 ## Machine identity and base rewards
 

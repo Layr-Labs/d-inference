@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-15 · commit `a4692e70e`
+> Last updated: 2026-09-18 · commit `2fb16f79d`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -157,6 +157,12 @@ Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 `~/.darkbloom/auth_token`. `logout` takes no flags and deletes that file.
 
 ### `darkbloom benchmark`
+
+The throughput sweep installs the same `MLXMemoryGuard` allocator limits as
+serving before it loads weights. Its progress log separates active allocations,
+reusable cache bytes and the active-allocation peak at each decode cell and
+shutdown (`provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift`,
+`run` and `runDecodeBatch`). These counters are not OS process footprint.
 
 | Group | Flags (type = default) |
 |---|---|

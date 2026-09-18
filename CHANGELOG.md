@@ -2,6 +2,7 @@
 
 ## Unreleased — Ternary Bonsai 2 onboarding draft
 
+- Apply the existing serving allocator guard before throughput-sweep model loading; bound freed-buffer retention and report active/cache memory separately without changing model precision or KV limits.
 - Add the `prism_hadamard_qwen35` native CBv2 adapter for the unchanged Prism Bonsai 2 27B affine 2-bit pack, including its real vision tower and explicit absence of MTP heads. Preserve signed-Hadamard transforms, FP16 packing, paging safeguards and matching provider/coordinator prompt semantics. Register `hadamard.json` as an integrity-bound config asset. Qualification and catalog/release activation are separate; this draft does not deploy the model.
 
 ## Release candidate v0.9.6 — Flash-Next signed-app resource recovery (not shipped; 2026-09-17)

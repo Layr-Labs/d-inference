@@ -11,5 +11,7 @@
   trademarks of Alibaba Cloud.
 - `nvidia.svg` is the NVIDIA eye mark already used by the Darkbloom landing page.
   NVIDIA and its mark are trademarks of NVIDIA Corporation.
+- `bonsai.svg` is the official Bonsai mark published by [PrismML](https://prismml.com/).
+  PrismML and Bonsai are trademarks of Prism ML, Inc.
 
 The files are intentionally served without recoloring or geometric edits.

@@ -4,9 +4,10 @@ import Testing
 @testable import ProviderBenchmark
 
 struct ModelBenchmarkDispatchTests {
-    @Test func onlyNativeQwen4UsesTheNativeBenchmark() {
+    @Test func nativePackedFamiliesUseTheNativeBenchmark() {
         #expect(ModelBenchmark.usesNativeGeneration(modelType: "qwen4_exp"))
         #expect(ModelBenchmark.usesNativeGeneration(modelType: "qwen4_exp_text"))
+        #expect(ModelBenchmark.usesNativeGeneration(modelType: "prism_hadamard_qwen35"))
         for modelType in [nil, "qwen3_5", "qwen3_5_text", "gemma4", "nemotron_h"] {
             #expect(!ModelBenchmark.usesNativeGeneration(modelType: modelType))
         }

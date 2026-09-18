@@ -32,6 +32,12 @@ import Foundation
 
 public enum EngineV2SupportedModels {
     public static let bonsai2ModelID = "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
+    public static func isBonsai2ListingModelID(_ id: String?) -> Bool {
+        switch id {
+        case bonsai2ModelID, "EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit", "ternary-bonsai-2-27b": true
+        default: false
+        }
+    }
     public static let nemotron35LightningModelID =
         "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit"
     public static let nemotron35LightningMTPModelID =

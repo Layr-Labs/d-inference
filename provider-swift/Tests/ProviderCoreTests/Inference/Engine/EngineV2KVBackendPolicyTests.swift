@@ -24,6 +24,7 @@ struct EngineV2KVBackendPolicyTests {
         "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
         "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit",
         "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
+        "EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit", "ternary-bonsai-2-27b",
     ])
     func exactReleaseArtifactAutoPolicy(modelID: String) {
         let parsed = EngineV2KVBackendPolicy.parseSelection(

@@ -301,7 +301,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         do {
             try checkFirstContentDeadline()
             if isVLM, let container, MediaIngest.hasMedia(request) {
-                nativeMediaTools = await container.perform { ctx in ctx.model is MLXVLM.Qwen4Exp }
+                nativeMediaTools = await container.perform { ctx in
+                    ctx.model is MLXVLM.Qwen4Exp || ctx.model is MLXVLM.PrismHadamardQwen35
+                }
             }
             if !MediaIngest.hasMedia(request) || nativeMediaTools {
                 toolHandler = try ToolStreamPreparation.makeHandler(

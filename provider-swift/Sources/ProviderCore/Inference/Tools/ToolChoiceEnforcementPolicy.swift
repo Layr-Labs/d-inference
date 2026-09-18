@@ -65,7 +65,7 @@ enum ToolChoiceEnforcementPolicy {
         let type = context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if type == "qwen4_exp" || type == "qwen4_exp_text" { return true }
         if type == "prism_hadamard_qwen35" {
-            return context.modelId == EngineV2SupportedModels.bonsai2ModelID
+            return EngineV2SupportedModels.isBonsai2ListingModelID(context.modelId)
         }
         return type == "nemotron_h"
             && EngineV2SupportedModels.isNemotron35ListingModelID(context.modelId)

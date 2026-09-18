@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-18 · commit `954f570d1`
+> Last updated: 2026-09-18 · commit `be5447aa7`
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -238,3 +238,13 @@ Mechanism for each error, including the exact functions, is in
 ## Bonsai trial rollout
 
 The Bonsai login-session offer is being implemented behind a disabled feature switch. It is not enabled by installing the pricing policy library. The intended allowance and paid API-key behavior are specified in the [trial design](../design/bonsai-session-trial.md); deployment and model qualification remain separate steps.
+
+## Using the Bonsai login-session trial
+
+When operators enable the offer, sign in and use Login session chat for Bonsai. The account receives one lifetime allowance of 5,000,000 prompt plus completion tokens. Repeated conversation history counts again because the model processes it again. Providers receive ordinary withdrawable earnings funded by Darkbloom; your balance is not debited.
+
+API-key calls remain paid and retain their key restrictions. Other models and non-chat endpoints retain normal billing. The allowance is shared across browsers and supported Bonsai builds, with no periodic reset. There is no remaining-token meter.
+
+At exhaustion chat reports: "Hey, you've used all 5 million free tokens for Bonsai 2. You can continue with a funded API key in the API Console." A funded account is never automatically charged instead. Select a funded API key deliberately to continue paid access.
+
+A request may be too large for the remaining allowance before usage reaches the limit: admission conservatively reserves the model's full context plus its output limit. A smaller output limit can reduce this reservation. Busy requests ask you to wait; unavailable trials ask you to retry later. See the [error contract](../reference/api-contracts.md#bonsai-sponsored-chat-errors). Using your own machine retains its existing free behavior and does not consume trial quota.

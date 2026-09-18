@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-18 · commit `cb1eacbfb`
+> Last updated: 2026-09-18 · commit `be5447aa7`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -521,3 +521,13 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 `store.TrialStore.SettleTrial` records consumer cost as zero and provider earnings as real withdrawable income. The provider-credit helper is shared with normal paid settlement. `trial_subsidies` records platform funding separately from consumer revenue; no consumer debit, platform-fee revenue credit, or referral reward is created by the trial transaction. The provider credit may be below the subsidy cost when the integration applies its existing fee policy.
 
 The [durable trial tables](storage.md#durable-trial-allowances) preserve the logical request identity across retries and restarts. A committed settlement is idempotent, and an interrupted transaction leaves no partial payout or consumed quota. Store methods are available before HTTP integration is enabled.
+
+## Sponsored request lifecycle
+
+The coordinator's Bonsai path is disabled by default. `prepareBonsaiTrial` accepts only verified sessions for the exact resolved model and chat endpoint. It bypasses consumer money reservation while retaining routing, validation and rate limits. `reserveBonsaiTrial` reserves the full registry context length plus enforced output bound and snapshots model rates and user fee policy. Missing platform rates and conflicting public-provider price overrides fail closed; fallback pricing cannot authorize a subsidy.
+
+`markTrialDispatched` persists intent before the provider write and requires a linked provider account. One shared atomic proof tracks whether the preceding attempt is confirmed unused. Trial requests have no simultaneous speculative backup; sequential retry requires a genuine provider no-content terminal. A socket failure or synthetic terminal is ambiguous and retains the durable hold (`coordinator/api/bonsai_trial_terminal.go`).
+
+`settleBonsaiTrial` validates a real completion, computes the frozen model cost and provider fee, and calls the atomic store settlement. Missing/negative/over-bound usage cannot authorize a payout. Error-frame `AttemptUsage` remains observation-only. A valid partial completion after client disconnect still pays the provider; a missing terminal retains the reservation. The ordinary customer ledger and referral paths are skipped. Owned service instead releases the hold and keeps the existing zero-cost/zero-payout behavior.
+
+The lifetime quota counts actual prompt plus completion usage, including repeated history and cached tokens once. No balance top-up or automatic paid conversion occurs at exhaustion. A disabled campaign preserves its rows and permits already-admitted valid completions to settle at their snapshot rates. There is no automatic unresolved-hold recovery worker in this draft.

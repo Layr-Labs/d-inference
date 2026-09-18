@@ -54,7 +54,7 @@ func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request,
 	// Self-route is free: skip the pre-flight balance reservation and the
 	// per-key spend cap entirely. A zero-balance owner must never be blocked
 	// from running on their own machine, and a self_route_only key never spends.
-	if s.billing == nil || p.policy.enabled {
+	if trialFromRequest(r) != nil || s.billing == nil || p.policy.enabled {
 		return 0, false, false
 	}
 	consumerKey := consumerKeyFromContext(r.Context())

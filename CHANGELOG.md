@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased: Bonsai login-session trial
+
+- Add disabled-by-default account-scoped free Bonsai chat with a lifetime token allowance, explicit exhaustion errors, durable reservations, and atomic provider subsidy settlement. API keys remain paid; ambiguous failures retain quota holds without charging the user. Model serving qualification and production enablement are separate.
+
 ## Release candidate v0.9.6 — Flash-Next signed-app resource recovery (not shipped; 2026-09-17)
 
 - Wait for the SSD write-behind consumer task to finish when draining after shutdown, so the final payload is released before teardown completes. Preserve reusable drains while the pipeline is running; cover the shutdown handoff with 10,000 regression cycles and both SDK 27 CI lanes.

@@ -305,6 +305,13 @@ func (d *dispatchState) configurePending(pr *registry.PendingRequest) {
 	if pr == nil {
 		return
 	}
+	// Direct dispatch published these fields before the provider send. Do not
+	// write even identical pointers here: the provider may already be settling.
+	// Queued requests are configured once before they are published.
+	if reservation := trialReservationFromRequest(d.r); reservation != nil && pr.TrialReservation == nil {
+		pr.TrialReservation = reservation
+		pr.TrialUnusedConfirmed = trialUnusedFromRequest(d.r)
+	}
 	pr.ConsumerEndpoint = d.consumerEndpoint
 	pr.RequestedStopSequences = append(
 		pr.RequestedStopSequences[:0], d.requestedStopSequences...)
@@ -598,6 +605,9 @@ func (d *dispatchState) commitFirstContent(pr *registry.PendingRequest, chunk st
 	// ever stamps FirstContentAt for the attempt that actually delivered content —
 	// never a late-completing abandoned/retried attempt sharing the same Timing.
 	pr.MarkContentCommitted()
+	if t := trialFromRequest(d.r); t != nil {
+		t.committed.Store(true)
+	}
 	d.s.observeTTFTCalibration(pr)
 	// First CONTENT chunk == the provider ACCEPTED and is serving: clear the
 	// pair's capacity-reject streak NOW rather than at completion. A long
@@ -1703,6 +1713,12 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// WriteText blocks until the frame is on the wire (write watchdog
 		// allows 5-30s per frame), so an unbounded write could eat the budget
 		// while the aggregator's cancel clock keeps running.
+		if err := s.markTrialDispatched(d.pr, d.provider); err != nil {
+			d.provider.RemovePending(d.requestID)
+			s.registry.SetProviderIdle(d.provider.ID)
+			d.setLastError("Free Bonsai 2 chat is temporarily unavailable. Please try again later.", http.StatusServiceUnavailable)
+			return outcomeFailFast
+		}
 		writeCtx, cancelWrite := firstTokenWriteContext(r.Context(), timingReceivedAt(d.timing), d.deadline)
 		d.pr.Profile.Mark(registry.StampWriteSubmitted)
 		_, writeErr := writeProviderInferenceRequestDeferred(
@@ -2297,10 +2313,13 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 	// returns nil when there's no other owned machine.) When the prefer
 	// primary is itself a public provider (the owner owns nothing / fell
 	// back), normal speculative behaviour applies.
-	skipBackup := false
+	// A trial uses one live serving attempt at a time. This avoids paying a
+	// speculative loser or letting a faster terminal settle the shared quota
+	// before the dispatch loop has committed a winner. Sequential failover stays.
+	skipBackup := d.pr.TrialReservation != nil
 	if d.policy.prefer {
 		provider.Mu().Lock()
-		skipBackup = d.policy.ownerAccountID != "" && provider.AccountID == d.policy.ownerAccountID
+		skipBackup = skipBackup || (d.policy.ownerAccountID != "" && provider.AccountID == d.policy.ownerAccountID)
 		provider.Mu().Unlock()
 	}
 

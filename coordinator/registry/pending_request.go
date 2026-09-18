@@ -42,6 +42,11 @@ type PendingRequest struct {
 	// Model. Responses echo PublicModel so consumers never see the quant/build.
 	PublicModel string
 	ConsumerKey string
+	// TrialReservation is an immutable logical request snapshot shared across retries.
+	TrialReservation *store.TrialReservation
+	// TrialUnusedConfirmed is shared across sequential attempts. It is cleared
+	// before dispatch and set only by a real provider no-content terminal.
+	TrialUnusedConfirmed *atomic.Bool
 	// KeyID is the public ID of the API key that originated the request, used
 	// for per-key usage and spend attribution. Empty for account-scoped/legacy
 	// callers (Privy JWT, admin, provider tokens, unlinked keys without an ID).

@@ -1890,13 +1890,13 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		// left to stop"). Stop the real work here, like the deadline and
 		// overflow branches do.
 		s.sendProviderCancel(provider, msg.RequestID)
-		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
+		s.handleInferenceErrorOwned(providerID, provider, &protocol.InferenceErrorMessage{
 			Type:        protocol.TypeInferenceError,
 			RequestID:   msg.RequestID,
 			Error:       "encrypted inference transport failed",
 			StatusCode:  http.StatusBadGateway,
 			FailureCode: protocol.FailureCodeEncryptionFailure,
-		})
+		}, false)
 		return
 	}
 	if ap := pr.Profile; ap != nil {
@@ -1924,14 +1924,14 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		// classification as boilerplate only after the deadline.
 		s.ddIncr("inference.first_content_after_deadline", []string{})
 		s.sendAbandonCancel(provider, pr.RequestID, pr.Model, cancelCauseLateContent)
-		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
+		s.handleInferenceErrorOwned(providerID, provider, &protocol.InferenceErrorMessage{
 			Type:        protocol.TypeInferenceError,
 			RequestID:   pr.RequestID,
 			Error:       "first content was unavailable at the request deadline",
 			StatusCode:  http.StatusServiceUnavailable,
 			ErrorReason: errorReasonDeadlineUnreachable,
 			FailureCode: protocol.FailureCodeCapacity,
-		})
+		}, false)
 		return
 	}
 	chunk := registry.ProviderChunk{Data: chunkData, ReceivedAt: receivedAt}
@@ -1957,13 +1957,13 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		s.sendAbandonCancel(provider, pr.RequestID, pr.Model, cancelCauseOverflow)
 		// 499 + "request cancelled" classifies as a consumer-side terminal in
 		// handleInferenceError: no provider reputation hit for our backpressure.
-		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
+		s.handleInferenceErrorOwned(providerID, provider, &protocol.InferenceErrorMessage{
 			Type:        protocol.TypeInferenceError,
 			RequestID:   msg.RequestID,
 			Error:       "request cancelled",
 			StatusCode:  499,
 			FailureCode: protocol.FailureCodeCancelled,
-		})
+		}, false)
 	}
 }
 
@@ -2436,7 +2436,10 @@ func (s *Server) handleCompleteAt(
 	// mutations (overage charge, refund) happen inside the finalization
 	// gate so that a concurrent timeout/error refund path cannot race
 	// with the settlement here.
-	if pr.ServiceReservation && pr.ReservedMicroUSD > 0 {
+	if pr.TrialReservation != nil {
+		billingFinalized = s.settleBonsaiTrial(pr, provider, msg.Usage, freeSelfRoute)
+		totalCost, providerPayout = 0, 0
+	} else if pr.ServiceReservation && pr.ReservedMicroUSD > 0 {
 		var chargeErr error
 		finalized, _ := pr.FinalizeReservation(func() error {
 			if totalCost > 0 {
@@ -2599,7 +2602,7 @@ func (s *Server) handleCompleteAt(
 		// providers only ever serve free self-route, so this also keeps their
 		// traffic out of public stats. The owner still sees it via the in-memory
 		// RecordUsage above (their session/transparency view).
-		if !freeSelfRoute {
+		if !freeSelfRoute && pr.TrialReservation == nil {
 			saferun.Go(s.logger, "recordUsage", func() {
 				s.store.RecordUsageFullWithPublicModel(providerID, pr.ConsumerKey, pr.KeyID, pr.Model, consumerModel(pr), msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
 			})
@@ -2783,6 +2786,12 @@ func (s *Server) handleCompleteAt(
 	// Skipped when the consumer is gone: no reader, and the channels may
 	// already be closed (send would panic).
 	if !consumerGone {
+		if pr.TrialReservation != nil && !billingFinalized {
+			pr.ErrorCh <- protocol.InferenceErrorMessage{Type: protocol.TypeInferenceError, RequestID: pr.RequestID, StatusCode: http.StatusServiceUnavailable, Error: "Free Bonsai 2 chat is temporarily unavailable. Please try again later."}
+			close(pr.ChunkCh)
+			s.registry.SetProviderIdle(providerID)
+			return
+		}
 		pr.CompleteCh <- msg.Usage
 		close(pr.ChunkCh)
 		close(pr.CompleteCh)
@@ -2805,7 +2814,7 @@ func (s *Server) handleCompleteAt(
 // loop (and the coordinator-synthesized errors handleChunk raises there). The
 // frame holds no terminal claim; ownership is decided at the peek inside.
 func (s *Server) handleInferenceError(providerID string, provider *registry.Provider, msg *protocol.InferenceErrorMessage) {
-	s.handleInferenceErrorOwned(providerID, provider, msg, false)
+	s.handleInferenceErrorWithSource(providerID, provider, msg, false, true)
 }
 
 // handleInferenceErrorOwned is handleInferenceError with terminal ownership
@@ -2814,10 +2823,15 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 // completion), so this path must neither re-claim nor drop that frame as a
 // duplicate.
 func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry.Provider, msg *protocol.InferenceErrorMessage, owned bool) {
+	s.handleInferenceErrorWithSource(providerID, provider, msg, owned, false)
+}
+
+func (s *Server) handleInferenceErrorWithSource(providerID string, provider *registry.Provider, msg *protocol.InferenceErrorMessage, owned, providerTerminal bool) {
 	if provider == nil {
 		s.logger.Warn("error from unregistered provider", "provider_id", providerID)
 		return
 	}
+	providerTerminal = providerTerminal && msg != nil && msg.CoordinatorCause == ""
 	safeMsg, invalidFailureCode, invalidTerminalCause := sanitizeProviderInferenceError(msg)
 	msg = &safeMsg
 	if invalidFailureCode {
@@ -2939,6 +2953,7 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 	// The request is terminal — drop its memoized chunk-decryption key.
 	s.chunkKeys.forget(pr.SessionPrivKey)
 	consumerGone := parked != nil
+	s.handleBonsaiTrialError(pr, provider, msg, providerTerminal)
 	// Provider errors carry no validated cache usage, but still close the
 	// selection/outcome correlation denominator as an unreported result.
 	s.emitCacheSelectionTerminal(pr, protocol.UsageInfo{}, false, false)

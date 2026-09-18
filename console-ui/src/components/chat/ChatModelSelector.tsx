@@ -6,6 +6,7 @@ import { useStore } from "@/lib/store";
 import { modelSupportsImages } from "@/lib/image-upload";
 import { trackEvent } from "@/lib/google-analytics";
 import type { Model } from "@/lib/api";
+import { useModelTokenPromotions } from "@/components/app-providers/ModelTokenPromotionsProvider";
 
 // Presentation only; billing eligibility is enforced separately by the server.
 function isBonsai(model: Model) {
@@ -16,6 +17,12 @@ export function ChatModelSelector() {
   const models = useStore((s) => s.models);
   const selectedModel = useStore((s) => s.selectedModel);
   const setSelectedModel = useStore((s) => s.setSelectedModel);
+  const { grants, ready, error } = useModelTokenPromotions();
+  const freeModelIds = new Set(
+    ready && !error
+      ? grants.filter((grant) => grant.claimed_at && grant.remaining_tokens > 0).map((grant) => grant.model_id)
+      : [],
+  );
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
@@ -101,7 +108,7 @@ export function ChatModelSelector() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <p className="truncate text-sm font-medium">{model.display_name || model.id.split("/").pop()}</p>
-                    {isBonsai(model) && (
+                    {isBonsai(model) && freeModelIds.has(model.id) && (
                       <span className="shrink-0 rounded-full bg-accent-brand-dim px-2 py-0.5 text-[10px] font-medium leading-4 text-accent-brand">
                         Free
                       </span>

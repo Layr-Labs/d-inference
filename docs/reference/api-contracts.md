@@ -1,8 +1,8 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-17 · commit `04dadef3b`
+> Last updated: 2026-09-18 · commit `b13dbe7b5`
 
-The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
+The complete public HTTP surface of the coordinator, derived from the 112 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
 Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`.
 
@@ -593,3 +593,16 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Drain, admin telemetry, profiler, state export, telemetry stub | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/admin_state_export.go`, `coordinator/api/telemetry_handlers.go` |
 | Rate-limit bucket consumption | `coordinator/ratelimit/ratelimit.go` (`allowBucket`, `debitBucket`): fixed and per-key rate paths share token consumption and retry calculation while keeping their own admission and clamp rules |
 | Shared types and helpers | `coordinator/api/types/types.go`, `coordinator/api/httputil.go`, `coordinator/ratelimit/ratelimit.go`, `coordinator/modelpolicy/first_content_deadline.go` |
+
+## Model token promotions
+
+| Method/path | Authorization | Behavior | Code |
+|---|---|---|---|
+| `PUT /v1/admin/token-promotions` | Admin | Create immutable terms or toggle `enabled` for an exact model ID, even before registration | `coordinator/api/model_token_promotions.go` (`handleAdminModelTokenPromotions`) |
+| `GET /v1/admin/token-promotions` | Admin | List configured promotions | `coordinator/api/model_token_promotions.go` (`handleAdminModelTokenPromotions`) |
+| `POST /v1/me/token-promotions/claim` | Privy only | Explicitly claim the requested `model_id` for an eligible individual account; atomically enforce signup cutoff and campaign capacity | `coordinator/api/model_token_promotions.go` (`handleMyModelTokenPromotions`) |
+| `GET /v1/me/token-promotions` | Privy only | Return account grants and available offers without issuing any | `coordinator/api/model_token_promotions.go` (`handleMyModelTokenPromotions`) |
+
+Promotion input is `{ "model_id": "...", "tokens": 150000000, "claim_starts_at": "RFC3339", "claim_ends_at": "RFC3339 or null", "signup_cutoff_at": "RFC3339", "max_claims": 250, "enabled": true }`. Signup eligibility is strictly before `signup_cutoff_at` using the persisted account creation timestamp. `max_claims` accepts integers in `[1, 1000000]`. A null claim end is supported, but the Bonsai launch draft has an explicit end. Only `enabled` is mutable; conflicting terms return `409 promotion_conflict`. Tokens are integers in `[1, 1000000000000]`. Grant responses have a `grants` array containing `model_id`, `total_tokens`, `used_tokens`, `reserved_tokens`, `remaining_tokens` (available after reservations), and `claimed_at`. There is no expiry field. Claiming requires `{"model_id":"..."}`, uses the server clock and does not require catalog registration. Repeated successful claims return the existing grant without consuming another slot, including after the window or cap closes. Service accounts receive no grant. Responses also include `offers` with `model_id`, `tokens`, `max_claims`, `remaining_claims`, `signup_cutoff_at`, `claim_ends_at` and `status` (`available`, `claimed`, `sold_out`, `ineligible`, or `unavailable`). Claim failures return `403 promotion_ineligible`, `409 promotion_sold_out`, `409 promotion_unavailable`, or `404 promotion_not_found`.
+
+Inference returns `402 free_tokens_exhausted` when the claimed allowance is exhausted or held by active requests and paid balance is insufficient. `402 promotion_balance_required` means remaining free tokens plus paid balance cannot cover the request's upper bound. Both carry an OpenAI-compatible `error.code` and user-facing message. Paid fallback succeeds when funded. See [operations/model-token-promotions.md](../operations/model-token-promotions.md).

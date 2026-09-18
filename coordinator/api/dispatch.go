@@ -305,6 +305,7 @@ func (d *dispatchState) configurePending(pr *registry.PendingRequest) {
 	if pr == nil {
 		return
 	}
+	stampModelTokenReservation(pr, modelTokenReservation(d.r))
 	pr.ConsumerEndpoint = d.consumerEndpoint
 	pr.RequestedStopSequences = append(
 		pr.RequestedStopSequences[:0], d.requestedStopSequences...)

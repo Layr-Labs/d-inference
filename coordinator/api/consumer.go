@@ -319,6 +319,9 @@ func (s *Server) cancelDispatchForFirstContentTimeout(
 // here — that is handled once by refundReservation (full failure) or by the
 // winning attempt's settlement.
 func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
+	if pr != nil && pr.ModelTokenReservationID != "" {
+		return
+	}
 	if pr == nil {
 		return
 	}
@@ -1080,6 +1083,7 @@ func (s *Server) dispatchWithReserver(
 		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
 		Timing:                 timing,
 	}
+	stampModelTokenReservation(pr, modelTokenReservation(r))
 	if !receivedAt.IsZero() {
 		pr.FirstContentDeadline = receivedAt.Add(requestDeadline)
 	}
@@ -1243,6 +1247,9 @@ func (s *Server) dispatchWithReserver(
 	// reserveAdditionalForProvider may have added. The caller's
 	// refundReservation only covers the base reservation.
 	refundExtra := func() {
+		if pr.ModelTokenReservationID != "" {
+			return
+		}
 		extra := pr.ReservedMicroUSD - reservedMicroUSD
 		if extra > 0 {
 			start := time.Now()
@@ -1558,6 +1565,13 @@ func (s *Server) reservationCost(model string, promptTokens, maxTokens int) int6
 }
 
 func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference string) bool {
+	if pr != nil && pr.ModelTokenReservationID != "" {
+		finalized, err := pr.FinalizeReservation(func() error { _, e := s.releaseModelTokenReservation(pr.ModelTokenReservationID); return e })
+		if err != nil {
+			s.logger.Error("promotion refund failed", "reservation_id", pr.ModelTokenReservationID, "error", err)
+		}
+		return finalized && err == nil
+	}
 	if pr == nil || pr.ReservedMicroUSD <= 0 {
 		return false
 	}
@@ -1723,6 +1737,9 @@ func (s *Server) reserveAdditionalForProvider(pr *registry.PendingRequest, provi
 	if pr == nil {
 		return 0, fmt.Errorf("pending request is required")
 	}
+	if pr.ModelTokenReservationID != "" {
+		return s.topUpModelTokenPromotion(pr, provider)
+	}
 	// Service/wholesale consumers are billed at the platform price at
 	// settlement, so don't top the reservation up to a provider's higher custom
 	// price — the base platform reservation already covers the actual charge.
@@ -1795,6 +1812,7 @@ func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool, bound int)
 // provider-facing chat shape while their original parsed form remains the
 // source for accounting and consumer-facing response conversion.
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	r = withModelTokenRequest(r)
 	timing := &registry.RequestTiming{ReceivedAt: time.Now()}
 	rp := s.newRequestProfile(r, "", "", false)
 
@@ -2125,6 +2143,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Refund reservation on early errors (before inference starts).
 	refundReservation := func() {
+		if s.releaseModelTokenRequest(r) {
+			return
+		}
 		if reservedMicroUSD > 0 {
 			s.releaseInitialReservation(consumerKeyFromContext(r.Context()), model, reservedMicroUSD, serviceReservation)
 		}
@@ -2644,6 +2665,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 // final provider body to OpenAI chat format, and reuses the same E2E encryption
 // and provider routing as chat completions.
 func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, endpoint string) {
+	r = withModelTokenRequest(r)
 	timing := &registry.RequestTiming{ReceivedAt: time.Now()}
 	rp := s.newRequestProfile(r, "", "", false)
 
@@ -2823,6 +2845,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	refundReservation := func() {
+		if s.releaseModelTokenRequest(r) {
+			return
+		}
 		if reservedMicroUSD > 0 {
 			s.releaseInitialReservation(consumerKey, model, reservedMicroUSD, serviceReservation)
 		}

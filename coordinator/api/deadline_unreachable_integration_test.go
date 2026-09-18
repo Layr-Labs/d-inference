@@ -281,6 +281,12 @@ func TestModelSpecificFirstContentDeadlineReachesProviderWire(t *testing.T) {
 		otherBase time.Duration
 	}{
 		{
+			name:      "Bonsai custom token slope",
+			model:     "ternary-bonsai-2-27b",
+			wantBase:  9 * time.Second,
+			otherBase: 4 * time.Second,
+		},
+		{
 			name:      "ordinary production-like model",
 			model:     "ordinary-wire-deadline-model",
 			wantBase:  9 * time.Second,
@@ -307,6 +313,12 @@ func TestModelSpecificFirstContentDeadlineReachesProviderWire(t *testing.T) {
 				Name: "provider-model-deadline", Version: "0.8.15", DecodeTPS: 200,
 				Models: []failoverModelSpec{{ID: tt.model}},
 				Script: func(ctx context.Context, fp *failoverProvider, req protocol.InferenceRequestMessage, _ []byte) {
+					if pending := reg.GetProvider(fp.registryID).GetPending(req.RequestID); pending != nil && tt.model == "ternary-bonsai-2-27b" {
+						want := 9*time.Second + time.Duration(pending.EstimatedPromptTokens)*5*time.Millisecond
+						if got := pending.FirstContentDeadline.Sub(pending.Timing.ReceivedAt); got != want {
+							t.Errorf("Bonsai live clock %s, want %s", got, want)
+						}
+					}
 					wireBudget <- req.FirstContentBudgetMS
 					fp.serveFull(ctx, req, tt.model, markerFor(fp.name))
 				},

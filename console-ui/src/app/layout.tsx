@@ -1,3 +1,4 @@
+import { ModelTokenPromotionsProvider } from "@/components/app-providers/ModelTokenPromotionsProvider";
 import type { Metadata } from "next";
 import "./globals.css";
 import { AppShell } from "@/components/AppShell";
@@ -47,9 +48,11 @@ export default function RootLayout({
         <DatadogRUM />
         <ThemeProvider>
           <PrivyClientProvider>
+            <ModelTokenPromotionsProvider>
             <VerificationModeProvider>
               <AppShell>{children}</AppShell>
             </VerificationModeProvider>
+          </ModelTokenPromotionsProvider>
           </PrivyClientProvider>
         </ThemeProvider>
       </body>

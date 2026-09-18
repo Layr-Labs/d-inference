@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-17 · commit `53e135e9e`
+> Last updated: 2026-09-18 · commit `513af2381`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -329,12 +329,11 @@ Media fetch (`coordinator/mediafetch/config.go`, `ConfigFromEnv`; a set-but-unpa
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DD_API_KEY` | secret | unset (no metric or log shipping) | `coordinator/datadog/datadog.go` (`ConfigFromEnv`); `coordinator/cmd/coordinator/main.go` | Enables the Datadog client (metrics over the HTTP API, Logs API forwarding) and the APM tracer; see [`../architecture/telemetry.md`](../architecture/telemetry.md). |
-| `DD_AGENT_HOST` | hostname | unset | `coordinator/cmd/coordinator/main.go` | Also starts the APM tracer and trace-context log handler when set (agent-based deployments without an API key). |
-| `DD_SITE` | Datadog site | `datadoghq.com` | `coordinator/datadog/datadog.go` (`ConfigFromEnv`) | Intake endpoint. |
-| `DD_ENV`, `DD_SERVICE` | strings | `production`, `d-inference-coordinator` | `coordinator/datadog/datadog.go` (`ConfigFromEnv`) | `env:` and `service:` tags on every series, log and trace. |
-| `DD_DOGSTATSD_URL` | `host:port` | `localhost:8125` | `coordinator/datadog/datadog.go` (`ConfigFromEnv`) | DogStatsD agent address. |
-| `DD_HOSTNAME` | hostname | the `DD_SERVICE` value | `coordinator/datadog/datadog.go` (`NewClient`) | `host` attribute on series shipped over the HTTP metrics API. |
+| `DD_API_KEY` | secret | unset (no log shipping) | `coordinator/datadog/datadog.go` (`ConfigFromEnv`); `coordinator/cmd/coordinator/main.go` | Enables the Datadog client (Logs API forwarding and events) and the APM tracer. Metrics do **not** use it — they go to the local agent over DogStatsD; see [`../architecture/telemetry.md`](../architecture/telemetry.md). |
+| `DD_AGENT_HOST` | hostname | unset | `coordinator/cmd/coordinator/main.go`; `dd-trace-go` | Its **presence** is what constructs the Datadog client, APM tracer and trace-context log handler, so metrics work on a host with an agent but no API key. Its **value** is read only by `dd-trace-go`, for the trace-agent address — no coordinator code maps it into the DogStatsD address, so pointing it at a remote host moves traces and leaves metrics on `DD_DOGSTATSD_URL`. Required in prod ([`required-env-keys.txt`](../../deploy/gcp/prod/required-env-keys.txt)) even though `DD_API_KEY` alone would also construct the client. |
+| `DD_SITE` | Datadog site | `datadoghq.com` | `coordinator/datadog/datadog.go` (`ConfigFromEnv`) | Logs/events intake endpoint. The agent has its own `site` in `/etc/datadog-agent/datadog.yaml`; keep them equal. |
+| `DD_ENV`, `DD_SERVICE` | strings | `production`, `d-inference-coordinator` | `coordinator/datadog/datadog.go` (`ConfigFromEnv`) | `env:` and `service:` tags on every metric, log and trace. Every dashboard widget scopes its query by that pair, so a wrong value renders as "No data". |
+| `DD_DOGSTATSD_URL` | `host:port` | `localhost:8125` | `coordinator/datadog/datadog.go` (`ConfigFromEnv`) | DogStatsD address. Never set in either environment: both run the container with `--network host`, so the code default reaches the host agent. A **local** address with no listener is logged (`datadog: DogStatsD delivery failing`) rather than silently dropped, because the kernel's ICMP port-unreachable surfaces as `ECONNREFUSED` on the next write; a remote address that is firewalled or black-holed produces no error and stays silent. |
 | `EIGENINFERENCE_PROFILER` | `off` disables | `on` | `coordinator/api/profiler.go` (`newProfilerFromEnv`) | Kill switch for the per-request system profiler; see [`../architecture/system-profiler.md`](../architecture/system-profiler.md). |
 | `EIGENINFERENCE_PROFILE_SAMPLE_RATE` | float 0–1 | `0.1` | `coordinator/api/profiler.go` (`newProfilerFromEnv`) | Fraction of successful requests the profiler samples; slow, failed and retried requests are always recorded. |
 

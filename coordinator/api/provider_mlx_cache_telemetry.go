@@ -15,10 +15,14 @@ import (
 // Cardinality: tags are bounded — chip_family and provider_version — never a
 // provider id. The previous per-provider gauges were tagged by the connection
 // UUID, so every reconnect minted a fresh series (~9 gauges × fleet, churning).
-// Point-in-time values are emitted as histograms with DogStatsD (agent-side
-// avg/max/p95/count across the fleet per tag set), or as latest-value gauges
-// per bounded tag set when the HTTPS series API is configured. HTTP gauges
-// preserve visibility without claiming fleet percentiles. Reclaimer counters
+// Point-in-time values here stay latest-value gauges per bounded tag set
+// (LockedGauge) because these names shipped on master as gauges and Datadog will
+// not let a name change type. That is a constraint, not the better model: a
+// gauge keeps one arbitrary provider's reading per flush window. The newer
+// snapshot metrics (process_memory, paged_storage, prefix_cache) were not yet
+// stored anywhere, so they submit distributions and do yield fleet aggregates —
+// see coordinator/datadog/metrics_snapshot.go.
+// Reclaimer counters
 // are converted to per-heartbeat deltas against prev (the capacity snapshot
 // taken before this heartbeat was applied) and emitted as counts, so a
 // fleet-wide reclaim rate survives aggregation. prev is nil on a session's
@@ -29,15 +33,15 @@ func (s *Server) recordMLXCacheTelemetry(provider *registry.Provider, prev, capa
 		return
 	}
 	tags := mlxTelemetryTags(provider)
-	s.dd.HistogramOrGauge("provider.mlx_memory.active_gb", capacity.GPUMemoryActiveGB, tags)
-	s.dd.HistogramOrGauge("provider.mlx_memory.peak_gb", capacity.GPUMemoryPeakGB, tags)
-	s.dd.HistogramOrGauge("provider.mlx_memory.cache_gb", capacity.GPUMemoryCacheGB, tags)
+	s.dd.LockedGauge("provider.mlx_memory.active_gb", capacity.GPUMemoryActiveGB, tags)
+	s.dd.LockedGauge("provider.mlx_memory.peak_gb", capacity.GPUMemoryPeakGB, tags)
+	s.dd.LockedGauge("provider.mlx_memory.cache_gb", capacity.GPUMemoryCacheGB, tags)
 
 	reclaimer := capacity.MLXCacheReclaimer
 	if reclaimer == nil {
 		return
 	}
-	s.dd.HistogramOrGauge("provider.mlx_cache.limit_bytes", float64(reclaimer.CacheLimitBytes), tags)
+	s.dd.LockedGauge("provider.mlx_cache.limit_bytes", float64(reclaimer.CacheLimitBytes), tags)
 
 	if prev == nil || prev.MLXCacheReclaimer == nil {
 		return
@@ -50,8 +54,8 @@ func (s *Server) recordMLXCacheTelemetry(provider *registry.Provider, prev, capa
 		// The last_* fields describe the most recent reclaim; sample them
 		// only when a reclaim happened since the previous heartbeat so the
 		// distribution is of reclaims, not of heartbeats.
-		s.dd.HistogramOrGauge("provider.mlx_cache.last_reclaimed_bytes", float64(reclaimer.LastReclaimedBytes), tags)
-		s.dd.HistogramOrGauge("provider.mlx_cache.last_reclaim_duration_ms", float64(reclaimer.LastReclaimDurationMS), tags)
+		s.dd.LockedGauge("provider.mlx_cache.last_reclaimed_bytes", float64(reclaimer.LastReclaimedBytes), tags)
+		s.dd.LockedGauge("provider.mlx_cache.last_reclaim_duration_ms", float64(reclaimer.LastReclaimDurationMS), tags)
 	}
 }
 

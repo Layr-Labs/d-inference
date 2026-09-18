@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-15 · commit `dfe0260c6`
+> Last updated: 2026-09-18 · commit `513af2381`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -15,7 +15,7 @@ design and failure modes are in [`../architecture/telemetry.md`](../architecture
 | Provider heartbeat → registry → Datadog gauges/counters | live; the only provider-diagnostic channel |
 | Coordinator-emitted telemetry events → slog + in-process counter + Datadog Logs API | live |
 | Per-request rows (`inference_routes`, `request_rejections`, `usage`, `request_profiles`) and 60 s `fleet_snapshots` | live |
-| DogStatsD / HTTPS series metrics from request handling, routing, billing, cache | live |
+| DogStatsD counters, gauges and distributions from request handling, routing, billing, cache → local Datadog Agent | live; the agent is the only metric path ([`../operations/datadog-agent.md`](../operations/datadog-agent.md)) |
 | Provider or console client telemetry events (`POST /v1/telemetry/events`) | retired — `telemetry_ingest_disabled`, body never read ([retired paths](#retired-paths-that-emit-nothing)); provider and console facades are no-ops |
 | `telemetry_events` table | removed |
 | Datadog APM spans | tracer is started (`ddtracer.Start`) but no code creates spans; `dd.trace_id`/`dd.span_id` therefore never appear in logs |
@@ -37,7 +37,7 @@ Producer: the Swift provider over the `GET /ws/provider` WebSocket. Consumer:
 | `slots[].prefix_cache`, `prefix_cache_maintenance` | `heartbeat` | Cached per-store observation at the configured stats interval; age and process maintenance counters refreshed with capacity | `recordPrefixCacheTelemetry` (`coordinator/api/provider_prefix_cache_telemetry.go`), after registry clone/clamp and capacity-sequence acceptance | live registry baseline and Datadog; no prompt/cache identities |
 | `slots[].paged_storage` | `heartbeat` | `PagedKVPool.segmentStorageSnapshot` on the engine queue; `PagedStorageTelemetryAdapter` preserves capture sequence/time through heartbeat polling | `recordPagedStorageTelemetry` (`coordinator/api/provider_paged_storage_telemetry.go`), after registry clone/clamp and sample freshness reconciliation | live registry baseline and Datadog; no admission changes or new Postgres columns |
 | `backend_capacity.telemetry.process_memory` | `heartbeat` | `ProcessMemoryTelemetrySampler` at coherent provider capacity refresh; heartbeat stamps preserve capture sequence and age | `recordProcessMemoryTelemetry` (`coordinator/api/provider_process_memory_telemetry.go`) after accepted registry replacement and freshness reconciliation | live registry baseline and Datadog; no routing authority or new Postgres columns |
-| GPU memory and `mlx_cache_reclaimer` | `heartbeat` | same | `recordMLXCacheTelemetry` (`coordinator/api/provider_mlx_cache_telemetry.go`) → histograms (DogStatsD-only) or latest-value gauges (HTTPS), and counter deltas tagged `chip_family`, `provider_version` | Datadog |
+| GPU memory and `mlx_cache_reclaimer` | `heartbeat` | same | `recordMLXCacheTelemetry` (`coordinator/api/provider_mlx_cache_telemetry.go`) → latest-value gauges and counter deltas tagged `chip_family`, `provider_version` | Datadog |
 | `prefix_cache_statuses`, `prefix_cache_donation_outcomes`, `prefix_cache_v2_models` | `register`, `heartbeat` | same | registry exact-cache state; `exact_cache.*` gauges; `routing.cache_telemetry_rejected{source:heartbeat}` on validation failure | memory |
 | `apns_device_token`, `apns_environment` | `register`, `heartbeat` | when changed | code-attestation re-arm (`maybeRearmCodeAttest`) | memory |
 | `usage`, `stop_sequence`, `response_hash`, `se_signature` | `inference_complete` | per attempt | `handleComplete` → `inference_routes` outcome columns, `usage` row, billing; `inference.completions`, `inference.ttft_ms`, `inference.decode_tps` | `inference_routes`/`usage` unbounded |
@@ -57,8 +57,28 @@ Fields the v0.8.16 provider declares but never populates: `register.prefill_tps`
 All names carry the `d_inference.` namespace and the constant tags `env:`
 (`DD_ENV`) and `service:` (`DD_SERVICE`; defaults in
 [`configuration.md#telemetry-datadog-and-profiling`](configuration.md#telemetry-datadog-and-profiling)).
-Transport and fallback rules:
+Every metric here reaches Datadog over DogStatsD through the host's local agent,
+which is the only path — there is no HTTPS fallback:
 [`../architecture/telemetry.md#mechanism`](../architecture/telemetry.md#mechanism).
+A metric typed `histogram` here is submitted as a DogStatsD distribution (`|d|`)
+and arrives as a Datadog **distribution**, so query it as
+`avg:<metric>` / `count:<metric>` / `max:<metric>` — not as an agent-aggregated
+`<metric>.95percentile` series, which nothing produces. `pNN:<metric>` additionally needs percentile
+aggregators enabled on that metric, which is a per-metric opt-in and is **not**
+on by default: `deploy/datadog/enable-distribution-percentiles.sh` covers the
+metrics the dashboard queries that way and accepts extra names as arguments
+(runbook: [`../operations/datadog-dashboard.md`](../operations/datadog-dashboard.md)).
+A `pNN:` query against a distribution without them returns no data rather than
+an error.
+Per-heartbeat snapshots (`provider.process_memory.*`, `provider.paged_storage.*`,
+`provider.prefix_cache.*` point-in-time values) are typed `histogram` here for
+that reason: they are fleet-wide readings tagged only by chip family and provider
+version, and datadog-go aggregates gauges client-side per (name, tag set), so a
+gauge would keep one arbitrary provider's value per flush window. The
+`provider.mlx_*` snapshots stay gauges only because those names are already
+stored in Datadog as gauges and a name cannot change type
+(`Client.LockedGauge`, `coordinator/datadog/metrics_snapshot.go`); read them as
+one provider's reading, not a fleet average.
 This table covers the metrics that derive from provider telemetry, request
 outcomes and the telemetry pipeline itself; billing, exact-cache, MDM and
 rate-limit families are emitted from their own subsystems (`rg 'dd(Incr|Count|Gauge|Histogram)\(' coordinator/api`
@@ -68,22 +88,22 @@ lists every name).
 
 | Metric | Type | Tags | Emitted |
 |---|---|---|---|
-| `provider.mlx_memory.active_gb`, `.peak_gb`, `.cache_gb` | histogram (DogStatsD-only) / latest-value gauge (HTTPS) | `chip_family`, `provider_version` | accepted heartbeat snapshot (`coordinator/api/provider_mlx_cache_telemetry.go`, `recordMLXCacheTelemetry`) |
-| `provider.mlx_cache.limit_bytes`, `.last_reclaimed_bytes`, `.last_reclaim_duration_ms` | histogram (DogStatsD-only) / latest-value gauge (HTTPS) | `chip_family`, `provider_version` | limit each accepted heartbeat; last-reclaim samples only when reclaim count increases (`recordMLXCacheTelemetry`) |
+| `provider.mlx_memory.active_gb`, `.peak_gb`, `.cache_gb` | gauge (latest value, type-locked) | `chip_family`, `provider_version` | accepted heartbeat snapshot (`coordinator/api/provider_mlx_cache_telemetry.go`, `recordMLXCacheTelemetry`) |
+| `provider.mlx_cache.limit_bytes`, `.last_reclaimed_bytes`, `.last_reclaim_duration_ms` | gauge (latest value, type-locked) | `chip_family`, `provider_version` | limit each accepted heartbeat; last-reclaim samples only when reclaim count increases (`recordMLXCacheTelemetry`) |
 | `provider.mlx_cache.sweep_signals`, `.reclaims`, `.reclaimed_bytes` | count | `chip_family`, `provider_version` | positive deltas from the previous accepted snapshot; first observation/reset contributes no delta (`ddCountDelta`) |
-| `provider.prefix_cache.sample_age_ms`, `.sample_fresh` | histogram (DogStatsD-only) / latest-value gauge (HTTPS) | `chip_family`, `provider_version`, `cache_kind` | Every accepted instrumented slot heartbeat; fresh means age ≤ five minutes (`recordPrefixCacheTelemetry`) |
-| `provider.prefix_cache.entries`, `.disk_bytes`, `.staging_bytes`, `.staging_peak_bytes` | histogram (DogStatsD-only) / latest-value gauge (HTTPS) | same | A new fresh store observation; peak is complete-store only |
+| `provider.prefix_cache.sample_age_ms`, `.sample_fresh` | histogram | `chip_family`, `provider_version`, `cache_kind` | Every accepted instrumented slot heartbeat; fresh means age ≤ five minutes (`recordPrefixCacheTelemetry`) |
+| `provider.prefix_cache.entries`, `.disk_bytes`, `.staging_bytes`, `.staging_peak_bytes` | histogram | same | A new fresh store observation; peak is complete-store only |
 | `provider.prefix_cache.stages`, `.files_written`, `.written_bytes`, `.donation_drops`, `.corrupt_drops`, `.evictions`, `.ttl_expired` | count | same | Positive store-lifetime counter deltas; first observation/reload/reset/missing baseline contributes no count (`recordPrefixCacheTelemetry`). Complete `.donation_drops` covers queued-write `writesDropped`, while prequeue refusals use donation outcome telemetry |
 | `provider.prefix_cache.files_read`, `.read_bytes`, `.stage_read_bytes`, `.donation_read_bytes`, `.stage_duration_us`, `.write_duration_us` | count | same | Complete-store deltas only; duration counters sum elapsed microseconds, never request-latency distributions |
 | `provider.prefix_cache.sweep.ttl_expired`, `.budget_evicted`, `.temp_removed` | count | `chip_family`, `provider_version` | Whole-root maintenance deltas across all models, including unloaded stores; distinct from active-store eviction counters |
-| `provider.paged_storage.sample_age_ms`, `.sample_fresh` | histogram (DogStatsD-only) / latest-value gauge (HTTPS) | `chip_family`, `provider_version` | Each accepted instrumented slot heartbeat; Swift producer preserves native capture age (`recordPagedStorageTelemetry`, `coordinator/api/provider_paged_storage_telemetry.go`) |
-| `provider.paged_storage.grant_bytes`, `.committed_bytes`, `.reserved_page_bytes`, `.live_page_bytes`, `.poison_bytes`, `.slack_bytes`, `.over_grant_bytes`, `.segment_count`, `.address_pages` | histogram (DogStatsD-only) / latest-value gauge (HTTPS) | same | New fresh queue capture only; overlapping gauges, not an additive memory total; [wire semantics](protocol-messages.md#slotspaged_storage) |
-| `provider.paged_storage.allocator_padding_bytes`, `.last_allocation_allowance_bytes` | histogram (DogStatsD-only) / latest-value gauge (HTTPS) | same | Optional; new fresh capture only. Retained nonusable padding and last released preparation allowance have different scopes; [wire semantics](protocol-messages.md#slotspaged_storage) |
-| `provider.paged_storage.nominal_kv_bytes`, `.physical_floor_overhead_bytes` | histogram (DogStatsD-only) / latest-value gauge (HTTPS) | same | Only when instrumented; new fresh capture; ownership overlaps other gauges (`recordPagedStorageTelemetry`) |
+| `provider.paged_storage.sample_age_ms`, `.sample_fresh` | histogram | `chip_family`, `provider_version` | Each accepted instrumented slot heartbeat; Swift producer preserves native capture age (`recordPagedStorageTelemetry`, `coordinator/api/provider_paged_storage_telemetry.go`) |
+| `provider.paged_storage.grant_bytes`, `.committed_bytes`, `.reserved_page_bytes`, `.live_page_bytes`, `.poison_bytes`, `.slack_bytes`, `.over_grant_bytes`, `.segment_count`, `.address_pages` | histogram | same | New fresh queue capture only; overlapping observations, not an additive memory total; [wire semantics](protocol-messages.md#slotspaged_storage) |
+| `provider.paged_storage.allocator_padding_bytes`, `.last_allocation_allowance_bytes` | histogram | same | Optional; new fresh capture only. Retained nonusable padding and last released preparation allowance have different scopes; [wire semantics](protocol-messages.md#slotspaged_storage) |
+| `provider.paged_storage.nominal_kv_bytes`, `.physical_floor_overhead_bytes` | histogram | same | Only when instrumented; new fresh capture; ownership overlaps the other footprint metrics (`recordPagedStorageTelemetry`) |
 | `provider.paged_storage.allocation_failures`, `.admission_refusals`, `.grant_refusals`, `.grant_epoch_retries` | count | same | Positive cumulative deltas within one pool generation; initial/reset/missing baseline contributes no count (`recordPagedStorageTelemetry`) |
-| `provider.process_memory.sample_age_ms`, `.sample_fresh` | histogram (DogStatsD-only) / latest-value gauge (HTTPS) | `chip_family`, `provider_version` | Each accepted instrumented capacity heartbeat, including no-slot samples (`recordProcessMemoryTelemetry`) |
-| `provider.process_memory.cap_bytes`, `.activation_reserve_bytes`, `.active_bytes`, `.cache_bytes`, `.charged_bytes`, `.materialized_bytes`, `.unmaterialized_bytes`, `.remaining_bytes`, `.commitment_debt_bytes`, `.owner_count`, `.closing_owner_count` | histogram (DogStatsD-only) / latest-value gauge (HTTPS) | same | New fresh capture only; C includes M, so projected usage is active+cache+(C−M); [wire semantics](protocol-messages.md#backend_capacitytelemetryprocess_memory) |
-| `provider.process_memory.system_available_bytes` | histogram (DogStatsD-only) / latest-value gauge (HTTPS) | same | New fresh capture only when the OS observation is available; omitted is not zero |
+| `provider.process_memory.sample_age_ms`, `.sample_fresh` | histogram | `chip_family`, `provider_version` | Each accepted instrumented capacity heartbeat, including no-slot samples (`recordProcessMemoryTelemetry`) |
+| `provider.process_memory.cap_bytes`, `.activation_reserve_bytes`, `.active_bytes`, `.cache_bytes`, `.charged_bytes`, `.materialized_bytes`, `.unmaterialized_bytes`, `.remaining_bytes`, `.commitment_debt_bytes`, `.owner_count`, `.closing_owner_count` | histogram | same | New fresh capture only; C includes M, so projected usage is active+cache+(C−M); [wire semantics](protocol-messages.md#backend_capacitytelemetryprocess_memory) |
+| `provider.process_memory.system_available_bytes` | histogram | same | New fresh capture only when the OS observation is available; omitted is not zero |
 | `provider.first_token_wedge_suspected` | count | `model` | per slot with `wedge_suspected` true, per heartbeat |
 | `provider.eval_in_flight_long` | count | — | at most once per heartbeat when any slot's `eval_in_flight_ms ≥ evalInFlightLongMs = 2000` |
 | `provider.oom_suspected` | count | — | abrupt disconnect classified as OOM |
@@ -103,7 +123,7 @@ lists every name).
 |---|---|---|---|
 | `inference.request_outcome` | count | `model`, `class` (`success`, `provider_5xx`, `timeout`, `rate_limited`, `client_error`; `mid_stream` declared, never produced), `kv_backend`, `kv_backend_fallback` | once per chat/responses request (`coordinator/api/openrouter_uptime.go`); `/v1/completions` and `/v1/messages` dispatches excluded, their pre-dispatch rejections included |
 | `inference.request_outcome_or_view` | count | `model`, `class` (`success`, `provider_5xx`, `timeout`, `mid_stream`, `rate_limited`, `client_error`, `client_gone`) | request-level terminal view: pre-dispatch rejection, dispatch terminal (including attempt-zero TTFT rejection), client departure, or committed route outcome; `client_gone` excludes early/post-commit client aborts while pre-content aborts at the deadline count as `timeout` (`coordinator/api/attempt_outcome_metrics.go`, `recordRequestOutcomeORView`) |
-| `routing.route_latency_ms` | histogram (DogStatsD only) | `model` | attempt-zero non-queued provider selection: `RoutedAt` minus `MediaFetchedAt` when set, otherwise `ReservedAt`; requires valid timing anchors (`coordinator/api/attempt_outcome_metrics.go`, `emitRouteLatency`). No in-process mirror. |
+| `routing.route_latency_ms` | histogram | `model` | attempt-zero non-queued provider selection: `RoutedAt` minus `MediaFetchedAt` when set, otherwise `ReservedAt`; requires valid timing anchors (`coordinator/api/attempt_outcome_metrics.go`, `emitRouteLatency`). No in-process mirror. |
 | `routing.provider_draining` | count | `model` | transition into draining announced by a validated error terminal, before releasing pending capacity (`coordinator/api/provider_drain.go`, `noteProviderDraining`). No in-process mirror. |
 | `inference.completions` | count | `model` | each `inference_complete` |
 | `inference.dispatches` | count | `status:success`, `failure`, `timeout`, `retry`, `retry_precontent` | each attempt |
@@ -116,7 +136,7 @@ lists every name).
 | `inference.invalid_failure_code`, `inference.in_band_error`, `inference.first_content_after_deadline`, `inference.speculative_dispatch`, `inference.speculative_win`, `inference.zombie_stream_cancel`, `inference.chunk_overflow_abort` | count | various | dispatch edge cases (`coordinator/api/dispatch.go`, `provider.go`) |
 | `inference.prompt_tokens`, `inference.completion_tokens` (histogram); `inference.prompt_tokens_total`, `inference.completion_tokens_total` (count) | — | `model` | each completion |
 | `registry.mu.write_wait_ms` | histogram | `site` | Registry write-lock acquisition wait, emitted after unlock (`coordinator/registry/lock_wait.go`, `lockWrite`); dispatch-load failure and recovery are separate sites. |
-| `registry.gate.wait_ms` | histogram (DogStatsD only) | `site` | per-identity recorder gate waits over `gateWaitReportThreshold`, emitted after release (`coordinator/registry/gate_lock.go`, `SetGateWaitObserver`; `coordinator/api/server.go`). No in-process mirror. |
+| `registry.gate.wait_ms` | histogram | `site` | per-identity recorder gate waits over `gateWaitReportThreshold`, emitted after release (`coordinator/registry/gate_lock.go`, `SetGateWaitObserver`; `coordinator/api/server.go`). No in-process mirror. |
 | `routing.scans` | count | `model`, `outcome` | Full reservation scans including retries (`coordinator/api/dispatch.go`, `recordRoutingDecisionFor`). |
 | `routing.decisions` | count | `model`, `model_type`, `outcome` (`selected`, `queued`, `model_shed`, `ttft_429`, `model_too_large`, `over_capacity`, `routing_saturated`, `capacity_queue_spill`, `capacity_429`, `cold_dispatch_spill`, `dedicated_capacity_429`, `no_eligible_provider`, `ttft_soft_served`, `unservable_429`) | each admission decision |
 | `inference.attempt_outcome`, `inference.queue_outcome` | count | `model`, `class` | dispatched-attempt and queue-only outcomes kept separate (`coordinator/api/attempt_outcome_metrics.go`, `emitAttemptOutcomeMetric`) |
@@ -159,7 +179,8 @@ and the public cache status retain their aggregate-only contract.
 | `ttft_us`, `ttft_samples` | Same as `selection` | Coordinator-measured first-content latency for valid reported usage in active cache routing. Compare hit/miss and selected/unselected populations; this is observed latency, not estimated savings. |
 | `estimated_ttft_saved_us`, `estimated_ttft_saved_samples` | Same as `selection` | Positive finite scheduler estimates, split by the terminal cache outcome. These are not measured counterfactual savings or success-only totals. |
 
-Timing sums/sample counters work with both HTTPS and DogStatsD. The admin
+Timing sums/sample counters are plain counters, so they re-aggregate over any
+queried range without a percentile aggregator being enabled. The admin
 registry additionally exposes `cache_model_provider_stage_ms` and
 `cache_model_ttft_ms` and `cache_model_estimated_ttft_saved_ms` histograms with the corresponding labels.
 Admin `cache_model_usage_prefill_saved_percent` and

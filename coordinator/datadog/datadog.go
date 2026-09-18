@@ -7,16 +7,52 @@
 //   - DD_SERVICE: service name override (default "d-inference-coordinator")
 //   - DD_DOGSTATSD_URL: DogStatsD address (default "localhost:8125")
 //
-// The DD agent sidecar handles trace intake (default localhost:8126) and
-// DogStatsD aggregation. The coordinator only pushes directly to the Logs
-// API for telemetry event forwarding.
+// # Metrics go through the agent
+//
+// Counters, gauges and histograms are handed to DogStatsD and the local agent
+// owns everything after that: aggregation, batching, compression, retries and
+// back-pressure. The coordinator deliberately does not reimplement any of it —
+// an earlier revision buffered and POSTed to the v1 series and
+// distribution_points intakes directly, which meant ~400 lines of reservoir
+// sampling and payload chunking in a service whose job is inference routing.
+// The agent is a deployment step (deploy/gcp/vm-startup.sh for dev,
+// docs/operations/datadog-agent.md for prod), not a Go problem.
+//
+// Histograms use the DogStatsD *distribution* type, not the histogram type.
+// That distinction is load-bearing: with `h`, the agent computes percentiles
+// locally per flush window and submits them as plain gauges named
+// `<metric>.95percentile`, which cannot be re-aggregated — `avg:` of a
+// percentile is not a percentile of anything, and it gets more wrong as a
+// widget's time range widens. With `d`, the agent forwards the raw values and
+// Datadog computes percentiles server-side over whatever range is queried.
+// Percentile aggregators must then be enabled per metric, per organization:
+// deploy/datadog/enable-distribution-percentiles.sh.
+//
+// # Delivery failures are reported
+//
+// The agent being absent used to be invisible. Opening a UDP socket succeeds
+// with nothing listening, the statsd client is asynchronous so every call
+// returns nil regardless, and the library's default error handler is
+// `func(error) {}` — so a host with no agent discarded every metric and said
+// nothing. A connected UDP socket does surface the dead listener (ICMP
+// port-unreachable makes the following write return ECONNREFUSED); nobody was
+// listening for it. NewClient installs an error handler, so that condition is
+// now logged instead of guessed at.
+//
+// # Logs stay on HTTPS
+//
+// Logs and events go straight to the Logs API, not through the agent. They
+// carry structured attributes through an allowlist (see
+// api/telemetry_handlers.go, the privacy backstop) and include provider-sourced
+// telemetry that never appears in this process's stdout, so an agent tailing
+// journald or docker logs is not a substitute. Everything submitted this way
+// carries env and service explicitly: an agent stamps the log stream it
+// collects itself, the intake does not, and the dashboards scope every query by
+// that pair.
 package datadog
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -36,6 +72,12 @@ type Client struct {
 	logsURL    string
 	eventsURL  string
 	httpClient *http.Client
+	// service is the log payload's service field and env/service the tags
+	// every forwarded log carries — the same pair metricsTags puts on metrics.
+	// Held on the client because a log is tagged where it is built, not where
+	// it is flushed.
+	env     string
+	service string
 
 	// Batching for log forwarding.
 	logMu      sync.Mutex
@@ -43,13 +85,20 @@ type Client struct {
 	logTicker  *time.Ticker
 	logDone    chan struct{}
 	logFlushWg sync.WaitGroup
+	closeOnce  sync.Once
 
-	// HTTP metric submission (no agent needed). See metrics_http.go.
-	series            *seriesBuffer
-	seriesURL         string
-	metricsHost       string
-	metricsTags       []string
-	flushIntervalSecs int64
+	// statsdAddr is kept only to name it in the delivery-error log. "metrics are
+	// being dropped" is not actionable without the address nobody is listening
+	// on, and the statsd client does not expose it back.
+	statsdAddr string
+
+	// statsdErrs rate-limits the DogStatsD delivery-error report. A dead agent
+	// refuses roughly every other datagram, so an unthrottled handler would emit
+	// thousands of identical lines a second and bury the signal it exists to
+	// raise.
+	statsdErrMu   sync.Mutex
+	statsdErrs    uint64
+	statsdErrLast time.Time
 }
 
 // Config holds Datadog configuration. Populated from env vars in NewClient.
@@ -88,11 +137,12 @@ func envOr(key, fallback string) string {
 // The caller should defer client.Close().
 func NewClient(cfg Config, logger *slog.Logger) (*Client, error) {
 	c := &Client{
-		logger:    logger,
-		apiKey:    cfg.APIKey,
-		logBuf:    make([]ddLog, 0, cfg.MaxBatchSize),
-		logDone:   make(chan struct{}),
-		logTicker: time.NewTicker(time.Duration(cfg.FlushSecs) * time.Second),
+		logger:     logger,
+		apiKey:     cfg.APIKey,
+		statsdAddr: cfg.StatsdAddr,
+		logBuf:     make([]ddLog, 0, cfg.MaxBatchSize),
+		logDone:    make(chan struct{}),
+		logTicker:  time.NewTicker(time.Duration(cfg.FlushSecs) * time.Second),
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -105,23 +155,28 @@ func NewClient(cfg Config, logger *slog.Logger) (*Client, error) {
 	}
 	c.logsURL = fmt.Sprintf("https://http-intake.logs.%s/api/v2/logs", site)
 	c.eventsURL = fmt.Sprintf("https://api.%s/api/v1/events", site)
-	c.seriesURL = fmt.Sprintf("https://api.%s/api/v1/series", site)
-	c.series = newSeriesBuffer()
-	c.metricsTags = []string{"env:" + cfg.Env, "service:" + cfg.Service}
-	c.metricsHost = envOr("DD_HOSTNAME", cfg.Service)
-	c.flushIntervalSecs = int64(cfg.FlushSecs)
+	c.env = cfg.Env
+	c.service = cfg.Service
 
-	// DogStatsD client — best effort. If the agent isn't running, metrics
-	// calls become no-ops (the library handles reconnection).
+	// DogStatsD client. The agent owns aggregation and delivery; the only thing
+	// this side is responsible for is noticing when it is not there, which is
+	// what the error handler is for — the library default discards every
+	// delivery error, and that is how an agentless host lost every metric
+	// silently for as long as it did.
 	sd, err := statsd.New(cfg.StatsdAddr,
 		statsd.WithNamespace("d_inference."),
 		statsd.WithTags([]string{
 			"env:" + cfg.Env,
 			"service:" + cfg.Service,
 		}),
+		statsd.WithErrorHandler(c.statsdError),
 	)
 	if err != nil {
-		logger.Warn("datadog: DogStatsD client init failed (metrics disabled)", "error", err, "addr", cfg.StatsdAddr)
+		// c.warn, not logger.Warn: an embedder may construct a Client with no
+		// logger, and a failed statsd connect is the most likely thing to happen
+		// on such a host — a nil dereference here would turn "no agent" into a
+		// startup panic.
+		c.warn("datadog: DogStatsD client init failed (metrics disabled)", "error", err, "addr", cfg.StatsdAddr)
 	} else {
 		c.Statsd = sd
 	}
@@ -133,268 +188,40 @@ func NewClient(cfg Config, logger *slog.Logger) (*Client, error) {
 	return c, nil
 }
 
-// Close flushes remaining logs and closes connections.
+// Close flushes remaining logs and closes connections. Safe to call twice, and
+// on a Client assembled by hand without a ticker or done channel: the tests in
+// this package build exactly that shape, and a shutdown path that panics is
+// worse than one that no-ops.
 func (c *Client) Close() {
 	if c == nil {
 		return
 	}
-	c.logTicker.Stop()
-	close(c.logDone)
+	c.closeOnce.Do(func() {
+		if c.logTicker != nil {
+			c.logTicker.Stop()
+		}
+		if c.logDone != nil {
+			close(c.logDone)
+		}
+	})
 	c.logFlushWg.Wait()
 	c.flushLogs()
-	c.flushSeries()
+	// Statsd.Close flushes whatever the client still holds before closing the
+	// socket, so buffered metrics from the last few seconds are not lost on a
+	// clean shutdown.
 	if c.Statsd != nil {
 		_ = c.Statsd.Close()
 	}
 }
 
-// ---------------------------------------------------------------------------
-// DogStatsD convenience methods
-// ---------------------------------------------------------------------------
-
-// httpMetrics reports whether metrics go via the HTTPS series API. When true,
-// the DogStatsD leg is skipped for gauges/counters — teeing both would
-// double-count if an agent ever appears, with divergent host tags. See
-// metrics_http.go.
-func (c *Client) httpMetrics() bool {
-	return c.apiKey != "" && c.series != nil
-}
-
-// Incr increments a counter.
-func (c *Client) Incr(name string, tags []string) {
-	c.Count(name, 1, tags)
-}
-
-// Count increments a counter by the given value.
-func (c *Client) Count(name string, value int64, tags []string) {
-	if c == nil {
+// warn logs a submission problem. Every caller is on a best-effort telemetry
+// path, and a Client can be assembled by hand (tests, embedders) without a
+// logger, so a missing logger must not turn a dropped metric into a panic.
+func (c *Client) warn(msg string, args ...any) {
+	if c == nil || c.logger == nil {
 		return
 	}
-	if c.httpMetrics() {
-		c.series.addCount(name, float64(value), tags, time.Now().Unix())
-		return
-	}
-	if c.Statsd != nil {
-		_ = c.Statsd.Count(name, value, tags, 1)
-	}
-}
-
-// Histogram records a histogram value. DogStatsD-only: percentile aggregation
-// happens agent-side and isn't replicated by the HTTP path.
-func (c *Client) Histogram(name string, value float64, tags []string) {
-	if c == nil || c.Statsd == nil {
-		return
-	}
-	_ = c.Statsd.Histogram(name, value, tags, 1)
-}
-
-// Gauge sets a gauge value.
-func (c *Client) Gauge(name string, value float64, tags []string) {
-	if c == nil {
-		return
-	}
-	if c.httpMetrics() {
-		c.series.setGauge(name, value, tags, time.Now().Unix())
-		return
-	}
-	if c.Statsd != nil {
-		_ = c.Statsd.Gauge(name, value, tags, 1)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Datadog Logs API forwarding
-// ---------------------------------------------------------------------------
-
-// ddLog is the JSON shape for the DD Logs API v2.
-type ddLog struct {
-	DDSource string         `json:"ddsource"`
-	DDTags   string         `json:"ddtags,omitempty"`
-	Hostname string         `json:"hostname,omitempty"`
-	Service  string         `json:"service"`
-	Status   string         `json:"status,omitempty"`
-	Message  string         `json:"message"`
-	Attrs    map[string]any `json:"attributes,omitempty"`
-}
-
-// TelemetryLogEntry is the shape callers pass to ForwardLog.
-type TelemetryLogEntry struct {
-	Source    string // "provider", "coordinator", "console", "app", "bridge"
-	Severity  string // "debug", "info", "warn", "error", "fatal"
-	Kind      string // "panic", "backend_crash", etc.
-	Message   string
-	MachineID string
-	AccountID string
-	RequestID string
-	SessionID string
-	Version   string
-	Fields    map[string]any
-	Stack     string
-}
-
-// ForwardLog buffers a telemetry event for async forwarding to the DD Logs API.
-// No-op if DD_API_KEY is not set.
-func (c *Client) ForwardLog(entry TelemetryLogEntry) {
-	if c == nil || c.apiKey == "" {
-		return
-	}
-
-	attrs := make(map[string]any, 16)
-	for k, v := range entry.Fields {
-		attrs[k] = v
-	}
-	attrs["dd.kind"] = entry.Kind
-	if entry.AccountID != "" {
-		attrs["account_id"] = entry.AccountID
-	}
-	if entry.RequestID != "" {
-		attrs["request_id"] = entry.RequestID
-	}
-	if entry.SessionID != "" {
-		attrs["session_id"] = entry.SessionID
-	}
-	if entry.Version != "" {
-		attrs["version"] = entry.Version
-	}
-	if entry.Stack != "" {
-		attrs["error.stack"] = entry.Stack
-	}
-
-	log := ddLog{
-		DDSource: entry.Source,
-		DDTags:   fmt.Sprintf("kind:%s,severity:%s", entry.Kind, entry.Severity),
-		Hostname: entry.MachineID,
-		Service:  "d-inference-coordinator",
-		Status:   mapSeverityToStatus(entry.Severity),
-		Message:  entry.Message,
-		Attrs:    attrs,
-	}
-
-	c.logMu.Lock()
-	c.logBuf = append(c.logBuf, log)
-	shouldFlush := len(c.logBuf) >= 100
-	c.logMu.Unlock()
-
-	if shouldFlush {
-		go c.flushLogs()
-	}
-
-	// Fatal events also emit a DD Event for monitors.
-	if entry.Severity == "fatal" {
-		go c.emitDDEvent(entry)
-	}
-}
-
-func mapSeverityToStatus(sev string) string {
-	switch sev {
-	case "debug":
-		return "debug"
-	case "info":
-		return "info"
-	case "warn":
-		return "warning"
-	case "error":
-		return "error"
-	case "fatal":
-		return "critical"
-	default:
-		return "info"
-	}
-}
-
-func (c *Client) logFlushLoop() {
-	defer c.logFlushWg.Done()
-	for {
-		select {
-		case <-c.logTicker.C:
-			c.flushLogs()
-			c.flushSeries()
-		case <-c.logDone:
-			return
-		}
-	}
-}
-
-func (c *Client) flushLogs() {
-	c.logMu.Lock()
-	if len(c.logBuf) == 0 {
-		c.logMu.Unlock()
-		return
-	}
-	batch := c.logBuf
-	c.logBuf = make([]ddLog, 0, 100)
-	c.logMu.Unlock()
-
-	body, err := json.Marshal(batch)
-	if err != nil {
-		c.logger.Warn("datadog: failed to marshal log batch", "error", err)
-		return
-	}
-
-	req, err := http.NewRequest(http.MethodPost, c.logsURL, bytes.NewReader(body))
-	if err != nil {
-		c.logger.Warn("datadog: failed to create log request", "error", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Dd-Api-Key", c.apiKey)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		c.logger.Warn("datadog: logs API request failed", "error", err, "batch_size", len(batch))
-		return
-	}
-	_, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		c.logger.Warn("datadog: logs API returned error", "status", resp.StatusCode, "batch_size", len(batch))
-	}
-}
-
-// emitDDEvent sends a Datadog Event for fatal telemetry entries so monitors
-// can trigger alerts.
-func (c *Client) emitDDEvent(entry TelemetryLogEntry) {
-	if c.apiKey == "" {
-		return
-	}
-	event := map[string]any{
-		"title":      "[d-inference] Fatal: " + truncate(entry.Message, 100),
-		"text":       entry.Message,
-		"alert_type": "error",
-		"source":     "d-inference",
-		"tags":       []string{"source:" + entry.Source, "kind:" + entry.Kind, "env:" + envOr("DD_ENV", "production")},
-	}
-	if entry.Stack != "" {
-		event["text"] = entry.Message + "\n\n```\n" + entry.Stack + "\n```"
-	}
-
-	body, err := json.Marshal(event)
-	if err != nil {
-		return
-	}
-
-	req, err := http.NewRequest(http.MethodPost, c.eventsURL, bytes.NewReader(body))
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Dd-Api-Key", c.apiKey)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		c.logger.Warn("datadog: events API request failed", "error", err)
-		return
-	}
-	_, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
+	c.logger.Warn(msg, args...)
 }
 
 // Check validates the configuration.

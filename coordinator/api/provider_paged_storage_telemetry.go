@@ -15,9 +15,9 @@ func (s *Server) recordPagedStorageTelemetry(provider *registry.Provider, prev, 
 		if cur == nil {
 			continue
 		}
-		s.dd.HistogramOrGauge("provider.paged_storage.sample_age_ms", float64(cur.SampleAgeMS), tags)
+		s.dd.Histogram("provider.paged_storage.sample_age_ms", float64(cur.SampleAgeMS), tags)
 		fresh := cur.SampleAgeMS <= capacitySampleFreshMS
-		s.dd.HistogramOrGauge("provider.paged_storage.sample_fresh", boolGauge(fresh), tags)
+		s.dd.Histogram("provider.paged_storage.sample_fresh", boolGauge(fresh), tags)
 		var old *protocol.PagedStorageTelemetry
 		if prev != nil {
 			for _, previousSlot := range prev.Slots {
@@ -41,7 +41,7 @@ func (s *Server) recordPagedStorageTelemetry(provider *registry.Provider, prev, 
 			{"over_grant_bytes", cur.OverGrantBytes}, {"segment_count", cur.SegmentCount},
 			{"address_pages", cur.AddressPages},
 		} {
-			s.dd.HistogramOrGauge("provider.paged_storage."+metric.name, float64(metric.value), tags)
+			s.dd.Histogram("provider.paged_storage."+metric.name, float64(metric.value), tags)
 		}
 		for _, metric := range []struct {
 			name  string
@@ -53,7 +53,7 @@ func (s *Server) recordPagedStorageTelemetry(provider *registry.Provider, prev, 
 			{"physical_floor_overhead_bytes", cur.PhysicalFloorOverheadBytes},
 		} {
 			if metric.value != nil {
-				s.dd.HistogramOrGauge("provider.paged_storage."+metric.name, float64(*metric.value), tags)
+				s.dd.Histogram("provider.paged_storage."+metric.name, float64(*metric.value), tags)
 			}
 		}
 		if !same {

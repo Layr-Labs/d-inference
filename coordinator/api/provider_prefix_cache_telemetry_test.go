@@ -48,7 +48,7 @@ func TestPrefixCacheTelemetryFlowsThroughAcceptedHeartbeat(t *testing.T) {
 		}
 	}
 	first := apply(sample(1, 1, 0, 10), 1)
-	expect(first, "prefix_cache.entries:2|h", "prefix_cache.disk_bytes:4096|h")
+	expect(first, "prefix_cache.entries:2|d", "prefix_cache.disk_bytes:4096|d")
 	noCounts(first)
 	assertBoundedTags(t, first)
 	for _, packet := range first {
@@ -59,21 +59,21 @@ func TestPrefixCacheTelemetryFlowsThroughAcceptedHeartbeat(t *testing.T) {
 	second := apply(sample(1, 2, 0, 20), 3)
 	expect(second, "prefix_cache.written_bytes:10|c", "prefix_cache.read_bytes:20|c",
 		"prefix_cache.stage_duration_us:30|c", "prefix_cache.sweep.ttl_expired:2|c")
-	if hasMetric(second, "stage_duration_us:30|h") {
-		t.Fatal("cumulative duration was emitted as latency sample")
+	if hasMetric(second, "stage_duration_us:30|d") || hasMetric(second, "stage_duration_us:30|g") {
+		t.Fatal("cumulative duration was emitted as a latency sample instead of a count")
 	}
 	repeated := apply(sample(1, 2, 90000, 999), 3)
 	noCounts(repeated)
 	if hasMetric(repeated, "prefix_cache.entries:") {
 		t.Fatalf("repeated sample was sampled again: %v", repeated)
 	}
-	expect(repeated, "prefix_cache.sample_age_ms:90000|h")
+	expect(repeated, "prefix_cache.sample_age_ms:90000|d")
 	// Regressed low-rate sample inside a newer heartbeat cannot roll back its
 	// baseline. A later sequence sees only the change since accepted sample 2.
 	noCounts(apply(sample(1, 1, 0, 0), 3))
 	expect(apply(sample(1, 3, 0, 30), 3), "prefix_cache.written_bytes:10|c")
 	stale := apply(sample(1, 4, capacitySampleFreshMS+1, 40), 3)
-	expect(stale, "prefix_cache.sample_fresh:0|h")
+	expect(stale, "prefix_cache.sample_fresh:0|d")
 	if hasMetric(stale, "prefix_cache.entries:") {
 		t.Fatalf("stale sample emitted a current gauge: %v", stale)
 	}

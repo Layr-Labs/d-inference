@@ -63,3 +63,23 @@ EIGENINFERENCE_MODEL_SOLO_TPS_SEED=gemma-4-26b-qat-4bit=14,gemma-4-26b-qat-4bit@
 EIGENINFERENCE_WARM_POOL_HEADROOM=true
 EIGENINFERENCE_WARM_POOL_HEADROOM_MAX_PROVIDERS=64
 EIGENINFERENCE_WARM_POOL_HEADROOM_LOAD_WINDOWS=1
+
+# Datadog metric identity, to match dev (deploy/gcp/vm-startup.sh). Every
+# dashboard widget scopes its query by env AND service, so a metric or log
+# missing either tag matches nothing — the tags are not decoration.
+#
+# DD_API_KEY is deliberately NOT here and NOT in required-env-keys.txt: it is a
+# secret, and a required key that only telemetry needs would let a missing
+# credential fail darkbloom-env-refresh.service, which is ordered before Docker
+# and would then keep the coordinator from starting.
+#
+# DD_SITE is different — not a secret, and its code default is this same
+# datadoghq.com (coordinator/datadog/datadog.go), so it is stated explicitly
+# below. It is still kept out of required-env-keys.txt for the same
+# ordering reason. Both are read off the live /etc/d-inference/env by the agent
+# installer (deploy/gcp/prod/install-datadog-agent.sh), which is downstream of
+# this file rather than a reader of it.
+DD_ENV=production
+DD_SERVICE=d-inference-coordinator
+DD_AGENT_HOST=localhost
+DD_SITE=datadoghq.com

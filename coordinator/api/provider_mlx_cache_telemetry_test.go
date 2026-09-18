@@ -106,14 +106,14 @@ func TestMLXCacheTelemetryBoundedTagsAndDeltas(t *testing.T) {
 	provider := newMLXTelemetryProvider(t, reg, uuid.New().String(), "M3", "0.8.20")
 
 	// 1. First heartbeat of the session: no baseline → point-in-time
-	// histograms only, no deltas, no last_* samples.
+	// gauges only, no deltas, no last_* samples.
 	first := mlxCapacity(5, 2, 4096)
 	srv.recordMLXCacheTelemetry(provider, nil, first)
 	packets := flushAndDrain()
 	assertBoundedTags(t, packets)
 	for _, want := range []string{
-		"provider.mlx_memory.active_gb:8|h", "provider.mlx_memory.peak_gb:12|h",
-		"provider.mlx_memory.cache_gb:2|h", "provider.mlx_cache.limit_bytes:1073741824|h",
+		"provider.mlx_memory.active_gb:8|g", "provider.mlx_memory.peak_gb:12|g",
+		"provider.mlx_memory.cache_gb:2|g", "provider.mlx_cache.limit_bytes:1073741824|g",
 	} {
 		if !hasMetric(packets, want) {
 			t.Fatalf("first heartbeat: missing %q in %v", want, packets)
@@ -133,19 +133,19 @@ func TestMLXCacheTelemetryBoundedTagsAndDeltas(t *testing.T) {
 	for _, want := range []string{
 		"provider.mlx_cache.sweep_signals:2|c", "provider.mlx_cache.reclaims:1|c",
 		"provider.mlx_cache.reclaimed_bytes:4096|c",
-		"provider.mlx_cache.last_reclaimed_bytes:2048|h", "provider.mlx_cache.last_reclaim_duration_ms:3|h",
+		"provider.mlx_cache.last_reclaimed_bytes:2048|g", "provider.mlx_cache.last_reclaim_duration_ms:3|g",
 	} {
 		if !hasMetric(packets, want) {
 			t.Fatalf("reclaim heartbeat: missing %q in %v", want, packets)
 		}
 	}
 
-	// 3. Nothing changed: memory histograms still flow, no counts, no last_*.
+	// 3. Nothing changed: memory gauges still flow, no counts, no last_*.
 	srv.recordMLXCacheTelemetry(provider, second, second)
 	packets = flushAndDrain()
 	assertBoundedTags(t, packets)
-	if !hasMetric(packets, "provider.mlx_memory.active_gb:8|h") {
-		t.Fatalf("steady heartbeat: memory histogram missing: %v", packets)
+	if !hasMetric(packets, "provider.mlx_memory.active_gb:8|g") {
+		t.Fatalf("steady heartbeat: memory gauge missing: %v", packets)
 	}
 	for _, absent := range []string{"|c|", "mlx_cache.last_"} {
 		if hasMetric(packets, absent) {
@@ -161,7 +161,7 @@ func TestMLXCacheTelemetryBoundedTagsAndDeltas(t *testing.T) {
 		t.Fatalf("reset heartbeat: a negative delta was emitted as a count: %v", packets)
 	}
 
-	// 5. No reclaimer block: memory histograms only.
+	// 5. No reclaimer block: memory gauges only.
 	srv.recordMLXCacheTelemetry(provider, second, &protocol.BackendCapacity{GPUMemoryActiveGB: 8})
 	packets = flushAndDrain()
 	assertBoundedTags(t, packets)
@@ -199,8 +199,13 @@ func TestMLXCacheTelemetryFleetCardinalityIsBounded(t *testing.T) {
 		srv.recordMLXCacheTelemetry(p, mlxCapacity(1, 1, 1), mlxCapacity(2, 2, 2))
 	}
 	packets := flushAndDrain()
-	if len(packets) < sessions {
-		t.Fatalf("expected at least one line per session, got %d", len(packets))
+	// Not "one line per session": point-in-time values are gauges, and
+	// datadog-go aggregates gauges client-side per (name, tag set), so 40
+	// sessions sharing four bounded tag sets collapse into far fewer lines.
+	// That collapse is the property under test — what matters is that
+	// something was submitted and that no line carries a session-scoped tag.
+	if len(packets) == 0 {
+		t.Fatal("no packets submitted for 40 sessions")
 	}
 	tagSets := map[string]struct{}{}
 	for _, p := range packets {

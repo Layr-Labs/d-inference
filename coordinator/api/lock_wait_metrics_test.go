@@ -58,8 +58,8 @@ func TestRegistryLockWaitHistogramTaggedBySite(t *testing.T) {
 	if !strings.Contains(packet, "site:commit") {
 		t.Fatalf("lock-wait histogram missing the site tag: %s", packet)
 	}
-	if !strings.Contains(packet, "|h|") {
-		t.Fatalf("lock-wait metric is not a histogram: %s", packet)
+	if !strings.Contains(packet, "|d|") {
+		t.Fatalf("lock-wait metric is not a distribution: %s", packet)
 	}
 }
 

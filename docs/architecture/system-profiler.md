@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-16 · commit `4595d7e65`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -31,7 +31,7 @@ per-token cost, or a free-form provider string to storage.
 | `request_profiles` row | dispatched attempt (pre-dispatch rejections never produce one) | stamps on `registry.RequestProfile` / `AttemptProfile`, flattened by `buildProfileRecord` (`coordinator/api/profiler_record.go`) | `profileSink` (`coordinator/api/profiler_sink.go`) → multi-row INSERT | `profileRetainProfiles` — value in [`../reference/telemetry-inventory.md#coordinator-per-request-records-postgres`](../reference/telemetry-inventory.md#coordinator-per-request-records-postgres) |
 | `fleet_snapshots` row | (provider session, slot) per 60 s + one `provider_id = 'coordinator'` row | `registry.FleetSample`, `CoordinatorSample` (`coordinator/registry/fleet_sample.go`) | sampler goroutine, `pgx.CopyFrom` (`coordinator/store/postgres_profiles.go`) | `profileRetainFleet` — same page |
 | `X-Timing` additive keys | committed response | `writeTimingHeaderWithProfile` (`coordinator/api/profiler_dispatch.go`) | response header ([`../reference/api-contracts.md#headers`](../reference/api-contracts.md#headers)) | n/a |
-| Datadog counters | process | [Operations](#operations) | DogStatsD / HTTPS series | n/a |
+| Datadog counters | process | [Operations](#operations) | DogStatsD → local Datadog Agent | n/a |
 
 ## Mechanism
 
@@ -339,9 +339,14 @@ with types and tags, in
 their tags never include a request id, a provider id or a provider-authored
 string.
 
-Percentiles come from Postgres, never from Datadog: the prod VM may run no
-DogStatsD agent, and histograms do not survive the HTTPS series path
-([`telemetry.md`](telemetry.md)).
+Percentiles here come from Postgres, not from Datadog. The profiler's own
+percentiles are computed over `request_profiles` rows so they are exact,
+reproducible from the database, and independent of retention or aggregator
+configuration on the Datadog side. Coordinator histograms reach Datadog as
+distributions through the local agent
+([`telemetry.md`](telemetry.md#datadog-transport)), but that is a separate
+surface with its own rollup — and one that needs the agent installed and
+percentile aggregators enabled, neither of which this page's numbers depend on.
 
 Migration window (DMS / Cloud SQL): both tables are created with
 `CREATE TABLE IF NOT EXISTS` and carry a primary key, so logical replication

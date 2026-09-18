@@ -378,7 +378,8 @@ public enum MTPBenchmarkRunner {
                     key.batchSize),
                 allowedSkipReasons: configuration.allowedSkipReasons,
                 expectation: configuration.mtpExpectation,
-                requireAutomaticVerification: configuration.purpose != .rawParityStress)
+                requireAutomaticVerification: configuration.purpose != .rawParityStress,
+                requireCostLearningEvidence: configuration.purpose == .productionPerformance)
             await session.engine.shutdown()
             didShutdown = true
             try requireBeforeDeadline(deadlineAt)
@@ -402,7 +403,8 @@ public enum MTPBenchmarkRunner {
         adaptiveDraftingExpected: Bool,
         allowedSkipReasons: Set<String>,
         expectation: MTPBenchmarkMTPExpectation = .active,
-        requireAutomaticVerification: Bool = false
+        requireAutomaticVerification: Bool = false,
+        requireCostLearningEvidence: Bool = true
     ) throws {
         try validateActivation(
             metrics: metrics,
@@ -458,11 +460,16 @@ public enum MTPBenchmarkRunner {
                     throw MTPBenchmarkError.invalidMetrics(
                         "\(mode.label), B=\(batchSize) did not execute active draft rounds")
                 }
-                guard metrics.costInputs.contains(where: {
+                let measuredRequestedCost = metrics.costInputs.contains(where: {
                     $0.decodeRowBucket == expectedBucket
                         && $0.draftDepth == expectedDepth
                         && $0.sampleCount > 0
-                }) else {
+                })
+                let verifiedRequestedWork = !requireCostLearningEvidence
+                    && (metrics.rectangularVerificationRounds ?? 0)
+                        + (metrics.serialVerificationRounds ?? 0) > 0
+                    && metrics.acceptanceByPosition.count >= expectedDepth
+                guard measuredRequestedCost || verifiedRequestedWork else {
                     throw MTPBenchmarkError.invalidMetrics(
                         "\(mode.label), B=\(batchSize) did not measure requested depth/bucket")
                 }
@@ -490,11 +497,19 @@ public enum MTPBenchmarkRunner {
                     throw MTPBenchmarkError.invalidMetrics(
                         "adaptive B=\(batchSize) never selected a nonzero depth")
                 }
-                guard metrics.costInputs.contains(where: {
+                let measuredPositiveCost = metrics.costInputs.contains(where: {
                     $0.decodeRowBucket == expectedBucket
                         && $0.draftDepth > 0
                         && $0.sampleCount > 0
-                }) else {
+                })
+                // Correctness certifies executed verification, not retention
+                // of a learning window cancelled at a request/token boundary.
+                // Performance still requires a measured positive-depth cost.
+                let verifiedPositiveWork = !requireCostLearningEvidence
+                    && (metrics.rectangularVerificationRounds ?? 0)
+                        + (metrics.serialVerificationRounds ?? 0) > 0
+                    && !metrics.acceptanceByPosition.isEmpty
+                guard measuredPositiveCost || verifiedPositiveWork else {
                     throw MTPBenchmarkError.invalidMetrics(
                         "adaptive B=\(batchSize) lacks positive-depth cost evidence for requested bucket \(expectedBucket)")
                 }
@@ -526,11 +541,11 @@ public enum MTPBenchmarkRunner {
             throw MTPBenchmarkError.invalidMetrics(
                 "automatic fixed-depth fallback B=\(batchSize) escaped its rectangular limit")
         }
-        if hasPositiveDepth {
+        if metrics.rounds > 0 {
             // The depth controller intentionally refuses cost attribution
             // when the finalized depth differs from its requested depth, so
             // clamped rounds may record no positive cost inputs at all.
-            guard metrics.rounds > 0,
+            guard hasPositiveDepth,
                   metrics.proposedTokens > 0,
                   (metrics.rectangularVerificationRounds ?? 0) > 0
             else {
@@ -539,10 +554,21 @@ public enum MTPBenchmarkRunner {
             }
             return true
         }
-        guard metrics.selectedDepth == 0,
+        // Selections record plans, including an initial seed at a smaller
+        // cohort before the requested batch fills. A seed is ordinary target
+        // decode, not a draft/verify round. Admit only bounded seed-only
+        // residue while still requiring zero speculative output/work.
+        let positiveSelections = metrics.depthSelections.reduce(Int?.some(0)) { total, entry in
+            guard let total, let depth = Int(entry.key), depth >= 0, entry.value >= 0 else { return nil }
+            let (sum, overflow) = total.addingReportingOverflow(depth > 0 ? entry.value : 0)
+            return overflow ? nil : sum
+        }
+        guard let positiveSelections,
+              (metrics.seedRows == 0 && positiveSelections == 0)
+                || (metrics.seedRows > 0 && positiveSelections > 0 && positiveSelections <= metrics.seedRows),
+              metrics.selectedDepth == 0,
               metrics.depthSelections["0", default: 0] > 0,
               metrics.rounds == 0,
-              metrics.seedRows == 0,
               metrics.proposedTokens == 0,
               metrics.acceptedDraftTokens == 0,
               metrics.committedTokens == 0,

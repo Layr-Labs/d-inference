@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-18 · commit `e64b9df42`
+> Last updated: 2026-09-18 · commit `4a453679b`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -36,6 +36,62 @@ preparation seam before tokenization. The shared public corpus covers JSON-objec
 and schema response formats plus multi-system and text/tool/endpoint forms; it compares
 actual Swift tokens and scope-bound hashes with Rust plans. No production
 prompts or model weights are needed (`scripts/verify-prompt-parity.sh`).
+
+## Bonsai performance qualification
+
+The default-on eligible profile is documented in
+`libs/mlx-swift-lm/docs/bonsai2.md`. Record unset/default, explicit `1` and
+explicit `0` process profiles separately; an unset control is no longer OFF.
+Unchanged weights and equal greedy tokens do not replace independent raw-logit
+and native-state comparisons. `Float16ConstantCastTests` and
+`PrismPrefillCarryPolicyTests` cover absent/explicit/invalid overrides;
+`PrismPrefillCarrySubmissionTests` runs the real scheduling, fault and retirement
+checks in both unset/default and explicit-ON processes with its GPU/witness opt-ins.
+
+`BonsaiEncryptedCheckpointLiveTests` requires the verified unchanged artifact
+and an exclusively owned GPU lane. Select it separately from other live model
+suites; its gate is `DARKBLOOM_BONSAI2_LIVE_MODEL` plus
+`DARKBLOOM_BONSAI2_EXCLUSIVE_GPU=1`. It prepares actual image/tool/video inputs,
+checks native three-row joins/shrink/cancellation against isolated tokens, then
+uses the production paged factory and encrypted complete-checkpoint store for
+cold/hot, same-process reopen, tenant/prefix misses and corrupted-ciphertext
+recomputation. Its random fixture key/root do not touch Keychain or production
+cache data and do not qualify signed persistence or hosted routing.
+
+```sh
+cd provider-swift
+DARKBLOOM_BONSAI2_LIVE_MODEL=/absolute/path/to/verified-artifact \
+DARKBLOOM_BONSAI2_EXCLUSIVE_GPU=1 \
+DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC=1 \
+DARKBLOOM_BONSAI_F16_CONSTANT_CACHE=1 \
+swift test --build-system native -c release -Xswiftc -enable-testing \
+  -Xswiftc -DDEBUG --filter BonsaiEncryptedCheckpointLiveTests --no-parallel
+```
+
+These are qualification instructions, not a claim that an unrun gate passed.
+Use a separate test build, its adjacent resource bundles and exact matching
+Metal library, and an owned-process memory/time guard. The ordinary production
+binary must also pass the final local Chat/Responses, reasoning/tool/history and
+multimodal API matrix. Keep the final local OpenRouter-compatible weather/tool
+gate distinct from any unavailable hosted certification.
+
+`LocalOutputTokenLimitTests` checks the complete provider-local responder stack,
+not only the SDK router: authenticated intercepted chat aliases/batches and
+routed Completions/Responses must preserve the SDK's early HTTP 400 before
+model acquisition, while missing authentication still returns 401.
+`NativeToolStreamRouterTests` includes Bonsai's explicit nested-reasoning policy
+and opaque XML string arguments. Its policy must be wired for both text and
+media, with other families unchanged. Do not "repair" generated quoted strings
+by guessing JSON unescaping; the published template renders string parameters
+as raw values. Keep model copying quality separate from transport fidelity.
+
+`LocalStreamingFailureTests` also exercises the authenticated chat-upload
+interceptor, not just the SDK routes. A failure after HTTP headers must finish
+with a sanitized SSE error event, without a success terminal or fabricated tool
+call. The SDK's `ChatStreamingFailureHTTPTests` covers Chat/Completions framing,
+observed-only usage, cancellation and the unchanged direct-service throwing
+contract. Successful tool-generation gates remain separate: a correctly framed
+error does not satisfy a required tool call or repair its generated arguments.
 
 ## SDK 27 release qualification
 

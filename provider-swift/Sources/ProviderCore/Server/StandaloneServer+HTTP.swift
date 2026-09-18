@@ -140,6 +140,12 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
                 message: ProviderLoop.sanitizedInferenceFailure(
                     from: error, phase: .generation).message
             )
+        } catch let error as OpenAIRequestValidationError {
+            // Chat upload interception lives outside the upstream router's
+            // HTTPResponseError mapping. Preserve this fixed, content-free
+            // validation error without exposing arbitrary upstream messages.
+            return Self.openAIErrorResponse(
+                status: error.status, message: error.localizedDescription)
         } catch let error as MLXOpenAIServiceError {
             return Self.openAIErrorResponse(
                 status: HTTPResponse.Status(

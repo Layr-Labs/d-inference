@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — model token promotions
+
+- Enable thinking by default in frontend chat requests.
+
+- Configure one-time, model-specific token grants before registration. Eligible users explicitly claim non-expiring tokens shared across their account keys, with an atomic campaign cap and signup cutoff. Prepare the Bonsai draft for 250 claims through September 19 by accounts created through September 18 (Los Angeles time). Exhaustion falls back to paid credit, with clear console allowance/error states.
+- Reserve and settle free tokens, paid credit and provider earnings atomically; retain platform-priced provider payouts on sponsored traffic, protect same-account serving, and recover orphaned reservations.
+- Give Bonsai 2 a 10-second plus 3-ms-per-input-token upstream first-content SLA, retaining coordinator response headroom. Add exact-model overrides for both SLA terms.
+
 ## Unreleased — Ternary Bonsai 2 onboarding draft
 
 - Compact Bonsai's retained recurrent convolution carry after prefill, preserving exact FP32 state bits without retaining whole chunk buffers. Other model families and single-token decode are unchanged.

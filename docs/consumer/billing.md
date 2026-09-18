@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-18 · commit `5fc48d460`
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -234,3 +234,11 @@ Mechanism for each error, including the exact functions, is in
 - [`models.md`](models.md) — `GET /v1/models` and its `pricing` block
 - [`../provider/self-route.md`](../provider/self-route.md) — routing to your own machine, which settles free
 - [`../reference/api-contracts.md`](../reference/api-contracts.md) — error envelope and status codes
+
+## Use free model tokens
+
+Sign in and click the model offer’s **Claim tokens** button before its deadline. Logging in alone does not claim a grant. Eligibility depends on your account’s signup date; a limited number of grants are allocated to the first eligible accounts to claim. Tokens belong to your account, work with all its API keys, and never expire. The chat view shows the selected model's remaining allowance. Other models use their ordinary billing.
+
+Input and output tokens both consume the allowance. When it runs out, requests use your paid balance. If a request crosses the boundary, only its uncovered tokens are billed, subject to the normal request minimum. A `402 free_tokens_exhausted` means no free tokens are available and paid credit cannot cover the request. Add credit, or wait if another request has reserved the remaining free tokens. A `402 promotion_balance_required` means the maximum requested size cannot fit the remaining free tokens plus paid balance; reduce `max_tokens` or add credit. A request may reserve more than it ultimately uses; unused tokens return at settlement.
+
+With an interactive Privy session, `GET /v1/me/token-promotions` lists grants; `POST /v1/me/token-promotions/claim` with `{"model_id":"..."}` claims the selected offer safely. The response also lists available offers, remaining claim slots and eligibility status. API keys may use an existing grant but cannot issue one. See [pricing-model.md](../reference/pricing-model.md).

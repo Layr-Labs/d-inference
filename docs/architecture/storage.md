@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-14 · commit `46299ff78`
+> Last updated: 2026-09-18 · commit `5fc48d460`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -336,3 +336,9 @@ KV blocks under a per-model key, not tokens.
 - [`prefix-cache.md`](prefix-cache.md) and [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) — the provider's on-disk cache
 - [`../operations/state-export.md`](../operations/state-export.md) — exporting the non-Postgres state on the persistent disk
 - [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md) — where the DSN is set
+
+## Model token grants
+
+`coordinator/store/model_token_promotions_schema.go` (`modelTokenPromotionDDL`) adds `model_token_promotions`, account/model keyed `model_token_grants`, and durable `model_token_reservations`. Promotion model IDs deliberately do not reference the model registry, allowing pre-launch setup. The promotion row serializes claims, enforces the maximum claim count and validates the user table’s authoritative account creation timestamp. Account/model uniqueness makes duplicate claims idempotent. Grant counters enforce nonnegative usage/reservations and prevent their sum from exceeding the grant. Reservation terminal state prevents duplicate spending, refunds and provider credit. Claim windows do not expire previously issued grants.
+
+`coordinator/store/model_token_settlement_postgres.go` (`SettleModelTokenReservation`) updates grant usage, consumer money and provider earnings in one transaction, locking balance rows in account order. The optional backend capability is discovered through `store.As`; grants bypass the user/model read-through caches and no user/model invalidation is needed. Lease recovery is in `coordinator/store/model_token_leases.go` (`ReleaseStaleModelTokenReservations`). Operational details: [model token promotions](../operations/model-token-promotions.md).

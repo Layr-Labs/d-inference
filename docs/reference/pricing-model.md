@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-11 · commit `e3993c611`
+> Last updated: 2026-09-18 · commit `5fc48d460`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -297,3 +297,16 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | Reconciliation | One-minute loop, up to 200 records per scan; posted records polled for 90 days and later returns handled by events | `coordinator/api/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`); `coordinator/store/global_payouts_postgres.go` (`ListGlobalPayoutsToReconcile`) |
 
 Published recipient bounds are stored in `coordinator/billing/globalpayouts/recipient_limits.go` (`Country.Limits`) from [Stripe's recipient minimums and maximums](https://docs.stripe.com/global-payouts/send-money#recipient-minimums). The API reports the local-currency threshold and validates the credited amount; direct pre-quote comparison is possible for USD destinations. The private payout row retains Stripe's `estimated_fees` as `estimated_stripe_fees` for operator cost review (`coordinator/api/global_payouts_withdraw.go`, `handleGlobalPayoutQuote`).
+
+## Promotional model tokens
+
+| Rule | Contract | Code |
+|---|---|---|
+| Allocation | Explicit claim, one grant per account/model; campaign claim cap and persisted signup cutoff; start-inclusive/end-exclusive claim window; issued tokens never expire | `coordinator/store/model_token_promotions.go` (`ModelTokenPromotion`) |
+| Token unit | Prompt plus completion tokens, including cached input and generated reasoning as reported in usage | `coordinator/api/model_token_settlement.go` (`settleModelTokenPromotion`) |
+| Coverage | Input first, then output; fully covered usage costs the consumer zero | `coordinator/api/model_token_admission.go` (`modelTokenQuote`) |
+| Paid fallback | Uncovered tokens use paid balance; the normal request minimum applies when any tokens are paid | `coordinator/api/model_token_admission.go` (`modelTokenQuote`) |
+| Provider earnings | Platform price for a sponsored request; ordinary pricing after exhaustion; same-account sponsored serving produces no payout | `coordinator/api/provider.go` (`handleComplete`) |
+| Reservation recovery | Renew every 30 seconds; reclaim after ten minutes without renewal | `coordinator/api/model_token_maintenance.go` (`runModelTokenMaintenance`, `modelTokenLeaseTimeout`) |
+
+Configure using the [model token promotion runbook](../operations/model-token-promotions.md).

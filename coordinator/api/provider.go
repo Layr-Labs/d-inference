@@ -2374,7 +2374,7 @@ func (s *Server) handleCompleteAt(
 	}
 	var customIn, customOut int64
 	var hasCustom bool
-	if !isServiceConsumer {
+	if !isServiceConsumer && pr.PromotionFreeTokens == 0 {
 		customIn, customOut, hasCustom = s.store.GetModelPrice(providerAccountForPricing, pr.Model)
 	}
 	if !hasCustom {
@@ -2402,7 +2402,7 @@ func (s *Server) handleCompleteAt(
 	// requesting account. Ownership is read from the serving provider object
 	// (stable across deregistration), not a fresh lookup.
 	freeSelfRoute := false
-	if pr.FreeSelfRoute || pr.PreferOwner {
+	if pr.FreeSelfRoute || pr.PreferOwner || pr.PromotionFreeTokens > 0 {
 		serving := s.registry.GetProvider(providerID)
 		if serving == nil {
 			serving = provider
@@ -2436,7 +2436,13 @@ func (s *Server) handleCompleteAt(
 	// mutations (overage charge, refund) happen inside the finalization
 	// gate so that a concurrent timeout/error refund path cannot race
 	// with the settlement here.
-	if pr.ServiceReservation && pr.ReservedMicroUSD > 0 {
+	if pr.ModelTokenReservationID != "" {
+		var promotionErr error
+		billingFinalized, totalCost, promotionErr = s.settleModelTokenPromotion(pr, provider, msg.Usage, customIn, customOut, hasCustom, providerPayout, freeSelfRoute)
+		if promotionErr != nil {
+			s.logger.Error("promotion settlement failed", "request_id", msg.RequestID, "reservation_id", pr.ModelTokenReservationID, "error", promotionErr)
+		}
+	} else if pr.ServiceReservation && pr.ReservedMicroUSD > 0 {
 		var chargeErr error
 		finalized, _ := pr.FinalizeReservation(func() error {
 			if totalCost > 0 {
@@ -2725,7 +2731,7 @@ func (s *Server) handleCompleteAt(
 			// or an uncollected charge (e.g. a self-route paid-fallback whose
 			// owner had no balance) — in both cases we must not record a
 			// (zero-value) earning row. Mirrors the platformFee > 0 guard below.
-			if accountID != "" && !freeSelfRoute && providerPayout > 0 {
+			if accountID != "" && !freeSelfRoute && providerPayout > 0 && pr.ModelTokenReservationID == "" {
 				settlementWg.Add(1)
 				go func() {
 					defer settlementWg.Done()

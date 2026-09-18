@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-15 · commit `a99ce680a`
+> Last updated: 2026-09-18 · commit `5fc48d460`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -511,3 +511,11 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 - [`architecture/request-outcome-observability.md`](request-outcome-observability.md) — how billing outcomes join the request outcome taxonomy
 - [`reference/api-contracts.md`](../reference/api-contracts.md) — error envelope and status codes
 - [`storage.md`](storage.md) — which store backend holds the ledger and what survives a restart
+
+## Model token promotions
+
+A model promotion gives each qualifying individual account one durable, non-expiring input-plus-output token grant. Users explicitly claim an offer; login only lists offers. A persisted account-signup cutoff, bounded claim window and atomic campaign claim cap restrict eligibility and allocation. Immutable grant terms prevent repeat claims or configuration retries from replenishing it. Model IDs can be configured before registration. The account, not an API key or browser, owns the grant. See the [promotion runbook](../operations/model-token-promotions.md).
+
+`coordinator/api/model_token_admission.go` (`reserveModelTokenPromotion`) reserves free tokens and any required paid balance atomically through `store.ModelTokenPromotionStore`. Free tokens cover input before output; uncovered usage is paid. At completion, `coordinator/api/model_token_settlement.go` (`settleModelTokenPromotion`) atomically consumes actual free tokens, returns unused holds, settles paid credit and credits the provider. Durable reservation identities make completion/refund races and ambiguous-commit retries idempotent. Fully sponsored requests have zero consumer cost; sponsored provider earnings use platform prices. An owned sponsored route refunds the grant and pays no provider earnings, preventing conversion of a free grant into the same account's withdrawable balance.
+
+`coordinator/api/model_token_maintenance.go` (`maintainModelTokens`) renews active reservations, retries failed financial finalization/refunds, and reclaims orphan holds. Grants do not expire when the claim window closes. Money and quota settlement are transactional; usage telemetry remains on the existing recording path.

@@ -471,7 +471,10 @@ type Server struct {
 
 	// serviceReservations avoids hot-row pre-router ledger debits for trusted
 	// service accounts when enabled. Normal consumers still use ledger debits.
-	serviceReservations *serviceReservationManager
+	serviceReservations   *serviceReservationManager
+	modelTokenActive      sync.Map
+	modelTokenRefunds     sync.Map
+	modelTokenSettlements sync.Map
 
 	// consumerTokenLimiter / serviceTokenLimiter enforce per-account input
 	// (ITPM) and output (OTPM) token-per-minute limits on inference endpoints,
@@ -2720,6 +2723,10 @@ func (s *Server) routes() {
 
 	// Account-scoped provider dashboard.
 	s.mux.HandleFunc("GET /v1/me/providers", s.requirePrivyAuth(s.handleMyProviders))
+	s.mux.HandleFunc("GET /v1/me/token-promotions", s.requirePrivyAuth(s.handleMyModelTokenPromotions))
+	s.mux.HandleFunc("POST /v1/me/token-promotions/claim", s.requirePrivyAuth(s.rateLimitFinancial(s.handleMyModelTokenPromotions)))
+	s.mux.HandleFunc("GET /v1/admin/token-promotions", s.handleAdminModelTokenPromotions)
+	s.mux.HandleFunc("PUT /v1/admin/token-promotions", s.handleAdminModelTokenPromotions)
 	s.mux.HandleFunc("GET /v1/me/summary", s.requirePrivyAuth(s.handleMySummary))
 	// Alias-aware owned live-model ids for the console's self-route key picker.
 	s.mux.HandleFunc("GET /v1/me/self-route-models", s.requirePrivyAuth(s.handleMySelfRouteModels))
@@ -3011,6 +3018,7 @@ const readCacheJanitorInterval = time.Minute
 // StartReadCacheJanitor periodically purges expired entries from the read cache
 // so it can't grow unbounded. Call as a goroutine; stops when ctx is cancelled.
 func (s *Server) StartReadCacheJanitor(ctx context.Context) {
+	saferun.Go(s.logger, "model_token_promotion_maintenance", func() { s.runModelTokenMaintenance(ctx) })
 	s.runReadCacheJanitor(ctx, readCacheJanitorInterval)
 }
 

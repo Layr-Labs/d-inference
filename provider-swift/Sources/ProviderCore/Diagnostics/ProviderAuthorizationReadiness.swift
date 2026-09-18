@@ -15,6 +15,7 @@ public enum ProviderAuthorizationReadiness {
               writtenAt.isFinite, receivedAt.isFinite, startedAt.isFinite,
               writtenAt <= now + 2, now - writtenAt <= snapshotMaxAge,
               receivedAt >= startedAt, receivedAt <= now + 2,
+              now - receivedAt <= snapshotMaxAge,
               status == "online", let authorization,
               authorization.protocolVersion == 1
         else { return nil }

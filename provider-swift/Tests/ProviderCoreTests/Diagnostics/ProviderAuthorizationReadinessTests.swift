@@ -74,6 +74,29 @@ import Testing
                                                   readProcessIdentity: { _ in nil }) == nil)
     }
 
+    @Test func daemonWritesCannotRefreshAnOldRemovalDecision() {
+        let identity = ProcessIdentity(pid: 41, startTimeMicros: 9)
+        func current(receivedAt: Double) -> ProviderAuthorizationStatus? {
+            let state = DaemonState(
+                pid: 41, processIdentity: identity, version: "test",
+                writtenAt: 100, startedAt: 50,
+                trust: .init(trustLevel: "self_signed", status: "online", reason: "",
+                             receivedAt: receivedAt, authorization: status(expiresAt: 120)),
+                coordinatorURL: "wss://api.darkbloom.dev/ws/provider")
+            return state.currentProviderAuthorization(
+                coordinatorURL: "https://api.darkbloom.dev", now: 100,
+                readProcessIdentity: { _ in identity })
+        }
+        // The file is freshly written and the lease has time left, but an
+        // old decision must not authorize removal after a delayed revocation.
+        for receivedAt in [89.999, 80, 50] {
+            #expect(current(receivedAt: receivedAt) == nil)
+            #expect(!ProviderAuthorizationReadiness.removalReady(current(receivedAt: receivedAt), now: 100))
+        }
+        #expect(ProviderAuthorizationReadiness.removalReady(current(receivedAt: 90), now: 100))
+        #expect(ProviderAuthorizationReadiness.removalReady(current(receivedAt: 99), now: 100))
+    }
+
     @Test func expiredStatusNeverClaimsThatRemovalIsAvailable() {
         let description = ProviderAuthorizationReadiness.summary(status(expiresAt: 100), now: 100)
         #expect(!description.contains("removal is available"))

@@ -146,9 +146,7 @@ func (r *Registry) RevokeAppAttestCredential(credentialID string) []string {
 	for id, p := range r.providers {
 		p.mu.Lock()
 		if p.appAttestCredentialID == credentialID || p.appAttestPresenterID == credentialID {
-			p.appAttestAuthorization = AppAttestServingAuthorization{}
-			p.appAttestSecurityDenied = true
-			p.RuntimeCapabilities = nil
+			r.denyAppAttestProviderLocked(p)
 			affected = append(affected, id)
 		}
 		p.mu.Unlock()

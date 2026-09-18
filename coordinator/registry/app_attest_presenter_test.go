@@ -24,6 +24,13 @@ func TestVerifiedPresenterAndRevocationHaveSafeEitherOrder(t *testing.T) {
 		if r.ProviderServingDenialReason(p) == "" || r.GrantAppAttestServingAuthorization(p, lease) {
 			t.Fatal("revocation/presentation ordering allowed a grant")
 		}
+		if p.GetStatus() != StatusUntrusted || r.OnlineCount() != 0 {
+			t.Fatal("revocation/presentation ordering left an online provider")
+		}
+		r.Disconnect(p.ID)
+		if r.OnlineCount() != 0 {
+			t.Fatal("revoked presenter was counted twice on disconnect")
+		}
 	}
 }
 

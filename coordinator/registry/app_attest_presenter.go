@@ -20,9 +20,7 @@ func (r *Registry) RecordVerifiedAppAttestPresenter(p *Provider, credential, acc
 	p.appAttestPresenterID = credential
 	_, revoked = r.appAttestRevokedCredentials[credential]
 	if revoked {
-		p.appAttestSecurityDenied = true
-		p.appAttestAuthorization = AppAttestServingAuthorization{}
-		p.RuntimeCapabilities = nil
+		r.denyAppAttestProviderLocked(p)
 	}
 	return true, revoked
 }
@@ -66,8 +64,6 @@ func (r *Registry) DenyAppAttestProvider(p *Provider) bool {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.appAttestSecurityDenied = true
-	p.appAttestAuthorization = AppAttestServingAuthorization{}
-	p.RuntimeCapabilities = nil
+	r.denyAppAttestProviderLocked(p)
 	return true
 }

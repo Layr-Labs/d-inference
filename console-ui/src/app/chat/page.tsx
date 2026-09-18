@@ -5,6 +5,7 @@ import { ArrowDown } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { fetchModels } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
+import { useChatAccess } from "@/hooks/useChatAccess";
 import { useChatStream } from "@/hooks/useChatStream";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatWelcome, ChatStarters } from "@/components/chat/ChatWelcome";
@@ -17,8 +18,10 @@ export default function ChatPage() {
   const chats = useStore((s) => s.chats);
   const activeChatId = useStore((s) => s.activeChatId);
   const setModels = useStore((s) => s.setModels);
-  const { ready, authenticated, apiKeyReady, login } = useAuth();
-  const { isStreaming, handleSend, handleStop, handleRetry } = useChatStream();
+  const { ready, authenticated, sessionReady, login } = useAuth();
+  const access = useChatAccess();
+  const chatReady = sessionReady && access.ready;
+  const { isStreaming, handleSend, handleStop, handleRetry } = useChatStream(access.mode);
   const [suggestedDraft, setSuggestedDraft] = useState<SuggestedDraft>();
   const [modelLoadAttempt, setModelLoadAttempt] = useState(0);
   const [modelLoadFailed, setModelLoadFailed] = useState(false);
@@ -29,10 +32,10 @@ export default function ChatPage() {
   const hasMessages = authenticated && !!activeChat?.messages.length;
 
   useEffect(() => {
-    if (!authenticated || !apiKeyReady) return;
+    if (!authenticated || !chatReady) return;
     let cancelled = false;
     setModelLoadFailed(false);
-    fetchModels()
+    fetchModels({ session: access.mode === "session" })
       .then((models) => {
         if (!cancelled) setModels(models);
         return models;
@@ -41,7 +44,7 @@ export default function ChatPage() {
         if (!cancelled) setModelLoadFailed(true);
       });
     return () => { cancelled = true; };
-  }, [setModels, authenticated, apiKeyReady, modelLoadAttempt]);
+  }, [setModels, authenticated, chatReady, access.mode, modelLoadAttempt]);
 
   useEffect(() => {
     followReply.current = true;
@@ -81,7 +84,7 @@ export default function ChatPage() {
                   key={msg.id}
                   message={msg}
                   onRetry={handleRetry}
-                  retryable={(msg.error || isLastAssistant) && !isStreaming && apiKeyReady}
+                  retryable={(msg.error || isLastAssistant) && !isStreaming && chatReady}
                 />
               );
             })}
@@ -105,6 +108,17 @@ export default function ChatPage() {
             </button>
           )}
 
+          {access.ready && access.hasSelectedKey && authenticated && (
+            <label className="mb-2 flex items-center justify-center gap-2 text-xs text-text-secondary">
+              Access
+              <select aria-label="Chat access" value={access.mode} disabled={isStreaming}
+                onChange={(event) => access.setMode(event.target.value === "api-key" ? "api-key" : "session")}
+                className="rounded border border-border-dim bg-bg-white px-2 py-1">
+                <option value="session">Login session</option>
+                <option value="api-key">Selected API key (key limits apply)</option>
+              </select>
+            </label>
+          )}
           <ChatInput
             onSend={(content, images) => {
               followReply.current = true;
@@ -115,7 +129,7 @@ export default function ChatPage() {
             authenticated={authenticated}
             onLogin={login}
             ready={ready}
-            submitReady={apiKeyReady}
+            submitReady={chatReady}
             suggestedDraft={suggestedDraft}
             spacious={!hasMessages}
           />

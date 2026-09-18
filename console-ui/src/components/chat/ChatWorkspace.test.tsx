@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
   send: vi.fn(),
   stop: vi.fn(),
   retry: vi.fn(),
-  auth: { authenticated: true, apiKeyReady: true, ready: true, login: vi.fn() },
+  auth: { authenticated: true, sessionReady: true, ready: true, login: vi.fn() },
 }));
 const models: Model[] = [
   { id: "test/text", object: "model", display_name: "Text model", input_modalities: ["text"] },
@@ -31,7 +31,7 @@ vi.mock("@/components/InviteCodeBanner", () => ({ InviteCodeBanner: () => null }
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.auth.authenticated = true;
-  mocks.auth.apiKeyReady = true;
+  mocks.auth.sessionReady = true;
   useStore.setState({ chats: [], activeChatId: null, selectedModel: models[0].id, models, useMyMachine: false });
 });
 afterEach(cleanup);

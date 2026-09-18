@@ -1,10 +1,13 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore, type Message } from "@/lib/store";
 import { streamChat, type ChatMessage as ApiChatMessage } from "@/lib/api";
 import { toApiMessages } from "@/lib/chat-messages";
 import { useToastStore } from "@/hooks/useToast";
+import { useAuthContext } from "@/components/app-providers/PrivyClientProvider";
+import { clearConsoleApiKey } from "@/lib/console-api-key";
+import { acquireChatCredentials, type ChatAccessMode } from "@/lib/chat/credentials";
 import { trackEvent } from "@/lib/google-analytics";
 
 const SYSTEM_PROMPT = `You are an AI assistant running on Darkbloom, a decentralized private inference platform built by Eigen Labs. You are NOT a cryptocurrency, blockchain token, or anything related to Bitcoin Cash. Darkbloom is an AI infrastructure project.
@@ -44,10 +47,28 @@ interface RunOptions {
  * requestAnimationFrame so a high-TPS reply triggers ~one store update per
  * frame instead of one per token (perf F3).
  */
-export function useChatStream() {
+export function useChatStream(mode: ChatAccessMode = "session") {
+  const { authenticated, user, getAccessToken } = useAuthContext();
+  const identity = authenticated ? user?.id ?? "" : "";
+  const identityRef = useRef(identity);
   const addToast = useToastStore((s) => s.addToast);
   const abortRef = useRef<AbortController | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
+
+  // An account change invalidates token acquisition and any pending stream.
+  // The shared local chat store must not reveal the previous account's history.
+  useEffect(() => {
+    if (identityRef.current !== identity) {
+      // Do not reuse an explicitly selected key from the previous account.
+      // Initial Privy hydration must preserve this account's saved choice.
+      if (identityRef.current) clearConsoleApiKey();
+      identityRef.current = identity;
+      abortRef.current?.abort();
+      setIsStreaming(false);
+      useStore.setState({ chats: [], activeChatId: null });
+    }
+    return () => { abortRef.current?.abort(); };
+  }, [identity]);
 
   const createChat = useStore((s) => s.createChat);
   const addMessage = useStore((s) => s.addMessage);
@@ -69,6 +90,7 @@ export function useChatStream() {
       let rafId: number | null = null;
       const flush = () => {
         rafId = null;
+        if (abort.signal.aborted) return;
         if (pendingContent) {
           appendToMessage(chatId, msgId, pendingContent);
           pendingContent = "";
@@ -89,19 +111,25 @@ export function useChatStream() {
       };
 
       try {
+        const requestIdentity = identity;
+        const auth = await acquireChatCredentials(mode, getAccessToken);
+        if (abort.signal.aborted || identityRef.current !== requestIdentity) return;
         await streamChat(
           apiMessages,
           model,
           {
             onToken: (token) => {
+              if (abort.signal.aborted) return;
               pendingContent += token;
               schedule();
             },
             onThinking: (token) => {
+              if (abort.signal.aborted) return;
               pendingThinking += token;
               schedule();
             },
             onMetrics: (metrics) => {
+              if (abort.signal.aborted) return;
               updateMessage(chatId, msgId, {
                 tps: metrics.tps,
                 ttft: metrics.ttft,
@@ -109,6 +137,7 @@ export function useChatStream() {
               });
             },
             onDone: (trust, metrics) => {
+              if (abort.signal.aborted) return;
               cancelPending();
               flush();
               trackEvent("chat_complete", {
@@ -127,6 +156,7 @@ export function useChatStream() {
               setIsStreaming(false);
             },
             onError: (error) => {
+              if (abort.signal.aborted) return;
               cancelPending();
               trackEvent("chat_error", { model, error_type: opts.errorCallbackType });
               updateMessage(chatId, msgId, {
@@ -139,11 +169,11 @@ export function useChatStream() {
             },
           },
           abort.signal,
-          { selfRoute },
+          { selfRoute, auth },
         );
       } catch (err) {
         cancelPending();
-        if ((err as Error).name !== "AbortError") {
+        if (!abort.signal.aborted && (err as Error).name !== "AbortError") {
           trackEvent("chat_error", { model, error_type: opts.errorRequestType });
           const msg = (err as Error).message;
           updateMessage(chatId, msgId, {
@@ -153,10 +183,10 @@ export function useChatStream() {
           });
           if (opts.toastOnRequestFailure) addToast(`Connection error: ${msg}`);
         }
-        setIsStreaming(false);
+        if (abortRef.current === abort) setIsStreaming(false);
       }
     },
-    [appendToMessage, appendToThinking, updateMessage, addToast],
+    [appendToMessage, appendToThinking, updateMessage, addToast, mode, identity, getAccessToken],
   );
 
   const handleSend = useCallback(

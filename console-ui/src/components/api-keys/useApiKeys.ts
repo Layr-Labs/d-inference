@@ -142,8 +142,8 @@ export function useApiKeys({ onConsoleKeyChange }: { onConsoleKeyChange?: (key: 
   // Point the console's active key (and its tracked id) at a secret.
   //
   // The console is a browser app that calls the inference API with a bearer
-  // key, so its one active key necessarily lives in localStorage (same place
-  // useAuth auto-provisions it). This is the pre-existing, accepted SEC-003
+  // key in explicit key mode, with the active key stored in localStorage.
+  // This is the pre-existing, accepted SEC-003
   // tradeoff — not new exposure from multi-key management. CodeQL flags the
   // write below ("clear-text storage"); moving off localStorage would require
   // re-architecting console auth to an HttpOnly-cookie/server-session model
@@ -267,7 +267,7 @@ export function useApiKeys({ onConsoleKeyChange }: { onConsoleKeyChange?: (key: 
           setConsoleKeyId(null);
           onConsoleKeyChange?.("");
           window.dispatchEvent(new Event("darkbloom-key-expired"));
-          addToast("Console key revoked — a new one will be provisioned automatically", "info");
+          addToast("Console key revoked. Create or select another key to use API-key access.", "info");
         } else {
           addToast("Key revoked", "success");
         }

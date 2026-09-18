@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-18 · commit `be5447aa7`
+> Last updated: 2026-09-18 · commit `23ec0a0f6`
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -248,3 +248,5 @@ API-key calls remain paid and retain their key restrictions. Other models and no
 At exhaustion chat reports: "Hey, you've used all 5 million free tokens for Bonsai 2. You can continue with a funded API key in the API Console." A funded account is never automatically charged instead. Select a funded API key deliberately to continue paid access.
 
 A request may be too large for the remaining allowance before usage reaches the limit: admission conservatively reserves the model's full context plus its output limit. A smaller output limit can reduce this reservation. Busy requests ask you to wait; unavailable trials ask you to retry later. See the [error contract](../reference/api-contracts.md#bonsai-sponsored-chat-errors). Using your own machine retains its existing free behavior and does not consume trial quota.
+
+Balance, usage and invite operations accept the login session, so a fresh trial account does not need an inference key for account pages. Creating and selecting a paid API key remains an explicit action in the API Console.

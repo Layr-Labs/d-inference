@@ -140,6 +140,31 @@ SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$bootstrap" \
     REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply >/dev/null
 grep -Fxq "$(grep "^$seed_key=" "$DEFAULTS")" "$bootstrap"
 
+# Existing hosts keep their live values, so the exact prior stock seed must
+# migrate to the benchmark-backed release default. Any customized spelling or
+# entry remains operator-owned.
+old_seed='gemma-4-26b-qat-4bit=14,gemma-4-26b-qat-4bit@M4|Max=70,gpt-oss-20b=30,gpt-oss-20b@M4|Max=70'
+stock_seed="$ENV_DIR/stock-seed.env"
+awk -F= -v key="$seed_key" -v value="$old_seed" \
+    '$1 == key { print key "=" value; next } { print }' "$ENV_FILE" > "$stock_seed"
+preview=$(SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$stock_seed" \
+    REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --check)
+printf '%s' "$preview" | grep -Fq "MIGRATE $seed_key"
+SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$stock_seed" \
+    REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply >/dev/null
+grep -Fxq "$(grep "^$seed_key=" "$DEFAULTS")" "$stock_seed"
+after=$(SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$stock_seed" \
+    REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --check)
+printf '%s' "$after" | grep -Fq 'prod env refresh: no changes'
+
+custom_seed="$ENV_DIR/custom-seed.env"
+custom_seed_value="$old_seed,qwen3.5-35b-a3b@M3|Max=44"
+awk -F= -v key="$seed_key" -v value="$custom_seed_value" \
+    '$1 == key { print key "=" value; next } { print }' "$ENV_FILE" > "$custom_seed"
+SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$custom_seed" \
+    REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply >/dev/null
+grep -Fxq "$seed_key=$custom_seed_value" "$custom_seed"
+
 # ...but a BLANKED value is a misconfiguration, not a bootstrap: the merge only
 # adds absent keys, so the post-merge check must still reject it.
 blanked="$ENV_DIR/blanked.env"

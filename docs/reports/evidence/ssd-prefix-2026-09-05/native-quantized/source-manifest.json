@@ -1,0 +1,8 @@
+{
+  "base": "21a387505d114a17baff3364544d230df98dc061",
+  "files": {
+    "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35+CompleteCheckpoint.swift": "efbc405ea1004356c4c8c034327d2d4aff471c075660f090775ad154906a6cc5",
+    "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35.swift": "1a3e828d43a74bc6e9ee8d311c44a71cc42a2b4a7adc0edd9bf1d59bedda503f",
+    "libs/mlx-swift-lm/Tests/MLXLMTests/Qwen35CBv2ConfigurationTests.swift": "c0a53ccf4a9a2825a27c5a6442ba35576b3de8fe3ed704478b4e73b4ef144bee"
+  }
+}

@@ -10,6 +10,7 @@
 // rules and FindProviderWithTrust exclusion checks.
 
 import type { MyProvider, MyProvidersResponse } from "./types";
+import { formatIdleWindow } from "@/lib/format";
 
 export type WarningSeverity = "blocking" | "degrading" | "info";
 
@@ -33,6 +34,14 @@ export function semverLess(a: string, b: string): boolean {
     if (av > bv) return false;
   }
   return false;
+}
+
+/** "1 h 30 min without requests" from the machine's reported policy, or a
+ *  generic phrase for providers that do not report one. */
+function idleWindowPhrase(p: MyProvider): string {
+  return p.idle_unload_mins && p.idle_unload_mins > 0
+    ? `${formatIdleWindow(p.idle_unload_mins)} without requests`
+    : "the idle window";
 }
 
 export function computeWarnings(
@@ -212,13 +221,15 @@ export function computeWarnings(
   const idleSlots =
     p.backend_capacity?.slots?.filter((s) => s.state === "idle_shutdown") ?? [];
   if (idleSlots.length > 0) {
+    // Under "Free when idle" a cold slot is the policy working as designed:
+    // say so, with the machine's own window, instead of a bare warning.
     out.push({
       id: "backend_idle_shutdown",
       severity: "degrading",
-      title: "Backend cold (0.1x weight on cold start)",
-      detail: `Backend(s) for ${idleSlots
+      title: "Model unloaded while idle (reloads on demand)",
+      detail: `${idleSlots
         .map((s) => s.model)
-        .join(", ")} were unloaded after 1h of idle. Next request will pay a ~10-30s cold-start penalty.`,
+        .join(", ")} unloaded after ${idleWindowPhrase(p)}. The next request reloads it (~10–30 s), and warm machines are preferred until then. Prefer instant responses? Run \`darkbloom idle keep-loaded\`.`,
     });
   }
 

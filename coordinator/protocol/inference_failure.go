@@ -12,7 +12,36 @@ type InferenceFailureCode string
 // cannot claim these control-plane-only conditions.
 type CoordinatorInferenceErrorCause string
 
-const CoordinatorCauseProviderDisconnected CoordinatorInferenceErrorCause = "provider_disconnected"
+const (
+	// CoordinatorCauseProviderDisconnected marks the pending-request flush of
+	// an ABRUPT socket loss (read error, OOM-suspected drop, stale eviction,
+	// duplicate-serial kick): the provider vanished with work in flight, so
+	// the flushed 502s strike the provider's stable-identity health trackers
+	// (the reconnecting-zombie discriminator).
+	CoordinatorCauseProviderDisconnected CoordinatorInferenceErrorCause = "provider_disconnected"
+	// CoordinatorCauseProviderRestart marks the same flush when the provider
+	// sent a peer-initiated graceful close (WebSocket 1000 normal / 1001
+	// going-away — a stop, restart, or update). The requests still fail over
+	// exactly like a disconnect, but the terminal is HEALTH-NEUTRAL: it
+	// strikes no breaker, cooldown, or ejection window and clears none.
+	CoordinatorCauseProviderRestart CoordinatorInferenceErrorCause = "provider_restart"
+)
+
+// InferenceErrorReasonProviderRestart is the coordinator-internal error_reason
+// stamped on the flushed terminals of a graceful (peer-close) disconnect. It
+// rides the existing error_reason funnel so every health tracker that already
+// honors the health-neutral reason vocabulary treats the terminal as neutral
+// without new plumbing. It is NEVER accepted from the provider wire: the
+// ingress sanitizer maps every provider-supplied error_reason through a closed
+// per-failure-code allowlist that does not include it.
+const InferenceErrorReasonProviderRestart = "provider_restart"
+
+// IsProviderDisconnect reports whether the cause marks a coordinator-synthetic
+// disconnect flush of either flavor (abrupt or graceful restart) — the
+// classification every "provider disconnected" presentation path keys on.
+func (c CoordinatorInferenceErrorCause) IsProviderDisconnect() bool {
+	return c == CoordinatorCauseProviderDisconnected || c == CoordinatorCauseProviderRestart
+}
 
 const (
 	FailureCodeInvalidRequest    InferenceFailureCode = "invalid_request"

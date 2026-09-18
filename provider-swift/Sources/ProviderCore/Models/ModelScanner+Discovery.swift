@@ -15,13 +15,12 @@ extension ModelScanner {
 
     private static let discoveryLogger = Logger(label: "darkbloom.ModelScanner.Discovery")
 
-    /// Memory overhead multiplier for KV cache, activation buffers, etc.
+    /// Fallback load-transient padding; runtime KV/activation reserves are separate.
     private static var memoryOverheadFactor: Double { 1.2 }
 
     /// Scan for locally cached MLX models, filtering to those that fit in available memory.
     public static func scanModels(hardwareInfo: HardwareInfo) -> [ModelInfo] {
-        guard let cacheDir = defaultCacheDirectory(),
-              FileManager.default.fileExists(atPath: cacheDir.path) else {
+        guard let cacheDir = defaultCacheDirectory() else {
             discoveryLogger.debug("HuggingFace cache directory not found")
             return []
         }
@@ -34,8 +33,7 @@ extension ModelScanner {
     /// doctor diagnose some other (fitting) model instead of flagging the one
     /// the operator actually configured and that will never load.
     public static func scanAllModels(hardwareInfo: HardwareInfo) -> [ModelInfo] {
-        guard let cacheDir = defaultCacheDirectory(),
-              FileManager.default.fileExists(atPath: cacheDir.path) else {
+        guard let cacheDir = defaultCacheDirectory() else {
             discoveryLogger.debug("HuggingFace cache directory not found")
             return []
         }
@@ -58,7 +56,9 @@ extension ModelScanner {
     /// Scan for every MLX model in a cache directory, unfiltered. The shared
     /// discovery core for both the memory-filtered `scanModels(in:availableMemoryGB:)`
     /// and the diagnostics path.
-    public static func scanAllModels(in cacheDir: URL) -> [ModelInfo] {
+    public static func scanAllModels(
+        in cacheDir: URL, environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [ModelInfo] {
         let fm = FileManager.default
         let entries: [URL]
         do {
@@ -69,7 +69,7 @@ extension ModelScanner {
             )
         } catch {
             discoveryLogger.warning("Failed to read cache directory \(cacheDir.path): \(error.localizedDescription)")
-            return []
+            entries = []
         }
 
         var models: [ModelInfo] = []
@@ -82,6 +82,8 @@ extension ModelScanner {
 
             let modelName = String(dirName.dropFirst("models--".count))
                 .replacingOccurrences(of: "--", with: "/")
+            if modelName == ModelMediaPolicy.ownedQwen4ModelID,
+                Qwen4LocalModelPath.isConfigured(environment: environment) { continue }
 
             let snapshotsDir = entry.appendingPathComponent("snapshots", isDirectory: true)
             guard fm.fileExists(atPath: snapshotsDir.path) else { continue }
@@ -94,6 +96,13 @@ extension ModelScanner {
                 continue
             }
 
+            models.append(info)
+        }
+
+        if Qwen4LocalModelPath.isConfigured(environment: environment),
+            let staged = Qwen4LocalModelPath.directory(environment: environment),
+            isMLXModel(snapshotDir: staged, modelName: ModelMediaPolicy.ownedQwen4ModelID),
+            let info = parseModelInfo(snapshotDir: staged, modelName: ModelMediaPolicy.ownedQwen4ModelID) {
             models.append(info)
         }
 
@@ -118,14 +127,23 @@ extension ModelScanner {
 
         guard sizeBytes > 0 else { return nil }
 
-        let estimatedMemoryGb = (Double(sizeBytes) / (1024.0 * 1024.0 * 1024.0)) * memoryOverheadFactor
+        // Only payloads actually filtered from the native load are excluded.
+        // Keep load-transient padding on compute weights, and keep runtime
+        // process/OS memory and per-request admission independent of this estimate.
+        let mmapExcluded = Qwen4ExpMmapFootprint.excludedBytes(snapshotDir: snapshotDir, modelType: modelType)
+        let residentBytes = sizeBytes > mmapExcluded ? sizeBytes - mmapExcluded : sizeBytes
+        let nativeLoad = Qwen4ExpLoadFootprint.estimate(
+            snapshotDir: snapshotDir, modelType: modelType, sizeBytes: sizeBytes,
+            offloadedBytes: mmapExcluded)
+        let estimatedMemoryGb = nativeLoad.map { Double($0.totalBytes) / 1_073_741_824 }
+            ?? (Double(residentBytes) / 1_073_741_824) * memoryOverheadFactor
 
         // Advertise whether this build can serve image/video input so the
         // coordinator only routes media requests to a vision-capable provider.
         // nil (not false) for text-only builds, so a freshly-scanned text model is
         // wire-identical to one decoded from an older provider's registration.
         let isVision = FileManager.default.fileExists(atPath: configPath.path)
-            && configDeclaresVision(at: configPath)
+            && configDeclaresVision(at: configPath, modelID: modelName)
 
         // Template-render self-check (DAR-130 class): render the model's chat
         // template(s) against canonical request fixtures so the coordinator can
@@ -133,7 +151,7 @@ extension ModelScanner {
         // template throws at request time. nil = no template found (key omitted
         // on the wire); false = some fixture threw (the routing signal).
         // `renderOK` never throws — the startup scan must stay crash-free.
-        let templateRenderOK = TemplateRenderCheck.renderOK(at: snapshotDir)
+        let templateRenderOK = TemplateRenderCheck.renderOK(at: snapshotDir, modelID: modelName)
         let toolConstraintTemplateHash =
             Gemma4ToolConstraintContract.supports(modelType: modelType)
             ? Gemma4ToolConstraintContract.templateSHA256(at: snapshotDir)
@@ -148,19 +166,22 @@ extension ModelScanner {
             estimatedMemoryGb: estimatedMemoryGb,
             isVision: isVision ? true : nil,
             templateRenderOK: templateRenderOK,
-            toolConstraintTemplateHash: toolConstraintTemplateHash
+            toolConstraintTemplateHash: toolConstraintTemplateHash,
+            ssdOffloadedWeightBytes: mmapExcluded > 0 && mmapExcluded < sizeBytes ? mmapExcluded : nil,
+            nativeLoadTransientBytes: nativeLoad?.transientBytes
         )
     }
 
-    /// Whether config.json declares a vision tower (`vision_config`) — i.e. the
-    /// build can serve image/video input. Mirrors ProviderLoop.modelIsVLM but lives
+    /// Whether config.json and provider identity policy allow serving media.
+    /// Native Qwen4 requires its owned qualified VLM declaration; retained
+    /// vision_config alone is insufficient. Mirrors ProviderLoop.modelIsVLM but lives
     /// in the dependency-free scanner so the advertised ModelInfo carries the flag.
-    static func configDeclaresVision(at path: URL) -> Bool {
+    static func configDeclaresVision(at path: URL, modelID: String? = nil) -> Bool {
         guard let data = try? Data(contentsOf: path),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return false
         }
-        return json["vision_config"] != nil
+        return ModelMediaPolicy.advertisesMedia(json, modelID: modelID)
     }
 
     // MARK: - Config Parsing

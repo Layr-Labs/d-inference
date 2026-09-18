@@ -1,0 +1,445 @@
+{
+  "schema_version": 1,
+  "block_size": 256,
+  "cases": [
+    {
+      "id": "tools",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Look up weather."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "weather",
+              "description": "Fetch weather",
+              "parameters": {
+                "properties": {
+                  "city": {
+                    "description": "City name",
+                    "default": null
+                  }
+                },
+                "required": [
+                  "city"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": {
+          "type": "function",
+          "function": {
+            "name": "weather"
+          }
+        },
+        "_darkbloom_prompt_date": "2028-02-29"
+      }
+    },
+    {
+      "id": "nulls",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Nulls must disappear",
+            "name": null,
+            "tool_calls": null
+          }
+        ],
+        "parallel_tool_calls": null,
+        "_darkbloom_prompt_date": "2028-02-29"
+      }
+    },
+    {
+      "id": "harmony",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "messages": [
+          {
+            "role": "assistant",
+            "content": "Calling two tools",
+            "reasoning_content": "Need both.",
+            "tool_calls": [
+              {
+                "id": "call_a",
+                "type": "function",
+                "function": {
+                  "name": "first",
+                  "arguments": "{\"value\":1}"
+                }
+              },
+              {
+                "id": "call_b",
+                "type": "function",
+                "function": {
+                  "name": "second",
+                  "arguments": "{\"value\":2}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_a",
+            "content": "one"
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_b",
+            "content": "two"
+          }
+        ],
+        "_darkbloom_prompt_date": "2028-02-29"
+      }
+    },
+    {
+      "id": "gemma",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Follow instructions."
+          },
+          {
+            "role": "user",
+            "content": "Respond briefly."
+          }
+        ],
+        "_darkbloom_prompt_date": "2028-02-29"
+      }
+    },
+    {
+      "id": "gemma_tool_turn",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "messages": [
+          {
+            "role": "assistant",
+            "content": "I will check both sources.",
+            "reasoning_content": "Need two calls."
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_weather",
+                "type": "function",
+                "function": {
+                  "name": "weather",
+                  "arguments": " "
+                }
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_forecast",
+                "type": "function",
+                "function": {
+                  "name": "forecast",
+                  "arguments": "{\"days\":2,\"unit\":null}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_forecast",
+            "content": "warm tomorrow"
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_weather",
+            "content": "sunny now"
+          },
+          {
+            "role": "user",
+            "content": "{{REPEAT}}"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "weather",
+              "description": "Fetch current weather",
+              "parameters": {
+                "type": "object",
+                "patternProperties": {
+                  "^city$": {}
+                },
+                "required": [
+                  "city"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "forecast",
+              "description": "Fetch a forecast",
+              "parameters": {
+                "properties": {
+                  "days": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "options": {
+                    "prefixItems": [
+                      {},
+                      false
+                    ]
+                  }
+                },
+                "required": [
+                  "days"
+                ]
+              }
+            }
+          }
+        ],
+        "_darkbloom_prompt_date": "2028-02-29"
+      },
+      "repeat": {
+        "text": " summarize",
+        "minimum_tokens": 600,
+        "max_repetitions": 2048
+      }
+    },
+    {
+      "id": "reasoning_effort",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Reason carefully."
+          }
+        ],
+        "reasoning_effort": "high",
+        "_darkbloom_prompt_date": "2028-02-29"
+      }
+    },
+    {
+      "id": "unicode",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Café 東京 مرحبا 👩🏽‍💻 é"
+          }
+        ],
+        "_darkbloom_prompt_date": "2028-02-29"
+      }
+    },
+    {
+      "id": "endpoint_chat_completions",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Chat endpoint"
+          }
+        ],
+        "_darkbloom_prompt_date": "2028-02-29"
+      }
+    },
+    {
+      "id": "endpoint_completions",
+      "endpoint": "completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "prompt": "Completion endpoint",
+        "_darkbloom_prompt_date": "2028-02-29"
+      }
+    },
+    {
+      "id": "endpoint_responses",
+      "endpoint": "responses",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "instructions": "Be concise.",
+        "input": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "Responses endpoint"
+              }
+            ]
+          }
+        ],
+        "_darkbloom_prompt_date": "2028-02-29"
+      }
+    },
+    {
+      "id": "endpoint_messages",
+      "endpoint": "messages",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "system": "Be concise.",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Messages endpoint"
+              }
+            ]
+          }
+        ],
+        "max_tokens": 32,
+        "_darkbloom_prompt_date": "2028-02-29"
+      }
+    },
+    {
+      "id": "endpoint_messages_tool_turn",
+      "endpoint": "messages",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "system": "Use the available tool.",
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Checking."
+              },
+              {
+                "type": "tool_use",
+                "id": "call_weather",
+                "name": "weather",
+                "input": {
+                  "city": "Paris",
+                  "unit": null
+                }
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "call_weather",
+                "content": "sunny"
+              },
+              {
+                "type": "text",
+                "text": "Summarize."
+              }
+            ]
+          }
+        ],
+        "tools": [
+          {
+            "name": "weather",
+            "description": "Fetch weather",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "city": {},
+                "unit": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        ],
+        "max_tokens": 32,
+        "_darkbloom_prompt_date": "2028-02-29"
+      }
+    },
+    {
+      "id": "exact_block_multiple",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "messages": [
+          {
+            "role": "user",
+            "content": "{{REPEAT}}"
+          }
+        ],
+        "_darkbloom_prompt_date": "2028-02-29"
+      },
+      "repeat": {
+        "text": " x",
+        "exact_tokens": 256,
+        "max_repetitions": 512
+      }
+    },
+    {
+      "id": "long_prompt",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "messages": [
+          {
+            "role": "user",
+            "content": "{{REPEAT}}"
+          }
+        ],
+        "_darkbloom_prompt_date": "2028-02-29"
+      },
+      "repeat": {
+        "text": " cache",
+        "minimum_tokens": 1025,
+        "max_repetitions": 4096
+      }
+    }
+  ],
+  "artifact_gate": "scripts/verify-prompt-parity.sh snapshots the public manifest-backed production catalog, provisions every declared prompt-role artifact by immutable hash, regenerates vectors, and fails on any catalog/vector mismatch."
+}

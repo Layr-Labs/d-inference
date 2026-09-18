@@ -1,5 +1,7 @@
 # Provider Reconnect Churn — Root Cause Analysis
 
+> Last updated: 2026-08-25 · commit `3b7c281fd`
+
 **Date:** 2026-07-03
 **Scope:** production `provider_sessions` (Jun 27 – Jul 3, 2026), coordinator WS lifecycle (`coordinator/api/provider.go`, `coordinator/registry/registry.go`), provider reconnect logic (`provider-swift/Sources/ProviderCore/Coordinator/`)
 **Data source:** prod Postgres, read-only. 31,202 sessions across 509 distinct machines in the window (median 18 sessions/machine, mean 61, max 728). Device identifiers are intentionally omitted.

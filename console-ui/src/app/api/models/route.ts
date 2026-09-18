@@ -47,6 +47,9 @@ function toModelEntry(model: JsonRecord, capacity?: JsonRecord) {
     output_modalities: model.output_modalities,
     supported_features: model.supported_features,
     supported_sampling_parameters: model.supported_sampling_parameters,
+    // Provider hardware gate (e.g. Apple M5 + NAX only). The catalog emits it
+    // top-level; sanitized to strings so a malformed value cannot reach the UI.
+    required_provider_capabilities: asStringArray(model.required_provider_capabilities),
     metadata: {
       ...metadata,
       model_type: model.model_type ?? metadata.model_type,

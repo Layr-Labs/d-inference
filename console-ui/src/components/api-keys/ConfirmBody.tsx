@@ -33,7 +33,7 @@ export function ConfirmBody({
           onClick={onConfirm}
           disabled={busy}
           className={`flex-1 py-2.5 rounded-lg text-white text-sm font-semibold hover:opacity-90 transition-all disabled:opacity-50 flex items-center justify-center gap-2 ${
-            danger ? "bg-accent-red" : "bg-coral"
+            danger ? "bg-accent-red" : "bg-coral dark:text-bg-primary"
           }`}
         >
           {busy && <Loader2 size={14} className="animate-spin" />}

@@ -54,9 +54,15 @@ on:
         description: 'Optional version string when running manually (otherwise derived from tag)'
         required: false
         type: string
+      validation_only:
+        description: 'Build a signed validation artifact in dev without publishing a release'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write   # gh release create
+  actions: read     # download the unsigned artifact from this run
 
 env:
   DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'
@@ -82,46 +88,87 @@ jobs:
     outputs:
       environment: ${{ steps.pick.outputs.environment }}
       version: ${{ steps.pick.outputs.version }}
+      publish: ${{ steps.pick.outputs.publish }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - id: pick
+        env:
+          RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+          RELEASE_VERSION_OVERRIDE: ${{ inputs.version_override }}
+          RELEASE_VALIDATION_ONLY: ${{ inputs.validation_only || false }}
+        run: ./scripts/resolve-provider-release.sh
+
+  build-provider:
+    name: Build optimized SDK 27 provider
+    needs: resolve-env
+    runs-on: xcode-27-xlarge
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.input.outputs.artifact_name }}
+      build_sdk_version: ${{ steps.build.outputs.build-sdk-version }}
+      mlx_sha_short: ${{ steps.build.outputs.mlx-sha-short }}
+    env:
+      VERSION: ${{ needs.resolve-env.outputs.version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - run: ./scripts/check-release-version.sh "$VERSION"
+      - uses: ./.github/actions/provider-release-build
+        id: build
+        with:
+          lane: release
+      - name: Bind unsigned bundle to this source and version
+        id: input
+        env:
+          BIN_DIR: ${{ steps.build.outputs.bin-dir }}
+          METALLIB: ${{ steps.build.outputs.metallib }}
         run: |
           set -euo pipefail
-          if [ -n "${{ inputs.environment }}" ]; then
-            ENV="${{ inputs.environment }}"
-          else
-            ENV="prod"
-          fi
-          if [ "${{ github.ref_type }}" = "tag" ] && [[ "${{ github.ref_name }}" == *-dev.* ]]; then
-            echo "::error::-dev tags are unsupported by the exact-version release contract; use workflow_dispatch with environment=dev"
-            exit 1
-          fi
-          if [ "$ENV" = "prod" ] && [ "${{ github.ref_type }}" != "tag" ]; then
-            echo "::error::Production publication requires a source-matching release tag"
-            exit 1
-          fi
-          echo "environment=$ENV" >> "$GITHUB_OUTPUT"
+          ./scripts/check-release-version.sh "$VERSION" "$("$BIN_DIR/$CLI_NAME" --version)"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 scripts/provider-signing-validation.py stage \
+            --source "$GITHUB_WORKSPACE" --bin "$BIN_DIR" --metallib "$METALLIB" \
+            --output "$RUNNER_TEMP/unsigned-provider" --version "$VERSION"
+          COPYFILE_DISABLE=1 tar czf "$RUNNER_TEMP/unsigned-provider.tar.gz" -C "$RUNNER_TEMP/unsigned-provider" .
+          echo "artifact_name=unsigned-provider-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - name: Transfer only unsigned products and resources
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.input.outputs.artifact_name }}
+          path: ${{ runner.temp }}/unsigned-provider.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3
 
-          if [ -n "${{ inputs.version_override }}" ]; then
-            VERSION="${{ inputs.version_override }}"
-          elif [ "${{ github.ref_type }}" != "tag" ]; then
-            VERSION=$(awk -F'\"' '/public static let version =/ { print $2 }' \
-              provider-swift/Sources/ProviderCore/ProviderCore.swift)
-          else
-            REF="${GITHUB_REF_NAME#v}"
-            VERSION="${REF%-swift*}"
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Resolved env=$ENV version=$VERSION"
-
-      - name: Fail before approval on version drift
-        run: ./scripts/check-release-version.sh "${{ steps.pick.outputs.version }}"
+  qualify-sdk:
+    name: Qualify provider with SDK 27
+    needs: resolve-env
+    runs-on: xcode-27-xlarge
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: ./.github/actions/provider-release-build
+        with:
+          lane: qualification
 
   build-and-release:
-    name: Build, sign, notarize, upload, register
-    needs: [resolve-env]
-    runs-on: blacksmith-12vcpu-macos-latest
+    name: Sign, notarize, optionally publish
+    needs: [resolve-env, build-provider, qualify-sdk]
+    # App Attest's current code measurements require SDK 27. The ordinary
+    # Blacksmith image is macOS 26.3 and cannot install Apple's SDK 27 tools.
+    runs-on: xcode-27
     environment: ${{ needs.resolve-env.outputs.environment }}
+    outputs:
+      validation_artifact: ${{ steps.validation_identity.outputs.artifact_name }}
 
     env:
       VERSION: ${{ needs.resolve-env.outputs.version }}
@@ -129,6 +176,7 @@ jobs:
 
     steps:
       - name: Resolve env-specific secrets
+        if: needs.resolve-env.outputs.publish == 'true'
         env:
           ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
           DEV_R2_ACCESS_KEY_ID: ${{ secrets.DEV_R2_ACCESS_KEY_ID }}
@@ -185,19 +233,30 @@ jobs:
       - name: Validate release version integrity
         run: ./scripts/check-release-version.sh "$VERSION"
 
-      - name: Set up Go for prompt parity
-        uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.4.0
-        with:
-          go-version: '1.25.0'
+      - name: Select SDK 27 signing toolchain
+        run: ./scripts/prepare-provider-release-toolchain.sh
 
-      - name: Show toolchain versions
+      - name: Ensure matching Metal compiler is available
+        timeout-minutes: 20
+        run: python3 scripts/prepare-metal-toolchain.py
+
+      - name: Fetch and verify this run's unsigned build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_ARTIFACT: ${{ needs.build-provider.outputs.artifact_name }}
+          EXPECTED_SOURCE: ${{ github.sha }}
+          BUILD_SDK_VERSION: ${{ needs.build-provider.outputs.build_sdk_version }}
         run: |
           set -euo pipefail
-          go version
-          xcodebuild -version
-          swift --version
-          xcrun --sdk macosx --show-sdk-version
-          uname -a
+          test "$BUILD_SDK_VERSION" = "$PROVIDER_SDK_VERSION"
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "$EXPECTED_ARTIFACT" --dir "$RUNNER_TEMP/unsigned-download"
+          python3 scripts/provider-signing-validation.py unpack \
+            --archive "$RUNNER_TEMP/unsigned-download/unsigned-provider.tar.gz" \
+            --output "$RUNNER_TEMP/qualified-unsigned" \
+            --source-sha "$EXPECTED_SOURCE" --version "$VERSION"
+          echo "UNSIGNED_ROOT=$RUNNER_TEMP/qualified-unsigned" >> "$GITHUB_ENV"
+          echo "BUILD_SDK_VERSION=$BUILD_SDK_VERSION" >> "$GITHUB_ENV"
 
       - name: Import Developer ID certificate
         env:
@@ -222,129 +281,12 @@ jobs:
           rm -f /tmp/cert.p12
 
       - name: Install awscli (R2)
+        if: needs.resolve-env.outputs.publish == 'true'
         run: |
           if ! command -v aws >/dev/null 2>&1; then
             brew install awscli >/dev/null 2>&1 || true
           fi
           aws --version
-
-      - name: Restore SwiftPM cache
-        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: |
-            ~/Library/Caches/org.swift.swiftpm
-            ~/Library/org.swift.swiftpm
-            provider-swift/.build
-            libs/mlx-swift-lm/.build
-          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
-          restore-keys: |
-            spm-v3-${{ runner.os }}-
-      - name: Discard metallibs restored by the generic SwiftPM cache
-        run: |
-          for root in provider-swift/.build libs/mlx-swift-lm/.build; do
-            [ ! -d "$root" ] || find "$root" -type f -name mlx.metallib -delete
-          done
-
-      - name: Verify production prompt parity
-        run: |
-          rustup toolchain install 1.88.0 --profile minimal
-          rustup override set 1.88.0
-          ./scripts/verify-prompt-parity.sh
-
-      # The root helper is the sole metallib builder. The Actions cache stores
-      # its private cache directory; the helper still runs on every release and
-      # authorizes the exact source/toolchain/deployment/JIT contract itself.
-      - name: Resolve source-matched metallib cache namespace
-        id: mlxkey
-        run: |
-          set -euo pipefail
-          MLX_SRC="libs/mlx-swift/Source/Cmlx/mlx"
-          test -f "$MLX_SRC/mlx/version.h" || { echo "::error::mlx submodule not checked out at $MLX_SRC"; exit 1; }
-          SOURCE_STATUS=$(git -C "$MLX_SRC" status --porcelain=v1 --untracked-files=all)
-          if [ -n "$SOURCE_STATUS" ]; then
-            echo "::error::release metallib source checkout is dirty"
-            printf '%s\n' "$SOURCE_STATUS"
-            exit 1
-          fi
-          MLX_SHA=$(git -C "$MLX_SRC" rev-parse HEAD)
-          HELPER_SHA=$(shasum -a 256 scripts/fetch-metallib.sh | cut -d' ' -f1)
-          SDK=$(xcrun --sdk macosx --show-sdk-version)
-          XCODE=$(xcodebuild -version | tr -cs '[:alnum:].' '-')
-          KEY="metallib-helper-v1-${MLX_SHA}-${HELPER_SHA}-${XCODE}-sdk${SDK}-dt${MLX_METALLIB_DEPLOYMENT_TARGET}-jitoff"
-          echo "key=$KEY" >> "$GITHUB_OUTPUT"
-          echo "mlx_sha_short=${MLX_SHA:0:12}" >> "$GITHUB_OUTPUT"
-          echo "Metallib cache namespace: $KEY"
-
-      - name: Restore source-matched metallib cache
-        id: metallib-cache
-        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: ${{ runner.temp }}/metallib-cache
-          key: ${{ steps.mlxkey.outputs.key }}
-
-      - name: Build source-matched mlx.metallib through root helper
-        id: metallib
-        env:
-          METALLIB_CACHE_DIR: ${{ runner.temp }}/metallib-cache
-        run: |
-          set -euo pipefail
-          command -v cmake >/dev/null 2>&1 || brew install cmake
-          MLX_SRC="libs/mlx-swift/Source/Cmlx/mlx"
-          test -z "$(git -C "$MLX_SRC" status --porcelain=v1 --untracked-files=all)"
-          ./scripts/fetch-metallib.sh "$RUNNER_TEMP/metallib"
-          test -z "$(git -C "$MLX_SRC" status --porcelain=v1 --untracked-files=all)" || {
-            echo "::error::metallib helper modified the release source checkout"
-            exit 1
-          }
-          MLIB="$RUNNER_TEMP/metallib/mlx.metallib"
-          test -s "$MLIB" || { echo "::error::metallib missing at $MLIB"; exit 1; }
-          echo "metallib=$MLIB" >> "$GITHUB_OUTPUT"
-
-      - name: Save source-matched metallib cache
-        if: steps.metallib-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: ${{ runner.temp }}/metallib-cache
-          key: ${{ steps.mlxkey.outputs.key }}
-
-      # ----------------------------------------------------------------------
-      # Build (tests run by CI, not the release workflow).
-      # ----------------------------------------------------------------------
-
-      - name: Build provider-swift (release)
-        working-directory: provider-swift
-        run: |
-          set -euo pipefail
-          swift build -c release --product darkbloom
-          swift build -c release --product darkbloom-enclave
-          swift build -c release --product darkbloom-fan-helper
-          BIN_DIR=$(swift build -c release --show-bin-path)
-          test -x "$BIN_DIR/$CLI_NAME"
-          test -x "$BIN_DIR/$ENCLAVE_NAME"
-          test -x "$BIN_DIR/$FAN_HELPER_NAME"
-          echo "BIN_DIR=$BIN_DIR" >> "$GITHUB_ENV"
-          ls -la "$BIN_DIR" | head -50
-          REPORTED=$("$BIN_DIR/$CLI_NAME" --version)
-          ../scripts/check-release-version.sh "$VERSION" "$REPORTED"
-
-      - name: Save SwiftPM cache
-        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        if: always()
-        with:
-          path: |
-            ~/Library/Caches/org.swift.swiftpm
-            ~/Library/org.swift.swiftpm
-            provider-swift/.build
-            libs/mlx-swift-lm/.build
-          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
-
-      # Unit tests are run by CI (ci.yml + integration.yml) on push to
-      # master. Skipped here to avoid flaky live MLX inference tests
-      # blocking signed releases on CI hardware timing differences.
-
-      # ----------------------------------------------------------------------
-      # Stage the app, every SwiftPM runtime bundle, and flat verifier files.
-      # ----------------------------------------------------------------------
 
       - name: Embed provisioning profile
         env:
@@ -440,19 +382,9 @@ jobs:
           # Wrap the CLI in a minimal .app bundle so the provisioning profile
           # authorizes keychain-access-groups for the persistent SE key.
           APP="$STAGE/Darkbloom.app"
-          mkdir -p \
-            "$APP/Contents/MacOS" \
-            "$APP/Contents/Helpers" \
-            "$APP/Contents/Resources/darkbloom-runtime-capabilities"
-
-          cp "$BIN_DIR/$CLI_NAME" "$APP/Contents/MacOS/"
-          cp "$BIN_DIR/$ENCLAVE_NAME" "$APP/Contents/MacOS/"
-          cp "${{ steps.metallib.outputs.metallib }}" "$APP/Contents/MacOS/mlx.metallib"
-          install -m 0755 \
-            "$BIN_DIR/$FAN_HELPER_NAME" \
-            "$APP/Contents/Helpers/$FAN_HELPER_NAME"
-          printf '1\n' \
-            > "$APP/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
+          mkdir -p "$STAGE"
+          cp -R "$UNSIGNED_ROOT/Darkbloom.app" "$APP"
+          printf '1\n' > "$APP/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1"
 
           cat > "$APP/Contents/Info.plist" << PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -489,8 +421,7 @@ jobs:
           # mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal and future
           # dependency resource bundles.
           RESOURCE_MANIFEST=/tmp/darkbloom-swiftpm-resource-bundles.txt
-          scripts/stage-swiftpm-resource-bundles.sh \
-            "$BIN_DIR" "$APP" "$RESOURCE_MANIFEST"
+          cp "$UNSIGNED_ROOT/validation-inputs/resource-bundles.txt" "$RESOURCE_MANIFEST"
 
           # Package-real runtime gate. Before its first GPU access the staged
           # child decodes the retained Gemma config, proves authoritative
@@ -506,6 +437,10 @@ jobs:
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT"
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
             | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
+          printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
+            | grep -Fqx 'app-attest-callback-runtime-smoke: ok'
+          printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
+            | grep -Fqx 'qwen4-metal-resources-runtime-smoke: ok'
 
           # Hardened-runtime sign each binary and resource, then the bundle.
           # mlx.metallib must be signed before the bundle or codesign rejects
@@ -532,12 +467,16 @@ jobs:
             --entitlements provider-swift/entitlements-enclave.plist \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/$ENCLAVE_NAME"
+          # Add App Attest beside APNs only with a matching profile grant.
+          python3 scripts/prepare-app-attest-entitlements.py \
+            --base provider-swift/entitlements.plist --profile /tmp/profile.plist \
+            --output /tmp/provider-signing-entitlements.plist
           codesign --force --options runtime --timestamp \
-            --entitlements provider-swift/entitlements.plist \
+            --entitlements /tmp/provider-signing-entitlements.plist \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/$CLI_NAME"
           codesign --force --options runtime --timestamp \
-            --entitlements provider-swift/entitlements.plist \
+            --entitlements /tmp/provider-signing-entitlements.plist \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP"
 
@@ -584,6 +523,9 @@ jobs:
             echo "::error::Failed to extract entitlements from signed CLI for APNs/get-task-allow verification"
             exit 1
           fi
+          python3 scripts/prepare-app-attest-entitlements.py \
+            --base provider-swift/entitlements.plist --profile /tmp/profile.plist \
+            --output /tmp/provider-signing-entitlements.plist --verify /tmp/cli-ents.plist
           APS_ENV=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.aps-environment' /tmp/cli-ents.plist 2>/dev/null || echo "")
           if [ "$APS_ENV" != "production" ]; then
             echo "::error::Signed CLI aps-environment must be 'production' (got '${APS_ENV:-<absent>}'). Regenerate the push provisioning profile + entitlements (v0.6.0 APNs code-identity)."
@@ -748,6 +690,7 @@ jobs:
             fi
           done
           FINAL_FAN_HELPER="$SMOKE_ROOT/Darkbloom.app/Contents/Helpers/$FAN_HELPER_NAME"
+          test -f "$SMOKE_ROOT/Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/app-attest-callback-v1"
           FINAL_FAN_MARKER="$SMOKE_ROOT/Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
           test -f "$FINAL_FAN_HELPER"
           test ! -L "$FINAL_FAN_HELPER"
@@ -771,6 +714,10 @@ jobs:
           printf '%s\n' "$FINAL_SMOKE_OUTPUT"
           printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
             | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
+          printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
+            | grep -Fqx 'app-attest-callback-runtime-smoke: ok'
+          printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
+            | grep -Fqx 'qwen4-metal-resources-runtime-smoke: ok'
           REPORTED=$("$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" --version)
           ./scripts/check-release-version.sh "$VERSION" "$REPORTED"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
@@ -779,16 +726,83 @@ jobs:
             "$SMOKE_ROOT/Darkbloom.app/Contents/Info.plist")" = "$VERSION"
 
           BINARY_HASH=$(shasum -a 256 "$SMOKE_ROOT/bin/$CLI_NAME" | cut -d' ' -f1)
+          CODE_DIRECTORY_HASH=$(codesign -d --verbose=4 \
+            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" 2>&1 \
+            | sed -n 's/^CandidateCDHashFull sha256=//p')
+          if [[ ! "$CODE_DIRECTORY_HASH" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Expected one full SHA-256 CodeDirectory hash from the final signed provider"
+            exit 1
+          fi
+          LINKED_SDK=$(codesign -d --verbose=4 \
+            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" 2>&1 \
+            | sed -n 's/^VersionSDK=//p')
+          python3 - "$LINKED_SDK" "$BUILD_SDK_VERSION" <<'PY'
+          import sys
+          linked = int(sys.argv[1])
+          expected = [int(p) for p in sys.argv[2].split('.')]
+          expected += [0] * (3 - len(expected))
+          if [linked >> 16, (linked >> 8) & 255, linked & 255] != expected:
+              raise SystemExit('Final executable SDK differs from the selected build SDK')
+          PY
           BUNDLE_HASH=$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
           METALLIB_HASH=$(shasum -a 256 "$FINAL_FLAT_METALLIB" | cut -d' ' -f1)
           echo "BINARY_HASH=$BINARY_HASH" >> "$GITHUB_ENV"
+          echo "CODE_DIRECTORY_HASH=$CODE_DIRECTORY_HASH" >> "$GITHUB_ENV"
           echo "BUNDLE_HASH=$BUNDLE_HASH" >> "$GITHUB_ENV"
           echo "METALLIB_HASH=$METALLIB_HASH" >> "$GITHUB_ENV"
           echo "Binary hash:   $BINARY_HASH"
+          echo "CodeDirectory SHA256: $CODE_DIRECTORY_HASH"
           echo "Bundle hash:   $BUNDLE_HASH"
           echo "Metallib hash: $METALLIB_HASH"
 
+      - name: Record signed validation identity
+        id: validation_identity
+        if: needs.resolve-env.outputs.publish == 'false'
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--ignore-submodules=none'], check=True)
+          source = git('rev-parse', 'HEAD')
+          if source != os.environ['GITHUB_SHA']:
+              raise SystemExit('Checked out source differs from workflow revision')
+          bundle = pathlib.Path('/tmp/darkbloom-bundle-macos-arm64.tar.gz')
+          digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
+          if digest != os.environ['BUNDLE_HASH']:
+              raise SystemExit('Signed bundle changed after final smoke')
+          submodules = git('submodule', 'status', '--recursive').splitlines()
+          if any(line.startswith(('-', '+', 'U')) for line in submodules):
+              raise SystemExit('Recursive submodule checkout differs from committed source')
+          identity = {
+              'schema': 1, 'purpose': 'signed-validation-only',
+              'source_commit': source, 'submodules': submodules,
+              'version': os.environ['VERSION'], 'run_id': os.environ['GITHUB_RUN_ID'],
+              'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'bundle_sha256': digest, 'bundle_bytes': bundle.stat().st_size,
+              'binary_sha256': os.environ['BINARY_HASH'], 'metallib_sha256': os.environ['METALLIB_HASH'],
+              'code_directory_sha256': os.environ['CODE_DIRECTORY_HASH'],
+              'build_sdk_version': os.environ['BUILD_SDK_VERSION'],
+              'release_published': False,
+          }
+          pathlib.Path('/tmp/darkbloom-validation-identity.json').write_text(json.dumps(identity, indent=2) + '\n')
+          PY
+          echo "artifact_name=darkbloom-signed-validation-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Retain signed validation bundle
+        if: needs.resolve-env.outputs.publish == 'false'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.validation_identity.outputs.artifact_name }}
+          path: |
+            /tmp/darkbloom-bundle-macos-arm64.tar.gz
+            /tmp/darkbloom-validation-identity.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
       - name: Upload bundle to R2
+        if: needs.resolve-env.outputs.publish == 'true'
         env:
           AWS_ACCESS_KEY_ID: ${{ env.r2_access_key_id }}
           AWS_SECRET_ACCESS_KEY: ${{ env.r2_secret_access_key }}
@@ -813,6 +827,7 @@ jobs:
             --endpoint-url "$R2_ENDPOINT" --only-show-errors
 
       - name: Register release with coordinator
+        if: needs.resolve-env.outputs.publish == 'true'
         env:
           COORDINATOR_URL: ${{ env.coordinator_url }}
           RELEASE_KEY: ${{ env.release_key }}
@@ -854,7 +869,7 @@ jobs:
           echo "Release v${VERSION} registered with coordinator"
 
       - name: Create GitHub Release
-        if: needs.resolve-env.outputs.environment == 'prod' && github.ref_type == 'tag'
+        if: needs.resolve-env.outputs.publish == 'true' && needs.resolve-env.outputs.environment == 'prod' && github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -863,8 +878,9 @@ jobs:
           ## Provider v${VERSION} (Swift CLI)
 
           **Binary hash:**   \`${BINARY_HASH}\`
+          **CodeDirectory SHA-256:** \`${CODE_DIRECTORY_HASH}\`
           **Bundle hash:**   \`${BUNDLE_HASH}\`
-          **Metallib hash:** \`${METALLIB_HASH}\` (built from mlx \`${{ steps.mlxkey.outputs.mlx_sha_short }}\`)
+          **Metallib hash:** \`${METALLIB_HASH}\` (built from mlx \`${{ needs.build-provider.outputs.mlx_sha_short }}\`)
           **Signed by:**     \`${DEVELOPER_ID}\`
           **Notarized:**     yes
           **Min macOS:**     ${MIN_MACOS}
@@ -886,3 +902,47 @@ jobs:
         if: always()
         run: |
           security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+
+  validate-older-macos:
+    name: Signed SDK 27 artifact on older macOS
+    needs: [resolve-env, build-and-release]
+    if: needs.resolve-env.outputs.publish == 'false'
+    runs-on: blacksmith-12vcpu-macos-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Verify and smoke the exact signed validation artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNED_VALIDATION_ARTIFACT: ${{ needs.build-and-release.outputs.validation_artifact }}
+        run: |
+          set -euo pipefail
+          ARTIFACT="$RUNNER_TEMP/signed-provider"
+          test -n "$SIGNED_VALIDATION_ARTIFACT"
+          gh run download "$GITHUB_RUN_ID" \
+            --name "$SIGNED_VALIDATION_ARTIFACT" \
+            --dir "$ARTIFACT"
+          python3 - "$ARTIFACT" <<'PY'
+          import hashlib, json, os, pathlib, subprocess, sys
+          root = pathlib.Path(sys.argv[1])
+          identity = json.loads((root / 'darkbloom-validation-identity.json').read_text())
+          assert identity['source_commit'] == os.environ['GITHUB_SHA']
+          assert identity['release_published'] is False
+          assert identity['build_sdk_version'] == '27.0'
+          assert hashlib.sha256((root / 'darkbloom-bundle-macos-arm64.tar.gz').read_bytes()).hexdigest() == identity['bundle_sha256']
+          major = int(subprocess.check_output(['sw_vers', '-productVersion'], text=True).split('.')[0])
+          assert 14 <= major < 27, 'This compatibility lane must exercise older macOS'
+          PY
+          mkdir "$ARTIFACT/extracted"
+          # Native tar restores the non-Mach-O signing extended attributes.
+          /usr/bin/tar -xzf "$ARTIFACT/darkbloom-bundle-macos-arm64.tar.gz" -C "$ARTIFACT/extracted"
+          APP="$ARTIFACT/extracted/Darkbloom.app"
+          codesign --verify --deep --strict "$APP"
+          xcrun stapler validate "$APP"
+          OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 "$APP/Contents/MacOS/$CLI_NAME" runtime-smoke)
+          printf '%s\n' "$OUTPUT"
+          for marker in app-attest-callback-runtime-smoke gemma-optimizations-runtime-smoke paged-kernel-runtime-smoke qwen4-metal-resources-runtime-smoke; do
+            printf '%s\n' "$OUTPUT" | grep -Fqx "$marker: ok"
+          done

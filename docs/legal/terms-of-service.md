@@ -1,5 +1,7 @@
 # Darkbloom Terms of Service
 
+> Last updated: 2026-06-26 · commit `af1eeb06d`
+
 Updated: April 17, 2026
 
 These Terms of Service ("Terms") are a legal agreement between you and Eigen Labs, Inc., operating the Darkbloom platform ("Eigen Labs," "Darkbloom," "we," "us," or "our") governing your access to and use of Darkbloom's websites, console, APIs, software, provider applications, downloads, hosted services, and related products and features (collectively, the "Services").

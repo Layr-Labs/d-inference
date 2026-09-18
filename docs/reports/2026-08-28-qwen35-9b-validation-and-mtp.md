@@ -1,5 +1,7 @@
 # Qwen3.5-9B (dense `qwen3_5`) validation + native inline-MTP head
 
+> Last updated: 2026-08-30 · commit `a8d0cf7f1`
+
 **Date:** 2026-08-28 (revised 2026-08-30 after review) · **Worktree:** branch `qwen35-9b-dense` @ `origin/master` (`0e63aed`, provider v0.8.15) · **Hardware:** Apple M4 Max (128 GB, 40 GPU cores, 546 GB/s)
 
 ## Summary

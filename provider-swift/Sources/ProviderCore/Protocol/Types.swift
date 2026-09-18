@@ -91,6 +91,13 @@ public struct ModelInfo: Codable, Sendable, Equatable {
     public var quantization: String?
     public var sizeBytes: UInt64
     public var estimatedMemoryGb: Double
+    /// Validated immutable payload excluded from native weight allocation.
+    /// Omitted for ordinary models; mapped OS pages still consume real memory.
+    public var ssdOffloadedWeightBytes: UInt64?
+    /// Explicit native load-copy allowance derived from validated checkpoint
+    /// headers. Only eligible Qwen4 SSD-offload loads declare this; nil retains
+    /// the legacy padded estimate. Not an activation/KV reserve or cache credit.
+    public var nativeLoadTransientBytes: UInt64?
     public var weightHash: String?
     /// True when this build can serve image/video (VLM) input. Encoded only when
     /// true (matches the coordinator's `is_vision,omitempty`), so pre-0.6.0
@@ -116,6 +123,8 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         case quantization
         case sizeBytes = "size_bytes"
         case estimatedMemoryGb = "estimated_memory_gb"
+        case ssdOffloadedWeightBytes = "ssd_offloaded_weight_bytes"
+        case nativeLoadTransientBytes = "native_load_transient_bytes"
         case weightHash = "weight_hash"
         case isVision = "is_vision"
         case templateRenderOK = "template_render_ok"
@@ -132,7 +141,9 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         weightHash: String? = nil,
         isVision: Bool? = nil,
         templateRenderOK: Bool? = nil,
-        toolConstraintTemplateHash: String? = nil
+        toolConstraintTemplateHash: String? = nil,
+        ssdOffloadedWeightBytes: UInt64? = nil,
+        nativeLoadTransientBytes: UInt64? = nil
     ) {
         self.id = id
         self.modelType = modelType
@@ -140,6 +151,8 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         self.quantization = quantization
         self.sizeBytes = sizeBytes
         self.estimatedMemoryGb = estimatedMemoryGb
+        self.ssdOffloadedWeightBytes = ssdOffloadedWeightBytes
+        self.nativeLoadTransientBytes = nativeLoadTransientBytes
         self.weightHash = weightHash
         self.isVision = isVision
         self.templateRenderOK = templateRenderOK
@@ -154,6 +167,12 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         try container.encodeIfPresent(quantization, forKey: .quantization)
         try container.encode(sizeBytes, forKey: .sizeBytes)
         try container.encode(estimatedMemoryGb, forKey: .estimatedMemoryGb)
+        if let bytes = ssdOffloadedWeightBytes, bytes > 0 {
+            try container.encode(bytes, forKey: .ssdOffloadedWeightBytes)
+        }
+        if let bytes = nativeLoadTransientBytes, bytes > 0 {
+            try container.encode(bytes, forKey: .nativeLoadTransientBytes)
+        }
         try container.encodeIfPresent(weightHash, forKey: .weightHash)
         // Encode only when true so text-only builds stay byte-compatible on the wire.
         if isVision == true {
@@ -179,6 +198,18 @@ public struct ProviderStats: Codable, Sendable, Equatable {
     public var streamClosedWithoutTerminal: UInt64
     public var cancelDuringModelLoad: UInt64
     public var usageGaps: UInt64
+    // Profiler cancel-stage counters (slice 2): where coordinator cancels
+    // land in the request lifecycle, cumulative per process, delta-merged by
+    // the coordinator. Encoded only when non-zero like the counters above.
+    public var cancelStagePreAcceptTotal: UInt64
+    public var cancelStagePreEngineTotal: UInt64
+    public var cancelStagePrefillTotal: UInt64
+    public var cancelStageDecodeTotal: UInt64
+    public var cancelStagePostTerminalTotal: UInt64
+    /// Σ tokens the engine generated after the cancel was received.
+    public var tokensAfterCancelTotal: UInt64
+    /// Σ (cancel_aborted − cancel_received) in nanoseconds.
+    public var cancelAbortNsSum: UInt64
 
     enum CodingKeys: String, CodingKey {
         case requestsServed = "requests_served"
@@ -191,6 +222,13 @@ public struct ProviderStats: Codable, Sendable, Equatable {
         case streamClosedWithoutTerminal = "stream_closed_without_terminal"
         case cancelDuringModelLoad = "cancel_during_model_load"
         case usageGaps = "usage_gaps"
+        case cancelStagePreAcceptTotal = "cancel_stage_pre_accept_total"
+        case cancelStagePreEngineTotal = "cancel_stage_pre_engine_total"
+        case cancelStagePrefillTotal = "cancel_stage_prefill_total"
+        case cancelStageDecodeTotal = "cancel_stage_decode_total"
+        case cancelStagePostTerminalTotal = "cancel_stage_post_terminal_total"
+        case tokensAfterCancelTotal = "tokens_after_cancel_total"
+        case cancelAbortNsSum = "cancel_abort_ns_sum"
     }
 
     public init(
@@ -203,7 +241,14 @@ public struct ProviderStats: Codable, Sendable, Equatable {
         chunkEncryptionErrors: UInt64 = 0,
         streamClosedWithoutTerminal: UInt64 = 0,
         cancelDuringModelLoad: UInt64 = 0,
-        usageGaps: UInt64 = 0
+        usageGaps: UInt64 = 0,
+        cancelStagePreAcceptTotal: UInt64 = 0,
+        cancelStagePreEngineTotal: UInt64 = 0,
+        cancelStagePrefillTotal: UInt64 = 0,
+        cancelStageDecodeTotal: UInt64 = 0,
+        cancelStagePostTerminalTotal: UInt64 = 0,
+        tokensAfterCancelTotal: UInt64 = 0,
+        cancelAbortNsSum: UInt64 = 0
     ) {
         self.requestsServed = requestsServed
         self.tokensGenerated = tokensGenerated
@@ -215,6 +260,13 @@ public struct ProviderStats: Codable, Sendable, Equatable {
         self.streamClosedWithoutTerminal = streamClosedWithoutTerminal
         self.cancelDuringModelLoad = cancelDuringModelLoad
         self.usageGaps = usageGaps
+        self.cancelStagePreAcceptTotal = cancelStagePreAcceptTotal
+        self.cancelStagePreEngineTotal = cancelStagePreEngineTotal
+        self.cancelStagePrefillTotal = cancelStagePrefillTotal
+        self.cancelStageDecodeTotal = cancelStageDecodeTotal
+        self.cancelStagePostTerminalTotal = cancelStagePostTerminalTotal
+        self.tokensAfterCancelTotal = tokensAfterCancelTotal
+        self.cancelAbortNsSum = cancelAbortNsSum
     }
 
     public init(from decoder: Decoder) throws {
@@ -229,6 +281,13 @@ public struct ProviderStats: Codable, Sendable, Equatable {
         self.streamClosedWithoutTerminal = try c.decodeIfPresent(UInt64.self, forKey: .streamClosedWithoutTerminal) ?? 0
         self.cancelDuringModelLoad = try c.decodeIfPresent(UInt64.self, forKey: .cancelDuringModelLoad) ?? 0
         self.usageGaps = try c.decodeIfPresent(UInt64.self, forKey: .usageGaps) ?? 0
+        self.cancelStagePreAcceptTotal = try c.decodeIfPresent(UInt64.self, forKey: .cancelStagePreAcceptTotal) ?? 0
+        self.cancelStagePreEngineTotal = try c.decodeIfPresent(UInt64.self, forKey: .cancelStagePreEngineTotal) ?? 0
+        self.cancelStagePrefillTotal = try c.decodeIfPresent(UInt64.self, forKey: .cancelStagePrefillTotal) ?? 0
+        self.cancelStageDecodeTotal = try c.decodeIfPresent(UInt64.self, forKey: .cancelStageDecodeTotal) ?? 0
+        self.cancelStagePostTerminalTotal = try c.decodeIfPresent(UInt64.self, forKey: .cancelStagePostTerminalTotal) ?? 0
+        self.tokensAfterCancelTotal = try c.decodeIfPresent(UInt64.self, forKey: .tokensAfterCancelTotal) ?? 0
+        self.cancelAbortNsSum = try c.decodeIfPresent(UInt64.self, forKey: .cancelAbortNsSum) ?? 0
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -243,6 +302,13 @@ public struct ProviderStats: Codable, Sendable, Equatable {
         try encodeIfNonZero(streamClosedWithoutTerminal, to: &c, forKey: .streamClosedWithoutTerminal)
         try encodeIfNonZero(cancelDuringModelLoad, to: &c, forKey: .cancelDuringModelLoad)
         try encodeIfNonZero(usageGaps, to: &c, forKey: .usageGaps)
+        try encodeIfNonZero(cancelStagePreAcceptTotal, to: &c, forKey: .cancelStagePreAcceptTotal)
+        try encodeIfNonZero(cancelStagePreEngineTotal, to: &c, forKey: .cancelStagePreEngineTotal)
+        try encodeIfNonZero(cancelStagePrefillTotal, to: &c, forKey: .cancelStagePrefillTotal)
+        try encodeIfNonZero(cancelStageDecodeTotal, to: &c, forKey: .cancelStageDecodeTotal)
+        try encodeIfNonZero(cancelStagePostTerminalTotal, to: &c, forKey: .cancelStagePostTerminalTotal)
+        try encodeIfNonZero(tokensAfterCancelTotal, to: &c, forKey: .tokensAfterCancelTotal)
+        try encodeIfNonZero(cancelAbortNsSum, to: &c, forKey: .cancelAbortNsSum)
     }
 
     private func encodeIfNonZero(
@@ -477,12 +543,9 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     /// opposite signals: the first is a choice, the second is a paged
     /// regression wearing a contiguous label.
     ///
-    /// `.auto` resolves CONTIGUOUS as of v0.8.1, so on the default fleet
-    /// NO class here fires — a stock slot resolves contiguous with no
-    /// fallback reason at all, and a non-nil value now means the box
-    /// carries an explicit `engine_v2_kv_backend = "paged"`. Every class
-    /// stays decodable: the paged failure classes are live on exactly
-    /// those boxes and on the paged CI lane. A machine whose paged
+    /// An automatic selection may resolve paged for an eligible model.
+    /// A non-nil reason therefore does not imply an explicit backend
+    /// override. A machine whose paged
     /// kernel preflight, physical-capacity plan, or pool construction
     /// fails degrades under `.auto` and reports `"kernel_preflight: …"`,
     /// `"physical_capacity: …"`, `"ineligible: …"` or
@@ -536,6 +599,14 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     /// running for THIS slot's engine (0 = none). A seconds-range value with no
     /// exit pins the clearCache/IOKit race. See `EngineCore.idleClearElapsedMs`.
     public var idleClearInFlightMs: Int64
+    /// Profiler slot telemetry (slice 2). OPTIONAL and encoded with
+    /// `encodeIfPresent`: the object's PRESENCE is the "new provider"
+    /// sentinel (P7), so a producing bridge always attaches one — possibly
+    /// sparse — and a legacy provider omits the key entirely. Mirrors Go
+    /// `Telemetry *SlotTelemetry \`json:"telemetry,omitempty"\``.
+    public var telemetry: SlotTelemetry?
+    public var prefixCache: PrefixCacheTelemetry?
+    public var pagedStorage: PagedStorageTelemetry?
 
     enum CodingKeys: String, CodingKey {
         case model
@@ -562,6 +633,9 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         case wedgeSuspected = "wedge_suspected"
         case evalInFlightMs = "eval_in_flight_ms"
         case idleClearInFlightMs = "idle_clear_in_flight_ms"
+        case telemetry
+        case prefixCache = "prefix_cache"
+        case pagedStorage = "paged_storage"
     }
 
     public init(
@@ -588,7 +662,10 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         secondsSinceLastFirstToken: Double = 0,
         wedgeSuspected: Bool = false,
         evalInFlightMs: Int64 = 0,
-        idleClearInFlightMs: Int64 = 0
+        idleClearInFlightMs: Int64 = 0,
+        telemetry: SlotTelemetry? = nil,
+        prefixCache: PrefixCacheTelemetry? = nil,
+        pagedStorage: PagedStorageTelemetry? = nil
     ) {
         self.model = model
         self.state = state
@@ -614,6 +691,9 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         self.wedgeSuspected = wedgeSuspected
         self.evalInFlightMs = evalInFlightMs
         self.idleClearInFlightMs = idleClearInFlightMs
+        self.telemetry = telemetry
+        self.prefixCache = prefixCache
+        self.pagedStorage = pagedStorage
     }
 
     public init(from decoder: Decoder) throws {
@@ -648,6 +728,11 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         wedgeSuspected = try container.decodeIfPresent(Bool.self, forKey: .wedgeSuspected) ?? false
         evalInFlightMs = try container.decodeIfPresent(Int64.self, forKey: .evalInFlightMs) ?? 0
         idleClearInFlightMs = try container.decodeIfPresent(Int64.self, forKey: .idleClearInFlightMs) ?? 0
+        // Absent stays absent (legacy provider); never synthesize an empty
+        // object, which would forge the "new provider" sentinel.
+        telemetry = try container.decodeIfPresent(SlotTelemetry.self, forKey: .telemetry)
+        prefixCache = try container.decodeIfPresent(PrefixCacheTelemetry.self, forKey: .prefixCache)
+        pagedStorage = try container.decodeIfPresent(PagedStorageTelemetry.self, forKey: .pagedStorage)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -681,6 +766,9 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         }
         try encodeIfNonZero(evalInFlightMs, forKey: .evalInFlightMs, into: &container)
         try encodeIfNonZero(idleClearInFlightMs, forKey: .idleClearInFlightMs, into: &container)
+        try container.encodeIfPresent(telemetry, forKey: .telemetry)
+        try container.encodeIfPresent(prefixCache, forKey: .prefixCache)
+        try container.encodeIfPresent(pagedStorage, forKey: .pagedStorage)
     }
 
     private func encodeIfNonZero<T: BinaryInteger & Encodable>(
@@ -765,6 +853,11 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     /// the wire (mirrors Go `capacity_seq,omitempty` — a session that has sent
     /// any heartbeat with capacity_seq > 0 is thereby quote-capable).
     public var capacitySeq: UInt64
+    /// Profiler process-level telemetry (slice 2). Optional pointer-style
+    /// sub-object: present (possibly sparse) from a producing provider,
+    /// absent from a legacy one. Mirrors Go `Telemetry *CapacityTelemetry`.
+    public var telemetry: CapacityTelemetry?
+    public var prefixCacheMaintenance: PrefixCacheMaintenanceTelemetry?
 
     enum CodingKeys: String, CodingKey {
         case slots
@@ -775,6 +868,8 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         case freeForLoadGb = "free_for_load_gb"
         case mlxCacheReclaimer = "mlx_cache_reclaimer"
         case capacitySeq = "capacity_seq"
+        case telemetry
+        case prefixCacheMaintenance = "prefix_cache_maintenance"
     }
 
     public init(
@@ -785,7 +880,9 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         totalMemoryGb: Double,
         freeForLoadGb: Double = 0,
         mlxCacheReclaimer: MLXCacheReclaimerTelemetry? = nil,
-        capacitySeq: UInt64 = 0
+        capacitySeq: UInt64 = 0,
+        telemetry: CapacityTelemetry? = nil,
+        prefixCacheMaintenance: PrefixCacheMaintenanceTelemetry? = nil
     ) {
         self.slots = slots
         self.gpuMemoryActiveGb = gpuMemoryActiveGb
@@ -795,6 +892,8 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         self.freeForLoadGb = freeForLoadGb
         self.mlxCacheReclaimer = mlxCacheReclaimer
         self.capacitySeq = capacitySeq
+        self.telemetry = telemetry
+        self.prefixCacheMaintenance = prefixCacheMaintenance
     }
 
     // Explicit decode so older payloads without `free_for_load_gb`,
@@ -809,6 +908,8 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         self.freeForLoadGb = try c.decodeIfPresent(Double.self, forKey: .freeForLoadGb) ?? 0
         self.mlxCacheReclaimer = try c.decodeIfPresent(
             MLXCacheReclaimerTelemetry.self, forKey: .mlxCacheReclaimer)
+        self.telemetry = try c.decodeIfPresent(CapacityTelemetry.self, forKey: .telemetry)
+        self.prefixCacheMaintenance = try c.decodeIfPresent(PrefixCacheMaintenanceTelemetry.self, forKey: .prefixCacheMaintenance)
         self.capacitySeq = try c.decodeIfPresent(UInt64.self, forKey: .capacitySeq) ?? 0
     }
 
@@ -827,6 +928,8 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         if capacitySeq != 0 {
             try c.encode(capacitySeq, forKey: .capacitySeq)
         }
+        try c.encodeIfPresent(telemetry, forKey: .telemetry)
+        try c.encodeIfPresent(prefixCacheMaintenance, forKey: .prefixCacheMaintenance)
     }
 }
 

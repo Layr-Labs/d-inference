@@ -45,10 +45,9 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // stripeStatusReady is the value of User.StripeAccountStatus when payouts are
@@ -122,6 +121,9 @@ func (s *Server) handleStripeOnboard(w http.ResponseWriter, r *http.Request) {
 	// immutable once the account is created, so we treat the user's selection
 	// as the source of truth.
 	requestedCountry := strings.ToUpper(strings.TrimSpace(req.Country))
+	if s.maybeGlobalOnboard(w, r, user, requestedCountry, returnURL, refreshURL) {
+		return
+	}
 	if requestedCountry == "" && user.StripeAccountID == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
 			"country is required before creating a Stripe payout account"))
@@ -218,6 +220,13 @@ func (s *Server) handleStripeOnboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if repo, ok := s.globalPayoutStore(); ok {
+		if err := repo.RemoveGlobalRecipient(user.AccountID); err != nil {
+			globalPayoutError(w, err)
+			return
+		}
+	}
+
 	// Re-read the user — the SetUserStripeAccount above may have updated the
 	// status from "" to "pending"; we want the response to reflect that.
 	refreshed, err := s.billing.Store().GetUserByAccountID(user.AccountID)
@@ -245,7 +254,13 @@ func (s *Server) handleStripeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.maybeGlobalStatus(w, r, user) {
+		return
+	}
 	resp := map[string]any{
+		"account_id":             user.AccountID,
+		"payout_rail":            "connect",
+		"countries":              s.payoutCountries(),
 		"has_account":            user.StripeAccountID != "",
 		"configured":             true,
 		"stripe_account_id":      user.StripeAccountID,
@@ -328,7 +343,12 @@ func (s *Server) handleStripeWithdrawals(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", err.Error()))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"withdrawals": withdrawals})
+	combined, err := s.appendGlobalWithdrawals(user.AccountID, withdrawals, limit)
+	if err != nil {
+		globalPayoutError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"withdrawals": combined})
 }
 
 // handleStripeDashboardLink handles POST /v1/billing/stripe/dashboard.
@@ -415,6 +435,19 @@ func (s *Server) handleStripeUnlink(w http.ResponseWriter, r *http.Request) {
 	user := s.requirePrivyUser(w, r)
 	if user == nil {
 		return
+	}
+	if repo, ok := s.globalPayoutStore(); ok {
+		if _, err := repo.GetGlobalRecipient(user.AccountID); err == nil {
+			if err = repo.RemoveGlobalRecipient(user.AccountID); err != nil {
+				globalPayoutError(w, err)
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"unlinked": true})
+			return
+		} else if !errors.Is(err, store.ErrNotFound) {
+			globalPayoutError(w, err)
+			return
+		}
 	}
 	if s.billing == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "billing not configured"))
@@ -520,13 +553,6 @@ func etaForMethod(method, accountCountry string) string {
 	// agreement accounts add +24h of transfer availability delay.
 	return "1-3 business days"
 }
-
-// Compile-time check we don't accidentally drop the auth import; the Privy
-// helpers stay in scope via requirePrivyUser.
-var _ = auth.UserFromContext
-
-// Compile-time check on time import staying live.
-var _ = time.Now
 
 // sweepDeliveryMessage is the human copy for a standard withdrawal's success
 // response, honest about the country's actual sweep cadence.

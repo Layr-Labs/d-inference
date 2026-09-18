@@ -1,0 +1,10 @@
+{
+  "input_validation": "passed",
+  "models": 6,
+  "logical_cases": 12,
+  "model_cases": 72,
+  "serving_payloads": 72,
+  "teacher_payloads": 72,
+  "quality_pass": null,
+  "model_execution": false
+}

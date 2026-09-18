@@ -308,7 +308,7 @@ func TestQualityCapAppliedAtAdmitRecheck(t *testing.T) {
 		defer reg.mu.RUnlock()
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		return reg.providerCanAdmitLockedEx(p, gemmaBuild, RequestTraits{}, false, false)
+		return reg.providerCanAdmitLockedEx(p, gemmaBuild, RequestTraits{}, false, false, time.Now())
 	}
 
 	// Under the cap (1 in flight, cap 2) → admit re-check passes.

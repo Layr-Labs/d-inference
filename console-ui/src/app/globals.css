@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
 
 button, a, [role="button"], summary { cursor: pointer; }
 
@@ -15,25 +16,25 @@ button, a, [role="button"], summary { cursor: pointer; }
 /* ─── Light mode (default) — EigenCloud brand palette ─── */
 :root {
   /* Backgrounds */
-  --bg-primary:     #F2F2F2;
-  --bg-secondary:   #E8E8E8;
-  --bg-tertiary:    #DEDEDE;
-  --bg-elevated:    #D8DCE5;
-  --bg-hover:       #E0E0E4;
+  --bg-primary:     #FAFAFC;
+  --bg-secondary:   #F1F2F6;
+  --bg-tertiary:    #EDEEF3;
+  --bg-elevated:    #E2E4EC;
+  --bg-hover:       #E8EAF1;
   --bg-white:       #FFFFFF;
 
   /* Ink / Text */
   --ink:            #000000;
-  --ink-light:      #666F7C;
-  --ink-faint:      #ACB1BC;
+  --ink-light:      #595D6E;
+  --ink-faint:      #747887;
   --text-primary:   #000000;
-  --text-secondary: #666F7C;
-  --text-tertiary:  #ACB1BC;
+  --text-secondary: #595D6E;
+  --text-tertiary:  #747887;
 
   /* Borders */
-  --border-dim:     #D8DCE5;
-  --border-subtle:  #ACB1BC;
-  --border-default: #D8DCE5;
+  --border-dim:     #E2E4EC;
+  --border-subtle:  #747887;
+  --border-default: #E2E4EC;
 
   /* Brand accents — eigen-blue primary */
   --coral:          #1A0C6D;
@@ -81,25 +82,25 @@ button, a, [role="button"], summary { cursor: pointer; }
 
 /* ─── Dark mode — Cool professional dark ─── */
 .dark {
-  --bg-primary:     #0F0F14;
-  --bg-secondary:   #16161F;
-  --bg-tertiary:    #1E1E2A;
-  --bg-elevated:    #262636;
-  --bg-hover:       #2A2A3C;
-  --bg-white:       #1E1E2A;
+  --bg-primary:     #11121A;
+  --bg-secondary:   #171922;
+  --bg-tertiary:    #1E202D;
+  --bg-elevated:    #292C3B;
+  --bg-hover:       #303446;
+  --bg-white:       #1E202D;
 
   --ink:            #E8E8EC;
   --ink-light:      #9CA3AF;
-  --ink-faint:      #6B7280;
+  --ink-faint:      #9096AA;
   --text-primary:   #E8E8EC;
   --text-secondary: #9CA3AF;
-  --text-tertiary:  #6B7280;
+  --text-tertiary:  #9096AA;
 
-  --border-dim:     #262636;
+  --border-dim:     #292C3B;
   --border-subtle:  #363648;
   --border-default: #363648;
 
-  --coral:          #818CF8;
+  --coral:          #A3ACFF;
   --coral-light:    rgba(129, 140, 248, 0.10);
   --teal:           #34D399;
   --teal-light:     rgba(52, 211, 153, 0.12);
@@ -113,7 +114,7 @@ button, a, [role="button"], summary { cursor: pointer; }
   --pink:           #F472B6;
   --pink-light:     rgba(244, 114, 182, 0.12);
 
-  --accent-brand:       #818CF8;
+  --accent-brand:       #A3ACFF;
   --accent-brand-dim:   rgba(129, 140, 248, 0.10);
   --accent-brand-hover: #6366F1;
   --accent-green:       #34D399;
@@ -202,19 +203,21 @@ body {
   background: var(--bg-primary);
   color: var(--text-primary);
   font-family: var(--font-sans);
-  line-height: 1.4;
-  letter-spacing: 0.02em;
+  line-height: 1.5;
+  letter-spacing: 0;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 /* ─── Typography — Brand Book rules ─── */
 /* Headlines: Bold, tracking -2%, leading 100% */
+@layer base {
 h1, h2, h3 {
   font-family: var(--font-sans);
   font-weight: 700;
   letter-spacing: -0.02em;
-  line-height: 1.0;
+  line-height: 1.15;
+}
 }
 
 /* ─── Trust badge glow ─── */
@@ -406,3 +409,30 @@ h1, h2, h3 {
 .code-dot-r { background: #FF5F57; }
 .code-dot-y { background: #FEBC2E; }
 .code-dot-g { background: #27C93F; }
+
+/* Shared interaction and layout foundations. */
+:root { color-scheme: light; }
+.dark { color-scheme: dark; }
+::selection { background: var(--accent-brand-dim); color: var(--text-primary); }
+:where(button, a, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent-brand);
+  outline-offset: 3px;
+}
+button:disabled { cursor: not-allowed; }
+.skip-link {
+  position: fixed; left: 1rem; top: -5rem; z-index: 100;
+  border-radius: .5rem; padding: .75rem 1rem;
+  background: var(--accent-brand); color: white;
+}
+.skip-link:focus { top: 1rem; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* The composer exposes its focus state on the containing surface. */
+.chat-composer-input:focus-visible { outline: none; }

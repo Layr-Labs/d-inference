@@ -1,5 +1,7 @@
 # Darkbloom Privacy Policy
 
+> Last updated: 2026-08-25 · commit `3b7c281fd`
+
 Updated: June 16, 2026
 
 This Privacy Policy explains how Eigen Labs, Inc., operating the Darkbloom platform ("Eigen Labs," "Darkbloom," "we," "us," or "our") collects, uses, discloses, and otherwise processes personal information in connection with Darkbloom's websites, console, APIs, software, provider applications, hosted services, and related products and features (collectively, the "Services").

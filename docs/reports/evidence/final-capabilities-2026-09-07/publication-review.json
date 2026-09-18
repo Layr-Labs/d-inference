@@ -1,0 +1,51 @@
+{
+  "reviewer": "gpt_finish",
+  "reviewed_unix": 1788748740.398643,
+  "status": "INDEPENDENT_CAPABILITIES135_PUBLICATION_REVIEW_PASSED",
+  "publication_files": {
+    "report.md": {
+      "sha256": "dfa718111086bb8dd766e3fe430c4cba645a1514ea2964f52b9361fbf0a806ed",
+      "bytes": 3064
+    },
+    "evidence.json": {
+      "sha256": "28959f84aa6a1315929310293dbd4d611aaf340f85f34970b5f448958c082eaa",
+      "bytes": 12550
+    },
+    "manifest.json": {
+      "sha256": "ef4cf474aa51530957909eceb120e597829721105a792bbefb5437f2bbbaffd0",
+      "bytes": 7861
+    },
+    "evidence.tar.gz": {
+      "sha256": "36598bb1d24b1728622c69af305b787621104be00a2f1c24272c0f1ea86adbd5",
+      "bytes": 5407617
+    }
+  },
+  "archive_members_verified": 49,
+  "original_file_identities_verified": 332,
+  "models": 4,
+  "http_requests_verified": 7,
+  "tool_calls": {
+    "count": 4,
+    "exact_function": "record_color",
+    "parsed_arguments": {
+      "color": "blue",
+      "count": 2
+    },
+    "finish_reason": "tool_calls"
+  },
+  "vision": {
+    "count": 3,
+    "all_natural_stop": true,
+    "image_independently_viewed": true,
+    "image_sha256": "f9f9fbf8c0a05fbac1081db94dff3688cdcb3ee3425e2c18e51cbe90f3c5cb33",
+    "all_texts_read_in_full": true,
+    "assessment": "All three short descriptions correctly identify the central white/gray 3D cube cluster on black. This establishes the bounded subject-identification task, not exhaustive image understanding."
+  },
+  "all_actual_backends_paged": true,
+  "qwen_ssd_enabled_gpt_qat_disabled": true,
+  "all_http_done_and_usage_consistent": true,
+  "scope_preserved": "Qwen3.8 final capabilities remain pending separately; no two-provider routing, broad model-quality, durable restart, production attestation or full release pass claimed.",
+  "new_findings": [],
+  "remote_actions": false,
+  "model_execution": false
+}

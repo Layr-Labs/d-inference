@@ -19,7 +19,6 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -315,16 +314,10 @@ func (c *Client) LookupDevice(ctx context.Context, serialNumber string) (*Device
 	return nil, nil // not found
 }
 
-// SendSecurityInfoCommand sends a SecurityInfo command to a device by UDID.
-// Returns the command UUID for tracking the response.
-func (c *Client) SendSecurityInfoCommand(ctx context.Context, udid string) (string, error) {
-	return c.sendSecurityInfoCommand(ctx, udid, nil)
-}
-
 func (c *Client) sendSecurityInfoCommand(
 	ctx context.Context,
 	udid string,
-	onIssued func(string) bool,
+	bindCommand func(string) bool,
 ) (string, error) {
 	const requestType = "SecurityInfo"
 	if err := assertReadOnlyCommand(requestType); err != nil {
@@ -358,7 +351,7 @@ func (c *Client) sendSecurityInfoCommand(
 		return "", errors.New("mdm command response missing command UUID")
 	}
 	c.trackCommand(result.Payload.CommandUUID, udid, time.Now())
-	if onIssued != nil && !onIssued(result.Payload.CommandUUID) {
+	if !bindCommand(result.Payload.CommandUUID) {
 		c.consumeCommand(result.Payload.CommandUUID, time.Now())
 		return "", errors.New("mdm SecurityInfo waiter ownership changed before command issue")
 	}
@@ -381,38 +374,20 @@ func (c *Client) pushDevice(ctx context.Context, udid string) {
 	}
 }
 
-// SendDeviceAttestationCommand sends a DeviceInformation command requesting
-// DevicePropertiesAttestation from Apple. The device contacts Apple's servers,
-// which return a DER-encoded certificate chain signed by Apple's Enterprise
-// Attestation Root CA. This is the real MDA — Apple vouches for the device.
-//
-// If nonce is non-empty, it is included as DeviceAttestationNonce. Apple hashes
-// the nonce and embeds the hash as FreshnessCode (OID 1.2.840.113635.100.8.11.1)
-// in the leaf certificate. This binds arbitrary data (e.g. a SE key hash) to
-// Apple's attestation signature.
-//
-// When a nonce is provided, we send a raw plist command because MicroMDM's
-// DeviceInformation struct doesn't support DeviceAttestationNonce.
-func (c *Client) SendDeviceAttestationCommand(ctx context.Context, udid string, nonce ...string) (string, error) {
-	// Always use raw plist to support DeviceAttestationNonce
-	nonceStr := ""
-	if len(nonce) > 0 {
-		nonceStr = nonce[0]
-	}
-	return c.sendDeviceAttestationWithNonce(ctx, udid, nonceStr, nil)
-}
-
+// sendDeviceAttestationWithNonce queues a raw DeviceInformation plist so Apple
+// binds DeviceAttestationNonce into the certificate's FreshnessCode. The caller
+// must bind its exclusive waiter before the command is published.
 func (c *Client) sendDeviceAttestationWithNonce(
 	ctx context.Context,
 	udid, nonce string,
-	onIssued func(string) bool,
+	bindCommand func(string) bool,
 ) (string, error) {
 	// DevicePropertiesAttestation is requested via a DeviceInformation command.
 	if err := assertReadOnlyCommand("DeviceInformation"); err != nil {
 		return "", err
 	}
 	cmdUUID := uuid.New().String()
-	if onIssued != nil && !onIssued(cmdUUID) {
+	if !bindCommand(cmdUUID) {
 		return "", errors.New("mdm device attestation waiter ownership changed before command issue")
 	}
 	c.trackCommand(cmdUUID, udid, time.Now())
@@ -504,7 +479,7 @@ func (c *Client) registerDeviceAttestationWaiter(
 	return ch, bind, release, nil
 }
 
-func awaitDeviceAttestation(ctx context.Context, ch <-chan *DeviceAttestationResponse, _ string, timeout time.Duration) (*DeviceAttestationResponse, error) {
+func awaitDeviceAttestation(ctx context.Context, ch <-chan *DeviceAttestationResponse, timeout time.Duration) (*DeviceAttestationResponse, error) {
 	select {
 	case resp := <-ch:
 		return resp, nil
@@ -542,7 +517,7 @@ func (c *Client) RequestDeviceAttestation(
 	); err != nil {
 		return nil, err
 	}
-	return awaitDeviceAttestation(ctx, ch, udid, timeout)
+	return awaitDeviceAttestation(ctx, ch, timeout)
 }
 
 // HandleWebhook processes a MicroMDM webhook payload and extracts
@@ -764,7 +739,7 @@ func (c *Client) registerSecurityInfoWaiter(
 
 // awaitSecurityInfo blocks on a previously-registered waiter channel until the
 // response arrives, ctx is cancelled, or the timeout elapses.
-func awaitSecurityInfo(ctx context.Context, ch <-chan *SecurityInfoResponse, _ string, timeout time.Duration) (*SecurityInfoResponse, error) {
+func awaitSecurityInfo(ctx context.Context, ch <-chan *SecurityInfoResponse, timeout time.Duration) (*SecurityInfoResponse, error) {
 	select {
 	case resp := <-ch:
 		return resp, nil
@@ -773,14 +748,6 @@ func awaitSecurityInfo(ctx context.Context, ch <-chan *SecurityInfoResponse, _ s
 	case <-time.After(timeout):
 		return nil, errors.New("timeout waiting for SecurityInfo")
 	}
-}
-
-// VerifyProvider performs the full MDM verification flow for a provider.
-func (c *Client) VerifyProvider(ctx context.Context, serialNumber string, attestationSIP, attestationSecureBoot bool) (*VerificationResult, error) {
-	return c.VerifyProviderWithUDIDObserver(
-		ctx, serialNumber, attestationSIP, attestationSecureBoot,
-		nil, nil,
-	)
 }
 
 // VerifyProviderWithUDIDObserver publishes transport identity in two phases:
@@ -851,7 +818,7 @@ func (c *Client) VerifyProviderWithUDIDObserver(
 	// Step 4: Wait for the response (via webhook). 90 seconds allows for APN
 	// delivery delays during Power Nap cycles (every ~15 minutes on AC). Returns
 	// early if ctx is cancelled (provider disconnected).
-	secInfo, err := awaitSecurityInfo(ctx, ch, device.UDID, 90*time.Second)
+	secInfo, err := awaitSecurityInfo(ctx, ch, 90*time.Second)
 	if err != nil {
 		result.Error = fmt.Sprintf("SecurityInfo response: %v", err)
 		return result, nil
@@ -934,10 +901,6 @@ func parseSecurityInfoPlist(data []byte) *SecurityInfoResponse {
 			}
 		}
 	}
-
-	// Suppress unused import warning
-	_ = xml.Name{}
-	_ = io.EOF
 
 	if !found {
 		return nil

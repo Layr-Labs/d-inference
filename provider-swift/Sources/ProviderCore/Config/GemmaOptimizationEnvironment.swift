@@ -6,16 +6,6 @@ public enum GemmaOptimizationEnvironment {
     public static let prefillLayer18Key = "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL"
     public static let weightedUnsortKey = "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT"
     public static let safeR1Key = "MLX_GATHER_QMM_EXPERT_SLICES"
-    /// MLX's per-buffer allocation cap, in MB.
-    ///
-    /// This one is NOT an engine switch and has no Swift reader: MLX C++ reads
-    /// it once, at first Metal device construction, and otherwise takes the
-    /// hardware default (50 MB on an M5 Max). It therefore cannot be fixed by
-    /// changing an engine default, and the projection — which `apply` runs
-    /// before any MLX array or device is touched — is the only place that can
-    /// set it. The measured Gemma 4 serial stack ran 500.
-    public static let maxMBPerBufferKey = "MLX_MAX_MB_PER_BUFFER"
-    public static let measuredMaxMBPerBuffer = "500"
     /// Serving default when the expert-slice route is ON: skip the
     /// descriptor-retract readback (no mid-eval stream drain). The tile grid
     /// is already over-dispatched; unused slots early-return.
@@ -67,22 +57,11 @@ public enum GemmaOptimizationEnvironment {
         } else {
             safeR1 = "0"
         }
-        var projection = [
+        return [
             prefillLayer18Key: settings.prefillLayer18 ? "18" : "0",
             weightedUnsortKey: weightedR1,
             safeR1Key: safeR1,
         ]
-        // The buffer cap is a live-serving / benchmark runtime refinement, not
-        // a config-backed Gemma control: MLX C++ reads it once at first Metal
-        // device construction, so only a process that will actually serve or
-        // benchmark needs it. `.retainedValidation` (artifact verification, the
-        // packaged runtime-smoke gate, paged-kernel preflight, SelfUpdater)
-        // must stay the exact coupled control set — `validateRetainedProjection`
-        // rejects any extra key — so the cap is added only for `.serving`.
-        if context == .serving {
-            projection[maxMBPerBufferKey] = measuredMaxMBPerBuffer
-        }
-        return projection
     }
 
     /// The `EnvironmentVariables` entries the launchd service plist must carry
@@ -156,12 +135,7 @@ public enum GemmaOptimizationEnvironment {
     ///
     /// - Parameter set: applies one key and returns `0` on success or the
     ///   failing `errno` otherwise.
-    /// Public so a second consumer can supply its own write rule. The
-    /// benchmark runner needs "fill in what nothing chose" rather than the
-    /// serving path's unconditional overwrite, and the alternative — copying
-    /// the projection table into `ProviderBenchmark` — is how bench and serve
-    /// drift apart.
-    public static func apply(
+    static func apply(
         _ settings: GemmaOptimizationSettings,
         context: Context = .serving,
         getenv: (String) -> String? = {

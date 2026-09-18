@@ -67,7 +67,22 @@ extension ProviderLoop {
         writeDaemonState()
     }
 
-    internal func updateAggregateCapacity() async {
+    /// `attempt`: internal retry counter for the stale-snapshot guard below;
+    /// callers use the default.
+    internal func updateAggregateCapacity(attempt: Int = 0) async {
+        // Reserve epoch at entry: the hops below (engine summary, KV
+        // outstanding) are actor suspensions, and a reserve push landing
+        // across them (a verified prefetch raising the floor, a retirement
+        // relaxing it, a load's own marker transitions) would leave this
+        // invocation publishing pre-push figures. Not every push site
+        // publishes a replacement, so a tripped guard RECOMPUTES rather
+        // than returns. For activation-reserve epochs the third attempt
+        // may publish one epoch behind rather than wait until the next tick.
+        // Staging and model-drain changes invalidate the old snapshot; their mutation
+        // paths explicitly publish a replacement.
+        let reserveEpochAtEntry = activationReserveEpoch
+        let stagingGenerationAtEntry = mtpStagingReservations.generation
+        let drainGenerationAtEntry = mtpAdmissionDrains.generation
         // ONE ENGINE (v0.7.5): `EngineV2Runtime.capacitySummary` is the ONLY
         // slot source — every loaded model serves through a v2 bridge; the
         // legacy scheduler fold is gone. Same `BackendSlotCapacity` wire
@@ -84,7 +99,7 @@ extension ProviderLoop {
             // shared KV gate would reject. The runtime reads each engine's
             // CURRENT (post-re-slice) grant per heartbeat — never a stale
             // construction-time figure. Heartbeat cadence only.
-            var totalResidentWeightBytes: UInt64 = 0
+            var totalResidentWeightBytes = mtpStagingBytes
             for (_, slot) in modelSlots {
                 let (sum, overflow) = totalResidentWeightBytes
                     .addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
@@ -100,6 +115,7 @@ extension ProviderLoop {
             let engineV2 = await engineV2Runtime.capacitySummary(
                 fleetKV: EngineV2Runtime.FleetKVContext(
                     totalResidentWeightBytes: totalResidentWeightBytes,
+                    activationReserveBytes: resolvedActivationReserveBytes,
                     configReserveBytes: Self.memoryReserveBytes(
                         forGiB: loopConfig.config.provider.memoryReserveGB),
                     physicalBytes: engineV2SlotHooks?.physicalMemoryBytes
@@ -109,38 +125,43 @@ extension ProviderLoop {
         }
 
         let gbDivisor = 1024.0 * 1024.0 * 1024.0
-        let totalMem = ProcessInfo.processInfo.physicalMemory
+        let processMemory = kvBudget.memoryHeadroomSnapshot()
+        let totalMem = processMemory.totalBytes
 
         // Max model weight we could load right now (single source of truth for
         // the coordinator's cold-load routing). Holds back the same load reserve
         // the load gate uses, so it enforces the 90% cap.
         //
         // Eviction handling: current MLX usage may be reclaimed by evicting idle
-        // models on a cold load — BUT ONLY when nothing is being served. MLX
+        // models on a cold load, only without serving work or retained MTP targets. MLX
         // memory is global (it also covers the local inference endpoint, whose
         // streams are tracked by localReservations, not modelSlots), so a model
         // serving a local request is NOT evictable. `hasInflightWork` is the
         // comprehensive signal (coordinator inflight + local streams): when work
         // is in flight we treat NOTHING as reclaimable (conservative, never
-        // advertises an actively-served model's weights as free); only when fully
-        // idle do we assume idle models can be evicted.
-        let mlxActiveBytes = UInt64(max(0, MLX.GPU.activeMemory))
+        // advertises an actively-served model's weights as free). Retained MTP
+        // targets also prevent reclaim credit, even when all slots are idle.
+        let mlxActiveBytes = processMemory.activeBytes
         let mlxPeakBytes = UInt64(max(0, MLX.GPU.peakMemory))
-        let mlxCacheBytes = UInt64(max(0, MLX.GPU.cacheMemory))
-        let mlxUsed = mlxActiveBytes + mlxCacheBytes
-        let reclaimableMlx: UInt64 = hasInflightWork ? 0 : mlxUsed
-        let loadReserve = UnifiedMemoryCap.loadReserveBytes(
-            configReserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB))
-        // Subtract KV already promised to in-flight requests (coordinator + local
-        // streams), exactly as the real load gate (availableMemoryGb) does, so the
-        // heartbeat can't advertise reserved-but-not-yet-allocated bytes as loadable.
-        let outstandingKV = await kvBudget.outstandingReservedBytes()
+        let mlxCacheBytes = processMemory.cacheBytes
+        let (sumUsed, usedOverflow) = mlxActiveBytes.addingReportingOverflow(mlxCacheBytes)
+        let mlxUsed = usedOverflow ? UInt64.max : sumUsed
+        let reclaimableMlx: UInt64 = hasInflightWork || mtpStagingReservations.hasRetainedTargets ? 0 : mlxUsed
+        let loadReserve = kvBudget.loadReserveBytes
+        // The same sample contains usage and only unmaterialized commitments;
+        // loaded native backing is already included in active/cache above.
+        let unmaterializedCommitments = processMemory.unmaterializedCommittedBytes
         let freeForLoadGb = ModelLoadAdmission.maxLoadableWeightGb(
             totalBytes: totalMem,
-            systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+            systemAvailableBytes: processMemory.systemAvailableBytes,
             mlxUsedBytes: reclaimableMlx,
             reserveBytes: loadReserve,
-            outstandingReservationBytes: outstandingKV)
+            // The serving set's resolved headroom (measured per-model floors),
+            // not the flat default — free_for_load_gb must mirror the load
+            // gate this box actually applies (ensureModelLoaded), or the
+            // coordinator's cold-load routing desyncs from it.
+            headroomGb: loadHeadroomGb,
+            outstandingReservationBytes: unmaterializedCommitments)
         let reclaimer = kvBudget.cacheReclaimerTelemetrySnapshot()
         let reclaimerTelemetry = MLXCacheReclaimerTelemetry(
             cacheLimitBytes: UInt64(max(
@@ -151,6 +172,44 @@ extension ProviderLoop {
             lastReclaimedBytes: reclaimer.lastReclaimedBytes,
             lastReclaimDurationMs: reclaimer.lastReclaimDurationMs)
 
+        // Stale-snapshot guard (see the epoch capture at entry): the reserve
+        // moved while this invocation was suspended — slot budgets and
+        // free_for_load_gb here predate the floor the KV gate already
+        // enforces. Recompute over the current state instead of publishing
+        // them; bounded so a push storm cannot starve the publish.
+        // A newer staging/drain refresh owns the replacement snapshot. Never let
+        // the bounded reserve retry publish obsolete staging or admission capacity.
+        if (mtpStagingReservations.generation != stagingGenerationAtEntry
+            || mtpAdmissionDrains.generation != drainGenerationAtEntry) && attempt >= 2 { return }
+        guard (activationReserveEpoch == reserveEpochAtEntry
+            && mtpStagingReservations.generation == stagingGenerationAtEntry
+            && mtpAdmissionDrains.generation == drainGenerationAtEntry) || attempt >= 2 else {
+            logger.info(
+                "Capacity snapshot recomputed: activation reserve, MTP staging or admission drain moved during refresh (attempt \(attempt + 1))")
+            return await updateAggregateCapacity(attempt: attempt + 1)
+        }
+
+        // Profiler process posture (slice 2). ALWAYS attached — the object's
+        // presence is the coordinator's "new provider" sentinel.
+        let pressureLevel: MemoryPressureLevelWire
+        switch lastMemoryPressureLevel.value {
+        case .normal: pressureLevel = .normal
+        case .warning: pressureLevel = .warning
+        case .critical: pressureLevel = .critical
+        }
+        let capacityTelemetry = CapacityTelemetry(
+            lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
+            memoryPressureLevel: pressureLevel,
+            mlxNumResources: Int64(max(0, MLX.Memory.numResources)),
+            inAdmission: Int64(requestToModel.count),
+            inflightTasks: Int64(inflightTasks.count),
+            processMemory: processMemoryTelemetrySampler.capture(processMemory))
+
+        // Existing coordinators reject reloading per model; an unknown new
+        // state would remain routable. Keep other slots and provider status live.
+        for index in allSlots.indices where mtpAdmissionDrains.contains(allSlots[index].model) {
+            allSlots[index].state = "reloading"
+        }
         state.backendCapacity = BackendCapacity(
             slots: allSlots,
             gpuMemoryActiveGb: Double(mlxActiveBytes) / gbDivisor,
@@ -158,7 +217,9 @@ extension ProviderLoop {
             gpuMemoryCacheGb: Double(mlxCacheBytes) / gbDivisor,
             totalMemoryGb: Double(totalMem) / gbDivisor,
             freeForLoadGb: freeForLoadGb,
-            mlxCacheReclaimer: reclaimerTelemetry
+            mlxCacheReclaimer: reclaimerTelemetry,
+            telemetry: capacityTelemetry,
+            prefixCacheMaintenance: PrefixCacheMaintenanceTelemetry(SSDWholeRootMaintainer.shared.statsSnapshot())
         )
         state.inferenceActive = totalActive > 0
         let loadedSlots = modelSlots.compactMap { modelId, slot
@@ -168,7 +229,10 @@ extension ProviderLoop {
         }
         state.setPrefixCacheSnapshot(
             sources: Dictionary(uniqueKeysWithValues: loadedSlots.compactMap { modelId, bridge in
-                bridge.ssdPrefixCache.map { (modelId, $0) }
+                bridge.durablePrefixCacheEvidenceSource.map { (modelId, $0) }
+            }),
+            memorySources: Dictionary(uniqueKeysWithValues: loadedSlots.compactMap { modelId, bridge in
+                bridge.residentPrefixCacheEvidence.map { (modelId, $0) }
             }),
             statuses: loadedSlots.map { _, bridge in bridge.prefixCacheModelStatus() },
             runtimeIdentityAvailable: binaryHash?.isEmpty == false)

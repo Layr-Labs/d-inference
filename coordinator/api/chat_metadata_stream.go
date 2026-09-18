@@ -38,20 +38,21 @@ func stripProviderChatMetadataJSON(raw string) (string, bool) {
 
 func containsChatMetadataKeyToken(raw string) bool {
 	const maxFoldedKeyBytes = 4 * len(chatCompletionMetadataField)
-	for start := 0; start < len(raw); start++ {
-		if raw[start] != '"' {
-			continue
+	start := strings.IndexByte(raw, '"')
+	for start >= 0 {
+		raw = raw[start+1:]
+		end := strings.IndexByte(raw, '"')
+		if end < 0 {
+			return false
 		}
-		limit := min(start+1+maxFoldedKeyBytes, len(raw)-1)
-		for end := start + 1; end <= limit; end++ {
-			if raw[end] == '\n' {
-				break
-			}
-			if raw[end] == '"' &&
-				strings.EqualFold(raw[start+1:end], chatCompletionMetadataField) {
-				return true
-			}
+		if end <= maxFoldedKeyBytes && strings.EqualFold(raw[:end], chatCompletionMetadataField) {
+			return true
 		}
+		// Every quote can start the next candidate, including the closing
+		// quote just examined. Pairing quotes would miss a key following an
+		// unmatched quote in an SSE comment. The reserved key contains no
+		// quotes or newlines, so only adjacent quotes can enclose a match.
+		start = end
 	}
 	return false
 }
@@ -66,26 +67,21 @@ func stripProviderChatMetadata(chunk string) string {
 	if !containsChatMetadataKeyToken(chunk) && !strings.Contains(chunk, `\u`) {
 		return chunk
 	}
-	normalized := strings.ReplaceAll(strings.ReplaceAll(chunk, "\r\n", "\n"), "\r", "\n")
-	groups := strings.Split(normalized, "\n\n")
-	changed := false
-	for i, group := range groups {
-		if sanitized, ok := sanitizeStreamJSONEventGroup(group, stripProviderChatMetadataJSON); ok {
-			groups[i] = sanitized
-			changed = true
-		}
-	}
-	if changed {
-		return strings.Join(groups, "\n\n")
-	}
-	return chunk
+	return sanitizeStreamJSONEvents(chunk, stripProviderChatMetadataJSON)
 }
 
-func newChatCompletionExtrasEvent(pr *registry.PendingRequest) map[string]any {
+func newChatCompletionExtrasEvent(pr *registry.PendingRequest, identities ...chatStreamIdentity) map[string]any {
+	id, created := "chatcmpl-"+pr.RequestID, time.Now().Unix()
+	if len(identities) > 0 && identities[0].id != "" {
+		id = identities[0].id
+		if identities[0].created != nil {
+			created = *identities[0].created
+		}
+	}
 	return map[string]any{
-		"id":      "chatcmpl-" + pr.RequestID,
+		"id":      id,
 		"object":  "chat.completion.chunk",
-		"created": time.Now().Unix(),
+		"created": created,
 		"model":   consumerModel(pr),
 		"choices": []any{},
 	}
@@ -99,9 +95,10 @@ func (s *Server) writeChatStreamTerminalError(
 	pr *registry.PendingRequest,
 	errorType string,
 	message string,
+	identities ...chatStreamIdentity,
 ) {
 	if hasChatCompletionMetadata(pr) {
-		event := newChatCompletionExtrasEvent(pr)
+		event := newChatCompletionExtrasEvent(pr, identities...)
 		attachChatCompletionMetadata(event, pr)
 		if metadataEvent, err := json.Marshal(event); err == nil {
 			fmt.Fprintf(w, "data: %s\n\n", metadataEvent)
@@ -113,6 +110,7 @@ func (s *Server) writeChatStreamTerminalError(
 			"type":    errorType,
 		},
 	})
-	fmt.Fprintf(w, "data: %s\n\n", errData)
+	n, err := fmt.Fprintf(w, "data: %s\n\n", errData)
+	markResponseTerminalWrite(w, responseTerminals{first: "error"}, n, len(errData)+8, err)
 	flusher.Flush()
 }

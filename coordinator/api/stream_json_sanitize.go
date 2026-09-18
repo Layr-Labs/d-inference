@@ -2,6 +2,24 @@ package api
 
 import "strings"
 
+// sanitizeStreamJSONEvents shares SSE framing across the provider metadata and
+// cache-detail filters. Unchanged chunks retain their original bytes.
+func sanitizeStreamJSONEvents(chunk string, sanitizeJSON func(string) (string, bool)) string {
+	normalized := strings.ReplaceAll(strings.ReplaceAll(chunk, "\r\n", "\n"), "\r", "\n")
+	groups := strings.Split(normalized, "\n\n")
+	changed := false
+	for i, group := range groups {
+		if sanitized, ok := sanitizeStreamJSONEventGroup(group, sanitizeJSON); ok {
+			groups[i] = sanitized
+			changed = true
+		}
+	}
+	if changed {
+		return strings.Join(groups, "\n\n")
+	}
+	return chunk
+}
+
 func sseDataValue(line string) (string, bool) {
 	line = strings.TrimPrefix(line, "\uFEFF")
 	colon := strings.IndexByte(line, ':')

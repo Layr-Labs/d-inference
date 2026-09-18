@@ -126,11 +126,15 @@ public enum ProviderProtocolCodec {
         }
         try appendIfPresent(register.apnsDeviceToken, key: "apns_device_token", to: &fields)
         try appendIfPresent(register.apnsEnvironment, key: "apns_environment", to: &fields)
+        try appendIfPresent(register.appAttestProtocol, key: "app_attest_protocol", to: &fields)
         if let version = register.prefixCacheProtocol, version != 0 {
             try fields.append(("prefix_cache_protocol", encodeValue(version)))
         }
         if let models = register.prefixCacheV2Models, !models.isEmpty {
             try fields.append(("prefix_cache_v2_models", encodeValue(models)))
+        }
+        if let models = register.prefixCacheMemoryModels, !models.isEmpty {
+            try fields.append(("prefix_cache_memory_models", encodeValue(models)))
         }
         if let statuses = register.prefixCacheStatuses {
             try fields.append(("prefix_cache_statuses", encodeValue(statuses)))

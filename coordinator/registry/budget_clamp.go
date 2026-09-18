@@ -59,12 +59,12 @@ import (
 // telemetry keep the existing protections (pair cooldown at threshold 5,
 // node-level streaks) and are never clamped, so a single 503 cannot gate them.
 //
-// Keyed by the STABLE fault identity (faultKeyLocked: serial → SE-key →
+// Lives on the STABLE fault identity's gate (gate_state.go: serial → SE-key →
 // account → session fallback) like every sibling breaker, so a reconnect
-// cannot shed the clamp; migrated on identity rebind (migrateFaultStateLocked)
-// and deliberately NOT cleared by Disconnect. Map is bounded by the same
-// opportunistic >1024 sweep as the sibling cooldown maps. All state is guarded
-// by r.mu; the routing-path reads happen under r.mu held in either mode.
+// cannot shed the clamp; migrated on identity rebind (mergeLocked) and
+// deliberately NOT cleared by Disconnect. TTL-expired entries are dropped by
+// the periodic gate sweep. All state is guarded by gate.mu; the routing-path
+// read is one lock-free flag load for the common no-clamp case.
 const (
 	// envBudgetClamp is the kill switch. Default ON; set to false/0 to restore
 	// pre-clamp behavior (stale-heartbeat admission).
@@ -109,9 +109,9 @@ func loadBudgetClampConfig() budgetClampConfig {
 }
 
 // budgetClampEntry is one pair's active (or released/expired-awaiting-sweep)
-// clamp. Written ONLY under the r.mu write lock (armed/re-armed in
-// RecordCapacityReject, accept flag in RecordCapacityAccept); routing paths
-// read it under r.mu in either mode.
+// clamp. Written and read ONLY under the identity's gate.mu (armed/re-armed
+// in RecordCapacityReject, accept flag in RecordCapacityAccept, routing reads
+// in budgetClampActive).
 type budgetClampEntry struct {
 	// clampedAt is when the capacity-503 landed — the freshness reference for
 	// release condition (a) and the TTL anchor.
@@ -137,21 +137,11 @@ type budgetClampEntry struct {
 // currently reports a token budget; it is STICKY across re-arms of a LIVE
 // clamp (a re-reject during a reconnect's budgetless window must not downgrade
 // the identity's demonstrated budget reporting) but is NOT inherited from a
-// TTL-expired entry — see the in-body comment. Caller holds the r.mu write
-// lock (called from RecordCapacityReject).
-func (r *Registry) recordBudgetClampLocked(key capacityRejectKey, budgetReported bool, now time.Time) {
-	if !r.budgetClampCfg.Enabled {
+// TTL-expired entry — see the in-body comment. Caller holds g.mu (called from
+// recordCapacityReject).
+func (g *gateState) recordBudgetClampLocked(cfg budgetClampConfig, model string, budgetReported bool, now time.Time) {
+	if !cfg.Enabled {
 		return
-	}
-	// Opportunistic sweep (mirrors the sibling cooldown maps): session-keyed
-	// entries for churned identities are never re-keyed, so bound the map by
-	// dropping TTL-expired clamps once it grows.
-	if len(r.budgetClamps) > 1024 {
-		for k, e := range r.budgetClamps {
-			if !now.Before(e.clampedAt.Add(r.budgetClampCfg.TTL)) {
-				delete(r.budgetClamps, k)
-			}
-		}
 	}
 	// Sticky-or the demonstrated budget reporting from the PREVIOUS entry —
 	// but only while that entry is still inside its TTL. The sticky-or exists
@@ -161,21 +151,20 @@ func (r *Registry) recordBudgetClampLocked(key capacityRejectKey, budgetReported
 	// would let a later benign budgetless reject (cold "not loaded" miss,
 	// pre-heartbeat window) re-arm as stale-budget dishonesty and gate the pair
 	// for another TTL — exactly what the budgetless-armed exemption forbids.
-	if prev, ok := r.budgetClamps[key]; ok && now.Before(prev.clampedAt.Add(r.budgetClampCfg.TTL)) {
+	if prev, ok := g.budgetClamps[model]; ok && now.Before(prev.clampedAt.Add(cfg.TTL)) {
 		budgetReported = budgetReported || prev.budgetReported
 	}
-	r.budgetClamps[key] = &budgetClampEntry{clampedAt: now, budgetReported: budgetReported}
+	g.budgetClamps[model] = &budgetClampEntry{clampedAt: now, budgetReported: budgetReported}
 }
 
-// providerReportsTokenBudgetLocked reports whether the provider's CURRENT
-// backend snapshot carries a token budget for the model (the arming-time input
-// to budgetClampEntry.budgetReported). A missing provider (the reject often
-// races the disconnect that caused it) or a missing/budgetless slot reads
-// false — the sticky-or in recordBudgetClampLocked keeps an identity's
-// demonstrated reporting from being downgraded by such a race. Caller holds
-// r.mu (either mode); takes p.mu internally (r.mu → p.mu lock order).
-func (r *Registry) providerReportsTokenBudgetLocked(providerID, modelID string) bool {
-	p := r.providers[providerID]
+// providerReportsTokenBudget reports whether the provider's CURRENT backend
+// snapshot carries a token budget for the model (the arming-time input to
+// budgetClampEntry.budgetReported). A missing provider (the reject often races
+// the disconnect that caused it) or a missing/budgetless slot reads false —
+// the sticky-or in recordBudgetClampLocked keeps an identity's demonstrated
+// reporting from being downgraded by such a race. Takes p.mu; the caller must
+// not hold a gate.mu (lock order p.mu → gate.mu).
+func providerReportsTokenBudget(p *Provider, modelID string) bool {
 	if p == nil {
 		return false
 	}
@@ -192,20 +181,9 @@ func (r *Registry) providerReportsTokenBudgetLocked(providerID, modelID string) 
 	return false
 }
 
-// noteBudgetClampAcceptLocked records release condition (b): the pair accepted
-// work after the clamp. The entry is kept (not deleted) — release also needs a
-// strictly-fresher heartbeat with meaningful headroom, which the routing-path
-// read evaluates against the provider's live budget fields. Caller holds the
-// r.mu write lock (called from RecordCapacityAccept).
-func (r *Registry) noteBudgetClampAcceptLocked(key capacityRejectKey) {
-	if e, ok := r.budgetClamps[key]; ok {
-		e.acceptedSince = true
-	}
-}
-
-// budgetClampActiveLocked reports whether admission must treat the pair's slot
-// as FULL right now. READ-ONLY (no lazy delete) — routing paths call it under
-// r.mu held in either mode, mirroring capacityCooldownActiveLocked.
+// budgetClampActive reports whether admission must treat the pair's slot as
+// FULL right now. READ-ONLY (no lazy delete): lock-free "no clamp on any
+// model" fast path, otherwise one short gate.mu section. nil-safe.
 //
 // heartbeatAt is when the provider's CURRENT BackendCapacity was delivered
 // (p.LastHeartbeat — Heartbeat overwrites BackendCapacity and stamps
@@ -227,15 +205,17 @@ func (r *Registry) noteBudgetClampAcceptLocked(key capacityRejectKey) {
 // not even once a later heartbeat starts reporting a budget, since no dispatch
 // could get through the clamp to produce the accept proof (the reject was
 // never a stale-budget lie to begin with).
-func (r *Registry) budgetClampActiveLocked(providerID, modelID string, heartbeatAt time.Time, rawBudgetRemaining int64, budgetReported bool, now time.Time) bool {
-	if !r.budgetClampCfg.Enabled {
+func (g *gateState) budgetClampActive(cfg budgetClampConfig, model string, heartbeatAt time.Time, rawBudgetRemaining int64, budgetReported bool, now time.Time) bool {
+	if !cfg.Enabled || !g.hasPairState(gateFlagBudgetClamp) {
 		return false
 	}
-	e, ok := r.budgetClamps[capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}]
+	g = g.lockResolved()
+	defer g.mu.Unlock()
+	e, ok := g.budgetClamps[model]
 	if !ok {
 		return false
 	}
-	if !now.Before(e.clampedAt.Add(r.budgetClampCfg.TTL)) {
+	if !now.Before(e.clampedAt.Add(cfg.TTL)) {
 		return false // TTL lapsed: fail open (a re-reject re-arms)
 	}
 	if !e.budgetReported {
@@ -266,14 +246,31 @@ func (r *Registry) budgetClampActiveLocked(providerID, modelID string, heartbeat
 	return !released
 }
 
-// providerBudgetSnapshotLocked reads the pair's live budget snapshot — the
-// heartbeat freshness anchor, the raw headroom (max - used - queued,
-// unclamped), and whether the current capacity report carries a budget for the
-// model at all. A missing provider or a missing/budgetless slot reads
-// zero/false. Caller holds r.mu (either mode); takes p.mu internally
-// (r.mu → p.mu lock order).
-func (r *Registry) providerBudgetSnapshotLocked(providerID, modelID string) (heartbeatAt time.Time, rawRemaining int64, budgetReported bool) {
-	p := r.providers[providerID]
+// budgetClamped resolves the session's gate; the scan uses the cached p.gate
+// through budgetClampedFor.
+func (r *Registry) budgetClamped(providerID, modelID string, heartbeatAt time.Time, rawBudgetRemaining int64, budgetReported bool, now time.Time) bool {
+	return r.lookupGateForSession(providerID).budgetClampActive(r.budgetClampCfg, modelID, heartbeatAt, rawBudgetRemaining, budgetReported, now)
+}
+
+// budgetClampedFor is budgetClampActive on the connected provider's cached
+// gate, confirmed against p.gate (gateView) — the routing snapshot's admission
+// input (snapshotProviderIntoPLockedEx and the preflight), read under p.mu.
+func (r *Registry) budgetClampedFor(p *Provider, model string, heartbeatAt time.Time, rawBudgetRemaining int64, budgetReported bool, now time.Time) bool {
+	view := r.gateViewOf(p)
+	for {
+		clamped := view.g.budgetClampActive(r.budgetClampCfg, model, heartbeatAt, rawBudgetRemaining, budgetReported, now)
+		if !view.moved() {
+			return clamped
+		}
+	}
+}
+
+// providerBudgetSnapshot reads the pair's live budget snapshot — the heartbeat
+// freshness anchor, the raw headroom (max - used - queued, unclamped), and
+// whether the current capacity report carries a budget for the model at all.
+// A missing provider or a missing/budgetless slot reads zero/false. Takes
+// p.mu; the caller must not hold a gate.mu (lock order p.mu → gate.mu).
+func providerBudgetSnapshot(p *Provider, modelID string) (heartbeatAt time.Time, rawRemaining int64, budgetReported bool) {
 	if p == nil {
 		return time.Time{}, 0, false
 	}
@@ -295,41 +292,28 @@ func (r *Registry) providerBudgetSnapshotLocked(providerID, modelID string) (hea
 // dropInactiveBudgetClampLocked deletes the pair's clamp entry when it can no
 // longer gate admission, so the entry's lifecycle matches its effect:
 //   - armed budgetless (entry.budgetReported == false: the exemption means it
-//     NEVER gates, so keeping it only costs the accept fast path);
+//     NEVER gates, so keeping it only costs a lock section per scan);
 //   - TTL lapsed (fail-open — a re-reject re-arms fresh anyway);
 //   - fully released (accept proof AND a strictly-fresher heartbeat with
-//     meaningful headroom, evaluated against the provider's live snapshot).
+//     meaningful headroom, evaluated against the supplied live snapshot).
 //
-// Deleting on release matters twice over: a lingering released entry (a) keeps
-// pulling every subsequent RecordCapacityAccept for the pair onto the r.mu
-// write lock (the fast-path gate keys on map presence), and (b) revives as a
-// block on the identity's next reconnect — the budgetless pre-heartbeat hold
-// branch treats an unreleased-looking entry as an active clamp, re-blocking a
-// pair that already proved recovery. A deleted entry re-arms from scratch on
-// the next reject, with budgetReported re-read at arm time. Called from the
-// accept path (RecordCapacityAcceptOutcome); the heartbeat release sweep uses
-// the snapshot variant below. Caller holds the r.mu WRITE lock.
-func (r *Registry) dropInactiveBudgetClampLocked(providerID, modelID string, now time.Time) {
-	heartbeatAt, rawRemaining, budgetReported := r.providerBudgetSnapshotLocked(providerID, modelID)
-	r.dropInactiveBudgetClampSnapshotLocked(providerID, modelID, heartbeatAt, rawRemaining, budgetReported, now)
-}
-
-// dropInactiveBudgetClampSnapshotLocked is dropInactiveBudgetClampLocked with
-// the budget snapshot supplied by the caller instead of re-read from
-// r.providers. The heartbeat release sweep passes the just-delivered
-// heartbeat's OWN stamped time and slot values, so the release proof cannot be
-// voided by a disconnect racing in between the heartbeat stamping the provider
-// and the sweep running — a re-read would find no provider, skip the delete,
-// and let the released entry re-block the identity's next reconnect. Caller
-// holds the r.mu WRITE lock.
-func (r *Registry) dropInactiveBudgetClampSnapshotLocked(providerID, modelID string, heartbeatAt time.Time, rawRemaining int64, budgetReported bool, now time.Time) {
-	key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
-	e, ok := r.budgetClamps[key]
+// Deleting on release matters: a lingering released entry revives as a block
+// on the identity's next reconnect — the budgetless pre-heartbeat hold branch
+// treats an unreleased-looking entry as an active clamp, re-blocking a pair
+// that already proved recovery. A deleted entry re-arms from scratch on the
+// next reject, with budgetReported re-read at arm time. The snapshot is
+// supplied by the caller (read under p.mu before the gate was taken): the
+// heartbeat release sweep passes the just-delivered heartbeat's OWN stamped
+// time and slot values, so the release proof cannot be voided by a disconnect
+// racing in between the heartbeat stamping the provider and the sweep running.
+// Caller holds g.mu.
+func (g *gateState) dropInactiveBudgetClampLocked(cfg budgetClampConfig, model string, heartbeatAt time.Time, rawRemaining int64, budgetReported bool, now time.Time) {
+	e, ok := g.budgetClamps[model]
 	if !ok {
 		return
 	}
-	if !e.budgetReported || !now.Before(e.clampedAt.Add(r.budgetClampCfg.TTL)) {
-		delete(r.budgetClamps, key)
+	if !e.budgetReported || !now.Before(e.clampedAt.Add(cfg.TTL)) {
+		delete(g.budgetClamps, model)
 		return
 	}
 	if !e.acceptedSince {
@@ -338,58 +322,54 @@ func (r *Registry) dropInactiveBudgetClampSnapshotLocked(providerID, modelID str
 	if budgetReported &&
 		heartbeatAt.After(e.clampedAt) &&
 		rawRemaining >= budgetClampReleaseMinHeadroomTokens {
-		delete(r.budgetClamps, key)
+		delete(g.budgetClamps, model)
 	}
 }
 
 // releaseBudgetClampsOnHeartbeat drops any clamp entries for the provider's
 // heartbeat-reported models that the just-stamped capacity snapshot proves
 // inactive (released / TTL-expired / budgetless-armed). Called from Heartbeat
-// AFTER BackendCapacity and LastHeartbeat are written, so the
-// accept-then-heartbeat release order cleans up even when the pair gets no
-// further traffic — otherwise the released entry would linger and re-block the
-// identity's next reconnect before its first heartbeat.
+// AFTER BackendCapacity and LastHeartbeat are written (and after p.mu is
+// released), so the accept-then-heartbeat release order cleans up even when
+// the pair gets no further traffic — otherwise the released entry would linger
+// and re-block the identity's next reconnect before its first heartbeat.
 //
 // heartbeatAt and capacity are the heartbeat's OWN stamped time and (clamped)
-// report, evaluated directly rather than re-read from r.providers, so a
+// report, evaluated directly rather than re-read from the provider, so a
 // disconnect racing in after the heartbeat cannot void this heartbeat's
-// release proof. The common case (no clamp state for the provider) is a
-// read-locked probe with one map lookup per reported slot; the write lock is
-// taken only when an entry actually exists.
+// release proof. The common case (no clamp state for the identity) is one
+// lock-free flag load; the gate is locked only when an entry exists.
 func (r *Registry) releaseBudgetClampsOnHeartbeat(providerID string, heartbeatAt time.Time, capacity *protocol.BackendCapacity) {
 	if !r.budgetClampCfg.Enabled || capacity == nil || len(capacity.Slots) == 0 {
 		return
 	}
-	r.mu.RLock()
-	faultKey := r.faultKeyLocked(providerID)
-	var found []protocol.BackendSlotCapacity
-	for _, slot := range capacity.Slots {
-		if _, ok := r.budgetClamps[capacityRejectKey{ProviderID: faultKey, ModelID: slot.Model}]; ok {
-			found = append(found, slot)
-		}
-	}
-	r.mu.RUnlock()
-	if len(found) == 0 {
+	ref, has := r.refHasPairState(r.lookupSessionGateRef(providerID), gateFlagBudgetClamp)
+	if !has {
 		return
 	}
-	r.mu.Lock()
-	now := time.Now()
-	for _, slot := range found {
-		rawRemaining := slot.ActiveTokenBudgetMax - slot.ActiveTokenBudgetUsed - slot.QueuedTokenBudget
-		r.dropInactiveBudgetClampSnapshotLocked(providerID, slot.Model, heartbeatAt, rawRemaining, slot.ActiveTokenBudgetMax > 0, now)
+	hold := r.lockGate(ref, "clamp_heartbeat")
+	defer hold.unlock()
+	g := hold.g
+	if g == nil {
+		return
 	}
-	r.mu.Unlock()
+
+	now := time.Now()
+	for _, slot := range capacity.Slots {
+		rawRemaining := slot.ActiveTokenBudgetMax - slot.ActiveTokenBudgetUsed - slot.QueuedTokenBudget
+		g.dropInactiveBudgetClampLocked(r.budgetClampCfg, slot.Model, heartbeatAt, rawRemaining, slot.ActiveTokenBudgetMax > 0, now)
+	}
+	g.publishLocked()
 }
 
 // BudgetClampActive reports whether the (provider, model) pair's token budget
 // is currently clamped for admission. Exposed for tests and observability; the
-// routing hot path uses budgetClampActiveLocked under the already-held r.mu.
+// routing hot path reads the cached p.gate directly.
 func (r *Registry) BudgetClampActive(providerID, modelID string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.providers[providerID] == nil {
+	p := r.sessionProvider(providerID)
+	if p == nil {
 		return false
 	}
-	heartbeatAt, rawRemaining, budgetReported := r.providerBudgetSnapshotLocked(providerID, modelID)
-	return r.budgetClampActiveLocked(providerID, modelID, heartbeatAt, rawRemaining, budgetReported, time.Now())
+	heartbeatAt, rawRemaining, budgetReported := providerBudgetSnapshot(p, modelID)
+	return r.budgetClamped(providerID, modelID, heartbeatAt, rawRemaining, budgetReported, time.Now())
 }

@@ -1,0 +1,20 @@
+[
+  {
+    "component": "cargo",
+    "url": "https://static.rust-lang.org/dist/2025-06-26/cargo-1.88.0-aarch64-unknown-linux-musl.tar.xz",
+    "sha256": "2828f7fba4777fef6c0a4cd800319f6a3ee07847e0c69ae502263443e6227795",
+    "filename": "cargo-1.88.0-aarch64-unknown-linux-musl.tar.xz"
+  },
+  {
+    "component": "rustc",
+    "url": "https://static.rust-lang.org/dist/2025-06-26/rustc-1.88.0-aarch64-unknown-linux-musl.tar.xz",
+    "sha256": "0e688fc032cdd828f4a448edbf109dc27e4cd13ef54c91633a32a153070d13b6",
+    "filename": "rustc-1.88.0-aarch64-unknown-linux-musl.tar.xz"
+  },
+  {
+    "component": "rust-std",
+    "url": "https://static.rust-lang.org/dist/2025-06-26/rust-std-1.88.0-aarch64-unknown-linux-musl.tar.xz",
+    "sha256": "b1562ce0836d5071abbbeaf52e3db9ce0d37fa432f5202b8f661aa4881b4c3e4",
+    "filename": "rust-std-1.88.0-aarch64-unknown-linux-musl.tar.xz"
+  }
+]

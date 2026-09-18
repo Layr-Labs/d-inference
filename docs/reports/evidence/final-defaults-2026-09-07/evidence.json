@@ -1,0 +1,2776 @@
+{
+  "status": "FIVE_MODEL_DEFAULTS_AND_QWEN_SSD_REPEAT_PASS",
+  "root_review": {
+    "reviewer": "/root",
+    "created_at": "2026-09-07T02:46:13.590868+00:00",
+    "status": "FIVE_MODEL_DEFAULT_CONFIGURATION_AND_RESTORATION_PASS",
+    "models": 5,
+    "verified_original_files": 425,
+    "rows": [
+      {
+        "model": "qwen36",
+        "rows": [
+          {
+            "case": "cold",
+            "finish_reason": "length",
+            "usage": {
+              "completion_tokens": 64,
+              "completion_tokens_details": {
+                "reasoning_tokens": 64
+              },
+              "prompt_tokens": 5503,
+              "total_tokens": 5567
+            },
+            "content": "",
+            "reasoning": "Here's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Input Text:** A highly repetitive paragraph about a committee reviewing regional water infrastructure. It mentions: reservoir levels recovered after spring rain, agricultural demand rose, engineers proposed staged pumping station upgrades, canal maintenance, and acoustic leak detection.",
+            "mtp_active": true,
+            "ssd_prefill_tokens_saved": 0,
+            "report_sha256": "126020260c6eb30e4dc6465b2efc1191150f4f395101c03ca188f024804a3ce8"
+          },
+          {
+            "case": "repeat",
+            "finish_reason": "length",
+            "usage": {
+              "completion_tokens": 64,
+              "completion_tokens_details": {
+                "reasoning_tokens": 64
+              },
+              "prompt_tokens": 5503,
+              "total_tokens": 5567
+            },
+            "content": "",
+            "reasoning": "Here's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Input Text:** A highly repetitive paragraph about a committee reviewing regional water infrastructure. It mentions: reservoir levels recovered after spring rain, agricultural demand rose, engineers proposed staged pumping station upgrades, canal maintenance, and acoustic leak detection.",
+            "mtp_active": true,
+            "ssd_prefill_tokens_saved": 4096,
+            "report_sha256": "126020260c6eb30e4dc6465b2efc1191150f4f395101c03ca188f024804a3ce8"
+          }
+        ]
+      },
+      {
+        "model": "qwen35",
+        "rows": [
+          {
+            "case": "cold",
+            "finish_reason": "length",
+            "usage": {
+              "completion_tokens": 64,
+              "completion_tokens_details": {
+                "reasoning_tokens": 64
+              },
+              "prompt_tokens": 5503,
+              "total_tokens": 5567
+            },
+            "content": "",
+            "reasoning": "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Input: A text that is heavily repetitive (the same paragraph is repeated many times).\n    *   Task: Summarize the proposed work in three sentences.\n    *   Constraint: The summary must be exactly three sentences.",
+            "mtp_active": true,
+            "ssd_prefill_tokens_saved": 0,
+            "report_sha256": "9a95f9f4e83ea3ebc8a182b3046af5aa072e39a47b46d0ff13b64589418f06a7"
+          },
+          {
+            "case": "repeat",
+            "finish_reason": "length",
+            "usage": {
+              "completion_tokens": 64,
+              "completion_tokens_details": {
+                "reasoning_tokens": 64
+              },
+              "prompt_tokens": 5503,
+              "total_tokens": 5567
+            },
+            "content": "",
+            "reasoning": "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Input: A text that is heavily repetitive (the same paragraph is repeated many times).\n    *   Task: Summarize the proposed work in three sentences.\n    *   Constraint: The summary must be exactly three sentences.",
+            "mtp_active": true,
+            "ssd_prefill_tokens_saved": 4096,
+            "report_sha256": "9a95f9f4e83ea3ebc8a182b3046af5aa072e39a47b46d0ff13b64589418f06a7"
+          }
+        ]
+      },
+      {
+        "model": "qwen38",
+        "rows": [
+          {
+            "case": "cold",
+            "finish_reason": "length",
+            "usage": {
+              "completion_tokens": 64,
+              "completion_tokens_details": {
+                "reasoning_tokens": 64
+              },
+              "prompt_tokens": 5545,
+              "total_tokens": 5609
+            },
+            "content": "",
+            "reasoning": "We need to respond to user: \"The committee reviewed regional water infrastructure... [repeated many times] ... The committee reviewed regional water infrastructure. Reservoir levels recovered after spring rain while agricultural demand rose. Engineers proposed staged pumping station upgrades, canal maintenance, and acoustic leak detection. The council requested costs, schedules, and",
+            "mtp_active": true,
+            "ssd_prefill_tokens_saved": 0,
+            "report_sha256": "c894d519a079ba401a30449f2e09a7fac7194ab805f114d49ac8e233767e15be"
+          },
+          {
+            "case": "repeat",
+            "finish_reason": "length",
+            "usage": {
+              "completion_tokens": 64,
+              "completion_tokens_details": {
+                "reasoning_tokens": 64
+              },
+              "prompt_tokens": 5545,
+              "total_tokens": 5609
+            },
+            "content": "",
+            "reasoning": "We need to respond to user: \"The committee reviewed regional water infrastructure... [repeated many times] ... The committee reviewed regional water infrastructure. Reservoir levels recovered after spring rain while agricultural demand rose. Engineers proposed staged pumping station upgrades, canal maintenance, and acoustic leak detection. The council requested costs, schedules, and",
+            "mtp_active": true,
+            "ssd_prefill_tokens_saved": 4096,
+            "report_sha256": "c894d519a079ba401a30449f2e09a7fac7194ab805f114d49ac8e233767e15be"
+          }
+        ]
+      },
+      {
+        "model": "gpt-oss-20b",
+        "rows": [
+          {
+            "case": "cold",
+            "finish_reason": "length",
+            "usage": {
+              "completion_tokens": 64,
+              "completion_tokens_details": {
+                "reasoning_tokens": 61
+              },
+              "prompt_tokens": 5454,
+              "total_tokens": 5518
+            },
+            "content": "",
+            "reasoning": "The user pasted a repetitive paragraph many times. They want a summary of the proposed work in three sentences. The content: committee reviewed regional water infrastructure; reservoir levels recovered after spring rain while agricultural demand rose; engineers proposed staged pumping station upgrades, canal maintenance, and acoustic leak detection; council requested costs, schedules",
+            "mtp_active": false,
+            "ssd_prefill_tokens_saved": 0,
+            "report_sha256": "87f6ee2004709a444ef3ecad9e1228f517a7f12cfcb8735b94e2a4e6fe09a9eb"
+          },
+          {
+            "case": "repeat",
+            "finish_reason": "length",
+            "usage": {
+              "completion_tokens": 64,
+              "completion_tokens_details": {
+                "reasoning_tokens": 61
+              },
+              "prompt_tokens": 5454,
+              "total_tokens": 5518
+            },
+            "content": "",
+            "reasoning": "The user pasted a repetitive paragraph many times. They want a summary of the proposed work in three sentences. The content: committee reviewed regional water infrastructure; reservoir levels recovered after spring rain while agricultural demand rose; engineers proposed staged pumping station upgrades, canal maintenance, and acoustic leak detection; council requested costs, schedules",
+            "mtp_active": false,
+            "ssd_prefill_tokens_saved": 0,
+            "report_sha256": "87f6ee2004709a444ef3ecad9e1228f517a7f12cfcb8735b94e2a4e6fe09a9eb"
+          }
+        ]
+      },
+      {
+        "model": "gemma-4-26b-qat-4bit",
+        "rows": [
+          {
+            "case": "cold",
+            "finish_reason": "length",
+            "usage": {
+              "completion_tokens": 64,
+              "prompt_tokens": 5399,
+              "total_tokens": 5463
+            },
+            "content": "Engineers have proposed a series of infrastructure improvements, including staged upgrades to pumping stations and regular maintenance of canals. Additionally, the plan incorporates the use of acoustic leak detection to improve system monitoring. The council has requested detailed cost estimates, project schedules, and an assessment of potential risks to downstream users during the construction phase.",
+            "reasoning": "",
+            "mtp_active": false,
+            "ssd_prefill_tokens_saved": 0,
+            "report_sha256": "c670e5fbdeeeaa10a9f52795579590c02be0747383f9fecec0b3aa13d7c3df43"
+          },
+          {
+            "case": "repeat",
+            "finish_reason": "length",
+            "usage": {
+              "completion_tokens": 64,
+              "prompt_tokens": 5399,
+              "total_tokens": 5463
+            },
+            "content": "Engineers have proposed a series of infrastructure improvements, including staged upgrades to pumping stations and regular maintenance of canals. Additionally, the plan incorporates the use of acoustic leak detection to improve system monitoring. The council has requested detailed cost estimates, project schedules, and an assessment of potential risks to downstream users during the construction phase.",
+            "reasoning": "",
+            "mtp_active": false,
+            "ssd_prefill_tokens_saved": 0,
+            "report_sha256": "c670e5fbdeeeaa10a9f52795579590c02be0747383f9fecec0b3aa13d7c3df43"
+          }
+        ]
+      }
+    ],
+    "scope": "Automatic paged backend, normal automatic MTP policy and configured SSD cohort, HTTP completion/accounting, Qwen repeated-prefix restore. Capped 64-token answers do not establish general quality, two-provider selection, or persistent restart."
+  },
+  "agent_summary": {
+    "status": "FIVE_MODELS_TEN_DEFAULT_REQUESTS_PASSED",
+    "runtime_review_sha256": "0294038647e97e98398c516bb6df6c52914c49c1897726a9fffd00064c2e86ee",
+    "native_rebuilt": false,
+    "reviewer": "http_finish",
+    "rows": [
+      {
+        "model": "qwen36",
+        "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+        "report_path": "/private/tmp/darkbloom-release090-defaults-final-execution2/qwen36-evidence/steps/1/http-evidence/evidence/report.json",
+        "report_sha256": "126020260c6eb30e4dc6465b2efc1191150f4f395101c03ca188f024804a3ce8",
+        "archive_sha256": "625e0c7ff89d0a123548871b5ca697bfa5b1d382cbff7b0c4ad77cd364a982c4",
+        "files_verified": 85,
+        "worker_accepted": true,
+        "cleanup_complete": true,
+        "requests": [
+          {
+            "name": "cold",
+            "status": "passed",
+            "finish_reason": "length",
+            "content": "",
+            "reasoning": "Here's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Input Text:** A highly repetitive paragraph about a committee reviewing regional water infrastructure. It mentions: reservoir levels recovered after spring rain, agricultural demand rose, engineers proposed staged pumping station upgrades, canal maintenance, and acoustic leak detection.",
+            "http_usage": {
+              "completion_tokens": 64,
+              "completion_tokens_details": {
+                "reasoning_tokens": 64
+              },
+              "prompt_tokens": 5503,
+              "total_tokens": 5567
+            },
+            "terminal": [
+              {
+                "profile": {
+                  "schema": 1,
+                  "wall_ms": 1788748576489,
+                  "dequeued_us": 661,
+                  "decrypted_us": 925,
+                  "parsed_us": 1476,
+                  "admission_us": 1893,
+                  "accepted_sent_us": 1904,
+                  "load_wait_start_us": 2161,
+                  "load_wait_end_us": 2166,
+                  "task_spawned_us": 2187,
+                  "prompt_prep_start_us": 3171,
+                  "prompt_prep_end_us": 59595,
+                  "engine_submit_us": 60145,
+                  "engine_admitted_us": 60208,
+                  "first_delta_us": 2110091,
+                  "first_frame_us": 2110222,
+                  "last_delta_us": 3152876,
+                  "terminal_built_us": 3247891,
+                  "terminal_sent_us": 3247911,
+                  "total_us": 3247920,
+                  "ssd_stage_us": 123,
+                  "flush_us": 1,
+                  "se_sign_us": 14464,
+                  "slept_us": 0,
+                  "budget_remaining_at_admit_us": 17742791,
+                  "prompt_tokens": 5503,
+                  "frames_emitted": 22,
+                  "running_at_admit": 0,
+                  "waiting_at_admit": 0,
+                  "queued_prefill_tokens_at_admit": 0,
+                  "steps_at_submit": 0,
+                  "steps_at_finish": 21,
+                  "partial_prefill_cap": 1,
+                  "bytes_emitted": 5330,
+                  "kv_bytes_in_use_at_admit": 0,
+                  "kv_bytes_capacity": 96331929068,
+                  "mlx_active_bytes_at_finish": 21709919629,
+                  "mlx_peak_bytes": 33361881832,
+                  "usage_recovered": false,
+                  "load_cold": false,
+                  "load_parked": false,
+                  "mtp_active": true,
+                  "low_power_mode": false,
+                  "deadline_mode": "legacy",
+                  "thermal_state": "nominal",
+                  "engine": {
+                    "admitted_ns": 536875,
+                    "kv_allocated_ns": 536875,
+                    "prefill_first_launch_ns": 536875,
+                    "prompt_computed_ns": 2049767208,
+                    "first_token_ns": 2049767208,
+                    "finished_ns": 3092507000,
+                    "readmissions": 0,
+                    "preemptions": 0,
+                    "capacity_requeues": 0,
+                    "prefill_chunks": 3,
+                    "packed_prefill_chunks": 0,
+                    "vision_chunks": 0,
+                    "solo_stripe_chunks": 3,
+                    "prefill_chunk_tokens_max": 2048,
+                    "decode_steps": 18,
+                    "chained_decode_steps": 0,
+                    "batch_rows_sum": 19,
+                    "batch_rows_min": 1,
+                    "batch_rows_max": 1,
+                    "step_latency_ns_sum": 1539794081,
+                    "step_latency_ns_max": 540262416,
+                    "mtp_rounds": 16,
+                    "mtp_proposed": 52,
+                    "mtp_accepted": 45,
+                    "paused_ns": 0,
+                    "pause_count": 0,
+                    "detok_delay_first_ns": 66042,
+                    "prefix_lookup_ns": 708,
+                    "finish_reason": "length"
+                  }
+                },
+                "usage": {
+                  "prompt_tokens": 5503,
+                  "completion_tokens": 64,
+                  "reasoning_tokens": 64,
+                  "cache_outcome": "miss_absent",
+                  "cache_tier": "ssd",
+                  "cache_stage_ms": 0.122542
+                }
+              }
+            ],
+            "slots_after": [
+              {
+                "cache_status": {
+                  "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+                  "backend": "paged",
+                  "replay_strategy": "direct",
+                  "state": "ready",
+                  "reason": "ready"
+                },
+                "provider_id": "432d094f-cd29-46d5-9142-c2beb6dc89ca",
+                "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+                "aggregate": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+                "template_hashes": {
+                  "mlx_metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+                },
+                "cache_capability": {
+                  "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+                  "model_aggregate_hash": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+                  "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+                  "block_hash_version": "darkbloom-block-chain-v1",
+                  "block_size": 256,
+                  "cache_epoch": "1bbbcde8-2c7e-431c-a16e-c5b286c309bf",
+                  "enabled": true,
+                  "ready": true,
+                  "ready_boundary_mode": "checkpoint"
+                },
+                "capacity": {
+                  "slots": [
+                    {
+                      "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+                      "state": "idle",
+                      "num_running": 0,
+                      "num_waiting": 0,
+                      "max_concurrency": 1,
+                      "active_tokens": 0,
+                      "max_tokens_potential": 0,
+                      "observed_decode_tps": 56.15485432340672,
+                      "observed_prefill_tps": 2684.460191768587,
+                      "active_token_budget_max": 3607665,
+                      "kv_bytes_per_token": 26628,
+                      "model_load_time_ms": 30897,
+                      "kv_backend": "paged",
+                      "steps_executed": 21,
+                      "admits": 1,
+                      "first_tokens_emitted": 1,
+                      "seconds_since_last_step": 4.803378041,
+                      "seconds_since_last_first_token": 5.9266735409999995,
+                      "telemetry": {
+                        "queued_prefill_tokens": 0,
+                        "partial_prefill_rows": 0,
+                        "prefill_tokens_total": 5503,
+                        "isolated_prefill_tps": 2684.460191768587,
+                        "ewma_initialized": true,
+                        "pump_tasks": 0,
+                        "mtp_rounds_total": 16,
+                        "mtp_proposed_total": 52,
+                        "mtp_accepted_total": 45,
+                        "kv_bytes_in_use": 0,
+                        "kv_bytes_capacity": 96331929068,
+                        "eval_in_flight_ms": 0,
+                        "step_wall_ns_total": 3008461747,
+                        "decode_rows_total": 18
+                      },
+                      "prefix_cache": {
+                        "kind": "complete_checkpoint",
+                        "generation": 1,
+                        "sample_seq": 1,
+                        "sample_age_ms": 10457,
+                        "entries": 0,
+                        "disk_bytes": 0,
+                        "staging_bytes": 0,
+                        "stages_total": 0,
+                        "files_written_total": 0,
+                        "written_bytes_total": 0,
+                        "donation_drops_total": 0,
+                        "corrupt_drops_total": 0,
+                        "evictions_total": 0,
+                        "io": {
+                          "staging_peak_bytes": 0,
+                          "files_read_total": 0,
+                          "read_bytes_total": 0,
+                          "stage_read_bytes_total": 0,
+                          "donation_read_bytes_total": 0,
+                          "stage_us_total": 0,
+                          "write_us_total": 0
+                        }
+                      },
+                      "paged_storage": {
+                        "kind": "segmented",
+                        "generation": 2269185010503011,
+                        "sample_seq": 3238,
+                        "sample_age_ms": 0,
+                        "grant_bytes": 96331929068,
+                        "committed_bytes": 0,
+                        "reserved_page_bytes": 0,
+                        "live_page_bytes": 0,
+                        "poison_bytes": 0,
+                        "slack_bytes": 0,
+                        "over_grant_bytes": 0,
+                        "segment_count": 0,
+                        "address_pages": 3487,
+                        "allocator_padding_bytes": 0,
+                        "last_allocation_allowance_bytes": 229369,
+                        "nominal_kv_bytes": 0,
+                        "physical_floor_overhead_bytes": 0,
+                        "allocation_failures_total": 0,
+                        "admission_refusals_total": 0,
+                        "grant_refusals_total": 0,
+                        "grant_epoch_retries_total": 0
+                      }
+                    }
+                  ],
+                  "gpu_memory_active_gb": 20.218938243575394,
+                  "gpu_memory_peak_gb": 31.070673681795597,
+                  "gpu_memory_cache_gb": 0,
+                  "total_memory_gb": 128,
+                  "free_for_load_gb": 89.99478968326002,
+                  "mlx_cache_reclaimer": {
+                    "cache_limit_bytes": 8589934592,
+                    "sweep_signals": 22,
+                    "reclaims": 3,
+                    "reclaimed_bytes": 16521844323,
+                    "last_reclaimed_bytes": 3839554227,
+                    "last_reclaim_duration_ms": 44
+                  },
+                  "capacity_seq": 14,
+                  "telemetry": {
+                    "low_power_mode": false,
+                    "memory_pressure_level": "normal",
+                    "mlx_num_resources": 6001,
+                    "in_admission": 0,
+                    "inflight_tasks": 0,
+                    "process_memory": {
+                      "generation": 737687777532072,
+                      "sample_seq": 26,
+                      "sample_age_ms": 975,
+                      "policy_epoch": 2,
+                      "cap_bytes": 123695058124,
+                      "activation_reserve_bytes": 5905580032,
+                      "active_bytes": 21709919629,
+                      "cache_bytes": 0,
+                      "charged_bytes": 0,
+                      "materialized_bytes": 0,
+                      "unmaterialized_bytes": 0,
+                      "remaining_bytes": 89738887168,
+                      "commitment_debt_bytes": 0,
+                      "owner_count": 1,
+                      "closing_owner_count": 0,
+                      "system_available_bytes": 95644467200
+                    }
+                  },
+                  "prefix_cache_maintenance": {
+                    "ttl_expired_total": 0,
+                    "budget_evicted_total": 0,
+                    "temp_removed_total": 0
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "repeat",
+            "status": "passed",
+            "finish_reason": "length",
+            "content": "",
+            "reasoning": "Here's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Input Text:** A highly repetitive paragraph about a committee reviewing regional water infrastructure. It mentions: reservoir levels recovered after spring rain, agricultural demand rose, engineers proposed staged pumping station upgrades, canal maintenance, and acoustic leak detection.",
+            "http_usage": {
+              "completion_tokens": 64,
+              "completion_tokens_details": {
+                "reasoning_tokens": 64
+              },
+              "prompt_tokens": 5503,
+              "total_tokens": 5567
+            },
+            "terminal": [
+              {
+                "profile": {
+                  "schema": 1,
+                  "wall_ms": 1788748585837,
+                  "dequeued_us": 306,
+                  "decrypted_us": 502,
+                  "parsed_us": 681,
+                  "admission_us": 866,
+                  "accepted_sent_us": 878,
+                  "load_wait_start_us": 1120,
+                  "load_wait_end_us": 1124,
+                  "task_spawned_us": 1143,
+                  "prompt_prep_start_us": 1746,
+                  "prompt_prep_end_us": 51723,
+                  "engine_submit_us": 106934,
+                  "engine_admitted_us": 111693,
+                  "first_delta_us": 501530,
+                  "first_frame_us": 501629,
+                  "last_delta_us": 857359,
+                  "terminal_built_us": 873699,
+                  "terminal_sent_us": 873717,
+                  "total_us": 873727,
+                  "ssd_stage_us": 54873,
+                  "flush_us": 1,
+                  "se_sign_us": 14455,
+                  "slept_us": 0,
+                  "projected_service_us": 1048255,
+                  "budget_remaining_at_admit_us": 17695306,
+                  "prompt_tokens": 5503,
+                  "frames_emitted": 20,
+                  "running_at_admit": 0,
+                  "waiting_at_admit": 0,
+                  "queued_prefill_tokens_at_admit": 0,
+                  "steps_at_submit": 21,
+                  "steps_at_finish": 38,
+                  "projected_prefill_tokens": 1407,
+                  "projected_decode_tokens": 0,
+                  "partial_prefill_cap": 1,
+                  "bytes_emitted": 4947,
+                  "kv_bytes_in_use_at_admit": 0,
+                  "kv_bytes_capacity": 96331929068,
+                  "mlx_active_bytes_at_finish": 21709919629,
+                  "mlx_peak_bytes": 33361881832,
+                  "usage_recovered": false,
+                  "load_cold": false,
+                  "load_parked": false,
+                  "mtp_active": true,
+                  "low_power_mode": false,
+                  "deadline_mode": "projected",
+                  "thermal_state": "nominal",
+                  "engine": {
+                    "admitted_ns": 4701583,
+                    "kv_allocated_ns": 4701583,
+                    "prefill_first_launch_ns": 4701583,
+                    "prompt_computed_ns": 394429083,
+                    "first_token_ns": 394429083,
+                    "finished_ns": 750242166,
+                    "readmissions": 0,
+                    "preemptions": 0,
+                    "capacity_requeues": 0,
+                    "prefill_chunks": 1,
+                    "packed_prefill_chunks": 0,
+                    "vision_chunks": 0,
+                    "solo_stripe_chunks": 1,
+                    "prefill_chunk_tokens_max": 1407,
+                    "decode_steps": 16,
+                    "chained_decode_steps": 0,
+                    "batch_rows_sum": 17,
+                    "batch_rows_min": 1,
+                    "batch_rows_max": 1,
+                    "step_latency_ns_sum": 704435707,
+                    "step_latency_ns_max": 389727500,
+                    "mtp_rounds": 14,
+                    "mtp_proposed": 56,
+                    "mtp_accepted": 47,
+                    "paused_ns": 0,
+                    "pause_count": 0,
+                    "detok_delay_first_ns": 70125,
+                    "prefix_lookup_ns": 54125,
+                    "prefix_adoption_ns": 4641250,
+                    "finish_reason": "length"
+                  }
+                },
+                "usage": {
+                  "prompt_tokens": 5503,
+                  "completion_tokens": 64,
+                  "reasoning_tokens": 64,
+                  "cache_outcome": "hit",
+                  "cache_tier": "ssd",
+                  "cached_tokens": 4096,
+                  "prefill_tokens_saved": 4096,
+                  "cache_stage_ms": 54.856417
+                }
+              }
+            ],
+            "slots_after": [
+              {
+                "cache_status": {
+                  "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+                  "backend": "paged",
+                  "replay_strategy": "direct",
+                  "state": "ready",
+                  "reason": "ready"
+                },
+                "provider_id": "432d094f-cd29-46d5-9142-c2beb6dc89ca",
+                "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+                "aggregate": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+                "template_hashes": {
+                  "mlx_metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+                },
+                "cache_capability": {
+                  "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+                  "model_aggregate_hash": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+                  "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+                  "block_hash_version": "darkbloom-block-chain-v1",
+                  "block_size": 256,
+                  "cache_epoch": "1bbbcde8-2c7e-431c-a16e-c5b286c309bf",
+                  "enabled": true,
+                  "ready": true,
+                  "ready_boundary_mode": "checkpoint"
+                },
+                "capacity": {
+                  "slots": [
+                    {
+                      "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+                      "state": "idle",
+                      "num_running": 0,
+                      "num_waiting": 0,
+                      "max_concurrency": 1,
+                      "active_tokens": 0,
+                      "max_tokens_potential": 0,
+                      "observed_decode_tps": 92.36107934454768,
+                      "observed_prefill_tps": 2684.460191768587,
+                      "active_token_budget_max": 3607665,
+                      "kv_bytes_per_token": 26628,
+                      "model_load_time_ms": 30897,
+                      "kv_backend": "paged",
+                      "steps_executed": 38,
+                      "admits": 2,
+                      "first_tokens_emitted": 2,
+                      "seconds_since_last_step": 1.8493884170000001,
+                      "seconds_since_last_first_token": 2.2070615,
+                      "telemetry": {
+                        "queued_prefill_tokens": 0,
+                        "partial_prefill_rows": 0,
+                        "prefill_tokens_total": 6910,
+                        "isolated_prefill_tps": 2684.460191768587,
+                        "ewma_initialized": true,
+                        "pump_tasks": 0,
+                        "mtp_rounds_total": 30,
+                        "mtp_proposed_total": 108,
+                        "mtp_accepted_total": 92,
+                        "kv_bytes_in_use": 0,
+                        "kv_bytes_capacity": 96331929068,
+                        "eval_in_flight_ms": 0,
+                        "step_wall_ns_total": 3712897454,
+                        "decode_rows_total": 34
+                      },
+                      "prefix_cache": {
+                        "kind": "complete_checkpoint",
+                        "generation": 1,
+                        "sample_seq": 1,
+                        "sample_age_ms": 15458,
+                        "entries": 0,
+                        "disk_bytes": 0,
+                        "staging_bytes": 0,
+                        "stages_total": 0,
+                        "files_written_total": 0,
+                        "written_bytes_total": 0,
+                        "donation_drops_total": 0,
+                        "corrupt_drops_total": 0,
+                        "evictions_total": 0,
+                        "io": {
+                          "staging_peak_bytes": 0,
+                          "files_read_total": 0,
+                          "read_bytes_total": 0,
+                          "stage_read_bytes_total": 0,
+                          "donation_read_bytes_total": 0,
+                          "stage_us_total": 0,
+                          "write_us_total": 0
+                        }
+                      },
+                      "paged_storage": {
+                        "kind": "segmented",
+                        "generation": 2269185010503011,
+                        "sample_seq": 4897,
+                        "sample_age_ms": 0,
+                        "grant_bytes": 96331929068,
+                        "committed_bytes": 0,
+                        "reserved_page_bytes": 0,
+                        "live_page_bytes": 0,
+                        "poison_bytes": 0,
+                        "slack_bytes": 0,
+                        "over_grant_bytes": 0,
+                        "segment_count": 0,
+                        "address_pages": 4513,
+                        "allocator_padding_bytes": 0,
+                        "last_allocation_allowance_bytes": 163835,
+                        "nominal_kv_bytes": 0,
+                        "physical_floor_overhead_bytes": 0,
+                        "allocation_failures_total": 0,
+                        "admission_refusals_total": 0,
+                        "grant_refusals_total": 0,
+                        "grant_epoch_retries_total": 0
+                      }
+                    }
+                  ],
+                  "gpu_memory_active_gb": 20.218938243575394,
+                  "gpu_memory_peak_gb": 31.070673681795597,
+                  "gpu_memory_cache_gb": 0.35386929381638765,
+                  "total_memory_gb": 128,
+                  "free_for_load_gb": 89.84920829348266,
+                  "mlx_cache_reclaimer": {
+                    "cache_limit_bytes": 8589934592,
+                    "sweep_signals": 24,
+                    "reclaims": 4,
+                    "reclaimed_bytes": 19479744712,
+                    "last_reclaimed_bytes": 2957900389,
+                    "last_reclaim_duration_ms": 6
+                  },
+                  "capacity_seq": 18,
+                  "telemetry": {
+                    "low_power_mode": false,
+                    "memory_pressure_level": "normal",
+                    "mlx_num_resources": 7357,
+                    "in_admission": 0,
+                    "inflight_tasks": 0,
+                    "process_memory": {
+                      "generation": 737687777532072,
+                      "sample_seq": 31,
+                      "sample_age_ms": 1957,
+                      "policy_epoch": 2,
+                      "cap_bytes": 123695058124,
+                      "activation_reserve_bytes": 5905580032,
+                      "active_bytes": 21709919629,
+                      "cache_bytes": 379964261,
+                      "charged_bytes": 0,
+                      "materialized_bytes": 0,
+                      "unmaterialized_bytes": 0,
+                      "remaining_bytes": 89202606080,
+                      "commitment_debt_bytes": 0,
+                      "owner_count": 1,
+                      "closing_owner_count": 0,
+                      "system_available_bytes": 95108186112
+                    }
+                  },
+                  "prefix_cache_maintenance": {
+                    "ttl_expired_total": 0,
+                    "budget_evicted_total": 0,
+                    "temp_removed_total": 0
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "model": "qwen35",
+        "model_id": "qwen3.5-35b-a3b",
+        "report_path": "/private/tmp/darkbloom-release090-defaults-final-execution2/qwen35-evidence/steps/1/http-evidence/evidence/report.json",
+        "report_sha256": "9a95f9f4e83ea3ebc8a182b3046af5aa072e39a47b46d0ff13b64589418f06a7",
+        "archive_sha256": "809a2353b0c7f577cd0322c111a523c1b1847a14981f176497d2b3685cfc3ba9",
+        "files_verified": 85,
+        "worker_accepted": true,
+        "cleanup_complete": true,
+        "requests": [
+          {
+            "name": "cold",
+            "status": "passed",
+            "finish_reason": "length",
+            "content": "",
+            "reasoning": "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Input: A text that is heavily repetitive (the same paragraph is repeated many times).\n    *   Task: Summarize the proposed work in three sentences.\n    *   Constraint: The summary must be exactly three sentences.",
+            "http_usage": {
+              "completion_tokens": 64,
+              "completion_tokens_details": {
+                "reasoning_tokens": 64
+              },
+              "prompt_tokens": 5503,
+              "total_tokens": 5567
+            },
+            "terminal": [
+              {
+                "profile": {
+                  "schema": 1,
+                  "wall_ms": 1788748747569,
+                  "dequeued_us": 641,
+                  "decrypted_us": 961,
+                  "parsed_us": 1600,
+                  "admission_us": 2064,
+                  "accepted_sent_us": 2078,
+                  "load_wait_start_us": 2354,
+                  "load_wait_end_us": 2360,
+                  "task_spawned_us": 2385,
+                  "prompt_prep_start_us": 3282,
+                  "prompt_prep_end_us": 60758,
+                  "engine_submit_us": 61395,
+                  "engine_admitted_us": 61508,
+                  "first_delta_us": 1441660,
+                  "first_frame_us": 1441787,
+                  "last_delta_us": 1802831,
+                  "terminal_built_us": 1892402,
+                  "terminal_sent_us": 1892421,
+                  "total_us": 1892430,
+                  "ssd_stage_us": 131,
+                  "flush_us": 1,
+                  "se_sign_us": 13665,
+                  "slept_us": 0,
+                  "budget_remaining_at_admit_us": 17741492,
+                  "prompt_tokens": 5503,
+                  "frames_emitted": 23,
+                  "running_at_admit": 0,
+                  "waiting_at_admit": 0,
+                  "queued_prefill_tokens_at_admit": 0,
+                  "steps_at_submit": 0,
+                  "steps_at_finish": 22,
+                  "partial_prefill_cap": 1,
+                  "bytes_emitted": 5099,
+                  "kv_bytes_in_use_at_admit": 0,
+                  "kv_bytes_capacity": 96827921874,
+                  "mlx_active_bytes_at_finish": 21294838209,
+                  "mlx_peak_bytes": 32946800360,
+                  "usage_recovered": false,
+                  "load_cold": false,
+                  "load_parked": false,
+                  "mtp_active": true,
+                  "low_power_mode": false,
+                  "deadline_mode": "legacy",
+                  "thermal_state": "nominal",
+                  "engine": {
+                    "admitted_ns": 171792,
+                    "kv_allocated_ns": 171792,
+                    "prefill_first_launch_ns": 171792,
+                    "prompt_computed_ns": 1379980042,
+                    "first_token_ns": 1379980042,
+                    "finished_ns": 1738857250,
+                    "readmissions": 0,
+                    "preemptions": 0,
+                    "capacity_requeues": 0,
+                    "prefill_chunks": 3,
+                    "packed_prefill_chunks": 0,
+                    "vision_chunks": 0,
+                    "solo_stripe_chunks": 3,
+                    "prefill_chunk_tokens_max": 2048,
+                    "decode_steps": 19,
+                    "chained_decode_steps": 0,
+                    "batch_rows_sum": 20,
+                    "batch_rows_min": 1,
+                    "batch_rows_max": 1,
+                    "step_latency_ns_sum": 677786503,
+                    "step_latency_ns_max": 361994584,
+                    "mtp_rounds": 18,
+                    "mtp_proposed": 51,
+                    "mtp_accepted": 44,
+                    "paused_ns": 0,
+                    "pause_count": 0,
+                    "detok_delay_first_ns": 86291,
+                    "prefix_lookup_ns": 1291,
+                    "finish_reason": "length"
+                  }
+                },
+                "usage": {
+                  "prompt_tokens": 5503,
+                  "completion_tokens": 64,
+                  "reasoning_tokens": 64,
+                  "cache_outcome": "miss_absent",
+                  "cache_tier": "ssd",
+                  "cache_stage_ms": 0.129584
+                }
+              }
+            ],
+            "slots_after": [
+              {
+                "cache_status": {
+                  "model_id": "qwen3.5-35b-a3b",
+                  "backend": "paged",
+                  "replay_strategy": "direct",
+                  "state": "ready",
+                  "reason": "ready"
+                },
+                "provider_id": "7e2a8e2b-da8b-4bcd-8e0f-e379df33a4d0",
+                "model": "qwen3.5-35b-a3b",
+                "aggregate": "95811153b3bb2ed78bf44b3248b07b52fce637706107de8b0fddf21796ade01c",
+                "template_hashes": {
+                  "mlx_metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+                },
+                "cache_capability": {
+                  "model_id": "qwen3.5-35b-a3b",
+                  "model_aggregate_hash": "95811153b3bb2ed78bf44b3248b07b52fce637706107de8b0fddf21796ade01c",
+                  "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+                  "block_hash_version": "darkbloom-block-chain-v1",
+                  "block_size": 256,
+                  "cache_epoch": "45af4789-518f-4030-b725-74af83c5046a",
+                  "enabled": true,
+                  "ready": true,
+                  "ready_boundary_mode": "checkpoint"
+                },
+                "capacity": {
+                  "slots": [
+                    {
+                      "model": "qwen3.5-35b-a3b",
+                      "state": "idle",
+                      "num_running": 0,
+                      "num_waiting": 0,
+                      "max_concurrency": 1,
+                      "active_tokens": 0,
+                      "max_tokens_potential": 0,
+                      "observed_decode_tps": 144.57894930085098,
+                      "observed_prefill_tps": 3986.91471262468,
+                      "active_token_budget_max": 3626292,
+                      "kv_bytes_per_token": 26628,
+                      "model_load_time_ms": 29167,
+                      "kv_backend": "paged",
+                      "steps_executed": 22,
+                      "admits": 1,
+                      "first_tokens_emitted": 1,
+                      "seconds_since_last_step": 4.08896575,
+                      "seconds_since_last_first_token": 4.5260025,
+                      "telemetry": {
+                        "queued_prefill_tokens": 0,
+                        "partial_prefill_rows": 0,
+                        "prefill_tokens_total": 5503,
+                        "isolated_prefill_tps": 3986.91471262468,
+                        "ewma_initialized": true,
+                        "pump_tasks": 0,
+                        "mtp_rounds_total": 18,
+                        "mtp_proposed_total": 51,
+                        "mtp_accepted_total": 44,
+                        "kv_bytes_in_use": 0,
+                        "kv_bytes_capacity": 96827921874,
+                        "eval_in_flight_ms": 0,
+                        "step_wall_ns_total": 1693682003,
+                        "decode_rows_total": 19
+                      },
+                      "prefix_cache": {
+                        "kind": "complete_checkpoint",
+                        "generation": 1,
+                        "sample_seq": 1,
+                        "sample_age_ms": 7724,
+                        "entries": 0,
+                        "disk_bytes": 0,
+                        "staging_bytes": 0,
+                        "stages_total": 0,
+                        "files_written_total": 0,
+                        "written_bytes_total": 0,
+                        "donation_drops_total": 0,
+                        "corrupt_drops_total": 0,
+                        "evictions_total": 0,
+                        "io": {
+                          "staging_peak_bytes": 0,
+                          "files_read_total": 0,
+                          "read_bytes_total": 0,
+                          "stage_read_bytes_total": 0,
+                          "donation_read_bytes_total": 0,
+                          "stage_us_total": 0,
+                          "write_us_total": 0
+                        }
+                      },
+                      "paged_storage": {
+                        "kind": "segmented",
+                        "generation": 2399806072111718,
+                        "sample_seq": 2976,
+                        "sample_age_ms": 0,
+                        "grant_bytes": 96827921874,
+                        "committed_bytes": 0,
+                        "reserved_page_bytes": 0,
+                        "live_page_bytes": 0,
+                        "poison_bytes": 0,
+                        "slack_bytes": 0,
+                        "over_grant_bytes": 0,
+                        "segment_count": 0,
+                        "address_pages": 3487,
+                        "allocator_padding_bytes": 0,
+                        "last_allocation_allowance_bytes": 229369,
+                        "nominal_kv_bytes": 0,
+                        "physical_floor_overhead_bytes": 0,
+                        "allocation_failures_total": 0,
+                        "admission_refusals_total": 0,
+                        "grant_refusals_total": 0,
+                        "grant_epoch_retries_total": 0
+                      }
+                    }
+                  ],
+                  "gpu_memory_active_gb": 19.832363546825945,
+                  "gpu_memory_peak_gb": 30.684098936617374,
+                  "gpu_memory_cache_gb": 0,
+                  "total_memory_gb": 128,
+                  "free_for_load_gb": 90.00068629998714,
+                  "mlx_cache_reclaimer": {
+                    "cache_limit_bytes": 8589934592,
+                    "sweep_signals": 20,
+                    "reclaims": 2,
+                    "reclaimed_bytes": 16535748882,
+                    "last_reclaimed_bytes": 7929037074,
+                    "last_reclaim_duration_ms": 19
+                  },
+                  "capacity_seq": 12,
+                  "telemetry": {
+                    "low_power_mode": false,
+                    "memory_pressure_level": "normal",
+                    "mlx_num_resources": 6029,
+                    "in_admission": 0,
+                    "inflight_tasks": 0,
+                    "process_memory": {
+                      "generation": 1463612332292035,
+                      "sample_seq": 24,
+                      "sample_age_ms": 107,
+                      "policy_epoch": 2,
+                      "cap_bytes": 123695058124,
+                      "activation_reserve_bytes": 5905580032,
+                      "active_bytes": 21294838209,
+                      "cache_bytes": 0,
+                      "charged_bytes": 0,
+                      "materialized_bytes": 0,
+                      "unmaterialized_bytes": 0,
+                      "remaining_bytes": 90160300032,
+                      "commitment_debt_bytes": 0,
+                      "owner_count": 1,
+                      "closing_owner_count": 0,
+                      "system_available_bytes": 96065880064
+                    }
+                  },
+                  "prefix_cache_maintenance": {
+                    "ttl_expired_total": 0,
+                    "budget_evicted_total": 0,
+                    "temp_removed_total": 0
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "repeat",
+            "status": "passed",
+            "finish_reason": "length",
+            "content": "",
+            "reasoning": "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Input: A text that is heavily repetitive (the same paragraph is repeated many times).\n    *   Task: Summarize the proposed work in three sentences.\n    *   Constraint: The summary must be exactly three sentences.",
+            "http_usage": {
+              "completion_tokens": 64,
+              "completion_tokens_details": {
+                "reasoning_tokens": 64
+              },
+              "prompt_tokens": 5503,
+              "total_tokens": 5567
+            },
+            "terminal": [
+              {
+                "profile": {
+                  "schema": 1,
+                  "wall_ms": 1788748755568,
+                  "dequeued_us": 285,
+                  "decrypted_us": 479,
+                  "parsed_us": 649,
+                  "admission_us": 832,
+                  "accepted_sent_us": 844,
+                  "load_wait_start_us": 1104,
+                  "load_wait_end_us": 1108,
+                  "task_spawned_us": 1127,
+                  "prompt_prep_start_us": 1694,
+                  "prompt_prep_end_us": 51246,
+                  "engine_submit_us": 109663,
+                  "engine_admitted_us": 114585,
+                  "first_delta_us": 490278,
+                  "first_frame_us": 490386,
+                  "last_delta_us": 845461,
+                  "terminal_built_us": 861619,
+                  "terminal_sent_us": 861639,
+                  "total_us": 861647,
+                  "ssd_stage_us": 58081,
+                  "flush_us": 1,
+                  "se_sign_us": 14335,
+                  "slept_us": 0,
+                  "projected_service_us": 705808,
+                  "budget_remaining_at_admit_us": 17692414,
+                  "prompt_tokens": 5503,
+                  "frames_emitted": 21,
+                  "running_at_admit": 0,
+                  "waiting_at_admit": 0,
+                  "queued_prefill_tokens_at_admit": 0,
+                  "steps_at_submit": 22,
+                  "steps_at_finish": 40,
+                  "projected_prefill_tokens": 1407,
+                  "projected_decode_tokens": 0,
+                  "partial_prefill_cap": 1,
+                  "bytes_emitted": 4742,
+                  "kv_bytes_in_use_at_admit": 0,
+                  "kv_bytes_capacity": 96827921874,
+                  "mlx_active_bytes_at_finish": 21294838209,
+                  "mlx_peak_bytes": 32946800360,
+                  "usage_recovered": false,
+                  "load_cold": false,
+                  "load_parked": false,
+                  "mtp_active": true,
+                  "low_power_mode": false,
+                  "deadline_mode": "projected",
+                  "thermal_state": "nominal",
+                  "engine": {
+                    "admitted_ns": 4865291,
+                    "kv_allocated_ns": 4865291,
+                    "prefill_first_launch_ns": 4865291,
+                    "prompt_computed_ns": 380454083,
+                    "first_token_ns": 380454083,
+                    "finished_ns": 733306416,
+                    "readmissions": 0,
+                    "preemptions": 0,
+                    "capacity_requeues": 0,
+                    "prefill_chunks": 1,
+                    "packed_prefill_chunks": 0,
+                    "vision_chunks": 0,
+                    "solo_stripe_chunks": 1,
+                    "prefill_chunk_tokens_max": 1407,
+                    "decode_steps": 17,
+                    "chained_decode_steps": 0,
+                    "batch_rows_sum": 18,
+                    "batch_rows_min": 1,
+                    "batch_rows_max": 1,
+                    "step_latency_ns_sum": 686681666,
+                    "step_latency_ns_max": 375588792,
+                    "mtp_rounds": 16,
+                    "mtp_proposed": 56,
+                    "mtp_accepted": 46,
+                    "paused_ns": 0,
+                    "pause_count": 0,
+                    "detok_delay_first_ns": 67625,
+                    "prefix_lookup_ns": 56042,
+                    "prefix_adoption_ns": 4803625,
+                    "finish_reason": "length"
+                  }
+                },
+                "usage": {
+                  "prompt_tokens": 5503,
+                  "completion_tokens": 64,
+                  "reasoning_tokens": 64,
+                  "cache_outcome": "hit",
+                  "cache_tier": "ssd",
+                  "cached_tokens": 4096,
+                  "prefill_tokens_saved": 4096,
+                  "cache_stage_ms": 58.063292
+                }
+              }
+            ],
+            "slots_after": [
+              {
+                "cache_status": {
+                  "model_id": "qwen3.5-35b-a3b",
+                  "backend": "paged",
+                  "replay_strategy": "direct",
+                  "state": "ready",
+                  "reason": "ready"
+                },
+                "provider_id": "7e2a8e2b-da8b-4bcd-8e0f-e379df33a4d0",
+                "model": "qwen3.5-35b-a3b",
+                "aggregate": "95811153b3bb2ed78bf44b3248b07b52fce637706107de8b0fddf21796ade01c",
+                "template_hashes": {
+                  "mlx_metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+                },
+                "cache_capability": {
+                  "model_id": "qwen3.5-35b-a3b",
+                  "model_aggregate_hash": "95811153b3bb2ed78bf44b3248b07b52fce637706107de8b0fddf21796ade01c",
+                  "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+                  "block_hash_version": "darkbloom-block-chain-v1",
+                  "block_size": 256,
+                  "cache_epoch": "45af4789-518f-4030-b725-74af83c5046a",
+                  "enabled": true,
+                  "ready": true,
+                  "ready_boundary_mode": "checkpoint"
+                },
+                "capacity": {
+                  "slots": [
+                    {
+                      "model": "qwen3.5-35b-a3b",
+                      "state": "idle",
+                      "num_running": 0,
+                      "num_waiting": 0,
+                      "max_concurrency": 1,
+                      "active_tokens": 0,
+                      "max_tokens_potential": 0,
+                      "observed_decode_tps": 154.3569758029189,
+                      "observed_prefill_tps": 3986.91471262468,
+                      "active_token_budget_max": 3626292,
+                      "kv_bytes_per_token": 26628,
+                      "model_load_time_ms": 29167,
+                      "kv_backend": "paged",
+                      "steps_executed": 40,
+                      "admits": 2,
+                      "first_tokens_emitted": 2,
+                      "seconds_since_last_step": 1.126253458,
+                      "seconds_since_last_first_token": 1.483219333,
+                      "telemetry": {
+                        "queued_prefill_tokens": 0,
+                        "partial_prefill_rows": 0,
+                        "prefill_tokens_total": 6910,
+                        "isolated_prefill_tps": 3986.91471262468,
+                        "ewma_initialized": true,
+                        "pump_tasks": 0,
+                        "mtp_rounds_total": 34,
+                        "mtp_proposed_total": 107,
+                        "mtp_accepted_total": 90,
+                        "kv_bytes_in_use": 0,
+                        "kv_bytes_capacity": 96827921874,
+                        "eval_in_flight_ms": 0,
+                        "step_wall_ns_total": 2380363669,
+                        "decode_rows_total": 36
+                      },
+                      "prefix_cache": {
+                        "kind": "complete_checkpoint",
+                        "generation": 1,
+                        "sample_seq": 1,
+                        "sample_age_ms": 12724,
+                        "entries": 0,
+                        "disk_bytes": 0,
+                        "staging_bytes": 0,
+                        "stages_total": 0,
+                        "files_written_total": 0,
+                        "written_bytes_total": 0,
+                        "donation_drops_total": 0,
+                        "corrupt_drops_total": 0,
+                        "evictions_total": 0,
+                        "io": {
+                          "staging_peak_bytes": 0,
+                          "files_read_total": 0,
+                          "read_bytes_total": 0,
+                          "stage_read_bytes_total": 0,
+                          "donation_read_bytes_total": 0,
+                          "stage_us_total": 0,
+                          "write_us_total": 0
+                        }
+                      },
+                      "paged_storage": {
+                        "kind": "segmented",
+                        "generation": 2399806072111718,
+                        "sample_seq": 4640,
+                        "sample_age_ms": 0,
+                        "grant_bytes": 96827921874,
+                        "committed_bytes": 0,
+                        "reserved_page_bytes": 0,
+                        "live_page_bytes": 0,
+                        "poison_bytes": 0,
+                        "slack_bytes": 0,
+                        "over_grant_bytes": 0,
+                        "segment_count": 0,
+                        "address_pages": 4513,
+                        "allocator_padding_bytes": 0,
+                        "last_allocation_allowance_bytes": 163835,
+                        "nominal_kv_bytes": 0,
+                        "physical_floor_overhead_bytes": 0,
+                        "allocation_failures_total": 0,
+                        "admission_refusals_total": 0,
+                        "grant_refusals_total": 0,
+                        "grant_epoch_retries_total": 0
+                      }
+                    }
+                  ],
+                  "gpu_memory_active_gb": 19.832363546825945,
+                  "gpu_memory_peak_gb": 30.684098936617374,
+                  "gpu_memory_cache_gb": 3.112021184526384,
+                  "total_memory_gb": 128,
+                  "free_for_load_gb": 89.81928097084165,
+                  "mlx_cache_reclaimer": {
+                    "cache_limit_bytes": 8589934592,
+                    "sweep_signals": 22,
+                    "reclaims": 2,
+                    "reclaimed_bytes": 16535748882,
+                    "last_reclaimed_bytes": 7929037074,
+                    "last_reclaim_duration_ms": 19
+                  },
+                  "capacity_seq": 15,
+                  "telemetry": {
+                    "low_power_mode": false,
+                    "memory_pressure_level": "normal",
+                    "mlx_num_resources": 7986,
+                    "in_admission": 0,
+                    "inflight_tasks": 0,
+                    "process_memory": {
+                      "generation": 1463612332292035,
+                      "sample_seq": 29,
+                      "sample_age_ms": 1102,
+                      "policy_epoch": 2,
+                      "cap_bytes": 123695058124,
+                      "activation_reserve_bytes": 5905580032,
+                      "active_bytes": 21294838209,
+                      "cache_bytes": 3341507303,
+                      "charged_bytes": 0,
+                      "materialized_bytes": 0,
+                      "unmaterialized_bytes": 0,
+                      "remaining_bytes": 86624010240,
+                      "commitment_debt_bytes": 0,
+                      "owner_count": 1,
+                      "closing_owner_count": 0,
+                      "system_available_bytes": 92529590272
+                    }
+                  },
+                  "prefix_cache_maintenance": {
+                    "ttl_expired_total": 0,
+                    "budget_evicted_total": 0,
+                    "temp_removed_total": 0
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "model": "qwen38",
+        "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+        "report_path": "/private/tmp/darkbloom-release090-defaults-final-execution2/qwen38-evidence/steps/1/http-evidence/evidence/report.json",
+        "report_sha256": "c894d519a079ba401a30449f2e09a7fac7194ab805f114d49ac8e233767e15be",
+        "archive_sha256": "e14633d7b4a317fcdc0fd2ae3055013d675d6fc257c88ec3815665f42cc3a631",
+        "files_verified": 85,
+        "worker_accepted": true,
+        "cleanup_complete": true,
+        "requests": [
+          {
+            "name": "cold",
+            "status": "passed",
+            "finish_reason": "length",
+            "content": "",
+            "reasoning": "We need to respond to user: \"The committee reviewed regional water infrastructure... [repeated many times] ... The committee reviewed regional water infrastructure. Reservoir levels recovered after spring rain while agricultural demand rose. Engineers proposed staged pumping station upgrades, canal maintenance, and acoustic leak detection. The council requested costs, schedules, and",
+            "http_usage": {
+              "completion_tokens": 64,
+              "completion_tokens_details": {
+                "reasoning_tokens": 64
+              },
+              "prompt_tokens": 5545,
+              "total_tokens": 5609
+            },
+            "terminal": [
+              {
+                "profile": {
+                  "schema": 1,
+                  "wall_ms": 1788748903239,
+                  "dequeued_us": 679,
+                  "decrypted_us": 966,
+                  "parsed_us": 1576,
+                  "admission_us": 2039,
+                  "accepted_sent_us": 2052,
+                  "load_wait_start_us": 2339,
+                  "load_wait_end_us": 2348,
+                  "task_spawned_us": 2375,
+                  "prompt_prep_start_us": 3134,
+                  "prompt_prep_end_us": 62023,
+                  "engine_submit_us": 62563,
+                  "engine_admitted_us": 62625,
+                  "first_delta_us": 6213172,
+                  "first_frame_us": 6213308,
+                  "last_delta_us": 7135093,
+                  "terminal_built_us": 7271660,
+                  "terminal_sent_us": 7271681,
+                  "total_us": 7271688,
+                  "ssd_stage_us": 124,
+                  "flush_us": 1,
+                  "se_sign_us": 14821,
+                  "slept_us": 0,
+                  "budget_remaining_at_admit_us": 17741374,
+                  "prompt_tokens": 5545,
+                  "frames_emitted": 22,
+                  "running_at_admit": 0,
+                  "waiting_at_admit": 0,
+                  "queued_prefill_tokens_at_admit": 0,
+                  "steps_at_submit": 0,
+                  "steps_at_finish": 20,
+                  "partial_prefill_cap": 1,
+                  "bytes_emitted": 5438,
+                  "kv_bytes_in_use_at_admit": 0,
+                  "kv_bytes_capacity": 101448498719,
+                  "mlx_active_bytes_at_finish": 18572961969,
+                  "mlx_peak_bytes": 26141818269,
+                  "usage_recovered": false,
+                  "load_cold": false,
+                  "load_parked": false,
+                  "mtp_active": true,
+                  "low_power_mode": false,
+                  "deadline_mode": "legacy",
+                  "thermal_state": "nominal",
+                  "engine": {
+                    "admitted_ns": 1864917,
+                    "kv_allocated_ns": 1864917,
+                    "prefill_first_launch_ns": 1864917,
+                    "prompt_computed_ns": 6150407667,
+                    "first_token_ns": 6150407667,
+                    "finished_ns": 7066587667,
+                    "readmissions": 0,
+                    "preemptions": 0,
+                    "capacity_requeues": 0,
+                    "prefill_chunks": 2,
+                    "packed_prefill_chunks": 0,
+                    "vision_chunks": 0,
+                    "solo_stripe_chunks": 2,
+                    "prefill_chunk_tokens_max": 4096,
+                    "decode_steps": 18,
+                    "chained_decode_steps": 0,
+                    "batch_rows_sum": 19,
+                    "batch_rows_min": 1,
+                    "batch_rows_max": 1,
+                    "step_latency_ns_sum": 2511056501,
+                    "step_latency_ns_max": 1692520625,
+                    "mtp_rounds": 17,
+                    "mtp_proposed": 54,
+                    "mtp_accepted": 45,
+                    "paused_ns": 0,
+                    "pause_count": 0,
+                    "detok_delay_first_ns": 91708,
+                    "prefix_lookup_ns": 875,
+                    "finish_reason": "length"
+                  }
+                },
+                "usage": {
+                  "prompt_tokens": 5545,
+                  "completion_tokens": 64,
+                  "reasoning_tokens": 64,
+                  "cache_outcome": "miss_absent",
+                  "cache_tier": "ssd",
+                  "cache_stage_ms": 0.123292
+                }
+              }
+            ],
+            "slots_after": [
+              {
+                "cache_status": {
+                  "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+                  "backend": "paged",
+                  "replay_strategy": "direct",
+                  "state": "ready",
+                  "reason": "ready"
+                },
+                "provider_id": "a09d0dc9-ca10-40ed-8a37-c04c4720e5da",
+                "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+                "aggregate": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+                "template_hashes": {
+                  "mlx_metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+                },
+                "cache_capability": {
+                  "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+                  "model_aggregate_hash": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+                  "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+                  "block_hash_version": "darkbloom-block-chain-v1",
+                  "block_size": 256,
+                  "cache_epoch": "544a6a37-6783-4c90-85a3-81ceca67bee6",
+                  "enabled": true,
+                  "ready": true,
+                  "ready_boundary_mode": "checkpoint"
+                },
+                "capacity": {
+                  "slots": [
+                    {
+                      "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+                      "state": "idle",
+                      "num_running": 0,
+                      "num_waiting": 0,
+                      "max_concurrency": 1,
+                      "active_tokens": 0,
+                      "max_tokens_potential": 0,
+                      "observed_decode_tps": 60.57282177270119,
+                      "observed_prefill_tps": 901.5367238118876,
+                      "active_token_budget_max": 1262151,
+                      "kv_bytes_per_token": 79876,
+                      "model_load_time_ms": 22872,
+                      "kv_backend": "paged",
+                      "steps_executed": 20,
+                      "admits": 1,
+                      "first_tokens_emitted": 1,
+                      "seconds_since_last_step": 4.579417459,
+                      "seconds_since_last_first_token": 5.623044834,
+                      "telemetry": {
+                        "queued_prefill_tokens": 0,
+                        "partial_prefill_rows": 0,
+                        "prefill_tokens_total": 5545,
+                        "isolated_prefill_tps": 901.5367238118876,
+                        "ewma_initialized": true,
+                        "pump_tasks": 0,
+                        "mtp_rounds_total": 17,
+                        "mtp_proposed_total": 54,
+                        "mtp_accepted_total": 45,
+                        "kv_bytes_in_use": 0,
+                        "kv_bytes_capacity": 101448498719,
+                        "eval_in_flight_ms": 0,
+                        "step_wall_ns_total": 6965953667,
+                        "decode_rows_total": 18
+                      },
+                      "prefix_cache": {
+                        "kind": "complete_checkpoint",
+                        "generation": 1,
+                        "sample_seq": 1,
+                        "sample_age_ms": 13406,
+                        "entries": 0,
+                        "disk_bytes": 0,
+                        "staging_bytes": 0,
+                        "stages_total": 0,
+                        "files_written_total": 0,
+                        "written_bytes_total": 0,
+                        "donation_drops_total": 0,
+                        "corrupt_drops_total": 0,
+                        "evictions_total": 0,
+                        "io": {
+                          "staging_peak_bytes": 0,
+                          "files_read_total": 0,
+                          "read_bytes_total": 0,
+                          "stage_read_bytes_total": 0,
+                          "donation_read_bytes_total": 0,
+                          "stage_us_total": 0,
+                          "write_us_total": 0
+                        }
+                      },
+                      "paged_storage": {
+                        "kind": "segmented",
+                        "generation": 1656838154586988,
+                        "sample_seq": 3133,
+                        "sample_age_ms": 0,
+                        "grant_bytes": 101448498719,
+                        "committed_bytes": 0,
+                        "reserved_page_bytes": 0,
+                        "live_page_bytes": 0,
+                        "poison_bytes": 0,
+                        "slack_bytes": 0,
+                        "over_grant_bytes": 0,
+                        "segment_count": 0,
+                        "address_pages": 5631,
+                        "allocator_padding_bytes": 0,
+                        "last_allocation_allowance_bytes": 491505,
+                        "nominal_kv_bytes": 0,
+                        "physical_floor_overhead_bytes": 0,
+                        "allocation_failures_total": 0,
+                        "admission_refusals_total": 0,
+                        "grant_refusals_total": 0,
+                        "grant_epoch_retries_total": 0
+                      }
+                    }
+                  ],
+                  "gpu_memory_active_gb": 17.297418759204447,
+                  "gpu_memory_peak_gb": 24.346465495415032,
+                  "gpu_memory_cache_gb": 0,
+                  "total_memory_gb": 128,
+                  "free_for_load_gb": 90.0308202477172,
+                  "mlx_cache_reclaimer": {
+                    "cache_limit_bytes": 8589934592,
+                    "sweep_signals": 20,
+                    "reclaims": 2,
+                    "reclaimed_bytes": 13538829967,
+                    "last_reclaimed_bytes": 8591351628,
+                    "last_reclaim_duration_ms": 72
+                  },
+                  "capacity_seq": 13,
+                  "telemetry": {
+                    "low_power_mode": false,
+                    "memory_pressure_level": "normal",
+                    "mlx_num_resources": 6514,
+                    "in_admission": 0,
+                    "inflight_tasks": 0,
+                    "process_memory": {
+                      "generation": 2415494772362827,
+                      "sample_seq": 24,
+                      "sample_age_ms": 147,
+                      "policy_epoch": 2,
+                      "cap_bytes": 123695058124,
+                      "activation_reserve_bytes": 5905580032,
+                      "active_bytes": 18572961969,
+                      "cache_bytes": 0,
+                      "charged_bytes": 0,
+                      "materialized_bytes": 0,
+                      "unmaterialized_bytes": 0,
+                      "remaining_bytes": 92914532352,
+                      "commitment_debt_bytes": 0,
+                      "owner_count": 1,
+                      "closing_owner_count": 0,
+                      "system_available_bytes": 98820112384
+                    }
+                  },
+                  "prefix_cache_maintenance": {
+                    "ttl_expired_total": 0,
+                    "budget_evicted_total": 0,
+                    "temp_removed_total": 0
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "repeat",
+            "status": "passed",
+            "finish_reason": "length",
+            "content": "",
+            "reasoning": "We need to respond to user: \"The committee reviewed regional water infrastructure... [repeated many times] ... The committee reviewed regional water infrastructure. Reservoir levels recovered after spring rain while agricultural demand rose. Engineers proposed staged pumping station upgrades, canal maintenance, and acoustic leak detection. The council requested costs, schedules, and",
+            "http_usage": {
+              "completion_tokens": 64,
+              "completion_tokens_details": {
+                "reasoning_tokens": 64
+              },
+              "prompt_tokens": 5545,
+              "total_tokens": 5609
+            },
+            "terminal": [
+              {
+                "profile": {
+                  "schema": 1,
+                  "wall_ms": 1788748916596,
+                  "dequeued_us": 300,
+                  "decrypted_us": 494,
+                  "parsed_us": 668,
+                  "admission_us": 855,
+                  "accepted_sent_us": 866,
+                  "load_wait_start_us": 1092,
+                  "load_wait_end_us": 1101,
+                  "task_spawned_us": 1124,
+                  "prompt_prep_start_us": 1716,
+                  "prompt_prep_end_us": 51662,
+                  "engine_submit_us": 192581,
+                  "engine_admitted_us": 197624,
+                  "first_delta_us": 1876194,
+                  "first_frame_us": 1876291,
+                  "last_delta_us": 2753906,
+                  "terminal_built_us": 2770703,
+                  "terminal_sent_us": 2770724,
+                  "total_us": 2770732,
+                  "ssd_stage_us": 140597,
+                  "flush_us": 1,
+                  "se_sign_us": 14836,
+                  "slept_us": 0,
+                  "projected_service_us": 3214511,
+                  "budget_remaining_at_admit_us": 17608375,
+                  "prompt_tokens": 5545,
+                  "frames_emitted": 20,
+                  "running_at_admit": 0,
+                  "waiting_at_admit": 0,
+                  "queued_prefill_tokens_at_admit": 0,
+                  "steps_at_submit": 20,
+                  "steps_at_finish": 37,
+                  "projected_prefill_tokens": 1449,
+                  "projected_decode_tokens": 0,
+                  "partial_prefill_cap": 1,
+                  "bytes_emitted": 5051,
+                  "kv_bytes_in_use_at_admit": 0,
+                  "kv_bytes_capacity": 101448498719,
+                  "mlx_active_bytes_at_finish": 18572961969,
+                  "mlx_peak_bytes": 26141818269,
+                  "usage_recovered": false,
+                  "load_cold": false,
+                  "load_parked": false,
+                  "mtp_active": true,
+                  "low_power_mode": false,
+                  "deadline_mode": "projected",
+                  "thermal_state": "nominal",
+                  "engine": {
+                    "admitted_ns": 4966334,
+                    "kv_allocated_ns": 4966334,
+                    "prefill_first_launch_ns": 4966334,
+                    "prompt_computed_ns": 1683421542,
+                    "first_token_ns": 1683421542,
+                    "finished_ns": 2555487334,
+                    "readmissions": 0,
+                    "preemptions": 0,
+                    "capacity_requeues": 0,
+                    "prefill_chunks": 1,
+                    "packed_prefill_chunks": 0,
+                    "vision_chunks": 0,
+                    "solo_stripe_chunks": 1,
+                    "prefill_chunk_tokens_max": 1449,
+                    "decode_steps": 16,
+                    "chained_decode_steps": 0,
+                    "batch_rows_sum": 17,
+                    "batch_rows_min": 1,
+                    "batch_rows_max": 1,
+                    "step_latency_ns_sum": 2464873458,
+                    "step_latency_ns_max": 1678455208,
+                    "mtp_rounds": 15,
+                    "mtp_proposed": 58,
+                    "mtp_accepted": 47,
+                    "paused_ns": 0,
+                    "pause_count": 0,
+                    "detok_delay_first_ns": 77500,
+                    "prefix_lookup_ns": 74042,
+                    "prefix_adoption_ns": 4903667,
+                    "finish_reason": "length"
+                  }
+                },
+                "usage": {
+                  "prompt_tokens": 5545,
+                  "completion_tokens": 64,
+                  "reasoning_tokens": 64,
+                  "cache_outcome": "hit",
+                  "cache_tier": "ssd",
+                  "cached_tokens": 4096,
+                  "prefill_tokens_saved": 4096,
+                  "cache_stage_ms": 140.580375
+                }
+              }
+            ],
+            "slots_after": [
+              {
+                "cache_status": {
+                  "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+                  "backend": "paged",
+                  "replay_strategy": "direct",
+                  "state": "ready",
+                  "reason": "ready"
+                },
+                "provider_id": "a09d0dc9-ca10-40ed-8a37-c04c4720e5da",
+                "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+                "aggregate": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+                "template_hashes": {
+                  "mlx_metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+                },
+                "cache_capability": {
+                  "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+                  "model_aggregate_hash": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+                  "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+                  "block_hash_version": "darkbloom-block-chain-v1",
+                  "block_size": 256,
+                  "cache_epoch": "544a6a37-6783-4c90-85a3-81ceca67bee6",
+                  "enabled": true,
+                  "ready": true,
+                  "ready_boundary_mode": "checkpoint"
+                },
+                "capacity": {
+                  "slots": [
+                    {
+                      "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+                      "state": "idle",
+                      "num_running": 0,
+                      "num_waiting": 0,
+                      "max_concurrency": 1,
+                      "active_tokens": 0,
+                      "max_tokens_potential": 0,
+                      "observed_decode_tps": 63.92312041800869,
+                      "observed_prefill_tps": 901.5367238118876,
+                      "active_token_budget_max": 1262151,
+                      "kv_bytes_per_token": 79876,
+                      "model_load_time_ms": 22872,
+                      "kv_backend": "paged",
+                      "steps_executed": 37,
+                      "admits": 2,
+                      "first_tokens_emitted": 2,
+                      "seconds_since_last_step": 5.773408,
+                      "seconds_since_last_first_token": 6.653031791,
+                      "telemetry": {
+                        "queued_prefill_tokens": 0,
+                        "partial_prefill_rows": 0,
+                        "prefill_tokens_total": 6994,
+                        "isolated_prefill_tps": 901.5367238118876,
+                        "ewma_initialized": true,
+                        "pump_tasks": 0,
+                        "mtp_rounds_total": 32,
+                        "mtp_proposed_total": 112,
+                        "mtp_accepted_total": 92,
+                        "kv_bytes_in_use": 0,
+                        "kv_bytes_capacity": 101448498719,
+                        "eval_in_flight_ms": 0,
+                        "step_wall_ns_total": 9430827125,
+                        "decode_rows_total": 34
+                      },
+                      "prefix_cache": {
+                        "kind": "complete_checkpoint",
+                        "generation": 1,
+                        "sample_seq": 1,
+                        "sample_age_ms": 23407,
+                        "entries": 0,
+                        "disk_bytes": 0,
+                        "staging_bytes": 0,
+                        "stages_total": 0,
+                        "files_written_total": 0,
+                        "written_bytes_total": 0,
+                        "donation_drops_total": 0,
+                        "corrupt_drops_total": 0,
+                        "evictions_total": 0,
+                        "io": {
+                          "staging_peak_bytes": 0,
+                          "files_read_total": 0,
+                          "read_bytes_total": 0,
+                          "stage_read_bytes_total": 0,
+                          "donation_read_bytes_total": 0,
+                          "stage_us_total": 0,
+                          "write_us_total": 0
+                        }
+                      },
+                      "paged_storage": {
+                        "kind": "segmented",
+                        "generation": 1656838154586988,
+                        "sample_seq": 6950,
+                        "sample_age_ms": 0,
+                        "grant_bytes": 101448498719,
+                        "committed_bytes": 0,
+                        "reserved_page_bytes": 0,
+                        "live_page_bytes": 0,
+                        "poison_bytes": 0,
+                        "slack_bytes": 0,
+                        "over_grant_bytes": 0,
+                        "segment_count": 0,
+                        "address_pages": 5631,
+                        "allocator_padding_bytes": 0,
+                        "last_allocation_allowance_bytes": 229369,
+                        "nominal_kv_bytes": 0,
+                        "physical_floor_overhead_bytes": 0,
+                        "allocation_failures_total": 0,
+                        "admission_refusals_total": 0,
+                        "grant_refusals_total": 0,
+                        "grant_epoch_retries_total": 0
+                      }
+                    }
+                  ],
+                  "gpu_memory_active_gb": 17.297418759204447,
+                  "gpu_memory_peak_gb": 24.346465495415032,
+                  "gpu_memory_cache_gb": 0.90754334628582,
+                  "total_memory_gb": 128,
+                  "free_for_load_gb": 89.67308954615146,
+                  "mlx_cache_reclaimer": {
+                    "cache_limit_bytes": 8589934592,
+                    "sweep_signals": 25,
+                    "reclaims": 3,
+                    "reclaimed_bytes": 17684134966,
+                    "last_reclaimed_bytes": 4145304999,
+                    "last_reclaim_duration_ms": 26
+                  },
+                  "capacity_seq": 18,
+                  "telemetry": {
+                    "low_power_mode": false,
+                    "memory_pressure_level": "normal",
+                    "mlx_num_resources": 8367,
+                    "in_admission": 0,
+                    "inflight_tasks": 0,
+                    "process_memory": {
+                      "generation": 2415494772362827,
+                      "sample_seq": 32,
+                      "sample_age_ms": 99,
+                      "policy_epoch": 2,
+                      "cap_bytes": 123695058124,
+                      "activation_reserve_bytes": 5905580032,
+                      "active_bytes": 18572961969,
+                      "cache_bytes": 974467248,
+                      "charged_bytes": 0,
+                      "materialized_bytes": 0,
+                      "unmaterialized_bytes": 0,
+                      "remaining_bytes": 91555954688,
+                      "commitment_debt_bytes": 0,
+                      "owner_count": 1,
+                      "closing_owner_count": 0,
+                      "system_available_bytes": 97461534720
+                    }
+                  },
+                  "prefix_cache_maintenance": {
+                    "ttl_expired_total": 0,
+                    "budget_evicted_total": 0,
+                    "temp_removed_total": 0
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "model": "gpt-oss-20b",
+        "model_id": "gpt-oss-20b",
+        "report_path": "/private/tmp/darkbloom-release090-defaults-final-execution2/gpt-oss-20b-evidence/steps/1/http-evidence/evidence/report.json",
+        "report_sha256": "87f6ee2004709a444ef3ecad9e1228f517a7f12cfcb8735b94e2a4e6fe09a9eb",
+        "archive_sha256": "5a681d446fa430a0ea10d1408ff9c1179bde1d0d5e3a952b596a3c9b7a9ee946",
+        "files_verified": 85,
+        "worker_accepted": true,
+        "cleanup_complete": true,
+        "requests": [
+          {
+            "name": "cold",
+            "status": "passed",
+            "finish_reason": "length",
+            "content": "",
+            "reasoning": "The user pasted a repetitive paragraph many times. They want a summary of the proposed work in three sentences. The content: committee reviewed regional water infrastructure; reservoir levels recovered after spring rain while agricultural demand rose; engineers proposed staged pumping station upgrades, canal maintenance, and acoustic leak detection; council requested costs, schedules",
+            "http_usage": {
+              "completion_tokens": 64,
+              "completion_tokens_details": {
+                "reasoning_tokens": 61
+              },
+              "prompt_tokens": 5454,
+              "total_tokens": 5518
+            },
+            "terminal": [
+              {
+                "profile": {
+                  "schema": 1,
+                  "wall_ms": 1788749015478,
+                  "dequeued_us": 419,
+                  "decrypted_us": 685,
+                  "parsed_us": 1237,
+                  "admission_us": 1607,
+                  "accepted_sent_us": 1619,
+                  "load_wait_start_us": 1878,
+                  "load_wait_end_us": 1883,
+                  "task_spawned_us": 1922,
+                  "prompt_prep_start_us": 2785,
+                  "prompt_prep_end_us": 66289,
+                  "engine_submit_us": 66418,
+                  "engine_admitted_us": 66479,
+                  "first_delta_us": 3105996,
+                  "first_frame_us": 3159457,
+                  "last_delta_us": 3633575,
+                  "terminal_built_us": 3653016,
+                  "terminal_sent_us": 3653020,
+                  "total_us": 3653036,
+                  "flush_us": 0,
+                  "se_sign_us": 15411,
+                  "slept_us": 1,
+                  "budget_remaining_at_admit_us": 17753520,
+                  "prompt_tokens": 5454,
+                  "frames_emitted": 64,
+                  "running_at_admit": 0,
+                  "waiting_at_admit": 0,
+                  "queued_prefill_tokens_at_admit": 0,
+                  "steps_at_submit": 0,
+                  "steps_at_finish": 67,
+                  "partial_prefill_cap": 1,
+                  "bytes_emitted": 13355,
+                  "kv_bytes_in_use_at_admit": 0,
+                  "kv_bytes_capacity": 107860842572,
+                  "mlx_active_bytes_at_finish": 12254689973,
+                  "mlx_peak_bytes": 14661967216,
+                  "usage_recovered": false,
+                  "load_cold": false,
+                  "load_parked": false,
+                  "mtp_active": false,
+                  "low_power_mode": false,
+                  "deadline_mode": "legacy",
+                  "thermal_state": "nominal",
+                  "engine": {
+                    "admitted_ns": 2220042,
+                    "kv_allocated_ns": 2220042,
+                    "prefill_first_launch_ns": 2220042,
+                    "prompt_computed_ns": 3039428459,
+                    "first_token_ns": 3039428459,
+                    "finished_ns": 3566997375,
+                    "readmissions": 0,
+                    "preemptions": 0,
+                    "capacity_requeues": 0,
+                    "prefill_chunks": 3,
+                    "packed_prefill_chunks": 0,
+                    "vision_chunks": 0,
+                    "solo_stripe_chunks": 3,
+                    "prefill_chunk_tokens_max": 2048,
+                    "decode_steps": 63,
+                    "chained_decode_steps": 63,
+                    "batch_rows_sum": 64,
+                    "batch_rows_min": 1,
+                    "batch_rows_max": 1,
+                    "step_latency_ns_sum": 1742233000,
+                    "step_latency_ns_max": 550188459,
+                    "mtp_rounds": 0,
+                    "mtp_proposed": 0,
+                    "mtp_accepted": 0,
+                    "paused_ns": 0,
+                    "pause_count": 0,
+                    "detok_delay_first_ns": 43250,
+                    "finish_reason": "length"
+                  }
+                },
+                "usage": {
+                  "prompt_tokens": 5454,
+                  "completion_tokens": 64,
+                  "reasoning_tokens": 61
+                }
+              }
+            ],
+            "slots_after": [
+              {
+                "cache_status": {
+                  "model_id": "gpt-oss-20b",
+                  "backend": "paged",
+                  "replay_strategy": "unknown",
+                  "state": "disabled",
+                  "reason": "config_disabled"
+                },
+                "provider_id": "5bc91636-1e8f-4972-bf2d-27ead06a8fdf",
+                "model": "gpt-oss-20b",
+                "aggregate": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+                "template_hashes": {
+                  "mlx_metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+                },
+                "capacity": {
+                  "slots": [
+                    {
+                      "model": "gpt-oss-20b",
+                      "state": "idle",
+                      "num_running": 0,
+                      "num_waiting": 0,
+                      "max_concurrency": 1,
+                      "active_tokens": 0,
+                      "max_tokens_potential": 0,
+                      "observed_decode_tps": 118.7437756703899,
+                      "observed_prefill_tps": 1794.3275614861336,
+                      "active_token_budget_max": 2194434,
+                      "kv_bytes_per_token": 49152,
+                      "model_load_time_ms": 3848,
+                      "kv_backend": "paged",
+                      "steps_executed": 67,
+                      "admits": 1,
+                      "first_tokens_emitted": 1,
+                      "seconds_since_last_first_token": 0.531570459,
+                      "telemetry": {
+                        "queued_prefill_tokens": 0,
+                        "partial_prefill_rows": 0,
+                        "prefill_tokens_total": 5454,
+                        "isolated_prefill_tps": 1794.3275614861336,
+                        "ewma_initialized": true,
+                        "pump_tasks": 0,
+                        "mtp_rounds_total": 0,
+                        "mtp_proposed_total": 0,
+                        "mtp_accepted_total": 0,
+                        "kv_bytes_in_use": 0,
+                        "kv_bytes_capacity": 107860842572,
+                        "eval_in_flight_ms": 0,
+                        "step_wall_ns_total": 4239669500,
+                        "decode_rows_total": 63
+                      },
+                      "paged_storage": {
+                        "kind": "segmented",
+                        "generation": 180199214548330,
+                        "sample_seq": 185,
+                        "sample_age_ms": 1,
+                        "grant_bytes": 107860842572,
+                        "committed_bytes": 0,
+                        "reserved_page_bytes": 0,
+                        "live_page_bytes": 0,
+                        "poison_bytes": 0,
+                        "slack_bytes": 0,
+                        "over_grant_bytes": 0,
+                        "segment_count": 0,
+                        "address_pages": 5692,
+                        "allocator_padding_bytes": 0,
+                        "last_allocation_allowance_bytes": 524272,
+                        "nominal_kv_bytes": 0,
+                        "physical_floor_overhead_bytes": 0,
+                        "allocation_failures_total": 0,
+                        "admission_refusals_total": 0,
+                        "grant_refusals_total": 0,
+                        "grant_epoch_retries_total": 0
+                      }
+                    }
+                  ],
+                  "gpu_memory_active_gb": 11.413069416768849,
+                  "gpu_memory_peak_gb": 13.65502105653286,
+                  "gpu_memory_cache_gb": 3.396485446020961,
+                  "total_memory_gb": 128,
+                  "free_for_load_gb": 77.10852355882525,
+                  "mlx_cache_reclaimer": {
+                    "cache_limit_bytes": 8589934592,
+                    "sweep_signals": 5,
+                    "reclaims": 1,
+                    "reclaimed_bytes": 2498462270,
+                    "last_reclaimed_bytes": 2498462270,
+                    "last_reclaim_duration_ms": 509
+                  },
+                  "capacity_seq": 7,
+                  "telemetry": {
+                    "low_power_mode": false,
+                    "memory_pressure_level": "normal",
+                    "mlx_num_resources": 2943,
+                    "in_admission": 1,
+                    "inflight_tasks": 1,
+                    "process_memory": {
+                      "generation": 678827643510666,
+                      "sample_seq": 8,
+                      "sample_age_ms": 0,
+                      "policy_epoch": 2,
+                      "cap_bytes": 123695058124,
+                      "activation_reserve_bytes": 3758096384,
+                      "active_bytes": 12254689973,
+                      "cache_bytes": 3646948478,
+                      "charged_bytes": 0,
+                      "materialized_bytes": 0,
+                      "unmaterialized_bytes": 0,
+                      "remaining_bytes": 97612283904,
+                      "commitment_debt_bytes": 0,
+                      "owner_count": 1,
+                      "closing_owner_count": 0,
+                      "system_available_bytes": 101370380288
+                    }
+                  },
+                  "prefix_cache_maintenance": {
+                    "ttl_expired_total": 0,
+                    "budget_evicted_total": 0,
+                    "temp_removed_total": 0
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "repeat",
+            "status": "passed",
+            "finish_reason": "length",
+            "content": "",
+            "reasoning": "The user pasted a repetitive paragraph many times. They want a summary of the proposed work in three sentences. The content: committee reviewed regional water infrastructure; reservoir levels recovered after spring rain while agricultural demand rose; engineers proposed staged pumping station upgrades, canal maintenance, and acoustic leak detection; council requested costs, schedules",
+            "http_usage": {
+              "completion_tokens": 64,
+              "completion_tokens_details": {
+                "reasoning_tokens": 61
+              },
+              "prompt_tokens": 5454,
+              "total_tokens": 5518
+            },
+            "terminal": [
+              {
+                "profile": {
+                  "schema": 1,
+                  "wall_ms": 1788749019133,
+                  "dequeued_us": 91,
+                  "decrypted_us": 165,
+                  "parsed_us": 232,
+                  "admission_us": 292,
+                  "accepted_sent_us": 298,
+                  "load_wait_start_us": 375,
+                  "load_wait_end_us": 377,
+                  "task_spawned_us": 385,
+                  "prompt_prep_start_us": 587,
+                  "prompt_prep_end_us": 34123,
+                  "engine_submit_us": 34153,
+                  "engine_admitted_us": 34221,
+                  "first_delta_us": 1440694,
+                  "first_frame_us": 1464467,
+                  "last_delta_us": 1938089,
+                  "terminal_built_us": 1956068,
+                  "terminal_sent_us": 1956072,
+                  "total_us": 1956085,
+                  "flush_us": 0,
+                  "se_sign_us": 14272,
+                  "slept_us": 0,
+                  "projected_service_us": 6079157,
+                  "budget_remaining_at_admit_us": 17786778,
+                  "prompt_tokens": 5454,
+                  "frames_emitted": 64,
+                  "running_at_admit": 0,
+                  "waiting_at_admit": 0,
+                  "queued_prefill_tokens_at_admit": 0,
+                  "steps_at_submit": 67,
+                  "steps_at_finish": 134,
+                  "projected_prefill_tokens": 5454,
+                  "projected_decode_tokens": 0,
+                  "partial_prefill_cap": 1,
+                  "bytes_emitted": 13355,
+                  "kv_bytes_in_use_at_admit": 0,
+                  "kv_bytes_capacity": 107860842572,
+                  "mlx_active_bytes_at_finish": 12254690037,
+                  "mlx_peak_bytes": 14662013101,
+                  "usage_recovered": false,
+                  "load_cold": false,
+                  "load_parked": false,
+                  "mtp_active": false,
+                  "low_power_mode": false,
+                  "deadline_mode": "projected",
+                  "thermal_state": "nominal",
+                  "engine": {
+                    "admitted_ns": 187833,
+                    "kv_allocated_ns": 187833,
+                    "prefill_first_launch_ns": 187833,
+                    "prompt_computed_ns": 1406466917,
+                    "first_token_ns": 1406466917,
+                    "finished_ns": 1903824458,
+                    "readmissions": 0,
+                    "preemptions": 0,
+                    "capacity_requeues": 0,
+                    "prefill_chunks": 3,
+                    "packed_prefill_chunks": 0,
+                    "vision_chunks": 0,
+                    "solo_stripe_chunks": 3,
+                    "prefill_chunk_tokens_max": 2048,
+                    "decode_steps": 63,
+                    "chained_decode_steps": 63,
+                    "batch_rows_sum": 64,
+                    "batch_rows_min": 1,
+                    "batch_rows_max": 1,
+                    "step_latency_ns_sum": 1407293583,
+                    "step_latency_ns_max": 396725292,
+                    "mtp_rounds": 0,
+                    "mtp_proposed": 0,
+                    "mtp_accepted": 0,
+                    "paused_ns": 0,
+                    "pause_count": 0,
+                    "detok_delay_first_ns": 26166,
+                    "finish_reason": "length"
+                  }
+                },
+                "usage": {
+                  "prompt_tokens": 5454,
+                  "completion_tokens": 64,
+                  "reasoning_tokens": 61
+                }
+              }
+            ],
+            "slots_after": [
+              {
+                "cache_status": {
+                  "model_id": "gpt-oss-20b",
+                  "backend": "paged",
+                  "replay_strategy": "unknown",
+                  "state": "disabled",
+                  "reason": "config_disabled"
+                },
+                "provider_id": "5bc91636-1e8f-4972-bf2d-27ead06a8fdf",
+                "model": "gpt-oss-20b",
+                "aggregate": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512",
+                "template_hashes": {
+                  "mlx_metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+                },
+                "capacity": {
+                  "slots": [
+                    {
+                      "model": "gpt-oss-20b",
+                      "state": "idle",
+                      "num_running": 0,
+                      "num_waiting": 0,
+                      "max_concurrency": 1,
+                      "active_tokens": 0,
+                      "max_tokens_potential": 0,
+                      "observed_decode_tps": 120.8955981739722,
+                      "observed_prefill_tps": 2419.3645376173513,
+                      "active_token_budget_max": 2194434,
+                      "kv_bytes_per_token": 49152,
+                      "model_load_time_ms": 3848,
+                      "kv_backend": "paged",
+                      "steps_executed": 134,
+                      "admits": 2,
+                      "first_tokens_emitted": 2,
+                      "seconds_since_last_first_token": 0.501064916,
+                      "telemetry": {
+                        "queued_prefill_tokens": 0,
+                        "partial_prefill_rows": 0,
+                        "prefill_tokens_total": 10908,
+                        "isolated_prefill_tps": 2419.3645376173513,
+                        "ewma_initialized": true,
+                        "pump_tasks": 0,
+                        "mtp_rounds_total": 0,
+                        "mtp_proposed_total": 0,
+                        "mtp_accepted_total": 0,
+                        "kv_bytes_in_use": 0,
+                        "kv_bytes_capacity": 107860842572,
+                        "eval_in_flight_ms": 0,
+                        "step_wall_ns_total": 6666955167,
+                        "decode_rows_total": 126
+                      },
+                      "paged_storage": {
+                        "kind": "segmented",
+                        "generation": 180199214548330,
+                        "sample_seq": 281,
+                        "sample_age_ms": 0,
+                        "grant_bytes": 107860842572,
+                        "committed_bytes": 0,
+                        "reserved_page_bytes": 0,
+                        "live_page_bytes": 0,
+                        "poison_bytes": 0,
+                        "slack_bytes": 0,
+                        "over_grant_bytes": 0,
+                        "segment_count": 0,
+                        "address_pages": 5692,
+                        "allocator_padding_bytes": 0,
+                        "last_allocation_allowance_bytes": 524272,
+                        "nominal_kv_bytes": 0,
+                        "physical_floor_overhead_bytes": 0,
+                        "allocation_failures_total": 0,
+                        "admission_refusals_total": 0,
+                        "grant_refusals_total": 0,
+                        "grant_epoch_retries_total": 0
+                      }
+                    }
+                  ],
+                  "gpu_memory_active_gb": 11.413069476373494,
+                  "gpu_memory_peak_gb": 13.655063790269196,
+                  "gpu_memory_cache_gb": 4.5066453302279115,
+                  "total_memory_gb": 128,
+                  "free_for_load_gb": 76.05148620530963,
+                  "mlx_cache_reclaimer": {
+                    "cache_limit_bytes": 8589934592,
+                    "sweep_signals": 6,
+                    "reclaims": 2,
+                    "reclaimed_bytes": 4844091976,
+                    "last_reclaimed_bytes": 2345629706,
+                    "last_reclaim_duration_ms": 140
+                  },
+                  "capacity_seq": 9,
+                  "telemetry": {
+                    "low_power_mode": false,
+                    "memory_pressure_level": "normal",
+                    "mlx_num_resources": 3150,
+                    "in_admission": 1,
+                    "inflight_tasks": 1,
+                    "process_memory": {
+                      "generation": 678827643510666,
+                      "sample_seq": 12,
+                      "sample_age_ms": 0,
+                      "policy_epoch": 2,
+                      "cap_bytes": 123695058124,
+                      "activation_reserve_bytes": 3758096384,
+                      "active_bytes": 12254690037,
+                      "cache_bytes": 4838973577,
+                      "charged_bytes": 0,
+                      "materialized_bytes": 0,
+                      "unmaterialized_bytes": 0,
+                      "remaining_bytes": 96477298688,
+                      "commitment_debt_bytes": 0,
+                      "owner_count": 1,
+                      "closing_owner_count": 0,
+                      "system_available_bytes": 100235395072
+                    }
+                  },
+                  "prefix_cache_maintenance": {
+                    "ttl_expired_total": 0,
+                    "budget_evicted_total": 0,
+                    "temp_removed_total": 0
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "model": "gemma-4-26b-qat-4bit",
+        "model_id": "gemma-4-26b-qat-4bit",
+        "report_path": "/private/tmp/darkbloom-release090-defaults-final-execution2/gemma-4-26b-qat-4bit-evidence/steps/1/http-evidence/evidence/report.json",
+        "report_sha256": "c670e5fbdeeeaa10a9f52795579590c02be0747383f9fecec0b3aa13d7c3df43",
+        "archive_sha256": "e31fb30264dc8d85a796b055d20d086e0fd459bf8fb01cdc8b9298e4ed7f3eca",
+        "files_verified": 85,
+        "worker_accepted": true,
+        "cleanup_complete": true,
+        "requests": [
+          {
+            "name": "cold",
+            "status": "passed",
+            "finish_reason": "length",
+            "content": "Engineers have proposed a series of infrastructure improvements, including staged upgrades to pumping stations and regular maintenance of canals. Additionally, the plan incorporates the use of acoustic leak detection to improve system monitoring. The council has requested detailed cost estimates, project schedules, and an assessment of potential risks to downstream users during the construction phase.",
+            "reasoning": "",
+            "http_usage": {
+              "completion_tokens": 64,
+              "prompt_tokens": 5399,
+              "total_tokens": 5463
+            },
+            "terminal": [
+              {
+                "profile": {
+                  "schema": 1,
+                  "wall_ms": 1788749121895,
+                  "dequeued_us": 324,
+                  "decrypted_us": 476,
+                  "parsed_us": 851,
+                  "admission_us": 1131,
+                  "accepted_sent_us": 1142,
+                  "load_wait_start_us": 1296,
+                  "load_wait_end_us": 1298,
+                  "task_spawned_us": 1320,
+                  "prompt_prep_start_us": 1765,
+                  "prompt_prep_end_us": 43983,
+                  "engine_submit_us": 44118,
+                  "engine_admitted_us": 44183,
+                  "first_delta_us": 2525484,
+                  "first_frame_us": 2525628,
+                  "last_delta_us": 3088053,
+                  "terminal_built_us": 3105920,
+                  "terminal_sent_us": 3105925,
+                  "total_us": 3105940,
+                  "flush_us": 1,
+                  "se_sign_us": 15196,
+                  "slept_us": 0,
+                  "budget_remaining_at_admit_us": 17776817,
+                  "prompt_tokens": 5399,
+                  "frames_emitted": 66,
+                  "running_at_admit": 0,
+                  "waiting_at_admit": 0,
+                  "queued_prefill_tokens_at_admit": 0,
+                  "steps_at_submit": 0,
+                  "steps_at_finish": 67,
+                  "partial_prefill_cap": 1,
+                  "bytes_emitted": 12339,
+                  "kv_bytes_in_use_at_admit": 0,
+                  "kv_bytes_capacity": 102180864048,
+                  "mlx_active_bytes_at_finish": 15611664769,
+                  "mlx_peak_bytes": 17356566608,
+                  "usage_recovered": false,
+                  "load_cold": false,
+                  "load_parked": false,
+                  "mtp_active": false,
+                  "low_power_mode": false,
+                  "deadline_mode": "legacy",
+                  "thermal_state": "nominal",
+                  "engine": {
+                    "admitted_ns": 433042,
+                    "kv_allocated_ns": 433042,
+                    "prefill_first_launch_ns": 433042,
+                    "prompt_computed_ns": 2481197000,
+                    "first_token_ns": 2481197000,
+                    "finished_ns": 3043829625,
+                    "readmissions": 0,
+                    "preemptions": 0,
+                    "capacity_requeues": 0,
+                    "prefill_chunks": 3,
+                    "packed_prefill_chunks": 0,
+                    "vision_chunks": 0,
+                    "solo_stripe_chunks": 3,
+                    "prefill_chunk_tokens_max": 2048,
+                    "decode_steps": 63,
+                    "chained_decode_steps": 63,
+                    "batch_rows_sum": 64,
+                    "batch_rows_min": 1,
+                    "batch_rows_max": 1,
+                    "step_latency_ns_sum": 1699973042,
+                    "step_latency_ns_max": 465337875,
+                    "mtp_rounds": 0,
+                    "mtp_proposed": 0,
+                    "mtp_accepted": 0,
+                    "paused_ns": 0,
+                    "pause_count": 0,
+                    "detok_delay_first_ns": 61834,
+                    "finish_reason": "stop"
+                  }
+                },
+                "usage": {
+                  "prompt_tokens": 5399,
+                  "completion_tokens": 64
+                }
+              }
+            ],
+            "slots_after": [
+              {
+                "cache_status": {
+                  "model_id": "gemma-4-26b-qat-4bit",
+                  "backend": "paged",
+                  "replay_strategy": "unknown",
+                  "state": "disabled",
+                  "reason": "config_disabled"
+                },
+                "provider_id": "bc6fe858-b8d8-4950-a567-bf56828b4d64",
+                "model": "gemma-4-26b-qat-4bit",
+                "aggregate": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+                "template_hashes": {
+                  "mlx_metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+                },
+                "capacity": {
+                  "slots": [
+                    {
+                      "model": "gemma-4-26b-qat-4bit",
+                      "state": "idle",
+                      "num_running": 0,
+                      "num_waiting": 0,
+                      "max_concurrency": 1,
+                      "active_tokens": 0,
+                      "max_tokens_potential": 0,
+                      "observed_decode_tps": 111.53023465164726,
+                      "observed_prefill_tps": 2175.81668814928,
+                      "active_token_budget_max": 4989300,
+                      "kv_bytes_per_token": 20480,
+                      "model_load_time_ms": 4420,
+                      "kv_backend": "paged",
+                      "steps_executed": 67,
+                      "admits": 1,
+                      "first_tokens_emitted": 1,
+                      "seconds_since_last_first_token": 0.565200917,
+                      "telemetry": {
+                        "queued_prefill_tokens": 0,
+                        "partial_prefill_rows": 0,
+                        "prefill_tokens_total": 5399,
+                        "isolated_prefill_tps": 2175.81668814928,
+                        "ewma_initialized": true,
+                        "pump_tasks": 0,
+                        "mtp_rounds_total": 0,
+                        "mtp_proposed_total": 0,
+                        "mtp_accepted_total": 0,
+                        "kv_bytes_in_use": 0,
+                        "kv_bytes_capacity": 102180864048,
+                        "eval_in_flight_ms": 0,
+                        "step_wall_ns_total": 3725543666,
+                        "decode_rows_total": 63
+                      },
+                      "paged_storage": {
+                        "kind": "segmented",
+                        "generation": 4138918245519241,
+                        "sample_seq": 141,
+                        "sample_age_ms": 0,
+                        "grant_bytes": 102180864048,
+                        "committed_bytes": 0,
+                        "reserved_page_bytes": 0,
+                        "live_page_bytes": 0,
+                        "poison_bytes": 0,
+                        "slack_bytes": 0,
+                        "over_grant_bytes": 0,
+                        "segment_count": 0,
+                        "address_pages": 4931,
+                        "allocator_padding_bytes": 0,
+                        "last_allocation_allowance_bytes": 688107,
+                        "nominal_kv_bytes": 0,
+                        "physical_floor_overhead_bytes": 0,
+                        "allocation_failures_total": 0,
+                        "admission_refusals_total": 0,
+                        "grant_refusals_total": 0,
+                        "grant_epoch_retries_total": 0
+                      }
+                    }
+                  ],
+                  "gpu_memory_active_gb": 14.53949582669884,
+                  "gpu_memory_peak_gb": 16.164562299847603,
+                  "gpu_memory_cache_gb": 3.45500423386693,
+                  "total_memory_gb": 128,
+                  "free_for_load_gb": 71.99911804124713,
+                  "mlx_cache_reclaimer": {
+                    "cache_limit_bytes": 8589934592,
+                    "sweep_signals": 5,
+                    "reclaims": 0,
+                    "reclaimed_bytes": 0,
+                    "last_reclaimed_bytes": 0,
+                    "last_reclaim_duration_ms": 0
+                  },
+                  "capacity_seq": 7,
+                  "telemetry": {
+                    "low_power_mode": false,
+                    "memory_pressure_level": "normal",
+                    "mlx_num_resources": 4930,
+                    "in_admission": 1,
+                    "inflight_tasks": 1,
+                    "process_memory": {
+                      "generation": 2507208597098541,
+                      "sample_seq": 8,
+                      "sample_age_ms": 0,
+                      "policy_epoch": 2,
+                      "cap_bytes": 123695058124,
+                      "activation_reserve_bytes": 5905580032,
+                      "active_bytes": 15611664769,
+                      "cache_bytes": 3709782548,
+                      "charged_bytes": 0,
+                      "materialized_bytes": 0,
+                      "unmaterialized_bytes": 0,
+                      "remaining_bytes": 92126101504,
+                      "commitment_debt_bytes": 0,
+                      "owner_count": 1,
+                      "closing_owner_count": 0,
+                      "system_available_bytes": 98031681536
+                    }
+                  },
+                  "prefix_cache_maintenance": {
+                    "ttl_expired_total": 0,
+                    "budget_evicted_total": 0,
+                    "temp_removed_total": 0
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "repeat",
+            "status": "passed",
+            "finish_reason": "length",
+            "content": "Engineers have proposed a series of infrastructure improvements, including staged upgrades to pumping stations and regular maintenance of canals. Additionally, the plan incorporates the use of acoustic leak detection to improve system monitoring. The council has requested detailed cost estimates, project schedules, and an assessment of potential risks to downstream users during the construction phase.",
+            "reasoning": "",
+            "http_usage": {
+              "completion_tokens": 64,
+              "prompt_tokens": 5399,
+              "total_tokens": 5463
+            },
+            "terminal": [
+              {
+                "profile": {
+                  "schema": 1,
+                  "wall_ms": 1788749125005,
+                  "dequeued_us": 90,
+                  "decrypted_us": 172,
+                  "parsed_us": 240,
+                  "admission_us": 305,
+                  "accepted_sent_us": 309,
+                  "load_wait_start_us": 398,
+                  "load_wait_end_us": 400,
+                  "task_spawned_us": 403,
+                  "prompt_prep_start_us": 630,
+                  "prompt_prep_end_us": 19853,
+                  "engine_submit_us": 19882,
+                  "engine_admitted_us": 19948,
+                  "first_delta_us": 1077483,
+                  "first_frame_us": 1077577,
+                  "last_delta_us": 1603842,
+                  "terminal_built_us": 1620046,
+                  "terminal_sent_us": 1620051,
+                  "total_us": 1620067,
+                  "flush_us": 1,
+                  "se_sign_us": 13773,
+                  "slept_us": 0,
+                  "projected_service_us": 4962734,
+                  "budget_remaining_at_admit_us": 17801051,
+                  "prompt_tokens": 5399,
+                  "frames_emitted": 66,
+                  "running_at_admit": 0,
+                  "waiting_at_admit": 0,
+                  "queued_prefill_tokens_at_admit": 0,
+                  "steps_at_submit": 67,
+                  "steps_at_finish": 134,
+                  "projected_prefill_tokens": 5399,
+                  "projected_decode_tokens": 0,
+                  "partial_prefill_cap": 1,
+                  "bytes_emitted": 12339,
+                  "kv_bytes_in_use_at_admit": 0,
+                  "kv_bytes_capacity": 102180864048,
+                  "mlx_active_bytes_at_finish": 15611664817,
+                  "mlx_peak_bytes": 17356566608,
+                  "usage_recovered": false,
+                  "load_cold": false,
+                  "load_parked": false,
+                  "mtp_active": false,
+                  "low_power_mode": false,
+                  "deadline_mode": "projected",
+                  "thermal_state": "nominal",
+                  "engine": {
+                    "admitted_ns": 191292,
+                    "kv_allocated_ns": 191292,
+                    "prefill_first_launch_ns": 191292,
+                    "prompt_computed_ns": 1057523250,
+                    "first_token_ns": 1057523250,
+                    "finished_ns": 1583900875,
+                    "readmissions": 0,
+                    "preemptions": 0,
+                    "capacity_requeues": 0,
+                    "prefill_chunks": 3,
+                    "packed_prefill_chunks": 0,
+                    "vision_chunks": 0,
+                    "solo_stripe_chunks": 3,
+                    "prefill_chunk_tokens_max": 2048,
+                    "decode_steps": 63,
+                    "chained_decode_steps": 63,
+                    "batch_rows_sum": 64,
+                    "batch_rows_min": 1,
+                    "batch_rows_max": 1,
+                    "step_latency_ns_sum": 1349557079,
+                    "step_latency_ns_max": 295201875,
+                    "mtp_rounds": 0,
+                    "mtp_proposed": 0,
+                    "mtp_accepted": 0,
+                    "paused_ns": 0,
+                    "pause_count": 0,
+                    "detok_delay_first_ns": 37542,
+                    "finish_reason": "stop"
+                  }
+                },
+                "usage": {
+                  "prompt_tokens": 5399,
+                  "completion_tokens": 64
+                }
+              }
+            ],
+            "slots_after": [
+              {
+                "cache_status": {
+                  "model_id": "gemma-4-26b-qat-4bit",
+                  "backend": "paged",
+                  "replay_strategy": "unknown",
+                  "state": "disabled",
+                  "reason": "config_disabled"
+                },
+                "provider_id": "bc6fe858-b8d8-4950-a567-bf56828b4d64",
+                "model": "gemma-4-26b-qat-4bit",
+                "aggregate": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+                "template_hashes": {
+                  "mlx_metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+                },
+                "capacity": {
+                  "slots": [
+                    {
+                      "model": "gemma-4-26b-qat-4bit",
+                      "state": "idle",
+                      "num_running": 0,
+                      "num_waiting": 0,
+                      "max_concurrency": 1,
+                      "active_tokens": 0,
+                      "max_tokens_potential": 0,
+                      "observed_decode_tps": 113.82721718883116,
+                      "observed_prefill_tps": 3054.6503864533875,
+                      "active_token_budget_max": 4989300,
+                      "kv_bytes_per_token": 20480,
+                      "model_load_time_ms": 4420,
+                      "kv_backend": "paged",
+                      "steps_executed": 134,
+                      "admits": 2,
+                      "first_tokens_emitted": 2,
+                      "seconds_since_last_first_token": 0.528748291,
+                      "telemetry": {
+                        "queued_prefill_tokens": 0,
+                        "partial_prefill_rows": 0,
+                        "prefill_tokens_total": 10798,
+                        "isolated_prefill_tps": 3054.6503864533875,
+                        "ewma_initialized": true,
+                        "pump_tasks": 0,
+                        "mtp_rounds_total": 0,
+                        "mtp_proposed_total": 0,
+                        "mtp_accepted_total": 0,
+                        "kv_bytes_in_use": 0,
+                        "kv_bytes_capacity": 102180864048,
+                        "eval_in_flight_ms": 0,
+                        "step_wall_ns_total": 5847390036,
+                        "decode_rows_total": 126
+                      },
+                      "paged_storage": {
+                        "kind": "segmented",
+                        "generation": 4138918245519241,
+                        "sample_seq": 230,
+                        "sample_age_ms": 0,
+                        "grant_bytes": 102180864048,
+                        "committed_bytes": 0,
+                        "reserved_page_bytes": 0,
+                        "live_page_bytes": 0,
+                        "poison_bytes": 0,
+                        "slack_bytes": 0,
+                        "over_grant_bytes": 0,
+                        "segment_count": 0,
+                        "address_pages": 4931,
+                        "allocator_padding_bytes": 0,
+                        "last_allocation_allowance_bytes": 688107,
+                        "nominal_kv_bytes": 0,
+                        "physical_floor_overhead_bytes": 0,
+                        "allocation_failures_total": 0,
+                        "admission_refusals_total": 0,
+                        "grant_refusals_total": 0,
+                        "grant_epoch_retries_total": 0
+                      }
+                    }
+                  ],
+                  "gpu_memory_active_gb": 14.539495871402323,
+                  "gpu_memory_peak_gb": 16.164562299847603,
+                  "gpu_memory_cache_gb": 2.0320629784837365,
+                  "total_memory_gb": 128,
+                  "free_for_load_gb": 73.415591429919,
+                  "mlx_cache_reclaimer": {
+                    "cache_limit_bytes": 8589934592,
+                    "sweep_signals": 6,
+                    "reclaims": 1,
+                    "reclaimed_bytes": 2539636090,
+                    "last_reclaimed_bytes": 2539636090,
+                    "last_reclaim_duration_ms": 94
+                  },
+                  "capacity_seq": 10,
+                  "telemetry": {
+                    "low_power_mode": false,
+                    "memory_pressure_level": "normal",
+                    "mlx_num_resources": 4469,
+                    "in_admission": 1,
+                    "inflight_tasks": 1,
+                    "process_memory": {
+                      "generation": 2507208597098541,
+                      "sample_seq": 12,
+                      "sample_age_ms": 0,
+                      "policy_epoch": 2,
+                      "cap_bytes": 123695058124,
+                      "activation_reserve_bytes": 5905580032,
+                      "active_bytes": 15611664817,
+                      "cache_bytes": 2181911009,
+                      "charged_bytes": 0,
+                      "materialized_bytes": 0,
+                      "unmaterialized_bytes": 0,
+                      "remaining_bytes": 93647028224,
+                      "commitment_debt_bytes": 0,
+                      "owner_count": 1,
+                      "closing_owner_count": 0,
+                      "system_available_bytes": 99552608256
+                    }
+                  },
+                  "prefix_cache_maintenance": {
+                    "ttl_expired_total": 0,
+                    "budget_evicted_total": 0,
+                    "temp_removed_total": 0
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "acceptance_scope": "Automatic paged selection on all five models; normal MTP and SSD defaults on all three Qwens, both off on GPT/QAT; native SSD restore/accounting on Qwen repeats; idle slots and clean retirement.",
+    "quality_limitation": "64-token default fixture responses may end inside reasoning; default/cache acceptance is not semantic completion evidence.",
+    "not_covered": [
+      "General model quality",
+      "Persistent signed SSD restart",
+      "Two-provider routing startup or SSD routing146"
+    ],
+    "aliases_restored": true
+  },
+  "capsule": {
+    "files": 65,
+    "bytes": 150216,
+    "sha256": "d770114edaabb71417e28f60bd5bed82ff4aaa9acf36af8620d342338dc87a58"
+  },
+  "scope": "One-provider final defaults; no general answer-quality, two-provider routing or production-key restart claim."
+}

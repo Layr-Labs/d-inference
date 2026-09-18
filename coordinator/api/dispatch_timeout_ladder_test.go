@@ -37,7 +37,7 @@ import (
 // (each on a DISTINCT provider — timed-out providers are excluded) and answer
 // one retryable 429, not walk all five providers.
 func TestDispatch_FirstChunkTimeoutLadder_CapsAtThreeAttempts(t *testing.T) {
-	reg, _, srv, ts := setupTTFTFailoverServer(t)
+	reg, st, srv, ts := setupTTFTFailoverServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -78,7 +78,12 @@ func TestDispatch_FirstChunkTimeoutLadder_CapsAtThreeAttempts(t *testing.T) {
 	}
 
 	start := time.Now()
-	d.run()
+	srv.observeRequestOutcome(func(ow http.ResponseWriter, incoming *http.Request) {
+		d.w = ow
+		d.r = incoming
+		d.profile = srv.newRequestProfile(incoming, model, model, false)
+		d.run()
+	})(w, r)
 	elapsed := time.Since(start)
 
 	if w.Code != http.StatusTooManyRequests {
@@ -109,6 +114,16 @@ func TestDispatch_FirstChunkTimeoutLadder_CapsAtThreeAttempts(t *testing.T) {
 	// 5-provider (or 64-attempt) walk.
 	if elapsed > 4*time.Second {
 		t.Errorf("dispatch took %s — the capped ladder must return promptly", elapsed)
+	}
+	outcome := awaitRequestOutcomes(t, st, 1)[0]
+	timeouts := 0
+	for _, a := range outcome.Attempts {
+		if a.RawReason == "first_chunk_timeout" {
+			timeouts++
+		}
+	}
+	if outcome.Termination != "rejected" || outcome.NormalizedCode != "ext_first_content_timeout" || timeouts != maxFirstChunkTimeoutRetries {
+		t.Fatalf("timeout accounting %+v", outcome)
 	}
 }
 

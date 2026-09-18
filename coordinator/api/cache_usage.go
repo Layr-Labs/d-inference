@@ -148,17 +148,5 @@ func sanitizeStreamCacheDetails(chunk string) string {
 	if !strings.Contains(chunk, `"cached_tokens"`) && !strings.Contains(chunk, `\u`) {
 		return chunk
 	}
-	normalized := strings.ReplaceAll(strings.ReplaceAll(chunk, "\r\n", "\n"), "\r", "\n")
-	groups := strings.Split(normalized, "\n\n")
-	changed := false
-	for i, group := range groups {
-		if sanitized, ok := sanitizeStreamJSONEventGroup(group, sanitizeStreamCacheDetailsJSON); ok {
-			groups[i] = sanitized
-			changed = true
-		}
-	}
-	if changed {
-		return strings.Join(groups, "\n\n")
-	}
-	return chunk
+	return sanitizeStreamJSONEvents(chunk, sanitizeStreamCacheDetailsJSON)
 }

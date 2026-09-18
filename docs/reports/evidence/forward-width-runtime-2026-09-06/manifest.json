@@ -1,0 +1,21 @@
+{
+  "scope": "Canonical runtime build and focused engine/compiler tests; no fleet-model batching or release certification",
+  "files": {
+    "runtime-summary.json": {
+      "bytes": 3561,
+      "sha256": "54f6f7707f924e2176a24c8b537ed623536823c5ff1912f7fc855f485751aab1"
+    },
+    "build-and-test-evidence.tar.gz": {
+      "bytes": 3858232,
+      "sha256": "8d5a94d4b8bb021b6932d0f59a9178941bd3ee8cd3f663fd823d886f2548056e"
+    },
+    "remote-artifact-check.json": {
+      "bytes": 1316,
+      "sha256": "fe1a12616de81fbeef5e0123f69d6fac83797449a64697d48ef2b714d3b7a51c"
+    },
+    "root-review.json": {
+      "bytes": 6668,
+      "sha256": "2f3395c8645e2e16f057209f86b6187449f6e7afea49d5378111b3efef0ca45c"
+    }
+  }
+}

@@ -116,10 +116,6 @@ struct Doctor: AsyncParsableCommand {
     /// binds one binary version); this verb exists for the operator who has
     /// diagnosed the box — or set the kill switch / an explicit backend —
     /// and wants `.auto` resolving normally again without waiting for one.
-    /// Since v0.8.1 "normally" is CONTIGUOUS, which is also what a tripped
-    /// guard forces, so clearing it is a no-op for backend selection on a
-    /// default box; it still matters for `status`/`doctor` reporting and
-    /// for any box that later takes an explicit paged selection.
     ///
     /// The clear also RESETS the persisted crash-loop chain
     /// (`watchdog-state.json`): the guard usually gets cleared within
@@ -172,10 +168,13 @@ struct Doctor: AsyncParsableCommand {
             }
         }
         output(
-            "Cleared. Note that since v0.8.1 `.auto` resolves CONTIGUOUS on its "
-                + "own, so clearing the guard only restores normal resolution — it "
-                + "does not move this box onto paged; that needs "
-                + "`engine_v2_kv_backend = \"paged\"`. If the box re-enters a crash "
+            "Cleared. On the next model load, `auto` retries paged only for the "
+                + "candidate Qwen allowlist; all other models stay contiguous. "
+                + "Automatic paged failures still fall back to contiguous. "
+                + "Explicit backend settings, capability/span-mask vetoes and "
+                + "`DARKBLOOM_CBV2_PAGED_KV=0` still apply. "
+                + "Candidate rollout is not yet validated; see "
+                + "docs/design/qwen-first-paged-ssd-rollout.md. If the box re-enters a crash "
                 + "loop, the guard re-trips after "
                 + "\(WatchdogPolicy.crashLoopTripThreshold) crash-loop restarts.")
     }

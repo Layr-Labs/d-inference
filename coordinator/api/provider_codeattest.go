@@ -229,13 +229,12 @@ func (s *Server) codeAttestLoopForGeneration(
 	// Cached same-version evidence authorizes only a live encrypted nonce
 	// challenge to this exact process key. CodeAttested is set only after the
 	// process decrypts that challenge and the SE key signs its nonce.
-	if allowResume && s.codeAttestThrottle.reuseAttestation(
-		seKey, version, apnsToken, nodeKey,
-	) {
+	if basis := s.codeAttestThrottle.reuseAttestationBasis(seKey, version, apnsToken, nodeKey); allowResume && basis != "" {
 		if s.sendCodeIdentityResumeChallenge(
 			ctx, providerID, provider, nodeKey, seKey, apnsToken,
 		) {
 			s.codeAttestMetric("resume_sent")
+			s.ddIncr("code_attest.resume_proof_sent", []string{"basis:" + basis})
 			return
 		}
 		if ctx.Err() != nil {
@@ -750,11 +749,16 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 		// The APNs challenge was atomically consumed after signature verification.
 	}
 	s.codeAttestMetric("attested")
-	s.logger.Info("provider code-attested via APNs")
+	proofKind := "resume"
+	if apnsProof {
+		proofKind = "apns"
+	}
+	s.ddIncr("code_attest.proof_verified", []string{"kind:" + proofKind})
+	s.logger.Info("provider code identity verified", "proof_kind", proofKind)
 	// Newly eligible for private routing — drain requests that queued waiting for an
 	// attested provider instead of waiting for the next heartbeat tick. Off the read
 	// loop so verification stays responsive.
 	saferun.Go(s.logger, "codeAttestDrain", func() {
-		s.registry.DrainQueuedRequestsForProvider(provider)
+		s.registry.DrainQueuedRequestsForProviderWithReason(provider, registry.DrainTriggerChallenge)
 	})
 }

@@ -1,3 +1,4 @@
+use crate::render_values::{sanitize_array, scalar_string};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use thiserror::Error;
@@ -10,6 +11,7 @@ pub struct NormalizedRequest {
     pub tools: Option<Vec<Value>>,
     pub additional_context: Map<String, Value>,
     pub body: Value,
+    pub prompt_date: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -38,13 +40,21 @@ pub fn normalize(
     normalize_tool_parameter_types(&mut body);
     normalize_legacy_function_calls(&mut body)?;
     let mut messages = template_messages(&body)?;
+    crate::response_format::prepare(&body, &mut messages)?;
     let mut tools = template_tools(&body)?;
-    let requires_tool_call = apply_tool_choice_policy(&body, &mut messages, &mut tools)?;
+    let requires_tool_call =
+        apply_tool_choice_policy(&body, model_type, &mut messages, &mut tools)?;
     messages = sanitize_array(messages);
     tools = tools.map(sanitize_array);
+    if crate::leading_system::qwen_applies(&model_id, model_type)
+        || is_harmony(Some(&model_id), model_type)
+    {
+        messages = crate::leading_system::normalize_messages(messages);
+    }
     validate_tool_history(&messages)?;
 
-    if is_harmony(Some(&model_id), model_type) {
+    let harmony = is_harmony(Some(&model_id), model_type);
+    if harmony {
         messages = harmony_messages(messages)?;
         tools = tools.map(harmony_tools);
     } else if crate::gemma4::applies(&model_id, model_type) {
@@ -52,16 +62,45 @@ pub fn normalize(
         tools = tools.map(crate::gemma4::normalize_tools);
     }
 
+    // Use the same family predicate as the provider's
+    // templateAdditionalContext. Catalog IDs and qwen3_vl_moe aliases must
+    // force the identical tool-only prompt, even without model metadata.
     let forced_qwen_tool = requires_tool_call
-        && (model_id == "EigenLabs/Qwen3.8-27B-4bit"
-            || model_type.is_some_and(|value| {
-                value
-                    .trim()
-                    .to_ascii_lowercase()
-                    .replace('-', "_")
-                    .starts_with("qwen3_5")
-            }));
-    let additional_context = template_additional_context(&body, forced_qwen_tool)?;
+        && crate::leading_system::qwen_applies(&model_id, model_type)
+        && !native_structured_target(&model_id, model_type);
+    let mut additional_context = template_additional_context(&body, forced_qwen_tool)?;
+    if crate::qwen4_identity::is_qualified(Some(&model_id))
+        && matches!(
+            model_type
+                .map(str::trim)
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("qwen4_exp" | "qwen4_exp_text")
+        )
+        && additional_context.get("enable_thinking") != Some(&Value::Bool(false))
+        && additional_context
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            .is_some_and(|effort| !matches!(effort, "low" | "medium" | "xhigh"))
+    {
+        // The owned native template rejects these controls before rendering.
+        // Planning must go cold instead of inventing an effort remapping.
+        return Err(NormalizeError::InvalidMessages);
+    }
+    // Match the provider's existing GPTOSSHarmonyTemplateFix serving policy.
+    if harmony
+        && additional_context
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            == Some("high")
+    {
+        additional_context.insert("reasoning_effort".into(), Value::String("medium".into()));
+    }
+    let prompt_date = body
+        .get(crate::request_date::BODY_FIELD)
+        .and_then(Value::as_str)
+        .filter(|value| crate::request_date::valid_date(value))
+        .map(str::to_owned);
 
     let mut normalized_body = Map::new();
     normalized_body.insert("model".into(), Value::String(model_id.clone()));
@@ -75,13 +114,37 @@ pub fn normalize(
             Value::Object(additional_context.clone()),
         );
     }
+    if let Some(date) = &prompt_date {
+        normalized_body.insert(
+            crate::request_date::BODY_FIELD.into(),
+            Value::String(date.clone()),
+        );
+    }
 
     Ok(NormalizedRequest {
         messages,
         tools,
         additional_context,
         body: Value::Object(normalized_body),
+        prompt_date,
     })
+}
+
+fn native_structured_target(model_id: &str, model_type: Option<&str>) -> bool {
+    match model_type
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("qwen4_exp" | "qwen4_exp_text") => true,
+        Some("nemotron_h") => matches!(
+            model_id,
+            "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit"
+                | "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp"
+                | "nvidia-nemotron-3.5-lightning"
+        ),
+        _ => false,
+    }
 }
 
 fn template_additional_context(
@@ -89,11 +152,22 @@ fn template_additional_context(
     forced_qwen_tool: bool,
 ) -> Result<Map<String, Value>, NormalizeError> {
     let mut context = Map::new();
-    let effort = body
+    let reasoning = match body.get("reasoning") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(reasoning)) => Some(reasoning),
+        Some(_) => return Err(NormalizeError::InvalidMessages),
+    };
+    let nested_effort = match reasoning.and_then(|reasoning| reasoning.get("effort")) {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(value.as_str()),
+        Some(_) => return Err(NormalizeError::InvalidMessages),
+    };
+    let raw_effort = body
         .get("reasoning_effort")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let effort = nested_effort.or(raw_effort);
     if let Some(effort) = effort {
         context.insert("reasoning_effort".into(), Value::String(effort.into()));
     }
@@ -126,9 +200,9 @@ fn template_additional_context(
         nested.or(top_level).or(kwargs).or_else(|| {
             effort
                 .filter(|value| {
-                    value.eq_ignore_ascii_case("none")
-                        || value.eq_ignore_ascii_case("off")
-                        || *value == "0"
+                    value.trim().eq_ignore_ascii_case("none")
+                        || value.trim().eq_ignore_ascii_case("off")
+                        || value.trim() == "0"
                 })
                 .map(|_| false)
         })
@@ -777,6 +851,7 @@ fn finite_value_types(object: &Map<String, Value>) -> Option<(HashSet<String>, b
 
 fn apply_tool_choice_policy(
     body: &Map<String, Value>,
+    model_type: Option<&str>,
     messages: &mut Vec<Value>,
     tools: &mut Option<Vec<Value>>,
 ) -> Result<bool, NormalizeError> {
@@ -787,6 +862,11 @@ fn apply_tool_choice_policy(
     {
         return Err(NormalizeError::InvalidTools);
     }
+    // Match ToolChoicePromptPolicy: absent/null permits independent calls.
+    let allows_parallel_calls = body
+        .get("parallel_tool_calls")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
     let choice = body.get("tool_choice");
     let mode = choice.and_then(Value::as_str).or_else(|| {
         choice
@@ -794,7 +874,7 @@ fn apply_tool_choice_policy(
             .and_then(|object| object.get("type"))
             .and_then(Value::as_str)
     });
-    if choice.is_none() || mode == Some("auto") {
+    if choice.is_none_or(Value::is_null) || mode == Some("auto") {
         return Ok(false);
     }
     if mode == Some("none") {
@@ -842,21 +922,79 @@ fn apply_tool_choice_policy(
                 .cloned()
                 .collect(),
         );
-        format!(
-            "Call the declared function '{name}' now. You must emit a '{name}' tool call with valid arguments before any final answer, even when another function seems more relevant. Your entire response must be that tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
-        )
+        if allows_parallel_calls {
+            format!(
+                "Call the declared function '{name}' now. You must emit one or more '{name}' tool calls with valid arguments before any final answer, even when another function seems more relevant. {}Your entire response must consist of '{name}' tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text.",
+                parallel_calls_instruction(Some(name))
+            )
+        } else {
+            format!(
+                "Call the declared function '{name}' now. You must emit a '{name}' tool call with valid arguments before any final answer, even when another function seems more relevant. Your entire response must be that tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
+            )
+        }
     } else if declared.len() == 1 {
         crate::tool_constraint::validate_constrained_tools(declared)?;
         let name = tool_name(&declared[0]).ok_or(NormalizeError::InvalidTools)?;
-        format!(
-            "Call the declared function '{name}' now. You must emit a tool call with valid arguments before any final answer, even when the user's request does not require the tool. Your entire response must be the tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
-        )
+        if allows_parallel_calls {
+            format!(
+                "Call the declared function '{name}' now. You must emit one or more '{name}' tool calls with valid arguments before any final answer, even when the user's request does not require the tool. {}Your entire response must consist of tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text.",
+                parallel_calls_instruction(Some(name))
+            )
+        } else {
+            format!(
+                "Call the declared function '{name}' now. You must emit a tool call with valid arguments before any final answer, even when the user's request does not require the tool. Your entire response must be the tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
+            )
+        }
     } else {
         crate::tool_constraint::validate_constrained_tools(declared)?;
-        "Call one of the declared tools now. You must emit a tool call with valid arguments before any final answer, even when the user's request does not require a tool. Your entire response must be the tool call; a text answer is forbidden.".into()
+        if allows_parallel_calls {
+            format!(
+                "Call one or more of the declared tools now. You must emit one or more tool calls with valid arguments before any final answer, even when the user's request does not require a tool. {}Your entire response must consist of tool calls; a text answer is forbidden.",
+                parallel_calls_instruction(None)
+            )
+        } else {
+            "Call one of the declared tools now. You must emit a tool call with valid arguments before any final answer, even when the user's request does not require a tool. Your entire response must be the tool call; a text answer is forbidden.".into()
+        }
     };
-    add_instruction(messages, &instruction, true);
+    if !native_qwen4_tool_prompt(body, model_type) {
+        add_instruction(messages, &instruction, true);
+    }
     Ok(true)
+}
+
+// Exact mirror of ToolChoicePromptPolicy's native-framing predicate. Other
+// artifacts, missing metadata and image/video requests retain legacy shaping.
+fn native_qwen4_tool_prompt(body: &Map<String, Value>, model_type: Option<&str>) -> bool {
+    crate::qwen4_identity::is_qualified(body.get("model").and_then(Value::as_str))
+        && model_type == Some("qwen4_exp")
+        && !body
+            .get("messages")
+            .and_then(Value::as_array)
+            .is_some_and(|messages| {
+                messages.iter().any(|message| {
+                    message
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .is_some_and(|parts| {
+                            parts.iter().any(|part| {
+                                matches!(
+                                    part.get("type").and_then(Value::as_str),
+                                    Some("image_url" | "video_url")
+                                )
+                            })
+                        })
+                })
+            })
+}
+
+fn parallel_calls_instruction(function: Option<&str>) -> String {
+    let selection = function.map_or_else(
+        || " from the declared tools".to_owned(),
+        |name| format!(" to '{name}'"),
+    );
+    format!(
+        "Include all independent calls{selection} requested by the user in this response. Do not stop after the first call or wait for results between independent calls. "
+    )
 }
 
 fn add_instruction(messages: &mut Vec<Value>, instruction: &str, repeat_user: bool) {
@@ -925,24 +1063,6 @@ fn tool_name(tool: &Value) -> Option<&str> {
         .as_object()?
         .get("name")?
         .as_str()
-}
-
-fn sanitize_array(values: Vec<Value>) -> Vec<Value> {
-    values.into_iter().filter_map(sanitize).collect()
-}
-
-fn sanitize(value: Value) -> Option<Value> {
-    match value {
-        Value::Null => None,
-        Value::Array(values) => Some(Value::Array(sanitize_array(values))),
-        Value::Object(values) => Some(Value::Object(
-            values
-                .into_iter()
-                .filter_map(|(key, value)| sanitize(value).map(|value| (key, value)))
-                .collect(),
-        )),
-        value => Some(value),
-    }
 }
 
 fn validate_tool_history(messages: &[Value]) -> Result<(), NormalizeError> {
@@ -1062,7 +1182,7 @@ fn split_harmony_tool_calls(messages: Vec<Value>) -> Result<Vec<Value>, Normaliz
             next += 1;
         }
         if let Some(thinking) = thinking {
-            output.push(json!({"role": "assistant", "thinking": thinking}));
+            output.push(json!({"role": "assistant", "content": "", "thinking": thinking}));
         }
         let mut consumed = std::collections::HashSet::new();
         for (call_index, call) in calls.iter().enumerate() {
@@ -1186,15 +1306,6 @@ fn normalize_harmony_schema(value: &mut Value) {
     }
 }
 
-fn scalar_string(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        Value::Bool(value) => value.to_string(),
-        Value::Number(value) => value.to_string(),
-        _ => String::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1226,6 +1337,22 @@ mod tests {
         normalize(body.as_object().unwrap().clone(), None)
             .unwrap()
             .additional_context
+    }
+
+    #[test]
+    fn harmony_effort_matches_existing_provider_policy() {
+        for (model, requested, expected) in [
+            ("gpt-oss-20b", "high", "medium"),
+            ("openai/gpt-oss-20b", " high ", "medium"),
+            ("gpt-oss-20b", "low", "low"),
+            ("qwen3.5-35b-a3b", "high", "high"),
+        ] {
+            let context = normalize_context(json!({
+                "model": model, "messages": [{"role":"user", "content":"hello"}],
+                "reasoning_effort": requested,
+            }));
+            assert_eq!(context["reasoning_effort"], expected, "{model}/{requested}");
+        }
     }
 
     #[test]
@@ -1349,7 +1476,7 @@ mod tests {
         let body = json!({
             "model":"gpt-oss-20b",
             "messages":[
-                {"role":"assistant","content":"","tool_calls":[
+                {"role":"assistant","content":"","reasoning_content":"Plan both calls", "tool_calls":[
                     {"id":"a","type":"function","function":{"name":"f","arguments":"{}"}},
                     {"id":"b","type":"function","function":{"name":"g","arguments":"{}"}}
                 ]},
@@ -1361,8 +1488,10 @@ mod tests {
         .unwrap()
         .clone();
         let normalized = normalize(body, Some("gpt_oss")).unwrap();
-        assert_eq!(normalized.messages[1]["tool_call_id"], "a");
-        assert_eq!(normalized.messages[3]["tool_call_id"], "b");
+        assert_eq!(normalized.messages[0]["thinking"], "Plan both calls");
+        assert_eq!(normalized.messages[0]["content"], "");
+        assert_eq!(normalized.messages[2]["tool_call_id"], "a");
+        assert_eq!(normalized.messages[4]["tool_call_id"], "b");
     }
 
     #[test]

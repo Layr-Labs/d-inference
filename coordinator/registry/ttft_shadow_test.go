@@ -47,7 +47,7 @@ func TestTTFTOccupancyTermZeroWhenAlphaZero(t *testing.T) {
 		backendRunning:     8,
 		pendingForModel:    8,
 	}
-	if got := ttftOccupancyMs(snap); got != 0 {
+	if got := ttftOccupancyMs(snapPtr(snap)); got != 0 {
 		t.Fatalf("ttftOccupancyMs must be 0 when alpha=0, got %f", got)
 	}
 }
@@ -76,11 +76,11 @@ func TestTTFTEstimateOccupancyTermActiveAndMonotonic(t *testing.T) {
 	// The occupancy term must add to the SHADOW estimate at b>0 (compare alpha on
 	// vs off). The LIVE estimate (ttftMsFromSnapshot) must NOT move with alpha.
 	SetTTFTOccupancyAlpha(0)
-	liveOff := ttftMsFromSnapshot(mk(4), reqPrompt)
-	shadowOff := occupancyAwareTTFTMsFromSnapshot(mk(4), reqPrompt)
+	liveOff := ttftMsFromSnapshot(snapPtr(mk(4)), reqPrompt)
+	shadowOff := occupancyAwareTTFTMsFromSnapshot(snapPtr(mk(4)), reqPrompt)
 	SetTTFTOccupancyAlpha(45)
-	liveOn := ttftMsFromSnapshot(mk(4), reqPrompt)
-	shadowOn := occupancyAwareTTFTMsFromSnapshot(mk(4), reqPrompt)
+	liveOn := ttftMsFromSnapshot(snapPtr(mk(4)), reqPrompt)
+	shadowOn := occupancyAwareTTFTMsFromSnapshot(snapPtr(mk(4)), reqPrompt)
 	if liveOn != liveOff {
 		t.Fatalf("ttftMsFromSnapshot must be occupancy-FREE (invariant): alpha=0 %f vs alpha=45 %f", liveOff, liveOn)
 	}
@@ -96,7 +96,7 @@ func TestTTFTEstimateOccupancyTermActiveAndMonotonic(t *testing.T) {
 	last := -1.0
 	knee := -1
 	for b := 0; b <= 8; b++ {
-		est := occupancyAwareTTFTMsFromSnapshot(mk(b), reqPrompt)
+		est := occupancyAwareTTFTMsFromSnapshot(snapPtr(mk(b)), reqPrompt)
 		if est <= last {
 			t.Fatalf("estimate not strictly increasing at b=%d: %f <= %f", b, est, last)
 		}
@@ -109,7 +109,7 @@ func TestTTFTEstimateOccupancyTermActiveAndMonotonic(t *testing.T) {
 		t.Fatalf("estimate should cross the %.0fms deadline at a knee in b=1..8, got knee=%d", deadline, knee)
 	}
 	// b=0 (idle) must stay well under the deadline — route-to-idle is preserved.
-	if idle := occupancyAwareTTFTMsFromSnapshot(mk(0), reqPrompt); idle > deadline {
+	if idle := occupancyAwareTTFTMsFromSnapshot(snapPtr(mk(0)), reqPrompt); idle > deadline {
 		t.Fatalf("idle box (b=0) must be under the deadline, got %f > %f", idle, deadline)
 	}
 }
@@ -162,14 +162,14 @@ func TestTTFTOccupancyTermRateUsesOccupancyNotBackendRunning(t *testing.T) {
 		backendWaiting:     0,
 		pendingForModel:    8,
 	}
-	occ := snapshotOccupancy(herd)
+	occ := snapshotOccupancy(snapPtr(herd))
 	if occ != 8 {
 		t.Fatalf("precondition: occ should be 8 (herd), got %d", occ)
 	}
-	got := ttftOccupancyMs(herd)
+	got := ttftOccupancyMs(snapPtr(herd))
 
 	// Correct: rate projected at the batch the request joins (occ).
-	wantRate := projectedPerRequestDecodeTPSAtBatch(herd, occ)
+	wantRate := projectedPerRequestDecodeTPSAtBatch(snapPtr(herd), occ)
 	want := 45 * float64(occ) * 1000.0 / wantRate
 	if math.Abs(got-want) > 1e-6 {
 		t.Fatalf("occupancy term must use occ for the rate: got %f want %f", got, want)
@@ -177,7 +177,7 @@ func TestTTFTOccupancyTermRateUsesOccupancyNotBackendRunning(t *testing.T) {
 
 	// The pre-fix rate (projected at the bare backend_running gauge) is FASTER, so
 	// the buggy term would be SMALLER. Assert the fix charges strictly more.
-	buggyRate := projectedPerRequestDecodeTPSAtBatch(herd, herd.backendRunning)
+	buggyRate := projectedPerRequestDecodeTPSAtBatch(snapPtr(herd), herd.backendRunning)
 	buggyTerm := 45 * float64(occ) * 1000.0 / buggyRate
 	if !(got > buggyTerm) {
 		t.Fatalf("herd term must exceed the backend_running-rate term: got %f buggy %f", got, buggyTerm)
@@ -187,9 +187,9 @@ func TestTTFTOccupancyTermRateUsesOccupancyNotBackendRunning(t *testing.T) {
 	// the term — both via the occ numerator AND the shrinking occ-projected rate.
 	lowBurst := herd
 	lowBurst.pendingForModel = 3 // occ = max(3, 2) = 3
-	if !(ttftOccupancyMs(herd) > ttftOccupancyMs(lowBurst)) {
+	if !(ttftOccupancyMs(snapPtr(herd)) > ttftOccupancyMs(snapPtr(lowBurst))) {
 		t.Fatalf("term must grow with pending burst at equal backend_running: occ8=%f occ3=%f",
-			ttftOccupancyMs(herd), ttftOccupancyMs(lowBurst))
+			ttftOccupancyMs(snapPtr(herd)), ttftOccupancyMs(snapPtr(lowBurst)))
 	}
 }
 

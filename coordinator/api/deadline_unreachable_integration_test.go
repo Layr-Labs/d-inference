@@ -70,11 +70,27 @@ func waitForDeadlineTelemetry(
 	minRoutes, minRejections int,
 ) ([]store.InferenceRouteRecord, []store.RejectionRecord) {
 	t.Helper()
+	return waitForDeadlineTelemetryWhere(t, st, minRoutes, minRejections, nil)
+}
+
+// waitForDeadlineTelemetryWhere waits for the row counts AND, when given, for
+// the route rows to satisfy settled. The route sink writes the attempt record
+// and its outcome as separate batched statements, so a row can be visible
+// before its final_status/error_reason are; callers that assert on outcome
+// fields must wait for them explicitly.
+func waitForDeadlineTelemetryWhere(
+	t *testing.T,
+	st *store.MemoryStore,
+	minRoutes, minRejections int,
+	settled func(routes []store.InferenceRouteRecord) bool,
+) ([]store.InferenceRouteRecord, []store.RejectionRecord) {
+	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		routes := st.InferenceRouteRecordsSince(time.Time{})
 		rejections := st.RejectionRecordsSince(time.Time{})
-		if len(routes) >= minRoutes && len(rejections) >= minRejections {
+		if len(routes) >= minRoutes && len(rejections) >= minRejections &&
+			(settled == nil || settled(routes)) {
 			return routes, rejections
 		}
 		if time.Now().After(deadline) {
@@ -210,6 +226,19 @@ func TestDeadlineUnreachableFailoverCarriesDecreasingBudgets(t *testing.T) {
 	}
 	assertAttemptBudgetsDecrease(t, attempts)
 	assertCleanFailoverStream(t, status, body, markerFor(attempts[1].provider))
+	outcome := awaitRequestOutcomes(t, st, 1)[0]
+	declined, dispatched := 0, 0
+	for _, a := range outcome.Attempts {
+		if a.WriteCompleted {
+			dispatched++
+		}
+		if a.NormalizedCode == "int_provider_deadline_rejected" {
+			declined++
+		}
+	}
+	if outcome.Termination != "completed" || outcome.NormalizedCode != "" || declined != 1 || dispatched != 2 {
+		t.Fatalf("recovered request accounting: %+v", outcome)
+	}
 
 	byName := map[string]*failoverProvider{
 		providers[0].name: providers[0],
@@ -218,7 +247,14 @@ func TestDeadlineUnreachableFailoverCarriesDecreasingBudgets(t *testing.T) {
 	assertDeadlineRefusalDidNotFeedCapacity(
 		t, reg, byName[attempts[0].provider], model)
 
-	routes, _ := waitForDeadlineTelemetry(t, st, 2, 0)
+	routes, _ := waitForDeadlineTelemetryWhere(t, st, 2, 0, func(routes []store.InferenceRouteRecord) bool {
+		for _, route := range routes {
+			if route.ErrorReason == errorReasonDeadlineUnreachable {
+				return true
+			}
+		}
+		return false
+	})
 	deadlineRoutes := 0
 	for _, route := range routes {
 		if route.ErrorReason != errorReasonDeadlineUnreachable {
@@ -357,6 +393,8 @@ func TestDispatchOneProviderUsesPinnedExpiredClockWithoutRecomputing(t *testing.
 		map[string]struct{}{},
 		0,
 		nil,
+		"",
+		nil,
 		nil,
 	)
 	if selected != nil || pending != nil {
@@ -465,6 +503,11 @@ func TestDeadlineUnreachableAllProvidersReturnSingle429(t *testing.T) {
 			"deadline route rows = %d, want %d; routes=%+v",
 			deadlineRoutes, providerCount, routes)
 	}
+	outcome := awaitRequestOutcomes(t, st, 1)[0]
+	if outcome.Termination != "rejected" || outcome.NormalizedCode != "ext_coordinator_exhausted" {
+		t.Fatalf("deadline exhaustion accounting: %+v", outcome)
+	}
+
 }
 
 func postGenericInference(
@@ -488,7 +531,7 @@ func postGenericInference(
 }
 
 func TestAcceptedDoesNotStopSpeculativeFirstContentRace(t *testing.T) {
-	reg, _, _, ts := setupTTFTFailoverServerWithConfig(t, ServerConfig{
+	reg, st, _, ts := setupTTFTFailoverServerWithConfig(t, ServerConfig{
 		FirstContentDeadlineBase: 400 * time.Millisecond,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -531,6 +574,23 @@ func TestAcceptedDoesNotStopSpeculativeFirstContentRace(t *testing.T) {
 		t.Fatalf("dispatches = %+v, want accepted primary plus speculative backup", got)
 	}
 	assertCleanFailoverStream(t, status, body, markerFor(got[1].provider))
+	outcome := awaitRequestOutcomes(t, st, 1)[0]
+	losers, winners, backups := 0, 0, 0
+	for _, a := range outcome.Attempts {
+		if a.Winning {
+			winners++
+		}
+		if a.BackupOf != "" {
+			backups++
+		}
+		if a.RawReason == "speculative_loser" {
+			losers++
+		}
+	}
+	if outcome.Termination != "completed" || winners != 1 || backups != 1 || losers != 1 {
+		t.Fatalf("speculative accounting: %+v", outcome)
+	}
+
 }
 
 func TestDeadlineRefusalDoesNotMaskLaterProvider500(t *testing.T) {
@@ -580,6 +640,11 @@ func TestDeadlineRefusalDoesNotMaskLaterProvider500(t *testing.T) {
 		rejections[0].ReasonCode == rejectionReasonDeadlineUnreachable {
 		t.Fatalf("terminal rejection = %+v, want genuine provider fault", rejections)
 	}
+	outcome := awaitRequestOutcomes(t, st, 1)[0]
+	if outcome.Termination != "rejected" || outcome.HTTPStatus != 500 || outcome.NormalizedCode != "ext_legacy:dispatch_exhausted" {
+		t.Fatalf("genuine-fault precedence: %+v", outcome)
+	}
+
 }
 
 func TestNinthBoilerplateNeverCommitsFailedProvider(t *testing.T) {

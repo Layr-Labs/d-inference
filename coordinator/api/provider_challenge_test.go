@@ -213,7 +213,7 @@ func TestChallengeResponseRequiresBinaryHashWhenPolicyConfigured(t *testing.T) {
 		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, knownGoodBinaryHashForTest),
 	}
 	p := reg.Register("provider-1", nil, regMsg)
-	srv.verifyProviderAttestation("provider-1", p, regMsg)
+	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
 	sipEnabled := true
 	secureBootEnabled := true
 	rdmaDisabled := true
@@ -263,7 +263,7 @@ func TestChallengeResponseRejectsHashChangedFromRegistrationAttestation(t *testi
 		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, knownGoodBinaryHashForTest),
 	}
 	p := reg.Register("provider-1", nil, regMsg)
-	srv.verifyProviderAttestation("provider-1", p, regMsg)
+	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
 	sipEnabled := true
 	secureBootEnabled := true
 	rdmaDisabled := true
@@ -313,7 +313,7 @@ func TestChallengeResponseAcceptsKnownBinaryHash(t *testing.T) {
 		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, knownGoodBinaryHashForTest),
 	}
 	p := reg.Register("provider-1", nil, regMsg)
-	srv.verifyProviderAttestation("provider-1", p, regMsg)
+	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
 	sipEnabled := true
 	secureBootEnabled := true
 	rdmaDisabled := true

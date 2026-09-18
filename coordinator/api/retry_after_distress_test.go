@@ -123,7 +123,7 @@ func TestNoteAttempt0RouteLatency_IgnoresMediaFetchTime(t *testing.T) {
 		r, model, model, []byte(`{"model":"`+model+`"}`), "test-key", nil,
 		0, 6, 15*time.Second, 64, registry.TokenAdmission{}, false,
 		registry.RequestTraits{}, nil, false, selfRoutePolicy{}, timing,
-		false, registry.CachePlan{}, map[string]struct{}{}, 0, nil, nil)
+		false, registry.CachePlan{}, map[string]struct{}{}, 0, nil, "", nil, nil)
 
 	got := srv.attempt0RouteEWMAMs()
 	if got <= 0 {
@@ -154,7 +154,7 @@ func TestNoteAttempt0RouteLatency_RecordsFailedSelections(t *testing.T) {
 		r, "overload-model", "overload-model", []byte(`{"model":"overload-model"}`),
 		"test-key", nil, 0, 6, 15*time.Second, 64, registry.TokenAdmission{},
 		false, registry.RequestTraits{}, nil, false, selfRoutePolicy{}, timing,
-		false, registry.CachePlan{}, map[string]struct{}{}, 0, nil, nil)
+		false, registry.CachePlan{}, map[string]struct{}{}, 0, nil, "", nil, nil)
 	if lastErr != "no provider available" {
 		t.Fatalf("lastErr = %q, want the empty-fleet failure", lastErr)
 	}

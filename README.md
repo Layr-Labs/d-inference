@@ -1,6 +1,6 @@
 # Darkbloom
 
-> **Public Alpha** — Darkbloom is a decentralized private-inference network for Apple Silicon. Expect rough edges, breaking changes, and downtime. During the alpha, providers keep **100% of revenue** (0% platform fee).
+> **Public Alpha** — Darkbloom is a decentralized private-inference network for Apple Silicon. Expect rough edges, breaking changes, and downtime. Alpha pricing, the platform fee and payout rules are stated once, in [billing](docs/architecture/billing.md#invariants).
 
 Darkbloom turns idle Macs into a private, OpenAI-compatible inference cloud.
 
@@ -197,7 +197,7 @@ Pricing is per-token and resolved per request: a provider's custom price, else a
 | Input tokens | $0.05 / 1M |
 | Output tokens | $0.20 / 1M |
 | Minimum charge | $0.0001 / request |
-| Platform fee | **0%** during public alpha |
+| Platform fee | see [billing invariants](docs/architecture/billing.md#invariants) |
 
 Per-token rates target roughly half of comparable hosted APIs. **Live per-model pricing is always at [`GET /v1/pricing`](https://api.darkbloom.dev/v1/pricing).** Funding uses Stripe deposits into the internal micro-USD ledger; provider payouts run through Stripe Connect. Requests routed to your own machine via [self-route](#self-route--direct-mode) are **free**. See [`docs/reference/pricing-model.md`](docs/reference/pricing-model.md).
 
@@ -228,8 +228,9 @@ Zero prerequisites and no `sudo`. The installer fetches the latest signed releas
 ### First run
 
 ```bash
-darkbloom start              # background launchd service (interactive model picker)
+darkbloom start              # background launchd service (interactive model picker + memory policy)
 darkbloom start --foreground # run attached to the terminal
+darkbloom idle keep-loaded   # keep models loaded while idle (instant responses); default frees after 60 min
 darkbloom login              # link your account (RFC 8628 device-code flow)
 darkbloom status             # config, hardware, schedule, live trust verdict
 darkbloom doctor             # local diagnostics + coordinator's trust view
@@ -267,7 +268,7 @@ auto_restart = true
 
 [backend]
 enabled_models = []        # empty = advertise all downloaded models
-idle_timeout_mins = 60     # unload an idle model after N minutes (0 = never)
+idle_timeout_mins = 60     # free when idle: unload after N idle minutes, reload on demand (0 = always ready)
 max_model_slots = 3        # max models resident at once
 continuous_batching = true
 
@@ -310,10 +311,12 @@ Running a node also makes your **own** inference free.
 | `coordinator/` | Go | Control plane: OpenAI/Anthropic API, routing, attestation, billing, model registry |
 | `provider-swift/` | Swift | `darkbloom` provider CLI for Apple Silicon (in-process MLX inference) |
 | `console-ui/` | Next.js 16 / React 19 | Web dashboard: chat, billing, models, provider verification |
+| `admin-ui/` | Next.js | Internal read-only operator dashboard over the Postgres read replica |
 | `landing/` | Static HTML | Marketing landing page |
 | `e2e/` | Go | System-level end-to-end & load test harness |
-| `scripts/` | Shell | Installer, admin CLI, model publishing, deploy helpers |
-| `docs/` | Markdown | Architecture, security, operations, and reference docs |
+| `scripts/` | Shell | Installer, admin CLI, model publishing, deploy helpers, docs lint (`docs-check.sh`, `docs-stamp.sh`) |
+| `libs/` | Git submodules | Pinned forks of `mlx`, `mlx-swift`, `mlx-swift-lm` compiled into the provider |
+| `docs/` | Markdown | How-tos, runbooks, reference, architecture, design records, dated reports — map in [`docs/README.md`](docs/README.md), rules in [`docs/AGENTS.md`](docs/AGENTS.md) |
 
 The coordinator and provider share WebSocket message types that must stay in sync (`coordinator/protocol/` ↔ `provider-swift/Sources/ProviderCore/Protocol/`).
 
@@ -333,7 +336,7 @@ cd console-ui && npm install && npm run dev
 cd console-ui && npm run build && npm test       # production build + vitest
 ```
 
-Build, test, and release details: [`docs/developer/build.md`](docs/developer/build.md), [`docs/developer/test.md`](docs/developer/test.md), [`docs/developer/release.md`](docs/developer/release.md).
+Build, test, and release details: [`docs/developer/build.md`](docs/developer/build.md), [`docs/developer/test.md`](docs/developer/test.md), [`docs/operations/provider-release.md`](docs/operations/provider-release.md).
 
 ## Documentation
 

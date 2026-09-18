@@ -171,7 +171,7 @@ func (r *Registry) evaluateTTFTShadowLocked(
 	if reqPrompt < 0 {
 		reqPrompt = 0
 	}
-	snap := winner.snapshot
+	snap := &winner.snapshot
 	// Occupancy-aware estimate (base + occupancy term). The occupancy term lives
 	// here, in the SHADOW path only — ttftMsFromSnapshot (the live cost / ceiling /
 	// bestTTFT input) stays occupancy-free so raising alpha cannot tighten the
@@ -212,7 +212,7 @@ func loadedIdleAlternativeExistsFromScan(scan candidateScan, winner *Provider) b
 		if candidate.provider == nil || candidate.provider.ID == winnerID {
 			continue
 		}
-		if candidate.snapshot.modelLoaded && snapshotOccupancy(candidate.snapshot) == 0 {
+		if candidate.snapshot.modelLoaded && snapshotOccupancy(&candidate.snapshot) == 0 {
 			return true
 		}
 	}

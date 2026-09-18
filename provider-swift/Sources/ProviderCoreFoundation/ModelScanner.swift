@@ -63,7 +63,13 @@ public struct ModelScanner: Sendable {
     ///
     /// Checks the HuggingFace cache for a directory matching the model ID.
     /// Returns the snapshot path so the backend can load directly from disk.
-    public static func resolveLocalPath(modelID: String) -> URL? {
+    public static func resolveLocalPath(
+        modelID: String, environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL? {
+        if modelID == ModelMediaPolicy.ownedQwen4ModelID, Qwen4LocalModelPath.isConfigured(environment: environment) {
+            // Invalid explicit staging must not silently serve the old cache.
+            return Qwen4LocalModelPath.directory(environment: environment)
+        }
         guard let cacheDir = defaultCacheDirectory() else { return nil }
         let fm = FileManager.default
 

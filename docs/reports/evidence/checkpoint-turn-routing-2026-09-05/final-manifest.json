@@ -1,0 +1,48 @@
+{
+  "scope": "Final single table after removing wall-clock-sensitive lower bound; earlier broader21/39 source/logs preserved in manifest.json",
+  "source": {
+    "path": "coordinator/registry/cache_checkpoint_turn_cost_test.go",
+    "bytes": 3691,
+    "sha256": "9530d246d8d4f3d3318e15e3ad4f580d26ee691ec553faa4e07968fe729a5a66"
+  },
+  "results": {
+    "normal": {
+      "top_level_passed": 1,
+      "subtests_passed": 4,
+      "failed": 0,
+      "skipped": 0,
+      "result": "pass",
+      "elapsed_seconds": 0.373,
+      "jsonl": {
+        "path": "final-normal.jsonl",
+        "bytes": 6272,
+        "sha256": "77398be6e90c55a00a8c9665015b14d7f741facb06ceadb4fb0f1ddb88dd0760"
+      },
+      "stderr": {
+        "path": "final-normal.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "command": "GOTOOLCHAIN=go1.25.0 go test -json ./coordinator/registry -run '^TestCheckpointSSDNextTurnPricesEachMachinesExecutableEndpoint$' -count=1"
+    },
+    "race": {
+      "top_level_passed": 1,
+      "subtests_passed": 4,
+      "failed": 0,
+      "skipped": 0,
+      "result": "pass",
+      "elapsed_seconds": 1.404,
+      "jsonl": {
+        "path": "final-race.jsonl",
+        "bytes": 6273,
+        "sha256": "4a01425276b2913c9520ab10b01351f8b632bbf31cb5538b4e8742df3df85bc3"
+      },
+      "stderr": {
+        "path": "final-race.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "command": "GOTOOLCHAIN=go1.25.0 go test -race -json ./coordinator/registry -run '^TestCheckpointSSDNextTurnPricesEachMachinesExecutableEndpoint$' -count=1"
+    }
+  }
+}

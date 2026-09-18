@@ -1,0 +1,396 @@
+{
+  "backend_token_equality_required": false,
+  "full_archive": {
+    "bytes": 6876692,
+    "not_downloaded_or_rehashed_by_projection": true,
+    "path": "/Users/gaj/autoresearch/radix-prefix-cache/123-qat-concurrency1/run/evidence.tar.gz",
+    "sha256_from_original_verified_collection": "fa50ebf3b341cbb58180a572524a73614735d515693748bae2a4b416c8defb36"
+  },
+  "full_original_manifest_sha256": "7decf91d3a7abeeaaa1e0265566c170475a047ae7c5f0bcc6b8bfbbeafb2a7c6",
+  "lane_release": {
+    "cleanup": {
+      "complete": true,
+      "errors": [],
+      "groups": [
+        {
+          "argv": [
+            "/Users/gaj/bench-runner/bin/macmon",
+            "pipe",
+            "-i",
+            "100"
+          ],
+          "birth": "Sun Sep  6 15:23:09 2026",
+          "created_unix": 1788733389.8918731,
+          "event": "spawn",
+          "group_absent": true,
+          "parent_pid": 42391,
+          "pgid": 42407,
+          "pid": 42407,
+          "role": "telemetry",
+          "signal_errors": [],
+          "signals": []
+        },
+        {
+          "argv": [
+            "/Users/gaj/autoresearch/radix-prefix-cache/104-release090-correctness1/artifact/radix-engine",
+            "/Users/gaj/.cache/huggingface/hub/models--gemma-4-26b-qat-4bit/snapshots/local",
+            "/Users/gaj/autoresearch/radix-prefix-cache/123-qat-concurrency1/run/results/gemma-4-26b-qat-4bit-retained-ordinary-b2-r1-contiguous-cache-off/input.json",
+            "/Users/gaj/autoresearch/radix-prefix-cache/123-qat-concurrency1/run/results/gemma-4-26b-qat-4bit-retained-ordinary-b2-r1-contiguous-cache-off/report.json",
+            "cache-off",
+            "mtp-off",
+            "contiguous",
+            "ssd",
+            "ephemeral-key",
+            "--concurrency",
+            "2",
+            "--production-kv-grant",
+            "--expected-model-sha256",
+            "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785"
+          ],
+          "birth": "Sun Sep  6 15:23:09 2026",
+          "created_unix": 1788733389.896571,
+          "event": "spawn",
+          "group_absent": true,
+          "parent_pid": 42391,
+          "pgid": 42413,
+          "pid": 42413,
+          "role": "native",
+          "signal_errors": [],
+          "signals": []
+        },
+        {
+          "argv": [
+            "/Users/gaj/bench-runner/bin/macmon",
+            "pipe",
+            "-i",
+            "100"
+          ],
+          "birth": "Sun Sep  6 15:24:14 2026",
+          "created_unix": 1788733454.200156,
+          "event": "spawn",
+          "group_absent": true,
+          "parent_pid": 42611,
+          "pgid": 42627,
+          "pid": 42627,
+          "role": "telemetry",
+          "signal_errors": [],
+          "signals": []
+        },
+        {
+          "argv": [
+            "/Users/gaj/autoresearch/radix-prefix-cache/104-release090-correctness1/artifact/radix-engine",
+            "/Users/gaj/.cache/huggingface/hub/models--gemma-4-26b-qat-4bit/snapshots/local",
+            "/Users/gaj/autoresearch/radix-prefix-cache/123-qat-concurrency1/run/results/gemma-4-26b-qat-4bit-retained-ordinary-b2-r1-paged-cache-off/input.json",
+            "/Users/gaj/autoresearch/radix-prefix-cache/123-qat-concurrency1/run/results/gemma-4-26b-qat-4bit-retained-ordinary-b2-r1-paged-cache-off/report.json",
+            "cache-off",
+            "mtp-off",
+            "paged",
+            "ssd",
+            "ephemeral-key",
+            "--concurrency",
+            "2",
+            "--production-kv-grant",
+            "--expected-model-sha256",
+            "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785"
+          ],
+          "birth": "Sun Sep  6 15:24:14 2026",
+          "created_unix": 1788733454.204885,
+          "event": "spawn",
+          "group_absent": true,
+          "parent_pid": 42611,
+          "pgid": 42633,
+          "pid": 42633,
+          "role": "native",
+          "signal_errors": [],
+          "signals": []
+        },
+        {
+          "argv": [
+            "/Users/gaj/bench-runner/bin/macmon",
+            "pipe",
+            "-i",
+            "100"
+          ],
+          "birth": "Sun Sep  6 15:25:18 2026",
+          "created_unix": 1788733518.489522,
+          "event": "spawn",
+          "group_absent": true,
+          "parent_pid": 42830,
+          "pgid": 42846,
+          "pid": 42846,
+          "role": "telemetry",
+          "signal_errors": [],
+          "signals": []
+        },
+        {
+          "argv": [
+            "/Users/gaj/autoresearch/radix-prefix-cache/104-release090-correctness1/artifact/radix-engine",
+            "/Users/gaj/.cache/huggingface/hub/models--gemma-4-26b-qat-4bit/snapshots/local",
+            "/Users/gaj/autoresearch/radix-prefix-cache/123-qat-concurrency1/run/results/gemma-4-26b-qat-4bit-retained-ordinary-b4-r1-contiguous-cache-off/input.json",
+            "/Users/gaj/autoresearch/radix-prefix-cache/123-qat-concurrency1/run/results/gemma-4-26b-qat-4bit-retained-ordinary-b4-r1-contiguous-cache-off/report.json",
+            "cache-off",
+            "mtp-off",
+            "contiguous",
+            "ssd",
+            "ephemeral-key",
+            "--concurrency",
+            "4",
+            "--production-kv-grant",
+            "--expected-model-sha256",
+            "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785"
+          ],
+          "birth": "Sun Sep  6 15:25:18 2026",
+          "created_unix": 1788733518.493668,
+          "event": "spawn",
+          "group_absent": true,
+          "parent_pid": 42830,
+          "pgid": 42852,
+          "pid": 42852,
+          "role": "native",
+          "signal_errors": [],
+          "signals": []
+        },
+        {
+          "argv": [
+            "/Users/gaj/bench-runner/bin/macmon",
+            "pipe",
+            "-i",
+            "100"
+          ],
+          "birth": "Sun Sep  6 15:26:34 2026",
+          "created_unix": 1788733594.033566,
+          "event": "spawn",
+          "group_absent": true,
+          "parent_pid": 43077,
+          "pgid": 43093,
+          "pid": 43093,
+          "role": "telemetry",
+          "signal_errors": [],
+          "signals": []
+        },
+        {
+          "argv": [
+            "/Users/gaj/autoresearch/radix-prefix-cache/104-release090-correctness1/artifact/radix-engine",
+            "/Users/gaj/.cache/huggingface/hub/models--gemma-4-26b-qat-4bit/snapshots/local",
+            "/Users/gaj/autoresearch/radix-prefix-cache/123-qat-concurrency1/run/results/gemma-4-26b-qat-4bit-retained-ordinary-b4-r1-paged-cache-off/input.json",
+            "/Users/gaj/autoresearch/radix-prefix-cache/123-qat-concurrency1/run/results/gemma-4-26b-qat-4bit-retained-ordinary-b4-r1-paged-cache-off/report.json",
+            "cache-off",
+            "mtp-off",
+            "paged",
+            "ssd",
+            "ephemeral-key",
+            "--concurrency",
+            "4",
+            "--production-kv-grant",
+            "--expected-model-sha256",
+            "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785"
+          ],
+          "birth": "Sun Sep  6 15:26:34 2026",
+          "created_unix": 1788733594.0380402,
+          "event": "spawn",
+          "group_absent": true,
+          "parent_pid": 43077,
+          "pgid": 43099,
+          "pid": 43099,
+          "role": "native",
+          "signal_errors": [],
+          "signals": []
+        }
+      ]
+    },
+    "collection": {
+      "archive_sha256": "fa50ebf3b341cbb58180a572524a73614735d515693748bae2a4b416c8defb36",
+      "files": 134,
+      "manifest_sha256": "7decf91d3a7abeeaaa1e0265566c170475a047ae7c5f0bcc6b8bfbbeafb2a7c6",
+      "verified": true
+    },
+    "entry_reason": null,
+    "entry_transient": false,
+    "lane_released": true,
+    "model_execution_performed": false,
+    "observation": {
+      "free_bytes": 233525485568,
+      "gpu_temperature_c": 34.64285659790039,
+      "hardware_model": "Mac17,6",
+      "load1": 2.4599609375,
+      "memory_bytes": 137438953472,
+      "owned_processes": [],
+      "unexpected_processes": []
+    },
+    "observed_unix": 1788733666.512645,
+    "supervisor": {
+      "accepted": true,
+      "detached_cleanup_complete": true,
+      "owner": {
+        "event": "terminal",
+        "exit_code": 0,
+        "failure": null,
+        "fixture_pid": 42302,
+        "group_cleanup_complete": true,
+        "pgid": 42304,
+        "pid": 42304,
+        "provider_started": true,
+        "root_created": true,
+        "seconds": 275.176725166,
+        "signal_errors": [],
+        "signals_sent": [],
+        "stop_requested": false
+      }
+    },
+    "terminal": {
+      "accepted": true,
+      "auto_http_validated": false,
+      "external_caller_control": {
+        "alive": false,
+        "last_ping_monotonic": 275.980393958,
+        "last_ping_unix": 1788733645.565774,
+        "lease_seconds": 30,
+        "reason": "supervision finished",
+        "received_pings": 137,
+        "requires_external_pings": true
+      },
+      "failure": null,
+      "gpu_ready": false,
+      "matrix_expanded": false,
+      "missing_post_audits": [],
+      "no_automatic_rerun": true,
+      "production_default_validated": false,
+      "supervisor_exit_code": 0
+    },
+    "test_pass_required_for_lane_release": false,
+    "worker_accepted": true
+  },
+  "projection": "18 original files selected from134 verified evidence files; complete reports/input/metadata,final verdict and owned cleanup retained; full audits available in local collection and remote archive.",
+  "raw_backend_diagnostics": [
+    {
+      "errors": [
+        {
+          "tenant_baseline_output_mismatch": true
+        },
+        {
+          "cancellation_recovery_output_mismatch": true
+        },
+        {
+          "cancellation_donor_output_mismatch": true
+        }
+      ],
+      "id": "gemma-4-26b-qat-4bit-retained-ordinary-b2-r1-backend",
+      "passed": false
+    },
+    {
+      "errors": [
+        {
+          "tenant_baseline_output_mismatch": true
+        },
+        {
+          "cancellation_recovery_output_mismatch": true
+        },
+        {
+          "cancellation_donor_output_mismatch": true
+        }
+      ],
+      "id": "gemma-4-26b-qat-4bit-retained-ordinary-b4-r1-backend",
+      "passed": false
+    }
+  ],
+  "release_gates_satisfied": false,
+  "runtime": "104",
+  "scope_passed": true,
+  "selected_original_files": {
+    "detached-retirement.json": {
+      "bytes": 6129,
+      "sha256": "f5c700903b032d6e88d829634fb04a5d7a80cb15df8ce93241df4365e33fe082"
+    },
+    "foreground-retirement.json": {
+      "bytes": 6129,
+      "sha256": "f5c700903b032d6e88d829634fb04a5d7a80cb15df8ce93241df4365e33fe082"
+    },
+    "results/gemma-4-26b-qat-4bit-retained-ordinary-b2-r1-contiguous-cache-off/input.json": {
+      "bytes": 72769,
+      "sha256": "8508c1cd472f0781cf8329a41939475b4f4a863080dd3dfcd68e708afd29acb8"
+    },
+    "results/gemma-4-26b-qat-4bit-retained-ordinary-b2-r1-contiguous-cache-off/metadata.json": {
+      "bytes": 3565,
+      "sha256": "7ad7fcd45921c1ad95452f2b040155ac584d17ee68dccc9e361a0bdad98aa9fd"
+    },
+    "results/gemma-4-26b-qat-4bit-retained-ordinary-b2-r1-contiguous-cache-off/report.json": {
+      "bytes": 1061642,
+      "sha256": "896e6bfd55765fd19d215b1bb4063bc894ab36685769460221d0697375400590"
+    },
+    "results/gemma-4-26b-qat-4bit-retained-ordinary-b2-r1-paged-cache-off/input.json": {
+      "bytes": 72769,
+      "sha256": "8508c1cd472f0781cf8329a41939475b4f4a863080dd3dfcd68e708afd29acb8"
+    },
+    "results/gemma-4-26b-qat-4bit-retained-ordinary-b2-r1-paged-cache-off/metadata.json": {
+      "bytes": 3534,
+      "sha256": "f5f857e58d7a9a80eab3969ef0163054045c5833689dd3d78f2658a7a1938b12"
+    },
+    "results/gemma-4-26b-qat-4bit-retained-ordinary-b2-r1-paged-cache-off/report.json": {
+      "bytes": 1104985,
+      "sha256": "4733e3e8b264d5aa6216fdb24eb8a3bb575ee9ab5293733c0f0a3dff03d4efed"
+    },
+    "results/gemma-4-26b-qat-4bit-retained-ordinary-b4-r1-contiguous-cache-off/input.json": {
+      "bytes": 72769,
+      "sha256": "8508c1cd472f0781cf8329a41939475b4f4a863080dd3dfcd68e708afd29acb8"
+    },
+    "results/gemma-4-26b-qat-4bit-retained-ordinary-b4-r1-contiguous-cache-off/metadata.json": {
+      "bytes": 3563,
+      "sha256": "7b373f302a852616a3cb4717750911333136fb0e4a4a85aed4bd5a38ce206d51"
+    },
+    "results/gemma-4-26b-qat-4bit-retained-ordinary-b4-r1-contiguous-cache-off/report.json": {
+      "bytes": 1528762,
+      "sha256": "0f2be5549434d7ea3c28632dc2ca2031b34df86f12e7181f8cd7f40880ee39e9"
+    },
+    "results/gemma-4-26b-qat-4bit-retained-ordinary-b4-r1-paged-cache-off/input.json": {
+      "bytes": 72769,
+      "sha256": "8508c1cd472f0781cf8329a41939475b4f4a863080dd3dfcd68e708afd29acb8"
+    },
+    "results/gemma-4-26b-qat-4bit-retained-ordinary-b4-r1-paged-cache-off/metadata.json": {
+      "bytes": 3526,
+      "sha256": "515c48d60a6a28812436bfd9ef4ca54abd21639449b58768941fcb2f8d3d89fb"
+    },
+    "results/gemma-4-26b-qat-4bit-retained-ordinary-b4-r1-paged-cache-off/report.json": {
+      "bytes": 1605785,
+      "sha256": "e56e99c1d9dea72cb837014794928a8e806d3e8fd83a55881cda193a98117a3d"
+    },
+    "steps/4/verdict.json": {
+      "bytes": 1376028,
+      "sha256": "bfe682627203641f9840b8c68e5a5f710c018f1bf42eff9ba5b2b88c8b8156ab"
+    },
+    "supervisor-terminal.json": {
+      "bytes": 406,
+      "sha256": "790bce09e2f696c7863f59b3b269fb232ba793c17a0a1a6bd0cdf2b38c88775d"
+    },
+    "terminal.json": {
+      "bytes": 518,
+      "sha256": "9345f5017e5f18a21e3bc088681d857fd7975936c4cb08fb9aa7e6410e302e75"
+    },
+    "worker-verdict.json": {
+      "bytes": 1453520,
+      "sha256": "43681c13571db00a833abf89b5361f0bb017c8f78bac3722cc2c5226a19f02ee"
+    }
+  },
+  "source_manifest_sha256": "e7b769e2713e48c53fb62fbe74e449bb409c8fc1b7e5f036b14e808a7c3da3f5",
+  "source_model_runtime_audits_before_after_identical": [
+    {
+      "before_after_identical": true,
+      "before_sha256": "981cf859be9ecef8c826dc44f2dbb9167dcfd12980d36144d132e29e24bcd177",
+      "step": 1
+    },
+    {
+      "before_after_identical": true,
+      "before_sha256": "981cf859be9ecef8c826dc44f2dbb9167dcfd12980d36144d132e29e24bcd177",
+      "step": 2
+    },
+    {
+      "before_after_identical": true,
+      "before_sha256": "981cf859be9ecef8c826dc44f2dbb9167dcfd12980d36144d132e29e24bcd177",
+      "step": 3
+    },
+    {
+      "before_after_identical": true,
+      "before_sha256": "981cf859be9ecef8c826dc44f2dbb9167dcfd12980d36144d132e29e24bcd177",
+      "step": 4
+    }
+  ]
+}

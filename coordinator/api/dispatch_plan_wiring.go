@@ -77,6 +77,7 @@ func (d *dispatchState) dispatchProviderWith(
 	fullScan bool,
 	timing *registry.RequestTiming,
 	exclude map[string]struct{},
+	backupOf string,
 	recordRoute routeDecisionRecorder,
 ) (*registry.Provider, *registry.PendingRequest, registry.RoutingDecision, *registry.DispatchPlan, string, int) {
 	return d.s.dispatchWithReserver(
@@ -84,7 +85,7 @@ func (d *dispatchState) dispatchProviderWith(
 		d.reservedMicroUSD, d.estimatedPromptTokens, d.deadline, d.requestedMaxTokens,
 		d.tokenAdmission, d.requiresVision, d.traits(), d.allowedProviderSerials,
 		d.isResponsesAPI, d.policy, timing, d.serviceReservation, d.cachePlan,
-		exclude, d.attempt, recordRoute, d.noteProviderDispatched, fullScan, reserve,
+		exclude, d.attempt, d.profile, backupOf, recordRoute, d.noteProviderDispatched, fullScan, reserve,
 	)
 }
 
@@ -102,6 +103,7 @@ func (d *dispatchState) dispatchProviderWith(
 func (d *dispatchState) dispatchFromPlanMachinery(
 	timing *registry.RequestTiming,
 	exclude map[string]struct{},
+	backupOf string,
 	recordRoute routeDecisionRecorder,
 ) (provider *registry.Provider, pr *registry.PendingRequest, decision registry.RoutingDecision, lastErr string, lastErrCode int, tried bool) {
 	plan := d.plan
@@ -118,7 +120,7 @@ func (d *dispatchState) dispatchFromPlanMachinery(
 			return p, dec, nil
 		},
 		false, // retained-plan step: bounded revalidation, no fleet scan
-		timing, exclude, recordRoute,
+		timing, exclude, backupOf, recordRoute,
 	)
 	if reserved {
 		return provider, pr, decision, lastErr, lastErrCode, true
@@ -141,7 +143,7 @@ func (d *dispatchState) dispatchFromPlanMachinery(
 			return p, dec, freshPlan
 		},
 		true, // the single plan refresh is itself a full fleet re-scan
-		timing, exclude, recordRoute,
+		timing, exclude, backupOf, recordRoute,
 	)
 	if fresh != nil {
 		// The refreshed plan (born with its refresh consumed) replaces the

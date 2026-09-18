@@ -27,9 +27,19 @@ export interface Model {
   architecture?: string;
   family?: string;
   capabilities?: string[];
+  // Provider hardware/runtime the model needs (e.g. ["apple_m5", "mlx_nax"]).
+  // Empty or absent means any provider can serve it. Label mapping lives in
+  // lib/provider-capabilities.ts.
+  required_provider_capabilities?: string[];
   // OpenRouter provider schema fields (from the enriched /v1/models endpoint).
   name?: string;
   hugging_face_id?: string;
+  // Exact download artifact on the public catalog; independent of upstream metadata.
+  hugging_face_artifact?: {
+    repo_id: string;
+    revision: string;
+    path_prefix?: string;
+  };
   created?: number;
   description?: string;
   context_length?: number;
@@ -124,7 +134,24 @@ export interface InviteRedeemResponse {
   balance_usd: string;
 }
 
+export interface BankWithdrawalQuote {
+  id: string; amount_usd: string; fee_usd: string; destination_amount: number; currency: string; currency_exponent: number; expires_at: string; destination_last4: string; eta: string;
+}
+
+export interface RecipientAmountLimits {
+  currency: string;
+  currency_exponent: number;
+  minimum?: number;
+  maximum?: number;
+}
+
 export interface StripeStatus {
+  recipient_limits?: RecipientAmountLimits;
+  account_id?: string;
+  payout_rail?: "connect" | "global";
+  payout_currency?: string;
+  payouts_available?: boolean;
+  countries?: { code: string; name: string; rail: string; currency?: string }[];
   configured: boolean;
   has_account: boolean;
   stripe_account_id?: string;
@@ -153,6 +180,8 @@ export interface StripeDashboardLinkResponse {
 }
 
 export interface StripeWithdrawResponse {
+  payout_rail?: "connect" | "global";
+  refunded?: boolean;
   status: string;
   withdrawal_id: string;
   transfer_id?: string;
@@ -167,6 +196,10 @@ export interface StripeWithdrawResponse {
 }
 
 export interface StripeWithdrawal {
+  payout_rail?: "connect" | "global";
+  payout_currency?: string;
+  destination_amount?: number;
+  currency_exponent?: number;
   id: string;
   account_id: string;
   stripe_account_id: string;
@@ -176,7 +209,7 @@ export interface StripeWithdrawal {
   fee_micro_usd: number;
   net_micro_usd: number;
   method: "standard" | "instant";
-  status: "pending" | "transferred" | "paid" | "failed";
+  status: "pending" | "transferred" | "paid" | "failed" | "processing" | "posted" | "returned" | "canceled";
   failure_reason?: string;
   refunded?: boolean;
   created_at: string;

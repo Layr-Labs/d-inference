@@ -1,0 +1,417 @@
+import Foundation
+
+/// Single source of truth for the provider's unified-memory budget.
+///
+/// The invariant the whole provider enforces is:
+///
+///     Σ(resident model weights) + KV cache + activations  ≤  hardCapBytes
+///
+/// where `hardCapBytes` is a fixed fraction (default 90%) of physical unified
+/// memory. Everything else — which models may be co-resident, when one is
+/// evicted, and how much memory KV cache may use — is derived from this one
+/// number. The policy is general: it makes no assumption about WHICH models are
+/// loaded or HOW MANY; it works for one model, two, or N.
+///
+/// This type is PURE POLICY: it reads no MLX globals and mutates nothing, so it
+/// is fully unit-testable and safe to call from any context. Enforcement (load
+/// admission, the KV reservation budget) consults these figures; MLX's own
+/// `memoryLimit` is a soft guideline that cannot enforce the cap on its own
+/// (the Metal allocator frees cache and then allocates past the byte limit
+/// anyway — only the resource COUNT limit throws), so the cap lives here in the
+/// admission layer, not in an MLX setting. See ``MLXMemoryGuard`` for the soft
+/// MLX ceiling we still pin as defense-in-depth.
+public enum UnifiedMemoryCap {
+    /// Fraction of physical unified memory the provider may use for EVERYTHING
+    /// (weights + KV + activations). The remaining `1 − fraction` is left for
+    /// macOS and non-MLX processes. Default 0.90.
+    public static let defaultCapFraction: Double = 0.90
+
+    /// Absolute floor on the reserve held back for the OS, so a small box never
+    /// hands almost all of RAM to the provider. The percentage reserve and this
+    /// floor cross over at `minReserve / (1 − fraction)` — with the 0.90 default
+    /// that is 2 GiB / 0.10 = 20 GiB: above 20 GiB the 10% fraction reserve
+    /// dominates and this floor never binds; at/below it, this floor protects the
+    /// OS (e.g. an 8 GiB box gets a 6 GiB cap, not 7.2 GiB).
+    static let minimumReserveBytes: UInt64 = 2 * 1024 * 1024 * 1024  // 2 GiB
+
+    /// The DEFAULT activation/working-memory reserve carved out INSIDE the cap
+    /// — every attention posture, every batch, and every model that has no
+    /// measured floor of its own (``measuredActivationFloorsBytes``). Nothing
+    /// in this type SCALES it — resolution picks between measured constants —
+    /// and the operator env override (`DARKBLOOM_ACTIVATION_RESERVE_GB`) may
+    /// only RAISE the resolved floor, never lower it.
+    ///
+    /// 5.5 GiB as of v0.8.0, sized against the table below: this release
+    /// raises the decode batch to 8, and the measured gemma-4 peak at B=8 is
+    /// **5.05 GiB** — ABOVE the previous flat 3 GiB, which was sized when the
+    /// fleet ran B=4 (3.40 GiB peak). An activation overshoot is not a
+    /// recoverable error: there is no MLX allocation-failure handler, so a
+    /// mid-request OOM kills the daemon. 5.5 GiB = measured 5.05 + ~0.45
+    /// slack for prompt shapes the sweep did not cover. The cost is real and
+    /// deliberate — 2.5 GiB less KV budget per box, fewer co-resident models
+    /// on small boxes — and protective: the alternative is a fleet-wide
+    /// daemon-kill lottery at exactly the batch depth this release ships.
+    ///
+    /// Measured on M4 Max / 128 GiB, peak-over-resident-weights across a batch
+    /// sweep at ~1.5k-token prompts (`libs/mlx-swift-lm/benchmarks/reports/`,
+    /// `*-paged-gate-2026-07-09.md`, run 2026-07-10):
+    ///
+    ///     gemma-4-26B-qat-4bit  composed, head_dim 256/512   B=4 3.40  B=8 5.05 GiB
+    ///     gpt-oss-20b-MXFP4-Q8  fused,    head_dim 64        B=4 2.20  B=8 2.56 GiB
+    ///
+    /// Two things follow, and together they are why this is NOT a function of
+    /// prefill shape. The composed/fused gap is real but small (+1.2 GiB at
+    /// B=4), and the FUSED model — which materialises no score tensor at all —
+    /// still spends 2.2 GiB. The dominant term is the non-attention working
+    /// set, which no attention-shape estimate models: a `[rows, heads, C, kL]`
+    /// score estimate predicts ~205 MB for the 3.40 GiB actually measured, and
+    /// exactly 0 for the 2.20 GiB. Sizing the reserve off the score tensor
+    /// would track the smaller, better-behaved half of the cost. That rules
+    /// out formulas, not measurements: the same sweep that sized this default
+    /// off gemma-4's peak measured gpt-oss-20b's, and
+    /// ``measuredActivationFloorsBytes`` carries those measured floors so a
+    /// provider serving ONLY measured models is not charged a reserve sized
+    /// for a model it can never run.
+    ///
+    /// This is also a FORWARD-LOOKING hold-back, not an accounting of live
+    /// bytes. Transient growth during a step is already visible to
+    /// ``liveKVHeadroomBytes``, which subtracts real MLX `active + cache`; the
+    /// reserve only has to keep the NEXT step's working set from crossing the
+    /// cap. Retune it against a measurement, in one place, for the whole fleet
+    /// — and mirror any change in `coordinator/registry/servability.go`
+    /// (`servabilityActivationFloorGB` / `servabilityModelActivationFloorsGB`),
+    /// which predicts this exact arithmetic for cold providers.
+    ///
+    /// KNOWN EXCEPTIONS, neither new nor yet measured as harmful. A composed
+    /// attention model (head_dim outside MLX's fused-SDPA set {64, 80, 128})
+    /// materialises an fp32 `[rows, heads, C, kL]` prefill score tensor. TEXT
+    /// prefill is query sub-blocked on both KV backends, which bounds it;
+    /// span-bearing VISION chunks are not — they take one unblocked call and
+    /// their `L` may snap over `prefillChunkSize` up to the step budget. They
+    /// are pinned to batch 1 on both backends (`CBv2AttentionV1`'s
+    /// `spanContext == nil || (B == 1 && L > 1)`, `PagedLayerCache`'s
+    /// "span-bearing chunks are never packed"), so at most ONE is ever live —
+    /// batch. Separately, `DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=0` unblocks TEXT on
+    /// both backends: the one OPERATOR-REACHABLE configuration where this
+    /// floor is provably wrong for the common case. That is a fact about the
+    /// code and holds whatever we sanction; as policy, v0.8.0 declines to
+    /// sanction `0` specifically for this reason. A non-default but NON-ZERO
+    /// width is a different matter and stays supported here — sub-blocking is
+    /// still on and the score tensor gets SMALLER, so it costs exactness
+    /// (summation order), not memory. Either way the answer here is the env
+    /// override, not a per-model formula.
+    // 5.5 GiB (11 × 2^30 / 2 = 5_905_580_032). Mirrored by
+    // coordinator/registry/servability.go (servabilityActivationFloorGB);
+    // the two MUST move in the same commit — see the doc comment above.
+    static let defaultActivationReserveBytes: UInt64 = 11 * 1024 * 1024 * 1024 / 2
+
+    /// Measured per-model activation floors. The default above is sized for
+    /// the WORST measured model (gemma-4's 5.05 GiB B=8 peak); a model whose
+    /// measured peak sits far below it carries a floor of its own, so a
+    /// provider serving ONLY such models does not hold back memory sized for
+    /// a model it can never run. For gpt-oss-20b the requirement drops from
+    /// weights 13.5 + 5.5 + 1 = 20.0 GB to 13.5 + 3.5 + 1 = 18.0 GB. On the
+    /// 32 GB tier that narrows the flap band #653 reported by ~2 GB (the
+    /// live gate needs ~22 GB free-plus-inactive instead of ~24; the two
+    /// samples in that report, 15.9 and 21.6 usable, get the same verdict
+    /// under either floor). On the catalog's
+    /// 24 GB tier it is NOT sufficient on its own: with the 4 GiB
+    /// `memory_reserve_gb` default the gate still needs ~22 GB free of 24,
+    /// and the #653 reporters measured 12.3 and 16.1 GB usable — the
+    /// remaining levers there are the admit-time disk×1.2 padding and the
+    /// small-box reserve default (see the plan's follow-ups).
+    ///
+    /// Keyed by catalog model id, EXACT match only: a variant or new build id
+    /// without its own measurement falls back to the default — unmeasured
+    /// means unmeasured. Values cover the WORST measured execution path for
+    /// the model, eager or compiled, plus slack — the same basis the default
+    /// carries (gemma-4: max(5.05 eager, 5.34 compiled) → 5.5; gpt-oss-20b:
+    /// max(2.56 eager, 3.20 compiled) → 3.5), from the same sweep
+    /// (`libs/mlx-swift-lm/benchmarks/reports/`, `*-paged-gate-2026-07-09.md`,
+    /// run 2026-07-10; compiled figures are the `v2-compiled B=8`
+    /// peak-over-resident rows).
+    ///
+    /// Mirrored by coordinator/registry/servability.go
+    /// (`servabilityModelActivationFloorsGB` +
+    /// `servabilityPerModelFloorMinVersion`); the tables MUST move in the
+    /// same commit — see the doc comment on ``defaultActivationReserveBytes``.
+    static let measuredActivationFloorsBytes: [String: UInt64] = [
+        // Measured B=8 activation peak: 2.56 GiB eager, 3.20 GiB compiled
+        // (fused SDPA, head_dim 64). 3.5 = 3.20 + 0.30 slack. Basis: raw
+        // peak-over-resident at 500-token prompts (the July 2026 sweep's
+        // convention; the compiled path was removed in v0.8.0 — the
+        // current-engine raw figure is 2.63, so 3.5 keeps ~0.9 margin).
+        "gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2,
+        // qwen3.5/3.6 (measured text-decode envelope ~3.3 GiB, floor 4.0
+        // candidate) are deliberately ABSENT pending a vision-inclusive
+        // measurement: they are vision-capable, and VisionMemoryGate charges
+        // decoded-media buffers + KV while the TOWER transient rides this
+        // reserve — lowering it on text-only evidence exposes headroom a
+        // vision request may need. Text-decode data:
+        // docs/reports/2026-08-30-activation-floor-measurements.md.
+    ]
+
+    /// The activation floor for a SERVING SET of models: the max of each
+    /// member's measured floor, with ``defaultActivationReserveBytes`` for any
+    /// unmeasured member — the reserve must cover every model that can run a
+    /// step, so a single unmeasured member pins the default. An EMPTY set is
+    /// an open world (no declared serving set) and takes the default.
+    static func activationFloorBytes(forModelIDs ids: [String]) -> UInt64 {
+        guard !ids.isEmpty else { return defaultActivationReserveBytes }
+        var floor: UInt64 = 0
+        for id in ids {
+            floor = max(floor, measuredActivationFloorsBytes[id] ?? defaultActivationReserveBytes)
+        }
+        return floor
+    }
+
+    /// Minimum KV headroom (bytes) a freshly-loaded model must have under the cap
+    /// to be worth loading — a model that loads but can serve no KV is useless.
+    /// Small (1 GiB): the load gate only needs to guarantee the model can serve
+    /// at least a modest request; concurrency beyond that is sized at runtime.
+    static let minimumLoadKVBytes: UInt64 = 1 * 1024 * 1024 * 1024  // 1 GiB
+
+    /// The post-load guard decision, as a pure function so it's unit-testable
+    /// (KVHeadroomProbe feeds it from real MLX globals). A
+    /// freshly-loaded model is serveable iff its MEASURED live KV headroom (taken
+    /// AFTER trimming the cold-load buffer cache) is at least the minimum
+    /// serveable KV. Below that, the caller unloads + rejects rather than keep a
+    /// model whose every request the KV gate would reject.
+    public static func loadIsServeable(measuredLiveKVHeadroomBytes: UInt64) -> Bool {
+        measuredLiveKVHeadroomBytes >= minimumLoadKVBytes
+    }
+
+    /// Headroom (bytes) the model-LOAD gate must require ABOVE the weights, so a
+    /// model that passes the gate can actually serve. The runtime KV path carves
+    /// out the activation reserve and then needs some KV room; the load gate must
+    /// reserve at least that much too, or it admits a model `GlobalKVCacheBudget`
+    /// then rejects every request for (the load gate's old flat 2 GiB one-request
+    /// headroom was LESS than the 3 GiB activation reserve, so a near-cap model
+    /// loaded with zero serveable KV). Returns
+    /// `activationReserve + minimumLoadKV`. `modelIDs` is the serving set the
+    /// reserve must cover (see ``activationFloorBytes(forModelIDs:)``); nil
+    /// keeps the flat default.
+    public static func loadHeadroomBytes(
+        activationReserveBytes: UInt64? = nil,
+        modelIDs: [String]? = nil
+    ) -> UInt64 {
+        let activations =
+            activationReserveBytes ?? resolvedActivationReserveBytes(modelIDs: modelIDs)
+        return saturatingAdd(activations, minimumLoadKVBytes)
+    }
+
+    // MARK: - Cap
+
+    /// The hard cap in bytes: `min(fraction × physical, physical − minReserve)`.
+    /// Never exceeds physical and always leaves at least `minimumReserveBytes`.
+    public static func hardCapBytes(
+        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
+        capFraction: Double? = nil
+    ) -> UInt64 {
+        let fraction = resolvedCapFraction(explicit: capFraction)
+        let byFraction = scale(physicalBytes, by: fraction)
+        // Never leave less than the absolute OS floor.
+        let byFloor = physicalBytes > minimumReserveBytes
+            ? physicalBytes - minimumReserveBytes
+            : 0
+        return min(byFraction, byFloor)
+    }
+
+    /// Bytes available for KV cache after subtracting all resident model weights,
+    /// the activation reserve, and any RAM-resident prefix-cache allowance, from
+    /// the hard cap. Clamps to 0 — never returns a negative budget.
+    ///
+    /// This is the core of the policy: `cap − Σweights − activations − ramPrefix`.
+    /// It is recomputed whenever a model loads or unloads, so it rises as models
+    /// leave and shrinks as they join, with no special-casing of model count.
+    ///
+    /// `configReserveBytes` is the operator's `memory_reserve_gb`. When it
+    /// exceeds the cap's own implied OS reserve (`physical − cap` — on 16/32 GiB
+    /// boxes the default 4 GiB reserve does), the effective cap drops to
+    /// `physical − configReserve`, the SAME `max(configReserve, capImplied)`
+    /// hold-back the model-LOAD gate (``loadReserveBytes``) and the runtime KV
+    /// gate (``liveKVHeadroomBytes``) apply — so a static budget derived here
+    /// can never promise memory the operator explicitly reserved. No-op when
+    /// `configReserve ≤ physical − cap` (the common case on big boxes).
+    public static func kvBudgetBytes(
+        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
+        residentWeightBytes: UInt64,
+        activationReserveBytes: UInt64? = nil,
+        ramPrefixAllowanceBytes: UInt64 = 0,
+        configReserveBytes: UInt64 = 0,
+        capFraction: Double? = nil
+    ) -> UInt64 {
+        let cap = hardCapBytes(physicalBytes: physicalBytes, capFraction: capFraction)
+        let reserveFloor =
+            physicalBytes > configReserveBytes ? physicalBytes - configReserveBytes : 0
+        let effectiveCap = min(cap, reserveFloor)
+        let activations = activationReserveBytes ?? resolvedActivationReserveBytes()
+        let claimed = saturatingAdd(residentWeightBytes, activations, ramPrefixAllowanceBytes)
+        return effectiveCap > claimed ? effectiveCap - claimed : 0
+    }
+
+    /// Live KV headroom in bytes: how many more bytes may be committed to KV
+    /// *right now* without crossing the cap, given current MLX usage, clamped to
+    /// real OS-free RAM and net of the activation reserve.
+    ///
+    /// This is the runtime counterpart to ``kvBudgetBytes``: instead of
+    /// subtracting a known Σweights, it subtracts `mlxUsedBytes` (MLX active +
+    /// cache), which already reflects every co-resident model's weights AND its
+    /// live/cached KV — so it is inherently multi-model with no per-model
+    /// bookkeeping. The single per-request reservation gate and the per-scheduler
+    /// live token budget both derive from this, which is what keeps them
+    /// consistent (no competing reserve constants).
+    ///
+    /// Uses the same ``hardCapBytes`` ceiling — including its 2 GiB absolute OS
+    /// floor — as the load gate, so the floor is honored as KV GROWS during
+    /// serving (the load gate only guarantees it at load time; KV expands after).
+    /// On boxes above ~20 GiB the floor never binds and this equals
+    /// `capFraction × physical − mlxUsed`. Cross-process safety additionally
+    /// comes from the `systemAvailableBytes` clamp.
+    public static func liveKVHeadroomBytes(
+        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
+        mlxUsedBytes: UInt64,
+        systemAvailableBytes: UInt64,
+        activationReserveBytes: UInt64? = nil,
+        configReserveBytes: UInt64 = 0,
+        capFraction: Double? = nil
+    ) -> UInt64 {
+        // Honor an operator-configured reserve (`memory_reserve_gb`) that is
+        // larger than the cap's own implied OS reserve (`physical − cap`), so the
+        // runtime KV gate holds back the SAME memory the load gate does
+        // (`loadReserveBytes = max(configReserve, physical − cap)`). Without this,
+        // serving could grow KV up to the 90% cap and consume memory the operator
+        // explicitly reserved, reintroducing the OS-pressure/OOM the reserve
+        // exists to prevent. No-op when `configReserve ≤ physical − cap`.
+        let cap = hardCapBytes(physicalBytes: physicalBytes, capFraction: capFraction)
+        let reserveFloor = physicalBytes > configReserveBytes ? physicalBytes - configReserveBytes : 0
+        let effectiveCap = min(cap, reserveFloor)
+        let underCap = effectiveCap > mlxUsedBytes ? effectiveCap - mlxUsedBytes : 0
+        let realFree = min(underCap, systemAvailableBytes)
+        let activations = activationReserveBytes ?? resolvedActivationReserveBytes()
+        return realFree > activations ? realFree - activations : 0
+    }
+
+    /// Whether a new model of `candidateWeightBytes` may be admitted while
+    /// `currentResidentWeightBytes` are already resident, leaving at least
+    /// `minimumKVBytes` of KV headroom under the cap (a model that loads with no
+    /// room to serve any KV is useless). Pure check; eviction is the caller's job.
+    public static func canAdmit(
+        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
+        currentResidentWeightBytes: UInt64,
+        candidateWeightBytes: UInt64,
+        minimumKVBytes: UInt64,
+        activationReserveBytes: UInt64? = nil,
+        ramPrefixAllowanceBytes: UInt64 = 0,
+        capFraction: Double? = nil
+    ) -> Bool {
+        let cap = hardCapBytes(physicalBytes: physicalBytes, capFraction: capFraction)
+        let activations = activationReserveBytes ?? resolvedActivationReserveBytes()
+        let need = saturatingAdd(
+            currentResidentWeightBytes, candidateWeightBytes,
+            activations, ramPrefixAllowanceBytes, minimumKVBytes)
+        return need <= cap
+    }
+
+    /// Effective reserve (bytes) the model-LOAD gate must hold back below total
+    /// physical memory so that loading never pushes usage past the cap.
+    ///
+    /// The load gate works in "free memory" terms (`total − used − reserve`), so
+    /// to honor the cap its reserve must be at least `physical − hardCap` (the
+    /// 10% / 2 GiB-floor the cap leaves the OS). It is also never LESS than the
+    /// operator's configured reserve — whichever is more conservative wins. This
+    /// is what makes the existing free-memory load gate enforce the 90% cap
+    /// without a separate code path: hold back `max(configReserve, physical −
+    /// hardCap)`.
+    public static func loadReserveBytes(
+        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
+        configReserveBytes: UInt64,
+        capFraction: Double? = nil
+    ) -> UInt64 {
+        let cap = hardCapBytes(physicalBytes: physicalBytes, capFraction: capFraction)
+        let capImpliedReserve = physicalBytes > cap ? physicalBytes - cap : 0
+        return max(configReserveBytes, capImpliedReserve)
+    }
+
+    // MARK: - Resolution (explicit → env → default)
+
+    /// Cap fraction from explicit value, env `DARKBLOOM_MEM_CAP_FRACTION`
+    /// (0–1), or the 0.90 default. A `<= 0` or non-finite env value is treated as
+    /// UNSET (→ default), not clamped to 0: a degenerate `0` fraction would make
+    /// `hardCapBytes == 0` and reject every request, silently bricking the
+    /// provider from a single bad env var. An explicit programmatic value (tests)
+    /// is still clamped as given. Values `> 1` clamp to 1.0.
+    static func resolvedCapFraction(
+        explicit: Double?,
+        env: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Double {
+        if let explicit { return clampFraction(explicit) }
+        if let raw = env["DARKBLOOM_MEM_CAP_FRACTION"], let v = Double(raw),
+            v.isFinite, v > 0 {
+            return clampFraction(v)
+        }
+        return defaultCapFraction
+    }
+
+    /// Activation reserve from explicit bytes, env
+    /// `DARKBLOOM_ACTIVATION_RESERVE_GB` (GB), or the serving-set floor
+    /// (``activationFloorBytes(forModelIDs:)`` when `modelIDs` is given,
+    /// ``defaultActivationReserveBytes`` otherwise).
+    ///
+    /// The env override is RAISE-ONLY, enforced, not just documented: the
+    /// resolved value is `max(env, floor)` where the floor is the serving
+    /// set's. A value below the floor — most likely a legacy `3` set when
+    /// 3 GiB WAS the default — would silently recreate the B=8 activation
+    /// OOM the floor exists to prevent, while the coordinator keeps
+    /// predicting capacity with the floor (`servability.go`). A `<= 0` or
+    /// non-finite env value is likewise treated as UNSET (→ the floor): a
+    /// `0` reserve would remove the activation headroom the cap exists to
+    /// guarantee. An explicit programmatic value (tests) is honored as
+    /// given, below the floor included — test fixtures legitimately model
+    /// small boxes.
+    static func resolvedActivationReserveBytes(
+        explicit: UInt64? = nil,
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        modelIDs: [String]? = nil
+    ) -> UInt64 {
+        if let explicit { return explicit }
+        let floor = modelIDs.map { activationFloorBytes(forModelIDs: $0) }
+            ?? defaultActivationReserveBytes
+        if let raw = env["DARKBLOOM_ACTIVATION_RESERVE_GB"], let gb = Double(raw),
+            gb.isFinite, gb > 0 {
+            let scaled = gb * 1_073_741_824
+            let bytes = scaled >= uint64MaxAsDouble ? UInt64.max : UInt64(scaled)
+            return max(bytes, floor)
+        }
+        return floor
+    }
+
+    // MARK: - Helpers
+
+    /// `Double(UInt64.max)` (exactly 2^64) — the saturation threshold so a
+    /// `>= uint64MaxAsDouble` test catches every value that would trap on
+    /// `UInt64(_:)` conversion. Mirrors ``MLXMemoryGuard``.
+    static let uint64MaxAsDouble = Double(UInt64.max)
+
+    private static func clampFraction(_ v: Double) -> Double {
+        guard v.isFinite else { return defaultCapFraction }
+        return min(1.0, max(0.0, v))
+    }
+
+    /// Multiply a byte count by a 0–1 fraction without overflow or a trapping
+    /// Double round-trip.
+    private static func scale(_ bytes: UInt64, by fraction: Double) -> UInt64 {
+        let scaled = Double(bytes) * fraction
+        if !scaled.isFinite || scaled <= 0 { return 0 }
+        return scaled >= uint64MaxAsDouble ? UInt64.max : UInt64(scaled)
+    }
+
+    private static func saturatingAdd(_ values: UInt64...) -> UInt64 {
+        var total: UInt64 = 0
+        for v in values {
+            let (sum, overflow) = total.addingReportingOverflow(v)
+            total = overflow ? UInt64.max : sum
+        }
+        return total
+    }
+}

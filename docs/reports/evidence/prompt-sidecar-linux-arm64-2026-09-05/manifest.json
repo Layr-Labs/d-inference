@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "scope": "One local native ARM Linux static-musl proof at banked544cfa5ee; no native Linux/amd64 production CI or platform-comparative performance claim. No source changes.",
+  "source_commit": "544cfa5eef9c6a02021d81f0054a5bbe624e89d3",
+  "binary_sha256": {
+    "promptsidecar-linux-arm64": "3137e7f913a435e6899262a8e650b34fe7241326226736b4f4c843f43db85236",
+    "promptsidecarloadproof-linux-arm64": "3bf53805288070f802a0e0caae8f4cf1e92b7a0b5a85f7453b8e7ca7f5d0a6b6"
+  },
+  "files": [
+    {
+      "path": "source.json",
+      "source": "/tmp/darkbloom-release-090/linux-validation/source.json",
+      "bytes": 332,
+      "sha256": "332ca07dbf7a5d1d0c5f9e0006c8e11de878bb3e9cc7b9b62a757aab3b4b9dd0",
+      "raw_bytes": 332,
+      "raw_sha256": "332ca07dbf7a5d1d0c5f9e0006c8e11de878bb3e9cc7b9b62a757aab3b4b9dd0"
+    },
+    {
+      "path": "execution.json",
+      "source": "/tmp/darkbloom-release-090/linux-validation/execution.json",
+      "bytes": 1909,
+      "sha256": "5a166e6f52846079704e90569254124c7505fc9a43bf532e62bf7f439ff31e47",
+      "raw_bytes": 1909,
+      "raw_sha256": "5a166e6f52846079704e90569254124c7505fc9a43bf532e62bf7f439ff31e47"
+    },
+    {
+      "path": "result.json",
+      "source": "/tmp/darkbloom-release-090/linux-validation/result.json",
+      "bytes": 4315,
+      "sha256": "eb47fbc8414ea443dbdb02654f28db0d68494444ae528b9690bde014da1409d3",
+      "raw_bytes": 4315,
+      "raw_sha256": "eb47fbc8414ea443dbdb02654f28db0d68494444ae528b9690bde014da1409d3"
+    },
+    {
+      "path": "proof.stderr.gz",
+      "source": "/tmp/darkbloom-release-090/linux-validation/proof.stderr",
+      "bytes": 20,
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "observed-limits.json",
+      "source": "/tmp/darkbloom-release-090/linux-validation/observed-limits.json",
+      "bytes": 3149,
+      "sha256": "e43c62a5a462bbf58978db6eb7b0fc4cb408d163ebe55b1f016edad14ebdd4a8",
+      "raw_bytes": 3149,
+      "raw_sha256": "e43c62a5a462bbf58978db6eb7b0fc4cb408d163ebe55b1f016edad14ebdd4a8"
+    },
+    {
+      "path": "observer.log.gz",
+      "source": "/tmp/darkbloom-release-090/linux-validation/observer.log",
+      "bytes": 104,
+      "sha256": "ac30698dc6ca17e997920b2ee9c96ca7f334d01d7f18dcd55cac774098dd049c",
+      "raw_bytes": 94,
+      "raw_sha256": "c1ff7773cd511a5e12ac688e7a2881a07eed2b26f6bfedf97a1dc275fb3f1ccd"
+    },
+    {
+      "path": "linux.yaml.gz",
+      "source": "/tmp/darkbloom-release-090/linux-validation/linux.yaml",
+      "bytes": 361,
+      "sha256": "53fbce6fe65bc071bc6eafa4cd8779d45e84a692a00a8facea04d6690fd36f08",
+      "raw_bytes": 486,
+      "raw_sha256": "84c795dd110c3d8735689504fe189af94624718cb387e21ff6bc2edf01366274"
+    },
+    {
+      "path": "rust-components.json",
+      "source": "/tmp/darkbloom-release-090/linux-validation/rust-components.json",
+      "bytes": 876,
+      "sha256": "b675a27f5e13785f053199345b6fa64f19f696be7b4258dd43266dc44af1c264",
+      "raw_bytes": 876,
+      "raw_sha256": "b675a27f5e13785f053199345b6fa64f19f696be7b4258dd43266dc44af1c264"
+    },
+    {
+      "path": "setup-guest.sh.gz",
+      "source": "/tmp/darkbloom-release-090/linux-validation/setup-guest.sh",
+      "bytes": 902,
+      "sha256": "21865ffdecf938755010060001af924eb7e7a6e0535b61c15cdf3f04bfc4f1a1",
+      "raw_bytes": 2080,
+      "raw_sha256": "f1518c190c846271fa5cc905ef386d47e22ebfba6d6f397fb51d255be185ae7b"
+    },
+    {
+      "path": "build-guest.sh.gz",
+      "source": "/tmp/darkbloom-release-090/linux-validation/build-guest.sh",
+      "bytes": 242,
+      "sha256": "047416c92dd3ec0ece4c9671a9368b269f5a439ac679a86de59f6bb75ae0883f",
+      "raw_bytes": 483,
+      "raw_sha256": "f71705af2758ce438acc08743af10b37c6fc3ea0ac83b8e83ccbfe32d9ac87cf"
+    },
+    {
+      "path": "run-proof-guest.sh.gz",
+      "source": "/tmp/darkbloom-release-090/linux-validation/run-proof-guest.sh",
+      "bytes": 239,
+      "sha256": "5400e941f8c8075a8d563be111309dc48d55e8b18856fb510842da461a2bae1e",
+      "raw_bytes": 436,
+      "raw_sha256": "d7226a55d40d7363142982b8f13b2a4763e87c89944ebfb2e89fedbd5ff5505e"
+    },
+    {
+      "path": "observe-proof.py.gz",
+      "source": "/tmp/darkbloom-release-090/linux-validation/observe-proof.py",
+      "bytes": 949,
+      "sha256": "718e873a248017c83c5366a03d3947e03a7899bfa4faec5977284538822b4429",
+      "raw_bytes": 2033,
+      "raw_sha256": "3231603878792dc8918b846680bbdfe5358be7b99343cf1adf5ac50dda9bd787"
+    },
+    {
+      "path": "setup-guest.log.gz",
+      "source": "/tmp/darkbloom-release-090/linux-validation/setup-guest.log",
+      "bytes": 2337,
+      "sha256": "da5af946830c67780c0ae2a7e66197d9c34c63c12ff82ae03f58440fc74ea619",
+      "raw_bytes": 8164,
+      "raw_sha256": "9befbc9e53fc50ebe0fe8c7a2022a251bc80146dc8ce8c3d903b1d2b169c4f81"
+    },
+    {
+      "path": "build-guest.log.gz",
+      "source": "/tmp/darkbloom-release-090/linux-validation/build-guest.log",
+      "bytes": 2075,
+      "sha256": "22cceefa69f1b6b06d3e54231af860c534c18a566f85d8d14bde9e554e159ba7",
+      "raw_bytes": 8279,
+      "raw_sha256": "8e357a77f98b0de04167fc80a5c09e16316a99bd93874fe37d79218c20eb58de"
+    },
+    {
+      "path": "go-build.log.gz",
+      "source": "/tmp/darkbloom-release-090/linux-validation/go-build.log",
+      "bytes": 20,
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "start.log.gz",
+      "source": "/tmp/darkbloom-release-090/linux-validation/start.log",
+      "bytes": 1209,
+      "sha256": "c6e990f4ac03d7760c4e9f59022d019e2378b168f4b31b2265f8c35bdab49f41",
+      "raw_bytes": 4195,
+      "raw_sha256": "fd58dd99c0cf09f40b74d1f0590e41cea33214864797022c2e5ebb06124a580c"
+    },
+    {
+      "path": "stop.log.gz",
+      "source": "/tmp/darkbloom-release-090/linux-validation/stop.log",
+      "bytes": 425,
+      "sha256": "86c2ca66486b2e85a2aac673348820829be3ba7f85a3f63792d740678827db62",
+      "raw_bytes": 1717,
+      "raw_sha256": "8c616df2d292c3979d4e075974d6329672aa2c071ce1d525ec00e46dc3fbddf6"
+    },
+    {
+      "path": "channel-rust-1.88.0.toml.gz",
+      "source": "/tmp/darkbloom-release-090/linux-validation/channel-rust-1.88.0.toml",
+      "bytes": 72704,
+      "sha256": "88c1eeb8d689dc9ad0d14374e146892fb17e43032211102cc6071ba559d2f19d",
+      "raw_bytes": 875562,
+      "raw_sha256": "431b7c5c0b9a511d8e31d29b378bbc74124e8521f14beb92d3a5a5f7e7e55449"
+    },
+    {
+      "path": "linux-input-manifest.json",
+      "source": "/tmp/darkbloom-release-090/tokenizer-sharing/linux-input-manifest.json",
+      "bytes": 12294,
+      "sha256": "eeaffebbb37f6ae7424438021479a809152bc1059942e3d9b3a27e16c7c19383",
+      "raw_bytes": 12294,
+      "raw_sha256": "eeaffebbb37f6ae7424438021479a809152bc1059942e3d9b3a27e16c7c19383"
+    }
+  ]
+}

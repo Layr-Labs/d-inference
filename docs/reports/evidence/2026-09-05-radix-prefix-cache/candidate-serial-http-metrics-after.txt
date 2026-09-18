@@ -1,0 +1,26 @@
+# TYPE mlx_server_requests_total counter
+mlx_server_requests_total 60
+# TYPE mlx_server_chat_completions_total counter
+mlx_server_chat_completions_total 60
+# TYPE mlx_server_responses_total counter
+mlx_server_responses_total 0
+# TYPE mlx_server_errors_total counter
+mlx_server_errors_total 0
+# TYPE mlx_server_prompt_tokens_total counter
+mlx_server_prompt_tokens_total 133329
+# TYPE mlx_server_completion_tokens_total counter
+mlx_server_completion_tokens_total 4240
+# TYPE mlx_server_uptime_seconds gauge
+mlx_server_uptime_seconds 213.2487930059433
+# TYPE mtp_enabled gauge
+mtp_enabled{model="EigenLabs/Qwen3.8-27B-4bit-mtp"} 0
+# TYPE mtp_active gauge
+mtp_active{model="EigenLabs/Qwen3.8-27B-4bit-mtp"} 0
+# TYPE mtp_rounds_total counter
+mtp_rounds_total{model="EigenLabs/Qwen3.8-27B-4bit-mtp"} 0
+# TYPE mtp_tokens_proposed_total counter
+mtp_tokens_proposed_total{model="EigenLabs/Qwen3.8-27B-4bit-mtp"} 0
+# TYPE mtp_tokens_accepted_total counter
+mtp_tokens_accepted_total{model="EigenLabs/Qwen3.8-27B-4bit-mtp"} 0
+# TYPE mtp_inactive_reason gauge
+mtp_inactive_reason{model="EigenLabs/Qwen3.8-27B-4bit-mtp",reason="config_disabled"} 1

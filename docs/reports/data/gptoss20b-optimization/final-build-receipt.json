@@ -1,0 +1,18 @@
+{
+  "binary": {
+    "bytes": 91939224,
+    "sha256": "e2d20361759da2d8ac05412d6d26d07b9e8d9727acf69ea5a5087675e3d222eb"
+  },
+  "buildCommandAsRecorded": "swift test -c release -j 8 --skip-update --force-resolved-versions --package-path provider-swift --filter GPTOSSOptimizationTests|ThroughputSweepDecodeTimingTests|BenchmarkArrivalPromptTests",
+  "createdAt": "2026-09-05T16:59:45.516843+00:00",
+  "metallib": {
+    "bytes": 182425056,
+    "sha256": "825d61069d38ca7517ac9f4fcf3b5e02174546384e4d3a4275e35ac07b791ef0"
+  },
+  "note": "Local absolute paths removed. Use the quoted filter command in the report for shell reproduction. Source patches and complete build logs are retained locally.",
+  "sourceBranch": "research/gptoss20b-profile",
+  "sourceRoot": "9b73b3efa07f5f1ff04943c6230637779e4552b1",
+  "submodules": "0a725e3000edabc4911cde345270ca950bfa152f libs/mlx (darkbloom-metal-resource-count-201-g0a725e30)\n+ef71ba240480cb31c7ac73da26f8482536963ed1 libs/mlx-swift (0.31.4-29-gef71ba2)\n 68ba61783e254982fea47f24593783787a174349 libs/mlx-swift/Source/Cmlx/mlx (v0.32.0-208-g68ba61783)\n 694b7fe8a281f21baf14cd1d522405f3ca6bf9b6 libs/mlx-swift/Source/Cmlx/mlx-c (darkbloom-metal-resource-count-9-g694b7fe)\n+2d1090b63d913dceba5201b4be9d2169b847f715 libs/mlx-swift-lm (3.31.3-229-g2d1090b)",
+  "toolchain": "Apple Swift version 6.3 (swiftlang-6.3.0.123.5 clang-2100.0.123.102)\nTarget: arm64-apple-macosx26.0\n",
+  "trackedSourceDiffSHA256": "ffeadfce4ae5d49bdeff78a5c7d8439064ac0c825df7d033819c5ba3ad32e3ec"
+}

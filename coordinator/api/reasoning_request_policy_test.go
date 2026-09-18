@@ -344,16 +344,25 @@ func TestApplyResolvedModelReasoningPolicyPreservesExplicitValuesAndUntouchedByt
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, changed, err := applyResolvedModelReasoningPolicy(
-				parsed, []byte(test.body), test.model, test.service, test.provided)
+			before, err := marshalForwardBody(parsed)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if changed {
+			if applyResolvedModelReasoningPolicy(parsed, test.model, test.service, test.provided) {
 				t.Fatal("policy reported a mutation")
 			}
-			if string(got) != test.body {
-				t.Fatalf("body changed: got %q, want original %q", got, test.body)
+			after, err := marshalForwardBody(parsed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Fatalf("parsed changed: got %s, want %s", after, before)
+			}
+			// A no-op policy leaves the forward body clean, so the caller's exact
+			// bytes reach the provider.
+			body := forwardBody{parsed: parsed, bytes: []byte(test.body)}
+			if got, _ := body.current(); string(got) != test.body {
+				t.Fatalf("forward body changed: got %q, want original %q", got, test.body)
 			}
 		})
 	}

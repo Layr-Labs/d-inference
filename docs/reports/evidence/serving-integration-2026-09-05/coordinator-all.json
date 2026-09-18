@@ -1,0 +1,17 @@
+{
+  "source_commit": "ce39db401f6093a00943683b54c22751a3ff5ef9",
+  "coordinator_tree": "4b56a8b3b6a30f2493970361614ce294b1a4c7ae",
+  "command": "GOTOOLCHAIN=go1.25.0 go test ./coordinator/...",
+  "log": "coordinator-all.txt.gz",
+  "uncompressed_sha256": "d477407acbe40bb3de142fb9b3ed9138634e3bc96d86bbd8452910820150cc82",
+  "verdict": {
+    "source_commit": "ce39db401f6093a00943683b54c22751a3ff5ef9",
+    "command": "GOTOOLCHAIN=go1.25.0 go test ./coordinator/...",
+    "exit_code": 0,
+    "elapsed_seconds": 159.973,
+    "passed_packages": 25,
+    "no_test_packages": 3,
+    "failed_packages": [],
+    "log": "/tmp/darkbloom-integrated-coordinator-all-final.log"
+  }
+}

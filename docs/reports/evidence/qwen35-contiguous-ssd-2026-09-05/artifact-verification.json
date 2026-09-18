@@ -1,0 +1,62 @@
+{
+  "artifact_manifest_sha256": "e522d59598d61c9137b527acae9a951410809c6d2a086f8e3a5c03f23e6bf6f3",
+  "checks": {
+    "source-manifest.json": {
+      "bytes": 153680,
+      "sha256": "f7e354636ac2ca735d3b2d47e369c06ac9308c024db54214e6225a7d11fd7e64"
+    },
+    "cli-release.log": {
+      "bytes": 29456,
+      "sha256": "327834ebad70cec6c25cf69911ac797bb8fc5a0c71d71624ee51e8791a5cc8fb"
+    },
+    "run_radix_http.py": {
+      "bytes": 6998,
+      "sha256": "9608cef72cea2f08cab343fe70d8948338cffab451c8636a9ccc0dc7e83eeefe"
+    },
+    "mlx.metallib": {
+      "bytes": 182380912,
+      "sha256": "4ffbbac48a99b495916c3fa0921ce813eb554de1a09aff408d9b5a5a8053e6b0"
+    },
+    "engine-release.log": {
+      "bytes": 1512,
+      "sha256": "db344c645fe6d4e872516e336aa2040e4ca0ea4c4aea0d4a2976a21627e36c71"
+    },
+    "darkbloom": {
+      "bytes": 85149848,
+      "sha256": "dcd221dc51b4e00cc0c1e1eb7ddddfb9898f6f83b7a20f8d884c4bf1b5ae23aa"
+    },
+    "run_radix_engine.py": {
+      "bytes": 4526,
+      "sha256": "d7176f37228a41e6bf9d14ee729e2b3b85d73f987d06c27f3376f628b614ab14"
+    },
+    "radix-engine": {
+      "bytes": 79123600,
+      "sha256": "44e5126098dc2d39a79371c8b57e1a476017fb9f26ae79e8d0140bbd401a73a8"
+    },
+    "radix_prefix_cache.py": {
+      "bytes": 11960,
+      "sha256": "17924ee6129a15cd1a142145f31d6e7e6b0eab64903e4a995780cd32e0737eaa"
+    },
+    "swift-transformers_Hub.bundle/gpt2_tokenizer_config.json": {
+      "bytes": 234,
+      "sha256": "551e26ec611d8d0c8edc3ef72e518a38418cb71f40de1347dd486a595e1557d7"
+    },
+    "swift-transformers_Hub.bundle/t5_tokenizer_config.json": {
+      "bytes": 20746,
+      "sha256": "e0aff0b1de9071e30d9a60a199303b6abe916a64a19932bd1c46992279b41a1f"
+    },
+    "swift-crypto_Crypto.bundle/PrivacyInfo.xcprivacy": {
+      "bytes": 398,
+      "sha256": "42fb8a30dd8d7ba0900e1bf17fe64ed8c12cfdb8a9c791ab6b4e1eceb0f299c0"
+    },
+    "mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal": {
+      "bytes": 22136,
+      "sha256": "1a5b813ef89a36aa802951a1c5bccab789dd0746f2159846e649974572be368b"
+    },
+    "swift-nio_NIOPosix.bundle/PrivacyInfo.xcprivacy": {
+      "bytes": 599,
+      "sha256": "982f20d820bc4460acc9d4116c3e6c8ec837f717dc82edbb7308f7400515c909"
+    }
+  },
+  "passed": true
+}

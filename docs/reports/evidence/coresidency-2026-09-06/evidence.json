@@ -1,0 +1,1403 @@
+{
+  "schema": "release090-coresidency-evidence-v1",
+  "verdict": "EXACT_THREE_MODEL_LIFECYCLE_PASSED",
+  "executed_tests": 1,
+  "request_outcomes": {
+    "release090-load-1": {
+      "completion_tokens": 532,
+      "errors": [
+        "request cancelled"
+      ],
+      "response_text_sha256": "41c75ee6dfdd6be4c00f7dbf8d46b91bb599956d0d75edf376716a216f9ad761"
+    },
+    "release090-load-2": {
+      "completion_tokens": 645,
+      "errors": [
+        "request cancelled"
+      ],
+      "response_text_sha256": "030df25c92c9fa515906796ca92a74764609f5e883f1b270b9f060db6b1bda1c"
+    },
+    "release090-recovery-gemma-4-26b-qat-4bit-slots-3": {
+      "completion_tokens": 128,
+      "errors": [],
+      "response_text_sha256": "b0cfbc7057f7e4f649566a1379e3e42a7e5079f51bf5851c8ad7a2c72415b774"
+    },
+    "release090-recovery-gpt-oss-20b-slots-2": {
+      "completion_tokens": 128,
+      "errors": [],
+      "response_text_sha256": "b222e281218ae9716b8f6d4d20051d53f4900fa1e744c62b06537a3897901d52"
+    },
+    "release090-recovery-gpt-oss-20b-slots-3": {
+      "completion_tokens": 128,
+      "errors": [],
+      "response_text_sha256": "b222e281218ae9716b8f6d4d20051d53f4900fa1e744c62b06537a3897901d52"
+    },
+    "release090-recovery-qwen3.6-35b-a3b-vl-mtp-mxfp8-alone": {
+      "completion_tokens": 64,
+      "errors": [],
+      "response_text_sha256": "3bece0ba182509b860d2ef559e952491ddd37ee875b4a2f6a7b9343112759fe3"
+    },
+    "release090-recovery-qwen3.6-35b-a3b-vl-mtp-mxfp8-regrown": {
+      "completion_tokens": 64,
+      "errors": [],
+      "response_text_sha256": "3bece0ba182509b860d2ef559e952491ddd37ee875b4a2f6a7b9343112759fe3"
+    },
+    "release090-recovery-qwen3.6-35b-a3b-vl-mtp-mxfp8-slots-2": {
+      "completion_tokens": 64,
+      "errors": [],
+      "response_text_sha256": "3bece0ba182509b860d2ef559e952491ddd37ee875b4a2f6a7b9343112759fe3"
+    },
+    "release090-recovery-qwen3.6-35b-a3b-vl-mtp-mxfp8-slots-3": {
+      "completion_tokens": 64,
+      "errors": [],
+      "response_text_sha256": "3bece0ba182509b860d2ef559e952491ddd37ee875b4a2f6a7b9343112759fe3"
+    }
+  },
+  "observations": [
+    {
+      "fleetBudget": 68844138374,
+      "grantSum": 68844138374,
+      "ledger": {
+        "active": 21709919300,
+        "cache": 0,
+        "cap": 96207267430,
+        "closingOwners": 0,
+        "debt": 0,
+        "epoch": 2,
+        "materialized": 0,
+        "owned": 0,
+        "owners": 1,
+        "physical": 137438953472,
+        "remaining": 68591768098,
+        "reserve": 5905580032,
+        "systemAvailable": 92040691712,
+        "unmaterialized": 0
+      },
+      "slots": [
+        {
+          "activeIDs": [],
+          "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+          "mtpActive": true,
+          "ssdEnabled": true,
+          "values": {
+            "active": 0,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 0,
+            "assistantWeights": 1055619072,
+            "backendCapacity": 68844138374,
+            "committed": 0,
+            "consumedPrefixTokens": 0,
+            "grant": 68844138374,
+            "grantRefusals": 0,
+            "kvInUse": 0,
+            "kvReserved": 0,
+            "livePages": 0,
+            "poison": 0,
+            "reservedPages": 0,
+            "slack": 0,
+            "stageConsumptions": 0,
+            "stageReadBytes": 0,
+            "staging": 0,
+            "steps": 0,
+            "waiting": 0,
+            "weights": 21457549024,
+            "writeHost": 0
+          }
+        }
+      ],
+      "stage": "one-slot",
+      "uptimeNanoseconds": 4014728129652875
+    },
+    {
+      "fleetBudget": 68844138374,
+      "grantSum": 68844138374,
+      "ledger": {
+        "active": 21709919625,
+        "cache": 8592660749,
+        "cap": 96207267430,
+        "closingOwners": 0,
+        "debt": 0,
+        "epoch": 2,
+        "materialized": 0,
+        "owned": 0,
+        "owners": 1,
+        "physical": 137438953472,
+        "remaining": 59999107024,
+        "reserve": 5905580032,
+        "systemAvailable": 82686017536,
+        "unmaterialized": 0
+      },
+      "slots": [
+        {
+          "activeIDs": [],
+          "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+          "mtpActive": true,
+          "ssdEnabled": true,
+          "values": {
+            "active": 0,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 0,
+            "assistantWeights": 1055619072,
+            "backendCapacity": 68844138374,
+            "committed": 0,
+            "consumedPrefixTokens": 0,
+            "grant": 68844138374,
+            "grantRefusals": 0,
+            "kvInUse": 0,
+            "kvReserved": 0,
+            "livePages": 0,
+            "poison": 0,
+            "reservedPages": 0,
+            "slack": 0,
+            "stageConsumptions": 0,
+            "stageReadBytes": 0,
+            "staging": 0,
+            "steps": 43,
+            "waiting": 0,
+            "weights": 21457549024,
+            "writeHost": 0
+          }
+        }
+      ],
+      "stage": "before-restored-stream-release090-load-1",
+      "uptimeNanoseconds": 4014739060684708
+    },
+    {
+      "fleetBudget": 68844138374,
+      "grantSum": 68844138374,
+      "ledger": {
+        "active": 23127169449,
+        "cache": 8540292325,
+        "cap": 96207267430,
+        "closingOwners": 0,
+        "debt": 0,
+        "epoch": 2,
+        "materialized": 494125056,
+        "owned": 1125617195,
+        "owners": 1,
+        "physical": 137438953472,
+        "remaining": 58002733485,
+        "reserve": 5905580032,
+        "systemAvailable": 81887690752,
+        "unmaterialized": 631492139
+      },
+      "slots": [
+        {
+          "activeIDs": [
+            "release090-load-1"
+          ],
+          "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+          "mtpActive": true,
+          "ssdEnabled": true,
+          "values": {
+            "active": 1,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 16384,
+            "assistantWeights": 1055619072,
+            "backendCapacity": 68844138374,
+            "committed": 494125056,
+            "consumedPrefixTokens": 20480,
+            "grant": 68844138374,
+            "grantRefusals": 0,
+            "kvInUse": 670697576,
+            "kvReserved": 1125617195,
+            "livePages": 451543040,
+            "poison": 622592,
+            "reservedPages": 493486080,
+            "slack": 0,
+            "stageConsumptions": 1,
+            "stageReadBytes": 568040656,
+            "staging": 0,
+            "steps": 44,
+            "waiting": 0,
+            "weights": 21457549024,
+            "writeHost": 0
+          }
+        }
+      ],
+      "stage": "restored-before-load-release090-load-1",
+      "uptimeNanoseconds": 4014739967763083
+    },
+    {
+      "fleetBudget": 68844138374,
+      "grantSum": 68844138374,
+      "ledger": {
+        "active": 23127169505,
+        "cache": 8540292269,
+        "cap": 96207267430,
+        "closingOwners": 0,
+        "debt": 0,
+        "epoch": 2,
+        "materialized": 494125056,
+        "owned": 1125617195,
+        "owners": 1,
+        "physical": 137438953472,
+        "remaining": 58002733485,
+        "reserve": 5905580032,
+        "systemAvailable": 81887707136,
+        "unmaterialized": 631492139
+      },
+      "slots": [
+        {
+          "activeIDs": [
+            "release090-load-1"
+          ],
+          "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+          "mtpActive": true,
+          "ssdEnabled": true,
+          "values": {
+            "active": 1,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 16384,
+            "assistantWeights": 1055619072,
+            "backendCapacity": 68844138374,
+            "committed": 494125056,
+            "consumedPrefixTokens": 20480,
+            "grant": 68844138374,
+            "grantRefusals": 0,
+            "kvInUse": 670697576,
+            "kvReserved": 1125617195,
+            "livePages": 451543040,
+            "poison": 622592,
+            "reservedPages": 493486080,
+            "slack": 0,
+            "stageConsumptions": 1,
+            "stageReadBytes": 568040656,
+            "staging": 0,
+            "steps": 44,
+            "waiting": 0,
+            "weights": 21457549024,
+            "writeHost": 0
+          }
+        }
+      ],
+      "stage": "load-begin-gpt-oss-20b",
+      "uptimeNanoseconds": 4014739968470041
+    },
+    {
+      "fleetBudget": 68844138374,
+      "grantSum": 25803645093,
+      "ledger": {
+        "active": 34510569929,
+        "cache": 104248782,
+        "cap": 96207267430,
+        "closingOwners": 0,
+        "debt": 0,
+        "epoch": 3,
+        "materialized": 494125056,
+        "owned": 2199359019,
+        "owners": 2,
+        "physical": 137438953472,
+        "remaining": 53981634724,
+        "reserve": 5905580032,
+        "systemAvailable": 79453913088,
+        "unmaterialized": 1705233963
+      },
+      "slots": [
+        {
+          "activeIDs": [
+            "release090-load-1"
+          ],
+          "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+          "mtpActive": true,
+          "ssdEnabled": true,
+          "values": {
+            "active": 1,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 16384,
+            "assistantWeights": 1055619072,
+            "backendCapacity": 25803645093,
+            "committed": 494125056,
+            "consumedPrefixTokens": 20480,
+            "grant": 25803645093,
+            "grantRefusals": 0,
+            "kvInUse": 713885212,
+            "kvReserved": 1125617195,
+            "livePages": 461701120,
+            "poison": 622592,
+            "reservedPages": 493486080,
+            "slack": 0,
+            "stageConsumptions": 1,
+            "stageReadBytes": 568040656,
+            "staging": 0,
+            "steps": 232,
+            "waiting": 0,
+            "weights": 21457549024,
+            "writeHost": 0
+          }
+        }
+      ],
+      "stage": "shrink-observed-active-release090-load-1",
+      "uptimeNanoseconds": 4014750636974541
+    },
+    {
+      "fleetBudget": 56768019206,
+      "grantSum": 56768019205,
+      "ledger": {
+        "active": 34645524139,
+        "cache": 86009600,
+        "cap": 96207267430,
+        "closingOwners": 0,
+        "debt": 0,
+        "epoch": 3,
+        "materialized": 494125056,
+        "owned": 1125617195,
+        "owners": 2,
+        "physical": 137438953472,
+        "remaining": 54938661520,
+        "reserve": 5905580032,
+        "systemAvailable": 79260041216,
+        "unmaterialized": 631492139
+      },
+      "slots": [
+        {
+          "activeIDs": [],
+          "modelID": "gpt-oss-20b",
+          "mtpActive": false,
+          "ssdEnabled": false,
+          "values": {
+            "active": 0,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 0,
+            "assistantWeights": 0,
+            "backendCapacity": 30964374112,
+            "committed": 0,
+            "consumedPrefixTokens": 0,
+            "grant": 30964374112,
+            "grantRefusals": 0,
+            "kvInUse": 0,
+            "kvReserved": 0,
+            "livePages": 0,
+            "poison": 0,
+            "reservedPages": 0,
+            "slack": 0,
+            "stageConsumptions": 0,
+            "stageReadBytes": 0,
+            "staging": 0,
+            "steps": 0,
+            "waiting": 0,
+            "weights": 12076119168,
+            "writeHost": 0
+          }
+        },
+        {
+          "activeIDs": [
+            "release090-load-1"
+          ],
+          "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+          "mtpActive": true,
+          "ssdEnabled": true,
+          "values": {
+            "active": 1,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 16384,
+            "assistantWeights": 1055619072,
+            "backendCapacity": 25803645093,
+            "committed": 494125056,
+            "consumedPrefixTokens": 20480,
+            "grant": 25803645093,
+            "grantRefusals": 0,
+            "kvInUse": 714864152,
+            "kvReserved": 1125617195,
+            "livePages": 462684160,
+            "poison": 622592,
+            "reservedPages": 493486080,
+            "slack": 0,
+            "stageConsumptions": 1,
+            "stageReadBytes": 568040656,
+            "staging": 0,
+            "steps": 246,
+            "waiting": 0,
+            "weights": 21457549024,
+            "writeHost": 0
+          }
+        }
+      ],
+      "stage": "load-end-active-gpt-oss-20b",
+      "uptimeNanoseconds": 4014751918657250
+    },
+    {
+      "fleetBudget": 56768019206,
+      "grantSum": 56768019205,
+      "ledger": {
+        "active": 33964931892,
+        "cache": 6959087328,
+        "cap": 96207267430,
+        "closingOwners": 0,
+        "debt": 0,
+        "epoch": 3,
+        "materialized": 0,
+        "owned": 0,
+        "owners": 2,
+        "physical": 137438953472,
+        "remaining": 49377668178,
+        "reserve": 5905580032,
+        "systemAvailable": 73001287680,
+        "unmaterialized": 0
+      },
+      "slots": [
+        {
+          "activeIDs": [],
+          "modelID": "gpt-oss-20b",
+          "mtpActive": false,
+          "ssdEnabled": false,
+          "values": {
+            "active": 0,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 0,
+            "assistantWeights": 0,
+            "backendCapacity": 30964374112,
+            "committed": 0,
+            "consumedPrefixTokens": 0,
+            "grant": 30964374112,
+            "grantRefusals": 0,
+            "kvInUse": 0,
+            "kvReserved": 0,
+            "livePages": 0,
+            "poison": 0,
+            "reservedPages": 0,
+            "slack": 0,
+            "stageConsumptions": 0,
+            "stageReadBytes": 0,
+            "staging": 0,
+            "steps": 129,
+            "waiting": 0,
+            "weights": 12076119168,
+            "writeHost": 0
+          }
+        },
+        {
+          "activeIDs": [],
+          "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+          "mtpActive": true,
+          "ssdEnabled": true,
+          "values": {
+            "active": 0,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 0,
+            "assistantWeights": 1055619072,
+            "backendCapacity": 25803645093,
+            "committed": 0,
+            "consumedPrefixTokens": 40960,
+            "grant": 25803645093,
+            "grantRefusals": 0,
+            "kvInUse": 0,
+            "kvReserved": 0,
+            "livePages": 0,
+            "poison": 0,
+            "reservedPages": 0,
+            "slack": 0,
+            "stageConsumptions": 2,
+            "stageReadBytes": 1136081312,
+            "staging": 0,
+            "steps": 279,
+            "waiting": 0,
+            "weights": 21457549024,
+            "writeHost": 0
+          }
+        }
+      ],
+      "stage": "drained-2-slots",
+      "uptimeNanoseconds": 4014758107392833
+    },
+    {
+      "fleetBudget": 56768019206,
+      "grantSum": 56768019205,
+      "ledger": {
+        "active": 33964931892,
+        "cache": 6959087328,
+        "cap": 96207267430,
+        "closingOwners": 0,
+        "debt": 0,
+        "epoch": 3,
+        "materialized": 0,
+        "owned": 0,
+        "owners": 2,
+        "physical": 137438953472,
+        "remaining": 49377668178,
+        "reserve": 5905580032,
+        "systemAvailable": 73001336832,
+        "unmaterialized": 0
+      },
+      "slots": [
+        {
+          "activeIDs": [],
+          "modelID": "gpt-oss-20b",
+          "mtpActive": false,
+          "ssdEnabled": false,
+          "values": {
+            "active": 0,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 0,
+            "assistantWeights": 0,
+            "backendCapacity": 30964374112,
+            "committed": 0,
+            "consumedPrefixTokens": 0,
+            "grant": 30964374112,
+            "grantRefusals": 0,
+            "kvInUse": 0,
+            "kvReserved": 0,
+            "livePages": 0,
+            "poison": 0,
+            "reservedPages": 0,
+            "slack": 0,
+            "stageConsumptions": 0,
+            "stageReadBytes": 0,
+            "staging": 0,
+            "steps": 129,
+            "waiting": 0,
+            "weights": 12076119168,
+            "writeHost": 0
+          }
+        },
+        {
+          "activeIDs": [],
+          "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+          "mtpActive": true,
+          "ssdEnabled": true,
+          "values": {
+            "active": 0,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 0,
+            "assistantWeights": 1055619072,
+            "backendCapacity": 25803645093,
+            "committed": 0,
+            "consumedPrefixTokens": 40960,
+            "grant": 25803645093,
+            "grantRefusals": 0,
+            "kvInUse": 0,
+            "kvReserved": 0,
+            "livePages": 0,
+            "poison": 0,
+            "reservedPages": 0,
+            "slack": 0,
+            "stageConsumptions": 2,
+            "stageReadBytes": 1136081312,
+            "staging": 0,
+            "steps": 279,
+            "waiting": 0,
+            "weights": 21457549024,
+            "writeHost": 0
+          }
+        }
+      ],
+      "stage": "before-restored-stream-release090-load-2",
+      "uptimeNanoseconds": 4014758110666458
+    },
+    {
+      "fleetBudget": 56768019206,
+      "grantSum": 56768019205,
+      "ledger": {
+        "active": 35386860162,
+        "cache": 5537159059,
+        "cap": 96207267430,
+        "closingOwners": 0,
+        "debt": 0,
+        "epoch": 3,
+        "materialized": 494125056,
+        "owned": 1125617195,
+        "owners": 2,
+        "physical": 137438953472,
+        "remaining": 48746176038,
+        "reserve": 5905580032,
+        "systemAvailable": 72992555008,
+        "unmaterialized": 631492139
+      },
+      "slots": [
+        {
+          "activeIDs": [],
+          "modelID": "gpt-oss-20b",
+          "mtpActive": false,
+          "ssdEnabled": false,
+          "values": {
+            "active": 0,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 0,
+            "assistantWeights": 0,
+            "backendCapacity": 30964374112,
+            "committed": 0,
+            "consumedPrefixTokens": 0,
+            "grant": 30964374112,
+            "grantRefusals": 0,
+            "kvInUse": 0,
+            "kvReserved": 0,
+            "livePages": 0,
+            "poison": 0,
+            "reservedPages": 0,
+            "slack": 0,
+            "stageConsumptions": 0,
+            "stageReadBytes": 0,
+            "staging": 0,
+            "steps": 129,
+            "waiting": 0,
+            "weights": 12076119168,
+            "writeHost": 0
+          }
+        },
+        {
+          "activeIDs": [
+            "release090-load-2"
+          ],
+          "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+          "mtpActive": true,
+          "ssdEnabled": true,
+          "values": {
+            "active": 1,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 16384,
+            "assistantWeights": 1055619072,
+            "backendCapacity": 25803645093,
+            "committed": 494125056,
+            "consumedPrefixTokens": 61440,
+            "grant": 25803645093,
+            "grantRefusals": 0,
+            "kvInUse": 670697576,
+            "kvReserved": 1125617195,
+            "livePages": 451543040,
+            "poison": 622592,
+            "reservedPages": 493486080,
+            "slack": 0,
+            "stageConsumptions": 3,
+            "stageReadBytes": 1704121968,
+            "staging": 0,
+            "steps": 280,
+            "waiting": 0,
+            "weights": 21457549024,
+            "writeHost": 0
+          }
+        }
+      ],
+      "stage": "restored-before-load-release090-load-2",
+      "uptimeNanoseconds": 4014758975909916
+    },
+    {
+      "fleetBudget": 56768019206,
+      "grantSum": 56768019205,
+      "ledger": {
+        "active": 35399828324,
+        "cache": 5524190897,
+        "cap": 96207267430,
+        "closingOwners": 0,
+        "debt": 0,
+        "epoch": 3,
+        "materialized": 494125056,
+        "owned": 1125617195,
+        "owners": 2,
+        "physical": 137438953472,
+        "remaining": 48746176038,
+        "reserve": 5905580032,
+        "systemAvailable": 72992587776,
+        "unmaterialized": 631492139
+      },
+      "slots": [
+        {
+          "activeIDs": [],
+          "modelID": "gpt-oss-20b",
+          "mtpActive": false,
+          "ssdEnabled": false,
+          "values": {
+            "active": 0,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 0,
+            "assistantWeights": 0,
+            "backendCapacity": 30964374112,
+            "committed": 0,
+            "consumedPrefixTokens": 0,
+            "grant": 30964374112,
+            "grantRefusals": 0,
+            "kvInUse": 0,
+            "kvReserved": 0,
+            "livePages": 0,
+            "poison": 0,
+            "reservedPages": 0,
+            "slack": 0,
+            "stageConsumptions": 0,
+            "stageReadBytes": 0,
+            "staging": 0,
+            "steps": 129,
+            "waiting": 0,
+            "weights": 12076119168,
+            "writeHost": 0
+          }
+        },
+        {
+          "activeIDs": [
+            "release090-load-2"
+          ],
+          "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+          "mtpActive": true,
+          "ssdEnabled": true,
+          "values": {
+            "active": 1,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 16384,
+            "assistantWeights": 1055619072,
+            "backendCapacity": 25803645093,
+            "committed": 494125056,
+            "consumedPrefixTokens": 61440,
+            "grant": 25803645093,
+            "grantRefusals": 0,
+            "kvInUse": 670697576,
+            "kvReserved": 1125617195,
+            "livePages": 451543040,
+            "poison": 622592,
+            "reservedPages": 493486080,
+            "slack": 0,
+            "stageConsumptions": 3,
+            "stageReadBytes": 1704121968,
+            "staging": 0,
+            "steps": 280,
+            "waiting": 0,
+            "weights": 21457549024,
+            "writeHost": 0
+          }
+        }
+      ],
+      "stage": "load-begin-gemma-4-26b-qat-4bit",
+      "uptimeNanoseconds": 4014758979217916
+    },
+    {
+      "fleetBudget": 56768019206,
+      "grantSum": 28297091048,
+      "ledger": {
+        "active": 50311464356,
+        "cache": 135571758,
+        "cap": 96207267430,
+        "closingOwners": 0,
+        "debt": 0,
+        "epoch": 4,
+        "materialized": 494125056,
+        "owned": 2199359019,
+        "owners": 3,
+        "physical": 137438953472,
+        "remaining": 38149417321,
+        "reserve": 5905580032,
+        "systemAvailable": 66692038656,
+        "unmaterialized": 1705233963
+      },
+      "slots": [
+        {
+          "activeIDs": [],
+          "modelID": "gpt-oss-20b",
+          "mtpActive": false,
+          "ssdEnabled": false,
+          "values": {
+            "active": 0,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 0,
+            "assistantWeights": 0,
+            "backendCapacity": 15434776935,
+            "committed": 0,
+            "consumedPrefixTokens": 0,
+            "grant": 15434776935,
+            "grantRefusals": 0,
+            "kvInUse": 0,
+            "kvReserved": 0,
+            "livePages": 0,
+            "poison": 0,
+            "reservedPages": 0,
+            "slack": 0,
+            "stageConsumptions": 0,
+            "stageReadBytes": 0,
+            "staging": 0,
+            "steps": 129,
+            "waiting": 0,
+            "weights": 12076119168,
+            "writeHost": 0
+          }
+        },
+        {
+          "activeIDs": [
+            "release090-load-2"
+          ],
+          "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+          "mtpActive": true,
+          "ssdEnabled": true,
+          "values": {
+            "active": 1,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 16384,
+            "assistantWeights": 1055619072,
+            "backendCapacity": 12862314113,
+            "committed": 494125056,
+            "consumedPrefixTokens": 61440,
+            "grant": 12862314113,
+            "grantRefusals": 0,
+            "kvInUse": 716834332,
+            "kvReserved": 1125617195,
+            "livePages": 464650240,
+            "poison": 622592,
+            "reservedPages": 493486080,
+            "slack": 0,
+            "stageConsumptions": 3,
+            "stageReadBytes": 1704121968,
+            "staging": 0,
+            "steps": 521,
+            "waiting": 0,
+            "weights": 21457549024,
+            "writeHost": 0
+          }
+        }
+      ],
+      "stage": "shrink-observed-active-release090-load-2",
+      "uptimeNanoseconds": 4014772412830166
+    },
+    {
+      "fleetBudget": 41159405162,
+      "grantSum": 41159405161,
+      "ledger": {
+        "active": 50257782012,
+        "cache": 85941768,
+        "cap": 96207267430,
+        "closingOwners": 0,
+        "debt": 0,
+        "epoch": 4,
+        "materialized": 494125056,
+        "owned": 1125617195,
+        "owners": 3,
+        "physical": 137438953472,
+        "remaining": 39326471479,
+        "reserve": 5905580032,
+        "systemAvailable": 66679160832,
+        "unmaterialized": 631492139
+      },
+      "slots": [
+        {
+          "activeIDs": [],
+          "modelID": "gemma-4-26b-qat-4bit",
+          "mtpActive": false,
+          "ssdEnabled": false,
+          "values": {
+            "active": 0,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 0,
+            "assistantWeights": 0,
+            "backendCapacity": 12862314113,
+            "committed": 0,
+            "consumedPrefixTokens": 0,
+            "grant": 12862314113,
+            "grantRefusals": 0,
+            "kvInUse": 0,
+            "kvReserved": 0,
+            "livePages": 0,
+            "poison": 0,
+            "reservedPages": 0,
+            "slack": 0,
+            "stageConsumptions": 0,
+            "stageReadBytes": 0,
+            "staging": 0,
+            "steps": 0,
+            "waiting": 0,
+            "weights": 15608614044,
+            "writeHost": 0
+          }
+        },
+        {
+          "activeIDs": [],
+          "modelID": "gpt-oss-20b",
+          "mtpActive": false,
+          "ssdEnabled": false,
+          "values": {
+            "active": 0,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 0,
+            "assistantWeights": 0,
+            "backendCapacity": 15434776935,
+            "committed": 0,
+            "consumedPrefixTokens": 0,
+            "grant": 15434776935,
+            "grantRefusals": 0,
+            "kvInUse": 0,
+            "kvReserved": 0,
+            "livePages": 0,
+            "poison": 0,
+            "reservedPages": 0,
+            "slack": 0,
+            "stageConsumptions": 0,
+            "stageReadBytes": 0,
+            "staging": 0,
+            "steps": 129,
+            "waiting": 0,
+            "weights": 12076119168,
+            "writeHost": 0
+          }
+        },
+        {
+          "activeIDs": [
+            "release090-load-2"
+          ],
+          "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+          "mtpActive": true,
+          "ssdEnabled": true,
+          "values": {
+            "active": 1,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 16384,
+            "assistantWeights": 1055619072,
+            "backendCapacity": 12862314113,
+            "committed": 494125056,
+            "consumedPrefixTokens": 61440,
+            "grant": 12862314113,
+            "grantRefusals": 0,
+            "kvInUse": 717157912,
+            "kvReserved": 1125617195,
+            "livePages": 464977920,
+            "poison": 622592,
+            "reservedPages": 493486080,
+            "slack": 0,
+            "stageConsumptions": 3,
+            "stageReadBytes": 1704121968,
+            "staging": 0,
+            "steps": 528,
+            "waiting": 0,
+            "weights": 21457549024,
+            "writeHost": 0
+          }
+        }
+      ],
+      "stage": "load-end-active-gemma-4-26b-qat-4bit",
+      "uptimeNanoseconds": 4014773428123833
+    },
+    {
+      "fleetBudget": 41159405162,
+      "grantSum": 41159405161,
+      "ledger": {
+        "active": 49577192637,
+        "cache": 7779911524,
+        "cap": 96207267430,
+        "closingOwners": 0,
+        "debt": 0,
+        "epoch": 4,
+        "materialized": 0,
+        "owned": 0,
+        "owners": 3,
+        "physical": 137438953472,
+        "remaining": 32944583237,
+        "reserve": 5905580032,
+        "systemAvailable": 59520958464,
+        "unmaterialized": 0
+      },
+      "slots": [
+        {
+          "activeIDs": [],
+          "modelID": "gemma-4-26b-qat-4bit",
+          "mtpActive": false,
+          "ssdEnabled": false,
+          "values": {
+            "active": 0,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 0,
+            "assistantWeights": 0,
+            "backendCapacity": 12862314113,
+            "committed": 0,
+            "consumedPrefixTokens": 0,
+            "grant": 12862314113,
+            "grantRefusals": 0,
+            "kvInUse": 0,
+            "kvReserved": 0,
+            "livePages": 0,
+            "poison": 0,
+            "reservedPages": 0,
+            "slack": 0,
+            "stageConsumptions": 0,
+            "stageReadBytes": 0,
+            "staging": 0,
+            "steps": 129,
+            "waiting": 0,
+            "weights": 15608614044,
+            "writeHost": 0
+          }
+        },
+        {
+          "activeIDs": [],
+          "modelID": "gpt-oss-20b",
+          "mtpActive": false,
+          "ssdEnabled": false,
+          "values": {
+            "active": 0,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 0,
+            "assistantWeights": 0,
+            "backendCapacity": 15434776935,
+            "committed": 0,
+            "consumedPrefixTokens": 0,
+            "grant": 15434776935,
+            "grantRefusals": 0,
+            "kvInUse": 0,
+            "kvReserved": 0,
+            "livePages": 0,
+            "poison": 0,
+            "reservedPages": 0,
+            "slack": 0,
+            "stageConsumptions": 0,
+            "stageReadBytes": 0,
+            "staging": 0,
+            "steps": 258,
+            "waiting": 0,
+            "weights": 12076119168,
+            "writeHost": 0
+          }
+        },
+        {
+          "activeIDs": [],
+          "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+          "mtpActive": true,
+          "ssdEnabled": true,
+          "values": {
+            "active": 0,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 0,
+            "assistantWeights": 1055619072,
+            "backendCapacity": 12862314113,
+            "committed": 0,
+            "consumedPrefixTokens": 81920,
+            "grant": 12862314113,
+            "grantRefusals": 0,
+            "kvInUse": 0,
+            "kvReserved": 0,
+            "livePages": 0,
+            "poison": 0,
+            "reservedPages": 0,
+            "slack": 0,
+            "stageConsumptions": 4,
+            "stageReadBytes": 2272162624,
+            "staging": 0,
+            "steps": 561,
+            "waiting": 0,
+            "weights": 21457549024,
+            "writeHost": 0
+          }
+        }
+      ],
+      "stage": "drained-3-slots",
+      "uptimeNanoseconds": 4014781710259750
+    },
+    {
+      "fleetBudget": 56768019206,
+      "grantSum": 56768019205,
+      "ledger": {
+        "active": 33964937244,
+        "cache": 0,
+        "cap": 96207267430,
+        "closingOwners": 0,
+        "debt": 0,
+        "epoch": 5,
+        "materialized": 0,
+        "owned": 0,
+        "owners": 2,
+        "physical": 137438953472,
+        "remaining": 56336750154,
+        "reserve": 5905580032,
+        "systemAvailable": 82807390208,
+        "unmaterialized": 0
+      },
+      "slots": [
+        {
+          "activeIDs": [],
+          "modelID": "gpt-oss-20b",
+          "mtpActive": false,
+          "ssdEnabled": false,
+          "values": {
+            "active": 0,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 0,
+            "assistantWeights": 0,
+            "backendCapacity": 30964374112,
+            "committed": 0,
+            "consumedPrefixTokens": 0,
+            "grant": 30964374112,
+            "grantRefusals": 0,
+            "kvInUse": 0,
+            "kvReserved": 0,
+            "livePages": 0,
+            "poison": 0,
+            "reservedPages": 0,
+            "slack": 0,
+            "stageConsumptions": 0,
+            "stageReadBytes": 0,
+            "staging": 0,
+            "steps": 258,
+            "waiting": 0,
+            "weights": 12076119168,
+            "writeHost": 0
+          }
+        },
+        {
+          "activeIDs": [],
+          "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+          "mtpActive": true,
+          "ssdEnabled": true,
+          "values": {
+            "active": 0,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 0,
+            "assistantWeights": 1055619072,
+            "backendCapacity": 25803645093,
+            "committed": 0,
+            "consumedPrefixTokens": 81920,
+            "grant": 25803645093,
+            "grantRefusals": 0,
+            "kvInUse": 0,
+            "kvReserved": 0,
+            "livePages": 0,
+            "poison": 0,
+            "reservedPages": 0,
+            "slack": 0,
+            "stageConsumptions": 4,
+            "stageReadBytes": 2272162624,
+            "staging": 0,
+            "steps": 561,
+            "waiting": 0,
+            "weights": 21457549024,
+            "writeHost": 0
+          }
+        }
+      ],
+      "stage": "unload-third-regrow",
+      "uptimeNanoseconds": 4014781848380458
+    },
+    {
+      "fleetBudget": 68844138374,
+      "grantSum": 68844138374,
+      "ledger": {
+        "active": 21709945769,
+        "cache": 0,
+        "cap": 96207267430,
+        "closingOwners": 0,
+        "debt": 0,
+        "epoch": 6,
+        "materialized": 0,
+        "owned": 0,
+        "owners": 1,
+        "physical": 137438953472,
+        "remaining": 68591741629,
+        "reserve": 5905580032,
+        "systemAvailable": 95078318080,
+        "unmaterialized": 0
+      },
+      "slots": [
+        {
+          "activeIDs": [],
+          "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+          "mtpActive": true,
+          "ssdEnabled": true,
+          "values": {
+            "active": 0,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 0,
+            "assistantWeights": 1055619072,
+            "backendCapacity": 68844138374,
+            "committed": 0,
+            "consumedPrefixTokens": 81920,
+            "grant": 68844138374,
+            "grantRefusals": 0,
+            "kvInUse": 0,
+            "kvReserved": 0,
+            "livePages": 0,
+            "poison": 0,
+            "reservedPages": 0,
+            "slack": 0,
+            "stageConsumptions": 4,
+            "stageReadBytes": 2272162624,
+            "staging": 0,
+            "steps": 561,
+            "waiting": 0,
+            "weights": 21457549024,
+            "writeHost": 0
+          }
+        }
+      ],
+      "stage": "unload-second-regrow",
+      "uptimeNanoseconds": 4014781927234250
+    },
+    {
+      "fleetBudget": 68844138374,
+      "grantSum": 68844138374,
+      "ledger": {
+        "active": 21709945769,
+        "cache": 5355380031,
+        "cap": 96207267430,
+        "closingOwners": 0,
+        "debt": 0,
+        "epoch": 6,
+        "materialized": 0,
+        "owned": 0,
+        "owners": 1,
+        "physical": 137438953472,
+        "remaining": 63236361598,
+        "reserve": 5905580032,
+        "systemAvailable": 89948667904,
+        "unmaterialized": 0
+      },
+      "slots": [
+        {
+          "activeIDs": [],
+          "modelID": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+          "mtpActive": true,
+          "ssdEnabled": true,
+          "values": {
+            "active": 0,
+            "admissionRefusals": 0,
+            "allocationFailures": 0,
+            "allocatorPadding": 0,
+            "assistantWeights": 1055619072,
+            "backendCapacity": 68844138374,
+            "committed": 0,
+            "consumedPrefixTokens": 102400,
+            "grant": 68844138374,
+            "grantRefusals": 0,
+            "kvInUse": 0,
+            "kvReserved": 0,
+            "livePages": 0,
+            "poison": 0,
+            "reservedPages": 0,
+            "slack": 0,
+            "stageConsumptions": 5,
+            "stageReadBytes": 2840203280,
+            "staging": 0,
+            "steps": 593,
+            "waiting": 0,
+            "weights": 21457549024,
+            "writeHost": 0
+          }
+        }
+      ],
+      "stage": "recovery-after-regrow",
+      "uptimeNanoseconds": 4014784463105375
+    },
+    {
+      "fleetBudget": 90301687398,
+      "grantSum": 0,
+      "ledger": {
+        "active": 41464,
+        "cache": 0,
+        "cap": 96207267430,
+        "closingOwners": 0,
+        "debt": 0,
+        "epoch": 7,
+        "materialized": 0,
+        "owned": 0,
+        "owners": 0,
+        "physical": 137438953472,
+        "remaining": 90301645934,
+        "reserve": 5905580032,
+        "systemAvailable": 111438249984,
+        "unmaterialized": 0
+      },
+      "slots": [],
+      "stage": "all-unloaded",
+      "uptimeNanoseconds": 4014784574320708
+    }
+  ],
+  "shrink_observed": [
+    "release090-load-1",
+    "release090-load-2"
+  ],
+  "complete": true,
+  "cleanup_complete": true,
+  "models": [
+    {
+      "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+      "aggregate_sha256": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed"
+    },
+    {
+      "model_id": "gpt-oss-20b",
+      "aggregate_sha256": "61bfc04e4016a7fa487eb10e29f79360047e302487229f298da3681984aec512"
+    },
+    {
+      "model_id": "gemma-4-26b-qat-4bit",
+      "aggregate_sha256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785"
+    }
+  ],
+  "memory_cap_fraction": "0.7",
+  "memory_reserve_gib": 8,
+  "fixture_sha256": "6dc9b7c18d303227bc2801656ffda436db6b2deec389d40ba76abe86f1b48842",
+  "source_manifest_sha256": "e7b769e2713e48c53fb62fbe74e449bb409c8fc1b7e5f036b14e808a7c3da3f5",
+  "prior104_runtime_review_sha256": "5bf7b2b054a9ac1bd512d7b3901eec10cfe0c1bc5286f265948ddfb51dca956e",
+  "test_build_result_sha256": "e5137a2fcf2ca20a13d893122be4df01f800d48ecc745c0c5e940711beda6db1",
+  "test_runtime_files": {
+    "/Users/gaj/autoresearch/radix-prefix-cache/118-release090-coresidency1/test-build/arm64-apple-macosx/debug/DarkbloomProviderPackageTests.xctest/Contents/MacOS/DarkbloomProviderPackageTests": {
+      "bytes": 226958896,
+      "mode": 493,
+      "sha256": "0ae8fff83dc20052c3ebcf4794393230b00823f001fc221c1039fb3c97790115"
+    },
+    "/Users/gaj/autoresearch/radix-prefix-cache/118-release090-coresidency1/test-build/arm64-apple-macosx/debug/DarkbloomProviderPackageTests.xctest/Contents/MacOS/DarkbloomProviderPackageTests.dSYM/Contents/Info.plist": {
+      "bytes": 658,
+      "mode": 420,
+      "sha256": "56633f0b5f1da15394c17ef4b0a845248681b9e5176a0e3bc22e42b8e5881541"
+    },
+    "/Users/gaj/autoresearch/radix-prefix-cache/118-release090-coresidency1/test-build/arm64-apple-macosx/debug/DarkbloomProviderPackageTests.xctest/Contents/MacOS/DarkbloomProviderPackageTests.dSYM/Contents/Resources/DWARF/DarkbloomProviderPackageTests": {
+      "bytes": 308609111,
+      "mode": 420,
+      "sha256": "fc3db0b0f2ce972c1068a555652b9137f89e26b16c96aeab11664ccb71efc413"
+    },
+    "/Users/gaj/autoresearch/radix-prefix-cache/118-release090-coresidency1/test-build/arm64-apple-macosx/debug/DarkbloomProviderPackageTests.xctest/Contents/MacOS/DarkbloomProviderPackageTests.dSYM/Contents/Resources/Relocations/aarch64/DarkbloomProviderPackageTests.yml": {
+      "bytes": 110861142,
+      "mode": 420,
+      "sha256": "b4fbeab65e0d46ad15effb8d79eef3fd4533cecadbc9f8a967c7264a035d6bb2"
+    },
+    "/Users/gaj/autoresearch/radix-prefix-cache/118-release090-coresidency1/test-build/arm64-apple-macosx/debug/DarkbloomProviderPackageTests.xctest/Contents/MacOS/mlx.metallib": {
+      "bytes": 182425984,
+      "mode": 420,
+      "sha256": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+    },
+    "/Users/gaj/autoresearch/radix-prefix-cache/118-release090-coresidency1/test-build/arm64-apple-macosx/debug/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal": {
+      "bytes": 24804,
+      "mode": 420,
+      "sha256": "4ad3ff17d8c6e0a3b5b8a91e9151447f84e36cb3688ed204e1e7eb6838dd9149"
+    },
+    "/Users/gaj/autoresearch/radix-prefix-cache/118-release090-coresidency1/test-build/arm64-apple-macosx/debug/mlx.metallib": {
+      "bytes": 182425984,
+      "mode": 420,
+      "sha256": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+    }
+  },
+  "raw_report_sha256": "30909f0afe99f9f721dc429e3b7a2fb734708e40c88851948b7ba9f66612f70e",
+  "raw_result_sha256": "143fd1cd25a6959ff7a5bde52fa8e1753ecd7a3e17d842fa011039c7aa181227",
+  "raw_log_sha256": "0ab17a3de5cbc9e77578c79499babf31d5aa3128b8d561294c8ba0335638eb67",
+  "collected_archive_sha256": "63ac05b83bf6fe51bcb6c79decfe04a10b2f8764531d842157d90ace51378f18",
+  "files_verified": 70,
+  "runtime_files_rehashed": 7,
+  "source_provider_runtime_model_before_after_equal": true,
+  "lane_release_sha256": "df0b25ff7e398a268342508588b46b0674d11c235a9d5b02e5abb69668cd12bb",
+  "owned_helper_retirement_sha256": "69733bc058ac8a61cc2ea4375687934851c063a057dea8b2c298d265f06e2503",
+  "root_build_review_sha256": "b7a69e4521ab9d73aed05c5874b2e29367538655f7321b5bf761a0681524c670",
+  "runtime_version": "0.8.16",
+  "scope_limits": [
+    "One frozen three-model lifecycle on one M5 Max128GiB host; nine request outcomes and17 observations.",
+    "Production inference source/runtime104 with four isolated test-only Swift additions.",
+    "No claim that SSD read I/O overlapped model load: restore completed before each load; restored generation overlapped each load.",
+    "No quality, throughput, complete fleet, or final0.9.0 binary acceptance claim."
+  ],
+  "diagnostic_correction": "Buffered SwiftPM output looked like planning delay. Exact owned helper sample showed the selected test hashing model weights via WeightHasher. The lifecycle completed without intervention. Separate helper pgid53826 was verified absent after terminal.",
+  "root_live_review_sha256": "d1b255d2eece3a1b5a1db3c1b46d9d533c6bb19a9070ccd04f78401816e935a6",
+  "operator_memory_reserve_gib": 8,
+  "observed_activation_reserve_bytes": 5905580032,
+  "memory_reserve_distinction": "memory_reserve_gib is the operator ProviderSettings value; ledger.reserve is the separate unchanged activation reserve."
+}

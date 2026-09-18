@@ -10,9 +10,8 @@ import (
 
 const (
 	maxPrefixCacheStatuses = 16
-	// The aggregate vocabulary remains the 13 known outcomes below. The raw
-	// wire cap leaves 19 slots for future-version outcomes while bounding all
-	// duplicate/filter work to a small fixed array.
+	// Leave room for future-version outcomes while bounding all duplicate/filter
+	// work to a small fixed array. Unknown outcomes never alter admission.
 	maxPrefixCacheDonationOutcomeEntries = 32
 )
 
@@ -43,12 +42,21 @@ var (
 		"incomplete_layer_state",
 		"stage_size_exceeded",
 		"write_rate_limited",
+		"write_priority_limited",
 		"write_queue_full",
 		"already_durable",
 		"already_queued",
 		"cache_closed",
 		"disk_unavailable",
 		"write_failed",
+		"host_memory_unavailable",
+		"cache_epoch_changed",
+		"cache_maintenance_busy",
+		"disk_space_insufficient",
+		"unsafe_cache_root",
+		"write_io_failed",
+		"existing_cache_unreadable",
+		"cache_entry_evicted",
 	}
 )
 
@@ -271,6 +279,10 @@ func (r *Registry) ValidatePrefixCacheRegistration(msg *protocol.RegisterMessage
 	if err != nil {
 		return err
 	}
+	if _, err := validateMemoryPrefixCacheCapabilities(
+		msg.PrefixCacheProtocol, msg.PrefixCacheMemoryModels, models); err != nil {
+		return err
+	}
 	statuses, reported := sanitizePrefixCacheStatuses(msg.PrefixCacheStatuses, models)
 	statuses, reported = reconcilePrefixCacheStatuses(
 		msg.PrefixCacheProtocol, capabilities, statuses, reported)
@@ -299,6 +311,7 @@ func (r *Registry) UpdatePrefixCacheTelemetry(
 		providerID,
 		false,
 		0,
+		nil,
 		nil,
 		statuses,
 		outcomes,

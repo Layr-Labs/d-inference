@@ -36,6 +36,14 @@ type RequestResult struct {
 	EncryptUs  int64
 	DispatchUs int64
 	ProviderUs int64
+	// Additive profiler segments (0 when the coordinator did not report them).
+	PreHandlerUs   int64
+	PreflightUs    int64
+	RouteReserveUs int64
+	QueuePureUs    int64
+	WriterUs       int64
+	SocketUs       int64
+	ProviderAckUs  int64
 }
 
 type ProfileRun struct {
@@ -218,6 +226,14 @@ func (lg *LoadGenerator) Run() *LoadResult {
 					EncryptUs  int64 `json:"encrypt_us"`
 					DispatchUs int64 `json:"dispatch_us"`
 					ProviderUs int64 `json:"provider_us"`
+					// Additive profiler keys (system profiler); omitted when absent.
+					PreHandlerUs   int64 `json:"pre_handler_us"`
+					PreflightUs    int64 `json:"preflight_us"`
+					RouteReserveUs int64 `json:"route_reserve_us"`
+					QueuePureUs    int64 `json:"queue_pure_us"`
+					WriterUs       int64 `json:"writer_us"`
+					SocketUs       int64 `json:"socket_us"`
+					ProviderAckUs  int64 `json:"provider_ack_us"`
 				}
 				if json.Unmarshal([]byte(v), &tj) == nil {
 					rr.ParseUs = tj.ParseUs
@@ -227,6 +243,13 @@ func (lg *LoadGenerator) Run() *LoadResult {
 					rr.EncryptUs = tj.EncryptUs
 					rr.DispatchUs = tj.DispatchUs
 					rr.ProviderUs = tj.ProviderUs
+					rr.PreHandlerUs = tj.PreHandlerUs
+					rr.PreflightUs = tj.PreflightUs
+					rr.RouteReserveUs = tj.RouteReserveUs
+					rr.QueuePureUs = tj.QueuePureUs
+					rr.WriterUs = tj.WriterUs
+					rr.SocketUs = tj.SocketUs
+					rr.ProviderAckUs = tj.ProviderAckUs
 				}
 			}
 
@@ -255,6 +278,19 @@ func (lg *LoadGenerator) Run() *LoadResult {
 				}
 				if rr.ProviderUs > 0 {
 					segmentTimings[SegmentCoordinatorToProvider] = append(segmentTimings[SegmentCoordinatorToProvider], time.Duration(rr.ProviderUs)*time.Microsecond)
+				}
+				for seg, us := range map[Segment]int64{
+					SegmentPreHandler:   rr.PreHandlerUs,
+					SegmentPreflight:    rr.PreflightUs,
+					SegmentRouteReserve: rr.RouteReserveUs,
+					SegmentQueuePure:    rr.QueuePureUs,
+					SegmentWriter:       rr.WriterUs,
+					SegmentSocket:       rr.SocketUs,
+					SegmentProviderAck:  rr.ProviderAckUs,
+				} {
+					if us > 0 {
+						segmentTimings[seg] = append(segmentTimings[seg], time.Duration(us)*time.Microsecond)
+					}
 				}
 				timingsMu.Unlock()
 
@@ -325,6 +361,13 @@ func (r *LoadResult) SummaryTable() string {
 			SegmentEncrypt,
 			SegmentDispatch,
 			SegmentCoordinatorToProvider,
+			SegmentPreHandler,
+			SegmentPreflight,
+			SegmentRouteReserve,
+			SegmentQueuePure,
+			SegmentWriter,
+			SegmentSocket,
+			SegmentProviderAck,
 			SegmentTTFT,
 		} {
 			durations, ok := r.ProfileRun.SegmentTimings[seg]
@@ -383,6 +426,13 @@ func (r *LoadResult) SummaryMarkdown() string {
 			SegmentEncrypt,
 			SegmentDispatch,
 			SegmentCoordinatorToProvider,
+			SegmentPreHandler,
+			SegmentPreflight,
+			SegmentRouteReserve,
+			SegmentQueuePure,
+			SegmentWriter,
+			SegmentSocket,
+			SegmentProviderAck,
 			SegmentTTFT,
 		} {
 			durations, ok := r.ProfileRun.SegmentTimings[seg]

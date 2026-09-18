@@ -1,0 +1,10 @@
+{
+  "source_manifest_sha256": "e1ed27b70f669d482cd2d515fda70d3d3ceb040d14298aef4b7c184914796d67",
+  "source_files_verified": 1056,
+  "source_head_at_capture": "da7303d4218631d8a40be919372dc9aa71e71c7f",
+  "build_command": "swift build -c release --product darkbloom --jobs 4 --disable-automatic-resolution",
+  "artifacts": {
+    "darkbloom": "c647eafe9b452698577f37acccbdb5b0aaf3f65b6fee72310ceb9d02b9d80c37",
+    "mlx.metallib": "4ffbbac48a99b495916c3fa0921ce813eb554de1a09aff408d9b5a5a8053e6b0"
+  }
+}

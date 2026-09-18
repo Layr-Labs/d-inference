@@ -1,4 +1,5 @@
 import Foundation
+import ProviderAppAttest
 
 public enum PrefixCacheStatusBackend: String, Codable, Sendable, Equatable, CaseIterable {
     case contiguous
@@ -78,12 +79,23 @@ public enum PrefixCacheDonationOutcome: String, Codable, Sendable, Equatable, Ca
     case incompleteLayerState = "incomplete_layer_state"
     case stageSizeExceeded = "stage_size_exceeded"
     case writeRateLimited = "write_rate_limited"
+    case writePriorityLimited = "write_priority_limited"
     case writeQueueFull = "write_queue_full"
     case alreadyDurable = "already_durable"
     case alreadyQueued = "already_queued"
     case cacheClosed = "cache_closed"
     case diskUnavailable = "disk_unavailable"
     case writeFailed = "write_failed"
+    // Closed diagnostic reasons for complete-checkpoint donations. Older
+    // coordinators ignore unknown outcomes without changing cache admission.
+    case hostMemoryUnavailable = "host_memory_unavailable"
+    case cacheEpochChanged = "cache_epoch_changed"
+    case cacheMaintenanceBusy = "cache_maintenance_busy"
+    case diskSpaceInsufficient = "disk_space_insufficient"
+    case unsafeCacheRoot = "unsafe_cache_root"
+    case writeIOFailed = "write_io_failed"
+    case existingCacheUnreadable = "existing_cache_unreadable"
+    case cacheEntryEvicted = "cache_entry_evicted"
 }
 
 public struct PrefixCacheDonationOutcomeCount: Codable, Sendable, Equatable {
@@ -97,6 +109,7 @@ public struct PrefixCacheDonationOutcomeCount: Codable, Sendable, Equatable {
 }
 
 public struct PrefixCacheV2Capability: Codable, Sendable, Equatable {
+    public static let checkpointBoundaryMode = "checkpoint"
     public let modelId: String
     public let modelAggregateHash: String
     public let promptContractId: String
@@ -105,6 +118,7 @@ public struct PrefixCacheV2Capability: Codable, Sendable, Equatable {
     public let cacheEpoch: String
     public let enabled: Bool
     public let ready: Bool
+    public let readyBoundaryMode: String?
 
     public init(
         modelId: String,
@@ -114,7 +128,8 @@ public struct PrefixCacheV2Capability: Codable, Sendable, Equatable {
         blockSize: UInt32,
         cacheEpoch: String,
         enabled: Bool,
-        ready: Bool
+        ready: Bool,
+        readyBoundaryMode: String? = nil
     ) {
         self.modelId = modelId
         self.modelAggregateHash = modelAggregateHash
@@ -124,6 +139,7 @@ public struct PrefixCacheV2Capability: Codable, Sendable, Equatable {
         self.cacheEpoch = cacheEpoch
         self.enabled = enabled
         self.ready = ready
+        self.readyBoundaryMode = readyBoundaryMode
     }
 
     enum CodingKeys: String, CodingKey {
@@ -133,6 +149,7 @@ public struct PrefixCacheV2Capability: Codable, Sendable, Equatable {
         case blockHashVersion = "block_hash_version"
         case blockSize = "block_size"
         case cacheEpoch = "cache_epoch"
+        case readyBoundaryMode = "ready_boundary_mode"
         case enabled, ready
     }
 }
@@ -163,6 +180,7 @@ public enum ProviderMessage: Sendable, Equatable {
     case inferenceError(InferenceError)
     case attestationResponse(AttestationResponse)
     case codeAttestationResponse(CodeAttestationResponse)
+    case appAttestShadow(AppAttestShadowPayload)
     case loadModelStatus(LoadModelStatus)
     case prefetchModelStatus(PrefetchModelStatus)
     case modelsUpdate(ModelsUpdate)
@@ -197,10 +215,12 @@ public enum ProviderMessage: Sendable, Equatable {
         /// to. Mirrors RegisterMessage.APNsDeviceToken/APNsEnvironment (Go).
         public var apnsDeviceToken: String?
         public var apnsEnvironment: String?
+        public var appAttestProtocol: Int?
         /// Provider-confirmed prefix-cache protocol version. Omitted by legacy
         /// providers; only version 2 carries exact, provider-proven ownership.
         public var prefixCacheProtocol: Int?
         public var prefixCacheV2Models: [PrefixCacheV2Capability]?
+        public var prefixCacheMemoryModels: [PrefixCacheV2Capability]?
         public var prefixCacheStatuses: [PrefixCacheModelStatus]?
         public var prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]?
         /// Inference-time tool grammar capability. Protocol 1 is advertised
@@ -230,10 +250,12 @@ public enum ProviderMessage: Sendable, Equatable {
             apnsEnvironment: String? = nil,
             prefixCacheProtocol: Int? = nil,
             prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
+            prefixCacheMemoryModels: [PrefixCacheV2Capability]? = nil,
             prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
             prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
             toolConstraintProtocol: Int? = nil,
-            toolConstraintModels: [String]? = nil
+            toolConstraintModels: [String]? = nil,
+            appAttestProtocol: Int? = nil
         ) {
             self.hardware = hardware
             self.models = models
@@ -254,8 +276,10 @@ public enum ProviderMessage: Sendable, Equatable {
             self.privateOnly = privateOnly
             self.apnsDeviceToken = apnsDeviceToken
             self.apnsEnvironment = apnsEnvironment
+            self.appAttestProtocol = appAttestProtocol
             self.prefixCacheProtocol = prefixCacheProtocol
             self.prefixCacheV2Models = prefixCacheV2Models
+            self.prefixCacheMemoryModels = prefixCacheMemoryModels
             self.prefixCacheStatuses = prefixCacheStatuses
             self.prefixCacheDonationOutcomes = prefixCacheDonationOutcomes
             self.toolConstraintProtocol = toolConstraintProtocol
@@ -281,8 +305,15 @@ public enum ProviderMessage: Sendable, Equatable {
         public var apnsEnvironment: String?
         public var prefixCacheProtocol: Int?
         public var prefixCacheV2Models: [PrefixCacheV2Capability]?
+        public var prefixCacheMemoryModels: [PrefixCacheV2Capability]?
         public var prefixCacheStatuses: [PrefixCacheModelStatus]?
         public var prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]?
+        /// The operator's idle-memory policy (`[backend] idle_timeout_mins`):
+        /// minutes without requests before this box unloads a model, or 0 when
+        /// models stay resident. Lets the coordinator (and the owner's
+        /// dashboard) tell "unloaded on purpose, wakes on demand" apart from
+        /// "should be loaded and isn't". nil/omitted from older providers.
+        public var idleUnloadMins: UInt64?
 
         public init(
             status: ProviderStatus,
@@ -295,8 +326,10 @@ public enum ProviderMessage: Sendable, Equatable {
             apnsEnvironment: String? = nil,
             prefixCacheProtocol: Int? = nil,
             prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
+            prefixCacheMemoryModels: [PrefixCacheV2Capability]? = nil,
             prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
-            prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
+            prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
+            idleUnloadMins: UInt64? = nil
         ) {
             self.status = status
             self.activeModel = activeModel
@@ -308,8 +341,10 @@ public enum ProviderMessage: Sendable, Equatable {
             self.apnsEnvironment = apnsEnvironment
             self.prefixCacheProtocol = prefixCacheProtocol
             self.prefixCacheV2Models = prefixCacheV2Models
+            self.prefixCacheMemoryModels = prefixCacheMemoryModels
             self.prefixCacheStatuses = prefixCacheStatuses
             self.prefixCacheDonationOutcomes = prefixCacheDonationOutcomes
+            self.idleUnloadMins = idleUnloadMins
         }
     }
 
@@ -336,19 +371,26 @@ public enum ProviderMessage: Sendable, Equatable {
         public var stopSequence: String?
         public var seSignature: String?
         public var responseHash: String?
+        /// Profiler per-attempt profile (slice 2). OBSERVABILITY ONLY — the
+        /// coordinator decodes it after the terminal has been fully processed
+        /// and it never influences routing, billing, or client bytes. Omitted
+        /// on the wire when nil (legacy providers).
+        public var profile: InferenceProfile?
 
         public init(
             requestId: String,
             usage: UsageInfo,
             stopSequence: String? = nil,
             seSignature: String? = nil,
-            responseHash: String? = nil
+            responseHash: String? = nil,
+            profile: InferenceProfile? = nil
         ) {
             self.requestId = requestId
             self.usage = usage
             self.stopSequence = stopSequence
             self.seSignature = seSignature
             self.responseHash = responseHash
+            self.profile = profile
         }
     }
 
@@ -398,10 +440,15 @@ public enum ProviderMessage: Sendable, Equatable {
         /// `capacity_seq` of the published snapshot this rejection was
         /// evaluated against, so the coordinator can order it with heartbeats.
         public let capacitySeq: UInt64?
+        /// Profiler per-attempt profile (slice 2), same contract as on
+        /// `InferenceComplete`. Closed numerics/enums only — never carries
+        /// the failure's text. Omitted on the wire when nil.
+        public let profile: InferenceProfile?
 
         public init(
             requestId: String,
-            failure: InferenceFailure
+            failure: InferenceFailure,
+            profile: InferenceProfile? = nil
         ) {
             self.requestId = requestId
             self.failureCode = failure.code
@@ -413,6 +460,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.availableTokenBudget = failure.availableTokenBudget
             self.feasibleAfterMs = failure.feasibleAfterMs
             self.capacitySeq = failure.capacitySeq
+            self.profile = profile
         }
 
         /// Decoder-only compatibility path. Discards the legacy free-form
@@ -428,7 +476,8 @@ public enum ProviderMessage: Sendable, Equatable {
             rejectionReason: CapacityRejectionReason?,
             availableTokenBudget: Int64?,
             feasibleAfterMs: Int64?,
-            capacitySeq: UInt64?
+            capacitySeq: UInt64?,
+            profile: InferenceProfile?
         ) {
             self.requestId = decodedRequestId
             self.failureCode = failureCode
@@ -440,6 +489,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.availableTokenBudget = availableTokenBudget
             self.feasibleAfterMs = feasibleAfterMs
             self.capacitySeq = capacitySeq
+            self.profile = profile
         }
     }
 
@@ -591,7 +641,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.cacheSeq = cacheSeq
             self.outcome = outcome
             self.tier = tier
-            self.readyAnchors = Array(readyAnchors.prefix(2))
+            self.readyAnchors = Array(readyAnchors.prefix(tier == .memory ? 16 : 2))
             self.requiredRecomputeTokens = requiredRecomputeTokens
             self.expectedPrefillTokensSaved = expectedPrefillTokensSaved
             self.stageMs = stageMs
@@ -806,6 +856,7 @@ extension ProviderMessage: Codable {
         case inferenceError = "inference_error"
         case attestationResponse = "attestation_response"
         case codeAttestationResponse = "code_attestation_response"
+        case appAttestShadow = "app_attest_shadow"
         case loadModelStatus = "load_model_status"
         case prefetchModelStatus = "prefetch_model_status"
         case modelsUpdate = "models_update"
@@ -835,8 +886,11 @@ extension ProviderMessage: Codable {
         case privateOnly = "private_only"
         case apnsDeviceToken = "apns_device_token"
         case apnsEnvironment = "apns_environment"
+        case appAttestProtocol = "app_attest_protocol"
+        case payload
         case prefixCacheProtocol = "prefix_cache_protocol"
         case prefixCacheV2Models = "prefix_cache_v2_models"
+        case prefixCacheMemoryModels = "prefix_cache_memory_models"
         case prefixCacheStatuses = "prefix_cache_statuses"
         case prefixCacheDonationOutcomes = "prefix_cache_donation_outcomes"
         case toolConstraintProtocol = "tool_constraint_protocol"
@@ -848,6 +902,7 @@ extension ProviderMessage: Codable {
         case stats
         case systemMetrics = "system_metrics"
         case backendCapacity = "backend_capacity"
+        case idleUnloadMins = "idle_unload_mins"
         // Common
         case requestId = "request_id"
         // InferenceResponseChunk
@@ -877,6 +932,8 @@ extension ProviderMessage: Codable {
         case ttftP90Ms = "ttft_p90_ms"
         case queueEstMs = "queue_est_ms"
         case confidence
+        // InferenceComplete + InferenceError (profiler slice 2)
+        case profile
         // AttestationResponse
         case nonce, signature
         case statusSignature = "status_signature"
@@ -942,10 +999,12 @@ extension ProviderMessage: Codable {
             }
             try container.encodeIfPresent(r.apnsDeviceToken, forKey: .apnsDeviceToken)
             try container.encodeIfPresent(r.apnsEnvironment, forKey: .apnsEnvironment)
+            try container.encodeIfPresent(r.appAttestProtocol, forKey: .appAttestProtocol)
             if let version = r.prefixCacheProtocol, version != 0 {
                 try container.encode(version, forKey: .prefixCacheProtocol)
             }
             try container.encodeIfPresent(r.prefixCacheV2Models, forKey: .prefixCacheV2Models)
+            try container.encodeIfPresent(r.prefixCacheMemoryModels, forKey: .prefixCacheMemoryModels)
             try container.encodeIfPresent(r.prefixCacheStatuses, forKey: .prefixCacheStatuses)
             try container.encodeIfPresent(
                 r.prefixCacheDonationOutcomes, forKey: .prefixCacheDonationOutcomes)
@@ -972,9 +1031,13 @@ extension ProviderMessage: Codable {
                 try container.encode(version, forKey: .prefixCacheProtocol)
             }
             try container.encodeIfPresent(h.prefixCacheV2Models, forKey: .prefixCacheV2Models)
+            try container.encodeIfPresent(h.prefixCacheMemoryModels, forKey: .prefixCacheMemoryModels)
             try container.encodeIfPresent(h.prefixCacheStatuses, forKey: .prefixCacheStatuses)
             try container.encodeIfPresent(
                 h.prefixCacheDonationOutcomes, forKey: .prefixCacheDonationOutcomes)
+            // 0 ("always ready") is a real value and MUST reach the wire; only
+            // nil (policy not reported) is omitted — Go decodes into *int.
+            try container.encodeIfPresent(h.idleUnloadMins, forKey: .idleUnloadMins)
 
         case .inferenceAccepted(let a):
             try container.encode(TypeValue.inferenceAccepted, forKey: .type)
@@ -995,6 +1058,10 @@ extension ProviderMessage: Codable {
             try container.encodeIfPresent(c.stopSequence, forKey: .stopSequence)
             try container.encodeIfPresent(c.seSignature, forKey: .seSignature)
             try container.encodeIfPresent(c.responseHash, forKey: .responseHash)
+            // Saturated at the canonical wire boundary so EVERY producer path
+            // (builder, early rejects, tests) stays inside the coordinator's
+            // accepted ranges; idempotent over an already-saturated profile.
+            try container.encodeIfPresent(c.profile?.saturatedToWireRanges(), forKey: .profile)
 
         case .inferenceError(let e):
             try container.encode(TypeValue.inferenceError, forKey: .type)
@@ -1024,6 +1091,7 @@ extension ProviderMessage: Codable {
             if let seq = e.capacitySeq, seq != 0 {
                 try container.encode(seq, forKey: .capacitySeq)
             }
+            try container.encodeIfPresent(e.profile?.saturatedToWireRanges(), forKey: .profile)
 
         case .attestationResponse(let a):
             try container.encode(TypeValue.attestationResponse, forKey: .type)
@@ -1044,6 +1112,10 @@ extension ProviderMessage: Codable {
             if !a.modelHashes.isEmpty {
                 try container.encode(a.modelHashes, forKey: .modelHashes)
             }
+
+        case .appAttestShadow(let p):
+            try container.encode(TypeValue.appAttestShadow, forKey: .type)
+            try container.encode(p, forKey: .payload)
 
         case .codeAttestationResponse(let c):
             try container.encode(TypeValue.codeAttestationResponse, forKey: .type)
@@ -1182,6 +1254,8 @@ extension ProviderMessage: Codable {
                 prefixCacheProtocol: try container.decodeIfPresent(Int.self, forKey: .prefixCacheProtocol),
                 prefixCacheV2Models: try container.decodeIfPresent(
                     [PrefixCacheV2Capability].self, forKey: .prefixCacheV2Models),
+                prefixCacheMemoryModels: try container.decodeIfPresent(
+                    [PrefixCacheV2Capability].self, forKey: .prefixCacheMemoryModels),
                 prefixCacheStatuses: try container.decodeIfPresent(
                     [PrefixCacheModelStatus].self, forKey: .prefixCacheStatuses),
                 prefixCacheDonationOutcomes: try container.decodeIfPresent(
@@ -1190,7 +1264,8 @@ extension ProviderMessage: Codable {
                 toolConstraintProtocol: try container.decodeIfPresent(
                     Int.self, forKey: .toolConstraintProtocol),
                 toolConstraintModels: try container.decodeIfPresent(
-                    [String].self, forKey: .toolConstraintModels)
+                    [String].self, forKey: .toolConstraintModels),
+                appAttestProtocol: try container.decodeIfPresent(Int.self, forKey: .appAttestProtocol)
             ))
 
         case .heartbeat:
@@ -1207,11 +1282,14 @@ extension ProviderMessage: Codable {
                     Int.self, forKey: .prefixCacheProtocol),
                 prefixCacheV2Models: try container.decodeIfPresent(
                     [PrefixCacheV2Capability].self, forKey: .prefixCacheV2Models),
+                prefixCacheMemoryModels: try container.decodeIfPresent(
+                    [PrefixCacheV2Capability].self, forKey: .prefixCacheMemoryModels),
                 prefixCacheStatuses: try container.decodeIfPresent(
                     [PrefixCacheModelStatus].self, forKey: .prefixCacheStatuses),
                 prefixCacheDonationOutcomes: try container.decodeIfPresent(
                     [PrefixCacheDonationOutcomeCount].self,
-                    forKey: .prefixCacheDonationOutcomes)
+                    forKey: .prefixCacheDonationOutcomes),
+                idleUnloadMins: try container.decodeIfPresent(UInt64.self, forKey: .idleUnloadMins)
             ))
 
         case .inferenceAccepted:
@@ -1232,7 +1310,8 @@ extension ProviderMessage: Codable {
                 usage: try container.decode(UsageInfo.self, forKey: .usage),
                 stopSequence: try container.decodeIfPresent(String.self, forKey: .stopSequence),
                 seSignature: try container.decodeIfPresent(String.self, forKey: .seSignature),
-                responseHash: try container.decodeIfPresent(String.self, forKey: .responseHash)
+                responseHash: try container.decodeIfPresent(String.self, forKey: .responseHash),
+                profile: try container.decodeIfPresent(InferenceProfile.self, forKey: .profile)
             ))
 
         case .inferenceError:
@@ -1264,7 +1343,8 @@ extension ProviderMessage: Codable {
                     Int64.self, forKey: .availableTokenBudget),
                 feasibleAfterMs: try container.decodeIfPresent(
                     Int64.self, forKey: .feasibleAfterMs),
-                capacitySeq: try container.decodeIfPresent(UInt64.self, forKey: .capacitySeq)
+                capacitySeq: try container.decodeIfPresent(UInt64.self, forKey: .capacitySeq),
+                profile: try container.decodeIfPresent(InferenceProfile.self, forKey: .profile)
             ))
 
         case .attestationResponse:
@@ -1283,6 +1363,9 @@ extension ProviderMessage: Codable {
                 templateHashes: try container.decodeIfPresent([String: String].self, forKey: .templateHashes) ?? [:],
                 modelHashes: try container.decodeIfPresent([String: String].self, forKey: .modelHashes) ?? [:]
             ))
+
+        case .appAttestShadow:
+            self = .appAttestShadow(try container.decode(AppAttestShadowPayload.self, forKey: .payload))
 
         case .codeAttestationResponse:
             self = .codeAttestationResponse(CodeAttestationResponse(
@@ -1421,6 +1504,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
     case cancel(Cancel)
     case attestationChallenge(AttestationChallenge)
     case codeAttestationResumeChallenge(CodeAttestationResumeChallenge)
+    case appAttestShadow(AppAttestShadowPayload)
     case runtimeStatus(RuntimeStatus)
     case loadModel(LoadModel)
     case prefetchModel(PrefetchModel)
@@ -1438,6 +1522,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public var cacheReceiptNonce: String?
         public var cacheScope: String?
         public var prefixCacheProtocol: Int?
+        public var cacheReceiptBoundaryMode: String?
         public var toolSchemaMetadataProtocol: Int?
 
         public init(
@@ -1448,6 +1533,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
             cacheReceiptNonce: String? = nil,
             cacheScope: String? = nil,
             prefixCacheProtocol: Int? = nil,
+            cacheReceiptBoundaryMode: String? = nil,
             toolSchemaMetadataProtocol: Int? = nil
         ) {
             self.requestId = requestId
@@ -1457,6 +1543,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
             self.cacheReceiptNonce = cacheReceiptNonce
             self.cacheScope = cacheScope
             self.prefixCacheProtocol = prefixCacheProtocol
+            self.cacheReceiptBoundaryMode = cacheReceiptBoundaryMode
             self.toolSchemaMetadataProtocol = toolSchemaMetadataProtocol
         }
     }
@@ -1608,6 +1695,7 @@ extension CoordinatorMessage: Codable {
         case cancel
         case attestationChallenge = "attestation_challenge"
         case codeAttestationResumeChallenge = "code_attestation_resume_challenge"
+        case appAttestShadow = "app_attest_shadow"
         case runtimeStatus = "runtime_status"
         case loadModel = "load_model"
         case prefetchModel = "prefetch_model"
@@ -1625,9 +1713,11 @@ extension CoordinatorMessage: Codable {
         case cacheReceiptNonce = "cache_receipt_nonce"
         case cacheScope = "cache_scope"
         case prefixCacheProtocol = "prefix_cache_protocol"
+        case cacheReceiptBoundaryMode = "cache_receipt_boundary_mode"
         case toolSchemaMetadataProtocol = "tool_schema_metadata_protocol"
         case nonce, timestamp
         case codeChallenge = "code_challenge"
+        case payload
         case verified, mismatches
         case modelId = "model_id"
         case priority
@@ -1659,6 +1749,7 @@ extension CoordinatorMessage: Codable {
             try container.encodeIfPresent(r.cacheReceiptNonce, forKey: .cacheReceiptNonce)
             try container.encodeIfPresent(r.cacheScope, forKey: .cacheScope)
             try container.encodeIfPresent(r.prefixCacheProtocol, forKey: .prefixCacheProtocol)
+            try container.encodeIfPresent(r.cacheReceiptBoundaryMode, forKey: .cacheReceiptBoundaryMode)
             try container.encodeIfPresent(
                 r.toolSchemaMetadataProtocol,
                 forKey: .toolSchemaMetadataProtocol)
@@ -1671,6 +1762,10 @@ extension CoordinatorMessage: Codable {
             try container.encode(TypeValue.attestationChallenge, forKey: .type)
             try container.encode(a.nonce, forKey: .nonce)
             try container.encode(a.timestamp, forKey: .timestamp)
+
+        case .appAttestShadow(let p):
+            try container.encode(TypeValue.appAttestShadow, forKey: .type)
+            try container.encode(p, forKey: .payload)
 
         case .codeAttestationResumeChallenge(let challenge):
             try container.encode(
@@ -1741,6 +1836,8 @@ extension CoordinatorMessage: Codable {
                 cacheScope: try container.decodeIfPresent(String.self, forKey: .cacheScope),
                 prefixCacheProtocol: try container.decodeIfPresent(
                     Int.self, forKey: .prefixCacheProtocol),
+                cacheReceiptBoundaryMode: try container.decodeIfPresent(
+                    String.self, forKey: .cacheReceiptBoundaryMode),
                 toolSchemaMetadataProtocol: try container.decodeIfPresent(
                     Int.self, forKey: .toolSchemaMetadataProtocol)
             ))
@@ -1771,6 +1868,9 @@ extension CoordinatorMessage: Codable {
                 nonce: try container.decode(String.self, forKey: .nonce),
                 timestamp: try container.decode(String.self, forKey: .timestamp)
             ))
+
+        case .appAttestShadow:
+            self = .appAttestShadow(try container.decode(AppAttestShadowPayload.self, forKey: .payload))
 
         case .codeAttestationResumeChallenge:
             self = .codeAttestationResumeChallenge(

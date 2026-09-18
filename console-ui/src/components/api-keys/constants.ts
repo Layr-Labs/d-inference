@@ -1,10 +1,10 @@
 import type { KeyResetWindow } from "@/lib/api";
-import { STORAGE_KEYS } from "@/lib/constants";
+import { STORAGE_KEYS } from "@/lib/storage-keys";
 
 // localStorage keys. The console uses a single "active" key for its own chat /
 // test calls (API_KEY_STORAGE) and tracks which managed key that is so the
 // "Console key" badge and rotate/delete bookkeeping stay in sync. The string
-// values live in lib/constants (single source); these names are kept for the
+// values live in lib/storage-keys (single source); these names are kept for the
 // existing import sites in this folder.
 export const API_KEY_STORAGE = STORAGE_KEYS.apiKey;
 export const CONSOLE_KEY_ID_STORAGE = STORAGE_KEYS.consoleKeyId;
@@ -21,7 +21,7 @@ export const SECRET_WARNING =
 export const SHARED_BALANCE_NOTE =
   "All keys draw from your shared account balance. A key's spend cap is a sub-limit on that balance, not extra funds.";
 export const CONSOLE_KEY_NOTE =
-  "This console uses one active key (saved in this browser) for its own chat and test calls. It's provisioned automatically; you can also point it at a new key below.";
+  "This console uses one active key (saved in this browser) for its own chat and test calls. Creating a key adopts it when none is set, including when only an auto-provisioned key is present. You can also point it at a new key below.";
 
 export const RESET_OPTIONS: { value: KeyResetWindow; label: string }[] = [
   { value: "none", label: "Lifetime (no reset)" },

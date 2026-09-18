@@ -120,7 +120,7 @@ extension ModelDownloader {
             if Self.fileMatches(job.destination, size: job.file.sizeBytes, sha256: job.file.sha256) {
                 continue
             }
-            try await downloadManifestFileWithResume(job)
+            try await downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact)
             progress.add(job.file.sizeBytes)
             onByteProgress?(progress.done, total)
         }

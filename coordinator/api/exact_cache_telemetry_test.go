@@ -85,3 +85,19 @@ func TestExactCacheOperationalMetricsAreCompleteAndPrivacySafe(t *testing.T) {
 		}
 	}
 }
+
+func TestCacheReceiptDiagnosticsDistinguishProofAndProviderUsage(t *testing.T) {
+	s := &Server{metrics: NewMetrics()}
+	s.emitCacheReceiptResult("lookup_v2", registry.CacheReceiptResult{Reason: registry.CacheReceiptPromptMismatch})
+	s.emitCacheReceiptResult("ready_v2", registry.CacheReceiptResult{Accepted: true, Reason: registry.CacheReceiptAccepted})
+	s.emitExactCacheUsage("hit", "ssd", 4096, 4096, 50)
+	snap := s.metrics.Snapshot()
+	for _, key := range []string{"exact_cache_receipt_total{outcome=rejected,reason=prompt_anchor_mismatch,type=lookup_v2}", "exact_cache_receipt_total{outcome=accepted,reason=accepted,type=ready_v2}"} {
+		if snap.Counters[key] != 1 {
+			t.Fatalf("missing receipt diagnostic %s: %+v", key, snap.Counters)
+		}
+	}
+	if snap.Counters["exact_cache_ssd_lookup_total{outcome=hit,protocol=v2}"] != 0 {
+		t.Fatal("provider usage was mislabeled as a verified lookup hit")
+	}
+}

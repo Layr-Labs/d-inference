@@ -1,9 +1,10 @@
 import ArgumentParser
 import ProviderCore
+import ProviderAppAttest
 
 /// Package-real release gate. Hidden because it is invoked by CI against the
 /// staged/extracted app, not by operators.
-struct RuntimeSmoke: ParsableCommand {
+struct RuntimeSmoke: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "runtime-smoke",
         abstract: "Internal: validate packaged runtime resources and kernels.",
@@ -12,7 +13,11 @@ struct RuntimeSmoke: ParsableCommand {
     @Argument(help: "Internal encoded kernel shapes.")
     var shapes: [String] = []
 
-    mutating func run() throws {
+    mutating func run() async throws {
+        try await AppAttestRuntimeSmoke.run()
+        print(AppAttestRuntimeSmoke.successMarker)
+        try PackagedRuntimeSmoke.verifyQwen4MetalResources()
+        print(PackagedRuntimeSmoke.qwen4MetalSuccessMarker)
         try PackagedRuntimeSmoke.verifyGemmaOptimizations()
         print(PackagedRuntimeSmoke.gemmaOptimizationSuccessMarker)
         try PackagedRuntimeSmoke.runPagedKernel(arguments: shapes)

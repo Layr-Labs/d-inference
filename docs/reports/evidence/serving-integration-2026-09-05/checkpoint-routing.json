@@ -1,0 +1,9 @@
+{
+  "source_commit": "a483651970905f052ac8c90527a1891ac83093e4",
+  "command": "GOTOOLCHAIN=go1.25.0 go test ./coordinator/registry ./coordinator/protocol ./coordinator/api -run 'TestCheckpoint|TestPrefixCacheV2|TestProviderInferenceFrame'",
+  "exit_code": 0,
+  "passed_packages": 3,
+  "log": "checkpoint-routing.txt.gz",
+  "uncompressed_sha256": "89caa92349ecfa723148bba227ce223286f1f7e2efeabdb290224a51a6c05c18",
+  "merge_review": "Go changes match tested676df63e7; field moved to pending_request.go and renamed constant preserves extracted registry helpers."
+}

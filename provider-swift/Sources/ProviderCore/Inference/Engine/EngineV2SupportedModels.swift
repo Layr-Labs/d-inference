@@ -1,0 +1,108 @@
+// Copyright © 2026 Eigen Labs.
+//
+// Architecture-derived supported set for the v2 engine (v0.7.5 fail-loud).
+//
+// v0.7.5 serves EVERYTHING through ContinuousBatchingV2 — there is no
+// legacy fallback — so a model is advertised to the coordinator ONLY when
+// its family has a CBv2 adapter. This predicate is the scan/advertise-time
+// mirror of the `EngineV2Factory.ProductionModelAdapter` family dispatch, keyed on the
+// `model_type` string config.json declares (the value
+// `ModelScanner.parseModelInfo` stamps on `ModelInfo`):
+//
+//   * `gpt_oss`       — GPT-OSS (GPTOSSModel)
+//   * `gemma4`        — Gemma 4 VLM wrapper, serving through its directly
+//                       owned text tower plus vision prefill
+//   * `gemma4_text`   — Gemma 4 text target
+//   * `qwen3_5`       — dense Qwen 3.5/3.8 VLM target with recurrent state
+//   * `qwen3_5_moe`   — Qwen 3.5/3.6 MoE VLM target with recurrent state
+//   * `qwen3_vl_moe`  — Qwen3-VL MoE wrapper, served directly through its
+//                       CBv2 language-model adapter and vision prefill
+//   * `qwen4_exp`, `qwen4_exp_text` — native Flash-Next target architecture;
+//                       automatic paging/cache policy is separately scoped
+//
+// Everything else (gemma3, dense/other qwen families, llama, …) is
+// dropped from the advertised set at startup and at prefetch-verify time
+// (WARN log), so the coordinator never routes to it. A load request for an
+// unsupported id (stale catalog) then fails the advertised-set guard in
+// `ensureModelLoaded` → 404 via `loadErrorStatusCode`, never a silent
+// degrade. Any change to the `ProductionModelAdapter` family dispatch MUST be
+// reflected here.
+
+import Foundation
+
+public enum EngineV2SupportedModels {
+    public static let nemotron35LightningModelID =
+        "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit"
+    public static let nemotron35LightningMTPModelID =
+        "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp"
+    public static let nemotron35LightningRegistryModelID = "nvidia-nemotron-3.5-lightning"
+
+    public static func isNemotron35ListingModelID(_ modelID: String?) -> Bool {
+        switch modelID {
+        case nemotron35LightningModelID, nemotron35LightningMTPModelID,
+            nemotron35LightningRegistryModelID:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Exact owned private candidate ID, not a family-name or substring grant.
+    /// Loaded artifact/capability checks still apply to paging and prefix reuse.
+    public static func isQwen4ExpListingModelID(_ modelID: String?) -> Bool {
+        Qwen4SupportPolicy.isOwnedModelID(modelID)
+    }
+
+    /// Nano and Lightning share a model_type but have different checkpoint
+    /// contracts. Only the selected Lightning artifact is onboarded here.
+    public static func isSupported(model: ModelInfo) -> Bool {
+        if normalized(model.modelType) == "nemotron_h" {
+            return isNemotron35ListingModelID(model.id)
+        }
+        return isSupported(modelType: model.modelType)
+    }
+    /// Exact config namespaces registered by the official Gemma 4 target
+    /// factories. Keep this closed: assistant checkpoints intentionally share
+    /// the `gemma4` prefix and must never become advertised chat targets.
+    private static let gemma4TargetTypes: Set<String> = ["gemma4", "gemma4_text"]
+
+    static func isGemma4Target(modelType: String?) -> Bool {
+        guard let raw = normalized(modelType) else { return false }
+        return gemma4TargetTypes.contains(raw)
+    }
+
+    /// Whether the v2 engine can serve this `model_type` (config.json).
+    /// nil/unknown types are unsupported — fail closed.
+    public static func isSupported(modelType: String?) -> Bool {
+        guard let raw = normalized(modelType) else { return false }
+        if raw == "gpt_oss" { return true }
+        if raw == "qwen3_5" || raw == "qwen3_5_moe" { return true }
+        if raw == "qwen3_vl_moe" { return true }
+        if raw == "qwen4_exp" || raw == "qwen4_exp_text" { return true }
+        return gemma4TargetTypes.contains(raw)
+    }
+
+    /// Split an advertised-model list into (supported, unsupported) by the
+    /// predicate above. Order-preserving; pure, for scan-time gating + tests.
+    public static func partition(
+        _ models: [ModelInfo]
+    ) -> (supported: [ModelInfo], unsupported: [ModelInfo]) {
+        var supported: [ModelInfo] = []
+        var unsupported: [ModelInfo] = []
+        for model in models {
+            if isSupported(model: model) {
+                supported.append(model)
+            } else {
+                unsupported.append(model)
+            }
+        }
+        return (supported, unsupported)
+    }
+
+    private static func normalized(_ modelType: String?) -> String? {
+        guard let raw = modelType?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(), !raw.isEmpty
+        else { return nil }
+        return raw
+    }
+}

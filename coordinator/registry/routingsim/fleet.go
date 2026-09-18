@@ -149,24 +149,74 @@ func BuildFleet(logger *slog.Logger, cfg FleetConfig) (*registry.Registry, error
 	return reg, nil
 }
 
-// registerSimProvider registers and arms one synthetic provider.
-func registerSimProvider(reg *registry.Registry, id string, cfg FleetConfig, decodeTPS float64, warm bool) *registry.Provider {
-	msg := &protocol.RegisterMessage{
+// HardwareSpec is the per-provider hardware identity the registry needs at
+// registration and that neither FleetConfig's synthetic fleet nor the
+// fleet_snapshots table carries per row. BuildFleet fills it from FleetConfig;
+// LoadFleetNDJSON takes it from the caller's override map or
+// DefaultHardwareSpec.
+type HardwareSpec struct {
+	ChipName           string
+	ChipFamily         string
+	ChipTier           string
+	MemoryGB           int
+	MemoryBandwidthGBs float64
+	GPUCores           int
+	// DecodeTPS is the static decode tokens/sec advertised at registration.
+	// LoadFleetNDJSON treats 0 as "derive it": the largest observed_decode_tps
+	// across the provider's slots at the tick, else the registry's
+	// bandwidth-based fallback.
+	DecodeTPS float64
+	// Models adds advertised model ids beyond the ones the provider's snapshot
+	// rows name. A provider whose only row at the tick is the provider-level
+	// (model "") row advertises nothing unless listed here.
+	Models []string
+}
+
+// DefaultHardwareSpec is the hardware BuildFleet has always used: an M3 Max
+// with 64 GB and 400 GB/s.
+func DefaultHardwareSpec() HardwareSpec {
+	return HardwareSpec{
+		ChipName:           "Apple M3 Max",
+		ChipFamily:         "M3",
+		ChipTier:           "Max",
+		MemoryGB:           64,
+		MemoryBandwidthGBs: 400,
+		GPUCores:           40,
+	}
+}
+
+// simModelInfos is the default routingsim advertisement for a model id list:
+// chat, 4-bit, no capability flags (not vision, no template-render opinion).
+func simModelInfos(models []string) []protocol.ModelInfo {
+	infos := make([]protocol.ModelInfo, 0, len(models))
+	for _, m := range models {
+		infos = append(infos, protocol.ModelInfo{ID: m, ModelType: "chat", Quantization: "4bit"})
+	}
+	return infos
+}
+
+// simRegisterMessage builds the RegisterMessage every routingsim provider is
+// registered with: the given hardware, the given model advertisements
+// (registry.Register stores them verbatim as Provider.Models, capability
+// flags included), the MLX backend, a valid X25519 key and the full
+// private-text privacy capability set, so the only routing gates left are the
+// ones armed by armSimProvider and RecordChallengeSuccess. The message
+// carries no version: Register never reads it (see FleetSpec.Build).
+func simRegisterMessage(hw HardwareSpec, infos []protocol.ModelInfo, decodeTPS float64) *protocol.RegisterMessage {
+	return &protocol.RegisterMessage{
 		Type: protocol.TypeRegister,
 		Hardware: protocol.Hardware{
 			MachineModel:       "Mac15,8",
-			ChipName:           "Apple M3 Max",
-			ChipFamily:         "M3",
-			ChipTier:           "Max",
-			MemoryGB:           cfg.MemoryGB,
-			MemoryAvailableGB:  float64(cfg.MemoryGB),
-			MemoryBandwidthGBs: float64(cfg.MemoryBandwidthGBs),
+			ChipName:           hw.ChipName,
+			ChipFamily:         hw.ChipFamily,
+			ChipTier:           hw.ChipTier,
+			MemoryGB:           hw.MemoryGB,
+			MemoryAvailableGB:  float64(hw.MemoryGB),
+			MemoryBandwidthGBs: hw.MemoryBandwidthGBs,
 			CPUCores:           protocol.CPUCores{Total: 16, Performance: 12, Efficiency: 4},
-			GPUCores:           40,
+			GPUCores:           hw.GPUCores,
 		},
-		Models: []protocol.ModelInfo{
-			{ID: cfg.Model, ModelType: "chat", Quantization: "4bit"},
-		},
+		Models:                  infos,
 		Backend:                 registry.BackendMLXSwift,
 		DecodeTPS:               decodeTPS,
 		PublicKey:               simProviderPublicKey,
@@ -182,8 +232,26 @@ func registerSimProvider(reg *registry.Registry, id string, cfg FleetConfig, dec
 			EnvScrubbed:             true,
 		},
 	}
+}
 
-	p := reg.Register(id, nil, msg)
+// armSimProvider grants the attestation state the registry/api test helpers
+// grant: TrustHardware plus runtime verification. Challenge freshness and
+// coordinator-verified SIP are armed separately via RecordChallengeSuccess.
+func armSimProvider(p *registry.Provider) {
+	p.Mu().Lock()
+	p.TrustLevel = registry.TrustHardware
+	p.RuntimeVerified = true
+	p.RuntimeManifestChecked = true
+	p.Mu().Unlock()
+}
+
+// registerSimProvider registers and arms one synthetic provider.
+func registerSimProvider(reg *registry.Registry, id string, cfg FleetConfig, decodeTPS float64, warm bool) *registry.Provider {
+	hw := DefaultHardwareSpec()
+	hw.MemoryGB = cfg.MemoryGB
+	hw.MemoryBandwidthGBs = float64(cfg.MemoryBandwidthGBs)
+	p := reg.Register(id, nil, simRegisterMessage(hw, simModelInfos([]string{cfg.Model}), decodeTPS))
+	armSimProvider(p)
 
 	// Warm providers have the model resident (slot state "running"/"idle",
 	// penalty 0). Cold providers advertise the model but have no resident slot,
@@ -200,9 +268,6 @@ func registerSimProvider(reg *registry.Registry, id string, cfg FleetConfig, dec
 	}
 
 	p.Mu().Lock()
-	p.TrustLevel = registry.TrustHardware
-	p.RuntimeVerified = true
-	p.RuntimeManifestChecked = true
 	p.SystemMetrics = protocol.SystemMetrics{
 		MemoryPressure: 0.1,
 		CPUUsage:       0.1,

@@ -374,8 +374,9 @@ extension CoordinatorClient {
             // callback won't fire until the connection is cancelled. Cancel it
             // here so the continuation unblocks and the reconnect loop proceeds
             // immediately instead of hanging until the transport times out.
-            let (data, context, receivedAt):
-                (Data?, NWConnection.ContentContext?, ContinuousClock.Instant) =
+            let (data, context, receivedAt, profileAnchor):
+                (Data?, NWConnection.ContentContext?, ContinuousClock.Instant,
+                 SuspendingClock.Instant) =
                 try await withTaskCancellationHandler {
                     try await withCheckedThrowingContinuation { cont in
                         connection.receiveMessage { data, context, _isComplete, error in
@@ -383,11 +384,16 @@ extension CoordinatorClient {
                             // scheduling or any UTF-8/String materialization can
                             // consume the coordinator's relative deadline.
                             let receivedAt = ContinuousClock.now
+                            // Profiler anchor `t0p` on the suspending clock
+                            // (mach_absolute_time, the engine's DispatchTime
+                            // domain). Taken beside — never instead of — the
+                            // continuous deadline stamp (plan v2 P3).
+                            let profileAnchor = SuspendingClock.now
                             if let error {
                                 cont.resume(throwing: CoordinatorError.connectionClosed(error))
                                 return
                             }
-                            cont.resume(returning: (data, context, receivedAt))
+                            cont.resume(returning: (data, context, receivedAt, profileAnchor))
                         }
                     }
                 } onCancel: {
@@ -421,7 +427,8 @@ extension CoordinatorClient {
                 throw CoordinatorError.connectionClosed(NWError.posix(.ECONNRESET))
             }
 
-            await handleIncomingFrame(data, receivedAt: receivedAt)
+            await handleIncomingFrame(
+                data, receivedAt: receivedAt, profileAnchor: profileAnchor)
         }
     }
 

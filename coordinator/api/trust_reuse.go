@@ -1402,6 +1402,7 @@ func (s *Server) trustCoverageLoop() {
 			return
 		case <-ticker.C:
 			s.sweepTrustCoverage()
+			s.sweepCodeAttestCoverage()
 		}
 	}
 }

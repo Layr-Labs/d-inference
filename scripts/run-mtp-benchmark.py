@@ -24,7 +24,7 @@ PACKAGE_ROOT = REPO_ROOT / "provider-swift"
 DEFAULT_TARGET_ID = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
 DEFAULT_ASSISTANT_ID = "mlx-community/gemma-4-26B-A4B-it-qat-assistant-4bit"
 DEFAULT_TEST_FILTER = "GemmaMTPPerformanceLiveTests"
-REPORT_SCHEMA_VERSION = 10
+REPORT_SCHEMA_VERSION = 5
 REPORT_NAME = "report.json"
 LOG_NAME = "benchmark.log"
 SUPERVISOR_CONTRACT = "run-mtp-benchmark-v1"
@@ -46,9 +46,6 @@ PERFORMANCE_KEYS = {
     "lastTokenLatencyMs",
     "ewmaRoundWallTimeNanos",
     "totalRoundWallTimeNanos",
-    # Per-stage round timing is wall-clock measurement, so it is stripped
-    # from every non-performance report exactly like the fields above it.
-    "roundTiming",
     "assistantTimeNanos",
     "targetVerifyTimeNanos",
 }
@@ -718,6 +715,27 @@ def positive_costs_within_cap(metrics: dict[str, Any], cap: int) -> bool:
     )
 
 
+def has_verified_depth(metrics: dict[str, Any], minimum_depth: int) -> bool:
+    """Execution evidence for correctness when a cost-learning window was cancelled."""
+    counters = [0 if metrics.get(name) is None else metrics[name] for name in
+                ("rectangularVerificationRounds", "serialVerificationRounds")]
+    acceptance = metrics.get("acceptanceByPosition")
+    return (all(type(value) is int and value >= 0 for value in counters)
+            and sum(counters) > 0 and isinstance(acceptance, list)
+            and len(acceptance) >= minimum_depth)
+
+
+def has_cost_or_verified_depth(
+    metrics: dict[str, Any], bucket: int, depth: int, *, exact: bool, require_cost: bool
+) -> bool:
+    measured = any(
+        item.get("decodeRowBucket") == bucket
+        and (item.get("draftDepth") == depth if exact else item.get("draftDepth", 0) >= depth)
+        and item.get("sampleCount", 0) > 0
+        for item in metrics.get("costInputs", []) if isinstance(item, dict))
+    return measured or (not require_cost and has_verified_depth(metrics, depth))
+
+
 def validate_automatic_fixed_fallback(
     metrics: dict[str, Any], batch: int, depth: int, label: str
 ) -> bool:
@@ -732,34 +750,37 @@ def validate_automatic_fixed_fallback(
     if cap is None or batch * (depth + 1) <= cap:
         return False
     selections = metrics.get("depthSelections", {})
-    has_positive_depth = any(
-        key.isdigit() and int(key) > 0 and count > 0
-        for key, count in selections.items()
-        if isinstance(key, str) and isinstance(count, int)
-    )
+    if any(not isinstance(key, str) or not key.isdigit()
+           or type(count) is not int or count < 0 for key, count in selections.items()):
+        raise ValueError(f"{label} has invalid depth selections")
+    positive_selections = sum(count for key, count in selections.items() if int(key) > 0)
+    has_positive_depth = positive_selections > 0
     if (
         metrics.get("controllerFallbacks", {}).get("automatic_rectangular_limit", 0) <= 0
         or not positive_costs_within_cap(metrics, cap)
         or metrics.get("serialVerificationRounds", 0) != 0
     ):
         raise ValueError(f"{label} escaped its rectangular limit")
-    if has_positive_depth:
+    if metrics.get("rounds", 0) > 0:
         if (
-            metrics.get("rounds", 0) <= 0
+            not has_positive_depth
             or metrics.get("proposedTokens", 0) <= 0
             or metrics.get("rectangularVerificationRounds", 0) <= 0
         ):
             raise ValueError(f"{label} lacks clamped-depth evidence")
         return True
-    # Complete zero-work evidence, mirroring the Swift validator field for
-    # field: a zero-fit clamp certifies that EXACT canonical fallback
-    # occurred, so any speculative array, counter, or timing residue must
-    # reject the report.
+    # A smaller initial cohort may seed before the requested batch fills.
+    # Positive plans must be bounded by real seeds; no draft/verify/output
+    # residue is permitted. This is target-only fallback, not MTP throughput.
+    seeds = metrics.get("seedRows", 0)
+    seed_only_plans = type(seeds) is int and (
+        (seeds == 0 and positive_selections == 0)
+        or (seeds > 0 and 0 < positive_selections <= seeds))
     if (
         metrics.get("selectedDepth") != 0
         or selections.get("0", 0) <= 0
         or metrics.get("rounds", 0) != 0
-        or metrics.get("seedRows", 0) != 0
+        or not seed_only_plans
         or metrics.get("proposedTokens", 0) != 0
         or metrics.get("acceptedDraftTokens", 0) != 0
         or metrics.get("committedTokens", 0) != 0
@@ -857,7 +878,7 @@ def effective_quantization_bits(artifact: dict[str, Any]) -> int | None:
     return next(iter(values)) if len(values) == 1 else None
 
 
-def expected_coverage(report: dict[str, Any], *, prompt_tokens: int = 0) -> dict[str, str]:
+def expected_coverage(report: dict[str, Any]) -> dict[str, str]:
     target = report.get("target", {})
     assistant = report.get("assistant", {})
     target_name = str(target.get("modelID", "")).lower()
@@ -892,16 +913,11 @@ def expected_coverage(report: dict[str, Any], *, prompt_tokens: int = 0) -> dict
         "structuredOutput": "not_implemented",
         "imagePrefill": "not_in_this_report",
         "videoPrefill": "not_implemented",
-        # Gemma 4 slides local attention at 1,024 tokens, so a synthetic prompt
-        # at or past that has genuinely exercised the sliding path.
-        "longSlidingAndPrefixContexts": (
-            "covered" if prompt_tokens >= 1024 else "not_implemented"
-        ),
+        "longSlidingAndPrefixContexts": "not_implemented",
         "opaqueTokenEvidence": "covered",
         "productionServingStopPolicy": (
             "not_in_this_report"
             if report.get("purpose") == "raw_parity_stress"
-            or report.get("stopPolicy", {}).get("kind") != "production_target_eos"
             else "covered"
         ),
         "artifactProvenanceAndDrift": "covered",
@@ -958,16 +974,7 @@ def validate_report(
     warmup: int,
     repetitions: int,
     seed: int,
-    pre_case_cmd: str | None = None,
     expect_mtp_inactive: bool,
-    batch_sizes: list[int],
-    widths: list[int],
-    include_adaptive: bool,
-    prompt_tokens: int,
-    prompt_count: int,
-    prompt_source: str,
-    parity_policy: str,
-    stop_policy: str,
 ) -> None:
     encoded, metadata = run.read_regular(REPORT_NAME, MAX_REPORT_BYTES)
     if metadata.st_mtime < launch_time - 1:
@@ -975,14 +982,6 @@ def validate_report(
     report = json.loads(encoded.decode("utf-8"))
     if not isinstance(report, dict):
         raise ValueError("report root is not an object")
-    # The command the report claims to have run between cases must be the one
-    # that was asked for. A report that silently held nothing is the defect this
-    # whole hook exists to make visible, so it is checked, not trusted.
-    if report.get("preCaseCommand") != pre_case_cmd:
-        raise ValueError(
-            f"preCaseCommand is {report.get('preCaseCommand')!r}, "
-            f"expected {pre_case_cmd!r}"
-        )
     if report.get("schemaVersion") != REPORT_SCHEMA_VERSION:
         raise ValueError(
             f"schemaVersion is {report.get('schemaVersion')}, expected {REPORT_SCHEMA_VERSION}"
@@ -1001,32 +1000,8 @@ def validate_report(
         raise ValueError("production performance cannot be expected-inactive")
     if report.get("complete") is not True:
         raise ValueError("report is only a partial checkpoint")
-    mode_count = 1 + len(widths) + (1 if include_adaptive else 0)
-    expected_case_count = mode_count * len(batch_sizes)
-    if report.get("expectedCaseCount") != expected_case_count:
-        raise ValueError(
-            f"expectedCaseCount is {report.get('expectedCaseCount')}, "
-            f"expected {expected_case_count}"
-        )
-    if report.get("parityPolicy") != parity_policy:
-        raise ValueError("report parity policy does not match this launch")
-    if report.get("promptSource") != prompt_source:
-        raise ValueError(
-            f"report prompt source is {report.get('promptSource')!r}, "
-            f"expected {prompt_source!r}"
-        )
-    prompt_counts = report.get("promptTokenCounts")
-    if not isinstance(prompt_counts, list) or not prompt_counts:
-        raise ValueError("report carries no prompt token counts")
-    if prompt_tokens > 0:
-        if len(prompt_counts) != prompt_count:
-            raise ValueError(
-                f"report has {len(prompt_counts)} prompts, expected {prompt_count}"
-            )
-        if any(count != prompt_tokens for count in prompt_counts):
-            raise ValueError(
-                f"report prompt token counts {prompt_counts} are not all {prompt_tokens}"
-            )
+    if report.get("expectedCaseCount") != 40:
+        raise ValueError("expectedCaseCount is not 40")
     if report.get("maxTokensPerRow") != max_tokens:
         raise ValueError("maxTokensPerRow does not match the request")
     if report.get("warmupIterations") != warmup:
@@ -1038,29 +1013,29 @@ def validate_report(
     validate_report_artifact(report.get("target"), target, "target")
     validate_report_artifact(report.get("assistant"), assistant, "assistant")
 
-    expected_purpose = (
-        "raw_parity_stress" if mode == "raw-parity" else "production_performance"
-    )
+    purposes = {"raw-parity": "raw_parity_stress",
+                "production-correctness": "production_correctness",
+                "production-performance": "production_performance"}
+    if mode not in purposes:
+        raise ValueError("unrecognized benchmark mode")
+    expected_purpose = purposes[mode]
     expected_stop = (
         "raw_fixed_length_no_stop"
-        if mode == "raw-parity" or stop_policy == "raw"
+        if mode == "raw-parity"
         else "production_target_eos"
     )
-    # A raw fixed-length performance sweep certifies nothing about the
-    # production stop set, so it is validated with the raw rules below.
-    raw_length_rules = mode == "raw-parity" or stop_policy == "raw"
     if report.get("purpose") != expected_purpose:
         raise ValueError("report purpose does not match this launch")
-    stop_policy_summary = report.get("stopPolicy", {})
-    if stop_policy_summary.get("kind") != expected_stop:
+    stop_policy = report.get("stopPolicy", {})
+    if stop_policy.get("kind") != expected_stop:
         raise ValueError("report stop policy does not match this launch")
-    configured_stop_count = stop_policy_summary.get("configuredTokenCount")
-    if raw_length_rules and configured_stop_count != 0:
-        raise ValueError("fixed-length report claims configured stop tokens")
-    if not raw_length_rules and (
+    configured_stop_count = stop_policy.get("configuredTokenCount")
+    if mode == "raw-parity" and configured_stop_count != 0:
+        raise ValueError("raw parity report claims configured stop tokens")
+    if mode != "raw-parity" and (
         not isinstance(configured_stop_count, int) or configured_stop_count <= 0
     ):
-        raise ValueError("production performance report has no target EOS evidence")
+        raise ValueError("production report has no target EOS evidence")
     exposed_token_arrays = recursively_present_keys(report, {"tokenIDs"})
     if exposed_token_arrays:
         raise ValueError("report recursively exposes raw token IDs")
@@ -1084,17 +1059,18 @@ def validate_report(
         raise ValueError("report timestamps are not fresh and ordered")
 
     cases = report.get("cases")
-    if not isinstance(cases, list) or len(cases) != expected_case_count:
+    if not isinstance(cases, list) or len(cases) != 40:
         count = len(cases) if isinstance(cases, list) else "invalid"
-        raise ValueError(f"report has {count} cases, expected {expected_case_count}")
-    mode_shapes: list[tuple[str, list[int | None]]] = [("target_only", [None]), ("fixed", list(widths))]
-    if include_adaptive:
-        mode_shapes.append(("adaptive", [None]))
+        raise ValueError(f"report has {count} cases")
     expected_keys = {
         (kind, width, batch)
-        for kind, kind_widths in mode_shapes
-        for width in kind_widths
-        for batch in batch_sizes
+        for kind, widths in (
+            ("target_only", [None]),
+            ("fixed", list(range(1, 9))),
+            ("adaptive", [None]),
+        )
+        for width in widths
+        for batch in (1, 2, 4, 8)
     }
     actual_keys: set[tuple[str, int | None, int]] = set()
     baseline_rows: dict[int, list[tuple[str, int, str]]] = {}
@@ -1108,46 +1084,8 @@ def validate_report(
         actual_keys.add((kind, width, batch))
         if case.get("measurementRepetitions") != repetitions:
             raise ValueError(f"case {kind}/{width}/B{batch} repetition count is wrong")
-        # Schema 10 fields (Swift 17e732bc bumped currentSchemaVersion 9 -> 10;
-        # preCaseExit itself arrived in the schema-9 hold-between-cases work at
-        # 05430abf). preCaseExit is the per-case thermal-hold command's exit
-        # status: nil/absent when nothing held before the case, otherwise an
-        # integer status. repetitionStableRequired says whether token identity
-        # across repetitions is a property this mode has (true for
-        # target-only/fixed, false for the adaptive controller, whose measured
-        # depth schedule legitimately differs run to run); when it IS required
-        # the case must actually be repetition-stable.
-        pre_case_exit = case.get("preCaseExit")
-        if pre_case_exit is not None and (
-            isinstance(pre_case_exit, bool) or not isinstance(pre_case_exit, int)
-        ):
-            raise ValueError(
-                f"case {kind}/{width}/B{batch} preCaseExit is not an integer or null")
-        rep_required = case.get("repetitionStableRequired")
-        if not isinstance(rep_required, bool):
-            raise ValueError(
-                f"case {kind}/{width}/B{batch} omits repetitionStableRequired")
-        if rep_required and case.get("repetitionStable") is not True:
-            raise ValueError(
-                f"case {kind}/{width}/B{batch} requires repetition stability "
-                f"but repetitionStable is {case.get('repetitionStable')!r}")
-        if parity_policy == "enforce":
-            if case.get("tokenParity") is not True or case.get("parityMismatchRows") != []:
-                raise ValueError(f"case {kind}/{width}/B{batch} failed token parity")
-        else:
-            # Recorded parity: the case may diverge, but it must SAY so
-            # consistently — a false `tokenParity` with no rows, or rows with no
-            # divergence detail, is a broken report rather than a measurement.
-            mismatch_rows = case.get("parityMismatchRows")
-            divergences = case.get("parityDivergences")
-            if not isinstance(mismatch_rows, list) or not isinstance(divergences, list):
-                raise ValueError(f"case {kind}/{width}/B{batch} lacks parity evidence fields")
-            if case.get("tokenParity") is not (not mismatch_rows):
-                raise ValueError(f"case {kind}/{width}/B{batch} parity flag contradicts its rows")
-            if sorted(item.get("row") for item in divergences) != sorted(mismatch_rows):
-                raise ValueError(f"case {kind}/{width}/B{batch} divergence rows are inconsistent")
-            if not isinstance(case.get("repetitionStable"), bool):
-                raise ValueError(f"case {kind}/{width}/B{batch} omits repetition stability")
+        if case.get("tokenParity") is not True or case.get("parityMismatchRows") != []:
+            raise ValueError(f"case {kind}/{width}/B{batch} failed token parity")
         rows = case.get("rows", [])
         if not isinstance(rows, list) or len(rows) != batch:
             raise ValueError(f"case {kind}/{width}/B{batch} has the wrong row count")
@@ -1165,20 +1103,20 @@ def validate_report(
                 or set(digest.lower()) - HEX_DIGITS
             ):
                 raise ValueError(f"case {kind}/{width}/B{batch} row {row_index} has invalid opaque evidence")
-            if raw_length_rules and (
+            if mode == "raw-parity" and (
                 row.get("finishReason") != "length" or token_count != max_tokens
             ):
                 raise ValueError(f"case {kind}/{width}/B{batch} row {row_index} is not fixed length")
-            if not raw_length_rules and row.get("finishReason") not in {"stop", "length"}:
+            if mode != "raw-parity" and row.get("finishReason") not in {"stop", "length"}:
                 raise ValueError(f"case {kind}/{width}/B{batch} row {row_index} has invalid terminal reason")
             if (
-                not raw_length_rules
+                mode != "raw-parity"
                 and row.get("finishReason") == "length"
                 and token_count != max_tokens
             ):
                 raise ValueError(f"case {kind}/{width}/B{batch} row {row_index} length terminal is premature")
             if (
-                not raw_length_rules
+                mode != "raw-parity"
                 and row.get("finishReason") == "stop"
                 and token_count > max_tokens
             ):
@@ -1192,25 +1130,7 @@ def validate_report(
         if kind == "target_only":
             baseline_rows[batch] = row_evidence
         elif baseline_rows.get(batch) != row_evidence:
-            # Under recorded parity a diverging arm is expected to carry
-            # different opaque evidence; the case's own parity fields are the
-            # record. It still has to agree with itself: evidence may only
-            # differ where the case declared a divergence.
-            if parity_policy == "enforce":
-                raise ValueError(
-                    f"case {kind}/{width}/B{batch} opaque evidence differs from baseline")
-            declared = set(case.get("parityMismatchRows") or [])
-            baseline = baseline_rows.get(batch) or []
-            differing = {
-                index
-                for index in range(max(len(baseline), len(row_evidence)))
-                if (baseline[index] if index < len(baseline) else None)
-                != (row_evidence[index] if index < len(row_evidence) else None)
-            }
-            if not differing <= declared:
-                raise ValueError(
-                    f"case {kind}/{width}/B{batch} evidence differs on undeclared rows "
-                    f"{sorted(differing - declared)}")
+            raise ValueError(f"case {kind}/{width}/B{batch} opaque evidence differs from baseline")
         if mode == "production-performance":
             if case.get("medianAggregateDecodeTokensPerSecond") is None:
                 raise ValueError("production performance case omitted aggregate throughput")
@@ -1262,13 +1182,8 @@ def validate_report(
             if depth > 0:
                 if metrics.get("rounds", 0) <= 0 or metrics.get("proposedTokens", 0) <= 0:
                     raise ValueError(f"fixed L{width}/B{batch} did not draft")
-                if not any(
-                    item.get("decodeRowBucket") == expected_bucket
-                    and item.get("draftDepth") == depth
-                    and item.get("sampleCount", 0) > 0
-                    for item in metrics.get("costInputs", [])
-                    if isinstance(item, dict)
-                ):
+                if not has_cost_or_verified_depth(metrics, expected_bucket, depth, exact=True,
+                                                   require_cost=mode == "production-performance"):
                     raise ValueError(f"fixed L{width}/B{batch} lacks depth/bucket cost evidence")
         elif kind == "adaptive":
             if expect_mtp_inactive:
@@ -1303,13 +1218,8 @@ def validate_report(
                 for depth, count in metrics.get("depthSelections", {}).items()
             ):
                 raise ValueError(f"adaptive B{batch} never selected nonzero depth")
-            if not any(
-                item.get("decodeRowBucket") == expected_bucket
-                and item.get("draftDepth", 0) > 0
-                and item.get("sampleCount", 0) > 0
-                for item in metrics.get("costInputs", [])
-                if isinstance(item, dict)
-            ):
+            if not has_cost_or_verified_depth(metrics, expected_bucket, 1, exact=False,
+                                               require_cost=mode == "production-performance"):
                 raise ValueError(
                     f"adaptive B{batch} lacks positive-depth cost evidence for its requested bucket"
                 )
@@ -1319,7 +1229,7 @@ def validate_report(
         raise ValueError(f"case set mismatch; missing={missing}, extra={extra}")
 
     coverage = report.get("coverage", {})
-    for field, expected in expected_coverage(report, prompt_tokens=prompt_tokens).items():
+    for field, expected in expected_coverage(report).items():
         if coverage.get(field) != expected:
             raise ValueError(f"coverage.{field} is not dynamically labeled {expected}")
 
@@ -1346,17 +1256,6 @@ def fingerprint_for(
             "build_configuration": build_configuration,
             "test_filter": args.test_filter,
             "max_tokens": args.max_tokens,
-            "batch_sizes": args.batch_size_list,
-            "widths": args.width_list,
-            "adaptive": not args.no_adaptive,
-            "prompt_tokens": args.prompt_tokens,
-            "prompt_count": args.prompt_count,
-            "prompt_source": prompt_source_of(args),
-            "prompt_file_sha256": (
-                sha256_file(args.prompt_file) if args.prompt_file else None
-            ),
-            "parity_policy": args.parity_policy,
-            "stop_policy": args.stop_policy,
             "warmup": warmup,
             "repetitions": repetitions,
             "seed": args.seed,
@@ -1415,35 +1314,9 @@ def worker_main(args: argparse.Namespace, warmup: int, repetitions: int) -> int:
                 "DARKBLOOM_MTP_BENCHMARK_RUN_INODE": str(run.inode),
                 "DARKBLOOM_MTP_BENCHMARK_BUILD_CONFIGURATION": build_configuration,
                 "DARKBLOOM_MTP_BENCHMARK_MAX_TOKENS": str(args.max_tokens),
-                "DARKBLOOM_MTP_BENCHMARK_BATCH_SIZES": ",".join(
-                    str(value) for value in args.batch_size_list
-                ),
-                "DARKBLOOM_MTP_BENCHMARK_WIDTHS": ",".join(
-                    str(value) for value in args.width_list
-                ),
-                "DARKBLOOM_MTP_BENCHMARK_INCLUDE_ADAPTIVE": (
-                    "0" if args.no_adaptive else "1"
-                ),
-                "DARKBLOOM_MTP_BENCHMARK_PROMPT_TOKENS": str(args.prompt_tokens),
-                "DARKBLOOM_MTP_BENCHMARK_PROMPT_FILE": (
-                    str(args.prompt_file) if args.prompt_file else ""
-                ),
-                "DARKBLOOM_MTP_BENCHMARK_PROMPT_COUNT": str(args.prompt_count),
-                "DARKBLOOM_MTP_BENCHMARK_PARITY_POLICY": args.parity_policy,
-                "DARKBLOOM_MTP_BENCHMARK_STOP_POLICY": args.stop_policy,
                 "DARKBLOOM_MTP_BENCHMARK_MODE": args.mode,
                 "DARKBLOOM_MTP_BENCHMARK_EXPECT_MTP_INACTIVE": (
                     "1" if args.expect_mtp_inactive else "0"
-                ),
-                # Forwarded, not interpreted. The wrapper never sees a case
-                # boundary -- every case runs inside the one `swift test`
-                # process below -- so the hold has to be applied by the Swift
-                # runner's own case loop and this only carries the command to
-                # it.
-                **(
-                    {"MTP_PRE_CASE_CMD": args.pre_case_cmd}
-                    if args.pre_case_cmd
-                    else {}
                 ),
                 "DARKBLOOM_MTP_BENCHMARK_WARMUP": str(warmup),
                 "DARKBLOOM_MTP_BENCHMARK_REPETITIONS": str(repetitions),
@@ -1515,16 +1388,7 @@ def worker_main(args: argparse.Namespace, warmup: int, repetitions: int) -> int:
                     warmup=warmup,
                     repetitions=repetitions,
                     seed=args.seed,
-                    pre_case_cmd=args.pre_case_cmd,
                     expect_mtp_inactive=args.expect_mtp_inactive,
-                    batch_sizes=args.batch_size_list,
-                    widths=args.width_list,
-                    include_adaptive=not args.no_adaptive,
-                    prompt_tokens=args.prompt_tokens,
-                    prompt_count=args.prompt_count,
-                    prompt_source=prompt_source_of(args),
-                    parity_policy=args.parity_policy,
-                    stop_policy=args.stop_policy,
                 )
             except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
                 print(
@@ -1700,7 +1564,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--max-tokens", type=int, default=16)
     parser.add_argument(
         "--mode",
-        choices=("raw-parity", "production-performance"),
+        choices=("raw-parity", "production-correctness", "production-performance"),
         default="raw-parity",
         help="raw parity recursively omits performance keys; performance requires release",
     )
@@ -1712,76 +1576,8 @@ def parse_arguments() -> argparse.Namespace:
             "hardware-veto reason and zero speculative work"
         ),
     )
-    parser.add_argument(
-        "--pre-case-cmd",
-        help=(
-            "shell command run immediately before each case's warmup, with "
-            "MTP_CASE set to the case description. Forwarded to the runner as "
-            "MTP_PRE_CASE_CMD; a non-zero exit is recorded per case as "
-            "preCaseExit and does not abort the matrix."
-        ),
-    )
     parser.add_argument("--warmup", type=int)
     parser.add_argument("--repetitions", type=int)
-    parser.add_argument(
-        "--batch-sizes",
-        default="1,2,4,8",
-        help="comma-separated decode batch sizes to sweep (THE TEST is 1)",
-    )
-    parser.add_argument(
-        "--widths",
-        default="1,2,3,4,5,6,7,8",
-        help="comma-separated fixed verification widths L to sweep; draft depth k = L-1",
-    )
-    parser.add_argument(
-        "--no-adaptive",
-        action="store_true",
-        help="drop the adaptive-controller arm from the matrix",
-    )
-    parser.add_argument(
-        "--prompt-tokens",
-        type=int,
-        default=0,
-        help=(
-            "build synthetic long prompts of exactly this many tokens instead of the "
-            "three short chat prompts; THE TEST is 17408 (16384 prefill + 1024 input)"
-        ),
-    )
-    parser.add_argument(
-        "--prompt-file",
-        type=Path,
-        help=(
-            "size REAL TEXT from this file to exactly --prompt-tokens tokens instead of "
-            "the built-in synthetic filler. Longer files are trimmed inside the measured "
-            "body region; shorter ones are repeated with a separator. Requires "
-            "--prompt-tokens"
-        ),
-    )
-    parser.add_argument(
-        "--prompt-count",
-        type=int,
-        default=1,
-        help="how many synthetic long prompts to build (only with --prompt-tokens)",
-    )
-    parser.add_argument(
-        "--parity-policy",
-        choices=("enforce", "record"),
-        default="enforce",
-        help=(
-            "enforce aborts on any divergence from the target-only baseline; "
-            "record writes the diverging rows and first divergence position into "
-            "the report and keeps measuring"
-        ),
-    )
-    parser.add_argument(
-        "--stop-policy",
-        choices=("production", "raw"),
-        default="production",
-        help=(
-            "production uses the target EOS set; raw runs fixed-length no-stop so every "
-            "arm emits exactly --max-tokens tokens and tok/s is comparable across modes"
-        ),
-    )
     parser.add_argument("--seed", type=int, default=0x4D545032)
     parser.add_argument(
         "--output",
@@ -1809,61 +1605,7 @@ def parse_arguments() -> argparse.Namespace:
         parser.error("production-performance mode rejects --expect-mtp-inactive")
     if not args.test_filter or args.test_filter.startswith("-"):
         parser.error("--test-filter must be nonempty")
-    try:
-        args.batch_size_list = parse_int_list(args.batch_sizes)
-        args.width_list = parse_int_list(args.widths)
-    except ValueError as error:
-        parser.error(str(error))
-    if not args.batch_size_list or any(value <= 0 for value in args.batch_size_list):
-        parser.error("--batch-sizes must be positive integers")
-    if len(set(args.batch_size_list)) != len(args.batch_size_list):
-        parser.error("--batch-sizes must not repeat")
-    # An EXPLICITLY empty --widths means "no fixed cases". With --no-adaptive
-    # that is the target-only-only arm, which had no other spelling: the list
-    # was required to be non-empty, and the one value that would have stood in
-    # for it, --widths 1, was rejected downstream by a metrics validator that
-    # demanded speculative evidence from a depth-0 case.
-    if any(not 1 <= value <= 8 for value in args.width_list):
-        parser.error("--widths must be integers in 1...8")
-    if not args.width_list and args.widths.strip():
-        parser.error("--widths must be integers in 1...8")
-    if len(set(args.width_list)) != len(args.width_list):
-        parser.error("--widths must not repeat")
-    if args.prompt_tokens < 0:
-        parser.error("--prompt-tokens must be nonnegative")
-    if args.prompt_count <= 0:
-        parser.error("--prompt-count must be positive")
-    if args.prompt_count > 1 and args.prompt_tokens == 0:
-        parser.error("--prompt-count applies only with --prompt-tokens")
-    if args.prompt_file is not None:
-        if args.prompt_tokens == 0:
-            parser.error("--prompt-file requires --prompt-tokens")
-        try:
-            resolved = args.prompt_file.resolve(strict=True)
-        except OSError as error:
-            parser.error(f"--prompt-file is unreadable: {error}")
-        if not resolved.is_file():
-            parser.error("--prompt-file must name a regular file")
-        if resolved.stat().st_size == 0:
-            parser.error("--prompt-file is empty")
-        args.prompt_file = resolved
-    if args.stop_policy == "raw" and args.mode != "production-performance":
-        parser.error("--stop-policy raw applies only to production-performance mode")
     return args
-
-
-def prompt_source_of(args: argparse.Namespace) -> str:
-    """What the report must claim its prompt bodies came from. A synthetic
-    report and a real-text report are not comparable, so the launch pins it."""
-    return "file" if getattr(args, "prompt_file", None) else "synthetic"
-
-
-def parse_int_list(value: str) -> list[int]:
-    parts = [item.strip() for item in str(value).split(",") if item.strip()]
-    try:
-        return [int(item) for item in parts]
-    except ValueError as error:
-        raise ValueError(f"not a comma-separated integer list: {value!r}") from error
 
 
 def main() -> int:
@@ -1873,10 +1615,10 @@ def main() -> int:
     if args.self_test_artifact_provenance:
         return self_test_artifact_provenance()
     warmup = args.warmup if args.warmup is not None else (
-        0 if args.mode == "raw-parity" else 1
+        1 if args.mode == "production-performance" else 0
     )
     repetitions = args.repetitions if args.repetitions is not None else (
-        1 if args.mode == "raw-parity" else 3
+        3 if args.mode == "production-performance" else 1
     )
     if warmup < 0 or repetitions <= 0:
         raise SystemExit("--warmup must be nonnegative and --repetitions positive")

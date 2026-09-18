@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- List Bonsai first in the chat model dropdown and add a small cosmetic “Free” badge beside its name.
+
 ## Unreleased — Ternary Bonsai 2 onboarding draft
 
 - Compact Bonsai's retained recurrent convolution carry after prefill, preserving exact FP32 state bits without retaining whole chunk buffers. Other model families and single-token decode are unchanged.

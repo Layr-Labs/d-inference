@@ -5,6 +5,12 @@ import { Check, ChevronDown, Search, SlidersHorizontal } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { modelSupportsImages } from "@/lib/image-upload";
 import { trackEvent } from "@/lib/google-analytics";
+import type { Model } from "@/lib/api";
+
+// Presentation only; billing eligibility is enforced separately by the server.
+function isBonsai(model: Model) {
+  return /\bbonsai\b/i.test(`${model.id} ${model.display_name ?? ""}`);
+}
 
 export function ChatModelSelector() {
   const models = useStore((s) => s.models);
@@ -19,7 +25,9 @@ export function ChatModelSelector() {
   const titleId = useId();
   const selected = models.find((model) => model.id === selectedModel);
   const displayName = selected?.display_name || selectedModel.split("/").pop() || "Choose a model";
-  const filtered = models.filter((model) => `${model.display_name ?? ""} ${model.id}`.toLowerCase().includes(query.toLowerCase()));
+  const filtered = models
+    .filter((model) => `${model.display_name ?? ""} ${model.id}`.toLowerCase().includes(query.toLowerCase()))
+    .sort((a, b) => Number(isBonsai(b)) - Number(isBonsai(a)));
 
   useEffect(() => {
     if (!open) return;
@@ -91,7 +99,14 @@ export function ChatModelSelector() {
                 className={`flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left transition-colors hover:bg-bg-secondary ${selectedModel === model.id ? "bg-accent-brand-dim text-accent-brand" : "text-text-primary"}`}
               >
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{model.display_name || model.id.split("/").pop()}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="truncate text-sm font-medium">{model.display_name || model.id.split("/").pop()}</p>
+                    {isBonsai(model) && (
+                      <span className="shrink-0 rounded-full bg-accent-brand-dim px-2 py-0.5 text-[10px] font-medium leading-4 text-accent-brand">
+                        Free
+                      </span>
+                    )}
+                  </div>
                   <p className="mt-1 text-xs text-text-secondary">{modelSupportsImages(model) ? "Text and images" : "Text"}{model.quantization ? ` · ${model.quantization}` : ""}</p>
                 </div>
                 {selectedModel === model.id && <Check size={16} className="shrink-0" />}

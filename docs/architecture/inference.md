@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-17 · commit `954f570d1`
+> Last updated: 2026-09-18 · commit `93e90aecc`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -16,6 +16,9 @@ and retains its vision wrapper. The SDK validates signed-Hadamard metadata and
 packed weights before returning the model. Packed scales and embeddings are
 FP16, but the published FP32 normalizers promote native KV and recurrent
 convolution state to FP32; checkpoint declarations preserve that actual dtype.
+Packed recurrent prefill retains a compact convolution carry rather than an
+alias of the complete chunk allocation; the SDK copies those state bits without
+changing the recurrence or other model families.
 `EngineV2SupportedModels.bonsai2ModelID` selects paged KV automatically;
 MTP remains unsupported because the checkpoint has no assistant tensors.
 See `libs/mlx-swift-lm/docs/bonsai2.md` for the checkpoint contract and current

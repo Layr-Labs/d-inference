@@ -13,8 +13,10 @@ legacy engine and no subprocess. For the memory model see
 
 The `prism_hadamard_qwen35` adapter reuses the native dense Qwen text backbone
 and retains its vision wrapper. The SDK validates signed-Hadamard metadata and
-packed weights before returning the model, preserving the artifact's FP16
-contract. `EngineV2SupportedModels.bonsai2ModelID` selects paged KV automatically;
+packed weights before returning the model. Packed scales and embeddings are
+FP16, but the published FP32 normalizers promote native KV and recurrent
+convolution state to FP32; checkpoint declarations preserve that actual dtype.
+`EngineV2SupportedModels.bonsai2ModelID` selects paged KV automatically;
 MTP remains unsupported because the checkpoint has no assistant tensors.
 See `libs/mlx-swift-lm/docs/bonsai2.md` for the checkpoint contract and current
 qualification scope. This implementation does not activate a catalog entry.

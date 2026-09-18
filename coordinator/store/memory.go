@@ -39,19 +39,21 @@ const keySpendRetentionDays = 40
 
 // MemoryStore manages API keys, usage records, payments, and balances in memory.
 type MemoryStore struct {
-	modelTokenPromotions   map[string]ModelTokenPromotion
-	modelTokenGrants       map[string]map[string]ModelTokenGrant
-	modelTokenReservations map[string]ModelTokenReservation
-	mu                     sync.RWMutex
-	keyRecords             map[string]*APIKey // raw key → record (metadata + limits)
-	keysByID               map[string]string  // public key ID → raw key
-	keySpend               map[string]*keySpend
-	usage                  []UsageRecord
-	payments               []PaymentRecord
-	balances               map[string]int64 // accountID → micro-USD
-	withdrawable           map[string]int64 // accountID → withdrawable micro-USD (subset of balance)
-	ledgerEntries          []LedgerEntry
-	ledgerSeq              int64 // auto-increment ID
+	modelTokenProviderCarries map[string]int64
+	modelTokenPromotions      map[string]ModelTokenPromotion
+	modelTokenGrants          map[string]map[string]ModelTokenGrant
+	modelTokenReservations    map[string]ModelTokenReservation
+
+	mu            sync.RWMutex
+	keyRecords    map[string]*APIKey // raw key → record (metadata + limits)
+	keysByID      map[string]string  // public key ID → raw key
+	keySpend      map[string]*keySpend
+	usage         []UsageRecord
+	payments      []PaymentRecord
+	balances      map[string]int64 // accountID → micro-USD
+	withdrawable  map[string]int64 // accountID → withdrawable micro-USD (subset of balance)
+	ledgerEntries []LedgerEntry
+	ledgerSeq     int64 // auto-increment ID
 
 	// Observation-only keys; independent from provider/rewards identity.
 	appAttestShadowKeys  map[string]AppAttestShadowKey

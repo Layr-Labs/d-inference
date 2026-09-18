@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
@@ -18,16 +17,11 @@ var errPromotionKeyLimit = errors.New("API key spend limit reached")
 // when some tokens remain paid; a fully sponsored request costs its user zero.
 func modelTokenQuote(model string, prompt, completion int, in, out int64, custom bool, limit *int64) store.ModelTokenQuote {
 	return func(free int64) (int64, int64, error) {
-		if prompt < 0 || completion < 0 {
-			return 0, 0, errors.New("negative token count")
+		price, err := priceModelTokens(model, prompt, completion, in, out, custom, free, nil)
+		if err != nil {
+			return 0, 0, err
 		}
-		gross := payments.CalculateCostWithOverrides(model, prompt, completion, in, out, custom)
-		paidPrompt := max(int64(prompt)-free, 0)
-		paidCompletion := max(int64(completion)-max(free-int64(prompt), 0), 0)
-		var paid int64
-		if paidPrompt+paidCompletion > 0 {
-			paid = payments.CalculateCostWithOverrides(model, int(paidPrompt), int(paidCompletion), in, out, custom)
-		}
+		gross, paid := price.gross, price.paid
 		if limit != nil && paid > *limit {
 			return 0, 0, errPromotionKeyLimit
 		}

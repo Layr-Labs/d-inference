@@ -2439,7 +2439,7 @@ func (s *Server) handleCompleteAt(
 	// with the settlement here.
 	if pr.ModelTokenReservationID != "" {
 		var promotionErr error
-		billingFinalized, totalCost, promotionErr = s.settleModelTokenPromotion(pr, provider, msg.Usage, customIn, customOut, hasCustom, providerPayout, freeSelfRoute, recordAccounting)
+		billingFinalized, totalCost, providerPayout, promotionErr = s.settleModelTokenPromotion(pr, provider, msg.Usage, customIn, customOut, hasCustom, feePercent, freeSelfRoute, recordAccounting)
 		if promotionErr != nil {
 			s.logger.Error("promotion settlement failed", "request_id", msg.RequestID, "reservation_id", pr.ModelTokenReservationID, "error", promotionErr)
 		}

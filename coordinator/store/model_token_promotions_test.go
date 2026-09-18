@@ -86,7 +86,7 @@ func TestModelTokenPromotionSettlementPaysProviderAtomically(t *testing.T) {
 			if err != nil || r.FreeTokens != 80 || r.ReservedMicroUSD != 0 {
 				t.Fatalf("reserve: %+v %v", r, err)
 			}
-			earning := &ProviderEarning{AccountID: "provider", ProviderID: "p", ProviderKey: "pk", JobID: "job", Model: r.ModelID, AmountMicroUSD: 30, PromptTokens: 20, CompletionTokens: 10}
+			earning := &ModelTokenEarning{ProviderEarning: ProviderEarning{AccountID: "provider", ProviderID: "p", ProviderKey: "pk", JobID: "job", Model: r.ModelID, AmountMicroUSD: 30, PromptTokens: 20, CompletionTokens: 10}}
 			result, err := b.SettleModelTokenReservation(r.ID, 30, tokenPrice(30), earning)
 			if err != nil || !result.Applied || result.Reservation.ConsumerCostMicroUSD != 0 || result.Reservation.SponsoredMicroUSD != 30 {
 				t.Fatalf("settle: %+v %v", result, err)
@@ -123,7 +123,7 @@ func TestModelTokenPromotionPartialPaidAndExhaustion(t *testing.T) {
 			if err != nil || r.FreeTokens != 10 || s.GetBalance("consumer") != 90 {
 				t.Fatalf("reserve %+v %v", r, err)
 			}
-			result, err := b.SettleModelTokenReservation(r.ID, 15, tokenPrice(15), &ProviderEarning{AccountID: "provider", JobID: "partial-job", AmountMicroUSD: 15})
+			result, err := b.SettleModelTokenReservation(r.ID, 15, tokenPrice(15), &ModelTokenEarning{ProviderEarning: ProviderEarning{AccountID: "provider", JobID: "partial-job", AmountMicroUSD: 15}})
 			if err != nil || result.Reservation.UsedTokens != 10 || result.Reservation.ConsumerCostMicroUSD != 5 {
 				t.Fatalf("settle %+v %v", result, err)
 			}
@@ -191,7 +191,7 @@ func TestModelTokenPromotionConcurrentClaimsReservationsAndTerminals(t *testing.
 				}(id)
 				go func(id string) {
 					defer wg.Done()
-					_, err := b.SettleModelTokenReservation(id, 10, tokenPrice(10), &ProviderEarning{AccountID: "provider", JobID: id, AmountMicroUSD: 10})
+					_, err := b.SettleModelTokenReservation(id, 10, tokenPrice(10), &ModelTokenEarning{ProviderEarning: ProviderEarning{AccountID: "provider", JobID: id, AmountMicroUSD: 10}})
 					if err != nil {
 						t.Error(err)
 					}
@@ -225,7 +225,7 @@ func TestModelTokenPromotionTopUpAndFailedSettlementRollback(t *testing.T) {
 			if grants[0].ReservedTokens != 80 {
 				t.Fatal("failed topup consumed tokens")
 			}
-			_, err = b.SettleModelTokenReservation(r.ID, 1000, tokenPrice(1000), &ProviderEarning{AccountID: "provider", JobID: "bad", AmountMicroUSD: 1000})
+			_, err = b.SettleModelTokenReservation(r.ID, 1000, tokenPrice(1000), &ModelTokenEarning{ProviderEarning: ProviderEarning{AccountID: "provider", JobID: "bad", AmountMicroUSD: 1000}})
 			if err == nil {
 				t.Fatal("unbounded settlement accepted")
 			}
@@ -273,7 +273,7 @@ func TestModelTokenPromotionOrphanRecoveryDoesNotReleaseLiveOrSettledRequests(t 
 			if grants[0].RemainingTokens != 100 {
 				t.Fatal(grants)
 			}
-			result, err := b.SettleModelTokenReservation(old.ID, 10, tokenPrice(10), &ProviderEarning{AccountID: "provider", JobID: "late", AmountMicroUSD: 10})
+			result, err := b.SettleModelTokenReservation(old.ID, 10, tokenPrice(10), &ModelTokenEarning{ProviderEarning: ProviderEarning{AccountID: "provider", JobID: "late", AmountMicroUSD: 10}})
 			if err != nil || result.Applied || s.GetBalance("provider") != 0 {
 				t.Fatal("late terminal revived orphan")
 			}

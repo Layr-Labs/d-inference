@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS model_token_grants (
  PRIMARY KEY (account_id, model_id),
  CHECK (used_tokens + reserved_tokens <= total_tokens)
 );
+CREATE TABLE IF NOT EXISTS model_token_provider_carries (
+ account_id TEXT PRIMARY KEY,
+ remainder BIGINT NOT NULL DEFAULT 0 CHECK (remainder >= 0 AND remainder < 100000000)
+);
 CREATE TABLE IF NOT EXISTS model_token_reservations (
  id TEXT PRIMARY KEY,
  account_id TEXT NOT NULL,

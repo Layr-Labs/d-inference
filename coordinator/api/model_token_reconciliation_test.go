@@ -21,7 +21,7 @@ type promotionSettlementFaultStore struct {
 	calls        atomic.Int64
 }
 
-func (s *promotionSettlementFaultStore) SettleModelTokenReservation(id string, actual int64, quote store.ModelTokenQuote, earning *store.ProviderEarning) (store.ModelTokenSettlement, error) {
+func (s *promotionSettlementFaultStore) SettleModelTokenReservation(id string, actual int64, quote store.ModelTokenQuote, earning *store.ModelTokenEarning) (store.ModelTokenSettlement, error) {
 	first := s.calls.Add(1) == 1
 	if first && s.beforeCommit {
 		return store.ModelTokenSettlement{}, errors.New("temporary settlement outage")
@@ -35,7 +35,9 @@ func (s *promotionSettlementFaultStore) SettleModelTokenReservation(id string, a
 
 func promotionCompletionRequest(s *Server, reservation *store.ModelTokenReservation, id string) (*registry.Provider, *registry.PendingRequest) {
 	provider := s.registry.Register(id+"-provider", nil, &protocol.RegisterMessage{Models: []protocol.ModelInfo{{ID: promoTestModel}}})
+	provider.Mu().Lock()
 	provider.AccountID = "paid-provider"
+	provider.Mu().Unlock()
 	pr := &registry.PendingRequest{
 		RequestID: id, Model: promoTestModel, PublicModel: "promotion-public-model", ConsumerKey: "promotion-user", KeyID: "promotion-key",
 		ReservedMicroUSD: reservation.ReservedMicroUSD,

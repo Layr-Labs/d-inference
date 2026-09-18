@@ -180,7 +180,7 @@ func (s *MemoryStore) releaseModelTokenLocked(id string, before time.Time) (bool
 	return true, nil
 }
 
-func (s *MemoryStore) SettleModelTokenReservation(id string, actual int64, quote ModelTokenQuote, earning *ProviderEarning) (ModelTokenSettlement, error) {
+func (s *MemoryStore) SettleModelTokenReservation(id string, actual int64, quote ModelTokenQuote, earning *ModelTokenEarning) (ModelTokenSettlement, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok := s.modelTokenReservations[id]
@@ -201,12 +201,20 @@ func (s *MemoryStore) SettleModelTokenReservation(id string, actual int64, quote
 	if delta < 0 && -delta > math.MaxInt64-s.balances[r.AccountID] {
 		return ModelTokenSettlement{}, errors.New("refund balance overflow")
 	}
+	var carry int64
+	if earning != nil {
+		carry = s.modelTokenProviderCarries[earning.AccountID]
+	}
+	credited, remainder, err := carryModelTokenEarning(earning, carry)
+	if err != nil {
+		return ModelTokenSettlement{}, err
+	}
 	if earning != nil {
 		balance := s.balances[earning.AccountID]
 		if earning.AccountID == r.AccountID {
 			balance -= delta
 		}
-		if earning.AmountMicroUSD > math.MaxInt64-balance {
+		if credited.AmountMicroUSD > math.MaxInt64-balance {
 			return ModelTokenSettlement{}, errors.New("provider balance overflow")
 		}
 	}
@@ -221,8 +229,15 @@ func (s *MemoryStore) SettleModelTokenReservation(id string, actual int64, quote
 	g.ReservedTokens -= r.FreeTokens
 	g.UsedTokens += next.UsedTokens
 	s.modelTokenGrants[r.AccountID][r.ModelID] = g
-	if earning != nil && earning.AmountMicroUSD > 0 {
-		_ = s.creditProviderAccountLocked(earning)
+	if credited != nil {
+		if s.modelTokenProviderCarries == nil {
+			s.modelTokenProviderCarries = make(map[string]int64)
+		}
+		s.modelTokenProviderCarries[credited.AccountID] = remainder
+		next.ProviderPayoutMicroUSD = credited.AmountMicroUSD
+		if credited.AmountMicroUSD > 0 {
+			_ = s.creditProviderAccountLocked(credited)
+		}
 	}
 	s.modelTokenReservations[id] = next
 	return ModelTokenSettlement{Reservation: next, Applied: true}, nil

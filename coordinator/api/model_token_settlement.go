@@ -18,20 +18,25 @@ func stampModelTokenReservation(pr *registry.PendingRequest, reservation *store.
 	pr.PromotionFreeTokens = reservation.FreeTokens
 }
 
-func (s *Server) settleModelTokenPromotion(pr *registry.PendingRequest, provider *registry.Provider, usage protocol.UsageInfo, in, out int64, custom bool, payout int64, freeSelf bool, onSettled func(int64)) (bool, int64, error) {
+func (s *Server) settleModelTokenPromotion(pr *registry.PendingRequest, provider *registry.Provider, usage protocol.UsageInfo, in, out int64, custom bool, feePercent *int64, freeSelf bool, onSettled func(int64)) (bool, int64, int64, error) {
 	backend, ok := store.As[store.ModelTokenPromotionStore](s.store)
 	if !ok {
-		return false, 0, errors.New("promotion store unavailable")
+		return false, 0, 0, errors.New("promotion store unavailable")
 	}
 	quote := modelTokenQuote(pr.Model, usage.PromptTokens, usage.CompletionTokens, in, out, custom, nil)
 	actual := int64(usage.PromptTokens) + int64(usage.CompletionTokens)
-	var earning *store.ProviderEarning
-	if !freeSelf && provider != nil && payout > 0 {
+	var earning *store.ModelTokenEarning
+	if !freeSelf && provider != nil {
 		provider.Mu().Lock()
 		account, key, id := provider.AccountID, provider.PublicKey, provider.ID
 		provider.Mu().Unlock()
 		if account != "" {
-			earning = &store.ProviderEarning{AccountID: account, ProviderID: id, ProviderKey: key, JobID: pr.RequestID, Model: pr.Model, AmountMicroUSD: payout, PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, CreatedAt: time.Now()}
+			price, err := priceModelTokens(pr.Model, usage.PromptTokens, usage.CompletionTokens, in, out, custom, pr.PromotionFreeTokens, feePercent)
+			if err != nil {
+				pr.MarkReservationFinalized()
+				return false, 0, 0, errors.Join(store.ErrPromotionInvalidSettlement, err, s.abandonModelTokenSettlement(pr.ModelTokenReservationID))
+			}
+			earning = &store.ModelTokenEarning{ProviderEarning: store.ProviderEarning{AccountID: account, ProviderID: id, ProviderKey: key, JobID: pr.RequestID, Model: pr.Model, AmountMicroUSD: price.payout, PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, CreatedAt: time.Now()}, FractionalMicroUSD: price.remainder}
 		}
 	}
 	if freeSelf {
@@ -50,7 +55,7 @@ func (s *Server) settleModelTokenPromotion(pr *registry.PendingRequest, provider
 		pr.MarkReservationFinalized()
 		if permanentModelTokenSettlementError(err) {
 			refundErr := s.abandonModelTokenSettlement(pr.ModelTokenReservationID)
-			return false, 0, errors.Join(err, refundErr)
+			return false, 0, 0, errors.Join(err, refundErr)
 		}
 		id := pr.ModelTokenReservationID
 		s.modelTokenSettlements.Store(id, func() error {
@@ -66,10 +71,10 @@ func (s *Server) settleModelTokenPromotion(pr *registry.PendingRequest, provider
 			}
 			return retryErr
 		})
-		return false, 0, err
+		return false, 0, 0, err
 	}
 	s.modelTokenActive.Delete(pr.ModelTokenReservationID)
-	return finalized && result.Applied, result.Reservation.ConsumerCostMicroUSD, nil
+	return finalized && result.Applied, result.Reservation.ConsumerCostMicroUSD, result.Reservation.ProviderPayoutMicroUSD, nil
 }
 
 func permanentModelTokenSettlementError(err error) bool {

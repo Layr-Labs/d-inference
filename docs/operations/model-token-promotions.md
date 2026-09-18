@@ -1,6 +1,6 @@
 # Run a model token promotion
 
-> Last updated: 2026-09-18 · commit `ad8dec1f2`
+> Last updated: 2026-09-18 · commit `e64b9df42`
 
 Configure a one-time token grant for eligible individual accounts that explicitly claim before the deadline and campaign cap. Grants never expire, work across the account's API keys, and switch to paid credit after exhaustion. Model registration is a separate step.
 
@@ -39,7 +39,7 @@ Use for a launch such as 150 million Bonsai 2 input-plus-output tokens for the f
 
 3. Register/publish the model separately using [model-migration.md](model-migration.md). A grant neither advertises a model nor bypasses its admission, capacity, authentication, rate-limit or trust gates.
 
-4. Set or verify model pricing. Sponsored requests pay providers using platform model pricing, not provider custom prices. Fully paid requests after exhaustion retain ordinary pricing. Serving your own sponsored request gives neither a provider payout nor a token deduction.
+4. Set or verify model pricing. Sponsored tokens pay providers at exact platform model pricing without a request minimum. Fractional micro-dollar earnings carry per provider account and become withdrawable as whole units accumulate; splitting requests cannot enlarge the subsidy. Provider custom prices do not enlarge sponsored earnings. Fully paid requests after exhaustion retain ordinary pricing. Serving your own sponsored request gives neither a provider payout nor a token deduction.
 
 5. Verify the model's first-content SLA. The exact Bonsai IDs already select a 10-second upstream base and 5 ms per estimated input token. The coordinator retains its 1-second response margin, so its cutoff is 9 seconds plus 5 ms/token. Other models keep their existing policies. An explicit deployment override can configure another model before registration:
 

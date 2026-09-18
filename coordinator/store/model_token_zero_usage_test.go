@@ -20,7 +20,7 @@ func TestModelTokenPromotionZeroUsageRejectsChargeAndPayout(t *testing.T) {
 					if gross == 0 && payout == 0 {
 						continue
 					}
-					earning := &ProviderEarning{AccountID: "provider", JobID: "zero-usage-job", AmountMicroUSD: payout}
+					earning := &ModelTokenEarning{ProviderEarning: ProviderEarning{AccountID: "provider", JobID: "zero-usage-job", AmountMicroUSD: payout}}
 					_, err := b.SettleModelTokenReservation(r.ID, 0, quote, earning)
 					if !errors.Is(err, ErrPromotionInvalidSettlement) {
 						t.Fatalf("gross=%d payout=%d: %v", gross, payout, err)

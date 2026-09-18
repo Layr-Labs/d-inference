@@ -72,12 +72,15 @@ type ModelTokenReservation struct {
 	UsedTokens                   int64     `json:"used_tokens"`
 	ConsumerCostMicroUSD         int64     `json:"consumer_cost_micro_usd"`
 	SponsoredMicroUSD            int64     `json:"sponsored_micro_usd"`
+	ProviderPayoutMicroUSD       int64     `json:"provider_payout_micro_usd"`
 	CreatedAt                    time.Time `json:"created_at"`
 	TouchedAt                    time.Time `json:"touched_at"`
 }
 
 // ModelTokenQuote must be pure: stores call it while holding the grant lock.
-// It returns the full request price and the consumer price after free tokens.
+// It returns a conservative whole-micro-dollar gross bound and the consumer
+// price after free tokens. Exact provider payouts are supplied separately; the
+// rounded gross/sponsored quote fields must never be used to fund a payout.
 type ModelTokenQuote func(freeTokens int64) (gross, paid int64, err error)
 
 type ModelTokenSettlement struct {
@@ -97,7 +100,7 @@ type ModelTokenPromotionStore interface {
 	ReserveModelTokens(id, accountID, modelID string, tokens int64, quote ModelTokenQuote) (*ModelTokenReservation, error)
 	TopUpModelTokenReservation(id string, tokens int64, quote ModelTokenQuote) (*ModelTokenReservation, error)
 	ReleaseModelTokenReservation(id string) (bool, error)
-	SettleModelTokenReservation(id string, actualTokens int64, quote ModelTokenQuote, earning *ProviderEarning) (ModelTokenSettlement, error)
+	SettleModelTokenReservation(id string, actualTokens int64, quote ModelTokenQuote, earning *ModelTokenEarning) (ModelTokenSettlement, error)
 }
 
 func promotionQuote(quote ModelTokenQuote, free int64) (int64, int64, error) {
@@ -114,7 +117,7 @@ func promotionQuote(quote ModelTokenQuote, free int64) (int64, int64, error) {
 	return gross, paid, nil
 }
 
-func promotionSettlement(r ModelTokenReservation, actual int64, quote ModelTokenQuote, earning *ProviderEarning) (ModelTokenReservation, error) {
+func promotionSettlement(r ModelTokenReservation, actual int64, quote ModelTokenQuote, earning *ModelTokenEarning) (ModelTokenReservation, error) {
 	if actual < 0 {
 		return r, fmt.Errorf("%w: negative token usage", ErrPromotionInvalidSettlement)
 	}
@@ -125,14 +128,14 @@ func promotionSettlement(r ModelTokenReservation, actual int64, quote ModelToken
 	}
 	// A request minimum must never fund a payout without consuming tokens.
 	// Zero-cost, zero-payout self-serving completions can still release holds.
-	if actual == 0 && (gross > 0 || earning != nil && earning.AmountMicroUSD > 0) {
+	if actual == 0 && (gross > 0 || earning != nil && (earning.AmountMicroUSD > 0 || earning.FractionalMicroUSD > 0)) {
 		return r, fmt.Errorf("%w: zero token usage cannot carry a charge or payout", ErrPromotionInvalidSettlement)
 	}
 	// Preserve the coordinator's fraud ceiling for provider-reported costs.
 	if gross > 2*r.GrossReservedMicroUSD || paid > 2*r.ReservedMicroUSD && paid > 0 {
 		return r, fmt.Errorf("%w: cost exceeds reservation ceiling", ErrPromotionInvalidSettlement)
 	}
-	if earning != nil && (earning.AccountID == "" || earning.JobID == "" || earning.AmountMicroUSD < 0 || earning.AmountMicroUSD > gross) {
+	if earning != nil && (earning.AccountID == "" || earning.JobID == "" || earning.AmountMicroUSD < 0 || earning.AmountMicroUSD > gross || earning.FractionalMicroUSD < 0 || earning.FractionalMicroUSD >= ModelTokenPayoutScale || earning.AmountMicroUSD == gross && earning.FractionalMicroUSD > 0) {
 		return r, fmt.Errorf("%w: invalid provider earning", ErrPromotionInvalidSettlement)
 	}
 	r.State, r.UsedTokens, r.ConsumerCostMicroUSD = "settled", used, paid

@@ -43,7 +43,7 @@ func (s *PostgresStore) releaseModelTokenBefore(id string, before time.Time) (bo
 
 // Lock both balance rows in account order before debiting/refunding/crediting.
 // This keeps two consumer/providers serving each other from forming a cycle.
-func lockPromotionBalances(ctx context.Context, tx pgx.Tx, consumer string, earning *ProviderEarning) error {
+func lockPromotionBalances(ctx context.Context, tx pgx.Tx, consumer string, earning *ModelTokenEarning) error {
 	accounts := []string{consumer}
 	if earning != nil && earning.AccountID != consumer {
 		accounts = append(accounts, earning.AccountID)
@@ -61,7 +61,7 @@ func lockPromotionBalances(ctx context.Context, tx pgx.Tx, consumer string, earn
 	return rows.Err()
 }
 
-func (s *PostgresStore) SettleModelTokenReservation(id string, actual int64, quote ModelTokenQuote, earning *ProviderEarning) (ModelTokenSettlement, error) {
+func (s *PostgresStore) SettleModelTokenReservation(id string, actual int64, quote ModelTokenQuote, earning *ModelTokenEarning) (ModelTokenSettlement, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	tx, err := s.pool.Begin(ctx)
@@ -99,9 +99,16 @@ func (s *PostgresStore) SettleModelTokenReservation(id string, actual int64, quo
 	if err != nil {
 		return ModelTokenSettlement{}, err
 	}
-	if earning != nil && earning.AmountMicroUSD > 0 {
-		if err = creditProviderAccount(ctx, tx, earning); err != nil {
-			return ModelTokenSettlement{}, err
+	credited, err := carryModelTokenEarningPostgres(ctx, tx, earning)
+	if err != nil {
+		return ModelTokenSettlement{}, err
+	}
+	if credited != nil {
+		next.ProviderPayoutMicroUSD = credited.AmountMicroUSD
+		if credited.AmountMicroUSD > 0 {
+			if err = creditProviderAccount(ctx, tx, credited); err != nil {
+				return ModelTokenSettlement{}, err
+			}
 		}
 	}
 	if err = savePromotionReservation(ctx, tx, next); err != nil {

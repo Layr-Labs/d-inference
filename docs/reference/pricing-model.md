@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-18 · commit `b13dbe7b5`
+> Last updated: 2026-09-18 · commit `e64b9df42`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -306,7 +306,8 @@ Published recipient bounds are stored in `coordinator/billing/globalpayouts/reci
 | Token unit | Prompt plus completion tokens, including cached input and generated reasoning as reported in usage | `coordinator/api/model_token_settlement.go` (`settleModelTokenPromotion`) |
 | Coverage | Input first, then output; fully covered usage costs the consumer zero | `coordinator/api/model_token_admission.go` (`modelTokenQuote`) |
 | Paid fallback | Uncovered tokens use paid balance; the normal request minimum applies when any tokens are paid | `coordinator/api/model_token_admission.go` (`modelTokenQuote`) |
-| Provider earnings | Platform price for a sponsored request; ordinary pricing after exhaustion; same-account sponsored serving produces no payout | `coordinator/api/provider.go` (`handleComplete`) |
+| Provider earnings | Sponsored portion uses exact platform token price and fee share, with no request or one-micro-dollar payout floor; fractional earnings carry across requests per provider account. Paid portion retains its funded minimum. Same-account sponsored serving produces no payout | `coordinator/api/provider.go` (`handleComplete`) |
+| Fractional payout storage | Remainders use 1/100000000 of a micro-dollar; whole units become withdrawable atomically with grant settlement; replay never adds the fraction twice | `coordinator/store/model_token_earnings.go` (`ModelTokenPayoutScale`, `carryModelTokenEarning`) |
 | Zero-token completion | Reject any nonzero charge or payout; release token/cash holds | `coordinator/store/model_token_promotions.go` (`promotionSettlement`) |
 | Settlement reconciliation | Resume usage, key spend and fee accounting once using the stored consumer cost; insufficient cash closes and refunds holds | `coordinator/api/completion_accounting.go` (`completionAccounting`); `coordinator/api/model_token_settlement.go` (`abandonModelTokenSettlement`) |
 | Reservation recovery | Renew every 30 seconds; reclaim after ten minutes without renewal | `coordinator/api/model_token_maintenance.go` (`runModelTokenMaintenance`, `modelTokenLeaseTimeout`) |

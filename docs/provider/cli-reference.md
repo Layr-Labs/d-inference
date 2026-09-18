@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-18 · commit `5fc48d460`
+> Last updated: 2026-09-18 · commit `8d7142dd0`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -798,10 +798,12 @@ override `provider.toml` for one process, are in
 ## LaunchAgent environment passthrough
 
 The [Bonsai performance profile](../reference/configuration.md#bonsai-performance-qualification)
-is available only through explicitly configured foreground/local environment
-variables. It leaves model bytes, native precision, context limits and MTP
-capabilities unchanged. Both controls default off and are not daemon passthrough
-entries; do not assume a shell setting reaches an installed LaunchAgent.
+uses source-default-on eligible paths in foreground and daemon processes. It
+leaves model bytes, native precision, context limits and MTP capabilities unchanged.
+Explicit `0` restores the prior path; other explicit values except `1` also
+disable it. These names are not daemon shell-environment passthrough entries:
+foreground overrides work, but do not assume a shell setting reaches an installed
+LaunchAgent. The generic constant-cache kill switch remains effective.
 
 For native Flash-Next foreground/local serving, the lower-only
 `DARKBLOOM_QWEN4_LISTING_CONTEXT` control bounds the complete request envelope.

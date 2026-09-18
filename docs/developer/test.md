@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-18 · commit `5fc48d460`
+> Last updated: 2026-09-18 · commit `8d7142dd0`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -39,10 +39,14 @@ prompts or model weights are needed (`scripts/verify-prompt-parity.sh`).
 
 ## Bonsai performance qualification
 
-The optional profile is documented in
-`libs/mlx-swift-lm/docs/bonsai2.md`. Keep its process-level switches explicit in
-both control and candidate receipts; unchanged weights and equal greedy tokens
-do not replace independent raw-logit and native-state comparisons.
+The default-on eligible profile is documented in
+`libs/mlx-swift-lm/docs/bonsai2.md`. Record unset/default, explicit `1` and
+explicit `0` process profiles separately; an unset control is no longer OFF.
+Unchanged weights and equal greedy tokens do not replace independent raw-logit
+and native-state comparisons. `Float16ConstantCastTests` and
+`PrismPrefillCarryPolicyTests` cover absent/explicit/invalid overrides;
+`PrismPrefillCarrySubmissionTests` runs the real scheduling, fault and retirement
+checks in both unset/default and explicit-ON processes with its GPU/witness opt-ins.
 
 `BonsaiEncryptedCheckpointLiveTests` requires the verified unchanged artifact
 and an exclusively owned GPU lane. Select it separately from other live model

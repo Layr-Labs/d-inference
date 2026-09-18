@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-18 · commit `5fc48d460`
+> Last updated: 2026-09-18 · commit `8d7142dd0`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -396,16 +396,17 @@ Installed processes still use the source defaults.
 
 ### Bonsai performance qualification
 
-These SDK controls are opt-in for the unchanged schema-2 Ternary Bonsai 2 27B
-artifact. They are not a weight conversion, MTP capability or deployment action.
-Set them before foreground/local provider startup; they are not added to the
-LaunchAgent environment passthrough. See `libs/mlx-swift-lm/docs/bonsai2.md` for the
+These SDK controls default on for eligible paths of the unchanged schema-2
+Ternary Bonsai 2 27B artifact. They are not a weight conversion, MTP capability
+or deployment action. Source defaults apply to foreground and daemon processes.
+Set any overrides before startup; these names are not in the LaunchAgent shell
+environment passthrough. See `libs/mlx-swift-lm/docs/bonsai2.md` for the
 artifact contract and qualification limits.
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC` | exact `1` enables | off | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/PrismHadamardPrefillCarry.swift` (`enabled`, `withScope`, `submit`) | Earlier submission of compact recurrent carry during eligible packed text prefill; native arithmetic, deferred input fills, write-fault checks and engine retirement remain unchanged. Short/decode, media positions and captured windows retain existing scheduling. |
-| `DARKBLOOM_BONSAI_F16_CONSTANT_CACHE` | exact `1` enables | off | `libs/mlx-swift/Source/MLXNN/Hadamard.swift` (`permitsFloat16ConstantReuse`); `libs/mlx-swift/Source/MLX/ConstantArrayCastCache.swift` (`cachedCast`) | Reuses the native FP16-to-FP32 scale/offset conversion for eligible 2-bit/group128/block1024 packed projections. Adds approximately 1.60 GB of retained constants for the selected pack; weights and native precision do not change. Descriptor/stream changes invalidate reuse; tracing falls back. The generic cache rollback remains effective. |
+| `DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC` | unset or exact `1` enables; `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/PrismHadamardPrefillCarry.swift` (`isEnabled`, `enabled`, `withScope`, `submit`) | Earlier submission of compact recurrent carry during eligible packed text prefill; native arithmetic, deferred input fills, write-fault checks and engine retirement remain unchanged. Short/decode, media positions and captured windows retain existing scheduling. Other explicit spellings remain disabled. |
+| `DARKBLOOM_BONSAI_F16_CONSTANT_CACHE` | unset or exact `1` enables; `0` disables | on | `libs/mlx-swift/Source/MLXNN/Hadamard.swift` (`float16ConstantReuseEnabled`, `permitsFloat16ConstantReuse`); `libs/mlx-swift/Source/MLX/ConstantArrayCastCache.swift` (`cachedCast`) | Reuses the native FP16-to-FP32 scale/offset conversion for eligible 2-bit/group128/block1024 packed projections. Adds approximately 1.60 GB of retained constants for the selected pack; weights and native precision do not change. Descriptor/stream changes invalidate reuse; tracing falls back. Other explicit spellings remain disabled; the generic cache rollback remains effective. |
 
 See the [matched performance report](../reports/2026-09-18-bonsai2-lossless-performance.md)
 for measured gains, tradeoffs and open gates. Neither control authorizes model

@@ -2,7 +2,7 @@
 
 > Last updated: 2026-09-18 · commit `5fc48d460`
 
-Matched OFF/ON qualification for the opt-in performance follow-up to merged
+Matched OFF/ON qualification for the performance follow-up to merged
 Bonsai support PR1124. Decode improves in the measured workloads; prefill gains
 are small and not universal. Active allocation reductions are not blanket
 whole-process memory reductions. This is a bounded local qualification report,
@@ -17,7 +17,10 @@ not hosted certification or an all-release-gates sign-off.
 - Native `prism_hadamard_qwen35` / dense `qwen3_5`, real vision, no MTP heads.
   No weight, template, normalizer, precision or numerical-baseline changes.
 - OFF/ON varies only `DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC` and
-  `DARKBLOOM_BONSAI_F16_CONSTANT_CACHE` together. Both are default OFF.
+  `DARKBLOOM_BONSAI_F16_CONSTANT_CACHE` together. Both were default OFF when
+  these explicit-OFF/ON measurements were taken. The subsequent default-activation
+  change makes unset equivalent to ON, preserving explicit `0` rollback and all
+  numerical/eligibility paths. These measurements are not relabelled as new runs.
 - Earlier submission of the exact compact recurrent carry; reuse of the existing
   exact FP16-to-FP32 constant conversion. The latter retains about 1.60 GB
   decimal of converted constants, with descriptor/stream invalidation and tracing
@@ -102,6 +105,47 @@ and was stopped; it is not accepted as clean timing evidence or a completed
 
 ## Regression evidence and remaining gates
 
+### Default-activation follow-up
+
+The default-on change keeps the previously qualified numerical paths intact:
+absent and exact `1` overrides enable each eligible path; explicit `0` and other
+explicit spellings disable it. Diagnostics remain opt-in. Shape/dtype/stream,
+tracing, deferred-fill, native write-fault and retirement checks are unchanged.
+
+Fresh M3 Ultra optimized, test-enabled native component build: 199.87 seconds.
+Tests are exact copies of the committed Swift/SDK tests, linked against the
+updated libraries and unchanged source-matched Metal. No downloaded model or
+HTTP endpoint was loaded for this follow-up.
+
+| Separate process profile | Passed | Deliberately skipped | Failures |
+|---|---:|---:|---:|
+| Both overrides absent (new default) | 26 | 0 | 0 |
+| Both overrides `1` | 26 | 0 | 0 |
+| Both overrides `0` | 22 | 4 ON-only scheduling tests | 0 |
+| Both overrides `invalid` | 22 | 4 ON-only scheduling tests | 0 |
+
+The tests cover all half bit patterns, exact packed outputs and dtypes,
+parameter-tree/mutation/tracing invariants, generic BF16/MXFP4 behavior,
+eligibility exclusions, process-default policy, actual carry submission,
+deferred fills, write faults, cleanup and same-ID recovery. All four owned guards
+terminate normally. All31 resolved remote dependencies match the unchanged lock.
+This is default-policy/component evidence, not a new full-model benchmark or a
+new hosted/release gate. The earlier explicit-ON numerical/API evidence retains
+its original scope and the known failures below remain visible.
+
+Test executable SHA256:
+`82aa893bce3ef070a0ba577581112e6280267ec7d71d9981e4df16e5457b8944`.
+Source heads: Swift `d7c1d3dcd114aa0e96ac6030da633ec7d4bd8254`, SDK
+`b16fc9235452fde903502a6285bb7097dc8504e2`. Raw operator logs stay private;
+immutable test-output SHA256 values:
+
+- Default: `37641b2620098c7fda1376e423e9ee6a6b3a660210b3d5c22ab98a8299edd55c`
+- ON: `f546af1011c52953243d76fd96e72ea995e2d15242c7c3cd054b5da4c6c3e36f`
+- OFF: `9dfb4577a8970a30ea7e43d2ee1df7c21e3dae6c328db86a4710c1567a34a3e9`
+- Invalid: `fe4f1e97d394d098c01b9b22db927cbf91ba9f5bc4906addd0e4d9d8687d862a`
+
+### Recorded broader qualification
+
 - Independent frozen raw logits, all 48 recurrent states and 16 paged-KV layers,
   B1/B2 on both machines, plus tail/chunk cases: exact comparisons pass.
 - Native ragged/mixed text/tool/image/video cohorts, actual concurrency,
@@ -141,7 +185,7 @@ The complete native matrix used executable
 `eedc10f9b02ec10edd09616944e620515d36cd4fae4bff6c7b4a7c5747a6acaa`.
 Fresh API/20K evidence used
 `327cc709c835c31afeead38dd9d190affb989f71fb80d8e683e1cf66125d31ca`.
-The final source-compatible ordinary runtime is
+The pre-default-activation source-compatible ordinary runtime is
 `0db475ecee9f0d5cc96d37c8892c871641cdd1dd79eb301218b2fdb8f2f37cfc`.
 All use Metal
 `38ceb8a1113b373ccaa89355d895fc8ded3bafc81076dc4ffdb426e2eee03a93`
@@ -164,7 +208,9 @@ immutable dependency; after an authorized merge, replace draft pins with the
 observed merge SHA and recheck the clean composed build. Model publication,
 catalogs, signing/release and deployment are separate actions.
 
-Leave both new controls unset/0 for the original performance paths; the generic
+Set both new controls explicitly to `0` for the original performance paths;
+unset now selects the qualified ON path. Other explicit spellings except `1`
+remain disabled. The generic
 MLX_QUANTIZED_CONSTANT_CACHE=0 kill switch remains effective. Reverting the
 separate API fixes requires their matching code/dependency rollback. No weight
 or disk-format migration is involved.

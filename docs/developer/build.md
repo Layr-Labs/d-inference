@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-17 · commit `b86445a0a`
+> Last updated: 2026-09-17 · commit `954f570d1`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -12,6 +12,9 @@ together. Build the paired coordinator/sidecar/provider candidate; the v6
 prompt contract cannot reuse a v5 cache identity. The follow-up retains the
 merged native SDK pin and does not require new model weights. See
 [prompt parity](test.md#9-prompt-contract-parity-fixtures-and-vectors) for the validation procedure.
+
+Use the matching test products for [Gemma MTP validation](gemma-mtp-validation.md);
+that procedure keeps production performance evidence distinct from correctness.
 
 Docs Lint needs Git history to validate moved source links in frozen records;
 its checkout uses `fetch-depth: 0` (`.github/workflows/ci.yml`, `docs` job).

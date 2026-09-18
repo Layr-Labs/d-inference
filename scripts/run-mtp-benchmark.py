@@ -715,6 +715,27 @@ def positive_costs_within_cap(metrics: dict[str, Any], cap: int) -> bool:
     )
 
 
+def has_verified_depth(metrics: dict[str, Any], minimum_depth: int) -> bool:
+    """Execution evidence for correctness when a cost-learning window was cancelled."""
+    counters = [0 if metrics.get(name) is None else metrics[name] for name in
+                ("rectangularVerificationRounds", "serialVerificationRounds")]
+    acceptance = metrics.get("acceptanceByPosition")
+    return (all(type(value) is int and value >= 0 for value in counters)
+            and sum(counters) > 0 and isinstance(acceptance, list)
+            and len(acceptance) >= minimum_depth)
+
+
+def has_cost_or_verified_depth(
+    metrics: dict[str, Any], bucket: int, depth: int, *, exact: bool, require_cost: bool
+) -> bool:
+    measured = any(
+        item.get("decodeRowBucket") == bucket
+        and (item.get("draftDepth") == depth if exact else item.get("draftDepth", 0) >= depth)
+        and item.get("sampleCount", 0) > 0
+        for item in metrics.get("costInputs", []) if isinstance(item, dict))
+    return measured or (not require_cost and has_verified_depth(metrics, depth))
+
+
 def validate_automatic_fixed_fallback(
     metrics: dict[str, Any], batch: int, depth: int, label: str
 ) -> bool:
@@ -729,34 +750,37 @@ def validate_automatic_fixed_fallback(
     if cap is None or batch * (depth + 1) <= cap:
         return False
     selections = metrics.get("depthSelections", {})
-    has_positive_depth = any(
-        key.isdigit() and int(key) > 0 and count > 0
-        for key, count in selections.items()
-        if isinstance(key, str) and isinstance(count, int)
-    )
+    if any(not isinstance(key, str) or not key.isdigit()
+           or type(count) is not int or count < 0 for key, count in selections.items()):
+        raise ValueError(f"{label} has invalid depth selections")
+    positive_selections = sum(count for key, count in selections.items() if int(key) > 0)
+    has_positive_depth = positive_selections > 0
     if (
         metrics.get("controllerFallbacks", {}).get("automatic_rectangular_limit", 0) <= 0
         or not positive_costs_within_cap(metrics, cap)
         or metrics.get("serialVerificationRounds", 0) != 0
     ):
         raise ValueError(f"{label} escaped its rectangular limit")
-    if has_positive_depth:
+    if metrics.get("rounds", 0) > 0:
         if (
-            metrics.get("rounds", 0) <= 0
+            not has_positive_depth
             or metrics.get("proposedTokens", 0) <= 0
             or metrics.get("rectangularVerificationRounds", 0) <= 0
         ):
             raise ValueError(f"{label} lacks clamped-depth evidence")
         return True
-    # Complete zero-work evidence, mirroring the Swift validator field for
-    # field: a zero-fit clamp certifies that EXACT canonical fallback
-    # occurred, so any speculative array, counter, or timing residue must
-    # reject the report.
+    # A smaller initial cohort may seed before the requested batch fills.
+    # Positive plans must be bounded by real seeds; no draft/verify/output
+    # residue is permitted. This is target-only fallback, not MTP throughput.
+    seeds = metrics.get("seedRows", 0)
+    seed_only_plans = type(seeds) is int and (
+        (seeds == 0 and positive_selections == 0)
+        or (seeds > 0 and 0 < positive_selections <= seeds))
     if (
         metrics.get("selectedDepth") != 0
         or selections.get("0", 0) <= 0
         or metrics.get("rounds", 0) != 0
-        or metrics.get("seedRows", 0) != 0
+        or not seed_only_plans
         or metrics.get("proposedTokens", 0) != 0
         or metrics.get("acceptedDraftTokens", 0) != 0
         or metrics.get("committedTokens", 0) != 0
@@ -989,9 +1013,12 @@ def validate_report(
     validate_report_artifact(report.get("target"), target, "target")
     validate_report_artifact(report.get("assistant"), assistant, "assistant")
 
-    expected_purpose = (
-        "raw_parity_stress" if mode == "raw-parity" else "production_performance"
-    )
+    purposes = {"raw-parity": "raw_parity_stress",
+                "production-correctness": "production_correctness",
+                "production-performance": "production_performance"}
+    if mode not in purposes:
+        raise ValueError("unrecognized benchmark mode")
+    expected_purpose = purposes[mode]
     expected_stop = (
         "raw_fixed_length_no_stop"
         if mode == "raw-parity"
@@ -1005,10 +1032,10 @@ def validate_report(
     configured_stop_count = stop_policy.get("configuredTokenCount")
     if mode == "raw-parity" and configured_stop_count != 0:
         raise ValueError("raw parity report claims configured stop tokens")
-    if mode == "production-performance" and (
+    if mode != "raw-parity" and (
         not isinstance(configured_stop_count, int) or configured_stop_count <= 0
     ):
-        raise ValueError("production performance report has no target EOS evidence")
+        raise ValueError("production report has no target EOS evidence")
     exposed_token_arrays = recursively_present_keys(report, {"tokenIDs"})
     if exposed_token_arrays:
         raise ValueError("report recursively exposes raw token IDs")
@@ -1104,7 +1131,7 @@ def validate_report(
             baseline_rows[batch] = row_evidence
         elif baseline_rows.get(batch) != row_evidence:
             raise ValueError(f"case {kind}/{width}/B{batch} opaque evidence differs from baseline")
-        if mode != "raw-parity":
+        if mode == "production-performance":
             if case.get("medianAggregateDecodeTokensPerSecond") is None:
                 raise ValueError("production performance case omitted aggregate throughput")
 
@@ -1155,13 +1182,8 @@ def validate_report(
             if depth > 0:
                 if metrics.get("rounds", 0) <= 0 or metrics.get("proposedTokens", 0) <= 0:
                     raise ValueError(f"fixed L{width}/B{batch} did not draft")
-                if not any(
-                    item.get("decodeRowBucket") == expected_bucket
-                    and item.get("draftDepth") == depth
-                    and item.get("sampleCount", 0) > 0
-                    for item in metrics.get("costInputs", [])
-                    if isinstance(item, dict)
-                ):
+                if not has_cost_or_verified_depth(metrics, expected_bucket, depth, exact=True,
+                                                   require_cost=mode == "production-performance"):
                     raise ValueError(f"fixed L{width}/B{batch} lacks depth/bucket cost evidence")
         elif kind == "adaptive":
             if expect_mtp_inactive:
@@ -1196,13 +1218,8 @@ def validate_report(
                 for depth, count in metrics.get("depthSelections", {}).items()
             ):
                 raise ValueError(f"adaptive B{batch} never selected nonzero depth")
-            if not any(
-                item.get("decodeRowBucket") == expected_bucket
-                and item.get("draftDepth", 0) > 0
-                and item.get("sampleCount", 0) > 0
-                for item in metrics.get("costInputs", [])
-                if isinstance(item, dict)
-            ):
+            if not has_cost_or_verified_depth(metrics, expected_bucket, 1, exact=False,
+                                               require_cost=mode == "production-performance"):
                 raise ValueError(
                     f"adaptive B{batch} lacks positive-depth cost evidence for its requested bucket"
                 )
@@ -1547,7 +1564,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--max-tokens", type=int, default=16)
     parser.add_argument(
         "--mode",
-        choices=("raw-parity", "production-performance"),
+        choices=("raw-parity", "production-correctness", "production-performance"),
         default="raw-parity",
         help="raw parity recursively omits performance keys; performance requires release",
     )
@@ -1598,10 +1615,10 @@ def main() -> int:
     if args.self_test_artifact_provenance:
         return self_test_artifact_provenance()
     warmup = args.warmup if args.warmup is not None else (
-        0 if args.mode == "raw-parity" else 1
+        1 if args.mode == "production-performance" else 0
     )
     repetitions = args.repetitions if args.repetitions is not None else (
-        1 if args.mode == "raw-parity" else 3
+        3 if args.mode == "production-performance" else 1
     )
     if warmup < 0 or repetitions <= 0:
         raise SystemExit("--warmup must be nonnegative and --repetitions positive")

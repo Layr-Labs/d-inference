@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — Gemma 4 MLXFast opt-in ports
+
+- Integrate operation-scoped Gemma 4 decode/prefill, expert-routing and cache fast
+  paths with corrected arithmetic and regression coverage. Keep optimization
+  flags off by default and preserve current sampled MTP, model weights,
+  quantization, multimodal support, batching, paging and prefix-cache policy.
+- Separate production MTP correctness evidence from retained performance-learning
+  samples, and recognize bounded seed-only automatic-cap fallback without
+  weakening exact token/finish comparisons or changing the automatic work cap.
+- Keep the known longer fixed-L4/B8 MTP parity failure and separate reasoning/tool
+  compatibility gaps visible; these ports do not establish full release readiness.
+
 ## Release candidate v0.9.6 — Flash-Next signed-app resource recovery (not shipped; 2026-09-17)
 
 - Wait for the SSD write-behind consumer task to finish when draining after shutdown, so the final payload is released before teardown completes. Preserve reusable drains while the pipeline is running; cover the shutdown handoff with 10,000 regression cycles and both SDK 27 CI lanes.

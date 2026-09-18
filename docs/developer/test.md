@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-17 · commit `b86445a0a`
+> Last updated: 2026-09-17 · commit `954f570d1`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -9,6 +9,9 @@ the docs lint locally; CI runs a subset per pull request (see the CI workflow
 map: the console UI job lints and builds but does not run vitest, and the
 benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
 Mac with the test checkpoints cached.
+
+For the supervised target/assistant matrix and its separate correctness and
+performance evidence, follow [Gemma MTP validation](gemma-mtp-validation.md).
 
 The Nemotron coordinator-serving path uses typed SDK events. `OpenAIServiceTests`
 and `ToolCallParserIntegrationTests` in `libs/mlx-swift-lm/Tests/MLXLMServerTests`

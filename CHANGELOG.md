@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — Bonsai performance and API stability
+
+- Complete late local Chat/Completions failures with a sanitized SSE error event instead of truncating the HTTP body. Preserve cancellation, pre-header errors and the direct SDK throwing contract; this does not change model generation or turn failed tool calls into successes.
+
+- Pin public Swift/SDK candidates for optional earlier compact-carry submission and exact FP16-to-FP32 constant reuse. Keep published weights, native precision, model architecture, context limits and absent-MTP capability unchanged. Both controls remain off by default.
+- Record matched M3 Ultra/M5 Max prefill, decode and memory measurements, including prefill tradeoffs and the real retained-constant cost. Dependency review, post-merge repinning and deployment remain separate actions; this performance draft is not a release.
+- Qualify early provider-local rejection of negative output-token limits through the SDK service, preserving explicit zero and valid requests. Coordinator validation and model numerics are unchanged.
+- Preserve the fixed SDK input-validation error through local chat interception, and explicitly admit the qualified Bonsai XML family to nested-reasoning routing for both text and media. Preserve opaque argument bytes and existing other-family policies; do not guess string unescaping.
+
 ## Unreleased — Ternary Bonsai 2 onboarding draft
 
 - Compact Bonsai's retained recurrent convolution carry after prefill, preserving exact FP32 state bits without retaining whole chunk buffers. Other model families and single-token decode are unchanged.

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-18 · commit `2fb16f79d`
+> Last updated: 2026-09-18 · commit `5fc48d460`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -148,6 +148,13 @@ Same checks as `doctor`; any WARN or FAIL exits 1.
 
 Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 (`LocalEndpoint.readLiveInfo`, `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift`).
+
+Provider-local Chat Completions, Completions and Responses reject negative output
+token limits with HTTP 400 before model invocation or streaming headers. Explicit
+zero, positive and omitted limits retain their existing semantics. This local
+SDK validation does not change coordinator normalization or model numerics
+(`libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/OpenAIRequestValidation.swift`,
+`OpenAIRequestValidation.preparedRequest`).
 
 ### `darkbloom login` / `darkbloom logout`
 
@@ -789,6 +796,12 @@ override `provider.toml` for one process, are in
 | `[backend] continuous_batching`, `adaptive_prefill`, `engine_v2`, `legacy_compiled_decode`, `kv_quant` | retired | Parsed for presence only; one startup WARN each (`RetiredCodingKeys`) |
 
 ## LaunchAgent environment passthrough
+
+The [Bonsai performance profile](../reference/configuration.md#bonsai-performance-qualification)
+is available only through explicitly configured foreground/local environment
+variables. It leaves model bytes, native precision, context limits and MTP
+capabilities unchanged. Both controls default off and are not daemon passthrough
+entries; do not assume a shell setting reaches an installed LaunchAgent.
 
 For native Flash-Next foreground/local serving, the lower-only
 `DARKBLOOM_QWEN4_LISTING_CONTEXT` control bounds the complete request envelope.

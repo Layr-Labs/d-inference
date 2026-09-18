@@ -17,6 +17,14 @@ enum ToolChoiceEnforcementPolicy {
 
     static let qwen38ConstrainedModelID = "EigenLabs/Qwen3.8-27B-4bit"
 
+    /// Bonsai media uses the same withheld/schema-validated native tool frames
+    /// as its text path; it does not require a sampler grammar. Admission must
+    /// also attest the actual loaded native wrapper, not only caller metadata.
+    static func supportsForcedMedia(context: ChatTemplateFixContext, nativeWrapperLoaded: Bool) -> Bool {
+        nativeWrapperLoaded && context.modelType == "prism_hadamard_qwen35"
+            && EngineV2SupportedModels.isBonsai2ListingModelID(context.modelId)
+    }
+
     static func isFramingWhitespace(_ text: String) -> Bool {
         // XML framing whitespace only. Foundation's broader character set
         // also includes invisible Unicode characters that are not framing.

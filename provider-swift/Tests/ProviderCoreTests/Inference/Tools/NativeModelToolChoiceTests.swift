@@ -10,6 +10,12 @@ struct NativeModelToolChoiceTests {
             modelId: EngineV2SupportedModels.bonsai2ModelID, modelType: "prism_hadamard_qwen35")
         #expect(Qwen35TemplateFix.applies(to: context))
         #expect(ToolChoiceEnforcementPolicy.nativeStructuredTarget(context))
+        #expect(ToolChoiceEnforcementPolicy.supportsForcedMedia(context: context, nativeWrapperLoaded: true))
+        #expect(!ToolChoiceEnforcementPolicy.supportsForcedMedia(context: context, nativeWrapperLoaded: false))
+        #expect(!ToolChoiceEnforcementPolicy.supportsForcedMedia(
+            context: .init(modelId: "unqualified/Bonsai", modelType: "prism_hadamard_qwen35"), nativeWrapperLoaded: true))
+        #expect(!ToolChoiceEnforcementPolicy.supportsForcedMedia(
+            context: .init(modelId: "owned-flash-next", modelType: "qwen4_exp"), nativeWrapperLoaded: true))
         for mode: ToolConstraintMode in [.required, .named("weather")] {
             let strategy = try ToolChoiceEnforcementPolicy.forcedStrategy(mode: mode, modelContext: context)
             #expect(strategy == .structuredPostValidation)

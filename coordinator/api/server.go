@@ -53,6 +53,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
+	"github.com/eigeninference/d-inference/coordinator/trial"
 	"github.com/google/uuid"
 	"golang.org/x/mod/semver"
 	"golang.org/x/sync/singleflight"
@@ -80,6 +81,8 @@ const (
 	ctxKeyConsumer contextKey = iota
 	ctxKeyRequestID
 	ctxKeyAPIKey
+	ctxKeyAuthKind
+	ctxKeyTrial
 )
 
 // requestIDFromContext returns the per-request correlation ID set by
@@ -198,6 +201,7 @@ type releaseTrustPolicySnapshot struct {
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
+	bonsaiTrial                   trial.Config
 	appAttestShadow               AppAttestShadowConfig
 	appAttestShadowSlots          chan struct{}
 	appAttestStorageOnce          sync.Once
@@ -818,6 +822,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	}
 
 	s := &Server{
+		bonsaiTrial:              normalizedTrialConfig(cfg.BonsaiTrial),
 		registry:                 reg,
 		store:                    st,
 		ledger:                   payments.NewLedger(st),
@@ -3221,6 +3226,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
+			ctx = context.WithValue(ctx, ctxKeyAuthKind, trial.AuthSession)
 			ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
 			stampAuth(r, "privy", true)
 			next(w, r.WithContext(ctx))

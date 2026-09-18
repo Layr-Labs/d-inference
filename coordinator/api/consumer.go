@@ -34,6 +34,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/eigeninference/d-inference/coordinator/trial"
 	"github.com/google/uuid"
 )
 
@@ -1054,6 +1055,8 @@ func (s *Server) dispatchWithReserver(
 		Model:                  model,
 		PublicModel:            publicModel,
 		ConsumerKey:            consumerKey,
+		TrialReservation:       trialReservationFromRequest(r),
+		TrialUnusedConfirmed:   trialUnusedFromRequest(r),
 		KeyID:                  keyIDFromContext(r.Context()),
 		KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
 		KeyLimitReset:          keyLimitResetFromContext(r.Context()),
@@ -1314,6 +1317,11 @@ func (s *Server) dispatchWithReserver(
 	// Bound the provider write by the request-absolute first-token clock (see
 	// firstTokenWriteContext): a congested write lane must not silently eat
 	// the budget while the aggregator's cancel clock keeps running.
+	if err := s.markTrialDispatched(pr, provider); err != nil {
+		cleanupPending()
+		excludeProviders[provider.ID] = struct{}{}
+		return nil, nil, decision, plan, trial.UnavailableMessage, http.StatusServiceUnavailable
+	}
 	writeCtx, cancelWrite := firstTokenWriteContext(
 		r.Context(), receivedAt, requestDeadline)
 	ap.Mark(registry.StampWriteSubmitted)
@@ -1558,6 +1566,12 @@ func (s *Server) reservationCost(model string, promptTokens, maxTokens int) int6
 }
 
 func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference string) bool {
+	if pr != nil && pr.TrialReservation != nil {
+		if pr.TrialUnusedConfirmed == nil || !pr.TrialUnusedConfirmed.Load() {
+			s.releaseTrialReservation(pr.TrialReservation, false)
+		}
+		return false // Retaining a token hold is not a refund.
+	}
 	if pr == nil || pr.ReservedMicroUSD <= 0 {
 		return false
 	}
@@ -1722,6 +1736,9 @@ func (s *Server) isServiceConsumer(accountID string) bool {
 func (s *Server) reserveAdditionalForProvider(pr *registry.PendingRequest, provider *registry.Provider) (int64, error) {
 	if pr == nil {
 		return 0, fmt.Errorf("pending request is required")
+	}
+	if pr.TrialReservation != nil {
+		return 0, nil
 	}
 	// Service/wholesale consumers are billed at the platform price at
 	// settlement, so don't top the reservation up to a provider's higher custom
@@ -2015,6 +2032,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// provider could return more tokens than we reserved for, and the
 	// silent post-inference charge failure would hand the consumer free
 	// inference (GitHub issue #33).
+	if kind, _ := r.Context().Value(ctxKeyAuthKind).(trial.AuthKind); !policy.enabled && s.bonsaiTrial.Matches(kind, r.URL.Path, model) {
+		if err := validateTrialOutputLimits(parsed); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
+			return
+		}
+	}
 	if ensureMaxTokensBound(parsed, isResponsesAPI, maxOutputBound) {
 		body.markDirty()
 	}
@@ -2103,6 +2126,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+
+	r, ok = s.prepareBonsaiTrial(w, r, model, isResponsesAPI, requiresVision, &policy, routingTraits)
+	if !ok {
+		return
+	}
+	defer s.finishTrialRequest(r)
 
 	// Pre-flight balance reservation + per-key spend cap (see
 	// reserveInferenceBalance). Self-route and a nil billing backend are free.
@@ -2331,6 +2360,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	if preflightHandled {
 		return
+	}
+	if err := s.reserveBonsaiTrial(r, model, requestedMaxTokens); err != nil {
+		if s.trialOwnedFallback(&policy, model, routingTraits, requiresVision) {
+			r = r.WithContext(context.WithValue(r.Context(), ctxKeyTrial, (*trialRequest)(nil)))
+		} else {
+			s.writeTrialError(w, err)
+			return
+		}
 	}
 
 	// Dispatch to a provider with speculative TTFT-aware dispatch. On the

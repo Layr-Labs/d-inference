@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-17 · commit `04dadef3b`
+> Last updated: 2026-09-18 · commit `be5447aa7`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -807,3 +807,9 @@ must not run in parallel with other scheduler tests in the same process.
 - [`../operations/routing-v2-rollout.md`](../operations/routing-v2-rollout.md) — kill switches for the routing flags named on this page.
 - [`../design/routing-v2.md`](../design/routing-v2.md), [`../design/routing-telemetry-and-calibration.md`](../design/routing-telemetry-and-calibration.md) — the design history behind the current constants.
 - [`request-outcome-observability.md`](request-outcome-observability.md) — how routing outcomes surface in telemetry.
+
+## Sponsored Bonsai admission
+
+`coordinator/api/bonsai_trial_admission.go` reserves an account's durable trial allowance after final model resolution and routing preflight, before provider dispatch. It uses the ready model's entire `MaxContextLength` plus the enforced output bound, so its safety depends on qualified provider context enforcement. Near the lifetime limit, even a short prompt can be rejected while some allowance remains; shortening the requested output may help, but shortening the conversation alone does not shrink this conservative reservation.
+
+`dispatchState.runSpeculative` disables simultaneous backup copies for trial requests. `markTrialDispatched` permits sequential attempts only after proof that the previous attempt produced no content; ambiguous sends retain a hold and block reuse. Existing API-key scheduling is unchanged. Exclusive owned-machine service remains free without trial usage. Prefer-owner requests can fall back to sponsored public work while quota is available; after exhaustion only a capable owned provider may serve, without paid public fallback.

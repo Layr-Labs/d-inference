@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-17 · commit `04dadef3b`
+> Last updated: 2026-09-18 · commit `be5447aa7`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -593,3 +593,18 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Drain, admin telemetry, profiler, state export, telemetry stub | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/admin_state_export.go`, `coordinator/api/telemetry_handlers.go` |
 | Rate-limit bucket consumption | `coordinator/ratelimit/ratelimit.go` (`allowBucket`, `debitBucket`): fixed and per-key rate paths share token consumption and retry calculation while keeping their own admission and clamp rules |
 | Shared types and helpers | `coordinator/api/types/types.go`, `coordinator/api/httputil.go`, `coordinator/ratelimit/ratelimit.go`, `coordinator/modelpolicy/first_content_deadline.go` |
+
+## Bonsai sponsored chat errors
+
+`POST /v1/chat/completions` can use the [Bonsai trial](../consumer/billing.md#using-the-bonsai-login-session-trial) only after `requireAuth` verifies a Privy JWT and stamps session identity. API keys, admin credentials, provider credentials, other endpoints, other resolved models, and browser headers cannot grant eligibility. No quota endpoint or response counter is added. Streaming and non-streaming share admission (`coordinator/api/bonsai_trial_admission.go`).
+
+| HTTP status | `error.code` | Meaning |
+|---|---|---|
+| `402` | `bonsai_trial_exhausted` | Settled lifetime usage reached the limit |
+| `402` | `bonsai_trial_request_too_large` | Remaining allowance cannot fit the conservative request bound |
+| `429` | `bonsai_trial_busy` | Other live reservations temporarily consume available allowance; `Retry-After: 1` |
+| `503` | `bonsai_trial_unavailable` | Disabled, unavailable storage/configuration, or unresolved accounting hold |
+
+Admission errors use the existing JSON/sealed error writer and `error.type = insufficient_quota`. Exhaustion message: "Hey, you've used all 5 million free tokens for Bonsai 2. You can continue with a funded API key in the API Console." Other messages are defined in `coordinator/trial/errors.go`. Failures after streaming starts use the existing stream error transport and cannot change the already-sent HTTP status.
+
+Explicit output limits must be positive integral values and agree if several aliases are supplied; only `n = 1` is accepted for trial requests (`coordinator/api/bonsai_trial_limits.go`). Initial trial scope excludes media. Owned-machine free routing retains precedence.

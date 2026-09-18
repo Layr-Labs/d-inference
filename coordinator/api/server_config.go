@@ -7,11 +7,13 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
+	"github.com/eigeninference/d-inference/coordinator/trial"
 )
 
 // ServerConfig holds coordinator HTTP server and URL configuration applied
 // when NewServer constructs an instance.
 type ServerConfig struct {
+	BonsaiTrial         trial.Config
 	AppAttestShadow     AppAttestShadowConfig
 	Port                string
 	ConsoleURL          string
@@ -71,6 +73,7 @@ type BaseRewardsConfig struct {
 // ReadServerConfig reads server configuration from environment variables.
 func ReadServerConfig() ServerConfig {
 	return ServerConfig{
+		BonsaiTrial:           readBonsaiTrialConfig(),
 		AppAttestShadow:       readAppAttestShadowConfig(),
 		Port:                  env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
 		ConsoleURL:            os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),

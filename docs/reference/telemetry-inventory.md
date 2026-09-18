@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-15 · commit `dfe0260c6`
+> Last updated: 2026-09-18 · commit `be5447aa7`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -278,3 +278,7 @@ two profiler tables: [`../architecture/system-profiler.md`](../architecture/syst
 - [`../architecture/system-profiler.md`](../architecture/system-profiler.md) — `profile`, `request_profiles`, `fleet_snapshots`
 - [`../architecture/request-outcome-observability.md`](../architecture/request-outcome-observability.md) — outcome vocabularies behind the request metrics
 - [`../architecture/scheduling.md`](../architecture/scheduling.md) — how heartbeat capacity drives admission
+
+## Bonsai trial accounting
+
+`billing.bonsai_trial` is a counter emitted by `coordinator/api/bonsai_trial_admission.go` and `coordinator/api/bonsai_trial_settlement.go`. Its low-cardinality `outcome` tag is `reserved`, `settled`, `unresolved`, or one of the four `bonsai_trial_*` admission error codes. Diagnostic logs identify unresolved reservations by logical reservation ID; the metric does not tag account IDs, prompts, or credentials. Durable `trial_subsidies` rows are the expense evidence, not this event counter.

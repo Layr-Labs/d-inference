@@ -2,6 +2,8 @@
 
 ## Unreleased — MDM-optional provider authorization
 
+- Retry first-proof App Attest readiness outages with a bounded early assertion retry (one minute, then five minutes, capped at the normal ten-minute cadence); recheck the complete proof, identity and serving policy after recovery.
+
 - Reflect App Attest revocation in untrusted status, availability and fleet counts without duplicate decrements or legacy-challenge recovery. Require a coordinator decision received within 10 seconds before offering MDM removal, even when the daemon keeps rewriting its state file.
 
 - Skip new MDM enrollment in the installer and CLI on macOS 27 or later; guide users through App Attest approval. Explain that upgrading avoids MDM and Darkbloom MDM will be deactivated soon. Keep existing profiles and coordinator authorization/removal gates intact; pending App Attest never falls back to automatic MDM enrollment.

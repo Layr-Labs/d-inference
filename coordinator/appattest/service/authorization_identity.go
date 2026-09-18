@@ -11,6 +11,7 @@ import (
 )
 
 func (x *Session) updateServingAuthorization(status *protocol.AppAttestStatus, evidence appattest.AuthorizationEvidence, verdict appattest.AuthorizationVerdict) {
+	x.readinessRetryPending = false
 	a := x.s.authorizer
 	if a == nil || status == nil || x.protocolVersion != 3 {
 		return
@@ -35,6 +36,12 @@ func (x *Session) updateServingAuthorization(status *protocol.AppAttestStatus, e
 		// The previous proof remains usable only within its existing deadlines.
 		// Keep its refresh record so recovery does not require another assertion;
 		// unknown evidence neither replaces the proof nor extends its lease.
+		// A first proof has no such record. Retry the assertion earlier after a
+		// failed readiness lookup, so recovery also repeats identity resolution
+		// and every proof/policy check before the first serving grant.
+		a.mu.Lock()
+		x.readinessRetryPending = !evidence.RevocationKnown && a.current[x.provider] == nil
+		a.mu.Unlock()
 		x.s.sendAppAttestAuthorizationStatus(x.provider)
 		return
 	}

@@ -50,6 +50,8 @@ type Session struct {
 	assertionAt                                    time.Time
 	policyFields                                   map[string]any
 	servingIdentityReady                           bool
+	readinessRetryPending                          bool // owned by the serialized session worker
+	readinessRetryFailures                         int
 }
 
 func (s *Service) startAppAttestShadow(ctx context.Context, provider *registry.Provider, registration *protocol.RegisterMessage, authenticatedAccount ...string) *Session {
@@ -251,7 +253,7 @@ func (x *Session) runAttempt(ctx context.Context) {
 			}
 			if next == "wait" {
 				x.expected = ""
-				timer.Reset(shadowAssertionInterval)
+				timer.Reset(x.nextAssertionDelay())
 				continue
 			}
 			if !x.send(ctx, next) {

@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-18 · commit `5fc48d460`
+> Last updated: 2026-09-18 · commit `b13dbe7b5`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -307,6 +307,8 @@ Published recipient bounds are stored in `coordinator/billing/globalpayouts/reci
 | Coverage | Input first, then output; fully covered usage costs the consumer zero | `coordinator/api/model_token_admission.go` (`modelTokenQuote`) |
 | Paid fallback | Uncovered tokens use paid balance; the normal request minimum applies when any tokens are paid | `coordinator/api/model_token_admission.go` (`modelTokenQuote`) |
 | Provider earnings | Platform price for a sponsored request; ordinary pricing after exhaustion; same-account sponsored serving produces no payout | `coordinator/api/provider.go` (`handleComplete`) |
+| Zero-token completion | Reject any nonzero charge or payout; release token/cash holds | `coordinator/store/model_token_promotions.go` (`promotionSettlement`) |
+| Settlement reconciliation | Resume usage, key spend and fee accounting once using the stored consumer cost; insufficient cash closes and refunds holds | `coordinator/api/completion_accounting.go` (`completionAccounting`); `coordinator/api/model_token_settlement.go` (`abandonModelTokenSettlement`) |
 | Reservation recovery | Renew every 30 seconds; reclaim after ten minutes without renewal | `coordinator/api/model_token_maintenance.go` (`runModelTokenMaintenance`, `modelTokenLeaseTimeout`) |
 
 Configure using the [model token promotion runbook](../operations/model-token-promotions.md).

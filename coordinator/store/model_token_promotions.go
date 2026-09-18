@@ -123,6 +123,11 @@ func promotionSettlement(r ModelTokenReservation, actual int64, quote ModelToken
 	if err != nil {
 		return r, fmt.Errorf("%w: %v", ErrPromotionInvalidSettlement, err)
 	}
+	// A request minimum must never fund a payout without consuming tokens.
+	// Zero-cost, zero-payout self-serving completions can still release holds.
+	if actual == 0 && (gross > 0 || earning != nil && earning.AmountMicroUSD > 0) {
+		return r, fmt.Errorf("%w: zero token usage cannot carry a charge or payout", ErrPromotionInvalidSettlement)
+	}
 	// Preserve the coordinator's fraud ceiling for provider-reported costs.
 	if gross > 2*r.GrossReservedMicroUSD || paid > 2*r.ReservedMicroUSD && paid > 0 {
 		return r, fmt.Errorf("%w: cost exceeds reservation ceiling", ErrPromotionInvalidSettlement)

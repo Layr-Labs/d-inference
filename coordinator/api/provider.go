@@ -2430,6 +2430,7 @@ func (s *Server) handleCompleteAt(
 		// log, settle as paid against the reservation.
 	}
 
+	recordAccounting := s.completionAccounting(pr, providerID, msg.Usage, feePercent, freeSelfRoute)
 	billingFinalized := true
 
 	// Settle billing against the pre-flight reservation. All balance
@@ -2438,7 +2439,7 @@ func (s *Server) handleCompleteAt(
 	// with the settlement here.
 	if pr.ModelTokenReservationID != "" {
 		var promotionErr error
-		billingFinalized, totalCost, promotionErr = s.settleModelTokenPromotion(pr, provider, msg.Usage, customIn, customOut, hasCustom, providerPayout, freeSelfRoute)
+		billingFinalized, totalCost, promotionErr = s.settleModelTokenPromotion(pr, provider, msg.Usage, customIn, customOut, hasCustom, providerPayout, freeSelfRoute, recordAccounting)
 		if promotionErr != nil {
 			s.logger.Error("promotion settlement failed", "request_id", msg.RequestID, "reservation_id", pr.ModelTokenReservationID, "error", promotionErr)
 		}
@@ -2585,31 +2586,6 @@ func (s *Server) handleCompleteAt(
 	}
 
 	if billingFinalized {
-		// Record in-memory usage (for current session queries).
-		s.ledger.RecordUsage(pr.ConsumerKey, payments.UsageEntry{
-			JobID:            msg.RequestID,
-			Model:            consumerModel(pr),
-			PromptTokens:     msg.Usage.PromptTokens,
-			CompletionTokens: msg.Usage.CompletionTokens,
-			CostMicroUSD:     totalCost,
-			Timestamp:        time.Now(),
-		})
-
-		// Persist usage to DB asynchronously — billing has already been
-		// settled above, so this INSERT is not on the critical path. KeyID
-		// carries per-key usage/spend attribution (empty for legacy callers).
-		//
-		// Skip the persistent (public-stats-feeding) row for FREE self-route:
-		// it is private, owner-only traffic and must not appear in the public
-		// /stats time-series, request-location, or flow aggregations. Private-only
-		// providers only ever serve free self-route, so this also keeps their
-		// traffic out of public stats. The owner still sees it via the in-memory
-		// RecordUsage above (their session/transparency view).
-		if !freeSelfRoute {
-			saferun.Go(s.logger, "recordUsage", func() {
-				s.store.RecordUsageFullWithPublicModel(providerID, pr.ConsumerKey, pr.KeyID, pr.Model, consumerModel(pr), msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)
-			})
-		}
 
 		// Fallback actual_ttft_ms anchor for the COMMITTED attempt only. The
 		// dispatch/handler goroutine normally stamps FirstContentAt at the
@@ -2709,15 +2685,14 @@ func (s *Server) handleCompleteAt(
 			p = provider
 		}
 
-		// Compute platform fee (needs referral lookup before spawning goroutines).
-		platformFee := payments.PlatformFeeWithPercent(totalCost, feePercent)
-		if platformFee > 0 && s.billing != nil && s.billing.Referral() != nil {
-			platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
-		}
-
-		// Run provider credit and platform fee credit concurrently —
-		// they target different accounts so there is no data dependency.
+		// Credit provider earnings for ordinary paid requests. Promotion
+		// earnings were already committed atomically with their reservation.
 		var settlementWg sync.WaitGroup
+		settlementWg.Add(1)
+		go func() {
+			defer settlementWg.Done()
+			recordAccounting(totalCost)
+		}()
 
 		// Credit the provider's linked account (if any).
 		if p != nil {
@@ -2730,7 +2705,7 @@ func (s *Server) handleCompleteAt(
 			// payout means either free self-route (consumer == provider account)
 			// or an uncollected charge (e.g. a self-route paid-fallback whose
 			// owner had no balance) — in both cases we must not record a
-			// (zero-value) earning row. Mirrors the platformFee > 0 guard below.
+			// (zero-value) earning row. The accounting callback also skips zero fees.
 			if accountID != "" && !freeSelfRoute && providerPayout > 0 && pr.ModelTokenReservationID == "" {
 				settlementWg.Add(1)
 				go func() {
@@ -2758,23 +2733,6 @@ func (s *Server) handleCompleteAt(
 					s.ddCount("billing.provider_credits_micro_usd", providerPayout, []string{"model:" + pr.Model, "type:account"})
 				}()
 			}
-		}
-
-		// Record platform fee.
-		if platformFee > 0 {
-			settlementWg.Add(1)
-			go func() {
-				defer settlementWg.Done()
-				start := time.Now()
-				// Financial: a failed platform-fee credit drops revenue accounting. Never swallow it.
-				if err := s.store.Credit("platform", platformFee, store.LedgerPlatformFee, msg.RequestID); err != nil {
-					s.logger.Error("failed to credit platform fee",
-						"request_id", msg.RequestID, "platform_fee_micro_usd", platformFee, "error", err)
-					s.ddIncr("billing.credit_failed", []string{"op:platform_fee"})
-				}
-				s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:platform_fee"})
-				s.ddCount("billing.platform_fees_micro_usd", platformFee, []string{"model:" + pr.Model})
-			}()
 		}
 
 		settlementWg.Wait()

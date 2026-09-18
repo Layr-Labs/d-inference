@@ -6,7 +6,7 @@ use serde_json::Value;
 
 pub(crate) fn qwen_applies(model_id: &str, model_type: Option<&str>) -> bool {
     let kind = model_type.unwrap_or_default().trim().to_lowercase();
-    if ["qwen3_5", "qwen3_5_moe", "qwen3_vl_moe"].contains(&kind.as_str()) {
+    if ["qwen3_5", "qwen3_5_moe", "qwen3_vl_moe", "prism_hadamard_qwen35"].contains(&kind.as_str()) {
         return true;
     }
     let id = model_id.to_lowercase();
@@ -59,6 +59,12 @@ pub(crate) fn normalize_messages(messages: Vec<Value>) -> Vec<Value> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn bonsai_uses_explicit_architecture_not_name_guessing() {
+        assert!(qwen_applies("prism-ml/Ternary-Bonsai-2-27B-mlx-2bit", Some("prism_hadamard_qwen35")));
+        assert!(!qwen_applies("arbitrary/Bonsai", None));
+    }
 
     #[test]
     fn leading_fold_preserves_first_metadata_and_non_system_order() {

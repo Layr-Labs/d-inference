@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-17 · commit `53e135e9e`
+> Last updated: 2026-09-17 · commit `954f570d1`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -10,6 +10,14 @@ legacy engine and no subprocess. For the memory model see
 [`prefix-cache.md`](prefix-cache.md).
 
 ## Context
+
+The `prism_hadamard_qwen35` adapter reuses the native dense Qwen text backbone
+and retains its vision wrapper. The SDK validates signed-Hadamard metadata and
+packed weights before returning the model, preserving the artifact's FP16
+contract. `EngineV2SupportedModels.bonsai2ModelID` selects paged KV automatically;
+MTP remains unsupported because the checkpoint has no assistant tensors.
+See `libs/mlx-swift-lm/docs/bonsai2.md` for the checkpoint contract and current
+qualification scope. This implementation does not activate a catalog entry.
 
 Every advertised model is served through CBv2; a `model_type` without a CBv2
 adapter is dropped from the advertised set at scan time and never loads

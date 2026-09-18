@@ -31,6 +31,7 @@
 import Foundation
 
 public enum EngineV2SupportedModels {
+    public static let bonsai2ModelID = "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
     public static let nemotron35LightningModelID =
         "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit"
     public static let nemotron35LightningMTPModelID =
@@ -76,7 +77,7 @@ public enum EngineV2SupportedModels {
     public static func isSupported(modelType: String?) -> Bool {
         guard let raw = normalized(modelType) else { return false }
         if raw == "gpt_oss" { return true }
-        if raw == "qwen3_5" || raw == "qwen3_5_moe" { return true }
+        if raw == "qwen3_5" || raw == "qwen3_5_moe" || raw == "prism_hadamard_qwen35" { return true }
         if raw == "qwen3_vl_moe" { return true }
         if raw == "qwen4_exp" || raw == "qwen4_exp_text" { return true }
         return gemma4TargetTypes.contains(raw)

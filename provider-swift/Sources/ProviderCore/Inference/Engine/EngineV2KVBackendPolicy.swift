@@ -29,6 +29,7 @@ public enum EngineV2KVBackendPolicy {
         case .contiguous: return .contiguous
         case .paged: return .paged
         case .auto:
+            if modelID == EngineV2SupportedModels.bonsai2ModelID { return .paged }
             if EngineV2SupportedModels.isNemotron35ListingModelID(modelID) { return .paged }
             if EngineV2SupportedModels.isQwen4ExpListingModelID(modelID) { return .paged }
             switch modelID {

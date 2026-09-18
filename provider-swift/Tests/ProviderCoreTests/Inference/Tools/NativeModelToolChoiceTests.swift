@@ -5,6 +5,23 @@ import Testing
 
 @Suite("Native model forced-tool enforcement")
 struct NativeModelToolChoiceTests {
+    @Test func bonsaiUsesNativeQwenFramingWithoutAdvertisingOtherArtifacts() throws {
+        let context = ChatTemplateFixContext(
+            modelId: EngineV2SupportedModels.bonsai2ModelID, modelType: "prism_hadamard_qwen35")
+        #expect(Qwen35TemplateFix.applies(to: context))
+        #expect(ToolChoiceEnforcementPolicy.nativeStructuredTarget(context))
+        for mode: ToolConstraintMode in [.required, .named("weather")] {
+            let strategy = try ToolChoiceEnforcementPolicy.forcedStrategy(mode: mode, modelContext: context)
+            #expect(strategy == .structuredPostValidation)
+            try ToolChoiceEnforcementPolicy.validateParser(.qwen35, strategy: strategy, modelContext: context)
+            #expect(throws: (any Error).self) {
+                try ToolChoiceEnforcementPolicy.validateParser(.nemotron, strategy: strategy, modelContext: context)
+            }
+        }
+        #expect(!ToolChoiceEnforcementPolicy.nativeStructuredTarget(
+            .init(modelId: "unqualified/Bonsai", modelType: "prism_hadamard_qwen35")))
+    }
+
     @Test func onlyFramingWhitespaceIsIgnorableInForcedMode() {
         #expect(ToolChoiceEnforcementPolicy.isFramingWhitespace("\n\n \t\r"))
         #expect(!ToolChoiceEnforcementPolicy.isFramingWhitespace("Let me think"))

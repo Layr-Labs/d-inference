@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-16 · commit `e22d49019`
+> Last updated: 2026-09-18 · commit `513af2381`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -91,6 +91,30 @@ flowchart TD
     DISP -->|first content| OK[stream]
     RACE --> OK
 ```
+
+### SSD-offloaded model weights
+
+Native Qwen4 can advertise a validated immutable offloaded payload alongside
+its native-weight loading estimate. `advertisedOffloadedMemoryGBLocked`
+(`coordinator/registry/offloaded_weights.go`) requires matching model ID and
+native Qwen4 type, finite positive memory, and an offloaded byte count strictly
+between zero and total artifact bytes. It uses the larger of the reported
+estimate and the remaining weight bytes plus a valid explicit
+`native_load_transient_bytes` allowance (at least 1 GiB, without overflow).
+Missing/invalid allowance declarations retain the 1.2 load-transient padding.
+Missing/invalid offload or other-family declarations keep the existing
+catalog/measured-weight policy.
+
+`coordinator/registry/scheduler.go` carries this estimate into cold snapshots.
+`reportedFreeForLoadAdmitsWithOffload` in
+`coordinator/registry/offloaded_weights.go` uses it at the cold-load boundary;
+`coldTokenBudgetEstimateWithOffload` in `coordinator/registry/servability.go`
+uses it for the post-load token-budget estimate.
+This does not subtract request KV, prove physical capacity, waive catalog
+minimum RAM or activate a model. Wire fields are defined in
+[model registration messages](../reference/protocol-messages.md#models), and
+the [private candidate reference](../reference/qwen4-next-support.md)
+records the unqualified serving boundary.
 
 ### Eligibility gates and the `GateReason` vocabulary
 
@@ -276,6 +300,26 @@ Useful reuse subtracts a bounded credit; excess restore cost increases
 `ThisReqMs`. Queue, load, decode and admission costs remain intact. The rules
 and their flag are the subject of
 [`cache-aware-routing.md`](cache-aware-routing.md).
+
+### Native model capacity and registry identity
+
+Native model context describes a capability, not an SLA promise. The provider
+enforces prompt plus reserved output against the native window and retains
+physical-memory safeguards. Coordinator token budgets, queueing, TTFT and
+throughput policies decide which eligible requests can be routed; historical
+test sizes must not become hidden provider context ceilings. The native
+Flash-Next policy is defined in [the support reference](../reference/qwen4-next-support.md).
+
+`providerEligibleForTraitsLocked` applies the exact registry-ID compatibility
+floor before request-shape gates. `qwen3.8-flash-next` requires `0.9.6` or newer;
+unknown/older versions are ineligible even for plain text. The 0.9.5 signed
+app crashes when resolving Qwen Metal resources, so it is excluded for Flash
+while remaining eligible for other supported models. This prevents an
+older provider from accepting that ID without its qualified native policies.
+Other IDs, including the legacy developer ID, retain existing version rules.
+Sources: `coordinator/registry/qwen4_model_policy.go`
+(`providerMeetsQwen4CatalogPolicyLocked`) and
+`coordinator/registry/request_traits.go` (`providerEligibleForTraitsLocked`).
 
 ### Selection paths
 

@@ -48,3 +48,15 @@ export async function rotateApiKey(token: string, id: string): Promise<CreatedKe
   if (!res.ok) throw await apiError(res, "Failed to rotate API key");
   return res.json();
 }
+
+/** Best-effort revoke of a raw secret via the legacy DELETE /v1/auth/keys proxy. */
+export function revokeLegacyApiKey(token: string, key: string): Promise<void> {
+  return fetch("/api/auth/keys", {
+    method: "DELETE",
+    headers: managementHeaders(token),
+    body: JSON.stringify({ key }),
+  }).then(
+    () => undefined,
+    () => undefined,
+  );
+}

@@ -30,6 +30,7 @@ extension PrefixCachePolicy {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
         var defaultEnabled = EngineV2SupportedModels.isNemotron35ListingModelID(modelId)
+            || EngineV2SupportedModels.isQwen4ExpListingModelID(modelId)
         switch modelId {
         case "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
             "EigenLabs/Qwen3.8-27B-4bit-mtp", "gemma-4-26b-qat-4bit", "gpt-oss-20b":

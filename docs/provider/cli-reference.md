@@ -1,12 +1,12 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-15 · commit `a4692e70e`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
 defaults, the environment variables it forwards to the daemon, and its runtime
 constants, as declared in `provider-swift/Sources/darkbloom/` (`Darkbloom`,
-version `ProviderCore.version` = `0.9.1` in
+version `ProviderCore.version` = `0.9.5` in
 `provider-swift/Sources/ProviderCore/ProviderCore.swift`). For operators; types
 and defaults are the ArgumentParser declarations; `—` means required.
 
@@ -494,6 +494,17 @@ darkbloom benchmark [--model <id>] [--prompt <text>] [--iterations <n>] [--max-t
 | `--iterations <n>` | Number of iterations (default from `ModelBenchmark`) |
 | `--max-tokens <n>` | Maximum tokens to generate per iteration |
 
+For native Qwen4 model types, the ordinary command uses the production CBv2
+model/factory path with MTP and prefix caching off. It preserves model/tokenizer
+EOS, checks complete weight integrity before and after load, and releases the
+session between independent runs. Other model types keep their generic path
+and JSON5 configuration support (`ModelBenchmark.run`,
+`provider-swift/Sources/ProviderBenchmark/ModelBenchmarkNativeQwen4.swift`).
+Iteration/output counts must be positive. The prefill column measures time to
+the first generated token, including prompt preparation; model loading and
+integrity hashing are outside the reported iteration time. An eight-token
+smoke proves entry-point operation, not sustained decode performance.
+
 ### Teacher-forced scores
 
 `--teacher-forced-input <json>` selects bounded ordinary target scoring with an
@@ -772,6 +783,17 @@ override `provider.toml` for one process, are in
 | `[backend] continuous_batching`, `adaptive_prefill`, `engine_v2`, `legacy_compiled_decode`, `kv_quant` | retired | Parsed for presence only; one startup WARN each (`RetiredCodingKeys`) |
 
 ## LaunchAgent environment passthrough
+
+For native Flash-Next foreground/local serving, the lower-only
+`DARKBLOOM_QWEN4_LISTING_CONTEXT` control bounds the complete request envelope.
+Its parsing, default and mandatory PLE acceptance setting are in the
+[candidate configuration reference](../reference/configuration.md#native-flash-next-candidate).
+The same reference describes the default Qwen4 full-KV/PV32/layer-submission
+profile and its explicit `0` rollback controls. It primarily affects decode and
+short MTP verification, not larger prefill chunks. These Qwen-specific controls
+are not in the daemon passthrough list below: source defaults apply there,
+while shell overrides require foreground/local serving. This candidate adds
+no release or catalog command.
 
 `darkbloom start` copies only these variables from the invoking shell into the
 provider plist's `EnvironmentVariables`

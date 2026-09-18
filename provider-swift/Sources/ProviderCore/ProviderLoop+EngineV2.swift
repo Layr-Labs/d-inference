@@ -68,6 +68,13 @@ final class EngineV2NewcomerBox: @unchecked Sendable {
     func release() {
         lock.withLock { _container = nil }
     }
+
+    /// Failed-load/unwind only. A live installed engine must drain before
+    /// calling this; successful ownership transfer uses ordinary deinit.
+    func releaseAfterExternalResources() async {
+        await ModelContainerLoading.releaseExternalResources(in: container)
+        release()
+    }
 }
 
 extension ProviderLoop {
@@ -327,7 +334,7 @@ extension ProviderLoop {
                 logInfo: { slotLogger.info($0) },
                 logWarning: { slotLogger.warning($0) })
         } catch {
-            newcomerBox.release()
+            await newcomerBox.releaseAfterExternalResources()
             MLX.Memory.clearCache()
             throw error
         }
@@ -397,7 +404,7 @@ extension ProviderLoop {
             // newcomer's weights promptly so live residency reflects the
             // refusal before the caller's error handling runs.
             prepared.assistant?.release()
-            newcomerBox.release()
+            await newcomerBox.releaseAfterExternalResources()
             MLX.Memory.clearCache()
             throw InferenceError.modelLoadFailed(message)
         }
@@ -436,7 +443,7 @@ extension ProviderLoop {
                 cacheEligibleWeightHash: cacheEligibleWeightHash)
         } catch {
             prepared.assistant?.release()
-            newcomerBox.release()
+            await newcomerBox.releaseAfterExternalResources()
             MLX.Memory.clearCache()
             for entry in existing {
                 await entry.bridge.updateKVBytesCapacity(entry.previousGrant)
@@ -468,7 +475,7 @@ extension ProviderLoop {
         await engineV2Runtime.unregister(modelId: modelId)
         await bundle.bridge.shutdown()
         bundle.releaseAssistant()
-        newcomer.release()
+        await newcomer.releaseAfterExternalResources()
         MLX.Memory.clearCache()
         await resliceGrowSurvivorsLocked()
     }

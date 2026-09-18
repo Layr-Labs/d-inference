@@ -141,6 +141,12 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
             case let qwen as MLXVLM.Qwen3VL:
                 // The wrapper is itself the production CBv2 serving model.
                 rate = fp16KVBytesPerToken(layerKinds: qwen.cbv2LayerKinds)
+            case let qwen as Qwen4ExpTextModel:
+                rate = fp16KVBytesPerToken(layerKinds: qwen.cbv2LayerKinds)
+            case let qwen as Qwen4ExpModel:
+                rate = fp16KVBytesPerToken(layerKinds: qwen.cbv2LayerKinds)
+            case let qwen as MLXVLM.Qwen4Exp:
+                rate = fp16KVBytesPerToken(layerKinds: qwen.cbv2LayerKinds)
             case is MLXVLM.Qwen35MoE:
                 return ModuleFacts(
                     bytes: bytes,

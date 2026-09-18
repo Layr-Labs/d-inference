@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-16 · commit `4595d7e65`
+> Last updated: 2026-09-18 · commit `513af2381`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -239,6 +239,7 @@ Datadog's; nothing is stored locally.
 | `provider failed, retrying` / `provider failed after accepting request, retrying` | warn · `inference_error` | `provider_id`, `attempt`, `reason:provider_error`, `status_code` (+ `request_id`) | `coordinator/api/dispatch.go` |
 | `provider first-chunk timeout` / `provider accepted timeout` | warn · `inference_error` | `provider_id`, `attempt`, `reason:first_chunk_timeout` / `accepted_timeout` | `dispatch.go` |
 | `inference failed after N attempt(s)` | error · `inference_error` | `reason:dispatch_exhausted`, `attempt`, `status_code`, `last_error` (the sanitized closed message) | `dispatch.go` |
+| `warm_pool_tick` | info · `custom` | Per-model latest-state sample: `model`, `target_warm`, `warm`, `eligible_cold`, `cold_ineligible`, `warm_saturated`, `warm_foreign_blocked`, `occupancy_ramp`, `headroom_providers`, `running`, `waiting`, `queue_depth`, `oldest_queue_age_ms`, `spill_arrival_rate`, `service_time_ms`, `quality_concurrency`, `demand_concurrency`, `capacity_rejects`, `ttft_misses`, `speculative_started`, `speculative_won`, `cold_dispatches`, `load_duration_ewma_ms`, `actions`, `observe_only`, plus scalar `cold_disq_<reason>` counts. Polled every 15 s and deduplicated by controller snapshot timestamp; intermediate controller ticks can be skipped. No provider or request identity; no Postgres record. | `coordinator/api/warm_pool_telemetry.go` (`StartWarmPoolTelemetryLoop`, `warmPoolTelemetryFields`) |
 | `panic in handler <method> <path>: <value>` | fatal · `panic` | `handler`, `endpoint`, plus `stack` | `coordinator/api/server.go` recovery middleware |
 
 ## Coordinator per-request records (Postgres)

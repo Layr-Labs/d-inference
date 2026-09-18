@@ -40,4 +40,30 @@ struct NativeModelToolChoiceTests {
         #expect(try ToolChoiceEnforcementPolicy.forcedStrategy(mode: .auto, modelContext: context) == .none)
         #expect(try ToolChoiceEnforcementPolicy.forcedStrategy(mode: .none, modelContext: context) == .none)
     }
+
+    @Test func nativeQwenParserAcceptanceDoesNotBroadenOtherFamilies() throws {
+        for type in ["qwen4_exp", "qwen4_exp_text"] {
+            let context = ChatTemplateFixContext(modelId: "owned-flash-next", modelType: type)
+            for mode: ToolConstraintMode in [.required, .named("add")] {
+                let strategy = try ToolChoiceEnforcementPolicy.forcedStrategy(mode: mode, modelContext: context)
+                #expect(strategy == .structuredPostValidation)
+                for format: ToolCallFormat in [.xmlFunction, .qwen35] {
+                    try ToolChoiceEnforcementPolicy.validateParser(format, strategy: strategy, modelContext: context)
+                }
+                for format: ToolCallFormat in [.json, .nemotron, .gemma] {
+                    #expect(throws: (any Error).self) {
+                        try ToolChoiceEnforcementPolicy.validateParser(format, strategy: strategy, modelContext: context)
+                    }
+                }
+            }
+        }
+        let unrelated = ChatTemplateFixContext(modelId: "looks-like-qwen4_exp", modelType: "llama")
+        #expect(!ToolChoiceEnforcementPolicy.nativeStructuredTarget(unrelated))
+        let nemotron = ChatTemplateFixContext(
+            modelId: EngineV2SupportedModels.nemotron35LightningModelID, modelType: "nemotron_h")
+        #expect(throws: (any Error).self) {
+            try ToolChoiceEnforcementPolicy.validateParser(
+                .qwen35, strategy: .structuredPostValidation, modelContext: nemotron)
+        }
+    }
 }

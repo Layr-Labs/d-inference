@@ -394,7 +394,14 @@ actor SpecDecArtifactFunnel {
     }
 
     static func isInlineQwenTarget(modelType: String?) -> Bool {
-        isQwen35Target(modelType: modelType)
+        isQwen35Target(modelType: modelType) || isQwen4ExpTarget(modelType: modelType)
+    }
+
+    static func isQwen4ExpTarget(modelType: String?) -> Bool {
+        guard let modelType = modelType?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        else { return false }
+        return modelType == "qwen4_exp" || modelType == "qwen4_exp_text"
     }
 
     static func isInlineTarget(modelType: String?) -> Bool {

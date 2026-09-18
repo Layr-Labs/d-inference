@@ -244,6 +244,7 @@ public enum EngineV2VisionPrefill {
     public struct PreparedSubmission: @unchecked Sendable {
         public let promptTokens: [Int]
         public let spans: [CBv2ImageSpan]
+        public let spanKinds: [SpanKind]
         public let embeddings: [MLXArray]
         /// Optional Qwen DeepStack embeddings. Outer order is the language
         /// layer injection order; each inner array follows `spans`.
@@ -255,6 +256,7 @@ public enum EngineV2VisionPrefill {
 
         public init(
             promptTokens: [Int], spans: [CBv2ImageSpan], embeddings: [MLXArray],
+            spanKinds: [SpanKind]? = nil,
             deepstackEmbeddings: [[MLXArray]] = [],
             attention: CBv2MultimodalAttention = .bidirectionalSpans,
             positionState: CBv2PositionState? = nil,
@@ -262,11 +264,25 @@ public enum EngineV2VisionPrefill {
         ) {
             self.promptTokens = promptTokens
             self.spans = spans
+            // Unknown mixed kinds cannot create a cache identity. Keep old
+            // constructor callers source-compatible without inventing order.
+            self.spanKinds = spanKinds ?? (mediaKind == .mixed ? [] : Array(
+                repeating: mediaKind == .image ? .image : .video, count: spans.count))
             self.embeddings = embeddings
             self.deepstackEmbeddings = deepstackEmbeddings
             self.attention = attention
             self.positionState = positionState
             self.mediaKind = mediaKind
+        }
+
+        public func hybridPrefixIdentity(
+            canonicalQwen4TextTail: Bool = false
+        ) throws -> CBv2HybridPrefixIdentity {
+            try EngineV2HybridPrefixIdentityBuilder.make(
+                spans: spans, spanKinds: spanKinds, embeddings: embeddings,
+                deepstackEmbeddings: deepstackEmbeddings, attention: attention,
+                positionState: positionState,
+                canonicalQwen4TextTail: canonicalQwen4TextTail)
         }
 
         /// The engine-facing input. The closure returns the precomputed
@@ -305,8 +321,16 @@ public enum EngineV2VisionPrefill {
         // surface). Inline video bytes stay in the UserInput's owned
         // memory-backed asset while processor preparation samples and
         // rasterizes its frames; no plaintext file exists to clean up.
+        // Bind native tool/history templating to the actual loaded wrapper,
+        // not a caller-supplied model label. Other VLMs retain their path.
+        let nativeToolMessages = await container.perform { ctx in
+            ctx.model is MLXVLM.Qwen4Exp
+        }
         let userInput = try await MediaIngest.buildUserInput(
-            from: request, templateControls: templateControls)
+            from: request, templateControls: templateControls,
+            tools: nativeToolMessages ? request.tools?.map { $0.toolSpec() } : nil,
+            preserveTemplateFields: nativeToolMessages,
+            modelType: nativeToolMessages ? "qwen4_exp" : nil)
         let towerLimits = VisionTowerBudget.liveLimits
         return try await container.perform(nonSendable: userInput) { ctx, userInput in
             // MLX's DEFAULT error handler is `fatalError`. A C++ fault raised
@@ -383,6 +407,9 @@ public enum EngineV2VisionPrefill {
         towerLimits: VisionTowerBudget.Limits,
         mlxErrors: MLX.ErrorBox
     ) async throws -> PreparedSubmission {
+        if let wrapper = ctx.model as? MLXVLM.Qwen4Exp, !wrapper.servesVision {
+            throw EngineV2VisionPrefillError.unsupportedMedia(MLXVLM.Qwen4Exp.mediaRejectedMessage)
+        }
         if ctx.model is MLXVLM.Qwen3VL, !userInput.videos.isEmpty {
             throw EngineV2VisionPrefillError.unsupportedMedia(
                 qwen3VLUnsupportedVideoDetail)
@@ -403,7 +430,7 @@ public enum EngineV2VisionPrefill {
                 wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens,
                 towerLimits: towerLimits, mlxErrors: mlxErrors)
         }
-        if let wrapper = ctx.model as? MLXVLM.Qwen35 {
+        if let wrapper = ctx.model as? any QwenVisionSeamModel {
             return try buildQwenSubmission(
                 wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens,
                 towerLimits: towerLimits, mlxErrors: mlxErrors)
@@ -470,6 +497,7 @@ public enum EngineV2VisionPrefill {
                 promptTokens: promptTokens,
                 spans: carved.map(\.span),
                 embeddings: vision.features,
+                spanKinds: carved.map(\.kind),
                 deepstackEmbeddings: vision.deepstack,
                 attention: .causal,
                 positionState: CBv2PositionState(
@@ -479,11 +507,11 @@ public enum EngineV2VisionPrefill {
         }
     }
 
-    /// Dense and MoE Qwen3.5/Qwen3.8: causal visual tokens, request-owned
+    /// Dense and MoE Qwen3.5/Qwen3.8 and native Qwen4: causal visual tokens, request-owned
     /// M-RoPE position state, one image per tower invocation, and one full
     /// T×H×W tower invocation per video.
     private static func buildQwenSubmission(
-        wrapper: MLXVLM.Qwen35,
+        wrapper: any QwenVisionSeamModel,
         lmInput: LMInput,
         promptTokens: [Int],
         towerLimits: VisionTowerBudget.Limits,
@@ -562,6 +590,7 @@ public enum EngineV2VisionPrefill {
             promptTokens: promptTokens,
             spans: carved.map(\.span),
             embeddings: embeddings,
+            spanKinds: carved.map(\.kind),
             attention: .causal,
             positionState: CBv2PositionState(
                 promptPositionIds: position.promptPositionIds,
@@ -651,6 +680,7 @@ public enum EngineV2VisionPrefill {
             promptTokens: promptTokens,
             spans: carved.map(\.span),
             embeddings: embeddings,
+            spanKinds: carved.map(\.kind),
             attention: .bidirectionalSpans,
             positionState: nil,
             mediaKind: lmInput.video == nil

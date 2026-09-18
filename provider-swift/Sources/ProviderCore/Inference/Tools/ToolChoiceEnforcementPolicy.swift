@@ -62,13 +62,16 @@ enum ToolChoiceEnforcementPolicy {
     /// Explicit family admission is supplied by each model onboarding change.
     /// Shared tool-frame validation alone must not advertise a new model.
     static func nativeStructuredTarget(_ context: ChatTemplateFixContext) -> Bool {
-        context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"
+        let type = context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if type == "qwen4_exp" || type == "qwen4_exp_text" { return true }
+        return type == "nemotron_h"
             && EngineV2SupportedModels.isNemotron35ListingModelID(context.modelId)
     }
 
     static func validateParser(
         _ format: ToolCallFormat,
-        strategy: Strategy
+        strategy: Strategy,
+        modelContext: ChatTemplateFixContext? = nil
     ) throws {
         switch strategy {
         case .none:
@@ -79,9 +82,13 @@ enum ToolChoiceEnforcementPolicy {
                     "inference-enforced Gemma tool_choice requires the gemma tool parser")
             }
         case .structuredPostValidation:
-            guard format == .xmlFunction || format == .nemotron else {
+            let type = modelContext?.modelType?
+                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let nativeQwen = type == "qwen4_exp" || type == "qwen4_exp_text"
+            let framedFormat: ToolCallFormat = nativeQwen ? .qwen35 : .nemotron
+            guard format == .xmlFunction || format == framedFormat else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "inference-enforced structured tool_choice requires an XML or Nemotron tool parser")
+                    "inference-enforced structured tool_choice requires the native model's framed or XML tool parser")
             }
         }
     }

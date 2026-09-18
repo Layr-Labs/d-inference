@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-11 · commit `e3993c611`
+> Last updated: 2026-09-17 · commit `04dadef3b`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -72,7 +72,7 @@ All four share the chain `drainGate → requireAuth → rateLimitConsumer → se
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
-| POST | `/v1/auth/keys` | `handleCreateKey` (`coordinator/api/apikey_handlers.go`) | `privy` | `fin` | Legacy mint: `CreateKeyResponse` `{api_key, account_id}` |
+| POST | `/v1/auth/keys` | `handleCreateKey` (`coordinator/api/apikey_handlers.go`) | `privy` | `fin` | Legacy mint: `CreateKeyResponse` `{api_key, account_id}`. If every active (not disabled, not expired) key on the account is already `self_route_only`, the minted key inherits that ceiling (`consoleKeyInheritsSelfRouteOnly`) so console auto-provision cannot escalate a machine-only account onto the paid public fleet |
 | DELETE | `/v1/auth/keys` | `handleRevokeKey` (`coordinator/api/apikey_handlers.go`) | `privy` | — | Body `{"key": "<api key>"}`; 400 `bad_request` otherwise; `RevokeKeyResponse` `{status}` |
 | GET | `/v1/keys` | `handleListAPIKeys` (`coordinator/api/apikey_handlers.go`) | `privy` | — | `APIKeyListResponse` `{object: "list", data: [APIKeyResponse]}` |
 | POST | `/v1/keys` | `handleCreateAPIKey` (`coordinator/api/apikey_handlers.go`) | `privy` | `fin` | `CreateAPIKeyResponse` `{key, data}`; `key` is the plaintext secret ([API key shapes](#api-key-shapes)) |
@@ -352,7 +352,7 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `withCode` in `coo
 }
 ```
 
-`code` mirrors `type` unless a handler overrides it (`withCode`, e.g. `payload_too_large`, `model_capability_unsupported`); `param` is present only when a handler names the offending field (`withParam`, e.g. `"model"` on `model_not_found`). Errors raised *after* a stream has committed cannot change the status line; they surface as a terminal SSE `error` event followed by `data: [DONE]` (`writeChatStreamTerminalError`, `coordinator/api/chat_metadata_stream.go`; `writeChatStreamProviderError`, `coordinator/api/consumer_stream.go`).
+`code` mirrors `type` unless a handler overrides it (`withCode`, e.g. `payload_too_large`, `model_capability_unsupported`); `param` is present only when a handler names the offending field (`withParam`, e.g. `"model"` on `model_not_found`). Chat errors raised *after* a stream has committed cannot change the status line; they surface as a terminal SSE `error` event, without a normal-completion `[DONE]` (`writeChatStreamTerminalError`, `coordinator/api/chat_metadata_stream.go`; `writeChatStreamProviderError`, `coordinator/api/consumer_stream.go`).
 
 | Status | `type` values | Raised by |
 |---|---|---|
@@ -423,6 +423,14 @@ Requests are decoded into a generic JSON object with `json.Number` preserved (`p
 }
 ```
 
+In Chat streams, usage may accompany the finish event or arrive in a separate
+usage-only event. Validated cache and reasoning details are added to the
+combined event only when no separate usage event follows; otherwise the
+dedicated event owns those details. No usage object is invented when the
+provider sends none (`handleStreamingResponseWithFirstChunkAndError`,
+`coordinator/api/consumer_stream.go`; `finalizeUsageChunk`,
+`coordinator/api/chat_stream_terminal.go`).
+
 `model` echoes the requested string, alias included (`buildNonStreamingResponse`, `coordinator/api/chat_response.go`). `se_signature` and `response_hash` are present when the provider signed the response; verification is described in [`../consumer/verification.md`](../consumer/verification.md). `metadata` is `ChatCompletionMetadata`:
 
 | Field | Type | Meaning |
@@ -441,6 +449,18 @@ Requests are decoded into a generic JSON object with `json.Number` preserved (`p
 
 Bodies are lowered into the chat pipeline (`coordinator/promptcontract/endpoint_lower_responses.go`) and the provider's chat output is raised back into `ResponsesResponse` (`coordinator/api/types/types.go`): `id` (`resp_…`), `object`, `created_at`, `status`, `error`, `incomplete_details.reason`, `instructions`, `max_output_tokens`, `model`, `output[]`, `parallel_tool_calls`, `temperature`, `tool_choice`, `tools`, `top_p`, `metadata`, `usage` (`input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`), `se_signature`, `response_hash`. Streams use `event:`-typed frames from `response.created` / `response.in_progress` through the item deltas to `response.completed` (or `response.incomplete` when truncated) and carry **no** `data: [DONE]` (`newResponsesStreamEmitter`, `coordinator/api/responses_stream.go`).
 
+`usage.total_tokens` is always emitted as `input_tokens + output_tokens`, including
+zero. Cached and reasoning token details are subsets, not additional tokens;
+the same `buildResponsesUsage` constructor supplies direct, converted and
+streamed responses (`coordinator/api/responses_response.go`). This field changes
+neither the underlying usage counts nor billing.
+
+Final non-streaming reasoning output items carry `status: completed`, matching
+the streaming emitter's closed reasoning items (`appendResponsesOutputItems`,
+`coordinator/api/responses_response.go`; `responsesStreamEmitter.closeReasoning`,
+`coordinator/api/responses_stream.go`). This item status does not override a
+root response marked `incomplete` because generation reached its output limit.
+
 ### Completions and Messages
 
 `/v1/completions` and `/v1/messages` are lowered to the chat contract (`coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_messages.go`); responses are re-shaped by `coordinator/api/generic_endpoint_response.go` and streams by `coordinator/api/generic_endpoint_stream.go`, which terminates with `data: [DONE]`.
@@ -453,9 +473,17 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 2. **Headers at commit**: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Inference-Job-ID` (`writeSSEResponseHeader`), plus `X-Timing` and the `X-Provider-*` headers.
 3. **Each provider chunk** is forwarded as one `data: <json>\n\n` event after `normalizeSSEChunk` (`coordinator/api/sse_normalize.go`); the coordinator does not re-tokenise or coalesce content. Chunks that arrive before commit are buffered (`chunkBufferSize` = 256).
 4. **Usage and finish chunks are held.** A chunk that only carries `usage` (`parseUsageOnlyStreamChunk`) is held so the reasoning-token breakdown can be spliced in; the chunk carrying the terminal `finish_reason` (`parseFinishStreamChunk`) is held so it can be corrected to `length` against the authoritative token counts. Both are written after every content delta. `se_signature`, `response_hash` and opt-in `metadata` ride on the held usage chunk; when there is none they are emitted as one additional fully-shaped `chat.completion.chunk` (`newChatCompletionExtrasEvent`) immediately before termination. Every chunk's `model` is rewritten to the alias you sent (`rewriteChunkModel`).
+
+   Coordinator-authored extras, including metadata before an in-band error,
+   reuse the first observed Chat response `id` and its valid `created` timestamp
+   (`chatStreamIdentity.observe`, `coordinator/api/chat_stream_identity.go`).
+   Provider frames are not rewritten for this purpose; signature/hash values
+   are preserved. The coordinator's job identity stays in `X-Inference-Job-ID`
+   and `metadata.job_id`, not in a new response ID. If no valid provider ID has
+   been observed, the existing `chatcmpl-<job-id>` fallback is used.
 5. **Termination**: exactly one `data: [DONE]\n\n`, written by the coordinator after every coordinator-appended event. Any `[DONE]` from the provider is stripped first (`stripSSEDoneEvents`). Responses streams end with `response.completed` / `response.incomplete` instead.
 6. **No keepalives.** The coordinator never writes comment frames or pings; a silent stream means the provider has not produced a token. Before commit the first-content deadline bounds the silence (a miss is answered with 429 + `Retry-After`, see the status table); after commit `inferenceTimeout` bounds it (a terminal `error` event of type `timeout`).
-7. **Errors after commit** are one `data: {"error": {...}}` event followed by `data: [DONE]`.
+7. **Chat errors after commit** are one terminal `data: {"error": {...}}` event, without `[DONE]`; optional authoritative metadata precedes it.
 8. **Sealed mode** seals each SSE event individually (see below).
 
 ## Limits and validation
@@ -500,12 +528,17 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 
 Three distinct version values govern providers:
 
-- `LatestProviderVersion = "0.8.16"` (`coordinator/api/server.go`) is the newest provider build the coordinator knows about. `handleVersion` (`/api/version`) and `/v1/me/summary` report the highest active release in the store and fall back to this constant when none is registered.
+- `LatestProviderVersion = "0.9.6"` (`coordinator/api/server.go`) is the source's provider-version display fallback. `handleVersion` (`/api/version`) and `/v1/me/summary` report the highest active release in the store and fall back to this constant when none is registered. Preparing a source bump does not create a release row or alter `/v1/releases/latest`.
 - `minProviderVersionForDesiredModels = "0.5.17"` (`coordinator/api/server.go`) is a **feature floor for the WebSocket `desired_models` message**: only Swift-runtime providers at or above it receive the message (`providerSupportsDesiredModels`, `fanOutDesiredModels` in `coordinator/api/model_alias_handlers.go`), because older decoders disconnect on unknown message types. It does not affect HTTP routes.
 - `EIGENINFERENCE_MIN_PROVIDER_VERSION` (`MinProviderVersion`, `coordinator/api/server_config.go`; `SetMinProviderVersion`) is the **routing floor**: a provider that registers or re-attests below it stays connected but is marked not runtime-verified and excluded from routing (`coordinator/api/provider.go`, registration and `applyChallengeMinVersionPolicy`), and its log uploads get 426 `upgrade_required`.
 - **Feature floors** exclude too-old providers from serving specific request traits rather than the whole model: tools require providers ≥ `0.6.3` (`capabilityVersionFloors`, `coordinator/registry/request_traits.go`); vision requests strip repetition-penalty fields for providers below `penaltySafeProviderVersion` = `0.6.7` (`coordinator/api/consumer.go`); reconnect attestation needs `minProviderVersionForReconnectAttestation` = `0.8.15` (`coordinator/api/provider.go`); servability gating uses `servabilityActivationFloorMinVersion` = `0.8.0` and `servabilityPerModelFloorMinVersion` = `0.8.16` (`coordinator/registry/servability.go`); private slot grants need `privateSlotGrantsMinVersion` = `0.7.5` (`coordinator/registry/pooled_admission.go`). When no provider clears the floor for a request, the client sees 503 `model_unavailable` (or 400 `param: tool_choice` when the fleet serves the model but no provider advertises the tool-constraint protocol).
 
 A consumer never sees a version error directly; an under-served model surfaces as 503 `model_unavailable`.
+
+The exact Flash-Next registry ID also has an all-request compatibility floor,
+separate from tool-only capability floors. See the
+[native identity routing gate](../architecture/routing.md#native-model-capacity-and-registry-identity);
+a catalog listing alone does not grant an older provider the matching policy.
 
 ## Sealed transport wire shape
 

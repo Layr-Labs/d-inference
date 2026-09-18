@@ -1418,7 +1418,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			Timing:       d.timing,
 		}
 		d.configurePending(queuePR)
-		if receivedAt := timingReceivedAt(d.timing); !receivedAt.IsZero() {
+		if receivedAt := timingReceivedAt(d.timing); !receivedAt.IsZero() && d.deadline > 0 {
 			queuePR.FirstContentDeadline = receivedAt.Add(d.deadline)
 		}
 		if !queuePR.RefreshFirstContentBudget(time.Now()) {

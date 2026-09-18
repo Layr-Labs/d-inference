@@ -172,6 +172,11 @@ func (d *dispatchState) maybeProbePlanCandidates() {
 	}
 	receivedAt := timingReceivedAt(d.timing)
 	remaining, ok := d.firstTokenRemaining()
+	if d.deadline <= 0 {
+		// Exemption removes the SLA, not capacity confirmation. Quotes use
+		// the ordinary inference wait; the collector skips SLA hedge advances.
+		remaining, ok = inferenceTimeout, true
+	}
 	if receivedAt.IsZero() || !ok || remaining <= 0 {
 		// No request-absolute clock (legacy timing, unit fixtures): a refined
 		// hedge instant could not be applied anyway — waitFirstChunk's re-arm
@@ -223,6 +228,9 @@ func collectCapacityQuotes(
 			confidences[outcome.ProviderID] = quoteHedgeConfidence(outcome.Quote.Confidence)
 		}
 	}
+	if deadline <= 0 {
+		return
+	} // no SLA expiry against which to advance a hedge
 	providerID, ttftP90, ok := plan.BestConfirmedBackup()
 	if !ok {
 		return

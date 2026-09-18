@@ -407,12 +407,14 @@ func TestIntegration_BillingAllowsProviderWithoutPayoutDestination(t *testing.T)
 	defer cancel()
 
 	model := "no-payout-destination-model"
-	conn, _, _ := setupProviderForBillingNoPayoutDestination(t, ctx, ts, srv.registry, model)
+	conn, _, pubKey := setupProviderForBillingNoPayoutDestination(t, ctx, ts, srv.registry, model)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
+	providerDone := serveOneInference(ctx, t, conn, pubKey, protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 5})
 	status := sendInferenceRequest(t, ctx, ts.URL, model, "test-key")
-	// Should NOT be 503 — providers without payout destination are allowed.
-	if status == http.StatusServiceUnavailable {
-		t.Fatalf("inference status = 503, providers without payout destination should be allowed")
+	<-providerDone
+	// Prove that inference actually completes; an SLA timeout is not success.
+	if status != http.StatusOK {
+		t.Fatalf("inference status = %d, want 200 without a payout destination", status)
 	}
 }

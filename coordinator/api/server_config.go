@@ -29,10 +29,13 @@ type ServerConfig struct {
 	TrustReuseJournalPath string
 	MDMScheduler          MDMSchedulerConfig
 	// FirstContentDeadlineBase is the ordinary-model fixed term in the
-	// request-absolute first-content budget. Exact-model policy may tighten it;
+	// request-absolute first-content budget for selected accounts. Model policy may override it;
 	// zero keeps the ordinary coordinator default.
 	FirstContentDeadlineBase time.Duration
-	BaseRewards              BaseRewardsConfig
+	// FirstContentSLAAccounts selects exact authenticated account IDs or stored
+	// emails. Empty disables the first-content SLA for all accounts.
+	FirstContentSLAAccounts []string
+	BaseRewards             BaseRewardsConfig
 	// MediaFetch is the remote media resolution config (mediafetch package).
 	// nil means "read it from the environment in NewServer", which keeps the
 	// bare ServerConfig{} literals used by tests working unchanged. main.go
@@ -71,19 +74,20 @@ type BaseRewardsConfig struct {
 // ReadServerConfig reads server configuration from environment variables.
 func ReadServerConfig() ServerConfig {
 	return ServerConfig{
-		AppAttestShadow:       readAppAttestShadowConfig(),
-		Port:                  env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
-		ConsoleURL:            os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),
-		CORSOrigin:            os.Getenv("CORS_ORIGIN"),
-		BaseURL:               os.Getenv(env.EnvPrefix + "_BASE_URL"),
-		R2CDNURL:              os.Getenv(env.EnvPrefix + "_R2_CDN_URL"),
-		MinProviderVersion:    os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION"),
-		AdminKey:              os.Getenv(env.EnvPrefix + "_ADMIN_KEY"),
-		AdminEmails:           ParseCommaList(env.EnvOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
-		ReleaseKey:            os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
-		ServiceReservations:   env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
-		TrustReuseJournalPath: resolveTrustReuseRevocationJournalPath(),
-		MDMScheduler:          readMDMSchedulerConfig(),
+		AppAttestShadow:         readAppAttestShadowConfig(),
+		Port:                    env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
+		ConsoleURL:              os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),
+		CORSOrigin:              os.Getenv("CORS_ORIGIN"),
+		BaseURL:                 os.Getenv(env.EnvPrefix + "_BASE_URL"),
+		R2CDNURL:                os.Getenv(env.EnvPrefix + "_R2_CDN_URL"),
+		MinProviderVersion:      os.Getenv(env.EnvPrefix + "_MIN_PROVIDER_VERSION"),
+		AdminKey:                os.Getenv(env.EnvPrefix + "_ADMIN_KEY"),
+		AdminEmails:             ParseCommaList(env.EnvOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
+		ReleaseKey:              os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
+		ServiceReservations:     env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
+		FirstContentSLAAccounts: ParseCommaList(os.Getenv(env.EnvPrefix + "_FIRST_CONTENT_SLA_ACCOUNTS")),
+		TrustReuseJournalPath:   resolveTrustReuseRevocationJournalPath(),
+		MDMScheduler:            readMDMSchedulerConfig(),
 		BaseRewards: BaseRewardsConfig{
 			Enabled:        env.EnvBool(env.EnvPrefix+"_BASE_REWARDS", false),
 			ReductionK:     env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_K", 0), // 0 = additive base income (full floor on top of earnings)

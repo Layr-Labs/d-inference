@@ -13,9 +13,12 @@ package api
 //
 // Everything here derives from one clock:
 // ReceivedAt + Server.FirstContentDeadline(model, tokens). Ordinary production
-// requests use 9s + 1ms/token inside the aggregator's standard 10s slope;
+// selected accounts use 9s + 1ms/token inside the aggregator's standard 10s slope;
 // exact model policies may tighten both clocks while preserving response
 // headroom (Qwen3-VL Instruct: 4s live inside a 5s upstream SLA).
+// Accounts outside FIRST_CONTENT_SLA_ACCOUNTS carry a zero duration: no
+// absolute SLA, scheduler ceiling, or provider wire budget. Normal inference
+// waits, provider-write watchdogs, queue limits and client cancellation remain.
 // Invariants:
 //
 //  1. No wait for first CONTENT may extend past the leftover clock — not
@@ -64,7 +67,7 @@ func firstTokenRemainingSince(receivedAt time.Time, deadline time.Duration) time
 // send. Positive sub-millisecond remainders are represented as 1ms: zero means
 // "field absent" on the wire and must never accidentally disable the deadline.
 func firstContentBudgetMillis(receivedAt time.Time, deadline time.Duration) (budgetMS int64, dispatchable bool) {
-	if receivedAt.IsZero() {
+	if receivedAt.IsZero() || deadline <= 0 {
 		return 0, true
 	}
 	remaining := firstTokenRemainingSince(receivedAt, deadline)
@@ -195,10 +198,11 @@ func (d *dispatchState) commitReadyFirstContent(
 }
 
 // firstTokenRemaining is the leftover request-absolute first-CONTENT budget.
-// ok is false when ReceivedAt was never stamped; callers then keep the
+// ok is false for exempt accounts or when ReceivedAt was never stamped;
+// callers then keep the
 // historical relative timer (d.deadline / d.deadline-speculativeAt).
 func (d *dispatchState) firstTokenRemaining() (remaining time.Duration, ok bool) {
-	if d == nil || d.timing == nil || d.timing.ReceivedAt.IsZero() {
+	if d == nil || d.deadline <= 0 || d.timing == nil || d.timing.ReceivedAt.IsZero() {
 		return 0, false
 	}
 	return firstTokenRemainingSince(d.timing.ReceivedAt, d.deadline), true
@@ -209,6 +213,11 @@ func (d *dispatchState) firstTokenRemaining() (remaining time.Duration, ok bool)
 // never a fresh relative window. relativeFallback is the pre-clock
 // behavior (full deadline, leftover after speculative, or inferenceTimeout).
 func (d *dispatchState) firstTokenWait(relativeFallback time.Duration) time.Duration {
+	// Exempt accounts retain the normal bounded inference wait, without a
+	// short SLA timer or a zero-duration timer firing immediately.
+	if d != nil && d.deadline <= 0 {
+		return inferenceTimeout
+	}
 	if remaining, ok := d.firstTokenRemaining(); ok {
 		return remaining
 	}

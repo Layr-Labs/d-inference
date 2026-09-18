@@ -180,10 +180,11 @@ type mediaResolveMeta struct {
 	// firstContentDeadline is the request-local duration pinned before media,
 	// admission, alias fallback, and dispatch. Production callers always set it;
 	// zero retains the focused-test fallback to the server policy.
-	firstContentDeadline time.Duration
-	requestedMaxTokens   int
-	hasTools             bool
-	requiresVision       bool
+	firstContentDeadline    time.Duration
+	firstContentDeadlineSet bool
+	requestedMaxTokens      int
+	hasTools                bool
+	requiresVision          bool
 	// selfRoute (exclusive X-Darkbloom-Route: self) skips the balance
 	// reservation, so the monetary cost gate that otherwise precedes a fetch is
 	// absent. ownerAccountID is the caller's owned-provider set. resolveRemoteMedia
@@ -242,8 +243,13 @@ func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawB
 	resolveCtx := r.Context()
 	if receivedAt := timingReceivedAt(timing); !receivedAt.IsZero() {
 		deadline := meta.firstContentDeadline
-		if deadline <= 0 {
-			deadline = s.FirstContentDeadline(meta.model, meta.estimatedPromptTokens)
+		if deadline <= 0 && !meta.firstContentDeadlineSet {
+			var err error
+			deadline, err = s.requestFirstContentDeadline(r, meta.publicModel, meta.model, meta.estimatedPromptTokens)
+			if err != nil {
+				s.writeServiceUnavailable(w, meta.model)
+				return nil, false, false
+			}
 		}
 		budget, bound := mediaFetchBudget(receivedAt, deadline)
 		if bound && budget <= 0 {

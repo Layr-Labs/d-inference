@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — account-scoped first-content SLA
+
+- Apply the first-content SLA only to authenticated accounts selected by `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; configure the intended account privately in the deployment environment. Direct users and other service accounts keep ordinary operational timeouts without the 9s + 1ms/token SLA.
+- Preserve configurable model timing for selected accounts, including Bonsai’s 9s + 5ms/token coordinator cutoff, and support explicit public-model policies before alias resolution.
+
 ## Unreleased — model token promotions
 
 - List Bonsai first in the chat model dropdown. Show its “Free” badge only after a confirmed claim for that exact model with available tokens; hide it while grant status is unknown, on lookup errors, or when the allowance is exhausted or fully reserved.

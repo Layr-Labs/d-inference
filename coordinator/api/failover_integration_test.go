@@ -71,7 +71,7 @@ func setupFailoverServer(t *testing.T) (*registry.Registry, *store.MemoryStore, 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := NewServer(reg, st, ServerConfig{FirstContentSLAAccounts: []string{testConsumerID}}, logger)
 	srv.challengeInterval = 500 * time.Millisecond
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)

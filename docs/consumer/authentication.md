@@ -1,6 +1,6 @@
 # Authentication
 
-> Last updated: 2026-09-16 · commit `b564e5828`
+> Last updated: 2026-09-18 · commit `23ec0a0f6`
 
 How to obtain and manage each credential the coordinator accepts, and which routes take it. Every request authenticates with one header, `Authorization: Bearer <token>` (`extractBearerToken`, `coordinator/api/server.go`); the token is an API key, a Privy session JWT, a device-flow provider token, or the operator's admin key, and `requireAuth` decides which by shape — JWTs (starting `eyJ`) are verified with Privy, the admin key is compared in constant time, everything else is looked up as an API key. For API consumers and console users; the per-route auth column is in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -55,7 +55,9 @@ All management routes require a Privy JWT (`requirePrivyAuth`); calling them wit
 
 ### 4. Sign in with Privy and use the session JWT
 
-The console signs you in with Privy (email only, in an in-page modal — `/login` redirects to `/`, `console-ui/src/proxy.ts`); the resulting JWT can be used directly as a bearer token. `requireAuth` verifies it (`privyAuth.VerifyToken`) and resolves or creates the account user, so a JWT is accepted everywhere an API key is. The console itself sends the JWT only on management routes — keys, fleet, earnings, device approval, Stripe Connect — through its `/api/*` relay (`managementHeaders`, `console-ui/src/lib/http/proxy-client.ts`); for chat, balance and usage it uses the `sk-db-…` console key. That key is the one you just created when this browser had none (or only an untracked auto-provisioned secret); otherwise `provisionConsoleKey` (`console-ui/src/hooks/useAuth.ts`) mints one with `POST /v1/auth/keys` and `writeUntrackedConsoleApiKey` (`console-ui/src/lib/console-api-key.ts`) so a leftover `darkbloom_console_key_id` cannot pin chat to the untitled mint. If every active key on the account is already `self_route_only`, that mint inherits the same ceiling so chat cannot silently open the paid public fleet. Some routes require the JWT:
+The console signs you in with Privy and normally chats with a fresh login-session JWT. Signing in does not automatically create an API key. If this browser has an explicitly selected key, Chat access preserves its restrictions until you deliberately choose Login session. API-key calls retain normal billing and limits; eligible Bonsai session calls follow the [trial contract](billing.md#using-the-bonsai-login-session-trial).
+
+`requireAuth` verifies the JWT and resolves the account. Expired sessions require signing in again, and failed keys require choosing another key; chat never automatically switches credentials. Balance, usage and invite redemption also support session access without creating an inference key. Some routes require the JWT:
 
 | Routes requiring a Privy JWT (`requirePrivyAuth`) | With an API key you get |
 |---|---|

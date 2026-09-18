@@ -1,8 +1,8 @@
 import { proxyHeaders } from "../http/proxy-client";
 import type { Model } from "./types";
 
-export async function fetchModels(): Promise<Model[]> {
-  const res = await fetch("/api/models", { headers: proxyHeaders() });
+export async function fetchModels(opts?: { session?: boolean }): Promise<Model[]> {
+  const res = await fetch("/api/models", { headers: opts?.session ? { "Content-Type": "application/json" } : proxyHeaders() });
   if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);
   const data = await res.json();
   const raw = Array.isArray(data)

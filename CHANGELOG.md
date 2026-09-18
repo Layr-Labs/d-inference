@@ -2,6 +2,8 @@
 
 ## Unreleased: Bonsai login-session trial
 
+- Chat obtains a fresh login token without minting an inference key, preserves explicitly selected key restrictions, and displays trial errors without a quota meter or automatic paid fallback. Account pages support session access for users without keys.
+
 - Add disabled-by-default account-scoped free Bonsai chat with a lifetime token allowance, explicit exhaustion errors, durable reservations, and atomic provider subsidy settlement. API keys remain paid; ambiguous failures retain quota holds without charging the user. Model serving qualification and production enablement are separate.
 
 ## Release candidate v0.9.6 — Flash-Next signed-app resource recovery (not shipped; 2026-09-17)

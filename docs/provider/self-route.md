@@ -1,6 +1,6 @@
 # Self-route: use your own machine through the coordinator
 
-> Last updated: 2026-09-16 · commit `b564e5828`
+> Last updated: 2026-09-18 · commit `23ec0a0f6`
 
 Send your normal Darkbloom API requests to the provider your account owns —
 free, end-to-end, through the same `api.darkbloom.dev` endpoint and SDK
@@ -72,16 +72,12 @@ fleet traffic whose scheduler is told which machine may serve it.
    restart after changing the key.
 
 5. In the console, the chat "Use my machine" toggle sends `prefer`
-   (`console-ui/src/lib/chat/stream.ts`, forwarded upstream by
-   `console-ui/src/app/api/chat/route.ts`); free-only routing there is the
-   per-key `self_route_only` ceiling. Creating a My Machine only key in the
-   API console adopts it as this browser's chat key when none is tracked
-   (logout, chat `401`, and untracked auto-provision drop a leftover
-   `darkbloom_console_key_id` so a stale id cannot block that adopt);
-   `POST /v1/auth/keys` (console auto-provision) also inherits
-   `self_route_only` when every active key on the account is already
-   machine-only, so it cannot mint an unrestricted "use everything" key
-   beside a machine-only one.
+   (`console-ui/src/lib/chat/stream.ts`). The selected key's `self_route_only`
+   restriction remains the hard free-only ceiling. Creating or adopting a My
+   Machine only key selects API-key mode for chat. A 401 never replaces it with
+   an unrestricted credential. Choose Login session deliberately through Chat
+   access to change modes. Sponsored public fallback and owned-machine
+   precedence follow the coordinator's [trial policy](../consumer/billing.md#using-the-bonsai-login-session-trial).
 
 ## What the coordinator relaxes — and what it does not
 

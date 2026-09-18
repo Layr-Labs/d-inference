@@ -1,14 +1,14 @@
 # Console UI (`console-ui/`)
 
-> Last updated: 2026-09-16 · commit `b564e5828`
+> Last updated: 2026-09-18 · commit `23ec0a0f6`
 
 The console at `console.darkbloom.dev` is a Next.js 16 App Router / React 19 application (`console-ui/package.json`) that gives consumers a chat client, model catalog, network stats, billing, API-key management, and provider linking. The browser never calls the coordinator for authenticated work: every page fetches same-origin `/api/*` route handlers, which resolve the coordinator URL server-side and forward the caller's own credential. This page explains how those pieces fit; the coordinator routes they call are specified in [`../../reference/api-contracts.md`](../../reference/api-contracts.md). The internal, read-only operator dashboard is a separate app — see [`admin-ui.md`](admin-ui.md).
 
 ## Context
 
-The console exists so a person can use Darkbloom without writing code: sign in, get a key, chat, buy credits, link a Mac, watch the fleet. Two facts shape its architecture:
+The console exists so a person can use Darkbloom without writing code: sign in, chat, create API keys, buy credits, link a Mac, watch the fleet. Two facts shape its architecture:
 
-1. **Two credentials, two audiences.** The coordinator authenticates every request with `Authorization: Bearer <token>` and distinguishes a Privy session JWT from an `sk-db-…` API key by shape ([`../../consumer/authentication.md`](../../consumer/authentication.md)). Management routes (keys, fleet, earnings, device approval, Stripe Connect) are Privy-only; inference and balance reads want an API key. The console therefore carries both and picks one per call (see [Two credential paths](#two-credential-paths)).
+1. **Two credentials, two audiences.** The coordinator authenticates every request with `Authorization: Bearer <token>` and distinguishes a Privy session JWT from an `sk-db-…` API key by shape ([`../../consumer/authentication.md`](../../consumer/authentication.md)). Management routes (keys, fleet, earnings, device approval, Stripe Connect) are Privy-only; inference accepts a verified session or an API key, and balance reads accept either. The console picks exactly one credential per inference call (see [Two credential paths](#two-credential-paths)).
 2. **A server-side relay, not a secret holder.** The route handlers under `console-ui/src/app/api/` hold no secret of their own (`console-ui/src/lib/server/coordinator.ts` reads exactly one environment variable, `NEXT_PUBLIC_COORDINATOR_URL`). They exist to keep the coordinator origin out of client input, to avoid CORS, and to let the edge cache public reads.
 
 ## Mechanism
@@ -24,7 +24,7 @@ Files are under `console-ui/src/app/`. "Auth" is what the page itself requires; 
 | Path | File(s) | Purpose | Auth |
 |---|---|---|---|
 | `/` | `page.tsx` | Server redirect to `/providers` | Public |
-| `/chat` | `chat/page.tsx`, `components/chat/*`, `hooks/useChatStream.ts` | Chat: model picker, image upload, think-block rendering, per-message trust badge (`components/TrustBadge.tsx`) | Renders for guests; sending needs `authenticated && apiKeyReady` (`useAuth`) |
+| `/chat` | `chat/page.tsx`, `components/chat/*`, `hooks/useChatStream.ts` | Chat: model picker, image upload, think-block rendering, per-message trust badge (`components/TrustBadge.tsx`) | Renders for guests; sending needs `sessionReady` (`useAuth`) |
 | `/login` | `login/page.tsx` | Legacy Privy login page (redirects to `?next=` once authenticated) | **Unreachable** — `console-ui/src/proxy.ts` redirects `/login` to `/`; its copy ("email, wallet, or social") is stale |
 | `/link` | `link/page.tsx`, `link/DeviceLinkForm.tsx` | RFC 8628 device-code approval for `darkbloom login`: `POST /api/device/approve` with `Authorization: Bearer <Privy token>` | Privy |
 | `/settings` | `settings/page.tsx`, `settings/useConsoleSettings.ts` | Theme, API example URL (`darkbloom_api_example_url`), health check via `/api/health`, and encrypt-to-coordinator toggle | None |
@@ -95,12 +95,12 @@ Credential column: **Privy (required)** = `privyAuth()` must be non-empty or the
 |---|---|---|---|---|
 | `/api/admin/base-rewards` | GET | `GET /v1/admin/base-rewards` | Privy (required) | No cache; no UI caller |
 | `/api/attestation` | GET | `GET /v1/providers/attestation` | none | `?summary=1` → `{count, last_verified}` of `trust_level === "hardware"` providers, `cacheControl(15, 60)`; full mode projects to the whitelisted `AttestationProvider` fields (`projectProvider`), uncached |
-| `/api/auth/keys` | POST, DELETE | `POST`/`DELETE /v1/auth/keys` | Privy (if present) | Used by `provisionConsoleKey` (`console-ui/src/hooks/useAuth.ts`) to obtain the console's inference key; DELETE drops a spare mint that lost a race with a user-created key |
-| `/api/chat` | POST | `POST /v1/chat/completions` | API key → Bearer | `runtime = "nodejs"`, `dynamic = "force-dynamic"`; forwards `X-Darkbloom-Route`; a body with `Content-Type: application/eigeninference-sealed+json` is forwarded byte-verbatim; streams the upstream body; copies `x-provider-attested`, `x-provider-trust-level`, `x-provider-secure-enclave`, `x-provider-mda-verified`, `x-provider-chip`, `x-provider-model`, `x-request-id`, `x-attestation-se-public-key`, `x-eigen-sealed`, `x-eigen-sealed-kid`; SSE gets `Cache-Control: no-cache, no-transform` |
+| `/api/auth/keys` | POST, DELETE | `POST`/`DELETE /v1/auth/keys` | Privy (if present) | Legacy explicit key endpoint; signing in and mounting `useAuth` no longer call it |
+| `/api/chat` | POST | `POST /v1/chat/completions` | Explicit session Bearer or API key → Bearer | `runtime = "nodejs"`, `dynamic = "force-dynamic"`; forwards `X-Darkbloom-Route`; a body with `Content-Type: application/eigeninference-sealed+json` is forwarded byte-verbatim; streams the upstream body; copies `x-provider-attested`, `x-provider-trust-level`, `x-provider-secure-enclave`, `x-provider-mda-verified`, `x-provider-chip`, `x-provider-model`, `x-request-id`, `x-attestation-se-public-key`, `x-eigen-sealed`, `x-eigen-sealed-kid`; SSE gets `Cache-Control: no-cache, no-transform` |
 | `/api/device/approve` | POST | `POST /v1/device/approve` | Privy (required) | `passthrough` |
 | `/api/encryption-key` | GET | `GET /v1/encryption-key` | none | Upstream 503 → `503 {"error":"encryption_unavailable"}`; success gets `Cache-Control: public, max-age=300` |
 | `/api/health` | GET | `GET /health` | none | — |
-| `/api/invite/redeem` | POST | `POST /v1/invite/redeem` | API key → Bearer | Body `{code}` |
+| `/api/invite/redeem` | POST | `POST /v1/invite/redeem` | API key → Bearer, otherwise Privy header/cookie | Body `{code}` |
 | `/api/keys` | GET, POST | `GET`/`POST /v1/keys` | Privy (required) | `passthrough` |
 | `/api/keys/[id]` | GET, PATCH, DELETE | `/v1/keys/{id}` | Privy (required) | `passthrough` |
 | `/api/keys/[id]/rotate` | POST | `POST /v1/keys/{id}/rotate` | Privy (required) | `passthrough` |
@@ -114,8 +114,8 @@ Credential column: **Privy (required)** = `privyAuth()` must be non-empty or the
 | `/api/models/capacity` | GET | `GET /v1/models/capacity` | none | `cacheControl(10, 30)` |
 | `/api/network/series` | GET | `GET /v1/network/series?window=<w>` | none | `window` must be in `SUPPORTED_WINDOWS` = `30m`, `24h`, `7d`, `30d`, else 400; `cacheControl(30, 60)` |
 | `/api/network/totals` | GET | `GET /v1/network/totals?<query>` | none | `cacheControl(10, 30)` |
-| `/api/payments/balance` | GET | `GET /v1/payments/balance` | API key → Bearer | — |
-| `/api/payments/usage` | GET | `GET /v1/payments/usage` | API key → Bearer | — |
+| `/api/payments/balance` | GET | `GET /v1/payments/balance` | API key → Bearer, otherwise Privy header/cookie | — |
+| `/api/payments/usage` | GET | `GET /v1/payments/usage` | API key → Bearer, otherwise Privy header/cookie | — |
 | `/api/payments/stripe/checkout` | POST | `POST /v1/billing/stripe/create-session` | Privy (if present) | The browser also sends `x-api-key` (`createStripeCheckout` uses `proxyHeaders()`); the handler ignores it and relies on the header or `privy-token` cookie |
 | `/api/payments/stripe/status` | GET | `GET /v1/billing/stripe/status[?refresh=1]` | Privy (if present) | — |
 | `/api/payments/stripe/onboard` | POST | `POST /v1/billing/stripe/onboard` | Privy (if present) | Stripe Connect onboarding link |
@@ -144,12 +144,13 @@ The stats page renders a continuous overview without waiting for catalog or capa
 
 ### Two credential paths
 
-| Path | Browser sends | Handler forwards | Used for |
-|---|---|---|---|
-| Privy access token | `Authorization: Bearer <JWT>` (`managementHeaders`, `console-ui/src/lib/http/proxy-client.ts`); the Privy SDK's `privy-token` cookie is the fallback read by `privyAuth()` | Header verbatim | Keys, fleet, earnings, device approval, Stripe Connect, base-rewards admin |
-| Console API key | `x-api-key: sk-db-…` (`proxyHeaders`; value from localStorage `darkbloom_api_key`) | `Authorization: Bearer sk-db-…` | Chat, `/api/models` (keyed path), balance, usage, invite redeem |
+`useAuth` provides identity and `sessionReady = ready && authenticated`; mounting it never creates an inference key. Ordinary chat obtains a fresh Privy access token for each send and retry through `acquireChatCredentials` (`console-ui/src/lib/chat/credentials.ts`). Session tokens are not saved in localStorage or embedded in API examples.
 
-The console key is provisioned by `provisionConsoleKey` (`console-ui/src/hooks/useAuth.ts`): on `authenticated`, it calls `getAccessToken()` and `POST /api/auth/keys` with the Privy Bearer, stores `api_key` under `darkbloom_api_key` via `writeUntrackedConsoleApiKey` (`console-ui/src/lib/console-api-key.ts`), migrates the pre-rebrand `eigeninference_api_key`, coalesces concurrent callers into one in-flight promise, and arms a `PROVISION_FAILURE_COOLDOWN_MS` = `30_000` ms cooldown after a failed or keyless response. An untracked mint, logout, a chat `401`, and `darkbloom-key-expired` all drop `darkbloom_console_key_id` so a leftover tracked id cannot make a newly provisioned secret look like the user's chosen console key. If localStorage already holds a secret when the mint returns (the user created/adopted a named key while the request was in flight), the spare is `DELETE`d via `/api/auth/keys` and is not stored. Creating a named key (`useApiKeys.createKey`) adopts it as the console key when none is tracked — including when only an untracked auto-provisioned secret is present — and revokes that previous secret. `apiKeyReady` gates sending in chat. The coordinator's `POST /v1/auth/keys` inherits `self_route_only` when every active key on the account is already machine-only (`consoleKeyInheritsSelfRouteOnly`).
+A saved secret paired with `darkbloom_console_key_id` represents an explicitly adopted key. `useChatAccess` preserves that choice by defaulting to API-key mode. The Chat access selector lets the user deliberately choose Login session or Selected API key. Selected-key mode keeps the key's model, spend, rate and self-route restrictions; missing or expired credentials never switch mode or create a replacement key. Remounting restores the default based on the tracked key. Untracked legacy keys do not control session chat.
+
+`/api/chat` requires one explicit credential and rejects dual credentials before forwarding. It does not use cookie fallback. Balance, usage and invite redemption accept an explicit API key or the existing Privy header/cookie fallback when no key is supplied. API Console creation, adoption, rotation, deletion and examples retain explicit-key behavior. Session-mode model discovery uses the public catalog; key mode preserves keyed model restrictions.
+
+Cancellation and account changes invalidate pending token acquisition and stream callbacks. A switch away from a known account clears its selected key and current chat history. Initial Privy hydration preserves the saved key. This does not introduce per-account durable chat storage.
 
 ### Coordinator URL resolution
 
@@ -169,17 +170,17 @@ sequenceDiagram
   participant P as /api/chat (app/api/chat/route.ts)
   participant C as Coordinator
   B->>B: prepareBody: JSON body, or NaCl-Box seal when isEncryptionEnabled()
-  B->>P: POST /api/chat — x-api-key, optional X-Darkbloom-Route: prefer, optional Content-Type: application/eigeninference-sealed+json
-  P->>C: POST /v1/chat/completions — Authorization: Bearer sk-db-…, body bytes verbatim
+  B->>P: POST /api/chat: explicit session or key, optional X-Darkbloom-Route: prefer, optional Content-Type: application/eigeninference-sealed+json
+  P->>C: POST /v1/chat/completions — Authorization: Bearer credential, body bytes verbatim
   C-->>P: text/event-stream + x-provider-* / x-eigen-sealed headers
   P-->>B: piped stream; whitelisted headers copied
   B->>B: readSsePayloads → optional unsealSseEvent → delta.content / reasoning → store
 ```
 
-- **Request.** `streamChat` (`console-ui/src/lib/chat/stream.ts`) posts `{model, messages, stream: true}` to `/api/chat` with `proxyHeaders()`. When the store's `useMyMachine` is on it adds `X-Darkbloom-Route: prefer` (prefer the caller's own machine, fall back to the paid fleet — [`../../provider/self-route.md`](../../provider/self-route.md)); the header never enters the body so it survives sealing.
+- **Request.** `streamChat` (`console-ui/src/lib/chat/stream.ts`) posts `{model, messages, stream: true}` to `/api/chat` with `chatAuthHeaders` and explicit credentials. When the store's `useMyMachine` is on it adds `X-Darkbloom-Route: prefer` (prefer the caller's own machine, fall back according to coordinator billing or trial policy — [`../../provider/self-route.md`](../../provider/self-route.md)); the header never enters the body so it survives sealing.
 - **Stream.** `readSsePayloads` (`console-ui/src/lib/chat/sse.ts`) yields each `data:` payload; `streamChat` stops on `[DONE]`, records an attestation receipt frame (`se_signature`, `response_hash`) into the trust metadata, and routes `choices[0].delta.content` and `delta.reasoning_content`/`delta.reasoning` through `ThinkStreamParser` (`console-ui/src/lib/chat/think-parser.ts`). Trust metadata comes from the copied `x-provider-*` and `x-attestation-se-public-key` headers (`extractTrustMeta`) and feeds `components/TrustBadge.tsx`.
 - **Sealing (opt-in).** With localStorage `darkbloom_encrypt_to_coordinator` set (`ENCRYPTION_FLAG_KEY`, `console-ui/src/lib/encryption.ts`), `getCoordinatorKey` fetches `/api/encryption-key` (requires `algorithm === "x25519-nacl-box"`, 32-byte key; cached under `darkbloom_coord_enc_key_v2` per coordinator URL for `COORD_KEY_TTL_MS` = 1 h) and `sealRawRequest` generates an ephemeral `nacl.box.keyPair()`, seals with `nacl.box` (X25519 + XSalsa20-Poly1305, 24-byte nonce), and sends the envelope `{kid, ephemeral_public_key, ciphertext}` where `ciphertext` = base64(nonce ‖ box) with `Content-Type: application/eigeninference-sealed+json` (`SEALED_CONTENT_TYPE`). If the response carries `x-eigen-sealed: true`, each SSE payload is opened with `unsealSseEvent` using the ephemeral secret before parsing; a `400` containing `kid_mismatch` clears the key cache. What this does and does not protect — the coordinator decrypts, then re-seals to the provider — is stated once in [`../security/encryption.md`](../security/encryption.md).
-- **Key expiry.** A `401` from `/api/chat` removes `darkbloom_api_key` and dispatches the `darkbloom-key-expired` event, which `useAuth` answers by re-provisioning.
+- **Errors.** Trial error codes preserve the coordinator message before generic paid 402 handling. A session 401 requires signing in again; a key 401 requires selecting another key. There is no automatic credential fallback, key provisioning, quota meter, or remaining-token polling. `Retry-After` passes through the proxy.
 
 ### Client state
 
@@ -236,22 +237,22 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 7. **`/api/*` is outside the interceptor.** The `matcher` in `console-ui/src/proxy.ts` excludes `api/`.
 8. **No client telemetry leaves the page.** `emit` and `installGlobalHandlers` are empty (`console-ui/src/lib/telemetry.ts`); `POST` in `console-ui/src/app/api/telemetry/route.ts` returns `telemetry_ingest_disabled` unconditionally ([api-contracts](../../reference/api-contracts.md#telemetry-1)).
 9. **Persisted chat state carries no image bytes or live flags.** `partialize` in `console-ui/src/lib/store.ts` sets `images: undefined` and `streaming: false`.
-10. **Key provisioning is bounded and does not clobber a user-created key.** One in-flight `POST /api/auth/keys` per tab (`provisionInFlight`) and a `PROVISION_FAILURE_COOLDOWN_MS` back-off after failure (`console-ui/src/hooks/useAuth.ts`). A mint that loses a race with a stored secret is revoked (`DELETE /api/auth/keys`) rather than overwriting localStorage. Creating a named key adopts it when the console key is missing or untracked (`adoptCreatedKeyIfUntracked`, `console-ui/src/components/api-keys/adoptConsoleKey.ts`).
+10. **Chat preserves explicit credential intent.** `useChatAccess` defaults to a tracked selected key; `acquireChatCredentials` never substitutes credentials after failure. `useAuth` does not provision keys.
 
 ## Failure modes
 
 | Symptom | Cause | Where |
 |---|---|---|
-| Everyone appears signed in, yet key creation, fleet, and earnings return `401 {"error":"missing privy token"}` and chat never becomes sendable | Mock auth (`NEXT_PUBLIC_PRIVY_APP_ID` unset or `"placeholder"`): `getAccessToken()` is `null`, so `provisionConsoleKey` returns `null` and management calls carry no `Authorization` | `MOCK_AUTH` (`console-ui/src/components/app-providers/PrivyClientProvider.tsx`), `missingPrivyToken` |
+| Mock login appears signed in but cannot send chat or management requests | Mock auth has no valid access token; acquisition returns a session-expired error | `acquireChatCredentials`; `MOCK_AUTH` |
 | 401 on a Privy-required route in a real deployment | No `Authorization` header and no `privy-token` cookie (logged out, or the SDK has not set the cookie yet) | `privyAuth` |
 | "Sender encryption is not configured on this coordinator" in Settings; every send fails with "Encryption setup failed" while the toggle is on | Coordinator returned 503 to `/api/encryption-key` → `encryption_unavailable`; the toggle stays on by design | `getCoordinatorKey`, `handleEncryptionToggle` (`console-ui/src/app/settings/useConsoleSettings.ts`) |
 | First sealed request after a coordinator key rotation fails with 400 | Cached key `kid` no longer matches; `streamChat` clears `darkbloom_coord_enc_key_v2` so the retry refetches | `clearCoordinatorKeyCache` |
-| "Session expired — please try again" mid-chat | `/api/chat` returned 401; the key is dropped and re-provisioned via `darkbloom-key-expired` | `streamChat`, `useAuth` |
+| Session or key expired mid-chat | Sign in again or select another API key; no replay or automatic credential fallback | `streamChat` |
 | `/stats` retains an older snapshot or shows unknown model capacity | A primary refresh failed, or an auxiliary catalog/capacity request failed; the page retains dated primary data and clears unavailable auxiliary values | `useNetworkStats` (`console-ui/src/app/stats/useNetworkStats.ts`) |
 | Datadog RUM enabled but no data arrives | `NEXT_PUBLIC_DD_*` set, yet no Datadog intake host is in `connect-src` | `cspDirectives`, `DatadogRUM` |
 | Buy Credits fails although the API key works | `/api/payments/stripe/checkout` forwards only the Privy session; a browser with an API key but no `privy-token` cookie sends an unauthenticated upstream call | `console-ui/src/app/api/payments/stripe/checkout/route.ts` |
 | Visiting `/login` lands on `/` and the `?next=` target is lost | `console-ui/src/proxy.ts` redirects before the page renders | `proxy` |
-| Provisioning stalls for 30 s after a 429 | `provisionBlockedUntil` cooldown | `console-ui/src/hooks/useAuth.ts` |
+| Trial unavailable or exhausted | Display coordinator message; there is no automatic paid conversion | `chatErrorMessage` |
 | Sidebar or chats "flash" empty on load | Persisted store is applied only after `AppShell` calls `useStore.persist.rehydrate()` (`skipHydration`) | `console-ui/src/lib/store.ts`, `console-ui/src/components/AppShell.tsx` |
 | GA cannot be turned off from the UI | `getGoogleAnalyticsConsentStatus()` always returns `"granted"`; `revokeGoogleAnalyticsConsent` writes the cookie as `granted` | `console-ui/src/lib/google-analytics.ts` |
 
@@ -266,7 +267,7 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 | Client header helpers | `console-ui/src/lib/http/proxy-client.ts` (`proxyHeaders`, `managementHeaders`, `apiError`) |
 | Client coordinator URL | `console-ui/src/lib/coordinator-url.ts` (`PUBLIC_COORDINATOR_URL`, `clientCoordinatorUrl`) |
 | Privy provider and mock auth | `console-ui/src/components/app-providers/PrivyClientProvider.tsx` (`MOCK_AUTH`, `IS_PRIVY_CONFIGURED`), `console-ui/src/components/app-providers/PrivyRealProvider.tsx` |
-| Console key provisioning | `console-ui/src/hooks/useAuth.ts` (`provisionConsoleKey`, `useAuth`) |
+| Session identity and chat credential intent | `console-ui/src/hooks/useAuth.ts`; `console-ui/src/hooks/useChatAccess.ts`; `console-ui/src/lib/chat/credentials.ts` |
 | Workspace discovery and navigation | `console-ui/src/components/console-entry/ConsoleExperience.tsx`, `console-ui/src/components/console-entry/useProviderAccount.ts`, `console-ui/src/components/navigation/items.ts` |
 | Provider onboarding | `console-ui/src/components/provider-onboarding/ProviderOnboarding.tsx`, `console-ui/src/components/provider-onboarding/content.ts` |
 | Chat orchestration | `console-ui/src/hooks/useChatStream.ts`, `console-ui/src/lib/chat/stream.ts` (`streamChat`, `prepareBody`, `extractTrustMeta`), `console-ui/src/lib/chat/sse.ts` (`readSsePayloads`), `console-ui/src/lib/chat/think-parser.ts` |

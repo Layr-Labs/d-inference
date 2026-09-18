@@ -13,8 +13,7 @@ import {
   unsealResponse,
   unsealSseEvent,
 } from "../encryption";
-import { clearConsoleApiKey } from "../console-api-key";
-import { proxyHeaders } from "../http/proxy-client";
+import { chatAuthHeaders, type ChatCredentials } from "./credentials";
 import type {
   ChatMessage,
   StreamCallbacks,
@@ -28,6 +27,7 @@ type SealContext = { ephemPriv: Uint8Array; coordPub: Uint8Array };
 
 /** Map an upstream error (status + message + error code) to user-facing copy. */
 function chatErrorMessage(status: number, msg: string, code?: string): string {
+  if (code && ["bonsai_trial_exhausted", "bonsai_trial_request_too_large", "bonsai_trial_busy", "bonsai_trial_unavailable"].includes(code)) return msg;
   if (code === "no_linked_machine") {
     return "No machine linked to your account — run `darkbloom login` on your Mac, then try again.";
   }
@@ -115,15 +115,15 @@ class StreamMetricsTracker {
 /** Build the (optionally sealed) request body + headers for /api/chat. */
 async function prepareBody(
   requestBody: unknown,
-  selfRouteHeader: Record<string, string>,
+  requestHeaders: Record<string, string>,
 ): Promise<{ headers: Record<string, string>; body: string; sealCtx: SealContext | null }> {
   if (!isEncryptionEnabled()) {
-    return { headers: proxyHeaders(selfRouteHeader), body: JSON.stringify(requestBody), sealCtx: null };
+    return { headers: { "Content-Type": "application/json", ...requestHeaders }, body: JSON.stringify(requestBody), sealCtx: null };
   }
   const coordKey = await getCoordinatorKey();
   const sealed = sealRequest(requestBody, coordKey);
   return {
-    headers: proxyHeaders({ "Content-Type": SEALED_CONTENT_TYPE, ...selfRouteHeader }),
+    headers: { "Content-Type": SEALED_CONTENT_TYPE, ...requestHeaders },
     body: sealed.envelopeJson,
     sealCtx: { ephemPriv: sealed.ephemeralPrivateKey, coordPub: coordKey.publicKey },
   };
@@ -133,9 +133,10 @@ export async function streamChat(
   messages: ChatMessage[],
   model: string,
   callbacks: StreamCallbacks,
-  signal?: AbortSignal,
-  opts?: { selfRoute?: boolean },
+  signal: AbortSignal | undefined,
+  opts: { auth: ChatCredentials; selfRoute?: boolean },
 ): Promise<void> {
+  const authHeaders = chatAuthHeaders(opts.auth);
   const requestBody = { model, messages, stream: true };
   // "Use my machine": prioritize the caller's own provider (free when it serves)
   // but fall back to the paid fleet. Carried as a header so it never enters the
@@ -148,7 +149,7 @@ export async function streamChat(
   let body: string;
   let sealCtx: SealContext | null;
   try {
-    ({ headers, body, sealCtx } = await prepareBody(requestBody, selfRouteHeader));
+    ({ headers, body, sealCtx } = await prepareBody(requestBody, { ...authHeaders, ...selfRouteHeader }));
   } catch (err) {
     callbacks.onError(
       `Encryption setup failed: ${err instanceof Error ? err.message : String(err)} — disable "Encrypt to coordinator" in Settings to continue in plaintext.`,
@@ -167,9 +168,9 @@ export async function streamChat(
 
   if (!res.ok) {
     if (res.status === 401) {
-      clearConsoleApiKey();
-      window.dispatchEvent(new Event("darkbloom-key-expired"));
-      callbacks.onError("Session expired — please try again");
+      callbacks.onError(opts.auth.kind === "session"
+        ? "Session expired. Please sign in again."
+        : "Your selected API key is invalid or expired. Select another key in the API Console.");
       return;
     }
     let text: string;

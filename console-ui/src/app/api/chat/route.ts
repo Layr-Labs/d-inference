@@ -7,8 +7,21 @@ export const dynamic = "force-dynamic";
 
 const SEALED_CT = "application/eigeninference-sealed+json";
 
+function chatAuthorization(headers: Headers): string | Response {
+  const apiKey = headers.get("x-api-key") || "";
+  const authorization = headers.get("authorization") || "";
+  if (apiKey && authorization) {
+    return Response.json({ error: { message: "Send one authentication credential." } }, { status: 400 });
+  }
+  if (!apiKey && !/^Bearer \S+$/i.test(authorization)) {
+    return Response.json({ error: { message: "Authentication required." } }, { status: 401 });
+  }
+  return apiKey ? `Bearer ${apiKey}` : authorization;
+}
+
 export async function POST(req: NextRequest) {
-  const apiKey = req.headers.get("x-api-key") || "";
+  const authorization = chatAuthorization(req.headers);
+  if (authorization instanceof Response) return authorization;
   const incomingCt = req.headers.get("content-type") || "application/json";
   const isSealed = incomingCt.toLowerCase().startsWith(SEALED_CT);
   // "Use my machine" routing opt-in (X-Darkbloom-Route: self | prefer).
@@ -25,7 +38,7 @@ export async function POST(req: NextRequest) {
     method: "POST",
     headers: {
       "Content-Type": isSealed ? SEALED_CT : "application/json",
-      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      Authorization: authorization,
       ...(selfRoute ? { "X-Darkbloom-Route": selfRoute } : {}),
     },
     body: isSealed ? bodyBytes : JSON.stringify(await req.json()),
@@ -56,6 +69,7 @@ export async function POST(req: NextRequest) {
     "x-attestation-se-public-key",
     "x-eigen-sealed",
     "x-eigen-sealed-kid",
+    "retry-after",
   ];
   for (const h of passthroughHeaders) {
     const v = upstream.headers.get(h);
@@ -87,5 +101,5 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  return new Response(stream, { status: 200, headers: respHeaders });
+  return new Response(stream, { status: upstream.status, headers: respHeaders });
 }

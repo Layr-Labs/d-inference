@@ -1,6 +1,6 @@
 # Design records — what was decided, and whether it shipped
 
-> Last updated: 2026-09-15 · commit `dfe556c13`
+> Last updated: 2026-09-18 · commit `954f570d1`
 
 Plans, proposals, and architecture decision records. Each file is frozen at the
 moment it was written except for its **Status** line, which says whether the
@@ -65,3 +65,9 @@ Write the record and make line 5 — directly under the freshness stamp — read
 here and stop editing the body once it lands. When the design ships, fold the
 as-built facts into `architecture/` and change only the status line. See
 [`../AGENTS.md`](../AGENTS.md) §8.
+
+## Consumer trials
+
+| Record | Status | Date | One line |
+|---|---|---|---|
+| [bonsai-session-trial.md](bonsai-session-trial.md) | In progress | 2026-09-18 | Login-session allowance, provider subsidy, four implementation slices, and 60 acceptance scenarios |

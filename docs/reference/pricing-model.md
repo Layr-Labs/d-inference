@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-11 · commit `e3993c611`
+> Last updated: 2026-09-18 · commit `954f570d1`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -297,3 +297,18 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | Reconciliation | One-minute loop, up to 200 records per scan; posted records polled for 90 days and later returns handled by events | `coordinator/api/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`); `coordinator/store/global_payouts_postgres.go` (`ListGlobalPayoutsToReconcile`) |
 
 Published recipient bounds are stored in `coordinator/billing/globalpayouts/recipient_limits.go` (`Country.Limits`) from [Stripe's recipient minimums and maximums](https://docs.stripe.com/global-payouts/send-money#recipient-minimums). The API reports the local-currency threshold and validates the credited amount; direct pre-quote comparison is possible for USD destinations. The private payout row retains Stripe's `estimated_fees` as `estimated_stripe_fees` for operator cost review (`coordinator/api/global_payouts_withdraw.go`, `handleGlobalPayoutQuote`).
+
+## Bonsai sponsored pricing policy
+
+The policy library is initially inactive; admission and durable settlement are separate integration changes. Launch values are an explicit snapshot of the actual configured reference model, not a live coupling to future Qwen changes.
+
+| Contract | Value | Citation |
+|---|---|---|
+| Campaign | `bonsai-2-lifetime-v1`; account-scoped lifetime allowance of `5000000` prompt plus completion tokens | `coordinator/trial/policy.go` (`DefaultCampaignID`, `DefaultTokenLimit`) |
+| Model identity | Exact resolved IDs only; initial build `prism-ml/Ternary-Bonsai-2-27B-mlx-2bit` | `coordinator/trial/policy.go` (`BonsaiBuildID`, `Config.Matches`) |
+| Rates | Each verified Qwen input/output rate divided by ten; positive exact integer division required | `coordinator/trial/pricing.go` (`DeriveRates`) |
+| Sponsored cost | Checked arithmetic with separate integer rounding per direction and the existing request minimum | `coordinator/trial/pricing.go` (`Rates.Cost`) |
+| Payer | Consumer charge zero; provider work retains nonzero pricing, funded by Darkbloom | [trial design](../design/bonsai-session-trial.md#pricing-and-provider-payment-contract) |
+| Reservation math | Checked prompt-plus-output sum and multiplicity; integration must supply a safe prompt bound | `coordinator/trial/tokens.go` (`ReservationTokens`) |
+
+The one-tenth ratio applies to rates. Currency rounding and the minimum request charge mean tiny requests need not settle at exactly one-tenth the corresponding Qwen request cost.

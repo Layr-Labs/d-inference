@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-18 · commit `954f570d1`
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -234,3 +234,7 @@ Mechanism for each error, including the exact functions, is in
 - [`models.md`](models.md) — `GET /v1/models` and its `pricing` block
 - [`../provider/self-route.md`](../provider/self-route.md) — routing to your own machine, which settles free
 - [`../reference/api-contracts.md`](../reference/api-contracts.md) — error envelope and status codes
+
+## Bonsai trial rollout
+
+The Bonsai login-session offer is being implemented behind a disabled feature switch. It is not enabled by installing the pricing policy library. The intended allowance and paid API-key behavior are specified in the [trial design](../design/bonsai-session-trial.md); deployment and model qualification remain separate steps.

@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-18 · commit `5fc48d460`
+> Last updated: 2026-09-18 · commit `ad8dec1f2`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -810,4 +810,4 @@ must not run in parallel with other scheduler tests in the same process.
 
 ## Model-specific first-content slopes
 
-`coordinator/modelpolicy/first_content_sla.go` (`SetFirstContentSLAsFromEnv`) configures both fixed and per-input-token terms for exact model IDs, independently of model registration. Bonsai 2 uses a 10-second upstream base plus 3 ms per estimated prompt token; the live coordinator cutoff retains the existing 1-second response margin. This is the request-absolute first-content budget, carried through admission, queueing, retries and provider writer handoff, not an independent kernel prefill clock. Unrelated models and the legacy Qwen3-VL tightening policy retain their existing budgets. Configuration details are in [configuration.md](../reference/configuration.md).
+`coordinator/modelpolicy/first_content_sla.go` (`SetFirstContentSLAsFromEnv`) configures both fixed and per-input-token terms for exact model IDs, independently of model registration. Bonsai 2 uses a 10-second upstream base plus 5 ms per estimated prompt token; the live coordinator cutoff retains the existing 1-second response margin. This is the request-absolute first-content budget, carried through admission, queueing, retries and provider writer handoff, not an independent kernel prefill clock. Unrelated models and the legacy Qwen3-VL tightening policy retain their existing budgets. Configuration details are in [configuration.md](../reference/configuration.md).

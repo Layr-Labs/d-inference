@@ -314,7 +314,7 @@ func TestModelSpecificFirstContentDeadlineReachesProviderWire(t *testing.T) {
 				Models: []failoverModelSpec{{ID: tt.model}},
 				Script: func(ctx context.Context, fp *failoverProvider, req protocol.InferenceRequestMessage, _ []byte) {
 					if pending := reg.GetProvider(fp.registryID).GetPending(req.RequestID); pending != nil && tt.model == "ternary-bonsai-2-27b" {
-						want := 9*time.Second + time.Duration(pending.EstimatedPromptTokens)*3*time.Millisecond
+						want := 9*time.Second + time.Duration(pending.EstimatedPromptTokens)*5*time.Millisecond
 						if got := pending.FirstContentDeadline.Sub(pending.Timing.ReceivedAt); got != want {
 							t.Errorf("Bonsai live clock %s, want %s", got, want)
 						}

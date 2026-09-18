@@ -10,7 +10,7 @@ import (
 
 func bonsaiFirstContentSLA() firstContentDeadlineBases {
 	return firstContentDeadlineBases{upstream: 10 * time.Second, coordinator: 9 * time.Second,
-		perToken: 3 * time.Millisecond, customSLA: true}
+		perToken: 5 * time.Millisecond, customSLA: true}
 }
 
 // SetFirstContentSLAsFromEnv sets exact-model SLAs using

@@ -8,10 +8,10 @@ import (
 
 func TestBonsaiFirstContentSLA(t *testing.T) {
 	for _, model := range []string{"ternary-bonsai-2-27b", "EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit", "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"} {
-		if got := UpstreamFirstContentDeadline(model, 10_000, 10*time.Second); got != 40*time.Second {
+		if got := UpstreamFirstContentDeadline(model, 10_000, 10*time.Second); got != 60*time.Second {
 			t.Fatalf("%s upstream=%s", model, got)
 		}
-		if got := CoordinatorFirstContentDeadline(model, 10_000, 5*time.Second); got != 39*time.Second {
+		if got := CoordinatorFirstContentDeadline(model, 10_000, 5*time.Second); got != 59*time.Second {
 			t.Fatalf("%s coordinator=%s", model, got)
 		}
 	}

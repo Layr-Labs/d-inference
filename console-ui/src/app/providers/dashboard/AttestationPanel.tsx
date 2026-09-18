@@ -67,7 +67,6 @@ export function AttestationPanel({
 }) {
   // Each chain link is "ok" only when all of its sub-checks pass; the spine
   // renders green up to the first broken link so the gap is obvious.
-  const enclaveOK = p.secure_enclave && p.se_key_bound;
   const osOK = p.sip_enabled && p.secure_boot_enabled && p.authenticated_root_enabled && p.runtime_verified;
   const mdmOK = p.trust_level === "hardware";
 
@@ -85,9 +84,8 @@ export function AttestationPanel({
 
   return (
     <div>
-      <ChainNode ok={enclaveOK} title="Secure Enclave">
+      <ChainNode ok={p.secure_enclave} title="Secure Enclave">
         <CheckLine ok={p.secure_enclave} label="Hardware-bound P-256 identity" />
-        <CheckLine ok={p.se_key_bound} label="SE key bound to MDA nonce" />
       </ChainNode>
 
       <ChainNode ok={osOK} title="OS security">

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-18 · commit `2fb16f79d`
+> Last updated: 2026-09-18 · commit `397b4d902`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -204,6 +204,14 @@ Exit 1 on `quarantined`, `busy`, `cancelled`, `downloadFailed`, `hashMismatch`,
 See [installation → Update](./installation.md#update).
 
 ### `darkbloom enroll` / `darkbloom unenroll`
+
+`EnrollmentService.enroll` in `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`
+returns App Attest setup guidance on macOS 27 or later before checking profiles,
+contacting the enrollment endpoint or opening Settings. Older macOS retains the
+legacy profile flow. `ProviderOnboardingPolicy` in
+`provider-swift/Sources/ProviderCore/Auth/ProviderOnboardingPolicy.swift` owns the
+OS choice and the upgrade/upcoming MDM deactivation notice. The OS choice never
+grants serving authorization or removes an existing profile.
 
 | Command | Flag | Type | Default | Effect |
 |---|---|---|---|---|

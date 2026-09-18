@@ -5,6 +5,24 @@ import Testing
 @Suite("Enrollment service")
 struct EnrollmentTests {
 
+    @Test("macOS 27+ never requests an enrollment profile", arguments: [27, 28])
+    func appAttestSetupSkipsProfile(macOSMajorVersion: Int) async throws {
+        // An unusable coordinator and openSystemSettings=true exercise the
+        // early exit before networking, profile creation or opening Settings.
+        let result = try await EnrollmentService().enroll(
+            coordinatorURL: "http://127.0.0.1:1", openSystemSettings: true,
+            macOSMajorVersion: macOSMajorVersion)
+        guard case .appAttest = result else {
+            Issue.record("App Attest setup unexpectedly returned an MDM profile")
+            return
+        }
+    }
+
+    @Test("older macOS retains legacy setup", arguments: [14, 26])
+    func olderMacOSUsesLegacySetup(macOSMajorVersion: Int) {
+        #expect(!ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion))
+    }
+
     @Test("attestation serial parser reads ioreg output")
     func attestationSerialParserReadsIOReg() {
         let output = """

@@ -79,4 +79,13 @@ import Testing
         #expect(!description.contains("removal is available"))
         #expect(description.contains("not currently qualified"))
     }
+
+    @Test func disabledCoordinatorLeavesMacOS27SetupPendingWithoutMDMFallback() {
+        var disabled = status(path: "none")
+        disabled.appAttestAvailable = false
+        let summary = ProviderAuthorizationReadiness.summary(disabled, now: 100, macOSMajorVersion: 27)
+        #expect(summary.contains("setup remains pending"))
+        #expect(!summary.contains("enrollment is still required"))
+        #expect(!ProviderAuthorizationReadiness.removalReady(disabled, now: 100))
+    }
 }

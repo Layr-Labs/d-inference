@@ -27,9 +27,12 @@ public enum ProviderAuthorizationReadiness {
             && authorization.hasCurrentAppAttestAuthorization(now: now)
     }
 
-    public static func summary(_ authorization: ProviderAuthorizationStatus?, now: Double) -> String {
+    public static func summary(
+        _ authorization: ProviderAuthorizationStatus?, now: Double,
+        macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+    ) -> String {
         guard let authorization else {
-            return "App Attest authorization is unconfirmed; keep Darkbloom enrollment until this running provider receives fresh coordinator readiness."
+            return "App Attest authorization is unconfirmed; keep any existing management profiles installed until this running provider receives fresh coordinator readiness."
         }
         if authorization.hasCurrentAppAttestAuthorization(now: now) {
             return "App Attest authorizes this connection. " + (authorization.mdmRemovalReady
@@ -43,7 +46,12 @@ public enum ProviderAuthorizationReadiness {
             return "The coordinator supports App Attest, but this connection is not currently qualified. "
                 + "Keep existing management in place. " + authorization.reason
         }
-        return "This coordinator has not enabled App Attest serving; legacy enrollment is still required."
+        if ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) {
+            return "This coordinator has not enabled App Attest serving. New macOS 27+ setup remains pending; "
+                + "check `darkbloom doctor` and contact support. Keep existing management profiles installed."
+        }
+        return "This coordinator has not enabled App Attest serving; legacy enrollment is still required on older macOS. "
+            + ProviderOnboardingPolicy.retirementNotice
     }
 }
 

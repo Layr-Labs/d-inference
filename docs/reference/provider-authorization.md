@@ -1,6 +1,6 @@
 # Provider serving authorization
 
-> Last updated: 2026-09-15 · commit `2cda8a221`
+> Last updated: 2026-09-18 · commit `397b4d902`
 
 The coordinator can authorize private inference through complete legacy verification or a qualified App Attest connection. These are separate evidence paths; App Attest never sets legacy MDA/APNs flags. The [rollout runbook](../operations/mdm-optional-rollout.md) separates code availability from activation qualification.
 
@@ -17,6 +17,20 @@ The [App Attest module map](../../coordinator/appattest/README.md) explains the 
 | Assertion freshness | `AssertionFreshness = 15 * time.Minute`; receipt and revocation deadlines may shorten it | `coordinator/appattest/authorization.go` (`EvaluateAuthorization`) |
 | Durable revocation/receipt refresh | `appAttestAuthorizationRefresh = 5 * time.Second`, batched at most 1000 distinct keys per query | `coordinator/appattest/service/authorizer.go` (`refresh`) |
 | Revocation freshness ceiling | `appAttestRevocationFreshness = 30 * time.Second` from the query start; a failed read cannot renew it | Same (`apply`) |
+
+## New-provider setup
+
+| Local OS / state | Setup behavior | Code |
+|---|---|---|
+| macOS 27 or later | Skip MDM profile download and opening Settings; link account, start provider and wait for App Attest serving approval | `scripts/install.sh` (`configure_device_verification`); `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift` (`EnrollmentService.enroll`) |
+| Older macOS | Legacy enrollment with an explicit macOS 27 upgrade option and upcoming Darkbloom MDM deactivation notice | Same; `provider-swift/Sources/ProviderCore/Auth/ProviderOnboardingPolicy.swift` |
+| Installer cannot parse the OS version | Download no profile; direct the user to `darkbloom enroll`, which uses the native OS version | `scripts/install.sh` (`configure_device_verification`) |
+| App Attest disabled or unqualified | New macOS 27+ setup stays pending; status/doctor explain the missing authorization, without silently enrolling in MDM | `provider-swift/Sources/ProviderCore/Diagnostics/ProviderAuthorizationReadiness.swift` (`summary`); `provider-swift/Sources/ProviderCore/Diagnostics/MDMTrustDiagnosis.swift` (`diagnose`) |
+| Existing Darkbloom or employer profile | Leave installed; Darkbloom removal still requires separate current readiness and local user action | `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift` |
+
+The setup page in `console-ui/src/components/provider-onboarding/content.ts`
+explains the same OS choice and planned MDM deactivation. This notice sets no
+retirement date and does not disable legacy serving.
 
 ## Serving decisions
 

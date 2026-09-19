@@ -157,7 +157,8 @@ type UsageStore interface {
 	UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) ([]UsageFlowBucket, error)
 
 	// Leaderboard returns the top N accounts ranked by the given metric
-	// over the given time window. Zero `since` means all-time.
+	// over the given time window. Zero `since` means all-time, which Postgres
+	// answers from earnings_summary rather than by scanning provider_earnings.
 	Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow
 
 	// NetworkTotals returns aggregated metrics across the network for the

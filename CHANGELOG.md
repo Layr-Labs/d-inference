@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — all-time earnings from the summary table
+
+- Serve all-time `GET /v1/network/totals` and `GET /v1/leaderboard` from `earnings_summary` instead of scanning `provider_earnings`. The summary gains `total_base_reward_micro_usd`, maintained by every earnings writer and backfilled once at boot from `provider_floor_draws`, so the work/reward split is unchanged. Windowed queries are unaffected.
+
 ## Unreleased — MDM-optional provider authorization
 
 - Warn on stderr for every CLI invocation below macOS 27, including help/version, while preserving commands and JSON output. Add prominent setup/dashboard upgrade notices, distinguish older from unknown reported OS versions, and retain legacy service during the transition.

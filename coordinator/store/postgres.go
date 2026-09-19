@@ -675,8 +675,13 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (key, key_type)
 		)`,
+		// Base rewards are folded into total_micro_usd; this column carries them
+		// separately so all-time network totals and the leaderboard can report
+		// the work/reward split without scanning provider_earnings.
+		`ALTER TABLE earnings_summary ADD COLUMN IF NOT EXISTS total_base_reward_micro_usd BIGINT NOT NULL DEFAULT 0`,
 
 		earningsSummaryBackfillPendingDDL,
+		earningsSummaryBaseRewardPendingDDL,
 
 		// Provider payouts — wallet-based payout history for unlinked providers
 		`CREATE TABLE IF NOT EXISTS provider_payouts (
@@ -1186,6 +1191,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 	}
 
 	if err := s.migrateEarningsSummary(ctx); err != nil {
+		return err
+	}
+	if err := s.migrateEarningsSummaryBaseReward(ctx); err != nil {
 		return err
 	}
 	if err := s.ensureProviderRestoreIndexes(ctx); err != nil {
@@ -2210,6 +2218,10 @@ func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, l
 		orderCol = "tokens"
 	case LeaderboardJobs:
 		orderCol = "jobs"
+	}
+
+	if since.IsZero() {
+		return s.leaderboardAllTime(ctx, orderCol, limit)
 	}
 
 	// `since` is bound once as $1 and referenced in both CTEs; `limit` is the
@@ -3834,13 +3846,15 @@ func (s *PostgresStore) RecordProviderEarning(earning *ProviderEarning) error {
 		 UNION ALL
 		 SELECT provider_key, 'provider', model, amount_micro_usd, prompt_tokens, completion_tokens FROM earning WHERE provider_key <> ''
 		)
-		INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
+		INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, total_base_reward_micro_usd, updated_at)
 		SELECT key, key_type, CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END, amount_micro_usd,
 		 CASE WHEN model = 'base_reward' THEN 0 ELSE prompt_tokens END,
-		 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END, NOW() FROM summaries
+		 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END,
+		 CASE WHEN model = 'base_reward' THEN amount_micro_usd ELSE 0 END, NOW() FROM summaries
 		ON CONFLICT (key, key_type) DO UPDATE SET
 		 total_count = earnings_summary.total_count + EXCLUDED.total_count,
 		 total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
+		 total_base_reward_micro_usd = earnings_summary.total_base_reward_micro_usd + EXCLUDED.total_base_reward_micro_usd,
 		 total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
 		 total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
 		 updated_at = NOW()`,

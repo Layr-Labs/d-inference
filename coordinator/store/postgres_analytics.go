@@ -139,13 +139,18 @@ func (s *PostgresStore) UsageFlowBuckets(since time.Time, _ map[string]*Provider
 // inference work in the window) so consumer-only reward recipients don't inflate
 // network provider totals. ActiveAccounts counts distinct provider accounts.
 //
-// The statement is three scans of provider_earnings; it runs in its own
+// All-time (zero `since`) is answered from earnings_summary (networkTotalsAllTime);
+// the windowed statement below is three scans of provider_earnings. It runs in its own
 // read-only transaction with the same work_mem policy as usage analytics. A failure —
 // most often the 10 s timeout — is returned as an error rather than a zero
 // row, so the handler never caches or serves all-zero totals.
 func (s *PostgresStore) NetworkTotals(since time.Time) (NetworkTotalsRow, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	if since.IsZero() {
+		return s.networkTotalsAllTime(ctx)
+	}
 
 	// `since`, when set, is bound once as $1 and referenced in the work,
 	// base_reward, providers, and reward subqueries.

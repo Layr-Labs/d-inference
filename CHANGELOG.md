@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — account-affinity routing
+
+- **Opt-in account affinity** — Add `off`/`shadow`/`on` account/model placement with stable verified-machine ranking and immediate-load spillover. A preferred machine must satisfy existing gates, projected decode quality, the absolute request deadline and a bounded estimated load-induced first-content delay relative to its own idle counterfactual, not a faster peer. Otherwise ordinary routing continues without a new wait or rejection. Retry fallbacks preserve affinity within every owner/version/quote priority tier, even after admission races. Identity snapshots avoid per-provider identity-string allocations and support verified canonical App Attest machine IDs without trusting unbound serial claims. Default `off` and `shadow` preserve existing selection, including repeated-prefix tiebreaking. Aggregate diagnostics contain no account or machine identity. The initial threshold is experimental, and activation does not enable prefix-cache reuse or change production settings.
+
 ## Unreleased — MDM-optional provider authorization
 
 - Warn on stderr for every CLI invocation below macOS 27, including help/version, while preserving commands and JSON output. Add prominent setup/dashboard upgrade notices, distinguish older from unknown reported OS versions, and retain legacy service during the transition.

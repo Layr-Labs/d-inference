@@ -10,6 +10,9 @@ import "time"
 func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider, model string, now time.Time) {
 	*snap = routingSnapshot{}
 	snap.provider = p
+	if r.accountAffinity.Mode != "" && r.accountAffinity.Mode != AccountAffinityOff {
+		snap.affinityIdentity = stableAccountAffinityIdentityLocked(p)
+	}
 	snap.model = model
 	snap.chipFamily = p.Hardware.ChipFamily
 	snap.binaryVersion = p.Version
@@ -28,6 +31,9 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 	snap.hasBackendCapacity = p.BackendCapacity != nil
 
 	if p.BackendCapacity != nil {
+		if r.accountAffinity.Mode != "" && r.accountAffinity.Mode != AccountAffinityOff {
+			snap.affinityBackendOccupancy = accountAffinityReportedOccupancy(p.BackendCapacity.Slots)
+		}
 		snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
 		snap.freeForLoadGB = p.BackendCapacity.FreeForLoadGB
 		if p.BackendCapacity.TotalMemoryGB > 0 {

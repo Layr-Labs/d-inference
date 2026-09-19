@@ -115,16 +115,19 @@ const (
 	SelectionRandom
 	// Stable prefix affinity among otherwise equivalent ordinary candidates.
 	SelectionPrefixAffinity
+	// Stable account/model rendezvous choice within the bounded latency pool.
+	SelectionAccountAffinity
 	selectionPathCount
 )
 
 var selectionPathNames = [selectionPathCount]string{
-	SelectionNone:           "none",
-	SelectionUniqueMin:      "unique_min",
-	SelectionTieQueue:       "tie_queue",
-	SelectionTiePending:     "tie_pending",
-	SelectionRandom:         "random",
-	SelectionPrefixAffinity: "prefix_affinity",
+	SelectionNone:            "none",
+	SelectionUniqueMin:       "unique_min",
+	SelectionTieQueue:        "tie_queue",
+	SelectionTiePending:      "tie_pending",
+	SelectionRandom:          "random",
+	SelectionPrefixAffinity:  "prefix_affinity",
+	SelectionAccountAffinity: "account_affinity",
 }
 
 // String returns the snake_case name of the path.

@@ -218,6 +218,10 @@ type Registry struct {
 	// without New(). See capacity_quotes.go.
 	capacityQuotes quoteTracker
 
+	// Account-affinity configuration is guarded by r.mu; there is no per-account
+	// registry state. A scan/commit compares this value to fence reconfiguration.
+	accountAffinity AccountAffinityConfig
+
 	cacheRouting                 *cacheRoutingTracker
 	cacheActivation              *cacheActivationGate
 	cacheRoutingMode             string

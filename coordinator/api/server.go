@@ -97,9 +97,9 @@ func requestIDFromContext(ctx context.Context) string {
 // so tests can stub it if needed; production uses crypto/rand.Read.
 var cryptoRand = rand.Read
 
-// consumerKeyFromContext retrieves the authenticated consumer's API key
-// from the request context. The key is stored by requireAuth middleware
-// and used as the consumer's identity for billing and usage tracking.
+// consumerKeyFromContext retrieves the authenticated account ID (not an API
+// key secret or key ID). requireAuth stamps the same identity for all of an
+// account's API keys and JWTs; billing and account/model affinity share it.
 func consumerKeyFromContext(ctx context.Context) string {
 	if v, ok := ctx.Value(ctxKeyConsumer).(string); ok {
 		return v

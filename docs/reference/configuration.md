@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-18 · commit `ad8dec1f2`
+> Last updated: 2026-09-18 · commit `d78ae77ef`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -121,7 +121,16 @@ Trust floor, model routing and per-request quality:
 | `EIGENINFERENCE_HEALTH_EJECTION` | `off`/`0`/`false`/`no` disables | on | `coordinator/registry/health_ejection_switch.go` (`healthEjectionSwitch`, parsed once at package init); `coordinator/registry/health_ejection.go` (`healthEjectionEnabled`) | Kill switch for provider health ejection; see [`../architecture/routing.md`](../architecture/routing.md). |
 | `EIGENINFERENCE_DISABLE_CLIENT_ERROR_STOP` | bool | `false` | `coordinator/cmd/coordinator/main.go` (`SetDisableClientErrorStop`) | Lets deterministic provider 4xx errors fail over instead of stopping the dispatch ladder. |
 
-TTFT admission and dispatch termination:
+#### Account affinity
+
+These switches control account/model placement, independently of cache participation; see the [routing mechanism](../architecture/routing.md#account-affinity-and-bounded-spillover).
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `EIGENINFERENCE_ACCOUNT_AFFINITY_MODE` | `off`, `shadow`, `on` (trimmed, case-insensitive) | `off` | `coordinator/registry/account_affinity_config.go` (`ReadAccountAffinityConfig`, `AccountAffinityConfig.Check`) | `off` preserves ordinary routing; `shadow` records the counterfactual without changing its winner; `on` prefers a safe, deterministically ranked account/model machine. Invalid values fail validation. |
+| `EIGENINFERENCE_ACCOUNT_AFFINITY_MAX_TTFT_PENALTY_MS` | finite float ≥ 0 | `250.0` | `coordinator/registry/account_affinity_config.go` (`defaultAccountAffinityMaxTTFTPenaltyMs`, `ReadAccountAffinityConfig`, `AccountAffinityConfig.Check`) | Maximum estimated TTFT increment caused by load on the preferred machine, compared with an estimated idle counterfactual for that same hardware/model/request, not with a faster peer. Explicit `0` permits no estimated load increment; negative, nonfinite or malformed values fail validation. This experimental bound is neither a wait timer nor a measured-latency guarantee, and does not relax the absolute request deadline. |
+
+#### TTFT admission and dispatch termination
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|

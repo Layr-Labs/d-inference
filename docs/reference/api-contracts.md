@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-18 · commit `6050cc4d4`
+> Last updated: 2026-09-18 · commit `d78ae77ef`
 
 The complete public HTTP surface of the coordinator, derived from the 112 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -38,6 +38,13 @@ Code: `coordinator/api/me_handlers.go` (`buildMyProvider`).
 ## Conventions used in the route tables
 
 **Auth column** — how the handler chain establishes identity. The only credential header is `Authorization: Bearer <token>` (`extractBearerToken`); the coordinator never reads `x-api-key`.
+
+The internal `ConsumerKey` is the authenticated account ID, not an API-key
+secret or key ID (`consumerKeyFromContext`, `coordinator/api/server.go`).
+All keys and JWTs for that account share the optional
+[account-affinity placement scope](../architecture/routing.md#account-affinity-and-bounded-spillover).
+Affinity adds no client header, request field, or guaranteed machine pinning;
+existing key restrictions and provider admission still apply.
 
 | Label | Mechanism | Symbol |
 |---|---|---|

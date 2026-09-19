@@ -13,10 +13,11 @@ import (
 
 // Config holds registry-level configuration.
 type Config struct {
-	MinTrustLevel string
-	WarmPool      WarmPoolConfig
-	CacheRouting  CacheRoutingConfig
-	QualityCap    QualityCapConfig
+	MinTrustLevel   string
+	WarmPool        WarmPoolConfig
+	CacheRouting    CacheRoutingConfig
+	AccountAffinity AccountAffinityConfig
+	QualityCap      QualityCapConfig
 }
 
 type CacheRoutingConfig struct {
@@ -145,7 +146,8 @@ func (c WarmPoolConfig) perTickCeiling() int {
 func ReadConfig() Config {
 	artifacts, artifactsErr := readCacheRoutingArtifacts()
 	return Config{
-		MinTrustLevel: os.Getenv(env.EnvPrefix + "_MIN_TRUST"),
+		AccountAffinity: ReadAccountAffinityConfig(),
+		MinTrustLevel:   os.Getenv(env.EnvPrefix + "_MIN_TRUST"),
 		WarmPool: WarmPoolConfig{
 			Enabled:                   env.EnvBool(env.EnvPrefix+"_WARM_POOL_ENABLED", true),
 			ObserveOnly:               env.EnvBool(env.EnvPrefix+"_WARM_POOL_OBSERVE_ONLY", false),
@@ -233,6 +235,9 @@ func (c Config) Check() error {
 		return err
 	}
 	if err := c.CacheRouting.Check(); err != nil {
+		return err
+	}
+	if err := c.AccountAffinity.Check(); err != nil {
 		return err
 	}
 	return c.QualityCap.Check()

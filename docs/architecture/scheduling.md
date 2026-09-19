@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-18 · commit `397b4d902`
+> Last updated: 2026-09-18 · commit `d78ae77ef`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -110,6 +110,14 @@ pops; and every waiter enforces its own `maxWait` timer. A model key is
 deleted from the map when nothing survives the sweep.
 
 ### Slot states
+
+Reservation and public capacity preflight share the locked provider projection
+in `coordinator/registry/routing_snapshot.go` (`fillRoutingSnapshotPLocked`),
+including offloaded-weight load estimates and token-budget clamps. When
+[account affinity](routing.md#account-affinity-and-bounded-spillover) is enabled,
+the same snapshot also carries verified machine identity and whole-machine
+reported occupancy. Those fields inform placement preferences only; they do
+not replace any memory, concurrency, or authorization gate.
 
 A provider's heartbeat carries one `BackendSlotCapacity` per model it has
 engine state for (`coordinator/protocol/messages.go`). The coordinator's

@@ -1,0 +1,8 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "redirects": [
+    { "source": "/privacy.html", "destination": "https://www.darkbloom.ai/privacy", "statusCode": 307 },
+    { "source": "/terms.html", "destination": "https://www.darkbloom.ai/terms", "statusCode": 307 },
+    { "source": "/(.*)", "destination": "https://www.darkbloom.ai/", "statusCode": 307 }
+  ]
+}

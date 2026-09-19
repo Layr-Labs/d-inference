@@ -304,15 +304,27 @@ extension Start {
             return try await fallbackPicker(
                 entries: entries,
                 memoryGb: memoryGb,
+                maxModelSlots: config.backend.maxModelSlots,
                 client: client,
                 runtimeCapabilities: runtimeCapabilities)
         }
 
-        // Run the interactive TUI picker.
-        let selectedIndices = try runModelPicker(entries: entries, memoryGb: memoryGb)
-
-        guard !selectedIndices.isEmpty else {
-            return []
+        // Review slots before downloads. Re-selection keeps the same config
+        // and catalog; only an explicit limit change writes provider.toml.
+        var selectedIndices: [Int] = []
+        while true {
+            selectedIndices = try runModelPicker(
+                entries: entries, memoryGb: memoryGb,
+                maxModelSlots: config.backend.maxModelSlots,
+                initialSelection: selectedIndices)
+            guard !selectedIndices.isEmpty else { return [] }
+            let accepted = try Self.reviewModelSlots(
+                selectedCount: selectedIndices.count,
+                current: config.backend.maxModelSlots,
+                saveLimit: { limit in
+                    try setModelSlotLimit(limit, at: snapshot.configPath, fallback: config)
+                })
+            if accepted { break }
         }
 
         // Download any selected models that aren't local yet.
@@ -355,6 +367,7 @@ extension Start {
     private func fallbackPicker(
         entries: [PickerEntry],
         memoryGb: Double,
+        maxModelSlots: UInt64,
         client: ModelCatalogClient,
         runtimeCapabilities: Set<ProviderRuntimeCapability>
     ) async throws -> [String] {
@@ -392,6 +405,10 @@ extension Start {
             let byID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             selected = ids.compactMap { byID[$0] }
         }
+
+        print("  \(ModelSlotPolicy.summary(selectedCount: selected.count, configuredLimit: maxModelSlots))")
+        print("  \(ModelSlotPolicy.selectionAdvice(selectedCount: selected.count, configuredLimit: maxModelSlots))")
+        print("  To change the limit, run start interactively or edit [backend] max_model_slots.")
 
         let localIDs = Set(entries.filter(\.downloaded).map(\.id))
         let missing = selected.filter { !localIDs.contains($0.id) }

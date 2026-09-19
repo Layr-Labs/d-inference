@@ -1,11 +1,12 @@
 # Provider quickstart
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-18 · commit `397b4d902`
 
 From a fresh Apple Silicon Mac to a provider that is registered with the
 coordinator, linked to your account and serving. For operators; install, check,
-log in, pick models, start — then enrol for the `hardware` trust level that
-public traffic requires.
+log in, pick models, start, then confirm serving authorization. macOS 27 or later
+uses App Attest without new Darkbloom MDM enrollment. Darkbloom MDM will be
+deactivated soon; upgrade to macOS 27 to avoid the legacy enrollment step.
 
 ## Prerequisites
 
@@ -89,18 +90,25 @@ watchdog `io.darkbloom.watchdog`
 (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`). The service
 starts again at every login.
 
-### 6. Enrol for public traffic
+### 6. Confirm verification
+
+On **macOS 27 or later**, the installer and `darkbloom enroll` skip MDM profile
+download and System Settings. Run `darkbloom status` and `darkbloom doctor` to
+check App Attest approval. Serving requires a qualified signed provider and an
+enabled coordinator; pending or unavailable approval does not trigger MDM
+fallback. See [serving authorization](../reference/provider-authorization.md).
+
+On **older macOS**, upgrade to macOS 27 to avoid MDM, or finish the legacy setup:
 
 ```bash
 darkbloom enroll
 ```
 
-A freshly started provider is `self_signed`; the coordinator sends public
-requests only to `hardware`-level machines, which requires MDM enrolment of
-this Mac. What the command does, how long the upgrade takes and how to read the
-result are in [Reaching and keeping `hardware` trust](./attestation.md#steps).
-Until then only your own [self-route](./self-route.md) requests reach the
-machine.
+Approve the Darkbloom profile in System Settings and follow the
+[legacy verification steps](./attestation.md#steps). Darkbloom MDM will be
+deactivated soon. Keep any employer management profile. Existing Darkbloom
+profiles should remain installed until `darkbloom unenroll` approves App Attest
+migration; choosing full exit instead stops the provider.
 
 ## Verify
 
@@ -117,9 +125,10 @@ and the stale threshold are in
 snapshot is reported as such
 (`provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`, `isStale`).
 
-The provider is earning once `doctor` shows the trust level the coordinator
-requires for routing; see [attestation](./attestation.md) for the levels and how
-to reach `hardware` trust.
+The provider becomes eligible for public traffic after the coordinator grants
+current App Attest authorization or complete legacy verification. Check recorded
+earnings in the dashboard; connection or setup completion alone does not prove
+that the provider is serving or earning. See [attestation](./attestation.md).
 
 ## Configuration
 

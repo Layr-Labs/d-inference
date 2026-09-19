@@ -37,6 +37,12 @@ and schema response formats plus multi-system and text/tool/endpoint forms; it c
 actual Swift tokens and scope-bound hashes with Rust plans. No production
 prompts or model weights are needed (`scripts/verify-prompt-parity.sh`).
 
+Installer onboarding regression coverage runs with `scripts/test-install-atomic.sh`.
+It invokes `scripts/test-install-onboarding.py`, which executes the actual setup
+function with profile/network/Settings effects mocked: macOS 27+, older and unknown
+versions, existing management, and unavailable enrollment. This checks setup
+routing only; signed Mac App Attest qualification is separate.
+
 ## SDK 27 release qualification
 
 The `qualify-sdk` job in `.github/workflows/release-swift.yml` runs production

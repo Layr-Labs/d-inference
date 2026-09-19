@@ -12,6 +12,7 @@ shapes under [`../reference/README.md`](../reference/README.md).
 | Runbook | Scope |
 |---|---|
 | [`model-token-promotions.md`](model-token-promotions.md) | Configure capped model-token claims, signup eligibility, paid fallback and provider settlement |
+| [mdm-optional-rollout.md](mdm-optional-rollout.md) | Qualify and activate App Attest serving, then scoped Darkbloom enrollment removal |
 | [`coordinator-deploy.md`](coordinator-deploy.md) | Swap the production coordinator container to a reviewed build, verify, roll back |
 | [`coordinator-startup-measurement.md`](coordinator-startup-measurement.md) | Measure post-stop candidate readiness, per-model routable capacity and optional disposable-test inference separately |
 | [`global-payouts.md`](global-payouts.md) | Enable international bank payouts, verify bank arrival and reconcile uncertain transfers |

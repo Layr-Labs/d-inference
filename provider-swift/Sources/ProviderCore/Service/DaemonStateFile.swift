@@ -36,6 +36,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// Optional so state files written by older daemons continue to decode.
     public var attestationPublicKey: String?
     public var trust: Trust?
+    /// Coordinator whose live trust status is recorded; a different CLI config
+    /// must not use it to offer removal of another enrollment.
+    public var coordinatorUrl: String?
     public var currentModel: String?
     public var warmModels: [String]
     /// The daemon's ACTUAL advertised set (post CLI overrides, family and
@@ -66,11 +69,14 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var status: String
         public var reason: String
         public var receivedAt: Double
-        public init(trustLevel: String, status: String, reason: String, receivedAt: Double) {
+        public var authorization: ProviderAuthorizationStatus?
+        public init(trustLevel: String, status: String, reason: String, receivedAt: Double,
+                    authorization: ProviderAuthorizationStatus? = nil) {
             self.trustLevel = trustLevel
             self.status = status
             self.reason = reason
             self.receivedAt = receivedAt
+            self.authorization = authorization
         }
     }
 
@@ -207,6 +213,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         startedAt: Double,
         attestationPublicKey: String? = nil,
         trust: Trust? = nil,
+        coordinatorURL: String? = nil,
         currentModel: String? = nil,
         warmModels: [String] = [],
         advertisedModels: [String]? = nil,
@@ -226,6 +233,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.startedAt = startedAt
         self.attestationPublicKey = attestationPublicKey
         self.trust = trust
+        self.coordinatorUrl = coordinatorURL
         self.currentModel = currentModel
         self.warmModels = warmModels
         self.advertisedModels = advertisedModels

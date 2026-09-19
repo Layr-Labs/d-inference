@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-18 · commit `b13dbe7b5`
+> Last updated: 2026-09-18 · commit `6050cc4d4`
 
 The complete public HTTP surface of the coordinator, derived from the 112 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -13,6 +13,27 @@ provider downloads; the admin registration accepts the same object. See the
 Admin request-profile records expose additive
 [prediction decision fields](prediction-decision-telemetry.md). Public inference
 responses and error codes are unchanged.
+
+## App Attest authorization additions
+
+| Surface | Contract | Code |
+|---|---|---|
+| `POST /v1/admin/app-attest/revoke` | Admin authenticated; account/key/reason body, durable idempotent revocation and immediate local dispatch fencing; [exact response and errors](provider-authorization.md#admin-revocation) | `coordinator/api/app_attest_revocation.go` (`handleAdminAppAttestRevoke`) |
+| `GET /v1/providers/attestation` | Additive `app_attest_authorized` boolean and `authorization_expires_at` Unix deadline; no account, credential, canonical machine IDs or raw evidence exposed | `coordinator/api/provider.go` (`handleProviderAttestation`) |
+
+`GET /v1/me/providers` adds account-scoped `app_attest_authorized` and optional
+`authorization_expires_at` (exclusive Unix seconds), computed from the current
+connection's complete registry authorization; stored/offline records never
+restore that grant. These fields add no private App Attest IDs or proof bytes
+and never change legacy `trust_level` or `mda_verified`. Code:
+`coordinator/api/me_authorization.go` (`attachMyProviderAuthorization`).
+
+Each owner-visible provider may also include `os_version`, the current or last
+app-reported macOS version retained from its signed registration blob in
+`attestation.VerificationResult.OSVersion`. This is upgrade guidance, not
+Apple-certified inventory or serving authorization. A live connection without
+an OS report clears any older stored version; absent values mean unknown.
+Code: `coordinator/api/me_handlers.go` (`buildMyProvider`).
 
 ## Conventions used in the route tables
 

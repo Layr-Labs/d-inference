@@ -11,6 +11,10 @@ routes, and env vars are tabulated in
 [`reference/pricing-model.md`](../reference/pricing-model.md); the consumer
 how-to is [`consumer/billing.md`](../consumer/billing.md).
 
+Qualified App Attest-only providers can receive base rewards through the [canonical machine settlement contract](../reference/provider-authorization.md#machine-identity-and-base-rewards). `coordinator/payments/baserewards/machine_candidates.go` unions known-machine uptime, aggregates account-matching organic earnings and rechecks current serving authorization before credit. Historical balances and organic-earning keys remain unchanged; neither a fresh connection nor a credential rotation creates another same-epoch floor.
+
+The remaining epoch allocation commits as one transaction in `coordinator/payments/baserewards/settlement_plan.go` (`settleCandidatePlan`) and `coordinator/store/floor_draw_batch.go` (`FloorDrawBatchStore`). If authorization or canonical identity changes before commit, the pending plan rolls back and the engine reallocates its unspent budget. This includes partial and zero-value waitlisted rows, so a rejected provider cannot permanently reduce another provider's payment. Previously finalized rows remain unchanged.
+
 ## Context
 
 - **Prepaid, reservation-first.** There is no post-paid billing. A request is
@@ -253,7 +257,8 @@ per-epoch base income on top of organic earnings. It is wired in
 (default `false`, `coordinator/api/server_config.go`); the engine loop is
 `Engine.Run`. Per closed `SettlementPeriod = 5 * time.Minute` epoch
 (`epoch.go`), for each machine that passes every gate in
-`engine.go` `buildCandidates` — attested and trust ≥ minimum; online with the
+`machine_candidates.go` `buildCandidates` — current complete public serving
+authorization through legacy verification or qualified App Attest; online with the
 model loaded; `MemoryPressure < 0.8` and thermal state not `critical`; a
 provider key; uptime from `provider_sessions` ≥ `MinUptimeFrac` (`0.90`, open
 sessions accrue to `last_seen + defaultGraceSeconds = 90`); hardware model in
@@ -271,13 +276,17 @@ draw   = max(0, floor − k × organicEarnings),  k = DefaultReductionK = 0.0   
 what earlier runs already settled for the epoch, funds the
 `workhorseMinGB`–`workhorseMaxGB` band first from a `WorkhorseReserveFrac` sub-pool, then
 water-fills by `valuePerFloorDollar`; `PerAccountCapFrac = 0` disables the
-per-account cap. `SettleProviderFloorDraw` writes one
+per-account cap. `SettleProviderFloorDrawBatch` commits the remaining allocation
+plan atomically, using the idempotent draw primitive to write one
 `provider_floor_draws` row per `(provider_key, epoch_id)`, credits the
 account as withdrawable `provider_floor_draw`, and mirrors a
 `provider_earnings` row with `model = 'base_reward'` and
 `job_id = floor:<epoch>:<provider_key>` so it shows in earnings history while
-`SumProviderEarningsByKey` excludes it from organic earnings. Settlement is
-serialized by an advisory lock. `GET /v1/admin/base-rewards` returns
+`SumProviderEarningsByKey` excludes it from organic earnings. A late rejection
+rolls back every pending row and recalculates the unspent allocation; no partial
+or zero-value row from that rejected plan is frozen. Settlement is serialized
+by a per-epoch lock (an advisory lock in PostgreSQL).
+`GET /v1/admin/base-rewards` returns
 `{"enabled": false}` when the engine is not wired
 (`coordinator/api/base_rewards_handlers.go`). The tier table is in
 [`reference/pricing-model.md`](../reference/pricing-model.md#base-rewards);
@@ -381,7 +390,9 @@ this release; they do not replace the existing reward inputs or eligibility gate
     (`UNIQUE (provider_key, epoch_id)`), credits withdrawable, and mirrors a
     `provider_earnings` row with `model = 'base_reward'` that
     `SumProviderEarningsByKey` excludes from the next epoch's `earned`
-    (`coordinator/store/postgres_base_rewards.go`).
+    (`coordinator/store/postgres_base_rewards.go`). The engine commits remaining
+    draws as an atomic batch and retries late eligibility/identity rejections
+    without changing finalized old draws (`coordinator/payments/baserewards/settlement_plan.go`).
 
 ## Failure modes
 

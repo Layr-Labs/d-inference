@@ -37,6 +37,7 @@ import (
 	"sync"
 	"time"
 
+	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
@@ -233,7 +234,7 @@ func (s *Server) closeSessionWithReason(providerID, reason string) {
 // them. It runs until the connection closes or the context is cancelled.
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
 	var provider *registry.Provider
-	var appAttestShadow *appAttestShadowSession
+	var appAttestShadow *attestservice.Session
 	tracker := newChallengeTracker()
 	var schedulerSEKey string
 	var schedulerGeneration uint64
@@ -373,7 +374,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				if appAttestShadow != nil {
 					// Inventory periodically persists this same atomic counter,
 					// including on disconnect. No proof or database work here.
-					appAttestShadow.dropped.Add(1)
+					appAttestShadow.RejectOversized()
 				}
 				s.ddIncr("app_attest.shadow.frames_rejected", []string{"reason:oversized"})
 			}
@@ -411,9 +412,29 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				_ = conn.Close(websocket.StatusPolicyViolation, "invalid prefix-cache capabilities")
 				return
 			}
+			// Resolve the token once before choosing the identity rollout path.
+			// Keep linkage after attestation restoration, as with legacy clients;
+			// only this validated account may select the App Attest cohort.
+			authenticatedAccountID, authenticatedTokenLabel := "", ""
+			accountResolved := false
+			resolveAccount := func() {
+				accountResolved = true
+				pt, err := s.store.GetProviderToken(regMsg.AuthToken)
+				if err != nil || pt == nil {
+					s.logger.Warn("provider auth token invalid", "provider_id", providerID, "error", err)
+				} else {
+					authenticatedAccountID, authenticatedTokenLabel = pt.AccountID, pt.Label
+				}
+			}
+			if regMsg.AuthToken != "" && s.appAttestFeature().NeedsIdentityAccount(regMsg) {
+				resolveAccount()
+			}
 			provider = s.registry.Register(providerID, conn, regMsg)
+			if s.appAttestIdentityCandidate(regMsg, authenticatedAccountID) {
+				provider.RequireVerifiedMachineIdentity()
+			}
 			s.attachProviderLocation(providerID, provider, r)
-			if err := s.verifyProviderAttestation(loopCtx, providerID, provider, regMsg); err != nil {
+			if err := s.verifyProviderAttestation(loopCtx, providerID, provider, regMsg, authenticatedAccountID); err != nil {
 				// No duplicate eviction or account/MDM continuation after failed
 				// recovery. Pending state remains unroutable through teardown.
 				s.logger.Warn("provider registration recovery failed", "provider_id", providerID, "error", err)
@@ -437,31 +458,19 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					"memory_gb":     regMsg.Hardware.MemoryGB,
 				})
 
-			// Resolve auth token → account linkage.
-			authenticatedAccountID := ""
-			if regMsg.AuthToken != "" {
-				pt, err := s.store.GetProviderToken(regMsg.AuthToken)
-				if err != nil {
-					s.logger.Warn("provider auth token invalid",
-						"provider_id", providerID,
-						"error", err,
-					)
-				} else {
-					provider.Mu().Lock()
-					provider.AccountID = pt.AccountID
-					authenticatedAccountID = pt.AccountID
-					provider.Mu().Unlock()
-					// Account linkage can be the provider's ONLY stable identity
-					// (Open Mode / invalid attestation → the acct: fallback), and
-					// it lands after the attestation-time bind — re-bind so fault
-					// state keys by identity instead of the session UUID.
-					provider.RebindStableFaultKey()
-					s.logger.Info("provider linked to account",
-						"provider_id", providerID,
-						"account_id", pt.AccountID,
-						"token_label", pt.Label,
-					)
-				}
+			// Legacy-only providers keep their original post-restoration lookup.
+			// A structurally eligible App Attest registration already resolved
+			// this token; never reroll its cohort through a second store read.
+			if regMsg.AuthToken != "" && !accountResolved {
+				resolveAccount()
+			}
+			if authenticatedAccountID != "" {
+				provider.Mu().Lock()
+				provider.AccountID = authenticatedAccountID
+				provider.Mu().Unlock()
+				provider.RebindStableFaultKey()
+				s.logger.Info("provider linked to account", "provider_id", providerID,
+					"account_id", authenticatedAccountID, "token_label", authenticatedTokenLabel)
 			}
 
 			// Store provider version. SetVersion also runs the version-changed
@@ -607,7 +616,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypeAppAttestShadow:
 			if appAttestShadow != nil {
-				appAttestShadow.offer(msg.Payload.(*protocol.AppAttestShadowMessage).Payload)
+				appAttestShadow.Offer(msg.Payload.(*protocol.AppAttestShadowMessage).Payload)
 			}
 
 		case protocol.TypeHeartbeat:
@@ -3033,7 +3042,12 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 // if one was included in the registration message. If the attestation is valid,
 // the provider is marked as attested. If missing or invalid, the provider is
 // accepted in Open Mode only when no binary hash policy is configured.
-func (s *Server) verifyProviderAttestation(ctx context.Context, providerID string, provider *registry.Provider, regMsg *protocol.RegisterMessage) error {
+func (s *Server) verifyProviderAttestation(ctx context.Context, providerID string, provider *registry.Provider, regMsg *protocol.RegisterMessage, authenticatedAccount ...string) error {
+	account := ""
+	if len(authenticatedAccount) > 0 {
+		account = authenticatedAccount[0]
+	}
+	identityCandidate := s.appAttestIdentityCandidate(regMsg, account)
 	policyConfigured, knownBinaryHashes := s.binaryHashPolicySnapshot()
 	if len(regMsg.Attestation) == 0 {
 		if policyConfigured {
@@ -3203,20 +3217,28 @@ func (s *Server) verifyProviderAttestation(ctx context.Context, providerID strin
 	// Resolve only this freshly verified identity, rather than loading all historical
 	// sessions before startup. Exclude every live session and keep incomplete
 	// registrations' identities unpublished across asynchronous persistence.
-	if err := s.restorePersistedProviderState(ctx, provider, result.SerialNumber, result.PublicKey); err != nil {
+	restoreSerial := result.SerialNumber
+	var expectedAccount []string
+	if identityCandidate {
+		restoreSerial = ""
+		expectedAccount = []string{account}
+	}
+	if err := s.restorePersistedProviderState(ctx, provider, restoreSerial, result.PublicKey, expectedAccount...); err != nil {
 		return err
 	}
 
 	// Independently recover the newest non-empty durable MDA chain. A newer
 	// empty record must not shadow a chain earned by an earlier session. The
 	// hardware-grant path still re-verifies the certificate and SE-key binding.
-	s.stageDurableMDAChain(provider, result.SerialNumber)
+	if !identityCandidate {
+		s.stageDurableMDAChain(provider, result.SerialNumber)
+	}
 
 	// Deduplicate: if another provider connection exists from the same physical
 	// device (same serial number), disconnect it. This prevents multiple
 	// provider processes on the same machine from registering independently
 	// and competing for a single shared vllm-mlx backend.
-	if result.SerialNumber != "" && !s.allowDuplicateProviderSerials {
+	if !identityCandidate && result.SerialNumber != "" && !s.allowDuplicateProviderSerials {
 		s.registry.DisconnectDuplicatesBySerial(providerID, result.SerialNumber)
 	}
 
@@ -3677,11 +3699,13 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	type providerAttestation struct {
-		ProviderID    string `json:"provider_id"`
-		ChipName      string `json:"chip_name"`
-		HardwareModel string `json:"hardware_model"`
-		TrustLevel    string `json:"trust_level"`
-		Status        string `json:"status"`
+		ProviderID             string `json:"provider_id"`
+		ChipName               string `json:"chip_name"`
+		HardwareModel          string `json:"hardware_model"`
+		TrustLevel             string `json:"trust_level"`
+		Status                 string `json:"status"`
+		AppAttestAuthorized    bool   `json:"app_attest_authorized"`
+		AuthorizationExpiresAt int64  `json:"authorization_expires_at,omitempty"`
 
 		// Hardware specs
 		MemoryGB int      `json:"memory_gb"`
@@ -3715,6 +3739,14 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 	var providers []providerAttestation
 
 	publicProviderModels := s.registry.PublicProviderModels()
+	// Read current authorization outside ForEachProvider's registry lock.
+	// Never publish account, credential or canonical machine identifiers here.
+	appAttestLeases := make(map[string]registry.AppAttestServingAuthorization)
+	for _, id := range s.registry.ProviderIDs() {
+		if lease, ok := s.registry.ProviderServingAuthorization(s.registry.GetProvider(id)); ok {
+			appAttestLeases[id] = lease
+		}
+	}
 	s.registry.ForEachProvider(func(p *registry.Provider) {
 		// Snapshot mutable fields under provider lock to avoid racing
 		// with background MDA verification and challenge goroutines.
@@ -3745,6 +3777,9 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		}
 
 		pa.Models = append(pa.Models, publicProviderModels[p.ID].Models...)
+		if lease, ok := appAttestLeases[p.ID]; ok {
+			pa.AppAttestAuthorized, pa.AuthorizationExpiresAt = true, lease.ValidUntil.Unix()
+		}
 
 		if attestResult != nil {
 			pa.ChipName = attestResult.ChipName
@@ -3783,10 +3818,11 @@ func (s *Server) sendTrustStatus(provider *registry.Provider, trustLevel registr
 		return
 	}
 	msg := protocol.TrustStatusMessage{
-		Type:       protocol.TypeTrustStatus,
-		TrustLevel: string(trustLevel),
-		Status:     status,
-		Reason:     reason,
+		Type:          protocol.TypeTrustStatus,
+		TrustLevel:    string(trustLevel),
+		Status:        status,
+		Reason:        reason,
+		Authorization: s.providerServingAuthorizationStatus(provider),
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {

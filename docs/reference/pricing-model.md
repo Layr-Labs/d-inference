@@ -170,7 +170,8 @@ Connected-account status `users.stripe_account_status`
 | `DefaultReductionK` | `0.0` (additive) | `floor.go` |
 | `MinUptimeForAvail` / `FullUptimeForAvail` | `0.90` / `1.00` | `floor.go` |
 | `defaultGraceSeconds` | `90` (open sessions accrue to `last_seen + grace`) | `engine.go` |
-| Health gates | `MemoryPressure < 0.8`; `ThermalState != "critical"`; online; model loaded; attested and trust ≥ minimum; linked account; hardware model known to `mdm.ModelMaxMemoryGB` | `engine.go` (`buildCandidates`) |
+| `FloorDrawBatchLimit` | `4096` pending rows; a larger plan returns an error without truncation or credit | `coordinator/store/floor_draw_batch.go` |
+| Health gates | Current complete public serving authorization; memory/thermal health and loaded-model readiness; linked account; qualified hardware capped by `hardware.ModelMaxMemoryGB` | `machine_candidates.go` (`rewardSnapshotEligible`, `rewardMemoryGB`) |
 
 Tier table (`floor.go` `floorTiers`; a machine takes the largest tier whose
 `MinGB` it meets; below 24 GB → `0`):
@@ -193,6 +194,8 @@ Formulas: `Avail(u) = clamp((u − 0.90) / 0.10, 0, 1)`;
 `provider_earnings` row has `model = 'base_reward'` and
 `job_id = floor:<epoch_id>:<provider_key>` (`coordinator/store/postgres_base_rewards.go`
 `SettleProviderFloorDraw`).
+
+`settleCandidatePlan` commits all pending rows atomically through `FloorDrawBatchStore`, rechecking current session authorization before each planned credit and before commit. A late rejection rolls back the pending plan and triggers reallocation under the same pool/account caps. Canonical identities, endpoint continuity and prior finalized rows follow the [provider authorization contract](provider-authorization.md#machine-identity-and-base-rewards). Code: `coordinator/payments/baserewards/settlement_plan.go`, `coordinator/store/floor_draw_batch.go`.
 
 ## Routes
 

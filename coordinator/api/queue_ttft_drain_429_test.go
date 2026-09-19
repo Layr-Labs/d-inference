@@ -38,7 +38,7 @@ func TestQueuedDedicatedRequestFailsFastOnDrainTTFTReject(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv := NewServer(reg, st, ServerConfig{FirstContentSLAAccounts: []string{testConsumerID}}, logger)
 	srv.SetTTFTHardReject(true)
 	srv.challengeInterval = time.Hour
 	ts := httptest.NewServer(srv.Handler())

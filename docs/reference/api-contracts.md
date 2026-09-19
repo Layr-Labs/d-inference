@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-18 · commit `6050cc4d4`
+> Last updated: 2026-09-18 · commit `d78ae77ef`
 
 The complete public HTTP surface of the coordinator, derived from the 112 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -503,7 +503,7 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
    and `metadata.job_id`, not in a new response ID. If no valid provider ID has
    been observed, the existing `chatcmpl-<job-id>` fallback is used.
 5. **Termination**: exactly one `data: [DONE]\n\n`, written by the coordinator after every coordinator-appended event. Any `[DONE]` from the provider is stripped first (`stripSSEDoneEvents`). Responses streams end with `response.completed` / `response.incomplete` instead.
-6. **No keepalives.** The coordinator never writes comment frames or pings; a silent stream means the provider has not produced a token. Before commit the first-content deadline bounds the silence (a miss is answered with 429 + `Retry-After`, see the status table); after commit `inferenceTimeout` bounds it (a terminal `error` event of type `timeout`).
+6. **No keepalives.** The coordinator never writes comment frames or pings; a silent stream means the provider has not produced a token. Before commit a first-content deadline bounds the silence only for accounts selected by `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS` (a miss is answered with 429 + `Retry-After`, see the status table). Other accounts have no first-content timeout and remain subject to client cancellation and provider-disconnect cleanup; after commit `inferenceTimeout` bounds it (a terminal `error` event of type `timeout`).
 7. **Chat errors after commit** are one terminal `data: {"error": {...}}` event, without `[DONE]`; optional authoritative metadata precedes it.
 8. **Sealed mode** seals each SSE event individually (see below).
 
@@ -532,9 +532,9 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 
 | Constant | Value | Where | Effect |
 |---|---|---|---|
-| `inferenceTimeout` | 600 s | `coordinator/api/consumer.go` | Streaming: maximum silence between chunks (the timer resets on every chunk) → terminal SSE `error` event, type `timeout`. Non-streaming: total wait for the response → 504 `timeout` |
-| `defaultFirstContentDeadlineBase` | the compiled default of [`EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS`](configuration.md#routing-admission-and-ttft) | `coordinator/api/consumer.go` | Fallback base of the request-absolute first-content deadline when the variable is unset. Deadline = `CoordinatorFirstContentDeadline(model, promptTokens, base)` = base + 1 ms per estimated prompt token, tightened per model by exact-model overrides (`coordinator/modelpolicy/first_content_deadline.go`, replaceable via `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES`). Expiry before any content → 429 `rate_limit_exceeded` + `Retry-After` (the pre-content 504 is reclassified by `classifyExhaustedStatus`) |
-| `preambleContentTimeout` | 90 s | `coordinator/api/consumer.go` | Cap from a provider's first preamble chunk (role delta / Responses lifecycle event, nothing written to the client yet) to its first content chunk; a provider that stalls after preamble fails over instead of holding the request for `inferenceTimeout`. Never exceeds the remaining first-content budget |
+| `inferenceTimeout` | 600 s | `coordinator/api/consumer.go` | Streaming: maximum silence between chunks (the timer resets on every chunk) → terminal SSE `error` event, type `timeout`. Non-streaming: remaining response wait after first-content commit → 504 `timeout` |
+| `defaultFirstContentDeadlineBase` | the compiled default of [`EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS`](configuration.md#routing-admission-and-ttft) | `coordinator/api/consumer.go` | Fallback base of the request-absolute first-content deadline for selected accounts when the variable is unset. Other accounts have no SLA deadline or provider budget. Deadline = `CoordinatorFirstContentDeadline(model, promptTokens, base)` = base + 1 ms per estimated prompt token, tightened per model by exact-model overrides (`coordinator/modelpolicy/first_content_deadline.go`, replaceable via `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES`). Expiry before any content → 429 `rate_limit_exceeded` + `Retry-After` (the pre-content 504 is reclassified by `classifyExhaustedStatus`) |
+| `preambleContentTimeout` | 90 s | `coordinator/api/consumer.go` | For SLA-selected accounts, cap from a provider's first preamble chunk (role delta / Responses lifecycle event, nothing written to the client yet) to its first content chunk; a provider that stalls after preamble fails over instead of holding the request for `inferenceTimeout`. Never exceeds the remaining first-content budget |
 | `maxDispatchAttempts` | 64 | `coordinator/api/consumer.go` | Upper bound on provider attempts per request |
 | `chunkBufferSize` | 256 | `coordinator/api/consumer.go` | Pre-commit chunk buffer per attempt |
 | `apiKeyCacheTTL` | 60 s | `coordinator/api/server.go` | API-key lookups are cached; a revocation takes effect within one TTL |

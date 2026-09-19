@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-17 · commit `77d1d1d86`
+> Last updated: 2026-09-18 · commit `4a453679b`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -596,7 +596,7 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | `request_id` | `string` | `String` | req | attempt UUID |
 | `body` | `InferenceRequestBody` | `JSONValue` | opt | plain body: `model`, `messages[]{role, content}`, `stream` (`bool`), `max_tokens` (`*int`, opt), `temperature` (`*float64`, opt), `endpoint` (`string`, opt; defaults to `/v1/chat/completions`). Empty when `encrypted_body` is set |
 | `encrypted_body` | `*EncryptedPayload` | `EncryptedPayload?` | opt | NaCl box; set whenever the provider registered a `public_key` |
-| `first_content_budget_ms` | `int64` | `Int64?` | opt | positive time left for this attempt to produce its first content chunk; 0 omitted |
+| `first_content_budget_ms` | `int64` | `Int64?` | opt | positive time left for this attempt to produce its first content chunk; 0 omitted. The coordinator omits this for accounts outside `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; missing means no coordinator first-content SLA, preserving existing Swift decoding |
 | `cache_receipt_nonce` | `string` | `String?` | opt | binds the prefix-cache receipts to this attempt |
 | `cache_scope` | `string` | `String?` | opt | |
 | `prefix_cache_protocol` | `int` | `Int?` | opt | |

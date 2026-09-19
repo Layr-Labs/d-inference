@@ -126,10 +126,12 @@ const (
 )
 
 // FirstContentDeadline returns this server's request-absolute first-content
-// budget for a concrete model. The ordinary base is instance-owned so
+// policy duration for a concrete model. Account enforcement is selected by
+// requestFirstContentDeadline; this helper also supplies a hedge timing hint.
+// The ordinary base is instance-owned so
 // production-like E2E servers can use the production value without mutating
-// concurrent unit tests. Exact-model overrides and the fixed 1ms/token slope
-// are centralized in modelpolicy.
+// concurrent unit tests. Exact-model overrides and per-token slopes are
+// centralized in modelpolicy.
 func (s *Server) FirstContentDeadline(model string, estimatedPromptTokens int) time.Duration {
 	base := s.firstContentDeadlineBase
 	if base <= 0 {
@@ -801,7 +803,7 @@ func (s *Server) maybeFallbackAlias(parsed map[string]any, mode aliasFallbackMod
 }
 
 func ttftTooSlow(bestTTFT time.Duration, hasTTFT bool, threshold time.Duration) bool {
-	return hasTTFT && bestTTFT > threshold
+	return threshold > 0 && hasTTFT && bestTTFT > threshold
 }
 
 // hardTTFTGateApplies reports whether the scheduler's token-prefill estimate is
@@ -1071,12 +1073,13 @@ func (s *Server) dispatchWithReserver(
 		Timing:                 timing,
 	}
 	stampModelTokenReservation(pr, modelTokenReservation(r))
-	if !receivedAt.IsZero() {
+	if !receivedAt.IsZero() && requestDeadline > 0 {
 		pr.FirstContentDeadline = receivedAt.Add(requestDeadline)
 	}
 
-	// Public inference routes (not self-route / prefer-owner) enforce the
-	// OpenRouter TTFT ceiling inside the scheduler. This makes the preflight
+	// Selected accounts on public routes (not self-route / prefer-owner)
+	// enforce the OpenRouter TTFT ceiling inside the scheduler. Exempt accounts
+	// have a zero requestDeadline and therefore no predictive ceiling. This makes the preflight
 	// check authoritative: the router cannot select a provider whose estimated
 	// TTFT is above the threshold.
 	// Routing v2 (P1 fix): only enforce the TTFT ceiling inside the scheduler when
@@ -1136,8 +1139,19 @@ func (s *Server) dispatchWithReserver(
 	// and either scans as soon as a slot frees or sheds capacity-shaped
 	// (errRoutingScanSaturated → one retryable 429) once the budget is gone.
 	if fullScan {
+		// Exempt requests still shed routing overload using the same short
+		// admission slice; this is a scan wait, not a first-content timeout.
+		scanBudget := preflightScanWait(0)
+		if requestDeadline > 0 {
+			scanBudget = firstTokenRemainingSince(receivedAt, requestDeadline)
+		}
+		if backupOf != "" {
+			// Backup selection runs on the primary's stream reader. Never park
+			// it behind fleet scans while healthy primary chunks accumulate.
+			scanBudget = 0
+		}
 		switch s.acquireRoutingScanSlot(
-			firstTokenRemainingSince(receivedAt, requestDeadline),
+			scanBudget,
 			r.Context().Done(),
 		) {
 		case scanSlotClientGone:
@@ -2026,7 +2040,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	estimatedPromptTokens := shape.routingPromptTokens(parsed)
 	billingPromptTokens := shape.billingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
-	deadline := s.FirstContentDeadline(model, estimatedPromptTokens)
+	deadline, deadlineErr := s.requestFirstContentDeadline(r, publicModel, model, estimatedPromptTokens)
+	if deadlineErr != nil {
+		s.writeServiceUnavailable(w, model)
+		return
+	}
 	timing.ParsedAt = time.Now()
 	rp.Mark(registry.StampReqParsed)
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
@@ -2172,17 +2190,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// derived from the pre-inline body is refreshed via refreshForwardBody.
 	var mediaInlined bool
 	rawBody, mediaInlined, ok = s.resolveRemoteMedia(w, r, rawBody, parsed, timing, mediaResolveMeta{
-		model:                 model,
-		publicModel:           publicModel,
-		stream:                stream,
-		estimatedPromptTokens: estimatedPromptTokens,
-		firstContentDeadline:  deadline,
-		requestedMaxTokens:    requestedMaxTokens,
-		hasTools:              hasTools,
-		requiresVision:        requiresVision,
-		selfRoute:             policy.enabled,
-		ownerAccountID:        policy.ownerAccountID,
-		traits:                routingTraits,
+		model:                   model,
+		publicModel:             publicModel,
+		stream:                  stream,
+		estimatedPromptTokens:   estimatedPromptTokens,
+		firstContentDeadline:    deadline,
+		firstContentDeadlineSet: true,
+		requestedMaxTokens:      requestedMaxTokens,
+		hasTools:                hasTools,
+		requiresVision:          requiresVision,
+		selfRoute:               policy.enabled,
+		ownerAccountID:          policy.ownerAccountID,
+		traits:                  routingTraits,
 	})
 	if !ok {
 		refundReservation()
@@ -2412,7 +2431,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		timing:                 timing,
 		profile:                rp,
 		deadline:               deadline,
-		speculativeAt:          time.Duration(float64(deadline) * speculativeTimerRatio),
+		speculativeAt:          s.firstContentHedgeDelay(model, estimatedPromptTokens, deadline),
 		modelMaxContext:        modelMaxContext,
 		refundReservation:      refundReservation,
 		// Track providers that failed during retry so we don't dispatch to them again.
@@ -2794,7 +2813,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	billingPromptTokens := estimateBillingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
-	genericDeadline := s.FirstContentDeadline(model, estimatedPromptTokens)
+	genericDeadline, deadlineErr := s.requestFirstContentDeadline(r, publicModel, model, estimatedPromptTokens)
+	if deadlineErr != nil {
+		s.writeServiceUnavailable(w, model)
+		return
+	}
 	timing.ParsedAt = time.Now()
 	rp.Mark(registry.StampReqParsed)
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
@@ -3004,7 +3027,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		timing:                 timing,
 		profile:                rp,
 		deadline:               genericDeadline,
-		speculativeAt:          time.Duration(float64(genericDeadline) * speculativeTimerRatio),
+		speculativeAt:          s.firstContentHedgeDelay(model, estimatedPromptTokens, genericDeadline),
 		modelMaxContext:        modelMaxContext,
 		refundReservation:      refundReservation,
 		excludeProviders:       make(map[string]struct{}),

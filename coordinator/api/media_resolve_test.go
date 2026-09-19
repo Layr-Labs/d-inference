@@ -225,7 +225,10 @@ func TestResolveRemoteMediaExpiredFirstContentClockDoesNotFetch(t *testing.T) {
 	w := httptest.NewRecorder()
 	timing := &registry.RequestTiming{ReceivedAt: time.Now().Add(-15 * time.Second)}
 
-	out, _, ok := s.resolveRemoteMedia(w, plainReq(), raw, parsed, timing, testMeta())
+	meta := testMeta()
+	meta.firstContentDeadline = 9 * time.Second
+	meta.firstContentDeadlineSet = true
+	out, _, ok := s.resolveRemoteMedia(w, plainReq(), raw, parsed, timing, meta)
 	if ok || out != nil {
 		t.Fatal("expired first-content clock must not fetch")
 	}
@@ -262,6 +265,28 @@ func TestResolveRemoteMediaUsesPinnedDeadlineWithoutRecomputing(t *testing.T) {
 	}
 	if w.Code != http.StatusRequestTimeout {
 		t.Fatalf("status=%d body=%s, want 408", w.Code, w.Body.String())
+	}
+}
+
+func TestResolveRemoteMediaPinnedSLAExemptionDoesNotRecompute(t *testing.T) {
+	cfg := mediafetch.DefaultConfig()
+	cfg.AllowPrivateIPs = true
+	cfg.AllowNonStandardPorts = true
+	var hits int32
+	media := httptest.NewServer(pngHandler(t, &hits))
+	defer media.Close()
+	s := minimalMediaServer(cfg)
+	// Even a later selector match must not replace a pinned zero budget.
+	s.firstContentSLAAccounts = map[string]struct{}{"selected-account": {}}
+	s.firstContentDeadlineBase = 9 * time.Second
+	raw, parsed := chatBodyBytes(t, media.URL+"/cat.png")
+	meta := testMeta()
+	meta.firstContentDeadlineSet = true
+	w := httptest.NewRecorder()
+	out, inlined, ok := s.resolveRemoteMedia(w, slaAccountRequest("selected-account"), raw, parsed,
+		&registry.RequestTiming{ReceivedAt: time.Now().Add(-15 * time.Second)}, meta)
+	if !ok || !inlined || len(out) == 0 || atomic.LoadInt32(&hits) != 1 {
+		t.Fatalf("pinned exemption fetched=%d ok=%v inlined=%v body=%s", hits, ok, inlined, w.Body)
 	}
 }
 

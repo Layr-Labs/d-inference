@@ -42,6 +42,10 @@ func setupTTFTFailoverServerWithConfig(
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
+	// These fixtures exercise the opted-in SLA path. Explicit empty selects exemption.
+	if cfg.FirstContentSLAAccounts == nil {
+		cfg.FirstContentSLAAccounts = []string{testConsumerID}
+	}
 	srv := NewServer(reg, st, cfg, logger)
 	srv.challengeInterval = 500 * time.Millisecond
 	ts := httptest.NewServer(srv.Handler())

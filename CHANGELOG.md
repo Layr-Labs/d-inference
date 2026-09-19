@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — provider onboarding residency
+
+- Show the resident-model slot limit alongside model selection. Before downloading,
+  interactive onboarding offers to keep the limit, explicitly change
+  `backend.max_model_slots`, or revise the selection. Keep the default of three
+  slots and unattended behavior unchanged. Replace the picker's simultaneous-serving
+  claim with slot and memory-headroom guidance.
+
 ## Unreleased — MDM-optional provider authorization
 
 - Warn on stderr for every CLI invocation below macOS 27, including help/version, while preserving commands and JSON output. Add prominent setup/dashboard upgrade notices, distinguish older from unknown reported OS versions, and retain legacy service during the transition.

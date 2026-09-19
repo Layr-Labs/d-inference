@@ -11,8 +11,12 @@ extension Start {
 
     /// Interactive multi-select model picker using raw terminal mode.
     /// Arrow keys navigate, Space toggles selection, Enter confirms, Esc/q cancels.
-    /// Enforces memory budget and shows two sections: downloaded and available.
-    internal func runModelPicker(entries: [PickerEntry], memoryGb: Double) throws -> [Int] {
+    /// Checks individual model fit and shows downloaded and available models.
+    /// Aggregate memory is only an estimate, not a guarantee of coexistence.
+    internal func runModelPicker(
+        entries: [PickerEntry], memoryGb: Double, maxModelSlots: UInt64,
+        initialSelection: [Int] = []
+    ) throws -> [Int] {
         let budget = memoryGb - Start.pickerOSReserveGb
 
         var cursorPos = 0
@@ -54,8 +58,13 @@ extension Start {
             Start.modelFitsBudget(sizeGb: entry.sizeGb, memoryGb: memoryGb)
         }
 
-        // Pre-select the largest downloaded model that can fit on this machine.
-        if let idx = entries.firstIndex(where: { $0.downloaded && canFitIndividually($0) }) {
+        // Preserve the selection when returning from the slot review.
+        // First entry still pre-selects one fitting downloaded model.
+        if !initialSelection.isEmpty {
+            for idx in initialSelection where entries.indices.contains(idx) {
+                selected[idx] = true
+            }
+        } else if let idx = entries.firstIndex(where: { $0.downloaded && canFitIndividually($0) }) {
             selected[idx] = true
         }
 
@@ -75,19 +84,21 @@ extension Start {
                 .map(\.element.sizeGb)
                 .reduce(0, +)
             let count = sel.filter { $0 }.count
-            let fitsSimultaneously = used <= budget
+            let weightEstimatesWithinBudget = used <= budget
 
             var lines = 0
 
             output += "  Select models (RAM: \(Int(memoryGb)) GB)  \u{2191}\u{2193} navigate \u{00B7} Space toggle \u{00B7} Enter confirm\r\n"
             lines += 1
 
-            if fitsSimultaneously {
-                output += "  \(ansiDim)\(count) selected \u{00B7} \(formattedGB(used)) GB total \u{00B7} all models can be served simultaneously\(ansiReset)\r\n\r\n"
-            } else {
-                output += "  \(ansiDim)\(count) selected \u{00B7} \(formattedGB(used)) GB on disk \u{00B7} \(ansiReset)\(ansiYellow)one model active at a time (swap on demand)\(ansiReset)\r\n\r\n"
+            output += "  \(ansiDim)\(ModelSlotPolicy.summary(selectedCount: count, configuredLimit: maxModelSlots))\(ansiReset)\r\n"
+            output += "  \(ansiDim)\(formattedGB(used)) GB estimated weights; additional serving headroom required.\(ansiReset)\r\n"
+            if !weightEstimatesWithinBudget {
+                output += "  \(ansiYellow)Selected weight estimates exceed the memory budget; models may need to swap.\(ansiReset)\r\n"
+                lines += 1
             }
-            lines += 2
+            output += "  \(ansiDim)\(ModelSlotPolicy.selectionAdvice(selectedCount: count, configuredLimit: maxModelSlots))\(ansiReset)\r\n\r\n"
+            lines += 4
 
             var idx = 0
 
@@ -173,8 +184,8 @@ extension Start {
                     } else {
                         // Allow selection if the model individually fits in memory.
                         // Multiple models can be selected even if their total exceeds
-                        // available RAM — only one will be warm (loaded) at a time;
-                        // the coordinator manages model swaps on demand.
+                        // available RAM. Slot and memory limits determine how
+                        // many stay resident; other models can load on demand.
                         if canFitIndividually(entries[cursorPos]) {
                             selected[cursorPos] = true
                         }

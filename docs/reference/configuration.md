@@ -9,7 +9,7 @@ symbol; a production or dev host may pin a different value in its environment
 file. Secrets are named, never valued. Unless a row says *live*, the variable is
 read once at process start and a restart applies a change.
 
-[App Attest shadow configuration](app-attest-shadow.md#configuration) lists the observation-only coordinator knobs, including optional dedicated receipt-renewal credentials. Shadow defaults off; rollout requires an explicit percentage and the safe provider version floor. Qualified build hashes are a separate prospective-policy input. Disabling shadow requests keeps the machine census and evidence maintenance running. APNs/MDM configuration remains authoritative.
+[App Attest shadow configuration](app-attest-shadow.md#configuration) defines evidence collection and receipt renewal. [Provider authorization](provider-authorization.md#controls) defines the separate serving and MDM-removal opt-ins, both disabled by default. The account cohort, safe-version floor and qualified build/code hashes remain required. Shadow alone grants no trust; an explicitly enabled qualified App Attest path can replace legacy serving verification.
 
 ## Where values are set
 

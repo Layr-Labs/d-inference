@@ -2,8 +2,34 @@
 
 ## Unreleased — account-scoped first-content SLA
 
-- Apply the first-content SLA only to authenticated accounts selected by `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; configure the intended account privately in the deployment environment. Direct users and other service accounts keep ordinary operational timeouts without the 9s + 1ms/token SLA.
+- Apply the first-content SLA only to authenticated accounts selected by `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; configure the intended account privately in the deployment environment. Direct users and other service accounts have no first-content timeout, including no 600-second fallback; queue limits, client cancellation and post-content response timers remain.
 - Preserve configurable model timing for selected accounts, including Bonsai’s 9s + 5ms/token coordinator cutoff, and support explicit public-model policies before alias resolution.
+
+## Unreleased — MDM-optional provider authorization
+
+- Warn on stderr for every CLI invocation below macOS 27, including help/version, while preserving commands and JSON output. Add prominent setup/dashboard upgrade notices, distinguish older from unknown reported OS versions, and retain legacy service during the transition.
+- Show current App Attest authorization on the owner dashboard without demanding legacy MDM verification; expire cached grants locally if polling fails and preserve independent legacy proof fields.
+
+- Retry first-proof App Attest readiness outages with a bounded early assertion retry (one minute, then five minutes, capped at the normal ten-minute cadence); recheck the complete proof, identity and serving policy after recovery.
+
+- Reflect App Attest revocation in untrusted status, availability and fleet counts without duplicate decrements or legacy-challenge recovery. Require a coordinator decision received within 10 seconds before offering MDM removal, even when the daemon keeps rewriting its state file.
+
+- Skip new MDM enrollment in the installer and CLI on macOS 27 or later; guide users through App Attest approval. Explain that upgrading avoids MDM and Darkbloom MDM will be deactivated soon. Keep existing profiles and coordinator authorization/removal gates intact; pending App Attest never falls back to automatic MDM enrollment.
+
+- Fence successful admin revocations even when the request deadline expires, and fence freshly verified revoked credentials before their first serving grant. Preserve bounded leases/refresh records through unknown readiness results without extending authorization.
+- Preserve legacy identity/MDA recovery for providers outside the authenticated rollout cohort and on older macOS. Restore a previously missing historical baseline after a later canonical merge without double-counting live work.
+- Count only authorized inference handoffs as provider dispatches; rejected frames clear provisional timing, and cancellation while waiting for authorization preserves the healthy connection.
+- Commit pending base-reward allocations atomically and reallocate after a late authorization/identity rejection, preserving prior finalized payments and pool/account caps. Resolve same-account endpoint continuity while session inventory catches up.
+
+- Consolidate App Attest session, archive, receipt, inventory and authorization workers under `coordinator/appattest/service`, with their unit tests. Keep only API wiring/authentication/release adapters; retain storage and scheduler locking with their owning packages.
+
+- Make plain `darkbloom unenroll` offer full exit or App Attest migration, with an explicit macOS 27+ requirement and fresh coordinator approval for migration. Cancel/EOF makes no changes; full exit stops the provider service before optional cleanup, and the cleanup prompt explicitly lists Secure Enclave signing keys.
+
+- Add independently enabled App Attest serving alongside complete legacy MDM/MDA and APNs verification. Require qualified signed code, current encrypted-endpoint assertions, durable evidence, valid receipts and fresh revocation state; preserve legacy trust flags.
+- Fence every new inference handoff on expiry, revocation, connection/endpoint replacement and policy changes, including queued requests and retries. Durable revocation refresh has a bounded lifetime; database failures cannot extend permission.
+- Preserve verified canonical machine history across reconnects and credential rotation, without allowing a claimed serial to evict another provider. Extend base rewards to qualified App Attest-only machines with canonical duplicate/epoch settlement protection and preserved historical balances.
+- Add coordinator-derived authorization diagnostics and `darkbloom unenroll --keep-serving`. Require fresh removal readiness, preserve local identity/account data and identify only Darkbloom's enrollment profile before guiding the user through System Settings; company management is retained.
+- Keep serving/removal disabled by default and retain explicit signed-artifact/security-transition qualification before activation. DeviceCheck's separate two-bit API is not required.
 
 ## Unreleased — model token promotions
 

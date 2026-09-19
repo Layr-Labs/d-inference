@@ -176,7 +176,7 @@ func TestProviderWriteDeferredBuildsAtDequeue(t *testing.T) {
 	if err := <-errCh; err != nil {
 		t.Fatalf("writeDeferred = %v", err)
 	}
-	if metadata := <-metadataCh; metadata.DequeuedAt.IsZero() {
+	if metadata := <-metadataCh; metadata.DequeuedAt.IsZero() || !metadata.Committed {
 		t.Fatal("successful deferred write returned zero dequeue metadata")
 	}
 	if got := <-written; got != `{"built":"at-dequeue"}` {
@@ -237,6 +237,9 @@ func TestProviderWriteDeadlineAbortsInFlightSocketWrite(t *testing.T) {
 		if got.metadata.DequeuedAt.IsZero() {
 			t.Fatal("canceled in-flight write lost dequeue metadata")
 		}
+		if !got.metadata.Committed {
+			t.Fatal("canceled in-flight write lost commitment")
+		}
 	case <-time.After(time.Second):
 		t.Fatal("deadline did not abort in-flight socket write")
 	}
@@ -293,6 +296,9 @@ func TestProviderWriteCompletionWinsConcurrentContextCancellation(t *testing.T) 
 	}
 	if got.metadata.DequeuedAt.IsZero() {
 		t.Fatal("completed write lost dequeue metadata")
+	}
+	if !got.metadata.Committed {
+		t.Fatal("completed write lost commitment")
 	}
 	if w.dead.Load() {
 		t.Fatal("completed write cancellation killed a healthy connection")
@@ -364,6 +370,9 @@ func TestProviderWriteDeferredCancellationDuringBuilderHasNoHandoff(t *testing.T
 		}
 		if !got.metadata.DequeuedAt.IsZero() {
 			t.Fatalf("canceled builder reported handoff at %v", got.metadata.DequeuedAt)
+		}
+		if got.metadata.Committed {
+			t.Fatal("canceled builder reported commitment")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("caller waited for canceled deferred builder")

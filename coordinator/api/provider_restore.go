@@ -19,7 +19,7 @@ const (
 // short transient failures inline, before account binding, duplicate eviction,
 // and registration completion. A sustained failure is returned to the WebSocket
 // handler, which ends this registration so normal reconnect can try again.
-func (s *Server) restorePersistedProviderState(ctx context.Context, p *registry.Provider, serial, seKey string) error {
+func (s *Server) restorePersistedProviderState(ctx context.Context, p *registry.Provider, serial, seKey string, expectedAccount ...string) error {
 	if s.store == nil || (serial == "" && seKey == "") {
 		p.CompleteProviderStateRestore()
 		return nil
@@ -32,7 +32,7 @@ func (s *Server) restorePersistedProviderState(ctx context.Context, p *registry.
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		err = s.tryRestorePersistedProviderState(ctx, p, serial, seKey)
+		err = s.tryRestorePersistedProviderState(ctx, p, serial, seKey, expectedAccount...)
 		if err == nil {
 			return nil
 		}
@@ -57,7 +57,7 @@ func (s *Server) restorePersistedProviderState(ctx context.Context, p *registry.
 	return fmt.Errorf("provider state restore: %w", err)
 }
 
-func (s *Server) tryRestorePersistedProviderState(ctx context.Context, p *registry.Provider, serial, seKey string) error {
+func (s *Server) tryRestorePersistedProviderState(ctx context.Context, p *registry.Provider, serial, seKey string, expectedAccount ...string) error {
 	excluded := s.registry.ProviderIDs()
 	for ctx.Err() == nil {
 		if s.registry.GetProvider(p.ID) != p {
@@ -72,6 +72,11 @@ func (s *Server) tryRestorePersistedProviderState(ctx context.Context, p *regist
 			// no registry lock is held over database IO or reputation restoration.
 			excluded = append(excluded, rec.ID)
 			continue
+		}
+		if rec != nil && len(expectedAccount) > 0 && (expectedAccount[0] == "" || rec.AccountID != expectedAccount[0]) {
+			// MDM-optional history belongs to the authenticated account, even
+			// when a local SE key survives logout or changes of operator.
+			rec = nil
 		}
 		if rec != nil {
 			if err := s.registry.RestoreProviderStateContext(ctx, p, rec); err != nil {

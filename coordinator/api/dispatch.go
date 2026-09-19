@@ -259,8 +259,8 @@ type dispatchState struct {
 	hedgeGovernorVerdict string
 	// providerDispatches counts inference frames actually handed to a
 	// provider — primary, queued, plan-retry, and speculative-backup sends
-	// alike, incremented in the write handoff callback that stamps
-	// Timing.DispatchedAt. Client-visible exhaustion messages report this
+	// alike, incremented only after the writer confirms final authorization
+	// and socket handoff. Client-visible exhaustion messages report this
 	// machine count; route rows keep the loop index d.attempt untouched.
 	providerDispatches int
 	// visionImageCount is the number of media parts in the request (0 for
@@ -1706,17 +1706,8 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// while the aggregator's cancel clock keeps running.
 		writeCtx, cancelWrite := firstTokenWriteContext(r.Context(), timingReceivedAt(d.timing), d.deadline)
 		d.pr.Profile.Mark(registry.StampWriteSubmitted)
-		_, writeErr := writeProviderInferenceRequestDeferred(
-			writeCtx,
-			d.provider,
-			providerInferenceFrameBuilder(
-				d.requestID, encrypted.EphemeralPublicKey, encrypted.Ciphertext, d.pr),
-			func(metadata registry.TextFrameWriteMetadata) {
-				d.timing.DispatchedAt = metadata.DequeuedAt
-				d.noteProviderDispatched()
-				d.pr.Profile.MarkAt(registry.StampWriteDequeued, metadata.DequeuedAt)
-			},
-		)
+		_, writeErr := d.writeQueuedProviderInferenceRequest(writeCtx,
+			providerInferenceFrameBuilder(d.requestID, encrypted.EphemeralPublicKey, encrypted.Ciphertext, d.pr))
 		cancelWrite()
 		if writeErr == nil {
 			d.pr.Profile.Mark(registry.StampWriteDone)

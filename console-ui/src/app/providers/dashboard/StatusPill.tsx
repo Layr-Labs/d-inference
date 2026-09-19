@@ -27,7 +27,14 @@ export function StatusPill({ status }: { status: string }) {
   );
 }
 
-export function TrustPill({ trustLevel }: { trustLevel: string }) {
+export function TrustPill({ trustLevel, appAttest = false }: { trustLevel: string; appAttest?: boolean }) {
+  if (appAttest) {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent-green/10 text-accent-green text-[10px] font-semibold uppercase tracking-wider">
+        <ShieldCheck size={10} /> App Attest
+      </span>
+    );
+  }
   if (trustLevel === "hardware") {
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent-green/10 text-accent-green text-[10px] font-semibold uppercase tracking-wider">

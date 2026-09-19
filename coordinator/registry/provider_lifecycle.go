@@ -113,6 +113,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		Conn:                        conn,
 		writer:                      newProviderWriter(conn),
 		LastHeartbeat:               time.Now(),
+		registeredAt:                time.Now(),
 		Reputation:                  NewReputation(),
 		pendingReqs:                 make(map[string]*PendingRequest),
 		applicationProofSettled:     make(chan struct{}),
@@ -280,7 +281,8 @@ func (r *Registry) disconnectWithCause(id string, cause protocol.CoordinatorInfe
 
 // disconnectProvider applies an optional eviction guard atomically with removal.
 // expected is the exact session observed by the stale scan; nil is an ordinary
-// unconditional disconnect. Both its identity and latest heartbeat are checked
+// unconditional disconnect. A negative timeout is a pointer-only guard for
+// canonical duplicate eviction. Otherwise its identity and heartbeat are checked
 // while r.mu and p.mu exclude replacement and heartbeat updates. The supplied
 // cause is stamped on every flushed pending-request terminal.
 func (r *Registry) disconnectProvider(id string, expected *Provider, timeout time.Duration, cause protocol.CoordinatorInferenceErrorCause) bool {
@@ -294,12 +296,13 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 			return false
 		}
 		p.mu.Lock()
-		if expected != nil && time.Since(p.LastHeartbeat) <= timeout {
+		if expected != nil && timeout >= 0 && time.Since(p.LastHeartbeat) <= timeout {
 			p.mu.Unlock()
 			r.mu.Unlock()
 			return false
 		}
 		delete(r.providers, id)
+		p.appAttestAuthorization = AppAttestServingAuthorization{}
 		// Clear any pending model load entries for this provider.
 		for key := range r.pendingModelLoads {
 			if key.ProviderID == id {

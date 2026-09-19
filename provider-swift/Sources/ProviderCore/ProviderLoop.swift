@@ -675,7 +675,7 @@ public actor ProviderLoop {
         // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
         // The EngineV2 SSD tier uses the separate `darkbloom/kv3` root,
         // so this cleanup cannot delete current cache data.
-        LegacyKVCacheSweeper.sweep()
+        if purgeLegacyFiles { LegacyKVCacheSweeper.sweep() }
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
         self.preloadTaskStarted = preloadTaskStarted
         self.beforeModelLoad = beforeModelLoad

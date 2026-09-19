@@ -759,10 +759,10 @@ func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now 
 	if p.SystemMetrics.ThermalState == "critical" {
 		return warmPoolCandidate{}, warmColdThermal
 	}
-	if trustRank(p.TrustLevel) < trustRank(r.MinTrustLevel) || !p.RuntimeVerified || !r.providerSupportsPrivateTextLocked(p) {
+	if !r.providerTrustMeetsMinimumAtLocked(p, r.MinTrustLevel, now) || !p.RuntimeVerified || !r.providerSupportsPrivateTextLocked(p) {
 		return warmPoolCandidate{}, warmColdTrust
 	}
-	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+	if !r.providerChallengeFreshAtLocked(p, now) {
 		return warmPoolCandidate{}, warmColdStaleChallenge
 	}
 	if !r.providerServesCatalogModelLocked(p, model) {

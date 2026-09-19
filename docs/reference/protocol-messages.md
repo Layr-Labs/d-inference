@@ -19,7 +19,7 @@ Terminal `profile` objects can include optional schema-1
 [`deadline_decision`](prediction-decision-telemetry.md#provider-fields).
 This does not add a message type or change the public error code.
 
-The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` (with protocol 1 and 2 compatibility) and `app_attest_shadow` frames. Version 3 also binds static hardware and the existing verification key; version 2 account/status binding and lost-enrollment recovery remain compatible. It does not replace the authoritative attestation messages.
+The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` (with protocol 1 and 2 compatibility) and `app_attest_shadow` frames. Version 3 also binds static hardware and the existing verification key; version 2 account/status binding and lost-enrollment recovery remain compatible. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
 
 ## Envelope and the single-parse rule
 

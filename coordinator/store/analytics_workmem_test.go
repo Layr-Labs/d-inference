@@ -210,6 +210,12 @@ func TestUsageAnalyticsRunInWorkMemTransaction(t *testing.T) {
 	}
 	assertAnalyticsTx(t, tracer.snapshot(), "AS active_accounts")
 
+	tracer.reset()
+	if rows := s.Leaderboard(LeaderboardEarnings, since, 50); rows == nil {
+		t.Fatal("leaderboard returned nil (query error)")
+	}
+	assertAnalyticsTx(t, tracer.snapshot(), "FULL OUTER JOIN base_reward")
+
 	// SET LOCAL must not leak past the transaction: every pooled session
 	// still reports the server default.
 	for i := 0; i < 5; i++ {

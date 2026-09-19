@@ -2083,7 +2083,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 
 	deadlineWait := d.firstTokenWait(d.deadline)
 	speculativeTimer := time.NewTimer(d.firstTokenSpeculativeWait())
-	deadlineTimer := time.NewTimer(deadlineWait)
+	deadlineTimer := d.newFirstContentTimer(deadlineWait)
 	// Routing v2 W2: the probe round may deliver ONE refined (strictly
 	// earlier) absolute speculative launch instant. Read through a local so
 	// the arm disarms itself after its single use; a nil channel (no probe
@@ -2437,7 +2437,7 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 	r := d.r
 	provider, pr := d.provider, d.pr
 
-	remainingDeadline := time.NewTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
+	remainingDeadline := d.newFirstContentTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
@@ -2592,7 +2592,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 	r := d.r
 	provider, pr := d.provider, d.pr
 
-	raceDeadline := time.NewTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
+	raceDeadline := d.newFirstContentTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
 	// One-shot extension: when the race deadline expires but a racer
 	// has shown liveness (preamble received), the race continues up to
 	// leftover first-token budget (capped by preambleContentTimeout).
@@ -2872,7 +2872,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				}
 				if ext > 0 {
 					raceExtended = true
-					raceDeadline = time.NewTimer(ext)
+					raceDeadline = d.newFirstContentTimer(ext)
 					continue
 				}
 			}
@@ -2938,7 +2938,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Provider, pr *registry.PendingRequest) dispatchOutcome {
 	s := d.s
 	r := d.r
-	remainingPrimary := time.NewTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
+	remainingPrimary := d.newFirstContentTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
@@ -3050,7 +3050,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 	// primary's 4xx/422/429, so the primary keeps the attribution even
 	// though the backup keeps racing (noteServingSlotFor's freeze rule).
 	d.noteServingSlotFor(backupPR)
-	backupDeadline := time.NewTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
+	backupDeadline := d.newFirstContentTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
 	for {
 		select {
 		case chunk, ok := <-backupPR.ChunkCh:
@@ -3172,7 +3172,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr *registry.PendingRequest) dispatchOutcome {
 	s := d.s
 	r := d.r
-	primaryDeadline := time.NewTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
+	primaryDeadline := d.newFirstContentTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
@@ -3296,14 +3296,14 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 		}
 	}()
 
-	firstContentBudget := inferenceTimeout
+	firstContentBudget := d.deadline
 	if d.preambleLiveness {
 		firstContentBudget = preambleContentTimeout
 	}
 	if remaining, ok := d.firstTokenRemaining(); ok && remaining < firstContentBudget {
 		firstContentBudget = remaining
 	}
-	chunkTimer := time.NewTimer(firstContentBudget)
+	chunkTimer := d.newFirstContentTimer(firstContentBudget)
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:

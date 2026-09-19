@@ -174,7 +174,8 @@ func (d *dispatchState) maybeProbePlanCandidates() {
 	remaining, ok := d.firstTokenRemaining()
 	if d.deadline <= 0 {
 		// Exemption removes the SLA, not capacity confirmation. Quotes use
-		// the ordinary inference wait; the collector skips SLA hedge advances.
+		// a finite advisory planning horizon only; it never arms a request
+		// timeout, and the collector skips SLA hedge advances.
 		remaining, ok = inferenceTimeout, true
 	}
 	if receivedAt.IsZero() || !ok || remaining <= 0 {

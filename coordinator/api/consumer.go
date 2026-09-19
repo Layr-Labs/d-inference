@@ -1152,9 +1152,16 @@ func (s *Server) dispatchWithReserver(
 	// and either scans as soon as a slot frees or sheds capacity-shaped
 	// (errRoutingScanSaturated → one retryable 429) once the budget is gone.
 	if fullScan {
-		scanBudget := inferenceTimeout
+		// Exempt requests still shed routing overload using the same short
+		// admission slice; this is a scan wait, not a first-content timeout.
+		scanBudget := preflightScanWait(0)
 		if requestDeadline > 0 {
 			scanBudget = firstTokenRemainingSince(receivedAt, requestDeadline)
+		}
+		if backupOf != "" {
+			// Backup selection runs on the primary's stream reader. Never park
+			// it behind fleet scans while healthy primary chunks accumulate.
+			scanBudget = 0
 		}
 		switch s.acquireRoutingScanSlot(
 			scanBudget,

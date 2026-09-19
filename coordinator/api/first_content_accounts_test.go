@@ -95,12 +95,12 @@ func TestFirstContentSLAIdentityFailureDoesNotSilentlyDisable(t *testing.T) {
 	}
 }
 
-func TestFirstContentSLAExemptionKeepsOperationalBounds(t *testing.T) {
+func TestFirstContentSLAExemptionHasNoFirstContentTimer(t *testing.T) {
 	d := &dispatchState{deadline: 0, speculativeAt: 4 * time.Second, timing: &registry.RequestTiming{ReceivedAt: time.Now().Add(-time.Minute)}}
 	if d.firstTokenExpired() {
 		t.Fatal("exempt request expired")
 	}
-	if wait := d.firstTokenWait(-time.Second); wait != inferenceTimeout {
+	if wait := d.firstTokenWait(-time.Second); wait != 0 {
 		t.Fatal(wait)
 	}
 	if wait := d.firstTokenSpeculativeWait(); wait != 4*time.Second {

@@ -399,15 +399,15 @@ func (pr *PendingRequest) FirstContentIngressArrivedByDeadline() bool {
 // OnTimeEmptyCompletionIngress returns the ingress time of an on-time clean
 // completion that had no preceding content-bearing chunk.
 func (pr *PendingRequest) OnTimeEmptyCompletionIngress() (time.Time, bool) {
-	if pr == nil || pr.FirstContentDeadline.IsZero() {
+	if pr == nil {
 		return time.Time{}, false
 	}
 	pr.firstContentIngressMu.Lock()
 	defer pr.firstContentIngressMu.Unlock()
 	receivedAt := pr.completionIngressAt
-	ok := pr.firstContentIngressAt.IsZero() &&
-		!receivedAt.IsZero() &&
-		!receivedAt.After(pr.FirstContentDeadline)
+	ok := !receivedAt.IsZero() &&
+		(pr.firstContentIngressAt.IsZero() || pr.firstContentIngressAt.After(receivedAt)) &&
+		(pr.FirstContentDeadline.IsZero() || !receivedAt.After(pr.FirstContentDeadline))
 	return receivedAt, ok
 }
 

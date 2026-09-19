@@ -64,6 +64,26 @@ Declaration order of `Darkbloom.configuration.subcommands` (21):
 
 ### `darkbloom start`
 
+In a terminal, the model picker shows both the configured resident-model limit
+and the number selected. Before downloading, it offers **keep the limit**,
+**change the limit**, or **return to model selection**. Enter keeps the
+existing limit; only an explicit change writes `[backend] max_model_slots` to
+the resolved config file (including `--config`). Selecting more models than
+the limit permits advertising them all, but serving another model may replace
+an idle resident. Weight estimates do not guarantee simultaneous residency:
+memory and serving-headroom checks still apply.
+
+`--model`, `--all`, foreground relaunches and non-TTY input do not ask this
+new question or change the slot limit. The numbered non-TTY picker reports
+the limit after selection. There is no new slot-limit flag.
+Source: `provider-swift/Sources/darkbloom/StartCommand+Picker.swift`
+(`interactiveCatalogPicker`, `fallbackPicker`),
+`provider-swift/Sources/darkbloom/ModelSlotPolicy.swift` (`review`),
+`provider-swift/Sources/darkbloom/StartCommand+ModelSlots.swift`
+(`reviewModelSlots`).
+
+![Rendered example of the resident-model review with six selected models](../assets/onboarding-model-slots.png)
+
 | Flag | Type | Default | Effect |
 |---|---|---|---|
 | `--coordinator-url <url>` | `String?` | `coordinator.url` (`wss://api.darkbloom.dev/ws/provider`) | Override the coordinator WebSocket URL |
@@ -272,8 +292,9 @@ Without flags: `log stream --predicate 'subsystem == "dev.darkbloom.provider"' -
 | `--last <duration>` | `String` | `24h` | Window of unified logs to collect |
 | `--dry-run` | flag | `false` | Print the report; do not upload |
 
-After the model picker, an interactive `darkbloom start` asks how the machine
-should treat its memory when nobody is sending requests:
+After model selection, the resident-limit review and any required downloads,
+an interactive `darkbloom start` asks how the machine should treat its memory
+when nobody is sending requests:
 
 ```
 Memory when idle

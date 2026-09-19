@@ -13,6 +13,19 @@ read once at process start and a restart applies a change.
 
 ## Where values are set
 
+Provider model selection and residency are separate settings. The interactive
+`darkbloom start` resident-limit review writes an explicitly changed
+`[backend] max_model_slots` to the resolved `provider.toml`; its compiled
+default remains `3`. Enter keeps the existing value. The provider reads it
+on the next process start, including the background process launched by that
+onboarding flow. Selected model IDs are persisted separately as `--model`
+arguments in the LaunchAgent; the review does not change `enabled_models` or
+request concurrency. See the [CLI onboarding behavior](../provider/cli-reference.md#darkbloom-start).
+Sources: `provider-swift/Sources/darkbloom/ModelSlotSettings.swift`
+(`setModelSlotLimit`), `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`
+(`BackendSettings`), `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`
+(`serviceProgramArguments`).
+
 | Component | Where the process gets its environment |
 |---|---|
 | Coordinator, production | `/etc/d-inference/env` (root-only, boot disk) on the Confidential VM. Secrets are placed by hand; `deploy/gcp/prod/refresh-env.sh` runs before Docker at every boot, adds any key from `deploy/gcp/prod/release-env-defaults` that is absent, migrates a few exact historical values, never overwrites an operator-set value, and refuses to run when a required key is missing or empty. The list of keys production must have is maintained once in [`../operations/coordinator-deploy.md#environment-file`](../operations/coordinator-deploy.md#environment-file). The container entrypoint `coordinator/deploy/start.sh` reads `USER_PERSISTENT_DATA_PATH`, `MICROMDM_API_KEY`, `MDM_PUSH_P12_B64`, `DOMAIN` and `EIGENINFERENCE_MDM_WEBHOOK_SECRET` itself before it `exec`s the `coordinator` binary; everything else is read by Go code. |

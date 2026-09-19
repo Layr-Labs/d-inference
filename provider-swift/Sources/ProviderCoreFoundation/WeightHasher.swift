@@ -1,4 +1,5 @@
 import Crypto
+import Dispatch
 import Foundation
 import Logging
 
@@ -110,7 +111,38 @@ public struct WeightHasher: Sendable {
     /// digests into a final hash. Used by both the legacy attestation path (sort key =
     /// absolute path) and the manifest builder (sort key = relative POSIX path).
     public static func hashFilesWithRelativeKey(_ files: [(file: URL, sortKey: String)]) -> String? {
+        hashFilesWithRelativeKey(files, workers: resolvedHashWorkers(
+            environment: ProcessInfo.processInfo.environment))
+    }
+
+    /// Opt-in bounded readers per invocation. No global queue is introduced:
+    /// a large model must not serialize an unrelated smaller model's hashing.
+    static func resolvedHashWorkers(environment: [String: String]) -> Int {
+        guard let raw = environment["DARKBLOOM_EXPERIMENT_HASH_WORKERS"],
+              let workers = Int(raw), [1, 2, 4].contains(workers) else { return 1 }
+        return workers
+    }
+
+    static func hashFilesWithRelativeKey(
+        _ files: [(file: URL, sortKey: String)], workers: Int
+    ) -> String? {
         let sorted = files.sorted { $0.sortKey < $1.sortKey }
+        let count = min(max(1, min(workers, 4)), sorted.count)
+        if count > 1 {
+            let results = OrderedFileDigests(count: sorted.count)
+            DispatchQueue.concurrentPerform(iterations: count) { worker in
+                for index in stride(from: worker, to: sorted.count, by: count) {
+                    results.store(hashSingleFile(at: sorted[index].file), at: index)
+                }
+            }
+            let digests = results.snapshot()
+            guard digests.allSatisfy({ $0 != nil }) else { return nil }
+            var finalHasher = SHA256()
+            for digest in digests {
+                digest!.withUnsafeBytes { finalHasher.update(bufferPointer: $0) }
+            }
+            return finalHasher.finalize().map { String(format: "%02x", $0) }.joined()
+        }
 
         // Combine per-file hashes in sorted order.
         var finalHasher = SHA256()
@@ -136,6 +168,14 @@ public struct WeightHasher: Sendable {
     /// attributes that block raw POSIX open() but are handled transparently by
     /// Foundation URL/file coordination.
     public static func hashSingleFile(at url: URL) -> SHA256Digest? {
+        // Local-only experiment: reuse InputStream's fixed 64 KiB buffer
+        // before trying FileHandle's per-read Data allocation. Preserve the
+        // full digest and every existing fallback; never skip integrity work.
+        if ProcessInfo.processInfo.environment["DARKBLOOM_EXPERIMENT_HASH_STREAM_FIRST"] == "1",
+            let digest = hashSingleFileViaInputStream(at: url)
+        {
+            return digest
+        }
         if let digest = hashSingleFileViaHandle(at: url) {
             return digest
         }
@@ -235,5 +275,21 @@ public struct WeightHasher: Sendable {
         }
 
         return hasher.finalize()
+    }
+}
+
+/// Each slot is written once; the lock also establishes a safe snapshot after
+/// all synchronous workers have joined. Failed reads never form a partial hash.
+private final class OrderedFileDigests: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [SHA256Digest?]
+    init(count: Int) { values = Array(repeating: nil, count: count) }
+    func store(_ value: SHA256Digest?, at index: Int) {
+        lock.lock(); defer { lock.unlock() }
+        values[index] = value
+    }
+    func snapshot() -> [SHA256Digest?] {
+        lock.lock(); defer { lock.unlock() }
+        return values
     }
 }

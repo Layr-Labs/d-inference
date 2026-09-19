@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-18 · commit `ad8dec1f2`
+> Last updated: 2026-09-19 · commit `d78ae77ef`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -409,6 +409,22 @@ Installed processes still use the source defaults.
 | `DARKBLOOM_MAX_VIDEO_SECONDS` | seconds | `600` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` | Per-video duration cap. |
 | `DARKBLOOM_MAX_IMAGES_PER_REQUEST`, `DARKBLOOM_MAX_VIDEOS_PER_REQUEST` | integers | `16`, `8` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` | Attachment count caps. |
 | `DARKBLOOM_MAX_REQUEST_VIDEO_FRAME_MEGAPIXELS` | megapixels | `384` | `provider-swift/Sources/ProviderCore/Inference/Vision/MediaIngest.swift` | Per-request decoded video-frame pixel cap. |
+
+### Model verification I/O
+
+These opt-in controls change full-file reading and scheduling, not the verified
+bytes or model arithmetic. Discovery remains hash-free. Fresh pre/post-load
+verification and delayed identity publication retain their existing rules.
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `DARKBLOOM_EXPERIMENT_HASH_STREAM_FIRST` | Only `1` enables | unset | `provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift` (`hashSingleFile`) | Try the existing reusable-buffer InputStream reader before FileHandle; retain full SHA and all existing fallbacks. |
+| `DARKBLOOM_EXPERIMENT_HASH_WORKERS` | Integers `1`, `2`, `4`; other values select `1` | `1` | `provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift` (`resolvedHashWorkers`, `hashFilesWithRelativeKey`) | Bound independent file readers per invocation, then combine every raw digest in the original sorted-key order. Any failed file prevents a successful aggregate. |
+
+Concurrent invocations each have their own worker bound; this is not a global
+thread budget. A warm resident request that does not hash gets no direct benefit.
+Leave the controls unset to retain the original reading path and serial order.
+The controls do not enable caches, alter attestation policy or skip load checks.
 
 ### SSD prefix cache
 

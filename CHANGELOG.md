@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — model verification I/O
+
+- Add opt-in reusable-buffer reads and bounded independent-file hashing while preserving complete SHA digests, failure handling and load-time integrity checks. Existing defaults remain unchanged.
+
 ## Unreleased — MDM-optional provider authorization
 
 - Warn on stderr for every CLI invocation below macOS 27, including help/version, while preserving commands and JSON output. Add prominent setup/dashboard upgrade notices, distinguish older from unknown reported OS versions, and retain legacy service during the transition.

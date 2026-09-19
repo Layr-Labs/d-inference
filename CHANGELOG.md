@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — earnings window index
+
+- Build a BRIN index on `provider_earnings(created_at)` at coordinator boot (`CONCURRENTLY`, no-op once valid) and pin the table's analyze cadence, so the 24h/7d network-totals and leaderboard aggregates stop scanning the whole table and timing out. Run the leaderboard query with the analytics `work_mem` like the other stats statements.
+
 ## Unreleased — MDM-optional provider authorization
 
 - Warn on stderr for every CLI invocation below macOS 27, including help/version, while preserving commands and JSON output. Add prominent setup/dashboard upgrade notices, distinguish older from unknown reported OS versions, and retain legacy service during the transition.

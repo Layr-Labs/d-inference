@@ -1206,6 +1206,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 	if err := s.ensureProviderEarningsJobIndex(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureProviderEarningsWindowIndex(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2260,19 +2263,26 @@ func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, l
 	      LIMIT $` + strconv.Itoa(len(args)+1)
 	args = append(args, limit)
 
-	rows, err := s.pool.Query(ctx, q, args...)
+	// The two GROUP BY account_id sorts cover millions of rows on the short
+	// windows; run them with the analytics work_mem so they do not spill to disk.
+	out := make([]LeaderboardRow, 0, limit)
+	err := s.withAnalyticsTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, q, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var r LeaderboardRow
+			if err := rows.Scan(&r.AccountID, &r.EarningsMicroUSD, &r.WorkEarningsMicroUSD, &r.RewardEarningsMicroUSD, &r.Tokens, &r.Jobs); err != nil {
+				continue
+			}
+			out = append(out, r)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil
-	}
-	defer rows.Close()
-
-	out := make([]LeaderboardRow, 0, limit)
-	for rows.Next() {
-		var r LeaderboardRow
-		if err := rows.Scan(&r.AccountID, &r.EarningsMicroUSD, &r.WorkEarningsMicroUSD, &r.RewardEarningsMicroUSD, &r.Tokens, &r.Jobs); err != nil {
-			continue
-		}
-		out = append(out, r)
 	}
 	return out
 }

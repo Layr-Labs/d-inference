@@ -219,6 +219,14 @@ func main() {
 		"decode_floor_tps", cfg.RegistryCfg.WarmPool.DecodeFloorTPS,
 	)
 
+	if err := reg.ConfigureAccountAffinity(cfg.RegistryCfg.AccountAffinity); err != nil {
+		logger.Error("account affinity configuration rejected", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("account affinity routing",
+		"mode", cfg.RegistryCfg.AccountAffinity.Mode,
+		"max_ttft_penalty_ms", cfg.RegistryCfg.AccountAffinity.MaxTTFTPenaltyMs,
+	)
 	if err := reg.ConfigureCacheRouting(cfg.RegistryCfg.CacheRouting); err != nil {
 		logger.Error("cache routing configuration rejected", "error", err)
 		os.Exit(1)

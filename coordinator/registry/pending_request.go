@@ -41,6 +41,8 @@ type PendingRequest struct {
 	// "gemma-4-26b"). When the request used a raw build id directly this equals
 	// Model. Responses echo PublicModel so consumers never see the quant/build.
 	PublicModel string
+	// ConsumerKey is the authenticated ACCOUNT ID (historical field name),
+	// shared across that account's API keys. It seeds account/model affinity.
 	ConsumerKey string
 	// KeyID is the public ID of the API key that originated the request, used
 	// for per-key usage and spend attribution. Empty for account-scoped/legacy

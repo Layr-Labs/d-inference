@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-13 · commit `d66a38b77`
+> Last updated: 2026-09-18 · commit `e4df336bc`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -84,7 +84,13 @@ flowchart TD
     C --> D[applyCacheRoutingCost]
     D --> P[pool narrowing: prefer owner, avoid version, min decode TPS]
     P --> SEL[selectRoutingCandidateWithAffinity: unique_min / tie_queue / tie_pending / random / prefix_affinity]
-    SEL --> PLAN[dispatch plan: winner + alternates]
+    SEL --> AFF{Account affinity mode}
+    AFF -->|off or shadow| LEGACY[keep existing winner]
+    AFF -->|on| SAFE[evaluateAccountAffinity: bounded own-machine load delay and quality checks]
+    SAFE -->|safe candidate| ACCOUNT[stable account/model machine preference]
+    SAFE -->|none| LEGACY
+    ACCOUNT --> PLAN[dispatch plan: winner + alternates]
+    LEGACY --> PLAN
     PLAN --> DISP[dispatch to winner]
     DISP -->|no first content by speculativeAt| H[runSpeculative: hedge governor + backup]
     H --> RACE[runRace: first content wins, loser cancelled]
@@ -312,10 +318,101 @@ leaves at least one candidate (`scanCandidatesLocked`):
    under the conditions above; an empty pool uses `none`.
 
 `SelectionPath` values (`coordinator/registry/gate_reason.go`): `none`,
-`unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity`. Historical profiler rows may
+`unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity`,
+`account_affinity` (the opt-in policy below). Historical profiler rows may
 still contain the retired `cache_tiebreak` string. The
-runner-up (the lowest-cost candidate other than the winner) is recorded for telemetry
-and as the first alternate in the dispatch plan.
+ordinary cost runner-up is recorded for telemetry. When account affinity
+replaces the ordinary winner, that displaced winner becomes the comparison
+candidate; it does not determine affinity-plan ordering.
+
+### Account affinity and bounded spillover
+
+Account affinity is a separate, opt-in placement preference after ordinary
+eligibility gates and owner/version/decode pool narrowing. It ranks verified
+physical machines by rendezvous hashing the authenticated account ID, concrete
+model ID and machine identity. API-key IDs, request IDs, prompt content and live
+load do not enter the rank; reconnecting the same attested machine preserves
+its preference. The rank is recomputed from request-local candidates, with no
+per-account map or additional queue. Identity snapshots reference the attested
+value and its namespace separately, avoiding a new identity string per scanned
+provider while preserving the same length-framed hash bytes
+(`coordinator/registry/account_affinity_hash.go`, `accountAffinityScore`;
+`coordinator/registry/account_affinity_identity.go`, `stableAccountAffinityIdentityLocked`).
+
+`evaluateAccountAffinity` (`coordinator/registry/account_affinity.go`) chooses
+the highest-ranked acceptable machine. Acceptance requires a loaded model,
+backend capacity and a positive finite calibrated TTFT, without a current
+capacity-rejection penalty or a `fair`/`serious`/`critical` thermal state. The
+spillover threshold bounds estimated TTFT added by load on that same machine:
+compare its current estimate with an estimated idle counterfactual for the
+same hardware, model and request. This is not a comparison with the fastest
+peer and is not a measured historical idle baseline. A higher-ranked idle
+machine estimated at 900 ms can therefore remain preferred over a lower-ranked
+400 ms machine, provided its quality and absolute deadline checks pass.
+The load increment combines estimated queued-prefill wait with the increase
+in first-decode time at current occupancy versus this machine at idle, using
+the candidate's captured TTFT calibration ratio. Its own request-prefill
+cost cancels from that difference; no per-machine idle measurement history is
+maintained. Absolute timing remains separate: use the larger of the existing
+calibrated TTFT and an estimate of own prefill plus queued prefill plus loaded
+first decode. This avoids counting the queue twice and must still fit the
+request's remaining deadline and any enabled TTFT ceiling. A small load
+increment does not excuse a slow request that cannot meet its deadline
+(`coordinator/registry/account_affinity_load.go`, `accountAffinityLoadEstimate`).
+The estimate does not reconstruct other models' queued prompt lengths or
+separate contention already embedded in an observed prefill rate from intrinsic
+machine speed; it is not a complete prediction of every source of load delay.
+
+The decode projection uses the maximum of whole-machine coordinator pending requests,
+summed backend running/waiting requests across slots, and matching-model
+occupancy. Reservations and heartbeat counts are not added together, avoiding
+double-counting the same request. Treating other models' requests as equivalent
+concurrent work is a conservative affinity-only quality check, not a new
+physical admission formula (`accountAffinityOccupancy`). The projected
+decode rate must meet `MinDecodeTPS` when set; ordinary routing's projection is
+unchanged. This sees coordinator reservations before the next heartbeat and
+spills to another ranked machine when the preferred one is too busy. The load
+increment is an estimate, not a sleep timer or a promise about measured
+latency. The threshold's default and switches are in the
+[configuration reference](../reference/configuration.md#account-affinity).
+
+`off` and `shadow` keep the existing winner and prefix-affinity tiebreaker;
+shadow computes only a counterfactual choice. `on` may replace the winner with
+an acceptable account-affinity candidate. Vision requests, missing identity or
+account, unknown estimates, and pools without an acceptable affinity candidate
+retain ordinary routing: affinity never introduces a rejection. Reservation
+and bounded-plan retries recheck live capacity and timing; a preference is not
+a reservation of future capacity. See `commitProviderReservation`
+(`coordinator/registry/scheduler.go`) and `ReserveNextFromPlan`
+(`coordinator/registry/dispatch_plan.go`).
+
+An applied affinity choice retains at most `dispatchPlanMaxAlternates = 8`
+backups. Ready alternatives are retained first in rendezvous order; spare
+entries may hold temporarily busy machines for recovery. Busy high-ranked
+machines cannot crowd every ready backup out of the shortlist. Retained
+entries are ordered by rendezvous rank, with negative quotes deferred; positive
+quote arrival does not reshuffle the rank. Retry/hedge consumption rechecks
+live load and exhausts affinity and ordinary-cost options within each
+owner/version/negative-quote priority tier before proceeding to the next.
+Every reached tier is evaluated in rendezvous order, including when the last
+provider in a higher tier loses admission between snapshot and reservation.
+Retry rank, candidate count and cost-baseline diagnostics describe the tier
+actually used. An initial ordinary-routing fallback keeps the legacy
+plan (`coordinator/registry/account_affinity_plan.go`, `retainEntryBefore`,
+`initAccountAffinity`; `coordinator/registry/account_affinity_plan_reserve.go`,
+`reserveAccountAffinityPlan`).
+
+Account placement does not enable prefix-cache participation. With cache
+routing off, coordinator-served requests lack authenticated `CacheScope` and
+current providers set request `cacheEnabled=false`; old protocol-0 providers
+receive a fresh per-attempt cache buster (`coordinator/registry/cache_receipts.go`,
+`PrepareCacheAttempt`; `provider-swift/Sources/ProviderCore/Inference/PrefixCacheReceipts.swift`,
+`RemotePrefixCacheContext`). More stable placement is therefore not itself a
+cache hit or evidence of latency savings. Cache rollout remains governed by
+[cache-aware routing](cache-aware-routing.md). Affinity telemetry carries only
+bounded reasons, numeric ranks and estimated own-machine load increments,
+never account or machine identity;
+see the [inventory](../reference/telemetry-inventory.md#account-affinity).
 
 ### Hedged (speculative) dispatch
 
@@ -715,6 +812,7 @@ must not run in parallel with other scheduler tests in the same process.
 | Queue timeout | A queued request found no eligible provider within the queue's wait bound. | `ErrQueueTimeout` → `429` with `Retry-After`; see [`scheduling.md`](scheduling.md#per-model-request-queue). |
 | Budget-clamped fleet | Every pair for the model is clamped after capacity 503s. | Pairs show as `free_memory` until release or `defaultBudgetClampTTL` ([above](#gray-box-capacity-signals)); heartbeat headroom plus one accept releases early. |
 | Hedge suppressed under load | Governor returns a suppress verdict. | Primary alone is waited on for the remaining deadline (`waitNoBackup`); `routing.hedge_governor_suppressed` counts the verdict. |
+| Account-affinity candidate is busy, cold or lacks a known TTFT | Its timing or immediate-load check cannot establish a safe placement preference. | Try another ranked acceptable candidate; if none exists, preserve ordinary routing without a new rejection (`coordinator/registry/account_affinity.go`, `evaluateAccountAffinity`). |
 
 ## Code map
 
@@ -722,6 +820,9 @@ must not run in parallel with other scheduler tests in the same process.
 |---|---|
 | Dispatch-time selection, cost model, TTFT estimate | `coordinator/registry/scheduler.go` — `ReserveProviderWithPlan`, `scanCandidatesLocked`, `snapshotProviderIntoLockedEx`, `buildCandidateInto`, `slotStatePenalty`, `healthPenaltyMs`, `resolveEffectiveTPS`, `ttftMsFromSnapshot`, `longPromptPenalty` |
 | Candidate preferences and ranking | `coordinator/registry/candidate_selection.go` — `preferRoutingCandidates`, `selectRoutingCandidate` |
+| Account-affinity policy, configuration and identity ranking | `coordinator/registry/account_affinity.go` — `evaluateAccountAffinity`, `AccountAffinityObservation`; `coordinator/registry/account_affinity_config.go` — `ReadAccountAffinityConfig`, `ConfigureAccountAffinity`; `coordinator/registry/account_affinity_hash.go` — `accountAffinityScore`; `coordinator/registry/account_affinity_identity.go` — `stableAccountAffinityIdentityLocked` |
+| Own-machine affinity load-delay and deadline estimates | `coordinator/registry/account_affinity_load.go` — `accountAffinityLoadEstimate`, `accountAffinityLoadDelayMs` |
+| Aggregate account-affinity metrics | `coordinator/api/account_affinity_metrics.go` — `emitAccountAffinityMetrics` |
 | Shared gate primitives | `coordinator/registry/routing_eligibility.go` — `providerLivenessGateReasonLocked`, `providerServesRoutableModelLocked` |
 | Closed vocabularies | `coordinator/registry/gate_reason.go` — `GateReason`, `SelectionPath`, `SlotState` |
 | Trust floor and challenge failures | `coordinator/registry/registry.go` — `MinTrustLevel`; `coordinator/registry/provider.go` — `MaxFailedChallenges`; `coordinator/registry/attestation_policy.go` — `RecordChallengeFailure` |

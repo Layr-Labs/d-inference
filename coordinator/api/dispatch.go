@@ -412,6 +412,7 @@ func (d *dispatchState) recordRoutingDecision(decision registry.RoutingDecision,
 
 func (d *dispatchState) recordRoutingDecisionFor(provider *registry.Provider, pr *registry.PendingRequest, requestID string, attempt int, decision registry.RoutingDecision, dispatchErr, outcomeOverride string) {
 	s := d.s
+	s.emitAccountAffinityMetrics(decision.AccountAffinity)
 	if requestID == "" && pr != nil {
 		requestID = pr.RequestID
 	}

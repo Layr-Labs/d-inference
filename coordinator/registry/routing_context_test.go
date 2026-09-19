@@ -58,6 +58,7 @@ func TestGateReasonNamesComplete(t *testing.T) {
 	want := map[SelectionPath]string{
 		SelectionNone: "none", SelectionUniqueMin: "unique_min", SelectionTieQueue: "tie_queue",
 		SelectionTiePending: "tie_pending", SelectionRandom: "random", SelectionPrefixAffinity: "prefix_affinity",
+		SelectionAccountAffinity: "account_affinity",
 	}
 	if len(want) != int(selectionPathCount) {
 		t.Fatalf("SelectionPath vocabulary has %d names, want %d", len(want), selectionPathCount)

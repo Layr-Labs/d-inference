@@ -1,11 +1,11 @@
 # Routing flags: kill switches and flag flips
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-13 · commit `e4df336bc`
 
-The routing-v2 rollout is complete: every behaviour it introduced ships in the
-coordinator binary and is **on by default**. This runbook is what remains
-operable — the environment variables that turn individual routing behaviours
-off or retune them without a code change. How the behaviours work is in
+This runbook covers the environment variables that disable, retune or
+experimentally enable coordinator routing behaviours without a code change.
+Account affinity is opt-in and starts off; the tables distinguish defaults
+from rollout choices. How the behaviours work is in
 [`../architecture/routing.md`](../architecture/routing.md) and
 [`../architecture/scheduling.md`](../architecture/scheduling.md); the original
 plan is [`../design/routing-v2.md`](../design/routing-v2.md).
@@ -54,6 +54,49 @@ is not explained by one of the behaviours below; roll the binary back per
 | `EIGENINFERENCE_MIN_DECODE_TPS` | `15.0` | `coordinator/cmd/coordinator/main.go` | `=0` | Disables the per-request decode-quality floor (soft pool narrowing; never rejects). Keep on unless the floor is demonstrably starving a model. |
 | `EIGENINFERENCE_SERVABILITY_GATE` | on | `coordinator/cmd/coordinator/main.go` (`SetServabilityGate`) | `=false` | Stops the early `429` for structurally unservable long prompts; such requests fall through to queueing and provider-side rejection. |
 | `EIGENINFERENCE_LONG_PROMPT_TOKENS` / `EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT` | `0` (off) / `2.0` | `coordinator/cmd/coordinator/main.go` → `SetLongPromptThreshold`, `SetLongPromptPrefillWeight` | set a threshold | Enables the long-prompt fastest-first-token bias ([`routing.md`](../architecture/routing.md#cost-model)). |
+
+### Account-affinity shadow-to-on experiment
+
+Use this procedure only for the opt-in
+[account-affinity policy](../architecture/routing.md#account-affinity-and-bounded-spillover).
+Obtain explicit human approval for each production env-file change and restart;
+the code change itself does not authorize activation.
+
+1. Establish a matched baseline with `EIGENINFERENCE_ACCOUNT_AFFINITY_MODE=off`.
+   Record measured p95/p99 first-content latency, 429 and timeout rates, decode
+   TPS and retry/hedge amplification over representative concurrent traffic.
+2. On dev, set `EIGENINFERENCE_ACCOUNT_AFFINITY_MODE=shadow`; leave
+   `EIGENINFERENCE_ACCOUNT_AFFINITY_MAX_TTFT_PENALTY_MS` at the
+   [experimental default](../reference/configuration.md#account-affinity).
+   Verify unchanged serving decisions, including the existing
+   `prefix_affinity` tiebreaker. Check
+   [`routing.account_affinity`](../reference/telemetry-inventory.md#account-affinity)
+   for counterfactual changes, spill ranks and estimated load-induced delay
+   relative to each proposed machine's own idle counterfactual. Shadow does
+   not measure the outcomes of its unserved alternatives.
+3. Exercise repeated account/model traffic, concurrent requests before a
+   heartbeat, reconnects, and overloaded preferred machines. Include an idle
+   higher-ranked machine that is inherently slower than its peers: peer speed
+   alone must not force spillover. Then add load to that machine and verify
+   spillover against its own estimated idle baseline. Confirm that live
+   rechecks spill or fall back without waiting on an affinity timer, admitting
+   beyond capacity, or introducing an affinity-only 429.
+4. After reviewing dev evidence and obtaining approval for the specific
+   production rollout, run `shadow` on production before a separately approved
+   `on` experiment. Use comparable observation windows and stop the experiment
+   if measured tail TTFT, 429s/timeouts, decode TPS or amplification regress.
+   The initial load-delay threshold is a hypothesis: an estimated bound does not establish
+   an acceptable measured tail-latency tradeoff.
+5. If cache benefit is a goal, independently verify authenticated prefix-cache
+   participation and measured saved tokens/hit rate using the
+   [cache-routing rollout](cache-routing-rollout.md). Account affinity neither
+   enables cache reuse nor makes an affinity choice count as a cache hit. Do
+   not activate cache routing as a side effect of this experiment.
+
+Rollback this experiment by setting `EIGENINFERENCE_ACCOUNT_AFFINITY_MODE=off`
+and restarting through the approved coordinator procedure. Verify affinity
+metrics stop and ordinary selection returns; no per-account state needs
+purging. Keep cache-routing settings unchanged.
 
 ### Queue and cold dispatch
 

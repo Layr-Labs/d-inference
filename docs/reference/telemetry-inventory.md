@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-18 · commit `e4df336bc`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -130,6 +130,27 @@ lists every name).
 | `routing.ttft_calibration_ratio` | gauge | `model` | each TTFT observation (`coordinator/api/settlement.go`) |
 | `routing.unservable_reclassified`, `routing.first_chunk_timeout_reclassified`, `routing.client_error_passthrough`, `routing.oversized_request_rejected`, `routing.deadline_unreachable_rejected`, `routing.invalid_ttft`, `routing.dispatch_client_error_stop`, `routing.first_chunk_timeout_ladder_capped`, `routing.hedge_governor_suppressed`, `routing.pending_load_backoff`, `routing.scan_admission_timeout`, `routing.ttft_admission`, `routing.ttft_spread`, `routing.provider_selected`, `routing.load_model_rejects` | count | mostly `model` | routing edge cases |
 | `http.requests` (count), `http.latency_ms` (histogram) | — | `method`, `path`, `status_code` | every HTTP request (`loggingMiddleware`, `coordinator/api/server.go`) |
+
+### Account affinity
+
+`coordinator/api/account_affinity_metrics.go` (`emitAccountAffinityMetrics`) emits these same names to DogStatsD and the in-process `Metrics` registry from `recordRoutingDecisionFor`. Only decisions with `AccountAffinityObservation.Evaluated=true` emit; default-off and pre-evaluation ineligible requests are absent, so this is not a denominator for all inference requests. These are selection estimates, not observed cache hits or latency savings; there are no new per-request stored fields or telemetry wire fields.
+
+On successful plan retries, candidate count, rank and the ordinary-choice comparison refer to the owner/version/quote priority tier actually used, not a higher tier that failed admission (`coordinator/registry/account_affinity_plan_reserve.go`, `accountAffinityPlanDecision`).
+
+| Metric | Type | Labels | Meaning / source |
+|---|---|---|---|
+| `routing.account_affinity` | count | `mode`, `reason`, `applied`, `would_change` | One evaluated routing decision; whether the proposed affinity winner differs from the ordinary winner, and whether affinity was applied (`emitAccountAffinityMetrics`). |
+| `routing.account_affinity.candidates` | histogram | `mode` | Number of candidates with a verified physical affinity identity, including candidates subsequently declined by affinity's timing or quality checks (`coordinator/registry/account_affinity.go`, `evaluateAccountAffinity`). |
+| `routing.account_affinity.rank` | histogram | `mode` | One-based rank of the acceptable proposed machine; absent on fallback (`emitAccountAffinityMetrics`). |
+| `routing.account_affinity.added_ttft_ms` | histogram | `mode` | Nonnegative estimated load-induced TTFT increment over an idle counterfactual for the chosen machine's own hardware/model/request, including zero; not a difference from a faster peer or a measured idle sample. Absent on fallback and for invalid/nonfinite samples (`emitAccountAffinityMetrics`). |
+
+| Label | Closed vocabulary / source |
+|---|---|
+| `mode` | `off`, `shadow`, `on`, `unknown`; unknown input is normalized (`accountAffinityMetricMode`). |
+| `reason` | `off`, `invalid_config`, `missing_account`, `missing_model`, `vision`, `no_candidates`, `no_known_ttft`, `no_identity`, `no_eligible_candidate`, `preferred`, `spill`, `plan_fallback`, `unknown`; only evaluated policy paths emit, and unknown input is normalized (`accountAffinityMetricReason`). |
+| `applied`, `would_change` | `true`, `false` (`emitAccountAffinityMetrics`). |
+
+No account, API key, request, model, physical-machine identity or rendezvous hash is included in these metric labels or samples. Counts, ranks and own-machine load increments remain numerical values rather than labels (`emitAccountAffinityMetrics`).
 
 ### Cache results by model (internal)
 

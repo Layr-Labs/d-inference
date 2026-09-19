@@ -99,6 +99,13 @@ const (
 )
 
 type routingSnapshot struct {
+	// Verified physical identity, never the provider owner's account or a
+	// connection ID. Request-local and never exported in routing telemetry.
+	affinityIdentity accountAffinityIdentity
+	// Whole-box reported work is used only by the optional affinity quality
+	// preference, never by legacy TTFT scoring or hard admission.
+	affinityBackendOccupancy int
+
 	provider   *Provider
 	model      string
 	chipFamily string // hardware chip family (e.g. "M3"); keys the TTFT calibrator
@@ -211,7 +218,10 @@ type routingSnapshot struct {
 }
 
 type routingCandidate struct {
-	cacheAffinityEligible bool
+	accountAffinityScore    [32]byte
+	accountAffinityRanked   bool
+	accountAffinityEligible bool
+	cacheAffinityEligible   bool
 	// Exact base-score work eligible for a cache credit; never includes load or decode.
 	pricedPromptTokens int
 	prefillCostMs      float64
@@ -314,6 +324,8 @@ type costBreakdown struct {
 // selection. Returned by ReserveProviderEx so callers can emit metrics
 // and structured logs without reaching into registry internals.
 type RoutingDecision struct {
+	AccountAffinity AccountAffinityObservation
+
 	ProviderID string  // winning provider, empty if no selection
 	Model      string  // requested model
 	CostMs     float64 // total cost of the winning candidate
@@ -537,6 +549,9 @@ func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bo
 	scans := 0
 	failedDecision := func() RoutingDecision {
 		decision := routingDecisionForFailedScan(model, last.candidates)
+		// The scan may have proposed affinity before a commit lock wait spent
+		// the deadline. No reservation succeeded on this path.
+		decision.AccountAffinity.Applied = false
 		addRoutingRejections(&decision, carried)
 		decision.LockWaitUS, decision.ScanUS, decision.AdmitUS = last.lockWaitUS, last.scanUS, admitUS
 		decision.ScanCount = scans
@@ -576,7 +591,7 @@ func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bo
 			if wantPlan {
 				// The scan pool is immutable value snapshots plus provider
 				// identities. Plan consumption revalidates both before use.
-				plan = newDispatchPlan(model, last.candidates, last.selected)
+				plan = newDispatchPlan(model, last.candidates, last.selected, pr)
 			}
 			return provider, decision, plan
 		}
@@ -693,6 +708,9 @@ func (r *Registry) commitProviderReservation(
 	if r.cacheRouting != scan.cacheTracker || r.cacheRoutingMode != scan.cacheMode {
 		return nil, nil, reservationNeedsRescan, RoutingDecision{}
 	}
+	if r.accountAffinity != scan.candidates.accountAffinityConfig {
+		return nil, nil, reservationNeedsRescan, RoutingDecision{}
+	}
 	selected := scan.selected
 	if selected == nil || selected.provider == nil {
 		return nil, nil, reservationCandidateRejected, RoutingDecision{}
@@ -758,6 +776,9 @@ func (r *Registry) commitProviderReservation(
 			routingDecisionForCommitRejection(model, rejectNone, true)
 	}
 	r.applyCacheRoutingCostPLocked(p, model, pr, candidate)
+	if accountAffinityReservationChanged(pr, scan.candidates, selected, candidate) {
+		return nil, nil, reservationNeedsRescan, RoutingDecision{}
+	}
 
 	// Another reservation or cache quarantine changed this winner after the
 	// shared scan. Re-scan before committing stale cost or affinity preference.
@@ -861,6 +882,7 @@ func addRoutingRejections(dst *RoutingDecision, src RoutingDecision) {
 
 func routingDecisionForFailedScan(model string, scan candidateScan) RoutingDecision {
 	return RoutingDecision{
+		AccountAffinity:         scan.accountAffinity,
 		Model:                   model,
 		CandidateCount:          scan.candidateCount,
 		CapacityRejections:      scan.capacityRejections,
@@ -1001,6 +1023,8 @@ func shouldBypassBreakerFailOpen(winner *routingCandidate, breakerRejected, capa
 // idle-spread shadow scan (loadedIdleAlternativeExistsLocked) so the two can
 // never drift on which providers are routable.
 type candidateScan struct {
+	accountAffinity       AccountAffinityObservation
+	accountAffinityConfig AccountAffinityConfig
 	pool                  []*routingCandidate
 	candidateCount        int
 	capacityRejections    int
@@ -1329,6 +1353,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 // that mode.
 func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingRequest, ignoreProviderBreaker bool, excludeIDs ...string) (*routingCandidate, candidateScan) {
 	scan := r.scanCandidatesLocked(model, pr, ignoreProviderBreaker, excludeIDs...)
+	scan.accountAffinityConfig = r.accountAffinity
 	if len(scan.pool) == 0 {
 		return nil, scan
 	}
@@ -1349,6 +1374,16 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 		}
 	}
 	winner, runnerUp, nearTieSize, path := selectRoutingCandidateWithAffinity(scan.pool, affinity)
+	preferred, observation := evaluateAccountAffinity(scan.pool, pr, r.accountAffinity)
+	observation.WouldChange = preferred != nil && preferred != winner
+	if r.accountAffinity.Mode == AccountAffinityOn && preferred != nil {
+		observation.Applied = true
+		if preferred != winner {
+			runnerUp = winner
+		}
+		winner, nearTieSize, path = preferred, 1, SelectionAccountAffinity
+	}
+	scan.accountAffinity = observation
 	pr.CacheOpportunity.AffinityApplied = path == SelectionPrefixAffinity
 	scan.runnerUp = candidateSummaryOf(runnerUp)
 	scan.nearTieSize = clampInt32(nearTieSize)
@@ -1690,6 +1725,9 @@ func (r *Registry) snapshotProviderIntoPLockedEx(dst *routingSnapshot, p *Provid
 	*dst = routingSnapshot{}
 	snap := dst
 	snap.provider = p
+	if r.accountAffinity.Mode != "" && r.accountAffinity.Mode != AccountAffinityOff {
+		snap.affinityIdentity = stableAccountAffinityIdentityLocked(p)
+	}
 	snap.model = model
 	snap.chipFamily = p.Hardware.ChipFamily
 	snap.binaryVersion = p.Version
@@ -1718,6 +1756,9 @@ func (r *Registry) snapshotProviderIntoPLockedEx(dst *routingSnapshot, p *Provid
 	snap.hasBackendCapacity = p.BackendCapacity != nil
 
 	if p.BackendCapacity != nil {
+		if r.accountAffinity.Mode != "" && r.accountAffinity.Mode != AccountAffinityOff {
+			snap.affinityBackendOccupancy = accountAffinityReportedOccupancy(p.BackendCapacity.Slots)
+		}
 		snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
 		snap.freeForLoadGB = p.BackendCapacity.FreeForLoadGB
 		if p.BackendCapacity.TotalMemoryGB > 0 {

@@ -18,8 +18,9 @@ import (
 // herd had moved, the scan re-ranked the same overloaded boxes, and the
 // request burned its first-content budget on rescan after rescan.
 //
-// The plan retains up to dispatchPlanMaxAlternates of the lowest-cost
-// NON-winner candidates from the SAME scan that selected the primary, plus
+// The plan retains up to dispatchPlanMaxAlternates NON-winner candidates
+// from the SAME scan that selected the primary: lowest cost by default,
+// stable rendezvous order when account affinity is active, plus
 // full-pool aggregate counts for telemetry. It is strictly request-local
 // state: *Provider pointers plus small value snapshots of the ranking terms,
 // no registry-side maps, no TTLs, no background reaping — when the request
@@ -112,14 +113,22 @@ type PlanEntry struct {
 type planEntry struct {
 	provider *Provider
 	view     PlanEntry
+	// Account affinity is request-local and never exported in plan telemetry.
+	affinityIdentity accountAffinityIdentity
+	affinityScore    [32]byte
+	affinityRanked   bool
+	affinityEligible bool
 }
 
 // DispatchPlan is the request-local shortlist produced by
-// ReserveProviderWithPlan. Entries are born ordered by ascending scan-time
-// cost and consumed once each (cursor); quote outcomes re-rank the UNCONSUMED
-// tail into confirmed → unprobed/legacy → demoted tiers (cost order preserved
-// within each tier — see resortTailLocked); one full re-scan refresh is
-// available for the plan's whole lifetime (RefreshDispatchPlan).
+// ReserveProviderWithPlan. Off/shadow entries start in ascending scan-time
+// cost order; quotes re-rank their unconsumed tail into confirmed → unprobed
+// → demoted tiers, keeping cost order within each tier. Active affinity starts
+// in stable HRW order and only negative quotes demote entries: positive quote
+// arrival order cannot scramble affinity. Consumption re-evaluates the bounded
+// live shortlist and falls back to cost when affinity is infeasible. Entries
+// are consumed once each, with one full re-scan refresh for the plan's whole
+// lifetime (RefreshDispatchPlan).
 //
 // Concurrency: a plan belongs to one request, but that request's retry loop,
 // its speculative-backup goroutine, AND the probe collector
@@ -146,16 +155,17 @@ type DispatchPlan struct {
 	eligible         int
 	admissible       int
 	deadlineFeasible int
+	affinity         accountAffinityPlanFence
 }
 
 // newDispatchPlan builds the plan from the scan that selected winner. One
 // bounded pass over the already-built pool: it keeps the
-// dispatchPlanMaxAlternates lowest-cost non-winner candidates via insertion
+// dispatchPlanMaxAlternates best-ranked non-winner candidates via insertion
 // into a fixed-capacity slice (O(n·8) comparisons, no full-pool sort, no
 // full-pool copy — only the ≤8 retained entries copy their ranking terms).
 // The scan pool is immutable; live provider identity/state is revalidated when
 // an entry is consumed.
-func newDispatchPlan(model string, scan candidateScan, winner *routingCandidate) *DispatchPlan {
+func newDispatchPlan(model string, scan candidateScan, winner *routingCandidate, requests ...*PendingRequest) *DispatchPlan {
 	plan := &DispatchPlan{
 		model:     model,
 		entries:   make([]planEntry, 0, dispatchPlanMaxAlternates),
@@ -170,6 +180,7 @@ func newDispatchPlan(model string, scan candidateScan, winner *routingCandidate)
 		admissible:       scan.candidateCount + scan.ttftRejections,
 		deadlineFeasible: scan.candidateCount,
 	}
+	plan.initAccountAffinity(scan, requests)
 	if winner != nil {
 		plan.attempted[winner.provider.ID] = struct{}{}
 	}
@@ -177,31 +188,28 @@ func newDispatchPlan(model string, scan candidateScan, winner *routingCandidate)
 		if c == winner {
 			continue
 		}
-		// Insertion position among the retained entries (ascending cost).
+		entry := planEntryFromCandidate(c)
+		// Off/shadow retain the original cost order. Active plans retain the
+		// bounded HRW shortlist, including temporarily busy identities whose
+		// live feasibility will be checked again at retry time.
 		pos := len(plan.entries)
-		for pos > 0 && c.costMs < plan.entries[pos-1].view.CostMs {
+		for pos > 0 && plan.retainEntryBefore(entry, plan.entries[pos-1]) {
 			pos--
 		}
 		if pos == dispatchPlanMaxAlternates {
-			continue // costlier than every retained entry, list full
+			continue // lower-ranked than every retained entry, list full
 		}
 		if len(plan.entries) < dispatchPlanMaxAlternates {
 			plan.entries = append(plan.entries, planEntry{})
 		}
 		copy(plan.entries[pos+1:], plan.entries[pos:])
-		plan.entries[pos] = planEntry{
-			provider: c.provider,
-			view: PlanEntry{
-				ProviderID:  c.provider.ID,
-				CostMs:      c.costMs,
-				TTFTMs:      c.breakdown.TTFTMs,
-				RawTTFTMs:   c.breakdown.RawTTFTMs,
-				StateMs:     c.breakdown.StateMs,
-				ModelLoaded: c.snapshot.modelLoaded,
-				SlotState:   c.snapshot.slotState,
-				ChipFamily:  c.snapshot.chipFamily,
-			},
-		}
+		plan.entries[pos] = entry
+	}
+	if plan.affinity.enabled {
+		// Retention protects ready backups from being crowded out by a run of
+		// busy high-HRW identities; consumption restores pure HRW order among
+		// the retained entries and re-evaluates their feasibility live.
+		plan.resortTailLocked()
 	}
 	return plan
 }
@@ -324,7 +332,8 @@ func (r *Registry) ReserveProviderWithPlan(model string, pr *PendingRequest, exc
 	return r.reserveProvider(model, pr, true, excludeIDs...)
 }
 
-// ReserveNextFromPlan consumes plan entries in cost order until one passes the
+// ReserveNextFromPlan consumes off/shadow entries in quote/cost order, or
+// active-affinity entries in freshly re-evaluated bounded HRW order, until one passes the
 // full, CURRENT admission gate chain, reserving it atomically
 // (addPendingLocked) exactly like the primary reservation. Entries that fail
 // are skipped with a bounded reason; the skip list (terminated by an
@@ -378,6 +387,9 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 		return nil, RoutingDecision{}, []PlanSkip{{Reason: PlanSkipExhausted}}
 	}
 	model := plan.model
+	if plan.affinity.account != "" && pr.Model != "" && pr.Model != model {
+		return nil, RoutingDecision{Model: model}, []PlanSkip{{Reason: PlanSkipExhausted}}
+	}
 	if pr.Model == "" {
 		pr.Model = model
 	}
@@ -401,11 +413,12 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 	lock := r.commitLock("commit_plan")
 	lock.lock()
 	defer lock.unlock()
+	useAffinity := plan.prepareAccountAffinity(pr, r.accountAffinity)
 
 	// tryReserve runs the full CURRENT gate chain against one identity-checked
 	// entry and, on success, commits the reservation. Failure appends the
 	// bounded gate_rejected skip.
-	tryReserve := func(entry planEntry) (*Provider, RoutingDecision, bool) {
+	tryReserve := func(entry planEntry, guard *accountAffinityPlanGuard) (*Provider, RoutingDecision, bool) {
 		id := entry.view.ProviderID
 		p := entry.provider
 		skip := func(reason PlanSkipReason) {
@@ -452,6 +465,13 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 		if enforceTTFT && snap.hasBackendCapacity && candidate.breakdown.TTFTMs > pr.MaxTTFTMs {
 			p.mu.Unlock()
 			skip(PlanSkipGateRejected)
+			return nil, RoutingDecision{}, false
+		}
+		if guard != nil && !guard.admits(entry, candidate, pr) {
+			p.mu.Unlock()
+			if !guard.softRejected {
+				skip(PlanSkipGateRejected)
+			}
 			return nil, RoutingDecision{}, false
 		}
 		if !r.providerCanAdmitLockedEx(p, model, pr.Traits, relaxTrust, false, now) ||
@@ -505,6 +525,9 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 		}
 		return p, decision, true
 	}
+	if useAffinity {
+		return r.reserveAccountAffinityPlan(pr, plan, exclude, allowedSerials, tryReserve, &skips)
+	}
 
 	// Pass 1: cost order, deferring live avoided-version entries (see the
 	// version-diverse retry rationale in the doc comment).
@@ -528,7 +551,7 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 			deferred = append(deferred, entry)
 			continue
 		}
-		if p, decision, ok := tryReserve(entry); ok {
+		if p, decision, ok := tryReserve(entry, nil); ok {
 			// Diversity won: the deferred same-version entries were passed
 			// over for this consumption — record them for telemetry.
 			for _, d := range deferred {
@@ -541,7 +564,7 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 	// version rather than failing closed. The pass-1 identity checks remain
 	// valid: r.providers cannot change while r.mu is held in either mode.
 	for _, entry := range deferred {
-		if p, decision, ok := tryReserve(entry); ok {
+		if p, decision, ok := tryReserve(entry, nil); ok {
 			return p, decision, skips
 		}
 	}
@@ -560,6 +583,9 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 func (r *Registry) RefreshDispatchPlan(pr *PendingRequest, plan *DispatchPlan, excludeIDs ...string) (p *Provider, decision RoutingDecision, fresh *DispatchPlan, performed bool) {
 	if plan == nil {
 		return nil, RoutingDecision{}, nil, false
+	}
+	if plan.affinity.account != "" && pr != nil && pr.Model != "" && pr.Model != plan.model {
+		return nil, RoutingDecision{Model: plan.model}, nil, false
 	}
 	plan.mu.Lock()
 	if plan.refreshUsed {
@@ -601,30 +627,28 @@ func planEntryRank(v PlanEntry) int {
 	}
 }
 
-// resortTailLocked re-ranks the unconsumed entries after a quote outcome:
-// tier first, ascending scan-time cost within the tier. Cost must be an
+// resortTailLocked re-ranks the unconsumed entries after a quote outcome.
+// Off/shadow use quote tier first, then ascending scan-time cost. Cost is an
 // explicit secondary key (not left to sort stability): entries change tier in
 // quote-arrival order, so by the time a cheap entry is confirmed a costlier
 // one may already sit in the confirmed tier ahead of it — a stability-only
 // sort would freeze that inversion and BestConfirmedBackup would return the
-// wrong entry. Entries the cursor already consumed are never moved — they are
+// wrong entry. Active affinity instead keeps HRW order within non-demoted and
+// demoted tiers; affirmative quotes do not reorder it. Consumed entries never move — they are
 // history (attempted set, telemetry), not candidates. Caller holds dp.mu.
 func (dp *DispatchPlan) resortTailLocked() {
 	tail := dp.entries[dp.cursor:]
 	sort.SliceStable(tail, func(i, j int) bool {
-		ri, rj := planEntryRank(tail[i].view), planEntryRank(tail[j].view)
-		if ri != rj {
-			return ri < rj
-		}
-		return tail[i].view.CostMs < tail[j].view.CostMs
+		return dp.entryBefore(tail[i], tail[j], true)
 	})
 }
 
 // ConfirmEntry records an affirmative capacity_quote on the named unconsumed
 // entry: the provider's live TTFT quantiles, token headroom, and confidence
 // replace nothing (the scan-time estimates stay for telemetry) but ride
-// alongside for hedge timing, and the entry is promoted into the confirmed
-// tier. A no-op when the entry was already consumed or is not in the plan —
+// alongside for hedge timing. Off/shadow promote the entry into the confirmed
+// tier; active affinity restores its non-demoted HRW position. A no-op when
+// the entry was already consumed or is not in the plan —
 // a quote that raced the dispatch loop carries no ordering work to do.
 func (dp *DispatchPlan) ConfirmEntry(providerID string, quote *protocol.CapacityQuoteMessage) {
 	if dp == nil || quote == nil {
@@ -671,12 +695,12 @@ func (dp *DispatchPlan) DemoteEntry(providerID string) {
 	}
 }
 
-// BestConfirmedBackup returns the lowest-scan-cost unconsumed entry whose
+// BestConfirmedBackup returns the highest-ranked unconsumed entry whose
 // quote confirmed admissibility, plus its quoted TTFT p90 — the hedge
 // scheduler's backup_ttft_q90 input (hedge_schedule.go). ok=false when no
 // confirmed entry remains; callers then fall back to the coordinator floor.
-// The tail is tier-sorted with cost order preserved inside the confirmed
-// tier, so the first confirmed entry IS the lowest-cost one.
+// The first confirmed entry follows the plan's policy: lowest scan cost by
+// default, stable account-affinity rank when active.
 func (dp *DispatchPlan) BestConfirmedBackup() (providerID string, ttftP90 time.Duration, ok bool) {
 	if dp == nil {
 		return "", 0, false

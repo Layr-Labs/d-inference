@@ -769,7 +769,7 @@ func (s *MemoryStore) UsageTimeSeries(since, until time.Time, bucketSize time.Du
 // network rewards. Base-reward rows live in provider_earnings for provider-facing
 // history, but count as reward earnings here so they do not inflate work/jobs.
 // Reward-only ledger accounts (e.g. consumer-only referrers) do not appear.
-func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow {
+func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, limit int) ([]LeaderboardRow, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if limit <= 0 || limit > 200 {
@@ -841,7 +841,7 @@ func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, lim
 	if len(rows) > limit {
 		rows = rows[:limit]
 	}
-	return rows
+	return rows, nil
 }
 
 // NetworkTotals aggregates provider earnings, splitting inference work from

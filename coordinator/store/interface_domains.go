@@ -157,8 +157,10 @@ type UsageStore interface {
 	UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) ([]UsageFlowBucket, error)
 
 	// Leaderboard returns the top N accounts ranked by the given metric
-	// over the given time window. Zero `since` means all-time.
-	Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow
+	// over the given time window. Zero `since` means all-time. A query that
+	// cannot run (most often the store timeout) is returned as an error, never
+	// as an empty board, so callers can refuse to publish or cache it.
+	Leaderboard(metric LeaderboardMetric, since time.Time, limit int) ([]LeaderboardRow, error)
 
 	// NetworkTotals returns aggregated metrics across the network for the
 	// given window. Zero `since` means all-time. It returns an error (never a

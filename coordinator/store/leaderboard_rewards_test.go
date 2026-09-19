@@ -96,7 +96,7 @@ func findRow(rows []LeaderboardRow, accountID string) (LeaderboardRow, bool) {
 
 func TestLeaderboardWorkRewardDifferentiation(t *testing.T) {
 	s := seedLeaderboardFixture(t)
-	rows := s.Leaderboard(LeaderboardEarnings, time.Time{}, 50)
+	rows := mustLeaderboard(t, s, LeaderboardEarnings, time.Time{}, 50)
 
 	cases := []struct {
 		name             string
@@ -149,7 +149,7 @@ func TestLeaderboardWorkRewardDifferentiation(t *testing.T) {
 // has strictly more *work* earnings. Reward-only bob is excluded (not a provider).
 func TestLeaderboardRankingUsesTotal(t *testing.T) {
 	s := seedLeaderboardFixture(t)
-	rows := s.Leaderboard(LeaderboardEarnings, time.Time{}, 50)
+	rows := mustLeaderboard(t, s, LeaderboardEarnings, time.Time{}, 50)
 
 	wantOrder := []string{"acct-carol", "acct-alice", "acct-dave", "acct-frank"}
 	if len(rows) != len(wantOrder) {
@@ -177,7 +177,7 @@ func TestLeaderboardRankingUsesTotal(t *testing.T) {
 func TestLeaderboardTokensAndJobsMetrics(t *testing.T) {
 	s := seedLeaderboardFixture(t)
 
-	tokens := s.Leaderboard(LeaderboardTokens, time.Time{}, 50)
+	tokens := mustLeaderboard(t, s, LeaderboardTokens, time.Time{}, 50)
 	wantTokenOrder := []string{"acct-alice", "acct-frank", "acct-carol", "acct-dave"}
 	for i, want := range wantTokenOrder {
 		if i >= len(tokens) || tokens[i].AccountID != want {
@@ -185,7 +185,7 @@ func TestLeaderboardTokensAndJobsMetrics(t *testing.T) {
 		}
 	}
 
-	jobs := s.Leaderboard(LeaderboardJobs, time.Time{}, 50)
+	jobs := mustLeaderboard(t, s, LeaderboardJobs, time.Time{}, 50)
 	// alice/carol/frank all have 1 job -> tiebreak by account_id asc; reward-only
 	// bob is not a provider and is excluded; dave has 0 jobs so sorts after the
 	// work providers.
@@ -207,14 +207,14 @@ func rowID(rows []LeaderboardRow, i int) string {
 func TestLeaderboardLimitClamp(t *testing.T) {
 	s := seedLeaderboardFixture(t)
 	// limit<=0 and limit>200 both clamp to 50 (>= our 4 provider rows), so all appear.
-	if got := s.Leaderboard(LeaderboardEarnings, time.Time{}, 0); len(got) != 4 {
+	if got := mustLeaderboard(t, s, LeaderboardEarnings, time.Time{}, 0); len(got) != 4 {
 		t.Errorf("limit 0 -> %d rows, want 4", len(got))
 	}
-	if got := s.Leaderboard(LeaderboardEarnings, time.Time{}, 1000); len(got) != 4 {
+	if got := mustLeaderboard(t, s, LeaderboardEarnings, time.Time{}, 1000); len(got) != 4 {
 		t.Errorf("limit 1000 -> %d rows, want 4", len(got))
 	}
 	// A real positive limit truncates after sorting.
-	if got := s.Leaderboard(LeaderboardEarnings, time.Time{}, 2); len(got) != 2 {
+	if got := mustLeaderboard(t, s, LeaderboardEarnings, time.Time{}, 2); len(got) != 2 {
 		t.Fatalf("limit 2 -> %d rows, want 2", len(got))
 	} else if got[0].AccountID != "acct-carol" || got[1].AccountID != "acct-alice" {
 		t.Errorf("limit 2 top rows = %s,%s want acct-carol,acct-alice", got[0].AccountID, got[1].AccountID)
@@ -282,7 +282,7 @@ func TestLeaderboardExcludesNonProviderRewards(t *testing.T) {
 		t.Fatalf("credit consumer admin reward: %v", err)
 	}
 
-	rows := s.Leaderboard(LeaderboardEarnings, time.Time{}, 50)
+	rows := mustLeaderboard(t, s, LeaderboardEarnings, time.Time{}, 50)
 	if _, ok := findRow(rows, "consumer"); ok {
 		t.Errorf("non-provider 'consumer' must not appear on the provider leaderboard")
 	}
@@ -335,7 +335,7 @@ func TestNetworkTotalsExcludesNonRewardLedgerTypes(t *testing.T) {
 		t.Errorf("ActiveAccounts = %d, want 0", totals.ActiveAccounts)
 	}
 
-	if rows := s.Leaderboard(LeaderboardEarnings, time.Time{}, 50); len(rows) != 0 {
+	if rows := mustLeaderboard(t, s, LeaderboardEarnings, time.Time{}, 50); len(rows) != 0 {
 		t.Errorf("Leaderboard returned %d rows, want 0 (non-reward ledger types only): %+v", len(rows), rows)
 	}
 }
@@ -361,4 +361,13 @@ func TestIsRewardLedgerType(t *testing.T) {
 	if len(RewardLedgerTypes) != 2 {
 		t.Errorf("RewardLedgerTypes has %d entries, want 2", len(RewardLedgerTypes))
 	}
+}
+
+func mustLeaderboard(t *testing.T, s Store, metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow {
+	t.Helper()
+	rows, err := s.Leaderboard(metric, since, limit)
+	if err != nil {
+		t.Fatalf("leaderboard: %v", err)
+	}
+	return rows
 }

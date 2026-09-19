@@ -70,7 +70,15 @@ func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows := s.store.Leaderboard(metric, since, limit)
+	rows, err := s.store.Leaderboard(metric, since, limit)
+	if err != nil {
+		// A timed-out ranking must not be published or cached as an empty board.
+		s.logger.Warn("leaderboard query failed", "key", cacheKey, "error", err)
+		s.ddIncr("cache.refresh_failed", []string{"key:" + cacheKey})
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable",
+			"leaderboard is temporarily unavailable"))
+		return
+	}
 
 	type entry struct {
 		Rank                   int    `json:"rank"`

@@ -239,6 +239,17 @@ func TestNetworkTotalsReturnsErrorWhenUnavailable(t *testing.T) {
 	}
 }
 
+// TestLeaderboardReturnsErrorWhenUnavailable: the ranking query reports an
+// error instead of an empty board, so the handler can 503 rather than cache
+// "no provider earned anything" for five minutes.
+func TestLeaderboardReturnsErrorWhenUnavailable(t *testing.T) {
+	s := testPostgresStore(t)
+	s.Close()
+	if _, err := s.Leaderboard(LeaderboardEarnings, time.Now().Add(-24*time.Hour), 50); err == nil {
+		t.Fatal("Leaderboard on a closed pool returned no error")
+	}
+}
+
 // TestUsageAggregatesReturnErrorWhenUnavailable: the four usage aggregates
 // behind /v1/stats report an error instead of zero totals, a zero count or a
 // nil series when the statement cannot run, so the stats refresher can keep

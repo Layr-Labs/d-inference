@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — leaderboard availability
+
+- Return 503 `service_unavailable` from `GET /v1/leaderboard` when the ranking query fails (typically the store timeout) instead of publishing and caching an empty board as a successful result. A successful empty window still returns 200 with empty entries.
+
 ## Unreleased — MDM-optional provider authorization
 
 - Warn on stderr for every CLI invocation below macOS 27, including help/version, while preserving commands and JSON output. Add prominent setup/dashboard upgrade notices, distinguish older from unknown reported OS versions, and retain legacy service during the transition.

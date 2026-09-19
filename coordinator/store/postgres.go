@@ -2196,7 +2196,7 @@ func rewardLedgerTypesSQLList() string {
 // provider-facing history, but count as reward earnings here so they do not
 // inflate inference work/jobs/tokens. Ledger reward-only accounts (e.g.
 // consumer-only referrers) never appear on the provider leaderboard.
-func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow {
+func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, limit int) ([]LeaderboardRow, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -2262,7 +2262,7 @@ func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, l
 
 	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("store: leaderboard: %w", err)
 	}
 	defer rows.Close()
 
@@ -2270,11 +2270,14 @@ func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, l
 	for rows.Next() {
 		var r LeaderboardRow
 		if err := rows.Scan(&r.AccountID, &r.EarningsMicroUSD, &r.WorkEarningsMicroUSD, &r.RewardEarningsMicroUSD, &r.Tokens, &r.Jobs); err != nil {
-			continue
+			return nil, fmt.Errorf("store: leaderboard: %w", err)
 		}
 		out = append(out, r)
 	}
-	return out
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: leaderboard: %w", err)
+	}
+	return out, nil
 }
 
 // GetBalance returns the current balance in micro-USD for an account.

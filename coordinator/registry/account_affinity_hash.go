@@ -19,9 +19,9 @@ func accountAffinityScore(account, model string, identity accountAffinityIdentit
 		_, _ = h.Write(length[:])
 		_, _ = h.Write([]byte(part))
 	}
-	// Feed the same length-framed identity bytes as "serial:"+value or
-	// "sekey:"+value without allocating that concatenation. Existing machine
-	// ranks remain byte-for-byte identical across this representation change.
+	// Feed the namespaced identity without allocating its concatenation.
+	// Legacy serial/key ranks remain byte-for-byte identical; verified
+	// inventory IDs use their own "machine:" namespace.
 	prefix := identity.prefix()
 	binary.BigEndian.PutUint64(length[:], uint64(len(prefix))+uint64(len(identity.value)))
 	_, _ = h.Write(length[:])

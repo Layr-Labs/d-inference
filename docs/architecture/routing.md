@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-18 · commit `e4df336bc`
+> Last updated: 2026-09-18 · commit `d78ae77ef`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -97,6 +97,30 @@ flowchart TD
     DISP -->|first content| OK[stream]
     RACE --> OK
 ```
+
+### SSD-offloaded model weights
+
+Native Qwen4 can advertise a validated immutable offloaded payload alongside
+its native-weight loading estimate. `advertisedOffloadedMemoryGBLocked`
+(`coordinator/registry/offloaded_weights.go`) requires matching model ID and
+native Qwen4 type, finite positive memory, and an offloaded byte count strictly
+between zero and total artifact bytes. It uses the larger of the reported
+estimate and the remaining weight bytes plus a valid explicit
+`native_load_transient_bytes` allowance (at least 1 GiB, without overflow).
+Missing/invalid allowance declarations retain the 1.2 load-transient padding.
+Missing/invalid offload or other-family declarations keep the existing
+catalog/measured-weight policy.
+
+`coordinator/registry/scheduler.go` carries this estimate into cold snapshots.
+`reportedFreeForLoadAdmitsWithOffload` in
+`coordinator/registry/offloaded_weights.go` uses it at the cold-load boundary;
+`coldTokenBudgetEstimateWithOffload` in `coordinator/registry/servability.go`
+uses it for the post-load token-budget estimate.
+This does not subtract request KV, prove physical capacity, waive catalog
+minimum RAM or activate a model. Wire fields are defined in
+[model registration messages](../reference/protocol-messages.md#models), and
+the [private candidate reference](../reference/qwen4-next-support.md)
+records the unqualified serving boundary.
 
 ### Eligibility gates and the `GateReason` vocabulary
 
@@ -283,6 +307,26 @@ Useful reuse subtracts a bounded credit; excess restore cost increases
 and their flag are the subject of
 [`cache-aware-routing.md`](cache-aware-routing.md).
 
+### Native model capacity and registry identity
+
+Native model context describes a capability, not an SLA promise. The provider
+enforces prompt plus reserved output against the native window and retains
+physical-memory safeguards. Coordinator token budgets, queueing, TTFT and
+throughput policies decide which eligible requests can be routed; historical
+test sizes must not become hidden provider context ceilings. The native
+Flash-Next policy is defined in [the support reference](../reference/qwen4-next-support.md).
+
+`providerEligibleForTraitsLocked` applies the exact registry-ID compatibility
+floor before request-shape gates. `qwen3.8-flash-next` requires `0.9.6` or newer;
+unknown/older versions are ineligible even for plain text. The 0.9.5 signed
+app crashes when resolving Qwen Metal resources, so it is excluded for Flash
+while remaining eligible for other supported models. This prevents an
+older provider from accepting that ID without its qualified native policies.
+Other IDs, including the legacy developer ID, retain existing version rules.
+Sources: `coordinator/registry/qwen4_model_policy.go`
+(`providerMeetsQwen4CatalogPolicyLocked`) and
+`coordinator/registry/request_traits.go` (`providerEligibleForTraitsLocked`).
+
 ### Selection paths
 
 Before selection the candidate pool may be narrowed, each step only when it
@@ -337,6 +381,16 @@ per-account map or additional queue. Identity snapshots reference the attested
 value and its namespace separately, avoiding a new identity string per scanned
 provider while preserving the same length-framed hash bytes
 (`coordinator/registry/account_affinity_hash.go`, `accountAffinityScore`;
+`coordinator/registry/account_affinity_identity.go`, `stableAccountAffinityIdentityLocked`).
+
+The identity prefers an account-bound, verified canonical inventory machine ID,
+so App Attest-only providers do not need fabricated legacy evidence. Legacy-only
+providers retain verified serial/SE-key identity. On MDM-optional connections
+without canonical binding, affinity requires a complete MDA-bound serial;
+otherwise it falls back to ordinary routing. Claimed serials and owner-only
+identities never seed affinity. Identity is not serving permission: live
+authorization still gates both reservation and inference handoff
+(`coordinator/registry/machine_identity.go`, `BindVerifiedMachineIdentity`;
 `coordinator/registry/account_affinity_identity.go`, `stableAccountAffinityIdentityLocked`).
 
 `evaluateAccountAffinity` (`coordinator/registry/account_affinity.go`) chooses
@@ -406,7 +460,7 @@ Account placement does not enable prefix-cache participation. With cache
 routing off, coordinator-served requests lack authenticated `CacheScope` and
 current providers set request `cacheEnabled=false`; old protocol-0 providers
 receive a fresh per-attempt cache buster (`coordinator/registry/cache_receipts.go`,
-`PrepareCacheAttempt`; `provider-swift/Sources/ProviderCore/Inference/PrefixCacheReceipts.swift`,
+`PrepareCacheAttempt`; `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCacheReceipts.swift`,
 `RemotePrefixCacheContext`). More stable placement is therefore not itself a
 cache hit or evidence of latency savings. Cache rollout remains governed by
 [cache-aware routing](cache-aware-routing.md). Affinity telemetry carries only
@@ -567,7 +621,7 @@ outcome exactly once at first content or completion.
 | Mechanism | File | Keyed by | Trips when | Holds for |
 |---|---|---|---|---|
 | Inference-error cooldown (`error_cooldown`) | `coordinator/registry/error_cooldown.go` | provider × model × error shape | `inferenceErrorThreshold = 2` strikes within `inferenceErrorWindow = 60 * time.Second` | `inferenceErrorCooldownTTL = 5 * time.Minute` |
-| Node-health breaker (`breaker`) | `coordinator/registry/provider_breaker.go` | stable provider identity | `providerBreakerConsecTrip = 5` consecutive genuine faults, or fail rate ≥ `providerBreakerFailRate = 0.80` over ≥ `providerBreakerMinVolume = 20` outcomes in `providerBreakerWindow = 120 * time.Second` (ring of `providerHealthRingSize = 20`) | `providerBreakerBaseCooldown = 60 * time.Second`, doubling to `providerBreakerMaxCooldown = 5 * time.Minute` |
+| Node-health breaker (`breaker`) | `coordinator/registry/provider_breaker.go` | stable provider identity | `providerBreakerConsecTrip = 5` consecutive genuine faults, or fail rate > `providerBreakerFailRate = 0.80` over ≥ `providerBreakerMinVolume = 20` outcomes in `providerBreakerWindow = 120 * time.Second` (ring of `providerHealthRingSize = 20`) | `providerBreakerBaseCooldown = 60 * time.Second`, doubling to `providerBreakerMaxCooldown = 5 * time.Minute` |
 | Health ejection (`ejection`) | `coordinator/registry/health_ejection.go` | stable provider identity | `healthEjectionConsecTrip = 8` consecutive failures, or success rate < `healthEjectionMinSuccessRate = 0.10` over ≥ `healthEjectionMinSample = 15` outcomes in `healthEjectionWindow = 10 * time.Minute`, or `healthEjectionCapacityConsecTrip = 10` consecutive capacity rejects | `healthEjectionBaseCooldown = 60 * time.Second`, doubling to `healthEjectionMaxCooldown = 10 * time.Minute` |
 | Dispatch-load cooldown (`dispatch_load_cooldown`) | `coordinator/registry/model_loading.go` | provider × model | a dispatch-time `load_model` fails | `dispatchLoadCooldownTTL = 2 * time.Minute` |
 
@@ -576,6 +630,12 @@ survives disconnect and reconnect (`Disconnect`, `coordinator/registry/provider_
 Every tracker in this table and in [gray-box capacity signals](#gray-box-capacity-signals)
 stores its state in one `gateState` per identity
 ([below](#concurrency-scan-commit-and-fault-state-gates)).
+
+The health rings share `providerHealthWindow.recordOutcome` for insertion and
+`rebuild` for identity merges and version-reset filtering. Rebuilds preserve
+each outcome's disconnect-flush marker and recompute the trailing fault streak
+from the retained chronological history (`coordinator/registry/provider_breaker.go`,
+`coordinator/registry/version_reset.go`).
 
 **Fail-open.** If the scan produced no winner, at least one provider was
 rejected only by the breaker or ejection, and there were no capacity or TTFT
@@ -741,6 +801,10 @@ traffic before deploy. It has no binary; it is driven from tests.
   (`FleetConfig`, `DefaultHardwareSpec`) into a fresh `Registry`.
 - `fleet_ndjson.go` — `LoadFleetNDJSON` reconstructs a fleet from exported
   fleet snapshots (`store.FleetSnapshotRow`) at the tick nearest a given time.
+  The loader validates every line while retaining only rows for the current
+  best tick; it accepts interleaved timestamps, chooses the earlier tick on a
+  distance tie and keeps duplicate-slot precedence in file order. A zero
+  requested time selects the latest tick.
 - `trace.go` / `trace_ndjson.go` — `GenerateTrace` and
   `CalibrationPromptMix` build synthetic prompt mixes;
   `LoadProfilesNDJSON` turns exported request profiles into arrivals.
@@ -819,6 +883,7 @@ must not run in parallel with other scheduler tests in the same process.
 | Concern | File / symbol |
 |---|---|
 | Dispatch-time selection, cost model, TTFT estimate | `coordinator/registry/scheduler.go` — `ReserveProviderWithPlan`, `scanCandidatesLocked`, `snapshotProviderIntoLockedEx`, `buildCandidateInto`, `slotStatePenalty`, `healthPenaltyMs`, `resolveEffectiveTPS`, `ttftMsFromSnapshot`, `longPromptPenalty` |
+| Provider-state projection for selection and capacity preflight | `coordinator/registry/routing_snapshot.go` — `fillRoutingSnapshotPLocked`; callers retain their own eligibility gates and hold both registry and provider locks |
 | Candidate preferences and ranking | `coordinator/registry/candidate_selection.go` — `preferRoutingCandidates`, `selectRoutingCandidate` |
 | Account-affinity policy, configuration and identity ranking | `coordinator/registry/account_affinity.go` — `evaluateAccountAffinity`, `AccountAffinityObservation`; `coordinator/registry/account_affinity_config.go` — `ReadAccountAffinityConfig`, `ConfigureAccountAffinity`; `coordinator/registry/account_affinity_hash.go` — `accountAffinityScore`; `coordinator/registry/account_affinity_identity.go` — `stableAccountAffinityIdentityLocked` |
 | Own-machine affinity load-delay and deadline estimates | `coordinator/registry/account_affinity_load.go` — `accountAffinityLoadEstimate`, `accountAffinityLoadDelayMs` |
@@ -853,3 +918,7 @@ must not run in parallel with other scheduler tests in the same process.
 - [`../operations/routing-v2-rollout.md`](../operations/routing-v2-rollout.md) — kill switches for the routing flags named on this page.
 - [`../design/routing-v2.md`](../design/routing-v2.md), [`../design/routing-telemetry-and-calibration.md`](../design/routing-telemetry-and-calibration.md) — the design history behind the current constants.
 - [`request-outcome-observability.md`](request-outcome-observability.md) — how routing outcomes surface in telemetry.
+
+## Model-specific first-content slopes
+
+`coordinator/modelpolicy/first_content_sla.go` (`SetFirstContentSLAsFromEnv`) configures both fixed and per-input-token terms for exact model IDs, independently of model registration. Bonsai 2 uses a 10-second upstream base plus 5 ms per estimated prompt token; the live coordinator cutoff retains the existing 1-second response margin. This is the request-absolute first-content budget, carried through admission, queueing, retries and provider writer handoff, not an independent kernel prefill clock. Unrelated models and the legacy Qwen3-VL tightening policy retain their existing budgets. Configuration details are in [configuration.md](../reference/configuration.md).

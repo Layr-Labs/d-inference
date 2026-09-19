@@ -46,12 +46,25 @@ public enum MDMTrustDiagnosis {
     public static func diagnose(
         trustLevel: String?,
         status: String?,
-        enrollment: MDMEnrollmentState
+        enrollment: MDMEnrollmentState,
+        macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
     ) -> Diagnostic? {
         // Defensive: a hardware-trusted box never needs an enrollment nag, even
         // if a caller forgets to gate on it.
         if trustLevel == "hardware" {
             return nil
+        }
+
+        if ProviderOnboardingPolicy.usesAppAttest(macOSMajorVersion: macOSMajorVersion) {
+            switch enrollment {
+            case .notEnrolled, .enrolledOtherMDM:
+                return Diagnostic(
+                    section: .trust, name: "App Attest setup", level: .warn,
+                    message: "New enrollment on macOS 27 or later uses App Attest; serving authorization is still unconfirmed.",
+                    fix: ProviderOnboardingPolicy.appAttestGuidance)
+            case .enrolledDarkbloom, .checkFailed:
+                break
+            }
         }
 
         switch enrollment {
@@ -75,13 +88,14 @@ public enum MDMTrustDiagnosis {
         case .enrolledOtherMDM(let serverURL):
             return Diagnostic(
                 section: .trust, name: "mdm enrollment", level: .warn,
-                message: "this Mac is managed by another MDM (\(serverURL)) — macOS allows one MDM per device, so Darkbloom hardware trust can't be granted here.",
-                fix: "remove that profile in System Settings → Device Management (if it's yours to remove), then run `darkbloom enroll`.")
+                message: "this Mac is managed by another MDM (\(serverURL)); Darkbloom's legacy MDM path is unavailable. App Attest serving requires a qualified connection on a coordinator that supports it.",
+                fix: "keep your organization's profile installed. Start the current Darkbloom provider and check its serving authorization with `darkbloom status`.")
         case .notEnrolled:
             return Diagnostic(
                 section: .trust, name: "mdm enrollment", level: .warn,
                 message: "this Mac is not enrolled in MDM — hardware trust can't be granted, so you won't receive traffic on a hardware-trust network.",
-                fix: "run `darkbloom enroll` and approve the profile in System Settings → Profiles, then wait ~5 min.")
+                fix: ProviderOnboardingPolicy.retirementNotice
+                    + " On older macOS, run `darkbloom enroll` and approve the profile in System Settings → Profiles, then wait ~5 min.")
         case .checkFailed:
             // Unknown state — asserting "not enrolled" here would send an
             // enrolled operator down the wrong flow, so stay silent (the

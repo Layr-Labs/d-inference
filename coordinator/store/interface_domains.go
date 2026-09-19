@@ -631,8 +631,8 @@ type ProviderEarningsStore interface {
 
 	// WithEpochSettlementLock runs fn while holding a cross-instance lock keyed
 	// on epochID, so two coordinators cannot settle the same epoch concurrently
-	// and overshoot the floor pool cap. The memory store runs fn directly; the
-	// postgres store uses a session-level advisory lock.
+	// and overshoot the floor pool cap. Memory uses a per-store, per-epoch lock;
+	// PostgreSQL uses a session-level advisory lock shared across processes.
 	WithEpochSettlementLock(ctx context.Context, epochID string, fn func() error) error
 }
 

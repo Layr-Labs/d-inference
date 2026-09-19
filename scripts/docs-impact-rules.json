@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "ignore_patterns": [
+    "**/*_test.go",
+    "**/Tests/**",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "**/*.spec.tsx"
+  ],
+  "rules": [
+    {
+      "name": "HTTP and API contracts",
+      "source_patterns": [
+        "coordinator/api/server.go",
+        "coordinator/api/types/**",
+        "coordinator/api/*handler*.go"
+      ],
+      "docs_any_of": [
+        "docs/reference/api-contracts.md"
+      ]
+    },
+    {
+      "name": "telemetry",
+      "source_patterns": [
+        "coordinator/telemetry/**",
+        "coordinator/datadog/**",
+        "coordinator/api/*telemetry*.go",
+        "coordinator/api/*metrics*.go",
+        "provider-swift/Sources/ProviderCore/Telemetry/**",
+        "console-ui/src/lib/telemetry*"
+      ],
+      "docs_any_of": [
+        "docs/reference/telemetry-inventory.md",
+        "docs/reference/telemetry-schema.md",
+        "docs/architecture/telemetry.md"
+      ]
+    },
+    {
+      "name": "protocol messages",
+      "source_patterns": [
+        "coordinator/protocol/**",
+        "provider-swift/Sources/ProviderCore/Protocol/**"
+      ],
+      "docs_any_of": [
+        "docs/reference/protocol-messages.md"
+      ]
+    },
+    {
+      "name": "warm-pool and scheduling",
+      "source_patterns": [
+        "coordinator/registry/warm_pool*.go",
+        "coordinator/registry/scheduler.go",
+        "coordinator/registry/model_loading.go",
+        "coordinator/registry/model_commands.go",
+        "coordinator/api/warm_pool*.go"
+      ],
+      "docs_any_of": [
+        "docs/architecture/scheduling.md"
+      ]
+    },
+    {
+      "name": "configuration",
+      "source_patterns": [
+        "coordinator/config/**",
+        "coordinator/env/**",
+        "coordinator/registry/config.go",
+        "provider-swift/Sources/ProviderCore/Config/**"
+      ],
+      "docs_any_of": [
+        "docs/reference/configuration.md"
+      ]
+    },
+    {
+      "name": "storage schema",
+      "source_patterns": [
+        "coordinator/store/postgres.go",
+        "coordinator/store/*migration*.go",
+        "coordinator/store/migrations/**"
+      ],
+      "docs_any_of": [
+        "docs/architecture/storage.md"
+      ]
+    },
+    {
+      "name": "provider release",
+      "source_patterns": [
+        ".github/workflows/release-swift.yml",
+        "scripts/install.sh",
+        "provider-swift/Sources/ProviderCore/ProviderCore.swift"
+      ],
+      "docs_any_of": [
+        "docs/operations/provider-release.md"
+      ]
+    }
+  ]
+}

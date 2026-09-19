@@ -5,6 +5,7 @@ type accountAffinityIdentityKind uint8
 const (
 	accountAffinityIdentitySerial accountAffinityIdentityKind = iota + 1
 	accountAffinityIdentitySEKey
+	accountAffinityIdentityMachine
 )
 
 // Keep a reference to the immutable attested value instead of allocating a
@@ -16,7 +17,7 @@ type accountAffinityIdentity struct {
 }
 
 func (id accountAffinityIdentity) valid() bool {
-	return id.value != "" && (id.kind == accountAffinityIdentitySerial || id.kind == accountAffinityIdentitySEKey)
+	return id.value != "" && (id.kind == accountAffinityIdentitySerial || id.kind == accountAffinityIdentitySEKey || id.kind == accountAffinityIdentityMachine)
 }
 
 func (id accountAffinityIdentity) prefix() string {
@@ -25,6 +26,8 @@ func (id accountAffinityIdentity) prefix() string {
 		return "serial:"
 	case accountAffinityIdentitySEKey:
 		return "sekey:"
+	case accountAffinityIdentityMachine:
+		return "machine:"
 	default:
 		return ""
 	}
@@ -43,7 +46,24 @@ func (id accountAffinityIdentity) before(other accountAffinityIdentity) bool {
 // caller holds p.mu. Unlike fault tracking, an owner-account fallback would
 // collapse a fleet of machines into one affinity destination, so it is absent.
 func stableAccountAffinityIdentityLocked(p *Provider) accountAffinityIdentity {
-	if p == nil || p.AttestationResult == nil || !p.AttestationResult.Valid {
+	if p == nil {
+		return accountAffinityIdentity{}
+	}
+	// Inventory IDs are globally unique and API-bound to this authenticated
+	// provider account; no client-supplied UUID or serial can populate them.
+	// App Attest-only providers need not carry any legacy attestation result.
+	if p.verifiedMachineID != "" && p.verifiedMachineAccount != "" && p.verifiedMachineAccount == p.AccountID {
+		return accountAffinityIdentity{value: p.verifiedMachineID, kind: accountAffinityIdentityMachine}
+	}
+	if p.AttestationResult == nil || !p.AttestationResult.Valid {
+		return accountAffinityIdentity{}
+	}
+	// MDM-optional sessions cannot trust the old Valid-only serial rule. Until
+	// canonical binding, permit affinity only with complete MDA-bound serial
+	// evidence; otherwise ordinary routing remains available under its own
+	// authorization gates. Never use a claimed serial or owner-only fallback.
+	if p.requireVerifiedMachineIdentity && !(p.TrustLevel == TrustHardware && p.MDAVerified && p.SEKeyBound &&
+		p.MDAResult != nil && p.MDAResult.DeviceSerial != "" && p.MDAResult.DeviceSerial == p.AttestationResult.SerialNumber) {
 		return accountAffinityIdentity{}
 	}
 	if serial := p.AttestationResult.SerialNumber; serial != "" {

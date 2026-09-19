@@ -1,0 +1,241 @@
+[
+  {
+    "name": "required-single-omitted",
+    "tool_names": [
+      "weather"
+    ],
+    "tool_choice": "required",
+    "expected_tool_names": [
+      "weather"
+    ],
+    "expected_instruction": "Call the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when the user's request does not require the tool. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text.",
+    "repeat_user": true
+  },
+  {
+    "name": "required-single-null",
+    "tool_names": [
+      "weather"
+    ],
+    "tool_choice": "required",
+    "expected_tool_names": [
+      "weather"
+    ],
+    "expected_instruction": "Call the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when the user's request does not require the tool. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text.",
+    "repeat_user": true,
+    "parallel_tool_calls": null
+  },
+  {
+    "name": "required-single-true",
+    "tool_names": [
+      "weather"
+    ],
+    "tool_choice": "required",
+    "expected_tool_names": [
+      "weather"
+    ],
+    "expected_instruction": "Call the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when the user's request does not require the tool. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text.",
+    "repeat_user": true,
+    "parallel_tool_calls": true
+  },
+  {
+    "name": "required-single-false",
+    "tool_names": [
+      "weather"
+    ],
+    "tool_choice": "required",
+    "expected_tool_names": [
+      "weather"
+    ],
+    "expected_instruction": "Call the declared function 'weather' now. You must emit a tool call with valid arguments before any final answer, even when the user's request does not require the tool. Your entire response must be the tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text.",
+    "repeat_user": true,
+    "parallel_tool_calls": false
+  },
+  {
+    "name": "required-many-omitted",
+    "tool_names": [
+      "weather",
+      "calculate"
+    ],
+    "tool_choice": "required",
+    "expected_tool_names": [
+      "weather",
+      "calculate"
+    ],
+    "expected_instruction": "Call one or more of the declared tools now. You must emit one or more tool calls with valid arguments before any final answer, even when the user's request does not require a tool. Include all independent calls from the declared tools requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of tool calls; a text answer is forbidden.",
+    "repeat_user": true
+  },
+  {
+    "name": "required-many-null",
+    "tool_names": [
+      "weather",
+      "calculate"
+    ],
+    "tool_choice": "required",
+    "expected_tool_names": [
+      "weather",
+      "calculate"
+    ],
+    "expected_instruction": "Call one or more of the declared tools now. You must emit one or more tool calls with valid arguments before any final answer, even when the user's request does not require a tool. Include all independent calls from the declared tools requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of tool calls; a text answer is forbidden.",
+    "repeat_user": true,
+    "parallel_tool_calls": null
+  },
+  {
+    "name": "required-many-true",
+    "tool_names": [
+      "weather",
+      "calculate"
+    ],
+    "tool_choice": "required",
+    "expected_tool_names": [
+      "weather",
+      "calculate"
+    ],
+    "expected_instruction": "Call one or more of the declared tools now. You must emit one or more tool calls with valid arguments before any final answer, even when the user's request does not require a tool. Include all independent calls from the declared tools requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of tool calls; a text answer is forbidden.",
+    "repeat_user": true,
+    "parallel_tool_calls": true
+  },
+  {
+    "name": "required-many-false",
+    "tool_names": [
+      "weather",
+      "calculate"
+    ],
+    "tool_choice": "required",
+    "expected_tool_names": [
+      "weather",
+      "calculate"
+    ],
+    "expected_instruction": "Call one of the declared tools now. You must emit a tool call with valid arguments before any final answer, even when the user's request does not require a tool. Your entire response must be the tool call; a text answer is forbidden.",
+    "repeat_user": true,
+    "parallel_tool_calls": false
+  },
+  {
+    "name": "named-omitted",
+    "tool_names": [
+      "weather",
+      "calculate"
+    ],
+    "tool_choice": {
+      "type": "function",
+      "function": {
+        "name": "weather"
+      }
+    },
+    "expected_tool_names": [
+      "weather"
+    ],
+    "expected_instruction": "Call the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when another function seems more relevant. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of 'weather' tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text.",
+    "repeat_user": true
+  },
+  {
+    "name": "named-null",
+    "tool_names": [
+      "weather",
+      "calculate"
+    ],
+    "tool_choice": {
+      "type": "function",
+      "function": {
+        "name": "weather"
+      }
+    },
+    "expected_tool_names": [
+      "weather"
+    ],
+    "expected_instruction": "Call the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when another function seems more relevant. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of 'weather' tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text.",
+    "repeat_user": true,
+    "parallel_tool_calls": null
+  },
+  {
+    "name": "named-true",
+    "tool_names": [
+      "weather",
+      "calculate"
+    ],
+    "tool_choice": {
+      "type": "function",
+      "function": {
+        "name": "weather"
+      }
+    },
+    "expected_tool_names": [
+      "weather"
+    ],
+    "expected_instruction": "Call the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when another function seems more relevant. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of 'weather' tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text.",
+    "repeat_user": true,
+    "parallel_tool_calls": true
+  },
+  {
+    "name": "named-false",
+    "tool_names": [
+      "weather",
+      "calculate"
+    ],
+    "tool_choice": {
+      "type": "function",
+      "function": {
+        "name": "weather"
+      }
+    },
+    "expected_tool_names": [
+      "weather"
+    ],
+    "expected_instruction": "Call the declared function 'weather' now. You must emit a 'weather' tool call with valid arguments before any final answer, even when another function seems more relevant. Your entire response must be that tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text.",
+    "repeat_user": true,
+    "parallel_tool_calls": false
+  },
+  {
+    "name": "auto-true",
+    "tool_names": [
+      "weather",
+      "calculate"
+    ],
+    "tool_choice": "auto",
+    "parallel_tool_calls": true,
+    "expected_tool_names": [
+      "weather",
+      "calculate"
+    ],
+    "expected_instruction": null,
+    "repeat_user": false
+  },
+  {
+    "name": "auto-false",
+    "tool_names": [
+      "weather",
+      "calculate"
+    ],
+    "tool_choice": "auto",
+    "parallel_tool_calls": false,
+    "expected_tool_names": [
+      "weather",
+      "calculate"
+    ],
+    "expected_instruction": null,
+    "repeat_user": false
+  },
+  {
+    "name": "none-true",
+    "tool_names": [
+      "weather",
+      "calculate"
+    ],
+    "tool_choice": "none",
+    "parallel_tool_calls": true,
+    "expected_tool_names": [],
+    "expected_instruction": "Do not call any tool. Answer the user directly without emitting a tool call.",
+    "repeat_user": false
+  },
+  {
+    "name": "none-false",
+    "tool_names": [
+      "weather",
+      "calculate"
+    ],
+    "tool_choice": "none",
+    "parallel_tool_calls": false,
+    "expected_tool_names": [],
+    "expected_instruction": "Do not call any tool. Answer the user directly without emitting a tool call.",
+    "repeat_user": false
+  }
+]

@@ -1,16 +1,26 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-11 · commit `ef7b5a9aa`
+> Last updated: 2026-09-18 · commit `6050cc4d4`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
 defaults, the environment variables it forwards to the daemon, and its runtime
 constants, as declared in `provider-swift/Sources/darkbloom/` (`Darkbloom`,
-version `ProviderCore.version` = `0.9.1` in
+version `ProviderCore.version` = `0.9.6` in
 `provider-swift/Sources/ProviderCore/ProviderCore.swift`). For operators; types
 and defaults are the ArgumentParser declarations; `—` means required.
 
 ## Global options
+
+Every `darkbloom` invocation on macOS below 27 prints an informational upgrade
+warning to stderr before command parsing or AppKit hosting, including help,
+version and background commands. `MacOSUpgradeNotice.emit` in
+`provider-swift/Sources/darkbloom/MacOSUpgradeNotice.swift` names the local OS,
+upcoming Darkbloom MDM deactivation, continued legacy verification during the
+transition and the need to retain the profile until App Attest migration is
+approved. The warning performs no network/config/profile operations and does
+not change command execution, exit codes or stdout/JSON. macOS 27+ prints no
+upgrade warning. It is independent of `DARKBLOOM_NO_UPDATE_CHECK`.
 
 | Option | Type | Default | Effect | Source |
 |---|---|---|---|---|
@@ -43,7 +53,7 @@ Declaration order of `Darkbloom.configuration.subcommands` (21):
 | `update` | Self-update | ✓ | `UpdateCommand.swift` (`Update`) |
 | `verify` | `doctor --strict` | ✓ | `VerifyCommand.swift` (`Verify`) |
 | `enroll` | Fetch and open the MDM enrollment profile | ✓ | `EnrollCommand.swift` (`Enroll`) |
-| `unenroll` | Open System Settings to remove the profile; delete local data | | `UnenrollCommand.swift` (`Unenroll`) |
+| `unenroll` | Choose full exit or MDM removal with App Attest | | `UnenrollCommand.swift` (`Unenroll`) |
 | `logs` | Unified logs for subsystem `dev.darkbloom.provider` | | `LogsCommand.swift` (`Logs`) |
 | `report` | Upload recent unified logs to the coordinator | ✓ | `ReportCommand.swift` (`Report`) |
 | `autoupdate` | Toggle `provider.auto_update` | ✓ | `AutoUpdateCommand.swift` (`AutoUpdate`) |
@@ -158,6 +168,12 @@ Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 
 ### `darkbloom benchmark`
 
+The throughput sweep installs the same `MLXMemoryGuard` allocator limits as
+serving before it loads weights. Its progress log separates active allocations,
+reusable cache bytes and the active-allocation peak at each decode cell and
+shutdown (`provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift`,
+`run` and `runDecodeBatch`). These counters are not OS process footprint.
+
 | Group | Flags (type = default) |
 |---|---|
 | Throughput | `--model <id>` (`String?`), `--prompt <text>` (`ModelBenchmark.defaultPrompt`), `--iterations <n>` (`ModelBenchmark.defaultIterations`), `--max-tokens <n>` (`ModelBenchmark.defaultMaxTokens`) |
@@ -199,12 +215,21 @@ See [installation → Update](./installation.md#update).
 
 ### `darkbloom enroll` / `darkbloom unenroll`
 
+`EnrollmentService.enroll` in `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`
+returns App Attest setup guidance on macOS 27 or later before checking profiles,
+contacting the enrollment endpoint or opening Settings. Older macOS retains the
+legacy profile flow. `ProviderOnboardingPolicy` in
+`provider-swift/Sources/ProviderCore/Auth/ProviderOnboardingPolicy.swift` owns the
+OS choice and the upgrade/upcoming MDM deactivation notice. The OS choice never
+grants serving authorization or removes an existing profile.
+
 | Command | Flag | Type | Default | Effect |
 |---|---|---|---|---|
 | `enroll` | `--coordinator <url>` | `String?` | config URL | Coordinator to request the profile from |
 | `enroll` | `--no-open` | flag | `false` | Save the `.mobileconfig`; do not open System Settings |
-| `unenroll` | `--force` | flag | `false` | Delete config dir, `auth_token` and legacy keys without asking |
+| `unenroll` | `--force` | flag | `false` | Select full exit, stop the service and confirm local-data cleanup without prompting |
 | `unenroll` | `--no-open` | flag | `false` | Do not open System Settings |
+| `unenroll` | `--keep-serving` | flag | `false` | Require fresh coordinator App Attest removal readiness, preserve identity/account data and guide removal of only Darkbloom enrollment |
 
 ### `darkbloom logs`
 
@@ -494,6 +519,17 @@ darkbloom benchmark [--model <id>] [--prompt <text>] [--iterations <n>] [--max-t
 | `--iterations <n>` | Number of iterations (default from `ModelBenchmark`) |
 | `--max-tokens <n>` | Maximum tokens to generate per iteration |
 
+For native Qwen4 model types, the ordinary command uses the production CBv2
+model/factory path with MTP and prefix caching off. It preserves model/tokenizer
+EOS, checks complete weight integrity before and after load, and releases the
+session between independent runs. Other model types keep their generic path
+and JSON5 configuration support (`ModelBenchmark.run`,
+`provider-swift/Sources/ProviderBenchmark/ModelBenchmarkNativeQwen4.swift`).
+Iteration/output counts must be positive. The prefill column measures time to
+the first generated token, including prompt preparation; model loading and
+integrity hashing are outside the reported iteration time. An eight-token
+smoke proves entry-point operation, not sustained decode performance.
+
 ### Teacher-forced scores
 
 `--teacher-forced-input <json>` selects bounded ordinary target scoring with an
@@ -646,17 +682,22 @@ darkbloom enroll [--coordinator <url>] [--no-open]
 
 ## `darkbloom unenroll`
 
-Open System Settings to remove the Darkbloom MDM profile and optionally clean up
-local data.
+Without a flag, ask whether to fully exit Darkbloom or remove only MDM and keep serving with App Attest. Enter or closed input cancels without changing anything. The App Attest option requires macOS 27 or later and fresh coordinator removal approval; an unsupported/unqualified choice never falls back to cleanup.
+
+Full exit stops the launchd provider and disables its automatic restart before profile-removal guidance and a separate local cleanup confirmation. If a foreground provider is still running, cleanup is refused. The cleanup list includes the current and legacy Secure Enclave signing keys. Model downloads and server-side account history remain intact.
+
+Code: `provider-swift/Sources/darkbloom/UnenrollCommand+Choice.swift` (`chooseUnenrollmentMode`, `performUnenrollment`); `provider-swift/Sources/darkbloom/UnenrollCommand.swift` (`performFullUnenrollment`). Noninteractive use requires an explicit mode flag.
 
 ```bash
 darkbloom unenroll [--force] [--no-open]
+darkbloom unenroll --keep-serving [--no-open]
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--force` | Skip the local-data cleanup confirmation |
+| `--force` | Select full exit and confirm local cleanup; cannot combine with `--keep-serving` |
 | `--no-open` | Do not open System Settings |
+| `--keep-serving` | Select macOS 27+ App Attest migration directly, retaining account/keys/data |
 
 ## `darkbloom local`
 
@@ -773,6 +814,17 @@ override `provider.toml` for one process, are in
 
 ## LaunchAgent environment passthrough
 
+For native Flash-Next foreground/local serving, the lower-only
+`DARKBLOOM_QWEN4_LISTING_CONTEXT` control bounds the complete request envelope.
+Its parsing, default and mandatory PLE acceptance setting are in the
+[candidate configuration reference](../reference/configuration.md#native-flash-next-candidate).
+The same reference describes the default Qwen4 full-KV/PV32/layer-submission
+profile and its explicit `0` rollback controls. It primarily affects decode and
+short MTP verification, not larger prefill chunks. These Qwen-specific controls
+are not in the daemon passthrough list below: source defaults apply there,
+while shell overrides require foreground/local serving. This candidate adds
+no release or catalog command.
+
 `darkbloom start` copies only these variables from the invoking shell into the
 provider plist's `EnvironmentVariables`
 (`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`,
@@ -797,24 +849,24 @@ control the explicitly opted-in recurrent checkpoint bank in foreground/local pr
 not forwarded into the LaunchAgent. Their defaults and budget semantics are
 listed in the
 [`resident cache configuration`](../reference/configuration.md#resident-recurrent-prefix-cache)
-table (`provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Hybrid.swift`,
+table (`provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Hybrid.swift`,
 `hybridConfig`). They do not change `mtp_mode`; eligible persistent assistants
 must support the checkpoint contract described in
 [`prefix caching`](../architecture/prefix-cache.md#resident-tiers).
 
 | Variable | Read by |
 |---|---|
-| `DARKBLOOM_PREFIX_CACHE_MEMORY` | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Activation.swift` (`memoryEnvironmentFlag`) |
-| `DARKBLOOM_PREFIX_CACHE` | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Activation.swift` (`environmentFlag`) |
+| `DARKBLOOM_PREFIX_CACHE_MEMORY` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`memoryEnvironmentFlag`) |
+| `DARKBLOOM_PREFIX_CACHE` | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`environmentFlag`) |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
-| `DARKBLOOM_CBV2_PAGED_KV` | `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift` |
+| `DARKBLOOM_CBV2_PAGED_KV` | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2KVBackendPolicy.swift` |
 | `DARKBLOOM_CBV2_MTP` | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` |
 | `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | MTP verification policy (tighten-only cap) |
 | `DARKBLOOM_KV_BACKEND_GUARD` | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
-| `DARKBLOOM_MLX_CACHE_LIMIT_GB` | `provider-swift/Sources/ProviderCore/Inference/MLXMemoryGuard.swift` (`defaultCacheLimitGB`) |
-| `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | `provider-swift/Sources/ProviderCore/Inference/MLXMemoryGuard.swift` |
-| `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Configuration.swift` (`maxPartialPrefillsKey`) |
-| `DARKBLOOM_PREFILL_DEADLINE_MODE` | `provider-swift/Sources/ProviderCore/Inference/PrefillDeadlineMode.swift` (`environmentKey`) |
+| `DARKBLOOM_MLX_CACHE_LIMIT_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` (`defaultCacheLimitGB`) |
+| `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
+| `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`maxPartialPrefillsKey`) |
+| `DARKBLOOM_PREFILL_DEADLINE_MODE` | `provider-swift/Sources/ProviderCore/Inference/Engine/PrefillDeadlineMode.swift` (`environmentKey`) |
 | `MLX_GATHER_QMM_EXPERT_SLICES` | only when the shell value is exactly `1` (`GemmaOptimizationEnvironment.daemonDrainPassthrough`, `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift`) |
 
 The watchdog plist carries its own list: `DARKBLOOM_NO_UPDATE_CHECK`,

@@ -154,11 +154,12 @@ type routingSnapshot struct {
 	// can load right now (net of cap/reserve/headroom, idle models reclaimed).
 	// When non-nil it is the authoritative cold-load gate; nil = legacy provider
 	// (fall back to the total-memory heuristic). See protocol.BackendCapacity.
-	freeForLoadGB   *float64
-	modelSizeGB     float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
-	minRAMGb        int     // catalog authoritative min RAM (GB) to run the model (0 = unknown)
-	modelLoaded     bool    // true when the requested model is resident (running or idle)
-	availableOnDisk bool    // model is in provider's Models list but not currently loaded
+	freeForLoadGB              *float64
+	modelSizeGB                float64 // catalog-reported weight footprint (0 = unknown, gate disabled)
+	estimatedOffloadedMemoryGB float64 // validated padded native weights; zero preserves legacy policy
+	minRAMGb                   int     // catalog authoritative min RAM (GB) to run the model (0 = unknown)
+	modelLoaded                bool    // true when the requested model is resident (running or idle)
+	availableOnDisk            bool    // model is in provider's Models list but not currently loaded
 
 	observedDecodeTPS     float64
 	observedPrefillTPS    float64 // measured per-slot prefill EWMA; 0 = unreported (fall back to prefillTPS chain)
@@ -1722,93 +1723,20 @@ func (r *Registry) snapshotProviderIntoPLockedEx(dst *routingSnapshot, p *Provid
 		return false, reason
 	}
 
-	*dst = routingSnapshot{}
-	snap := dst
-	snap.provider = p
-	if r.accountAffinity.Mode != "" && r.accountAffinity.Mode != AccountAffinityOff {
-		snap.affinityIdentity = stableAccountAffinityIdentityLocked(p)
-	}
-	snap.model = model
-	snap.chipFamily = p.Hardware.ChipFamily
-	snap.binaryVersion = p.Version
-	snap.slotState = "unknown"
-	snap.totalPending = p.pendingCount()
-	snap.systemMetrics = p.SystemMetrics
-	snap.decodeTPS = resolvedDecodeTPS(p)
-	snap.prefillTPS = resolvedPrefillTPS(p)
-	snap.totalMemoryGB = float64(p.Hardware.MemoryGB)
-	snap.modelSizeGB = r.modelSizeGBForFitLocked(p, model)
-	snap.minRAMGb = r.catalogMinRAMGbLocked(model)
+	r.fillRoutingSnapshotPLocked(dst, p, model, now)
 	// Heartbeat age from the scan clock (system-profiler record); a zero
 	// LastHeartbeat saturates rather than reading as "fresh".
-	snap.hbAgeMs = heartbeatAgeMs(now, p.LastHeartbeat)
+	dst.hbAgeMs = heartbeatAgeMs(now, p.LastHeartbeat)
 
-	fillSnapshotPendingAndPool(snap, p, model)
 	// Concurrency headroom with the quality-concurrency cap: a slow model whose
 	// quality batch is below the flat fallback (e.g. Gemma at ~14 tok/s solo →
 	// batch 1-2) stops being admittable once it is at its quality cap, so load
 	// spreads across boxes instead of collapsing a few. The cap resolves the
 	// model's own static solo rate internally (solo median / seed → provider
-	// benchmark fallback) — NOT snap.decodeTPS, which stays the provider-level
+	// benchmark fallback) — NOT dst.decodeTPS, which stays the provider-level
 	// rate for TTFT/cost estimation, and NOT the observed-under-load value.
 	// No-op (legacy flat cap) when the cap is disabled.
-	snap.hasHeadroom = r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, model)
-	snap.hasBackendCapacity = p.BackendCapacity != nil
-
-	if p.BackendCapacity != nil {
-		if r.accountAffinity.Mode != "" && r.accountAffinity.Mode != AccountAffinityOff {
-			snap.affinityBackendOccupancy = accountAffinityReportedOccupancy(p.BackendCapacity.Slots)
-		}
-		snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
-		snap.freeForLoadGB = p.BackendCapacity.FreeForLoadGB
-		if p.BackendCapacity.TotalMemoryGB > 0 {
-			snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
-		}
-		for _, slot := range p.BackendCapacity.Slots {
-			if slot.Model != model {
-				continue
-			}
-			snap.slotState = slot.State
-			snap.backendRunning = int(slot.NumRunning)
-			snap.backendWaiting = int(slot.NumWaiting)
-			snap.maxTokensPotential = slot.MaxTokensPotential
-			snap.observedDecodeTPS = slot.ObservedDecodeTPS
-			snap.observedPrefillTPS = slot.ObservedPrefillTPS
-			snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
-			snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
-			snap.queuedTokenBudget = slot.QueuedTokenBudget
-			snap.kvBytesPerToken = clampKVBytesPerToken(slot.KVBytesPerToken)
-			snap.stepsExecuted = slot.StepsExecuted
-			snap.admits = slot.Admits
-			snap.firstTokensEmitted = slot.FirstTokensEmitted
-			snap.secondsSinceLastStep = slot.SecondsSinceLastStep
-			snap.secondsSinceLastFirstToken = slot.SecondsSinceLastFirstToken
-			snap.wedgeSuspected = slot.WedgeSuspected
-			snap.evalInFlightMs = slot.EvalInFlightMs
-			snap.idleClearInFlightMs = slot.IdleClearInFlightMs
-			break
-		}
-	}
-	snap.modelLoaded = slotStateModelLoaded(snap.slotState)
-	snap.availableOnDisk = !snap.modelLoaded
-	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
-
-	// Gray-box budget clamp (budget_clamp.go): when a capacity-503 has proven
-	// the pair's live gate is rejecting, admission must not believe the
-	// stale-optimistic heartbeat budget. Evaluated for budgetless snapshots
-	// too — a reconnected session has no BackendCapacity until its first
-	// heartbeat, and a clamp armed on a budget-reporting pair must keep
-	// holding through that window instead of shedding onto the legacy memory
-	// path (never-budget-reporting legacy pairs stay exempt inside the check).
-	// p.LastHeartbeat is when the CURRENT BackendCapacity was delivered
-	// (Heartbeat stamps both in one critical section), which is what the
-	// release-freshness check compares against the clamp time. p.mu and r.mu
-	// are both held here (see lock discipline above); the clamp read is one
-	// lock-free flag load unless the identity actually carries a clamp, and is
-	// confirmed against p.gate like the gates above (gateView).
-	rawRemaining := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
-	snap.budgetClamped = r.budgetClampedFor(p, model, p.LastHeartbeat, rawRemaining, snap.activeTokenBudgetMax > 0, now)
-
+	dst.hasHeadroom = r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, model)
 	return true, GateReasonCount
 }
 
@@ -1850,16 +1778,13 @@ func backendFreeForLoadGB(bc *protocol.BackendCapacity) *float64 {
 // or unknown catalog size that can't be normalized). Used by every cold-load
 // decision path (direct admission, the swap planner, the warm pool, and the
 // cold-spill predicate) so they cannot drift.
-// The PADDED conversion on purpose, for every binary and model: this
+// The legacy PADDED conversion is deliberate without explicit SSD offload: it
 // mirrors the provider's ADMIT gate, which deliberately charges the
 // disk×1.2 load-transient figure (shard staging exceeds steady residency).
 // Measured post-load residency (servabilityMeasuredResidentGiB) informs
 // only coldTokenBudgetEstimate — the POST-load arithmetic.
 func reportedFreeForLoadAdmits(catalogSizeGB float64, freeForLoadGB *float64) (admit bool, reported bool) {
-	if freeForLoadGB == nil || catalogSizeGB <= 0 {
-		return false, false
-	}
-	return catalogSizeGB*coldLoadCatalogGBToMemGiB <= *freeForLoadGB, true
+	return reportedFreeForLoadAdmitsWithOffload(catalogSizeGB, 0, freeForLoadGB)
 }
 
 // freeMemoryAdmits returns true when the provider has enough headroom.
@@ -1964,7 +1889,7 @@ func freeMemoryAdmits(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int) 
 		// provider's padded-GiB load basis so it exactly mirrors the provider's own
 		// ModelLoadAdmission gate (no over-admit → OOM, no under-admit on evictable
 		// weights).
-		if admit, reported := reportedFreeForLoadAdmits(snap.modelSizeGB, snap.freeForLoadGB); reported {
+		if admit, reported := reportedFreeForLoadAdmitsWithOffload(snap.modelSizeGB, snap.estimatedOffloadedMemoryGB, snap.freeForLoadGB); reported {
 			return admit
 		}
 		// Fallback for legacy providers that don't report freeForLoadGB: the old
@@ -2816,63 +2741,9 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			continue
 		}
 
-		// Build a snapshot for the admission gate (slot state + free memory).
-		snap := routingSnapshot{
-			provider:           p,
-			model:              model,
-			chipFamily:         p.Hardware.ChipFamily,
-			binaryVersion:      p.Version,
-			slotState:          "unknown",
-			totalPending:       p.pendingCount(),
-			systemMetrics:      p.SystemMetrics,
-			decodeTPS:          resolvedDecodeTPS(p),
-			prefillTPS:         resolvedPrefillTPS(p),
-			totalMemoryGB:      float64(p.Hardware.MemoryGB),
-			modelSizeGB:        r.modelSizeGBForFitLocked(p, model),
-			minRAMGb:           r.catalogMinRAMGbLocked(model),
-			hasBackendCapacity: p.BackendCapacity != nil,
-		}
-		fillSnapshotPendingAndPool(&snap, p, model)
-		if snap.hasBackendCapacity {
-			snap.gpuMemoryActiveGB = p.BackendCapacity.GPUMemoryActiveGB
-			snap.freeForLoadGB = p.BackendCapacity.FreeForLoadGB
-			if p.BackendCapacity.TotalMemoryGB > 0 {
-				snap.totalMemoryGB = p.BackendCapacity.TotalMemoryGB
-			}
-			for _, slot := range p.BackendCapacity.Slots {
-				if slot.Model != model {
-					continue
-				}
-				snap.slotState = slot.State
-				snap.backendRunning = int(slot.NumRunning)
-				snap.backendWaiting = int(slot.NumWaiting)
-				snap.observedDecodeTPS = slot.ObservedDecodeTPS
-				snap.observedPrefillTPS = slot.ObservedPrefillTPS
-				snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
-				snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
-				snap.queuedTokenBudget = slot.QueuedTokenBudget
-				snap.maxTokensPotential = slot.MaxTokensPotential
-				snap.kvBytesPerToken = clampKVBytesPerToken(slot.KVBytesPerToken)
-				snap.stepsExecuted = slot.StepsExecuted
-				snap.admits = slot.Admits
-				snap.firstTokensEmitted = slot.FirstTokensEmitted
-				snap.secondsSinceLastStep = slot.SecondsSinceLastStep
-				snap.secondsSinceLastFirstToken = slot.SecondsSinceLastFirstToken
-				snap.wedgeSuspected = slot.WedgeSuspected
-				snap.evalInFlightMs = slot.EvalInFlightMs
-				snap.idleClearInFlightMs = slot.IdleClearInFlightMs
-				break
-			}
-		}
-		snap.modelLoaded = slotStateModelLoaded(snap.slotState)
-		snap.availableOnDisk = !snap.modelLoaded
-		snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
-
-		// Gray-box budget clamp — same evaluation as snapshotProviderLockedEx
-		// (including the budgetless-snapshot hold for reconnecting sessions)
-		// so the preflight cannot report capacity that routing then refuses.
-		rawRemaining := snap.activeTokenBudgetMax - snap.activeTokenBudgetUsed - snap.queuedTokenBudget
-		snap.budgetClamped = r.budgetClampedFor(p, model, p.LastHeartbeat, rawRemaining, snap.activeTokenBudgetMax > 0, now)
+		// Project the same locked provider state used by reservation scoring.
+		var snap routingSnapshot
+		r.fillRoutingSnapshotPLocked(&snap, p, model, now)
 
 		p.mu.Unlock()
 

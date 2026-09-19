@@ -1,10 +1,17 @@
 # Models reference
 
-> Last updated: 2026-09-11 · commit `49b62bfe6`
+> Last updated: 2026-09-17 · commit `954f570d1`
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
 ## `GET /v1/models`
+
+The Bonsai 2 support draft admits the explicit `prism_hadamard_qwen35` artifact
+through `EngineV2SupportedModels` without adding a public catalog listing. Its
+published configuration and tensors include vision but no MTP. Native context
+is derived from configuration; measured hardware coverage and coordinator
+routing limits are separate. See `libs/mlx-swift-lm/docs/bonsai2.md` for scope;
+API/media qualification remains a release gate, not a consequence of a model tag.
 
 Handler `handleListModels` (`coordinator/api/models_endpoints.go`). Requires a bearer credential (`requireAuth`).
 
@@ -113,9 +120,9 @@ a model or enable coordinator cache routing.
 
 | Behavior | Default and limits | Source |
 |---|---|---|
-| Prefix reuse | Requires the loaded historical-attention capability, segmented paged storage, verified model/runtime identity and the same request isolation scope. A miss or refused checkpoint computes the prompt normally | `provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+CompletePrefixCache.swift` (`prepareCompletePrefixCache`); [cache capability](../reference/ssd-kv-cache.md#per-family-reuse-capability) |
-| Operator control | `DARKBLOOM_PREFIX_CACHE=0` disables reuse; a contiguous fallback also serves cold. Resident retention remains opt-in. API aliases follow their resolved build's default, including `gpt-oss-20b`; other provider artifact IDs remain opt-in | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Activation.swift` (`isEnabled`, `isMemoryEnabled`); `coordinator/api/consumer.go` (`resolveRequestedModel`); [cache controls](../reference/configuration.md#ssd-prefix-cache) |
-| Usage | Successful reuse contributes to `usage.prompt_tokens_details.cached_tokens`; a family name or previous request alone does not guarantee a hit | `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift`; [cache usage](../architecture/prefix-cache.md) |
+| Prefix reuse | Requires the loaded historical-attention capability, segmented paged storage, verified model/runtime identity and the same request isolation scope. A miss or refused checkpoint computes the prompt normally | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory+CompletePrefixCache.swift` (`prepareCompletePrefixCache`); [cache capability](../reference/ssd-kv-cache.md#per-family-reuse-capability) |
+| Operator control | `DARKBLOOM_PREFIX_CACHE=0` disables reuse; a contiguous fallback also serves cold. Resident retention remains opt-in. API aliases follow their resolved build's default, including `gpt-oss-20b`; other provider artifact IDs remain opt-in | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isEnabled`, `isMemoryEnabled`); `coordinator/api/consumer.go` (`resolveRequestedModel`); [cache controls](../reference/configuration.md#ssd-prefix-cache) |
+| Usage | Successful reuse contributes to `usage.prompt_tokens_details.cached_tokens`; a family name or previous request alone does not guarantee a hit | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+PrefixCache.swift`; [cache usage](../architecture/prefix-cache.md) |
 
 ## Gemma 4 26B QAT runtime defaults
 
@@ -126,9 +133,28 @@ these defaults.
 
 | Behavior | Default and limits | Source |
 |---|---|---|
-| Prefix caching | Encrypted complete paged SSD checkpoints enabled, subject to loaded capability, verified identity, cache key and tenant scope. A cache hit is not guaranteed; explicit cache disable wins | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Activation.swift` (`isEnabled`); [cache defaults](../architecture/prefix-cache.md#kv-layouts) |
+| Prefix caching | Encrypted complete paged SSD checkpoints enabled, subject to loaded capability, verified identity, cache key and tenant scope. A cache hit is not guaranteed; explicit cache disable wins | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isEnabled`); [cache defaults](../architecture/prefix-cache.md#kv-layouts) |
 | Multi-token prediction (MTP) | `mtp_mode = "auto"` resolves the catalog-declared assistant; adaptive decoding chooses ordinary decode or one draft token. Missing, invalid or memory-ineligible assistants retain target-only serving; explicit `off` and the process kill switch win | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); [MTP policy and controls](../architecture/inference.md#multi-token-prediction) |
-| Assistant activation | Requests continue during download and preparation. Network providers also serve during rollout jitter, then temporarily close admissions only for this model while accepted requests finish and the prepared engine swaps in. Racing/new acquisitions can receive transient 503; timeout or cancellation reopens the original engine without force-cancelling accepted work. Random jitter provides no fleet availability guarantee | `provider-swift/Sources/ProviderCore/Inference/MTPIdleUpgrade.swift` (`run`); [provider memory and availability](../provider/hardware-requirements.md#gemma-qat-assistant-footprint-and-availability) |
+| Assistant activation | Requests continue during download and preparation. Network providers also serve during rollout jitter, then temporarily close admissions only for this model while accepted requests finish and the prepared engine swaps in. Racing/new acquisitions can receive transient 503; timeout or cancellation reopens the original engine without force-cancelling accepted work. Random jitter provides no fleet availability guarantee | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPIdleUpgrade.swift` (`run`); [provider memory and availability](../provider/hardware-requirements.md#gemma-qat-assistant-footprint-and-availability) |
+
+## Native Flash-Next candidate
+
+The [native Flash-Next candidate](../reference/qwen4-next-support.md)
+recognizes the registry ID and legacy developer ID listed in that reference.
+Native image/video routing requires the validated full vision declaration and
+explicit non-language-only configuration; unsupported media is rejected rather
+than silently reduced to text
+(`provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift`,
+`advertisesMedia`). Its local listing and bridge apply the native
+[candidate context policy](../reference/configuration.md#native-flash-next-candidate)
+to prompt plus reserved completion tokens. Coordinator SLA and device capacity
+may still reject a request within native context. This source change does not edit the
+coordinator's catalog limits, aliases, prices or marketplace feed.
+
+Paging/cache defaults and embedded-MTP source support do not certify a cache
+hit, device tier or answer quality. Final same-artifact build, serving and
+restart qualification remain distinct; unit-level ID/context checks do not
+certify full native-context operation on the minimum-RAM device.
 
 ## Related
 

@@ -1,0 +1,174 @@
+// Copyright © 2026 Eigen Labs.
+//
+// Typed errors emitted by ``MultiModelBatchSchedulerEngine`` and the
+// generation-message parser that promotes structured `.error(...)` payloads
+// into those typed cases.
+//
+// Split out of `MultiModelBatchSchedulerEngine.swift` so the error
+// surface and its message-prefix dictionary stay self-contained and
+// independently navigable; the engine itself only depends on the
+// public cases here.
+
+import Foundation
+
+/// Errors surfaced by ``MultiModelBatchSchedulerEngine`` that map to
+/// HTTP-status-bearing OpenAI error responses upstream.
+///
+/// EngineV2Bridge emits `.error(String)` events with structured message
+/// prefixes; the adapter translates those into
+/// typed cases here so ``ProviderLoop/mapInferenceErrorToStatus(_:)``
+/// can return retry/backoff-bearing status codes (429/503) instead of
+/// collapsing every admission failure into a generic 500.
+public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatable {
+    /// The request named a model that is not currently resident.
+    case modelNotLoaded(String)
+    /// The scheduler emitted an `.error` event during generation that
+    /// did not match any of the structured admission/capacity prefixes
+    /// below. Treated as a generic 500 by the status mapper.
+    case generationFailed(String)
+    /// `tokenize`/`detokenize`/`applyTemplate` were called but no model
+    /// is loaded, so we have no tokenizer to hand off to upstream.
+    case noModelLoadedForTokenization
+    /// Inbound request named a chat role we do not recognise (i.e. it
+    /// is not one of `system`/`user`/`assistant`/`tool`). Surfaced as
+    /// 400 so callers can fix the role rather than the previous silent
+    /// coercion to `user` that changed prompt semantics.
+    case invalidRole(String)
+    /// Tool-bearing chat payload violates the chat-template invariants
+    /// before generation begins. Surfaced as 400 so malformed OpenAI
+    /// histories do not trip model-specific Jinja assertions as provider
+    /// 500s.
+    case invalidToolPayload(String)
+    /// The owned native Flash-Next template does not support the resolved
+    /// thinking effort. Deterministic request error, before template rendering.
+    case unsupportedReasoningEffort
+    /// The MODEL failed to satisfy the request's forced `tool_choice`
+    /// contract, or the inference-time grammar reached an impossible state.
+    /// This depends on what the model GENERATED —
+    /// a re-sample (or another provider) can comply — so it surfaces as 422
+    /// with error_reason "tool_noncompliance" (E5), which stays on the
+    /// coordinator's normal bounded-failover path, NOT as a generic 500
+    /// that burns provider reputation.
+    case toolChoiceViolation(String)
+    /// Admission rejection caused by the batch token budget / global
+    /// KV-cache headroom / pending-queue timeout. Surfaces as 503 so
+    /// clients back off and retry once capacity frees up.
+    case tokenBudgetExhausted(String)
+    /// Pending request queue is full. Surfaces as 429 so clients can
+    /// honour a retry-after.
+    case queueFull(String)
+    /// Catch-all for other planner-rejected admission failures (for
+    /// example a future "request_rejected: ..." path). Surfaces as
+    /// 503 — the request was not run and the client may safely retry.
+    case requestRejected(String)
+    /// The request carried image/video media but the resolved model is not
+    /// a usable vision-language model (not VLM-capable, or its container is
+    /// unavailable for the non-batched vision path). A client fault that
+    /// will fail identically on retry, so it surfaces as 400 — never let
+    /// media silently fall through to the text-only path.
+    case mediaUnsupportedByModel(String)
+    /// The v2 engine rejected a vision (multimodal) submission at submit
+    /// time (`CBv2MultimodalError` → the canonical `multimodal_rejected:`
+    /// message, see `EngineV2Translation.admissionErrorMessage`). Every
+    /// such rejection is deterministic for the request/engine pairing —
+    /// never transient capacity — so it surfaces as 400, not a retry
+    /// signal.
+    case multimodalRejected(String)
+    /// The prompt plus resolved output reservation is outside this candidate's
+    /// advertised context. Deterministic client fault; no request content carried.
+    case advertisedContextExceeded
+    /// A typed CBv2 platform/engine terminal (a monotonic deadline lease or
+    /// the step watchdog) fired mid-generation. Unlike `.generationFailed`,
+    /// this carries the machine-readable `cause` AND the engine-reconciled
+    /// `attemptUsage` (partial generation included), so the provider can emit
+    /// an `inference_error` with `terminal_cause`/`attempt_usage` and the
+    /// coordinator can classify health/retry from the cause instead of parsing
+    /// a string. Status is cause-derived (`mapInferenceErrorToStatus`); never
+    /// 429 (a policy deadline must not be relabeled a rate limit). `message`
+    /// already includes the cause for the human-readable `error` field.
+    case platformTerminal(
+        cause: InferenceTerminalCause, message: String, attemptUsage: UsageInfo)
+
+    public var errorDescription: String? {
+        switch self {
+        case .modelNotLoaded(let id):
+            return "Model '\(id)' is not loaded on this provider"
+        case .generationFailed(let message):
+            return message
+        case .noModelLoadedForTokenization:
+            return "No model is loaded; cannot tokenize or apply template"
+        case .invalidRole(let role):
+            return "Unsupported chat message role: '\(role)'"
+        case .invalidToolPayload(let message):
+            return message
+        case .unsupportedReasoningEffort:
+            return "Qwen3.8-Flash-Next supports reasoning effort low, medium, or xhigh when thinking is enabled"
+        case .toolChoiceViolation(let message):
+            return message
+        case .tokenBudgetExhausted(let message):
+            return message
+        case .queueFull(let message):
+            return message
+        case .requestRejected(let message):
+            return message
+        case .mediaUnsupportedByModel(let id):
+            return
+                "Model '\(id)' does not support image or video input on this provider"
+        case .multimodalRejected(let message):
+            return message
+        case .advertisedContextExceeded:
+            return Qwen4SupportPolicy.contextRejectionMessage
+        case .platformTerminal(_, let message, _):
+            return message
+        }
+    }
+
+    /// Map a generation `.error(message)` payload into a typed engine error.
+    /// Recognises the structured prefixes emitted by EngineV2 translation and
+    /// admission; anything else stays
+    /// as ``generationFailed`` so the operator-facing message is
+    /// preserved verbatim.
+    ///
+    /// Order matters here: "queue full" must be checked before the
+    /// generic `token_budget_exhausted` prefix because the planner's
+    /// queue-full rejection is reported as
+    /// `token_budget_exhausted: request queue full`.
+    static func fromSchedulerMessage(_ message: String) -> MultiModelBatchSchedulerEngineError {
+        let lowercased = message.lowercased()
+        // v2 vision submit rejections (`EngineV2Translation
+        // .admissionErrorMessage` for `CBv2MultimodalError`). Checked first:
+        // deterministic 400s that must never be mistaken for retryable
+        // capacity by the broader substring checks below.
+        if lowercased.hasPrefix(EngineV2Translation.multimodalRejectedPrefix) {
+            return .multimodalRejected(message)
+        }
+        if lowercased == Qwen4SupportPolicy.contextRejectionMessage {
+            return .advertisedContextExceeded
+        }
+        if lowercased == "tool_constraint_impossible_state" {
+            return .toolChoiceViolation(
+                "inference-time tool constraint reached an impossible state")
+        }
+        // Planner validation failures share the `token_budget_exhausted:`
+        // prefix but are request-shape errors, NOT transient capacity
+        // exhaustion. Map them to 400 (`.requestRejected`) so clients
+        // don't get a misleading 503 + retry signal for a request that
+        // will fail identically on retry.
+        if lowercased.contains("invalid token count")
+            || lowercased.contains("duplicate request id")
+            || lowercased.contains("exceeds batch token budget")
+        {
+            return .requestRejected(message)
+        }
+        if lowercased.contains("queue full") {
+            return .queueFull(message)
+        }
+        if lowercased.contains("token_budget_exhausted")
+            || lowercased.contains("timed out waiting for capacity")
+            || lowercased.contains("insufficient global kv cache headroom")
+        {
+            return .tokenBudgetExhausted(message)
+        }
+        return .generationFailed(message)
+    }
+}

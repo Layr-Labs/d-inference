@@ -1,11 +1,13 @@
 # Provider attestation
 
-> Last updated: 2026-09-13 · commit `1f52a71fb`
+> Last updated: 2026-09-15 · commit `605651bb9`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
 the level (`mda_verified`, `code_attested`), the five-minute challenge that
 keeps the verdict fresh, and the single routing gate that consumes all of it.
+
+The legacy levels and flags below retain their meaning. With the explicit serving opt-in, [qualified App Attest authorization](../../reference/provider-authorization.md) is an independent path alongside complete legacy verification. `coordinator/registry/app_attest_authorization.go` (`GrantAppAttestServingAuthorization`) binds permission to the account, verified machine, credential, live connection, endpoint and policy generation. `coordinator/registry/inference_authorization.go` (`authorizeInferenceHandoff`) checks every final inference handoff after queueing. Expired, revoked or replaced authorizations cannot permit new dispatch; no legacy flags are fabricated. Shadow mode alone still changes no trust.
 
 ## Context
 
@@ -129,7 +131,7 @@ as `\u2028` and `\u2029` to match Go's JSON encoder. Literal backslash escape
 text remains distinct. Nil optional fields, empty hash strings and empty maps
 are omitted; explicit `false` values remain signed. Matching Swift and Go
 golden vectors cover these byte rules; signature verification still rejects
-changed fields (`provider-swift/Tests/ProviderCoreTests/StatusCanonicalTests.swift`,
+changed fields (`provider-swift/Tests/ProviderCoreTests/Security/StatusCanonicalTests.swift`,
 `statusCanonicalMatchesCoordinatorNestedMapVectors`;
 `coordinator/attestation/status_canonical_mixed_case_test.go`,
 `TestBuildStatusCanonicalNestedMapVectors`, `TestVerifyStatusSignatureBindsMixedCaseNestedMaps`).
@@ -355,6 +357,7 @@ received (`darkbloom status`, `Trust: <level> / <status>`).
 | MDA | `coordinator/attestation/mda.go` (`VerifyMDADeviceAttestation`); `coordinator/api/provider.go` (`verifyAppleDeviceAttestation`, `attachCachedMDAProof`); `coordinator/mdm/mdm.go` (`RequestDeviceAttestation`) |
 | Code identity | `coordinator/apns/attestor.go`; `coordinator/api/provider_codeattest.go`; `coordinator/api/code_attest_throttle.go`; `coordinator/cmd/coordinator/main.go` (`parseAPNsEnforceAfter`) |
 | Routing gate | `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`); `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`); `coordinator/registry/model_capacity.go` (`publiclyRoutableLocked`); `coordinator/registry/scheduler.go` (`challengeFreshnessMaxAge`) |
+| Release evidence publication | `coordinator/api/release_policy_publish.go` (`publishReleaseTrustPolicy`, `retainedReleaseTrustPolicy`, `addRelease`): successful sync and committed-mutation recovery publish the snapshot, revalidate the generation, then challenge invalidated providers; cold-start deny-all stays separate in `coordinator/api/server.go` |
 | Runtime manifest | `coordinator/api/server.go` (`SyncRuntimeManifest`, `RuntimeManifest`, `verifyRuntimeHashesForBackend`, `verifyRuntimeHashesAgainstManifest`, `runtimeManifestApprovesMetallib`, `revalidateConnectedProvidersAgainstRuntimePolicy`, `handleRuntimeManifest`); `coordinator/api/provider.go` (`applyChallengeRuntimePolicy`); `coordinator/api/release_handlers.go` |
 | Release-policy / evidence-mode gate | `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextModeLocked`, `releasePolicyEnforcedLocked`, `SetReleasePolicyGeneration`) |
 | Trust status messages to providers | `coordinator/api/provider.go` (`sendTrustStatus`); `coordinator/protocol/messages.go` (`TypeTrustStatus`) |

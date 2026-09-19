@@ -36,10 +36,16 @@ final class BoundedSingleConsumerPipeline<Payload: Sendable>: @unchecked Sendabl
         private var accepted = 0
         private var dropped = 0
         private var pending = 0
+        private var shutdownRequested = false
         private var drainWaiters: [CheckedContinuation<Void, Never>] = []
 
         var acceptedCount: Int { lock.withLock { accepted } }
         var droppedCount: Int { lock.withLock { dropped } }
+        var isShutdown: Bool { lock.withLock { shutdownRequested } }
+
+        func markShutdown() {
+            lock.withLock { shutdownRequested = true }
+        }
 
         func beginSubmit() {
             lock.withLock { pending += 1 }
@@ -173,14 +179,21 @@ final class BoundedSingleConsumerPipeline<Payload: Sendable>: @unchecked Sendabl
     /// `consume` is not awaited indefinitely across teardown. Idempotent.
     /// Releases the stream's buffered payloads.
     func shutdown() {
+        state.markShutdown()
         continuation.finish()
         consumer.cancel()
     }
 
     /// Await all work accepted before this call without shutting down the
-    /// long-lived consumer. Teardown can call this after `shutdown()` too.
+    /// long-lived consumer. After `shutdown()`, also join the consumer so its
+    /// final payload and task-local references are released before returning.
     func waitUntilDrained() async {
         await state.waitUntilDrained()
+        if state.isShutdown {
+            // completeOne() resumes drain waiters while the loop still owns
+            // its last payload. Pending == 0 alone is not a teardown barrier.
+            await consumer.value
+        }
     }
 
     deinit {

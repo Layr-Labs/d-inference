@@ -32,6 +32,7 @@ public struct ModelScanner: Sendable {
     /// `darkbloom-publish hash` manifest generation.
     public static let integrityFileNames: Set<String> = [
         "config.json",
+        "hadamard.json",
         "tokenizer.json",
         "tokenizer_config.json",
         "tokenizer.model",
@@ -63,7 +64,13 @@ public struct ModelScanner: Sendable {
     ///
     /// Checks the HuggingFace cache for a directory matching the model ID.
     /// Returns the snapshot path so the backend can load directly from disk.
-    public static func resolveLocalPath(modelID: String) -> URL? {
+    public static func resolveLocalPath(
+        modelID: String, environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL? {
+        if modelID == ModelMediaPolicy.ownedQwen4ModelID, Qwen4LocalModelPath.isConfigured(environment: environment) {
+            // Invalid explicit staging must not silently serve the old cache.
+            return Qwen4LocalModelPath.directory(environment: environment)
+        }
         guard let cacheDir = defaultCacheDirectory() else { return nil }
         let fm = FileManager.default
 
@@ -202,7 +209,7 @@ public struct ModelScanner: Sendable {
            filename == "vocab.json" || filename == "merges.txt" {
             return "tokenizer"
         }
-        if filename == "config.json" || filename == "generation_config.json" || filename == "quantize_config.json" {
+        if filename == "config.json" || filename == "hadamard.json" || filename == "generation_config.json" || filename == "quantize_config.json" {
             return "config"
         }
         if filename == "chat_template.jinja" || filename == "chat_template.json" {

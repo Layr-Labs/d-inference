@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-12 · commit `06518dc93`
+> Last updated: 2026-09-15 · commit `2a843bb2c`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -11,6 +11,8 @@
 > reference, explanation, design record, or dated report) and carries a
 > freshness stamp. Rules for reading and writing them:
 > [`AGENTS.md`](AGENTS.md). One name for each thing: [`glossary.md`](glossary.md).
+
+[App Attest inventory validation](reports/2026-09-14-app-attest-inventory-validation.md) records the protocol 2 Mac test, durable machine identity, complete evidence archive, and remaining release gates.
 
 ## Start here, by task
 
@@ -69,6 +71,7 @@
 - [`reference/telemetry-inventory.md`](reference/telemetry-inventory.md): every telemetry datum collected — producer, sink, cadence, retention — and the Datadog metric-name inventory with tags and emitting file.
 - [`reference/pricing-model.md`](reference/pricing-model.md): micro-USD units, price resolution, formulas, every billing constant (the single home for money constants), routes, service accounts.
 - [`reference/model-registry-format.md`](reference/model-registry-format.md): manifest schema, registration payload, alias format.
+- [`reference/qwen4-next-support.md`](reference/qwen4-next-support.md): native Flash-Next private identity, serving/state policy and explicitly incomplete qualification.
 - [`reference/ssd-kv-cache.md`](reference/ssd-kv-cache.md): DBK3 on-disk format, paths, identity binding, env knobs, eviction rules, per-family reuse capability, status vocabularies.
 - [`glossary.md`](glossary.md): canonical terms and the page that owns each.
 
@@ -97,6 +100,8 @@
 
 ## Developer how-tos
 
+- [`developer/historical-references.md`](developer/historical-references.md): open the original source behind a frozen report after files move.
+- [`developer/navigation.md`](developer/navigation.md): find implementation and tests, choose descriptive filenames, and check path dependencies when moving files.
 - [`developer/build.md`](developer/build.md): build the coordinator, sidecar, provider, and UIs; toolchain pins.
 - [`developer/test.md`](developer/test.md): every test suite, what CI runs, how to run the e2e suite.
 

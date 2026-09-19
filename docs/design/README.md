@@ -1,6 +1,6 @@
 # Design records — what was decided, and whether it shipped
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-15 · commit `dfe556c13`
 
 Plans, proposals, and architecture decision records. Each file is frozen at the
 moment it was written except for its **Status** line, which says whether the
@@ -27,12 +27,17 @@ below repeats the vocabulary word only; the file's line 5 carries the evidence.
 
 | Record | Status | Date | One line |
 |---|---|---|---|
+| [mdm-optional-provider-authorization.md](mdm-optional-provider-authorization.md) | In progress | 2026-09-15 | Independent legacy or App Attest authorization, dispatch fencing, stable identity and scoped MDM removal |
+| [app-attest-migration.md](app-attest-migration.md) | In progress | 2026-09-12 | App Attest shadow rollout with APNs/MDM authoritative, coverage evidence, and later retirement |
+| [app-attest-release-observability.md](app-attest-release-observability.md) | Proposed | 2026-09-14 | Next-release unique-machine/OS census, complete proof and receipt archive, and migration from serial-based identity |
+| [app-attest-retirement.md](app-attest-retirement.md) | In progress | 2026-09-14 | Complete shadow policy, receipt and key lifecycle, live connection authorization, accounting continuity, and gates for removing APNs/MDM |
 | [apns-code-attestation.md](apns-code-attestation.md) | Implemented | 2026-06-14 | Why code identity is proven through an APNs-delivered challenge; as built in [`../architecture/security/attestation.md`](../architecture/security/attestation.md) |
 
 ## Inference engine and memory
 
 | Record | Status | Date | One line |
 |---|---|---|---|
+| [qwen4-canonical-media-prefix.md](qwen4-canonical-media-prefix.md) | In progress | 2026-09-14 | Exact canonical text-tail binding for appended native Qwen4 media history; private qualification required |
 | [release-090-acceptance.md](release-090-acceptance.md) | In progress | 2026-09-06 | Numerical, quality, cache and serving acceptance; backend wording differences and functional routing scope |
 | [release-090-paged-qwen-cache.md](release-090-paged-qwen-cache.md) | In progress | 2026-09-06 | Five-artifact paged migration with Qwen-only default caching, scoped acceptance and independent rollback controls |
 | [qwen-first-paged-ssd-rollout.md](qwen-first-paged-ssd-rollout.md) | Superseded | 2026-09-06 | Earlier three-Qwen paging scope, corrected by the five-artifact release decision |

@@ -12,6 +12,9 @@ import (
 )
 
 func testAccountAffinityIdentity(identity string) accountAffinityIdentity {
+	if value, ok := strings.CutPrefix(identity, "machine:"); ok {
+		return accountAffinityIdentity{value: value, kind: accountAffinityIdentityMachine}
+	}
 	if value, ok := strings.CutPrefix(identity, "serial:"); ok {
 		return accountAffinityIdentity{value: value, kind: accountAffinityIdentitySerial}
 	}
@@ -127,7 +130,7 @@ func TestAccountAffinityRankingMembershipChanges(t *testing.T) {
 }
 
 func TestAccountAffinityIdentityRepresentationPreservesHashesAndTies(t *testing.T) {
-	identities := []string{"sekey:a", "sekey:serial:a", "serial:a", "serial:aa", "serial:sekey:a", "serial:机器\x00"}
+	identities := []string{"machine:a", "sekey:a", "sekey:serial:a", "serial:a", "serial:aa", "serial:sekey:a", "serial:机器\x00"}
 	for _, identity := range identities {
 		// Reproduce the original string representation's length-framed byte
 		// stream independently. No account/model/machine should be re-ranked.

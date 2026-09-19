@@ -106,10 +106,16 @@ export interface MyProvider {
   models: MyModelInfo[];
   backend?: string;
   version?: string;
+  /** Current/last app-reported macOS version; this is not a trust credential. */
+  os_version?: string;
 
   trust_level: "hardware" | "self_signed" | "none" | string;
   attested: boolean;
   mda_verified: boolean;
+  /** Coordinator-derived, live-only App Attest verdict; never legacy proof. */
+  app_attest_authorized?: boolean;
+  /** Exclusive Unix-seconds deadline for that verdict. */
+  authorization_expires_at?: number;
   se_key_bound: boolean;
   se_public_key?: string;
   // X25519 E2E key (same value as /v1/encryption-key); present only for

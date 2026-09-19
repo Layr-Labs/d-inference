@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-18 · commit `e4df336bc`
+> Last updated: 2026-09-18 · commit `d78ae77ef`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -101,7 +101,7 @@ lists every name).
 
 | Metric | Type | Tags | Emitted |
 |---|---|---|---|
-| `inference.request_outcome` | count | `model`, `class` (`success`, `provider_5xx`, `timeout`, `rate_limited`, `client_error`; `mid_stream` declared, never produced), `kv_backend`, `kv_backend_fallback` | once per chat/responses request (`coordinator/api/or_uptime.go`); `/v1/completions` and `/v1/messages` dispatches excluded, their pre-dispatch rejections included |
+| `inference.request_outcome` | count | `model`, `class` (`success`, `provider_5xx`, `timeout`, `rate_limited`, `client_error`; `mid_stream` declared, never produced), `kv_backend`, `kv_backend_fallback` | once per chat/responses request (`coordinator/api/openrouter_uptime.go`); `/v1/completions` and `/v1/messages` dispatches excluded, their pre-dispatch rejections included |
 | `inference.request_outcome_or_view` | count | `model`, `class` (`success`, `provider_5xx`, `timeout`, `mid_stream`, `rate_limited`, `client_error`, `client_gone`) | request-level terminal view: pre-dispatch rejection, dispatch terminal (including attempt-zero TTFT rejection), client departure, or committed route outcome; `client_gone` excludes early/post-commit client aborts while pre-content aborts at the deadline count as `timeout` (`coordinator/api/attempt_outcome_metrics.go`, `recordRequestOutcomeORView`) |
 | `routing.route_latency_ms` | histogram (DogStatsD only) | `model` | attempt-zero non-queued provider selection: `RoutedAt` minus `MediaFetchedAt` when set, otherwise `ReservedAt`; requires valid timing anchors (`coordinator/api/attempt_outcome_metrics.go`, `emitRouteLatency`). No in-process mirror. |
 | `routing.provider_draining` | count | `model` | transition into draining announced by a validated error terminal, before releasing pending capacity (`coordinator/api/provider_drain.go`, `noteProviderDraining`). No in-process mirror. |
@@ -239,6 +239,7 @@ Datadog's; nothing is stored locally.
 | `provider failed, retrying` / `provider failed after accepting request, retrying` | warn · `inference_error` | `provider_id`, `attempt`, `reason:provider_error`, `status_code` (+ `request_id`) | `coordinator/api/dispatch.go` |
 | `provider first-chunk timeout` / `provider accepted timeout` | warn · `inference_error` | `provider_id`, `attempt`, `reason:first_chunk_timeout` / `accepted_timeout` | `dispatch.go` |
 | `inference failed after N attempt(s)` | error · `inference_error` | `reason:dispatch_exhausted`, `attempt`, `status_code`, `last_error` (the sanitized closed message) | `dispatch.go` |
+| `warm_pool_tick` | info · `custom` | Per-model latest-state sample: `model`, `target_warm`, `warm`, `eligible_cold`, `cold_ineligible`, `warm_saturated`, `warm_foreign_blocked`, `occupancy_ramp`, `headroom_providers`, `running`, `waiting`, `queue_depth`, `oldest_queue_age_ms`, `spill_arrival_rate`, `service_time_ms`, `quality_concurrency`, `demand_concurrency`, `capacity_rejects`, `ttft_misses`, `speculative_started`, `speculative_won`, `cold_dispatches`, `load_duration_ewma_ms`, `actions`, `observe_only`, plus scalar `cold_disq_<reason>` counts. Polled every 15 s and deduplicated by controller snapshot timestamp; intermediate controller ticks can be skipped. No provider or request identity; no Postgres record. | `coordinator/api/warm_pool_telemetry.go` (`StartWarmPoolTelemetryLoop`, `warmPoolTelemetryFields`) |
 | `panic in handler <method> <path>: <value>` | fatal · `panic` | `handler`, `endpoint`, plus `stack` | `coordinator/api/server.go` recovery middleware |
 
 ## Coordinator per-request records (Postgres)

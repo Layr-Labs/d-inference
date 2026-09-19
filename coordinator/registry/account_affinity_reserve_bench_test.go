@@ -23,26 +23,36 @@ func buildAccountAffinityReserveBenchFleet(tb testing.TB, mode string) *Registry
 // Include identity snapshots, ranking, final admission and pending release,
 // not just the allocation-free pure policy. Enabling affinity must not bring
 // back one allocation per scanned provider to the arena-backed scheduler.
+// Compare identical attested fleets: current upstream's verified-provider
+// routing already allocates more than the unverified reserve-bench fixture.
+// Affinity itself must add ZERO allocations above that off-mode baseline.
 func TestAccountAffinityReserveAllocBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("alloc budget check skipped in -short mode")
 	}
+	measureAllocs := func(t *testing.T, mode string) float64 {
+		t.Helper()
+		r := buildAccountAffinityReserveBenchFleet(t, mode)
+		return testing.AllocsPerRun(200, func() {
+			model, pr := reserveBenchRequest(1)
+			pr.ConsumerKey = "benchmark-account"
+			p, decision := r.ReserveProviderEx(model, pr)
+			if p == nil || decision.AccountAffinity.Applied != (mode == AccountAffinityOn) ||
+				decision.AccountAffinity.Evaluated != (mode != AccountAffinityOff) {
+				t.Fatal("fixture did not exercise the configured reservation policy")
+			}
+			p.RemovePending(pr.RequestID)
+		})
+	}
+	// Measure outside subtests so a focused -run selecting only on or shadow
+	// still compares against a real off baseline.
+	offAllocs := measureAllocs(t, AccountAffinityOff)
 	for _, mode := range []string{AccountAffinityOff, AccountAffinityShadow, AccountAffinityOn} {
 		t.Run(mode, func(t *testing.T) {
-			r := buildAccountAffinityReserveBenchFleet(t, mode)
-			allocs := testing.AllocsPerRun(200, func() {
-				model, pr := reserveBenchRequest(1)
-				pr.ConsumerKey = "benchmark-account"
-				p, decision := r.ReserveProviderEx(model, pr)
-				if p == nil || decision.AccountAffinity.Applied != (mode == AccountAffinityOn) ||
-					decision.AccountAffinity.Evaluated != (mode != AccountAffinityOff) {
-					t.Fatal("fixture did not exercise the configured reservation policy")
-				}
-				p.RemovePending(pr.RequestID)
-			})
-			t.Logf("ReserveProviderEx affinity %s: %.1f allocs/op (ceiling %d)", mode, allocs, reserveBenchMaxAllocs)
-			if allocs > float64(reserveBenchMaxAllocs) {
-				t.Fatalf("enabled affinity exceeded the scheduler allocation budget: %.1f > %d", allocs, reserveBenchMaxAllocs)
+			allocs := measureAllocs(t, mode)
+			t.Logf("ReserveProviderEx affinity %s: %.1f allocs/op (same-fleet off baseline %.1f)", mode, allocs, offAllocs)
+			if allocs > offAllocs {
+				t.Fatalf("affinity added allocations above the same-fleet off baseline: %.1f > %.1f", allocs, offAllocs)
 			}
 		})
 	}

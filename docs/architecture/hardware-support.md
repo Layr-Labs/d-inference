@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-09-05 · commit `02f6af71a`
+> Last updated: 2026-09-17 · commit `77d1d1d86`
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -15,7 +15,7 @@ the packages described in
 [`components/mlx-swift.md#what-providercore-links`](components/mlx-swift.md#what-providercore-links),
 `coordinator/api/install.sh` refuses anything but Darwin on `arm64`, and
 `darkbloom start` requires Metal
-(`provider-swift/Sources/ProviderCore/Inference/GPUEnforcement.swift`,
+(`provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift`,
 `requireMetal`) and a minimum amount of RAM
 (`provider-swift/Sources/darkbloom/StartCommand+Preflight.swift`,
 `hardware.memoryGb`). There is no hard runtime macOS-version check:
@@ -30,7 +30,7 @@ identity is parsed from the brand string into `ChipFamily` ∈ {`M1`, `M2`,
 
 Weights, KV cache and activations share unified memory, so the provider owns one
 byte-level invariant: `Σ resident weights + KV + activations ≤ hardCapBytes`
-(`provider-swift/Sources/ProviderCore/Inference/UnifiedMemoryCap.swift`).
+(`provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift`).
 
 ## Mechanism
 
@@ -45,9 +45,9 @@ byte-level invariant: `Σ resident weights + KV + activations ≤ hardCapBytes`
 | `defaultActivationReserveBytes` | `11 * 1024 * 1024 * 1024 / 2` = 5.5 GiB (since v0.8.0; basis gemma-4 qat-4bit B=8: 5.05 GiB eager / 5.34 compiled + slack) | `UnifiedMemoryCap.swift` |
 | `measuredActivationFloorsBytes` | `["gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2]` = 3.5 GiB; exact catalog-id match only; per-model floors since v0.8.16 | `UnifiedMemoryCap.swift` |
 | `minimumLoadKVBytes` | `1 * 1024 * 1024 * 1024` (1 GiB) | `UnifiedMemoryCap.swift` |
-| `memoryOverheadFactor` | `1.2`; `estimatedMemoryGb = (sizeBytes / 2^30) * 1.2` | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
+| `memoryOverheadFactor` | `1.2` fallback loading allowance; eligible native Qwen4 uses the header-derived copy bound below | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
 | `memory_reserve_gb` | operator config reserve (`memoryReserveGB`); default in [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |
-| `MLXMemoryGuard.defaultReserveGB` / `defaultCacheLimitGB` | `6` / `8` (soft MLX limits; `cacheFraction = 0.75`, `minimumLimitBytes` 2 GiB) | `provider-swift/Sources/ProviderCore/Inference/MLXMemoryGuard.swift` |
+| `MLXMemoryGuard.defaultReserveGB` / `defaultCacheLimitGB` | `6` / `8` (soft MLX limits; `cacheFraction = 0.75`, `minimumLimitBytes` 2 GiB) | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
 
 `DARKBLOOM_MEM_CAP_FRACTION` overrides the cap fraction and
 `DARKBLOOM_ACTIVATION_RESERVE_GB` raises (never lowers) the activation reserve;
@@ -124,14 +124,32 @@ fitsAtAllocation(availableNetOfLedger, ownReservation, required) = availableNetO
 canLoad(...) = requiredToLoadGb ≤ freeForLoadGb
 ```
 
-`weightsGb` is the scanner's padded estimate (`sizeBytes / 2^30 ×
-memoryOverheadFactor`), so a load needs `weights × memoryOverheadFactor +
-activationReserve + minimumLoadKVBytes` of free-for-load memory. The worked
+`weightsGb` is the scanner's loading estimate, not bare steady residency.
+Ordinary models retain `sizeBytes / 2^30 × memoryOverheadFactor`. Eligible native
+Qwen4 with SSD PLE offload uses all non-offloaded weight bytes plus
+`Qwen4ExpLoadFootprint.estimate`'s bound: the larger of one complete shard or
+the largest target gate/up copy plus complete vision/assistant copies and
+page-rounding allowance, then 1 GiB for loader metadata/small objects. Complete
+index/header coverage, bounded headers and native non-FP16 layouts are required;
+unknown layouts retain ordinary padding. Every load still adds
+`activationReserve + minimumLoadKVBytes` and passes the same real-OS clamp and
+atomic pending-load permit.
+Native declarations are revalidated after hashing/hooks and before allocation;
+changed geometry or an obsolete smaller allowance fails closed and requires a
+rescan rather than loading against stale accounting. The worked
 example in the source comment
-(`provider-swift/Sources/ProviderCore/Inference/ModelLoadAdmission.swift`)
+(`provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift`)
 shows gpt-oss-20b's requirement falling by exactly `defaultActivationReserveBytes
 − measuredActivationFloorsBytes["gpt-oss-20b"]` once its measured floor
 applies. There is no `× 3.0` headroom rule anywhere in the load path.
+
+After an owned Qwen4 retirement, the provider and standalone loader can recheck
+insufficient real headroom every 25 ms for at most two seconds from retirement
+(`NativeMemoryRetirementWindow`). A load that already fits proceeds immediately;
+cancellation interrupts the wait. Zero MLX/Metal allocation counters do not
+prove macOS has reclaimed physical pages. This window grants no memory credit,
+does not extend on each retry and does not bypass the final atomic load permit.
+An unresolved shortage still fails normally.
 
 ```mermaid
 flowchart TD
@@ -164,7 +182,7 @@ standalone server runs the same sequence in
 - `KVHeadroomProbe.measuredLiveKVHeadroomBytes` (after trimming the cold-load
   buffer cache) must satisfy `loadIsServeable` (≥ `minimumLoadKVBytes`) or the model is
   unloaded and the load rejected
-  (`provider-swift/Sources/ProviderCore/Inference/KVHeadroomProbe.swift`).
+  (`provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift`).
 - `EngineV2KVSizing` and `EngineV2Reslice` assign the admitted
   [KV slot grants](#kv-slot-grants). A paged build must also expose a backend
   ceiling at least `minimumLoadKVBytes`; empty segmented storage can satisfy
@@ -188,7 +206,7 @@ and any explicit RAM prefix allowance. `weightsBytes` sums loaded target
 parameter bytes and retained assistant weights; the scanner's disk-size padding
 belongs to load admission, not this runtime grant. Default SSD streaming has no
 resident prefix-bank carve (`UnifiedMemoryCap.kvBudgetBytes`,
-`provider-swift/Sources/ProviderCore/Inference/SlotSizingSnapshot.swift`).
+`provider-swift/Sources/ProviderCore/Inference/Memory/SlotSizingSnapshot.swift`).
 
 One model slot receives the full fleet KV budget. With multiple slots,
 `EngineV2KVSizing.resliceGrants` divides it in proportion to each model's fp16
@@ -196,7 +214,7 @@ owning-full-attention marginal byte rate times context, capped by
 `resliceContextCap = 131_072`. If any rate is unknown, all slots receive an equal split. Those fairness
 weights do not choose KV precision: native admission separately accounts for the
 observed per-layer dtype, window rings, recurrent state and configured MTP state
-(`provider-swift/Sources/ProviderCore/Inference/EngineV2Reslice.swift`).
+(`provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift`).
 
 The production paged factory passes that admitted grant to empty segmented
 storage. `makeSegmentedPagedBackend` retains the native dtype/owner map,
@@ -204,7 +222,7 @@ scheduler chunk geometry and context. Its `segmentSizeBytes = 64 << 20` is an
 allocation target, not a slot-capacity ceiling. Native checks still bound each
 Metal buffer, kernel page indices and arithmetic. The former provider eager-pool
 limits do not cap this path
-(`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+SegmentedBackend.swift`;
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+SegmentedBackend.swift`;
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVPool.swift`).
 
 A co-resident load shrinks existing grants before building the newcomer. Live
@@ -217,7 +235,7 @@ through [process ownership](#process-ownership) before allocation. The bridge
 forwards a resize when native `capacity.pagedStorage` is present; only explicit
 fixed-reference native fixtures retain a construction-capacity clamp and
 `pagedPoolResizeShortfall()`
-(`provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Resizing.swift`;
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Resizing.swift`;
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineV2.swift`,
 `updateKVBytesCapacity`).
 
@@ -287,7 +305,7 @@ Implementation: `libs/mlx-swift/Source/MLX/AllocationFootprint.swift`
 (`allocationFootprintUpperBound`, `evaluatedBufferInfo`) and
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVSegments.swift`
 (`PagedKVSegmentLayout.allocationBytes`, `PagedKVSegmentBacking`).
-Implementation: `provider-swift/Sources/ProviderCore/Inference/ProcessMemoryLedger.swift`
+Implementation: `provider-swift/Sources/ProviderCore/Inference/Memory/ProcessMemoryLedger.swift`
 (`replaceCharge`, `recordMaterialization`, `withdrawCoverage`),
 `GlobalKVCacheBudget+PendingLoads.swift` (`claimPendingLoad`, `recheckPendingLoad`),
 `EngineProcessMemoryOwner.swift`, and
@@ -345,14 +363,14 @@ its use in admission are described once, in
 
 | Concern | File / symbol |
 |---|---|
-| Cap, reserves, floors | `provider-swift/Sources/ProviderCore/Inference/UnifiedMemoryCap.swift` |
-| Load gate | `provider-swift/Sources/ProviderCore/Inference/ModelLoadAdmission.swift` |
-| Post-load probe | `provider-swift/Sources/ProviderCore/Inference/KVHeadroomProbe.swift` |
-| Slot KV sizing and re-slice | `provider-swift/Sources/ProviderCore/Inference/EngineV2KVSizing.swift`, `provider-swift/Sources/ProviderCore/Inference/EngineV2Reslice.swift` |
-| Process-wide KV ledger | `provider-swift/Sources/ProviderCore/Inference/GlobalKVCacheBudget.swift` |
-| MLX soft limits | `provider-swift/Sources/ProviderCore/Inference/MLXMemoryGuard.swift` |
+| Cap, reserves, floors | `provider-swift/Sources/ProviderCore/Inference/Memory/UnifiedMemoryCap.swift` |
+| Load gate | `provider-swift/Sources/ProviderCore/Inference/Memory/ModelLoadAdmission.swift` |
+| Post-load probe | `provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift` |
+| Slot KV sizing and re-slice | `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2KVSizing.swift`, `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift` |
+| Process-wide KV ledger | `provider-swift/Sources/ProviderCore/Inference/Memory/GlobalKVCacheBudget.swift` |
+| MLX soft limits | `provider-swift/Sources/ProviderCore/Inference/Memory/MLXMemoryGuard.swift` |
 | Padded weight estimate, quantization | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift` |
-| Platform and hardware gates | `provider-swift/Package.swift`, `provider-swift/Sources/darkbloom/StartCommand+Preflight.swift`, `provider-swift/Sources/ProviderCore/Inference/GPUEnforcement.swift`, `provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`, `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |
+| Platform and hardware gates | `provider-swift/Package.swift`, `provider-swift/Sources/darkbloom/StartCommand+Preflight.swift`, `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift`, `provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`, `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |
 | Coordinator mirror | `coordinator/registry/servability.go`, `coordinator/registry/scheduler.go` |
 | Measurements behind the floors | `docs/reports/2026-08-30-activation-floor-measurements.md` |
 

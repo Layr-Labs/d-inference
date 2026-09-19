@@ -1,26 +1,212 @@
 # Changelog
 
-## Unreleased — prefix-cache reuse and routing
+## Unreleased — account-affinity routing
+
+- **Opt-in account affinity** — Add `off`/`shadow`/`on` account/model placement with stable verified-machine ranking and immediate-load spillover. A preferred machine must satisfy existing gates, projected decode quality, the absolute request deadline and a bounded estimated load-induced first-content delay relative to its own idle counterfactual, not a faster peer. Otherwise ordinary routing continues without a new wait or rejection. Retry fallbacks preserve affinity within every owner/version/quote priority tier, even after admission races. Identity snapshots avoid per-provider identity-string allocations and support verified canonical App Attest machine IDs without trusting unbound serial claims. Default `off` and `shadow` preserve existing selection, including repeated-prefix tiebreaking. Aggregate diagnostics contain no account or machine identity. The initial threshold is experimental, and activation does not enable prefix-cache reuse or change production settings.
+
+## Unreleased — MDM-optional provider authorization
+
+- Warn on stderr for every CLI invocation below macOS 27, including help/version, while preserving commands and JSON output. Add prominent setup/dashboard upgrade notices, distinguish older from unknown reported OS versions, and retain legacy service during the transition.
+- Show current App Attest authorization on the owner dashboard without demanding legacy MDM verification; expire cached grants locally if polling fails and preserve independent legacy proof fields.
+
+- Retry first-proof App Attest readiness outages with a bounded early assertion retry (one minute, then five minutes, capped at the normal ten-minute cadence); recheck the complete proof, identity and serving policy after recovery.
+
+- Reflect App Attest revocation in untrusted status, availability and fleet counts without duplicate decrements or legacy-challenge recovery. Require a coordinator decision received within 10 seconds before offering MDM removal, even when the daemon keeps rewriting its state file.
+
+- Skip new MDM enrollment in the installer and CLI on macOS 27 or later; guide users through App Attest approval. Explain that upgrading avoids MDM and Darkbloom MDM will be deactivated soon. Keep existing profiles and coordinator authorization/removal gates intact; pending App Attest never falls back to automatic MDM enrollment.
+
+- Fence successful admin revocations even when the request deadline expires, and fence freshly verified revoked credentials before their first serving grant. Preserve bounded leases/refresh records through unknown readiness results without extending authorization.
+- Preserve legacy identity/MDA recovery for providers outside the authenticated rollout cohort and on older macOS. Restore a previously missing historical baseline after a later canonical merge without double-counting live work.
+- Count only authorized inference handoffs as provider dispatches; rejected frames clear provisional timing, and cancellation while waiting for authorization preserves the healthy connection.
+- Commit pending base-reward allocations atomically and reallocate after a late authorization/identity rejection, preserving prior finalized payments and pool/account caps. Resolve same-account endpoint continuity while session inventory catches up.
+
+- Consolidate App Attest session, archive, receipt, inventory and authorization workers under `coordinator/appattest/service`, with their unit tests. Keep only API wiring/authentication/release adapters; retain storage and scheduler locking with their owning packages.
+
+- Make plain `darkbloom unenroll` offer full exit or App Attest migration, with an explicit macOS 27+ requirement and fresh coordinator approval for migration. Cancel/EOF makes no changes; full exit stops the provider service before optional cleanup, and the cleanup prompt explicitly lists Secure Enclave signing keys.
+
+- Add independently enabled App Attest serving alongside complete legacy MDM/MDA and APNs verification. Require qualified signed code, current encrypted-endpoint assertions, durable evidence, valid receipts and fresh revocation state; preserve legacy trust flags.
+- Fence every new inference handoff on expiry, revocation, connection/endpoint replacement and policy changes, including queued requests and retries. Durable revocation refresh has a bounded lifetime; database failures cannot extend permission.
+- Preserve verified canonical machine history across reconnects and credential rotation, without allowing a claimed serial to evict another provider. Extend base rewards to qualified App Attest-only machines with canonical duplicate/epoch settlement protection and preserved historical balances.
+- Add coordinator-derived authorization diagnostics and `darkbloom unenroll --keep-serving`. Require fresh removal readiness, preserve local identity/account data and identify only Darkbloom's enrollment profile before guiding the user through System Settings; company management is retained.
+- Keep serving/removal disabled by default and retain explicit signed-artifact/security-transition qualification before activation. DeviceCheck's separate two-bit API is not required.
+
+## Unreleased — model token promotions
+
+- List Bonsai first in the chat model dropdown. Show its “Free” badge only after a confirmed claim for that exact model with available tokens; hide it while grant status is unknown, on lookup errors, or when the allowance is exhausted or fully reserved.
+
+- Enable thinking by default in frontend chat requests.
+
+- Configure one-time, model-specific token grants before registration. Eligible users explicitly claim non-expiring tokens shared across their account keys, with an atomic campaign cap and signup cutoff. Prepare the Bonsai draft for 250 claims through September 19 by accounts created through September 18 (Los Angeles time). Exhaustion falls back to paid credit, with clear console allowance/error states.
+- Reserve and settle free tokens, paid credit and provider earnings atomically; retain platform-priced provider payouts on sponsored traffic, protect same-account serving, and recover orphaned reservations.
+- Recover usage, key spend and fee accounting after promotion settlement retries; release holds after deterministic failures and reject zero-token payouts.
+- Bound sponsored provider earnings to exact token prices, carrying fractional micro-dollars atomically instead of funding a minimum payout for each tiny request.
+- Give Bonsai 2 a 10-second plus 5-ms-per-input-token upstream first-content SLA, retaining coordinator response headroom. Add exact-model overrides for both SLA terms.
+
+## Unreleased — Ternary Bonsai 2 onboarding draft
+
+- Compact Bonsai's retained recurrent convolution carry after prefill, preserving exact FP32 state bits without retaining whole chunk buffers. Other model families and single-token decode are unchanged.
+- Apply the existing serving allocator guard before throughput-sweep model loading; bound freed-buffer retention and report active/cache memory separately without changing model precision or KV limits.
+- Add the `prism_hadamard_qwen35` native CBv2 adapter for the unchanged Prism Bonsai 2 27B affine 2-bit pack, including its real vision tower and explicit absence of MTP heads. Preserve signed-Hadamard transforms, FP16 packing, paging safeguards and matching provider/coordinator prompt semantics. Register `hadamard.json` as an integrity-bound config asset. Qualification and catalog/release activation are separate; this draft does not deploy the model.
+
+## Release candidate v0.9.6 — Flash-Next signed-app resource recovery (not shipped; 2026-09-17)
+
+- Wait for the SSD write-behind consumer task to finish when draining after shutdown, so the final payload is released before teardown completes. Preserve reusable drains while the pipeline is running; cover the shutdown handoff with 10,000 regression cycles and both SDK 27 CI lanes.
+- Resolve native Qwen Metal preambles from the signed app’s `Contents/Resources`, including installer symlinks; prevent developer build paths from hiding missing packaged files. Model weights and kernel bytes are unchanged.
+- Exercise all Qwen Metal preambles in `runtime-smoke` before signing, after notarization, and through the existing installer/updater smoke. Add relocated-app, missing-resource, symlink-escape, and standalone-development regression checks.
+- Require provider 0.9.6 or newer for `qwen3.8-flash-next`, excluding the crashing 0.9.5 bundle without changing other models. Keep the 262144-token native context and memory safeguards. Cold SSD-offload accounting requires the separately deployed coordinator.
+
+## v0.9.5 — Qwen 3.8 Next / native Qwen4 follow-up (shipped; 2026-09-17)
+
+- Recognize the exact `qwen3.8-flash-next` registry ID alongside the legacy developer ID for native Qwen4 media, paging/prefix, tool and reasoning policies. Keep artifact/configuration checks and developer-only path overrides intact.
+- Use native model context in listing and runtime policy, with a 262144 fallback only for the known artifact identities. Remove the extra 82K bridge clamp; retain lower-only operator overrides, checked prompt-plus-output budgets, physical-memory safeguards and coordinator SLA admission.
+- Mirror the registry-ID prompt semantics in Rust and bump the shared Swift/Go/Rust normalization contract to v6. Old contracts fail cold rather than receiving cache credit under different semantics.
+- Gate the registry ID on provider 0.9.5 or newer across request shapes; legacy and other models keep existing version floors. Align the provider version and coordinator display fallback without retagging 0.9.5 or deploying this draft.
+- Leave SDK, model weights, quantization, embedded MTP and numerical kernels unchanged. Physical full-context and composed API qualification remain separate from policy-level tests.
+
+### Release reliability and build reuse
+
+- Make model-free Qwen4 standalone admission tests use controlled memory, including
+  low-headroom refusal and recovery, while retaining production memory safeguards.
+- Run optimized SDK 27 compilation alongside SDK 27 prompt parity and tests; gate
+  signing on both and verify the source-bound unsigned artifact before signing.
+- Warm compatible Swift, Rust and Metal caches on master for release tags, preserve
+  unchanged source timestamps, and report cache reuse without skipping validation.
+
+
+- Pin the native Qwen4 SDK to merged upstream PR #149. The approved SDK source tree is unchanged; this dependency update introduces no new model, numerical or performance changes.
+- Stage native Qwen4's bounded MTP catch-up, consistent carry-only initialization of cold/restored unprimed heads and grouped selected-page KV reads as a paired SDK/provider default candidate. Preserve already-primed caches, target parameters, ordered attention arithmetic and explicit rollback controls; full default-posture qualification is required before promotion.
+- Derive eligible Qwen4 SSD-offload load estimates from validated native copy bounds instead of generic 20% padding. Preserve all compute/MTP/vision payloads and the existing OS, activation and KV safeguards; other layouts retain their previous policy. Recheck actual headroom for at most two seconds after owned Qwen4 retirement, without granting speculative reclaim credit. Physical full-model qualification remains required.
+- Discover hidden SwiftPM resource bundles during paged-backend preflight while retaining sealed-app boundaries and rejection of conflicting source bytes. No model arithmetic or weights change.
+- Preserve reasoning with its following function calls when the standalone Responses API replays prior output as input. Keep explicit message/tool-result boundaries, argument bytes and media unchanged; no model, MTP, sampling or cache-algorithm change.
+- Preserve both upstream Hugging Face mock isolation and the Qwen native-GPU test gates when composing the provider CI runner.
+- Snapshot verified converter metadata before shard conversion so later license, tokenizer or template mutations cannot enter a successful pinned conversion.
+- Preserve all semantic Qwen4 configuration fields across Codable round-trips. Bind and validate PLE resources in both model factories, keep legacy request state in each cache, and reject unsupported generic generation recoverably.
+- Run the ordinary Qwen4 benchmark through native CBv2, with normal EOS handling, explicit target-only/cache-off scope and complete duration accounting. Preserve other models' JSON5 configuration support.
+- Materialize Qwen4 fused expert weights through the existing bounded loader hook after relinquishing staging owners. Retain explicit physical-memory, reload and deadline qualification gates.
+- Keep unsupported generic SDK sampling controls explicit without changing native provider support. Align the provider version and coordinator display fallback at 0.9.5; publication and rollout remain separate approvals.
+- Enable the existing Qwen4 full-KV parallel attention, 32 value partitions and early layer submission by default for eligible decode/MTP verification. Preserve explicit `0` rollback, compact-KV opt-in, wider-prefill fallbacks and unchanged model weights, arithmetic and MTP policy.
+
+## Release candidate v0.9.4 — App Attest recovery and retirement readiness (not shipped; 2026-09-14)
+
+- Fix the released 0.9.3 App Attest callback-timer abort. Require the callback completion/expiry smoke in the optimized signed bundle, installer and updater; distinguish callback failures from Metal failures.
+- Keep App Attest off by default, require an explicit stable account cohort and provider 0.9.4 or newer. Existing APNs/MDM serving and the supported macOS floor remain unchanged. Production App Attest remains paused until a separately approved rollout.
+- Retry transient shadow failures, including temporarily saturated control-lane sends, without disconnecting serving providers; bound actual uncancellable Apple operations and fence late callbacks.
+- Recover cached enrollment receipts through a separately validated renewal path, retain original failure records, and reconcile interrupted evidence without advancing counters. Receipt renewal requires the dedicated server credentials.
+- Associate machine identities through fresh account-bound App Attest assertions, including reconnects after legacy-key rotation. This does not rewrite balances or certify physical-device uniqueness.
+- Negotiate App Attest protocol 3 to bind app-measured machine model, RAM, CPU/GPU counts and the existing verification key to the signed transcript. Preserve old transcripts and cached enrollment recovery across upgrades; move the unchanged base-reward memory-cap catalog out of the MDM package.
+- Record versioned prospective authorization outcomes, revocation, current-connection freshness, qualified builds and receipt/risk readiness. The private dashboard shows exact cohort denominators and blockers for a later MDM retirement.
+- Capture SDK 27 Apple-signed CodeDirectory measurements and require an exact qualified binary/code-hash pair for prospective build approval. Release builds and their provider tests select SDK 27 / Swift 6.4 and record the full CodeDirectory SHA-256; missing or unsupported measurements stay unknown. macOS can identify the exact code without a bundle-version extension.
+- Forward the latest distinct per-model warm-pool planning snapshot through the coordinator telemetry emitter so Datadog can show target sizing, measured demand, candidate availability and blocker counts. Keep provider identities and request data out of the event.
+- Stop minting an unrestricted console API key after you create a My Machine only key. Chat adopts the key you just created; `POST /v1/auth/keys` inherits `self_route_only` when every active key on the account is already machine-only. Logout, chat 401, and untracked mint drop a leftover console key id so a stale id cannot pin chat to the untitled secret.
+
+
+## v0.9.3 — App Attest shadow rollout and provider reliability (2026-09-14)
+
+Source changes since `v0.9.2`. App Attest remains observational, with APNs and MDM authoritative.
+
+### Prefix-cache reuse and routing
 
 Provider changes require a new signed bundle; coordinator changes require a
 coordinator deployment.
 
-### Provider
+#### Provider
 
 - **Checkpoint write priority** — Limit first-seen checkpoint writes to a continuously refilling 90% share of the existing write budget, reserving capacity for prefixes observed again within the cache TTL. Every write still consumes the original total budget; authenticated durable duplicates consume no additional write budget. Novel-share exhaustion reports `write_priority_limited`, while total-budget exhaustion remains `write_rate_limited`. TTL, disk-space reserves and the overall write cap remain unchanged.
 - **Maintenance recovery** — Reconcile removed checkpoint index entries inside the destructive epoch barrier for whole-root external mutations so later reconciliation does not rotate the model epoch again solely for those removed entries. Single-entry eviction and corrupt-file removal update only their known index entries, avoiding a full filesystem scan after each victim during budget reduction. Surviving valid checkpoints remain reusable.
 
-### Coordinator
+#### Coordinator
 
-- **Opt-in account affinity** — Add `off`/`shadow`/`on` account/model placement with stable verified-machine ranking and immediate-load spillover. A preferred machine must satisfy existing gates, projected decode quality, the absolute request deadline and a bounded estimated load-induced first-content delay relative to its own idle counterfactual, not a faster peer. Otherwise ordinary routing continues without a new wait or rejection. Retry fallbacks preserve affinity within every owner/version/quote priority tier, even after admission races. Identity snapshots avoid per-provider identity-string allocations. Default `off` and `shadow` preserve existing selection, including repeated-prefix tiebreaking. Aggregate diagnostics contain no account or machine identity. The initial threshold is experimental, and activation does not enable prefix-cache reuse or change production settings.
+- **Combined streaming usage** — Preserve validated cached-token and reasoning-token details when a Chat stream carries usage on its finish event. When a dedicated usage event follows, enrich only that event; do not duplicate details, invent usage, or change content, token totals, signatures or terminal identity.
 - **Qwen prompt parity** — Match the provider's Qwen-family handling of required and named tool calls, including catalog aliases and Qwen3-VL, to avoid mismatched thinking controls in cache proofs.
 - **Repeated-prefix routing** — Prefer a stable cache-capable provider for repeated prefixes only among otherwise equivalent cost, queue and pending-work candidates. Exclude capabilities quarantined after a failed cache proof from this preference, even when heartbeats continue advertising them. Revalidate at reservation and rescan if affinity eligibility changed after selection. Preserve ordinary serving when no unfenced cache candidate is available, along with capacity, deadline, trust and proof gates. Profiler rows identify this preference as `prefix_affinity`.
 - **Cache opportunity diagnostics** — Report per-model reasons and numerical counts for repeated-prefix demand, usable holders and routing selection. These diagnostics distinguish routing opportunities from actual cache hits and measured latency savings. Add a [consumer guide](docs/consumer/prefix-cache.md) for preserving shared prompt prefixes.
 
-## Unreleased — doctor and attestation reliability
+### Doctor and attestation reliability
 
 - Prevent large process lists from blocking `doctor` and `verify`. Capture contention and sleep-probe output without pipe backpressure and apply an execution deadline; preserve diagnostic output and failure handling.
 - Match the coordinator's canonical status bytes for mixed-case model IDs and template names, including Unicode separators. Preserve signed fields, omission rules and signature verification.
+
+### App Attest coexistence
+
+- Add stable server-assigned machine identities, verified legacy aliases, historical backfill and macOS adoption inventory. Keep existing operational serial, routing, and accounting rules.
+- Retain complete attestation and assertion submissions, initial and renewed receipts, verification context and outcomes in a private durable archive. Add an authenticated admin dashboard and complete-record downloads.
+- Bind account scope and locally derived OS/build status with protocol 2. Recover lost enrollment responses, cap key generation across accounts, and bound Apple callback waits. DeviceCheck's separate device-bit service stays deferred.
+- Bound shadow archive, rejection, and disconnect work against the shared database pool; count saturation as a coverage gap. Recover after missing Apple callbacks without restarting the provider. Continue renewing existing receipts when new shadow exchanges are disabled.
+- Repair missed inventory disconnect records from durable liveness history after contention or restart. Use only bounded, validated endpoint keys for shadow enrollment, and label original-field and decoded-proof checksums explicitly.
+- Include App Attest frames rejected by the 48 KiB decoder limit in refusal telemetry and the machine-inventory census, without retaining oversized proof payloads or blocking normal provider messages.
+
+- Add negotiated App Attest shadow enrollment and fresh connection assertions, with independent certificate/policy verification, durable counters, and coverage/latency observations. APNs and MDM remain authoritative; shadow success or failure changes no routing, trust, payments, or supported OS floor.
+- Keep the CLI and app launch flow; add profile-authorized App Attest signing alongside APNs in release and validation workflows. Actual macOS 27 acceptance requires the final signed app on physical hardware.
+- Accept macOS Developer ID profiles granting only the App Attest CDhash opt-in, including array grants. Preserve existing APNs/keychain entitlements; validate the attested environment on the coordinator even when the optional environment entitlement is absent.
+
+## Unreleased — Qwen 3.8 Next (Flash-Next) support candidate
+
+- Record the human-reviewed candidate and final 118-cell local API pass,
+  account-scoped cache/usage fixes, default long-prefix cache qualification,
+  full affected-suite results and matched speed checks in the
+  [native API/cache qualification report](docs/reports/2026-09-15-qwen38-native-api-qualification.md).
+  Existing opt-in multirow and semantic-quality limitations remain explicit.
+
+- Align final non-streaming reasoning-item status with streaming Responses;
+  preserve the root incomplete/complete status, original text, usage and
+  provider attestation fields.
+- Preserve the Chat stream's response ID and creation timestamp on terminal
+  coordinator metadata while retaining signature/hash values and the distinct
+  job ID. Include `input_tokens + output_tokens` as Responses `total_tokens`;
+  cached/reasoning details are not counted again and billing is unchanged.
+- Add a real-coordinator/native-unified API matrix with authenticated metrics
+  from the same provider. Replace the generic plaintext test's ASCII-density
+  heuristic with an exact known-answer/UTF-8 check, preserving normal surrounding
+  whitespace without rewriting engine output.
+- Require a declared native function header or framed JSON at each forced-tool
+  frame opening. Reject prose in that header boundary while preserving literal
+  argument content and mandatory final validation; no output repair is added.
+- Preserve original messages for exact owned native Qwen4 text required/named
+  calls through Swift serving/accounting and the Rust prompt sidecar. Advance
+  normalization to v5; previous identities fail cold for exact-cache credit.
+- Preserve per-request rotary position semantics in mixed text/image batches,
+  including hidden-returning MTP history paths. Keep singleton admission and
+  speculative caps unchanged; longer-prefix batching qualification remains open.
+- Add qualified opt-in full-KV parallel attention and early layer submission,
+  plus canonical media-prefix positions for appended-text reuse. Preserve
+  native state, PLE fill/fault ownership, MTP and existing fallback behavior.
+- Require native tool framing after the rendered reasoning boundary for
+  required/named Qwen4 text calls. Keep argument values model-generated and
+  retain strict postvalidation and target-only constraint safety gates.
+- Record bounded speed gains and unresolved quality/release gates in the
+  [September 15 draft update](docs/reports/2026-09-15-qwen38-performance-stability.md).
+- Mirror parallel-aware required/named tool instructions for other paths in
+  the coordinator's prompt sidecar. Regenerate immutable prompt vectors and
+  preserve ordinary serving across mixed prompt-contract versions.
+- Preserve non-reasoning Qwen 3.8 Next function-call history on the standalone
+  Responses endpoint and emit Responses SSE lifecycle/item events, including
+  incomplete and failed terminals. Add actual cold-load admission regressions
+  covering the Nemotron standalone-guard lesson.
+- Drain native completion before the final empty-pool memory refund; retain
+  strict allocator and scoped-stream ordering tests.
+- Reject unsupported thinking efforts for the owned Next artifact with a
+  typed HTTP 400 before template rendering. Preserve native low/medium/xhigh
+  controls, disabled-thinking precedence and other models' templates.
+- Make required/named tool instructions respect allowed parallel calls. Retain
+  the singular contract when parallel calls are disabled; do not contradict
+  a request for several independent calls with singular forcing instructions.
+
+No provider version bump, model publication, catalog activation, release or
+deployment is implied by this support update.
+
+- Add native Qwen4 text serving with retained embedded MTP, SSD-backed learned
+  PLE tables, native paged state and complete-checkpoint support. Scope automatic
+  paging/cache defaults to the exact owned serving identity; preserve artifact,
+  runtime, dtype and cache-identity gates.
+- Enforce a lower-only local context limit over prompt plus reserved completion,
+  reject overflow with a sanitized client error, keep unsupported media out of
+  the text path and preserve request-owned cache usage and connection cancellation.
+- Carry validated SSD-offloaded weight declarations through provider/coordinator
+  admission and add repository-owned pinned conversion/provenance tooling.
+- Record current component/synthetic checks and remaining fresh-build, real-model,
+  cache/restart, API and hardware qualification in the
+  [native support reference](docs/reference/qwen4-next-support.md).
+  Full production qualification remains separate from the reviewed support update.
 
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 

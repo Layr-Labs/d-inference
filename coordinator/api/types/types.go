@@ -147,6 +147,7 @@ type ResponsesUsage struct {
 	InputTokensDetail  ResponsesUsageDetail `json:"input_tokens_details"`
 	OutputTokens       int                  `json:"output_tokens"`
 	OutputTokensDetail ResponsesUsageDetail `json:"output_tokens_details"`
+	TotalTokens        int                  `json:"total_tokens"`
 }
 
 // ResponsesIncompleteDetail is the incomplete_details block.

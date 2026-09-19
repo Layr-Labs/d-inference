@@ -143,6 +143,9 @@ extension CoordinatorClient {
                 timestamp: challenge.timestamp
             ))
 
+        case .appAttestShadow(let payload):
+            eventContinuation?.yield(.appAttestShadow(payload))
+
         case .codeAttestationResumeChallenge(let challenge):
             eventContinuation?.yield(
                 .codeAttestationResumeChallenge(challenge.codeChallenge))
@@ -177,11 +180,13 @@ extension CoordinatorClient {
             eventContinuation?.yield(.desiredModels(entries: dm.models))
 
         case .trustStatus(let ts):
-            logger.info("Trust status from coordinator: level=\(ts.trustLevel) status=\(ts.status) reason=\(ts.reason)")
+            // ProviderLoop logs decision changes; periodic lease renewals
+            // still reach the state file without duplicate log messages.
             eventContinuation?.yield(.trustStatus(
                 trustLevel: ts.trustLevel,
                 status: ts.status,
-                reason: ts.reason
+                reason: ts.reason,
+                authorization: ts.authorization
             ))
         }
     }

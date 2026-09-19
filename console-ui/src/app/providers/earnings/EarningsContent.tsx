@@ -5,7 +5,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { trackEvent } from "@/lib/google-analytics";
 import { useToastStore } from "@/hooks/useToast";
 import { useVisiblePolling } from "@/hooks/useVisiblePolling";
-import { STORAGE_KEYS } from "@/lib/constants";
+import { STORAGE_KEYS } from "@/lib/storage-keys";
 import {
   Loader2,
   DollarSign,

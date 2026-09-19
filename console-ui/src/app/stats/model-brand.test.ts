@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { modelBrand } from "./model-brand";
 
+const NEMOTRON_LIGHTNING_ID = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4";
+
 describe("modelBrand", () => {
   it("uses the standalone OpenAI icon for GPT-OSS aliases", () => {
     expect(modelBrand("gpt-oss-20b")).toMatchObject({
@@ -31,6 +33,21 @@ describe("modelBrand", () => {
     });
   });
 
+  it("uses the NVIDIA mark for Nemotron Lightning model IDs", () => {
+    expect(modelBrand(NEMOTRON_LIGHTNING_ID)).toMatchObject({
+      maker: "nvidia",
+      makerLabel: "NVIDIA",
+      logoSrc: "/brand/nvidia.svg",
+    });
+  });
+
+  it("uses the NVIDIA mark when the family identifies Nemotron", () => {
+    expect(modelBrand("custom-build", "Nemotron 3.5 Lightning")).toMatchObject({
+      maker: "nvidia",
+      logoSrc: "/brand/nvidia.svg",
+    });
+  });
+
   it("falls back safely for unknown model families", () => {
     expect(modelBrand("custom-model")).toMatchObject({ maker: "unknown", makerLabel: "Model" });
   });
@@ -47,6 +64,7 @@ describe("modelBrand", () => {
     ["qwen3.6-35b-a3b-vl-mtp-mxfp8", "Qwen3.6", "qwen"],
     ["qwen3.5-35b-a3b", "Qwen3.5", "qwen"],
     ["qwen3-vl-30b-a3b-instruct", "Qwen3-VL", "qwen"],
+    [NEMOTRON_LIGHTNING_ID, "Nemotron 3.5 Lightning", "nvidia"],
   ];
 
   it.each(CATALOG)("brands %s (family %s) as %s", (id, family, maker) => {

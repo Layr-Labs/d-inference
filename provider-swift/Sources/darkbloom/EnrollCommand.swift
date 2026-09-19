@@ -4,9 +4,16 @@ import ProviderCore
 
 struct Enroll: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Enroll this Mac in Darkbloom MDM (device-attestation profile).",
+        abstract: "Set up verification: App Attest on macOS 27+, MDM on older macOS.",
         discussion: """
-        Requests a per-device .mobileconfig profile from the coordinator,
+        On macOS 27 or later, use App Attest without downloading an MDM profile.
+        Link your account, start the provider and check darkbloom status for
+        coordinator approval. Existing management profiles are kept in place.
+
+        Darkbloom MDM will be deactivated soon. Upgrade to macOS 27 or later
+        to avoid Darkbloom MDM enrollment.
+
+        On older macOS, requests a .mobileconfig profile from the coordinator,
         opens it (registering with System Settings), then opens the
         Profiles pane so you can click Install. The profile lets the
         coordinator verify that SIP/Secure Boot are on and that the
@@ -34,6 +41,8 @@ struct Enroll: AsyncParsableCommand {
         print("Darkbloom Device Attestation Enrollment")
         print("Coordinator: \(httpBase)")
         print()
+        print("  \(ProviderOnboardingPolicy.retirementNotice)")
+        print()
 
         let service = EnrollmentService()
         let result: EnrollmentResult
@@ -47,18 +56,23 @@ struct Enroll: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        if result.alreadyEnrolled {
+        guard case .mdm(let profilePath, let alreadyEnrolled) = result else {
+            print("  \(ProviderOnboardingPolicy.appAttestGuidance)")
+            return
+        }
+
+        if alreadyEnrolled {
             print("  ✓ Already enrolled — no action needed.")
             print("  Verify with: darkbloom doctor")
             return
         }
 
-        print("  → Profile saved:  \(result.profilePath.path)")
+        print("  → Profile saved:  \(profilePath.path)")
         print()
 
         if noOpen {
             print("  Install the profile manually:")
-            print("    open \(result.profilePath.path)")
+            print("    open \(profilePath.path)")
             print()
         } else {
             print("  System Settings → Device Management is now open.")

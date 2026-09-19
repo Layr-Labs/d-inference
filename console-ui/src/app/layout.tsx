@@ -1,11 +1,12 @@
+import { ModelTokenPromotionsProvider } from "@/components/app-providers/ModelTokenPromotionsProvider";
 import type { Metadata } from "next";
 import "./globals.css";
 import { AppShell } from "@/components/AppShell";
 import { GoogleAnalytics } from "@/components/GoogleAnalytics";
 import { Analytics } from "@vercel/analytics/next";
-import { ThemeProvider } from "@/components/providers/ThemeProvider";
-import { PrivyClientProvider } from "@/components/providers/PrivyClientProvider";
-import { VerificationModeProvider } from "@/components/providers/verification-mode";
+import { ThemeProvider } from "@/components/app-providers/ThemeProvider";
+import { PrivyClientProvider } from "@/components/app-providers/PrivyClientProvider";
+import { VerificationModeProvider } from "@/components/app-providers/verification-mode";
 import { TelemetryInitializer } from "@/components/TelemetryInitializer";
 import { DatadogRUM } from "@/components/DatadogRUM";
 
@@ -47,9 +48,11 @@ export default function RootLayout({
         <DatadogRUM />
         <ThemeProvider>
           <PrivyClientProvider>
+            <ModelTokenPromotionsProvider>
             <VerificationModeProvider>
               <AppShell>{children}</AppShell>
             </VerificationModeProvider>
+          </ModelTokenPromotionsProvider>
           </PrivyClientProvider>
         </ThemeProvider>
       </body>

@@ -57,6 +57,9 @@ func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request,
 	if s.billing == nil || p.policy.enabled {
 		return 0, false, false
 	}
+	if amount, attempted, handled := s.reserveModelTokenPromotion(w, r, p); attempted {
+		return amount, false, handled
+	}
 	consumerKey := consumerKeyFromContext(r.Context())
 	// Normally the byte-count billing bound dominates the routing estimate. A
 	// remote media URL is the exception: its short URL is rewritten after this
@@ -138,6 +141,23 @@ func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request,
 // the top-up failed) and handled=true after writing a terminal response, in
 // which case the caller must refund and return.
 func (s *Server) topUpReservationForInlinedMedia(w http.ResponseWriter, r *http.Request, parsed map[string]any, p balanceReservationParams, currentMicroUSD int64) (reservedMicroUSD int64, handled bool) {
+	if reservation := modelTokenReservation(r); reservation != nil {
+		backend, ok := store.As[store.ModelTokenPromotionStore](s.store)
+		if !ok {
+			s.writeServiceUnavailable(w, p.model)
+			return currentMicroUSD, true
+		}
+		in, out, custom := s.store.GetModelPrice("platform", p.model)
+		limit := s.promotionKeyRemaining(keyIDFromContext(r.Context()), keyLimitMicroFromContext(r.Context()), keyLimitResetFromContext(r.Context()))
+		updated, err := backend.TopUpModelTokenReservation(reservation.ID, int64(max(p.billingPromptTokens, p.estimatedPromptTokens))+int64(p.requestedMaxTokens), modelTokenQuote(p.model, max(p.billingPromptTokens, p.estimatedPromptTokens), p.requestedMaxTokens, in, out, custom, limit))
+		if err != nil {
+			s.writePromotionAdmissionError(w, p.model, err, true, reservation.FreeTokens)
+			return currentMicroUSD, true
+		}
+		modelTokenRequest(r).reservation = updated
+		return updated.ReservedMicroUSD, false
+	}
+
 	// Same skips as reserveInferenceBalance: self-route is free and a nil billing
 	// backend never reserved anything to top up.
 	if s.billing == nil || p.policy.enabled || currentMicroUSD <= 0 {

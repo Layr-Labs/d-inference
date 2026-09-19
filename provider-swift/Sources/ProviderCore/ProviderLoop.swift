@@ -12,6 +12,7 @@
 
 import CryptoKit
 import Foundation
+import ProviderAppAttest
 import MLXLMServer
 #if canImport(os)
 import os
@@ -178,6 +179,9 @@ internal enum ProviderLoopError: Error, CustomStringConvertible {
 // purely-local members (e.g. `configuredMaxModelSlots`, `bytesPerGiB`,
 // `createAttestationSigner`) stay `private`. Behavior is unchanged.
 public actor ProviderLoop {
+    internal var appAttestShadowClient: AppAttestShadowClient?
+    internal var appAttestShadowTask: Task<Void, Never>?
+    internal var appAttestShadowGeneration: UInt64 = 0
     internal let loopConfig: ProviderLoopConfig
     internal let keyPair: NodeKeyPair
     internal let signer: (any AttestationSigner)?
@@ -353,6 +357,7 @@ public actor ProviderLoop {
     /// reentrant loads cannot start against memory that has not been freed yet.
     internal var modelsUnloading: Set<String> = []
     internal var unloadingWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+    internal var qwen4MemoryRetirement: NativeMemoryRetirementWindow?
 
     /// Serializes KV-GRANT mutations: the load-side re-slice
     /// (`resliceAndBuildEngineV2Slot` — snapshot grants → shrink → build →
@@ -602,7 +607,9 @@ public actor ProviderLoop {
         purgeLegacyFiles: Bool,
         attestationSigner: (any AttestationSigner)?,
         preloadTaskStarted: (@Sendable (String) -> Void)? = nil,
-        beforeModelLoad: (@Sendable (String) async -> Void)? = nil
+        beforeModelLoad: (@Sendable (String) async -> Void)? = nil,
+        // Scripted slot fixtures must not inherit the test host's RAM.
+        kvBudgetForTesting: GlobalKVCacheBudget? = nil
     ) throws {
         self.loopConfig = config
         self.specDecFunnel = SpecDecArtifactFunnel(
@@ -661,14 +668,14 @@ public actor ProviderLoop {
         // (measured per-model floors; env raise-only above them) and re-pushed
         // via refreshActivationReserve() whenever that set changes, so the
         // runtime KV gate and the load gate always carve the same reserve.
-        self.kvBudget = GlobalKVCacheBudget(
+        self.kvBudget = kvBudgetForTesting ?? GlobalKVCacheBudget(
             activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
                 modelIDs: Array(advertised.keys)),
             configReserveBytes: Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB))
         // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
         // The EngineV2 SSD tier uses the separate `darkbloom/kv3` root,
         // so this cleanup cannot delete current cache data.
-        LegacyKVCacheSweeper.sweep()
+        if purgeLegacyFiles { LegacyKVCacheSweeper.sweep() }
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
         self.preloadTaskStarted = preloadTaskStarted
         self.beforeModelLoad = beforeModelLoad

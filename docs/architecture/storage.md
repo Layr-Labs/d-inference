@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-09 · commit `4c77fc285`
+> Last updated: 2026-09-18 · commit `6050cc4d4`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -17,6 +17,20 @@ the existing model read-through cache; [artifact schema](../reference/model-regi
 Attempt decision fields are additive columns and existing provider JSONB;
 [prediction telemetry](../reference/prediction-decision-telemetry.md#storage-and-rollout)
 defines migration, historical NULLs and the separately applied waterfall view.
+
+App Attest maintenance marks abandoned pending submissions `interrupted` without accepting old assertions or changing counters. Enrollment contexts retain their protocol version so an upgrade does not reinterpret a cached proof. Historical receipt recovery appends new versions; credential revocations are durable and account-scoped. See `coordinator/store/app_attest_maintenance.go` and `coordinator/store/app_attest_readiness.go`.
+
+The additive [App Attest inventory and evidence tables](../reference/app-attest-shadow.md#storage-and-complete-evidence-archive) retain stable machine mappings, session/OS history, complete proof bytes, receipt versions, and atomic verification results. They do not restore live authorization. The [MDM-optional path](../reference/provider-authorization.md#machine-identity-and-base-rewards) uses verified canonical identity for new base-floor settlement, while retaining original organic-earning keys and historical ledger rows.
+
+Machine-session reconciliation uses a partial index over open sessions and bounded, row-locked batches to repair missed disconnect writes after contention or restart. Fresh inventory or provider-session heartbeats preserve liveness. Known closures retain their timestamp; inferred stale closures are labelled and can recover when fresh observations resume. Older observations and confirmed disconnects are fenced in `ObserveMachine`. See the [inventory lifecycle](../reference/app-attest-shadow.md#machine-inventory-and-identity) and `coordinator/store/machine_inventory_reconcile.go`.
+
+Canonical history and reward queries use the existing inventory tables. `coordinator/store/machine_inventory_schema.go` adds the reverse-merge index `darkbloom_machines_merged_into`; include it in additive migration preflight. `coordinator/store/postgres_machine_floor_settlement.go` serializes canonical/raw-session settlement with inventory merges, preventing duplicate same-epoch floors without rewriting existing balances. Serving leases remain in memory and are re-established after reconnect.
+
+Provider `attestation_result` JSON additively retains `OSVersion` from the signed
+registration blob (`coordinator/attestation/attestation.go`, `VerificationResult`).
+Existing rows without it decode as unknown. This app-reported metadata supports
+owner upgrade notices; it does not certify an OS or alter trust gates, and needs
+no SQL migration.
 
 ## Context
 
@@ -214,6 +228,8 @@ Roughly forty tables; grouped by what would be lost if the family vanished.
 
 ### Global Payouts state
 
+Claims, result application and definitive-rejection records use one locked PostgreSQL mutation boundary (`coordinator/store/global_payouts_postgres.go`, `mutateGlobalPayout`). Operation-specific checks run under the withdrawal row lock; any refund ledger entry and payout update commit together. A no-op claim rolls back without changing the lease or dispatch count.
+
 Payouts marked `manual_reconciliation_required` without an external payment ID are excluded from automatic scans and claims; their pending row and debit are retained. A verified external ID permits readback reconciliation to resume (`coordinator/store/global_payouts.go`, `GlobalPayout.RequiresManualReconciliation`).
 
 Global Payouts uses separate recipient and withdrawal tables with immutable request data, persisted dispatch counts, definitive rejection records, an indexed quote expiry and a unique external-payment index. `GlobalPayoutStore` is accessed through `store.As` so decorators preserve the capability. These mutations do not write the cached users table. The migration creates the payout tables and adds/backfills indexed quote expiry for an earlier Global Payouts schema (`coordinator/store/global_payouts_postgres.go`, `globalPayoutSchema`). Cleanup locks and removes only expired, never-confirmed quotes in bounded batches; confirmed payout and ledger records are retained (`coordinator/store/global_payouts_maintenance.go`, `PruneExpiredGlobalPayoutQuotes`).
@@ -311,6 +327,7 @@ KV blocks under a per-model key, not tokens.
 | Interface and record types | `coordinator/store/interface.go`, `coordinator/store/interface_domains.go` |
 | Backend selection and validation | `coordinator/store/config.go`, `coordinator/cmd/coordinator/main.go` |
 | Postgres pool, schema, one-shot migrations | `coordinator/store/postgres.go`, `coordinator/store/postgres_usage_totals_migration.go`, `coordinator/store/postgres_withdrawable_migration.go`, `coordinator/store/postgres_log_report_privacy.go` |
+| Provider identity and usage reads | `coordinator/store/postgres_provider_read.go` (`providerRecordColumns`, `scanProviderRecord`, `GetProviderRecord`, `GetProviderBySerial`); `coordinator/store/provider_restore.go` (`GetProviderForRestore`, using the same projection); `coordinator/store/postgres_usage_read.go` (`readUsageRecords`, `UsageRecords`, `UsageRecordsSince`); `coordinator/store/postgres_row.go` (`rowScanner`) |
 | Domain files | `coordinator/store/postgres_model_registry.go`, `coordinator/store/postgres_base_rewards.go`, `coordinator/store/postgres_profiles.go`, `coordinator/store/route_telemetry.go`, `coordinator/store/usage_time_series.go`, `coordinator/store/apikey.go` |
 | Memory backend | `coordinator/store/memory.go`, `coordinator/store/memory_base_rewards.go` |
 | Manual SQL | `coordinator/store/migrations/` |
@@ -327,3 +344,9 @@ KV blocks under a per-model key, not tokens.
 - [`prefix-cache.md`](prefix-cache.md) and [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) — the provider's on-disk cache
 - [`../operations/state-export.md`](../operations/state-export.md) — exporting the non-Postgres state on the persistent disk
 - [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md) — where the DSN is set
+
+## Model token grants
+
+`coordinator/store/model_token_promotions_schema.go` (`modelTokenPromotionDDL`) adds `model_token_promotions`, account/model keyed `model_token_grants`, durable `model_token_reservations`, and provider-account keyed `model_token_provider_carries`. The carry row retains a sub-micro-dollar payout remainder in `[0, 100000000)`; the additive table also works when upgrading an existing promotion schema. Promotion model IDs deliberately do not reference the model registry, allowing pre-launch setup. The promotion row serializes claims, enforces the maximum claim count and validates the user table’s authoritative account creation timestamp. Account/model uniqueness makes duplicate claims idempotent. Grant counters enforce nonnegative usage/reservations and prevent their sum from exceeding the grant. Reservation terminal state prevents duplicate spending, refunds and provider credit. Claim windows do not expire previously issued grants.
+
+`coordinator/store/model_token_settlement_postgres.go` (`SettleModelTokenReservation`) updates grant usage, consumer money, fractional payout carry and provider earnings in one transaction, locking balance rows in account order before the carry row. `coordinator/store/model_token_earnings_postgres.go` (`carryModelTokenEarningPostgres`) updates the remainder; the reservation persists the credited whole-micro-dollar payout so replay returns the original result without accumulating fractions again. The optional backend capability is discovered through `store.As`; grants bypass the user/model read-through caches and no user/model invalidation is needed. Lease recovery is in `coordinator/store/model_token_leases.go` (`ReleaseStaleModelTokenReservations`). Operational details: [model token promotions](../operations/model-token-promotions.md).

@@ -33,15 +33,15 @@ public struct LocalInferenceHTTPConfig: Sendable {
 }
 
 /// The concrete responder stack the local endpoint always uses:
-/// auth (outermost) → CORS → MTP-augmented /metrics → chat-upload
+/// disconnect ownership → auth → CORS → MTP-augmented /metrics → chat-upload
 /// interception (32 MiB body ceiling for the media-bearing chat routes, see
 /// `LocalChatUploadResponder`) → upstream MLXLMServer router.
 public typealias LocalInferenceApplication =
     Application<
-        LocalAuthResponder<
+        LocalDisconnectResponder<LocalAuthResponder<
             CORSResponder<
                 LocalMetricsResponder<
-                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>
+                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>
 
 /// Builds the local OpenAI-compatible Hummingbird application from a model
 /// registry expressed as three closures. Shared by `StandaloneServer` and the
@@ -107,12 +107,12 @@ func makeLocalInferenceApplication(
     let metricsResponder = LocalMetricsResponder(
         inner: uploadResponder, service: service, mtpSlots: mtpSlots)
     let corsResponder = CORSResponder(inner: metricsResponder)
-    // Auth is the outermost layer so an unauthenticated request is rejected
-    // before reaching the engine. Pass-through when no token is configured.
+    // Auth rejects unauthenticated requests before body/model handling. The
+    // outer disconnect layer only binds lifetime; it does not inspect content.
     let authedResponder = LocalAuthResponder(inner: corsResponder, token: config.authToken)
 
     return Application(
-        responder: authedResponder,
+        responder: LocalDisconnectResponder(inner: authedResponder),
         configuration: .init(
             address: .hostname(config.host, port: Int(config.port)),
             serverName: "darkbloom-provider"

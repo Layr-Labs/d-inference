@@ -9,8 +9,9 @@ extension ProviderLoop {
     /// load remains a local-only catalog-cache/artifact-cache consultation.
     ///
     /// `auto` prewarms only for the exact Gemma QAT target; explicit `on`
-    /// also permits other supported external assistants. Embedded Qwen heads
-    /// resolve from the checkpoint itself without catalog metadata.
+    /// also permits other supported external assistants. Embedded Qwen heads,
+    /// including native Qwen4, resolve from the checkpoint itself without
+    /// catalog metadata.
     func prewarmSpecDecCatalog() async {
         let backend = loopConfig.config.backend
         guard backend.mtpDrafterPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false,

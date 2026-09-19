@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import type { MyProvider } from "../types";
 import { formatRelative } from "./format";
+import { AppAttestPanel } from "./AppAttestPanel";
 
 function CheckLine({ ok, label }: { ok: boolean; label: string }) {
   return (
@@ -82,6 +83,10 @@ export function AttestationPanel({
     const age = (Date.now() - new Date(p.last_challenge_verified).getTime()) / 1000;
     setChallengeStale(age > (challengeMaxAgeSeconds || 360));
   }, [p.last_challenge_verified, challengeMaxAgeSeconds]);
+
+  if (p.app_attest_authorized || p.authorization_expires_at !== undefined) {
+    return <AppAttestPanel provider={p} />;
+  }
 
   return (
     <div>

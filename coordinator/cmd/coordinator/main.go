@@ -716,6 +716,12 @@ func main() {
 			logger.Warn("invalid EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES; using built-in table", "value", v)
 		}
 	}
+	if v := os.Getenv("EIGENINFERENCE_MODEL_FIRST_CONTENT_SLAS"); v != "" {
+		if err := modelpolicy.SetFirstContentSLAsFromEnv(v); err != nil {
+			logger.Error("invalid model first-content SLA configuration", "error", err)
+			os.Exit(1)
+		}
+	}
 
 	// Optional pprof listener on a DEDICATED private mux/port — never the
 	// public mux. The 2026-09-01 collapse was diagnosed blind because the
@@ -888,6 +894,7 @@ func main() {
 
 	// Push gauge values to DogStatsD periodically.
 	go srv.StartDDGaugeLoop(ctx)
+	go srv.StartWarmPoolTelemetryLoop(ctx)
 	srv.StartProfilerLoops(ctx)
 
 	// Reclaim expired read-cache entries periodically (bounds memory growth).

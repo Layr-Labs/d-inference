@@ -34,6 +34,9 @@ type PendingRequest struct {
 	// ceilings from this timestamp; zero preserves legacy relative behavior.
 	FirstContentDeadline time.Time
 	ProviderID           string
+	// Captured atomically with this provider's pending debit. A later lease
+	// cannot transfer already-queued work onto a changed endpoint or identity.
+	providerAuthorizationBinding providerRequestAuthorizationBinding
 	// Model is the CONCRETE build id used for routing, admission, billing, and
 	// warm-model matching (e.g. "mlx-community/gemma-4-26B-A4B-it-qat-4bit").
 	Model string
@@ -44,6 +47,10 @@ type PendingRequest struct {
 	// ConsumerKey is the authenticated ACCOUNT ID (historical field name),
 	// shared across that account's API keys. It seeds account/model affinity.
 	ConsumerKey string
+	// Durable logical-request grant reservation, shared by retries and queued attempts.
+	ModelTokenReservationID string
+	PromotionModelID        string
+	PromotionFreeTokens     int64
 	// KeyID is the public ID of the API key that originated the request, used
 	// for per-key usage and spend attribution. Empty for account-scoped/legacy
 	// callers (Privy JWT, admin, provider tokens, unlinked keys without an ID).

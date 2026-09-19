@@ -5,8 +5,8 @@ import XCTest
 @testable import ProviderCoreFoundation
 
 final class WeightHasherConcurrencyTests: XCTestCase {
-    func testWorkerSelectionIsExplicitAndBounded() {
-        XCTAssertEqual(WeightHasher.resolvedHashWorkers(environment: [:]), 1)
+    func testWorkerSelectionDefaultsOnAndRetainsBoundedOverrides() {
+        XCTAssertEqual(WeightHasher.resolvedHashWorkers(environment: [:]), 4)
         for value in ["", "0", "-1", "3", "5", "999", "true", "invalid"] {
             XCTAssertEqual(WeightHasher.resolvedHashWorkers(environment:
                 ["DARKBLOOM_EXPERIMENT_HASH_WORKERS": value]), 1)

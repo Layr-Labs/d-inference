@@ -2,7 +2,7 @@
 
 ## Unreleased — model verification I/O
 
-- Add opt-in reusable-buffer reads and bounded independent-file hashing while preserving complete SHA digests, failure handling and load-time integrity checks. Existing defaults remain unchanged.
+- Enable reusable-buffer reads and up to four independent file readers by default for model integrity verification, preserving complete SHA digests, failure handling and load-time checks. Explicit overrides retain the original reader and serial hashing for rollback.
 
 ## Unreleased — MDM-optional provider authorization
 

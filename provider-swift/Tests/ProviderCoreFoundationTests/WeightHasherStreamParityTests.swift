@@ -3,9 +3,19 @@ import Foundation
 import XCTest
 @testable import ProviderCoreFoundation
 
-/// Process-isolated OFF/ON qualification for the streaming-I/O experiment.
+/// Process-isolated default/OFF/ON qualification for streaming integrity I/O.
 /// No model weights or gate expectations are rewritten by these fixtures.
 final class WeightHasherStreamParityTests: XCTestCase {
+    func testReaderSelectionDefaultsOnAndRetainsExplicitRollback() {
+        XCTAssertTrue(WeightHasher.prefersStreamReader(environment: [:]))
+        XCTAssertTrue(WeightHasher.prefersStreamReader(environment:
+            ["DARKBLOOM_EXPERIMENT_HASH_STREAM_FIRST": "1"]))
+        for value in ["0", "", "true", "false", "invalid", "2"] {
+            XCTAssertFalse(WeightHasher.prefersStreamReader(environment:
+                ["DARKBLOOM_EXPERIMENT_HASH_STREAM_FIRST": value]))
+        }
+    }
+
     private func withDirectory(_ body: (URL) throws -> Void) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "weight-stream-parity-\(UUID().uuidString)", isDirectory: true)

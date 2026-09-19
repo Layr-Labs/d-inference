@@ -115,12 +115,18 @@ public struct WeightHasher: Sendable {
             environment: ProcessInfo.processInfo.environment))
     }
 
-    /// Opt-in bounded readers per invocation. No global queue is introduced:
+    /// Bounded readers per invocation, enabled by default. No global queue is introduced:
     /// a large model must not serialize an unrelated smaller model's hashing.
     static func resolvedHashWorkers(environment: [String: String]) -> Int {
-        guard let raw = environment["DARKBLOOM_EXPERIMENT_HASH_WORKERS"],
-              let workers = Int(raw), [1, 2, 4].contains(workers) else { return 1 }
+        guard let raw = environment["DARKBLOOM_EXPERIMENT_HASH_WORKERS"] else { return 4 }
+        guard let workers = Int(raw), [1, 2, 4].contains(workers) else { return 1 }
         return workers
+    }
+
+    /// Unset selects the reusable-buffer reader; explicit values retain their
+    /// existing strict Boolean semantics, including the disabled invalid fallback.
+    static func prefersStreamReader(environment: [String: String]) -> Bool {
+        environment["DARKBLOOM_EXPERIMENT_HASH_STREAM_FIRST"].map { $0 == "1" } ?? true
     }
 
     static func hashFilesWithRelativeKey(
@@ -162,16 +168,17 @@ public struct WeightHasher: Sendable {
     /// SHA-256 hash a single file by streaming in chunks. Returns the raw digest
     /// so callers can either hex-encode it or feed it into another hasher.
     ///
-    /// Falls back through `InputStream` and, as a last resort, `Data(contentsOf:)`
-    /// when `FileHandle` fails. This happens for files moved from URLSession
+    /// Tries the reusable-buffer `InputStream` reader first by default, retaining
+    /// `FileHandle`, retry and size-bounded `Data(contentsOf:)` fallbacks.
+    /// `FileHandle` can fail for files moved from URLSession
     /// download temp locations — they retain NSFileProtectionComplete extended
     /// attributes that block raw POSIX open() but are handled transparently by
     /// Foundation URL/file coordination.
     public static func hashSingleFile(at url: URL) -> SHA256Digest? {
-        // Local-only experiment: reuse InputStream's fixed 64 KiB buffer
+        // Reuse InputStream's fixed 64 KiB buffer by default
         // before trying FileHandle's per-read Data allocation. Preserve the
         // full digest and every existing fallback; never skip integrity work.
-        if ProcessInfo.processInfo.environment["DARKBLOOM_EXPERIMENT_HASH_STREAM_FIRST"] == "1",
+        if prefersStreamReader(environment: ProcessInfo.processInfo.environment),
             let digest = hashSingleFileViaInputStream(at: url)
         {
             return digest

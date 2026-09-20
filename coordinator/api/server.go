@@ -309,6 +309,8 @@ type Server struct {
 	// servers can exercise production and unit-test postures without racing on
 	// process-global state.
 	firstContentDeadlineBase time.Duration
+	firstContentSLAAccounts  map[string]struct{}
+	firstContentSLAEmails    map[string]struct{}
 
 	// rejectModels are requested aliases or resolved model IDs the coordinator
 	// takes out of public/prefer-owner routing: every matching request is answered
@@ -815,6 +817,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		mediaFetchCfg = *cfg.MediaFetch
 	}
 	firstContentDeadlineBase := cfg.FirstContentDeadlineBase
+	firstContentSLAAccounts, firstContentSLAEmails := firstContentAccountSelectors(cfg.FirstContentSLAAccounts)
 	if firstContentDeadlineBase <= 0 {
 		firstContentDeadlineBase = defaultFirstContentDeadlineBase
 	}
@@ -841,6 +844,8 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
 		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
 		firstContentDeadlineBase: firstContentDeadlineBase,
+		firstContentSLAAccounts:  firstContentSLAAccounts,
+		firstContentSLAEmails:    firstContentSLAEmails,
 		routingScanSem:           make(chan struct{}, DefaultRoutingConcurrency()),
 	}
 	if _, clampedDown := trustReuseReconnectGapFromEnv(); clampedDown {

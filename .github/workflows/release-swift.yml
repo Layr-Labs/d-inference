@@ -161,7 +161,7 @@ jobs:
           lane: qualification
 
   build-and-release:
-    name: Sign, notarize and stage exact artifact
+    name: Sign, notarize and retain exact artifact
     needs: [resolve-env, build-provider, qualify-sdk]
     # App Attest's current code measurements require SDK 27. The ordinary
     # Blacksmith image is macOS 26.3 and cannot install Apple's SDK 27 tools.
@@ -176,18 +176,10 @@ jobs:
       ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
 
     steps:
-      - name: Resolve env-specific secrets
+      - name: Resolve release metadata URLs
         if: needs.resolve-env.outputs.publish == 'true'
         env:
           ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
-          DEV_R2_ACCESS_KEY_ID: ${{ secrets.DEV_R2_ACCESS_KEY_ID }}
-          PROD_R2_ACCESS_KEY_ID: ${{ secrets.PROD_R2_ACCESS_KEY_ID }}
-          DEV_R2_SECRET_ACCESS_KEY: ${{ secrets.DEV_R2_SECRET_ACCESS_KEY }}
-          PROD_R2_SECRET_ACCESS_KEY: ${{ secrets.PROD_R2_SECRET_ACCESS_KEY }}
-          DEV_R2_ENDPOINT: ${{ secrets.DEV_R2_ENDPOINT }}
-          PROD_R2_ENDPOINT: ${{ secrets.PROD_R2_ENDPOINT }}
-          DEV_R2_BUCKET: ${{ secrets.DEV_R2_BUCKET }}
-          PROD_R2_BUCKET: ${{ secrets.PROD_R2_BUCKET }}
           DEV_R2_PUBLIC_URL: ${{ secrets.DEV_R2_PUBLIC_URL }}
           PROD_R2_PUBLIC_URL: ${{ secrets.PROD_R2_PUBLIC_URL }}
           DEV_COORDINATOR_URL: ${{ secrets.DEV_COORDINATOR_URL }}
@@ -195,16 +187,12 @@ jobs:
           # Legacy unprefixed prod secrets (pre-DEV_/PROD_ split). Fall back
           # to these when PROD_* is empty so we don't have to duplicate every
           # secret in the GitHub UI just to satisfy the new naming scheme.
-          LEGACY_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          LEGACY_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          LEGACY_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          LEGACY_R2_BUCKET: ${{ vars.R2_BUCKET }}
           LEGACY_R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
           LEGACY_COORDINATOR_URL: ${{ secrets.COORDINATOR_URL }}
         run: |
           set -euo pipefail
           PREFIX=$(echo "$ENV_PREFIX" | tr '[:lower:]' '[:upper:]')
-          for key in R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET R2_PUBLIC_URL COORDINATOR_URL; do
+          for key in R2_PUBLIC_URL COORDINATOR_URL; do
             primary="${PREFIX}_${key}"
             legacy="LEGACY_${key}"
             outkey=$(echo "$key" | tr '[:upper:]' '[:lower:]')
@@ -277,14 +265,6 @@ jobs:
 
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
           rm -f /tmp/cert.p12
-
-      - name: Install awscli (R2)
-        if: needs.resolve-env.outputs.publish == 'true'
-        run: |
-          if ! command -v aws >/dev/null 2>&1; then
-            brew install awscli >/dev/null 2>&1 || true
-          fi
-          aws --version
 
       - name: Embed provisioning profile
         env:
@@ -812,8 +792,8 @@ jobs:
           echo "artifact_name=provider-publication-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
           {
             echo '### Exact signed release awaiting qualification'
-            echo 'Review qualification-request.json in the publication artifact and supply test evidence to POST /v1/admin/app-attest/builds.'
-            echo 'The release key cannot approve builds. If publication is blocked, approve this artifact, then rerun only the failed publication job.'
+            echo 'After the R2 staging job succeeds, review qualification-request.json and supply test evidence to POST /v1/admin/app-attest/builds.'
+            echo 'The release key cannot approve builds. Retry failed staging/publication jobs to reuse this artifact; qualification remains an independent operator step.'
             echo 'Do not rerun signing: that changes the signed artifact.'
             echo '```json'
             cat "$RUNNER_TEMP/provider-publication/qualification-request.json"
@@ -830,6 +810,85 @@ jobs:
           retention-days: 30
           compression-level: 0
 
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+
+  stage-release:
+    name: Stage retained signed artifact in R2
+    needs: [resolve-env, build-and-release]
+    if: needs.resolve-env.outputs.publish == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    environment: ${{ needs.resolve-env.outputs.environment }}
+    permissions:
+      contents: read
+      actions: read
+    env:
+      VERSION: ${{ needs.resolve-env.outputs.version }}
+      ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Resolve env-specific secrets
+        if: needs.resolve-env.outputs.publish == 'true'
+        env:
+          ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
+          DEV_R2_ACCESS_KEY_ID: ${{ secrets.DEV_R2_ACCESS_KEY_ID }}
+          PROD_R2_ACCESS_KEY_ID: ${{ secrets.PROD_R2_ACCESS_KEY_ID }}
+          DEV_R2_SECRET_ACCESS_KEY: ${{ secrets.DEV_R2_SECRET_ACCESS_KEY }}
+          PROD_R2_SECRET_ACCESS_KEY: ${{ secrets.PROD_R2_SECRET_ACCESS_KEY }}
+          DEV_R2_ENDPOINT: ${{ secrets.DEV_R2_ENDPOINT }}
+          PROD_R2_ENDPOINT: ${{ secrets.PROD_R2_ENDPOINT }}
+          DEV_R2_BUCKET: ${{ secrets.DEV_R2_BUCKET }}
+          PROD_R2_BUCKET: ${{ secrets.PROD_R2_BUCKET }}
+          DEV_R2_PUBLIC_URL: ${{ secrets.DEV_R2_PUBLIC_URL }}
+          PROD_R2_PUBLIC_URL: ${{ secrets.PROD_R2_PUBLIC_URL }}
+          # Legacy unprefixed prod secrets (pre-DEV_/PROD_ split). Fall back
+          # to these when PROD_* is empty so we don't have to duplicate every
+          # secret in the GitHub UI just to satisfy the new naming scheme.
+          LEGACY_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          LEGACY_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          LEGACY_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          LEGACY_R2_BUCKET: ${{ vars.R2_BUCKET }}
+          LEGACY_R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+        run: |
+          set -euo pipefail
+          PREFIX=$(echo "$ENV_PREFIX" | tr '[:lower:]' '[:upper:]')
+          for key in R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET R2_PUBLIC_URL; do
+            primary="${PREFIX}_${key}"
+            legacy="LEGACY_${key}"
+            outkey=$(echo "$key" | tr '[:upper:]' '[:lower:]')
+            value="${!primary:-}"
+            if [ -z "$value" ] && [ "$PREFIX" = "PROD" ]; then
+              value="${!legacy:-}"
+              if [ -n "$value" ]; then
+                echo "::notice::Using legacy unprefixed secret for ${key} (set PROD_${key} to silence this)"
+              fi
+            fi
+            if [ -z "$value" ]; then
+              echo "::error::No value resolved for ${PREFIX}_${key} (also tried LEGACY_${key})"
+              exit 1
+            fi
+            echo "${outkey}=${value}" >> "$GITHUB_ENV"
+          done
+
+      - name: Download this run's exact signed publication artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLICATION_ARTIFACT: ${{ needs.build-and-release.outputs.publication_artifact }}
+        run: |
+          set -euo pipefail
+          test -n "$PUBLICATION_ARTIFACT"
+          gh run download "$GITHUB_RUN_ID" --name "$PUBLICATION_ARTIFACT" --dir "$RUNNER_TEMP/provider-publication"
+      - name: Install publication tools
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/publication-tools"
+          "$RUNNER_TEMP/publication-tools/bin/pip" install awscli
+          echo "$RUNNER_TEMP/publication-tools/bin" >> "$GITHUB_PATH"
       - name: Stage immutable bundle in R2
         if: needs.resolve-env.outputs.publish == 'true'
         env:
@@ -840,14 +899,9 @@ jobs:
           R2_PUBLIC_URL: ${{ env.r2_public_url }}
         run: python3 scripts/provider-release-publication.py stage --directory "$RUNNER_TEMP/provider-publication"
 
-      - name: Cleanup keychain
-        if: always()
-        run: |
-          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
-
   publish-release:
     name: Publish qualified signed release
-    needs: [resolve-env, build-and-release]
+    needs: [resolve-env, build-and-release, stage-release]
     if: needs.resolve-env.outputs.publish == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15

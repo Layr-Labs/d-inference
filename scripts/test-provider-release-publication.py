@@ -44,6 +44,20 @@ class PublicationTests(PublicationFixture):
             self.assertIn('/artifacts/' + self.payload['bundle_hash'] + '/', upload.call_args.args[1])
             self.assertNotIn('/latest/', upload.call_args.args[1])
 
+    def test_r2_stage_retry_reuses_retained_bytes_without_publication(self):
+        before = {p.name: p.read_bytes() for p in self.root.iterdir()}
+        with patch.object(PUB, 'upload', side_effect=[RuntimeError('R2 unavailable'), None]) as upload, \
+                patch.object(PUB, 'prepare') as prepare, patch.object(PUB, 'coordinator') as api, \
+                patch.object(PUB, 'publish_github_release') as github:
+            with self.assertRaisesRegex(RuntimeError, 'R2 unavailable'):
+                PUB.stage(self.root, self.env)
+            PUB.stage(self.root, dict(self.env, GITHUB_RUN_ATTEMPT='2'))
+            self.assertEqual(upload.call_args_list[0].args[:2], upload.call_args_list[1].args[:2])
+            prepare.assert_not_called()
+            api.assert_not_called()
+            github.assert_not_called()
+        self.assertEqual({p.name: p.read_bytes() for p in self.root.iterdir()}, before)
+
     def test_registration_failure_cannot_advance_aliases_or_github(self):
         with patch.object(PUB, 'coordinator', side_effect=RuntimeError('unqualified')), patch.object(PUB, 'upload') as upload, patch.object(PUB, 'publish_github_release') as github:
             with self.assertRaisesRegex(RuntimeError, 'unqualified'):

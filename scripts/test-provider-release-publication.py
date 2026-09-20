@@ -115,13 +115,18 @@ class PublicationTests(PublicationFixture):
 
     def test_tag_annotation_is_retained_as_data_not_executable_code(self):
         repo = self.base / 'tag-repository'
-        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
-        subprocess.run(['git', '-c', 'user.name=Release Test', '-c', 'user.email=test@example.com',
-                        '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'Fixture'], cwd=repo, check=True)
+        # CI has no global committer identity. Configure both fixture commands,
+        # and suppress machine-wide config so a developer's defaults cannot
+        # hide an undeclared dependency (notably the annotated-tag identity).
+        git = ['git', '-c', 'user.name=Release Test', '-c', 'user.email=test@example.com']
+        git_env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1')
+        subprocess.run(git + ['init', '-q', str(repo)], env=git_env, check=True)
+        subprocess.run(git + ['-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'Fixture'],
+                       cwd=repo, env=git_env, check=True)
         marker = self.base / 'must-not-exist'
         message = 'Restore release approvals\n\nDetailed notes with "quotes", `backticks`, and $(touch ' + str(marker) + ').\nSecond paragraph: café.\n'
-        subprocess.run(['git', '-c', 'tag.gpgsign=false', 'tag', '-a', self.env['GITHUB_REF_NAME'], '-F', '-'],
-                       input=message, text=True, cwd=repo, check=True)
+        subprocess.run(git + ['-c', 'tag.gpgsign=false', 'tag', '-a', self.env['GITHUB_REF_NAME'], '-F', '-'],
+                       input=message, text=True, cwd=repo, env=git_env, check=True)
         env = dict(self.env, GITHUB_REF_TYPE='tag')
         with patch.dict(os.environ, {'GIT_DIR': str(repo / '.git'), 'GIT_WORK_TREE': str(repo)}):
             root = self.base / 'tagged-artifact'

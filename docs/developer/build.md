@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-18 · commit `5fc48d460`
+> Last updated: 2026-09-20 · commit `1451a4c89`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -109,13 +109,30 @@ for first-run costs and rerun behavior.
   depends on `../libs/mlx-swift` and `../libs/mlx-swift-lm` by local path.
 - **Docker** only for the coordinator container image (step 9).
 
+### Pinned MLX dependencies
+
+The provider consumes the local packages through immutable Git submodule pins:
+
+| Package | Merged revision | Included update |
+|---|---|---|
+| `libs/mlx-swift` | `0f4fe403bef6899e8a72882bc6d4036a7a62ae31` | [PR #28](https://github.com/Layr-Labs/mlx-swift/pull/28): exact constant reuse for eligible Bonsai packed projections |
+| `libs/mlx-swift-lm` | `e22fc82bdb7bfbd93874d56c7df9ca3306782b09` | [PR #155](https://github.com/Layr-Labs/mlx-swift-lm/pull/155): exact Bonsai carry scheduling and safe HTTP failures |
+
+Keep both local packages in the provider build. The SDK's standalone package
+manifest can still reference a pre-merge Swift review revision; the nested-test
+procedure in [test.md](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib) binds it to the recorded local
+Swift gitlink. The MLX core and C-wrapper pins are unchanged by this update.
+Rebuild the consumer after changing pins; earlier full-model measurements are
+evidence for their recorded dependency set, not a new benchmark of these pins.
+
 ### Native Flash-Next candidate
 
-The Qwen 3.8 Next integration pins `libs/mlx-swift-lm` to the merged
-[SDK PR #149](https://github.com/Layr-Labs/mlx-swift-lm/pull/149) commit
-`729fa45c67a8b1cb26b1debeacf7f1d16ef3a21e`. Its complete Git tree is identical
+The Qwen 3.8 Next integration originally landed in
+[SDK PR #149](https://github.com/Layr-Labs/mlx-swift-lm/pull/149), commit
+`729fa45c67a8b1cb26b1debeacf7f1d16ef3a21e`. That commit's complete Git tree is identical
 to the approved review head `ae3ecdc835a895091f8929749fdb3e14383295a9`.
-Use the recorded gitlink, not a floating branch or a private experiment.
+The current SDK gitlink above retains this support. Use the recorded gitlink,
+not a floating branch or a private experiment.
 
 Use the repository-owned [conversion tools](../../scripts/qwen38_conversion/README.md)
 for the pinned official source. Metadata verification is distinct from full

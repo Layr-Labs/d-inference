@@ -1,16 +1,26 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-18 · commit `8d7142dd0`
+> Last updated: 2026-09-20 · commit `1451a4c89`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
 defaults, the environment variables it forwards to the daemon, and its runtime
 constants, as declared in `provider-swift/Sources/darkbloom/` (`Darkbloom`,
-version `ProviderCore.version` = `0.9.5` in
+version `ProviderCore.version` = `0.9.7` in
 `provider-swift/Sources/ProviderCore/ProviderCore.swift`). For operators; types
 and defaults are the ArgumentParser declarations; `—` means required.
 
 ## Global options
+
+Every `darkbloom` invocation on macOS below 27 prints an informational upgrade
+warning to stderr before command parsing or AppKit hosting, including help,
+version and background commands. `MacOSUpgradeNotice.emit` in
+`provider-swift/Sources/darkbloom/MacOSUpgradeNotice.swift` names the local OS,
+upcoming Darkbloom MDM deactivation, continued legacy verification during the
+transition and the need to retain the profile until App Attest migration is
+approved. The warning performs no network/config/profile operations and does
+not change command execution, exit codes or stdout/JSON. macOS 27+ prints no
+upgrade warning. It is independent of `DARKBLOOM_NO_UPDATE_CHECK`.
 
 | Option | Type | Default | Effect | Source |
 |---|---|---|---|---|
@@ -43,7 +53,7 @@ Declaration order of `Darkbloom.configuration.subcommands` (21):
 | `update` | Self-update | ✓ | `UpdateCommand.swift` (`Update`) |
 | `verify` | `doctor --strict` | ✓ | `VerifyCommand.swift` (`Verify`) |
 | `enroll` | Fetch and open the MDM enrollment profile | ✓ | `EnrollCommand.swift` (`Enroll`) |
-| `unenroll` | Open System Settings to remove the profile; delete local data | | `UnenrollCommand.swift` (`Unenroll`) |
+| `unenroll` | Choose full exit or MDM removal with App Attest | | `UnenrollCommand.swift` (`Unenroll`) |
 | `logs` | Unified logs for subsystem `dev.darkbloom.provider` | | `LogsCommand.swift` (`Logs`) |
 | `report` | Upload recent unified logs to the coordinator | ✓ | `ReportCommand.swift` (`Report`) |
 | `autoupdate` | Toggle `provider.auto_update` | ✓ | `AutoUpdateCommand.swift` (`AutoUpdate`) |
@@ -212,12 +222,21 @@ See [installation → Update](./installation.md#update).
 
 ### `darkbloom enroll` / `darkbloom unenroll`
 
+`EnrollmentService.enroll` in `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`
+returns App Attest setup guidance on macOS 27 or later before checking profiles,
+contacting the enrollment endpoint or opening Settings. Older macOS retains the
+legacy profile flow. `ProviderOnboardingPolicy` in
+`provider-swift/Sources/ProviderCore/Auth/ProviderOnboardingPolicy.swift` owns the
+OS choice and the upgrade/upcoming MDM deactivation notice. The OS choice never
+grants serving authorization or removes an existing profile.
+
 | Command | Flag | Type | Default | Effect |
 |---|---|---|---|---|
 | `enroll` | `--coordinator <url>` | `String?` | config URL | Coordinator to request the profile from |
 | `enroll` | `--no-open` | flag | `false` | Save the `.mobileconfig`; do not open System Settings |
-| `unenroll` | `--force` | flag | `false` | Delete config dir, `auth_token` and legacy keys without asking |
+| `unenroll` | `--force` | flag | `false` | Select full exit, stop the service and confirm local-data cleanup without prompting |
 | `unenroll` | `--no-open` | flag | `false` | Do not open System Settings |
+| `unenroll` | `--keep-serving` | flag | `false` | Require fresh coordinator App Attest removal readiness, preserve identity/account data and guide removal of only Darkbloom enrollment |
 
 ### `darkbloom logs`
 
@@ -670,17 +689,22 @@ darkbloom enroll [--coordinator <url>] [--no-open]
 
 ## `darkbloom unenroll`
 
-Open System Settings to remove the Darkbloom MDM profile and optionally clean up
-local data.
+Without a flag, ask whether to fully exit Darkbloom or remove only MDM and keep serving with App Attest. Enter or closed input cancels without changing anything. The App Attest option requires macOS 27 or later and fresh coordinator removal approval; an unsupported/unqualified choice never falls back to cleanup.
+
+Full exit stops the launchd provider and disables its automatic restart before profile-removal guidance and a separate local cleanup confirmation. If a foreground provider is still running, cleanup is refused. The cleanup list includes the current and legacy Secure Enclave signing keys. Model downloads and server-side account history remain intact.
+
+Code: `provider-swift/Sources/darkbloom/UnenrollCommand+Choice.swift` (`chooseUnenrollmentMode`, `performUnenrollment`); `provider-swift/Sources/darkbloom/UnenrollCommand.swift` (`performFullUnenrollment`). Noninteractive use requires an explicit mode flag.
 
 ```bash
 darkbloom unenroll [--force] [--no-open]
+darkbloom unenroll --keep-serving [--no-open]
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--force` | Skip the local-data cleanup confirmation |
+| `--force` | Select full exit and confirm local cleanup; cannot combine with `--keep-serving` |
 | `--no-open` | Do not open System Settings |
+| `--keep-serving` | Select macOS 27+ App Attest migration directly, retaining account/keys/data |
 
 ## `darkbloom local`
 

@@ -45,6 +45,8 @@ type MemoryStore struct {
 	modelTokenReservations    map[string]ModelTokenReservation
 
 	mu            sync.RWMutex
+	floorEpochMu  sync.Mutex // separate from store state; settlement callbacks read the store
+	floorEpochs   map[string]*memoryFloorEpochLock
 	keyRecords    map[string]*APIKey // raw key → record (metadata + limits)
 	keysByID      map[string]string  // public key ID → raw key
 	keySpend      map[string]*keySpend

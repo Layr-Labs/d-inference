@@ -145,6 +145,9 @@ func queuedFleetHarnessConfigured(t *testing.T, ctx context.Context, cfg ServerC
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
+	if cfg.FirstContentSLAAccounts == nil {
+		cfg.FirstContentSLAAccounts = []string{testConsumerID}
+	}
 	srv := NewServer(reg, st, cfg, logger)
 	srv.challengeInterval = time.Hour
 	if configure != nil {

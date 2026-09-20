@@ -9,6 +9,8 @@ Every row cites the code that defines it. For how and why things work, use
 
 [App Attest shadow protocol](app-attest-shadow.md) defines the coexistence exchange, observations, storage, and packaging requirements.
 
+[Provider serving authorization](provider-authorization.md) defines independent legacy/App Attest authorization, expiry, revocation and MDM-removal readiness.
+
 ## Interfaces
 
 | Page | Content |

@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-17 · commit `77d1d1d86`
+> Last updated: 2026-09-18 · commit `397b4d902`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -26,6 +26,11 @@ plus whatever it has dispatched since. Scheduling therefore has three jobs:
    changes.
 3. **Shape the fleet.** Load models where demand is, ahead of demand where
    the signals justify it, without flapping.
+
+Warm-pool eligibility uses the same complete legacy or qualified App Attest
+serving policy as dispatch (`coordinator/registry/warm_pool_controller.go`,
+`warmPoolCandidateReasonLocked`). App Attest never changes capacity or grants
+legacy trust flags. See [provider authorization](../reference/provider-authorization.md).
 
 ## Mechanism
 

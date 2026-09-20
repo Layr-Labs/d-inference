@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/apns"
+	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/datadog"
@@ -158,7 +159,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // assistant support; model-aware MTP defaults remain provider-side policy.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.9.6"
+var LatestProviderVersion = "0.9.7"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -199,10 +200,8 @@ type releaseTrustPolicySnapshot struct {
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
 	appAttestShadow               AppAttestShadowConfig
-	appAttestShadowSlots          chan struct{}
-	appAttestStorageOnce          sync.Once
-	appAttestStorageSlots         chan struct{}
-	machineInventorySlots         chan struct{}
+	appAttest                     *attestservice.Service
+	appAttestOnce                 sync.Once
 	registry                      *registry.Registry
 	store                         store.Store
 	ledger                        *payments.Ledger
@@ -310,6 +309,8 @@ type Server struct {
 	// servers can exercise production and unit-test postures without racing on
 	// process-global state.
 	firstContentDeadlineBase time.Duration
+	firstContentSLAAccounts  map[string]struct{}
+	firstContentSLAEmails    map[string]struct{}
 
 	// rejectModels are requested aliases or resolved model IDs the coordinator
 	// takes out of public/prefer-owner routing: every matching request is answered
@@ -816,6 +817,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		mediaFetchCfg = *cfg.MediaFetch
 	}
 	firstContentDeadlineBase := cfg.FirstContentDeadlineBase
+	firstContentSLAAccounts, firstContentSLAEmails := firstContentAccountSelectors(cfg.FirstContentSLAAccounts)
 	if firstContentDeadlineBase <= 0 {
 		firstContentDeadlineBase = defaultFirstContentDeadlineBase
 	}
@@ -833,8 +835,6 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		apiKeyCache:              make(map[string]apiKeyCacheEntry),
 		codeAttestThrottle:       newCodeAttestThrottle(),
 		appAttestShadow:          cfg.AppAttestShadow,
-		appAttestShadowSlots:     make(chan struct{}, 4),
-		machineInventorySlots:    make(chan struct{}, 4),
 		trustReuseCache:          newTrustReuseCache(),
 		mdmSchedulerConfig:       cfg.MDMScheduler,
 		settlements:              newSettlementHolder(),
@@ -844,6 +844,8 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
 		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
 		firstContentDeadlineBase: firstContentDeadlineBase,
+		firstContentSLAAccounts:  firstContentSLAAccounts,
+		firstContentSLAEmails:    firstContentSLAEmails,
 		routingScanSem:           make(chan struct{}, DefaultRoutingConcurrency()),
 	}
 	if _, clampedDown := trustReuseReconnectGapFromEnv(); clampedDown {
@@ -862,10 +864,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	s.trustCoverage = make(map[string]string)
 	s.trustCoverageCtx, s.trustCoverageCancel = context.WithCancel(context.Background())
 	saferun.Go(logger, "trustCoverageLoop", s.trustCoverageLoop)
-	s.startAppAttestReceiptWorker(s.trustCoverageCtx)
-	s.startAppAttestMaintenance(s.trustCoverageCtx)
-	s.startMachineInventoryBackfill(s.trustCoverageCtx)
-	s.startMachineInventoryReconciler(s.trustCoverageCtx)
+	s.appAttestFeature().Start()
 	if cfg.DurableTrustReuse {
 		journalPath := cfg.TrustReuseJournalPath
 		if strings.TrimSpace(journalPath) == "" {
@@ -2827,7 +2826,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/admin/models/aliases", s.handleModelAliasUpsert)
 	s.mux.HandleFunc("DELETE /v1/admin/models/aliases/{aliasID}", s.handleModelAliasDelete)
 	s.mux.HandleFunc("POST /v1/admin/models/", s.handleAdminModelRegistryAction)
-	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases)     // admin key or Privy admin
+	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases) // admin key or Privy admin
+	s.mux.HandleFunc("POST /v1/admin/app-attest/revoke", s.handleAdminAppAttestRevoke)
 	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease) // admin key or Privy admin
 
 	// Historical admin state export (DAR-70) — streams the TEE-sealed /data

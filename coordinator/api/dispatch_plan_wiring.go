@@ -42,12 +42,10 @@ const capacityProbeWindow = 250 * time.Millisecond
 const dispatchPlanProbeFanout = 8
 
 // noteProviderDispatched counts one inference frame actually handed to a
-// provider. It is invoked from the write handoff callback — the same instant
-// Timing.DispatchedAt is stamped — for the primary, queued, plan-retry, and
-// speculative-backup sends alike. The deferred writer blocks the dispatching
-// goroutine until the frame is handed off, so the increment happens-before
-// every later read on the dispatch goroutine (the same publication discipline
-// Timing.DispatchedAt relies on).
+// provider. It is invoked only after the writer confirms final authorization
+// and socket handoff, for primary, queued, plan-retry and speculative-backup
+// sends alike. The request owner publishes it before any subsequent outcome or
+// exhaustion accounting; merely preparing a frame does not count as dispatch.
 func (d *dispatchState) noteProviderDispatched() {
 	d.providerDispatches++
 }
@@ -56,8 +54,10 @@ func (d *dispatchState) noteProviderDispatched() {
 // messages and terminal logs report: actual provider dispatches when any
 // frame reached a provider (plan Phase 3: "providerDispatches counts actual
 // inference sends"), else the legacy loop count for requests that never
-// dispatched (selection-only failures keep their historical "after 1
-// attempt(s)" framing). Route rows keep the raw loop index unchanged.
+// dispatched (selection/preparation-only failures, including authorization
+// rejection, retain their historical "after N attempt(s)" framing). This
+// fallback is an attempted-loop count, not a claim of provider delivery. Route
+// rows keep the raw loop index unchanged.
 func (d *dispatchState) exhaustionAttemptCount() int {
 	if d.providerDispatches > 0 {
 		return d.providerDispatches
@@ -172,6 +172,12 @@ func (d *dispatchState) maybeProbePlanCandidates() {
 	}
 	receivedAt := timingReceivedAt(d.timing)
 	remaining, ok := d.firstTokenRemaining()
+	if d.deadline <= 0 {
+		// Exemption removes the SLA, not capacity confirmation. Quotes use
+		// a finite advisory planning horizon only; it never arms a request
+		// timeout, and the collector skips SLA hedge advances.
+		remaining, ok = inferenceTimeout, true
+	}
 	if receivedAt.IsZero() || !ok || remaining <= 0 {
 		// No request-absolute clock (legacy timing, unit fixtures): a refined
 		// hedge instant could not be applied anyway — waitFirstChunk's re-arm
@@ -223,6 +229,9 @@ func collectCapacityQuotes(
 			confidences[outcome.ProviderID] = quoteHedgeConfidence(outcome.Quote.Confidence)
 		}
 	}
+	if deadline <= 0 {
+		return
+	} // no SLA expiry against which to advance a hedge
 	providerID, ttftP90, ok := plan.BestConfirmedBackup()
 	if !ok {
 		return

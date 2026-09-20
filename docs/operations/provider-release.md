@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-17 · commit `b86445a0a`
+> Last updated: 2026-09-20 · commit `b4e64dadd`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -9,7 +9,7 @@ build, sign, notarize, hash, upload, and register the bundle. The coordinator
 verifies every registered artifact by re-downloading it, so a release either
 lands fully or not at all.
 
-The prepared version is **0.9.6**; its source changes since `v0.9.3` are
+The prepared version is **0.9.7**; its source changes since `v0.9.6` are
 collected in [`CHANGELOG.md`](../../CHANGELOG.md). The version bump prepares
 the source for the provider bundle. Publication and coordinator deployment remain
 separate operations; the bump alone does not change the registered release
@@ -20,6 +20,16 @@ returned by `GET /v1/releases/latest`.
 The 0.9.6 candidate fixes the native Qwen Metal resource lookup inside the signed app. Keep resources in `Contents/Resources`; do not repair an installed signed bundle by copying files into its root. Require `qwen4-metal-resources-runtime-smoke: ok` from the staged and final extracted app. After publication, verify a real Flash model load, a completed request, and a positive live token budget separately.
 
 Deploy the coordinator containing the native SSD-offload capacity accounting and the `qwen3.8-flash-next` provider floor of 0.9.6 as a separately approved operation. An older coordinator can understate cold capacity; fixing app resources alone does not deploy that accounting. Preserve the advertised 262144-token context and the physical memory guards.
+
+### MDM-optional onboarding candidate
+
+The installer and `darkbloom enroll` select App Attest setup on macOS 27+ without
+requesting an MDM profile. Older macOS keeps legacy enrollment and sees the
+upgrade/upcoming deactivation notice. Follow the
+[MDM-optional rollout runbook](mdm-optional-rollout.md) to coordinate the embedded
+installer, signed provider, setup page and serving cohort. A disabled or
+unqualified coordinator leaves new macOS 27+ providers pending; the notice does
+not activate serving or retire legacy verification.
 
 ### App Attest recovery rollout
 

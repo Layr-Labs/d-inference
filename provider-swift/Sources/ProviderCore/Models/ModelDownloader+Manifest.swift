@@ -36,7 +36,7 @@ extension ModelDownloader {
     }
 
     /// Verify the aggregate hash over the staged files, then publish the snapshot
-    /// (`snapshots/local` + `refs/main`) so `ModelScanner` discovers it. Shared by
+    /// (immutable revision + optional `refs/main`) so `ModelScanner` discovers it. Shared by
     /// the normal completion path and the finish-on-restart short-circuit.
     ///
     /// On an aggregate mismatch over internally-valid files (a poisoned manifest:
@@ -49,16 +49,17 @@ extension ModelDownloader {
         manifest: ModelManifest,
         jobs: [(file: ManifestFile, destination: URL, url: String)],
         stagingDir: URL,
-        cacheDir: URL
+        cacheDir: URL,
+        activate: Bool = true
     ) throws {
         let aggregate = WeightHasher.hashFilesWithRelativeKey(jobs.map { (file: $0.destination, sortKey: $0.file.path) })
         guard aggregate == manifest.aggregateSHA256 else {
             try? FileManager.default.removeItem(at: stagingDir)
             throw ModelCatalogError.downloadFailed("aggregate hash mismatch for \(model.id)")
         }
-        try Self.publishStagedSnapshot(stagingDir, to: cacheDir)
-        try writeMainRef(for: model.id)
-        // Staging was consumed by publishStagedSnapshot; best-effort husk cleanup.
+        try Self.publishRevision(stagingDir: stagingDir, directory: cacheDir, manifest: manifest)
+        if activate { try Self.activateRevision(modelID: model.id, directory: cacheDir) }
+        // Staging was consumed by publication; best-effort husk cleanup.
         try? FileManager.default.removeItem(at: stagingDir)
     }
 }

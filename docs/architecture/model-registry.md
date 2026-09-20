@@ -1,6 +1,6 @@
 # Model registry
 
-> Last updated: 2026-09-27 · commit `5d0dd2674`
+> Last updated: 2026-09-27 · commit `547f202f4`
 
 How Darkbloom decides which model builds exist, which bytes are trusted, which
 providers may serve them, and what public name a consumer uses for them. The
@@ -74,8 +74,10 @@ in `provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`).
 
 ### 2. Registration verifies the upload and writes the rows
 
-`coordinator/api/model_registry_handlers.go` (`handleRegisterModel`) is the
-only way a build enters the registry. It authenticates with a publishing key
+`coordinator/api/model_registry_handlers.go` (`handleRegisterModel`) registers
+a new model. The authenticated `handlePublishModelRevision` action in
+`coordinator/api/model_revision_handlers.go` publishes replacement bytes for an
+existing model while preserving metadata and pricing. Both validate the upload. It authenticates with a publishing key
 (`requirePublishingAPIKey`), recomputes the R2 prefix from `model_id` and
 `version` (`modelR2Prefix`, byte-identical to the Swift builder), fetches
 `<cdn>/<prefix>/manifest.json`, and rejects the request unless
@@ -124,7 +126,8 @@ so a bad desired build never causes the previous build to be dropped.
 
 Weight hashes are also re-checked on every attestation challenge: the response
 carries a hash per advertised model, and any mismatch against
-`CatalogWeightHash` marks the provider untrusted
+the desired or previously promoted, non-retired hashes for that model marks
+the provider untrusted (`CatalogAcceptsWeightHash`)
 (`coordinator/api/provider.go`, log line
 `provider model weight hash mismatch — possible model swap`).
 
@@ -137,8 +140,12 @@ carries a hash per advertised model, and any mismatch against
 share one contract — every file is checked against its manifest size and
 SHA-256 before it leaves staging, and the aggregate is recomputed with
 `WeightHasher.hashFilesWithRelativeKey` before the snapshot is published to
-`{cache}/models--{org}--{name}/snapshots/local/` with a `refs/main` pointer so
-`ModelScanner` discovers it. `ModelScanner.resolveCache` in
+`{cache}/models--{org}--{name}/snapshots/.revision-<aggregate_sha256>/`.
+Only an explicit `refs/main` selection makes this immutable snapshot discoverable.
+Both manifest flows share `ModelArtifactRevision` validation/publication and a
+process-shared `ModelArtifactWriteLease`.
+
+`ModelScanner.resolveCache` in
 `provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift`
 selects the shared discovery/download root using the [cache-location precedence](../reference/configuration.md#model-cache-location).
 The CLI installs the saved config value before serving; without it, the legacy
@@ -205,6 +212,15 @@ once verified, and retries failed prefetches with the bounded backoff
 (`provider-swift/Sources/ProviderCore/ProviderLoop.swift`); a fresh push resets
 the budget.
 
+Providers advertising `model_revisions_v1` also receive `revision` and
+`aggregate_sha256`, including for already-advertised concrete IDs without aliases.
+A different hash triggers the general revision monitor even when that ID is
+already loaded. It stages, drains and activates through `ModelIdleUpgrade`, with
+indefinite retries capped at 300 seconds rather than the legacy finite retry
+budget. [Model artifact revisions](model-revisions.md) is the canonical lifecycle
+and rollback explanation; [the runbook](../operations/model-revisions.md) provides
+the single publish command.
+
 ## Invariants
 
 1. **Bytes precede rows.** A version row exists only after the coordinator has
@@ -216,7 +232,8 @@ the budget.
    (`WeightHasher.hashFilesWithRelativeKey` in `finalizeStagedManifest`) all
    hash the sorted per-file digests. The catalog pins the result as
    `CatalogEntry.WeightHash`, and `mergeProviderModels` refuses a build whose
-   reported hash is absent or different.
+   reported hash is absent or belongs to neither the desired nor a retained
+   approved revision.
 3. **Routable ⇔ active status, ready version, catalog membership.**
    `activeModelRegistryQuery` selects `status IN ('active','beta')` joined
    through `model_active_versions` to a `ready` version; `SetModelCatalog`

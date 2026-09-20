@@ -795,16 +795,23 @@ replies with `prefetch_model_status` and then `models_update`.
 ### `desired_models`
 
 Go `DesiredModelsMessage` · Swift `DesiredModels`. `models` (`[]DesiredModelEntry`):
-`model_name` (public alias), `desired_build` (concrete build id),
-`previous_build` (opt; still acceptable mid-rollout). Sent right after `register`,
-when desired builds or eligible capabilities change, and freshly recomputed after
-matching provider readiness for a committed replacement even when the alias snapshot
-equals the one sent before switching. The same backend/version and attested
-capability guards apply. Entries describe aliases whose desired, previous, or
-retired build is in the provider's advertised inventory; an empty set revokes old
-targets. The provider reconciles by background-prefetching a missing desired
-build, hard-swapping, and emitting `models_update`. Source:
+`model_name` (public alias or concrete model ID), `desired_build` (concrete build ID),
+`previous_build` (optional; still acceptable mid-rollout), `revision` (optional version),
+`aggregate_sha256` (optional artifact hash). `DesiredModelsForProvider` in
+`coordinator/registry/model_commands.go` adds the revision fields and unaliased
+concrete-model entries only for providers reporting `model_revisions_v1` in
+`runtime_capabilities`. This is protocol feature detection, not a new trust grant.
+
+Sent right after `register`, when desired identities or eligible capabilities
+change, and freshly recomputed after matching provider readiness for a committed
+replacement even when the snapshot equals the one sent before switching. The same
+backend/version and attested capability guards apply. Alias entries describe aliases
+whose desired, previous, or retired build is in the provider's advertised inventory;
+an empty set revokes old targets. Revision-aware providers stage the exact artifact
+and drain before activation; ID-only providers retain the legacy prefetch path.
+Both announce completed updates through `models_update`. Source:
 `coordinator/registry/model_commands.go` (`DesiredModelsForProvider`, `RefreshDesiredModels`).
+See [revision lifecycle](../architecture/model-revisions.md).
 
 ### `trust_status`
 

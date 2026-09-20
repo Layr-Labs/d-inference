@@ -54,7 +54,7 @@ public struct ModelDownloader: Sendable {
     /// catalog entry without `r2_prefix`/`aggregate_sha256` is refused.
     ///
     /// On success, the model is laid out under
-    /// `{hf-cache}/models--{org}--{name}/snapshots/local/` (see
+    /// an immutable `{hf-cache}/models--{org}--{name}/snapshots/.revision-…/` (see
     /// `cacheModelDirectory(for:)` for how the cache root is resolved)
     /// with a `refs/main` pointer so `ModelScanner` discovers it the next
     /// time `darkbloom status` runs.
@@ -62,6 +62,8 @@ public struct ModelDownloader: Sendable {
         model: CatalogModel,
         onProgress: (@Sendable (ProgressEvent) -> Void)? = nil
     ) async throws {
+        let lease = try await ModelArtifactWriteLease.acquire(modelID: model.id)
+        defer { lease.release() }
         let eligibility = ModelRuntimeRequirements.evaluate(
             modelID: model.id,
             catalogRequirements: model.requiredProviderCapabilities,

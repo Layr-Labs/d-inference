@@ -192,9 +192,9 @@ struct HuggingFaceDownloadTests {
         } else {
             try await downloader().downloadManifestModel(model: model, manifest: manifest, onProgress: nil)
         }
-        let snapshot = ModelDownloader.cacheSnapshotDirectory(for: id)
+        let snapshot = try #require(ModelScanner.resolveLocalPath(modelID: id))
         #expect(try Data(contentsOf: snapshot.appendingPathComponent(file.path)) == bytes)
-        #expect(try String(contentsOf: modelDir.appendingPathComponent("refs/main"), encoding: .utf8) == "local")
+        #expect(try String(contentsOf: modelDir.appendingPathComponent("refs/main"), encoding: .utf8) == snapshot.lastPathComponent)
         #expect(HFDownloadProtocol.captured().map { $0.url!.host! } == ["huggingface.co"])
     }
 

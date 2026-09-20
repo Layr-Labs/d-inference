@@ -25,17 +25,22 @@ extension ModelDownloader {
     /// prefetch. On re-entry, any file already present in staging that matches
     /// its manifest size AND SHA-256 is skipped; only missing/corrupt files are
     /// re-fetched. Per-file SHA is verified as each file lands; the aggregate
-    /// hash is verified before the snapshot is published. The published snapshot
-    /// is the same `snapshots/local` layout `download` produces, so
-    /// `ModelScanner` discovers it immediately.
+    /// hash is verified before the snapshot is published. The completed snapshot
+    /// is immutable. Activation selects it with refs/main; callers can stage
+    /// without changing the active revision by passing activate: false.
     ///
     /// `onByteProgress(done, total)` reports cumulative verified-on-disk bytes
     /// against the manifest total (already-present files count as done up front).
+    @discardableResult
     public func prefetch(
         model: CatalogModel,
         manifest: ModelManifest,
-        onByteProgress: (@Sendable (Int64, Int64) -> Void)? = nil
-    ) async throws {
+        onByteProgress: (@Sendable (Int64, Int64) -> Void)? = nil,
+        activate: Bool = true
+    ) async throws -> URL {
+        let lease = try await ModelArtifactWriteLease.acquire(modelID: model.id)
+        defer { lease.release() }
+        try Self.validateArtifactManifest(manifest, model: model)
         let eligibility = ModelRuntimeRequirements.evaluate(
             modelID: model.id,
             catalogRequirements: model.requiredProviderCapabilities,
@@ -44,9 +49,12 @@ extension ModelDownloader {
             throw ModelCatalogError.ineligible(
                 ModelRuntimeIneligibleError(eligibility: eligibility).localizedDescription)
         }
-        try Self.validate(manifest: manifest, for: model)
-
-        let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
+        let cacheDir = Self.revisionSnapshotDirectory(modelID: model.id, aggregateSHA256: manifest.aggregateSHA256)
+        if Self.verifiedRevisionExists(at: cacheDir, manifest: manifest) {
+            if activate { try Self.activateRevision(modelID: model.id, directory: cacheDir) }
+            onByteProgress?(manifest.totalSizeBytes, manifest.totalSizeBytes)
+            return cacheDir
+        }
         let snapshotsDir = cacheDir.deletingLastPathComponent()
         try Self.prepareModelCacheDirectory(at: snapshotsDir.deletingLastPathComponent())
         try FileManager.default.createDirectory(at: snapshotsDir, withIntermediateDirectories: true)
@@ -61,6 +69,8 @@ extension ModelDownloader {
         try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
 
         let jobs = try manifestJobs(manifest, stagingDir: stagingDir)
+
+        try Self.reuseVerifiedFiles(modelID: model.id, manifest: manifest, stagingDir: stagingDir)
 
         // Classify each file once (hashing is expensive) into already-valid vs
         // still-needed. Reused for both progress seeding and the capacity check.
@@ -108,8 +118,10 @@ extension ModelDownloader {
         try Task.checkCancellation()
 
         try finalizeStagedManifest(
-            model: model, manifest: manifest, jobs: jobs, stagingDir: stagingDir, cacheDir: cacheDir)
+            model: model, manifest: manifest, jobs: jobs, stagingDir: stagingDir,
+            cacheDir: cacheDir, activate: activate)
         onByteProgress?(total, total)
+        return cacheDir
     }
 
     /// Whether an interrupted foreground download left resumable content staged on

@@ -191,7 +191,8 @@ func (s *Server) handleRegisterModel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requirePublishingAPIKey(w, r); !ok {
+	actor, ok := s.requirePublishingAPIKey(w, r)
+	if !ok {
 		return
 	}
 	modelID, action, ok := parseAdminModelActionPath(r.URL.Path)
@@ -201,7 +202,7 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 	}
 	switch action {
 	case "publish-revision":
-		s.handlePublishModelRevision(w, r, modelID)
+		s.handlePublishModelRevision(w, r, modelID, actor)
 	case "retire-revision":
 		s.handleRetireModelRevision(w, r, modelID)
 	case "promote":
@@ -483,6 +484,10 @@ func normalizeCapabilities(in []string) []string {
 }
 
 func (s *Server) writeModelRegistryStoreError(w http.ResponseWriter, operation string, err error) {
+	if errors.Is(err, store.ErrModelVersionRetired) {
+		writeJSON(w, http.StatusConflict, errorResponse("invalid_request_error", err.Error()))
+		return
+	}
 	if isModelRegistryNotFound(err) {
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", err.Error()))
 		return

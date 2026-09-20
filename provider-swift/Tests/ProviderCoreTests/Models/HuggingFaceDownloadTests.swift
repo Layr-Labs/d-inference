@@ -215,3 +215,38 @@ struct HuggingFaceDownloadTests {
         #expect(!FileManager.default.fileExists(atPath: ModelDownloader.cacheSnapshotDirectory(for: id).path))
     }
 }
+
+extension HuggingFaceDownloadTests {
+    @Test("each revision uses its own pinned HF source while preserving the selected snapshot", arguments: [false, true])
+    func differentSourcePerRevision(fallback: Bool) async throws {
+        let id = "test-hf/revisions-\(UUID().uuidString)"
+        defer { _ = try? ModelDownloader.remove(modelID: id) }
+        func checkpoint(version: String, source: HuggingFaceArtifact, content: Data) -> (CatalogModel, ModelManifest) {
+            let prefix = "v2/revision-sources/\(version)"
+            let file = ManifestFile(path: "weights/model.safetensors", sizeBytes: Int64(content.count),
+                sha256: digest(content), role: "weight")
+            let aggregate = digest(Data(SHA256.hash(data: content)))
+            let model = CatalogModel(id: id, s3Name: prefix, displayName: "Test", sizeGb: 0,
+                version: version, r2Prefix: prefix, huggingFaceArtifact: source, aggregateSHA256: aggregate)
+            let manifest = ModelManifest(schemaVersion: 1, modelID: id, version: version, r2Prefix: prefix,
+                aggregateSHA256: aggregate, totalSizeBytes: Int64(content.count), fileCount: 1,
+                files: [file], createdAt: Date())
+            return (model, manifest)
+        }
+        HFDownloadProtocol.reset(bodies: ["huggingface.co": bytes])
+        let (first, firstManifest) = checkpoint(version: "v1", source: artifact, content: bytes)
+        let old = try await downloader().prefetch(model: first, manifest: firstManifest)
+        let nextBytes = Data("different model revision bytes".utf8)
+        let nextSource = HuggingFaceArtifact(repoID: "different-owner/replacement",
+            revision: String(repeating: "b", count: 40), pathPrefix: "another/subdirectory")
+        let (next, nextManifest) = checkpoint(version: "v2", source: nextSource, content: nextBytes)
+        HFDownloadProtocol.reset(bodies: ["huggingface.co": fallback ? Data([0]) : nextBytes, "r2.test": nextBytes])
+        let staged = try await downloader().prefetch(model: next, manifest: nextManifest, activate: false)
+        let requests = HFDownloadProtocol.captured()
+        #expect(requests.first?.url == (try nextSource.downloadURL(for: "weights/model.safetensors")))
+        #expect(requests.map { $0.url!.host! } == (fallback ? ["huggingface.co", "r2.test"] : ["huggingface.co"]))
+        #expect(try Data(contentsOf: staged.appendingPathComponent("weights/model.safetensors")) == nextBytes)
+        #expect(ModelScanner.resolveLocalPath(modelID: id) == old)
+        #expect(try Data(contentsOf: old.appendingPathComponent("weights/model.safetensors")) == bytes)
+    }
+}

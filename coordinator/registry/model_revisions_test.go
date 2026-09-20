@@ -1,8 +1,10 @@
 package registry
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"fmt"
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 func TestRevisionApprovalAndConvergence(t *testing.T) {
@@ -37,5 +39,42 @@ func TestRevisionApprovalAndConvergence(t *testing.T) {
 	}
 	if !reg.CatalogAcceptsWeightHash("model", "old") {
 		t.Fatal("rapid promotion revoked a still-serving older revision")
+	}
+}
+
+func TestRevisionUpdatesForLineageWhoseDesiredBuildIsIneligible(t *testing.T) {
+	for _, lineage := range []string{"previous", "retired"} {
+		for _, eligible := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/desired-eligible=%t", lineage, eligible), func(t *testing.T) {
+				reg := New(testLogger())
+				reg.SetModelCatalog([]CatalogEntry{
+					{ID: "old", Revision: "old-v2", WeightHash: "old-new-hash"},
+					{ID: "replacement", Revision: "new-v1", WeightHash: "new-hash", RequiredProviderCapabilities: []string{ProviderCapabilityAppleM5}},
+				})
+				target := AliasTarget{Desired: "replacement"}
+				if lineage == "previous" {
+					target.Previous = "old"
+				} else {
+					target.Retired = []string{"old"}
+				}
+				reg.SetModelAliases(map[string]AliasTarget{"public-model": target})
+				provider := registerWithWeightHash(reg, "p1", "old", "old-new-hash")
+				provider.ReportedRuntimeCapabilities = []string{"model_revisions_v1"}
+				if eligible {
+					provider.RuntimeCapabilities = []string{ProviderCapabilityAppleM5}
+				}
+				entries := reg.DesiredModelsForProvider("p1")
+				if len(entries) != 1 {
+					t.Fatalf("unexpected desired entries: %+v", entries)
+				}
+				wantID, wantHash := "old", "old-new-hash"
+				if eligible {
+					wantID, wantHash = "replacement", "new-hash"
+				}
+				if entries[0].DesiredBuild != wantID || entries[0].AggregateSHA256 != wantHash {
+					t.Fatalf("wrong revision target: %+v", entries)
+				}
+			})
+		}
 	}
 }

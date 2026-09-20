@@ -260,6 +260,7 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 		}
 	}
 	var entries []protocol.DesiredModelEntry
+	covered := make(map[string]bool)
 	for alias, t := range r.modelAliases {
 		if t.OpenRouterOnly || t.Desired == "" {
 			continue
@@ -301,21 +302,16 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 			DesiredBuild:  t.Desired,
 			PreviousBuild: previous,
 		})
-	}
-	// Same-ID revision updates also cover concrete models without aliases.
-	covered := make(map[string]bool, len(entries))
-	for _, entry := range entries {
-		covered[entry.DesiredBuild] = true
-	}
-	for _, alias := range r.modelAliases {
-		if alias.OpenRouterOnly {
-			continue
-		}
-		covered[alias.Previous] = true
-		for _, id := range alias.Retired {
+		// Suppress lineage only when this provider actually receives the
+		// alias target. Otherwise its eligible old build still needs its own
+		// revision updates (for example, when the desired build requires M5).
+		covered[t.Desired] = true
+		covered[t.Previous] = true
+		for _, id := range t.Retired {
 			covered[id] = true
 		}
 	}
+	// Same-ID updates also cover concrete builds whose alias target cannot be acquired.
 	for id := range advertised {
 		artifact, exists := r.modelCatalog[id]
 		if !supportsRevisions || !exists || artifact.Revision == "" || covered[id] || !r.providerCanAcquireCatalogModelLocked(p, id) {

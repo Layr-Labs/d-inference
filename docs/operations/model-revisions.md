@@ -1,6 +1,6 @@
 # Publish new weights for an existing model
 
-> Last updated: 2026-09-20 · commit `1451a4c89`
+> Last updated: 2026-09-20 · commit `cc225365f`
 
 Use this runbook to change an existing model's weights while keeping its model
 ID, pricing and aliases. The [revision architecture](../architecture/model-revisions.md)
@@ -45,11 +45,27 @@ Overwriting an already published R2 revision is rejected.
    timestamp/UUID version. Retry with the same version and identical files to
    resume an interrupted publication.
 
-   The action preserves existing model metadata and pricing. It does not copy
-   an old Hugging Face download locator into the new version: those pinned
-   bytes belong to the old revision. Configure a matching mirror separately.
-   The coordinator checks the manifest and R2 file sizes before promotion;
-   each provider independently checks file and aggregate SHA-256 hashes.
+   To use a different HF source for this revision, add these flags to both the
+   preview and publication commands:
+
+   ```bash
+   --hf-repo-id EigenLabs/model-revision-v2 \
+   --hf-revision <full-lowercase-40-character-commit-SHA> \
+   --hf-path-prefix mlx/q4
+   ```
+
+   The path prefix is optional. The pinned HF repo must contain this revision's
+   exact manifest files and bytes. Providers try that HF source first, verify
+   checksums, and fall back to R2 if it is unavailable or incorrect. Every
+   revision can specify a different repo, commit and subdirectory. Omitting
+   the HF flags makes the revision R2-only; an old source is never inherited.
+
+   The action preserves model metadata, upstream `hugging_face_id` and pricing,
+   and records the authenticated publisher in `uploaded_by`. The coordinator
+   checks the R2 manifest and file sizes before promotion; providers check file
+   and aggregate SHA-256 hashes for either source. If publication returns 503
+   after promotion, retry with the same version and HF flags until the live
+   catalog refresh succeeds.
 
 3. Let eligible providers download while serving their existing revisions.
    Providers then stagger their model-scoped drains, switch snapshots and
@@ -84,7 +100,9 @@ model metadata changes made separately through other admin actions.
 
 Retirement is a separate, explicit operation after checking fleet adoption:
 `POST /v1/admin/models/{model_id}/retire-revision` with `{"version":"old-version"}`.
-The active version cannot be retired. Retirement revokes the old hash for routing
+The active version cannot be retired. Re-registering a retired version does
+not reactivate it; publish a new version to approve its bytes again.
+Retirement revokes the old hash for routing
 and challenge validation, including returning offline providers; do not use it
 as automatic storage cleanup. It does not delete R2 or provider files.
 If retirement returns 503 after its storage write, retry the same operation;

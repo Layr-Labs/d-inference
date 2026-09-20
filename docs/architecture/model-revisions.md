@@ -1,6 +1,6 @@
 # Model artifact revisions
 
-> Last updated: 2026-09-20 · commit `1451a4c89`
+> Last updated: 2026-09-20 · commit `cc225365f`
 
 An existing model can acquire new weights without changing its model ID or
 releasing another provider binary. Publishers upload an immutable revision and
@@ -47,11 +47,19 @@ flowchart TD
 The coordinator sends revision fields only to providers advertising the
 `model_revisions_v1` protocol capability. It includes already-advertised concrete
 models without aliases, and continues to use alias lineage for build-ID swaps.
-Alias previous/retired members do not get a competing concrete-model target.
+An emitted alias target suppresses competing targets for its previous/retired
+members. If the provider cannot acquire that alias target, its eligible old build
+still receives same-ID revision updates.
 A new hash or version changes the desired-state deduplication key. Reconnects
 receive the latest state, so a provider can skip revisions published offline.
 Older providers keep the ID-only protocol and need one provider upgrade to gain
 revision reconciliation.
+
+A revision can specify `hugging_face_artifact` with its own pinned public repo,
+commit and optional subdirectory. The publisher exposes `--hf-repo-id`,
+`--hf-revision` and `--hf-path-prefix`; the API records that locator on the
+version row. Providers verify the same manifest checksums from HF and R2,
+with HF first and R2 fallback. The upstream/feed `hugging_face_id` is unchanged.
 
 `ModelDownloader` retains its foreground parallel scheduler and background
 sequential scheduler. They share manifest validation, checksum/resume transport,
@@ -98,7 +106,9 @@ random rollout jitter is not a fleet availability guarantee.
    are excluded. Existing legacy omission semantics are unchanged.
 4. **Revocation is explicit.** `RetireModelVersion` removes an inactive revision
    from the accepted set. It refuses the active version and invalidates the
-   store cache. Retirement is not automatic fleet cleanup.
+   store cache. Retirement is not automatic fleet cleanup. Idempotent registration preserves
+   retired status even when a subsequent promotion fails. Retired versions
+   cannot be promoted again; new approval requires a new version.
 5. **Accepted requests keep their engine until idle.**
    `beginModelRevisionDrain` uses the same admission fence as MTP upgrades.
    `commitModelRevisionIfIdle` checks coordinator requests, local reservations,
@@ -112,6 +122,7 @@ random rollout jitter is not a fleet availability guarantee.
 
 | Condition | Result |
 |---|---|
+| Live catalog refresh fails after promotion | HTTP 503 with `Retry-After`; retry publication using the same version and source |
 | Incomplete upload or invalid manifest | Publishing is rejected; desired revision stays unchanged |
 | Network interruption or insufficient disk | Old revision serves; partial downloads can resume |
 | Desired revision changes during preparation | Old attempt is cancelled; completed bytes may remain for reuse |

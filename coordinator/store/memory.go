@@ -1831,6 +1831,11 @@ func (s *MemoryStore) setModelVersionLocked(entry *ModelRegistryEntry, version *
 	versionCopy := cloneModelVersion(version)
 	if existing, ok := s.modelVersions[key]; ok {
 		versionCopy.ID = existing.ID
+		// Re-registration must not undo an explicit retirement, including when
+		// a later promotion fails or the coordinator restarts before syncing.
+		if existing.Status == "retired" {
+			versionCopy.Status = "retired"
+		}
 		if versionCopy.UploadedAt.IsZero() {
 			versionCopy.UploadedAt = existing.UploadedAt
 		}
@@ -1846,6 +1851,7 @@ func (s *MemoryStore) setModelVersionLocked(entry *ModelRegistryEntry, version *
 	s.modelVersionByID[versionCopy.ID] = &versionCopy
 	version.ID = versionCopy.ID
 	version.UploadedAt = versionCopy.UploadedAt
+	version.Status = versionCopy.Status
 
 	fileCopies := make([]ModelVersionFile, len(files))
 	for i := range files {
@@ -1862,6 +1868,9 @@ func (s *MemoryStore) PromoteModelVersion(modelID, version string) error {
 	defer s.mu.Unlock()
 
 	v, ok := s.modelVersions[modelVersionKey(modelID, version)]
+	if ok && v.Status == "retired" {
+		return ErrModelVersionRetired
+	}
 	if !ok || v.Status != "ready" {
 		return fmt.Errorf("model version %q %q not found", modelID, version)
 	}

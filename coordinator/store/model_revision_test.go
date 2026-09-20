@@ -66,8 +66,38 @@ func testModelRevisionLifecycle(t *testing.T, st Store) {
 	if err != nil || len(retired.ServingVersions) != 1 {
 		t.Fatal("retired revision remained cached", err)
 	}
-	if err := st.PromoteModelVersion(id, "b"); err == nil {
-		t.Fatal("retired revision promoted without re-registration")
+	if err := st.PromoteModelVersion(id, "b"); !errors.Is(err, ErrModelVersionRetired) {
+		t.Fatal("retired revision was promotable", err)
+	}
+	// Both registration entry points must preserve retirement even when a
+	// retry supplies ready and no subsequent promotion succeeds.
+	b.AggregateSHA256 = strings.Repeat("b", 64)
+	for _, existingOnly := range []bool{false, true} {
+		b.Status = "ready"
+		var err error
+		if existingOnly {
+			err = st.SetExistingModelVersion(b, files)
+		} else {
+			err = st.SetModelVersion(entry, b, files)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b.Status != "retired" {
+			t.Fatalf("registration resurrected status: %s", b.Status)
+		}
+		// A fresh decorator forces the durable/read-through path to reread.
+		reread := NewCached(st, DefaultCacheConfig())
+		record, err := reread.GetModelRegistryRecord(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(record.ServingVersions) != 1 || record.ActiveVersion.Version != "a" {
+			t.Fatalf("retired bytes approved after reread: %+v", record)
+		}
+		if err := st.PromoteModelVersion(id, "b"); !errors.Is(err, ErrModelVersionRetired) {
+			t.Fatal("re-registration allowed retired promotion", err)
+		}
 	}
 	renamed := append([]ModelVersionFile(nil), files...)
 	renamed[0].Path = "different.json"

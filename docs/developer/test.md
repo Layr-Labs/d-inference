@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-20 · commit `1451a4c89`
+> Last updated: 2026-09-20 · commit `cc225365f`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -106,8 +106,11 @@ Model revision changes are covered by `ModelPrefetchDownloaderTests`,
 `provider-swift/Tests/ProviderCoreTests`. Run them with a source-matched metallib.
 Coordinator lifecycle tests cover memory/cached stores and, when `DATABASE_URL`
 points to a disposable database, `TestPostgresModelRevisionLifecycle`.
-`python3 scripts/test_publish_model_revision.py` tests publication ordering and
-immutable reservations. These fixture tests do not qualify a full-weight fleet swap.
+`python3 scripts/test_publish_model_revision.py` tests publication ordering,
+immutable reservations and per-revision HF arguments/request bodies. API and
+store regressions cover retired re-registration, publisher attribution, failed
+live refresh retries and alias-lineage eligibility; HF download fixtures change
+the pinned repo/commit/subdirectory between two revisions. These fixture tests do not qualify a full-weight fleet swap.
 
 
 ## SDK 27 release qualification

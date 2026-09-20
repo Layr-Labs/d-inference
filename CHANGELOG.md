@@ -7,6 +7,7 @@
 ### Model verification I/O
 
 - Enable reusable-buffer reads and up to four independent file readers by default for model integrity verification, preserving complete SHA digests, failure handling and load-time checks. Explicit overrides retain the original reader and serial hashing for rollback.
+- Pin MLX Swift and MLX Swift LM to their merged Bonsai constant-reuse, carry-scheduling and HTTP-validation updates. Preserve the existing MLX core/C pins and native Qwen4 support.
 
 ### Account-scoped first-content SLA
 

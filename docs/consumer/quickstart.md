@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-13 · commit `f7a3ef1fd`
+> Last updated: 2026-09-18 · commit `4a453679b`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -121,6 +121,8 @@ Successful empty windows are valid data. The [public stats contract](../referenc
 defines refresh intervals, maximum cached staleness, and window aliases.
 
 ## Troubleshooting
+
+Direct accounts do not have the upstream first-content SLA. Allow enough time for model loading and prefill in your client timeout. Queue, inference-stall and cancellation limits still apply. Accounts explicitly selected by the operator, such as OpenRouter, retain their configured first-content budget and model exceptions. See [timeouts](../reference/api-contracts.md) and [SLA configuration](../reference/configuration.md#routing-admission-and-ttft).
 
 | Response | Cause | Fix |
 |---|---|---|

@@ -81,6 +81,13 @@ func exactFirstContentDeadlineBases(model string) (firstContentDeadlineBases, bo
 	return bases, ok
 }
 
+// HasFirstContentPolicy lets account-scoped callers prefer an explicit public
+// alias policy over the resolved build's defaults.
+func HasFirstContentPolicy(model string) bool {
+	_, ok := exactFirstContentDeadlineBases(model)
+	return ok
+}
+
 // SetFirstContentBasesFromEnv parses an override of the form
 // "<model>=<upstream_ms>,..." (e.g. "qwen3-vl-30b-a3b-instruct=8000") and
 // REPLACES the exact-model table when at least one valid pair is present.

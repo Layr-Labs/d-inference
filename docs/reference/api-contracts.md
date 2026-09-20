@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-18 · commit `d78ae77ef`
+> Last updated: 2026-09-20 · commit `b4e64dadd`
 
 The complete public HTTP surface of the coordinator, derived from the 112 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -207,6 +207,12 @@ envelope when their required data is unavailable.
 | POST | `/v1/releases` | `handleRegisterRelease` (`coordinator/api/release_handlers.go`) | `release` | Register a release |
 | GET | `/v1/releases/latest` | `handleLatestRelease` (`coordinator/api/release_handlers.go`) | `—` | Latest release record |
 | GET | `/readyz` | `handleReadyz` (`coordinator/api/drain.go`) | `—` | 200 normally; 503 while draining |
+
+The 0.9.7 candidate sets `LatestProviderVersion = "0.9.7"` in
+`coordinator/api/server.go`. A registered active release still takes precedence
+for version displays; this fallback change does not publish an updater release.
+`GET /v1/releases/latest` requires a registered release and returns 404 when none
+exists (`coordinator/api/release_handlers.go`, `handleLatestRelease`).
 
 Release publishing: [`../operations/provider-release.md`](../operations/provider-release.md).
 

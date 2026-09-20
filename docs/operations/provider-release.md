@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-18 · commit `397b4d902`
+> Last updated: 2026-09-20 · commit `b4e64dadd`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -9,7 +9,7 @@ build, sign, notarize, hash, upload, and register the bundle. The coordinator
 verifies every registered artifact by re-downloading it, so a release either
 lands fully or not at all.
 
-The prepared version is **0.9.6**; its source changes since `v0.9.3` are
+The prepared version is **0.9.7**; its source changes since `v0.9.6` are
 collected in [`CHANGELOG.md`](../../CHANGELOG.md). The version bump prepares
 the source for the provider bundle. Publication and coordinator deployment remain
 separate operations; the bump alone does not change the registered release

@@ -20,6 +20,7 @@ func (r *Registry) fillRoutingSnapshotPLocked(snap *routingSnapshot, p *Provider
 	snap.prefillTPS = resolvedPrefillTPS(p)
 	snap.totalMemoryGB = float64(p.Hardware.MemoryGB)
 	snap.modelSizeGB = r.modelSizeGBForFitLocked(p, model)
+	snap.estimatedOffloadedMemoryGB = advertisedOffloadedMemoryGBLocked(p, model)
 	snap.minRAMGb = r.catalogMinRAMGbLocked(model)
 
 	fillSnapshotPendingAndPool(snap, p, model)

@@ -55,12 +55,17 @@ type myProvider struct {
 	Models       []protocol.ModelInfo `json:"models"`
 	Backend      string               `json:"backend,omitempty"`
 	Version      string               `json:"version,omitempty"`
+	OSVersion    string               `json:"os_version,omitempty"` // Current or last app-reported macOS version.
 	serialNumber string
 
 	// Trust & attestation
 	TrustLevel  string `json:"trust_level"`
 	Attested    bool   `json:"attested"`
 	MDAVerified bool   `json:"mda_verified"`
+	// Live App Attest guidance is independent of legacy proof fields and is
+	// never restored from a stored record. The client honors the lease deadline.
+	AppAttestAuthorized    bool  `json:"app_attest_authorized"`
+	AuthorizationExpiresAt int64 `json:"authorization_expires_at,omitempty"`
 	// Deprecated: the ACME device-attest-01 leg was removed. Key kept (always
 	// false) because shipped provider builds decode it as a required field.
 	ACMEVerified bool   `json:"acme_verified"`
@@ -239,10 +244,11 @@ func needsAttention(mp *myProvider, minVersion string) bool {
 	if !mp.RuntimeVerified {
 		return true
 	}
-	if mp.TrustLevel != string(registry.TrustHardware) {
+	appAttest := myProviderHasAppAttestAuthorization(mp, time.Now())
+	if !appAttest && mp.TrustLevel != string(registry.TrustHardware) {
 		return true
 	}
-	if mp.FailedChallenges > 0 {
+	if !appAttest && mp.FailedChallenges > 0 {
 		return true
 	}
 	if minVersion != "" && mp.Version != "" && semverLess(mp.Version, minVersion) {
@@ -293,6 +299,7 @@ func (s *Server) mergeFleet(ctx context.Context, accountID string) ([]myProvider
 			live = liveByIdentity[recordIdentity(&deduped[i])]
 		}
 		mp := buildMyProvider(&deduped[i], live)
+		s.attachMyProviderAuthorization(&mp, live, accountID)
 		out = append(out, mp)
 		seenIDs[deduped[i].ID] = true
 		if live != nil {
@@ -306,7 +313,9 @@ func (s *Server) mergeFleet(ctx context.Context, accountID string) ([]myProvider
 		if liveMatchesEmittedIdentity(p, out) {
 			continue
 		}
-		out = append(out, buildMyProvider(nil, p))
+		mp := buildMyProvider(nil, p)
+		s.attachMyProviderAuthorization(&mp, p, accountID)
+		out = append(out, mp)
 	}
 	return out, nil
 }
@@ -514,6 +523,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		if len(rec.AttestationResult) > 0 {
 			var ar attestation.VerificationResult
 			if err := json.Unmarshal(rec.AttestationResult, &ar); err == nil {
+				mp.OSVersion = ar.OSVersion
 				if ar.SerialNumber != "" {
 					mp.serialNumber = ar.SerialNumber
 				}
@@ -550,6 +560,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.Models = append([]protocol.ModelInfo{}, live.Models...)
 		mp.Backend = live.Backend
 		mp.Version = live.Version
+		mp.OSVersion = "" // A live connection must not inherit a previous OS report.
 		mp.TrustLevel = string(live.TrustLevel)
 		mp.Attested = live.Attested
 		mp.MDAVerified = live.MDAVerified
@@ -575,6 +586,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 
 		if live.AttestationResult != nil {
 			ar := live.AttestationResult
+			mp.OSVersion = ar.OSVersion
 			if ar.SerialNumber != "" {
 				mp.serialNumber = ar.SerialNumber
 			}

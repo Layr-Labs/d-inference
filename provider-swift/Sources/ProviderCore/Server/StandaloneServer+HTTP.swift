@@ -127,6 +127,12 @@ public struct CORSResponder<Inner: HTTPResponder>: HTTPResponder {
             var response = try await inner.respond(to: request, context: context)
             response.headers[.accessControlAllowOrigin] = "*"
             return response
+        } catch let error as OpenAIRequestValidationError {
+            // Chat upload interception lives outside the upstream router's
+            // HTTPResponseError mapping. Preserve this fixed, content-free
+            // validation error without exposing arbitrary upstream messages.
+            return Self.openAIErrorResponse(
+                status: error.status, message: error.localizedDescription)
         } catch let error as MLXOpenAIServiceError {
             // Keep the upstream service's generic message policy distinct from
             // provider engine/media failures, which have bounded public codes.

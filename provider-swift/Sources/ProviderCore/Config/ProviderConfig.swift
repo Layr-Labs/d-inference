@@ -89,7 +89,7 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
     /// funnel stays the single authority on which models it will *resolve*;
     /// this set only decides which ones `auto` is willing to *ask about*.
     static let automaticEmbeddedModelTypes: Set<String> = [
-        "qwen3_5", "qwen3_5_moe", "nemotron_h",
+        "qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen4_exp_text", "nemotron_h",
     ]
 
     private static func isAutomaticGemmaTarget(modelType: String?, modelID: String?) -> Bool {

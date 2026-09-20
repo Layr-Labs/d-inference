@@ -1,8 +1,8 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-09-15 · commit `a99ce680a`
+> Last updated: 2026-09-15 · commit `b61d32a38`
 
-App Attest runs alongside authoritative APNs and MDM verification. The coordinator records stable machine identities, fleet adoption, complete submitted proofs, and receipts. These records do not change routing, rewards, trust, or the supported OS floor. DeviceCheck's separate two-bit API is deferred.
+App Attest shadow collection records stable machine identities, fleet adoption, submitted proofs and receipts alongside legacy verification. Shadow alone changes no routing, rewards or trust. The separately enabled [provider authorization path](provider-authorization.md) uses qualified evidence for MDM-optional serving and rewards. DeviceCheck's separate two-bit API remains deferred.
 
 ## Configuration
 
@@ -17,13 +17,13 @@ App Attest runs alongside authoritative APNs and MDM verification. The coordinat
 | `EIGENINFERENCE_APP_ATTEST_RECEIPT_KEY_PATH` | unset | Private server-side ES256 key file with DeviceCheck service authorization, used only for App Attest receipt renewal. Unset disables renewal. |
 | `EIGENINFERENCE_APP_ATTEST_RECEIPT_KEY_ID` | unset | Apple key identifier for receipt renewal. Both credential settings are required. |
 
-Code: `coordinator/api/app_attest_shadow_config.go` (`readAppAttestShadowConfig`) and `coordinator/api/app_attest_rollout.go` (`appAttestRolloutDecision`). All machines on one authenticated account share the cohort; the percentage is of accounts, not an exact fraction of machines. A provisional machine ID or lost legacy key cannot reroll it. Direct `ServerConfig{}` construction keeps shadow disabled. There is no enforcement setting. Receipt renewal does not generate DCDevice tokens, read or write DeviceCheck bits, or send APNs pushes.
+Code: `coordinator/appattest/service/config.go` (`ConfigFromEnvironment`) and `coordinator/appattest/service/rollout.go` (`appAttestRolloutDecision`). All machines on one authenticated account share the cohort; the percentage is of accounts, not an exact fraction of machines. A provisional machine ID or lost legacy key cannot reroll it. Direct `ServerConfig{}` construction keeps shadow disabled. Serving and MDM-removal controls are specified separately in [provider authorization](provider-authorization.md). Receipt renewal does not generate DCDevice tokens, read or write DeviceCheck bits, or send APNs pushes.
 
 ## Wire exchange
 
 New clients advertise `register.app_attest_protocol = 3`; the coordinator also accepts protocols 1 and 2. Older providers receive no unknown frames. A coordinator predating version 3 may ignore the new capability while continuing legacy serving. The registration capability is preserved by both Swift encoders, including `encodeRegisterPreservingRawAttestation`.
 
-The shadow session uses the registry's validated endpoint key, never the original registration field. It requires a canonical 44-character base64 encoding of 32 bytes, rejecting missing/invalid keys and encodings padded with CR/LF before enrollment. Machine inventory remains independent of that readiness check. Code: `coordinator/api/app_attest_shadow.go`.
+The shadow session uses the registry's validated endpoint key, never the original registration field. It requires a canonical 44-character base64 encoding of 32 bytes, rejecting missing/invalid keys and encodings padded with CR/LF before enrollment. Machine inventory remains independent of that readiness check. Code: `coordinator/appattest/service/session.go`.
 
 Frames use `type = "app_attest_shadow"` and nested `payload`. Every request has a random session and expected environment. Versions 2 and 3 carry the negotiated `protocol_version` and an opaque authenticated-account scope.
 
@@ -44,9 +44,9 @@ The app derives status locally. The server never supplies a replacement endpoint
 
 ## Machine inventory and identity
 
-`startMachineInventory` in `coordinator/api/machine_inventory.go` observes each completed registration, even with shadow disabled or an old client. A separate worker updates liveness once a minute, appends changed observations, and records disconnects. Four concurrent inventory operations are allowed; storage failures are measured and retried. Initial shadow work waits for durable inventory.
+`startMachineInventory` in `coordinator/appattest/service/inventory.go` observes each completed registration, even with shadow disabled or an old client. A separate worker updates liveness once a minute, appends changed observations, and records disconnects. Four concurrent inventory operations are allowed; storage failures are measured and retried. Initial shadow work waits for durable inventory.
 
-`startMachineInventoryReconciler` in `coordinator/api/machine_inventory_reconcile.go` repairs missed terminal captures on startup and every five seconds. Each attempt shares the four inventory slots, has a two-second deadline, and processes at most 100 rows; errors and locked rows are retried on later ticks. The repair reads durable rows and survives a coordinator restart. The partial index over open sessions avoids scanning closed history.
+`startMachineInventoryReconciler` in `coordinator/appattest/service/inventory_reconcile.go` repairs missed terminal captures on startup and every five seconds. Each attempt shares the four inventory slots, has a two-second deadline, and processes at most 100 rows; errors and locked rows are retried on later ticks. The repair reads durable rows and survives a coordinator restart. The partial index over open sessions avoids scanning closed history.
 
 Reconciliation requires inventory liveness older than five minutes and preserves sessions with a fresh, open `provider_sessions` heartbeat, including connections on another coordinator during a cutover. A known provider-session closure supplies its timestamp and records `disconnect_reason=provider_session`. Otherwise both available liveness streams must be stale; closure is estimated at the latest recorded activity and explicitly labelled `inventory_stale`. A fresh observation can reopen an inferred stale closure using the same machine identity. Confirmed disconnects stay closed, and delayed older observations cannot overwrite newer liveness. Reconciliation appends history and never changes provider routing or accounting records. Code: `coordinator/store/machine_inventory_reconcile.go` and `coordinator/store/postgres_machine_inventory.go`.
 
@@ -83,7 +83,7 @@ The archive stores invalid base64 verbatim and preserves invalid, replayed, wron
 
 `BeginAppAttestEvidence` writes the full submission before verification. `CompleteAppAttestEvidence` commits the result and accepted key/counter update in one transaction. A failed completion cannot advance a counter or acknowledge enrollment. Interrupted verification initially remains `pending`; `ReconcileAppAttestEvidence` marks rows older than five minutes `interrupted` in bounded locked batches. The original proof remains intact and no counter/key acceptance is synthesized. Identical enrollment is idempotent; replayed assertions remain separate rejected records. Queued proofs are archived as rejected when a shadow session stops or the verifier is busy, subject to the shared storage limit.
 
-`acquireStorage` in `coordinator/api/app_attest_shadow_storage.go` admits at most four concurrent session storage operations. Normal verification, verifier-busy rejection, disconnect draining, standalone events, and outbound enrollment writes share this limit. Admission is nonblocking; an admitted proof retains its permit through deferred archive completion, and nested observations reuse it. Refused proof submissions increment the session's dropped count and report `archive/storage_busy`; event persistence refusals emit `app_attest.events.storage_failed` with `reason:busy`. Metrics/logs remain available without making another unbounded database call. Inventory and receipt renewal retain their separate worker limits.
+`acquireStorage` in `coordinator/appattest/service/storage.go` admits at most four concurrent session storage operations. Normal verification, verifier-busy rejection, disconnect draining, standalone events, and outbound enrollment writes share this limit. Admission is nonblocking; an admitted proof retains its permit through deferred archive completion, and nested observations reuse it. Refused proof submissions increment the session's dropped count and report `archive/storage_busy`; event persistence refusals emit `app_attest.events.storage_failed` with `reason:busy`. Metrics/logs remain available without making another unbounded database call. Inventory and receipt renewal retain their separate worker limits.
 
 Input refused by frame, queue, or storage admission bounds is counted rather than retained without limit. Storage failures pause that connection's shadow exchange and appear in metrics; they do not interrupt inference. The system cannot guarantee recording bytes it never accepts or durably receives during an outage. Re-verification uses the archived context and original evaluation time, never treats a historical assertion as a fresh challenge.
 
@@ -93,13 +93,13 @@ The protocol decoder returns a distinct error for App Attest frames exceeding 48
 
 `coordinator/appattest/receipt.go` verifies the PKCS#7 signature and chain against the separately pinned Apple Root CA G3, then validates App ID, key, initial enrollment hash, type, creation freshness, expiry, and renewal fields. Mac field 3 can contain the attestation leaf certificate; its public key must match the verified credential. Duplicate ASN.1 fields and malformed metadata fail closed. Receipt errors are observational and do not remove legacy trust.
 
-`coordinator/api/app_attest_receipt_worker.go` leases at most one due job per second when dedicated credentials are configured, including when new shadow exchanges are disabled. It sends the previous receipt to the environment-specific Apple endpoint, verifies the response, retains every recorded version, and advances the job only for a verified successor or a separately validated historical recovery input. Failures retain the previous usable receipt and back off. HTTP bodies are bounded to 64 KiB; an oversized response has an explicit outcome. Raw server authentication material is never archived. Overdue jobs remain visible while credentials are unconfigured. Mac production receipt renewal is a separate qualification from initial local receipt verification.
+`coordinator/appattest/service/receipt_worker.go` leases at most one due job per second when dedicated credentials are configured, including when new shadow exchanges are disabled. It sends the previous receipt to the environment-specific Apple endpoint, verifies the response, retains every recorded version, and advances the job only for a verified successor or a separately validated historical recovery input. Failures retain the previous usable receipt and back off. HTTP bodies are bounded to 64 KiB; an oversized response has an explicit outcome. Raw server authentication material is never archived. Overdue jobs remain visible while credentials are unconfigured. Mac production receipt renewal is a separate qualification from initial local receipt verification.
 
 Apple's [receipt contract](https://developer.apple.com/documentation/devicecheck/assessing-fraud-risk) specifies `Authorization: <JWT>` for this endpoint, including its curl example. The worker sends that raw ES256 JWT; the linked APNs guide supplies the JWT generation procedure. The receipt's approximate recent key-count metric is not a permanent machine identifier or an automatic fraud verdict.
 
 `VerifyReceipt` keeps Apple’s five-minute creation-time requirement. A cached enrollment receipt that fails only freshness can pass `ReceiptForRenewal`, which still checks the Apple receipt chain, identity, key, client hash and expiration. Its outcome is `renewal_required`, never `verified`. The worker exchanges it for a fresh `RECEIPT`; HTTP responses must pass the strict fresh validator. Initial `ATTEST` receipts require the exact enrollment hash. Apple renewed risk receipts bind the app and attested key, and can carry a lossy text representation in field 4; the verifier never treats that as a nonce binding. Fresh signature/chain, app/key, creation time, expiration and risk fields remain mandatory, and receipt types cannot substitute for one another. `QueueAppAttestReceiptRecovery` seeds missing jobs for old `receipt_creation_time` records only when the original attestation was accepted and its credential exists. Recovery appends a new receipt version and leaves the original failure untouched. The worker claims one job per second with a two-minute cross-coordinator lease; failures retain the last usable receipt and retry later.
 
-`startAppAttestMaintenance` runs independently of the shadow switch and credentials, once per minute with at most 100 records per batch. See `coordinator/api/app_attest_maintenance.go` and `coordinator/store/app_attest_maintenance.go`.
+`startAppAttestMaintenance` runs independently of the shadow switch and credentials, once per minute with at most 100 records per batch. See `coordinator/appattest/service/maintenance.go` and `coordinator/store/app_attest_maintenance.go`.
 
 ## Bounds and credential lifecycle
 
@@ -110,7 +110,7 @@ Apple's [receipt contract](https://developer.apple.com/documentation/devicecheck
 | Protocol | 48 KiB frame, 32 KiB decoded proof; bounded CBOR and status fields. |
 | Response/storage | 90-second response deadline; two-second handling budget, with a separate two-second budget for deferred archive completion. Standalone events and enrollment writes each have a two-second storage timeout. |
 | Assertions | Every ten minutes after success; a fresh encrypted challenge after reconnect or recovery. A failure immediately supersedes the last prospective verdict. |
-| Session recovery | Transient failures retry after one minute, then five minutes, then hourly. Every attempt gets a new session/nonce and reloads durable acceptance/counters. Successful assertions reset backoff. Permanent crypto/policy rejections stop; cancellation stops retries. Code: `coordinator/api/app_attest_retry.go`. |
+| Session recovery | Transient failures retry after one minute, then five minutes, then hourly. Every attempt gets a new session/nonce and reloads durable acceptance/counters. Successful assertions reset backoff. Permanent crypto/policy rejections stop; cancellation stops retries. Code: `coordinator/appattest/service/retry.go`. |
 | Apple callbacks | 25-second waiter deadline. The actual uncancellable Apple operation retains admission until its callback arrives; retries receive `busy` in the meantime. A token fences duplicate late callbacks from unlocking a newer operation. A pre-cancelled call does not acquire admission. Code: `AppleOperationGate.swift` and `AppleAppAttestService.swift` in `provider-swift/Sources/ProviderAppAttest/`. |
 | Attestation retries | At most three attempts, 2/8-second waits, only for service unavailable, using the same key/hash. |
 | Key generation | Per-key one-hour replacement cooldown plus five generations per coordinator/environment per hour across account scopes, persisted before calling Apple. |
@@ -118,13 +118,13 @@ Apple's [receipt contract](https://developer.apple.com/documentation/devicecheck
 | Acknowledgement | An assertion request follows durable enrollment acceptance; the successful local assertion clears the cached enrollment proof. |
 | Cancellation | Connection generation prevents late delivery into a different session. |
 
-Code: `AppAttestShadowClient.swift`, `CallbackDeadline.swift`, `AppleAppAttestService.swift`, and `coordinator/api/app_attest_shadow_context.go`. Keychain items remain nonsynchronizing and device-local; private App Attest keys remain with Apple's service.
+Code: `AppAttestShadowClient.swift`, `CallbackDeadline.swift`, `AppleAppAttestService.swift`, and `coordinator/appattest/service/context.go`. Keychain items remain nonsynchronizing and device-local; private App Attest keys remain with Apple's service.
 
 ## Prospective authorization
 
 `coordinator/appattest/authorization.go` (`EvaluateAuthorization`) evaluates the
 future policy without MDM/APNs inputs or registry mutations. It is not wired as
-a serving gate in this release. `coordinator/api/app_attest_shadow_policy.go`
+a serving gate in this release. `coordinator/appattest/service/policy.go`
 records its versioned outcome after each durably accepted assertion; failed
 exchanges supersede the previous verdict.
 
@@ -153,7 +153,7 @@ lists qualification and retirement gates.
 
 A controlled physical macOS 27 test of the same probe with SDK 26.5 and SDK 27.0 found that only the SDK 27 build returned the launch category and code measurement. With CDhash opt-in, its assertions carried `apple_cd_hash_type_01` as one byte (`2`) and `apple_cd_hash_hash_01` as the full 32-byte SHA-256 CodeDirectory digest. That digest exactly matched `codesign -d --verbose=4` `CandidateCDHashFull sha256`; it is neither the truncated 20-byte `CDHash` nor the SHA-256 of the entire signed executable. No bundle-version extension was present. These are observed wire semantics requiring qualification on the final artifact and supported OS builds, not a promise of an undocumented future format.
 
-`coordinator/appattest/code_measurement.go` parses the bounded signed fields and exposes only the observed type-2 SHA-256 format for matching. `coordinator/api/app_attest_build_policy.go` requires an explicit qualified mapping for the reported binary hash; the independently loaded release catalog also pins that binary hash and version. The policy never accepts a code hash supplied in ordinary client status as Apple's measurement. Unknown algorithms remain recorded but cannot qualify. Assertions and enrollment observations retain `attested_code_directory_type` and `attested_code_directory_hash`; only the current assertion feeds prospective authorization. Parsed measurements are also committed atomically into the proof decision details. Verified OS/build status is recorded even when readiness storage fails or the key is revoked; only identity alias attachment depends on a known non-revoked credential. SDK 26 builds remain safe shadow clients and stay unknown for replacement readiness.
+`coordinator/appattest/code_measurement.go` parses the bounded signed fields and exposes only the observed type-2 SHA-256 format for matching. `coordinator/appattest/service/build_policy.go` requires an explicit qualified mapping for the reported binary hash; the independently loaded release catalog also pins that binary hash and version. The policy never accepts a code hash supplied in ordinary client status as Apple's measurement. Unknown algorithms remain recorded but cannot qualify. Assertions and enrollment observations retain `attested_code_directory_type` and `attested_code_directory_hash`; only the current assertion feeds prospective authorization. Parsed measurements are also committed atomically into the proof decision details. Verified OS/build status is recorded even when readiness storage fails or the key is revoked; only identity alias attachment depends on a known non-revoked credential. SDK 26 builds remain safe shadow clients and stay unknown for replacement readiness.
 
 
 ## Dashboard and telemetry

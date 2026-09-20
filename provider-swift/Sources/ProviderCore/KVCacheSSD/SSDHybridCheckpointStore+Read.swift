@@ -38,7 +38,7 @@ extension SSDHybridCheckpointStore {
         makeImportPlan: @Sendable (CBv2CompleteCheckpointManifest) throws -> CBv2CompleteCheckpointImportPlan
     ) async -> SSDPrefixCacheStageResult {
         let started = ContinuousClock.now
-        let scope = request.cacheSalt ?? ""
+        let scope = request.checkpointCacheSalt ?? ""
         let chain = hashes(tokens: request.promptTokens, scope: scope)
         func result(_ disposition: SSDPrefixCacheStageDisposition, deviceBytes: Int = 0) -> SSDPrefixCacheStageResult {
             let elapsed = Self.milliseconds(since: started)
@@ -46,7 +46,9 @@ extension SSDHybridCheckpointStore {
             return .init(disposition: disposition, stageMs: elapsed, chainHashes: chain,
                          blockSize: PrefixCachePolicy.blockSize, deviceBytes: deviceBytes)
         }
-        guard !Task.isCancelled, request.prefixCacheEnabled, request.multimodal == nil, request.positionState == nil else {
+        let boundMedia = request.multimodal != nil && request.hybridPrefixIdentity != nil
+        guard !Task.isCancelled, request.prefixCacheEnabled,
+            (request.multimodal == nil && request.positionState == nil) || boundMedia else {
             return result(.skippedPolicy)
         }
         guard let candidate = candidate(hashes: chain, scope: scope), hasSafeRoot else {
@@ -196,7 +198,7 @@ extension SSDHybridCheckpointStore {
         } catch ReadControl.manifestRead { }
         guard let manifest, manifest.position == candidate.position, manifest.identity == identity,
             manifest.backendLayout == config.backendLayout,
-            manifest.cacheSalt == request.cacheSalt, request.promptTokens.starts(with: manifest.prefixTokens)
+            manifest.cacheSalt == request.checkpointCacheSalt, request.promptTokens.starts(with: manifest.prefixTokens)
         else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
         let envelope = try SSDHybridCheckpointEnvelope(manifest: manifest, maximumPlaintextBytes: config.maxReadBytes)
         let plan: CBv2CompleteCheckpointImportPlan

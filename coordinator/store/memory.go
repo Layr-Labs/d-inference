@@ -39,7 +39,14 @@ const keySpendRetentionDays = 40
 
 // MemoryStore manages API keys, usage records, payments, and balances in memory.
 type MemoryStore struct {
+	modelTokenProviderCarries map[string]int64
+	modelTokenPromotions      map[string]ModelTokenPromotion
+	modelTokenGrants          map[string]map[string]ModelTokenGrant
+	modelTokenReservations    map[string]ModelTokenReservation
+
 	mu            sync.RWMutex
+	floorEpochMu  sync.Mutex // separate from store state; settlement callbacks read the store
+	floorEpochs   map[string]*memoryFloorEpochLock
 	keyRecords    map[string]*APIKey // raw key → record (metadata + limits)
 	keysByID      map[string]string  // public key ID → raw key
 	keySpend      map[string]*keySpend
@@ -1444,6 +1451,11 @@ func (s *MemoryStore) DebitWithdrawable(accountID string, amountMicroUSD int64, 
 func (s *MemoryStore) Debit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	return s.debitLocked(accountID, amountMicroUSD, entryType, reference)
+}
+
+func (s *MemoryStore) debitLocked(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
 
 	if s.balances[accountID] < amountMicroUSD {
 		return ErrInsufficientBalance
@@ -2911,6 +2923,11 @@ func (s *MemoryStore) CreditProviderAccount(earning *ProviderEarning) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	return s.creditProviderAccountLocked(earning)
+}
+
+func (s *MemoryStore) creditProviderAccountLocked(earning *ProviderEarning) error {
 
 	// Idempotency guard mirroring the postgres ON CONFLICT (job_id) DO NOTHING:
 	// a retried settlement with the same non-empty job_id must not double-credit

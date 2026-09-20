@@ -384,18 +384,8 @@ struct SelfUpdaterTests {
         return (tarball, release, install)
     }
 
-    private func buildProduct(
-        _ name: String,
-        testBundleURL: URL = Bundle(for: SelfUpdaterTestBundleAnchor.self).bundleURL
-    ) throws -> URL {
-        guard testBundleURL.pathExtension == "xctest" else {
-            throw CocoaError(.fileNoSuchFile)
-        }
-        let product = testBundleURL.deletingLastPathComponent().appendingPathComponent(name)
-        guard FileManager.default.fileExists(atPath: product.path) else {
-            throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: product.path])
-        }
-        return product
+    private func activeBuildProduct(_ name: String) throws -> URL {
+        try LiveInferenceFixtures.buildProduct(name)
     }
 
     @Test("runtime fixtures use only products beside the running test bundle", arguments: ["debug", "release"])
@@ -409,12 +399,12 @@ struct SelfUpdaterTests {
         try FileManager.default.createDirectory(at: unrelated.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("unrelated-build".utf8).write(to: unrelated)
         #expect(throws: CocoaError.self) {
-            try buildProduct("darkbloom", testBundleURL: bundle)
+            try LiveInferenceFixtures.buildProduct("darkbloom", testBundleURL: bundle)
         }
         try FileManager.default.createDirectory(at: products, withIntermediateDirectories: true)
         let active = products.appendingPathComponent("darkbloom")
         try Data("active-build".utf8).write(to: active)
-        #expect(try buildProduct("darkbloom", testBundleURL: bundle) == active)
+        #expect(try LiveInferenceFixtures.buildProduct("darkbloom", testBundleURL: bundle) == active)
     }
 
     private func makeSignedRuntimeFixture(
@@ -436,9 +426,9 @@ struct SelfUpdaterTests {
         try fm.createDirectory(at: bin, withIntermediateDirectories: true)
         try fm.createDirectory(at: install, withIntermediateDirectories: true)
 
-        let darkbloom = try buildProduct("darkbloom")
-        let fanHelper = try buildProduct("darkbloom-fan-helper")
-        let metallib = try buildProduct("mlx.metallib")
+        let darkbloom = try activeBuildProduct("darkbloom")
+        let fanHelper = try activeBuildProduct("darkbloom-fan-helper")
+        let metallib = try activeBuildProduct("mlx.metallib")
         try fm.copyItem(
             at: darkbloom,
             to: appMacOS.appendingPathComponent("darkbloom"))
@@ -475,7 +465,7 @@ struct SelfUpdaterTests {
         try Data("1\n".utf8).write(
             to: capability.appendingPathComponent("fan-helper-v1"))
         if includeResource {
-            let builtBundle = try buildProduct(
+            let builtBundle = try activeBuildProduct(
                 PackagedRuntimeSmoke.mlxLMCommonBundleName)
             try fm.copyItem(
                 at: builtBundle,
@@ -532,7 +522,7 @@ struct SelfUpdaterTests {
     @Test("v0.8.9 parent can bootstrap a v0.8.10 runtime-smoke child")
     func oldParentBootstrapsCandidateSmoke() throws {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
-        let executable = try buildProduct("darkbloom")
+        let executable = try activeBuildProduct("darkbloom")
         let output = try BoundedProcess.runCapturingStandardOutput(
             executable,
             arguments: ["runtime-smoke"],
@@ -921,6 +911,3 @@ struct SelfUpdaterInstallRootTests {
         #expect(!root.path.contains("usr/local"))
     }
 }
-
-/// Anchor in the test image, independent of the SwiftPM/xctest host executable.
-private final class SelfUpdaterTestBundleAnchor {}

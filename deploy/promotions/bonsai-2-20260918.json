@@ -1,0 +1,9 @@
+{
+  "model_id": "ternary-bonsai-2-27b",
+  "tokens": 150000000,
+  "claim_starts_at": "2026-09-18T00:00:00-07:00",
+  "claim_ends_at": "2026-09-20T00:00:00-07:00",
+  "signup_cutoff_at": "2026-09-19T00:00:00-07:00",
+  "max_claims": 250,
+  "enabled": true
+}

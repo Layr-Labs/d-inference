@@ -52,6 +52,9 @@ extension EngineV2SlotFactory {
         logInfo: @escaping @Sendable (String) -> Void
     ) throws -> any LanguageModel {
         guard isVLM else { return snapshot.model }
+        if snapshot.model is MLXVLM.Qwen4Exp || snapshot.model is MLXVLM.PrismHadamardQwen35 {
+            return try EngineV2Factory.directServingModel(model: snapshot.model, isVLM: true)
+        }
         if snapshot.model is MLXVLM.Gemma4 || snapshot.model is MLXVLM.Qwen3VL {
             do {
                 let target = try EngineV2Factory.directServingModel(

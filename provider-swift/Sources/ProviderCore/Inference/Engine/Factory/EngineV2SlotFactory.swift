@@ -306,7 +306,14 @@ enum EngineV2SlotFactory {
             }
         } else {
             preparedBackend = nil
+            try EngineV2Factory.configureNativeQwen4Batching(model: servingModel, environment: environment)
         }
+        // Preparation resolved the cap once for backend sizing and the engine.
+        // Its value must also drive bridge accounting and reported capacity.
+        // Scripted engines have no preparation, so apply the same pure policy.
+        let effectiveMaxConcurrentRequests = preparedBackend?.effectiveMaxConcurrentRequests
+            ?? EngineV2Factory.nativeConcurrentRequestLimit(
+                requested: maxConcurrentRequests, model: servingModel, environment: environment)
 
         // SSD staging reserves transient RAM through GlobalKVCacheBudget;
         // refused staging falls back to recomputation. Complete recurrent
@@ -425,8 +432,12 @@ enum EngineV2SlotFactory {
             eosTokenIds: eosTokenIds,
             extraEOSTokens: snapshot.extraEOSTokens,
             defaultMaxTokens: sizing.defaultMaxTokens,
-            maxConcurrentRequests: maxConcurrentRequests,
+            maxConcurrentRequests: effectiveMaxConcurrentRequests,
             prefillDeadlineMode: prefillDeadlineMode,
+            advertisedContextTokens: Qwen4SupportPolicy.contextLimit(
+                modelID: modelId, modelType: modelType,
+                nativeContextTokens: sizing.maxContextLength, environment: environment),
+            pagedPageSize: preparedBackend?.pagedPoolConfig?.pageSize,
             runtimePolicyEnvironment: environment,
             kvBytesPerToken: processKVBytesPerToken,
             auxiliaryBytesPerToken: assistantStateBytesPerToken,

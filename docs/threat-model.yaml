@@ -29,6 +29,16 @@ created: "2026-05-14"
 # prospective mismatches against registration. The app also binds its existing
 # verification public key, preventing substitution of model/runtime signature
 # credentials during the later trust transition. Reward rules are unchanged.
+# MDM-optional authorization added 2026-09-15: explicit serving opt-in consumes
+# qualified protocol3 evidence; it never sets legacy MDA/APNs flags. Fresh
+# connection/endpoint/policy-bound permission is checked at every final dispatch.
+# Receipt/revocation polling has a 30s ceiling from query start, and failed reads
+# never extend it; local admin revocation fences before acknowledgement. Shared
+# machine settlement prevents duplicate base floors while preserving old ledger
+# records. App Attest still does not certify physical uniqueness or RAM, prove
+# computation correctness, or move inference into the Secure Enclave. Final
+# signed-artifact and physical SIP/boot-security transition qualification remain
+# required before enabling serving or scoped Darkbloom profile removal.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference

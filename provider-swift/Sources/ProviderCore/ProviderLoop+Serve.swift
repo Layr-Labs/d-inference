@@ -132,7 +132,7 @@ extension ProviderLoop {
         #if os(macOS)
         apnsDeviceToken = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 10)
         if apnsDeviceToken == nil {
-            logger.warning("no APNs device token (no GUI session / not push-provisioned) — registering un-attested")
+            logger.warning("no APNs device token — legacy code verification unavailable; awaiting coordinator authorization")
         }
         #endif
 
@@ -231,6 +231,7 @@ extension ProviderLoop {
             for await event in events {
                 switch event {
                 case .connected:
+                    clearConnectionAuthorization()
                     logger.info(.coordinatorConnected)
                     // The post-retirement reconnect's admission barrier
                     // (see `fireRetirementReconnect`) lifts with the new
@@ -239,6 +240,7 @@ extension ProviderLoop {
                     setRetirementReconnectBarrier(false)
 
                 case .disconnected:
+                    clearConnectionAuthorization()
                     cancelAppAttestShadow()
                     logger.warning(.coordinatorDisconnected)
                     // Cancel all in-flight requests on disconnect -- the coordinator
@@ -313,14 +315,16 @@ extension ProviderLoop {
                         await reconcileDesiredModels(entries, send: send)
                     }
 
-                case .trustStatus(let trustLevel, let status, let reason):
-                    handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason)
+                case .trustStatus(let trustLevel, let status, let reason, let authorization):
+                    handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason,
+                                      authorization: authorization)
                 }
             }
         } onCancel: {
             Task { await coordinator.shutdown() }
         }
 
+        clearConnectionAuthorization()
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
         // Quote path mirror (routing v2): a shutting-down provider quotes

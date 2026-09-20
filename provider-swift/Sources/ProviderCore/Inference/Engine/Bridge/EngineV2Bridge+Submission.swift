@@ -55,6 +55,7 @@ extension EngineV2Bridge {
         usageSignal: EngineV2RequestUsageSignal? = nil,
         multimodal: CBv2MultimodalInput? = nil,
         positionState: CBv2PositionState? = nil,
+        hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
         mediaKind: EngineV2MediaKind? = nil,
         tokenConstraint: (any CBv2TokenConstraint)? = nil
     ) async -> AsyncStream<GenerationEvent> {
@@ -69,13 +70,19 @@ extension EngineV2Bridge {
                 usageSignal: usageSignal,
                 multimodal: multimodal,
                 positionState: positionState,
+                hybridPrefixIdentity: hybridPrefixIdentity,
                 mediaKind: mediaKind,
                 tokenConstraint: tokenConstraint,
                 firstContentDeadline: nil)
+        } catch MultiModelBatchSchedulerEngineError.advertisedContextExceeded {
+            // Preserve the typed client rejection across the nonthrowing stream
+            // API using only its fixed, content-free scheduler marker.
+            let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
+            continuation.yield(.error(Qwen4SupportPolicy.contextRejectionMessage))
+            continuation.finish()
+            return stream
         } catch {
-            // A nil deadline cannot produce the only thrown error in the
-            // deadline-aware overload. Keep local callers non-throwing
-            // without turning a future invariant violation into a process crash.
+            // Unknown admission failures remain bounded for nonthrowing callers.
             let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
             usageSignal?.finalizeLookup(
                 failure: .policy,
@@ -100,6 +107,7 @@ extension EngineV2Bridge {
         usageSignal: EngineV2RequestUsageSignal? = nil,
         multimodal: CBv2MultimodalInput? = nil,
         positionState: CBv2PositionState? = nil,
+        hybridPrefixIdentity: CBv2HybridPrefixIdentity? = nil,
         mediaKind: EngineV2MediaKind? = nil,
         tokenConstraint: (any CBv2TokenConstraint)? = nil,
         firstContentDeadline: FirstContentDeadline?,
@@ -171,6 +179,8 @@ extension EngineV2Bridge {
             tokenConstraint: tokenConstraint
         )
         cbv2Request.positionState = positionState ?? multimodal?.positionState
+        cbv2Request.hybridPrefixIdentity = hybridPrefixIdentity
+        let checkpointScope = cbv2Request.checkpointCacheSalt ?? ""
         try await checkFirstContentDeadline(
             firstContentDeadline,
             requestID: id,
@@ -181,6 +191,15 @@ extension EngineV2Bridge {
             usageSignal: usageSignal)
         let (worstCaseTokens, tokenCountOverflow) = promptTokens.count.addingReportingOverflow(
             cbv2Request.maxTokens)
+        if let cap = advertisedContextTokens,
+            cbv2Request.maxTokens < 0 || tokenCountOverflow || worstCaseTokens > cap
+        {
+            usageSignal?.finalizeLookup(
+                failure: .policy,
+                fallbackTier: prefixCacheFallbackTier)
+            continuation.finish()
+            throw MultiModelBatchSchedulerEngineError.advertisedContextExceeded
+        }
         guard !tokenCountOverflow else {
             usageSignal?.finalizeLookup(
                 failure: .capacity,
@@ -206,7 +225,10 @@ extension EngineV2Bridge {
         // identify this concrete submission across both resident and SSD tiers.
         let prefixCacheReceiptID: CBv2RequestID?
         var readyReceiptRegistered = false
-        if cacheEnabled, multimodal == nil,
+        let mediaHybridCacheEligible = Qwen4SupportPolicy.isOwnedModelID(modelId)
+            && multimodal != nil && hybridPrefixIdentity != nil
+            && cbv2Request.positionState != nil && ssdHybridCheckpointStore != nil
+        if cacheEnabled, (multimodal == nil || mediaHybridCacheEligible),
             ssdPrefixCache != nil || ssdHybridCheckpointStore != nil || residentPrefixCacheEvidence != nil
         {
             let receiptID = mintPrefixCacheReceiptID()
@@ -217,10 +239,10 @@ extension EngineV2Bridge {
             }
             if let store = ssdHybridCheckpointStore, let callback = usageSignal?.onCacheReady {
                 store.registerReadyReceipt(requestID: receiptID, promptTokens: promptTokens,
-                                           cacheScope: cacheScope, callback: callback)
+                                           cacheScope: checkpointScope, callback: callback)
                 readyReceiptRegistered = true
             }
-            if let evidence = residentPrefixCacheEvidence, let usageSignal,
+            if multimodal == nil, let evidence = residentPrefixCacheEvidence, let usageSignal,
                 let proof = evidence.promptProof(tokens: promptTokens, scope: cacheScope)
             {
                 usageSignal.recordResidentPrompt(proof)
@@ -249,7 +271,7 @@ extension EngineV2Bridge {
         cbv2Request.prefixCacheReceiptID = prefixCacheReceiptID
         if !cacheEnabled {
             usageSignal?.recordCacheDisabled(tier: prefixCacheFallbackTier)
-        } else if multimodal != nil {
+        } else if multimodal != nil, !mediaHybridCacheEligible {
             usageSignal?.finalizeLookup(
                 failure: .policy,
                 fallbackTier: prefixCacheFallbackTier)

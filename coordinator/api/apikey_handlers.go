@@ -24,6 +24,11 @@ import (
 // handleCreateKey handles POST /v1/auth/keys — creates a new consumer API key.
 // Requires Privy authentication. The key is linked to the user's account so
 // requests made with the key are billed to the same account.
+//
+// If every active key on the account is already self_route_only, the minted
+// key inherits that ceiling. The console's auto-provision path uses this
+// legacy endpoint; minting an unrestricted key here would silently put a
+// machine-only account onto the paid public fleet.
 func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	if user == nil {
@@ -32,13 +37,20 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, err := s.store.CreateKeyForAccount(user.AccountID)
+	keys, err := s.store.ListAPIKeys(user.AccountID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("server_error", "failed to create key"))
+		return
+	}
+	raw, _, err := s.store.CreateAPIKey(user.AccountID, store.APIKeyCreate{
+		SelfRouteOnly: consoleKeyInheritsSelfRouteOnly(keys, time.Now()),
+	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("server_error", "failed to create key"))
 		return
 	}
 	writeJSON(w, http.StatusOK, types.CreateKeyResponse{
-		APIKey:    key,
+		APIKey:    raw,
 		AccountID: user.AccountID,
 	})
 }

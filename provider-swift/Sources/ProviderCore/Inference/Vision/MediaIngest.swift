@@ -232,12 +232,21 @@ public enum MediaIngest {
     static func buildUserInput(
         from request: OpenAIChatCompletionRequest,
         templateControls: ChatTemplateControls = .init(),
+        tools: [ToolSpec]? = nil,
+        preserveTemplateFields: Bool = false,
+        modelType: String? = nil,
         maxImagePixels: Int = Self.maxImagePixels,
         maxRequestImagePixels: Int = Self.maxRequestImagePixels,
         maxImagesPerRequest: Int = Self.maxImagesPerRequest,
         maxVideosPerRequest: Int = Self.maxVideosPerRequest,
         maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
     ) async throws -> UserInput {
+        let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+            for: request, controls: templateControls, modelType: modelType, hasMedia: true)
+        if preserveTemplateFields {
+            try Qwen4SupportPolicy.validateReasoningContext(
+                modelID: request.model, modelType: modelType, additionalContext: additionalContext)
+        }
         var chatMessages: [Chat.Message] = []
         var totalPixels = 0
         var totalVideoPixels = 0
@@ -263,13 +272,37 @@ public enum MediaIngest {
             case .tool:
                 chatMessages.append(.tool(text))
             }
+            if preserveTemplateFields {
+                chatMessages[chatMessages.count - 1].templateFields = message.templateMessageDict()
+            }
+        }
+        if preserveTemplateFields {
+            // Preserve the validated native Qwen4 request's interleaved order.
+            // Only symbolic placeholders enter the template; decoded media
+            // remains owned by UserInput, never rendered as URLs/base64 text.
+            let generator = Qwen3VLMessageGenerator()
+            let messages = zip(request.messages, chatMessages).map { original, decoded in
+                var message = generator.generate(messages: [decoded])[0]
+                if original.role == .user, case .parts(let parts) = original.content {
+                    message["content"] = parts.compactMap { part -> [String: String]? in
+                        switch part {
+                        case .text(let text): return ["type": "text", "text": text]
+                        case .imageURL: return ["type": "image"]
+                        case .videoURL: return ["type": "video"]
+                        case .unsupported: return nil
+                        }
+                    }
+                }
+                return message
+            }
+            return UserInput(messages: messages,
+                images: chatMessages.flatMap(\.images), videos: chatMessages.flatMap(\.videos),
+                tools: tools, additionalContext: additionalContext)
         }
         return UserInput(
             chat: chatMessages,
-            additionalContext: MultiModelBatchSchedulerEngine.templateAdditionalContext(
-                for: request,
-                controls: templateControls,
-                hasMedia: true))
+            tools: tools,
+            additionalContext: additionalContext)
     }
 
 

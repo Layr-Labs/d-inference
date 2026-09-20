@@ -529,8 +529,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
                                 tokenizer.inner.decode(tokenIds: Array(visionPrepared.promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                                        skipSpecialTokens: false)) ?? "<think></think>") : nil,
-                        preserveInnerReasoningSpans: Qwen4ModelIdentity.isQualified(modelId)
-                            && modelType == "qwen4_exp"
+                        preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
+                            .init(modelId: modelId, modelType: modelType))
                     )
                 } catch let failure as PreContentDeadlineFailure {
                     await mediaGate.release(requestId: mediaReqId)
@@ -778,8 +778,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
                     tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                            skipSpecialTokens: false)) ?? "<think></think>") : nil,
-            preserveInnerReasoningSpans: Qwen4ModelIdentity.isQualified(modelId)
-                && modelType == "qwen4_exp"
+            preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
+                .init(modelId: modelId, modelType: modelType))
         )
     }
 

@@ -1,0 +1,973 @@
+{
+  "native_m3": {
+    "identity": {
+      "binary_sha256": "eedc10f9b02ec10edd09616944e620515d36cd4fae4bff6c7b4a7c5747a6acaa",
+      "metallib_sha256": "38ceb8a1113b373ccaa89355d895fc8ded3bafc81076dc4ffdb426e2eee03a93",
+      "scope": "synthetic B1 paged fixed128 decode tokens; prompt/TTFT is not kernel prefill",
+      "cache_tiers": "off",
+      "contexts": [
+        1024,
+        10000,
+        20000,
+        50000
+      ],
+      "iterations": 2,
+      "varied_flags": [
+        "DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC",
+        "DARKBLOOM_BONSAI_F16_CONSTANT_CACHE"
+      ]
+    },
+    "reports": [
+      {
+        "prompt_tokens": 1024,
+        "token_agreement": "all129exact",
+        "off": {
+          "decode_tps": {
+            "n": 4,
+            "min": 28.83322334975373,
+            "median": 29.487100580431687,
+            "max": 29.808871283483832
+          },
+          "ttft_ms": {
+            "n": 4,
+            "min": 3492.90075,
+            "median": 3498.8249585,
+            "max": 3499.381708
+          },
+          "prompt_over_ttft_tps": {
+            "n": 4,
+            "min": 292.62312186721874,
+            "median": 292.66968692827743,
+            "max": 293.16607407181556
+          },
+          "mlx_active_peak_bytes": {
+            "n": 4,
+            "min": 12552587677,
+            "median": 12552587677,
+            "max": 12552587677
+          },
+          "process_lifetime_peak_footprint_bytes": {
+            "n": 2,
+            "min": 15467437736,
+            "median": 15470337752,
+            "max": 15473237768
+          }
+        },
+        "on": {
+          "decode_tps": {
+            "n": 4,
+            "min": 43.23204574904787,
+            "median": 43.31550893118198,
+            "max": 43.330451265915634
+          },
+          "ttft_ms": {
+            "n": 4,
+            "min": 3481.6077920000002,
+            "median": 3483.8134375,
+            "max": 3486.237958
+          },
+          "prompt_over_ttft_tps": {
+            "n": 4,
+            "min": 293.7263641600221,
+            "median": 293.930811290466,
+            "max": 294.11698880986415
+          },
+          "mlx_active_peak_bytes": {
+            "n": 4,
+            "min": 12585867833,
+            "median": 12585867833,
+            "max": 12585867833
+          },
+          "process_lifetime_peak_footprint_bytes": {
+            "n": 2,
+            "min": 15498944288,
+            "median": 15499386632,
+            "max": 15499828976
+          }
+        },
+        "on_vs_off_median_percent": {
+          "decode_tps": 46.8964668568572,
+          "ttft_ms": -0.42904464150260724,
+          "prompt_over_ttft_tps": 0.4309036495800944,
+          "mlx_active_peak_bytes": 0.2651258597538231,
+          "process_lifetime_peak_footprint_bytes": 0.18777146605117867
+        }
+      },
+      {
+        "prompt_tokens": 10000,
+        "token_agreement": "all129exact",
+        "off": {
+          "decode_tps": {
+            "n": 4,
+            "min": 28.27418411237338,
+            "median": 28.905802725309393,
+            "max": 29.077319026061442
+          },
+          "ttft_ms": {
+            "n": 4,
+            "min": 35628.598458,
+            "median": 35640.8908125,
+            "max": 35652.70312500001
+          },
+          "prompt_over_ttft_tps": {
+            "n": 4,
+            "min": 280.48364144899597,
+            "median": 280.5766095811016,
+            "max": 280.6734037486286
+          },
+          "mlx_active_peak_bytes": {
+            "n": 4,
+            "min": 16282982440,
+            "median": 16282982440,
+            "max": 16282982440
+          },
+          "process_lifetime_peak_footprint_bytes": {
+            "n": 2,
+            "min": 23848066680,
+            "median": 23857561220,
+            "max": 23867055760
+          }
+        },
+        "on": {
+          "decode_tps": {
+            "n": 4,
+            "min": 39.596046087322975,
+            "median": 39.7953532983495,
+            "max": 39.81835829297616
+          },
+          "ttft_ms": {
+            "n": 4,
+            "min": 35413.594583000006,
+            "median": 35419.92050000001,
+            "max": 35422.175084
+          },
+          "prompt_over_ttft_tps": {
+            "n": 4,
+            "min": 282.30903314903844,
+            "median": 282.3270029646784,
+            "max": 282.3774349300428
+          },
+          "mlx_active_peak_bytes": {
+            "n": 4,
+            "min": 14184547157,
+            "median": 14184547157,
+            "max": 14184547157
+          },
+          "process_lifetime_peak_footprint_bytes": {
+            "n": 2,
+            "min": 22924255056,
+            "median": 22929366840,
+            "max": 22934478624
+          }
+        },
+        "on_vs_off_median_percent": {
+          "decode_tps": 37.67254165719955,
+          "ttft_ms": -0.6199909919829882,
+          "prompt_over_ttft_tps": 0.623855775501081,
+          "mlx_active_peak_bytes": -12.887290708151134,
+          "process_lifetime_peak_footprint_bytes": -3.8905669001150334
+        }
+      },
+      {
+        "prompt_tokens": 20000,
+        "token_agreement": "all129exact",
+        "off": {
+          "decode_tps": {
+            "n": 4,
+            "min": 28.381946873938844,
+            "median": 28.765145873199913,
+            "max": 28.960187844683766
+          },
+          "ttft_ms": {
+            "n": 4,
+            "min": 75420.90975000002,
+            "median": 75434.90877100002,
+            "max": 75476.352791
+          },
+          "prompt_over_ttft_tps": {
+            "n": 4,
+            "min": 264.9836572705306,
+            "median": 265.1292396190032,
+            "max": 265.1784507279826
+          },
+          "mlx_active_peak_bytes": {
+            "n": 4,
+            "min": 19176966284,
+            "median": 19176970380,
+            "max": 19180116112
+          },
+          "process_lifetime_peak_footprint_bytes": {
+            "n": 2,
+            "min": 25813655112,
+            "median": 25815588448,
+            "max": 25817521784
+          }
+        },
+        "on": {
+          "decode_tps": {
+            "n": 4,
+            "min": 35.974398320290625,
+            "median": 35.99943541056462,
+            "max": 36.05217933311642
+          },
+          "ttft_ms": {
+            "n": 4,
+            "min": 74876.284291,
+            "median": 74890.181292,
+            "max": 74899.04908400001
+          },
+          "prompt_over_ttft_tps": {
+            "n": 4,
+            "min": 267.0260870411025,
+            "median": 267.05770635966826,
+            "max": 267.1072715397012
+          },
+          "mlx_active_peak_bytes": {
+            "n": 4,
+            "min": 17008285616,
+            "median": 17011431348,
+            "max": 17014577080
+          },
+          "process_lifetime_peak_footprint_bytes": {
+            "n": 2,
+            "min": 25893019400,
+            "median": 25898835756,
+            "max": 25904652112
+          }
+        },
+        "on_vs_off_median_percent": {
+          "decode_tps": 25.14949713536756,
+          "ttft_ms": -0.7221159114192965,
+          "prompt_over_ttft_tps": 0.7273685631340676,
+          "mlx_active_peak_bytes": -11.29239389272082,
+          "process_lifetime_peak_footprint_bytes": 0.3224691475372854
+        }
+      },
+      {
+        "prompt_tokens": 50000,
+        "token_agreement": "all129exact",
+        "off": {
+          "decode_tps": {
+            "n": 4,
+            "min": 23.86920829867917,
+            "median": 23.888468474718373,
+            "max": 23.975136286723203
+          },
+          "ttft_ms": {
+            "n": 4,
+            "min": 224663.358875,
+            "median": 224698.510146,
+            "max": 224807.383125
+          },
+          "prompt_over_ttft_tps": {
+            "n": 4,
+            "min": 222.4126241094067,
+            "median": 222.52039144566015,
+            "max": 222.5552054877778
+          },
+          "mlx_active_peak_bytes": {
+            "n": 4,
+            "min": 29473257604,
+            "median": 29477976202,
+            "max": 29479549068
+          },
+          "process_lifetime_peak_footprint_bytes": {
+            "n": 2,
+            "min": 34838437520,
+            "median": 34853813916,
+            "max": 34869190312
+          }
+        },
+        "on": {
+          "decode_tps": {
+            "n": 4,
+            "min": 28.037603760797428,
+            "median": 28.103192799380366,
+            "max": 28.154542593849744
+          },
+          "ttft_ms": {
+            "n": 4,
+            "min": 222118.37512500002,
+            "median": 222144.421104,
+            "max": 222267.772875
+          },
+          "prompt_over_ttft_tps": {
+            "n": 4,
+            "min": 224.95388941571497,
+            "median": 225.07880253803316,
+            "max": 225.10519434451044
+          },
+          "mlx_active_peak_bytes": {
+            "n": 4,
+            "min": 27310266288,
+            "median": 27313412020,
+            "max": 27313412020
+          },
+          "process_lifetime_peak_footprint_bytes": {
+            "n": 2,
+            "min": 35914899136,
+            "median": 35921075904,
+            "max": 35927252672
+          }
+        },
+        "on_vs_off_median_percent": {
+          "decode_tps": 17.64334255719455,
+          "ttft_ms": -1.136673776938013,
+          "prompt_over_ttft_tps": 1.1497423115929495,
+          "mlx_active_peak_bytes": -7.342987751829244,
+          "process_lifetime_peak_footprint_bytes": 3.0621096175361906
+        }
+      }
+    ],
+    "limitations": [
+      "Synthetic fixed-budget B1 paged compute; EOS intentionally ignored",
+      "Prompt/TTFT is not internal pure-kernel prefill",
+      "Short series; no significance or full qualification claim",
+      "Whole-process footprint includes load, warmup, allocator cache and measured repetitions"
+    ]
+  },
+  "native_m5": {
+    "identity": {
+      "binary_sha256": "eedc10f9b02ec10edd09616944e620515d36cd4fae4bff6c7b4a7c5747a6acaa",
+      "metallib_sha256": "38ceb8a1113b373ccaa89355d895fc8ded3bafc81076dc4ffdb426e2eee03a93",
+      "scope": "synthetic B1 paged fixed128 decode tokens; prompt/TTFT is not kernel prefill",
+      "cache_tiers": "off",
+      "contexts": [
+        1024,
+        10000,
+        20000,
+        50000
+      ],
+      "iterations": 2,
+      "varied_flags": [
+        "DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC",
+        "DARKBLOOM_BONSAI_F16_CONSTANT_CACHE"
+      ]
+    },
+    "reports": [
+      {
+        "prompt_tokens": 1024,
+        "token_agreement": "all129exact",
+        "off": {
+          "decode_tps": {
+            "n": 4,
+            "min": 36.88499316763134,
+            "median": 38.23608986919744,
+            "max": 39.084512973096125
+          },
+          "ttft_ms": {
+            "n": 4,
+            "min": 1501.535208,
+            "median": 1566.110063,
+            "max": 1634.758541
+          },
+          "prompt_over_ttft_tps": {
+            "n": 4,
+            "min": 626.3922006326438,
+            "median": 654.9623863494708,
+            "max": 681.9686908067494
+          },
+          "mlx_active_peak_bytes": {
+            "n": 4,
+            "min": 12547869085,
+            "median": 12547869085,
+            "max": 12547869085
+          },
+          "process_lifetime_peak_footprint_bytes": {
+            "n": 2,
+            "min": 15280135824,
+            "median": 15280217744,
+            "max": 15280299664
+          }
+        },
+        "on": {
+          "decode_tps": {
+            "n": 4,
+            "min": 45.395747402633994,
+            "median": 46.33135185009958,
+            "max": 47.34216361119681
+          },
+          "ttft_ms": {
+            "n": 4,
+            "min": 1484.496166,
+            "median": 1528.5377705,
+            "max": 1562.910583
+          },
+          "prompt_over_ttft_tps": {
+            "n": 4,
+            "min": 655.1878342486084,
+            "median": 669.9220704667766,
+            "max": 689.7963251459149
+          },
+          "mlx_active_peak_bytes": {
+            "n": 4,
+            "min": 12578789945,
+            "median": 12578789945,
+            "max": 12578789945
+          },
+          "process_lifetime_peak_footprint_bytes": {
+            "n": 2,
+            "min": 15305481920,
+            "median": 15305842404,
+            "max": 15306202888
+          }
+        },
+        "on_vs_off_median_percent": {
+          "decode_tps": 21.171783015981415,
+          "ttft_ms": -2.399083780103395,
+          "prompt_over_ttft_tps": 2.2840524019533293,
+          "mlx_active_peak_bytes": 0.24642319576766436,
+          "process_lifetime_peak_footprint_bytes": 0.1676982647060843
+        }
+      },
+      {
+        "prompt_tokens": 10000,
+        "token_agreement": "all129exact",
+        "off": {
+          "decode_tps": {
+            "n": 4,
+            "min": 30.334902957193872,
+            "median": 31.066582157701074,
+            "max": 31.833770678897537
+          },
+          "ttft_ms": {
+            "n": 4,
+            "min": 19793.136708,
+            "median": 19996.7236875,
+            "max": 20190.430583
+          },
+          "prompt_over_ttft_tps": {
+            "n": 4,
+            "min": 495.2841376458722,
+            "median": 500.11586659044826,
+            "max": 505.2256318705763
+          },
+          "mlx_active_peak_bytes": {
+            "n": 4,
+            "min": 16282982440,
+            "median": 16282982440,
+            "max": 16282982440
+          },
+          "process_lifetime_peak_footprint_bytes": {
+            "n": 2,
+            "min": 23669218816,
+            "median": 23843864076,
+            "max": 24018509336
+          }
+        },
+        "on": {
+          "decode_tps": {
+            "n": 4,
+            "min": 37.579623669933035,
+            "median": 37.90503621126354,
+            "max": 38.329602889260585
+          },
+          "ttft_ms": {
+            "n": 4,
+            "min": 19674.607542,
+            "median": 19728.850875000004,
+            "max": 19778.622917
+          },
+          "prompt_over_ttft_tps": {
+            "n": 4,
+            "min": 505.5963725060384,
+            "median": 506.87192160757485,
+            "max": 508.26935066697956
+          },
+          "mlx_active_peak_bytes": {
+            "n": 4,
+            "min": 14174721356,
+            "median": 14184547157,
+            "max": 14184547157
+          },
+          "process_lifetime_peak_footprint_bytes": {
+            "n": 2,
+            "min": 22753763056,
+            "median": 22754082496,
+            "max": 22754401936
+          }
+        },
+        "on_vs_off_median_percent": {
+          "decode_tps": 22.012251038266495,
+          "ttft_ms": -1.339583507209463,
+          "prompt_over_ttft_tps": 1.3508979555450162,
+          "mlx_active_peak_bytes": -12.887290708151134,
+          "process_lifetime_peak_footprint_bytes": -4.57049065758145
+        }
+      },
+      {
+        "prompt_tokens": 20000,
+        "token_agreement": "all129exact",
+        "off": {
+          "decode_tps": {
+            "n": 4,
+            "min": 24.045613966124666,
+            "median": 24.76743328448073,
+            "max": 27.84742580326704
+          },
+          "ttft_ms": {
+            "n": 4,
+            "min": 44515.495167,
+            "median": 47085.5409585,
+            "max": 49237.295959
+          },
+          "prompt_over_ttft_tps": {
+            "n": 4,
+            "min": 406.19614888384694,
+            "median": 425.3457298441159,
+            "max": 449.28175964279285
+          },
+          "mlx_active_peak_bytes": {
+            "n": 4,
+            "min": 19180107920,
+            "median": 19180107920,
+            "max": 19180112016
+          },
+          "process_lifetime_peak_footprint_bytes": {
+            "n": 2,
+            "min": 25607740928,
+            "median": 25624116748,
+            "max": 25640492568
+          }
+        },
+        "on": {
+          "decode_tps": {
+            "n": 4,
+            "min": 28.232125528632057,
+            "median": 28.403479892082604,
+            "max": 28.557528825343216
+          },
+          "ttft_ms": {
+            "n": 4,
+            "min": 47959.93674999999,
+            "median": 48411.783125,
+            "max": 48931.811542
+          },
+          "prompt_over_ttft_tps": {
+            "n": 4,
+            "min": 408.7320573208955,
+            "median": 413.1249831529238,
+            "max": 417.014728444153
+          },
+          "mlx_active_peak_bytes": {
+            "n": 4,
+            "min": 17011431348,
+            "median": 17013004214,
+            "max": 17014577080
+          },
+          "process_lifetime_peak_footprint_bytes": {
+            "n": 2,
+            "min": 25649307352,
+            "median": 25681321700,
+            "max": 25713336048
+          }
+        },
+        "on_vs_off_median_percent": {
+          "decode_tps": 14.680756644574133,
+          "ttft_ms": 2.8166654550468406,
+          "prompt_over_ttft_tps": -2.873132568104275,
+          "mlx_active_peak_bytes": -11.298704444411701,
+          "process_lifetime_peak_footprint_bytes": 0.22324653201739597
+        }
+      },
+      {
+        "prompt_tokens": 50000,
+        "token_agreement": "all129exact",
+        "off": {
+          "decode_tps": {
+            "n": 4,
+            "min": 17.16457310558472,
+            "median": 17.43311262094766,
+            "max": 17.647929764272753
+          },
+          "ttft_ms": {
+            "n": 4,
+            "min": 146211.677917,
+            "median": 147735.178458,
+            "max": 149087.450542
+          },
+          "prompt_over_ttft_tps": {
+            "n": 4,
+            "min": 335.37363351662054,
+            "median": 338.4484896269155,
+            "max": 341.9699487231349
+          },
+          "mlx_active_peak_bytes": {
+            "n": 4,
+            "min": 29476403336,
+            "median": 29477976202,
+            "max": 29479549068
+          },
+          "process_lifetime_peak_footprint_bytes": {
+            "n": 2,
+            "min": 34680528432,
+            "median": 34681708056,
+            "max": 34682887680
+          }
+        },
+        "on": {
+          "decode_tps": {
+            "n": 4,
+            "min": 18.826406092152734,
+            "median": 18.994343468982226,
+            "max": 19.274727758117162
+          },
+          "ttft_ms": {
+            "n": 4,
+            "min": 149248.97295800003,
+            "median": 151113.37987499998,
+            "max": 151948.24266699998
+          },
+          "prompt_over_ttft_tps": {
+            "n": 4,
+            "min": 329.05941603797805,
+            "median": 330.8850761786118,
+            "max": 335.01068053627705
+          },
+          "mlx_active_peak_bytes": {
+            "n": 4,
+            "min": 27313412020,
+            "median": 27313412020,
+            "max": 27313412020
+          },
+          "process_lifetime_peak_footprint_bytes": {
+            "n": 2,
+            "min": 35555073680,
+            "median": 35649265320,
+            "max": 35743456960
+          }
+        },
+        "on_vs_off_median_percent": {
+          "decode_tps": 8.95554845529185,
+          "ttft_ms": 2.2866601254083685,
+          "prompt_over_ttft_tps": -2.234731038877169,
+          "mlx_active_peak_bytes": -7.342987751829244,
+          "process_lifetime_peak_footprint_bytes": 2.789820104701013
+        }
+      }
+    ],
+    "limitations": [
+      "Synthetic fixed-budget B1 paged compute; EOS intentionally ignored",
+      "Prompt/TTFT is not internal pure-kernel prefill",
+      "Short series; no significance or full qualification claim",
+      "Whole-process footprint includes load, warmup, allocator cache and measured repetitions"
+    ]
+  },
+  "api_m3": {
+    "identity": {
+      "binary_sha256": "327cc709c835c31afeead38dd9d190affb989f71fb80d8e683e1cf66125d31ca",
+      "metallib_sha256": "38ceb8a1113b373ccaa89355d895fc8ded3bafc81076dc4ffdb426e2eee03a93",
+      "scope": "owned local, not hosted",
+      "cache_tiers": "off"
+    },
+    "reports": [
+      {
+        "prompt_tokens": 1213,
+        "output_tokens": 128,
+        "all_visible_content_exact": true,
+        "off": {
+          "api_decode_tps": {
+            "min": 28.251709944449846,
+            "median": 28.37029005277845,
+            "max": 28.488631283773543
+          },
+          "visible_ttft_s": {
+            "min": 4.221294374961872,
+            "median": 4.226790229004109,
+            "max": 4.231460916984361
+          },
+          "prompt_over_visible_ttft_tps": {
+            "min": 286.66222465419105,
+            "median": 286.97904252753153,
+            "max": 287.3526203703707
+          }
+        },
+        "on": {
+          "api_decode_tps": {
+            "min": 42.96989229648563,
+            "median": 43.22251621705123,
+            "max": 43.26535009658058
+          },
+          "visible_ttft_s": {
+            "min": 4.186638750019483,
+            "median": 4.197881520463852,
+            "max": 4.203956332989037
+          },
+          "prompt_over_visible_ttft_tps": {
+            "min": 288.5377258753661,
+            "median": 288.95527599562683,
+            "max": 289.7312312877138
+          }
+        },
+        "on_vs_off_median_percent": {
+          "api_decode_tps": 52.351337038298,
+          "visible_ttft_s": -0.683939986940596,
+          "prompt_over_visible_ttft_tps": 0.688633375695269
+        }
+      },
+      {
+        "prompt_tokens": 4505,
+        "output_tokens": 128,
+        "all_visible_content_exact": true,
+        "off": {
+          "api_decode_tps": {
+            "min": 27.822045121999228,
+            "median": 27.886786414640085,
+            "max": 27.97183390520424
+          },
+          "visible_ttft_s": {
+            "min": 15.810500750027131,
+            "median": 15.81206660400494,
+            "max": 15.814650874992367
+          },
+          "prompt_over_visible_ttft_tps": {
+            "min": 284.8624377237271,
+            "median": 284.9089965141476,
+            "max": 284.9372117446862
+          }
+        },
+        "on": {
+          "api_decode_tps": {
+            "min": 41.61314787125787,
+            "median": 41.63381540509365,
+            "max": 41.81897045151237
+          },
+          "visible_ttft_s": {
+            "min": 15.683419583016075,
+            "median": 15.68706758398912,
+            "max": 15.69436262495583
+          },
+          "prompt_over_visible_ttft_tps": {
+            "min": 287.04574423663024,
+            "median": 287.1792310489117,
+            "max": 287.24602923195175
+          }
+        },
+        "on_vs_off_median_percent": {
+          "api_decode_tps": 49.29585211452192,
+          "visible_ttft_s": -0.7905293036405525,
+          "prompt_over_visible_ttft_tps": 0.7968279564844583
+        }
+      }
+    ],
+    "whole_process_peak_median_bytes": {
+      "off": 19531390536,
+      "on": 16807370144
+    },
+    "whole_process_peak_on_vs_off_percent": -13.946884053027976,
+    "limitations": [
+      "Synthetic real API tool-result histories, not private user traffic",
+      "Visible API intervals, not internal kernel timers",
+      "Fixed 128 output budget; independent native raw/state gates are separate",
+      "Whole-process peak includes both history sizes and the short concurrency controls"
+    ]
+  },
+  "api_m5": {
+    "identity": {
+      "binary_sha256": "327cc709c835c31afeead38dd9d190affb989f71fb80d8e683e1cf66125d31ca",
+      "metallib_sha256": "38ceb8a1113b373ccaa89355d895fc8ded3bafc81076dc4ffdb426e2eee03a93",
+      "scope": "owned local, not hosted",
+      "cache_tiers": "off"
+    },
+    "reports": [
+      {
+        "prompt_tokens": 1213,
+        "output_tokens": 128,
+        "all_visible_content_exact": true,
+        "off": {
+          "api_decode_tps": {
+            "min": 35.480500376982135,
+            "median": 36.67591498731322,
+            "max": 38.60637863895962
+          },
+          "visible_ttft_s": {
+            "min": 2.0650879169999996,
+            "median": 2.2502233335,
+            "max": 2.475370999999999
+          },
+          "prompt_over_visible_ttft_tps": {
+            "min": 490.02755546542335,
+            "median": 539.3652663662357,
+            "max": 587.3841931931657
+          }
+        },
+        "on": {
+          "api_decode_tps": {
+            "min": 44.96033113166346,
+            "median": 45.15672499754625,
+            "max": 47.17848950636162
+          },
+          "visible_ttft_s": {
+            "min": 2.1284853329999995,
+            "median": 2.341516792,
+            "max": 2.4706976669999996
+          },
+          "prompt_over_visible_ttft_tps": {
+            "min": 490.9544442452417,
+            "median": 518.1596954497313,
+            "max": 569.8888224380357
+          }
+        },
+        "on_vs_off_median_percent": {
+          "api_decode_tps": 23.123649439057424,
+          "visible_ttft_s": 4.057084340957484,
+          "prompt_over_visible_ttft_tps": -3.9315788833360843
+        }
+      },
+      {
+        "prompt_tokens": 4505,
+        "output_tokens": 128,
+        "all_visible_content_exact": true,
+        "off": {
+          "api_decode_tps": {
+            "min": 33.57343480093128,
+            "median": 34.25700620240719,
+            "max": 34.57451924456316
+          },
+          "visible_ttft_s": {
+            "min": 8.592402999999997,
+            "median": 9.305557541999999,
+            "max": 10.068787749999998
+          },
+          "prompt_over_visible_ttft_tps": {
+            "min": 447.4222827867238,
+            "median": 485.0753361361582,
+            "max": 524.3003616101341
+          }
+        },
+        "on": {
+          "api_decode_tps": {
+            "min": 41.760295660894045,
+            "median": 42.70886253737763,
+            "max": 44.0550372295418
+          },
+          "visible_ttft_s": {
+            "min": 9.38786125,
+            "median": 9.505016853999999,
+            "max": 9.683977667
+          },
+          "prompt_over_visible_ttft_tps": {
+            "min": 465.20140327787476,
+            "median": 473.96289442738254,
+            "max": 479.87500880458794
+          }
+        },
+        "on_vs_off_median_percent": {
+          "api_decode_tps": 24.671905901621184,
+          "visible_ttft_s": 2.143442895277947,
+          "prompt_over_visible_ttft_tps": -2.290869248742111
+        }
+      }
+    ],
+    "whole_process_peak_median_bytes": {
+      "off": 19327147592,
+      "on": 18057133340
+    },
+    "whole_process_peak_on_vs_off_percent": -6.57114168531362,
+    "limitations": [
+      "Synthetic real API tool-result histories, not private user traffic",
+      "Visible API intervals, not internal kernel timers",
+      "Fixed 128 output budget; independent native raw/state gates are separate",
+      "Whole-process peak includes both history sizes and the short concurrency controls"
+    ]
+  },
+  "native_m3_20k_confirm": {
+    "identity": {
+      "binary_sha256": "327cc709c835c31afeead38dd9d190affb989f71fb80d8e683e1cf66125d31ca",
+      "metallib_sha256": "38ceb8a1113b373ccaa89355d895fc8ded3bafc81076dc4ffdb426e2eee03a93",
+      "scope": "synthetic B1 paged fixed128 decode tokens; prompt/TTFT is not kernel prefill",
+      "cache_tiers": "off",
+      "contexts": [
+        20000
+      ],
+      "iterations": 1,
+      "varied_flags": [
+        "DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC",
+        "DARKBLOOM_BONSAI_F16_CONSTANT_CACHE"
+      ]
+    },
+    "reports": [
+      {
+        "prompt_tokens": 20000,
+        "token_agreement": "all129exact",
+        "off": {
+          "decode_tps": {
+            "n": 2,
+            "min": 27.791075988569805,
+            "median": 27.80169326410212,
+            "max": 27.81231053963444
+          },
+          "ttft_ms": {
+            "n": 2,
+            "min": 76316.875,
+            "median": 76327.266521,
+            "max": 76337.658042
+          },
+          "prompt_over_ttft_tps": {
+            "n": 2,
+            "min": 261.99389021073006,
+            "median": 262.02956403794053,
+            "max": 262.06523786515106
+          },
+          "mlx_active_peak_bytes": {
+            "n": 2,
+            "min": 19180116112,
+            "median": 19180116112,
+            "max": 19180116112
+          },
+          "process_lifetime_peak_footprint_bytes": {
+            "n": 2,
+            "min": 25784704704,
+            "median": 25790709404,
+            "max": 25796714104
+          }
+        },
+        "on": {
+          "decode_tps": {
+            "n": 2,
+            "min": 35.892714013900004,
+            "median": 35.90359178218736,
+            "max": 35.91446955047473
+          },
+          "ttft_ms": {
+            "n": 2,
+            "min": 75360.848667,
+            "median": 75546.1057295,
+            "max": 75731.362792
+          },
+          "prompt_over_ttft_tps": {
+            "n": 2,
+            "min": 264.0913785604388,
+            "median": 264.7405855941847,
+            "max": 265.3897926279307
+          },
+          "mlx_active_peak_bytes": {
+            "n": 2,
+            "min": 17011431348,
+            "median": 17013004214,
+            "max": 17014577080
+          },
+          "process_lifetime_peak_footprint_bytes": {
+            "n": 2,
+            "min": 25878208312,
+            "median": 25894903620,
+            "max": 25911598928
+          }
+        },
+        "on_vs_off_median_percent": {
+          "decode_tps": 29.141744861081943,
+          "ttft_ms": -1.0234360892317107,
+          "prompt_over_ttft_tps": 1.0346243051611026,
+          "mlx_active_peak_bytes": -11.298742329532363,
+          "process_lifetime_peak_footprint_bytes": 0.40399903068908394
+        }
+      }
+    ],
+    "limitations": [
+      "Synthetic fixed-budget B1 paged compute; EOS intentionally ignored",
+      "Prompt/TTFT is not internal pure-kernel prefill",
+      "Short series; no significance or full qualification claim",
+      "Whole-process footprint includes load, warmup, allocator cache and measured repetitions"
+    ]
+  }
+}

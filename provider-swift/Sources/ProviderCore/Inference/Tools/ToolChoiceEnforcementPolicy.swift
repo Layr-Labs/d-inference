@@ -79,6 +79,17 @@ enum ToolChoiceEnforcementPolicy {
             && EngineV2SupportedModels.isNemotron35ListingModelID(context.modelId)
     }
 
+    /// Nested examples inside native XML-family reasoning stay reasoning.
+    /// Admission is family-specific; this is a wire policy, not an architecture
+    /// alias, and must not change legacy Nemotron or other model behavior.
+    static func preservesInnerReasoningSpans(_ context: ChatTemplateFixContext) -> Bool {
+        if Qwen4ModelIdentity.isQualified(context.modelId), context.modelType == "qwen4_exp" {
+            return true
+        }
+        return context.modelType == "prism_hadamard_qwen35"
+            && EngineV2SupportedModels.isBonsai2ListingModelID(context.modelId)
+    }
+
     static func validateParser(
         _ format: ToolCallFormat,
         strategy: Strategy,

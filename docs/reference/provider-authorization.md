@@ -1,6 +1,6 @@
 # Provider serving authorization
 
-> Last updated: 2026-09-20 · commit `0cb0c6310`
+> Last updated: 2026-09-20 · commit `863b339b9`
 
 The coordinator can authorize private inference through complete legacy verification or a qualified App Attest connection. These are separate evidence paths; App Attest never sets legacy MDA/APNs flags. The [rollout runbook](../operations/mdm-optional-rollout.md) separates code availability from activation qualification.
 
@@ -28,7 +28,7 @@ The [App Attest module map](../../coordinator/appattest/README.md) explains the 
 | Publication gate | Production workflow sets `require_app_attest_qualification=true`; the coordinator also requires it whenever production App Attest serving is enabled. Missing/mismatched/revoked approval returns 409; unreadable policy returns 503; previous latest remains unchanged | `coordinator/api/app_attest_publication.go` (`persistReleaseForPublication`) |
 | Qualification refresh | Poll every five seconds; `BuildQualificationFreshness = 30 * time.Second` from read start. Every lease recomputes qualification and full code match from retained verified Apple metadata; no I/O at dispatch | `coordinator/appattest/service/build_qualifications.go` (`RefreshBuildQualifications`, `applyBuildQualification`); `coordinator/appattest/service/authorizer.go` (`apply`) |
 | Build withdrawal | Admin `POST /v1/admin/app-attest/builds/revoke` with `binary_hash` and `reason`; 200 includes `revoked`, `changed`, `max_propagation_seconds`. Local qualification generation fences before acknowledgement; remote/stale-store leases expire within 30 seconds. A build tombstone also overrides env-only approvals | `coordinator/api/app_attest_builds.go` (`handleAdminAppAttestBuildRevoke`); `coordinator/registry/app_attest_authorization.go` (`SetAppAttestQualificationGeneration`) |
-| Failure and retry | Malformed approval 400, unauthorized admin 403, conflicting/revoked immutable identity 409, unavailable/pending durable policy 503. Idempotent retry preserves original audit evidence. Revocation never restores through approval retry | `coordinator/store/app_attest_builds_postgres.go` (`QualifyAppAttestBuild`, `SetQualifiedRelease`) |
+| Failure and retry | Malformed approval 400, missing/invalid authentication 401, authenticated non-admin or non-interactive credentials 403, conflicting/revoked immutable identity 409, unavailable/pending durable policy 503. Idempotent retry preserves original audit evidence. Revocation never restores through approval retry | `coordinator/store/app_attest_builds_postgres.go` (`QualifyAppAttestBuild`, `SetQualifiedRelease`) |
 
 The [qualification runbook](../operations/app-attest-build-qualification.md) gives the staged publication, migration and rollback procedure. Build withdrawal removes App Attest eligibility; it does not fabricate a credential violation or revoke independently valid legacy evidence.
 

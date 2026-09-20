@@ -72,7 +72,7 @@ func TestQualifiedPublicationRequiresSeparateOperatorApproval(t *testing.T) {
 		t.Fatal("failure advanced latest")
 	}
 	for _, token := range []string{"", "release-key"} {
-		if w := qualificationCall(t, s, "POST", "/v1/admin/app-attest/builds", token, qualificationBody(b)); w.Code != 403 {
+		if w := qualificationCall(t, s, "POST", "/v1/admin/app-attest/builds", token, qualificationBody(b)); w.Code != 401 {
 			t.Fatalf("CI granted its own approval: %d", w.Code)
 		}
 	}

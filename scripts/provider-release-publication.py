@@ -12,10 +12,11 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-import tempfile
 import time
 import urllib.error
 import urllib.request
+
+from provider_release_github import publish_github_release
 
 BUNDLE = 'darkbloom-bundle-macos-arm64.tar.gz'
 
@@ -51,6 +52,17 @@ def validate(payload, env):
         raise ValueError('Publication origin or immutable object path changed')
 
 
+def release_changelog(env):
+    if env.get('GITHUB_REF_TYPE') == 'tag':
+        # Read annotation text as data: never interpolate it into Python or a
+        # shell program. Preserve multiline notes in the retained JSON payload.
+        result = subprocess.run(['git', 'tag', '--list', '--format=%(contents)',
+                                 '--', env['GITHUB_REF_NAME']], capture_output=True, text=True, check=True)
+        if result.stdout.strip():
+            return result.stdout.strip()
+    return f"Release v{env['VERSION']}"
+
+
 def prepare(root, bundle, env):
     root.mkdir(parents=True, exist_ok=False)
     payload = {
@@ -59,7 +71,7 @@ def prepare(root, bundle, env):
         'metallib_hash': env['METALLIB_HASH'], 'code_directory_hash': env['CODE_DIRECTORY_HASH'],
         'source_commit': env['GITHUB_SHA'], 'ci_run_id': env['GITHUB_RUN_ID'],
         'require_app_attest_qualification': env['ENV_PREFIX'] == 'prod',
-        'changelog': f"Release v{env['VERSION']}",
+        'changelog': release_changelog(env),
     }
     payload['url'] = env['R2_PUBLIC_URL'].rstrip('/') + '/' + object_key(payload)
     validate(payload, env)
@@ -153,6 +165,8 @@ def await_latest(env, payload):
             if core(latest.get('version', '')) > core(payload['version']):
                 return False
         except ReadinessPending:
+            # A 503 is expected while another coordinator loads the committed
+            # policy. Retry within the same bounded convergence window.
             pass
         if attempt < 6:
             time.sleep(2)
@@ -169,19 +183,7 @@ def publish(root, env):
         for name in [BUNDLE, 'eigeninference-bundle-macos-arm64.tar.gz']:
             upload(root, 'releases/latest/' + name, env)
     if env['ENV_PREFIX'] == 'prod':
-        tag = env['GITHUB_REF_NAME']
-        # A partial retry may follow successful GitHub publication. Never replace
-        # an existing asset: the coordinator has already checked immutable identity.
-        exists = subprocess.run(['gh', 'release', 'view', tag, '--json', 'tagName'], capture_output=True)
-        if exists.returncode == 0:
-            with tempfile.TemporaryDirectory(prefix='verify-published-release-') as directory:
-                subprocess.run(['gh', 'release', 'download', tag, '--pattern', BUNDLE, '--dir', directory], check=True)
-                if sha256(Path(directory) / BUNDLE) != payload['bundle_hash']:
-                    raise ValueError('Existing GitHub release contains different signed bytes; refusing replacement')
-        else:
-            subprocess.run(['gh', 'release', 'create', tag, str(root / BUNDLE), '--verify-tag',
-                            '--title', tag, '--notes-file', str(root / 'release-notes.md'),
-                            '--generate-notes', '--latest=' + str(is_latest).lower()], check=True)
+        publish_github_release(root, BUNDLE, payload['bundle_hash'], env, is_latest)
 
 
 def main():

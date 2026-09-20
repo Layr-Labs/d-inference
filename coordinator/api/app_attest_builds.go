@@ -38,8 +38,19 @@ func buildApprovalActor(r *http.Request) string {
 	return "admin-key"
 }
 
+// requireAuth establishes the Privy/admin-key identity at the route boundary.
+// An admin-owned inference key or provider token must not inherit the owner's
+// ability to approve executable builds merely because it resolves to that user.
+func (s *Server) isBuildAdminAuthorized(w http.ResponseWriter, r *http.Request) bool {
+	if r.Context().Value(ctxKeyAPIKey) != nil {
+		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "build qualification requires an admin session or admin key"))
+		return false
+	}
+	return s.isAdminAuthorized(w, r)
+}
+
 func (s *Server) handleAdminAppAttestBuilds(w http.ResponseWriter, r *http.Request) {
-	if !s.isAdminAuthorized(w, r) {
+	if !s.isBuildAdminAuthorized(w, r) {
 		return
 	}
 	st, ok := store.As[store.AppAttestBuildStore](s.store)
@@ -103,7 +114,7 @@ func (s *Server) handleAdminAppAttestBuilds(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleAdminAppAttestBuildRevoke(w http.ResponseWriter, r *http.Request) {
-	if !s.isAdminAuthorized(w, r) {
+	if !s.isBuildAdminAuthorized(w, r) {
 		return
 	}
 	var body struct {

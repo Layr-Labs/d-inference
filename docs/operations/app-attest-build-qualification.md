@@ -1,6 +1,6 @@
 # Qualify and publish a signed App Attest build
 
-> Last updated: 2026-09-20 · commit `0cb0c6310`
+> Last updated: 2026-09-20 · commit `863b339b9`
 
 Use this runbook to approve an exact signed provider artifact before users can update to it. Approval persists across coordinator restarts and refreshes without a hotswap. The [authorization reference](../reference/provider-authorization.md) owns serving controls and freshness deadlines.
 
@@ -10,7 +10,7 @@ Every production provider publication, including a retry after missing qualifica
 
 ## Prerequisites
 
-- Human authorization for the release and build qualification; administrator access to the coordinator. The CI release key cannot approve builds.
+- Human authorization for the release and build qualification; administrator access to the coordinator through a verified Privy session (including `scripts/admin.sh login`) or admin key. The CI release key and admin-owned inference/provider credentials cannot approve builds.
 - Deploy the coordinator implementing `coordinator/api/app_attest_publication.go` and the additive `app_attest_build_qualifications` table before using the updated publication workflow. All serving coordinators and rollback images must understand durable qualification and revocation.
 - Complete the signed-artifact, actual Apple proof, hardware-security transition, supported older-macOS, and inference checks in [MDM-optional rollout](mdm-optional-rollout.md#prerequisites). Record actual test evidence; a hash mapping is not evidence that those tests ran.
 - Preserve existing qualified env pairs during the initial transition. They remain a compatibility fallback for existing builds without a durable row, only while the qualification store is readable and fresh. They cannot approve a new gated publication and never override a durable revocation.
@@ -29,7 +29,7 @@ Every production provider publication, including a retry after missing qualifica
    ```
 
    A 200 response confirms durable approval and local policy readiness. This does not publish the release or turn on serving/removal. A 503 after persistence is retryable with the same body; a conflicting identity returns 409. To import a previously published build, construct the same body from its original signed release and original source/run provenance; keep its existing URL.
-4. Approve the environment-protected **Publish qualified signed release** job. If it already stopped with `app_attest_qualification_required`, use **Re-run failed jobs**. Do not rerun successful signing: a new signature timestamp changes the artifact identity and requires a new approval. Publication downloads the retained artifact from the same run, verifies its source/run/version/origin/digest, calls `POST /v1/releases`, checks `/v1/releases/latest`, then updates R2 latest aliases and creates the GitHub Release. An older staged version never overwrites a newer latest alias. Partial publication retries preserve and verify the exact GitHub asset.
+4. Approve the environment-protected **Publish qualified signed release** job. If it already stopped with `app_attest_qualification_required`, use **Re-run failed jobs**. Do not rerun successful signing: a new signature timestamp changes the artifact identity and requires a new approval. Publication downloads the retained artifact from the same run, verifies its source/run/version/origin/digest, calls `POST /v1/releases`, checks `/v1/releases/latest`, then updates R2 latest aliases and creates the GitHub Release. An older staged version never overwrites a newer latest alias. Partial publication retries resume a draft left by creation/upload/publish failure: upload missing bytes, repair only an incomplete `starter` placeholder, verify the exact downloaded hash, then publish. Completed mismatched assets are never overwritten. The retained changelog preserves the tag annotation as data.
 5. Check the registered release, current serving grants and completed requests by version. Adding approval does not fabricate a new Apple assertion: a never-authorized connection still needs its normal fresh proof/identity flow. Retained qualified proofs can renew on the next five-second authorizer pass while their original assertion deadline remains valid. Keep prior approved versions active during adoption.
 
 ## Verification

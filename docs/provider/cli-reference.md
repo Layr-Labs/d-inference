@@ -159,6 +159,13 @@ Same checks as `doctor`; any WARN or FAIL exits 1.
 Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 (`LocalEndpoint.readLiveInfo`, `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift`).
 
+Provider-local Chat Completions, Completions and Responses reject negative output
+token limits with HTTP 400 before model invocation or streaming headers. Explicit
+zero, positive and omitted limits retain their existing semantics. This local
+SDK validation does not change coordinator normalization or model numerics
+(`libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/OpenAIRequestValidation.swift`,
+`OpenAIRequestValidation.preparedRequest`).
+
 ### `darkbloom login` / `darkbloom logout`
 
 `login` takes `--config` only and runs `performDeviceCodeLogin`
@@ -817,6 +824,14 @@ override `provider.toml` for one process, are in
 | `[backend] continuous_batching`, `adaptive_prefill`, `engine_v2`, `legacy_compiled_decode`, `kv_quant` | retired | Parsed for presence only; one startup WARN each (`RetiredCodingKeys`) |
 
 ## LaunchAgent environment passthrough
+
+The [Bonsai performance profile](../reference/configuration.md#bonsai-performance-qualification)
+uses source-default-on eligible paths in foreground and daemon processes. It
+leaves model bytes, native precision, context limits and MTP capabilities unchanged.
+Explicit `0` restores the prior path; other explicit values except `1` also
+disable it. These names are not daemon shell-environment passthrough entries:
+foreground overrides work, but do not assume a shell setting reaches an installed
+LaunchAgent. The generic constant-cache kill switch remains effective.
 
 For native Flash-Next foreground/local serving, the lower-only
 `DARKBLOOM_QWEN4_LISTING_CONTEXT` control bounds the complete request envelope.

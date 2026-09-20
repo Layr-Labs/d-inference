@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-20 · commit `e660abb96`
+> Last updated: 2026-09-20 · commit `cc225365f`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -25,6 +25,11 @@ Native CI test isolation reuses these built test products and their staged
 metallib; it does not rebuild or download a model. Follow the
 [provider test procedure](test.md) to run GPU-global assertions in separate
 processes with the exclusive opt-in scoped to the named test.
+
+The [Bonsai performance qualification](test.md#bonsai-performance-qualification)
+uses a separate optimized test build with `-enable-testing` and `-DDEBUG` for
+test-only ownership/scheduler seams. Do not add these switches to the ordinary
+production build or substitute its benchmark archive with a test binary.
 
 Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 `scripts/publish-model.sh` to registration. See the

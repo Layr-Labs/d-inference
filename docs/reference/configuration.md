@@ -396,6 +396,24 @@ Installed processes still use the source defaults.
 | `DARKBLOOM_QWEN4_QSA_PARALLEL_VALUE_PARTITIONS` | `1`, `2`, `4`, `8`, `16`, `32` | `32` for full KV; caller fallback for compact KV | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpParallelQSA.swift` (`valuePartitions`) | A valid explicit caller argument wins over the environment. Invalid explicit values retain the caller fallback. This changes scheduling, not arithmetic order, precision or MTP depth. |
 | `DARKBLOOM_QWEN4_LAYER_ASYNC` | unset or exact `1` enables; explicit `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen4ExpLayerSubmission.swift` (`enabled`, `plan`) | Early singleton text layer submission on valid native paged caches at widths 1–6. Media/explicit positions, wider/batched shapes and faulted or unknown caches retain the existing scheduling. Other explicit spellings stay disabled. |
 
+### Bonsai performance qualification
+
+These SDK controls default on for eligible paths of the unchanged schema-2
+Ternary Bonsai 2 27B artifact. They are not a weight conversion, MTP capability
+or deployment action. Source defaults apply to foreground and daemon processes.
+Set any overrides before startup; these names are not in the LaunchAgent shell
+environment passthrough. See `libs/mlx-swift-lm/docs/bonsai2.md` for the
+artifact contract and qualification limits.
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC` | unset or exact `1` enables; `0` disables | on | `libs/mlx-swift-lm/Libraries/MLXLLM/Models/PrismHadamardPrefillCarry.swift` (`isEnabled`, `enabled`, `withScope`, `submit`) | Earlier submission of compact recurrent carry during eligible packed text prefill; native arithmetic, deferred input fills, write-fault checks and engine retirement remain unchanged. Short/decode, media positions and captured windows retain existing scheduling. Other explicit spellings remain disabled. |
+| `DARKBLOOM_BONSAI_F16_CONSTANT_CACHE` | unset or exact `1` enables; `0` disables | on | `libs/mlx-swift/Source/MLXNN/Hadamard.swift` (`float16ConstantReuseEnabled`, `permitsFloat16ConstantReuse`); `libs/mlx-swift/Source/MLX/ConstantArrayCastCache.swift` (`cachedCast`) | Reuses the native FP16-to-FP32 scale/offset conversion for eligible 2-bit/group128/block1024 packed projections. Adds approximately 1.60 GB of retained constants for the selected pack; weights and native precision do not change. Descriptor/stream changes invalidate reuse; tracing falls back. Other explicit spellings remain disabled; the generic cache rollback remains effective. |
+
+See the [matched performance report](../reports/2026-09-18-bonsai2-lossless-performance.md)
+for measured gains, tradeoffs and open gates. Neither control authorizes model
+uploads, catalog changes, signing or production promotion.
+
 ### Memory and media budgets
 
 | Variable | Values / type | Default | Read in | Effect |

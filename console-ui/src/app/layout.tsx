@@ -50,11 +50,11 @@ export default function RootLayout({
         <ThemeProvider>
           <PrivyClientProvider>
             <ModelTokenPromotionsProvider>
-            <ReferralAttributionProvider>
-              <VerificationModeProvider>
-                <AppShell>{children}</AppShell>
-              </VerificationModeProvider>
-            </ReferralAttributionProvider>
+              <ReferralAttributionProvider>
+                <VerificationModeProvider>
+                  <AppShell>{children}</AppShell>
+                </VerificationModeProvider>
+              </ReferralAttributionProvider>
             </ModelTokenPromotionsProvider>
           </PrivyClientProvider>
         </ThemeProvider>

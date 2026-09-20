@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-20 · commit `0cb0c6310`
+> Last updated: 2026-09-20 · commit `cc45cebc2`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -70,6 +70,10 @@ Existing referral codes created by older releases may contain Unicode letters;
 applying those codes remains supported. New registration uses ASCII code rules.
 
 ## Formulas
+
+For token-promotion requests, referral rewards use only
+`ModelTokenReservation.ConsumerCostMicroUSD`; `SponsoredMicroUSD` is excluded
+(`coordinator/store/model_token_referrals.go`, `promotionReferralRecord`).
 
 | Quantity | Formula | Citation |
 |---|---|---|

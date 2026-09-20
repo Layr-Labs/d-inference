@@ -1,6 +1,6 @@
 "use client";
 
-import { useAuthContext } from "@/components/providers/PrivyClientProvider";
+import { useAuthContext } from "@/components/app-providers/PrivyClientProvider";
 import { ReferralRegistration, referralButtonClass } from "./ReferralRegistration";
 import { ReferralEarnings } from "./ReferralEarnings";
 import { ReferralApply } from "./ReferralApply";

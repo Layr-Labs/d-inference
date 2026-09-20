@@ -1,6 +1,6 @@
 # Open Sales Program: share a code and withdraw rewards
 
-> Last updated: 2026-09-07 · commit `14ffb2114`
+> Last updated: 2026-09-20 · commit `cc45cebc2`
 
 Use the Open Sales Program to refer consumers to Darkbloom, track their contribution to
 your referral earnings, and withdraw earned rewards. The reward is a share of
@@ -39,6 +39,20 @@ collected inference spend; the exact rate, units, and rounding are in
    [withdrawal steps](billing.md#9-withdraw-international-earnings). Referral rewards
    join other earnings in the same balance. Lifetime rewards stay visible even
    after you spend or withdraw them.
+
+### Existing provider accounts
+
+Sign in with the account linked to your Macs and open **Open Sales Program**
+in the account navigation. Register your own code to receive credit for
+consumers you introduce. To acknowledge the person who introduced you, enter
+their code under **Who introduced you?** if your account has no referrer yet.
+Existing accounts are eligible; attribution applies only to future collected
+inference spending, not earlier usage or income earned by serving requests.
+
+The **Your impact** section shows consumers referred, their eligible spending,
+and lifetime referral rewards. This program does not record machine
+recruitment or a free-form claim of past contributions; provider acquisition
+is a [separate proposal](../design/provider-referral-growth-program.md).
 
 ### Use the API
 

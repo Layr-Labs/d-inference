@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-20 · commit `0cb0c6310`
+> Last updated: 2026-09-20 · commit `cc45cebc2`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -230,6 +230,15 @@ record commit in one Postgres transaction or one memory-store lock. Replaying a
 settled request returns the existing result and cannot add a referrer or reward
 retroactively. Existing referral relationships apply to future settlements;
 there is no historical backfill. See [Storage](storage.md#consumer-referral-settlement).
+
+`SettleModelTokenReservation` preserves the same referral contract for token
+promotions: only `ConsumerCostMicroUSD` earns a reward, never sponsored token
+value. Consumer adjustment, provider payout, referral credit and the terminal
+reservation state commit together. `coordinator/store/model_token_referrals.go`
+(`promotionReferralRecord`) records these settlements under
+`promotion:<reservation_id>`; the reservation state prevents duplicate rewards
+and retroactive attribution. PostgreSQL locks consumer, provider and referrer
+balances in account order, including when the provider is also the referrer.
 
 The console's **Open Sales Program** page provides registration, share links, attribution
 and earnings. A first-touch `?ref=CODE` survives sign-in and the invite gate;

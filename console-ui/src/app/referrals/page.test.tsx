@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
   info: vi.fn(), stats: vi.fn(), register: vi.fn(),
   attribution: { code: null as string | null, status: "idle", error: null, apply: vi.fn(), dismiss: vi.fn() },
 }));
-vi.mock("@/components/providers/PrivyClientProvider", () => ({ useAuthContext: () => mocks.auth }));
+vi.mock("@/components/app-providers/PrivyClientProvider", () => ({ useAuthContext: () => mocks.auth }));
 vi.mock("@/components/TopBar", () => ({ TopBar: () => null }));
 vi.mock("@/lib/api/referrals", () => ({ fetchReferralInfo: mocks.info, fetchReferralStats: mocks.stats, registerReferral: mocks.register }));
 vi.mock("@/components/referrals/ReferralAttributionProvider", () => ({ useReferralAttribution: () => mocks.attribution }));

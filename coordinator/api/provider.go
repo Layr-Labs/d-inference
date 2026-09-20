@@ -27,6 +27,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"maps"
 	"math"
 
@@ -2437,6 +2438,7 @@ func (s *Server) handleCompleteAt(
 
 	recordAccounting := s.completionAccounting(pr, providerID, msg.Usage, feePercent, freeSelfRoute)
 	billingFinalized := true
+	var providerPayout int64
 
 	// Settle billing against the pre-flight reservation. All balance
 	// mutations (overage charge, refund) happen inside the finalization

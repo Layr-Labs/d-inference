@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
-import { useAuthContext } from "@/components/providers/PrivyClientProvider";
+import { useAuthContext } from "@/components/app-providers/PrivyClientProvider";
 import { applyReferral } from "@/lib/api/referrals";
 import { useToastStore } from "@/hooks/useToast";
 import { captureReferral, clearReferral, normalizeReferral, readReferral } from "./attribution";

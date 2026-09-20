@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-20 · commit `0cb0c6310`
+> Last updated: 2026-09-20 · commit `cc45cebc2`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -227,6 +227,10 @@ Roughly forty tables; grouped by what would be lost if the family vanished.
 | Bookkeeping | `schema_migrations`, `earnings_summary_backfill_pending` | Completion/plan markers and resumable per-key historical deltas. |
 
 ### Consumer referral settlement
+
+Token-promotion settlements also write this table, using
+`promotion:<reservation_id>` and only the collected paid portion. The record
+and reward share the promotion settlement transaction.
 
 `FinalizeConsumerCharge` adds a request-keyed settlement record in
 `consumer_charge_settlements` through `consumerSettlementSchema`

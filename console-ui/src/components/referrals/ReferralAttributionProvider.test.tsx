@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   auth: { ready: true, authenticated: false, user: null as { id: string } | null, getAccessToken: vi.fn() },
   apply: vi.fn(),
 }));
-vi.mock("@/components/providers/PrivyClientProvider", () => ({ useAuthContext: () => mocks.auth }));
+vi.mock("@/components/app-providers/PrivyClientProvider", () => ({ useAuthContext: () => mocks.auth }));
 vi.mock("@/lib/api/referrals", () => ({ applyReferral: mocks.apply }));
 vi.mock("next/navigation", () => ({ usePathname: () => "/" }));
 

@@ -1150,16 +1150,16 @@ struct CoordinatorAdvertiseTests {
 }
 
 extension ModelPrefetchDownloaderTests {
-    private func revisionFixture(_ id: String, version: String, weights: Data) -> (CatalogModel, ModelManifest) {
+    private func revisionFixture(_ id: String, version: String, weights: Data, weightPath: String = "model.safetensors") -> (CatalogModel, ModelManifest) {
         let config = Data("shared config".utf8)
         let prefix = "v2/revision-test/\(version)"
         let files = [
             ManifestFile(path: "config.json", sizeBytes: Int64(config.count), sha256: sha256Hex(config), role: "config"),
-            ManifestFile(path: "model.safetensors", sizeBytes: Int64(weights.count), sha256: sha256Hex(weights), role: "weight"),
+            ManifestFile(path: weightPath, sizeBytes: Int64(weights.count), sha256: sha256Hex(weights), role: "weight"),
         ]
-        let aggregate = aggregateHash(files: [("config.json", config), ("model.safetensors", weights)])
+        let aggregate = aggregateHash(files: [("config.json", config), (weightPath, weights)])
         PrefetchURLProtocol.files["/\(prefix)/config.json"] = config
-        PrefetchURLProtocol.files["/\(prefix)/model.safetensors"] = weights
+        PrefetchURLProtocol.files["/\(prefix)/\(weightPath)"] = weights
         return (
             CatalogModel(id: id, s3Name: prefix, displayName: id, sizeGb: 0,
                 version: version, r2Prefix: prefix, aggregateSHA256: aggregate),
@@ -1190,6 +1190,41 @@ extension ModelPrefetchDownloaderTests {
         _ = try await downloader.prefetch(model: b, manifest: mb, activate: false)
         #expect(PrefetchURLProtocol.fetchedPaths().isEmpty)
         #expect(ModelScanner.resolveLocalPath(modelID: id) == old)
+    }
+
+    @Test("equal aggregate hashes with renamed files remain distinct immutable revisions", arguments: [false, true])
+    func renamedRevisionFiles(foreground: Bool) async throws {
+        PrefetchURLProtocol.reset()
+        let id = "test-org/renamed-revision-\(UUID().uuidString)"
+        defer { try? ModelDownloader.remove(modelID: id) }
+        let downloader = ModelDownloader(r2CDNURL: "https://fixture.test", urlSession: makeSession())
+        let weights = Data("unchanged weights".utf8)
+        let (a, ma) = revisionFixture(id, version: "a", weights: weights)
+        let old = try await downloader.prefetch(model: a, manifest: ma)
+        let (b, mb) = revisionFixture(id, version: "b", weights: weights, weightPath: "renamed.safetensors")
+        #expect(ma.aggregateSHA256 == mb.aggregateSHA256)
+        let next: URL
+        if foreground {
+            try await downloader.downloadManifestModel(model: b, manifest: mb, onProgress: nil)
+            next = try #require(ModelScanner.resolveLocalPath(modelID: id))
+        } else {
+            next = try await downloader.prefetch(model: b, manifest: mb, activate: false)
+            #expect(ModelScanner.resolveLocalPath(modelID: id) == old)
+            try ModelDownloader.activateRevision(modelID: id, directory: next)
+        }
+        #expect(next != old)
+        #expect(try Data(contentsOf: next.appendingPathComponent("renamed.safetensors")) == weights)
+        #expect(try Data(contentsOf: old.appendingPathComponent("model.safetensors")) == weights)
+        #expect(!FileManager.default.fileExists(atPath: old.appendingPathComponent("renamed.safetensors").path))
+        try ModelDownloader.activateRevision(modelID: id, directory: old)
+        #expect(ModelScanner.resolveLocalPath(modelID: id) == old)
+        PrefetchURLProtocol.clearRequested()
+        let retryManifest = ModelManifest(schemaVersion: mb.schemaVersion, modelID: mb.modelID,
+            version: mb.version, r2Prefix: mb.r2Prefix, aggregateSHA256: mb.aggregateSHA256,
+            totalSizeBytes: mb.totalSizeBytes, fileCount: mb.fileCount,
+            files: mb.files.reversed(), createdAt: mb.createdAt.addingTimeInterval(60))
+        #expect(try await downloader.prefetch(model: b, manifest: retryManifest, activate: false) == next)
+        #expect(PrefetchURLProtocol.fetchedPaths().isEmpty)
     }
 
     @Test("same-ID concurrent requests share immutable files and never choose a staged revision")

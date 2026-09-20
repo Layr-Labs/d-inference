@@ -1,12 +1,34 @@
+import Crypto
 import Foundation
 
 /// Downloaded revisions are immutable and hidden from discovery until refs/main
 /// selects one. Keeping preparation separate from activation preserves live
 /// engines, supports rollback, and makes process death during download harmless.
 extension ModelDownloader {
-    static func revisionSnapshotDirectory(modelID: String, aggregateSHA256: String) -> URL {
-        cacheModelDirectory(for: modelID).appendingPathComponent("snapshots", isDirectory: true)
-            .appendingPathComponent(".revision-" + aggregateSHA256, isDirectory: true)
+    static func revisionSnapshotDirectory(manifest: ModelManifest) throws -> URL {
+        // The wire aggregate hashes file digests, not their paths. Include the
+        // immutable revision and sorted file layout so a rename cannot collide
+        // with an existing snapshot. Timestamps and download mirrors are not
+        // part of artifact identity and must not break idempotent reuse.
+        let identity = ModelRevisionIdentity(manifest)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let digest = SHA256.hash(data: try encoder.encode(identity))
+            .map { String(format: "%02x", $0) }.joined()
+        return cacheModelDirectory(for: manifest.modelID).appendingPathComponent("snapshots", isDirectory: true)
+            .appendingPathComponent(".revision-" + digest, isDirectory: true)
+    }
+
+    /// Read only the small activation receipt; this is not a replacement for
+    /// byte verification during download or attestation.
+    static func selectedRevisionMatches(modelID: String, version: String, aggregateSHA256: String) -> Bool {
+        guard let directory = ModelScanner.resolveLocalPath(modelID: modelID),
+            let data = try? Data(contentsOf: directory.appendingPathComponent(".darkbloom-manifest.json"))
+        else { return false }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let manifest = try? decoder.decode(ModelManifest.self, from: data) else { return false }
+        return manifest.modelID == modelID && manifest.version == version && manifest.aggregateSHA256 == aggregateSHA256
     }
 
     static func validateArtifactManifest(_ manifest: ModelManifest, model: CatalogModel) throws {
@@ -93,5 +115,25 @@ extension ModelDownloader {
         let refs = modelDir.appendingPathComponent("refs", isDirectory: true)
         try FileManager.default.createDirectory(at: refs, withIntermediateDirectories: true)
         try directory.lastPathComponent.write(to: refs.appendingPathComponent("main"), atomically: true, encoding: .utf8)
+    }
+}
+
+/// Stable, path-aware snapshot identity. Derived totals and creation time do not
+/// distinguish revisions; the complete file entries and registry identity do.
+private struct ModelRevisionIdentity: Encodable {
+    let schemaVersion: Int
+    let modelID: String
+    let version: String
+    let r2Prefix: String
+    let aggregateSHA256: String
+    let files: [ManifestFile]
+
+    init(_ manifest: ModelManifest) {
+        schemaVersion = manifest.schemaVersion
+        modelID = manifest.modelID
+        version = manifest.version
+        r2Prefix = manifest.r2Prefix
+        aggregateSHA256 = manifest.aggregateSHA256
+        files = manifest.files.sorted { $0.path < $1.path }
     }
 }

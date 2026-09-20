@@ -119,7 +119,7 @@ extension ModelDownloader {
         onProgress: (@Sendable (ProgressEvent) -> Void)?
     ) async throws {
         try Self.validateArtifactManifest(manifest, model: model)
-        let cacheDir = Self.revisionSnapshotDirectory(modelID: model.id, aggregateSHA256: manifest.aggregateSHA256)
+        let cacheDir = try Self.revisionSnapshotDirectory(manifest: manifest)
         if Self.verifiedRevisionExists(at: cacheDir, manifest: manifest) {
             try Self.activateRevision(modelID: model.id, directory: cacheDir)
             onProgress?(ProgressEvent(file: model.id, bytesDownloaded: manifest.totalSizeBytes, bytesTotal: manifest.totalSizeBytes))

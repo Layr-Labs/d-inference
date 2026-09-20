@@ -1,6 +1,6 @@
 # Model artifact revisions
 
-> Last updated: 2026-09-20 · commit `cc225365f`
+> Last updated: 2026-09-20 · commit `59215f370`
 
 An existing model can acquire new weights without changing its model ID or
 releasing another provider binary. Publishers upload an immutable revision and
@@ -68,7 +68,12 @@ Files copied from the active snapshot are independently owned and reverified.
 The implementation uses copies, not a deduplicating blob store; disk must fit
 both retained and incoming revisions. A storage failure preserves the selection.
 
-Completed snapshots live at `snapshots/.revision-<aggregate_sha256>`. Hidden
+Completed snapshots live at `snapshots/.revision-<identity_sha256>`. The snapshot
+key hashes the model ID, version, R2 prefix, aggregate hash and path-sorted file
+entries; creation timestamps and download mirrors do not affect it. The wire
+aggregate alone cannot identify a layout because it combines file digests without
+hashing their paths. Reconciliation also reads the selected manifest receipt's
+version, so equal-content versions still converge to the requested layout. Hidden
 staging and completed-but-unselected snapshots are excluded from discovery.
 `ModelScanner.findLatestSnapshot` honors `refs/main`; modification times cannot
 undo a rollback. Legacy caches without a ref retain modification-time discovery.
@@ -77,7 +82,11 @@ The provider never deletes retained revisions automatically.
 The monitor runs one revision attempt at a time and retries with jittered,
 exponential backoff capped at 300 seconds. A new desired identity resets that
 backoff and cancels the superseded attempt. Each attempt rechecks current desired
-state before activation. The drain waits at most 120 half-second checks for
+state before activation and after each suspending publication step. Publication
+returns success before activation consumes alias lineage; a superseded or
+cancelled attempt restores the previous selection and leaves the current alias
+drop pending for retry. A provisional advertisement is not treated as converged
+while activation is in progress. The drain waits at most 120 half-second checks for
 accepted work; loading and recovery occur afterward and are not included in
 that wait bound. Other resident models remain available. Cold loads serialize
 behind activation so another load cannot consume the space reserved by unloading
@@ -125,7 +134,7 @@ random rollout jitter is not a fleet availability guarantee.
 | Live catalog refresh fails after promotion | HTTP 503 with `Retry-After`; retry publication using the same version and source |
 | Incomplete upload or invalid manifest | Publishing is rejected; desired revision stays unchanged |
 | Network interruption or insufficient disk | Old revision serves; partial downloads can resume |
-| Desired revision changes during preparation | Old attempt is cancelled; completed bytes may remain for reuse |
+| Desired revision changes during preparation or publication | Old attempt is cancelled; publication restores the previous selection and preserves pending alias cleanup; completed bytes may remain for reuse |
 | Explicit external snapshot override | The provider respects the override and does not replace it through the cache |
 | Busy accepted requests outlast drain wait | New admission reopens on old revision; retry later |
 | New engine fails to load | Restore old ref and attempt to reload old engine |
@@ -143,6 +152,7 @@ random rollout jitter is not a fleet availability guarantee.
 | Desired state and routing hash admission | `coordinator/registry/model_commands.go`, `model_revisions.go`, `model_catalog.go` |
 | Immutable files and atomic selection | `provider-swift/Sources/ProviderCore/Models/ModelArtifactRevision.swift`, `ModelArtifactWriteLease.swift` |
 | Reconciliation and backoff | `provider-swift/Sources/ProviderCore/ProviderLoop+ModelRevisions.swift` |
+| Guarded inventory publication | `provider-swift/Sources/ProviderCore/ProviderLoop+PrefetchPublication.swift` (`publishVerifiedPrefetch`) |
 | Activation and recovery | `provider-swift/Sources/ProviderCore/ProviderLoop+ModelRevisionActivation.swift`, `ProviderLoop+ModelRevisionRecovery.swift` |
 | Shared target/assistant drain lifecycle | `provider-swift/Sources/ProviderCore/Models/ModelIdleUpgrade.swift` |
 

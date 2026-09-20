@@ -49,7 +49,7 @@ extension ModelDownloader {
             throw ModelCatalogError.ineligible(
                 ModelRuntimeIneligibleError(eligibility: eligibility).localizedDescription)
         }
-        let cacheDir = Self.revisionSnapshotDirectory(modelID: model.id, aggregateSHA256: manifest.aggregateSHA256)
+        let cacheDir = try Self.revisionSnapshotDirectory(manifest: manifest)
         if Self.verifiedRevisionExists(at: cacheDir, manifest: manifest) {
             if activate { try Self.activateRevision(modelID: model.id, directory: cacheDir) }
             onByteProgress?(manifest.totalSizeBytes, manifest.totalSizeBytes)

@@ -51,8 +51,16 @@ extension ProviderLoop {
     func pendingModelRevisions() -> [CoordinatorMessage.DesiredModelEntry] {
         guard !isShuttingDown, !state.refusingNewWork else { return [] }
         return desiredModelRevisions.values.filter {
-            liveModelHashes[$0.desiredBuild] != $0.aggregateSHA256 || advertisedModels[$0.desiredBuild] == nil || failedModelRevisionRestores[$0.desiredBuild] != nil
+            !modelRevisionIsSelected($0) || failedModelRevisionRestores[$0.desiredBuild] != nil
         }.sorted { $0.desiredBuild < $1.desiredBuild }
+    }
+
+    func modelRevisionIsSelected(_ entry: CoordinatorMessage.DesiredModelEntry) -> Bool {
+        guard let version = entry.revision, let hash = entry.aggregateSHA256,
+            liveModelHashes[entry.desiredBuild] == hash, advertisedModels[entry.desiredBuild] != nil
+        else { return false }
+        return ModelDownloader.selectedRevisionMatches(modelID: entry.desiredBuild,
+            version: version, aggregateSHA256: hash)
     }
 
     func revisionIsDesired(_ entry: CoordinatorMessage.DesiredModelEntry) -> Bool {

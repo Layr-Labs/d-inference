@@ -82,11 +82,16 @@ extension ProviderLoop {
             // Persist selection only after a warm replacement has loaded. A
             // process crash during validation boots the previous snapshot.
             try ModelDownloader.activateRevision(modelID: id, directory: staged.directory)
-            let previousBuild = desiredSwapDrop.removeValue(forKey: id)
-            await applyVerifiedPrefetch(modelId: id, revisionUpdate: true, verifiedArtifact: (staged.info, staged.entry.aggregateSHA256!))
-            guard revisionIsDesired(staged.entry), advertisedModels[id]?.weightHash == staged.entry.aggregateSHA256,
+            let published = await publishVerifiedPrefetch(modelId: id, expectedRevision: staged.entry,
+                verifiedArtifact: (staged.info, staged.entry.aggregateSHA256!))
+            try Task.checkCancellation()
+            guard revisionIsDesired(staged.entry) else { throw CancellationError() }
+            guard published, advertisedModels[id]?.weightHash == staged.entry.aggregateSHA256,
                 modelHashes[id] == staged.entry.aggregateSHA256
             else { throw ModelCatalogError.downloadFailed("verified revision could not be advertised") }
+            // No suspension between validating this attempt and consuming the
+            // current alias lineage. A superseded attempt leaves it for retry.
+            let previousBuild = desiredSwapDrop.removeValue(forKey: id)
             if let previousBuild, previousBuild != id { await dropAdvertisedBuild(previousBuild) }
             outboundSend?.send(.prefetchModelStatus(modelId: id, status: .verified,
                 bytesDone: staged.totalSizeBytes, bytesTotal: staged.totalSizeBytes, error: nil))

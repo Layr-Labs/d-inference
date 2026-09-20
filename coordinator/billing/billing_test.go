@@ -15,9 +15,7 @@ func newTestService(t *testing.T) (*Service, store.Store) {
 	ledger := payments.NewLedger(st)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	cfg := Config{
-		ReferralSharePercent: 20,
-	}
+	cfg := Config{}
 	svc := NewService(st, ledger, logger, cfg)
 	return svc, st
 }
@@ -133,53 +131,43 @@ func TestReferralInvalidCode(t *testing.T) {
 
 func TestReferralRewardDistribution(t *testing.T) {
 	svc, st := newTestService(t)
-
-	referrer, _ := svc.Referral().Register("referrer-wallet", "EARN")
-	_ = svc.Referral().Apply("consumer-key", referrer.Code)
-
-	platformFee := int64(100)
-	adjustedFee := svc.Referral().DistributeReferralReward("consumer-key", platformFee, "job-001")
-
-	expectedReferralReward := int64(20)
-	expectedPlatformFee := platformFee - expectedReferralReward
-
-	if adjustedFee != expectedPlatformFee {
-		t.Fatalf("expected adjusted platform fee %d, got %d", expectedPlatformFee, adjustedFee)
+	_, _ = svc.Referral().Register("referrer", "EARN")
+	_ = svc.Referral().Apply("consumer", "EARN")
+	_ = st.Credit("consumer", 1_000, store.LedgerDeposit, "deposit")
+	input := store.ConsumerChargeSettlement{AccountID: "consumer", JobID: "job", CostMicroUSD: 100, ReferralEnabled: true}
+	for i := 0; i < 2; i++ {
+		result, err := st.FinalizeConsumerCharge(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.ReferralRewardMicroUSD != 5 {
+			t.Fatalf("reward=%d", result.ReferralRewardMicroUSD)
+		}
 	}
-
-	referrerBalance := st.GetBalance("referrer-wallet")
-	if referrerBalance != expectedReferralReward {
-		t.Fatalf("expected referrer balance %d, got %d", expectedReferralReward, referrerBalance)
+	if got := st.GetBalance("referrer"); got != 5 {
+		t.Fatalf("referrer=%d", got)
+	}
+	if got := st.GetBalance("consumer"); got != 900 {
+		t.Fatalf("consumer=%d", got)
+	}
+	stats, err := svc.Referral().Stats("referrer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.TotalReferred != 1 || stats.TotalRewardsMicroUSD != 5 || stats.TotalReferredSpendMicroUSD != 100 || stats.TotalReferredSpendUSD != "0.000100" {
+		t.Fatalf("stats=%+v", stats)
 	}
 }
 
 func TestReferralRewardNoReferrer(t *testing.T) {
-	svc, _ := newTestService(t)
-	platformFee := int64(100)
-	adjustedFee := svc.Referral().DistributeReferralReward("consumer-no-ref", platformFee, "job-002")
-	if adjustedFee != platformFee {
-		t.Fatalf("expected unchanged platform fee %d, got %d", platformFee, adjustedFee)
-	}
-}
-
-func TestReferralStats(t *testing.T) {
-	svc, _ := newTestService(t)
-
-	referrer, _ := svc.Referral().Register("referrer-account", "STATS")
-	_ = svc.Referral().Apply("consumer-1", referrer.Code)
-	_ = svc.Referral().Apply("consumer-2", referrer.Code)
-	_ = svc.Referral().DistributeReferralReward("consumer-1", 100, "job-1")
-	_ = svc.Referral().DistributeReferralReward("consumer-2", 200, "job-2")
-
-	stats, err := svc.Referral().Stats("referrer-account")
+	_, st := newTestService(t)
+	_ = st.Credit("consumer", 100, store.LedgerDeposit, "deposit")
+	result, err := st.FinalizeConsumerCharge(store.ConsumerChargeSettlement{AccountID: "consumer", JobID: "job", CostMicroUSD: 100, ReferralEnabled: true})
 	if err != nil {
-		t.Fatalf("stats: %v", err)
+		t.Fatal(err)
 	}
-	if stats.TotalReferred != 2 {
-		t.Fatalf("expected 2 referred, got %d", stats.TotalReferred)
-	}
-	if stats.TotalRewardsMicroUSD != 60 {
-		t.Fatalf("expected 60 micro-USD in rewards, got %d", stats.TotalRewardsMicroUSD)
+	if result.ReferralRewardMicroUSD != 0 || result.CollectedMicroUSD != 100 {
+		t.Fatalf("result=%+v", result)
 	}
 }
 
@@ -310,8 +298,8 @@ func TestReferralRecording(t *testing.T) {
 		t.Fatalf("expected CODE1, got %s", code)
 	}
 
-	if err := st.RecordReferral("CODE1", "consumer-1"); err == nil {
-		t.Fatal("expected error on duplicate referral")
+	if err := st.RecordReferral("CODE1", "consumer-1"); err != nil {
+		t.Fatalf("same-code retry: %v", err)
 	}
 	if err := st.RecordReferral("INVALID", "consumer-2"); err == nil {
 		t.Fatal("expected error on invalid code")

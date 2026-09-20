@@ -80,8 +80,17 @@ func TestModelTokenPromotionReconciliationResumesAccountingOnce(t *testing.T) {
 			provider, pr := promotionCompletionRequest(s, modelTokenReservation(r), "reconcile-accounting")
 			s.store = &promotionSettlementFaultStore{Store: st, ModelTokenPromotionStore: st, beforeCommit: beforeCommit}
 			s.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{RequestID: pr.RequestID, Usage: protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 200}})
-			if len(s.ledger.Usage("promotion-user")) != 0 || st.GetBalance("platform") != 0 || st.GetBalance("referrer") != 0 {
+			if len(s.ledger.Usage("promotion-user")) != 0 || st.GetBalance("platform") != 0 {
 				t.Fatal("accounting ran before reconciliation")
+			}
+			// Referral credit commits with the consumer charge, even when the
+			// acknowledgement is lost. Downstream accounting still waits.
+			wantReward := int64(20)
+			if beforeCommit {
+				wantReward = 0
+			}
+			if got := st.GetWithdrawableBalance("referrer"); got != wantReward {
+				t.Fatalf("committed referral reward=%d want=%d", got, wantReward)
 			}
 			retry, pending := s.modelTokenSettlements.Load(pr.ModelTokenReservationID)
 			if !pending {
@@ -120,8 +129,8 @@ func TestModelTokenPromotionReconciliationResumesAccountingOnce(t *testing.T) {
 				t.Fatalf("key spend=%d", spent)
 			}
 			// Gross 500, consumer 400; provider 80% of gross, fee 20% of
-			// collected spend, and the referrer gets 20% of that fee.
-			for account, want := range map[string]int64{"promotion-user": 600, "paid-provider": 400, "referrer": 16, "platform": 64} {
+			// collected spend, plus a separately funded 5% referral reward.
+			for account, want := range map[string]int64{"promotion-user": 600, "paid-provider": 400, "referrer": 20, "platform": 80} {
 				if got := st.GetBalance(account); got != want {
 					t.Errorf("%s balance=%d want=%d", account, got, want)
 				}

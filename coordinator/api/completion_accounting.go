@@ -57,11 +57,8 @@ func (s *Server) completionAccounting(pr *registry.PendingRequest, providerID st
 				})
 			}
 
-			// Distribute the referral share of the collected consumer fee.
+			// Referral rewards are funded separately during consumer settlement.
 			platformFee := payments.PlatformFeeWithPercent(totalCost, feePercent)
-			if platformFee > 0 && s.billing != nil && s.billing.Referral() != nil {
-				platformFee = s.billing.Referral().DistributeReferralReward(consumerKey, platformFee, requestID)
-			}
 
 			// Record platform fee.
 			if platformFee > 0 {

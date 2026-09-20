@@ -43,6 +43,7 @@ type MemoryStore struct {
 	modelTokenPromotions      map[string]ModelTokenPromotion
 	modelTokenGrants          map[string]map[string]ModelTokenGrant
 	modelTokenReservations    map[string]ModelTokenReservation
+	consumerSettlements       map[string]consumerSettlementRecord
 
 	mu            sync.RWMutex
 	floorEpochMu  sync.Mutex // separate from store state; settlement callbacks read the store
@@ -180,6 +181,7 @@ type MemoryStore struct {
 // pre-seeded as a valid API key for bootstrapping.
 func NewMemory(scfg Config) *MemoryStore {
 	s := &MemoryStore{
+		consumerSettlements:           make(map[string]consumerSettlementRecord),
 		keyRecords:                    make(map[string]*APIKey),
 		keysByID:                      make(map[string]string),
 		keySpend:                      make(map[string]*keySpend),
@@ -1562,10 +1564,10 @@ func (s *MemoryStore) CreateReferrer(accountID, code string) error {
 	defer s.mu.Unlock()
 
 	if _, exists := s.referrersByCode[code]; exists {
-		return fmt.Errorf("referral code %q already exists", code)
+		return fmt.Errorf("%w: referral code %q already exists", ErrReferralConflict, code)
 	}
 	if _, exists := s.referrersByAccount[accountID]; exists {
-		return fmt.Errorf("account %q is already a referrer", accountID)
+		return fmt.Errorf("%w: account %q is already a referrer", ErrReferralConflict, accountID)
 	}
 
 	ref := &Referrer{
@@ -1585,7 +1587,7 @@ func (s *MemoryStore) GetReferrerByCode(code string) (*Referrer, error) {
 
 	ref, ok := s.referrersByCode[code]
 	if !ok {
-		return nil, fmt.Errorf("referral code %q not found", code)
+		return nil, fmt.Errorf("%w: referral code %q", ErrNotFound, code)
 	}
 	copy := *ref
 	return &copy, nil
@@ -1598,7 +1600,7 @@ func (s *MemoryStore) GetReferrerByAccount(accountID string) (*Referrer, error) 
 
 	ref, ok := s.referrersByAccount[accountID]
 	if !ok {
-		return nil, fmt.Errorf("account %q is not a referrer", accountID)
+		return nil, fmt.Errorf("%w: account %q is not a referrer", ErrNotFound, accountID)
 	}
 	copy := *ref
 	return &copy, nil
@@ -1609,11 +1611,18 @@ func (s *MemoryStore) RecordReferral(referrerCode, referredAccountID string) err
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.referrersByCode[referrerCode]; !exists {
-		return fmt.Errorf("referral code %q not found", referrerCode)
+	ref, exists := s.referrersByCode[referrerCode]
+	if !exists {
+		return fmt.Errorf("%w: referral code %q", ErrNotFound, referrerCode)
 	}
-	if _, exists := s.referrals[referredAccountID]; exists {
-		return errors.New("account already has a referrer")
+	if ref.AccountID == referredAccountID {
+		return fmt.Errorf("%w: cannot refer yourself", ErrReferralConflict)
+	}
+	if existing, exists := s.referrals[referredAccountID]; exists {
+		if existing == referrerCode {
+			return nil
+		}
+		return fmt.Errorf("%w: account already has a referrer", ErrReferralConflict)
 	}
 
 	s.referrals[referredAccountID] = referrerCode
@@ -1640,7 +1649,7 @@ func (s *MemoryStore) GetReferralStats(code string) (*ReferralStats, error) {
 
 	ref, ok := s.referrersByCode[code]
 	if !ok {
-		return nil, fmt.Errorf("referral code %q not found", code)
+		return nil, fmt.Errorf("%w: referral code %q", ErrNotFound, code)
 	}
 
 	// Sum referral rewards from ledger
@@ -1651,10 +1660,15 @@ func (s *MemoryStore) GetReferralStats(code string) (*ReferralStats, error) {
 		}
 	}
 
+	var totalSpend int64
+	for _, settlement := range s.consumerSettlements {
+		if settlement.Referrer == ref.AccountID {
+			totalSpend += settlement.Result.CollectedMicroUSD
+		}
+	}
 	return &ReferralStats{
-		Code:                 code,
-		TotalReferred:        s.referralCounts[code],
-		TotalRewardsMicroUSD: totalRewards,
+		Code: code, TotalReferred: s.referralCounts[code],
+		TotalRewardsMicroUSD: totalRewards, TotalReferredSpendMicroUSD: totalSpend,
 	}, nil
 }
 

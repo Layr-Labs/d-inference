@@ -188,8 +188,25 @@ func TestServiceReservationCompletionDebitsActualAndReleasesHold(t *testing.T) {
 	expected := payments.CalculateCostWithOverridesNoMinimum("svc-model", usage.PromptTokens, usage.CompletionTokens, 1_000_000, 2_000_000, true)
 	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID, Usage: usage})
 
-	if got := st.DebitCount(); got != 1 {
-		t.Fatalf("Debit calls = %d, want 1 completion settlement debit", got)
+	// The atomic settlement owns the debit now; inspect its financial effect
+	// instead of the old standalone Debit call count.
+	var charges int
+	for _, entry := range st.LedgerHistory("svc-complete") {
+		if entry.Type == store.LedgerCharge {
+			charges++
+			if entry.AmountMicroUSD != -expected || entry.Reference != pr.RequestID {
+				t.Fatalf("unexpected settlement charge: %+v", entry)
+			}
+		}
+	}
+	if charges != 1 {
+		t.Fatalf("charge entries = %d, want 1", charges)
+	}
+	srv.serviceReservations.mu.Lock()
+	outstanding := srv.serviceReservations.outstanding["svc-complete"]
+	srv.serviceReservations.mu.Unlock()
+	if outstanding != 0 {
+		t.Fatalf("service reservation not released: %d", outstanding)
 	}
 	if got := st.GetBalance("svc-complete"); got != 1_000_000-expected {
 		t.Fatalf("balance = %d, want %d", got, 1_000_000-expected)

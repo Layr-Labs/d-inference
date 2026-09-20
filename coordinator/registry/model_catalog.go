@@ -10,8 +10,10 @@ import (
 // CatalogEntry holds metadata about an active model in the catalog.
 type CatalogEntry struct {
 	ID                           string
-	WeightHash                   string  // expected SHA-256 weight fingerprint (empty = not enforced)
-	SizeGB                       float64 // disk/GPU footprint of the model weights (zero = unknown, gate disabled)
+	Revision                     string
+	ServingWeightHashes          []string // only operator-promoted, non-retired revisions
+	WeightHash                   string   // expected SHA-256 weight fingerprint (empty = not enforced)
+	SizeGB                       float64  // disk/GPU footprint of the model weights (zero = unknown, gate disabled)
 	RequiredProviderCapabilities []string
 	// MinRAMGB is the catalog's authoritative minimum unified memory (GB) to run
 	// this model — the operator-published requirement. The hardware-fit gate
@@ -33,6 +35,7 @@ func (r *Registry) SetModelCatalog(entries []CatalogEntry) {
 	}
 	catalog := make(map[string]CatalogEntry, len(entries))
 	for _, e := range entries {
+		e.ServingWeightHashes = append([]string(nil), e.ServingWeightHashes...)
 		e.RequiredProviderCapabilities = effectiveRequiredProviderCapabilities(
 			e.ID, e.RequiredProviderCapabilities)
 		catalog[e.ID] = e
@@ -126,7 +129,7 @@ func (r *Registry) modelAllowedByCatalogLocked(model protocol.ModelInfo) bool {
 	if !ok {
 		return false
 	}
-	return entry.WeightHash == "" || model.WeightHash == "" || model.WeightHash == entry.WeightHash
+	return entry.WeightHash == "" || model.WeightHash == "" || entry.acceptsWeightHash(model.WeightHash)
 }
 
 // providerServesCatalogModelLocked returns true if the provider advertises the

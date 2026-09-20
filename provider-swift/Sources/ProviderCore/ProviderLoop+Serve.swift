@@ -75,6 +75,7 @@ extension ProviderLoop {
         // assistant bytes and fails open on timeout.
         await prewarmSpecDecCatalog()
         startMTPUpgradeMonitor()
+        startModelRevisionMonitor()
 
         // Unified mode: also expose a local OpenAI endpoint off the same loaded
         // models. It starts after the bounded metadata prewarm, but still before
@@ -346,6 +347,10 @@ extension ProviderLoop {
         for task in desiredPrefetchRetryTasks.values { task.cancel() }
         desiredPrefetchRetryTasks.removeAll()
         desiredPrefetchRetryAttempts.removeAll()
+        modelRevisionMonitorTask?.cancel()
+        modelRevisionAttempt?.task.cancel()
+        await modelRevisionMonitorTask?.value
+        modelRevisionMonitorTask = nil
         let mtpUpgradeTask = mtpUpgradeMonitorTask
         mtpUpgradeMonitorTask = nil
         mtpUpgradeTask?.cancel()

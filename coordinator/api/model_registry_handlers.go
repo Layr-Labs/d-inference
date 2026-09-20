@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -155,6 +156,10 @@ func (s *Server) handleRegisterModel(w http.ResponseWriter, r *http.Request) {
 		files[i] = store.ModelVersionFile{Path: f.Path, SizeBytes: f.SizeBytes, SHA256: f.SHA256, Role: f.Role}
 	}
 	if err := s.store.SetModelVersion(entry, version, files); err != nil {
+		if errors.Is(err, store.ErrModelVersionImmutable) {
+			writeJSON(w, http.StatusConflict, errorResponse("invalid_request_error", err.Error()))
+			return
+		}
 		s.logger.Error("model registry: register failed", "model_id", req.ModelID, "version", req.Version, "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to save model version"))
 		return
@@ -195,6 +200,10 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 		return
 	}
 	switch action {
+	case "publish-revision":
+		s.handlePublishModelRevision(w, r, modelID)
+	case "retire-revision":
+		s.handleRetireModelRevision(w, r, modelID)
 	case "promote":
 		var req struct {
 			Version string `json:"version"`
@@ -562,7 +571,7 @@ func parseAdminModelActionPath(p string) (string, string, bool) {
 	if rest == p || rest == "" {
 		return "", "", false
 	}
-	for _, action := range []string{"/promote", "/status", "/runtime-parameters", "/capabilities", "/deprecation", "/openrouter-slug", "/hugging-face-id"} {
+	for _, action := range []string{"/publish-revision", "/retire-revision", "/promote", "/status", "/runtime-parameters", "/capabilities", "/deprecation", "/openrouter-slug", "/hugging-face-id"} {
 		if strings.HasSuffix(rest, action) {
 			modelID, err := url.PathUnescape(strings.TrimSuffix(rest, action))
 			if err != nil {

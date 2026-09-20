@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-17 · commit `954f570d1`
+> Last updated: 2026-09-20 · commit `1451a4c89`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -125,7 +125,7 @@ not certify space for a concurrently staged assistant replacement.
 |---|---|---|
 | Assistant download | The pinned catalog assistant adds 236,127,665 bytes (about 236 MB) of files beside the target and SSD cache. This is artifact size, not a promise of loaded memory use; future catalog revisions may differ | [Pinned assistant file sizes](../reports/evidence/2026-09-08-gemma-qat-defaults/hf-assistant-identity-verification.json); `provider-swift/Sources/ProviderCore/SpecDec/SpecDecResolver.swift` (`SpecDecResolver`) |
 | Replacement memory | Before preparation, reserve the assistant's resident-byte estimate plus the minimum serviceable KV grant (1 GiB) while the old engine remains resident. Existing activation/headroom reserves remain enforced; shared target weights are retained and counted once. Insufficient memory defers the optional upgrade without evicting a serving model | `provider-swift/Sources/ProviderCore/ProviderLoop+MTPUpgrade.swift` (`prepareMTPUpgrade`); `provider-swift/Sources/ProviderCore/Inference/Memory/EngineV2Reslice.swift` (`EngineV2KVSizing.minimumServiceableGrantBytes`); `provider-swift/Sources/ProviderCore/Inference/MTP/MTPStagingReservations.swift` (`extraBytes`) |
-| Download, verification and preparation | The original engine continues serving. Missing or invalid artifacts and preparation failures preserve target-only serving | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` (`prepare`); `provider-swift/Sources/ProviderCore/Inference/MTP/MTPIdleUpgrade.swift` (`run`) |
+| Download, verification and preparation | The original engine continues serving. Missing or invalid artifacts and preparation failures preserve target-only serving | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` (`prepare`); `provider-swift/Sources/ProviderCore/Models/ModelIdleUpgrade.swift` (`run`) |
 | Prepared-engine activation | Network serving continues through the configured rollout jitter, then new admissions for this model close until accepted work finishes and the engine swaps. Other models remain eligible. Standalone skips fleet jitter; new acquisitions during either model drain can receive transient 503. Timeout/cancellation discards the candidate and reopens the original engine without force-cancelling accepted work | [Drain bounds, controls and failure behavior](../architecture/inference.md#multi-token-prediction); [`update_jitter_seconds`](cli-reference.md#providertoml-keys-read-by-the-cli) |
 
 Jitter spreads independent network-provider upgrades; it does not reserve spare

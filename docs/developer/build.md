@@ -41,6 +41,10 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 
 The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its [shadow packaging and live-validation requirements](../reference/app-attest-shadow.md#packaging-and-live-acceptance) are separate from a successful local compile.
 
+The revision publisher runs the SwiftPM `darkbloom-publish` executable to hash
+artifacts. It also needs Python 3 and the AWS CLI; use the existing pinned tools.
+The [revision runbook](../operations/model-revisions.md) describes its invocation.
+
 ## SDK 27 release builds and caches
 
 The release pipeline runs optimized products and SDK qualification on separate

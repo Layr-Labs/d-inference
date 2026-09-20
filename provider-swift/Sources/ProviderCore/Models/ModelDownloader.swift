@@ -50,7 +50,11 @@ public struct ModelDownloader: Sendable {
 
     /// Download a catalog model into the local HuggingFace cache.
     ///
-    /// Tries (in order):
+    /// Manifest-backed catalog entries use immutable, verified revision
+    /// snapshots selected by refs/main. Legacy entries without a manifest
+    /// use the fallback layout below.
+    ///
+    /// The legacy flow tries (in order):
     ///   1. `${R2_CDN}/${s3_name}/config.json` -- the existence smoke test
     ///   2. tokenizer files (best-effort, missing files are fine)
     ///   3. `model.safetensors` if present, else
@@ -64,6 +68,8 @@ public struct ModelDownloader: Sendable {
         model: CatalogModel,
         onProgress: (@Sendable (ProgressEvent) -> Void)? = nil
     ) async throws {
+        let lease = try await ModelArtifactWriteLease.acquire(modelID: model.id)
+        defer { lease.release() }
         let eligibility = ModelRuntimeRequirements.evaluate(
             modelID: model.id,
             catalogRequirements: model.requiredProviderCapabilities,

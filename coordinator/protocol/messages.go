@@ -801,9 +801,11 @@ type PrefetchModelMessage struct {
 // pointer (no weights). PreviousBuild (if set) stays acceptable to serve during
 // a staggered rollout so a not-yet-swapped provider keeps serving.
 type DesiredModelEntry struct {
-	ModelName     string `json:"model_name"`               // clean/public alias, e.g. "gemma-4-26b"
-	DesiredBuild  string `json:"desired_build"`            // concrete build id to converge to
-	PreviousBuild string `json:"previous_build,omitempty"` // still-acceptable build mid-rollout
+	Revision        string `json:"revision,omitempty"`
+	AggregateSHA256 string `json:"aggregate_sha256,omitempty"`
+	ModelName       string `json:"model_name"`               // clean/public alias, e.g. "gemma-4-26b"
+	DesiredBuild    string `json:"desired_build"`            // concrete build id to converge to
+	PreviousBuild   string `json:"previous_build,omitempty"` // still-acceptable build mid-rollout
 }
 
 // DesiredModelsMessage is the coordinator's declarative statement of the desired

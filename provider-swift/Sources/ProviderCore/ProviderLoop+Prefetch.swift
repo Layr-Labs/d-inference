@@ -288,7 +288,16 @@ extension ProviderLoop {
         return failed.isEmpty || failed == hash
     }
 
-    func applyVerifiedPrefetch(modelId: String) async {
+    func applyVerifiedPrefetch(modelId: String, revisionUpdate: Bool = false, verifiedArtifact: (ModelInfo, String)? = nil) async {
+        if revisionUpdatesInProgress.contains(modelId), !revisionUpdate { return }
+        // A revision drain cannot pass an older advertisement suspended in
+        // hashing, memory re-slicing or the coordinator client. Once the drain
+        // begins, this entry guard prevents any new ID-only publication.
+        prefetchPublicationCounts[modelId, default: 0] += 1
+        defer {
+            prefetchPublicationCounts[modelId, default: 1] -= 1
+            if prefetchPublicationCounts[modelId] == 0 { prefetchPublicationCounts.removeValue(forKey: modelId) }
+        }
         guard ModelRuntimeRequirements.isEligible(
             modelID: modelId, available: loopConfig.runtimeCapabilities)
         else {
@@ -310,13 +319,18 @@ extension ProviderLoop {
         // builds). The prefetcher already aggregate-verified the snapshot, so
         // this hash is over a known-good build. Returns nil if the on-disk
         // snapshot cannot be resolved/scanned.
-        let computed = await Task.detached(priority: .utility) { () -> (ModelInfo, String?)? in
-            guard let info = Self.scanVerifiedModelInfo(modelId: modelId) else { return nil }
-            let hash = WeightHasher.computeHash(for: modelId)
-            var withHash = info
-            withHash.weightHash = hash
-            return (withHash, hash)
-        }.value
+        let computed: (ModelInfo, String?)?
+        if let verifiedArtifact {
+            computed = (verifiedArtifact.0, verifiedArtifact.1)
+        } else {
+            computed = await Task.detached(priority: .utility) { () -> (ModelInfo, String?)? in
+                guard let info = Self.scanVerifiedModelInfo(modelId: modelId) else { return nil }
+                let hash = WeightHasher.computeHash(for: modelId)
+                var withHash = info
+                withHash.weightHash = hash
+                return (withHash, hash)
+            }.value
+        }
 
         // A verified prefetch whose snapshot we can't scan must NOT be
         // advertised: a synthetic zero-size ModelInfo would be routed with
@@ -558,7 +572,7 @@ extension ProviderLoop {
     /// Locally retire a superseded build: stop advertising it (so no new requests
     /// route to it and the next register won't re-announce it) and forget its hash.
     /// The GPU slot, if resident, is left to the idle monitor — a lazy drop.
-    private func dropAdvertisedBuild(_ buildID: String) async {
+    func dropAdvertisedBuild(_ buildID: String) async {
         guard advertisedModels[buildID] != nil else { return }
         advertisedModels.removeValue(forKey: buildID)
         modelHashes.removeValue(forKey: buildID)
@@ -591,6 +605,7 @@ extension ProviderLoop {
             clearDesiredPrefetchRetryState(for: stale)
         }
         desiredPrefetchTargets = currentDesired
+        updateDesiredModelRevisions(entries)
 
         for entry in entries {
             let desired = entry.desiredBuild
@@ -611,6 +626,13 @@ extension ProviderLoop {
                 desiredSwapDrop[desired] = previous
             } else {
                 desiredSwapDrop.removeValue(forKey: desired)
+            }
+            if entry.aggregateSHA256?.isEmpty == false, entry.revision?.isEmpty == false,
+                liveModelHashes[desired] != entry.aggregateSHA256 || advertisedModels[desired] == nil {
+                // The revision monitor stages without touching the selected
+                // snapshot, then drains and activates. ID-only prefetch cannot
+                // safely change the bytes beneath a resident engine.
+                continue
             }
             // Already converged (advertised + verified) → ensure the old build is
             // no longer advertised locally AND re-emit the authoritative

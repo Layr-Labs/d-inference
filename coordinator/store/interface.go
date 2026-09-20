@@ -676,8 +676,10 @@ type ModelVersionFile struct {
 // ModelRegistryRecord combines a model with its active version and files.
 type ModelRegistryRecord struct {
 	ModelRegistryEntry
-	ActiveVersion *ModelVersion      `json:"active_version,omitempty"`
-	Files         []ModelVersionFile `json:"files,omitempty"`
+	ActiveVersion *ModelVersion `json:"active_version,omitempty"`
+	// ServingVersions are previously promoted, non-retired immutable artifacts.
+	ServingVersions []ModelVersion     `json:"serving_versions,omitempty"`
+	Files           []ModelVersionFile `json:"files,omitempty"`
 }
 
 type ModelAliasSourceKind string

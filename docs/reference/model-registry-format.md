@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-08 · commit `efb5517fc`
+> Last updated: 2026-09-20 · commit `1451a4c89`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -93,6 +93,8 @@ Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
 | `description` | string | no | |
 | `runtime_parameters` | object | no | merged into provider requests at dispatch |
 | `metadata` | object | no | opaque; see [metadata keys](#metadata-keys) |
+| `publish-revision` | `{"version":"..."}` | `handlePublishModelRevision` in `coordinator/api/model_revision_handlers.go`: verify R2 manifest/files, `SetExistingModelVersion` registers immutable bytes under a metadata lock, preserves pricing, promote and fan out desired state | `{"status":"promoted","model_id","version","aggregate_sha256"}` |
+| `retire-revision` | `{"version":"..."}` | `RetireModelVersion` removes an inactive revision from accepted hashes; active revision returns 409. No file deletion | `{"status":"retired","model_id","version"}` |
 | `promote` | boolean | no | activate this version immediately |
 | `input_price` | integer | yes | > 0, micro-USD per 1M tokens |
 | `output_price` | integer | yes | > 0, micro-USD per 1M tokens |
@@ -277,6 +279,14 @@ to its declared R2 object and still verify; a failed checksum on both sources
 must leave no published assistant. Inspect the provider's assistant revision
 and active MTP metrics after loading; downloading alone does not prove the
 assistant has been installed in a serving engine.
+
+A registered `(model_id, version)` is immutable for R2 prefix, aggregate hash,
+size, file count and file manifest. `SetModelVersion` rejects changes with
+`ErrModelVersionImmutable` (HTTP 409); publish a new version instead.
+Previously promoted `ready` versions remain accepted while providers converge.
+`ModelRegistryRecord.ServingVersions` and its cache clone retain these records;
+`RetireModelVersion` explicitly withdraws an inactive version. The active catalog
+and manifest endpoints continue to describe only the desired version.
 
 ## Admin actions
 

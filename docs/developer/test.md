@@ -99,6 +99,17 @@ observed-only usage, cancellation and the unchanged direct-service throwing
 contract. Successful tool-generation gates remain separate: a correctly framed
 error does not satisfy a required tool call or repair its generated arguments.
 
+## Model revision validation
+
+Model revision changes are covered by `ModelPrefetchDownloaderTests`,
+`ModelRevisionActivationTests`, and the existing MTP drain suites in
+`provider-swift/Tests/ProviderCoreTests`. Run them with a source-matched metallib.
+Coordinator lifecycle tests cover memory/cached stores and, when `DATABASE_URL`
+points to a disposable database, `TestPostgresModelRevisionLifecycle`.
+`python3 scripts/test_publish_model_revision.py` tests publication ordering and
+immutable reservations. These fixture tests do not qualify a full-weight fleet swap.
+
+
 ## SDK 27 release qualification
 
 The `qualify-sdk` job in `.github/workflows/release-swift.yml` runs production

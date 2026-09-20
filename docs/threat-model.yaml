@@ -139,6 +139,10 @@ assets:
     notes: >
       Not cryptographically protected at rest. An operator can replace weights; the
       coordinator's weight-hash verification is currently fail-open (SEC-007).
+      Supplied hashes may match the desired revision or a previously promoted,
+      non-retired revision of that same model during automatic weight updates.
+      Explicit revision retirement removes that approval; unpromoted hashes are
+      never added to the accepted set.
 
   - id: A-005
     name: coordinator_release_api_key

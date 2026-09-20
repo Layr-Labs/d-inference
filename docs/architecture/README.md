@@ -1,6 +1,6 @@
 # Architecture — how Darkbloom works
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-20 · commit `1451a4c89`
 
 Explanation pages: context, mechanism, invariants, failure modes, and a code
 map for each part of the system. The code in `coordinator/`,
@@ -54,6 +54,7 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 | [inference.md](inference.md) | CBv2 request lifecycle and `CBv2RequestTiming`, scheduler and lease defaults, deadlines, MTP, sampling, tool parsers, vision constraints, supported families and quantization |
 | [prefix-cache.md](prefix-cache.md) | KV layouts (contiguous default, paged), block hashing, prefix-reuse plan per family, RAM staging and the encrypted SSD tier; why a default box builds no SSD cache |
 | [hardware-support.md](hardware-support.md) | Memory model: unified-memory cap, activation floors, load gate, KV budget and re-slice; platform and hardware gates |
+| [model-revisions.md](model-revisions.md) | Immutable weight revisions, automatic provider convergence, draining and rollback |
 | [model-registry.md](model-registry.md) | Model manifests, aliases, publishing to R2, registration, provider downloads |
 
 ## Data, money, and observability

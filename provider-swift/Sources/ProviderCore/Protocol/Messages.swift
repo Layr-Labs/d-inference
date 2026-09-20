@@ -1651,16 +1651,22 @@ public enum CoordinatorMessage: Sendable, Equatable {
     public struct DesiredModelEntry: Sendable, Equatable, Codable {
         public var modelName: String
         public var desiredBuild: String
+        public var revision: String?
+        public var aggregateSHA256: String?
         public var previousBuild: String?
-        public init(modelName: String, desiredBuild: String, previousBuild: String? = nil) {
+        public init(modelName: String, desiredBuild: String, previousBuild: String? = nil, revision: String? = nil, aggregateSHA256: String? = nil) {
             self.modelName = modelName
             self.desiredBuild = desiredBuild
             self.previousBuild = previousBuild
+            self.revision = revision
+            self.aggregateSHA256 = aggregateSHA256
         }
         enum CodingKeys: String, CodingKey {
             case modelName = "model_name"
             case desiredBuild = "desired_build"
             case previousBuild = "previous_build"
+            case revision
+            case aggregateSHA256 = "aggregate_sha256"
         }
     }
 

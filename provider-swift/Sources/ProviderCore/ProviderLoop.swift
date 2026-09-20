@@ -317,6 +317,13 @@ public actor ProviderLoop {
     internal var mtpStagingReservations = MTPStagingReservations()
     internal var mtpAdmissionDrains = MTPAdmissionDrains()
     internal var mtpUpgradeMonitorTask: Task<Void, Never>?
+    internal var modelRevisionMonitorTask: Task<Void, Never>?
+    internal var modelRevisionAttempt: (entry: CoordinatorMessage.DesiredModelEntry, task: Task<Void, Never>)?
+    internal var desiredModelRevisions: [String: CoordinatorMessage.DesiredModelEntry] = [:]
+    internal var revisionUpdatesInProgress = Set<String>()
+    internal var modelRevisionActivationID: String?
+    internal var failedModelRevisionRestores: [String: UUID] = [:]
+    internal var prefetchPublicationCounts: [String: Int] = [:]
     internal var mtpUpgradeTransitions: Set<String> = []
     internal var mtpUpgradeWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
 

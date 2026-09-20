@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-18 · commit `397b4d902`
+> Last updated: 2026-09-20 · commit `1451a4c89`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -9,6 +9,13 @@ derived from them, demand-driven model loads, and the warm-pool controller
 that keeps enough providers resident for each model. Choosing *which*
 eligible provider gets a request is the subject of
 [`routing.md`](routing.md); this page stops where that choice begins.
+
+For automatic same-ID weight updates, desired state includes a revision and
+aggregate hash for providers advertising `model_revisions_v1`. The provider
+stages the update without occupying a GPU slot, then closes admission for that
+model and drains accepted work before activation. Other resident models remain
+available; new cold loads wait through the activation boundary. See
+[model revisions](model-revisions.md) for backoff, snapshot selection and rollback.
 
 ## Context
 

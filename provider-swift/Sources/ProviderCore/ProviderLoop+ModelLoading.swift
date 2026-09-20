@@ -195,9 +195,9 @@ extension ProviderLoop {
     /// the assistant before admission. The target remains independently
     /// loadable: assistant headroom failure selects target-only decode.
     internal func ensureModelLoaded(
-        modelId: String, allowEviction: Bool = true
+        modelId: String, allowEviction: Bool = true, revisionUpdate: Bool = false, revisionDirectory: URL? = nil
     ) async throws {
-        await waitForMTPUpgrade(modelId)
+        if !revisionUpdate { await waitForMTPUpgrade(modelId) }
         try ModelRuntimeRequirements.requireEligible(
             modelID: modelId, available: loopConfig.runtimeCapabilities)
         if isShuttingDown {
@@ -236,11 +236,11 @@ extension ProviderLoop {
             try throwIfRetiring(modelId)
             if modelSlots[modelId] != nil { return }
             try await ensureModelLoaded(
-                modelId: modelId, allowEviction: allowEviction)
+                modelId: modelId, allowEviction: allowEviction, revisionUpdate: revisionUpdate, revisionDirectory: revisionDirectory)
             return
         }
 
-        guard let modelPath = ModelScanner.resolveLocalPath(modelID: modelId) else {
+        guard let modelPath = revisionDirectory ?? ModelScanner.resolveLocalPath(modelID: modelId) else {
             throw InferenceError.invalidModelDirectory(
                 "Model '\(modelId)' not found in local HuggingFace cache"
             )
@@ -272,12 +272,12 @@ extension ProviderLoop {
         if modelSlots[modelId] != nil { return }
         if modelsLoading.contains(modelId) {
             try await ensureModelLoaded(
-                modelId: modelId, allowEviction: allowEviction)
+                modelId: modelId, allowEviction: allowEviction, revisionUpdate: revisionUpdate, revisionDirectory: revisionDirectory)
             return
         }
 
         // Serialize loads so concurrent eviction decisions don't interleave
-        while isLoadingAny {
+        while isLoadingAny || (!revisionUpdate && modelRevisionActivationID != nil) {
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
                 loadGateWaiters.append(cont)
             }
@@ -292,6 +292,13 @@ extension ProviderLoop {
             // Same rule at the load-gate wait's resident return.
             try throwIfRetiring(modelId)
             if modelSlots[modelId] != nil { return }
+        }
+        // Preparation/load-gate waits may have spanned a complete revision
+        // activation. Re-resolve both bytes and metadata before owning the load
+        // gate, otherwise a cold preload can resurrect the previous revision.
+        if (revisionDirectory == nil && ModelScanner.resolveLocalPath(modelID: modelId) != modelPath) || advertisedModels[modelId] != modelInfo {
+            try await ensureModelLoaded(modelId: modelId, allowEviction: allowEviction, revisionUpdate: revisionUpdate, revisionDirectory: revisionDirectory)
+            return
         }
         isLoadingAny = true
 
@@ -835,8 +842,8 @@ extension ProviderLoop {
     }
 
     @discardableResult
-    internal func unloadModel(_ modelId: String, forEviction: Bool = false) async -> Bool {
-        await waitForMTPUpgrade(modelId)
+    internal func unloadModel(_ modelId: String, forEviction: Bool = false, revisionUpdate: Bool = false) async -> Bool {
+        if !revisionUpdate { await waitForMTPUpgrade(modelId) }
         // Recheck after the transition wait: staging or new work can begin
         // after the LRU/idle snapshot. Explicit retirement still may unload;
         // its retained target stays charged until preparation/discard ends.

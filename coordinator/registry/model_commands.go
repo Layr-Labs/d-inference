@@ -238,7 +238,7 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	p, ok := r.providers[providerID]
-	if !ok || len(r.modelAliases) == 0 {
+	if !ok {
 		return nil
 	}
 	p.mu.Lock()
@@ -253,6 +253,12 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 		}
 	}
 
+	supportsRevisions := false
+	for _, capability := range p.ReportedRuntimeCapabilities {
+		if capability == "model_revisions_v1" {
+			supportsRevisions = true
+		}
+	}
 	var entries []protocol.DesiredModelEntry
 	for alias, t := range r.modelAliases {
 		if t.OpenRouterOnly || t.Desired == "" {
@@ -284,10 +290,39 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 		if previous != "" && !r.providerCanAcquireCatalogModelLocked(p, previous) {
 			previous = ""
 		}
+		artifact := r.modelCatalog[t.Desired]
+		if !supportsRevisions {
+			artifact.Revision = ""
+			artifact.WeightHash = ""
+		}
 		entries = append(entries, protocol.DesiredModelEntry{
+			Revision: artifact.Revision, AggregateSHA256: artifact.WeightHash,
 			ModelName:     alias,
 			DesiredBuild:  t.Desired,
 			PreviousBuild: previous,
+		})
+	}
+	// Same-ID revision updates also cover concrete models without aliases.
+	covered := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		covered[entry.DesiredBuild] = true
+	}
+	for _, alias := range r.modelAliases {
+		if alias.OpenRouterOnly {
+			continue
+		}
+		covered[alias.Previous] = true
+		for _, id := range alias.Retired {
+			covered[id] = true
+		}
+	}
+	for id := range advertised {
+		artifact, exists := r.modelCatalog[id]
+		if !supportsRevisions || !exists || artifact.Revision == "" || covered[id] || !r.providerCanAcquireCatalogModelLocked(p, id) {
+			continue
+		}
+		entries = append(entries, protocol.DesiredModelEntry{
+			ModelName: id, DesiredBuild: id, Revision: artifact.Revision, AggregateSHA256: artifact.WeightHash,
 		})
 	}
 	p.mu.Unlock()

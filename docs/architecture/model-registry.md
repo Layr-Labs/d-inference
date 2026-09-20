@@ -140,8 +140,9 @@ the provider untrusted (`CatalogAcceptsWeightHash`)
 share one contract — every file is checked against its manifest size and
 SHA-256 before it leaves staging, and the aggregate is recomputed with
 `WeightHasher.hashFilesWithRelativeKey` before the snapshot is published to
-`{cache}/models--{org}--{name}/snapshots/.revision-<aggregate_sha256>/`.
-Only an explicit `refs/main` selection makes this immutable snapshot discoverable.
+`{cache}/models--{org}--{name}/snapshots/.revision-<identity_sha256>/`.
+The key includes registry revision identity and the file layout; see
+[model artifact revisions](model-revisions.md#mechanism). Only an explicit `refs/main` selection makes this immutable snapshot discoverable.
 Both manifest flows share `ModelArtifactRevision` validation/publication and a
 process-shared `ModelArtifactWriteLease`.
 
@@ -150,7 +151,8 @@ process-shared `ModelArtifactWriteLease`.
 selects the shared discovery/download root using the [cache-location precedence](../reference/configuration.md#model-cache-location).
 The CLI installs the saved config value before serving; without it, the legacy
 home cache remains authoritative. Ambient Hugging Face/XDG variables are ignored
-by runtime selection. Only an explicit `models location --from-env` or confirmed
+by runtime selection. The key includes registry revision identity and the file layout; see
+[model artifact revisions](model-revisions.md#mechanism). Only an explicit `models location --from-env` or confirmed
 menu import resolves those variables once and saves the concrete path in TOML.
 Location inspection is discovery only, not the manifest-integrity contract above.
 

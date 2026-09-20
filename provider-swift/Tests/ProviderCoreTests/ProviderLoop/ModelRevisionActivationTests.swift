@@ -1,9 +1,10 @@
+import Crypto
 import Foundation
 import Testing
 @testable import ProviderCore
 import ProviderCoreFoundation
 
-private struct RevisionActivationFixture {
+struct RevisionActivationFixture {
     let id: String
     let oldDirectory: URL
     let newDirectory: URL
@@ -20,7 +21,20 @@ private struct RevisionActivationFixture {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try Data("{\"model_type\":\"gpt_oss\"}".utf8).write(to: directory.appendingPathComponent("config.json"))
             try Data(bytes.utf8).write(to: directory.appendingPathComponent("model.safetensors"))
-            return (directory, try #require(WeightHasher.computeHash(snapshotDir: directory, modelID: id)))
+            let hash = try #require(WeightHasher.computeHash(snapshotDir: directory, modelID: id))
+            let files = try ["config.json", "model.safetensors"].map { path in
+                let data = try Data(contentsOf: directory.appendingPathComponent(path))
+                return ManifestFile(path: path, sizeBytes: Int64(data.count),
+                    sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(), role: "other")
+            }
+            let manifest = ModelManifest(schemaVersion: 1, modelID: id,
+                version: name.replacingOccurrences(of: ".revision-", with: ""), r2Prefix: name,
+                aggregateSHA256: hash, totalSizeBytes: files.reduce(0) { $0 + $1.sizeBytes },
+                fileCount: files.count, files: files, createdAt: Date())
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            try encoder.encode(manifest).write(to: directory.appendingPathComponent(".darkbloom-manifest.json"))
+            return (directory, hash)
         }
         let (oldDirectory, oldHash) = try write(".revision-old", "old")
         let (newDirectory, newHash) = try write(".revision-new", "new")
@@ -49,7 +63,7 @@ private struct RevisionActivationFixture {
     func clean() { staged.lease.release(); _ = try? ModelDownloader.remove(modelID: id) }
 }
 
-private extension ProviderLoop {
+extension ProviderLoop {
     func revisionTestSetDesired(_ entry: CoordinatorMessage.DesiredModelEntry) {
         desiredPrefetchTargets = [entry.desiredBuild]
         updateDesiredModelRevisions([entry])
@@ -67,6 +81,18 @@ struct ModelRevisionActivationTests {
         let f = try await RevisionActivationFixture.make()
         defer { f.clean() }
         #expect(await f.loop.pendingModelRevisions().count == 1)
+    }
+
+    @Test("a different version with identical bytes remains pending until that revision is selected")
+    func detectsSameHashVersionChange() async throws {
+        let f = try await RevisionActivationFixture.make()
+        defer { f.clean() }
+        await f.loop.revisionTestSetDesired(.init(modelName: f.id, desiredBuild: f.id,
+            revision: "renamed", aggregateSHA256: f.oldHash))
+        #expect(await f.loop.pendingModelRevisions().count == 1)
+        await f.loop.revisionTestSetDesired(.init(modelName: f.id, desiredBuild: f.id,
+            revision: "old", aggregateSHA256: f.oldHash))
+        #expect(await f.loop.pendingModelRevisions().isEmpty)
     }
 
     @Test("accepted requests drain before the active snapshot or hash changes")

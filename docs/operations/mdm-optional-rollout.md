@@ -1,6 +1,6 @@
 # Roll out MDM-optional providers
 
-> Last updated: 2026-09-20 · commit `a981e3fbb`
+> Last updated: 2026-09-20 · commit `3b1b6a476`
 
 Enable the independent App Attest serving path and, separately, allow providers to remove Darkbloom enrollment. This runbook does not authorize a production change. The [authorization reference](../reference/provider-authorization.md) owns exact controls and deadlines.
 

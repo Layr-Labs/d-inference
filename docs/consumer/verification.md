@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-20 · commit `a981e3fbb`
+> Last updated: 2026-09-20 · commit `3b1b6a476`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is

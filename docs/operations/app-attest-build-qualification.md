@@ -1,6 +1,6 @@
 # Qualify and publish a signed App Attest build
 
-> Last updated: 2026-09-20 · commit `a981e3fbb`
+> Last updated: 2026-09-20 · commit `3b1b6a476`
 
 Use this runbook to approve an exact signed provider artifact before users can update to it. Approval persists across coordinator restarts and refreshes without a hotswap. The [authorization reference](../reference/provider-authorization.md) owns serving controls and freshness deadlines.
 

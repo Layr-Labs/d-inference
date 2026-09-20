@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-20 · commit `cc225365f`
+> Last updated: 2026-09-20 · commit `a26b1107b`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -205,6 +205,10 @@ validated**; benchmark selection alone is not release evidence.
 
 Environment inputs for the harnesses are in
 [`reference/configuration.md`](../reference/configuration.md).
+[Model verification I/O](../reference/configuration.md#model-verification-io)
+uses reusable-buffer reads and up to four independent file readers by default,
+retaining complete integrity checks. It affects load/verification work, not
+ordinary resident decode; explicit overrides provide the original serial path.
 For a pinned GPT-OSS matrix with aggregate B=2/B=4 decode, raw token timing,
 and mixed prompt arrivals, see [the profiling workflow](../developer/test.md#6-scripts-and-release-integrity).
 

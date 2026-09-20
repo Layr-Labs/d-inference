@@ -4,6 +4,11 @@
 
 - Align `ProviderCore.version` and the coordinator's `LatestProviderVersion` fallback at 0.9.7. Publication, coordinator deployment and App Attest serving/removal activation remain separate rollout steps.
 
+### Model verification I/O
+
+- Enable reusable-buffer reads and up to four independent file readers by default for model integrity verification, preserving complete SHA digests, failure handling and load-time checks. Explicit overrides retain the original reader and serial hashing for rollback.
+- Pin MLX Swift and MLX Swift LM to their merged Bonsai constant-reuse, carry-scheduling and HTTP-validation updates. Preserve the existing MLX core/C pins and native Qwen4 support.
+
 ### Bonsai performance and API stability
 
 - Enable encrypted SSD prefix-cache eligibility by default for the three exact supported Bonsai 2 MLX identities. Preserve the global cache opt-out, fresh load hashes and runtime capability/identity gates; resident RAM retention stays opt-in. Signed persistent-restart qualification and coordinator artifact allowlisting remain separate rollout steps.
@@ -14,6 +19,7 @@
 - Record matched M3 Ultra/M5 Max prefill, decode and memory measurements, including prefill tradeoffs and the real retained-constant cost. Dependency review, post-merge repinning and deployment remain separate actions; this performance draft is not a release.
 - Qualify early provider-local rejection of negative output-token limits through the SDK service, preserving explicit zero and valid requests. Coordinator validation and model numerics are unchanged.
 - Preserve the fixed SDK input-validation error through local chat interception, and explicitly admit the qualified Bonsai XML family to nested-reasoning routing for both text and media. Preserve opaque argument bytes and existing other-family policies; do not guess string unescaping.
+
 ### Account-scoped first-content SLA
 
 - Apply the first-content SLA only to authenticated accounts selected by `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; configure the intended account privately in the deployment environment. Direct users and other service accounts have no first-content timeout, including no 600-second fallback; queue limits, client cancellation and post-content response timers remain.

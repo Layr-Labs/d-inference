@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-09-15 · commit `2a843bb2c`
+> Last updated: 2026-09-20 · commit `cc225365f`
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -51,6 +51,9 @@ for these exact fleet/private-candidate identities, not family names, aliases or
 - `nvidia-nemotron-3.5-lightning`
 - `EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp`
 - `mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit` (target-only artifact)
+- `ternary-bonsai-2-27b`
+- `EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit`
+- `prism-ml/Ternary-Bonsai-2-27B-mlx-2bit`
 - The [owned Flash-Next candidate](../reference/qwen4-next-support.md#identity-and-serving-policy)
 
 Every other ID, including unlisted Qwen artifacts, Gemma 8-bit and unknown
@@ -96,7 +99,7 @@ record completed validation. Final sustained, connected-serving, quality and
 production-key restart checks remain subject to the
 [acceptance criteria](../design/release-090-acceptance.md).
 This selection change is not a release or deployment claim. SSD prefix reuse
-defaults on for the exact Qwen and Nemotron Lightning IDs above,
+defaults on for the exact Qwen, Nemotron Lightning and Bonsai 2 IDs above,
 `gemma-4-26b-qat-4bit` and `gpt-oss-20b`.
 GPT-OSS 20B and Gemma QAT use the paged historical-attention complete checkpoint.
 Gemma automatic MTP resolves its catalog assistant through `SpecDecArtifactFunnel`, and a
@@ -108,6 +111,23 @@ local/connected load hashing and benchmark expectations use the model-scoped
 `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift`.
 Resident retention remains off unless explicitly enabled through the separate
 memory flag (`PrefixCachePolicy.isMemoryEnabled`).
+
+### Bonsai complete state
+
+Bonsai uses the existing complete-checkpoint path to restore attention KV and
+recurrent state together. `EngineV2SupportedModels.isBonsai2ListingModelID`
+selects the three exact MLX identities above for default SSD eligibility; the
+GGUF repository, marketplace slug and near-matching names remain outside this
+default. `PrefixCachePolicy.requiresLoadHashBracket` requires fresh hashes around
+standalone weight loading, while the connected provider preserves its hash
+publication lifecycle. The loaded model, storage identity and verified hashes
+still gate cache construction in `EngineV2SlotFactory`.
+
+`BonsaiEncryptedCheckpointLiveTests` exercises an encrypted full checkpoint
+with a fixture key and real weights; it does not establish signed Keychain
+persistence or hosted routing readiness. Use the
+[Bonsai rollout procedure](../operations/cache-routing-rollout.md#add-bonsai-to-an-existing-routing-cohort)
+to qualify the final signed artifact and add its exact coordinator tuple.
 
 ### Flash-Next complete state
 

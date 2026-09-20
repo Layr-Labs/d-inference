@@ -102,15 +102,16 @@ func (s *PostgresStore) setModelVersion(entry *ModelRegistryEntry, version *Mode
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9, $10)
 		ON CONFLICT (model_id, version) DO UPDATE SET
 		  r2_prefix = $3, aggregate_sha256 = $4, total_size_bytes = $5, file_count = $6,
-		  status = $7, uploaded_by = $8, metadata = $9, hugging_face_artifact = $10
+		  status = CASE WHEN model_versions.status = 'retired' THEN 'retired' ELSE $7 END,
+		  uploaded_by = $8, metadata = $9, hugging_face_artifact = $10
 		WHERE model_versions.aggregate_sha256 = EXCLUDED.aggregate_sha256
 		  AND model_versions.r2_prefix = EXCLUDED.r2_prefix
 		  AND model_versions.total_size_bytes = EXCLUDED.total_size_bytes
 		  AND model_versions.file_count = EXCLUDED.file_count
-		RETURNING id, uploaded_at, promoted_at`,
+		RETURNING id, uploaded_at, promoted_at, status`,
 		version.ModelID, version.Version, version.R2Prefix, version.AggregateSHA256,
 		version.TotalSizeBytes, version.FileCount, version.Status, version.UploadedBy,
-		versionMetadata, version.HuggingFaceArtifact).Scan(&version.ID, &version.UploadedAt, &version.PromotedAt)
+		versionMetadata, version.HuggingFaceArtifact).Scan(&version.ID, &version.UploadedAt, &version.PromotedAt, &version.Status)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return ErrModelVersionImmutable
@@ -152,11 +153,18 @@ func (s *PostgresStore) PromoteModelVersion(modelID, version string) error {
 		return err
 	}
 	var versionID int64
-	if err := tx.QueryRow(ctx, `SELECT id FROM model_versions WHERE model_id = $1 AND version = $2 AND status = 'ready'`, modelID, version).Scan(&versionID); err != nil {
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT id, status FROM model_versions WHERE model_id = $1 AND version = $2`, modelID, version).Scan(&versionID, &status); err != nil {
 		if err == pgx.ErrNoRows {
 			return fmt.Errorf("model version %q %q not found", modelID, version)
 		}
 		return fmt.Errorf("store: find model version: %w", err)
+	}
+	if status == "retired" {
+		return ErrModelVersionRetired
+	}
+	if status != "ready" {
+		return fmt.Errorf("model version %q %q not found", modelID, version)
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO model_active_versions (model_id, model_version_id, activated_at)

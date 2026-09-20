@@ -12,7 +12,10 @@ eligible provider gets a request is the subject of
 
 For automatic same-ID weight updates, desired state includes a revision and
 aggregate hash for providers advertising `model_revisions_v1`. The provider
-stages the update without occupying a GPU slot, then closes admission for that
+stages the update without occupying a GPU slot. If an alias target is ineligible,
+its eligible previous or retired lineage build still receives revision updates.
+Only an emitted alias target suppresses competing lineage targets. The provider
+then closes admission for that
 model and drains accepted work before activation. Other resident models remain
 available; new cold loads wait through the activation boundary. See
 [model revisions](model-revisions.md) for backoff, snapshot selection and rollback.

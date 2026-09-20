@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-20 · commit `0cb0c6310`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -8,6 +8,8 @@ the level (`mda_verified`, `code_attested`), the five-minute challenge that
 keeps the verdict fresh, and the single routing gate that consumes all of it.
 
 The legacy levels and flags below retain their meaning. With the explicit serving opt-in, [qualified App Attest authorization](../../reference/provider-authorization.md) is an independent path alongside complete legacy verification. `coordinator/registry/app_attest_authorization.go` (`GrantAppAttestServingAuthorization`) binds permission to the account, verified machine, credential, live connection, endpoint and policy generation. `coordinator/registry/inference_authorization.go` (`authorizeInferenceHandoff`) checks every final inference handoff after queueing. Expired, revoked or replaced authorizations cannot permit new dispatch; no legacy flags are fabricated. Shadow mode alone still changes no trust.
+
+The [durable build qualification policy](../../reference/provider-authorization.md#durable-build-qualification) adds a separate qualification generation to App Attest leases. `coordinator/appattest/service/authorizer.go` (`apply`) recomputes the build/code match using the current approved record and retained Apple-signed full measurement; cached true booleans cannot survive withdrawal. `coordinator/registry/app_attest_authorization.go` (`providerHasAppAttestAuthorizationLocked`) rejects stale generations at every shared dispatch gate. Qualification expiry is independent of assertion and receipt expiry.
 
 ## Context
 

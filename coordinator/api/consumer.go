@@ -2490,6 +2490,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // to the hardcoded LatestProviderVersion.
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	if cached, ok := s.readCache.Get(apiVersionCacheKey); ok {
+		var version types.VersionResponse
+		if json.Unmarshal(cached, &version) != nil || !s.appAttestVersionDownloadReady(version) {
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("release_not_ready", "release authorization is not ready"))
+			return
+		}
 		writeCachedJSON(w, cached)
 		return
 	}
@@ -2497,6 +2502,10 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	var resp types.VersionResponse
 	// Try release table first.
 	if release := s.store.GetLatestRelease(defaultReleasePlatform); release != nil {
+		if !s.appAttestDownloadReady(release) {
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("release_not_ready", "release authorization is not ready"))
+			return
+		}
 		resp = types.VersionResponse{
 			Version:      release.Version,
 			Platform:     release.Platform,
@@ -2508,6 +2517,10 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 			Changelog:    release.Changelog,
 		}
 	} else {
+		if s.requiresAppAttestPublication() {
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse("release_not_ready", "no authorized provider release available"))
+			return
+		}
 		// Fallback to hardcoded version + coordinator download.
 		scheme := "https"
 		if r.TLS == nil && !strings.Contains(r.Host, "darkbloom.dev") {

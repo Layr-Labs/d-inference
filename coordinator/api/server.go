@@ -199,6 +199,8 @@ type releaseTrustPolicySnapshot struct {
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
+	appAttestRuntimeRefreshPending atomic.Bool
+
 	appAttestShadow               AppAttestShadowConfig
 	appAttest                     *attestservice.Service
 	appAttestOnce                 sync.Once
@@ -2828,6 +2830,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/admin/models/", s.handleAdminModelRegistryAction)
 	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases) // admin key or Privy admin
 	s.mux.HandleFunc("POST /v1/admin/app-attest/revoke", s.handleAdminAppAttestRevoke)
+	s.mux.HandleFunc("GET /v1/admin/app-attest/builds", s.handleAdminAppAttestBuilds)
+	s.mux.HandleFunc("POST /v1/admin/app-attest/builds", s.handleAdminAppAttestBuilds)
+	s.mux.HandleFunc("POST /v1/admin/app-attest/builds/revoke", s.handleAdminAppAttestBuildRevoke)
 	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease) // admin key or Privy admin
 
 	// Historical admin state export (DAR-70) — streams the TEE-sealed /data

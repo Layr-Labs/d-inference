@@ -63,6 +63,7 @@ type MemoryStore struct {
 	machineInventory     *memoryMachineInventory
 	appAttestEvidence    map[string]memoryAppAttestEvidence
 	appAttestEnrollments map[string]AppAttestEnrollment
+	appAttestBuilds      map[string]AppAttestBuildQualification
 
 	// Referral system
 	referrersByCode    map[string]*Referrer // code → referrer

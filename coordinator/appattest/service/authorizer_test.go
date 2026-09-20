@@ -47,15 +47,20 @@ func newAuthorizationFixture(t *testing.T) (*Service, *registry.Provider, *appAt
 	}
 	s := &Service{registry: r, store: store.NewMemory(store.Config{}), logger: logger, config: Config{ServingEnabled: true, MDMRemovalEnabled: true, Environment: "production"}}
 	s.currentReleasePolicy = func() ReleasePolicy {
-		return ReleasePolicy{Generation: 7, Known: true, Approves: func(_ *registry.Provider, status *protocol.AppAttestStatus) bool {
+		return ReleasePolicy{Generation: 7, Known: true, ContainsQualifiedRelease: func(store.Release) bool { return true }, Approves: func(_ *registry.Provider, status *protocol.AppAttestStatus) bool {
 			return status != nil && status.BinaryHash == strings.Repeat("a", 64) && status.AppVersion == "0.9.4"
 		}}
+	}
+	s.config.QualifiedBuildHashes = strings.Repeat("a", 64)
+	s.config.QualifiedCodeHashes = strings.Repeat("a", 64) + ":" + strings.Repeat("c", 64)
+	if err := s.RefreshBuildQualifications(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 	s.authorizer = &authorizer{s: s, current: map[*registry.Provider]*appAttestAuthorizationRecord{}}
 	now := time.Now().UTC()
 	category := uint32(6)
 	binding := appattest.AuthorizationBinding{Account: "account", Machine: "machine", Credential: "credential", Connection: "proof", Endpoint: key, AppID: "TEST.app", Environment: "production"}
-	e := appattest.AuthorizationEvidence{Binding: binding, Expected: binding, ProtocolVersion: 3, CredentialVerified: true, EndpointBound: true, AssertionAt: now,
+	e := appattest.AuthorizationEvidence{CodeDirectoryHash: strings.Repeat("c", 64), Binding: binding, Expected: binding, ProtocolVersion: 3, CredentialVerified: true, EndpointBound: true, AssertionAt: now,
 		ValidationCategory: &category, ReportedVersion: "0.9.4", CatalogKnown: true, BuildMatched: true, BuildQualified: true,
 		CodeMeasurementKnown: true, CodeMeasurementMatched: true, VerificationKeyKnown: true, VerificationKeyMatched: true,
 		HardwareKnown: true, HardwareMatched: true, ArchiveComplete: true, RenewalConfigured: true}
@@ -125,9 +130,9 @@ func TestAppAttestAuthorizerRejectsMissingPolicyAndArchive(t *testing.T) {
 			s, p, record, state := newAuthorizationFixture(t)
 			switch mode {
 			case "unqualified":
-				record.evidence.BuildQualified = false
+				s.config.QualifiedBuildHashes = ""
 			case "missing_code":
-				record.evidence.CodeMeasurementKnown = false
+				record.evidence.CodeDirectoryHash = ""
 			case "archive_gap":
 				record.dropped = func() uint64 { return 1 }
 			case "catalog_changed":

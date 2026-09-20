@@ -1,6 +1,6 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-09-15 · commit `b61d32a38`
+> Last updated: 2026-09-20 · commit `0cb0c6310`
 
 App Attest shadow collection records stable machine identities, fleet adoption, submitted proofs and receipts alongside legacy verification. Shadow alone changes no routing, rewards or trust. The separately enabled [provider authorization path](provider-authorization.md) uses qualified evidence for MDM-optional serving and rewards. DeviceCheck's separate two-bit API remains deferred.
 
@@ -10,14 +10,16 @@ App Attest shadow collection records stable machine identities, fleet adoption, 
 |---|---|---|
 | `EIGENINFERENCE_APP_ATTEST_SHADOW` | `false` | Enables negotiated shadow requests. Disabling it preserves machine inventory, legacy verification, and renewal of existing receipts when credentials are configured. |
 | `EIGENINFERENCE_APP_ATTEST_ROLLOUT_PERCENT` | `0` | Stable authenticated-account cohort, integer 0–100. Invalid values exclude all clients. The hard provider floor is `0.9.4`; older, missing, malformed and prerelease versions below that floor never receive Apple operations. |
-| `EIGENINFERENCE_APP_ATTEST_QUALIFIED_CODE_HASHES` | unset | Comma-separated `binary_sha256:full_code_directory_sha256` pairs from the same final qualified signed artifact. Only full SHA-256 CodeDirectory measurements (Apple type 2, 32 bytes) can match. Missing, malformed or conflicting mappings remain unknown. The release catalog and qualified binary allowlist must also approve the build. |
-| `EIGENINFERENCE_APP_ATTEST_QUALIFIED_BUILD_HASHES` | unset | Comma-separated immutable binary hashes with completed Mac build/security-transition qualification. This does not override the active release catalog or missing Apple metadata. Empty means prospective build qualification is unknown. |
+| `EIGENINFERENCE_APP_ATTEST_QUALIFIED_CODE_HASHES` | unset | Comma-separated `binary_sha256:full_code_directory_sha256` pairs from the same final qualified signed artifact. Only full SHA-256 CodeDirectory measurements (Apple type 2, 32 bytes) can match. Legacy bootstrap only when no durable build row exists and the qualification store is fresh. Missing, malformed or conflicting mappings remain unknown. A durable approval or revocation overrides this value. New gated publications require a durable approval. |
+| `EIGENINFERENCE_APP_ATTEST_QUALIFIED_BUILD_HASHES` | unset | Comma-separated immutable binary hashes with completed Mac build/security-transition qualification. This does not override the active release catalog or missing Apple metadata. Legacy bootstrap only; empty remains unknown unless a durable qualification exists. Durable revocation always wins. |
 | `EIGENINFERENCE_APP_ATTEST_APP_ID` | `SLDQ2GJ6TL.io.darkbloom.provider` | Expected team prefix and macOS signing identifier. |
 | `EIGENINFERENCE_APP_ATTEST_ENVIRONMENT` | `production` | Apple attestation environment; `development` is also supported. |
 | `EIGENINFERENCE_APP_ATTEST_RECEIPT_KEY_PATH` | unset | Private server-side ES256 key file with DeviceCheck service authorization, used only for App Attest receipt renewal. Unset disables renewal. |
 | `EIGENINFERENCE_APP_ATTEST_RECEIPT_KEY_ID` | unset | Apple key identifier for receipt renewal. Both credential settings are required. |
 
 Code: `coordinator/appattest/service/config.go` (`ConfigFromEnvironment`) and `coordinator/appattest/service/rollout.go` (`appAttestRolloutDecision`). All machines on one authenticated account share the cohort; the percentage is of accounts, not an exact fraction of machines. A provisional machine ID or lost legacy key cannot reroll it. Direct `ServerConfig{}` construction keeps shadow disabled. Serving and MDM-removal controls are specified separately in [provider authorization](provider-authorization.md). Receipt renewal does not generate DCDevice tokens, read or write DeviceCheck bits, or send APNs pushes.
+
+Build qualifications are now managed through the [durable authorization contracts](provider-authorization.md#durable-build-qualification), independently of this wire protocol. `app_attest.qualification.refresh_failed` and `app_attest.release_refresh_failed` count policy refresh failures; these metrics contain no credentials or machine identifiers.
 
 ## Wire exchange
 

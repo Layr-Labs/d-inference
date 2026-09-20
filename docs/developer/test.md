@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-20 · commit `1451a4c89`
+> Last updated: 2026-09-20 · commit `0cb0c6310`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -42,6 +42,8 @@ It invokes `scripts/test-install-onboarding.py`, which executes the actual setup
 function with profile/network/Settings effects mocked: macOS 27+, older and unknown
 versions, existing management, and unavailable enrollment. This checks setup
 routing only; signed Mac App Attest qualification is separate.
+
+Build qualification regressions run in `coordinator/store/app_attest_builds_test.go`, `coordinator/appattest/service/build_qualifications_test.go`, and `coordinator/api/app_attest_builds_test.go`. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts and retry ordering without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. These checks do not replace final signed-Mac/Apple qualification.
 
 ## Bonsai performance qualification
 

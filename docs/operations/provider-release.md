@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-20 · commit `b4e64dadd`
+> Last updated: 2026-09-20 · commit `0cb0c6310`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -14,6 +14,8 @@ collected in [`CHANGELOG.md`](../../CHANGELOG.md). The version bump prepares
 the source for the provider bundle. Publication and coordinator deployment remain
 separate operations; the bump alone does not change the registered release
 returned by `GET /v1/releases/latest`.
+
+Production publication requires independent [durable App Attest build qualification](app-attest-build-qualification.md). Signing now stages immutable bytes and a qualification template; the separate Linux publication job verifies approval before release registration, R2 latest aliases and GitHub publication. Retry only the failed publication job after approval, preserving the original signed artifact. Deploy the matching coordinator first; the existing release key cannot approve builds.
 
 ### Flash resource recovery rollout
 

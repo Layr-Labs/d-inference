@@ -39,6 +39,22 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn('continue-on-error:', ACTION)
         self.assertIn('needs: [resolve-env, build-and-release]', job(RELEASE, 'validate-older-macos'))
 
+    def test_publication_is_separate_and_retryable_without_signing(self):
+        stage = job(RELEASE, 'build-and-release')
+        publish = job(RELEASE, 'publish-release')
+        self.assertNotIn('/v1/releases', stage)
+        self.assertNotIn('gh release create', stage)
+        self.assertNotIn('releases/latest/', stage)
+        self.assertNotIn('secrets.PROD_RELEASE_KEY', stage)
+        self.assertIn('provider-release-publication.py stage', stage)
+        self.assertIn('provider-release-publication.py publish', publish)
+        self.assertIn('needs: [resolve-env, build-and-release]', publish)
+        self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', publish)
+        self.assertIn('gh run download "$GITHUB_RUN_ID"', publish)
+        self.assertNotIn('notarytool', publish)
+        self.assertNotIn('provider-release-build', publish)
+        self.assertIn('cancel-in-progress: false', publish)
+
     def test_artifact_handoff_is_same_run_and_source_bound(self):
         build = job(RELEASE, 'build-provider');sign = job(RELEASE, 'build-and-release')
         self.assertIn('provider-signing-validation.py stage', build)

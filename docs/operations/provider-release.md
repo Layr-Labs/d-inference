@@ -1,13 +1,14 @@
 # Release a provider version
 
-> Last updated: 2026-09-20 · commit `863b339b9`
+> Last updated: 2026-09-20 · commit `a981e3fbb`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
 environment, and let [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml)
-build, sign, notarize, hash, upload, and register the bundle. The coordinator
-verifies every registered artifact by re-downloading it, so a release either
-lands fully or not at all.
+build, sign, notarize, retain, stage and register the bundle. The coordinator
+re-downloads artifacts and requires independent App Attest qualification before
+activating a production release. Staging/publication failures retry the retained
+artifact; GitHub and R2 publication are separate recoverable steps.
 
 The prepared version is **0.9.7**; its source changes since `v0.9.6` are
 collected in [`CHANGELOG.md`](../../CHANGELOG.md). The version bump prepares
@@ -15,7 +16,7 @@ the source for the provider bundle. Publication and coordinator deployment remai
 separate operations; the bump alone does not change the registered release
 returned by `GET /v1/releases/latest`.
 
-Production publication requires independent [durable App Attest build qualification](app-attest-build-qualification.md). Signing now stages immutable bytes and a qualification template; the separate Linux publication job verifies approval before release registration, R2 latest aliases and GitHub publication. Retry only the failed publication job after approval, preserving the original signed artifact. Deploy the matching coordinator first; the existing release key cannot approve builds.
+Production publication requires independent [durable App Attest build qualification](app-attest-build-qualification.md). Signing retains immutable bytes and a qualification template; a separate Linux staging job uploads those retained bytes to R2, and the Linux publication job verifies approval before release registration, R2 latest aliases and GitHub publication. Retry only the failed publication job after approval, preserving the original signed artifact. Deploy the matching coordinator first; the existing release key cannot approve builds.
 
 ### Flash resource recovery rollout
 
@@ -228,7 +229,7 @@ Coordinator deploys are a separate runbook:
 The provider and coordinator versions must be identical strings:
 
 - `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.6"`
-- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.6"`
+- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.7"`
 
 ```bash
 ./scripts/check-release-version.sh          # provider == coordinator, semver
@@ -328,7 +329,7 @@ The CodeDirectory digest is also printed in production release notes and supplie
 the measurement side of an explicitly qualified App Attest binary/code-hash pair.
 Recording it does not authorize the build. In validation-only mode, a second
 job downloads that exact artifact to the older macOS runner, verifies its
-source/archive hashes and notarization, and requires all three runtime smoke
+source/archive hashes and notarization, and requires all four runtime smoke
 markers. It asserts that the host is below macOS 27 so the compatibility lane
 cannot silently become another current-OS run. Retention is 14 days. Verify those hashes
 before an isolated model or persistent-cache restart test, and retain the artifact
@@ -338,7 +339,7 @@ durability or authorize rollout.
 ### 6. Approve signing, qualify the exact artifact, then publish
 
 After `build-provider` and `qualify-sdk` both succeed, approve the pending
-`prod` (or `dev`) deployment for **Sign, notarize and stage exact artifact**
+`prod` (or `dev`) deployment for **Sign, notarize and retain exact artifact**
 (`build-and-release`, `xcode-27`). Compilation and SDK tests have already run
 in the parallel jobs; the signing job consumes their source-bound artifact.
 The relevant signing steps run in this order:
@@ -347,15 +348,25 @@ The relevant signing steps run in this order:
 |---|---|---|
 | 1 | Checkout · Validate release version integrity · Select SDK 27 signing toolchain · Ensure matching Metal compiler is available | Verify the source version and exact SDK before signing |
 | 2 | Fetch and verify this run's unsigned build | Download the build job's same-run artifact and validate source SHA, version and SDK |
-| 3 | Import Developer ID certificate · Install awscli (R2) · Embed provisioning profile | Prepare the temporary keychain and validate profile-authorized entitlements |
+| 3 | Import Developer ID certificate · Embed provisioning profile | Prepare the temporary keychain and validate profile-authorized entitlements |
 | 4 | Stage and sign bundle | Build the app and flat compatibility layout, preserve SwiftPM resources, sign with hardened runtime, and verify signatures |
 | 5 | Notarize bundle | Notarize, staple, rebuild and extract the final archive, run runtime smoke, then calculate final binary/bundle/metallib and full CodeDirectory SHA-256 values |
 | 6 | Prepare signed release qualification evidence | `scripts/provider-release-publication.py prepare` retains the registration payload, annotated-tag changelog and independent operator qualification template |
 | 7 | Retain exact signed publication artifact | Retain the final bundle and metadata in `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` for 30 days |
-| 8 | Stage immutable bundle in R2 | Upload only `releases/v<VERSION>/artifacts/<BUNDLE_SHA256>/darkbloom-bundle-macos-arm64.tar.gz`; do not update latest aliases or register the release |
-| 9 | Cleanup keychain | Always remove the temporary signing keychain |
+| 8 | Cleanup keychain | Always remove the temporary signing keychain |
 
-For production, review/test these final signed bytes, fill in the template's
+After signing succeeds, the independent **Stage retained signed artifact in R2**
+job (`stage-release`, Linux) resolves its R2 credentials, downloads the exact
+`needs.build-and-release.outputs.publication_artifact` from the same run,
+verifies its identity/digest, and uploads only the immutable bundle-digest
+path. It does not compile, sign, notarize, register a release, or update latest
+aliases. The signing job has no R2 upload credentials or AWS CLI step.
+A transient R2/artifact-download failure belongs to this downstream job:
+**Re-run failed jobs** reuses the retained bytes and original metadata even
+when the workflow attempt number changes. Publication explicitly depends on
+successful staging.
+
+After R2 staging succeeds, review/test these final signed bytes for production, fill in the template's
 actual qualification evidence, and submit it through the admin approval route
 as described in [build qualification](app-attest-build-qualification.md#steps).
 Use a verified Privy admin session from `scripts/admin.sh login` or the admin

@@ -1,6 +1,6 @@
 # Qualify and publish a signed App Attest build
 
-> Last updated: 2026-09-20 · commit `863b339b9`
+> Last updated: 2026-09-20 · commit `a981e3fbb`
 
 Use this runbook to approve an exact signed provider artifact before users can update to it. Approval persists across coordinator restarts and refreshes without a hotswap. The [authorization reference](../reference/provider-authorization.md) owns serving controls and freshness deadlines.
 
@@ -17,9 +17,9 @@ Every production provider publication, including a retry after missing qualifica
 
 ## Steps
 
-1. Start the source-matching tagged [provider release](provider-release.md). Compilation and SDK checks remain parallel. The signing job notarizes and smokes the final app, uploads it under `releases/v<VERSION>/artifacts/<BUNDLE_SHA256>/darkbloom-bundle-macos-arm64.tar.gz`, and retains the same bytes and metadata in a GitHub artifact for 30 days. It does not advance latest aliases, register a release, or create a GitHub Release.
+1. Start the source-matching tagged [provider release](provider-release.md). Compilation and SDK checks remain parallel. The signing job notarizes and smokes the final app, then retains the exact bytes and metadata in a GitHub artifact for 30 days. A separate Linux `stage-release` job downloads that retained artifact and uploads it under `releases/v<VERSION>/artifacts/<BUNDLE_SHA256>/darkbloom-bundle-macos-arm64.tar.gz`. If downloading or uploading fails, rerun the failed staging job to reuse the same signed bytes; do not rerun successful signing. It does not advance latest aliases, register a release, or create a GitHub Release.
 2. Download the `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` artifact named in the signing job outputs. Review `release-payload.json`, `qualification-request.json`, and the final signed bundle. Confirm the source commit, CI run, binary/bundle/metallib hashes and full CodeDirectory SHA-256. Use `CandidateCDHashFull sha256` from the final executable, not the truncated `CDHash`, and compare it with the current verified Apple assertion measurement.
-3. Complete qualification against these exact bytes. Put the test report/reference and operator confirmation in the template's `evidence` field. Submit the template using an administrator credential:
+3. Wait for **Stage retained signed artifact in R2** to succeed, then complete qualification against these exact bytes. Put the test report/reference and operator confirmation in the template's `evidence` field. Submit the template using an administrator credential:
 
    ```bash
    curl --fail-with-body --request POST "$COORDINATOR_URL/v1/admin/app-attest/builds" \

@@ -1,6 +1,6 @@
 # Operations runbooks
 
-> Last updated: 2026-09-20 · commit `0cb0c6310`
+> Last updated: 2026-09-20 · commit `a981e3fbb`
 
 Procedures for deploying, migrating, and operating Darkbloom production
 infrastructure. Every runbook has the same shape — when to use, prerequisites,

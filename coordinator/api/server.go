@@ -199,6 +199,7 @@ type releaseTrustPolicySnapshot struct {
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
+	modelCatalogSyncMu            sync.Mutex // serialize catalog snapshots and desired-state publication
 	appAttestShadow               AppAttestShadowConfig
 	appAttest                     *attestservice.Service
 	appAttestOnce                 sync.Once
@@ -1215,22 +1216,38 @@ func (s *Server) SetMDMWebhookSecret(secret string) {
 
 // SyncModelCatalog reads active models from the store and updates the
 // registry's model catalog. Call this at startup and after admin catalog changes.
-func (s *Server) SyncModelCatalog() {
+func (s *Server) SyncModelCatalog() { s.syncModelCatalog() }
+
+// Return whether the committed registry state reached the live routing policy.
+// Revocation callers must not acknowledge completion after a failed refresh.
+func (s *Server) syncModelCatalog() bool {
+	s.modelCatalogSyncMu.Lock()
+	defer s.modelCatalogSyncMu.Unlock()
 	registryRows, err := s.store.ListActiveModelRegistryWithError()
 	if err != nil {
 		s.logger.Error("model registry catalog sync failed", "error", err)
-		return
+		return false
 	}
 	entries := make([]registry.CatalogEntry, 0, len(registryRows))
 	for _, row := range registryRows {
 		if row.ActiveVersion == nil {
 			continue
 		}
+		servingHashes := make([]string, 0, len(row.ServingVersions))
+		sizeBytes := row.ActiveVersion.TotalSizeBytes
+		for _, v := range row.ServingVersions {
+			servingHashes = append(servingHashes, v.AggregateSHA256)
+			if v.TotalSizeBytes > sizeBytes {
+				sizeBytes = v.TotalSizeBytes
+			}
+		}
 		entries = append(entries, registry.CatalogEntry{
-			ID:         row.ID,
-			WeightHash: row.ActiveVersion.AggregateSHA256,
-			SizeGB:     float64(row.ActiveVersion.TotalSizeBytes) / 1e9,
-			MinRAMGB:   row.MinRAMGB,
+			Revision:            row.ActiveVersion.Version,
+			ServingWeightHashes: servingHashes,
+			ID:                  row.ID,
+			WeightHash:          row.ActiveVersion.AggregateSHA256,
+			SizeGB:              float64(sizeBytes) / 1e9,
+			MinRAMGB:            row.MinRAMGB,
 			RequiredProviderCapabilities: append(
 				[]string{}, row.RequiredProviderCapabilities...),
 		})
@@ -1251,6 +1268,7 @@ func (s *Server) SyncModelCatalog() {
 	// set, which cancels stale reconciliation work.
 	s.fanOutDesiredModels()
 	s.invalidateCatalogCache()
+	return true
 }
 
 // syncModelAliases loads standard rollout aliases first, then resolves

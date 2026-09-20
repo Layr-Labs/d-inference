@@ -48,6 +48,10 @@ extension ProviderLoop {
             ))
             return
         }
+        if revisionUpdatesInProgress.contains(modelId) {
+            send.send(.loadModelStatus(modelId: modelId, status: .failed, error: "model revision activation in progress"))
+            return
+        }
         if isDrainingForUpdate {
             sendDrainingLoadModelFailure(modelId: modelId, send: send)
             return

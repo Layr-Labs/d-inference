@@ -112,7 +112,7 @@ func (r *Registry) mergeProviderModels(
 		// When the catalog pins an expected hash, a models_update MUST carry a
 		// non-empty MATCHING hash. A missing hash is rejected just like a
 		// mismatched one.
-		if exp := entry.WeightHash; exp != "" && !strings.EqualFold(m.WeightHash, exp) {
+		if exp := entry.WeightHash; exp != "" && !entry.acceptsWeightHash(m.WeightHash) {
 			r.logger.Warn("models_update weight-hash missing or mismatched; rejecting build",
 				"provider_id", providerID, "model_id", m.ID, "expected", exp, "got", m.WeightHash)
 			continue

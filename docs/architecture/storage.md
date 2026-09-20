@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-18 · commit `6050cc4d4`
+> Last updated: 2026-09-20 · commit `cc225365f`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -9,6 +9,13 @@ does not, and which files an operator may touch. Configuration values are
 listed once in [`../reference/configuration.md`](../reference/configuration.md);
 the SSD cache file format is in
 [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md).
+
+Promoted, non-retired model versions remain accepted during automatic weight
+updates. `ModelRegistryRecord.ServingVersions` derives from existing
+`model_versions.promoted_at` and `status`; no new schema migration is required.
+The model cache invalidates on publication, promotion and explicit retirement.
+Provider snapshots use immutable hidden revision directories selected by
+`refs/main`; [revision storage and recovery](model-revisions.md) describes them.
 
 Model versions also store the optional `hugging_face_artifact` as nullable JSONB
 (`coordinator/store/postgres.go`). `SetModelVersion` replaces it and invalidates

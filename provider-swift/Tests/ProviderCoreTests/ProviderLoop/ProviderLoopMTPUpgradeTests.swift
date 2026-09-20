@@ -301,7 +301,7 @@ struct ProviderLoopMTPUpgradeTests {
         let staged = try #require(try await fixture.prepare())
         await fixture.loop.acquireResliceGateForTesting()
         let task = Task {
-            await MTPIdleUpgrade.run(prepare: { staged },
+            await ModelIdleUpgrade.run(prepare: { staged },
                 beginDrain: { try await fixture.loop.beginMTPUpgradeDrain($0) },
                 commitIfIdle: { try await fixture.loop.commitMTPUpgradeIfIdle($0) },
                 discard: { await fixture.loop.discardMTPUpgrade($0) },
@@ -499,7 +499,7 @@ struct ProviderLoopMTPUpgradeTests {
         await fixture.loop.setUpgradeCoordinatorPin(true)
         let pause = UpgradeBarrier()
         let task = Task {
-            await MTPIdleUpgrade.run(maximumIdleChecks: 1, prepare: { staged },
+            await ModelIdleUpgrade.run(maximumIdleChecks: 1, prepare: { staged },
                 beginDrain: { try await fixture.loop.beginMTPUpgradeDrain($0) },
                 commitIfIdle: { try await fixture.loop.commitMTPUpgradeIfIdle($0) },
                 discard: { await fixture.loop.discardMTPUpgrade($0) },

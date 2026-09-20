@@ -37,7 +37,7 @@ extension StandaloneServer {
         guard mtpUpgradeMonitorTask == nil else { return }
         mtpUpgradeMonitorTask = Task { [weak self] in
             var nextAttempt: [String: ContinuousClock.Instant] = [:]
-            var lastOutcome: [String: MTPIdleUpgrade.Outcome] = [:]
+            var lastOutcome: [String: ModelIdleUpgrade.Outcome] = [:]
             while !Task.isCancelled {
                 guard let self else { return }
                 let candidates = await self.pendingMTPUpgradeModels()
@@ -47,7 +47,7 @@ extension StandaloneServer {
                     if lastOutcome[modelID] == nil {
                         await self.logMTPUpgrade("checking/downloading verified assistant; target remains available", modelID: modelID)
                     }
-                    let outcome = await MTPIdleUpgrade.run(
+                    let outcome = await ModelIdleUpgrade.run(
                         prepare: { try await self.prepareMTPUpgrade(modelID) },
                         beginDrain: { try await self.beginMTPUpgradeDrain($0) },
                         commitIfIdle: { try await self.commitMTPUpgradeIfIdle($0) },
@@ -126,7 +126,7 @@ extension StandaloneServer {
         else {
             standaloneLogger.warning("mtp: model=\(modelID) assistant staging deferred: insufficient memory; retaining target engine")
             await finishMTPUpgradeLoad()
-            throw MTPIdleUpgrade.PreparationError.insufficientMemory
+            throw ModelIdleUpgrade.PreparationError.insufficientMemory
         }
         mtpStagingReservations.reserve(lease, target: ObjectIdentifier(original.container),
             targetBytes: UInt64(max(0, original.sizing.weightsBytes)),

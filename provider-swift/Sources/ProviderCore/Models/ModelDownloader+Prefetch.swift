@@ -25,17 +25,22 @@ extension ModelDownloader {
     /// prefetch. On re-entry, any file already present in staging that matches
     /// its manifest size AND SHA-256 is skipped; only missing/corrupt files are
     /// re-fetched. Per-file SHA is verified as each file lands; the aggregate
-    /// hash is verified before the snapshot is published. The published snapshot
-    /// is the same `snapshots/local` layout `download` produces, so
-    /// `ModelScanner` discovers it immediately.
+    /// hash is verified before the snapshot is published. The completed snapshot
+    /// is immutable. Activation selects it with refs/main; callers can stage
+    /// without changing the active revision by passing activate: false.
     ///
     /// `onByteProgress(done, total)` reports cumulative verified-on-disk bytes
     /// against the manifest total (already-present files count as done up front).
+    @discardableResult
     public func prefetch(
         model: CatalogModel,
         manifest: ModelManifest,
-        onByteProgress: (@Sendable (Int64, Int64) -> Void)? = nil
-    ) async throws {
+        onByteProgress: (@Sendable (Int64, Int64) -> Void)? = nil,
+        activate: Bool = true
+    ) async throws -> URL {
+        let lease = try await ModelArtifactWriteLease.acquire(modelID: model.id)
+        defer { lease.release() }
+        try Self.validateArtifactManifest(manifest, model: model)
         let eligibility = ModelRuntimeRequirements.evaluate(
             modelID: model.id,
             catalogRequirements: model.requiredProviderCapabilities,
@@ -44,23 +49,12 @@ extension ModelDownloader {
             throw ModelCatalogError.ineligible(
                 ModelRuntimeIneligibleError(eligibility: eligibility).localizedDescription)
         }
-        guard manifest.modelID == model.id else {
-            throw ModelCatalogError.downloadFailed("manifest model_id \(manifest.modelID) does not match catalog id \(model.id)")
+        let cacheDir = try Self.revisionSnapshotDirectory(manifest: manifest)
+        if Self.verifiedRevisionExists(at: cacheDir, manifest: manifest) {
+            if activate { try Self.activateRevision(modelID: model.id, directory: cacheDir) }
+            onByteProgress?(manifest.totalSizeBytes, manifest.totalSizeBytes)
+            return cacheDir
         }
-        guard manifest.files.count == manifest.fileCount else {
-            throw ModelCatalogError.downloadFailed("manifest file_count \(manifest.fileCount) does not match files array")
-        }
-        guard !manifest.files.isEmpty else {
-            throw ModelCatalogError.downloadFailed("manifest contains no files")
-        }
-        if let aggregate = model.aggregateSHA256, aggregate != manifest.aggregateSHA256 {
-            throw ModelCatalogError.downloadFailed("catalog aggregate hash does not match manifest")
-        }
-        if let prefix = model.r2Prefix, prefix != manifest.r2Prefix {
-            throw ModelCatalogError.downloadFailed("catalog r2_prefix does not match manifest")
-        }
-
-        let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: snapshotsDir, withIntermediateDirectories: true)
 
@@ -81,6 +75,8 @@ extension ModelDownloader {
                 url: "\(r2CDNURL)/\(Self.escapeR2Path(manifest.r2Prefix))/\(Self.escapeR2Path(relativePath))"
             )
         }
+
+        try Self.reuseVerifiedFiles(modelID: model.id, manifest: manifest, stagingDir: stagingDir)
 
         // Classify each file once (hashing is expensive) into already-valid vs
         // still-needed. Reused for both progress seeding and the capacity check.
@@ -143,12 +139,13 @@ extension ModelDownloader {
             throw ModelCatalogError.downloadFailed("aggregate hash mismatch for \(model.id)")
         }
 
-        try Self.publishStagedSnapshot(stagingDir, to: cacheDir)
-        try writeMainRef(for: model.id)
+        try Self.publishRevision(stagingDir: stagingDir, directory: cacheDir, manifest: manifest)
+        if activate { try Self.activateRevision(modelID: model.id, directory: cacheDir) }
         // Staging was consumed by publishStagedSnapshot (moved/replaced); make a
         // best-effort cleanup in case the platform left a husk behind.
         try? FileManager.default.removeItem(at: stagingDir)
         onByteProgress?(total, total)
+        return cacheDir
     }
 
     /// Whether an interrupted foreground download left resumable content staged on

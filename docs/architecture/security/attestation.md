@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-15 · commit `605651bb9`
+> Last updated: 2026-09-20 · commit `cc225365f`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -8,6 +8,13 @@ the level (`mda_verified`, `code_attested`), the five-minute challenge that
 keeps the verdict fresh, and the single routing gate that consumes all of it.
 
 The legacy levels and flags below retain their meaning. With the explicit serving opt-in, [qualified App Attest authorization](../../reference/provider-authorization.md) is an independent path alongside complete legacy verification. `coordinator/registry/app_attest_authorization.go` (`GrantAppAttestServingAuthorization`) binds permission to the account, verified machine, credential, live connection, endpoint and policy generation. `coordinator/registry/inference_authorization.go` (`authorizeInferenceHandoff`) checks every final inference handoff after queueing. Expired, revoked or replaced authorizations cannot permit new dispatch; no legacy flags are fabricated. Shadow mode alone still changes no trust.
+
+Model weight challenges accept the desired hash or a previously promoted,
+non-retired revision of that same model (`CatalogAcceptsWeightHash` in
+`coordinator/registry/model_revisions.go`). This permits honest providers to
+serve approved old bytes during download and draining. Explicit retirement
+withdraws that acceptance. The existing legacy missing-hash behavior is unchanged;
+this change does not close SEC-007. See [model revisions](../model-revisions.md).
 
 ## Context
 

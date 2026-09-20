@@ -28,6 +28,7 @@ public struct ProviderRuntimeCapability: RawRepresentable, Codable, Hashable, Se
         lhs.rawValue < rhs.rawValue
     }
 
+    public static let modelRevisions = Self(rawValue: "model_revisions_v1")
     public static let appleM5 = Self(rawValue: "apple_m5")
     public static let mlxNAX = Self(rawValue: "mlx_nax")
 }
@@ -105,7 +106,7 @@ public enum ProviderRuntimeCapabilityDetector {
             chipFamily: hardware.chipFamily,
             naxAvailable: naxAvailable,
             liveMetallibHash: { boundMetallibHash }
-        )
+        ).union([.modelRevisions])
     }
 }
 

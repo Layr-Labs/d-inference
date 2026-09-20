@@ -1,6 +1,6 @@
 # Operations runbooks
 
-> Last updated: 2026-09-18 · commit `5fc48d460`
+> Last updated: 2026-09-20 · commit `cc225365f`
 
 Procedures for deploying, migrating, and operating Darkbloom production
 infrastructure. Every runbook has the same shape — when to use, prerequisites,
@@ -22,6 +22,7 @@ shapes under [`../reference/README.md`](../reference/README.md).
 | [`routing-v2-rollout.md`](routing-v2-rollout.md) | Kill switches and flag flips for the shipped routing-v2 behaviours (TTFT gate, queue-before-shed, cold dispatch, warm pool, budget clamp, anomaly detector) |
 | [`cache-routing-rollout.md`](cache-routing-rollout.md) | Turn exact prefix-cache routing on in production, widen the activation percent and plan-QPS bounds one at a time, verify with `GET /v1/cache/status`, roll back to `off` |
 | [`profiler-queries.md`](profiler-queries.md) | Read-only SQL recipes against the profiler tables (`request_profiles`, `fleet_snapshots`) for latency, fleet and outcome questions |
+| [`model-revisions.md`](model-revisions.md) | Publish replacement weights under the same model ID and roll back |
 | [`model-migration.md`](model-migration.md) | Publish a model build and move a public alias to it with zero downtime |
 | [`state-export.md`](state-export.md) | Extract and rehydrate sealed coordinator state (`DAR-70`) |
 | [`coordinator-perf-tier1-rollout.md`](coordinator-perf-tier1-rollout.md) | Roll out the 2026-09 coordinator performance Tier 1 branch: `GOGC` gate, Tier 0 env knobs, before/after checks |

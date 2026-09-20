@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-18 · commit `dab62c50a`
+> Last updated: 2026-09-20 · commit `cc225365f`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -10,6 +10,12 @@ is slow to produce first content — races a second provider against it.
 Capacity, queues, slot states and the warm pool are covered in
 [`scheduling.md`](scheduling.md); this page covers only choosing among
 eligible providers.
+
+For same-ID weight updates, `CatalogAcceptsWeightHash` and catalog eligibility
+accept the desired and retained approved revisions for that same model. An
+unpromoted or explicitly retired hash is not accepted. Catalog size uses the
+largest retained revision as a conservative admission bound during convergence.
+[Model revisions](model-revisions.md) defines this transition policy.
 
 ## Context
 

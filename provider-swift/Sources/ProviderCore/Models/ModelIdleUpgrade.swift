@@ -3,7 +3,7 @@ import Foundation
 /// Prepare while serving, fence new admissions, then let accepted work reach
 /// idle before publication. A timeout restores admission without cancelling
 /// existing requests. Publication and drain cleanup are caller-owned.
-enum MTPIdleUpgrade {
+enum ModelIdleUpgrade {
     enum PreparationError: Error { case insufficientMemory }
 
     enum Outcome: Equatable { case notReady, installed, deferred, cancelled, failed }

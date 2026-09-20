@@ -1455,7 +1455,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			continue
 		}
 		expectedHash := s.registry.CatalogWeightHash(modelID)
-		if expectedHash != "" && hash != expectedHash {
+		if expectedHash != "" && !s.registry.CatalogAcceptsWeightHash(modelID, hash) {
 			s.logger.Error("provider model weight hash mismatch — possible model swap",
 				"provider_id", providerID,
 				"model", modelID,
@@ -1489,7 +1489,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				allEnforced = false
 				break
 			}
-			if resp.ActiveModelHash == expectedHash {
+			if s.registry.CatalogAcceptsWeightHash(m.ID, resp.ActiveModelHash) {
 				matched = true
 			}
 		}
@@ -1516,7 +1516,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				if !s.registry.IsAliasLineageBuild(modelID) {
 					continue
 				}
-				if expected := s.registry.CatalogWeightHash(modelID); expected != "" && hash == expected {
+				if expected := s.registry.CatalogWeightHash(modelID); expected != "" && s.registry.CatalogAcceptsWeightHash(modelID, hash) {
 					matched = true
 					break
 				}

@@ -102,6 +102,17 @@ public struct ModelScanner: Sendable {
     /// Find the latest snapshot directory by modification time.
     public static func findLatestSnapshot(in snapshotsDir: URL) -> URL? {
         let fm = FileManager.default
+        // A managed revision is selected explicitly. Modification times must
+        // never activate a staged download or undo a rollback.
+        let mainRef = snapshotsDir.deletingLastPathComponent().appendingPathComponent("refs/main")
+        if let raw = try? String(contentsOf: mainRef, encoding: .utf8) {
+            let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\\") else { return nil }
+            let selected = snapshotsDir.appendingPathComponent(name, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            guard fm.fileExists(atPath: selected.path, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
+            return selected.resolvingSymlinksInPath()
+        }
         let entries: [URL]
         do {
             entries = try fm.contentsOfDirectory(

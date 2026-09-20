@@ -238,7 +238,7 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	p, ok := r.providers[providerID]
-	if !ok || len(r.modelAliases) == 0 {
+	if !ok {
 		return nil
 	}
 	p.mu.Lock()
@@ -253,7 +253,14 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 		}
 	}
 
+	supportsRevisions := false
+	for _, capability := range p.ReportedRuntimeCapabilities {
+		if capability == "model_revisions_v1" {
+			supportsRevisions = true
+		}
+	}
 	var entries []protocol.DesiredModelEntry
+	covered := make(map[string]bool)
 	for alias, t := range r.modelAliases {
 		if t.OpenRouterOnly || t.Desired == "" {
 			continue
@@ -284,10 +291,34 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 		if previous != "" && !r.providerCanAcquireCatalogModelLocked(p, previous) {
 			previous = ""
 		}
+		artifact := r.modelCatalog[t.Desired]
+		if !supportsRevisions {
+			artifact.Revision = ""
+			artifact.WeightHash = ""
+		}
 		entries = append(entries, protocol.DesiredModelEntry{
+			Revision: artifact.Revision, AggregateSHA256: artifact.WeightHash,
 			ModelName:     alias,
 			DesiredBuild:  t.Desired,
 			PreviousBuild: previous,
+		})
+		// Suppress lineage only when this provider actually receives the
+		// alias target. Otherwise its eligible old build still needs its own
+		// revision updates (for example, when the desired build requires M5).
+		covered[t.Desired] = true
+		covered[t.Previous] = true
+		for _, id := range t.Retired {
+			covered[id] = true
+		}
+	}
+	// Same-ID updates also cover concrete builds whose alias target cannot be acquired.
+	for id := range advertised {
+		artifact, exists := r.modelCatalog[id]
+		if !supportsRevisions || !exists || artifact.Revision == "" || covered[id] || !r.providerCanAcquireCatalogModelLocked(p, id) {
+			continue
+		}
+		entries = append(entries, protocol.DesiredModelEntry{
+			ModelName: id, DesiredBuild: id, Revision: artifact.Revision, AggregateSHA256: artifact.WeightHash,
 		})
 	}
 	p.mu.Unlock()

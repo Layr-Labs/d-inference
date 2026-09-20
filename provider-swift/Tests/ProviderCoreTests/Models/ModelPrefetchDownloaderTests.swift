@@ -216,10 +216,10 @@ struct ModelPrefetchDownloaderTests {
         }
 
         // Snapshot published with both files + refs/main.
-        #expect(try Data(contentsOf: cacheDir.appendingPathComponent("config.json")) == configBytes)
-        #expect(try Data(contentsOf: cacheDir.appendingPathComponent("model.safetensors")) == weightBytes)
+        #expect(try Data(contentsOf: (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent("config.json")) == configBytes)
+        #expect(try Data(contentsOf: (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent("model.safetensors")) == weightBytes)
         let mainRef = modelDir.appendingPathComponent("refs/main")
-        #expect(try String(contentsOf: mainRef, encoding: .utf8) == "local")
+        #expect(try String(contentsOf: mainRef, encoding: .utf8) == ModelScanner.resolveLocalPath(modelID: modelID)?.lastPathComponent)
         let (lastDone, lastTotal) = lastProgress.get()
         #expect(lastDone == lastTotal && lastTotal == manifest.totalSizeBytes)
     }
@@ -273,8 +273,8 @@ struct ModelPrefetchDownloaderTests {
         #expect(fetched.contains("/\(prefix)/model.safetensors"))
         #expect(!fetched.contains("/\(prefix)/config.json"))
         // Final snapshot is complete + correct.
-        #expect(try Data(contentsOf: cacheDir.appendingPathComponent("config.json")) == configBytes)
-        #expect(try Data(contentsOf: cacheDir.appendingPathComponent("model.safetensors")) == weightBytes)
+        #expect(try Data(contentsOf: (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent("config.json")) == configBytes)
+        #expect(try Data(contentsOf: (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent("model.safetensors")) == weightBytes)
     }
 
     @Test("prefetch interrupted mid-download resumes from disk and never re-fetches completed files")
@@ -374,13 +374,13 @@ struct ModelPrefetchDownloaderTests {
 
         // The aggregate verified and the snapshot was published to the live dir.
         for (i, name) in names.enumerated() {
-            let published = cacheDir.appendingPathComponent(name)
+            let published = (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent(name)
             #expect(try Data(contentsOf: published) == served["/\(prefix)/\(name)"], "published \(name) must match served bytes")
             _ = i
         }
         // refs/main points at the local snapshot so ModelScanner discovers it.
         let mainRef = modelDir.appendingPathComponent("refs/main")
-        #expect(try String(contentsOf: mainRef, encoding: .utf8) == "local")
+        #expect(try String(contentsOf: mainRef, encoding: .utf8) == ModelScanner.resolveLocalPath(modelID: modelID)?.lastPathComponent)
         // Staging was cleaned up after a successful publish.
         #expect(!FileManager.default.fileExists(atPath: stagingDir.path), "staging should be removed after publish")
     }
@@ -463,7 +463,7 @@ struct ModelPrefetchDownloaderTests {
         let weightRanges = PrefetchURLProtocol.rangeHeaders(for: "/\(prefix)/\(names[1])")
         #expect(weightRanges.contains(where: { ($0 ?? "").hasPrefix("bytes=") }),
                 "weight resume must send a Range header; got \(weightRanges)")
-        #expect(try Data(contentsOf: cacheDir.appendingPathComponent(names[1])) == served["/\(prefix)/\(names[1])"])
+        #expect(try Data(contentsOf: (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent(names[1])) == served["/\(prefix)/\(names[1])"])
         #expect(!FileManager.default.fileExists(atPath: stagingDir.path))
     }
 
@@ -534,7 +534,7 @@ struct ModelPrefetchDownloaderTests {
         // The `.part` was consumed (promoted to final) on success.
         #expect(!FileManager.default.fileExists(atPath: partFile.path))
         // The published snapshot has the complete, correct shard.
-        #expect(try Data(contentsOf: cacheDir.appendingPathComponent(shardName)) == shardBytes)
+        #expect(try Data(contentsOf: (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent(shardName)) == shardBytes)
     }
 
     @Test("a mid-stream drop persists the received prefix in .part (resumable, not zeroed)")
@@ -666,8 +666,8 @@ struct ModelPrefetchDownloaderTests {
                                      r2Prefix: prefix, aggregateSHA256: correctAggregate)
 
         try await downloader.prefetch(model: goodModel, manifest: goodManifest)
-        #expect(try Data(contentsOf: cacheDir.appendingPathComponent("config.json")) == configBytes)
-        #expect(try Data(contentsOf: cacheDir.appendingPathComponent("model.safetensors")) == weightBytes)
+        #expect(try Data(contentsOf: (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent("config.json")) == configBytes)
+        #expect(try Data(contentsOf: (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent("model.safetensors")) == weightBytes)
         #expect(!FileManager.default.fileExists(atPath: stagingDir.path), "staging removed after a successful publish")
     }
 
@@ -768,8 +768,8 @@ struct ModelPrefetchDownloaderTests {
         let fetched = PrefetchURLProtocol.fetchedPaths()
         #expect(fetched.contains("/\(prefix)/small.json"))
         #expect(!fetched.contains("/\(prefix)/big.safetensors")) // big was skipped
-        #expect(try Data(contentsOf: cacheDir.appendingPathComponent("big.safetensors")) == bigBytes)
-        #expect(try Data(contentsOf: cacheDir.appendingPathComponent("small.json")) == smallBytes)
+        #expect(try Data(contentsOf: (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent("big.safetensors")) == bigBytes)
+        #expect(try Data(contentsOf: (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent("small.json")) == smallBytes)
     }
 
     @Test("foreground download resumes: already-valid staged files are skipped, only missing files fetched")
@@ -827,8 +827,8 @@ struct ModelPrefetchDownloaderTests {
         let fetched = PrefetchURLProtocol.fetchedPaths()
         #expect(fetched.contains("/\(prefix)/config.json")) // missing file fetched
         #expect(!fetched.contains("/\(prefix)/model-00001-of-00001.safetensors")) // staged file skipped
-        #expect(try Data(contentsOf: cacheDir.appendingPathComponent("model-00001-of-00001.safetensors")) == bigBytes)
-        #expect(try Data(contentsOf: cacheDir.appendingPathComponent("config.json")) == smallBytes)
+        #expect(try Data(contentsOf: (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent("model-00001-of-00001.safetensors")) == bigBytes)
+        #expect(try Data(contentsOf: (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent("config.json")) == smallBytes)
     }
 
     @Test("foreground download byte-resumes a mid-stream-dropped shard via Range and never re-fetches from zero")
@@ -907,8 +907,8 @@ struct ModelPrefetchDownloaderTests {
                 "resume must continue from the saved prefix; got \(shardRanges)")
         #expect(!shardRanges.contains("bytes=0-"), "must never restart the shard from byte 0")
         // The published snapshot has the complete, correct shard + refs/main.
-        #expect(try Data(contentsOf: cacheDir.appendingPathComponent(shardName)) == shardBytes)
-        #expect(try String(contentsOf: modelDir.appendingPathComponent("refs/main"), encoding: .utf8) == "local")
+        #expect(try Data(contentsOf: (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent(shardName)) == shardBytes)
+        #expect(try String(contentsOf: modelDir.appendingPathComponent("refs/main"), encoding: .utf8) == ModelScanner.resolveLocalPath(modelID: modelID)?.lastPathComponent)
         #expect(!FileManager.default.fileExists(atPath: partFile.path), "`.part` must be consumed on success")
     }
 
@@ -974,9 +974,9 @@ struct ModelPrefetchDownloaderTests {
                 "a complete staging dir must publish without re-downloading; fetched \(fetched)")
         // The snapshot was published from staging (+ refs/main) and staging cleaned.
         for (name, bytes) in pairs {
-            #expect(try Data(contentsOf: cacheDir.appendingPathComponent(name)) == bytes)
+            #expect(try Data(contentsOf: (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent(name)) == bytes)
         }
-        #expect(try String(contentsOf: modelDir.appendingPathComponent("refs/main"), encoding: .utf8) == "local")
+        #expect(try String(contentsOf: modelDir.appendingPathComponent("refs/main"), encoding: .utf8) == ModelScanner.resolveLocalPath(modelID: modelID)?.lastPathComponent)
         #expect(!FileManager.default.fileExists(atPath: stagingDir.path), "staging removed after publish")
         #expect(!ModelDownloader.hasResumableStaging(modelID: modelID, r2Prefix: prefix))
     }
@@ -1010,7 +1010,7 @@ struct ModelPrefetchDownloaderTests {
             try await downloader.prefetch(model: model, manifest: manifest)
         }
         // Nothing was published to the live snapshot dir.
-        #expect(!FileManager.default.fileExists(atPath: cacheDir.appendingPathComponent("config.json").path))
+        #expect(!FileManager.default.fileExists(atPath: (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent("config.json").path))
     }
 
     @Test("prefetch honors cancellation mid-flight")
@@ -1061,7 +1061,7 @@ struct ModelPrefetchDownloaderTests {
             threw = true
         }
         #expect(threw)
-        #expect(!FileManager.default.fileExists(atPath: cacheDir.appendingPathComponent("file-0.bin").path))
+        #expect(!FileManager.default.fileExists(atPath: (ModelScanner.resolveLocalPath(modelID: modelID) ?? cacheDir).appendingPathComponent("file-0.bin").path))
     }
 
     // Aggregate hash matching the production `WeightHasher.hashFilesWithRelativeKey`
@@ -1146,5 +1146,128 @@ struct CoordinatorAdvertiseTests {
         // Duplicate advertise of the same id is a no-op (not new).
         let again = await client.advertiseModel(newModel)
         #expect(!again)
+    }
+}
+
+extension ModelPrefetchDownloaderTests {
+    private func revisionFixture(_ id: String, version: String, weights: Data, weightPath: String = "model.safetensors") -> (CatalogModel, ModelManifest) {
+        let config = Data("shared config".utf8)
+        let prefix = "v2/revision-test/\(version)"
+        let files = [
+            ManifestFile(path: "config.json", sizeBytes: Int64(config.count), sha256: sha256Hex(config), role: "config"),
+            ManifestFile(path: weightPath, sizeBytes: Int64(weights.count), sha256: sha256Hex(weights), role: "weight"),
+        ]
+        let aggregate = aggregateHash(files: [("config.json", config), (weightPath, weights)])
+        PrefetchURLProtocol.files["/\(prefix)/config.json"] = config
+        PrefetchURLProtocol.files["/\(prefix)/\(weightPath)"] = weights
+        return (
+            CatalogModel(id: id, s3Name: prefix, displayName: id, sizeGb: 0,
+                version: version, r2Prefix: prefix, aggregateSHA256: aggregate),
+            ModelManifest(schemaVersion: 1, modelID: id, version: version, r2Prefix: prefix,
+                aggregateSHA256: aggregate, totalSizeBytes: Int64(config.count + weights.count),
+                fileCount: files.count, files: files, createdAt: Date()))
+    }
+
+    @Test("revision staging preserves selection, reuses unchanged files, and supports rollback")
+    func revisionStageActivateRollback() async throws {
+        PrefetchURLProtocol.reset()
+        let id = "test-org/revision-\(UUID().uuidString)"
+        defer { try? ModelDownloader.remove(modelID: id) }
+        let downloader = ModelDownloader(r2CDNURL: "https://fixture.test", urlSession: makeSession())
+        let (a, ma) = revisionFixture(id, version: "a", weights: Data("old weights".utf8))
+        let old = try await downloader.prefetch(model: a, manifest: ma)
+        let (b, mb) = revisionFixture(id, version: "b", weights: Data("new weights".utf8))
+        PrefetchURLProtocol.clearRequested()
+        let next = try await downloader.prefetch(model: b, manifest: mb, activate: false)
+        #expect(ModelScanner.resolveLocalPath(modelID: id) == old)
+        #expect(PrefetchURLProtocol.fetchedPaths() == ["/v2/revision-test/b/model.safetensors"])
+        #expect(try Data(contentsOf: old.appendingPathComponent("model.safetensors")) == Data("old weights".utf8))
+        try ModelDownloader.activateRevision(modelID: id, directory: next)
+        #expect(ModelScanner.resolveLocalPath(modelID: id) == next)
+        try ModelDownloader.activateRevision(modelID: id, directory: old)
+        #expect(ModelScanner.resolveLocalPath(modelID: id) == old)
+        PrefetchURLProtocol.clearRequested()
+        _ = try await downloader.prefetch(model: b, manifest: mb, activate: false)
+        #expect(PrefetchURLProtocol.fetchedPaths().isEmpty)
+        #expect(ModelScanner.resolveLocalPath(modelID: id) == old)
+    }
+
+    @Test("equal aggregate hashes with renamed files remain distinct immutable revisions", arguments: [false, true])
+    func renamedRevisionFiles(foreground: Bool) async throws {
+        PrefetchURLProtocol.reset()
+        let id = "test-org/renamed-revision-\(UUID().uuidString)"
+        defer { try? ModelDownloader.remove(modelID: id) }
+        let downloader = ModelDownloader(r2CDNURL: "https://fixture.test", urlSession: makeSession())
+        let weights = Data("unchanged weights".utf8)
+        let (a, ma) = revisionFixture(id, version: "a", weights: weights)
+        let old = try await downloader.prefetch(model: a, manifest: ma)
+        let (b, mb) = revisionFixture(id, version: "b", weights: weights, weightPath: "renamed.safetensors")
+        #expect(ma.aggregateSHA256 == mb.aggregateSHA256)
+        let next: URL
+        if foreground {
+            try await downloader.downloadManifestModel(model: b, manifest: mb, onProgress: nil)
+            next = try #require(ModelScanner.resolveLocalPath(modelID: id))
+        } else {
+            next = try await downloader.prefetch(model: b, manifest: mb, activate: false)
+            #expect(ModelScanner.resolveLocalPath(modelID: id) == old)
+            try ModelDownloader.activateRevision(modelID: id, directory: next)
+        }
+        #expect(next != old)
+        #expect(try Data(contentsOf: next.appendingPathComponent("renamed.safetensors")) == weights)
+        #expect(try Data(contentsOf: old.appendingPathComponent("model.safetensors")) == weights)
+        #expect(!FileManager.default.fileExists(atPath: old.appendingPathComponent("renamed.safetensors").path))
+        try ModelDownloader.activateRevision(modelID: id, directory: old)
+        #expect(ModelScanner.resolveLocalPath(modelID: id) == old)
+        PrefetchURLProtocol.clearRequested()
+        let retryManifest = ModelManifest(schemaVersion: mb.schemaVersion, modelID: mb.modelID,
+            version: mb.version, r2Prefix: mb.r2Prefix, aggregateSHA256: mb.aggregateSHA256,
+            totalSizeBytes: mb.totalSizeBytes, fileCount: mb.fileCount,
+            files: mb.files.reversed(), createdAt: mb.createdAt.addingTimeInterval(60))
+        #expect(try await downloader.prefetch(model: b, manifest: retryManifest, activate: false) == next)
+        #expect(PrefetchURLProtocol.fetchedPaths().isEmpty)
+    }
+
+    @Test("same-ID concurrent requests share immutable files and never choose a staged revision")
+    func concurrentRevisionDownloads() async throws {
+        PrefetchURLProtocol.reset()
+        let id = "test-org/concurrent-revision-\(UUID().uuidString)"
+        defer { try? ModelDownloader.remove(modelID: id) }
+        let downloader = ModelDownloader(r2CDNURL: "https://fixture.test", urlSession: makeSession())
+        let (model, manifest) = revisionFixture(id, version: "a", weights: Data("weights".utf8))
+        async let first = downloader.prefetch(model: model, manifest: manifest, activate: false)
+        async let second = downloader.prefetch(model: model, manifest: manifest, activate: false)
+        let (a, b) = try await (first, second)
+        #expect(a == b)
+        #expect(PrefetchURLProtocol.fetchedPaths().count == 2)
+        #expect(ModelScanner.resolveLocalPath(modelID: id) == nil)
+    }
+
+    @Test("a failed update leaves the selected revision available")
+    func failedRevisionKeepsCurrent() async throws {
+        PrefetchURLProtocol.reset()
+        let id = "test-org/failed-revision-\(UUID().uuidString)"
+        defer { try? ModelDownloader.remove(modelID: id) }
+        let downloader = ModelDownloader(r2CDNURL: "https://fixture.test", urlSession: makeSession())
+        let (a, ma) = revisionFixture(id, version: "a", weights: Data("old".utf8))
+        let old = try await downloader.prefetch(model: a, manifest: ma)
+        let (b, mb) = revisionFixture(id, version: "b", weights: Data("new".utf8))
+        PrefetchURLProtocol.setFailPaths(["/v2/revision-test/b/model.safetensors"])
+        await #expect(throws: (any Error).self) { try await downloader.prefetch(model: b, manifest: mb, activate: false) }
+        #expect(ModelScanner.resolveLocalPath(modelID: id) == old)
+        PrefetchURLProtocol.setFailPaths([])
+        let staged = try await downloader.prefetch(model: b, manifest: mb, activate: false)
+        #expect(staged != old)
+        #expect(ModelScanner.resolveLocalPath(modelID: id) == old)
+    }
+
+    @Test("waiting for an artifact writer is cancellable")
+    func cancelledArtifactLease() async throws {
+        let id = "test-org/lease-\(UUID().uuidString)"
+        defer { try? ModelDownloader.remove(modelID: id) }
+        let lease = try await ModelArtifactWriteLease.acquire(modelID: id)
+        defer { lease.release() }
+        let waiter = Task { try await ModelArtifactWriteLease.acquire(modelID: id) }
+        waiter.cancel()
+        await #expect(throws: CancellationError.self) { try await waiter.value }
     }
 }

@@ -118,23 +118,13 @@ extension ModelDownloader {
         manifest: ModelManifest,
         onProgress: (@Sendable (ProgressEvent) -> Void)?
     ) async throws {
-        guard manifest.modelID == model.id else {
-            throw ModelCatalogError.downloadFailed("manifest model_id \(manifest.modelID) does not match catalog id \(model.id)")
+        try Self.validateArtifactManifest(manifest, model: model)
+        let cacheDir = try Self.revisionSnapshotDirectory(manifest: manifest)
+        if Self.verifiedRevisionExists(at: cacheDir, manifest: manifest) {
+            try Self.activateRevision(modelID: model.id, directory: cacheDir)
+            onProgress?(ProgressEvent(file: model.id, bytesDownloaded: manifest.totalSizeBytes, bytesTotal: manifest.totalSizeBytes))
+            return
         }
-        guard manifest.files.count == manifest.fileCount else {
-            throw ModelCatalogError.downloadFailed("manifest file_count \(manifest.fileCount) does not match files array")
-        }
-        guard !manifest.files.isEmpty else {
-            throw ModelCatalogError.downloadFailed("manifest contains no files")
-        }
-        if let aggregate = model.aggregateSHA256, aggregate != manifest.aggregateSHA256 {
-            throw ModelCatalogError.downloadFailed("catalog aggregate hash does not match manifest")
-        }
-        if let prefix = model.r2Prefix, prefix != manifest.r2Prefix {
-            throw ModelCatalogError.downloadFailed("catalog r2_prefix does not match manifest")
-        }
-
-        let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: snapshotsDir, withIntermediateDirectories: true)
 
@@ -156,6 +146,8 @@ extension ModelDownloader {
                 url: "\(r2CDNURL)/\(Self.escapeR2Path(manifest.r2Prefix))/\(Self.escapeR2Path(relativePath))"
             )
         }
+
+        try Self.reuseVerifiedFiles(modelID: model.id, manifest: manifest, stagingDir: stagingDir)
 
         // Resume: skip files already staged + valid; only the not-yet-valid files
         // are enqueued below.
@@ -260,7 +252,7 @@ extension ModelDownloader {
     }
 
     /// Verify the aggregate hash over the staged files, then publish the snapshot
-    /// (`snapshots/local` + `refs/main`) so `ModelScanner` discovers it. Shared by
+    /// (immutable revision + `refs/main`) so `ModelScanner` discovers it. Shared by
     /// the normal completion path and the finish-on-restart short-circuit.
     ///
     /// On an aggregate mismatch over internally-valid files (a poisoned manifest:
@@ -280,9 +272,9 @@ extension ModelDownloader {
             try? FileManager.default.removeItem(at: stagingDir)
             throw ModelCatalogError.downloadFailed("aggregate hash mismatch for \(model.id)")
         }
-        try Self.publishStagedSnapshot(stagingDir, to: cacheDir)
-        try writeMainRef(for: model.id)
-        // Staging was consumed by publishStagedSnapshot; best-effort husk cleanup.
+        try Self.publishRevision(stagingDir: stagingDir, directory: cacheDir, manifest: manifest)
+        try Self.activateRevision(modelID: model.id, directory: cacheDir)
+        // Staging was consumed by publication; best-effort husk cleanup.
         try? FileManager.default.removeItem(at: stagingDir)
     }
 

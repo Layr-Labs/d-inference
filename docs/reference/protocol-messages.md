@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-18 · commit `4a453679b`
+> Last updated: 2026-09-20 · commit `cc225365f`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -642,10 +642,15 @@ replies with `prefetch_model_status` and then `models_update`.
 ### `desired_models`
 
 Go `DesiredModelsMessage` · Swift `DesiredModels`. `models` (`[]DesiredModelEntry`):
-`model_name` (public alias), `desired_build` (concrete build id),
-`previous_build` (opt; still acceptable mid-rollout). Sent once right after
-`register` and again whenever a desired build changes. The provider reconciles:
-background-prefetch any missing desired build, hard-swap, emit `models_update`.
+`model_name` (public alias or concrete model ID), `desired_build` (concrete build ID),
+`previous_build` (optional; still acceptable mid-rollout), `revision` (optional version),
+`aggregate_sha256` (optional artifact hash). `DesiredModelsForProvider` in
+`coordinator/registry/model_commands.go` adds the revision fields and unaliased
+concrete-model entries only for providers reporting `model_revisions_v1` in
+`runtime_capabilities`. This is protocol feature detection, not a new trust grant.
+Sent after registration and when desired identity changes. Revision-aware providers
+stage the exact artifact and drain before activation; ID-only providers retain the
+legacy prefetch path. See [revision lifecycle](../architecture/model-revisions.md).
 
 ### `trust_status`
 

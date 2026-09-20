@@ -1,11 +1,15 @@
 # Changelog
 
-## Unreleased — account-scoped first-content SLA
+## Release candidate v0.9.7 — MDM-optional providers and account-scoped SLAs (not shipped; 2026-09-20)
+
+- Align `ProviderCore.version` and the coordinator's `LatestProviderVersion` fallback at 0.9.7. Publication, coordinator deployment and App Attest serving/removal activation remain separate rollout steps.
+
+### Account-scoped first-content SLA
 
 - Apply the first-content SLA only to authenticated accounts selected by `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; configure the intended account privately in the deployment environment. Direct users and other service accounts have no first-content timeout, including no 600-second fallback; queue limits, client cancellation and post-content response timers remain.
 - Preserve configurable model timing for selected accounts, including Bonsai’s 9s + 5ms/token coordinator cutoff, and support explicit public-model policies before alias resolution.
 
-## Unreleased — MDM-optional provider authorization
+### MDM-optional provider authorization
 
 - Warn on stderr for every CLI invocation below macOS 27, including help/version, while preserving commands and JSON output. Add prominent setup/dashboard upgrade notices, distinguish older from unknown reported OS versions, and retain legacy service during the transition.
 - Show current App Attest authorization on the owner dashboard without demanding legacy MDM verification; expire cached grants locally if polling fails and preserve independent legacy proof fields.

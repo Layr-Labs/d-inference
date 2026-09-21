@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { CatalogDataSummary } from "@/lib/stats-model-filter";
+import type { DemandMetric } from "./history";
 import { DemandHistory } from "./DemandHistory";
 import { DEMAND_COLUMNS, DemandRow } from "./DemandRow";
 import { useModelDemand } from "./useModelDemand";
@@ -12,6 +13,8 @@ const date = (value: string) => new Date(value).toLocaleString(undefined, { mont
 
 export function ModelDemandPanel({ refreshToken, catalogData }: { refreshToken: string | null; catalogData: CatalogDataSummary | null }) {
   const [window, setWindow] = useState<DemandWindow>("24h");
+  const [historyModel, setHistoryModel] = useState("");
+  const [historyMetric, setHistoryMetric] = useState<DemandMetric>("requests");
   const [sort, setSort] = useState("requests");
   const [selected, setSelected] = useState<string | null>(null);
   const { data, loading, error, retry } = useModelDemand(window, refreshToken);
@@ -28,7 +31,7 @@ export function ModelDemandPanel({ refreshToken, catalogData }: { refreshToken: 
           <p className="mt-4 text-xs leading-5 text-text-tertiary">{date(data.start_at)} – {date(data.end_at)}. Data is delayed by at least one hour.</p>
           <p className="mt-2 text-xs leading-5 text-text-tertiary">Recording is best-effort. Percentages describe recorded requests, not guaranteed network-wide coverage.</p>
           {Date.parse(data.collection_started_at) > Date.parse(data.start_at) && <p role="status" className="mt-3 text-xs leading-5 text-text-secondary">Collection began {date(data.collection_started_at)}. This window has only partial history.</p>}
-          <DemandHistory data={data} names={names} />
+          <DemandHistory data={data} names={names} modelId={historyModel} onModelChange={setHistoryModel} metric={historyMetric} onMetricChange={setHistoryMetric} />
           <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-3 text-xs text-text-tertiary">
             <span className="inline-flex items-center gap-2"><span aria-hidden="true" className="h-2 w-5 rounded-sm bg-accent-brand" />Completed</span>
             <span className="inline-flex items-center gap-2"><span aria-hidden="true" className="h-2 w-5 rounded-sm bg-accent-amber" />Capacity rejected</span>

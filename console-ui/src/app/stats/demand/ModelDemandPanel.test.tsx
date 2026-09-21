@@ -39,11 +39,13 @@ describe("Model demand", () => {
     const fetcher = vi.fn().mockResolvedValueOnce(mockResponse()).mockResolvedValueOnce(new Response(null, { status: 503 })).mockResolvedValueOnce(mockResponse({ ...snapshot, window: "7d", bucket_seconds: 21600, start_at: "2026-09-13T10:00:00Z", models: snapshot.models.map(m => ({ ...m, time_series: Array.from({length:28},(_,i)=>({timestamp:new Date(Date.parse("2026-09-13T10:00:00Z")+i*21600000).toISOString(),counts:null})) })) }));
     vi.stubGlobal("fetch", fetcher); renderPanel();
     await screen.findByRole("button", { name: /Show demand details for model-a/ });
+    fireEvent.change(screen.getByRole("combobox", { name: historyModelLabel }), { target: { value: "model-b" } });
     fireEvent.click(screen.getByRole("button", { name: "7 days" }));
     await screen.findByRole("alert");
     expect(screen.queryByRole("button", { name: /Show demand details for model-a/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Retry model demand" }));
     await screen.findByRole("button", { name: /Show demand details for model-a/ });
+    expect(screen.getByRole("combobox", { name: historyModelLabel })).toHaveValue("model-b");
     expect(fetcher).toHaveBeenLastCalledWith("/api/network/model-demand?window=7d", expect.any(Object));
   });
   it("explains suppression without claiming zero demand", async () => {

@@ -1,13 +1,13 @@
-import { useState } from "react";
 import { Download } from "lucide-react";
 import { DemandHistoryPlot } from "./DemandHistoryPlot";
 import { DemandIntervalTable } from "./DemandIntervalTable";
 import { demandCSV, historyCoverage, METRICS, type DemandMetric } from "./history";
 import type { ModelDemandResponse } from "./types";
 
-export function DemandHistory({ data, names }: { data: ModelDemandResponse; names: Map<string, string> }) {
-  const [modelId, setModelId] = useState("");
-  const [metric, setMetric] = useState<DemandMetric>("requests");
+export function DemandHistory({ data, names, modelId, onModelChange, metric, onMetricChange }: {
+  data: ModelDemandResponse; names: Map<string, string>; modelId: string;
+  onModelChange: (id: string) => void; metric: DemandMetric; onMetricChange: (metric: DemandMetric) => void;
+}) {
   const model = data.models.find(m => m.model === modelId) || data.models[0];
   if (!model) return null;
   const coverage = historyCoverage(model.time_series);
@@ -24,8 +24,8 @@ export function DemandHistory({ data, names }: { data: ModelDemandResponse; name
     <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
       <div><h3 className="font-medium text-text-primary">Demand over time</h3><p className="mt-1 text-xs text-text-tertiary">Per {interval} · {coverage.visible} of {coverage.total} intervals published</p></div>
       <div className="flex min-w-0 flex-wrap gap-2">
-        <select aria-label="Model for demand history" value={model.model} onChange={event => setModelId(event.target.value)} className="h-10 max-w-full rounded-lg border border-border-dim bg-bg-white px-3 text-xs text-text-secondary">{data.models.map(m => <option key={m.model} value={m.model}>{names.get(m.model) || m.model}</option>)}</select>
-        <select aria-label="Demand history metric" value={metric} onChange={event => setMetric(event.target.value as DemandMetric)} className="h-10 rounded-lg border border-border-dim bg-bg-white px-3 text-xs text-text-secondary">{METRICS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
+        <select aria-label="Model for demand history" value={model.model} onChange={event => onModelChange(event.target.value)} className="h-10 max-w-full rounded-lg border border-border-dim bg-bg-white px-3 text-xs text-text-secondary">{data.models.map(m => <option key={m.model} value={m.model}>{names.get(m.model) || m.model}</option>)}</select>
+        <select aria-label="Demand history metric" value={metric} onChange={event => onMetricChange(event.target.value as DemandMetric)} className="h-10 rounded-lg border border-border-dim bg-bg-white px-3 text-xs text-text-secondary">{METRICS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
       </div>
     </div>
     <DemandHistoryPlot key={`${model.model}-${data.window}-${metric}`} model={model} metric={metric} bucketSeconds={data.bucket_seconds} />

@@ -1,11 +1,11 @@
 # Calibrate cold-start solo-TPS seeds
 
-> Last updated: 2026-09-16 · commit `4c8e33125`
+> Last updated: 2026-09-21 · commit `a07a4832e`
 
 This how-to measures every eligible local catalog model on one Apple Silicon
 chip class and turns the B=1 decode results into a conservative
 `EIGENINFERENCE_MODEL_SOLO_TPS_SEED` proposal. It reproduces the method used for
-the 2026-09-16 M4 Max calibration while making the evidence and rejection rules
+the 2026-09-21 M4 Max calibration while making the evidence and rejection rules
 explicit.
 
 ## Prerequisites
@@ -28,7 +28,7 @@ explicit.
 Use `darkbloom benchmark --sweep`, not the ordinary benchmark table, for this
 calibration. The sweep emits raw B=1 repetitions, requested-versus-measured
 coverage, and the resolved production KV backend as JSON. The provider version
-used for the M4 Max campaign, `0.9.4`, also had a known whole-second conversion
+used for the M4 Max campaign, `0.9.7`, also had a known whole-second conversion
 bug in the ordinary table path; the sweep's duration conversion was separate
 and retained complete durations.
 
@@ -89,8 +89,8 @@ Place the exact selected build IDs in a shell array:
 ```bash
 MODELS=(
   gpt-oss-20b
+  ternary-bonsai-2-27b
   qwen3.6-35b-a3b-vl-mtp-mxfp8
-  qwen3-vl-30b-a3b-instruct
   qwen3.5-35b-a3b
   nvidia-nemotron-3.5-lightning
 )
@@ -132,7 +132,7 @@ darkbloom benchmark --sweep \
 ```
 
 The omitted `--decode-prompt-tokens` and `--kv-backend` flags used their
-`darkbloom 0.9.4` defaults, `64` and `auto`. Record the CLI version because
+`darkbloom 0.9.7` defaults, `64` and `auto`. Record the CLI version because
 defaults can change. `--sweep` builds the same `ContinuousBatchingV2`
 production engine used by a serving slot. It warms the requested shape before
 recording data, then returns three independent B=1 decode samples.
@@ -147,6 +147,14 @@ for model in "${MODELS[@]}"; do
   slug="$(printf '%s' "$model" | tr '/@|' '___')"
   report="$RUN_DIR/reports/$slug.json"
   progress="$RUN_DIR/reports/$slug.stderr"
+
+  pmset -g batt > "$RUN_DIR/posture/$slug-battery-before.txt"
+  osascript -l JavaScript \
+    -e 'ObjC.import("Foundation"); console.log(Number($.NSProcessInfo.processInfo.thermalState))' \
+    > "$RUN_DIR/posture/$slug-foundation-thermal-before.txt" 2>&1
+  pmset -g therm > "$RUN_DIR/posture/$slug-thermal-before.txt"
+  memory_pressure > "$RUN_DIR/posture/$slug-memory-before.txt"
+  sysctl vm.swapusage > "$RUN_DIR/posture/$slug-swap-before.txt"
 
   darkbloom benchmark --sweep \
     --model "$model" \
@@ -172,6 +180,10 @@ for model in "${MODELS[@]}"; do
     )
   ' "$report" >/dev/null
 
+  pmset -g batt > "$RUN_DIR/posture/$slug-battery-after.txt"
+  osascript -l JavaScript \
+    -e 'ObjC.import("Foundation"); console.log(Number($.NSProcessInfo.processInfo.thermalState))' \
+    > "$RUN_DIR/posture/$slug-foundation-thermal-after.txt" 2>&1
   pmset -g therm > "$RUN_DIR/posture/$slug-thermal-after.txt"
   memory_pressure > "$RUN_DIR/posture/$slug-memory-after.txt"
   sysctl vm.swapusage > "$RUN_DIR/posture/$slug-swap-after.txt"
@@ -227,14 +239,22 @@ that common-value rule.
 
 ### 6. Calculate the useful seed range
 
-For a desired provider cap `N`, decode floor `F`, measured load factor `k`, and
-quality-cap overcommit `O`, calculate two thresholds.
+For a desired provider-reported cap `N`, decode floor `F`, measured load factor
+`k`, and quality-cap overcommit `O`, calculate two thresholds. Darkbloom 0.9.7
+defaults to provider cap 4; use a larger `N` only when evaluating an explicitly
+configured provider.
 
-The smallest strict quality batch whose overcommitted cap reaches `N` is:
+First calculate the smallest strict quality batch whose overcommitted cap
+would reach `N`:
 
 ```text
-q = floor((N - 1) / O) + 1
+q_candidate = floor((N - 1) / O) + 1
 ```
+
+The runtime bounds the strict quality batch at the provider cap `N`. If
+`q_candidate > N`, no seed can produce effective cap `N` under the configured
+overcommit; raise `O` or choose a lower target cap. Otherwise set
+`q = q_candidate` and continue.
 
 The seed that merely grants cap `N` after overcommit is:
 
@@ -250,7 +270,8 @@ strict_threshold = F × (1 + k × N)
 ```
 
 Use `strict_threshold` when proposing a normal production seed. For the M4 Max
-campaign:
+campaign, the released default-cap case uses `N = 4`. The PR also modeled
+providers explicitly configured for cap 8:
 
 ```text
 N = 8
@@ -267,14 +288,15 @@ Discount the slowest accepted observation to account for the narrow evidence.
 The M4 Max campaign required at least 35% headroom:
 
 ```text
-slowest_observation = 108.76 tok/s
-maximum_seed_at_35_percent_headroom = 108.76 × 0.65 = 70.694 tok/s
+fast_cohort_slowest_observation = 105.615 tok/s
+maximum_fast_seed_at_35_percent_headroom = 105.615 × 0.65 = 68.650 tok/s
 ```
 
-The supported interval was therefore:
+The supported interval for models intended to preserve an explicit cap 8 was
+therefore:
 
 ```text
-61.80 <= seed <= 70.694
+61.80 <= seed <= 68.650
 ```
 
 The 35% discount is an engineering margin for one machine and three
@@ -283,18 +305,21 @@ choosing the seed. A broader multi-machine campaign can justify a different
 reviewed margin; a narrow campaign must not shrink its margin merely to make
 the desired cap fit.
 
-The PR chose the clean round value `70`. It:
+The PR chose the clean round value `65` for the fast cohort. It:
 
-- supports cap 8 without relying on the overcommit allowance;
-- remains 35.64% below the slowest sample;
-- matches the existing M4 Max seed used for Gemma and GPT-OSS;
-- changes no admission result if raised further because 8 is already the
-  provider-reported ceiling.
+- preserves the released provider cap 4 and supports an explicitly configured
+  cap 8 without relying on the overcommit allowance;
+- remains 38.46% below the slowest sample;
+- changes no admission result if raised further once the provider-reported
+  ceiling is reached.
 
 If no value satisfies both `seed >= strict_threshold` and the chosen discounted
-measurement bound, the campaign does not support the desired cap. Reduce `N`,
-collect broader evidence, or make no seed change. Do not lower the safety margin
-only to force an update.
+measurement bound, the campaign does not support the desired cap. Bonsai's
+37.502 tok/s minimum produced a discounted maximum of 24.376 tok/s. The
+campaign therefore selected 24 tok/s for strict quality batch 1; the default
+1.2 overcommit yields an effective cap of 2. Reduce `N`, collect broader
+evidence, or make no seed change. Do not lower the safety margin only to force
+an update.
 
 ### 7. Scope the value to measured hardware
 
@@ -322,7 +347,7 @@ whole class. Until then, describe the class-wide value as provisional and keep
 enough margin for the unmeasured variants. The coordinator cannot express a
 GPU-core-specific seed inside one family and tier.
 
-The 2026-09-16 campaign directly measured a 40-GPU-core `Mac16,6`. Its
+The 2026-09-21 campaign directly measured a 40-GPU-core `Mac16,6`. Its
 `M4|Max` proposal is therefore direct evidence for that configuration and
 provisional class-wide evidence for lower-core M4 Max variants.
 
@@ -380,11 +405,11 @@ git diff --check
 | Thermal warning, swap growth, or serious memory pressure appears | Reject the affected run, cool or free the machine, and repeat the whole model |
 | Samples drift downward across the three repetitions | Treat this as thermal or contention evidence; stabilize the Mac and rerun rather than taking the median |
 | Discounted minimum is below `strict_threshold` | The data cannot support the desired cap; lower the cap target or make no update |
-| Ordinary benchmark reports implausible multi-second timing on `0.9.4` | Use `--sweep`; do not use the ordinary table as seed evidence |
+| Ordinary benchmark reports implausible multi-second timing on `0.9.7` | Use `--sweep`; do not use the ordinary table as seed evidence |
 
 ## Related
 
-- [M4 Max calibration report](../reports/2026-09-16-m4-max-solo-tps-seeds.md)
+- [M4 Max calibration report](../reports/2026-09-21-m4-max-solo-tps-seeds.md)
 - [Provider CLI reference](cli-reference.md#darkbloom-benchmark)
 - [Coordinator configuration reference](../reference/configuration.md)
 - [Scheduling architecture](../architecture/scheduling.md)

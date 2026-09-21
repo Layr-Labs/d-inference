@@ -47,7 +47,7 @@ EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=true
 # cap falls to the model-agnostic sqrt(memory_bandwidth) proxy on every restart.
 # It is also the upper bound on cross-class solo-median transfer. Keep the
 # unqualified entries conservative: they apply to every class not named here.
-EIGENINFERENCE_MODEL_SOLO_TPS_SEED=gemma-4-26b-qat-4bit=14,gemma-4-26b-qat-4bit@M4|Max=70,gpt-oss-20b=30,gpt-oss-20b@M4|Max=70,qwen3.6-35b-a3b-vl-mtp-mxfp8@M4|Max=70,qwen3-vl-30b-a3b-instruct@M4|Max=70,qwen3.5-35b-a3b@M4|Max=70,nvidia-nemotron-3.5-lightning@M4|Max=70
+EIGENINFERENCE_MODEL_SOLO_TPS_SEED=gemma-4-26b-qat-4bit=14,gemma-4-26b-qat-4bit@M4|Max=70,gpt-oss-20b=30,gpt-oss-20b@M4|Max=70,ternary-bonsai-2-27b@M4|Max=24,qwen3.6-35b-a3b-vl-mtp-mxfp8@M4|Max=65,qwen3.5-35b-a3b@M4|Max=65,nvidia-nemotron-3.5-lightning@M4|Max=65
 
 # v0.9 proactive warm-pool headroom. These are in required-env-keys.txt, and an
 # existing production host's /etc/d-inference/env predates them, so they MUST ship

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-20 · commit `826fa102e`
+> Last updated: 2026-09-20 · commit `76a8f03d`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -44,6 +44,35 @@ versions, existing management, and unavailable enrollment. This checks setup
 routing only; signed Mac App Attest qualification is separate.
 
 Build qualification regressions run in `coordinator/store/app_attest_builds_test.go`, `coordinator/appattest/service/build_qualifications_test.go`, `coordinator/api/app_attest_builds_test.go`, and `coordinator/api/app_attest_builds_auth_test.go`. The route tests validate real ES256 Privy JWTs through the mux, server-attributed audit actors, and rejection of admin-owned inference keys. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not replace final signed-Mac/Apple qualification.
+
+## Provider lifecycle regression checks
+
+Run `make provider-test` to build tests and install the source-matched Metal
+library beside the runner. Focused suites include `ProviderLifecycleTests`,
+`LifecycleMailboxTests`, `ServiceDrainTests`, `LocalResponseTrackerTests`,
+`CoordinatorLifecycleBarrierTests`, `ProviderSignalTests`, and
+`AutoUpdateLifecycleOverlapTests`. They cover accepted concurrent/cold work,
+slow final writes, expiry, force, command interruption, update overlap, process
+identity, wire ordering, unsupported acknowledgements and real-process SIGTERM.
+
+The isolated launchd integration is opt-in on a logged-in macOS session:
+
+```bash
+cd provider-swift
+DARKBLOOM_LAUNCHD_TESTS=1 swift test --skip-build --filter LaunchAgentDrainIntegrationTests
+```
+
+It uses a unique temporary GUI-domain label and plist, never the installed
+provider/watchdog. `TestProviderDrainAckFollowsUsageSettlementAndKeepsControlTrafficAlive`
+in `coordinator/api/provider_drain_barrier_test.go` runs both streaming and
+non-streaming traffic against the actual coordinator, delays asynchronous
+settlement, sends duplicate terminals, and verifies one usage record before
+acknowledgement. Run it and the dispatch/drain tests with Go's race detector.
+
+Release qualification still requires a Developer ID-signed installed provider
+against real coordinator traffic, with App Attest or legacy authorization. A
+unit test, simulated provider, ad-hoc signature or green CI is not that evidence.
+
 
 ## Bonsai performance qualification
 

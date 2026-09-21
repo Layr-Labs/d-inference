@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-09-13 · commit `ec73023e4`
+> Last updated: 2026-09-20 · commit `76a8f03d`
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, the field allowlist, and the tests
@@ -53,6 +53,19 @@ Process ownership uses optional
 The Swift producer, Go consumer and TypeScript mirror share the canonical
 `coordinator/protocol/testdata/process_memory_wire.json` fixture. These scalar
 observations add no event fields or allowlist entries.
+
+## Local provider drain events
+
+`provider-swift/Sources/ProviderCore/Service/ProviderDrainTelemetry.swift`
+(`ProviderDrainTelemetry`) writes a local stderr JSON event when phase or
+remaining-work count changes. It contains only `operation = provider_drain`,
+`reason` (`serving`, `draining`, `drained`, `timedOut`, `forced`, `busy`),
+`in_flight`, and `coordinator_acknowledged`. It has no inference/control IDs,
+models, credentials, prompts or responses. These local records are not uploaded;
+the privacy-disabled `TelemetryClient` and existing wire enums/allowlists remain
+unchanged. A startup/scheduled-idle process with no coordinator connection can
+be drained without claiming `coordinator_acknowledged = true`. The daemon state and CLI also report the drain deadline and outcome.
+
 
 ## Mirrors
 

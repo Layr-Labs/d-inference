@@ -43,6 +43,8 @@ enum ProviderAppKitHost {
 @MainActor
 final class ProviderAppDelegate: NSObject, NSApplicationDelegate {
     private let args: [String]
+    private var serveTask: Task<Void, Never>?
+    private var terminationSignals: ProviderSignalHandler?
 
     init(args: [String]) {
         self.args = args
@@ -59,8 +61,9 @@ final class ProviderAppDelegate: NSObject, NSApplicationDelegate {
         // (apsd redacts the payload as <private> and keeps no cleartext copy —
         // verified on macOS 26.4, see docs/apns-code-attestation-design.md).
         NSApplication.shared.registerForRemoteNotifications()
+        terminationSignals = ProviderSignalHandler { _ = await ProviderTermination.shared.request() }
         let args = self.args
-        Task {
+        serveTask = Task {
             do {
                 let command = try Darkbloom.parseAsRoot(args)
                 if let asyncCommand = command as? AsyncParsableCommand {
@@ -75,6 +78,14 @@ final class ProviderAppDelegate: NSObject, NSApplicationDelegate {
                 Darkbloom.exit(withError: error)
             }
         }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        Task {
+            let drained = await ProviderTermination.shared.request()
+            sender.reply(toApplicationShouldTerminate: drained)
+        }
+        return .terminateLater
     }
 
     func application(_: NSApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {

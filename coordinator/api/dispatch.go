@@ -1727,6 +1727,11 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 					"timeout", "first_chunk_timeout", http.StatusGatewayTimeout))
 				return outcomeFailFast
 			}
+			if errors.Is(writeErr, registry.ErrProviderDraining) {
+				d.setLastError(protocol.ProviderDrainingForUpdate, http.StatusServiceUnavailable)
+				d.updateRoutingOutcome(d.errorRoutingOutcome("error", "draining", http.StatusServiceUnavailable))
+				return outcomeRetry
+			}
 			d.setLastError("failed to send request to provider", 0)
 			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "provider_error", 0))
 			return outcomeRetry

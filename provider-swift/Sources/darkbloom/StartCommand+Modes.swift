@@ -106,6 +106,9 @@ extension Start {
             models: advertised
         )
         try await server.start()
+        await ProviderTermination.shared.install {
+            await server.drainAndStop(timeoutSeconds: ProviderTermination.timeoutSeconds)
+        }
 
         // Wait until the server CONFIRMS it bound the port before advertising it.
         // start() launches Hummingbird in a child task and returns before the
@@ -370,10 +373,11 @@ extension Start {
         schedule: Schedule
     ) async throws {
         while !Task.isCancelled {
+            if await ProviderTermination.shared.terminationRequested { return }
             if !schedule.isActiveNow() {
                 let wait = schedule.durationUntilNextActive()
                 print("Outside availability schedule; next window opens in \(formatDuration(wait)).")
-                try await Task.sleep(nanoseconds: sleepNanoseconds(for: wait))
+                if try await waitOutsideSchedule(seconds: wait, coordinatorURL: loopConfig.coordinatorURL) { return }
                 continue
             }
 
@@ -411,6 +415,14 @@ extension Start {
     }
 
     private func runProviderLoopWithFanLease(_ loop: ProviderLoop) async throws {
+        await ProviderTermination.shared.install {
+            // CLI drains already disarmed recovery. A late old-process signal
+            // must not stop a watchdog newly armed by the replacement CLI.
+            if await !loop.lifecycleIsCommandDriven() { try? WatchdogAgent.stop() }
+            // Preserve configured login startup for ordinary OS termination;
+            // only explicit CLI stop/restart disables it persistently.
+            return await loop.drainAndShutdown(timeoutSeconds: ProviderTermination.timeoutSeconds)
+        }
         try await withFanActivityLease(providerVersion: ProviderCore.version) {
             try await loop.run()
         }

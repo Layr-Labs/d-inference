@@ -159,7 +159,7 @@ extension ProviderLoop {
     /// enter the `.installing` phase — still serving while the new bundle
     /// downloads and stages.
     private func claimUpdateStart(updater: SelfUpdater) -> Bool {
-        guard updatePhase == .idle, !isShuttingDown else { return false }
+        guard updatePhase == .idle, !servingDrain.refusing, !isShuttingDown else { return false }
         do {
             let session = try updater.beginUpdateSession(
                 operation: "background-auto-update",
@@ -187,7 +187,9 @@ extension ProviderLoop {
     internal func resumeServingAfterUpdate() async {
         updatePhase = .idle
         // Quote path mirror (routing v2): quotes may admit again.
-        state.refusingNewWork = isReconnectingAfterRetirement || isShuttingDown
+        servingDrain.resumeUpdate()
+        localResponseTracker.setAccepting(!servingDrain.refusing && !isShuttingDown)
+        state.refusingNewWork = servingDrain.refusing || isReconnectingAfterRetirement || isShuttingDown
         // Announce the un-drain NOW: the coordinator ages its drain mark on a
         // TTL, so a prompt `serving`/`idle` heartbeat ends the routing
         // blackout instead of leaving it to the next 5 s baseline tick.
@@ -202,6 +204,8 @@ extension ProviderLoop {
         updateSession?.release()
         updateSession = nil
 
+        // A lifecycle-owned drain cannot replay model work after a cancelled update.
+        guard !servingDrain.refusing else { return }
         if let entries = deferredDesiredModels {
             deferredDesiredModels = nil
             if let send = outboundSend {
@@ -216,6 +220,7 @@ extension ProviderLoop {
     /// hot-swap.
     internal func beginUpdateDraining() {
         updatePhase = .draining
+        beginServingDrain(owner: .update)
         // Quote path mirror (routing v2): while draining, capacity quotes
         // refuse with `slot_state` exactly like the live admission gate.
         state.refusingNewWork = true

@@ -6,7 +6,7 @@ struct Restart: AsyncParsableCommand {
         commandName: "restart",
         abstract: "Restart the provider with its current model selection.",
         discussion: """
-        Restarts the running launchd service in place, re-using the existing
+        Drains accepted requests, then restarts the launchd service, re-using the existing
         coordinator URL and model selection — it does NOT show the model
         picker or change what you serve. Use this to pick up a new binary or
         recover a wedged provider.
@@ -15,18 +15,29 @@ struct Restart: AsyncParsableCommand {
         """
     )
 
+    @OptionGroup var drain: DrainOptions
+    @Option(help: "Seconds to confirm a new, freshly authorized connection after restart.")
+    var startupTimeout: Int = 180
+
+    mutating func validate() throws {
+        guard (1...3600).contains(startupTimeout) else { throw ValidationError("--startup-timeout must be between 1 and 3600 seconds") }
+    }
+
     @OptionGroup var configOptions: ConfigOptions
 
     mutating func run() async throws {
-        let wasLoaded = LaunchAgent.isLoaded()
+        let wasLoaded = LaunchAgent.isAnySupportedLabelLoaded()
+        let previous = LaunchAgent.launchSnapshot()?.process
+        let session = try await ServiceDrain.prepare(options: drain)
+        defer { session.release() }
         do {
-            try LaunchAgent.restart()
+            try LaunchAgent.restartAfterDrain()
         } catch LaunchAgentError.notInstalled {
             printError("Provider is not running. Start it with `darkbloom start`.")
             throw ExitCode.failure
         }
         if wasLoaded {
-            print("Provider restarted.")
+            print("Drained provider relaunched; waiting for fresh authorization...")
         } else {
             print("Provider started.")
         }
@@ -53,6 +64,9 @@ struct Restart: AsyncParsableCommand {
             break
         }
 
+        // Let startup/update confirmation acquire its own process lease.
+        session.release()
+        try await ServiceDrain.waitForRestart(previous: previous, timeout: startupTimeout)
         print("  darkbloom status  Check status")
     }
 }

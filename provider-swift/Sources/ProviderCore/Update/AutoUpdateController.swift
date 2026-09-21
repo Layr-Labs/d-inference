@@ -162,6 +162,7 @@ public struct AutoUpdateController: Sendable {
         }
 
         let checkResult = await deps.check()
+        if Task.isCancelled { await deps.resumeServing(); return .cancelled }
         switch checkResult {
         case .upToDate:
             await deps.resumeServing()
@@ -177,6 +178,7 @@ public struct AutoUpdateController: Sendable {
                 "auto-update: v\(installed) is already installed but not running; draining before restart")
             await deps.beginDraining()
             let drained = await deps.waitForDrain(drainTimeout)
+            if Task.isCancelled { await deps.resumeServing(); return .cancelled }
             if !drained {
                 await deps.forceCancelInflight()
             }
@@ -212,6 +214,7 @@ public struct AutoUpdateController: Sendable {
         deps.log("auto-update: v\(release.version) staged; draining in-flight requests before install + restart")
         await deps.beginDraining()
         let drained = await deps.waitForDrain(drainTimeout)
+        if Task.isCancelled { await deps.resumeServing(); return .cancelled }
         if !drained {
             deps.log("auto-update: drain timed out after \(drainTimeout.components.seconds)s; cancelling remaining requests")
             await deps.forceCancelInflight()
@@ -221,6 +224,7 @@ public struct AutoUpdateController: Sendable {
             await deps.resumeServing()
             return .commitFailed(reason)
         }
+        if Task.isCancelled { await deps.resumeServing(); return .cancelled }
         deps.log("auto-update: restarting into v\(release.version)")
         return await restartInstalled(from: current, to: release.version, drained: drained, logFailure: true)
     }
@@ -234,6 +238,7 @@ public struct AutoUpdateController: Sendable {
             await deps.resumeServing()
             return .restartFailed(reason)
         }
+        if Task.isCancelled { await deps.resumeServing(); return .cancelled }
         do {
             try deps.restart()
             return .restarted(from: current, to: installed, drained: drained)

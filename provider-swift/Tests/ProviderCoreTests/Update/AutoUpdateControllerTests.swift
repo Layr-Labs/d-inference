@@ -254,3 +254,27 @@ struct AutoUpdateControllerTests {
     }
 
 }
+
+
+@Suite("Auto-update lifecycle overlap")
+struct AutoUpdateLifecycleOverlapTests {
+    @Test func cancelledDrainDoesNotForceCancelCommitOrRestart() async {
+        actor Calls {
+            var values: [String] = []
+            func add(_ value: String) { values.append(value) }
+        }
+        let calls = Calls()
+        let controller = AutoUpdateController(deps: .init(
+            claimStart: { true }, resumeServing: { await calls.add("resume") },
+            check: { .restartRequired(current: "1", installed: "2") },
+            downloadVerifyStage: { _ in .completed }, beginDraining: {},
+            waitForDrain: { _ in withUnsafeCurrentTask { $0?.cancel() }; return false },
+            forceCancelInflight: { await calls.add("force") },
+            commitInstall: { await calls.add("commit"); return .completed },
+            restart: { Issue.record("cancelled update restarted the provider") }, log: { _ in }
+        ), drainTimeout: .seconds(1))
+        let task = Task { await controller.run() }
+        #expect(await task.value == .cancelled)
+        #expect(await calls.values == ["resume"])
+    }
+}

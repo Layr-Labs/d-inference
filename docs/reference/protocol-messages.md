@@ -1,13 +1,12 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-18 · commit `4a453679b`
+> Last updated: 2026-09-20 · commit `76a8f03d`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
 (`coordinator/protocol/messages.go`, `capacity.go`, `profile.go`); Swift mirrors
 it (`provider-swift/Sources/ProviderCore/Protocol/Messages.swift`, `Types.swift`,
-`InferenceProfile.swift`). There are 16 provider→coordinator and 10
-coordinator→provider message types; nothing else is accepted.
+`InferenceProfile.swift`). The message inventory and additive lifecycle/attestation sections enumerate the accepted types.
 
 Conventions: **req** = always present; **opt** = Go `omitempty`, Swift
 `encodeIfPresent` (absent when nil, and for scalars when zero/empty unless a
@@ -20,6 +19,41 @@ Terminal `profile` objects can include optional schema-1
 This does not add a message type or change the public error code.
 
 The additive [App Attest shadow exchange](app-attest-shadow.md#wire-exchange) uses `register.app_attest_protocol = 3` (with protocol 1 and 2 compatibility) and `app_attest_shadow` frames. Version 3 also binds static hardware and the existing verification key; version 2 account/status binding and lost-enrollment recovery remain compatible. Shadow alone does not replace authoritative verification. The separately enabled [provider authorization](provider-authorization.md) path consumes qualified protocol 3 evidence and adds coordinator-derived `trust_status.authorization` diagnostics; legacy message meanings remain unchanged.
+
+## Provider lifecycle drain
+
+| Direction | Type | Required fields | Behavior / source |
+|---|---|---|---|
+| Provider → coordinator | `provider_drain` | `request_id`: nonempty random barrier ID, at most 64 bytes | `coordinator/protocol/provider_drain.go` (`ProviderDrainMessage`), Swift `ProviderMessage.drainBarrier` |
+| Coordinator → provider | `provider_drain_ack` | Matching `request_id` | Swift `CoordinatorMessage.drainAck`; only the issuing connection's current waiter can consume it |
+
+The registered provider closes admission first, then sends a barrier over the
+FIFO control writer. The coordinator permanently fences that connection from
+new dispatch and asynchronously waits for all earlier completion/billing workers
+before acknowledging. Heartbeat/challenge reads continue during that wait; the
+connection has at most two pending acknowledgement workers. A final barrier
+after accepted requests and local response writes finish establishes that prior
+terminal usage has been processed. The Swift acknowledgement also passes through
+the ordered provider event queue, so earlier inbound inference frames are refused
+before the barrier completes. It is not a bearer credential or permission
+to serve. A stale idle heartbeat or drain TTL cannot reopen this connection; a
+restart registers and authorizes a new connection. Code:
+`coordinator/api/provider_completion_barrier.go` (`providerCompletionBarrier`),
+`coordinator/api/provider.go` (`providerReadLoop`),
+`coordinator/registry/drain_state.go` (`CommitProviderDrain`),
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Drain.swift`
+(`acknowledgeDrain`).
+
+Missing/late acknowledgements, including an older coordinator that does not
+support these additive frames, never imply success. Normal shutdown remains
+draining and returns non-success at its deadline. Explicit force is separate.
+Existing `heartbeat.status = draining` and typed `inference_error` draining
+rejections remain compatible. The legacy string `provider draining for update`
+is retained for load/prefetch and old rejection classifiers even on lifecycle
+drains. Legacy authorization diagnostics can report `authorization.path = legacy`
+without App Attest serving enabled; this is a current registry verdict, not a
+change to legacy eligibility.
+
 
 ## Envelope and the single-parse rule
 

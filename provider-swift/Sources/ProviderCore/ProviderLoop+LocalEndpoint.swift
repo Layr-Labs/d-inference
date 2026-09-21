@@ -53,6 +53,7 @@ extension ProviderLoop {
             // best-effort HTTP probe that a foreign process on the same port
             // could answer). If the bind fails, runService throws below and this
             // never runs, so no stale/foreign discovery record is written.
+            responseTracker: localResponseTracker,
             onServerRunning: { [weak self] _ in
                 await self?.onLocalEndpointBound(cfg)
             }

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-20 · commit `a26b1107b`
+> Last updated: 2026-09-20 · commit `76a8f03d`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -41,8 +41,8 @@ Declaration order of `Darkbloom.configuration.subcommands` (21):
 | Command | Purpose | `--config` | Source (`provider-swift/Sources/darkbloom/…`) |
 |---|---|---|---|
 | `start` | Serve. Default: install and start the LaunchAgent; `--local` for a coordinator-less server | ✓ | `StartCommand.swift` (`Start`) |
-| `stop` | Stop the LaunchAgent; `--uninstall` removes both plists | | `StopCommand.swift` (`Stop`) |
-| `restart` | Restart the service in place and re-arm the watchdog | ✓ | `RestartCommand.swift` (`Restart`) |
+| `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes both plists | | `StopCommand.swift` (`Stop`) |
+| `restart` | Drain, restart with recorded configuration, and confirm fresh authorization | ✓ | `RestartCommand.swift` (`Restart`) |
 | `status` | Config, hardware, schedule, live daemon state (including the coordinator's last `Trust: <level> / <status>` message), per-slot KV/MTP posture | ✓ | `StatusCommand.swift` (`Status`) |
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
@@ -82,24 +82,29 @@ a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
 detection fails, no model is selected, or the local server does not bind within
 5 s (`StartCommand+Preflight.swift`, `StartCommand+Modes.swift`).
 
-### `darkbloom stop`
+### Graceful stop and restart
 
-| Flag | Type | Default | Effect |
-|---|---|---|---|
-| `--uninstall` | flag | `false` | Also delete `io.darkbloom.provider.plist` and `io.darkbloom.watchdog.plist` |
+```bash
+darkbloom stop --timeout 600
+darkbloom restart --timeout 600 --startup-timeout 180
+darkbloom stop --force             # explicit interruption, including stalled work
+```
 
-Disarms the watchdog first, removes `~/.darkbloom/watchdog-state.json`, then
-stops the service and disables it in launchd; `darkbloom start` re-enables
-auto-start.
+Use the [stop flags](#darkbloom-stop) and [restart flags](#darkbloom-restart) above
+for deadline recovery. Commands do not initiate graceful shutdown by killing the
+serve task. `SIGTERM`, `SIGINT` and AppKit termination enter the same drain;
+standalone local mode also waits for active HTTP response bodies. The signal
+deadline is configurable with
+[`DARKBLOOM_DRAIN_TIMEOUT_SECONDS`](../reference/configuration.md#provider-drain-deadline).
+Signal-only shutdown disarms current watchdog recovery but preserves configured
+login startup; use `darkbloom stop` for a persistent stop.
+Newly installed or CLI-restarted jobs have launchd `ExitTimeOut = 3660`; an
+existing job must be restarted to load that allowance. OS logout/shutdown may
+impose its own limit. Crashes, power loss, SIGKILL and explicit force can interrupt
+responses. The [protocol barrier](../reference/protocol-messages.md#provider-lifecycle-drain)
+requires the updated coordinator before normal provider shutdown can be confirmed.
 
-### `darkbloom restart`
-
-Only `--config`. Restarts the loaded service in place with its recorded
-coordinator URL and models; starts it if installed but not running; exit 1 if
-not installed. Re-arms the watchdog when `provider.auto_restart` is `true`,
-disarms it when `false`.
-
-### `darkbloom status`
+## `darkbloom status`
 
 Only `--config`. Read-only. Prints the daemon snapshot (refresh cadence under
 [Runtime constants](#runtime-constants)) and the last trust message the

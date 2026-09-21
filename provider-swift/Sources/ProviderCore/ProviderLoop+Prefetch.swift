@@ -60,7 +60,7 @@ extension ProviderLoop {
                 error: "provider is shutting down"))
             return
         }
-        if isDrainingForUpdate {
+        if isDraining {
             sendDrainingPrefetchFailure(modelId: modelId, send: send)
             return
         }

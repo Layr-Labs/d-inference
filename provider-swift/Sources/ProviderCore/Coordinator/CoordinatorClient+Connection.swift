@@ -179,6 +179,7 @@ extension CoordinatorClient {
         // inference replies flowing after a reconnect. Activate before announcing
         // .connected so any immediate outbound is buffered, not dropped.
         let (outboundStream, outboundCont) = AsyncStream<OutboundMessage>.makeStream()
+        failDrainBarriers()
         outboundRouter.activate(outboundCont)
 
         // Bind the inference-chunk fast path to THIS connection. A per-session

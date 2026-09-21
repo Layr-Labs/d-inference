@@ -314,6 +314,15 @@ public actor ProviderLoop {
     internal var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false
+    internal var servingDrain = ProviderDrain()
+    internal var lifecycleStatus = ProviderDrainStatus()
+    internal var lastLifecycleTelemetry: ProviderDrainStatus?
+    internal var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?
+    internal var lifecycleDrainRequestID: String?
+    internal var lifecycleCommandReceived = false
+    internal var lifecycleMonitorTask: Task<Void, Never>?
+    internal var acceptedLifecycleRequests: Set<String> = []
+    internal let localResponseTracker = LocalResponseTracker()
     internal var mtpStagingReservations = MTPStagingReservations()
     internal var mtpAdmissionDrains = MTPAdmissionDrains()
     internal var mtpUpgradeMonitorTask: Task<Void, Never>?

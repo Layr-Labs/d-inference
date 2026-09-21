@@ -31,6 +31,7 @@ import NIOCore
 /// Captured wire messages received from the provider. Cumulative for the
 /// lifetime of the mock; tests inspect a snapshot after each interaction.
 public struct CapturedMessages: Sendable {
+    public var drainBarriers: [String] = []
     public var appAttestShadow: [AppAttestShadowPayload] = []
     public var registers: [ProviderMessage.Register] = []
     public var heartbeats: [ProviderMessage.Heartbeat] = []
@@ -191,9 +192,12 @@ public final class MockCoordinator: @unchecked Sendable {
         let serverTask: Task<Void, Never>
     }
 
+    private let acknowledgeDrains: Bool
+
     // MARK: Init
 
     public init(
+        acknowledgeDrains: Bool = true,
         catalog: [CatalogModel] = MockCoordinator.defaultCatalog,
         release: MockReleaseFixture = MockReleaseFixture(),
         releaseArtifact: Data? = nil,
@@ -201,6 +205,7 @@ public final class MockCoordinator: @unchecked Sendable {
         mobileConfig: Data = MockCoordinator.defaultMobileConfig,
         deviceCode: MockDeviceCodeFixture = MockDeviceCodeFixture()
     ) {
+        self.acknowledgeDrains = acknowledgeDrains
         self.catalog = catalog
         self.release = release
         self.releaseArtifact = releaseArtifact
@@ -602,6 +607,7 @@ public final class MockCoordinator: @unchecked Sendable {
 
         lock.withLock {
             switch parsed {
+            case .drainBarrier(let id): captured.drainBarriers.append(id)
             case .appAttestShadow(let p): captured.appAttestShadow.append(p)
             case .register(let r):           captured.registers.append(r)
             case .heartbeat(let h):          captured.heartbeats.append(h)
@@ -622,6 +628,9 @@ public final class MockCoordinator: @unchecked Sendable {
             }
         }
         eventContinuation.yield(.providerMessage(parsed))
+        if acknowledgeDrains, case .drainBarrier(let id) = parsed {
+            Task { try? await self.sendCoordinatorMessage(.drainAck(id)) }
+        }
     }
 
     // MARK: Response helpers

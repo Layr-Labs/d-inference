@@ -36,6 +36,7 @@ public actor CoordinatorClient {
     /// is recreated per connection (see OutboundRouter / connectAndRun); reusing
     /// one AsyncStream across reconnects silently kills outbound delivery.
     internal let outboundRouter = OutboundRouter()
+    internal var drainAcknowledgements: [String: AsyncStream<Bool>.Continuation] = [:]
 
     /// Inference-chunk fast path. `chunkBatcher` owns the dedicated serial queue
     /// + coalescing; `chunkSender` is the nonisolated, Sendable handle the
@@ -219,6 +220,7 @@ public actor CoordinatorClient {
     }
 
     public func shutdown() {
+        failDrainBarriers()
         shutdownFlag.request()
         closeCurrentConnection()
         eventContinuation?.finish()

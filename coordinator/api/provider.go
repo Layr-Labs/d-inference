@@ -234,6 +234,8 @@ func (s *Server) closeSessionWithReason(providerID, reason string) {
 // them. It runs until the connection closes or the context is cancelled.
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
 	var provider *registry.Provider
+	var terminalWork providerCompletionBarrier
+	drainAcks := make(chan struct{}, 2)
 	var appAttestShadow *attestservice.Session
 	tracker := newChallengeTracker()
 	var schedulerSEKey string
@@ -619,6 +621,42 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				appAttestShadow.Offer(msg.Payload.(*protocol.AppAttestShadowMessage).Payload)
 			}
 
+		case protocol.TypeProviderDrain:
+			if provider == nil {
+				_ = conn.Close(websocket.StatusPolicyViolation, "register before drain")
+				return
+			}
+			barrier := msg.Payload.(*protocol.ProviderDrainMessage)
+			if barrier.RequestID == "" || len(barrier.RequestID) > 64 {
+				_ = conn.Close(websocket.StatusPolicyViolation, "invalid drain barrier")
+				return
+			}
+			// This read loop has processed all preceding terminal/usage frames.
+			// Mark before acknowledging, so reservations waiting in the writer
+			// fail their final eligibility check while control traffic continues.
+			s.registry.CommitProviderDrain(provider)
+			select {
+			case drainAcks <- struct{}{}:
+			default:
+				continue
+			}
+			pending := terminalWork.snapshot()
+			ack, _ := json.Marshal(protocol.ProviderDrainMessage{Type: protocol.TypeProviderDrainAck, RequestID: barrier.RequestID})
+			// Keep reading required control traffic while async billing settles.
+			saferun.Go(s.logger, "providerDrainAck", func() {
+				defer func() { <-drainAcks }()
+				for _, done := range pending {
+					select {
+					case <-done:
+					case <-loopCtx.Done():
+						return
+					}
+				}
+				ackCtx, cancel := context.WithTimeout(loopCtx, 10*time.Second)
+				defer cancel()
+				_ = provider.WriteTextControl(ackCtx, ack)
+			})
+
 		case protocol.TypeHeartbeat:
 			if provider == nil {
 				// Heartbeats are meaningful only after this connection has
@@ -708,7 +746,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// that can block for seconds under DB pressure. If the read loop is
 			// blocked, attestation challenge responses can't be read from the
 			// WebSocket, causing challenge timeouts and provider derouting.
+			terminalDone := terminalWork.begin()
 			saferun.Go(s.logger, "handleComplete", func() {
+				defer terminalDone()
 				s.handleCompleteAt(providerID, provider, completeMsg, receivedAt)
 			})
 

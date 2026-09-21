@@ -209,14 +209,14 @@ struct UpdateDrainAwarenessTests {
         let send = SendHandle { captured.append($0) }
 
         // Not draining: the gate admits (returns false, sends nothing).
-        let admitted = await loop.rejectIfDrainingForUpdate(
+        let admitted = await loop.rejectIfDraining(
             requestId: "req-admit", send: send,
             lookupReceiptFinalizer: PrefixCacheLookupReceiptFinalizer(callback: nil))
         #expect(admitted == false)
         #expect(captured.all.isEmpty)
 
         await loop.beginUpdateDraining()
-        let rejected = await loop.rejectIfDrainingForUpdate(
+        let rejected = await loop.rejectIfDraining(
             requestId: "req-drain", send: send,
             lookupReceiptFinalizer: PrefixCacheLookupReceiptFinalizer(callback: nil))
         #expect(rejected)
@@ -294,5 +294,69 @@ struct UpdateDrainAwarenessTests {
         #expect(try await heartbeatObject(client)["status"] as? String == "draining")
         await loop.resumeServingAfterUpdate()
         #expect(!state.refusingNewWork)
+    }
+}
+
+
+@Suite("Coordinator lifecycle barrier")
+struct CoordinatorLifecycleBarrierTests {
+    @Test func acknowledgesAfterQueuedTerminalFrames() async throws {
+        let mock = MockCoordinator()
+        let url = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+        let client = makeHeartbeatClient(state: ProviderState(), url: url.mockProviderWebSocketURL())
+        let (events, send) = await client.start()
+        defer { Task { await client.shutdown() } }
+        for await event in events { if case .connected = event { break } }
+        let reader = Task {
+            for await event in events {
+                if case .drainAck(let id) = event { await client.completeDrainAcknowledgement(id) }
+            }
+        }
+        defer { reader.cancel() }
+        send(.inferenceComplete(requestId: "finished", usage: UsageInfo(promptTokens: 3, completionTokens: 2), stopSequence: nil, seSignature: nil, responseHash: nil, profile: nil))
+        #expect(await client.acknowledgeDrain(timeout: .seconds(2)))
+        let captured = mock.snapshot()
+        #expect(captured.inferenceComplete.count == 1)
+        #expect(captured.drainBarriers.count == 1)
+        #expect(await client.drainAcknowledgements.isEmpty)
+    }
+
+    @Test func rawSocketAcknowledgementWaitsForApplicationEventQueue() async throws {
+        let mock = MockCoordinator()
+        let url = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+        let client = makeHeartbeatClient(state: ProviderState(), url: url.mockProviderWebSocketURL())
+        let (events, _) = await client.start()
+        defer { Task { await client.shutdown() } }
+        for await event in events { if case .connected = event { break } }
+        let barrier = Task { await client.acknowledgeDrain(timeout: .seconds(2)) }
+        let captured = try await mock.waitForSnapshot(timeout: .seconds(1)) { !$0.drainBarriers.isEmpty }
+        let id = try #require(captured?.drainBarriers.first)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        // The socket has received its echo, but prior inference events have not
+        // yet been processed by ProviderLoop. Only its ordered callback may finish.
+        #expect(await client.drainAcknowledgements.count == 1)
+        await client.completeDrainAcknowledgement(id)
+        #expect(await barrier.value)
+    }
+
+    @Test func unsupportedOrDisconnectedCoordinatorDoesNotConfirmDrain() async throws {
+        let mock = MockCoordinator(acknowledgeDrains: false)
+        let url = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+        let client = makeHeartbeatClient(state: ProviderState(), url: url.mockProviderWebSocketURL())
+        let (events, _) = await client.start()
+        for await event in events { if case .connected = event { break } }
+        let reader = Task {
+            for await event in events {
+                if case .drainAck(let id) = event { await client.completeDrainAcknowledgement(id) }
+            }
+        }
+        defer { reader.cancel() }
+        #expect(await !client.acknowledgeDrain(timeout: .milliseconds(30)))
+        #expect(await client.drainAcknowledgements.isEmpty)
+        await client.shutdown()
+        #expect(await !client.acknowledgeDrain(timeout: .seconds(1)))
     }
 }

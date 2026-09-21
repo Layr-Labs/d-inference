@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-18 · commit `dab62c50a`
+> Last updated: 2026-09-20 · commit `76a8f03d`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -10,6 +10,26 @@ is slow to produce first content — races a second provider against it.
 Capacity, queues, slot states and the warm pool are covered in
 [`scheduling.md`](scheduling.md); this page covers only choosing among
 eligible providers.
+
+## Provider lifecycle drain boundary
+
+`provider_drain` permanently fences a live connection until disconnect, unlike
+the existing TTL-bounded update heartbeat. `authorizeInferenceHandoff` in
+`coordinator/registry/inference_authorization.go` rechecks the drain after writer
+queueing and reservation: direct, queued, cold, retry and hedge reservations
+cannot send a new inference frame across the boundary. A late reservation gets
+`ErrProviderDraining`, releases its unused reservation, and retries through the
+existing transient-capacity path. No response output is replayed by this change.
+
+Warm/cold model-load and prefetch selection also exclude drains. Provider-side
+admission checks remain necessary for already handed-off frames: these receive
+a typed 503 draining refusal before acceptance. Already accepted coordinator
+queues (including a cold model load) finish. Local requests that have not acquired
+a model may still receive 503; acquired local requests and their HTTP response
+writes are drained. See [the terminal barrier](../reference/protocol-messages.md#provider-lifecycle-drain)
+for the asynchronous settlement boundary. Existing draining-capacity preflight
+semantics (transient 429/capacity, not structural absence) remain unchanged.
+
 
 ## Context
 

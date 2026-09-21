@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-20 · commit `826fa102e`
+> Last updated: 2026-09-21 · commit `76a8f03d9`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1370,7 +1370,14 @@ procedure, its inputs and the regeneration flow are in
 
 **Installer** — `./scripts/test-install-atomic.sh` exercises the atomic
 install/replace path of `scripts/install.sh` in a temp dir (and runs
-`scripts/sync-install-embed.sh check` first).
+`scripts/sync-install-embed.sh check` first). It also covers
+`configure_shell_path` via `install.sh --configure-path-test <home>`: against a
+throwaway `$HOME` seeded with legacy brand residue and a duplicated export, it
+asserts the block converges to one copy per file across two runs, that
+`~/.zshrc` is left carrying none, that both `zsh -c` and `zsh -l -c` resolve the
+CLI (the interactive-only-rc regression), that a bash `$SHELL` gets both bash
+files, and that the installer never claims a `/usr/local/bin` link it failed to
+make.
 
 ### 5. Console UI and Admin UI
 

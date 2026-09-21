@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Put `darkbloom` on `PATH` for every shell, not just interactive ones. The installer wrote the export to `~/.zshrc`, which zsh reads for interactive shells only, so login shells (`ssh host darkbloom status`), cron jobs, LaunchAgents and non-interactive scripts could not resolve the CLI; it now writes `~/.zshenv` (plus both bash files for bash users) and prunes the managed block from every startup file first, so repeat installs converge on one copy instead of stacking duplicates. A failed `/usr/local/bin` symlink is now reported rather than silently swallowed.
 - Persist independently approved App Attest builds and revocations; refresh qualification without per-release coordinator restarts, with bounded failure/expiry and stale-grant fencing.
 - Stage immutable signed provider artifacts before publication. Block unqualified releases before updater/latest aliases advance; retry the separate publication job using the same signed bytes, without rebuilding or notarizing again.
 

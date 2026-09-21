@@ -108,6 +108,90 @@ assert_no_privileged_install() {
 assert_no_privileged_install "$REPO_ROOT/scripts/install.sh"
 assert_no_privileged_install "$REPO_ROOT/coordinator/api/install.sh"
 
+# ─── PATH configuration ──────────────────────────────────────
+# Regression cover: the export landed only in ~/.zshrc (interactive shells
+# only), and the duplicate guard grepped a superseded brand name, so the
+# rename appended a second copy.
+seed_path_home() {
+    local home=$1
+    mkdir -p "$home/.darkbloom/bin"
+    cat > "$home/.darkbloom/bin/darkbloom" <<'STUB'
+#!/bin/bash
+echo stub-darkbloom
+STUB
+    chmod +x "$home/.darkbloom/bin/darkbloom"
+    # The residue an upgraded Mac carries.
+    cat > "$home/.zshrc" <<'RC'
+export EDITOR=vim
+
+# EigenInference
+export PATH="$HOME/.eigeninference/bin:$PATH"
+alias eigeninf=darkbloom
+
+# Darkbloom
+export PATH="$HOME/.darkbloom/bin:$PATH"
+export PATH="$HOME/.darkbloom/bin:$PATH"
+RC
+}
+
+count_matches() {
+    grep -c "$2" "$1" 2>/dev/null || true
+}
+
+ZSH_HOME="$ROOT/path-home-zsh"
+mkdir -p "$ZSH_HOME"
+seed_path_home "$ZSH_HOME"
+# Twice: the second pass must converge, not append.
+SHELL=/bin/zsh bash "$INSTALLER" --configure-path-test "$ZSH_HOME" >/dev/null
+SHELL=/bin/zsh bash "$INSTALLER" --configure-path-test "$ZSH_HOME" >/dev/null
+
+test "$(count_matches "$ZSH_HOME/.zshenv" '\.darkbloom/bin')" = "1"
+# ~/.zshrc must be left with none, so the files cannot disagree.
+test "$(count_matches "$ZSH_HOME/.zshrc" '\.darkbloom/bin')" = "0"
+test "$(count_matches "$ZSH_HOME/.zshrc" 'eigeninf')" = "0"
+grep -q 'export EDITOR=vim' "$ZSH_HOME/.zshrc"
+test ! -e "$ZSH_HOME/.bash_profile"
+
+# The gap that mattered: neither mode reads ~/.zshrc.
+for zsh_mode in "-c" "-l -c"; do
+    # shellcheck disable=SC2086
+    resolved=$(env -u ZDOTDIR HOME="$ZSH_HOME" zsh $zsh_mode 'command -v darkbloom')
+    if [ "$resolved" != "$ZSH_HOME/.darkbloom/bin/darkbloom" ]; then
+        echo "zsh $zsh_mode did not resolve darkbloom: '$resolved'" >&2
+        exit 1
+    fi
+done
+
+# A bash user needs both files.
+BASH_HOME="$ROOT/path-home-bash"
+mkdir -p "$BASH_HOME"
+seed_path_home "$BASH_HOME"
+SHELL=/bin/bash bash "$INSTALLER" --configure-path-test "$BASH_HOME" >/dev/null
+SHELL=/bin/bash bash "$INSTALLER" --configure-path-test "$BASH_HOME" >/dev/null
+test "$(count_matches "$BASH_HOME/.bash_profile" '\.darkbloom/bin')" = "1"
+test "$(count_matches "$BASH_HOME/.bashrc" '\.darkbloom/bin')" = "1"
+resolved=$(HOME="$BASH_HOME" bash -l -c 'command -v darkbloom')
+test "$resolved" = "$BASH_HOME/.darkbloom/bin/darkbloom"
+
+# A home directory with a space must land one file, not two split paths.
+SPACE_HOME="$ROOT/path home spaced"
+mkdir -p "$SPACE_HOME"
+seed_path_home "$SPACE_HOME"
+SHELL=/bin/zsh bash "$INSTALLER" --configure-path-test "$SPACE_HOME" >/dev/null
+test "$(count_matches "$SPACE_HOME/.zshenv" '\.darkbloom/bin')" = "1"
+test ! -e "$ROOT/path"
+
+# Never claim a link it failed to make.
+PATH_OUTPUT=$(SHELL=/bin/zsh bash "$INSTALLER" --configure-path-test "$ZSH_HOME")
+grep -q 'shell startup files' <<<"$PATH_OUTPUT"
+grep -q 'Open a new terminal' <<<"$PATH_OUTPUT"
+if grep -q 'linked ✓' <<<"$PATH_OUTPUT"; then
+    echo "installer claimed a /usr/local/bin link it never made" >&2
+    exit 1
+fi
+
+echo "PATH configuration tests passed"
+
 make_artifact() {
     local output=$1
     local capability=$2

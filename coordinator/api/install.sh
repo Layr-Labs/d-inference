@@ -404,6 +404,77 @@ configure_device_verification() {
     fi
 }
 
+# ─── PATH setup ──────────────────────────────────────────────
+PATH_MANAGED_FILES='.zshenv .zshrc .zprofile .zlogin .bashrc .bash_profile .profile'
+
+# '# Darkbloom' is anchored so a user comment mentioning Darkbloom survives.
+PATH_PRUNE_SED='/\.darkbloom\/bin/d; /\.dginf\/bin/d; /\.eigeninference\/bin/d; /alias eigeninf/d; /alias dginf/d; /# EigenInference/d; /# Darkbloom$/d'
+
+# ~/.zshrc is deliberately not a target: zsh reads it for interactive shells
+# only, so a login shell, cron job or LaunchAgent never saw the CLI. ~/.zshenv
+# is read by every zsh invocation. Bash needs both of its files — .bash_profile
+# is login-only, .bashrc interactive-only.
+path_startup_files() {
+    local home=$1
+    PATH_STARTUP_TARGETS=("$home/.zshenv")
+    case "${SHELL:-}" in
+        *bash)
+            PATH_STARTUP_TARGETS+=("$home/.bash_profile" "$home/.bashrc")
+            ;;
+        *)
+            [ -f "$home/.bashrc" ] && PATH_STARTUP_TARGETS+=("$home/.bashrc")
+            [ -f "$home/.bash_profile" ] && PATH_STARTUP_TARGETS+=("$home/.bash_profile")
+            ;;
+    esac
+    return 0
+}
+
+configure_shell_path() {
+    local home=${1:-$HOME}
+    local name target linked=0
+
+    for name in $PATH_MANAGED_FILES; do
+        target="$home/$name"
+        [ -f "$target" ] || continue
+        sed -i '' "$PATH_PRUNE_SED" "$target" 2>/dev/null || true
+    done
+
+    # $HOME stays unexpanded so the line survives an account move.
+    path_startup_files "$home"
+    for target in "${PATH_STARTUP_TARGETS[@]}"; do
+        cat >> "$target" << 'SHELL'
+# Darkbloom
+export PATH="$HOME/.darkbloom/bin:$PATH"
+SHELL
+    done
+
+    # Covers shells that read none of the files above. Needs admin rights, so
+    # failure is reported and never fatal.
+    if [ "$INSTALL_TEST_MODE" = "1" ]; then
+        linked=0
+    elif ln -sf "$home/.darkbloom/bin/darkbloom" /usr/local/bin/darkbloom 2>/dev/null; then
+        linked=1
+    fi
+
+    if [ "$linked" = "1" ]; then
+        echo "  PATH: /usr/local/bin/darkbloom linked ✓"
+    else
+        echo "  PATH: set in your shell startup files ✓"
+        echo "    (/usr/local/bin is not writable without admin rights — skipped)"
+    fi
+    echo "    Open a new terminal, or run: export PATH=\"\$HOME/.darkbloom/bin:\$PATH\""
+}
+
+if [ "${1:-}" = "--configure-path-test" ]; then
+    [ "$#" -eq 2 ] || {
+        echo "usage: $0 --configure-path-test <home>" >&2
+        exit 64
+    }
+    INSTALL_TEST_MODE=1
+    configure_shell_path "$2"
+    exit $?
+fi
+
 if [ "${1:-}" = "--verify-staged-app-signature-test" ]; then
     [ "$#" -eq 3 ] || {
         echo "usage: $0 --verify-staged-app-signature-test <app> <requirement>" >&2
@@ -509,32 +580,12 @@ fi
 rm -f "$TARBALL"
 echo "  Strict signature, runtime resources, and atomic swap verified ✓"
 
-# Make available in PATH. Try /usr/local/bin symlink, fall back to shell rc.
-if ln -sf "$BIN_DIR/darkbloom" /usr/local/bin/darkbloom 2>/dev/null; then
-    :
-fi
-RC="$HOME/.zshrc"
-if [ -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.zshrc" ]; then
-    RC="$HOME/.bashrc"
-fi
-if ! grep -q "\.darkbloom/bin" "$RC" 2>/dev/null; then
-    sed -i '' '/\.dginf\/bin/d; /\.eigeninference\/bin/d; /alias eigeninf/d; /alias dginf/d; /# EigenInference/d; /# Darkbloom$/d' "$RC" 2>/dev/null || true
-    cat >> "$RC" << 'SHELL'
-
-# Darkbloom
-export PATH="$HOME/.darkbloom/bin:$PATH"
-SHELL
-fi
-export PATH="$BIN_DIR:$PATH"
-
-# Source rc so commands work in this shell. Disable -eu around it: rc files
-# may use unbound vars or shell-specific builtins that fail under bash strict.
-set +eu
-source "$RC" 2>/dev/null || true
-set -eu
-
 echo "  Binaries installed ✓"
-echo "  Shortcut: darkbloom"
+
+configure_shell_path "$HOME"
+# The rest of this script calls the CLI by absolute path; this is for anything
+# a user pastes into the same session.
+export PATH="$BIN_DIR:$PATH"
 
 # ─── Migrate from old installs ───────────────────────────────
 # Migration chain: ~/.dginf → ~/.eigeninference → ~/.darkbloom

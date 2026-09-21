@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-09-14 · commit `b725a72a8`
+> Last updated: 2026-09-21 · commit `76a8f03d9`
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -46,7 +46,8 @@ has started, leaves the previous install untouched.
 | `Atomic app swap failed; previous install was restored.` | `mv` into `~/.darkbloom` failed | Check free space and permissions on `~/.darkbloom` |
 | `Secure Enclave ⚠ (not available on this hardware …)` (warning, install continues) | `darkbloom-enclave info` failed | Trust stays below `hardware`; see [attestation](./attestation.md) |
 | `Enrollment ⚠ …` (warning) | Profile not installed, or `POST /v1/enroll` unreachable | `darkbloom enroll`, then install the profile in System Settings |
-| `darkbloom: command not found` after install | Shell not reloaded; rc file is `~/.zshrc`, or `~/.bashrc` only if `~/.zshrc` is absent | `source ~/.zshrc`, or `export PATH="$HOME/.darkbloom/bin:$PATH"` |
+| `darkbloom: command not found` after install | Shell started before the install wrote `~/.zshenv` | Open a new terminal, or `export PATH="$HOME/.darkbloom/bin:$PATH"` |
+| `darkbloom: command not found` in a cron job, LaunchAgent, or `ssh host darkbloom …` | `~/.zshenv` missing the export (installed by a release older than the `configure_shell_path` fix, which only wrote `~/.zshrc` — interactive shells only) | Re-run `install.sh`, or invoke by absolute path: `~/.darkbloom/bin/darkbloom` |
 
 ## Doctor checks
 

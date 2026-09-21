@@ -84,13 +84,17 @@ env:
 
 jobs:
   resolve-env:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
     outputs:
       environment: ${{ steps.pick.outputs.environment }}
       version: ${{ steps.pick.outputs.version }}
       publish: ${{ steps.pick.outputs.publish }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - id: pick
         env:
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
@@ -101,7 +105,7 @@ jobs:
   build-provider:
     name: Build optimized SDK 27 provider
     needs: resolve-env
-    runs-on: xcode-27-xlarge
+    runs-on: tenki-macos-26-large
     timeout-minutes: 60
     permissions:
       contents: read
@@ -110,6 +114,7 @@ jobs:
       build_sdk_version: ${{ steps.build.outputs.build-sdk-version }}
       mlx_sha_short: ${{ steps.build.outputs.mlx-sha-short }}
     env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
       VERSION: ${{ needs.resolve-env.outputs.version }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -145,9 +150,11 @@ jobs:
           retention-days: 3
 
   qualify-sdk:
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
     name: Qualify provider with SDK 27
     needs: resolve-env
-    runs-on: xcode-27-xlarge
+    runs-on: tenki-macos-26-large
     timeout-minutes: 60
     permissions:
       contents: read
@@ -163,8 +170,7 @@ jobs:
   build-and-release:
     name: Sign, notarize and retain exact artifact
     needs: [resolve-env, build-provider, qualify-sdk]
-    # App Attest's current code measurements require SDK 27. The ordinary
-    # Blacksmith image is macOS 26.3 and cannot install Apple's SDK 27 tools.
+    # Signing credentials stay on GitHub's SDK 27 runner.
     runs-on: xcode-27
     environment: ${{ needs.resolve-env.outputs.environment }}
     outputs:
@@ -213,6 +219,7 @@ jobs:
       - name: Checkout (with submodules)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           submodules: recursive
           fetch-depth: 0   # gh release --generate-notes wants full history
 
@@ -819,7 +826,7 @@ jobs:
     name: Stage retained signed artifact in R2
     needs: [resolve-env, build-and-release]
     if: needs.resolve-env.outputs.publish == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: ${{ needs.resolve-env.outputs.environment }}
     permissions:
@@ -903,7 +910,7 @@ jobs:
     name: Publish qualified signed release
     needs: [resolve-env, build-and-release, stage-release]
     if: needs.resolve-env.outputs.publish == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: ${{ needs.resolve-env.outputs.environment }}
     concurrency:
@@ -996,12 +1003,14 @@ jobs:
     name: Signed SDK 27 artifact on older macOS
     needs: [resolve-env, build-and-release]
     if: needs.resolve-env.outputs.publish == 'false'
-    runs-on: blacksmith-12vcpu-macos-latest
+    runs-on: tenki-macos-26-large
     permissions:
       contents: read
       actions: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - name: Verify and smoke the exact signed validation artifact
         env:
           GH_TOKEN: ${{ github.token }}

@@ -47,10 +47,46 @@ The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its 
 
 Provider signing, R2 staging and publication run in separate jobs in `.github/workflows/release-swift.yml`. `scripts/provider-release-publication.py` stages the final signed bundle under an immutable digest path, retains metadata, and gates publication on coordinator qualification. A staging or publication retry downloads and reuses the original signed artifact and does not rerun compilation or notarization. `scripts/provider_release_github.py` resumes draft/upload state, verifies asset hashes before publishing and never replaces completed mismatched bytes. See [build qualification](../operations/app-attest-build-qualification.md).
 
+## CI runner and credential boundary
+
+Unsigned builds and tests use Tenki: Linux jobs run on
+`tenki-standard-medium-4c-8g` (4 vCPU, 8 GB), and Apple Silicon jobs on
+`tenki-macos-26-large` (8 vCPU, 32 GB). Every compiling Mac job selects
+`DEVELOPER_DIR=/Applications/Xcode_27.0.app/Contents/Developer`.
+Runner specifications: [Tenki labels](https://tenki.cloud/docs/runners/sizes).
+The Tenki Runners GitHub App must already have access to this repository;
+runner labels alone do not install or authorize it.
+
+Signing and notarization use GitHub's `xcode-27` runner. R2 staging, release
+publication, model registration and credentialed review automation use
+GitHub's `ubuntu-24.04`. Coordinator container builds/deploys retain their
+existing GCP workflow. No production deployment is triggered by this migration.
+
+Tenki jobs have explicit read-only GitHub permissions, no `secrets` expressions,
+no GitHub environment, and `persist-credentials: false` on checkout. They still
+receive the short-lived read-only GitHub job token and Actions runtime tokens
+needed for checkout, caches and artifacts; this is not a token-free runner.
+Integration and benchmark checkpoints download anonymously with `token=False`.
+No Apple, Hugging Face, R2, coordinator, or AI API credentials reach these jobs.
+
+Tenki operates the machines compiling unsigned release inputs and therefore
+remains part of the build supply chain. The signing job checks the same-run
+artifact inventory and source identity before importing credentials; those
+checks do not independently prove compiler or runner integrity. Signing jobs do
+not restore Tenki build caches. Tenki's [cache service](https://tenki.cloud/docs/runners/caching)
+handles unsigned build caches; the generic Swift cache uses a Tenki/Xcode 27
+namespace, and release caches retain exact compiler/SDK/path identities.
+
+`scripts/check-ci-runner-policy.py` checks workflow and local composite-action
+credential references, effective token permissions, checkout cleanup, approved
+static labels and placement of privileged jobs. CI runs its mutation tests on
+GitHub in **CI Runner Policy**. This is a regression guard for reviewed YAML,
+not a sandbox for arbitrary workflow or source changes.
+
 ## SDK 27 release builds and caches
 
 The release pipeline runs optimized products and SDK qualification on separate
-`xcode-27-xlarge` runners. Both call `.github/actions/provider-release-build/action.yml`;
+`tenki-macos-26-large` runners. Both call `.github/actions/provider-release-build/action.yml`;
 only the optimized lane transfers an unsigned app and its file inventory to
 signing. All binaries, SwiftPM resource bundles and the source-matched Metal
 library travel together. Signing verifies the same-run artifact's source commit,

@@ -51,7 +51,7 @@ jobs:
   warm:
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
     name: SDK 27 ${{ matrix.lane }}
-    runs-on: xcode-27-xlarge
+    runs-on: tenki-macos-26-large
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -59,6 +59,7 @@ jobs:
       matrix:
         lane: [release, qualification]
     env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
       MLX_METALLIB_DEPLOYMENT_TARGET: '26.2'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683

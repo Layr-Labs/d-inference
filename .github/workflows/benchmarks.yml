@@ -1,6 +1,6 @@
 # E2E load benchmarks, split out of integration.yml (v0.8.0 gate audit).
 #
-# WHY A SEPARATE WORKFLOW: this job runs under the `benchmarks` environment,
+# WHY A SEPARATE WORKFLOW: the approval job uses the `benchmarks` environment,
 # whose required-reviewer rule (repo Settings -> Environments -> benchmarks)
 # makes every run wait for a manual approval — a deliberate cost control for
 # a 45-minute macOS runner job that posts PR comments. While it shared a
@@ -21,30 +21,44 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
+  approve:
+    name: Approve benchmark spend
+    runs-on: ubuntu-24.04
+    environment: benchmarks
+    permissions: {}
+    steps:
+      - run: echo 'Benchmark run approved'
+
   benchmark:
     name: E2E Benchmarks
-    runs-on: blacksmith-12vcpu-macos-latest
+    needs: approve
+    runs-on: tenki-macos-26-large
     timeout-minutes: 45
-    environment: benchmarks
     env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
       TESTBED_PROVIDER_CONFIG: debug
       BENCHMARK_MD_PATH: /tmp/benchmark-results.md
-      RUNNER_DESC: macos-15 (M1 Virtual)
+      RUNNER_DESC: Tenki macOS 26 (M4 Pro, 8 vCPU, 32 GB)
       GPT_OSS_REVISION: 773a7da77e569019bb0fd17a554b263738d669a3
       GEMMA_REVISION: 0e3cbab38ce568cf6e23543010d08d03b731910c
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           submodules: recursive
 
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
 
+      - name: Verify Xcode 27 toolchain
+        run: |
+          xcodebuild -version
+          xcrun swift --version
+          test "$(xcrun --sdk macosx --show-sdk-version)" = '27.0'
       - name: Install Postgres
         run: brew install postgresql@16
 
@@ -87,18 +101,37 @@ jobs:
           go test ./e2e/ -count=1 -v -timeout 40m -p=1 \
             -run 'TestBenchmark'
 
-      - name: Post benchmark results
+      - name: Retain benchmark report
         if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: benchmark-report
+          path: /tmp/benchmark-results.md
+          if-no-files-found: warn
+          retention-days: 3
+
+  report:
+    name: Post benchmark results
+    needs: benchmark
+    if: ${{ !cancelled() && needs.benchmark.result != 'skipped' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      pull-requests: write
+    steps:
+      - name: Download and post report as data
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          if [ ! -f /tmp/benchmark-results.md ]; then
-            echo "No benchmark results file found"
+          set -euo pipefail
+          artifact_id=$(gh api "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name == "benchmark-report" and .expired == false) | .id')
+          if [ -z "$artifact_id" ]; then
+            echo 'No benchmark report was produced'
             exit 0
           fi
-          BODY=$(cat /tmp/benchmark-results.md)
-          gh pr comment ${{ github.event.pull_request.number }} \
-            --body "$BODY" \
-            --edit-last \
-            || gh pr comment ${{ github.event.pull_request.number }} \
-            --body "$BODY"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          gh run download "$GITHUB_RUN_ID" --name benchmark-report --dir "$RUNNER_TEMP/report"
+          gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/report/benchmark-results.md" --edit-last \
+            || gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/report/benchmark-results.md"

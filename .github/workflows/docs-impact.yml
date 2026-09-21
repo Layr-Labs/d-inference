@@ -4,10 +4,13 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
+permissions:
+  contents: read
+
 jobs:
   commit-signatures:
     name: Commit Signatures
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: tenki-standard-medium-4c-8g
     permissions:
       contents: read
       pull-requests: read
@@ -36,10 +39,11 @@ jobs:
 
   docs-impact:
     name: Docs Impact
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: tenki-standard-medium-4c-8g
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: Test documentation-impact validation
         run: python3 scripts/test-docs-impact-check.py

@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-20 · commit `826fa102e`
+> Last updated: 2026-09-21 · commit `76a8f03d9`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -462,6 +462,19 @@ curl -fsS "$COORD/v1/admin/releases" -H "Authorization: Bearer $ADMIN_KEY" | jq 
 - Install on a clean Mac: `curl -fsSL $COORD/install.sh | bash`;
   `scripts/install.sh` reads `/v1/releases/latest` and verifies the bundle
   hash before installing. `darkbloom --version` must print the new version.
+- Check `PATH` in a **non-interactive** shell, not just the terminal you
+  installed from — `configure_shell_path` writes `~/.zshenv` precisely because
+  `~/.zshrc` is interactive-only, and a regression there is invisible from an
+  interactive prompt while breaking cron jobs, LaunchAgents and
+  `ssh host darkbloom status`:
+
+  ```bash
+  zsh -c 'command -v darkbloom'      # must print ~/.darkbloom/bin/darkbloom
+  zsh -l -c 'darkbloom --version'    # must print the new version
+  ```
+
+  `scripts/test-install-atomic.sh` asserts both against a throwaway `$HOME`, so
+  CI covers it; this is the on-device confirmation.
 - Connected providers pick the release up through the background auto-update
   monitor (`provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`:
   initial delay 5 m, interval 30 m, disabled by `auto_update=false` or

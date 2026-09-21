@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-09-18 · commit `397b4d902`
+> Last updated: 2026-09-21 · commit `76a8f03d9`
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -15,8 +15,8 @@ is updated afterwards, and how to remove everything. For operators; at the end
   which models fit) is in [hardware requirements](./hardware-requirements.md).
 - Outbound HTTPS to the coordinator (`https://api.darkbloom.dev`).
 - No `sudo`. The script writes to `~/.darkbloom`, appends one `PATH` line to
-  `~/.zshrc` (or `~/.bashrc`), and tries — best effort, no prompt — to link
-  `/usr/local/bin/darkbloom`.
+  `~/.zshenv` (and to both bash startup files for a bash `$SHELL`), and tries —
+  best effort, no prompt — to link `/usr/local/bin/darkbloom`.
 
 ## Steps
 
@@ -89,13 +89,28 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
      `commit_staged_flat_bundle` swaps `~/.darkbloom/bin` the same way;
    - the staging directory is removed; on any failure the script prints
      `Existing installation was left unchanged.` and exits 1.
-4. **PATH.** `ln -sf ~/.darkbloom/bin/darkbloom /usr/local/bin/darkbloom`
-   (errors ignored). The rc file is `~/.zshrc`, or `~/.bashrc` only when
-   `~/.zshrc` does not exist. If the rc does not already mention
-   `.darkbloom/bin`, lines referencing `.dginf/bin`, `.eigeninference/bin`,
-   `alias eigeninf`, `alias dginf`, `# EigenInference` and `# Darkbloom` are
-   deleted and `# Darkbloom` + `export PATH="$HOME/.darkbloom/bin:$PATH"` is
-   appended; the rc is then sourced.
+4. **PATH** (`configure_shell_path`). Every managed startup file — `.zshenv`,
+   `.zshrc`, `.zprofile`, `.zlogin`, `.bashrc`, `.bash_profile`, `.profile` —
+   is first pruned of lines referencing `.darkbloom/bin`, `.dginf/bin`,
+   `.eigeninference/bin`, `alias eigeninf`, `alias dginf`, `# EigenInference`
+   and `# Darkbloom`. Then `# Darkbloom` + `export
+   PATH="$HOME/.darkbloom/bin:$PATH"` is appended to `~/.zshenv`, plus
+   `~/.bash_profile` and `~/.bashrc` when `$SHELL` is bash (or either already
+   exists). Prune-then-append makes repeat installs converge on exactly one
+   copy per file rather than stacking duplicates.
+
+   `~/.zshenv` is the target because zsh reads `~/.zshrc` for **interactive**
+   shells only; a login shell (`ssh host darkbloom status`), a cron job, a
+   LaunchAgent, or any non-interactive script never picks up an rc-only export.
+   `~/.zshenv` is read by every zsh invocation. Bash has no all-shells
+   equivalent, so a bash user needs the export in both its files.
+
+   `ln -sf ~/.darkbloom/bin/darkbloom /usr/local/bin/darkbloom` is still
+   attempted as a belt-and-braces path for shells that read none of the above.
+   It needs admin rights, so on a stock Mac it fails; the installer reports
+   that it was skipped instead of swallowing the error, and never claims a link
+   it did not make. The installer does not source anything — it prints the
+   `export` line to paste into an already-open shell.
 5. **Legacy install migration.** For each real directory `~/.dginf` and
    `~/.eigeninference`: `cp -n` of `enclave_key.data`, `wallet_key` and
    `auth_token` into `~/.darkbloom`, then the old directory is replaced by a

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-20 · commit `a26b1107b`
+> Last updated: 2026-09-21 · commit `76a8f03d9`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -776,6 +776,7 @@ manual use.
 | Install root | `~/.darkbloom/` | `scripts/install.sh` (`INSTALL_DIR`) |
 | App bundle | `~/.darkbloom/Darkbloom.app`; swapped atomically, backup in `.install-backup-*` during the swap | `scripts/install.sh` (`commit_staged_app`) |
 | CLI symlinks | `~/.darkbloom/bin/darkbloom`, `darkbloom-enclave`, `mlx.metallib` → `../Darkbloom.app/Contents/MacOS/*`; `eigeninference-enclave → darkbloom-enclave`; best-effort `/usr/local/bin/darkbloom` | `scripts/install.sh` |
+| Shell PATH | `export PATH="$HOME/.darkbloom/bin:$PATH"` in `~/.zshenv` (every zsh invocation, not just interactive), plus `~/.bash_profile` and `~/.bashrc` for bash users | `scripts/install.sh` (`configure_shell_path`) |
 | Capability markers | `Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/{paged-kernel-v1,fan-helper-v1}` | `scripts/install.sh` (`verify_staged_app`, `verify_fan_helper_capability`) |
 | Config | `~/.config/darkbloom/provider.toml`; a config at a legacy path is copied here on the next run | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`defaultConfigPath`); `provider-swift/Sources/darkbloom/Darkbloom.swift` (`migrateConfigIfNeeded`) |
 | Device token | `~/.darkbloom/auth_token` (`DARKBLOOM_AUTH_TOKEN_PATH`) | `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` |

@@ -313,6 +313,7 @@ Running a node also makes your **own** inference free.
 | `console-ui/` | Next.js 16 / React 19 | Web dashboard: chat, billing, models, provider verification |
 | `admin-ui/` | Next.js | Internal read-only operator dashboard over the Postgres read replica |
 | `landing/` | Static HTML | Marketing landing page |
+| `marketing-ui/` | Next.js 16 / React 19 | [Darkbloom marketing site](marketing-ui/README.md), imported from eigen-homepages |
 | `e2e/` | Go | System-level end-to-end & load test harness |
 | `scripts/` | Shell | Installer, admin CLI, model publishing, deploy helpers, docs lint (`docs-check.sh`, `docs-stamp.sh`) |
 | `libs/` | Git submodules | Pinned forks of `mlx`, `mlx-swift`, `mlx-swift-lm` compiled into the provider |

@@ -83,6 +83,9 @@ admin-ui/             Next.js 16 internal read-only ops dashboard (SELECT-only q
 
 landing/              static landing page (index.html, earn calculator, network stats)
 
+marketing-ui/         Next.js marketing site imported from eigen-homepages; standalone npm app
+                      (make marketing: install, lint, build; dev/start port 3008)
+
 scripts/              build, signing, install, and deploy helpers
 ├── install.sh        end-user installer served from coordinator (hash + codesign verification)
 ├── admin.sh          admin CLI (Privy auth, release mgmt, API calls)

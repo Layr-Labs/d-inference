@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-20 · commit `76a8f03d`
+> Last updated: 2026-09-21 · commit `cbc861b66`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -90,7 +90,7 @@ darkbloom restart --timeout 600 --startup-timeout 180
 darkbloom stop --force             # explicit interruption, including stalled work
 ```
 
-Use the [stop flags](#darkbloom-stop) and [restart flags](#darkbloom-restart) above
+Use the [stop flags](#darkbloom-stop) and [restart flags](#darkbloom-restart) below
 for deadline recovery. Commands do not initiate graceful shutdown by killing the
 serve task. `SIGTERM`, `SIGINT` and AppKit termination enter the same drain;
 standalone local mode also waits for active HTTP response bodies. The signal
@@ -104,7 +104,7 @@ impose its own limit. Crashes, power loss, SIGKILL and explicit force can interr
 responses. The [protocol barrier](../reference/protocol-messages.md#provider-lifecycle-drain)
 requires the updated coordinator before normal provider shutdown can be confirmed.
 
-## `darkbloom status`
+### `darkbloom status`
 
 Only `--config`. Read-only. Prints the daemon snapshot (refresh cadence under
 [Runtime constants](#runtime-constants)) and the last trust message the
@@ -358,27 +358,58 @@ machine-readably.
 
 ## `darkbloom stop`
 
-### `darkbloom watchdog`, `darkbloom runtime-smoke`
+Drain accepted requests and their terminal usage before persistently stopping
+the launchd service.
 
 ```bash
-darkbloom stop [--uninstall]
+darkbloom stop [--timeout <seconds>] [--force] [--uninstall]
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--uninstall` | Also remove the launchd plist |
+| Flag | Type / valid range | Default | Effect |
+|---|---|---|---|
+| `--timeout <seconds>` | integer, 0–3600 | `600` | Wait for accepted coordinator requests, local response writes and the coordinator acknowledgement |
+| `--force` | flag | `false` | Explicitly permit bounded cancellation and termination of unfinished work |
+| `--uninstall` | flag | `false` | After draining or explicit force, remove the provider and watchdog plists |
 
-`--uninstall` disarms the crash-recovery watchdog before removing the agent
-(`provider-swift/Sources/darkbloom/StopCommand.swift`).
+The command disarms the watchdog and disables login/reboot startup before
+requesting the drain. A normal drain timeout returns non-success and leaves the
+process draining with automatic restart disabled. Repeat `stop` or `restart`
+with a new deadline, or explicitly pass `--force`. Interrupting the CLI does not
+cancel accepted inference or reopen admission. A running provider without the
+drain control protocol requires an upgrade or an explicit forced interruption.
+
+Code: `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`,
+`ServiceDrain.prepare`) and `provider-swift/Sources/darkbloom/StopCommand.swift`
+(`Stop`). See [graceful lifecycle behavior](#graceful-stop-and-restart) for signal
+handling and launchd's termination allowance.
 
 ## `darkbloom restart`
 
-Restart the running launchd service in place, reusing the current coordinator URL
-and model selection.
+Drain accepted work, reload the recorded launchd configuration, and confirm a
+new provider process with fresh serving authorization. The coordinator URL,
+model selection and provider config arguments are preserved.
 
 ```bash
-darkbloom restart
+darkbloom restart [--timeout <seconds>] [--force] [--startup-timeout <seconds>] [--config <path>]
 ```
+
+| Flag | Type / valid range | Default | Effect |
+|---|---|---|---|
+| `--timeout <seconds>` | integer, 0–3600 | `600` | Wait for accepted work and the coordinator acknowledgement before restarting |
+| `--force` | flag | `false` | Explicitly permit interruption of unfinished work before restarting |
+| `--startup-timeout <seconds>` | integer, 1–3600 | `180` | Wait for a new process identity and fresh App Attest or legacy authorization |
+| `--config <path>` | path | unset | Override the config used to re-arm the watchdog; the provider keeps its recorded config arguments |
+
+A drain timeout returns non-success and leaves the old process draining with
+automatic restart disabled; repeat the command with a new deadline or explicitly
+choose `--force`. A startup timeout returns non-success while the new service
+keeps starting, without issuing another restart. Inspect `darkbloom status` to
+check its progress. An installed, stopped service is started; a missing service
+returns non-success. The watchdog is re-armed according to `provider.auto_restart`.
+
+Code: `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`,
+`ServiceDrain.waitForRestart`) and
+`provider-swift/Sources/darkbloom/RestartCommand.swift` (`Restart`).
 
 ## `darkbloom status`
 

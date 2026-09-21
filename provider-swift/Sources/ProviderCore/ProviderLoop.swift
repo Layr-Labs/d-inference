@@ -280,6 +280,11 @@ public actor ProviderLoop {
     /// retirements coalesces into one re-registration, fired once
     /// box-wide in-flight work has drained.
     internal var pendingRetirementReconnect: Task<Void, Never>?
+    internal var plannedReconnectTaskGeneration: UInt64 = 0
+    internal var plannedReconnectRevision: UInt64 = 0
+    internal var issuedReconnectRevision: UInt64 = 0
+    internal var connectionGeneration: UInt64 = 0
+    internal var disconnectBarrierPending = false
 
     /// Admission barrier across the post-retirement reconnect: raised on
     /// the actor immediately before the socket is closed, cleared when the

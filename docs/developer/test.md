@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-20 · commit `76a8f03d`
+> Last updated: 2026-09-21 · commit `12599b420`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -2094,3 +2094,13 @@ go test -race ./api ./modelpolicy \
 ## Account-scoped first-content SLA
 
 `coordinator/api/first_content_accounts_test.go` covers exact account/email selection, unrelated service accounts, header spoofing, public-model override precedence, disabled clocks and identity-store failures. `coordinator/api/first_content_accounts_integration_test.go` runs streaming and non-streaming requests through chat, Responses, completions and messages past the old deadline with hard TTFT rejection enabled; exempt requests omit their wire budget and scheduler ceiling, while the configured OpenRouter email still times out. The existing deadline/queue/retry/provider-wire suites explicitly opt their fixture account into the SLA. `coordinator/api/media_resolve_test.go` verifies a pinned exemption cannot be recomputed during media fetch.
+
+### Replacement and reconnect coverage
+
+`PlannedProviderDisconnectTests` exercises late-APNs and inventory reconnects
+against a mock WebSocket coordinator while accepted work is held open.
+`StandaloneLifecycleControlTests` holds a local response across a mailbox drain.
+`LifecycleRecoveryRollbackTests` checks failures before and after command publication;
+`ProcessLifecycleTests` verifies that lock acquisition cannot kill a live PID owner.
+`TestRestartStatusReportsOwnerAuthorizationWithoutPublicGrant` checks explicit
+owner authorization while retaining runtime/security denials.

@@ -530,7 +530,7 @@ extension ProviderLoop {
                 // coordinator's registered inventory converges on the
                 // corrected store — rare double-race path; the disruption is
                 // bounded and correctness-restoring.
-                await coordinatorClient.forceReconnect()
+                requestPlannedReconnect()
                 logger.warning(
                     "Prefetch announcement for \(modelId) aborted: retirement removed it "
                         + "mid-announce; client store restored and re-registered")

@@ -27,16 +27,24 @@ enum ServiceDrain {
                     throw ValidationError("This running provider does not expose graceful-drain control. Upgrade it, or explicitly use --force to interrupt it.")
                 }
             }
-            // A killed/interrupted CLI must not be resurrected by the watchdog
-            // or at login while its daemon continues draining.
-            try WatchdogAgent.stop()
-            try LaunchAgent.disableAutomaticStartup()
+            let hasControl = identity?.isCurrent() == true && state?.processIdentity == identity && state?.lifecycle != nil
+            if !hasControl && !options.force && LaunchAgent.launchSnapshot()?.process != nil {
+                throw ValidationError("Cannot confirm the running provider identity. No process or recovery setting was changed.")
+            }
+            let request = identity.flatMap { hasControl ? ProviderDrainRequest(target: $0, timeoutSeconds: options.timeout, force: options.force) : nil }
+            let mailbox = identity.map { LifecycleMailbox(identity: $0) }
+            let recovery = try ServiceRecoverySnapshot.capture()
+            try publishWithRecoveryRollback(disable: {
+                try WatchdogAgent.stop()
+                try LaunchAgent.disableAutomaticStartup()
+            }, publish: {
+                if let request, let mailbox { try mailbox.writeRequest(request) }
+            }, restore: { try recovery.restore() })
+            // Only a published request (or a confirmed stopped process) may
+            // discard prior recovery history. Later drain timeouts stay fenced.
             try? FileManager.default.removeItem(at: WatchdogStateStore.path())
 
-            if let identity, identity.isCurrent(), state?.processIdentity == identity, state?.lifecycle != nil {
-                let request = ProviderDrainRequest(target: identity, timeoutSeconds: options.timeout, force: options.force)
-                let mailbox = LifecycleMailbox(identity: identity)
-                try mailbox.writeRequest(request)
+            if let request, let mailbox {
                 print("Draining accepted requests (deadline: \(options.timeout)s). New work is refused by the running provider.")
                 do {
                     let result = try await wait(request: request, mailbox: mailbox)
@@ -48,10 +56,9 @@ enum ServiceDrain {
                 }
             } else if options.force {
                 print("Forced lifecycle requested: unfinished work may be interrupted; completion is unconfirmed.")
-            } else if LaunchAgent.launchSnapshot()?.process != nil {
-                throw ValidationError("Cannot confirm the running provider identity. Service remains disabled; use --force only to explicitly interrupt work.")
+
             }
-            if options.force, let identity = LaunchAgent.launchSnapshot()?.process, identity.isCurrent() {
+            if options.force, let identity, identity.isCurrent() {
                 guard ProcessLifecycle.terminate(identity, gracePeriod: 1) else {
                     throw ValidationError("Forced termination did not finish; the service remains disabled.")
                 }
@@ -61,6 +68,43 @@ enum ServiceDrain {
             session.release()
             throw error
         }
+    }
+
+    /// Stop only a confirmed drained owner. A PID file alone never authorizes
+    /// signalling a process, and ordinary replacement never escalates to SIGKILL.
+    static func stopDrainedProvider(unloadService: Bool = true) async throws {
+        let launchIdentity = LaunchAgent.launchSnapshot()?.process
+        let identity = WatchdogProbe.providerIdentity(daemonState: DaemonStateFile.read(),
+                                                      launchSnapshotProcess: LaunchAgent.launchSnapshot()?.process)
+        // Restart must retain the loaded label until restartAfterDrain captures
+        // its original plist (including installations under a legacy label).
+        if !unloadService && identity == launchIdentity { return }
+        if unloadService && launchIdentity?.pid != ProcessInfo.processInfo.processIdentifier {
+            try LaunchAgent.stop()
+        }
+        guard let identity, identity.pid != ProcessInfo.processInfo.processIdentifier, identity.isCurrent() else { return }
+        try ProcessLifecycle.requestTermination(identity)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+        while identity.isCurrent(), ContinuousClock.now < deadline {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        guard !identity.isCurrent() else {
+            throw ValidationError("The drained provider is still shutting down. No replacement was started. Retry or explicitly use --force.")
+        }
+    }
+
+    static func prepareForegroundReplacement(options: DrainOptions) async throws {
+        guard let pid = ProcessLifecycle.existingPID(), pid != ProcessInfo.processInfo.processIdentifier,
+              ProcessIdentity.read(pid: pid) != nil else { return }
+        guard DaemonStateFile.read()?.processIdentity == ProcessIdentity.read(pid: pid) else {
+            throw ValidationError("A live process owns the provider PID file, but its identity cannot be confirmed. No process was stopped.")
+        }
+        guard LaunchAgent.launchSnapshot()?.process?.pid != ProcessInfo.processInfo.processIdentifier else {
+            throw ValidationError("The previous provider is still exiting. This launch did not replace or signal it; retry after it finishes.")
+        }
+        let session = try await prepare(options: options)
+        defer { session.release() }
+        try await stopDrainedProvider()
     }
 
     static func wait(request: ProviderDrainRequest, mailbox: LifecycleMailbox) async throws -> ProviderDrainStatus {
@@ -112,7 +156,7 @@ enum ServiceDrain {
               identity != previous, isCurrent(identity), let trust = state.trust,
               trust.receivedAt >= state.startedAt, trust.receivedAt <= now, now - trust.receivedAt <= 90,
               trust.status == "online" || trust.status == "serving", let auth = trust.authorization else { return false }
-        return auth.hasCurrentAppAttestAuthorization(now: now) || (auth.path == "legacy" && !auth.sessionID.isEmpty)
+        return auth.hasCurrentAppAttestAuthorization(now: now) || ((auth.path == "legacy" || auth.path == "self_route") && !auth.sessionID.isEmpty)
     }
 
 }

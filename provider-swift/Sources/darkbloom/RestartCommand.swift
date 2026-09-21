@@ -27,10 +27,14 @@ struct Restart: AsyncParsableCommand {
 
     mutating func run() async throws {
         let wasLoaded = LaunchAgent.isAnySupportedLabelLoaded()
-        let previous = LaunchAgent.launchSnapshot()?.process
+        guard LaunchAgent.isInstalled() || wasLoaded else {
+            throw ValidationError("No launchd configuration is installed. Use darkbloom start to select the replacement configuration; the foreground provider was left running.")
+        }
+        let previous = DaemonStateFile.read()?.processIdentity ?? LaunchAgent.launchSnapshot()?.process
         let session = try await ServiceDrain.prepare(options: drain)
         defer { session.release() }
         do {
+            try await ServiceDrain.stopDrainedProvider(unloadService: false)
             try LaunchAgent.restartAfterDrain()
         } catch LaunchAgentError.notInstalled {
             printError("Provider is not running. Start it with `darkbloom start`.")
@@ -42,27 +46,7 @@ struct Restart: AsyncParsableCommand {
             print("Provider started.")
         }
 
-        // Re-arm the watchdog (re-enables it after a prior `stop`, or installs it
-        // on a provider upgraded from a pre-watchdog build). The rewrite must
-        // not drop a custom config: an explicit --config wins, otherwise the
-        // installed plist's recorded config path is preserved. An opted-out
-        // config (`auto_restart = false`) DISARMS a still-loaded watchdog
-        // instead of leaving the stale job running.
-        let watchdogConfig = WatchdogAgent.rearmConfigPath(
-            explicit: configOptions.config,
-            installed: WatchdogAgent.installedConfigPath()
-        )
-        switch WatchdogAgent.rearmAction(
-            autoRestartEnabled: Watchdog.autoRestartEnabled(configPath: watchdogConfig?.path),
-            isLoaded: WatchdogAgent.isLoaded()
-        ) {
-        case .arm:
-            try? WatchdogAgent.installAndStart(configPath: watchdogConfig)
-        case .disarm:
-            try? WatchdogAgent.stop()
-        case nil:
-            break
-        }
+        ServiceDrain.rearmWatchdog(explicitConfig: configOptions.config)
 
         // Let startup/update confirmation acquire its own process lease.
         session.release()

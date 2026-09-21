@@ -79,6 +79,7 @@ extension Start {
 
         // Lock acquisition and exact legacy-artifact housekeeping are one
         // ordered operation shared with coordinator-connected foreground mode.
+        try await ServiceDrain.prepareForegroundReplacement(options: drain)
         try ProcessLifecycle.acquireMediaServingLock()
         ProcessLifecycle.preventSystemSleep()
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
@@ -122,6 +123,8 @@ extension Start {
             printError("Local server failed to bind \(bind):\(port) within 5s — is the port already in use?")
             throw ExitCode.failure
         }
+
+        await server.startLifecycleControl()
 
         // Publish discovery metadata so a same-machine client (and
         // `darkbloom local`) can find + authenticate to this server. Removed on
@@ -171,6 +174,11 @@ extension Start {
             throw ExitCode.failure
         }
 
+        try await ServiceDrain.prepareForegroundReplacement(options: drain)
+        try ProcessLifecycle.acquireMediaServingLock()
+        ProcessLifecycle.preventSystemSleep()
+        defer { ProcessLifecycle.releaseSingleInstanceLock() }
+
         let (models, modelHashes, modelHashFingerprints) = attachWeightHashes(to: selectedModels)
         let runtimeHashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
         let authToken = AuthTokenStore.load()
@@ -185,13 +193,6 @@ extension Start {
         if config.provider.autoUpdate {
             try await runStartupAutoUpdate(coordinatorURL: coordinatorURL)
         }
-
-        // ----- Process lifecycle: PID lock, legacy-artifact housekeeping, caffeinate. -----
-        // Housekeeping runs once here, outside telemetry configuration and any
-        // scheduled ProviderLoop reconstruction, after the old process releases the lock.
-        try ProcessLifecycle.acquireMediaServingLock()
-        ProcessLifecycle.preventSystemSleep()
-        defer { ProcessLifecycle.releaseSingleInstanceLock() }
 
         // Housekeeping has removed the legacy telemetry queue. Install the
         // panic hook now; its compatibility queue calls are no-ops and its only

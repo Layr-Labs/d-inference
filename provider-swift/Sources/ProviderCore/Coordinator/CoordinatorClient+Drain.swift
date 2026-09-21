@@ -1,6 +1,10 @@
 import Foundation
 
 extension CoordinatorClient {
+    internal func hasRegisteredConnection() -> Bool {
+        sessionRegistered && !shutdownRequested && nwConnection != nil
+    }
+
     /// FIFO barrier behind all queued terminals. The coordinator acknowledges
     /// only after processing them and fencing its final dispatch handoff.
     /// A dropped connection/unsupported coordinator never counts as a drain.

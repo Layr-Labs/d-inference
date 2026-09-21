@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-20 · commit `76a8f03d`
+> Last updated: 2026-09-21 · commit `12599b420`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -53,6 +53,21 @@ is retained for load/prefetch and old rejection classifiers even on lifecycle
 drains. Legacy authorization diagnostics can report `authorization.path = legacy`
 without App Attest serving enabled; this is a current registry verdict, not a
 change to legacy eligibility.
+When public authorization is absent, `authorization.path = self_route` reports
+an authenticated owner's existing private/preferred-owner liveness and privacy
+checks (`ProviderOwnerServingAuthorized` in `coordinator/registry/owner_authorization.go`).
+It relaxes only the existing owner trust floor; it does not grant public routing,
+change dispatch policy, or infer authorization from an `online` status.
+
+All healthy planned disconnects use the drain barrier: lifecycle replacement,
+manual/background update activation, late APNs registration, and model-inventory
+reconciliation. Reconnect admission reopens only on the fresh session. A timeout
+defers the reconnect/update rather than cancelling accepted inference. If a
+barrier may have permanently fenced the old session, admission remains closed
+until a confirmed drain and reconnect. Unexpected transport loss and explicit
+force/fault recovery retain their cancellation paths; a dead connection cannot
+deliver a graceful-drain acknowledgement.
+
 
 
 ## Envelope and the single-parse rule

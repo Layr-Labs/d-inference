@@ -208,7 +208,7 @@ extension ProviderLoop {
             Task {
                 if let late = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 60) {
                     log.info("APNs device token arrived after registration — reconnecting to re-register with token")
-                    await coordinator.refreshAPNsToken(late)
+                    await self.refreshAPNsAfterDrain(late)
                 }
             }
         }
@@ -243,10 +243,10 @@ extension ProviderLoop {
                     clearConnectionAuthorization()
                     logger.info(.coordinatorConnected)
                     // The post-retirement reconnect's admission barrier
-                    // (see `fireRetirementReconnect`) lifts with the new
+                    // (see `requestPlannedReconnect`) lifts with the new
                     // session: the register it carried excluded every
                     // retired id, so routed work is safe to admit again.
-                    setRetirementReconnectBarrier(false)
+                    finishPlannedReconnect()
 
                 case .disconnected:
                     clearConnectionAuthorization()

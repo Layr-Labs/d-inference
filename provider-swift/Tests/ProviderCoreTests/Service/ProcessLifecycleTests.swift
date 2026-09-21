@@ -113,3 +113,32 @@ struct ProcessLifecycleTests {
         #expect(videoPurgeCount == 0)
     }
 }
+
+
+@Test func livePIDOwnerIsNeverKilledByLockAcquisition() throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+    process.arguments = ["30"]
+    try process.run()
+    defer { process.terminate(); process.waitUntilExit() }
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".pid")
+    defer { try? FileManager.default.removeItem(at: path); try? FileManager.default.removeItem(at: path.appendingPathExtension("lock")) }
+    try "\(process.processIdentifier)\n".write(to: path, atomically: true, encoding: .utf8)
+    #expect(throws: ProcessLifecycle.InstanceError.self) {
+        try ProcessLifecycle.acquireSingleInstanceLock(at: path, terminationGracePeriod: 0)
+    }
+    #expect(process.isRunning)
+    #expect(ProcessLifecycle.existingPID(at: path) == process.processIdentifier)
+    // An old process's cleanup cannot delete another owner's PID file.
+    ProcessLifecycle.releaseSingleInstanceLock(at: path)
+    #expect(ProcessLifecycle.existingPID(at: path) == process.processIdentifier)
+}
+
+@Test func launchdRecoverySnapshotPreservesDisabledOverrides() {
+    let states = ServiceRecoverySnapshot.enabledStates(labels: ["provider", "watchdog", "absent"],
+        output: "disabled services = { \"provider\" => false \"watchdog\" => true }")
+    #expect(states == ["provider": true, "watchdog": false, "absent": true])
+    let modern = ServiceRecoverySnapshot.enabledStates(labels: ["provider", "watchdog"],
+        output: "disabled services = { \"provider\" => enabled \"watchdog\" => disabled }")
+    #expect(modern == ["provider": true, "watchdog": false])
+}

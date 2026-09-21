@@ -131,6 +131,10 @@ let standaloneLogger = Logger(
 public actor StandaloneServer {
     nonisolated let responseTracker = LocalResponseTracker()
     var lifecycleDraining = false
+    var lifecycleControlTask: Task<Void, Never>?
+    var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?
+    var lifecycleCommandID: String?
+    var lifecycleStatus = ProviderDrainStatus()
 
     /// One resident model: its v2 bridge, loaded container (the VLM owns both
     /// vision and the exact text tower served by the bridge), and KV sizing
@@ -544,6 +548,8 @@ public actor StandaloneServer {
     /// Stop the server and fully release resident serving resources. Concurrent
     /// callers and `waitUntilStopped()` join one teardown task.
     public func stop() async {
+        lifecycleControlTask?.cancel()
+        lifecycleControlTask = nil
         switch lifecycleState {
         case .stopped:
             return
@@ -569,6 +575,8 @@ public actor StandaloneServer {
     }
 
     private func finishShutdown(serviceTask: Task<Void, Never>?) async {
+        lifecycleControlTask?.cancel()
+        lifecycleControlTask = nil
         kvSweepTask?.cancel()
         kvSweepTask = nil
         serviceTask?.cancel()

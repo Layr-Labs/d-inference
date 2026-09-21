@@ -360,3 +360,59 @@ struct CoordinatorLifecycleBarrierTests {
         #expect(await !client.acknowledgeDrain(timeout: .seconds(1)))
     }
 }
+
+
+private extension ProviderLoop {
+    func holdPlannedWork() { acceptedLifecycleRequests.insert("accepted") }
+    func finishPlannedWork() { acceptedLifecycleRequests.remove("accepted") }
+}
+
+@Suite("Planned provider disconnects", .serialized)
+struct PlannedProviderDisconnectTests {
+    @Test(arguments: ["apns", "inventory"])
+    func plannedReconnectPreservesAcceptedWork(reason: String) async throws {
+        let mock = MockCoordinator()
+        let url = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+        let loop = try makeDrainTestLoop()
+        let state = await loop.state
+        let client = makeHeartbeatClient(state: state, url: url.mockProviderWebSocketURL())
+        let (events, send) = await client.start()
+        for await event in events { if case .connected = event { break } }
+        await loop.setCoordinatorClientForTesting(client)
+        await loop.finishPlannedReconnect()
+        let reader = Task {
+            for await event in events {
+                switch event {
+                case .drainAck(let id): await client.completeDrainAcknowledgement(id)
+                case .connected: await loop.finishPlannedReconnect()
+                default: break
+                }
+            }
+        }
+        defer { reader.cancel(); Task { await client.shutdown() } }
+        await loop.holdPlannedWork()
+        if reason == "apns" { await loop.refreshAPNsAfterDrain("late-token") }
+        else { await loop.requestPlannedReconnect() }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(state.refusingNewWork)
+        #expect(mock.snapshot().registers.count == 1)
+        #expect(await loop.lifecycleRemaining == 1)
+        send(.inferenceComplete(requestId: "accepted", usage: .init(promptTokens: 2, completionTokens: 1), stopSequence: nil, seSignature: nil, responseHash: nil, profile: nil))
+        await loop.finishPlannedWork()
+        let completed = try await mock.waitForSnapshot(timeout: .seconds(5)) { $0.registers.count >= 2 }
+        #expect(completed?.inferenceComplete.count == 1)
+        #expect(completed?.drainBarriers.count == 1)
+        if reason == "apns" { #expect(completed?.registers.last?.apnsDeviceToken == "late-token") }
+    }
+
+    @Test func deadlineDoesNotTurnIntoPermissionToDisconnect() async throws {
+        let loop = try makeDrainTestLoop()
+        await loop.holdPlannedWork()
+        await loop.beginServingDrain(owner: .reconnect)
+        #expect(await !loop.waitForSafeDisconnect(timeout: .milliseconds(10), reason: "test"))
+        #expect(await loop.lifecycleRemaining == 1)
+        #expect(await loop.state.refusingNewWork)
+        await loop.finishPlannedWork()
+    }
+}

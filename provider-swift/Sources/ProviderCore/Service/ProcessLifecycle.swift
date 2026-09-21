@@ -2,8 +2,8 @@
 /// that every long-running provider process needs (PID file, caffeinate
 /// sleep prevention).
 ///
-/// On `darkbloom serve` these helpers write a PID file, kill any existing
-/// provider that matches, and spawn `caffeinate -s -i -w <pid>` so the
+/// CLI lifecycle commands drain and stop the old owner before these helpers
+/// acquire a kernel-owned instance lock, publish the new PID, and spawn `caffeinate -s -i -w <pid>` so the
 /// system doesn't sleep mid-inference.
 
 import Foundation
@@ -23,46 +23,52 @@ public enum ProcessLifecycle {
             .appendingPathComponent(".darkbloom/provider.pid")
     }
 
-    /// Acquire the single-instance lock. If an older provider is already
-    /// running, send it SIGTERM, wait briefly, then SIGKILL if it didn't
-    /// exit. Always writes our own PID to the file at the end.
-    ///
-    /// Returns the path of the PID file on success, throws on inability to
-    /// write.
+    private static let instanceLocks = InstanceLocks()
+
+    private final class InstanceLocks: @unchecked Sendable {
+        let mutex = NSLock()
+        var held: [URL: UpdateProcessLock] = [:]
+    }
+
+    public enum InstanceError: Error, CustomStringConvertible {
+        case alreadyRunning(Int32)
+        public var description: String {
+            switch self {
+            case .alreadyRunning(let pid): return "Provider process \(pid) is still running. Drain it with darkbloom stop/restart before replacing it."
+            }
+        }
+    }
+
+    /// The kernel lock is held for the process lifetime. This low-level handoff
+    /// never signals an existing owner: CLI lifecycle commands own draining.
     @discardableResult
     public static func acquireSingleInstanceLock(
         at pidFile: URL = ProcessLifecycle.defaultPIDFile(),
         terminationGracePeriod: TimeInterval = 2.0
     ) throws -> URL {
-        let myPID = ProcessInfo.processInfo.processIdentifier
-        let fm = FileManager.default
-
-        // Best-effort kill of any previous instance.
-        if let existing = readPID(at: pidFile),
-           existing != myPID,
-           processIsAlive(existing)
-        {
-            sendSignal(SIGTERM, to: existing)
-            // Spin-wait up to `terminationGracePeriod` for graceful shutdown.
-            let deadline = Date().addingTimeInterval(terminationGracePeriod)
-            while Date() < deadline, processIsAlive(existing) {
-                Thread.sleep(forTimeInterval: 0.1)
+        _ = terminationGracePeriod // retained for source compatibility, never a kill deadline
+        return try instanceLocks.mutex.withLock {
+            if instanceLocks.held[pidFile] != nil { return pidFile }
+            let lock = try UpdateProcessLock.acquire(at: pidFile.appendingPathExtension("lock"), operation: "provider-instance")
+            if let existing = readPID(at: pidFile), existing != getpid(), processIsAlive(existing) {
+                lock.release()
+                throw InstanceError.alreadyRunning(existing)
             }
-            if processIsAlive(existing) {
-                sendSignal(SIGKILL, to: existing)
-            }
+            try "\(getpid())\n".write(to: pidFile, atomically: true, encoding: .utf8)
+            instanceLocks.held[pidFile] = lock
+            return pidFile
         }
+    }
 
-        // Make the parent directory.
-        let parent = pidFile.deletingLastPathComponent()
-        try fm.createDirectory(
-            at: parent,
-            withIntermediateDirectories: true
-        )
+    public static func existingPID(at pidFile: URL = ProcessLifecycle.defaultPIDFile()) -> Int32? {
+        readPID(at: pidFile)
+    }
 
-        // Write our PID.
-        try "\(myPID)\n".write(to: pidFile, atomically: true, encoding: .utf8)
-        return pidFile
+    public static func requestTermination(_ identity: ProcessIdentity) throws {
+        guard identity.isCurrent() else { return }
+        guard kill(identity.pid, SIGTERM) == 0 || errno == ESRCH else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
     }
 
     /// Acquire the production media-serving lock, then perform the one launch
@@ -108,7 +114,10 @@ public enum ProcessLifecycle {
     public static func releaseSingleInstanceLock(
         at pidFile: URL = ProcessLifecycle.defaultPIDFile()
     ) {
-        try? FileManager.default.removeItem(at: pidFile)
+        instanceLocks.mutex.withLock {
+            if readPID(at: pidFile) == getpid() { try? FileManager.default.removeItem(at: pidFile) }
+            instanceLocks.held.removeValue(forKey: pidFile)?.release()
+        }
     }
 
     /// Spawn `/usr/bin/caffeinate -s -i -w <pid>` in the background so the

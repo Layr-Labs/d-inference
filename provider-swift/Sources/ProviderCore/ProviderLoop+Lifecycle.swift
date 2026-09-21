@@ -3,6 +3,7 @@ import Foundation
 extension ProviderLoop {
     internal func beginServingDrain(owner: ProviderDrain.Owner) {
         servingDrain.begin(owner)
+        if servingDrain.owner != .lifecycle { lifecycleStatus = .init(outcome: .draining, remaining: lifecycleRemaining) }
         localResponseTracker.setAccepting(false)
         state.refusingNewWork = true
     }
@@ -33,6 +34,8 @@ extension ProviderLoop {
 
     private func performLifecycleDrain(request: ProviderDrainRequest) async -> ProviderDrainStatus {
         beginServingDrain(owner: .lifecycle)
+        pendingRetirementReconnect?.cancel()
+        pendingRetirementReconnect = nil
         let deadline = ContinuousClock.now.advanced(by: .seconds(request.timeoutSeconds))
         lifecycleStatus = ProviderDrainStatus(requestID: request.id, outcome: .draining,
             remaining: lifecycleRemaining, deadline: Date().timeIntervalSince1970 + Double(request.timeoutSeconds))

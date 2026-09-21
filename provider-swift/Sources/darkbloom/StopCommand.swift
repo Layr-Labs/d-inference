@@ -17,6 +17,7 @@ struct Stop: AsyncParsableCommand {
         let session = try await ServiceDrain.prepare(options: drain)
         defer { session.release() }
 
+        try await ServiceDrain.stopDrainedProvider()
         if uninstall { try? WatchdogAgent.uninstall() }
 
         if uninstall {

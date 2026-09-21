@@ -95,3 +95,56 @@ struct ServiceDrainTests {
         exit(keptClosed && acknowledged ? 0 : 1)
     }
 }
+
+
+@Suite("Lifecycle recovery rollback")
+struct LifecycleRecoveryRollbackTests {
+    @Test func failedPublicationRestoresPriorRecovery() {
+        struct Failure: Error {}
+        var calls: [String] = []
+        #expect(throws: Failure.self) {
+            try ServiceDrain.publishWithRecoveryRollback(disable: { calls.append("disable") },
+                publish: { calls.append("publish"); throw Failure() }, restore: { calls.append("restore") })
+        }
+        #expect(calls == ["disable", "publish", "restore"])
+    }
+    @Test func partialDisableFailureRestoresAndDoesNotPublish() {
+        struct Failure: Error {}
+        var calls: [String] = []
+        #expect(throws: Failure.self) {
+            try ServiceDrain.publishWithRecoveryRollback(disable: { calls.append("disable"); throw Failure() },
+                publish: { calls.append("publish") }, restore: { calls.append("restore") })
+        }
+        #expect(calls == ["disable", "restore"])
+    }
+    @Test func publishedTimeoutDoesNotRearmDuringDrain() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let identity = try #require(ProcessIdentity.current())
+        let request = ProviderDrainRequest(target: identity, timeoutSeconds: 0)
+        let mailbox = LifecycleMailbox(identity: identity, directory: root)
+        var restored = false
+        try ServiceDrain.publishWithRecoveryRollback(disable: {}, publish: {
+            try mailbox.writeRequest(request)
+        }, restore: { restored = true })
+        try mailbox.writeStatus(.init(requestID: request.id, outcome: .timedOut, remaining: 1))
+        await #expect(throws: (any Error).self) { try await ServiceDrain.wait(request: request, mailbox: mailbox) }
+        #expect(!restored)
+    }
+    @Test func startAndUpdateExposeExplicitReplacementPolicy() throws {
+        let start = try Start.parse(["--timeout", "50", "--force", "--model", "chosen"])
+        #expect(start.drain.timeout == 50 && start.drain.force)
+        let update = try Update.parse(["--check-only"])
+        #expect(update.drain.timeout == 600 && !update.drain.force)
+    }
+}
+
+@Test func restartAcceptsExplicitOwnerScopeButNotBareOnlineStatus() {
+    let identity = ProcessIdentity(pid: 2, startTimeMicros: 20)
+    var state = DaemonState(pid: 2, processIdentity: identity, version: "test", writtenAt: 1000, startedAt: 900,
+        trust: .init(trustLevel: "none", status: "online", reason: "owner", receivedAt: 999,
+            authorization: .init(appAttestAvailable: false, path: "self_route", sessionID: "new-session", machineID: "")))
+    #expect(ServiceDrain.restartReady(state: state, previous: nil, now: 1000, isCurrent: { _ in true }))
+    state.trust?.authorization = nil
+    #expect(!ServiceDrain.restartReady(state: state, previous: nil, now: 1000, isCurrent: { _ in true }))
+}

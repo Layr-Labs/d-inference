@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-20 · commit `76a8f03d`
+> Last updated: 2026-09-21 · commit `12599b420`
 
 The complete public HTTP surface of the coordinator, derived from the 116 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -23,7 +23,16 @@ continue through their normal streaming/non-streaming terminal and settlement
 paths. The additive [provider WebSocket barrier](protocol-messages.md#provider-lifecycle-drain)
 is connection-scoped and never exposed as an unauthenticated HTTP stop endpoint.
 The unified local API refuses new admissions with 503 during drain and tracks
-accepted response bodies until their final write.
+accepted response bodies until their final write. This applies to local-only
+CLI replacement as well as coordinator-connected providers; CLI lifecycle
+control remains private to the local OS user.
+
+The `trust_status.authorization` readiness diagnostic can use `self_route` for
+an account-owned connection that passes existing self/preferred-owner liveness
+and privacy gates below the public trust floor. It does not grant public-fleet
+eligibility or bypass per-model dispatch checks. Code:
+`coordinator/registry/owner_authorization.go` (`ProviderOwnerServingAuthorized`)
+and `coordinator/api/app_attest.go` (`providerServingAuthorizationStatus`).
 
 
 ## App Attest authorization additions

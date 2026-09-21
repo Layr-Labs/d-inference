@@ -3739,26 +3739,14 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 
 	var providers []providerAttestation
 
-	publicProviderModels := s.registry.PublicProviderModels()
-	verifications := s.registry.ProviderVerifications()
-	// Read current authorization outside ForEachProvider's registry lock.
-	// Never publish account, credential or canonical machine identifiers here.
-	appAttestLeases := make(map[string]registry.AppAttestServingAuthorization)
-	for _, id := range s.registry.ProviderIDs() {
-		if lease, ok := s.registry.ProviderServingAuthorization(s.registry.GetProvider(id)); ok {
-			appAttestLeases[id] = lease
-		}
-	}
-	s.registry.ForEachProvider(func(p *registry.Provider) {
-		// Snapshot mutable fields under provider lock to avoid racing
-		// with background MDA verification and challenge goroutines.
-		p.Mu().Lock()
+	// The registry holds membership and provider locks for the whole row:
+	// verification and compatibility fields cannot observe different grants.
+	s.registry.ForEachProviderVerification(func(p *registry.Provider, verification registry.Verification, models registry.PublicProviderModelSnapshot) {
 		trustLevel := p.TrustLevel
 		status := p.Status
 		mdaVerified := p.MDAVerified
 		attestResult := p.AttestationResult
 		mdaResult := p.MDAResult
-		p.Mu().Unlock()
 
 		// The public proofs (mdm/mda) are reported true ONLY for a connection
 		// that currently holds hardware trust. A hardware proof is meaningful for
@@ -3770,7 +3758,7 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		isHardware := trustLevel == registry.TrustHardware
 		pa := providerAttestation{
 			ProviderID:   p.ID,
-			Verification: verifications[p.ID],
+			Verification: verification,
 			TrustLevel:   string(trustLevel),
 			Status:       string(status),
 			MemoryGB:     p.Hardware.MemoryGB,
@@ -3779,9 +3767,9 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 			MDAVerified:  mdaVerified && isHardware,
 		}
 
-		pa.Models = append(pa.Models, publicProviderModels[p.ID].Models...)
-		if lease, ok := appAttestLeases[p.ID]; ok {
-			pa.AppAttestAuthorized, pa.AuthorizationExpiresAt = true, lease.ValidUntil.Unix()
+		pa.Models = models.Models
+		if verification.AppAttest.State == "verified" {
+			pa.AppAttestAuthorized, pa.AuthorizationExpiresAt = true, verification.AppAttest.ExpiresAt
 		}
 
 		if attestResult != nil {

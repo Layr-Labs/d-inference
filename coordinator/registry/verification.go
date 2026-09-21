@@ -56,6 +56,30 @@ func (r *Registry) ProviderVerifications() map[string]Verification {
 	return out
 }
 
+// ForEachProviderVerification reads membership, proof state and catalog models
+// together. The callback runs under r.mu and p.mu: copy fields only; do not call
+// registry/provider methods that acquire either lock or perform external I/O.
+func (r *Registry) ForEachProviderVerification(fn func(*Provider, Verification, PublicProviderModelSnapshot)) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.providers {
+		func() {
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			models := PublicProviderModelSnapshot{Models: []string{}}
+			for _, model := range p.Models {
+				if r.providerModelAllowedByCatalogLocked(p, model) {
+					models.Models = append(models.Models, model.ID)
+					if model.ID == p.CurrentModel {
+						models.CurrentModel = model.ID
+					}
+				}
+			}
+			fn(p, r.providerVerificationLocked(p, time.Now()), models)
+		}()
+	}
+}
+
 func (r *Registry) providerVerificationLocked(p *Provider, now time.Time) Verification {
 	v := Verification{ObservedAt: now.Unix(), AppAttest: VerificationPath{State: "pending"}, Legacy: VerificationPath{State: "pending"}}
 	if p.Status == StatusOffline {

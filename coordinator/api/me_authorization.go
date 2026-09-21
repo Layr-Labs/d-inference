@@ -11,10 +11,15 @@ import (
 func (s *Server) attachMyProviderAuthorization(mp *myProvider, live *registry.Provider, account string) {
 	mp.AppAttestAuthorized, mp.AuthorizationExpiresAt = false, 0
 	mp.Verification = s.registry.ProviderVerification(nil)
-	if live == nil || mp.AccountID != account || !mp.Online {
+	if live == nil || mp.AccountID != account {
 		return
 	}
 	mp.Verification = s.registry.ProviderVerification(live)
+	// Connected, untrusted machines still have a live verification verdict
+	// (including revocation). Online gates serving permission, not diagnostics.
+	if !mp.Online {
+		return
+	}
 	lease, valid := s.registry.ProviderServingAuthorization(live)
 	if !valid || lease.AccountID != account || lease.Endpoint != mp.ProviderKey {
 		return

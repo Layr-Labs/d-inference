@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-20 · commit `76a8f03d`
+> Last updated: 2026-09-21 · commit `8fe9eeb8a`
 
 The complete public HTTP surface of the coordinator, derived from the 116 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -37,7 +37,11 @@ provider-hop encryption headers; it does not construct them from provider output
 
 `GET /v1/me/providers`, `GET /v1/providers/attestation`, and individual public
 `GET /v1/stats` provider rows include the same `verification` object evaluated
-at snapshot time. Owner records with no live connection are offline.
+at snapshot time. Owner records with no live connection are offline. Connected but untrusted owned
+providers retain their live verification verdict (including revocation), while
+serving authorization remains false. Public attestation rows capture verification,
+compatibility authorization flags, and catalog models in one registry/provider
+locked walk (`ForEachProviderVerification` in `coordinator/registry/verification.go`).
 `verification_counts` in stats and privacy-floored provider geography buckets
 contains `connections`, `authorized` (union), `app_attest`, `legacy`, and
 `overlap`. Both method counts include the overlap. Legacy `hardware_attested`

@@ -49,6 +49,9 @@ func TestOwnerFleetAppAttestAuthorizationIsLiveScopedAndRedacted(t *testing.T) {
 	if err != nil || len(fleet) != 1 || fleet[0].AppAttestAuthorized || fleet[0].AuthorizationExpiresAt != 0 {
 		t.Fatalf("revoked authorization remained in owner fleet: %+v %v", fleet, err)
 	}
+	if fleet[0].Status != "untrusted" || fleet[0].Online || fleet[0].Verification.AppAttest.State != "revoked" || fleet[0].Verification.Legacy.State != "revoked" {
+		t.Fatalf("connected revocation was mislabeled offline: %+v", fleet[0])
+	}
 	if !needsAttention(&fleet[0], "0.9.4") {
 		t.Fatal("revoked provider lost attention warning")
 	}

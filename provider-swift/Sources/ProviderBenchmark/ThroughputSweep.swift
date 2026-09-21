@@ -73,6 +73,14 @@ public enum ThroughputSweep {
         hardware: HardwareInfo,
         efficiency: Double = DecodeBandwidthModel.defaultBandwidthEfficiency
     ) async throws -> ThroughputSweepReport {
+        // This entry point loads the factory directly, without the serving
+        // scheduler that normally installs these limits. Use the same bounded
+        // allocator cache before any model allocation: long-prompt shape churn
+        // must not retain freed buffers up to MLX's machine-sized default.
+        MLXMemoryGuard.configureOnce(log: { limits in
+            log("allocator limits: memory_bytes=\(limits.memoryLimitBytes) cache_bytes=\(limits.cacheLimitBytes)")
+        })
+        log("allocator applied: cache_limit_bytes=\(Memory.cacheLimit)")
         Memory.peakMemory = 0
         log("loading model \(modelID)")
         log("  path: \(modelDirectory.path)")
@@ -534,11 +542,13 @@ public enum ThroughputSweep {
             return rows
         }
         let peakMemoryBytes = Memory.peakMemory
+        log("decode cell memory: active_bytes=\(Memory.activeMemory) cache_bytes=\(Memory.cacheMemory) peak_bytes=\(peakMemoryBytes)")
         let cell = Self.aggregateRows(rows)
         let timing = ThroughputSweepReport.DecodeTiming.make(
             rows: rows.compactMap(\.timing).sorted { $0.row < $1.row },
             peakMemoryBytes: peakMemoryBytes, decodePromptTokens: promptLen)
         await engine.shutdown()
+        log("decode shutdown memory: active_bytes=\(Memory.activeMemory) cache_bytes=\(Memory.cacheMemory)")
         return (
             totalTokens: cell.totalTokens, maxElapsed: cell.maxElapsed,
             resolvedBackend: parts.resolvedBackend, constructionFailure: nil,

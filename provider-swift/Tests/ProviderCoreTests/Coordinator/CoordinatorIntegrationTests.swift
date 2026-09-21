@@ -452,7 +452,8 @@ struct CoordinatorIntegrationTests {
         do {
             result = try await service.enroll(
                 coordinatorURL: baseURL.absoluteString,
-                openSystemSettings: false
+                openSystemSettings: false,
+                macOSMajorVersion: 26
             )
         } catch EnrollmentError.managedByOtherMDM {
             // Host machine is managed by a corporate MDM (e.g. Kandji on dev
@@ -463,7 +464,11 @@ struct CoordinatorIntegrationTests {
             return
         }
 
-        if result.alreadyEnrolled {
+        guard case .mdm(let profilePath, let alreadyEnrolled) = result else {
+            Issue.record("Legacy setup unexpectedly selected App Attest")
+            return
+        }
+        if alreadyEnrolled {
             // Production short-circuits when an MDM profile is already
             // installed (true on most darkbloom dev workstations and CI
             // runners with the profile pre-loaded). The function never hit
@@ -479,10 +484,10 @@ struct CoordinatorIntegrationTests {
             #expect(data == mockBytes)
         } else {
             // Fresh machine: profile written to disk should match the mock.
-            let written = try Data(contentsOf: result.profilePath)
+            let written = try Data(contentsOf: profilePath)
             #expect(written == mockBytes)
-            #expect(result.profilePath.lastPathComponent.hasPrefix("Darkbloom-Enroll-"))
-            try? FileManager.default.removeItem(at: result.profilePath)
+            #expect(profilePath.lastPathComponent.hasPrefix("Darkbloom-Enroll-"))
+            try? FileManager.default.removeItem(at: profilePath)
         }
     }
 

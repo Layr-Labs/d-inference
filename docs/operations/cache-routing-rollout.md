@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-16 · commit `fa4e6bdc2`
+> Last updated: 2026-09-21 · commit `ce809b792`
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -12,6 +12,7 @@ Written for an operator with production access; how the feature works is in
 - First production activation of `EIGENINFERENCE_CACHE_ROUTING_MODE=on`.
 - Raising `EIGENINFERENCE_CACHE_ROUTING_PERCENT` or
   `EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS` after a clean observation window.
+- Adding a qualified model artifact to an existing routing cohort.
 - Turning cache routing off — on its own, or as the first step of a coordinator
   binary rollback.
 
@@ -30,7 +31,7 @@ test alone does not qualify a tuple for cache routing. See the
 [five-model release decision](../design/release-090-paged-qwen-cache.md).
 Leave the provider's `DARKBLOOM_PREFIX_CACHE` unset to use its
 [model defaults](../architecture/prefix-cache.md#kv-layouts). Default SSD eligibility
-for Gemma QAT or GPT-OSS does not change the deployed routing allowlist.
+for Gemma QAT, GPT-OSS or Bonsai 2 does not change the deployed routing allowlist.
 Adding its exact model/weight/template tuple is a separate activation after validation.
 An explicit affirmative value opts other supported models into SSD caching;
 the coordinator allowlist restricts network participation but does not override
@@ -179,6 +180,53 @@ the same request from the same account remains in or out of the cohort.
    `EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS` — never both in one change —
    by repeating steps 3–4 with the new value, and observe again before the
    next step.
+
+### Add Bonsai to an existing routing cohort
+
+Use this procedure when routing is already active for other artifacts. Preserve
+their tuples and the current mode, percentage and QPS bounds; the initial
+activation example above is not a reset procedure.
+
+1. **Qualify the final signed provider and registered artifact.** Record the
+   provider version/build hash, resolved model ID, aggregate weight hash and
+   prompt-contract ID. Use `ternary-bonsai-2-27b` for the catalog model, with
+   hashes from its current manifest and the sidecar's matching contract. Leave
+   `DARKBLOOM_PREFIX_CACHE` unset and resident memory retention disabled to test
+   the new default. Require the persistent Keychain-backed cache key; do not use
+   `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` as restart evidence.
+2. **Verify actual SSD restoration.** On the signed build, run a cold request
+   long enough to donate at least one full checkpoint stripe, then repeat its
+   prefix with a changed suffix. Record completed output, SSD writes/reads and
+   saved prefill tokens. Restart the provider within the configured cache TTL
+   and repeat to prove persistent-key reuse. Check another account misses and
+   a damaged checkpoint in an isolated test cache falls back safely. Use the
+   [SSD configuration](../reference/ssd-kv-cache.md) for TTL and staging bounds;
+   use the production scheduler's prefill stripe from
+   `EngineV2Factory.productionSchedulerConfig` in
+   `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift`.
+   The existing `BonsaiEncryptedCheckpointLiveTests` fixture checks
+   mechanics with real weights and a fixture key; it cannot replace these
+   signed-build and account-isolation checks.
+3. **Append the qualified tuple.** Add one object containing `model_id`,
+   `model_aggregate_sha256` and `prompt_contract_id` to
+   `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS`, retaining every existing
+   entry. Never replace the list with only Bonsai or unset it to enable Bonsai.
+   If the list is currently unset, first inventory the participating artifacts
+   before introducing a restriction. Follow the prerequisites and approved
+   coordinator swap procedure above; the value is read only at startup.
+4. **Verify hosted reuse.** Confirm ordinary Bonsai requests still complete,
+   then correlate repeated same-account requests with provider SSD reads,
+   saved prefill tokens and successful cache-selected completions. Holder
+   counts or selection attempts alone do not prove reuse. Compare latency,
+   cold fallback and errors with the recorded baseline using the verification
+   signals below.
+5. **Roll back the Bonsai routing addition if needed.** Restore the previous
+   allowlist and restart through the approved procedure. This preserves other
+   cache cohorts and ordinary Bonsai inference; it does not disable local SSD
+   caching. For a provider-side cache problem, `DARKBLOOM_PREFIX_CACHE=0`
+   disables caching for all its models. Apply it to the actual daemon
+   environment; restarting an existing LaunchAgent does not import shell
+   changes. See [provider environment propagation](../reference/configuration.md#where-values-are-set).
 
 ## Verification
 

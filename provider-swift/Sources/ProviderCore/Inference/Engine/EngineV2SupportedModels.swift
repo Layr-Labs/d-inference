@@ -17,6 +17,8 @@
 //   * `qwen3_5_moe`   — Qwen 3.5/3.6 MoE VLM target with recurrent state
 //   * `qwen3_vl_moe`  — Qwen3-VL MoE wrapper, served directly through its
 //                       CBv2 language-model adapter and vision prefill
+//   * `qwen4_exp`, `qwen4_exp_text` — native Flash-Next target architecture;
+//                       automatic paging/cache policy is separately scoped
 //
 // Everything else (gemma3, dense/other qwen families, llama, …) is
 // dropped from the advertised set at startup and at prefetch-verify time
@@ -29,6 +31,13 @@
 import Foundation
 
 public enum EngineV2SupportedModels {
+    public static let bonsai2ModelID = "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit"
+    public static func isBonsai2ListingModelID(_ id: String?) -> Bool {
+        switch id {
+        case bonsai2ModelID, "EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit", "ternary-bonsai-2-27b": true
+        default: false
+        }
+    }
     public static let nemotron35LightningModelID =
         "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit"
     public static let nemotron35LightningMTPModelID =
@@ -43,6 +52,12 @@ public enum EngineV2SupportedModels {
         default:
             return false
         }
+    }
+
+    /// Exact owned private candidate ID, not a family-name or substring grant.
+    /// Loaded artifact/capability checks still apply to paging and prefix reuse.
+    public static func isQwen4ExpListingModelID(_ modelID: String?) -> Bool {
+        Qwen4SupportPolicy.isOwnedModelID(modelID)
     }
 
     /// Nano and Lightning share a model_type but have different checkpoint
@@ -68,8 +83,9 @@ public enum EngineV2SupportedModels {
     public static func isSupported(modelType: String?) -> Bool {
         guard let raw = normalized(modelType) else { return false }
         if raw == "gpt_oss" { return true }
-        if raw == "qwen3_5" || raw == "qwen3_5_moe" { return true }
+        if raw == "qwen3_5" || raw == "qwen3_5_moe" || raw == "prism_hadamard_qwen35" { return true }
         if raw == "qwen3_vl_moe" { return true }
+        if raw == "qwen4_exp" || raw == "qwen4_exp_text" { return true }
         return gemma4TargetTypes.contains(raw)
     }
 

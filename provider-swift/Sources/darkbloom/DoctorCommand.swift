@@ -336,6 +336,10 @@ func buildCoordinatorDoctorChecks(
 ) async -> [DoctorCheck] {
     let base = coordinatorHTTPBase(coordinatorOverride ?? snapshot.config.coordinator.url)
     var checks: [DoctorCheck] = []
+    let now = Date().timeIntervalSince1970
+    let authorization = DaemonStateFile.read()?.currentProviderAuthorization(
+        coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url, now: now)
+    let appAttestAuthorized = authorization?.hasCurrentAppAttestAuthorization(now: now) == true
 
     let linked = AuthTokenStore.load() != nil
     checks.append(.init(
@@ -350,12 +354,13 @@ func buildCoordinatorDoctorChecks(
             name: "mdm enrollment", status: .pass, detail: "Darkbloom profile installed"))
     case .enrolledOtherMDM(let serverURL):
         checks.append(.init(
-            name: "mdm enrollment", status: .warn,
-            detail: "enrolled in another MDM (\(serverURL)) — Darkbloom hardware trust unavailable on this Mac"))
+            name: "mdm enrollment", status: appAttestAuthorized ? .pass : .warn,
+            detail: "managed by another MDM (\(serverURL)); keep that profile installed. "
+                + (appAttestAuthorized ? "App Attest authorizes this connection." : "Awaiting qualified App Attest serving.")))
     case .notEnrolled:
         checks.append(.init(
-            name: "mdm enrollment", status: .warn,
-            detail: "not enrolled; hardware trust may remain pending"))
+            name: "mdm enrollment", status: appAttestAuthorized ? .pass : .warn,
+            detail: appAttestAuthorized ? "not required for this App Attest-authorized connection" : "not enrolled; awaiting coordinator serving authorization"))
     case .checkFailed:
         checks.append(.init(
             name: "mdm enrollment", status: .warn,
@@ -375,6 +380,13 @@ func buildCoordinatorDoctorChecks(
             status: .fail,
             detail: "\(base): \(error.localizedDescription)"
         ))
+        return checks
+    }
+
+    if let authorization {
+        checks.append(.init(name: "serving authorization",
+                            status: appAttestAuthorized || authorization.path == "legacy" ? .pass : .warn,
+                            detail: ProviderAuthorizationReadiness.summary(authorization, now: now)))
         return checks
     }
 

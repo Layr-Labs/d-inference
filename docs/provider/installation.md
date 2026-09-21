@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-09-16 · commit `fa4e6bdc2`
+> Last updated: 2026-09-21 · commit `ce809b792`
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -115,12 +115,18 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
    (`provider-swift/Sources/darkbloom-enclave-cli/EnclaveCLI.swift`), which
    creates the P-256 key if missing. Failure prints a warning; the install
    continues with reduced trust (see [attestation](./attestation.md)).
-7. **Step 4/5 — enrollment.** If `profiles status -type enrollment` does not
-   report `MDM enrollment: Yes`, the script `POST`s `{}` to
-   `$COORD_URL/v1/enroll`, saves the `.mobileconfig` under
-   `${TMPDIR:-/tmp}/Darkbloom-Enroll.XXXXXX/`, opens it and the System Settings
-   Profiles pane, waits for Enter (interactive) or 3 s (piped), then re-checks.
-   An unreachable coordinator prints `enroll later with: darkbloom enroll`.
+7. **Step 4/5 — verification setup.** `configure_device_verification` uses the
+   local `sw_vers` major version. On macOS 27 or later it skips profile checks,
+   download and System Settings, and directs the user to login/start/status for
+   App Attest approval. Older macOS retains legacy enrollment and prints the
+   upgrade option and upcoming MDM deactivation notice. If `profiles status
+   -type enrollment` reports no management, the script posts `{}` to
+   `$COORD_URL/v1/enroll`, saves the profile under
+   `${TMPDIR:-/tmp}/Darkbloom-Enroll.XXXXXX/`, and opens System Settings for
+   approval. Existing management is preserved without claiming it is Darkbloom
+   verification. Unknown OS versions download no profile and direct users to
+   `darkbloom enroll`. Setup choice grants no serving authorization; see the
+   [authorization contract](../reference/provider-authorization.md).
 8. **Step 5/5 — catalog.** `GET $COORD_URL/v1/models/catalog?type=text`;
    interactive runs print up to 20 entries. Nothing is downloaded.
 

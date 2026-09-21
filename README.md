@@ -11,7 +11,7 @@ The person running a provider node has root and physical custody of the machine 
 - **In-process inference.** The network provider runs MLX inside its hardened process, without a separate inference server or subprocess.
 - **Runtime hardening.** `PT_DENY_ATTACH`, Hardened Runtime and coordinator-verified SIP restrict debugging, memory access and code injection.
 - **Hop-by-hop encryption.** The coordinator opens the request for routing and billing, then seals it with NaCl Box (X25519 + XSalsa20-Poly1305) to the provider's attested key. The provider process decrypts it to run the model.
-- **Hardware attestation.** A four-layer chain — Secure Enclave signatures, MDM cross-checks, Apple Managed Device Attestation, and APNs code-identity — proves each node's security posture and that it runs a genuine, unmodified binary.
+- **Provider authorization.** Complete legacy verification combines Secure Enclave signatures, MDM/MDA evidence and APNs code identity. When independently enabled and qualified, eligible macOS 27+ providers can instead use App Attest authorization without MDM. The two paths retain separate evidence; see [provider authorization](docs/reference/provider-authorization.md).
 
 These controls depend on the security of the operating system, hardware and attested software. See [privacy expectations](docs/consumer/privacy-expectations.md) for what each party can observe and what metadata is retained.
 

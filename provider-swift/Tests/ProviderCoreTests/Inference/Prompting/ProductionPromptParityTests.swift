@@ -59,7 +59,7 @@ struct ProductionPromptParityTests {
                 for try await _ in frames {}
                 let generationRequest = try #require(await engine.request)
                 let actual = try ProviderPromptContractPipeline.tokenize(
-                    prepared: ToolChoicePromptPolicy.prepare(generationRequest),
+                    prepared: ToolChoicePromptPolicy.prepare(generationRequest, modelType: modelType),
                     request: generationRequest,
                     tokenizer: tokenizer,
                     modelType: modelType,

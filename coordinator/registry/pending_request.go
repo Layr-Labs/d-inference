@@ -34,6 +34,9 @@ type PendingRequest struct {
 	// ceilings from this timestamp; zero preserves legacy relative behavior.
 	FirstContentDeadline time.Time
 	ProviderID           string
+	// Captured atomically with this provider's pending debit. A later lease
+	// cannot transfer already-queued work onto a changed endpoint or identity.
+	providerAuthorizationBinding providerRequestAuthorizationBinding
 	// Model is the CONCRETE build id used for routing, admission, billing, and
 	// warm-model matching (e.g. "mlx-community/gemma-4-26B-A4B-it-qat-4bit").
 	Model string
@@ -42,6 +45,10 @@ type PendingRequest struct {
 	// Model. Responses echo PublicModel so consumers never see the quant/build.
 	PublicModel string
 	ConsumerKey string
+	// Durable logical-request grant reservation, shared by retries and queued attempts.
+	ModelTokenReservationID string
+	PromotionModelID        string
+	PromotionFreeTokens     int64
 	// KeyID is the public ID of the API key that originated the request, used
 	// for per-key usage and spend attribution. Empty for account-scoped/legacy
 	// callers (Privy JWT, admin, provider tokens, unlinked keys without an ID).
@@ -395,15 +402,15 @@ func (pr *PendingRequest) FirstContentIngressArrivedByDeadline() bool {
 // OnTimeEmptyCompletionIngress returns the ingress time of an on-time clean
 // completion that had no preceding content-bearing chunk.
 func (pr *PendingRequest) OnTimeEmptyCompletionIngress() (time.Time, bool) {
-	if pr == nil || pr.FirstContentDeadline.IsZero() {
+	if pr == nil {
 		return time.Time{}, false
 	}
 	pr.firstContentIngressMu.Lock()
 	defer pr.firstContentIngressMu.Unlock()
 	receivedAt := pr.completionIngressAt
-	ok := pr.firstContentIngressAt.IsZero() &&
-		!receivedAt.IsZero() &&
-		!receivedAt.After(pr.FirstContentDeadline)
+	ok := !receivedAt.IsZero() &&
+		(pr.firstContentIngressAt.IsZero() || pr.firstContentIngressAt.After(receivedAt)) &&
+		(pr.FirstContentDeadline.IsZero() || !receivedAt.After(pr.FirstContentDeadline))
 	return receivedAt, ok
 }
 

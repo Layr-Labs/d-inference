@@ -1,10 +1,17 @@
 # Models reference
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-17 · commit `954f570d1`
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
 ## `GET /v1/models`
+
+The Bonsai 2 support draft admits the explicit `prism_hadamard_qwen35` artifact
+through `EngineV2SupportedModels` without adding a public catalog listing. Its
+published configuration and tensors include vision but no MTP. Native context
+is derived from configuration; measured hardware coverage and coordinator
+routing limits are separate. See `libs/mlx-swift-lm/docs/bonsai2.md` for scope;
+API/media qualification remains a release gate, not a consequence of a model tag.
 
 Handler `handleListModels` (`coordinator/api/models_endpoints.go`). Requires a bearer credential (`requireAuth`).
 
@@ -129,6 +136,25 @@ these defaults.
 | Prefix caching | Encrypted complete paged SSD checkpoints enabled, subject to loaded capability, verified identity, cache key and tenant scope. A cache hit is not guaranteed; explicit cache disable wins | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy+Activation.swift` (`isEnabled`); [cache defaults](../architecture/prefix-cache.md#kv-layouts) |
 | Multi-token prediction (MTP) | `mtp_mode = "auto"` resolves the catalog-declared assistant; adaptive decoding chooses ordinary decode or one draft token. Missing, invalid or memory-ineligible assistants retain target-only serving; explicit `off` and the process kill switch win | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); [MTP policy and controls](../architecture/inference.md#multi-token-prediction) |
 | Assistant activation | Requests continue during download and preparation. Network providers also serve during rollout jitter, then temporarily close admissions only for this model while accepted requests finish and the prepared engine swaps in. Racing/new acquisitions can receive transient 503; timeout or cancellation reopens the original engine without force-cancelling accepted work. Random jitter provides no fleet availability guarantee | `provider-swift/Sources/ProviderCore/Inference/MTP/MTPIdleUpgrade.swift` (`run`); [provider memory and availability](../provider/hardware-requirements.md#gemma-qat-assistant-footprint-and-availability) |
+
+## Native Flash-Next candidate
+
+The [native Flash-Next candidate](../reference/qwen4-next-support.md)
+recognizes the registry ID and legacy developer ID listed in that reference.
+Native image/video routing requires the validated full vision declaration and
+explicit non-language-only configuration; unsupported media is rejected rather
+than silently reduced to text
+(`provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift`,
+`advertisesMedia`). Its local listing and bridge apply the native
+[candidate context policy](../reference/configuration.md#native-flash-next-candidate)
+to prompt plus reserved completion tokens. Coordinator SLA and device capacity
+may still reject a request within native context. This source change does not edit the
+coordinator's catalog limits, aliases, prices or marketplace feed.
+
+Paging/cache defaults and embedded-MTP source support do not certify a cache
+hit, device tier or answer quality. Final same-artifact build, serving and
+restart qualification remain distinct; unit-level ID/context checks do not
+certify full native-context operation on the minimum-RAM device.
 
 ## Related
 

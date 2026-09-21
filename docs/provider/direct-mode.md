@@ -1,6 +1,6 @@
 # Direct mode: a local OpenAI-compatible endpoint
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-18 · commit `5fc48d460`
 
 Run the provider's inference engine as an OpenAI-compatible HTTP server on your
 own Mac, either standalone (`darkbloom start --local`, no coordinator, no
@@ -132,6 +132,16 @@ matches the coordinator WebSocket frame allowance. Per-image, per-video and
 per-audio limits are the same as fleet serving and are configured through the
 variables in [`reference/configuration.md`](../reference/configuration.md).
 `max_tokens` defaults to the scheduler's default when a request omits it.
+
+For Chat/Completions streaming, inspect every SSE event for `error`, even after
+HTTP 200. A late generation failure ends with a sanitized error chunk and
+`finish_reason: "error"`, without a success `[DONE]`; the HTTP transfer closes
+normally. Pre-header errors retain their HTTP status, and client cancellation
+still cancels generation. Responses uses `response.failed` for late failures.
+The provider chat-upload interceptor selects the SDK service's HTTP framing
+policy (`LocalChatUploadResponder.respond` and `MLXOpenAIService.streamChatCompletionFrames`).
+A failed required tool call is still a failure; no argument repair or fabricated
+call is performed.
 
 ## Verify
 

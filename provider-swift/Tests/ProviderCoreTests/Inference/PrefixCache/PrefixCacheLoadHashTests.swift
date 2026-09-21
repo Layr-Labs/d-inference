@@ -20,6 +20,20 @@ struct PrefixCacheLoadHashTests {
             environment: [PrefixCachePolicy.environmentFlag: "0"]))
     }
 
+    @Test("Bonsai default SSD activation requires fresh load hashes and respects opt-out", arguments: [
+        "prism-ml/Ternary-Bonsai-2-27B-mlx-2bit",
+        "EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit", "ternary-bonsai-2-27b",
+    ])
+    func bonsaiLoadHashBracket(modelID: String) throws {
+        let directory = try snapshot(#"{"model_type":"prism_hadamard_qwen35"}"#)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #expect(PrefixCachePolicy.requiresLoadHashBracket(
+            modelId: modelID, modelDirectory: directory, environment: [:]))
+        #expect(!PrefixCachePolicy.requiresLoadHashBracket(
+            modelId: modelID, modelDirectory: directory,
+            environment: [PrefixCachePolicy.environmentFlag: "0"]))
+    }
+
     private func snapshot(_ config: String) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ssd-load-hash-\(UUID().uuidString)")

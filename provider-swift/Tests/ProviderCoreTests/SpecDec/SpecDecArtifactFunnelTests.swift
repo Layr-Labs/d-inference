@@ -142,6 +142,7 @@ private func makeInlineQwenArtifact(includeMTP: Bool = true) throws -> URL {
         arrays: [key: MLXArray([Float(1), Float(2), Float(3), Float(4)])],
         url: root.appendingPathComponent(shard))
     let index = try JSONSerialization.data(withJSONObject: [
+        "metadata": ["total_size": 16, "format": "mlx"],
         "weight_map": [key: shard]
     ])
     try index.write(to: root.appendingPathComponent("model.safetensors.index.json"))

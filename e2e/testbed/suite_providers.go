@@ -54,6 +54,7 @@ func (s *Suite) startProviders() error {
 				s.providerAttempts = append(s.providerAttempts, p)
 			}
 			if err := p.Start(s.Ctx, providerURL, ProviderConfig{
+				LocalEndpointPort:          s.Config.LocalEndpointPort,
 				ModelIDs:                   modelIDs,
 				PrefixCacheMode:            s.Config.PrefixCacheMode,
 				TrustLevel:                 TrustNone,

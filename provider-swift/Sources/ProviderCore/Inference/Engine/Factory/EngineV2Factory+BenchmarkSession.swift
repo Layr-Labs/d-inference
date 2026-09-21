@@ -102,6 +102,12 @@ public actor EngineV2BenchmarkSession {
         memorySampler.capture(budget.memoryHeadroomSnapshot())
     }
 
+    /// Normal model/tokenizer/extra EOS union, resolved by the production
+    /// slot factory. Raw fixed-budget probes may still explicitly override it.
+    public func stopTokenIDs() async -> Set<Int> {
+        await bundle.bridge.stopTokenIds
+    }
+
     /// Start the caller's TTFT clock BEFORE awaiting this method. It returns
     /// the engine's original stream after production SSD staging, without a
     /// relay task. Call complete(receiptID:) after fully draining that stream.

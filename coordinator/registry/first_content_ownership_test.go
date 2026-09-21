@@ -48,3 +48,26 @@ func TestSpeculativeEmptyCompletionRequiresDispatchDecision(t *testing.T) {
 		t.Fatalf("decision = (%v, %v), want (false, true)", accepted, waited)
 	}
 }
+
+func TestEmptyCompletionIngressUsesDeadlineAndEventOrder(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name                          string
+		deadline, completion, content time.Time
+		want                          bool
+	}{
+		{"unstamped without completion", time.Time{}, time.Time{}, time.Time{}, false},
+		{"unbounded empty", time.Time{}, now, time.Time{}, true},
+		{"unbounded prior content", time.Time{}, now, now.Add(-time.Millisecond), false},
+		{"bounded empty", now.Add(time.Second), now, time.Time{}, true},
+		{"expired empty", now.Add(-time.Second), now, time.Time{}, false},
+		{"later content cannot strand completion", now.Add(time.Second), now, now.Add(time.Millisecond), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pr := &PendingRequest{FirstContentDeadline: tc.deadline, completionIngressAt: tc.completion, firstContentIngressAt: tc.content}
+			if _, got := pr.OnTimeEmptyCompletionIngress(); got != tc.want {
+				t.Fatalf("eligible=%v want %v", got, tc.want)
+			}
+		})
+	}
+}

@@ -357,6 +357,7 @@ public actor ProviderLoop {
     /// reentrant loads cannot start against memory that has not been freed yet.
     internal var modelsUnloading: Set<String> = []
     internal var unloadingWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+    internal var qwen4MemoryRetirement: NativeMemoryRetirementWindow?
 
     /// Serializes KV-GRANT mutations: the load-side re-slice
     /// (`resliceAndBuildEngineV2Slot` — snapshot grants → shrink → build →
@@ -674,7 +675,7 @@ public actor ProviderLoop {
         // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
         // The EngineV2 SSD tier uses the separate `darkbloom/kv3` root,
         // so this cleanup cannot delete current cache data.
-        LegacyKVCacheSweeper.sweep()
+        if purgeLegacyFiles { LegacyKVCacheSweeper.sweep() }
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
         self.preloadTaskStarted = preloadTaskStarted
         self.beforeModelLoad = beforeModelLoad

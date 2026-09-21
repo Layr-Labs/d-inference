@@ -121,10 +121,10 @@ struct MTPConfigKeyTests {
 
     @Test("automatic embedded heads require a supported embedded model type")
     func targetPolicy() {
-        // Declared embedded heads in Qwen 3.5-family and Nemotron Lightning
+        // Declared embedded heads in Qwen 3.5, native Qwen4, and Nemotron Lightning
         // checkpoints self-activate under `auto`. Exact Gemma QAT uses
         // its separately validated external assistant policy below.
-        let familyModelTypes = ["qwen3_5_moe", "qwen3_5", "nemotron_h"]
+        let familyModelTypes = ["qwen3_5_moe", "qwen3_5", "qwen4_exp", "qwen4_exp_text", "nemotron_h"]
         let nonFamilyModelTypes: [String?] = [
             "gemma4",
             "gemma4_text",
@@ -166,6 +166,8 @@ struct MTPConfigKeyTests {
             forModelType: " QWEN3_5_MOE ", embeddedArtifactDeclared: true))
         #expect(MTPMode.auto.enablesMTP(
             forModelType: "Qwen3_5", embeddedArtifactDeclared: true))
+        #expect(MTPMode.auto.enablesMTP(
+            forModelType: " QWEN4_EXP_TEXT ", embeddedArtifactDeclared: true))
     }
 
     @Test("automatic Gemma admission requires exact QAT identity and supported target type")
@@ -201,6 +203,8 @@ struct MTPConfigKeyTests {
         for (modelType, modelID) in [
             ("gemma4", "gemma-4-26b-8bit"),
             ("qwen3_5_moe", "qwen3.6-35b-a3b-vl-mtp-mxfp8"),
+            ("qwen4_exp", "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp"),
+            ("qwen4_exp_text", "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp"),
             ("nemotron_h", "nvidia-nemotron-3.5-lightning"),
         ] {
             #expect(!MTPMode.auto.requiresCatalogPrewarm(forModelType: modelType, modelID: modelID))
@@ -219,7 +223,7 @@ struct MTPConfigKeyTests {
         let backend = BackendSettings(mtpMode: .auto)
         let standalone = StandaloneServerConfig(mtpMode: backend.mtpMode)
 
-        for modelType in ["qwen3_5_moe", "qwen3_5", "gemma4", nil] as [String?] {
+        for modelType in ["qwen3_5_moe", "qwen3_5", "qwen4_exp", "qwen4_exp_text", "gemma4", nil] as [String?] {
             for embedded in [true, false] {
                 #expect(
                     backend.mtpMode.enablesMTP(

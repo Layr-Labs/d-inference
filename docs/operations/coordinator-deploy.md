@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-18 · commit `4a453679b`
+> Last updated: 2026-09-21 · commit `76a8f03d9`
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -458,6 +458,44 @@ reference copy; editing it changes nothing on the host.
 | New flag "not working" | value read once at start; or a kill switch left from an incident (`EIGENINFERENCE_HEALTH_EJECTION=off`, `EIGENINFERENCE_QUEUE_BEFORE_SHED=false`) | `grep` the env file; recreate the container |
 | Release registration `503 not_configured` | `EIGENINFERENCE_R2_CDN_URL` unset | set it, recreate the container |
 | A manual SQL edit to `users` (role, platform fee, Stripe fields) or the model-registry tables "did not apply" | those lookups are served from an in-process read-through cache (`store.NewCached`: users 30 s, model records 10 s, misses 5 s); only writes made through the coordinator invalidate at once | wait out the TTL, or make the change through the admin API (`PUT /v1/admin/users/role`, `POST /v1/admin/models/...`) |
+
+## Alerting
+
+The public stats plane (`/v1/stats`, `/v1/network/totals`, `/v1/leaderboard`) is
+served from a read cache that background refreshers keep warm
+(`coordinator/api/cache_refresher.go`). Every failed refresh increments
+`d_inference.cache.refresh_failed` tagged `key:<cache key>`; a healthy
+coordinator never emits it, and a sustained failure turns into 503s once the
+last good body ages out of its 5-minute safety TTL. In September 2026 the
+network-totals refresher failed four times a minute for eight days before a
+downstream dashboard operator noticed, because nothing watched the counter.
+
+The monitor lives in the repository and is applied like the dev dashboard:
+
+```bash
+# Validate the definition against the Datadog API without writing anything.
+deploy/datadog/apply-monitor.sh --validate
+
+# Create or update it. DD_MONITOR_NOTIFY is the on-call handle the alert pages;
+# credentials come from DD_API_KEY / DD_APPLICATION_KEY or the
+# eigeninference-dd-* secrets in Secret Manager, as for apply-dev-dashboard.sh.
+DD_MONITOR_NOTIFY="@slack-darkbloom-oncall" deploy/datadog/apply-monitor.sh
+```
+
+Definition: `deploy/datadog/monitors/cache-refresh-failed.json` — more than 3
+failed refreshes for one `key` in 5 minutes, grouped by `env` and `key`, gaps
+read as zero so the alert recovers when refreshes succeed again, and no-data is
+not an alert (silence is the healthy state for this counter). The apply script
+is idempotent: an existing monitor with the same name and the
+`managed-by:deploy/datadog` tag is updated in place. Changing the threshold or
+the message is a normal PR against the JSON, re-applied with the same command;
+`scripts/test-datadog-monitors.py` checks the definition in CI.
+
+Verify after applying: the monitor page shows the coordinator's `env` groups in
+OK within ten minutes. To exercise it end to end, stop the **dev** coordinator's
+database for six minutes and confirm the alert fires naming
+`network_totals:24h` and `stats:v1`, then recovers after the database is back.
+Do not run this exercise against production.
 
 ## Related
 

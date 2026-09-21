@@ -130,10 +130,10 @@ migrate_exact_value \
     100 \
     1000
 
-# The September M4 Max benchmark extends the stock solo-TPS seed to four
-# current catalog models. Existing values normally win over release defaults,
-# so migrate only the exact prior stock string. Any operator-added, removed, or
-# retuned entry remains authoritative.
+# The v0.9.7 M4 Max benchmark extends the stock solo-TPS seed to four current
+# catalog models and excludes retired Qwen3-VL. Existing values normally win
+# over release defaults, so migrate only the exact prior stock string. Any
+# operator-added, removed, or retuned entry remains authoritative.
 model_solo_tps_seed=$(awk -F= \
     '$1 == "EIGENINFERENCE_MODEL_SOLO_TPS_SEED" { print substr($0, index($0, "=") + 1) }' \
     "$DEFAULTS_FILE")

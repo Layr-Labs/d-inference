@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Stop `GET /v1/network/totals` cache misses from queueing behind the background refresher: a request waits at most 2 s for an in-flight refresh and never runs the aggregate while the refresher holds the query, answering 503 promptly instead of after 20–40 s and without adding a second scan per poll during an outage.
 - Persist independently approved App Attest builds and revocations; refresh qualification without per-release coordinator restarts, with bounded failure/expiry and stale-grant fencing.
 - Stage immutable signed provider artifacts before publication. Block unqualified releases before updater/latest aliases advance; retry the separate publication job using the same signed bytes, without rebuilding or notarizing again.
 

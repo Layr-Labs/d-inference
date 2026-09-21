@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -15,6 +16,16 @@ const (
 	// Failed refreshes retain the previous success only until this safety TTL.
 	refreshedCacheTTL = 5 * time.Minute
 )
+
+// coldFillWait bounds how long a request that misses the cache waits for a
+// compute already in flight. Healthy computes finish well inside it; one that
+// is heading for the store timeout must not hold requests for its full 10 s.
+var coldFillWait = 2 * time.Second
+
+// errComputeBusy is returned by a compute that declined to run because the
+// background refresher already owns the query. It is not a refresh failure:
+// nothing is logged or counted, the caller simply serves what is cached.
+var errComputeBusy = errors.New("cache: refresh already in flight")
 
 // cacheRefresher coalesces computations of one read-cache entry. Only complete
 // successful results are cached; query errors never become partial JSON data.
@@ -45,7 +56,17 @@ func (s *Server) computeCachedEntry(entry *cacheRefresher, key string, refresh b
 	}
 	if wait := entry.inflight; wait != nil {
 		entry.mu.Unlock()
-		<-wait
+		if refresh {
+			<-wait
+		} else {
+			// A request joins a flight only briefly; past coldFillWait it answers
+			// from whatever is cached (or 503s) rather than queueing behind a
+			// compute that is timing out.
+			select {
+			case <-wait:
+			case <-time.After(coldFillWait):
+			}
+		}
 		return s.readCache.Get(key)
 	}
 	done := make(chan struct{})
@@ -59,6 +80,9 @@ func (s *Server) computeCachedEntry(entry *cacheRefresher, key string, refresh b
 	}()
 
 	body, err := compute()
+	if errors.Is(err, errComputeBusy) {
+		return s.readCache.Get(key)
+	}
 	if err != nil {
 		s.logger.Warn("cache refresh failed; keeping previous value", "key", key, "error", err)
 		s.ddIncr("cache.refresh_failed", []string{"key:" + key})

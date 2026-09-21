@@ -39,6 +39,36 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertNotIn('continue-on-error:', ACTION)
         self.assertIn('needs: [resolve-env, build-and-release]', job(RELEASE, 'validate-older-macos'))
 
+    def test_publication_is_separate_and_retryable_without_signing(self):
+        sign = job(RELEASE, 'build-and-release')
+        stage = job(RELEASE, 'stage-release')
+        publish = job(RELEASE, 'publish-release')
+        for content in [sign, stage]:
+            self.assertNotIn('/v1/releases', content)
+            self.assertNotIn('gh release create', content)
+            self.assertNotIn('releases/latest/', content)
+            self.assertNotIn('secrets.PROD_RELEASE_KEY', content)
+        self.assertNotIn('provider-release-publication.py stage', sign)
+        self.assertNotIn('secrets.PROD_R2_ACCESS_KEY_ID', sign)
+        self.assertNotIn('secrets.PROD_R2_SECRET_ACCESS_KEY', sign)
+        self.assertNotIn('aws s3', sign)
+        self.assertIn('publication_artifact: ${{ steps.publication_identity.outputs.artifact_name }}', sign)
+        self.assertIn('provider-release-publication.py stage', stage)
+        self.assertIn('provider-release-publication.py publish', publish)
+        self.assertIn('needs: [resolve-env, build-and-release]', stage)
+        self.assertIn('needs: [resolve-env, build-and-release, stage-release]', publish)
+        for content in [stage, publish]:
+            self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', content)
+            self.assertIn('needs.build-and-release.outputs.publication_artifact', content)
+            self.assertIn('gh run download "$GITHUB_RUN_ID"', content)
+            self.assertNotIn('GITHUB_RUN_ATTEMPT', content)
+            self.assertNotIn('notarytool', content)
+            self.assertNotIn('APPLE_', content)
+            self.assertNotIn('provider-release-build', content)
+            self.assertIn("if: needs.resolve-env.outputs.publish == 'true'", content)
+            self.assertNotRegex(content, r'(?m)^    if:.*always')
+        self.assertIn('cancel-in-progress: false', publish)
+
     def test_artifact_handoff_is_same_run_and_source_bound(self):
         build = job(RELEASE, 'build-provider');sign = job(RELEASE, 'build-and-release')
         self.assertIn('provider-signing-validation.py stage', build)

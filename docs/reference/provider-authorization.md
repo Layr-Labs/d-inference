@@ -1,6 +1,6 @@
 # Provider serving authorization
 
-> Last updated: 2026-09-18 · commit `6050cc4d4`
+> Last updated: 2026-09-20 · commit `3b1b6a476`
 
 The coordinator can authorize private inference through complete legacy verification or a qualified App Attest connection. These are separate evidence paths; App Attest never sets legacy MDA/APNs flags. The [rollout runbook](../operations/mdm-optional-rollout.md) separates code availability from activation qualification.
 
@@ -12,12 +12,25 @@ The [App Attest module map](../../coordinator/appattest/README.md) explains the 
 |---|---|---|
 | `EIGENINFERENCE_APP_ATTEST_SERVING` | `false`; enable the independent App Attest serving path and its proof/receipt refresh worker | `coordinator/appattest/service/config.go` (`ConfigFromEnvironment`) |
 | `EIGENINFERENCE_APP_ATTEST_MDM_REMOVAL` | `false`; allow qualified live providers to receive removal readiness; disabling this does not disable existing App Attest serving | Same |
-| Existing shadow cohort and build qualification | Existing cohort, safe-version floor, production environment and exact qualified binary/CodeDirectory mappings still apply; a serving switch alone cannot qualify a build | `coordinator/appattest/service/rollout.go` (`appAttestRolloutDecision`); `coordinator/appattest/service/build_policy.go` (`qualifiedAppAttestMeasurement`) |
+| Existing shadow cohort and build qualification | Existing cohort, safe-version floor, production environment and exact qualified binary/CodeDirectory mappings still apply; a serving switch alone cannot qualify a build. Durable approvals override legacy env pairs | `coordinator/appattest/service/rollout.go` (`appAttestRolloutDecision`); `coordinator/appattest/service/build_qualifications.go` (`applyBuildQualification`) |
 | Registration identity cohort | Use the authenticated token account and configured percentage in production; providers outside that cohort, including explicit macOS versions below 27, retain legacy history/MDA recovery and duplicate handling | `coordinator/appattest/service/authorization_identity.go` (`appAttestIdentityCandidate`) |
 | Assertion freshness | `AssertionFreshness = 15 * time.Minute`; receipt and revocation deadlines may shorten it | `coordinator/appattest/authorization.go` (`EvaluateAuthorization`) |
 | Durable revocation/receipt refresh | `appAttestAuthorizationRefresh = 5 * time.Second`, batched at most 1000 distinct keys per query | `coordinator/appattest/service/authorizer.go` (`refresh`) |
 | First-proof readiness lookup failure | Without an existing authorizer record, request a fresh assertion after one minute, then five minutes, then the normal ten-minute cadence while the lookup remains unavailable. A known decision or retained refresh record resets the backoff; all identity and policy gates still apply before granting | `coordinator/appattest/service/retry.go` (`nextAssertionDelay`); `coordinator/appattest/service/authorization_identity.go` (`updateServingAuthorization`) |
 | Revocation freshness ceiling | `appAttestRevocationFreshness = 30 * time.Second` from the query start; a failed read cannot renew it | Same (`apply`) |
+
+## Durable build qualification
+
+| Contract | Behavior | Code |
+|---|---|---|
+| Exact approved artifact | Binary, full CodeDirectory, bundle, metallib, version/platform/backend/URL, source commit and CI run; operator/test evidence retained separately from the public release catalog | `coordinator/store/app_attest_builds.go` (`AppAttestBuildIdentity`, `AppAttestBuildQualification`) |
+| Approval API | Admin `GET/POST /v1/admin/app-attest/builds`; POST contains `release`, `code_directory_hash`, `source_commit`, `ci_run_id`, `evidence`. Attribution and timestamps are server-owned. A scoped CI release key cannot approve | `coordinator/api/app_attest_builds.go` (`handleAdminAppAttestBuilds`) |
+| Publication gate | Production workflow sets `require_app_attest_qualification=true`; the coordinator also requires it whenever production App Attest serving is enabled. Missing/mismatched/revoked approval returns 409; unreadable policy returns 503; previous latest remains unchanged | `coordinator/api/app_attest_publication.go` (`persistReleaseForPublication`) |
+| Qualification refresh | Poll every five seconds; `BuildQualificationFreshness = 30 * time.Second` from read start. Every lease recomputes qualification and full code match from retained verified Apple metadata; no I/O at dispatch | `coordinator/appattest/service/build_qualifications.go` (`RefreshBuildQualifications`, `applyBuildQualification`); `coordinator/appattest/service/authorizer.go` (`apply`) |
+| Build withdrawal | Admin `POST /v1/admin/app-attest/builds/revoke` with `binary_hash` and `reason`; 200 includes `revoked`, `changed`, `max_propagation_seconds`. Local qualification generation fences before acknowledgement; remote/stale-store leases expire within 30 seconds. A build tombstone also overrides env-only approvals | `coordinator/api/app_attest_builds.go` (`handleAdminAppAttestBuildRevoke`); `coordinator/registry/app_attest_authorization.go` (`SetAppAttestQualificationGeneration`) |
+| Failure and retry | Malformed approval 400, missing/invalid authentication 401, authenticated non-admin or non-interactive credentials 403, conflicting/revoked immutable identity 409, unavailable/pending durable policy 503. Idempotent retry preserves original audit evidence. Revocation never restores through approval retry | `coordinator/store/app_attest_builds_postgres.go` (`QualifyAppAttestBuild`, `SetQualifiedRelease`) |
+
+The [qualification runbook](../operations/app-attest-build-qualification.md) gives the staged publication, migration and rollback procedure. Build withdrawal removes App Attest eligibility; it does not fabricate a credential violation or revoke independently valid legacy evidence.
 
 ## New-provider setup
 

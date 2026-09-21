@@ -104,6 +104,9 @@ func TestUnknownReadinessRetainsProofAndLeaseWithoutExtendingDeadline(t *testing
 		// Recovery reuses the old verified proof; it must not manufacture a new
 		// assertion timestamp or extend past that original signature's limit.
 		st.state = map[string]store.AppAttestReadiness{record.evidence.Binding.Credential: state}
+		s.qualificationMu.Lock()
+		s.publishBuildQualifications(s.qualifications.Load().builds, time.Now())
+		s.qualificationMu.Unlock()
 		a.refresh(context.Background())
 		after, ok := s.registry.ProviderServingAuthorization(p)
 		if !ok || after.IssuedAt != before.IssuedAt || after.ValidUntil.After(before.IssuedAt.Add(appattest.AssertionFreshness)) {

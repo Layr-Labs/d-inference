@@ -7,6 +7,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -16,9 +17,10 @@ import (
 // ReleasePolicy captures one immutable catalog generation. Approves must close
 // over that same snapshot rather than reload a newer generation mid-decision.
 type ReleasePolicy struct {
-	Generation uint64
-	Known      bool
-	Approves   func(*registry.Provider, *protocol.AppAttestStatus) bool
+	Generation               uint64
+	Known                    bool
+	Approves                 func(*registry.Provider, *protocol.AppAttestStatus) bool
+	ContainsQualifiedRelease func(store.Release) bool
 }
 
 type Dependencies struct {
@@ -29,6 +31,7 @@ type Dependencies struct {
 	Emit                 func(map[string]any)
 	SendTrustStatus      func(*registry.Provider, registry.TrustLevel, string, string)
 	CurrentReleasePolicy func() ReleasePolicy
+	RefreshReleasePolicy func() error
 }
 
 type Service struct {
@@ -47,6 +50,9 @@ type Service struct {
 	emitEvent            func(map[string]any)
 	trustStatus          func(*registry.Provider, registry.TrustLevel, string, string)
 	currentReleasePolicy func() ReleasePolicy
+	refreshReleasePolicy func() error
+	qualificationMu      sync.Mutex
+	qualifications       atomic.Pointer[buildQualificationSnapshot]
 }
 
 // New constructs the service without starting workers, which also allows unit
@@ -65,6 +71,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) *Service {
 		verifierSlots: make(chan struct{}, 4), inventorySlots: make(chan struct{}, 4),
 		metrics: deps.Metrics, emitEvent: deps.Emit, trustStatus: deps.SendTrustStatus,
 		currentReleasePolicy: deps.CurrentReleasePolicy,
+		refreshReleasePolicy: deps.RefreshReleasePolicy,
 	}
 }
 
@@ -72,6 +79,9 @@ func New(ctx context.Context, cfg Config, deps Dependencies) *Service {
 // maintenance and inventory remain active even when shadow verification is off.
 func (s *Service) Start() {
 	s.startOnce.Do(func() {
+		if s.config.Enabled || s.config.ServingEnabled {
+			s.startBuildQualifications(s.lifetime)
+		}
 		s.startAppAttestReceiptWorker(s.lifetime)
 		s.startAppAttestMaintenance(s.lifetime)
 		s.startAppAttestAuthorizer(s.lifetime)

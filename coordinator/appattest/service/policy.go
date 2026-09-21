@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"time"
 
@@ -27,8 +28,8 @@ func (x *Session) observeBuildPolicy(status *protocol.AppAttestStatus, metadata 
 		evidence.VerificationKeyKnown = x.protocolVersion == 3 && x.attestationKey != "" && status.AttestationPublicKey != ""
 		evidence.VerificationKeyMatched = evidence.VerificationKeyKnown && status.AttestationPublicKey == x.attestationKey
 		evidence.ReportedVersion = status.AppVersion
-		evidence.BuildQualified = qualifiedAppAttestBuild(x.s.config.QualifiedBuildHashes, status.BinaryHash)
-		evidence.CodeMeasurementKnown, evidence.CodeMeasurementMatched = qualifiedAppAttestMeasurement(x.s.config.QualifiedCodeHashes, status.BinaryHash, metadata)
+		evidence.CodeDirectoryHash = hex.EncodeToString(metadata.CodeDirectorySHA256())
+		x.s.applyBuildQualification(&evidence, status, snapshot)
 		evidence.BuildMatched = appAttestReleaseApproved(snapshot, x.provider, status)
 	}
 	if st, ok := store.As[store.AppAttestReadinessStore](x.s.store); ok {

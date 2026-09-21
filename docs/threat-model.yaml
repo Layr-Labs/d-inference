@@ -47,6 +47,12 @@ created: "2026-05-14"
 # local qualification-generation change. Revocation tombstones override legacy
 # env mappings and persist across restarts. Signed physical-Mac qualification
 # remains an operator evidence requirement, never inferred from a CI green check.
+# Verification presentation added 2026-09-20 (base 76a8f03d): public method
+# verdicts expose only states/times; no raw certificate/receipt or credential
+# identifiers. Inference captures the winning verdict at final dispatch; live
+# UI bounds cached verdict age and expiry. Neither generic attested nor OS
+# reports establish App Attest; machine-inventory counts do not prove physical
+# uniqueness. This changes presentation, not serving or revocation policy.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference

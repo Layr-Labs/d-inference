@@ -30,27 +30,27 @@ function renderWithMode(ui: React.ReactElement) {
 // ---------------------------------------------------------------------------
 
 describe("TrustBadge (normal mode)", () => {
-  it("renders 'Unverified' for trust level none", () => {
+  it("shows unavailable when no authorization snapshot exists", () => {
     renderWithMode(<TrustBadge trust={makeTrust({ trustLevel: "none" })} />);
-    expect(screen.getByText("Unverified")).toBeInTheDocument();
+    expect(screen.getByText("Verification unavailable")).toBeInTheDocument();
   });
 
-  it("renders 'Hardware Verified' for hardware without MDA", () => {
+  it("does not infer authorization from hardware without MDA", () => {
     renderWithMode(
       <TrustBadge
         trust={makeTrust({ trustLevel: "hardware", mdaVerified: false })}
       />
     );
-    expect(screen.getByText("Hardware Verified")).toBeInTheDocument();
+    expect(screen.getByText("Verification unavailable")).toBeInTheDocument();
   });
 
-  it("renders 'Apple-verified hardware' for hardware with MDA", () => {
+  it("does not infer authorization from hardware with MDA", () => {
     renderWithMode(
       <TrustBadge
         trust={makeTrust({ trustLevel: "hardware", mdaVerified: true })}
       />
     );
-    expect(screen.getByText("Apple-verified hardware")).toBeInTheDocument();
+    expect(screen.getByText("Verification unavailable")).toBeInTheDocument();
   });
 
   it("does NOT show SE/MDA indicators in normal mode", () => {
@@ -89,6 +89,6 @@ describe("TrustBadge (normal mode)", () => {
     );
     const span = container.querySelector("span[title]");
     expect(span).toBeTruthy();
-    expect(span!.getAttribute("title")).toBe("Apple-verified hardware");
+    expect(span!.getAttribute("title")).toBe("Verification unavailable at dispatch");
   });
 });

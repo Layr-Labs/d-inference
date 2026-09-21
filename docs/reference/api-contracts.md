@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-20 · commit `76a8f03d`
 
 The complete public HTTP surface of the coordinator, derived from the 116 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -13,6 +13,49 @@ provider downloads; the admin registration accepts the same object. See the
 Admin request-profile records expose additive
 [prediction decision fields](prediction-decision-telemetry.md). Public inference
 responses and error codes are unchanged.
+
+## Verification presentation contract
+
+`X-Provider-Authorization-Method` is `app_attest`, `legacy`, `dual`, or `none`.
+`X-Provider-Verification` is compact JSON with `observed_at`, `app_attest`, and
+`legacy`. Each method has `state` and optional `verified_at` / `expires_at`
+(exclusive Unix seconds). Server states are `verified`, `pending`, `expired`,
+`revoked`, `unsupported`, and `offline`; missing metadata is unknown. Unsupported
+means the registered App Attest protocol lacks the qualified protocol 3 path,
+not an inference from a reported OS version. Times absent from the response are
+unavailable. No certificate, receipt, account, credential, serial or canonical
+machine identifier is included. Code: `coordinator/registry/verification.go`
+(`ProviderVerification`).
+
+For inference these fields are frozen at `authorizeInferenceHandoff` in
+`coordinator/registry/inference_authorization.go`, after the writer queue and
+last authorization check. The winning attempt's snapshot is used for headers
+and opt-in chat `metadata.verification` even if its grant expires or is revoked
+before the first response byte. Existing `X-Provider-Trust-Level` and MDA fields
+keep their legacy meaning. The console proxy forwards the verification and
+provider-hop encryption headers; it does not construct them from provider output.
+
+`GET /v1/me/providers`, `GET /v1/providers/attestation`, and individual public
+`GET /v1/stats` provider rows include the same `verification` object evaluated
+at snapshot time. Owner records with no live connection are offline.
+`verification_counts` in stats and privacy-floored provider geography buckets
+contains `connections`, `authorized` (union), `app_attest`, `legacy`, and
+`overlap`. Both method counts include the overlap. Legacy `hardware_attested`
+counts remain evidence counts. Top-level counts additionally report
+`known_unique_machines`, `connections_without_machine_identity`,
+`reported_macos_27_or_later`, and `connections_with_reported_os`. Known machines
+are deduplicated privately from verified account/machine inventory; this is not
+proof of physical uniqueness. OS counts are app reports, not successful App
+Attest counts. Private-only providers are excluded. These aggregates describe
+the source snapshot, not a reusable routing grant. Code:
+`coordinator/api/stats_verification.go` (`addProvider`).
+
+Live console views honor each method's expiry and stop showing cached verified
+verdicts after 60 seconds from `observed_at`, even if polling fails. Revocation
+appears on refresh, subject to server/cache/poll delay; no instant push is
+promised. Chat history uses dispatch time instead of the live clock. No
+telemetry wire enums or authorization gates change.
+
 
 ## App Attest authorization additions
 

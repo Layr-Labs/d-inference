@@ -25,20 +25,21 @@ const (
 // publicProviderLocationBucket is the privacy-safe shape returned to
 // callers in the provider_locations array.
 type publicProviderLocationBucket struct {
-	Key              string   `json:"key"`
-	Scope            string   `json:"scope"`
-	City             string   `json:"city,omitempty"`
-	Region           string   `json:"region,omitempty"`
-	RegionCode       string   `json:"region_code,omitempty"`
-	Country          string   `json:"country,omitempty"`
-	CountryCode      string   `json:"country_code,omitempty"`
-	Latitude         float64  `json:"latitude,omitempty"`
-	Longitude        float64  `json:"longitude,omitempty"`
-	Providers        int      `json:"providers"`
-	HardwareAttested int      `json:"hardware_attested"`
-	GPUCores         int      `json:"gpu_cores"`
-	MemoryGB         int      `json:"memory_gb"`
-	Models           []string `json:"models,omitempty"`
+	Key              string                   `json:"key"`
+	Scope            string                   `json:"scope"`
+	City             string                   `json:"city,omitempty"`
+	Region           string                   `json:"region,omitempty"`
+	RegionCode       string                   `json:"region_code,omitempty"`
+	Country          string                   `json:"country,omitempty"`
+	CountryCode      string                   `json:"country_code,omitempty"`
+	Latitude         float64                  `json:"latitude,omitempty"`
+	Longitude        float64                  `json:"longitude,omitempty"`
+	Providers        int                      `json:"providers"`
+	HardwareAttested int                      `json:"hardware_attested"`
+	Verification     verificationMethodCounts `json:"verification_counts"`
+	GPUCores         int                      `json:"gpu_cores"`
+	MemoryGB         int                      `json:"memory_gb"`
+	Models           []string                 `json:"models,omitempty"`
 }
 
 // publicRequestLocationBucket is the privacy-safe shape returned for
@@ -137,7 +138,10 @@ func (s *Server) computeStats() ([]byte, error) {
 		activePowerWatts float64            // sum of estimated watts over online public providers
 	)
 
+	var verificationTotals verificationCounts
+	machines := map[[2]string]struct{}{}
 	publicProviderModels := s.registry.PublicProviderModels()
+	verifications := s.registry.ProviderVerifications()
 	s.registry.ForEachProvider(func(p *registry.Provider) {
 		// Private-only providers serve only their owner's self-route traffic and
 		// are not part of the public fleet, so they must not inflate public
@@ -145,6 +149,7 @@ func (s *Server) computeStats() ([]byte, error) {
 		if p.PrivateOnly {
 			return
 		}
+		verificationTotals.addProvider(p, verifications[p.ID], machines)
 		activePowerWatts += registry.EstimateMachineWatts(p.Hardware.ChipFamily, p.Hardware.ChipTier, p.Hardware.GPUCores)
 		totalRequests += p.Stats.RequestsServed
 		totalTokensGen += p.Stats.TokensGenerated
@@ -170,6 +175,8 @@ func (s *Server) computeStats() ([]byte, error) {
 
 		prov := map[string]any{
 			"id":                             p.ID,
+			"verification":                   verifications[p.ID],
+			"os_version":                     reportedOSVersion(p),
 			"chip":                           p.Hardware.ChipName,
 			"chip_family":                    p.Hardware.ChipFamily,
 			"chip_tier":                      p.Hardware.ChipTier,
@@ -297,6 +304,7 @@ func (s *Server) computeStats() ([]byte, error) {
 		"location_window_hours":          24,
 		"avg_tokens_per_request":         avgTokens,
 		"active_providers":               len(providers),
+		"verification_counts":            verificationTotals,
 		"active_power_watts":             activePowerWatts,
 		"code_attested_providers":        codeAttestedProviders,
 		"code_attestation_enforced":      codeAttestationEnforced,
@@ -345,6 +353,7 @@ func (s *Server) aggregateProviderLocations() (
 		coordCount       int
 		providers        int
 		hardwareAttested int
+		verification     verificationMethodCounts
 		gpuCores         int
 		memoryGB         int
 	}
@@ -354,12 +363,14 @@ func (s *Server) aggregateProviderLocations() (
 		coordCount       int
 		providers        int
 		hardwareAttested int
+		verification     verificationMethodCounts
 		gpuCores         int
 		memoryGB         int
 	}
 	cities := make(map[cityKey]*cityAgg)
 	regions := make(map[regionKey]*regionAgg)
 
+	verifications := s.registry.ProviderVerifications()
 	s.registry.ForEachProvider(func(p *registry.Provider) {
 		// Private-only providers are not part of the public fleet — keep them off
 		// the public network map and out of its provider/hardware counts.
@@ -383,6 +394,7 @@ func (s *Server) aggregateProviderLocations() (
 			cities[ck] = ca
 		}
 		ca.providers++
+		ca.verification.add(verifications[p.ID])
 		ca.hardwareAttested += hwAttested
 		ca.gpuCores += p.Hardware.GPUCores
 		ca.memoryGB += p.Hardware.MemoryGB
@@ -399,6 +411,7 @@ func (s *Server) aggregateProviderLocations() (
 			regions[rk] = ra
 		}
 		ra.providers++
+		ra.verification.add(verifications[p.ID])
 		ra.hardwareAttested += hwAttested
 		ra.gpuCores += p.Hardware.GPUCores
 		ra.memoryGB += p.Hardware.MemoryGB
@@ -425,6 +438,7 @@ func (s *Server) aggregateProviderLocations() (
 			CountryCode:      ca.key.CountryCode,
 			Providers:        ca.providers,
 			HardwareAttested: ca.hardwareAttested,
+			Verification:     ca.verification,
 			GPUCores:         ca.gpuCores,
 			MemoryGB:         ca.memoryGB,
 		}
@@ -449,6 +463,7 @@ func (s *Server) aggregateProviderLocations() (
 			CountryCode:      ra.key.CountryCode,
 			Providers:        ra.providers,
 			HardwareAttested: ra.hardwareAttested,
+			Verification:     ra.verification,
 			GPUCores:         ra.gpuCores,
 			MemoryGB:         ra.memoryGB,
 		}

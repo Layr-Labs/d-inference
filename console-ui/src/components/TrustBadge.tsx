@@ -2,75 +2,13 @@
 
 import { Shield, ShieldCheck } from "lucide-react";
 import type { TrustMetadata } from "@/lib/api";
-import { useVerificationMode } from "@/components/app-providers/verification-mode";
+import { verificationPresentation } from "@/lib/verification";
 
-const config = {
-  hardware_mda: {
-    icon: ShieldCheck,
-    normalLabel: "Apple-verified hardware",
-    technicalLabel: "Apple Attested",
-    color: "text-teal",
-    bg: "bg-teal-light/50",
-    glow: "trust-glow-hardware",
-  },
-  hardware: {
-    icon: ShieldCheck,
-    normalLabel: "Hardware Verified",
-    technicalLabel: "Hardware Attested",
-    color: "text-teal",
-    bg: "bg-teal-light/50",
-    glow: "trust-glow-hardware",
-  },
-  none: {
-    icon: Shield,
-    normalLabel: "Unverified",
-    technicalLabel: "Unverified",
-    color: "text-text-tertiary",
-    bg: "bg-bg-elevated",
-    glow: "",
-  },
-};
-
-export function TrustBadge({
-  trust,
-  compact = false,
-}: {
-  trust: TrustMetadata;
-  compact?: boolean;
-}) {
-  const { mode } = useVerificationMode();
-
-  const level =
-    trust.trustLevel === "hardware" && trust.mdaVerified
-      ? "hardware_mda"
-      : trust.trustLevel;
-  const c = config[level] || config.none;
-  const Icon = c.icon;
-  const label = mode === "normal" ? c.normalLabel : c.technicalLabel;
-
-  if (compact) {
-    return (
-      <span
-        className={`inline-flex items-center gap-1 text-xs ${c.color} ${c.glow}`}
-        title={label}
-      >
-        <Icon size={12} />
-      </span>
-    );
-  }
-
-  return (
-    <span
-      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${c.color} ${c.bg} ${c.glow}`}
-    >
-      <Icon size={12} />
-      {label}
-      {mode === "technical" && trust.secureEnclave && (
-        <span className="opacity-60">· SE</span>
-      )}
-      {mode === "technical" && trust.mdaVerified && (
-        <span className="opacity-60">· MDA</span>
-      )}
-    </span>
-  );
+export function TrustBadge({ trust, compact = false }: { trust: TrustMetadata; compact?: boolean }) {
+  const view = verificationPresentation(trust.verification);
+  const Icon = view.verified ? ShieldCheck : Shield;
+  const color = view.verified ? "text-teal bg-teal-light/50" : "text-text-tertiary bg-bg-elevated";
+  return <span title={`${view.label} at dispatch`} className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${color}`}>
+    <Icon size={12} />{!compact && view.label}
+  </span>;
 }

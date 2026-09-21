@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-20 · commit `76a8f03d`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -10,6 +10,25 @@ keeps the verdict fresh, and the single routing gate that consumes all of it.
 The legacy levels and flags below retain their meaning. With the explicit serving opt-in, [qualified App Attest authorization](../../reference/provider-authorization.md) is an independent path alongside complete legacy verification. `coordinator/registry/app_attest_authorization.go` (`GrantAppAttestServingAuthorization`) binds permission to the account, verified machine, credential, live connection, endpoint and policy generation. `coordinator/registry/inference_authorization.go` (`authorizeInferenceHandoff`) checks every final inference handoff after queueing. Expired, revoked or replaced authorizations cannot permit new dispatch; no legacy flags are fabricated. Shadow mode alone still changes no trust.
 
 The [durable build qualification policy](../../reference/provider-authorization.md#durable-build-qualification) adds a separate qualification generation to App Attest leases. `coordinator/appattest/service/authorizer.go` (`apply`) recomputes the build/code match using the current approved record and retained Apple-signed full measurement; cached true booleans cannot survive withdrawal. `coordinator/registry/app_attest_authorization.go` (`providerHasAppAttestAuthorizationLocked`) rejects stale generations at every shared dispatch gate. Qualification expiry is independent of assertion and receipt expiry.
+
+## Presentation and dispatch history
+
+`coordinator/registry/verification.go` (`ProviderVerification`) evaluates the
+two authorization paths under registry/provider locks and exports only bounded
+states and timestamps. Legacy hardware trust is preserved as evidence, not
+rewritten by App Attest. `authorizeInferenceHandoff` captures the verdict on the
+pending request at the final writer check. The response metadata uses that
+immutable winning-attempt snapshot, not a later live grant.
+
+Live views use each path's expiry and a bounded source-snapshot age. Historical
+chat uses the recorded dispatch time; revocation fences future work without
+rewriting prior claims. Counts distinguish connection-level union/breakdowns
+from privately deduplicated machine inventory and reported OS adoption. See
+[the presentation contract](../../reference/api-contracts.md#verification-presentation-contract)
+for cache bounds and unknown-field behavior. No raw Apple certificate or receipt
+is added to public/owner presentation; detailed archive access remains on its
+existing authorized operations path.
+
 
 ## Context
 

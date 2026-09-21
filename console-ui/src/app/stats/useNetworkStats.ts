@@ -1,10 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVisiblePolling } from "@/hooks/useVisiblePolling";
 import { capacityModelsFromResponse, catalogDataFromResponse, type CapacityModelSummary, type CatalogDataSummary } from "@/lib/stats-model-filter";
 import type { PlatformStats } from "./platform-types";
 import type { NetworkWindowTotals } from "./types";
+
+import { useVerificationClock } from "@/hooks/useVerificationClock";
+import { currentVerification } from "@/lib/verification";
 
 export const STATS_REFRESH_MS = 30_000;
 
@@ -99,5 +102,7 @@ export function useNetworkStats() {
   }, []);
 
   useVisiblePolling(refresh, STATS_REFRESH_MS);
-  return { stats, catalogData, capacityModels, totals24h, snapshotAt, fetchedAt, isMock, refreshing, error, secondaryError, refresh };
+  const now = useVerificationClock();
+  const currentStats = useMemo(() => stats && ({ ...stats, providers: stats.providers.map((p) => ({ ...p, verification: currentVerification(p.verification, now) })) }), [stats, now]);
+  return { stats: currentStats, catalogData, capacityModels, totals24h, snapshotAt, fetchedAt, isMock, refreshing, error, secondaryError, refresh };
 }

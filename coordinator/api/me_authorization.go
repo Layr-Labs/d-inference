@@ -10,9 +10,11 @@ import (
 // ProviderServingAuthorization takes registry and provider locks itself.
 func (s *Server) attachMyProviderAuthorization(mp *myProvider, live *registry.Provider, account string) {
 	mp.AppAttestAuthorized, mp.AuthorizationExpiresAt = false, 0
+	mp.Verification = s.registry.ProviderVerification(nil)
 	if live == nil || mp.AccountID != account || !mp.Online {
 		return
 	}
+	mp.Verification = s.registry.ProviderVerification(live)
 	lease, valid := s.registry.ProviderServingAuthorization(live)
 	if !valid || lease.AccountID != account || lease.Endpoint != mp.ProviderKey {
 		return

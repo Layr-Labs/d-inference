@@ -86,8 +86,10 @@ export interface ChatMessage {
 }
 
 export interface TrustMetadata {
+  verification?: import("../verification").Verification;
+  encrypted?: boolean;
   attested: boolean;
-  trustLevel: "none" | "hardware";
+  trustLevel: "none" | "hardware" | "self_signed";
   secureEnclave: boolean;
   mdaVerified: boolean;
   providerChip: string;

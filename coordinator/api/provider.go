@@ -3699,13 +3699,14 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	type providerAttestation struct {
-		ProviderID             string `json:"provider_id"`
-		ChipName               string `json:"chip_name"`
-		HardwareModel          string `json:"hardware_model"`
-		TrustLevel             string `json:"trust_level"`
-		Status                 string `json:"status"`
-		AppAttestAuthorized    bool   `json:"app_attest_authorized"`
-		AuthorizationExpiresAt int64  `json:"authorization_expires_at,omitempty"`
+		ProviderID             string                `json:"provider_id"`
+		ChipName               string                `json:"chip_name"`
+		HardwareModel          string                `json:"hardware_model"`
+		TrustLevel             string                `json:"trust_level"`
+		Status                 string                `json:"status"`
+		Verification           registry.Verification `json:"verification"`
+		AppAttestAuthorized    bool                  `json:"app_attest_authorized"`
+		AuthorizationExpiresAt int64                 `json:"authorization_expires_at,omitempty"`
 
 		// Hardware specs
 		MemoryGB int      `json:"memory_gb"`
@@ -3739,6 +3740,7 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 	var providers []providerAttestation
 
 	publicProviderModels := s.registry.PublicProviderModels()
+	verifications := s.registry.ProviderVerifications()
 	// Read current authorization outside ForEachProvider's registry lock.
 	// Never publish account, credential or canonical machine identifiers here.
 	appAttestLeases := make(map[string]registry.AppAttestServingAuthorization)
@@ -3767,13 +3769,14 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		// consistent.
 		isHardware := trustLevel == registry.TrustHardware
 		pa := providerAttestation{
-			ProviderID:  p.ID,
-			TrustLevel:  string(trustLevel),
-			Status:      string(status),
-			MemoryGB:    p.Hardware.MemoryGB,
-			GPUCores:    p.Hardware.GPUCores,
-			MDMVerified: isHardware,
-			MDAVerified: mdaVerified && isHardware,
+			ProviderID:   p.ID,
+			Verification: verifications[p.ID],
+			TrustLevel:   string(trustLevel),
+			Status:       string(status),
+			MemoryGB:     p.Hardware.MemoryGB,
+			GPUCores:     p.Hardware.GPUCores,
+			MDMVerified:  isHardware,
+			MDAVerified:  mdaVerified && isHardware,
 		}
 
 		pa.Models = append(pa.Models, publicProviderModels[p.ID].Models...)

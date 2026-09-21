@@ -7,7 +7,6 @@
 import { Cpu, ShieldCheck, Zap } from "lucide-react";
 import type { MyProvider } from "../types";
 import { computeWarnings } from "../warnings";
-import { hasCurrentAppAttestAuthorization } from "../authorization";
 import { reportedMacOSMajor } from "../macos-upgrade";
 import { deriveRouting, routingMeta, selectTopWarning, type RoutingCtx } from "./routing";
 import { StatusPill, TrustPill } from "./StatusPill";
@@ -77,7 +76,7 @@ export function MachineCard({
         </div>
         <div className="flex flex-col items-end gap-1.5 shrink-0">
           <StatusPill status={provider.status} />
-          <TrustPill trustLevel={provider.trust_level} appAttest={hasCurrentAppAttestAuthorization(provider)} />
+          <TrustPill verification={provider.verification} />
           <span className="text-[10px] text-text-tertiary">{reportedMacOSMajor(provider) !== null ? `Reported macOS ${provider.os_version}` : "macOS version unknown"}</span>
           {removable && <RemoveMachineButton provider={provider} onRemoved={onRemoved} />}
         </div>

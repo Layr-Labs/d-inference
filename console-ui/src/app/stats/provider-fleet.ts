@@ -1,3 +1,5 @@
+import { currentVerification, verificationPresentation } from "@/lib/verification";
+
 export interface CPUCores {
   total: number;
   performance: number;
@@ -5,6 +7,8 @@ export interface CPUCores {
 }
 
 export interface ProviderStats {
+  verification?: import("@/lib/verification").Verification;
+  os_version?: string;
   id: string;
   chip: string;
   chip_family: string;
@@ -32,7 +36,7 @@ export interface ProviderStats {
 
 export type ProviderRouteState = "serving" | "ready" | "attention" | "unreported";
 export type ProviderStatusFilter = "all" | ProviderRouteState;
-export type ProviderTrustFilter = "all" | "hardware" | "basic";
+export type ProviderTrustFilter = "all" | "hardware" | "basic" | "verified" | "app_attest" | "legacy" | "dual";
 export type ProviderSortKey = "readiness" | "hardware" | "requests" | "tokens" | "chip";
 
 export interface ProviderFleetSummary {
@@ -57,6 +61,7 @@ export function hasFreshChallenge(iso?: string, now = Date.now()): boolean {
 /** Published checks are useful context, but do not include every routing gate. */
 export function passesPublishedVerificationChecks(provider: ProviderStats, now = Date.now()): boolean {
   const statusOK = provider.status === "online" || provider.status === "serving";
+  if (provider.verification) return statusOK && verificationPresentation(currentVerification(provider.verification, now)).verified;
   return statusOK && provider.trust_level === "hardware" && provider.runtime_verified === true && hasFreshChallenge(provider.last_challenge_verified, now);
 }
 
@@ -126,7 +131,12 @@ export function compareProviders(
 export function matchesTrustFilter(provider: ProviderStats, filter: ProviderTrustFilter): boolean {
   if (filter === "all") return true;
   if (filter === "hardware") return provider.trust_level === "hardware";
-  return provider.trust_level !== "hardware";
+  const v = verificationPresentation(currentVerification(provider.verification));
+  if (filter === "verified") return v.verified;
+  if (filter === "app_attest") return v.appAttest;
+  if (filter === "legacy") return v.legacy;
+  if (filter === "dual") return v.method === "dual";
+  return !v.verified;
 }
 
 export function relativeChallengeLabel(iso?: string, now = Date.now()): string {

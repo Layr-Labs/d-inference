@@ -27,8 +27,8 @@ describe("App Attest dashboard authorization", () => {
       expect(warnings.some((warning) => warning.id === id)).toBe(false);
     }
     expect(routingFor(provider, DEFAULT_CTX)).toBe("routable");
-    render(<AttestationPanel provider={provider} challengeMaxAgeSeconds={360} />);
-    expect(screen.getByText("App Attest serving authorization verified")).toBeInTheDocument();
+    render(<AttestationPanel provider={{ ...provider, verification: { observed_at: Date.now() / 1000, app_attest: { state: "verified", verified_at: Date.now() / 1000, expires_at: provider.authorization_expires_at }, legacy: { state: "pending" } } }} challengeMaxAgeSeconds={360} />);
+    expect(screen.getByText("Verified via App Attest")).toBeInTheDocument();
     expect(screen.queryByText("MDM security posture")).not.toBeInTheDocument();
   });
 

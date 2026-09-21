@@ -23,7 +23,6 @@ import { OnboardingState } from "./OnboardingState";
 import { LoadingState, ErrorState } from "./states";
 import { useCurrentAuthorizations } from "./useCurrentAuthorizations";
 import { MacOSUpgradeNotice } from "@/components/provider-onboarding/MacOSUpgradeNotice";
-import { hasCurrentAppAttestAuthorization } from "../authorization";
 
 export function ProviderDashboard() {
   const {
@@ -46,10 +45,6 @@ export function ProviderDashboard() {
   const verdict = useMemo(() => deriveFleetVerdict(providers, ctx), [providers, ctx]);
   const groups = useMemo(() => buildAttentionGroups(providers, ctx), [providers, ctx]);
   const maxDecode = useMemo(() => fleetMaxDecodeTps(providers), [providers]);
-  const hardwareCount = useMemo(
-    () => providers.filter((p) => p.trust_level === "hardware").length,
-    [providers]
-  );
   // "Update available" nudges machines running below the latest release (the
   // below-minimum case is already surfaced as a blocking attention row).
   const updateAvailable = useMemo(
@@ -90,7 +85,7 @@ export function ProviderDashboard() {
       <FleetHealthStrip verdict={verdict} summary={summary} />
       <AttentionFeed groups={groups} />
       <MachineGrid providers={providers} ctx={ctx} fleetMaxDecodeTps={maxDecode} onRemoved={refetch} />
-      <TrustFooter hardwareCount={hardwareCount} appAttestCount={providers.filter((p) => hasCurrentAppAttestAuthorization(p)).length} total={providers.length} />
+      <TrustFooter providers={providers} />
     </Shell>
   );
 }

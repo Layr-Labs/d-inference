@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { ArrowLeft, ArrowRight } from "lucide-react";
+import { summarizeVerification } from "@/lib/verification";
 import { isProviderRoutable, shortProviderModel, summarizeProviderFleet, type ProviderStats } from "./provider-fleet";
 import { ProviderFilters } from "./providers/ProviderFilters";
 import { ProviderTable } from "./providers/ProviderTable";
@@ -45,7 +46,7 @@ export function ProviderDashboard({ providers }: { providers: ProviderStats[] })
       </div>
       <div className="mt-4 grid grid-cols-2 gap-x-5 gap-y-3 border-b border-border-dim pb-4 sm:grid-cols-4">
         <FleetMetric label="Visible nodes" value={summary.visible} />
-        <FleetMetric label="Hardware verified" value={summary.hardware} />
+        <FleetMetric label="Currently verified" value={summarizeVerification(providers).authorized} />
         <FleetMetric label="Serving now" value={summary.serving} />
         <FleetMetric label="Routing unreported" value={summary.unreported} />
       </div>

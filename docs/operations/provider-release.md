@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-20 · commit `826fa102e`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -15,6 +15,12 @@ collected in [`CHANGELOG.md`](../../CHANGELOG.md). The version bump prepares
 the source for the provider bundle. Publication and coordinator deployment remain
 separate operations; the bump alone does not change the registered release
 returned by `GET /v1/releases/latest`.
+
+Keep `ProviderCore.version` in
+`provider-swift/Sources/ProviderCore/ProviderCore.swift` as the concise release
+identity. Record release history in `CHANGELOG.md`;
+`scripts/check-release-version.sh` checks parity with the coordinator display
+fallback before packaging.
 
 Production publication requires independent [durable App Attest build qualification](app-attest-build-qualification.md). Signing retains immutable bytes and a qualification template; a separate Linux staging job uploads those retained bytes to R2, and the Linux publication job verifies approval before release registration, R2 latest aliases and GitHub publication. Retry only the failed publication job after approval, preserving the original signed artifact. Deploy the matching coordinator first; the existing release key cannot approve builds.
 

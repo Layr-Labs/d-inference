@@ -10,50 +10,6 @@ private func providerCorePtrace(
     _ data: CInt
 ) -> CInt
 
-// MARK: - Command Running
-
-public struct SecurityCommandResult: Sendable, Equatable {
-    public let terminationStatus: Int32
-    public let stdout: String
-    public let stderr: String
-
-    public init(terminationStatus: Int32, stdout: String = "", stderr: String = "") {
-        self.terminationStatus = terminationStatus
-        self.stdout = stdout
-        self.stderr = stderr
-    }
-}
-
-public struct SecurityCommandRunner: @unchecked Sendable {
-    public var run: (_ executablePath: String, _ arguments: [String]) throws -> SecurityCommandResult
-
-    public init(
-        run: @escaping (_ executablePath: String, _ arguments: [String]) throws -> SecurityCommandResult
-    ) {
-        self.run = run
-    }
-
-    public static let live = SecurityCommandRunner { executablePath, arguments in
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executablePath)
-        process.arguments = arguments
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        try process.run()
-        process.waitUntilExit()
-
-        return SecurityCommandResult(
-            terminationStatus: process.terminationStatus,
-            stdout: String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
-            stderr: String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        )
-    }
-}
-
 // MARK: - SIP Status
 
 public enum SIPStatus: Sendable, Equatable {
@@ -206,15 +162,7 @@ public struct BinarySHA256Hasher: Sendable {
         }
         defer { try? handle.close() }
 
-        var hasher = SHA256()
-        while true {
-            let chunk = handle.readData(ofLength: chunkSize)
-            if chunk.isEmpty {
-                break
-            }
-            hasher.update(data: chunk)
-        }
-        return hasher.finalize()
+        return sha256Digest(of: handle, chunkSize: chunkSize)
     }
 }
 

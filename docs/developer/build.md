@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-20 · commit `826fa102e`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -279,6 +279,20 @@ production prompt vectors against a Linux sidecar binary (CI job "Prompt
 Sidecar Tests").
 
 ### 5. Provider CLI (Swift) with source-matched metallib
+
+Build the test product again after changing fixture helpers or assertions;
+`--skip-build` alone reuses the previous executable. The
+[provider test procedure](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib)
+covers isolated CLI configuration, artifact integrity, SSD authentication,
+paged-preflight diagnostics, and stream ordering. Synthetic MLX fixtures need
+the matched metallib; enabled live-model fixtures also need their documented
+model inputs.
+
+To compile all test targets without executing fixtures:
+
+```bash
+(cd provider-swift && swift build --build-tests)
+```
 
 ```bash
 make provider-build

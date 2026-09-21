@@ -176,7 +176,7 @@ public final class AtomicProviderStats: Sendable {
     }
 }
 
-/// Lock-free atomic wrapper using os_unfair_lock for shared mutable state
+/// Lock-backed snapshot of shared mutable state
 /// accessed from both the heartbeat tick and the main event loop.
 public final class ProviderState: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()
@@ -196,7 +196,7 @@ public final class ProviderState: @unchecked Sendable {
 
     /// Bounded per-(model, warm/cold, prompt-bucket, batch-bucket) end-to-end
     /// TTFT statistics from completed real requests, fed by the ProviderLoop's
-    /// streaming path and read lock-free-ish by the quote path. Lives here
+    /// streaming path and read without an actor hop by the quote path. Lives here
     /// because ProviderState is the one object both the loop actor and the
     /// CoordinatorClient actor already share without an actor hop.
     public let ttftTracker = TTFTQuantileTracker()
@@ -265,7 +265,7 @@ public final class ProviderState: @unchecked Sendable {
     }
 
     /// The capacity payload of the LAST heartbeat actually sent on the
-    /// current connection, seq-stamped (routing v2). This is the lock-free
+    /// current connection, seq-stamped (routing v2). This is the lock-backed
     /// published snapshot the capacity-quote path reads: quotes must be
     /// computed from state the coordinator can order by `capacity_seq`, never
     /// from a rebuild it has not seen — and reading it here costs one unfair

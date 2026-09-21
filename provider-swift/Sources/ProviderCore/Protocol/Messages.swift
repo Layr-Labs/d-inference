@@ -1679,10 +1679,13 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public var trustLevel: String
         public var status: String
         public var reason: String
-        public init(trustLevel: String, status: String, reason: String = "") {
+        public var authorization: ProviderAuthorizationStatus?
+        public init(trustLevel: String, status: String, reason: String = "",
+                    authorization: ProviderAuthorizationStatus? = nil) {
             self.trustLevel = trustLevel
             self.status = status
             self.reason = reason
+            self.authorization = authorization
         }
     }
 }
@@ -1722,7 +1725,7 @@ extension CoordinatorMessage: Codable {
         case modelId = "model_id"
         case priority
         case trustLevel = "trust_level"
-        case status, reason
+        case status, reason, authorization
         case models
         // CapacityProbe
         case quoteId = "quote_id"
@@ -1799,6 +1802,7 @@ extension CoordinatorMessage: Codable {
             try container.encode(TypeValue.trustStatus, forKey: .type)
             try container.encode(t.trustLevel, forKey: .trustLevel)
             try container.encode(t.status, forKey: .status)
+            try container.encodeIfPresent(t.authorization, forKey: .authorization)
             if !t.reason.isEmpty {
                 try container.encode(t.reason, forKey: .reason)
             }
@@ -1906,7 +1910,8 @@ extension CoordinatorMessage: Codable {
             self = .trustStatus(TrustStatus(
                 trustLevel: try container.decode(String.self, forKey: .trustLevel),
                 status: try container.decode(String.self, forKey: .status),
-                reason: try container.decodeIfPresent(String.self, forKey: .reason) ?? ""
+                reason: try container.decodeIfPresent(String.self, forKey: .reason) ?? "",
+                authorization: try container.decodeIfPresent(ProviderAuthorizationStatus.self, forKey: .authorization)
             ))
         }
     }

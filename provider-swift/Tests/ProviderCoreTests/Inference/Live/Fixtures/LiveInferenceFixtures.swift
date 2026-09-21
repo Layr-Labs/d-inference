@@ -68,6 +68,27 @@ enum LiveInferenceFixtures {
         return .missing(modelID)
     }
 
+    // MARK: Matching build products
+
+    static func buildProduct(_ name: String) throws -> URL {
+        try buildProduct(name, testBundleURL: Bundle(for: BundleSentinel.self).bundleURL)
+    }
+
+    /// Bind child executables/resources to the running test configuration,
+    /// including custom scratch paths. Never borrow a stale debug/release peer.
+    static func buildProduct(_ name: String, testBundleURL: URL) throws -> URL {
+        let directory = testBundleURL.deletingLastPathComponent()
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"),
+            testBundleURL.pathExtension == "xctest",
+            ["debug", "release"].contains(directory.lastPathComponent)
+        else { throw CocoaError(.fileNoSuchFile) }
+        let product = directory.appendingPathComponent(name)
+        guard FileManager.default.fileExists(atPath: product.path) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        return product
+    }
+
     // MARK: Metallib bootstrap
 
     /// MLX (the C++ runtime) looks for `mlx.metallib` next to the binary

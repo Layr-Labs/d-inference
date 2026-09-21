@@ -33,11 +33,11 @@ const STEPS: StepData[] = [
     iconBg: "bg-purple-light",
     title: "Apple Hardware",
     description:
-      "The coordinator verifies the provider's Secure Enclave identity and hardware security posture.",
+      "The coordinator verifies the provider's identity and current permission to serve inference.",
     technical:
       "The provider runs on Apple Silicon with a Secure Enclave identity key. " +
-      "MDM SecurityInfo checks System Integrity Protection and Secure Boot before hardware trust is granted. " +
-      "Apple Managed Device Attestation (MDA) provides a separate certificate proof when verified.",
+      "Legacy hardware trust uses MDM SecurityInfo to check System Integrity Protection and Secure Boot, with MDA certificate proof reported separately. " +
+      "Eligible macOS 27+ providers can instead serve through an independently enabled, qualified App Attest path without MDM.",
   },
   {
     icon: Fingerprint,
@@ -56,9 +56,9 @@ const STEPS: StepData[] = [
     icon: ShieldCheck,
     iconColor: "text-blue",
     iconBg: "bg-blue-light",
-    title: "Apple Certificate, When Verified",
+    title: "Legacy MDA Certificate",
     description:
-      "Providers marked Apple attestation verified have an Apple-signed device certificate checked by the coordinator.",
+      "Legacy MDA verification confirms an Apple-signed device certificate. App Attest authorization is separate and does not imply MDA verification.",
     technical:
       "When mda_verified is true, the coordinator has verified the device certificate chain " +
       "against Apple's pinned Enterprise Attestation Root CA. This proof is reported separately from hardware trust. " +
@@ -88,10 +88,9 @@ const STEPS: StepData[] = [
     description:
       "Periodic checks keep provider trust up to date. Providers that fail required security checks stop receiving requests.",
     technical:
-      "The coordinator sends attestation challenges (32-byte random nonce + timestamp) " +
-      "every 5 minutes and verifies the provider's SE signature and required security posture. " +
-      "Trust and routing decisions distinguish proven security failures from transient timeouts; " +
-      "RDMA enablement alone does not revoke hardware trust.",
+      "Legacy verification uses periodic signed challenges and security-posture checks. " +
+      "App Attest serving permission is time-limited, refreshed and checked before each inference handoff; expired or revoked permission cannot authorize a new request. " +
+      "Legacy trust decisions distinguish proven security failures from transient timeouts; RDMA enablement alone does not revoke hardware trust.",
   },
 ];
 
@@ -221,8 +220,8 @@ export function TrustExplainerModal({ open, onClose }: TrustExplainerModalProps)
                   Privacy-Preserving Verification
                 </p>
                 <p className="text-xs text-text-secondary mt-1 leading-relaxed">
-                  The coordinator publishes hardware trust and the separate
-                  Apple attestation status without exposing the
+                  The coordinator reports legacy hardware/MDA evidence and
+                  App Attest authorization separately, without exposing the
                   device&apos;s serial number, UDID, or raw certificate.
                 </p>
               </div>

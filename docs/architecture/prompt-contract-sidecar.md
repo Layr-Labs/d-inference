@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-13 · commit `69454529a`
+> Last updated: 2026-09-17 · commit `53e135e9e`
 
 How the coordinator's `promptsidecar` child process derives deterministic,
 provider-compatible token boundaries so exact-cache routing can predict which
@@ -188,7 +188,7 @@ the provider contract, relax receipt checks or clear existing fences.
 
 The semantic versions (`CurrentVersions`) are:
 
-- normalization: `darkbloom-request-normalization-v3` (includes Gemma 4 compatibility, explicit empty content on detached Harmony reasoning turns, and the provider's existing GPT-OSS high-to-medium effort policy)
+- normalization: `darkbloom-request-normalization-v6` (retains prior model policies and extends the native Qwen4 text prompt and reasoning-effort policy to the exact registry ID)
 - renderer: `swift-jinja-request-date-compatible-v3`
 - tokenizer: `huggingface-tokenizer-json-v1`
 - block hash: `PromptContractIdentity.blockHashVersion`, stated in
@@ -196,6 +196,53 @@ The semantic versions (`CurrentVersions`) are:
 
 Changing an artifact digest, path, role, semantic implementation, or block size
 creates a different contract.
+
+The instruction contract preserves the user's independent requested calls
+when `parallel_tool_calls` is true, null or omitted; explicit false keeps the
+previous singular wording. Named calls remain restricted to the selected
+function. `ToolChoicePromptPolicy.prepare` and
+`coordinator/promptsidecar/src/normalize.rs` (`apply_tool_choice_policy`) share
+exact instruction fixtures across all four parallel settings. Auto and none
+modes are unchanged.
+
+V6 leaves the original messages unchanged for required/named text requests only
+when the serving ID is a qualified Qwen4 ID and `model_type` is `qwen4_exp`.
+The registry and legacy IDs are defined in
+`provider-swift/Sources/ProviderCoreFoundation/Qwen4ModelIdentity.swift`
+(`isQualified`) and mirrored by `coordinator/promptsidecar/src/qwen4_identity.rs`.
+Media-bearing requests do not select this policy. The trained template supplies
+the tool format; the provider's native framing constraint and final
+name/schema/cardinality validator enforce the request. Selected named tools are
+still filtered before rendering. Swift serving, admission/accounting and the
+Rust planner share this predicate; other models retain their prior messages.
+Sources: `provider-swift/Sources/ProviderCore/Inference/Prompting/ToolChoicePromptPolicy.swift`
+(`prepare`), `provider-swift/Sources/ProviderCore/Inference/Prompting/ProviderPromptContractPipeline.swift`
+(`tokenize`) and `coordinator/promptsidecar/src/normalize.rs` (`apply_tool_choice_policy`).
+
+Native `qwen4_exp` / `qwen4_exp_text` and the explicitly supported Nemotron
+identities preserve caller reasoning during forced tools instead of inheriting
+the legacy Qwen thinking-OFF workaround. Typed `reasoning.effort` takes
+precedence over the raw effort alias; malformed typed controls fail planning.
+The owned Next artifact rejects unsupported active efforts rather than mapping
+them to a different value. The context/error vectors mirror
+`Qwen4SupportPolicy.validateReasoningContext` and
+`MultiModelBatchSchedulerEngine.templateAdditionalContext`.
+
+A v3/v4/v5 provider and v6 coordinator (or the reverse) cannot earn cache credit or
+affinity from the other's contract: `coordinator/registry/cache_tiers.go`
+(`capabilityMatchesPlan`) requires identical IDs while ordinary serving remains
+available. Before an authorized rollout, regenerate prompt artifacts/preloaded
+contracts and any configured exact artifact allowlist using the new identity;
+do not relabel old cache objects as v6. Renderer, tokenizer and block-hash
+versions are unchanged. No deployment or allowlist mutation follows merely
+from building this private candidate.
+
+The new registry ID additionally requires a compatible provider version for
+all inference, not merely cache credit; see the
+[registry-ID gate](routing.md#native-model-capacity-and-registry-identity).
+The version transition preserves existing models' template inputs and token
+arrays while regenerating contract-dependent hashes. It is not a change to
+model weights or a new floating-point baseline.
 
 The artifact loader records the pinned `swift-transformers` precedence:
 `chat_template.jinja`, then `chat_template.json`, then the tokenizer-config

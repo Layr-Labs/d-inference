@@ -29,6 +29,7 @@ export {
   updateApiKey,
   deleteApiKey,
   rotateApiKey,
+  revokeLegacyApiKey,
 } from "./keys";
 export { deleteProvider } from "./providers";
 export { streamChat } from "../chat/stream";

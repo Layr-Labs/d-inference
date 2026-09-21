@@ -41,6 +41,8 @@ const (
 type firstContentDeadlineBases struct {
 	upstream    time.Duration
 	coordinator time.Duration
+	perToken    time.Duration
+	customSLA   bool
 }
 
 var (
@@ -62,6 +64,9 @@ var (
 // dispatch cannot select different model sets.
 func defaultExactFirstContentDeadlineBases() map[string]firstContentDeadlineBases {
 	return map[string]firstContentDeadlineBases{
+		"ternary-bonsai-2-27b":                    bonsaiFirstContentSLA(),
+		"EigenLabs/Ternary-Bonsai-2-27B-MLX-2bit": bonsaiFirstContentSLA(),
+		"prism-ml/Ternary-Bonsai-2-27B-mlx-2bit":  bonsaiFirstContentSLA(),
 		Qwen3VL30BA3BInstructModelID: {
 			upstream:    Qwen3VL30BA3BInstructUpstreamFirstContentBase,
 			coordinator: Qwen3VL30BA3BInstructCoordinatorFirstContentBase,
@@ -74,6 +79,13 @@ func exactFirstContentDeadlineBases(model string) (firstContentDeadlineBases, bo
 	bases, ok := exactBases[model]
 	basesMu.RUnlock()
 	return bases, ok
+}
+
+// HasFirstContentPolicy lets account-scoped callers prefer an explicit public
+// alias policy over the resolved build's defaults.
+func HasFirstContentPolicy(model string) bool {
+	_, ok := exactFirstContentDeadlineBases(model)
+	return ok
 }
 
 // SetFirstContentBasesFromEnv parses an override of the form
@@ -127,10 +139,10 @@ func SetFirstContentBasesFromEnv(raw string) (replaced, removed int) {
 			// The coordinator base (upstream − headroom) must stay positive.
 			continue
 		}
-		next[model] = firstContentDeadlineBases{
-			upstream:    upstream,
-			coordinator: upstream - FirstContentResponseHeadroom,
-		}
+		policy := next[model]
+		policy.upstream = upstream
+		policy.coordinator = upstream - FirstContentResponseHeadroom
+		next[model] = policy
 		replaced++
 	}
 	if replaced == 0 && removed == 0 {
@@ -151,8 +163,13 @@ func UpstreamFirstContentDeadline(model string, estimatedPromptTokens int, defau
 	if base <= 0 {
 		base = StandardUpstreamFirstContentBase
 	}
-	if exact, ok := exactFirstContentDeadlineBases(model); ok && base > exact.upstream {
-		base = exact.upstream
+	if exact, ok := exactFirstContentDeadlineBases(model); ok {
+		if exact.customSLA {
+			return addFirstContentSlope(exact.upstream, estimatedPromptTokens, exact.perToken)
+		}
+		if base > exact.upstream {
+			base = exact.upstream
+		}
 	}
 	return addPromptTokenSlope(base, estimatedPromptTokens)
 }
@@ -167,15 +184,17 @@ func CoordinatorFirstContentDeadline(model string, estimatedPromptTokens int, de
 	if base <= 0 {
 		base = StandardUpstreamFirstContentBase - FirstContentResponseHeadroom
 	}
-	if exact, ok := exactFirstContentDeadlineBases(model); ok && base > exact.coordinator {
-		base = exact.coordinator
+	if exact, ok := exactFirstContentDeadlineBases(model); ok {
+		if exact.customSLA {
+			return addFirstContentSlope(exact.coordinator, estimatedPromptTokens, exact.perToken)
+		}
+		if base > exact.coordinator {
+			base = exact.coordinator
+		}
 	}
 	return addPromptTokenSlope(base, estimatedPromptTokens)
 }
 
 func addPromptTokenSlope(base time.Duration, estimatedPromptTokens int) time.Duration {
-	if estimatedPromptTokens < 0 {
-		estimatedPromptTokens = 0
-	}
-	return base + time.Duration(estimatedPromptTokens)*time.Millisecond
+	return addFirstContentSlope(base, estimatedPromptTokens, time.Millisecond)
 }

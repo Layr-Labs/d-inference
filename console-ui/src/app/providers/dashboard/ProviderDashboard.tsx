@@ -21,6 +21,9 @@ import { MachineGrid } from "./MachineGrid";
 import { TrustFooter } from "./TrustFooter";
 import { OnboardingState } from "./OnboardingState";
 import { LoadingState, ErrorState } from "./states";
+import { useCurrentAuthorizations } from "./useCurrentAuthorizations";
+import { MacOSUpgradeNotice } from "@/components/provider-onboarding/MacOSUpgradeNotice";
+import { hasCurrentAppAttestAuthorization } from "../authorization";
 
 export function ProviderDashboard() {
   const {
@@ -37,7 +40,8 @@ export function ProviderDashboard() {
     refetch,
   } = useFleetData();
 
-  const providers = useMemo(() => providersResp?.providers ?? [], [providersResp]);
+  const reportedProviders = useMemo(() => providersResp?.providers ?? [], [providersResp]);
+  const providers = useCurrentAuthorizations(reportedProviders);
 
   const verdict = useMemo(() => deriveFleetVerdict(providers, ctx), [providers, ctx]);
   const groups = useMemo(() => buildAttentionGroups(providers, ctx), [providers, ctx]);
@@ -82,10 +86,11 @@ export function ProviderDashboard() {
         pollFailed={pollFailed}
         updateAvailable={updateAvailable}
       />
+      <MacOSUpgradeNotice providers={providers} />
       <FleetHealthStrip verdict={verdict} summary={summary} />
       <AttentionFeed groups={groups} />
       <MachineGrid providers={providers} ctx={ctx} fleetMaxDecodeTps={maxDecode} onRemoved={refetch} />
-      <TrustFooter hardwareCount={hardwareCount} total={providers.length} />
+      <TrustFooter hardwareCount={hardwareCount} appAttestCount={providers.filter((p) => hasCurrentAppAttestAuthorization(p)).length} total={providers.length} />
     </Shell>
   );
 }

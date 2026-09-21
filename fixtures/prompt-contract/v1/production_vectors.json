@@ -4,7 +4,7 @@
     {
       "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
       "model_type": null,
-      "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+      "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
       "cache_routing_eligible": true,
       "cases": [
         {
@@ -42,7 +42,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 54,
             "block_boundaries": []
           },
@@ -133,7 +133,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 54,
             "block_boundaries": []
           },
@@ -245,7 +245,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 58,
             "block_boundaries": []
           },
@@ -510,15 +510,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 377,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "59a17e82dfc1a13f28065015f473be93323fed8cd6003c3235833956ea78eeeb"
+                "chain_hash": "74a55835205002ed77f80fa429245a974f09ad53a9896ecbe4b2011bc60d97a9"
               }
             ],
-            "last_complete_block_hash": "59a17e82dfc1a13f28065015f473be93323fed8cd6003c3235833956ea78eeeb"
+            "last_complete_block_hash": "74a55835205002ed77f80fa429245a974f09ad53a9896ecbe4b2011bc60d97a9"
           },
           "token_ids": [
             248045,
@@ -942,7 +942,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 54,
             "block_boundaries": []
           },
@@ -1038,7 +1038,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 256,
             "block_boundaries": []
           },
@@ -1348,7 +1348,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 59,
             "block_boundaries": []
           },
@@ -1734,19 +1734,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 600,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "d7c60f86b9f109453a4a7683dffe1b2ce86151ec9bc67b08170c4708fe305d66"
+                "chain_hash": "23f7103c84779a3f84d4ffb92a0c565d3365b6d94f0c8db56481ad15e4851dba"
               },
               {
                 "token_count": 512,
-                "chain_hash": "07d1c7693ead8b4ce98ca6d782c6f58fcf360a1df17603853cffa6507d5d11a5"
+                "chain_hash": "dd8d25bcc22cedc1bea8650f44f46073fabe3ad8a4173e5f9d19cd062239d4dd"
               }
             ],
-            "last_complete_block_hash": "07d1c7693ead8b4ce98ca6d782c6f58fcf360a1df17603853cffa6507d5d11a5"
+            "last_complete_block_hash": "dd8d25bcc22cedc1bea8650f44f46073fabe3ad8a4173e5f9d19cd062239d4dd"
           },
           "token_ids": [
             248045,
@@ -2489,7 +2489,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 142,
             "block_boundaries": []
           },
@@ -2691,23 +2691,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 803,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "9a0e79e2f6bc0e1a0e9461fbb8f574912e84e787094f9348b8841cf1bf08394c"
+                "chain_hash": "3d1ff2df5fae1751f86a0d7f6144f1f76f0198a00756187de4763dff4bd614a0"
               },
               {
                 "token_count": 512,
-                "chain_hash": "53156abd72059511ea57235a30f03e8f3858d475b22b9910247e3df2a0164ee0"
+                "chain_hash": "ddb911f277a6494ee2fafe78b7d549460f25215f14c2cadf3f0405306c339a29"
               },
               {
                 "token_count": 768,
-                "chain_hash": "5d2bb02cb3687b4025b78cb2e9c4571c6bc31c0c191a2c30a073474e69debef6"
+                "chain_hash": "abe1eed9fbd1dc5a66e2325f4682e10a39da4d48f740d8d9915241e03996a105"
               }
             ],
-            "last_complete_block_hash": "5d2bb02cb3687b4025b78cb2e9c4571c6bc31c0c191a2c30a073474e69debef6"
+            "last_complete_block_hash": "abe1eed9fbd1dc5a66e2325f4682e10a39da4d48f740d8d9915241e03996a105"
           },
           "token_ids": [
             248045,
@@ -3612,23 +3612,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 862,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "b2acb4edb87e6deea1038772d6bb618925b5b1fb9adb5beba55f8602fa5cd0d3"
+                "chain_hash": "c14265ea75fdabbfd24add413417f9b77a039b225e81e7a017f98f41025c4cec"
               },
               {
                 "token_count": 512,
-                "chain_hash": "49783f8476a029e1ef516e2f76c978ad2e0b4f4ee4f4a28c14ac91513a723ce3"
+                "chain_hash": "f0aae5abd3cbc533de8d0b187cde3b8aa76e228c5f5d81f8d6d3baec1c402c52"
               },
               {
                 "token_count": 768,
-                "chain_hash": "ef720889d49c44336e05853ae1613e4615c84d4c22df9695d8e00ebfcfbc66e2"
+                "chain_hash": "709ff8456bb1e7a1fb8bd9b45b6ec6abac197437a4799197017855f0c93a1b59"
               }
             ],
-            "last_complete_block_hash": "ef720889d49c44336e05853ae1613e4615c84d4c22df9695d8e00ebfcfbc66e2"
+            "last_complete_block_hash": "709ff8456bb1e7a1fb8bd9b45b6ec6abac197437a4799197017855f0c93a1b59"
           },
           "token_ids": [
             248045,
@@ -4530,27 +4530,27 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 1025,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "73d172a050446f9ee54acc40224c99c4413be44730bf596894ef1bfadf041e2e"
+                "chain_hash": "61df6b8dd3c62d32c8a25bdf3034fa15fb93e9164d496e2f48ccf08dfb9ff19d"
               },
               {
                 "token_count": 512,
-                "chain_hash": "b49fb5897620f003d32ff1b3dadf96abd6b752b979e8decd9eab7540f934a879"
+                "chain_hash": "b2c0583689a5b213550ca9084f8afdfbcdeda84bd69de8a6592d3f195caae758"
               },
               {
                 "token_count": 768,
-                "chain_hash": "a1db2eea26fa77a8b736942d628ad1af217143adb33fe0bafaef949ad9677ca5"
+                "chain_hash": "fc13c3534dba3e952a8c1c1239423a0e95bb9a0c2af76691f77ea9d8b9017eea"
               },
               {
                 "token_count": 1024,
-                "chain_hash": "20e0bc2c9fbb59c71b18831e0154485663c3af7f29529a52ff872d1bf3ed8d03"
+                "chain_hash": "354ebd17726bac8d46e11c4911db0c74057a6bccc09e9771575dad8caf77c5b9"
               }
             ],
-            "last_complete_block_hash": "20e0bc2c9fbb59c71b18831e0154485663c3af7f29529a52ff872d1bf3ed8d03"
+            "last_complete_block_hash": "354ebd17726bac8d46e11c4911db0c74057a6bccc09e9771575dad8caf77c5b9"
           },
           "token_ids": [
             248045,
@@ -5667,15 +5667,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 484,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "1f67f62926f0d61ce314f475e5e1785308ff4c4469c394011cff1275035444ee"
+                "chain_hash": "5011134104e385d4833d92faa31fe089fd900e4c904c7d997c1a30085cefae1b"
               }
             ],
-            "last_complete_block_hash": "1f67f62926f0d61ce314f475e5e1785308ff4c4469c394011cff1275035444ee"
+            "last_complete_block_hash": "5011134104e385d4833d92faa31fe089fd900e4c904c7d997c1a30085cefae1b"
           },
           "token_ids": [
             248045,
@@ -6205,7 +6205,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 56,
             "block_boundaries": []
           },
@@ -6308,7 +6308,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 13,
             "block_boundaries": []
           },
@@ -6381,19 +6381,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 756,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "3ec4115850108b4e48624f4cd1fc403b575f2739d92f26ea7fc54de8301cb891"
+                "chain_hash": "9987e9772e9049ca1a826cba1fea2399187813967108f7889f234a6d9aa8605b"
               },
               {
                 "token_count": 512,
-                "chain_hash": "56adb08ac27db4dc3af85ddba52910153ac6d0ca6e05938f2c09ea853b5d9765"
+                "chain_hash": "4aeb0d3b41c2f2f3914c5af5a57ae19856f6e29ff1f2862b941c401bd9243b45"
               }
             ],
-            "last_complete_block_hash": "56adb08ac27db4dc3af85ddba52910153ac6d0ca6e05938f2c09ea853b5d9765"
+            "last_complete_block_hash": "4aeb0d3b41c2f2f3914c5af5a57ae19856f6e29ff1f2862b941c401bd9243b45"
           },
           "token_ids": [
             248045,
@@ -7235,11 +7235,11 @@
             "messages": [
               {
                 "role": "system",
-                "content": "Call the declared function 'weather' now. You must emit a 'weather' tool call with valid arguments before any final answer, even when another function seems more relevant. Your entire response must be that tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
+                "content": "Call the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when another function seems more relevant. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of 'weather' tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
               },
               {
                 "role": "user",
-                "content": "Look up weather.\n\nCall the declared function 'weather' now. You must emit a 'weather' tool call with valid arguments before any final answer, even when another function seems more relevant. Your entire response must be that tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
+                "content": "Look up weather.\n\nCall the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when another function seems more relevant. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of 'weather' tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
               }
             ],
             "tools": [
@@ -7269,15 +7269,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
-            "prompt_token_count": 393,
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
+            "prompt_token_count": 465,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "06b724c528f739c9f5cb81ccec92466398129e3e18264704a1106fd8c4cc394c"
+                "chain_hash": "c7a67bf2a9b4495503e23b8236047b0142aa78da79d23c7867fc2a401e9f57ba"
               }
             ],
-            "last_complete_block_hash": "06b724c528f739c9f5cb81ccec92466398129e3e18264704a1106fd8c4cc394c"
+            "last_complete_block_hash": "c7a67bf2a9b4495503e23b8236047b0142aa78da79d23c7867fc2a401e9f57ba"
           },
           "token_ids": [
             248045,
@@ -7534,12 +7534,14 @@
             1394,
             1902,
             16201,
-            264,
+            799,
+            466,
+            777,
             359,
             14764,
             6,
             5224,
-            1562,
+            6526,
             440,
             2610,
             5789,
@@ -7556,14 +7558,48 @@
             777,
             9468,
             13,
+            28763,
+            660,
+            9209,
+            6526,
+            310,
+            359,
+            14764,
+            6,
+            10897,
+            539,
+            279,
+            1156,
+            303,
+            411,
+            1965,
+            13,
+            3054,
+            524,
+            2842,
+            1238,
+            279,
+            1118,
+            1562,
+            466,
+            3655,
+            364,
+            2961,
+            1881,
+            9209,
+            6526,
+            13,
             4465,
             4307,
             1965,
             1902,
-            381,
-            421,
+            6475,
+            314,
+            359,
+            14764,
+            6,
             5224,
-            1562,
+            6526,
             26,
             264,
             1414,
@@ -7610,12 +7646,14 @@
             1394,
             1902,
             16201,
-            264,
+            799,
+            466,
+            777,
             359,
             14764,
             6,
             5224,
-            1562,
+            6526,
             440,
             2610,
             5789,
@@ -7632,14 +7670,48 @@
             777,
             9468,
             13,
+            28763,
+            660,
+            9209,
+            6526,
+            310,
+            359,
+            14764,
+            6,
+            10897,
+            539,
+            279,
+            1156,
+            303,
+            411,
+            1965,
+            13,
+            3054,
+            524,
+            2842,
+            1238,
+            279,
+            1118,
+            1562,
+            466,
+            3655,
+            364,
+            2961,
+            1881,
+            9209,
+            6526,
+            13,
             4465,
             4307,
             1965,
             1902,
-            381,
-            421,
+            6475,
+            314,
+            359,
+            14764,
+            6,
             5224,
-            1562,
+            6526,
             26,
             264,
             1414,
@@ -7710,7 +7782,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "28fe0197711c336750f406968562025fa7bf78e674742e81caebf25debdc1bb8",
+            "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
             "prompt_token_count": 69,
             "block_boundaries": []
           },
@@ -7791,7 +7863,7 @@
     {
       "model_id": "gemma-4-26b",
       "model_type": null,
-      "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+      "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
       "cache_routing_eligible": true,
       "cases": [
         {
@@ -7829,7 +7901,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -7881,7 +7953,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -7954,7 +8026,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 23,
             "block_boundaries": []
           },
@@ -8184,7 +8256,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 106,
             "block_boundaries": []
           },
@@ -8339,7 +8411,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -8396,7 +8468,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 256,
             "block_boundaries": []
           },
@@ -8706,7 +8778,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 24,
             "block_boundaries": []
           },
@@ -9053,19 +9125,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 600,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "c52e6501dd8728cb256a05b966ea87f920452c52a90c072e7d23675d7a1a4c8c"
+                "chain_hash": "d61995bc61fbe39b82b8ccca51903e37ba0fca17bba179d467426f7f3dffe678"
               },
               {
                 "token_count": 512,
-                "chain_hash": "6544fcf1911acce114ae3d43af38e1841ff7a40a4ad4bd1827ac32d35b5f1310"
+                "chain_hash": "e15bc3361916565094c3dadd9fe375343612530e05e22872894433d73d13a8b0"
               }
             ],
-            "last_complete_block_hash": "6544fcf1911acce114ae3d43af38e1841ff7a40a4ad4bd1827ac32d35b5f1310"
+            "last_complete_block_hash": "e15bc3361916565094c3dadd9fe375343612530e05e22872894433d73d13a8b0"
           },
           "token_ids": [
             2,
@@ -9808,7 +9880,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 74,
             "block_boundaries": []
           },
@@ -9946,23 +10018,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 773,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "47a736f057cd5f1ec20547d2bb33115032ffabcd91844dba7b8d2e9c3aa59316"
+                "chain_hash": "50314d9c1757902502e2edcb117bbb75270cf58479704c1939d55c52bb864917"
               },
               {
                 "token_count": 512,
-                "chain_hash": "91c0112802d1c22952d2d66e52c5d4ed11a0dab0fe0d61f486df652c0ffb6786"
+                "chain_hash": "ce0186a0be0952f9179fee311f56f37e40f948f822d01828ef7295d2c2e7407b"
               },
               {
                 "token_count": 768,
-                "chain_hash": "b20088213ad6701cc17f1ea822deb01287c70dbb25f900e2b07de80cd64eec22"
+                "chain_hash": "1968fa9986a3c93f2954672d9067468b1b748e2525259044312bad0e595c0fae"
               }
             ],
-            "last_complete_block_hash": "b20088213ad6701cc17f1ea822deb01287c70dbb25f900e2b07de80cd64eec22"
+            "last_complete_block_hash": "1968fa9986a3c93f2954672d9067468b1b748e2525259044312bad0e595c0fae"
           },
           "token_ids": [
             2,
@@ -10841,23 +10913,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 833,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "724ac93bf23edf3c3a646babe12e57fcebe3b1458deb1365e7404f10049c69af"
+                "chain_hash": "b1173b4a7f780f0e066ae0b9383a0f2c09c840a8d5a69d7d9c2590c3ded0d294"
               },
               {
                 "token_count": 512,
-                "chain_hash": "3fa228794a7da406a51e1bc937753ab81aaed2fff1c61764483466b2d0df6e27"
+                "chain_hash": "e30d2b96ebfa37ce321476ba18bb74aa496ca8d32922369f05ab6c44d5955eaf"
               },
               {
                 "token_count": 768,
-                "chain_hash": "b7b255239e48c673441f99ae618de5703b10196428bd3e573634e5ddc3c0db15"
+                "chain_hash": "bd4b2e2d2fa9d6ef3c85bd2bf2aba9dc9e3069d18888bc2e062cc20845bdbaec"
               }
             ],
-            "last_complete_block_hash": "b7b255239e48c673441f99ae618de5703b10196428bd3e573634e5ddc3c0db15"
+            "last_complete_block_hash": "bd4b2e2d2fa9d6ef3c85bd2bf2aba9dc9e3069d18888bc2e062cc20845bdbaec"
           },
           "token_ids": [
             2,
@@ -11730,27 +11802,27 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 1025,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "178d68f50b4568d109ebfd0d771f912407b162954724295f74023389dac1e9b0"
+                "chain_hash": "782875325bf5e9246b4e71432afc65898a852b8b6e602e169cd13ff018fa4e72"
               },
               {
                 "token_count": 512,
-                "chain_hash": "caeaba2ca00bac030bc558bfe63256c7e2abd5d995558c94349156afbda36a95"
+                "chain_hash": "d93b2d93b824eaf0ef1a1180c221e0bb742fc9ecbc96186e544882c7baeec989"
               },
               {
                 "token_count": 768,
-                "chain_hash": "cbf53f3d33125b8e432c6781f34c35927ba955a88a06c25fa5d08c01213c550a"
+                "chain_hash": "62474fe9cdf10de2d650dafc988dffff69987b9154d56418aac09143b7a27184"
               },
               {
                 "token_count": 1024,
-                "chain_hash": "d5a28f498ae532bdd3603704456c11c668a9b0b717f00d545357d96603062a53"
+                "chain_hash": "20456b9594f57e1f6c7d86d9e49bb7c4277b2f2908ca2e44b90ebb3ef2b2111b"
               }
             ],
-            "last_complete_block_hash": "d5a28f498ae532bdd3603704456c11c668a9b0b717f00d545357d96603062a53"
+            "last_complete_block_hash": "20456b9594f57e1f6c7d86d9e49bb7c4277b2f2908ca2e44b90ebb3ef2b2111b"
           },
           "token_ids": [
             2,
@@ -12875,15 +12947,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 354,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "c28aca6d612fb6576e3e600efeba5f07520e428b6c492735a19281abada84e40"
+                "chain_hash": "7ab98403d0bf07a1d1513b14f04ad5cc80e191cb93c4f4bb01140e5a5858ddce"
               }
             ],
-            "last_complete_block_hash": "c28aca6d612fb6576e3e600efeba5f07520e428b6c492735a19281abada84e40"
+            "last_complete_block_hash": "7ab98403d0bf07a1d1513b14f04ad5cc80e191cb93c4f4bb01140e5a5858ddce"
           },
           "token_ids": [
             2,
@@ -13283,7 +13355,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 17,
             "block_boundaries": []
           },
@@ -13347,7 +13419,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 16,
             "block_boundaries": []
           },
@@ -13423,19 +13495,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 721,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "3e8a5c9c32a504a271ea3e7e43f018edce73f686195929423d82515857ae7dfe"
+                "chain_hash": "2207a842261a10fe57517d4351807370a2ccf884a9633522cd5c8fae6da1a5a9"
               },
               {
                 "token_count": 512,
-                "chain_hash": "d8c80551c48f4d6edb79dc32632b6f3f696c848120ea65067a0072450b3defa7"
+                "chain_hash": "a17add104815bc08311d94473e668422262f38fd4bfc53115ca68a4895d0f9b6"
               }
             ],
-            "last_complete_block_hash": "d8c80551c48f4d6edb79dc32632b6f3f696c848120ea65067a0072450b3defa7"
+            "last_complete_block_hash": "a17add104815bc08311d94473e668422262f38fd4bfc53115ca68a4895d0f9b6"
           },
           "token_ids": [
             2,
@@ -14242,11 +14314,11 @@
             "messages": [
               {
                 "role": "system",
-                "content": "Call the declared function 'weather' now. You must emit a 'weather' tool call with valid arguments before any final answer, even when another function seems more relevant. Your entire response must be that tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
+                "content": "Call the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when another function seems more relevant. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of 'weather' tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
               },
               {
                 "role": "user",
-                "content": "Look up weather.\n\nCall the declared function 'weather' now. You must emit a 'weather' tool call with valid arguments before any final answer, even when another function seems more relevant. Your entire response must be that tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
+                "content": "Look up weather.\n\nCall the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when another function seems more relevant. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of 'weather' tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
               }
             ],
             "tools": [
@@ -14273,9 +14345,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
-            "prompt_token_count": 201,
-            "block_boundaries": []
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
+            "prompt_token_count": 273,
+            "block_boundaries": [
+              {
+                "token_count": 256,
+                "chain_hash": "bbc49d0abbbed74bd1c05c0282c452596bf7a5e64fea16cd2fa56bea5906ad2a"
+              }
+            ],
+            "last_complete_block_hash": "bbc49d0abbbed74bd1c05c0282c452596bf7a5e64fea16cd2fa56bea5906ad2a"
           },
           "token_ids": [
             2,
@@ -14294,12 +14372,14 @@
             1599,
             1921,
             29910,
-            496,
+            886,
+            653,
+            919,
             756,
             19323,
             236789,
             5904,
-            2246,
+            9139,
             607,
             4341,
             12130,
@@ -14316,14 +14396,48 @@
             919,
             7798,
             236761,
+            12213,
+            784,
+            6829,
+            9139,
+            531,
+            756,
+            19323,
+            236789,
+            15633,
+            684,
+            506,
+            2430,
+            528,
+            672,
+            3072,
+            236761,
+            3574,
+            711,
+            4721,
+            1308,
+            506,
+            1171,
+            2246,
+            653,
+            4491,
+            573,
+            2536,
+            1534,
+            6829,
+            9139,
+            236761,
             5180,
             4251,
             3072,
             1921,
-            577,
-            600,
+            4551,
+            529,
+            756,
+            19323,
+            236789,
             5904,
-            2246,
+            9139,
             236793,
             496,
             1816,
@@ -14415,12 +14529,14 @@
             1599,
             1921,
             29910,
-            496,
+            886,
+            653,
+            919,
             756,
             19323,
             236789,
             5904,
-            2246,
+            9139,
             607,
             4341,
             12130,
@@ -14437,14 +14553,48 @@
             919,
             7798,
             236761,
+            12213,
+            784,
+            6829,
+            9139,
+            531,
+            756,
+            19323,
+            236789,
+            15633,
+            684,
+            506,
+            2430,
+            528,
+            672,
+            3072,
+            236761,
+            3574,
+            711,
+            4721,
+            1308,
+            506,
+            1171,
+            2246,
+            653,
+            4491,
+            573,
+            2536,
+            1534,
+            6829,
+            9139,
+            236761,
             5180,
             4251,
             3072,
             1921,
-            577,
-            600,
+            4551,
+            529,
+            756,
+            19323,
+            236789,
             5904,
-            2246,
+            9139,
             236793,
             496,
             1816,
@@ -14516,7 +14666,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 24,
             "block_boundaries": []
           },
@@ -14552,7 +14702,7 @@
     {
       "model_id": "gemma-4-26b-8bit",
       "model_type": null,
-      "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+      "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
       "cache_routing_eligible": true,
       "cases": [
         {
@@ -14590,7 +14740,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -14642,7 +14792,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -14715,7 +14865,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 23,
             "block_boundaries": []
           },
@@ -14945,7 +15095,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 106,
             "block_boundaries": []
           },
@@ -15100,7 +15250,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -15157,7 +15307,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 256,
             "block_boundaries": []
           },
@@ -15467,7 +15617,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 24,
             "block_boundaries": []
           },
@@ -15814,19 +15964,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 600,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "c52e6501dd8728cb256a05b966ea87f920452c52a90c072e7d23675d7a1a4c8c"
+                "chain_hash": "d61995bc61fbe39b82b8ccca51903e37ba0fca17bba179d467426f7f3dffe678"
               },
               {
                 "token_count": 512,
-                "chain_hash": "6544fcf1911acce114ae3d43af38e1841ff7a40a4ad4bd1827ac32d35b5f1310"
+                "chain_hash": "e15bc3361916565094c3dadd9fe375343612530e05e22872894433d73d13a8b0"
               }
             ],
-            "last_complete_block_hash": "6544fcf1911acce114ae3d43af38e1841ff7a40a4ad4bd1827ac32d35b5f1310"
+            "last_complete_block_hash": "e15bc3361916565094c3dadd9fe375343612530e05e22872894433d73d13a8b0"
           },
           "token_ids": [
             2,
@@ -16569,7 +16719,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 74,
             "block_boundaries": []
           },
@@ -16707,23 +16857,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 773,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "47a736f057cd5f1ec20547d2bb33115032ffabcd91844dba7b8d2e9c3aa59316"
+                "chain_hash": "50314d9c1757902502e2edcb117bbb75270cf58479704c1939d55c52bb864917"
               },
               {
                 "token_count": 512,
-                "chain_hash": "91c0112802d1c22952d2d66e52c5d4ed11a0dab0fe0d61f486df652c0ffb6786"
+                "chain_hash": "ce0186a0be0952f9179fee311f56f37e40f948f822d01828ef7295d2c2e7407b"
               },
               {
                 "token_count": 768,
-                "chain_hash": "b20088213ad6701cc17f1ea822deb01287c70dbb25f900e2b07de80cd64eec22"
+                "chain_hash": "1968fa9986a3c93f2954672d9067468b1b748e2525259044312bad0e595c0fae"
               }
             ],
-            "last_complete_block_hash": "b20088213ad6701cc17f1ea822deb01287c70dbb25f900e2b07de80cd64eec22"
+            "last_complete_block_hash": "1968fa9986a3c93f2954672d9067468b1b748e2525259044312bad0e595c0fae"
           },
           "token_ids": [
             2,
@@ -17602,23 +17752,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 833,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "724ac93bf23edf3c3a646babe12e57fcebe3b1458deb1365e7404f10049c69af"
+                "chain_hash": "b1173b4a7f780f0e066ae0b9383a0f2c09c840a8d5a69d7d9c2590c3ded0d294"
               },
               {
                 "token_count": 512,
-                "chain_hash": "3fa228794a7da406a51e1bc937753ab81aaed2fff1c61764483466b2d0df6e27"
+                "chain_hash": "e30d2b96ebfa37ce321476ba18bb74aa496ca8d32922369f05ab6c44d5955eaf"
               },
               {
                 "token_count": 768,
-                "chain_hash": "b7b255239e48c673441f99ae618de5703b10196428bd3e573634e5ddc3c0db15"
+                "chain_hash": "bd4b2e2d2fa9d6ef3c85bd2bf2aba9dc9e3069d18888bc2e062cc20845bdbaec"
               }
             ],
-            "last_complete_block_hash": "b7b255239e48c673441f99ae618de5703b10196428bd3e573634e5ddc3c0db15"
+            "last_complete_block_hash": "bd4b2e2d2fa9d6ef3c85bd2bf2aba9dc9e3069d18888bc2e062cc20845bdbaec"
           },
           "token_ids": [
             2,
@@ -18491,27 +18641,27 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 1025,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "178d68f50b4568d109ebfd0d771f912407b162954724295f74023389dac1e9b0"
+                "chain_hash": "782875325bf5e9246b4e71432afc65898a852b8b6e602e169cd13ff018fa4e72"
               },
               {
                 "token_count": 512,
-                "chain_hash": "caeaba2ca00bac030bc558bfe63256c7e2abd5d995558c94349156afbda36a95"
+                "chain_hash": "d93b2d93b824eaf0ef1a1180c221e0bb742fc9ecbc96186e544882c7baeec989"
               },
               {
                 "token_count": 768,
-                "chain_hash": "cbf53f3d33125b8e432c6781f34c35927ba955a88a06c25fa5d08c01213c550a"
+                "chain_hash": "62474fe9cdf10de2d650dafc988dffff69987b9154d56418aac09143b7a27184"
               },
               {
                 "token_count": 1024,
-                "chain_hash": "d5a28f498ae532bdd3603704456c11c668a9b0b717f00d545357d96603062a53"
+                "chain_hash": "20456b9594f57e1f6c7d86d9e49bb7c4277b2f2908ca2e44b90ebb3ef2b2111b"
               }
             ],
-            "last_complete_block_hash": "d5a28f498ae532bdd3603704456c11c668a9b0b717f00d545357d96603062a53"
+            "last_complete_block_hash": "20456b9594f57e1f6c7d86d9e49bb7c4277b2f2908ca2e44b90ebb3ef2b2111b"
           },
           "token_ids": [
             2,
@@ -19636,15 +19786,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 354,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "c28aca6d612fb6576e3e600efeba5f07520e428b6c492735a19281abada84e40"
+                "chain_hash": "7ab98403d0bf07a1d1513b14f04ad5cc80e191cb93c4f4bb01140e5a5858ddce"
               }
             ],
-            "last_complete_block_hash": "c28aca6d612fb6576e3e600efeba5f07520e428b6c492735a19281abada84e40"
+            "last_complete_block_hash": "7ab98403d0bf07a1d1513b14f04ad5cc80e191cb93c4f4bb01140e5a5858ddce"
           },
           "token_ids": [
             2,
@@ -20044,7 +20194,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 17,
             "block_boundaries": []
           },
@@ -20108,7 +20258,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 16,
             "block_boundaries": []
           },
@@ -20184,19 +20334,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 721,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "3e8a5c9c32a504a271ea3e7e43f018edce73f686195929423d82515857ae7dfe"
+                "chain_hash": "2207a842261a10fe57517d4351807370a2ccf884a9633522cd5c8fae6da1a5a9"
               },
               {
                 "token_count": 512,
-                "chain_hash": "d8c80551c48f4d6edb79dc32632b6f3f696c848120ea65067a0072450b3defa7"
+                "chain_hash": "a17add104815bc08311d94473e668422262f38fd4bfc53115ca68a4895d0f9b6"
               }
             ],
-            "last_complete_block_hash": "d8c80551c48f4d6edb79dc32632b6f3f696c848120ea65067a0072450b3defa7"
+            "last_complete_block_hash": "a17add104815bc08311d94473e668422262f38fd4bfc53115ca68a4895d0f9b6"
           },
           "token_ids": [
             2,
@@ -21003,11 +21153,11 @@
             "messages": [
               {
                 "role": "system",
-                "content": "Call the declared function 'weather' now. You must emit a 'weather' tool call with valid arguments before any final answer, even when another function seems more relevant. Your entire response must be that tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
+                "content": "Call the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when another function seems more relevant. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of 'weather' tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
               },
               {
                 "role": "user",
-                "content": "Look up weather.\n\nCall the declared function 'weather' now. You must emit a 'weather' tool call with valid arguments before any final answer, even when another function seems more relevant. Your entire response must be that tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
+                "content": "Look up weather.\n\nCall the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when another function seems more relevant. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of 'weather' tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
               }
             ],
             "tools": [
@@ -21034,9 +21184,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
-            "prompt_token_count": 201,
-            "block_boundaries": []
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
+            "prompt_token_count": 273,
+            "block_boundaries": [
+              {
+                "token_count": 256,
+                "chain_hash": "bbc49d0abbbed74bd1c05c0282c452596bf7a5e64fea16cd2fa56bea5906ad2a"
+              }
+            ],
+            "last_complete_block_hash": "bbc49d0abbbed74bd1c05c0282c452596bf7a5e64fea16cd2fa56bea5906ad2a"
           },
           "token_ids": [
             2,
@@ -21055,12 +21211,14 @@
             1599,
             1921,
             29910,
-            496,
+            886,
+            653,
+            919,
             756,
             19323,
             236789,
             5904,
-            2246,
+            9139,
             607,
             4341,
             12130,
@@ -21077,14 +21235,48 @@
             919,
             7798,
             236761,
+            12213,
+            784,
+            6829,
+            9139,
+            531,
+            756,
+            19323,
+            236789,
+            15633,
+            684,
+            506,
+            2430,
+            528,
+            672,
+            3072,
+            236761,
+            3574,
+            711,
+            4721,
+            1308,
+            506,
+            1171,
+            2246,
+            653,
+            4491,
+            573,
+            2536,
+            1534,
+            6829,
+            9139,
+            236761,
             5180,
             4251,
             3072,
             1921,
-            577,
-            600,
+            4551,
+            529,
+            756,
+            19323,
+            236789,
             5904,
-            2246,
+            9139,
             236793,
             496,
             1816,
@@ -21176,12 +21368,14 @@
             1599,
             1921,
             29910,
-            496,
+            886,
+            653,
+            919,
             756,
             19323,
             236789,
             5904,
-            2246,
+            9139,
             607,
             4341,
             12130,
@@ -21198,14 +21392,48 @@
             919,
             7798,
             236761,
+            12213,
+            784,
+            6829,
+            9139,
+            531,
+            756,
+            19323,
+            236789,
+            15633,
+            684,
+            506,
+            2430,
+            528,
+            672,
+            3072,
+            236761,
+            3574,
+            711,
+            4721,
+            1308,
+            506,
+            1171,
+            2246,
+            653,
+            4491,
+            573,
+            2536,
+            1534,
+            6829,
+            9139,
+            236761,
             5180,
             4251,
             3072,
             1921,
-            577,
-            600,
+            4551,
+            529,
+            756,
+            19323,
+            236789,
             5904,
-            2246,
+            9139,
             236793,
             496,
             1816,
@@ -21277,7 +21505,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "a8b0173f78e3f38d0d85ca7ecaffa95a839c4fc2df1fbd37f762f3982072599a",
+            "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
             "prompt_token_count": 24,
             "block_boundaries": []
           },
@@ -21313,7 +21541,7 @@
     {
       "model_id": "gemma-4-26b-qat-4bit",
       "model_type": null,
-      "prompt_contract_id": "b6bf2b40c2a734956584814dc13d6530d8895ad51de8031e77d37fb1d35ebb67",
+      "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
       "cache_routing_eligible": true,
       "cases": [
         {
@@ -21351,7 +21579,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "b6bf2b40c2a734956584814dc13d6530d8895ad51de8031e77d37fb1d35ebb67",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -21403,7 +21631,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "b6bf2b40c2a734956584814dc13d6530d8895ad51de8031e77d37fb1d35ebb67",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -21476,7 +21704,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "b6bf2b40c2a734956584814dc13d6530d8895ad51de8031e77d37fb1d35ebb67",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 23,
             "block_boundaries": []
           },
@@ -21706,7 +21934,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "b6bf2b40c2a734956584814dc13d6530d8895ad51de8031e77d37fb1d35ebb67",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 106,
             "block_boundaries": []
           },
@@ -21861,7 +22089,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "b6bf2b40c2a734956584814dc13d6530d8895ad51de8031e77d37fb1d35ebb67",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -21918,7 +22146,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "b6bf2b40c2a734956584814dc13d6530d8895ad51de8031e77d37fb1d35ebb67",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 256,
             "block_boundaries": []
           },
@@ -22228,7 +22456,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "b6bf2b40c2a734956584814dc13d6530d8895ad51de8031e77d37fb1d35ebb67",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 24,
             "block_boundaries": []
           },
@@ -22575,19 +22803,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "b6bf2b40c2a734956584814dc13d6530d8895ad51de8031e77d37fb1d35ebb67",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 600,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "46736edd2ed427ad05eb5bef825f030768e809141e7e93660109c4eb70649a06"
+                "chain_hash": "be11f6ffe2e168f6faf0fa5ff8e932d3d3f38b5deb24c6189210333d714f2d5b"
               },
               {
                 "token_count": 512,
-                "chain_hash": "5caf36ed9318adc7c8ad4bc335d6179c7a9fef7c3c4b7b4a049717f39980402a"
+                "chain_hash": "2f7451354e3257ca583e06b53f99e1754504eecc504271cf7b094cd57255a0cc"
               }
             ],
-            "last_complete_block_hash": "5caf36ed9318adc7c8ad4bc335d6179c7a9fef7c3c4b7b4a049717f39980402a"
+            "last_complete_block_hash": "2f7451354e3257ca583e06b53f99e1754504eecc504271cf7b094cd57255a0cc"
           },
           "token_ids": [
             2,
@@ -23330,7 +23558,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "b6bf2b40c2a734956584814dc13d6530d8895ad51de8031e77d37fb1d35ebb67",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 74,
             "block_boundaries": []
           },
@@ -23468,23 +23696,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "b6bf2b40c2a734956584814dc13d6530d8895ad51de8031e77d37fb1d35ebb67",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 773,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "e7cdd80748774043b8e522bda8d6dc93a9b82bf9addb7f58827f0503868fb18e"
+                "chain_hash": "c5a9bf5f0e01161fe8c67e3b91aea62c955cd052fa5e479be3cab4a00e8b65cb"
               },
               {
                 "token_count": 512,
-                "chain_hash": "c90d72289ce735b0e571b3e1f982e22df9dc3385d73dadbd5704e7aa84894de4"
+                "chain_hash": "4da2aab7f4e857acf11123c6a25a25c1ac5e996da8b54a77581621fc87a92f06"
               },
               {
                 "token_count": 768,
-                "chain_hash": "aa41d05d677a7c0912b6e7526d35a61a9daf3d79daad105185912ddb7ac51e7b"
+                "chain_hash": "276e1460645ead8a6191750b51f31afa7304d3ee5a51d6134adeb157aaa741a8"
               }
             ],
-            "last_complete_block_hash": "aa41d05d677a7c0912b6e7526d35a61a9daf3d79daad105185912ddb7ac51e7b"
+            "last_complete_block_hash": "276e1460645ead8a6191750b51f31afa7304d3ee5a51d6134adeb157aaa741a8"
           },
           "token_ids": [
             2,
@@ -24363,23 +24591,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "b6bf2b40c2a734956584814dc13d6530d8895ad51de8031e77d37fb1d35ebb67",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 833,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "8d0fef21fb3118413f563ed13f800e1b13e4a3192f2082c778f687bfbc50d58a"
+                "chain_hash": "58389c1b8812e337aafe517fa08e171ead83402dd764c3af8bc01375fb398553"
               },
               {
                 "token_count": 512,
-                "chain_hash": "91e51f4227f5d2d6128a363bb24638b4b227159737d023d146521be2aba62645"
+                "chain_hash": "e30dd378c6c8e032aafab17de3cb0fc912a30ef080b603dde91813d218884f90"
               },
               {
                 "token_count": 768,
-                "chain_hash": "ead457741dc95c35567b8df57a0ccab272174e19197610c02679e3072193bc38"
+                "chain_hash": "cdc99332d40e24612ea46c83d7b0961d87f675ee3ae75b87b50ebe0b8907d98b"
               }
             ],
-            "last_complete_block_hash": "ead457741dc95c35567b8df57a0ccab272174e19197610c02679e3072193bc38"
+            "last_complete_block_hash": "cdc99332d40e24612ea46c83d7b0961d87f675ee3ae75b87b50ebe0b8907d98b"
           },
           "token_ids": [
             2,
@@ -25252,27 +25480,27 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "b6bf2b40c2a734956584814dc13d6530d8895ad51de8031e77d37fb1d35ebb67",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 1025,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "4a08d172ab8a9c4fd3e67bbe48e76dd16a94c53ec236c1a7fd6628427c7a42cb"
+                "chain_hash": "37edc07386d03b7ca8704f31319f13a4450c5b7856718d9fb1130b7f9489eec6"
               },
               {
                 "token_count": 512,
-                "chain_hash": "0e344e97799b72567d30bdd7efd047a23b1fd599c54c049e80108e0985ba4477"
+                "chain_hash": "27def91574e4d0f371eb5cde713ca92e501dcdd5c6180b435374c8aea3a87271"
               },
               {
                 "token_count": 768,
-                "chain_hash": "95f3992c085c1d58b7de12b55e75f210ce63c99d748ef0fc978570b9ce9edb01"
+                "chain_hash": "66ce6cdbaccdcc950006a9734e9818771acaf4aa952d50f24f39734d21e8bff3"
               },
               {
                 "token_count": 1024,
-                "chain_hash": "b769f4e387d3c4a088e42361d3074e8ba15e909ab027c3086d17df64d6116446"
+                "chain_hash": "5780131835e744ec0219f5f5e08f25788ef93ba8a7216aed448d66731f1dad7a"
               }
             ],
-            "last_complete_block_hash": "b769f4e387d3c4a088e42361d3074e8ba15e909ab027c3086d17df64d6116446"
+            "last_complete_block_hash": "5780131835e744ec0219f5f5e08f25788ef93ba8a7216aed448d66731f1dad7a"
           },
           "token_ids": [
             2,
@@ -26397,15 +26625,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "b6bf2b40c2a734956584814dc13d6530d8895ad51de8031e77d37fb1d35ebb67",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 354,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "bbfe98041c6e4311866e99684e1a77c879bb027d8e8f2cf9ac1d009403e04b85"
+                "chain_hash": "8a2459a86120538bfb85f3c1b904c330ffdc6a9d9dc3f4ca0b23f8e7c0e8775a"
               }
             ],
-            "last_complete_block_hash": "bbfe98041c6e4311866e99684e1a77c879bb027d8e8f2cf9ac1d009403e04b85"
+            "last_complete_block_hash": "8a2459a86120538bfb85f3c1b904c330ffdc6a9d9dc3f4ca0b23f8e7c0e8775a"
           },
           "token_ids": [
             2,
@@ -26805,7 +27033,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "b6bf2b40c2a734956584814dc13d6530d8895ad51de8031e77d37fb1d35ebb67",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 17,
             "block_boundaries": []
           },
@@ -26869,7 +27097,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "b6bf2b40c2a734956584814dc13d6530d8895ad51de8031e77d37fb1d35ebb67",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 16,
             "block_boundaries": []
           },
@@ -26945,19 +27173,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "b6bf2b40c2a734956584814dc13d6530d8895ad51de8031e77d37fb1d35ebb67",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 721,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "1f651be5ff8963a5bbeefaa5000766b9f152a39697ec3164c5e613e03b4c95d6"
+                "chain_hash": "3c01c76125fec935e81276a914e88b44418583b9d0417c472bb8aee74d95cdb9"
               },
               {
                 "token_count": 512,
-                "chain_hash": "d6580d77ded323b3dc2687bf49e6990bf489562afce370917b6eef062164e2a4"
+                "chain_hash": "4163928b3197c3b14df1097cda4bb219feffe2400a940ec5eb7ec7d276f753eb"
               }
             ],
-            "last_complete_block_hash": "d6580d77ded323b3dc2687bf49e6990bf489562afce370917b6eef062164e2a4"
+            "last_complete_block_hash": "4163928b3197c3b14df1097cda4bb219feffe2400a940ec5eb7ec7d276f753eb"
           },
           "token_ids": [
             2,
@@ -27764,11 +27992,11 @@
             "messages": [
               {
                 "role": "system",
-                "content": "Call the declared function 'weather' now. You must emit a 'weather' tool call with valid arguments before any final answer, even when another function seems more relevant. Your entire response must be that tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
+                "content": "Call the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when another function seems more relevant. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of 'weather' tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
               },
               {
                 "role": "user",
-                "content": "Look up weather.\n\nCall the declared function 'weather' now. You must emit a 'weather' tool call with valid arguments before any final answer, even when another function seems more relevant. Your entire response must be that tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
+                "content": "Look up weather.\n\nCall the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when another function seems more relevant. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of 'weather' tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
               }
             ],
             "tools": [
@@ -27795,9 +28023,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "b6bf2b40c2a734956584814dc13d6530d8895ad51de8031e77d37fb1d35ebb67",
-            "prompt_token_count": 201,
-            "block_boundaries": []
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
+            "prompt_token_count": 273,
+            "block_boundaries": [
+              {
+                "token_count": 256,
+                "chain_hash": "9dfa20e574c05b8027bf9b551de9bb3b8be0926d260caaac9765c897218260f2"
+              }
+            ],
+            "last_complete_block_hash": "9dfa20e574c05b8027bf9b551de9bb3b8be0926d260caaac9765c897218260f2"
           },
           "token_ids": [
             2,
@@ -27816,12 +28050,14 @@
             1599,
             1921,
             29910,
-            496,
+            886,
+            653,
+            919,
             756,
             19323,
             236789,
             5904,
-            2246,
+            9139,
             607,
             4341,
             12130,
@@ -27838,14 +28074,48 @@
             919,
             7798,
             236761,
+            12213,
+            784,
+            6829,
+            9139,
+            531,
+            756,
+            19323,
+            236789,
+            15633,
+            684,
+            506,
+            2430,
+            528,
+            672,
+            3072,
+            236761,
+            3574,
+            711,
+            4721,
+            1308,
+            506,
+            1171,
+            2246,
+            653,
+            4491,
+            573,
+            2536,
+            1534,
+            6829,
+            9139,
+            236761,
             5180,
             4251,
             3072,
             1921,
-            577,
-            600,
+            4551,
+            529,
+            756,
+            19323,
+            236789,
             5904,
-            2246,
+            9139,
             236793,
             496,
             1816,
@@ -27937,12 +28207,14 @@
             1599,
             1921,
             29910,
-            496,
+            886,
+            653,
+            919,
             756,
             19323,
             236789,
             5904,
-            2246,
+            9139,
             607,
             4341,
             12130,
@@ -27959,14 +28231,48 @@
             919,
             7798,
             236761,
+            12213,
+            784,
+            6829,
+            9139,
+            531,
+            756,
+            19323,
+            236789,
+            15633,
+            684,
+            506,
+            2430,
+            528,
+            672,
+            3072,
+            236761,
+            3574,
+            711,
+            4721,
+            1308,
+            506,
+            1171,
+            2246,
+            653,
+            4491,
+            573,
+            2536,
+            1534,
+            6829,
+            9139,
+            236761,
             5180,
             4251,
             3072,
             1921,
-            577,
-            600,
+            4551,
+            529,
+            756,
+            19323,
+            236789,
             5904,
-            2246,
+            9139,
             236793,
             496,
             1816,
@@ -28038,7 +28344,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "b6bf2b40c2a734956584814dc13d6530d8895ad51de8031e77d37fb1d35ebb67",
+            "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
             "prompt_token_count": 24,
             "block_boundaries": []
           },
@@ -28074,7 +28380,7 @@
     {
       "model_id": "gpt-oss-20b",
       "model_type": null,
-      "prompt_contract_id": "e68476d47cdabe12af5d748e514bb894d5c6710d341ef88443b93b447a2c213b",
+      "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
       "cache_routing_eligible": true,
       "cases": [
         {
@@ -28112,7 +28418,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e68476d47cdabe12af5d748e514bb894d5c6710d341ef88443b93b447a2c213b",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 69,
             "block_boundaries": []
           },
@@ -28218,7 +28524,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e68476d47cdabe12af5d748e514bb894d5c6710d341ef88443b93b447a2c213b",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 69,
             "block_boundaries": []
           },
@@ -28345,7 +28651,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e68476d47cdabe12af5d748e514bb894d5c6710d341ef88443b93b447a2c213b",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 79,
             "block_boundaries": []
           },
@@ -28631,7 +28937,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e68476d47cdabe12af5d748e514bb894d5c6710d341ef88443b93b447a2c213b",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 173,
             "block_boundaries": []
           },
@@ -28853,7 +29159,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e68476d47cdabe12af5d748e514bb894d5c6710d341ef88443b93b447a2c213b",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 69,
             "block_boundaries": []
           },
@@ -28964,7 +29270,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e68476d47cdabe12af5d748e514bb894d5c6710d341ef88443b93b447a2c213b",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 256,
             "block_boundaries": []
           },
@@ -29274,7 +29580,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e68476d47cdabe12af5d748e514bb894d5c6710d341ef88443b93b447a2c213b",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 80,
             "block_boundaries": []
           },
@@ -29682,19 +29988,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e68476d47cdabe12af5d748e514bb894d5c6710d341ef88443b93b447a2c213b",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 600,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "adc3b58a7ffc67fda2bc2a01456bed45777511cc8f6982af1e426b9085aa072b"
+                "chain_hash": "c6d9f45b422b3feae90377d0805307f4bc40a6c353fdbe607055e74fd58fc769"
               },
               {
                 "token_count": 512,
-                "chain_hash": "4734fcd914b15c8e4a5bacaa9bf7474ca1626dd07da800eef1f8fb9b3a3b11dd"
+                "chain_hash": "793575b83d977ab2160960467dccc422014bf81448821542b5e30499e7188946"
               }
             ],
-            "last_complete_block_hash": "4734fcd914b15c8e4a5bacaa9bf7474ca1626dd07da800eef1f8fb9b3a3b11dd"
+            "last_complete_block_hash": "793575b83d977ab2160960467dccc422014bf81448821542b5e30499e7188946"
           },
           "token_ids": [
             200006,
@@ -30446,7 +30752,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e68476d47cdabe12af5d748e514bb894d5c6710d341ef88443b93b447a2c213b",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 152,
             "block_boundaries": []
           },
@@ -30658,23 +30964,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e68476d47cdabe12af5d748e514bb894d5c6710d341ef88443b93b447a2c213b",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 825,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "fcfb1d5b00541c55788a15494bb4beec56c4604593d4acf9e48b561b8bda9496"
+                "chain_hash": "fb954dba74caf512a2bfee02513348bfff7190f91517f4df1b5288fdd61918cb"
               },
               {
                 "token_count": 512,
-                "chain_hash": "123b74bcdd295d2799657220c29a5c9a42b95ee5b9e1774b47ee6e04c6ae47ee"
+                "chain_hash": "20709af97f569cdefd2cbd99b55bb22bcf75e965303e12ce4f44e1eefe7ad84f"
               },
               {
                 "token_count": 768,
-                "chain_hash": "255726ac172db2bb4f6a2e7165494a1543cf9dcb9cbc95a970e50f84394030ea"
+                "chain_hash": "d8286991297eb9eae67a8dedd008b63640836981b5fecf6a0c3117b38df4a35d"
               }
             ],
-            "last_complete_block_hash": "255726ac172db2bb4f6a2e7165494a1543cf9dcb9cbc95a970e50f84394030ea"
+            "last_complete_block_hash": "d8286991297eb9eae67a8dedd008b63640836981b5fecf6a0c3117b38df4a35d"
           },
           "token_ids": [
             200006,
@@ -31601,23 +31907,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e68476d47cdabe12af5d748e514bb894d5c6710d341ef88443b93b447a2c213b",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 882,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "2b492451baf1b262047f277ff7011c087e1d0c0e4aa0135515e3fc58481f0133"
+                "chain_hash": "07d30c28778cbb2b78ce4517a08a7750e7e49c6dcd51c9b92151c6e08f602085"
               },
               {
                 "token_count": 512,
-                "chain_hash": "b5d8da769c1b56bd1d36d07c70f4846230979cbdba77936291a34fae762962f6"
+                "chain_hash": "0bfa665466a67aaa06677f8896415e812edf8420dea76a20d763f638e11b98bd"
               },
               {
                 "token_count": 768,
-                "chain_hash": "cc0d487fe90014c759d324ac25f5e97223f305835a384e5a5499ffb661bc4036"
+                "chain_hash": "74883e1d3da045a9d472ffbfdabbe39790337b5ff750091c311f759c5785ed6d"
               }
             ],
-            "last_complete_block_hash": "cc0d487fe90014c759d324ac25f5e97223f305835a384e5a5499ffb661bc4036"
+            "last_complete_block_hash": "74883e1d3da045a9d472ffbfdabbe39790337b5ff750091c311f759c5785ed6d"
           },
           "token_ids": [
             200006,
@@ -32539,27 +32845,27 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e68476d47cdabe12af5d748e514bb894d5c6710d341ef88443b93b447a2c213b",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 1025,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "06e9371677ecb1a112db427255b8a2eca08054e3af7766d4bf21bd157cd59abe"
+                "chain_hash": "e12d90935059215c03dc357386d5128411d3ab464159e3864df9e706d1048d94"
               },
               {
                 "token_count": 512,
-                "chain_hash": "654745a3fc8b404a080bc1ded1c65d4b2cf09ca29ba31a1babb47d45ba079d65"
+                "chain_hash": "d5ddb3460a975e6dbc213482558b0cb8d2152f23816c3032815c8d3d3685352f"
               },
               {
                 "token_count": 768,
-                "chain_hash": "51e115d991ae47fde4b99722ee0160a6e036548058a097be8fa2adaae46b8a10"
+                "chain_hash": "7d85e71ed57cc71a15e58c3a066741364f7081c5de53746294d4ba91593cdef2"
               },
               {
                 "token_count": 1024,
-                "chain_hash": "cca664f8fefb712d350ac33f4120b3a8eaa267b5ef8ed290ba7199d4b86d525d"
+                "chain_hash": "69cb7ac84d6cc70a84e1231fe3aa9ea7f90ce58c07bf9523243ecbdc8c57b98c"
               }
             ],
-            "last_complete_block_hash": "cca664f8fefb712d350ac33f4120b3a8eaa267b5ef8ed290ba7199d4b86d525d"
+            "last_complete_block_hash": "69cb7ac84d6cc70a84e1231fe3aa9ea7f90ce58c07bf9523243ecbdc8c57b98c"
           },
           "token_ids": [
             200006,
@@ -33676,15 +33982,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e68476d47cdabe12af5d748e514bb894d5c6710d341ef88443b93b447a2c213b",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 501,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "f9448a294c666144034852e0f5c02c5d3eabec3899f13bf92a61499e21e4173b"
+                "chain_hash": "e364e4f2f40ac254c1299c61da0f590277f6cdd2dcbca15aa00b4e52847d63ea"
               }
             ],
-            "last_complete_block_hash": "f9448a294c666144034852e0f5c02c5d3eabec3899f13bf92a61499e21e4173b"
+            "last_complete_block_hash": "e364e4f2f40ac254c1299c61da0f590277f6cdd2dcbca15aa00b4e52847d63ea"
           },
           "token_ids": [
             200006,
@@ -34231,7 +34537,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e68476d47cdabe12af5d748e514bb894d5c6710d341ef88443b93b447a2c213b",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 71,
             "block_boundaries": []
           },
@@ -34349,7 +34655,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e68476d47cdabe12af5d748e514bb894d5c6710d341ef88443b93b447a2c213b",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 70,
             "block_boundaries": []
           },
@@ -34479,23 +34785,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e68476d47cdabe12af5d748e514bb894d5c6710d341ef88443b93b447a2c213b",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 778,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "cb53a45d2e04c92ac9a221a954aa53bd54539af713fdb3cf6753c2acb8d38576"
+                "chain_hash": "899b35ebfd9c9f79b45997c3c4e43fa243b89772e2db4b44356168c2d707f22c"
               },
               {
                 "token_count": 512,
-                "chain_hash": "be4e007134959b3a0b0f1f747bf09a9438bd4448eb680f4686d93fb657257af6"
+                "chain_hash": "0155c52757a2b99bb224f93efa23b8c4c918d625927d3f95224cab3157d3c13c"
               },
               {
                 "token_count": 768,
-                "chain_hash": "16cba860de0a77f4c4834d8d21077b19fb411a354a9b0d47485a891c7041d43b"
+                "chain_hash": "263361d189d07a7f5ccdb6a4d32371fcbe7b8286cdb45e9a2d6127630b69cd31"
               }
             ],
-            "last_complete_block_hash": "16cba860de0a77f4c4834d8d21077b19fb411a354a9b0d47485a891c7041d43b"
+            "last_complete_block_hash": "263361d189d07a7f5ccdb6a4d32371fcbe7b8286cdb45e9a2d6127630b69cd31"
           },
           "token_ids": [
             200006,
@@ -35359,11 +35665,11 @@
             "messages": [
               {
                 "role": "system",
-                "content": "Call the declared function 'weather' now. You must emit a 'weather' tool call with valid arguments before any final answer, even when another function seems more relevant. Your entire response must be that tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
+                "content": "Call the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when another function seems more relevant. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of 'weather' tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
               },
               {
                 "role": "user",
-                "content": "Look up weather.\n\nCall the declared function 'weather' now. You must emit a 'weather' tool call with valid arguments before any final answer, even when another function seems more relevant. Your entire response must be that tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
+                "content": "Look up weather.\n\nCall the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when another function seems more relevant. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of 'weather' tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
               }
             ],
             "tools": [
@@ -35390,9 +35696,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e68476d47cdabe12af5d748e514bb894d5c6710d341ef88443b93b447a2c213b",
-            "prompt_token_count": 255,
-            "block_boundaries": []
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
+            "prompt_token_count": 327,
+            "block_boundaries": [
+              {
+                "token_count": 256,
+                "chain_hash": "ad439365c35b957565ae78511a4eebe8f34bce3f3a7d3cbaeb3c53ebc6ddc675"
+              }
+            ],
+            "last_complete_block_hash": "ad439365c35b957565ae78511a4eebe8f34bce3f3a7d3cbaeb3c53ebc6ddc675"
           },
           "token_ids": [
             200006,
@@ -35488,12 +35800,14 @@
             1608,
             2804,
             22845,
-            261,
+            1001,
+            503,
+            945,
             461,
             28393,
             6,
             4584,
-            2421,
+            11666,
             483,
             4529,
             11917,
@@ -35510,14 +35824,48 @@
             945,
             12331,
             13,
+            50210,
+            722,
+            13313,
+            11666,
+            316,
+            461,
+            28393,
+            6,
+            17222,
+            656,
+            290,
+            1825,
+            306,
+            495,
+            3322,
+            13,
+            3756,
+            625,
+            5666,
+            1934,
+            290,
+            1577,
+            2421,
+            503,
+            5238,
+            395,
+            4376,
+            2870,
+            13313,
+            11666,
+            13,
             4886,
             6508,
             3322,
             2804,
-            413,
-            484,
+            8897,
+            328,
+            461,
+            28393,
+            6,
             4584,
-            2421,
+            11666,
             26,
             261,
             2201,
@@ -35594,12 +35942,14 @@
             1608,
             2804,
             22845,
-            261,
+            1001,
+            503,
+            945,
             461,
             28393,
             6,
             4584,
-            2421,
+            11666,
             483,
             4529,
             11917,
@@ -35616,14 +35966,48 @@
             945,
             12331,
             13,
+            50210,
+            722,
+            13313,
+            11666,
+            316,
+            461,
+            28393,
+            6,
+            17222,
+            656,
+            290,
+            1825,
+            306,
+            495,
+            3322,
+            13,
+            3756,
+            625,
+            5666,
+            1934,
+            290,
+            1577,
+            2421,
+            503,
+            5238,
+            395,
+            4376,
+            2870,
+            13313,
+            11666,
+            13,
             4886,
             6508,
             3322,
             2804,
-            413,
-            484,
+            8897,
+            328,
+            461,
+            28393,
+            6,
             4584,
-            2421,
+            11666,
             26,
             261,
             2201,
@@ -35687,7 +36071,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "e68476d47cdabe12af5d748e514bb894d5c6710d341ef88443b93b447a2c213b",
+            "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
             "prompt_token_count": 81,
             "block_boundaries": []
           },
@@ -35780,7 +36164,7 @@
     {
       "model_id": "qwen3.5-35b-a3b",
       "model_type": null,
-      "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+      "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
       "cache_routing_eligible": true,
       "cases": [
         {
@@ -35818,7 +36202,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 12,
             "block_boundaries": []
           },
@@ -35867,7 +36251,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 12,
             "block_boundaries": []
           },
@@ -35937,7 +36321,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 20,
             "block_boundaries": []
           },
@@ -36164,15 +36548,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 335,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "876510b13518bc1a4d1a5c72acaf67a69e53e3e15c41755056d3a43b625c32a3"
+                "chain_hash": "5b6fc8ec1ff0f94ba65f0fe9c263e5862de6dc12e5c6b1a6c4e658861ad775e4"
               }
             ],
-            "last_complete_block_hash": "876510b13518bc1a4d1a5c72acaf67a69e53e3e15c41755056d3a43b625c32a3"
+            "last_complete_block_hash": "5b6fc8ec1ff0f94ba65f0fe9c263e5862de6dc12e5c6b1a6c4e658861ad775e4"
           },
           "token_ids": [
             248045,
@@ -36554,7 +36938,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 12,
             "block_boundaries": []
           },
@@ -36608,7 +36992,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 256,
             "block_boundaries": []
           },
@@ -36918,7 +37302,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 21,
             "block_boundaries": []
           },
@@ -37266,19 +37650,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 600,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "3c1465375c82196a49a3cd1f0ed6a8fcf655fe4e8b8321f1b1ea521047b7fc88"
+                "chain_hash": "9472ef8436437524ca446f4010deddfc1804023ff38cc54aaaabe54e5de44845"
               },
               {
                 "token_count": 512,
-                "chain_hash": "dece2a59583968dc6ed33e9d6b8c79f9bc85770bdcc8fc3fd1bae04bf6bd2f33"
+                "chain_hash": "415d82877ae2819cda13e92d85d093930c6ff9e38b6414a496a5cee4580247de"
               }
             ],
-            "last_complete_block_hash": "dece2a59583968dc6ed33e9d6b8c79f9bc85770bdcc8fc3fd1bae04bf6bd2f33"
+            "last_complete_block_hash": "415d82877ae2819cda13e92d85d093930c6ff9e38b6414a496a5cee4580247de"
           },
           "token_ids": [
             248045,
@@ -38021,7 +38405,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 100,
             "block_boundaries": []
           },
@@ -38181,19 +38565,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 765,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "1d05c32ad518d7361ddd2535afe345ec4fdc379ed259da9bb6af10d2e7b05766"
+                "chain_hash": "1679d1f8ccecca52eae957dd549a94e30039dd3579d1993d79c9bd15e3a4e6e0"
               },
               {
                 "token_count": 512,
-                "chain_hash": "9480782bcd4fdf2136d41166aca1dad6ac67bbed7dbda107ba584bb4600cccc4"
+                "chain_hash": "60d14a9c6a13d824eb916836d21aad8e8a1ccbb5f4e1d96327b5319c79524a69"
               }
             ],
-            "last_complete_block_hash": "9480782bcd4fdf2136d41166aca1dad6ac67bbed7dbda107ba584bb4600cccc4"
+            "last_complete_block_hash": "60d14a9c6a13d824eb916836d21aad8e8a1ccbb5f4e1d96327b5319c79524a69"
           },
           "token_ids": [
             248045,
@@ -39060,23 +39444,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 824,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "d14b6a54e3d810c2e1a6026903bae45d38b41a6f8f9a449102cac9c5d6f9c1d1"
+                "chain_hash": "b32f87cb71988d0f0558077b492c3291fb3280c35977faf5c196be1172e75e44"
               },
               {
                 "token_count": 512,
-                "chain_hash": "d95ed0043511919b40d46b73fb616e00693630053f754c3ee936ba8e6d06c152"
+                "chain_hash": "14e07e98c7637c9df62294a88271c15abe7e1b493e7e24b8851e77f6e7778b91"
               },
               {
                 "token_count": 768,
-                "chain_hash": "947fe5b02c2f24726de3249de62ced239075de813269ec6565db6c050a85cd13"
+                "chain_hash": "f517447e26442a744d80f46e1232293452a7cc8b740e5001bec7346c5392295e"
               }
             ],
-            "last_complete_block_hash": "947fe5b02c2f24726de3249de62ced239075de813269ec6565db6c050a85cd13"
+            "last_complete_block_hash": "f517447e26442a744d80f46e1232293452a7cc8b740e5001bec7346c5392295e"
           },
           "token_ids": [
             248045,
@@ -39940,27 +40324,27 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 1025,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "f83b727132c2d05a9de972505198bcf9edb1b6914ce111494620f81b49a434f2"
+                "chain_hash": "2a487ccc33ffc38644dfa6250be1267187df4072a4ea8e2f9c029b17d1522b08"
               },
               {
                 "token_count": 512,
-                "chain_hash": "5837c83330d1cc3e63858f903f55be382edbc4aed30f39030a68506c0769556d"
+                "chain_hash": "2608e8e6d96e2f93b8680aaa9eb24edbc3e06936097d4109363b0c356d4b699e"
               },
               {
                 "token_count": 768,
-                "chain_hash": "a31cdcc02a48e67f2c6e4c938400410708099ec52402f334d89ecf1cab14ef7f"
+                "chain_hash": "e2b81e4b0095bfedd522f765aa804c53cc8e1f5e08b9e3fe4eefb11cef00d1d9"
               },
               {
                 "token_count": 1024,
-                "chain_hash": "2ff16c557e911c71298490e0ac8d2af81d71bdc8689b5bf9927620ea66eccba3"
+                "chain_hash": "79f54e25a05b421886b4e72d1d9c5d27a9272366319d4110233cb3760ba67177"
               }
             ],
-            "last_complete_block_hash": "2ff16c557e911c71298490e0ac8d2af81d71bdc8689b5bf9927620ea66eccba3"
+            "last_complete_block_hash": "79f54e25a05b421886b4e72d1d9c5d27a9272366319d4110233cb3760ba67177"
           },
           "token_ids": [
             248045,
@@ -41077,15 +41461,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 442,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "4bf9b3c7e58a28db8094fbc37a8aa58562296f9e1319d15320c7ece3b8c1b777"
+                "chain_hash": "64bed2191e9bb480e06865dcd30d3279322c17557ad4fa1e56c6aac53b1c268a"
               }
             ],
-            "last_complete_block_hash": "4bf9b3c7e58a28db8094fbc37a8aa58562296f9e1319d15320c7ece3b8c1b777"
+            "last_complete_block_hash": "64bed2191e9bb480e06865dcd30d3279322c17557ad4fa1e56c6aac53b1c268a"
           },
           "token_ids": [
             248045,
@@ -41573,7 +41957,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 14,
             "block_boundaries": []
           },
@@ -41634,7 +42018,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 13,
             "block_boundaries": []
           },
@@ -41707,19 +42091,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 718,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "4e3cb69cdd9207c2538382ef6054edce91cc0bcd523e265ffbcbeef77ae97bf0"
+                "chain_hash": "dae040299d06d1a8b3bce7f152da1c2b6a99af3209e4743efe00c2c824282d57"
               },
               {
                 "token_count": 512,
-                "chain_hash": "360446c29e11168d5702b02eb61cc8e8e7115f69ed8aa1a5395e6e8540302da5"
+                "chain_hash": "94c7d2fbf15e09b10c03a079bcf65406718eb2da0b11806cb4cd107e7f8cbc7b"
               }
             ],
-            "last_complete_block_hash": "360446c29e11168d5702b02eb61cc8e8e7115f69ed8aa1a5395e6e8540302da5"
+            "last_complete_block_hash": "94c7d2fbf15e09b10c03a079bcf65406718eb2da0b11806cb4cd107e7f8cbc7b"
           },
           "token_ids": [
             248045,
@@ -42523,11 +42907,11 @@
             "messages": [
               {
                 "role": "system",
-                "content": "Call the declared function 'weather' now. You must emit a 'weather' tool call with valid arguments before any final answer, even when another function seems more relevant. Your entire response must be that tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
+                "content": "Call the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when another function seems more relevant. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of 'weather' tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
               },
               {
                 "role": "user",
-                "content": "Look up weather.\n\nCall the declared function 'weather' now. You must emit a 'weather' tool call with valid arguments before any final answer, even when another function seems more relevant. Your entire response must be that tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
+                "content": "Look up weather.\n\nCall the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when another function seems more relevant. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of 'weather' tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
               }
             ],
             "tools": [
@@ -42557,15 +42941,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
-            "prompt_token_count": 393,
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
+            "prompt_token_count": 465,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "bdd7a4d6a661edab768d523b0ccacc874a779cd13b88f5fbd00abe9e48c2c455"
+                "chain_hash": "79309865c9c78af2318127f1e0552c0e42956f1036a6a1e82f49b6dec108a91a"
               }
             ],
-            "last_complete_block_hash": "bdd7a4d6a661edab768d523b0ccacc874a779cd13b88f5fbd00abe9e48c2c455"
+            "last_complete_block_hash": "79309865c9c78af2318127f1e0552c0e42956f1036a6a1e82f49b6dec108a91a"
           },
           "token_ids": [
             248045,
@@ -42822,12 +43206,14 @@
             1394,
             1902,
             16201,
-            264,
+            799,
+            466,
+            777,
             359,
             14764,
             6,
             5224,
-            1562,
+            6526,
             440,
             2610,
             5789,
@@ -42844,14 +43230,48 @@
             777,
             9468,
             13,
+            28763,
+            660,
+            9209,
+            6526,
+            310,
+            359,
+            14764,
+            6,
+            10897,
+            539,
+            279,
+            1156,
+            303,
+            411,
+            1965,
+            13,
+            3054,
+            524,
+            2842,
+            1238,
+            279,
+            1118,
+            1562,
+            466,
+            3655,
+            364,
+            2961,
+            1881,
+            9209,
+            6526,
+            13,
             4465,
             4307,
             1965,
             1902,
-            381,
-            421,
+            6475,
+            314,
+            359,
+            14764,
+            6,
             5224,
-            1562,
+            6526,
             26,
             264,
             1414,
@@ -42898,12 +43318,14 @@
             1394,
             1902,
             16201,
-            264,
+            799,
+            466,
+            777,
             359,
             14764,
             6,
             5224,
-            1562,
+            6526,
             440,
             2610,
             5789,
@@ -42920,14 +43342,48 @@
             777,
             9468,
             13,
+            28763,
+            660,
+            9209,
+            6526,
+            310,
+            359,
+            14764,
+            6,
+            10897,
+            539,
+            279,
+            1156,
+            303,
+            411,
+            1965,
+            13,
+            3054,
+            524,
+            2842,
+            1238,
+            279,
+            1118,
+            1562,
+            466,
+            3655,
+            364,
+            2961,
+            1881,
+            9209,
+            6526,
+            13,
             4465,
             4307,
             1965,
             1902,
-            381,
-            421,
+            6475,
+            314,
+            359,
+            14764,
+            6,
             5224,
-            1562,
+            6526,
             26,
             264,
             1414,
@@ -42998,7 +43454,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "dae1428922f1f92ccdffcf081e96fb5ed10de7940320a79cb69a27b8b5d4f8ec",
+            "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
             "prompt_token_count": 27,
             "block_boundaries": []
           },
@@ -43037,7 +43493,7 @@
     {
       "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
       "model_type": null,
-      "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+      "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
       "cache_routing_eligible": true,
       "cases": [
         {
@@ -43075,7 +43531,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 12,
             "block_boundaries": []
           },
@@ -43124,7 +43580,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 12,
             "block_boundaries": []
           },
@@ -43194,7 +43650,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 20,
             "block_boundaries": []
           },
@@ -43421,15 +43877,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 335,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "e2d3457f1a534aef92927d058e198c8d27c087121bfb349c7cda732741a425c1"
+                "chain_hash": "b578a8d702ab3bd38a461e1b9dc17986127f0411a4f5a8d3367dfeed150d3000"
               }
             ],
-            "last_complete_block_hash": "e2d3457f1a534aef92927d058e198c8d27c087121bfb349c7cda732741a425c1"
+            "last_complete_block_hash": "b578a8d702ab3bd38a461e1b9dc17986127f0411a4f5a8d3367dfeed150d3000"
           },
           "token_ids": [
             248045,
@@ -43811,7 +44267,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 12,
             "block_boundaries": []
           },
@@ -43865,7 +44321,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 256,
             "block_boundaries": []
           },
@@ -44175,7 +44631,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 21,
             "block_boundaries": []
           },
@@ -44523,19 +44979,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 600,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "f49d2a7b9860e07f16af138ef10c9e0d998c4aa75d3bddebe1b7e713559a05b0"
+                "chain_hash": "9bff7b71fccb63a3aa6b0af4fd9ea0c07c5c3a31d4f0a0b9767b745e41e85cfa"
               },
               {
                 "token_count": 512,
-                "chain_hash": "424a70b0868d894db3b61bcab2378a109181711b8cfeedbd55dfd8b857e61ff8"
+                "chain_hash": "f59f8b96a69ce0199a2e6f7db320a9d3d6dcd56f0afc680d4d23d81a0083ee06"
               }
             ],
-            "last_complete_block_hash": "424a70b0868d894db3b61bcab2378a109181711b8cfeedbd55dfd8b857e61ff8"
+            "last_complete_block_hash": "f59f8b96a69ce0199a2e6f7db320a9d3d6dcd56f0afc680d4d23d81a0083ee06"
           },
           "token_ids": [
             248045,
@@ -45278,7 +45734,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 100,
             "block_boundaries": []
           },
@@ -45438,19 +45894,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 765,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "a400e59d1ec31a6bb77972d70ca9fa8d1d3a173daad5f692e7cf3ed5865c1407"
+                "chain_hash": "49d7f30001bc37d2975cddfae2f7a914632ea51edd1bba36feaef9ba50ab6ae4"
               },
               {
                 "token_count": 512,
-                "chain_hash": "38650c35c765c614f417c3ae0b41e15e39af24bbd4da4212db11c8e761311ffd"
+                "chain_hash": "a1787c9c9b82127402a1a94fc8683b6a71aab094a0f0d014a80749aa20247673"
               }
             ],
-            "last_complete_block_hash": "38650c35c765c614f417c3ae0b41e15e39af24bbd4da4212db11c8e761311ffd"
+            "last_complete_block_hash": "a1787c9c9b82127402a1a94fc8683b6a71aab094a0f0d014a80749aa20247673"
           },
           "token_ids": [
             248045,
@@ -46317,23 +46773,23 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 824,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "f835374dbf5aa594d8be3830d34a26680e0a24d95b89d02cced790935911eac6"
+                "chain_hash": "1733faf875881fa46dcfe685e0b98308653c7c5f3e6b064cddfa23f270cf2a61"
               },
               {
                 "token_count": 512,
-                "chain_hash": "83b323df48329cf8b776c857ce96c334c4d6c134f7b1fa54fd2a7659adb5df81"
+                "chain_hash": "f113c8817992d2515b1d32a49b4b692b78096183ecf3f60a7831428168991e48"
               },
               {
                 "token_count": 768,
-                "chain_hash": "5dc313762e4abee9292d034f5d68a44c844683a2eb984c0189c6a5827a4b7289"
+                "chain_hash": "a13b621779423050f15dda441e01ab9df48df3651c3fc5887e7995a68e84c498"
               }
             ],
-            "last_complete_block_hash": "5dc313762e4abee9292d034f5d68a44c844683a2eb984c0189c6a5827a4b7289"
+            "last_complete_block_hash": "a13b621779423050f15dda441e01ab9df48df3651c3fc5887e7995a68e84c498"
           },
           "token_ids": [
             248045,
@@ -47197,27 +47653,27 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 1025,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "0503c98c42cae243d7b489ab4fb4dd46e30b1614746ae4177193c462cc49e3ca"
+                "chain_hash": "4483b1522118df34753dca6aac148341f4839b93adba349812dc9e88a66113a4"
               },
               {
                 "token_count": 512,
-                "chain_hash": "0781618350fcc9a24367dcf0528903379b0a02501dec409c51b7c3bfc2029c95"
+                "chain_hash": "57ad25b9026e24799b0c5395e7e84dff59077c4ae4bb557847db73de3954c627"
               },
               {
                 "token_count": 768,
-                "chain_hash": "da1a41def68b736176e808f9e617465dba9739cfebfbe522868da5a357683fb1"
+                "chain_hash": "89c214856f88ab4f1d112151fdd86c03eaac7622439464f6b2db89b4498d61a9"
               },
               {
                 "token_count": 1024,
-                "chain_hash": "a32fa26a2111af2f147046981d197f7d7ded7090417d732016b08a92f44bac99"
+                "chain_hash": "dae86581cd182275690c089f80975568fc69ebc9b103b9b4eae50fd5e9c5636c"
               }
             ],
-            "last_complete_block_hash": "a32fa26a2111af2f147046981d197f7d7ded7090417d732016b08a92f44bac99"
+            "last_complete_block_hash": "dae86581cd182275690c089f80975568fc69ebc9b103b9b4eae50fd5e9c5636c"
           },
           "token_ids": [
             248045,
@@ -48334,15 +48790,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 442,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "a5242f8c4b7a039ed44347da0cd4a463300309eb4bf3d24cf4c58aa15d13ff69"
+                "chain_hash": "26673dca1b88bc1f07ecbcbb4113c9340a9a0838616ca683412544c73d172ef1"
               }
             ],
-            "last_complete_block_hash": "a5242f8c4b7a039ed44347da0cd4a463300309eb4bf3d24cf4c58aa15d13ff69"
+            "last_complete_block_hash": "26673dca1b88bc1f07ecbcbb4113c9340a9a0838616ca683412544c73d172ef1"
           },
           "token_ids": [
             248045,
@@ -48830,7 +49286,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 14,
             "block_boundaries": []
           },
@@ -48891,7 +49347,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 13,
             "block_boundaries": []
           },
@@ -48964,19 +49420,19 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 718,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "abf28757d5adc8494fa230e61c72d5ab6a9f83880f4af4a318e83e343c912315"
+                "chain_hash": "d093966bf19e058f6ca4fe13927623d19008fc147f714612ccddd1bd8865fbed"
               },
               {
                 "token_count": 512,
-                "chain_hash": "cb84c3fa61dbfb41eb202e4b4c40caea051e46f9a6af3c3fc99535abd26da35a"
+                "chain_hash": "0881fa462ce6f470b6038fa77c0dd8d80ce1e61f42cf19875b67559a938d06b9"
               }
             ],
-            "last_complete_block_hash": "cb84c3fa61dbfb41eb202e4b4c40caea051e46f9a6af3c3fc99535abd26da35a"
+            "last_complete_block_hash": "0881fa462ce6f470b6038fa77c0dd8d80ce1e61f42cf19875b67559a938d06b9"
           },
           "token_ids": [
             248045,
@@ -49780,11 +50236,11 @@
             "messages": [
               {
                 "role": "system",
-                "content": "Call the declared function 'weather' now. You must emit a 'weather' tool call with valid arguments before any final answer, even when another function seems more relevant. Your entire response must be that tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
+                "content": "Call the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when another function seems more relevant. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of 'weather' tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
               },
               {
                 "role": "user",
-                "content": "Look up weather.\n\nCall the declared function 'weather' now. You must emit a 'weather' tool call with valid arguments before any final answer, even when another function seems more relevant. Your entire response must be that tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
+                "content": "Look up weather.\n\nCall the declared function 'weather' now. You must emit one or more 'weather' tool calls with valid arguments before any final answer, even when another function seems more relevant. Include all independent calls to 'weather' requested by the user in this response. Do not stop after the first call or wait for results between independent calls. Your entire response must consist of 'weather' tool calls; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
               }
             ],
             "tools": [
@@ -49814,15 +50270,15 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
-            "prompt_token_count": 393,
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
+            "prompt_token_count": 465,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "2ce9c510391235963792179a3abc353461735a827dff72c15b5492cc0aa7db92"
+                "chain_hash": "dedaa3472010162b108415bbb27583924967fbe1e4dbeba9075d1aa942f021cd"
               }
             ],
-            "last_complete_block_hash": "2ce9c510391235963792179a3abc353461735a827dff72c15b5492cc0aa7db92"
+            "last_complete_block_hash": "dedaa3472010162b108415bbb27583924967fbe1e4dbeba9075d1aa942f021cd"
           },
           "token_ids": [
             248045,
@@ -50079,12 +50535,14 @@
             1394,
             1902,
             16201,
-            264,
+            799,
+            466,
+            777,
             359,
             14764,
             6,
             5224,
-            1562,
+            6526,
             440,
             2610,
             5789,
@@ -50101,14 +50559,48 @@
             777,
             9468,
             13,
+            28763,
+            660,
+            9209,
+            6526,
+            310,
+            359,
+            14764,
+            6,
+            10897,
+            539,
+            279,
+            1156,
+            303,
+            411,
+            1965,
+            13,
+            3054,
+            524,
+            2842,
+            1238,
+            279,
+            1118,
+            1562,
+            466,
+            3655,
+            364,
+            2961,
+            1881,
+            9209,
+            6526,
+            13,
             4465,
             4307,
             1965,
             1902,
-            381,
-            421,
+            6475,
+            314,
+            359,
+            14764,
+            6,
             5224,
-            1562,
+            6526,
             26,
             264,
             1414,
@@ -50155,12 +50647,14 @@
             1394,
             1902,
             16201,
-            264,
+            799,
+            466,
+            777,
             359,
             14764,
             6,
             5224,
-            1562,
+            6526,
             440,
             2610,
             5789,
@@ -50177,14 +50671,48 @@
             777,
             9468,
             13,
+            28763,
+            660,
+            9209,
+            6526,
+            310,
+            359,
+            14764,
+            6,
+            10897,
+            539,
+            279,
+            1156,
+            303,
+            411,
+            1965,
+            13,
+            3054,
+            524,
+            2842,
+            1238,
+            279,
+            1118,
+            1562,
+            466,
+            3655,
+            364,
+            2961,
+            1881,
+            9209,
+            6526,
+            13,
             4465,
             4307,
             1965,
             1902,
-            381,
-            421,
+            6475,
+            314,
+            359,
+            14764,
+            6,
             5224,
-            1562,
+            6526,
             26,
             264,
             1414,
@@ -50255,7 +50783,7 @@
             "_darkbloom_prompt_date": "2028-02-29"
           },
           "plan": {
-            "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+            "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
             "prompt_token_count": 27,
             "block_boundaries": []
           },

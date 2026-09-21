@@ -1029,6 +1029,10 @@ struct SSDPrefixCacheLifecycleTests {
         let tokens = Array(0 ..< tokenCount)
         donateFixture(cache, tokens: tokens)
         #expect(await waitForIndexCount(cache, atLeast: 8))
+        // Index publication can precede the writer's final maintenance sweep.
+        // Finish that write-behind job before advancing this test's clock;
+        // otherwise two sweeps race across the assertions below.
+        await cache.waitForWritesForTesting()
 
         // Cross the 15-minute TTL, then sweep (the write path + periodic
         // task call exactly this).

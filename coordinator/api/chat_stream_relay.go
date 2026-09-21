@@ -28,6 +28,7 @@ type chatStreamRelay struct {
 	// chat-completions-specific handling (DONE swallowing, usage/finish holds,
 	// normalizeSSEChunk, coordinator terminators) is skipped.
 	sawResponsesAPI bool
+	identity        chatStreamIdentity
 
 	// pendingUsage is the held terminal include_usage chunk (parsed once); it
 	// is re-emitted at stream end with the provider's authoritative reasoning
@@ -76,6 +77,7 @@ func (rl *chatStreamRelay) handleChunk(chunk string) {
 	}
 	chunk = stripProviderChatMetadata(sanitizeStreamCacheDetails(chunk))
 	if !rl.sawResponsesAPI {
+		rl.identity.observe(chunk)
 		// Hold the terminal usage chunk (chat completions only) so the
 		// reasoning breakdown can be spliced in at stream end; forwarding it
 		// inline would emit it without reasoning_tokens.

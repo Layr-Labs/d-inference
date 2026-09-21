@@ -190,9 +190,12 @@ extension ProviderLoop {
     func mtpSlotMetricsSamplesForLocal() async -> [MTPSlotMetricsSample] {
         var samples: [MTPSlotMetricsSample] = []
         samples.reserveCapacity(modelSlots.count)
-        for (modelId, slot) in modelSlots.sorted(by: { $0.key < $1.key }) {
-            samples.append(
-                .init(model: modelId, snapshot: await slot.engineV2.mtpStatusSnapshot()))
+        let bridges = modelSlots.map { (model: $0.key, bridge: $0.value.engineV2) }
+            .sorted { $0.model < $1.model }
+        for entry in bridges {
+            guard let sample = await entry.bridge.localMetricsSample(model: entry.model),
+                modelSlots[entry.model]?.engineV2 === entry.bridge else { continue }
+            samples.append(sample)
         }
         return samples
     }

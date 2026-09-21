@@ -1332,7 +1332,7 @@
         <div class="card">
           <div class="card-label">Hardware</div>
           <h3>Hardware-verified</h3>
-          <p>Each provider's encryption key is bound to a Secure Enclave identity, with hardware posture checked through MDM. Providers marked Apple attestation verified have also passed certificate-chain verification against Apple's root certificate authority.</p>
+          <p>Provider encryption keys are bound to verified identities. Legacy verification uses MDM hardware-posture checks and separate MDA certificate proof. Eligible macOS 27+ providers can instead use qualified App Attest authorization without MDM when that serving path is enabled.</p>
         </div>
         <div class="card">
           <div class="card-label">Runtime</div>
@@ -1354,10 +1354,10 @@
           <text x="20" y="26" style="font-family:'ABC Repro Mono',monospace;font-size:11px;fill:#1A0C6D;opacity:0.6">Network Encryption</text>
           <text x="580" y="26" text-anchor="end" style="font-family:'ABC Repro Mono',monospace;font-size:9px;fill:#ACB1BC">HTTPS to coordinator · encrypted provider hop</text>
 
-          <!-- Layer 4: OS Integrity -->
+          <!-- Layer 4: Code Integrity -->
           <rect x="20" y="40" width="560" height="250" rx="14" fill="#1A0C6D" opacity="0.04" stroke="#1A0C6D" stroke-width="1" stroke-opacity="0.12"/>
-          <text x="40" y="64" style="font-family:'ABC Repro Mono',monospace;font-size:11px;fill:#1A0C6D;opacity:0.6">OS Integrity</text>
-          <text x="560" y="64" text-anchor="end" style="font-family:'ABC Repro Mono',monospace;font-size:9px;fill:#ACB1BC">SIP enforced · signed system volume · binary self-hash</text>
+          <text x="40" y="64" style="font-family:'ABC Repro Mono',monospace;font-size:11px;fill:#1A0C6D;opacity:0.6">Code Integrity</text>
+          <text x="560" y="64" text-anchor="end" style="font-family:'ABC Repro Mono',monospace;font-size:9px;fill:#ACB1BC">signed runtime · verified code identity</text>
 
           <!-- Layer 3: Attested key binding -->
           <rect x="44" y="78" width="512" height="192" rx="12" fill="#1A0C6D" opacity="0.04" stroke="#1A0C6D" stroke-width="1" stroke-opacity="0.12"/>

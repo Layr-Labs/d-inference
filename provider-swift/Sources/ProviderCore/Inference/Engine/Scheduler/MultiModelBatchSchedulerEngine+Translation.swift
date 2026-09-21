@@ -67,6 +67,10 @@ extension MultiModelBatchSchedulerEngine {
         hasMedia: Bool = false,
         requiresToolCall: Bool = false
     ) -> [String: any Sendable]? {
+        // Responses translates its typed effort into the same request field.
+        // Preserve it ahead of raw-body effort aliases; explicit thinking
+        // booleans retain their existing precedence over effort shorthands.
+        let effort = request.reasoning?.effort ?? controls.reasoningEffort
         var context: [String: any Sendable] = [:]
         if let date = controls.promptDate {
             context.merge(date.templateContext()) { _, pinned in pinned }
@@ -75,7 +79,7 @@ extension MultiModelBatchSchedulerEngine {
             modelId: request.model,
             modelType: modelType)
         if let effectiveEffort = GPTOSSHarmonyTemplateFix.effectiveReasoningEffort(
-            controls.reasoningEffort,
+            effort,
             context: fixContext)
         {
             context["reasoning_effort"] = effectiveEffort
@@ -86,19 +90,22 @@ extension MultiModelBatchSchedulerEngine {
         // none/off/0 spellings disable through reasoning_effort. `minimal` is
         // preserved as an effort value and intentionally is not rewritten to
         // false.
-        if requiresToolCall && Qwen35TemplateFix.applies(to: fixContext) {
-            // Qwen's XML tool parser treats reasoning before <tool_call> as
-            // visible prose. Required/named tool_choice cannot expose prose,
-            // so the forced-tool contract takes precedence over thinking
-            // controls and renders a tool-only prompt.
+        if requiresToolCall && Qwen35TemplateFix.applies(to: fixContext)
+            && !ToolChoiceEnforcementPolicy.nativeStructuredTarget(fixContext)
+        {
+            // Legacy Qwen text routing cannot separate reasoning before XML
+            // tool parsing. Native Qwen4/Nemotron use NativeToolStreamRouter,
+            // so they preserve caller thinking controls instead of inheriting
+            // this older tool-only workaround. Visible prose still fails the
+            // forced-call contract; reasoning is a separate typed channel.
             context["enable_thinking"] = false
         } else if let nested = request.reasoning?.enabled {
             context["enable_thinking"] = nested
         } else if let explicit = controls.enableThinking {
             context["enable_thinking"] = explicit
-        } else if controls.effortDisablesThinking {
+        } else if ChatTemplateControls(reasoningEffort: effort).effortDisablesThinking {
             context["enable_thinking"] = false
-        } else if hasMedia && !controls.hasExplicitThinkingControl {
+        } else if hasMedia && controls.enableThinking == nil && effort == nil {
             // Qwen templates default thinking on. Grounded media defaults off
             // only when the caller supplied no thinking control at all.
             context["enable_thinking"] = false
@@ -115,24 +122,11 @@ extension MultiModelBatchSchedulerEngine {
     /// This text translator collapses multimodal parts; production media
     /// requests are intercepted and prepared before reaching it.
     ///
-    /// KNOWN DEVIATION (P1 #3, narrowed): the upstream
-    /// `OpenAIChatCompletionRequest` does not expose `seed` or `logit_bias`
-    /// fields today (see
-    /// `libs/mlx-swift-lm/Libraries/MLXLMServer/Protocol/OpenAIProtocol.swift`),
-    /// so a translation from the upstream shape ALONE always yields
-    /// `seed == nil` / `logit_bias == nil`. On the coordinator serving path
-    /// they are recovered the same way `logprobs`/`top_logprobs` are: decoded
-    /// straight from the sealed body
-    /// (`ProviderLoop.extractSamplingOverrides`) and overlaid here via the
-    /// `logitBias`/`seed` parameters. The standalone
-    /// `--local` path still drops both — it decodes inside the upstream
-    /// Hummingbird router with no provider seam — pending the upstream shape
-    /// gaining the fields.
-    /// We intentionally do NOT smuggle `seed` through the OpenAI `user`
-    /// field (the other free-form caller field) because we may need to
-    /// repurpose `user` for cancellation / request-id correlation in
-    /// the future and double-booking that field would be a layering
-    /// trap.
+    /// `seed` and `logit_bias` now travel on the upstream OpenAI request shape,
+    /// so standalone local serving preserves them. The coordinator serving
+    /// path also decodes them directly from the sealed body through
+    /// `ProviderLoop.extractSamplingOverrides`; a supplied sealed-body overlay
+    /// remains authoritative to preserve that authenticated boundary.
     /// `logprobs`/`topLogprobs` overlay the OpenAI knobs of the same names
     /// onto the internal shape; on the coordinator path they arrive via
     /// `EngineV2LogprobsPlumbing`.
@@ -162,14 +156,12 @@ extension MultiModelBatchSchedulerEngine {
             frequency_penalty: request.frequencyPenalty,
             stream: request.stream,
             stop: stop,
-            // Sealed-body overlay (nil unless the coordinator handler decoded
-            // one) — see KNOWN DEVIATION on `translate(...)`.
-            seed: seed,
+            seed: seed ?? request.seed,
             tools: nil,
             tool_choice: nil,
             response_format: nil,
             user: nil,
-            logit_bias: logitBias,
+            logit_bias: logitBias ?? request.logitBias,
             logprobs: logprobs,
             top_logprobs: topLogprobs
         )

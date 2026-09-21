@@ -106,7 +106,12 @@ struct Status: AsyncParsableCommand {
             now: now,
             heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs))
 
-        if let trust = state.trust {
+        let authorization = state.currentProviderAuthorization(
+            coordinatorURL: config.coordinator.url, now: now)
+        if let authorization {
+            print("Authorization: \(ProviderAuthorizationReadiness.summary(authorization, now: now))")
+            if !authorization.machineID.isEmpty { print("Machine ID: \(authorization.machineID)") }
+        } else if let trust = state.trust {
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
             print("Trust: \(trust.trustLevel) / \(trust.status)")
             print("  → \(advice.message)")

@@ -1,11 +1,19 @@
 # MDM enrollment
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-18 · commit `397b4d902`
 
 How a provider Mac joins Darkbloom's MDM so the coordinator can ask Apple's
 management subsystem, rather than the provider binary, whether SIP and Secure
 Boot are on. Enrollment is SCEP + MDM only; the historical ACME
 `device-attest-01` payload was removed.
+
+New setup on macOS 27 or later uses App Attest and does not enter this MDM flow.
+The installer (`scripts/install.sh`, `configure_device_verification`) and CLI
+(`provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`, `EnrollmentService.enroll`)
+select the setup path locally; [serving authorization](../../reference/provider-authorization.md)
+still comes from the coordinator. Existing profiles remain installed until the
+separate removal readiness check passes. Older macOS receives legacy enrollment
+and an upgrade/upcoming deactivation notice.
 
 ## Context
 

@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-17 · commit `954f570d1`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -21,6 +21,16 @@ and are not repeated here.
 | Storage | Weights per model (catalog `size_gb`) under the Hugging Face hub cache, plus the SSD prefix-cache budget (`ssdDiskBudgetBytes`, [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules)) when that cache is active | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift` (`defaultCacheDirectory`), `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` |
 | Network | Outbound `wss://api.darkbloom.dev/ws/provider` and HTTPS on 443; a heartbeat every `heartbeat_interval_secs` ([`cli-reference.md`](./cli-reference.md#providertoml-keys-read-by-the-cli)); no inbound port | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |
 | Security posture | SIP enabled and Full Security boot; a logged-in GUI session for APNs code-identity attestation | [`attestation.md`](./attestation.md) |
+
+## Bonsai 2 qualification scope
+
+The unchanged Prism Bonsai 2 27B MLX 2-bit payload is 8,595,477,990 bytes,
+including its vision tensors. File size is not a RAM-tier qualification:
+activation/KV reserves and live OS headroom remain required. The initial draft
+targets M5 Max testing; no minimum-RAM catalog value, full-context guarantee or
+MTP capability is introduced. `EngineV2KVBackendPolicy` selects paging for the
+exact artifact ID; all existing admission checks remain in effect. The artifact
+contract is in `libs/mlx-swift-lm/docs/bonsai2.md`.
 
 ## Chip families
 
@@ -82,6 +92,27 @@ out of whatever the cap leaves after weights and activations; a model that loads
 with less than `minimumLoadKVBytes` of KV headroom is unloaded again
 (`provider-swift/Sources/ProviderCore/Inference/Memory/KVHeadroomProbe.swift`;
 [after the load](../architecture/hardware-support.md#after-the-load)).
+
+## Qwen4 learned-table offload
+
+The [Flash-Next candidate](../reference/qwen4-next-support.md)
+keeps learned PLE tables SSD-backed even when request prefix caching is off.
+`Qwen4ExpMmapFootprint.excludedBytes` validates safetensor payload ranges before
+subtracting offloaded bytes from the scanner's native-weight loading estimate
+(`provider-swift/Sources/ProviderCore/Models/Qwen4ExpMmapFootprint.swift`).
+Eligible native non-FP16 layouts also receive a header-derived load-copy
+allowance through `Qwen4ExpLoadFootprint.estimate`; all vision and MTP weights
+remain counted. Malformed or unsupported metadata retains the conservative
+padding. See the [loading bound and retirement window](../architecture/hardware-support.md#mechanism).
+The coordinator applies
+the separate [offload declaration gate](../architecture/routing.md#ssd-offloaded-model-weights).
+
+Mapped pages can still occupy reclaimable OS cache. Target KV, QSA index,
+GDN/PLE state, MTP history, restore scratch and concurrent requests add live
+allocations with their own owners. Arithmetic weight fit is not hardware
+qualification: retaining native multimodal support and listing full native
+context does not establish full-window operation on 128 GiB hardware. Existing catalog minimum RAM,
+runtime headroom and actual capacity gates remain in force.
 
 ## Gemma QAT assistant footprint and availability
 

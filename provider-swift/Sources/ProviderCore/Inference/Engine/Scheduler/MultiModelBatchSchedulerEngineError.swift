@@ -39,6 +39,9 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// histories do not trip model-specific Jinja assertions as provider
     /// 500s.
     case invalidToolPayload(String)
+    /// The owned native Flash-Next template does not support the resolved
+    /// thinking effort. Deterministic request error, before template rendering.
+    case unsupportedReasoningEffort
     /// The MODEL failed to satisfy the request's forced `tool_choice`
     /// contract, or the inference-time grammar reached an impossible state.
     /// This depends on what the model GENERATED —
@@ -71,6 +74,9 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// never transient capacity — so it surfaces as 400, not a retry
     /// signal.
     case multimodalRejected(String)
+    /// The prompt plus resolved output reservation is outside this candidate's
+    /// advertised context. Deterministic client fault; no request content carried.
+    case advertisedContextExceeded
     /// A typed CBv2 platform/engine terminal (a monotonic deadline lease or
     /// the step watchdog) fired mid-generation. Unlike `.generationFailed`,
     /// this carries the machine-readable `cause` AND the engine-reconciled
@@ -95,6 +101,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return "Unsupported chat message role: '\(role)'"
         case .invalidToolPayload(let message):
             return message
+        case .unsupportedReasoningEffort:
+            return "Qwen3.8-Flash-Next supports reasoning effort low, medium, or xhigh when thinking is enabled"
         case .toolChoiceViolation(let message):
             return message
         case .tokenBudgetExhausted(let message):
@@ -108,6 +116,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
                 "Model '\(id)' does not support image or video input on this provider"
         case .multimodalRejected(let message):
             return message
+        case .advertisedContextExceeded:
+            return Qwen4SupportPolicy.contextRejectionMessage
         case .platformTerminal(_, let message, _):
             return message
         }
@@ -131,6 +141,9 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
         // capacity by the broader substring checks below.
         if lowercased.hasPrefix(EngineV2Translation.multimodalRejectedPrefix) {
             return .multimodalRejected(message)
+        }
+        if lowercased == Qwen4SupportPolicy.contextRejectionMessage {
+            return .advertisedContextExceeded
         }
         if lowercased == "tool_constraint_impossible_state" {
             return .toolChoiceViolation(

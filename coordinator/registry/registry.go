@@ -82,6 +82,15 @@ type Registry struct {
 	codeAttestationConfigured bool
 	codeAttestationDeadline   time.Time
 
+	// Independent App Attest serving policy. A zero-value registry preserves
+	// legacy authorization. Credentials are denied for this process lifetime;
+	// the API also consults the durable revocation store before each grant.
+	appAttestServingEnabled          bool
+	appAttestQualificationGeneration uint64
+
+	appAttestPolicyGeneration   uint64
+	appAttestRevokedCredentials map[string]struct{}
+
 	// Active-release authorization is generation-bound. When at least one
 	// release policy record exists, private routing requires application evidence
 	// derived from the current generation; APNs identity alone is insufficient.

@@ -143,11 +143,17 @@ type Hardware struct {
 
 // ModelInfo describes a model available on a provider.
 type ModelInfo struct {
-	ID           string `json:"id"`
-	SizeBytes    int64  `json:"size_bytes"`
-	ModelType    string `json:"model_type"`
-	Quantization string `json:"quantization"`
-	WeightHash   string `json:"weight_hash,omitempty"` // SHA-256 fingerprint of weight files
+	// Only providers declaring validated SSD-offloaded weight payload use the
+	// padded resident estimate for cold routing. Ordinary models retain the
+	// catalog/measured-weight policy of their current engine release.
+	EstimatedMemoryGB        float64 `json:"estimated_memory_gb,omitempty"`
+	SSDOffloadedWeightBytes  int64   `json:"ssd_offloaded_weight_bytes,omitempty"`
+	NativeLoadTransientBytes int64   `json:"native_load_transient_bytes,omitempty"`
+	ID                       string  `json:"id"`
+	SizeBytes                int64   `json:"size_bytes"`
+	ModelType                string  `json:"model_type"`
+	Quantization             string  `json:"quantization"`
+	WeightHash               string  `json:"weight_hash,omitempty"` // SHA-256 fingerprint of weight files
 	// IsVision is true when the provider can serve this build with image/video
 	// input (a VLM, detected via vision_config). v0.6.0+ only; older providers omit
 	// it (decodes to false) so they are never selected for media requests. The
@@ -940,10 +946,11 @@ type RuntimeMismatch struct {
 // TrustStatusMessage is sent by the coordinator to inform a provider of its
 // current trust level for local operator diagnostics.
 type TrustStatusMessage struct {
-	Type       string `json:"type"`
-	TrustLevel string `json:"trust_level"` // "none", "self_signed", "hardware"
-	Status     string `json:"status"`      // "online", "untrusted", etc.
-	Reason     string `json:"reason,omitempty"`
+	Type          string                        `json:"type"`
+	TrustLevel    string                        `json:"trust_level"` // "none", "self_signed", "hardware"
+	Status        string                        `json:"status"`      // "online", "untrusted", etc.
+	Reason        string                        `json:"reason,omitempty"`
+	Authorization *ProviderServingAuthorization `json:"authorization,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

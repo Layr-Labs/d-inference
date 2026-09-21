@@ -84,8 +84,8 @@ extension EngineV2VisionPrefill {
 
     /// The N² buffer multiple this wrapper's vision tower will allocate, read
     /// from the model's own config against MLX's kernel-selection rule.
-    static func qwenAttentionHeadFactor(_ wrapper: MLXVLM.Qwen35) -> Int {
-        let vision = wrapper.config.visionConfiguration
+    static func qwenAttentionHeadFactor(_ wrapper: any QwenVisionSeamModel) -> Int {
+        let vision = wrapper.visionTowerAttentionGeometry
         return VisionTowerBudget.attentionHeadFactor(
             hiddenSize: vision.hiddenSize, numHeads: vision.numHeads)
     }
@@ -164,7 +164,7 @@ extension EngineV2VisionPrefill {
     /// for MLX faults — before the next image's graph is built, so peak device
     /// memory is one image's tower and a fault stops the loop where it happens.
     static func qwenPerImageVisionFeatures(
-        wrapper: MLXVLM.Qwen35,
+        wrapper: any QwenVisionSeamModel,
         pixels: MLXArray,
         grids: [THW],
         towerLimits: VisionTowerBudget.Limits,
@@ -198,7 +198,8 @@ extension EngineV2VisionPrefill {
             }
 
             let single = try wrapper.visionFeatures(
-                imagePixels: pixels[runs[index], 0...], imageGrids: [grid])
+                imagePixels: pixels[runs[index], 0...], imageGrids: [grid],
+                videoPixels: nil, videoGrids: nil)
             guard single.ordered.count == 1 else {
                 throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .image)
             }
@@ -226,7 +227,7 @@ extension EngineV2VisionPrefill {
     /// `carveSpans` carves the matching adjacent spans out of the single
     /// contiguous `<|video_pad|>` run the processor emitted.
     static func qwenPerVideoVisionFeatures(
-        wrapper: MLXVLM.Qwen35,
+        wrapper: any QwenVisionSeamModel,
         pixels: MLXArray,
         grids: [THW],
         towerLimits: VisionTowerBudget.Limits,
@@ -252,6 +253,7 @@ extension EngineV2VisionPrefill {
                 throw EngineV2VisionPrefillError.towerBudgetExceeded(reason)
             }
             let single = try wrapper.visionFeatures(
+                imagePixels: nil, imageGrids: nil,
                 videoPixels: pixels[runs[index], 0...], videoGrids: [grid])
             guard single.ordered.count == grid.t, grid.t > 0 else {
                 throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .video)

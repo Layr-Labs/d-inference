@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-13 · commit `f6b5e111c`
+> Last updated: 2026-09-18 · commit `dab62c50a`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -91,6 +91,30 @@ flowchart TD
     DISP -->|first content| OK[stream]
     RACE --> OK
 ```
+
+### SSD-offloaded model weights
+
+Native Qwen4 can advertise a validated immutable offloaded payload alongside
+its native-weight loading estimate. `advertisedOffloadedMemoryGBLocked`
+(`coordinator/registry/offloaded_weights.go`) requires matching model ID and
+native Qwen4 type, finite positive memory, and an offloaded byte count strictly
+between zero and total artifact bytes. It uses the larger of the reported
+estimate and the remaining weight bytes plus a valid explicit
+`native_load_transient_bytes` allowance (at least 1 GiB, without overflow).
+Missing/invalid allowance declarations retain the 1.2 load-transient padding.
+Missing/invalid offload or other-family declarations keep the existing
+catalog/measured-weight policy.
+
+`coordinator/registry/scheduler.go` carries this estimate into cold snapshots.
+`reportedFreeForLoadAdmitsWithOffload` in
+`coordinator/registry/offloaded_weights.go` uses it at the cold-load boundary;
+`coldTokenBudgetEstimateWithOffload` in `coordinator/registry/servability.go`
+uses it for the post-load token-budget estimate.
+This does not subtract request KV, prove physical capacity, waive catalog
+minimum RAM or activate a model. Wire fields are defined in
+[model registration messages](../reference/protocol-messages.md#models), and
+the [private candidate reference](../reference/qwen4-next-support.md)
+records the unqualified serving boundary.
 
 ### Eligibility gates and the `GateReason` vocabulary
 
@@ -276,6 +300,26 @@ Useful reuse subtracts a bounded credit; excess restore cost increases
 `ThisReqMs`. Queue, load, decode and admission costs remain intact. The rules
 and their flag are the subject of
 [`cache-aware-routing.md`](cache-aware-routing.md).
+
+### Native model capacity and registry identity
+
+Native model context describes a capability, not an SLA promise. The provider
+enforces prompt plus reserved output against the native window and retains
+physical-memory safeguards. Coordinator token budgets, queueing, TTFT and
+throughput policies decide which eligible requests can be routed; historical
+test sizes must not become hidden provider context ceilings. The native
+Flash-Next policy is defined in [the support reference](../reference/qwen4-next-support.md).
+
+`providerEligibleForTraitsLocked` applies the exact registry-ID compatibility
+floor before request-shape gates. `qwen3.8-flash-next` requires `0.9.6` or newer;
+unknown/older versions are ineligible even for plain text. The 0.9.5 signed
+app crashes when resolving Qwen Metal resources, so it is excluded for Flash
+while remaining eligible for other supported models. This prevents an
+older provider from accepting that ID without its qualified native policies.
+Other IDs, including the legacy developer ID, retain existing version rules.
+Sources: `coordinator/registry/qwen4_model_policy.go`
+(`providerMeetsQwen4CatalogPolicyLocked`) and
+`coordinator/registry/request_traits.go` (`providerEligibleForTraitsLocked`).
 
 ### Selection paths
 
@@ -721,7 +765,7 @@ must not run in parallel with other scheduler tests in the same process.
 | `no_provider` | No provider advertises the model, or every advertising provider fails a non-capacity gate (`candidateCount == 0` with no capacity rejections). | Preflight returns `429` with `Retry-After` and reason code `no_provider` (`coordinator/api/inference_admission.go`). With [`EIGENINFERENCE_COLD_DISPATCH`](../reference/configuration.md#routing-admission-and-ttft) enabled and an idle on-disk provider that could load the model, the request is queued for a cold dispatch instead (`coldSpillAvailable`, `coordinator/api/cold_dispatch.go`). With breaker-only rejections, fail-open re-scans first (`shouldBypassBreakerFailOpen`). |
 | `model_too_large` | Every advertising provider is cold and `modelFitsHardware` fails (`rejectModelTooLarge`). | Permanent rejection for this fleet composition; `routingsim` reports `OutcomeModelTooLarge`. |
 | All gated on capacity (`machine_busy`) | Providers serve the model but all are at `no_headroom`, `free_memory` or `capacity_cooldown`. | With [`EIGENINFERENCE_QUEUE_BEFORE_SHED`](../reference/configuration.md#routing-admission-and-ttft) enabled (`coordinator/api/cold_dispatch.go`) the request queues per [`scheduling.md`](scheduling.md); otherwise `429` with `Retry-After` from `estimateRetryAfter`. |
-| `ttft_too_slow` | Every candidate's estimated TTFT exceeds the first-content deadline. | Soft by default: the best-available provider still serves. `EIGENINFERENCE_TTFT_HARD_REJECT=true` restores the legacy `429`; vision requests are never TTFT-gated. |
+| `ttft_too_slow` | Every candidate's estimated TTFT exceeds the first-content deadline. | Soft by default: the best-available provider still serves. `EIGENINFERENCE_TTFT_HARD_REJECT=true` restores the legacy `429`; vision requests and accounts outside the first-content SLA selector are never TTFT-gated. |
 | Queue timeout | A queued request found no eligible provider within the queue's wait bound. | `ErrQueueTimeout` → `429` with `Retry-After`; see [`scheduling.md`](scheduling.md#per-model-request-queue). |
 | Budget-clamped fleet | Every pair for the model is clamped after capacity 503s. | Pairs show as `free_memory` until release or `defaultBudgetClampTTL` ([above](#gray-box-capacity-signals)); heartbeat headroom plus one accept releases early. |
 | Hedge suppressed under load | Governor returns a suppress verdict. | Primary alone is waited on for the remaining deadline (`waitNoBackup`); `routing.hedge_governor_suppressed` counts the verdict. |
@@ -763,3 +807,13 @@ must not run in parallel with other scheduler tests in the same process.
 - [`../operations/routing-v2-rollout.md`](../operations/routing-v2-rollout.md) — kill switches for the routing flags named on this page.
 - [`../design/routing-v2.md`](../design/routing-v2.md), [`../design/routing-telemetry-and-calibration.md`](../design/routing-telemetry-and-calibration.md) — the design history behind the current constants.
 - [`request-outcome-observability.md`](request-outcome-observability.md) — how routing outcomes surface in telemetry.
+
+## Account-scoped first-content SLA
+
+`coordinator/modelpolicy/first_content_sla.go` (`SetFirstContentSLAsFromEnv`) configures both fixed and per-input-token terms for exact model IDs, independently of model registration. Bonsai 2 uses a 10-second upstream base plus 5 ms per estimated prompt token; the live coordinator cutoff retains the existing 1-second response margin. This is the request-absolute first-content budget, carried through admission, queueing, retries and provider writer handoff, not an independent kernel prefill clock. These budgets apply only to accounts selected by `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`. Provision the selector privately in the deployment environment; its value must match the authenticated account ID or stored email. Other service accounts and direct consumers are exempt, including for Bonsai. An explicit public-model policy takes precedence over its resolved build, and the selected duration is pinned before media, admission and alias fallback. Configuration details are in [configuration.md](../reference/configuration.md).
+
+`coordinator/api/first_content_accounts.go` (`requestFirstContentDeadline`) selects the policy using authenticated identity. Empty selectors disable the SLA for all accounts. An email lookup storage failure returns a retryable service error before reservation rather than silently changing account policy. Missing user records do not match an email selector.
+
+For exempt accounts, zero explicitly disables first-content deadlines: preflight skips its TTFT ceiling, queued and dispatched requests retain an empty `FirstContentDeadline`, and the provider frame omits `first_content_budget_ms`. The Swift inbound handler already interprets an omitted budget as no coordinator first-content deadline. `coordinator/api/first_token_clock.go` (`newFirstContentTimer`) disables the timeout select arm in every first-content wait, including accepted, retry and speculative-race paths. There is no 600-second first-content fallback. Clean empty completions remain eligible for speculative arbitration even with a zero deadline.
+
+Queue limits, provider write watchdogs, client cancellation and disconnect cleanup remain. The existing response/stream timers apply after first content commits. Ranking, ordinary hedge launch hints and capacity probes remain active; exempt probes use a finite advisory planning horizon without arming a request timeout or advancing SLA hedges. Exempt primary scans use the short admission scan-wait slice. Speculative backup scans only acquire an immediately available scan slot; saturation skips the backup and resumes reading the primary. Shadow TTFT metrics remain counterfactual measurements, not enforcement.

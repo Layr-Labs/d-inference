@@ -1,6 +1,6 @@
 # Encryption and privacy model
 
-> Last updated: 2026-09-16 · commit `b080f1a1a`
+> Last updated: 2026-09-20 · commit `76a8f03d9`
 
 An inference request crosses three NaCl Box hops: consumer → coordinator
 (optional), coordinator → provider (mandatory), provider → coordinator
@@ -41,9 +41,10 @@ they do not guarantee that every prompt, response or model buffer is zeroed
 after inference. The `secureZero` and `secureZeroData` helpers in
 `provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift` are not
 invoked by the inference path. Consumer-facing verification copy therefore
-describes process protections and reports Apple certificate verification
-only for the separate `mda_verified` proof described in
-[`attestation.md`](./attestation.md).
+describes process protections. Legacy device-certificate claims use the separate
+`mda_verified` proof described in [`attestation.md`](./attestation.md).
+[Qualified App Attest serving authorization](../../reference/provider-authorization.md)
+is an independent path and never implies legacy MDA/APNs verification.
 
 ## Mechanism
 

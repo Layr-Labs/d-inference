@@ -1,15 +1,28 @@
 # Provider inference engine
 
-> Last updated: 2026-09-15 · commit `40e1bc5b6`
+> Last updated: 2026-09-20 · commit `0cb0c6310`
 
 How a chat-completion request is served inside the `darkbloom` provider
-process in v0.9.1: one in-process engine (`mlx-swift-lm`
+process: one in-process engine (`mlx-swift-lm`
 ContinuousBatchingV2, "CBv2"), one `EngineV2Bridge` per resident model, no
 legacy engine and no subprocess. For the memory model see
 [`hardware-support.md`](hardware-support.md); for KV/prefix caching see
 [`prefix-cache.md`](prefix-cache.md).
 
 ## Context
+
+The `prism_hadamard_qwen35` adapter reuses the native dense Qwen text backbone
+and retains its vision wrapper. The SDK validates signed-Hadamard metadata and
+packed weights before returning the model. Packed scales and embeddings are
+FP16, but the published FP32 normalizers promote native KV and recurrent
+convolution state to FP32; checkpoint declarations preserve that actual dtype.
+Packed recurrent prefill retains a compact convolution carry rather than an
+alias of the complete chunk allocation; the SDK copies those state bits without
+changing the recurrence or other model families.
+`EngineV2SupportedModels.bonsai2ModelID` selects paged KV automatically;
+MTP remains unsupported because the checkpoint has no assistant tensors.
+See `libs/mlx-swift-lm/docs/bonsai2.md` for the checkpoint contract and current
+qualification scope. This implementation does not activate a catalog entry.
 
 Every advertised model is served through CBv2; a `model_type` without a CBv2
 adapter is dropped from the advertised set at scan time and never loads
@@ -422,6 +435,7 @@ records tiny-model correctness and remaining release gates.
 | `qwen3_5` | Dense Qwen 3.5/3.8, recurrent state | Embedded MTP head; complete streamed SSD checkpoints on native contiguous or segmented paged KV; explicit paging requires observed native types; resident bank is opt-in |
 | `qwen3_5_moe` | Qwen 3.5/3.6 MoE, recurrent state | Same complete-checkpoint and segmented-native paging gates as dense Qwen |
 | `qwen3_vl_moe` | Qwen3-VL MoE wrapper | Served via CBv2 adapter + vision prefill; `cbv2Capabilities` all `false` (no prefix reuse, paged, compiled decode, packed prefill or MTP) |
+| `qwen4_exp`, `qwen4_exp_text` | Native Flash-Next candidate | Native QSA/GDN/HC/MoE with SSD PLE, retained embedded MTP, qualified image/video processing and identity-bound complete prefix state. Exact identity, capability limits and qualification are in the [support reference](../reference/qwen4-next-support.md) |
 | `nemotron_h` | Nemotron 3.5 Lightning | Advertisement is limited to `EngineV2SupportedModels.isNemotron35ListingModelID`, not every checkpoint sharing this type. Native Mamba/MoE/attention target; `nemotron35LightningModelID` is target-only and `nemotron35LightningMTPModelID` retains the embedded head. Listing eligibility is not registry publication or performance qualification |
 
 Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
@@ -429,8 +443,56 @@ Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 `quantize_config.json` `bits`; else `nil`
 (`provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift`,
 `detectQuantization`). KV quantization was retired in v0.8.0. Memory sizing
-(the `1.2` padded estimate and the load gate) is in
+(native Qwen4's validated loading envelope, fallback padding and the load gate) is in
 [`hardware-support.md`](hardware-support.md).
+
+### Native Flash-Next ownership and admission
+
+Native Qwen4 bounds assistant catch-up to2048tokens by default and initializes
+an unprimed head from the trusted carry consistently across cold and restored
+target histories. Already-primed caches are preserved. Eligible singleton sparse requests read only selected paged KV rows,
+binding up to17 segments per pass, with the existing ordered attention math.
+The exact switches, explicit zero rollback and numerical/ownership tests live
+in `libs/mlx-swift-lm/docs/qwen4/qualification.md`. Target weights, native
+architecture and the target's prefill chunk policy remain unchanged; assistant
+proposals and their cost must be qualified separately from committed outputs.
+
+`ModelContainerLoading.factorySelection` selects the native VLM factory for the
+canonical Qwen4 artifact with validated vision geometry and explicit
+`language_model_only=false`; text-only declarations retain the native text factory.
+Both preserve the checkpoint config. The model owns its PLE
+directory lease; `CheckpointWeightLoadFiltering` removes learned-table and
+unserved vision arrays before evaluation. Failed load and normal unload release
+the same owned external resources
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/ModelContainerLoading.swift`,
+`loadContainer`, `releaseExternalResources`). The shared
+`ModelMediaPolicy.advertisesMedia` keeps scanner/template/loader media policy
+consistent (`provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift`).
+
+The registry and legacy serving IDs share exact native policies through
+`provider-swift/Sources/ProviderCoreFoundation/Qwen4ModelIdentity.swift`.
+HF source/download identifiers are not substituted for the registry ID, and
+the developer-only model-path override remains limited to the legacy ID.
+
+The slot factory passes native context (or an explicitly lower operator limit)
+into the bridge; the generic bridge does not impose a second Qwen-sized cap
+on this or other model families. Coordinator admission owns SLA policy, while
+provider context and physical-memory checks remain mandatory.
+`EngineV2Bridge.submitTokenized` checks prompt plus the translated output
+reservation with overflow-safe arithmetic before cache probes or tickets.
+`advertisedContextExceeded` stays a content-free client error through both
+submission overloads and the shared HTTP mapper; cache hits cannot bypass it.
+The [candidate reference](../reference/qwen4-next-support.md) owns the
+identity, configuration and qualification boundary.
+
+Local Chat/Responses cache usage is request-owned in
+`MultiModelBatchSchedulerEngine.streamChatCompletion`; forwarding waits for the
+engine's accounting rather than borrowing another request's signal. The local
+connection cancellation registration reaches the owned upstream row and is
+removed when forwarding ends (`makeEventStream`;
+`provider-swift/Sources/ProviderCore/Server/LocalRequestCancellation.swift`).
+The close callback observes complete connection closure. Legal half-close and
+real cache-enabled cancellation/readmission remain runtime qualification gates.
 
 ### Coordinator-serving native channels
 
@@ -473,6 +535,7 @@ or change consumer/OpenRouter routing.
 | `token_budget_exhausted: … shared KV budget has no headroom` | Two failed `GlobalKVCacheBudget` reservations | `EngineV2Bridge+Submission.swift` |
 | `PreContentDeadlineFailure.deadlineUnreachable` | First-content budget spent before submit or during prefill projection | `CoordinatorClientTypes.swift`, `EngineV2Bridge+Submission.swift`, `EngineV2Bridge+Admission.swift` |
 | Request cancelled by lease | No admission/prefill/decode progress within 120 s, or a step over 30 s | `EngineLoopV2.swift` |
+| `advertisedContextExceeded` (400) | Candidate prompt plus resolved output reservation is invalid, overflowing or above its context limit | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Submission.swift` (`submitTokenized`); `provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift` (`sanitizedInferenceFailure`) |
 | Model dropped from advertised set | Unsupported `model_type` | `EngineV2SupportedModels.swift` |
 | Model advertised, capacity quotes rejected with reason `template` | Scan-time render check failed (`template_render_ok = false`) | `TemplateRenderCheck.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift` (`reject(.template)`) |
 | Image rejected | Over `MediaIngest` caps or over the N² tower budget | `MediaIngest.swift`, `VisionTowerBudget.swift` |

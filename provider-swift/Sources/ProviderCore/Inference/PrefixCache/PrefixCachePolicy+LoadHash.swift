@@ -24,8 +24,15 @@ extension PrefixCachePolicy {
     ) -> Bool {
         guard isEnabled(modelId: modelId, environment: environment) else { return false }
         guard let data = try? Data(contentsOf: modelDirectory.appendingPathComponent("config.json")),
-            let declaration = try? JSONDecoder().decode(LoadModelDeclaration.self, from: data),
-            ["qwen3_5", "qwen3_5_moe"].contains(declaration.modelType),
+            let declaration = try? JSONDecoder().decode(LoadModelDeclaration.self, from: data)
+        else { return true }
+        if ["qwen4_exp", "qwen4_exp_text"].contains(declaration.modelType),
+            let configuration = try? JSONDecoder().decode(MLXLLM.Qwen4ExpConfiguration.self, from: data)
+        {
+            let capabilities = configuration.textConfig.cbv2Capabilities
+            return capabilities.supportsPrefixReuse || capabilities.supportsRecurrentCheckpointReuse
+        }
+        guard ["qwen3_5", "qwen3_5_moe"].contains(declaration.modelType),
             let configuration = try? JSONDecoder().decode(MLXLLM.Qwen35Configuration.self, from: data)
         else { return true }
         let capabilities = configuration.cbv2Capabilities

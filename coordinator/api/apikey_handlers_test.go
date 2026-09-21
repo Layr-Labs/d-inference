@@ -185,6 +185,80 @@ func TestHandleDeleteAPIKeyScoping(t *testing.T) {
 	}
 }
 
+func TestHandleCreateKeyInheritsSelfRouteOnly(t *testing.T) {
+	srv, st := newKeyTestServer(t)
+
+	if _, _, err := st.CreateAPIKey("acct-self", store.APIKeyCreate{Name: "mine", SelfRouteOnly: true}); err != nil {
+		t.Fatalf("seed machine-only key: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	srv.handleCreateKey(w, reqWithUser(http.MethodPost, "/v1/auth/keys", "", "acct-self"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var created types.CreateKeyResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	rec, err := st.AuthenticateKey(created.APIKey)
+	if err != nil {
+		t.Fatalf("AuthenticateKey: %v", err)
+	}
+	if !rec.SelfRouteOnly {
+		t.Fatal("legacy mint on a machine-only account must inherit self_route_only")
+	}
+}
+
+func TestHandleCreateKeyStaysUnrestrictedWhenAccountHasOpenKey(t *testing.T) {
+	srv, st := newKeyTestServer(t)
+
+	if _, _, err := st.CreateAPIKey("acct-mix", store.APIKeyCreate{Name: "mine", SelfRouteOnly: true}); err != nil {
+		t.Fatalf("seed machine-only key: %v", err)
+	}
+	if _, _, err := st.CreateAPIKey("acct-mix", store.APIKeyCreate{Name: "open"}); err != nil {
+		t.Fatalf("seed open key: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	srv.handleCreateKey(w, reqWithUser(http.MethodPost, "/v1/auth/keys", "", "acct-mix"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var created types.CreateKeyResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	rec, err := st.AuthenticateKey(created.APIKey)
+	if err != nil {
+		t.Fatalf("AuthenticateKey: %v", err)
+	}
+	if rec.SelfRouteOnly {
+		t.Fatal("legacy mint must stay unrestricted when the account already has an open key")
+	}
+}
+
+func TestHandleCreateKeyUnrestrictedForFirstKey(t *testing.T) {
+	srv, st := newKeyTestServer(t)
+
+	w := httptest.NewRecorder()
+	srv.handleCreateKey(w, reqWithUser(http.MethodPost, "/v1/auth/keys", "", "acct-new"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var created types.CreateKeyResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	rec, err := st.AuthenticateKey(created.APIKey)
+	if err != nil {
+		t.Fatalf("AuthenticateKey: %v", err)
+	}
+	if rec.SelfRouteOnly {
+		t.Fatal("first console key must stay unrestricted")
+	}
+}
+
 func TestHandleCreateAPIKeyRejectsBadInput(t *testing.T) {
 	srv, _ := newKeyTestServer(t)
 	w := httptest.NewRecorder()

@@ -16,12 +16,19 @@ jobs:
           ./scripts/check-release-version.sh
           python3 scripts/test-provider-release-resolution.py
           python3 scripts/test-provider-release-toolchain.py
+          python3 scripts/test-provider-release-cache.py
+          python3 scripts/test-prepare-metal-toolchain.py
+          python3 scripts/test-provider-release-pipeline.py
+          python3 scripts/test-provider-release-publication.py
+          python3 scripts/test-provider-signing-validation.py
           python3 scripts/test-provider-test-watchdog.py
           python3 scripts/test-app-attest-entitlements.py
           ./scripts/sync-install-embed.sh check
           ./scripts/test-prod-env-refresh.sh
       - name: Test startup observer against local stubs
         run: python3 -m unittest discover -s scripts/startup_measurement -t scripts -p 'test_*.py'
+      - name: Test native GPU CI routing without a GPU
+        run: python3 scripts/test-native-gpu-ci.py
 
   docs:
     name: Docs Lint
@@ -130,6 +137,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
+      - name: Test Qwen resources in a relocated app
+        run: python3 scripts/test-qwen4-packaged-resources.py
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
@@ -299,7 +308,9 @@ jobs:
         # Dispatches the JIT-compiled Metal kernels, exactly as
         # CBv2PagedSafetyTests' runtimeSmoke already does in this job.
         timeout-minutes: 20
-        run: ../../scripts/run-nested-suite.sh CBv2PagedKernelTests
+        # The composition assertion opts in only in its own test process;
+        # both invocations retain the nonempty/no-skips tripwires.
+        run: ../../scripts/run-paged-kernel-tests.sh
       - name: Run nested KV-sharing contiguous/paged parity tests
         if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm

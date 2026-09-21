@@ -261,6 +261,7 @@ func preflightScanWait(deadline time.Duration) time.Duration {
 // the (possibly fallback-updated) build model and handled=false. Self-route and
 // prefer modes short-circuit the public capacity gate exactly as before.
 func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, parsed map[string]any, p inferenceAdmissionParams) (string, bool) {
+	markPublicModelDemand(r, p)
 	model := p.model
 	publicModel := p.publicModel
 	refundReservation := p.refundReservation

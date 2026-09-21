@@ -36,6 +36,7 @@ func (s *PostgresStore) RecordRequestOutcomes(ctx context.Context, records []Req
 		return err
 	}
 	defer tx.Rollback(ctx)
+	records = orderModelDemandWrites(records)
 	batch := &pgx.Batch{}
 	for _, r := range records {
 		raw, err := json.Marshal(r)
@@ -51,6 +52,7 @@ func (s *PostgresStore) RecordRequestOutcomes(ctx context.Context, records []Req
   updated_at=CASE WHEN EXCLUDED.revision>request_outcomes.revision THEN EXCLUDED.updated_at ELSE request_outcomes.updated_at END,
   record=CASE WHEN EXCLUDED.revision>request_outcomes.revision THEN EXCLUDED.record || jsonb_build_object('received_at',request_outcomes.record->'received_at','endpoint',request_outcomes.record->'endpoint') ELSE request_outcomes.record END,
   revision=GREATEST(request_outcomes.revision,EXCLUDED.revision)`, r.CoordRequestID, r.ReceivedAt, r.UpdatedAt, r.Revision, r.EvidenceConflict, raw)
+		batch.Queue(projectModelDemandSQL, r.CoordRequestID)
 	}
 	results := tx.SendBatch(ctx, batch)
 	if err := results.Close(); err != nil {

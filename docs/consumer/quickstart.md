@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-18 · commit `4a453679b`
+> Last updated: 2026-09-20 · commit `0cb0c6310`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -117,7 +117,24 @@ Requests land on `POST /v1/messages` (`handleAnthropicMessages`, `coordinator/ap
 To display network activity, read `GET /v1/stats`, `GET /v1/network/totals`,
 or `GET /v1/network/series`. If one returns 503 `service_unavailable`, keep
 your last displayed value and retry later; do not replace it with zero.
-Successful empty windows are valid data. The [public stats contract](../reference/api-contracts.md#public-stats-and-health-5)
+Successful empty windows are valid data.
+
+The Stats page also shows **Model demand & fulfillment**. Select 24 hours,
+7 days or 30 days, sort by request volume or capacity rejections, and expand a
+model to inspect outcomes. Use the demand-history controls to select a model
+and chart requests, capacity rejections, timeouts, service errors or completion
+rate. Hover, tap or use arrow keys for exact interval counts; expand the
+interval table or download its CSV for analysis. Hatched chart intervals are
+unpublished, not zeros, and CSV exports leave their counts blank.
+`GET /v1/network/model-demand?window=24h` exposes the
+same aggregates. Counts cover recorded public requests reaching routing
+admission; private routes, account-limit failures and invalid requests are
+excluded. Internal retries do not add requests, but client retries do. The
+page labels partial history and best-effort recording. Sparse cohorts are
+hidden, so an empty result does not establish zero demand. Data is delayed by
+at least one hour. A 429 count overlaps outcomes and is not itself a capacity
+rejection count.
+The [public stats contract](../reference/api-contracts.md#public-stats-and-health-5)
 defines refresh intervals, maximum cached staleness, and window aliases.
 
 ## Troubleshooting

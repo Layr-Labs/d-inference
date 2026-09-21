@@ -164,10 +164,12 @@ type MemoryStore struct {
 	// System profiler: per-attempt request profiles (write-once per
 	// request_id/attempt, mirroring the Postgres UNIQUE + DO NOTHING) and
 	// per-tick fleet snapshots. Both are append-only and capped by Prune.
-	requestOutcomes    map[string]RequestOutcomeRecord
-	requestProfiles    []RequestProfileRecord
-	requestProfileKeys map[string]struct{} // request_id/attempt -> present
-	fleetSnapshots     []FleetSnapshotRow
+	requestOutcomes      map[string]RequestOutcomeRecord
+	modelDemand          map[string]modelDemandObservation
+	modelDemandStartedAt time.Time
+	requestProfiles      []RequestProfileRecord
+	requestProfileKeys   map[string]struct{} // request_id/attempt -> present
+	fleetSnapshots       []FleetSnapshotRow
 
 	// Base rewards — per-epoch floor draws (idempotent on provider_key|epoch_id).
 	providerFloorDraws []ProviderFloorDraw
@@ -180,6 +182,7 @@ type MemoryStore struct {
 // pre-seeded as a valid API key for bootstrapping.
 func NewMemory(scfg Config) *MemoryStore {
 	s := &MemoryStore{
+		modelDemandStartedAt:          time.Now().UTC(),
 		keyRecords:                    make(map[string]*APIKey),
 		keysByID:                      make(map[string]string),
 		keySpend:                      make(map[string]*keySpend),

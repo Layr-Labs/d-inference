@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-20 · commit `b4e64dadd`
+> Last updated: 2026-09-20 · commit `0cb0c6310`
 
 The complete public HTTP surface of the coordinator, derived from the 112 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -167,13 +167,16 @@ Ledger semantics, reservations and payouts: [`../architecture/billing.md`](../ar
 | POST | `/v1/invite/redeem` | `handleRedeemInviteCode` (`coordinator/api/invite_handlers.go`) | `key` | `fin` | Redeem an invite code |
 | GET | `/v1/providers/attestation` | `handleProviderAttestation` (`coordinator/api/provider.go`) | `—` | — | Public attestation roster; see [`../architecture/security/attestation.md`](../architecture/security/attestation.md) |
 
-### Public stats and health (5)
+<a id="public-stats-and-health-5"></a>
+
+### Public stats and health (6)
 
 | Method | Path | Handler | Auth | Notes |
 |---|---|---|---|---|
 | GET | `/v1/stats` | `handleStats` (`coordinator/api/stats.go`) | `—` | Refresh every 30 s; preserve the UTC source observation time in `snapshot_at` (`time.RFC3339Nano`). Geography refreshes independently and reports availability per section. Retain a successful core body up to 5 min on core refresh failure; 503 `service_unavailable` without an unexpired success |
 | GET | `/v1/leaderboard` | `handleLeaderboard` (`coordinator/api/leaderboard.go`) | `—` | Cached 5 min (full) / 1 min (recent window) |
 | GET | `/v1/network/totals` | `handleNetworkTotals` (`coordinator/api/network_totals.go`) | `—` | Totals refreshed every minute with the same 5 min safety TTL; 503 `service_unavailable` without an unexpired success; canonical windows `24h`, `7d`, `30d`, `all` (`1d` → `24h`, empty/`lifetime` → `all`) |
+| GET | `/v1/network/model-demand` | `handleModelDemand` (`coordinator/api/model_demand.go`) | `—` | Recorded public model demand; `window=24h` (default), `7d`, `30d`; cached up to 5 min; 400 for other windows; 503 on unavailable aggregation |
 | GET | `/v1/network/series` | `handleNetworkSeries` (`coordinator/api/network_series.go`) | `—` | Time series, cached 1 min; 503 `service_unavailable` on a store error after a miss, with no failed result cached |
 | GET | `/health` | `handleHealth` (`coordinator/api/consumer.go`) | `—` | `HealthResponse` `{status: "ok", draining, providers, version, build_commit, build_date}` |
 
@@ -197,6 +200,45 @@ Cache behavior is implemented by `coordinator/api/cache_refresher.go`
 
 The stats, totals, and series handlers emit the 503 `service_unavailable` error
 envelope when their required data is unavailable.
+
+### Model demand response
+
+`coordinator/api/model_demand.go` (`handleModelDemand`) serves a fixed receipt-time
+window ending at the preceding UTC hour (at least one hour behind now). The
+JSON has `window`, `start_at`, `end_at`, `updated_at`, `collection_started_at`,
+`coverage: "recorded_requests_only"`, `bucket_seconds`, and `models`. Each model object has `model`,
+`requests`, `completed`, `capacity_rejected`, `latency_rejected`, `timed_out`,
+`failed`, `cancelled`, `unknown`, and `http_429` (all counts are integers).
+Each model also contains `time_series`: fixed intervals with `timestamp` and
+`counts` (the same outcome counters, or `null` when not publishable). Intervals
+are 1 hour for `24h`, 6 hours for `7d`, and 24 hours for `30d`. Both the overall
+model and each interval independently need 20 requests from 3 consumer accounts.
+Unpublished intervals are gaps, not measured zeros, and the sum of published
+intervals may be smaller than the model total. Totals and series share one
+repeatable-read transaction.
+
+The seven outcome counts sum to `requests`; `http_429` overlaps that partition.
+No token estimates, identifiers, provider details, raw reasons, or suppressed
+counts are exposed. `ModelDemandCounts` in `coordinator/store/model_demand.go`
+is the response shape.
+
+Only new, explicitly scoped requests reaching public routing admission are
+counted. Owner-preferred, exclusive self-route and machine-restricted requests
+are excluded; validation and account failures are outside the denominator.
+Requests rejected before this point (including early model shedding) are not
+covered. Admin-key traffic is excluded. Ordinary authenticated load tests cannot be separated from organic
+traffic. Public aliases retain their requested identity through build fallback.
+Client retries count separately; internal dispatch attempts do not.
+
+`ModelDemandMinRequests = 20` and `ModelDemandMinConsumers = 3` suppress sparse
+model cohorts in the selected window. A gateway is one authenticated consumer,
+not a count of its downstream users. A successful empty list means no cohort
+qualifies for publication, not zero traffic. Collection can cover only part of a
+selected window; even a full-age window remains best-effort observed data, not
+an independently reconciled network-wide denominator. Completion establishes
+coordinator-observed provider completion and successful terminal writes, not
+client receipt. See [incoming request accounting](../architecture/request-accounting.md).
+
 
 ### Release and install (5)
 
@@ -269,6 +311,7 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | `/v1/` | `handleUnimplementedEndpoint` | Any `/v1/*` request matching no registered method+path — including a wrong method on a real path — gets 404 `invalid_request_error` with message `endpoint <METHOD> <path> is not implemented` |
 
 Total: 4 + 9 + 10 + 3 + 13 + 13 + 6 + 5 + 5 + 3 + 1 + 35 + 1 = **108 registrations**, matching `routes()`.
+
 
 ## Exact cache status
 

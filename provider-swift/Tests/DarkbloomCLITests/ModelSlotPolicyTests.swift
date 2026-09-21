@@ -94,10 +94,9 @@ struct ModelSlotPolicyTests {
     @Test("First-run persistence creates the selected config and survives reload")
     func firstRun() throws {
         try withConfig { url, config in
-            try setModelSlotLimit(5, at: url, fallback: config)
+            try setModelSlotLimit(5, configPath: url.path, migrateOnDisk: false)
             let reloaded = try ConfigManager.load(from: url)
             #expect(reloaded.backend.maxModelSlots == 5)
-            #expect(reloaded.provider.name == "slot-test")
             #expect(reloaded.backend.enabledModels.isEmpty)
             #expect(reloaded.backend.engineV2MaxConcurrent == config.backend.engineV2MaxConcurrent)
         }
@@ -112,7 +111,7 @@ struct ModelSlotPolicyTests {
             newer.backend.enabledModels = ["chosen-model"]
             newer.backend.engineV2MaxConcurrent = 6
             try ConfigManager.save(newer, to: url)
-            try setModelSlotLimit(4, at: url, fallback: original)
+            try setModelSlotLimit(4, configPath: url.path, migrateOnDisk: false)
             newer.backend.maxModelSlots = 4
             #expect(try ConfigManager.load(from: url) == newer)
         }
@@ -120,9 +119,9 @@ struct ModelSlotPolicyTests {
 
     @Test("Malformed config is left intact and a bad limit never creates config")
     func rejectWithoutOverwrite() throws {
-        try withConfig { url, config in
+        try withConfig { url, _ in
             #expect(throws: (any Error).self) {
-                try setModelSlotLimit(0, at: url, fallback: config)
+                try setModelSlotLimit(0, configPath: url.path, migrateOnDisk: false)
             }
             #expect(!FileManager.default.fileExists(atPath: url.path))
             try FileManager.default.createDirectory(
@@ -130,7 +129,7 @@ struct ModelSlotPolicyTests {
             let malformed = "[backend\nmax_model_slots = 3"
             try malformed.write(to: url, atomically: true, encoding: .utf8)
             #expect(throws: (any Error).self) {
-                try setModelSlotLimit(4, at: url, fallback: config)
+                try setModelSlotLimit(4, configPath: url.path, migrateOnDisk: false)
             }
             #expect(try String(contentsOf: url, encoding: .utf8) == malformed)
         }

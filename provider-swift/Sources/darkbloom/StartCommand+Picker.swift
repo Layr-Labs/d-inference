@@ -322,7 +322,7 @@ extension Start {
                 selectedCount: selectedIndices.count,
                 current: config.backend.maxModelSlots,
                 saveLimit: { limit in
-                    try setModelSlotLimit(limit, at: snapshot.configPath, fallback: config)
+                    try setModelSlotLimit(limit, configPath: configOptions.config)
                 })
             if accepted { break }
         }

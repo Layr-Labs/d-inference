@@ -29,6 +29,24 @@ created: "2026-05-14"
 # prospective mismatches against registration. The app also binds its existing
 # verification public key, preventing substitution of model/runtime signature
 # credentials during the later trust transition. Reward rules are unchanged.
+# MDM-optional authorization added 2026-09-15: explicit serving opt-in consumes
+# qualified protocol3 evidence; it never sets legacy MDA/APNs flags. Fresh
+# connection/endpoint/policy-bound permission is checked at every final dispatch.
+# Receipt/revocation polling has a 30s ceiling from query start, and failed reads
+# never extend it; local admin revocation fences before acknowledgement. Shared
+# machine settlement prevents duplicate base floors while preserving old ledger
+# records. App Attest still does not certify physical uniqueness or RAM, prove
+# computation correctness, or move inference into the Secure Enclave. Final
+# signed-artifact and physical SIP/boot-security transition qualification remain
+# required before enabling serving or scoped Darkbloom profile removal.
+# Durable build qualification added 2026-09-20: an independently authenticated
+# operator approves the exact signed binary, full CodeDirectory, bundle/runtime,
+# source and CI provenance. CI release keys cannot grant approval. Publication
+# atomically checks the approval under the revocation row lock; stale cached
+# authorization cannot extend beyond a 30s qualification snapshot or survive a
+# local qualification-generation change. Revocation tombstones override legacy
+# env mappings and persist across restarts. Signed physical-Mac qualification
+# remains an operator evidence requirement, never inferred from a CI green check.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference

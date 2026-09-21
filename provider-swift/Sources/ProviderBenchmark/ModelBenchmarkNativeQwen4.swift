@@ -20,6 +20,7 @@ extension ModelBenchmark {
 
     static func usesNativeGeneration(modelType: String?) -> Bool {
         Qwen4ExpPLEResidency.isQwen4ExpModelType(modelType)
+            || modelType == "prism_hadamard_qwen35"
     }
 
     static func decodedModelType(from data: Data) throws -> String? {

@@ -208,6 +208,9 @@ func providerTemplateRenderBrokenLocked(p *Provider, model string) bool {
 //
 // Caller holds r.mu and p.mu (same discipline as providerServesVisionModelLocked).
 func (r *Registry) providerEligibleForTraitsLocked(p *Provider, model string, t RequestTraits) bool {
+	if !providerMeetsQwen4CatalogPolicyLocked(p, model) {
+		return false
+	}
 	if p.PrefixCacheProtocol < t.MinPrefixCacheProtocol {
 		return false
 	}

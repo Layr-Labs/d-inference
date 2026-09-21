@@ -208,7 +208,7 @@ public actor ProviderLoop {
 
     /// Test seam (`ProviderLoop+Testing`): overrides the environment, the
     /// container EOS snapshot, and the production CBv2 engine builder used
-    /// by `makeEngineV2BridgeForSlot`. nil in production.
+    /// by `makeEngineV2BundleForSlot`. nil in production.
     internal var engineV2SlotHooks: EngineV2SlotHooks?
 
     /// Operator-configured hard cap on concurrent model slots
@@ -675,7 +675,7 @@ public actor ProviderLoop {
         // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
         // The EngineV2 SSD tier uses the separate `darkbloom/kv3` root,
         // so this cleanup cannot delete current cache data.
-        LegacyKVCacheSweeper.sweep()
+        if purgeLegacyFiles { LegacyKVCacheSweeper.sweep() }
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
         self.preloadTaskStarted = preloadTaskStarted
         self.beforeModelLoad = beforeModelLoad

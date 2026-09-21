@@ -132,7 +132,7 @@ extension ProviderLoop {
         #if os(macOS)
         apnsDeviceToken = await APNsBridge.shared.awaitDeviceToken(timeoutSeconds: 10)
         if apnsDeviceToken == nil {
-            logger.warning("no APNs device token (no GUI session / not push-provisioned) — registering un-attested")
+            logger.warning("no APNs device token — legacy code verification unavailable; awaiting coordinator authorization")
         }
         #endif
 
@@ -231,6 +231,7 @@ extension ProviderLoop {
             for await event in events {
                 switch event {
                 case .connected:
+                    clearConnectionAuthorization()
                     logger.info(.coordinatorConnected)
                     // The post-retirement reconnect's admission barrier
                     // (see `fireRetirementReconnect`) lifts with the new
@@ -239,6 +240,7 @@ extension ProviderLoop {
                     setRetirementReconnectBarrier(false)
 
                 case .disconnected:
+                    clearConnectionAuthorization()
                     cancelAppAttestShadow()
                     logger.warning(.coordinatorDisconnected)
                     // Cancel all in-flight requests on disconnect -- the coordinator
@@ -313,14 +315,16 @@ extension ProviderLoop {
                         await reconcileDesiredModels(entries, send: send)
                     }
 
-                case .trustStatus(let trustLevel, let status, let reason):
-                    handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason)
+                case .trustStatus(let trustLevel, let status, let reason, let authorization):
+                    handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason,
+                                      authorization: authorization)
                 }
             }
         } onCancel: {
             Task { await coordinator.shutdown() }
         }
 
+        clearConnectionAuthorization()
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
         // Quote path mirror (routing v2): a shutting-down provider quotes
@@ -413,29 +417,15 @@ extension ProviderLoop {
         // pythonRuntimeLocked + dangerousModulesBlocked: report false. There
         //   is no Python runtime to lock anymore. Coordinator's Swift-runtime
         //   trust path (registry.BackendUsesSwiftRuntime) doesn't read these.
-        if let posture = securityPosture {
-            return PrivacyCapabilities(
-                textBackendInprocess: true,
-                textProxyDisabled: true,
-                pythonRuntimeLocked: false,
-                dangerousModulesBlocked: false,
-                sipEnabled: posture.sipEnabled,
-                antiDebugEnabled: posture.antiDebugEnabled,
-                coreDumpsDisabled: posture.coreDumpsDisabled,
-                envScrubbed: posture.envScrubbed
-            )
-        }
-
-        // Pre-hardening fallback (DEBUG builds, or hardening failed).
         return PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
             pythonRuntimeLocked: false,
             dangerousModulesBlocked: false,
-            sipEnabled: SecurityChecks.isSIPEnabled(),
-            antiDebugEnabled: false,
-            coreDumpsDisabled: false,
-            envScrubbed: false
+            sipEnabled: securityPosture?.sipEnabled ?? SecurityChecks.isSIPEnabled(),
+            antiDebugEnabled: securityPosture?.antiDebugEnabled ?? false,
+            coreDumpsDisabled: securityPosture?.coreDumpsDisabled ?? false,
+            envScrubbed: securityPosture?.envScrubbed ?? false
         )
     }
 

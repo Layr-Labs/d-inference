@@ -29,12 +29,11 @@ func (r *Registry) ApplicationEvidenceModelCoverage() map[string]ModelEvidenceCo
 		p.mu.Lock()
 		baseline := p.Status != StatusOffline && p.Status != StatusUntrusted &&
 			!p.PrivateOnly &&
-			trustRank(p.TrustLevel) >= trustRank(r.MinTrustLevel) &&
+			r.providerTrustMeetsMinimumAtLocked(p, r.MinTrustLevel, now) &&
 			p.RuntimeVerified &&
 			r.providerSupportsPrivateTextModeLocked(p, false) &&
-			!p.LastChallengeVerified.IsZero() &&
-			now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge
-		holds := baseline && r.providerHoldsCurrentApplicationEvidenceLocked(p)
+			r.providerChallengeFreshAtLocked(p, now)
+		holds := baseline && (r.providerHasAppAttestAuthorizationLocked(p, now) || r.providerHoldsCurrentApplicationEvidenceLocked(p))
 		if baseline {
 			for _, model := range p.Models {
 				if !r.providerModelAllowedByCatalogLocked(p, model) {

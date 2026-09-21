@@ -8,7 +8,8 @@ import Testing
 struct Qwen4ReasoningEffortValidationTests {
     private let owned = Qwen4SupportPolicy.ownedModelID
 
-    @Test func supportedAndDefaultEffortsReachTokenizerUnchanged() throws {
+    @Test(arguments: [Qwen4SupportPolicy.ownedModelID, Qwen4SupportPolicy.registryModelID])
+    func supportedAndDefaultEffortsReachTokenizerUnchanged(owned: String) throws {
         for effort: String? in [nil, "low", "medium", "xhigh"] {
             let tokenizer = ReasoningContextTokenizer()
             let request = OpenAIChatCompletionRequest(model: owned,
@@ -22,7 +23,8 @@ struct Qwen4ReasoningEffortValidationTests {
         }
     }
 
-    @Test func unsupportedEffortsAreRejectedBeforeTemplateInvocation() throws {
+    @Test(arguments: [Qwen4SupportPolicy.ownedModelID, Qwen4SupportPolicy.registryModelID])
+    func unsupportedEffortsAreRejectedBeforeTemplateInvocation(owned: String) throws {
         for effort in ["high", "minimal", "unsupported", "LOW", " low ", ""] {
             let tokenizer = ReasoningContextTokenizer()
             let request = OpenAIChatCompletionRequest(model: owned,
@@ -85,7 +87,8 @@ struct Qwen4ReasoningEffortValidationTests {
         }
     }
 
-    @Test func responsesTypedEffortUsesTheSameValidationBoundary() throws {
+    @Test(arguments: [Qwen4SupportPolicy.ownedModelID, Qwen4SupportPolicy.registryModelID])
+    func responsesTypedEffortUsesTheSameValidationBoundary(owned: String) throws {
         for effort in ["high", "minimal"] {
             let request = OpenAIResponseRequest(model: owned, input: .text("hi"), reasoning: .init(effort: effort))
             let tokenizer = ReasoningContextTokenizer()

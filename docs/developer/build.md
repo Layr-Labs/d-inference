@@ -1,11 +1,17 @@
 # Build
 
-> Last updated: 2026-09-17 · commit `53e135e9e`
+> Last updated: 2026-09-20 · commit `826fa102e`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
 source-matched `mlx.metallib`), and the two Next.js UIs. `make build` does all
 of it; the per-component steps below explain what each target runs.
+
+Registry-ID support changes Swift provider policy and Rust prompt normalization
+together. Build the paired coordinator/sidecar/provider candidate; the v6
+prompt contract cannot reuse a v5 cache identity. The follow-up retains the
+merged native SDK pin and does not require new model weights. See
+[prompt parity](test.md#9-prompt-contract-parity-fixtures-and-vectors) for the validation procedure.
 
 Docs Lint needs Git history to validate moved source links in frozen records;
 its checkout uses `fetch-depth: 0` (`.github/workflows/ci.yml`, `docs` job).
@@ -20,6 +26,11 @@ metallib; it does not rebuild or download a model. Follow the
 [provider test procedure](test.md) to run GPU-global assertions in separate
 processes with the exclusive opt-in scoped to the named test.
 
+The [Bonsai performance qualification](test.md#bonsai-performance-qualification)
+uses a separate optimized test build with `-enable-testing` and `-DDEBUG` for
+test-only ownership/scheduler seams. Do not add these switches to the ordinary
+production build or substitute its benchmark archive with a test binary.
+
 Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 `scripts/publish-model.sh` to registration. See the
 [model publishing procedure](../operations/model-migration.md).
@@ -29,6 +40,8 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
 
 The `ProviderAppAttest` Swift target uses public DeviceCheck/Security APIs. Its [shadow packaging and live-validation requirements](../reference/app-attest-shadow.md#packaging-and-live-acceptance) are separate from a successful local compile.
+
+Provider signing, R2 staging and publication run in separate jobs in `.github/workflows/release-swift.yml`. `scripts/provider-release-publication.py` stages the final signed bundle under an immutable digest path, retains metadata, and gates publication on coordinator qualification. A staging or publication retry downloads and reuses the original signed artifact and does not rerun compilation or notarization. `scripts/provider_release_github.py` resumes draft/upload state, verifies asset hashes before publishing and never replaces completed mismatched bytes. See [build qualification](../operations/app-attest-build-qualification.md).
 
 ## SDK 27 release builds and caches
 
@@ -42,7 +55,9 @@ version, inventory and entitlements before importing its certificate.
 `.github/workflows/provider-release-cache.yml` runs the same two lanes after
 relevant `master` changes. Release tags can restore those default-branch caches;
 they cannot reuse another tag's cache. Release-plumbing PRs run these lanes with
-PR-scoped caches and no signing or publishing secrets. Two concurrent SDK 27
+PR-scoped caches and no signing or publishing secrets. Changes to
+`BoundedSingleConsumerPipeline.swift` or its tests also run both lanes to catch
+shutdown lifetime regressions with the release compiler. Two concurrent SDK 27
 runners are needed for the parallel wall-time benefit; a smaller runner quota
 queues the jobs without changing their gates.
 
@@ -96,13 +111,30 @@ for first-run costs and rerun behavior.
   depends on `../libs/mlx-swift` and `../libs/mlx-swift-lm` by local path.
 - **Docker** only for the coordinator container image (step 9).
 
+### Pinned MLX dependencies
+
+The provider consumes the local packages through immutable Git submodule pins:
+
+| Package | Merged revision | Included update |
+|---|---|---|
+| `libs/mlx-swift` | `0f4fe403bef6899e8a72882bc6d4036a7a62ae31` | [PR #28](https://github.com/Layr-Labs/mlx-swift/pull/28): exact constant reuse for eligible Bonsai packed projections |
+| `libs/mlx-swift-lm` | `e22fc82bdb7bfbd93874d56c7df9ca3306782b09` | [PR #155](https://github.com/Layr-Labs/mlx-swift-lm/pull/155): exact Bonsai carry scheduling and safe HTTP failures |
+
+Keep both local packages in the provider build. The SDK's standalone package
+manifest can still reference a pre-merge Swift review revision; the nested-test
+procedure in [test.md](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib) binds it to the recorded local
+Swift gitlink. The MLX core and C-wrapper pins are unchanged by this update.
+Rebuild the consumer after changing pins; earlier full-model measurements are
+evidence for their recorded dependency set, not a new benchmark of these pins.
+
 ### Native Flash-Next candidate
 
-The Qwen 3.8 Next integration pins `libs/mlx-swift-lm` to the merged
-[SDK PR #149](https://github.com/Layr-Labs/mlx-swift-lm/pull/149) commit
-`729fa45c67a8b1cb26b1debeacf7f1d16ef3a21e`. Its complete Git tree is identical
+The Qwen 3.8 Next integration originally landed in
+[SDK PR #149](https://github.com/Layr-Labs/mlx-swift-lm/pull/149), commit
+`729fa45c67a8b1cb26b1debeacf7f1d16ef3a21e`. That commit's complete Git tree is identical
 to the approved review head `ae3ecdc835a895091f8929749fdb3e14383295a9`.
-Use the recorded gitlink, not a floating branch or a private experiment.
+The current SDK gitlink above retains this support. Use the recorded gitlink,
+not a floating branch or a private experiment.
 
 Use the repository-owned [conversion tools](../../scripts/qwen38_conversion/README.md)
 for the pinned official source. Metadata verification is distinct from full
@@ -247,6 +279,20 @@ production prompt vectors against a Linux sidecar binary (CI job "Prompt
 Sidecar Tests").
 
 ### 5. Provider CLI (Swift) with source-matched metallib
+
+Build the test product again after changing fixture helpers or assertions;
+`--skip-build` alone reuses the previous executable. The
+[provider test procedure](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib)
+covers isolated CLI configuration, artifact integrity, SSD authentication,
+paged-preflight diagnostics, and stream ordering. Synthetic MLX fixtures need
+the matched metallib; enabled live-model fixtures also need their documented
+model inputs.
+
+To compile all test targets without executing fixtures:
+
+```bash
+(cd provider-swift && swift build --build-tests)
+```
 
 ```bash
 make provider-build
@@ -620,9 +666,9 @@ The private admin queries have PostgreSQL coverage in
 `admin-ui/src/lib/queries/app-attest.test.ts`.
 
 After the optimized provider is packaged with its resources, run
-`Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`. Require all three markers:
+`Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`. Require all four markers:
 `app-attest-callback-runtime-smoke: ok`, `gemma-optimizations-runtime-smoke: ok`,
-and `paged-kernel-runtime-smoke: ok`. Callback completion and expiry are exercised
+`paged-kernel-runtime-smoke: ok`, and `qwen4-metal-resources-runtime-smoke: ok`. Callback completion and expiry are exercised
 without Apple service calls or a Keychain item. This linked-binary check catches
 a release-only allocator failure that debug tests missed. Run
 `bash scripts/test-install-atomic.sh` for installer acceptance and rollback cases.
@@ -641,3 +687,11 @@ Candidate native prefix-cache benchmarks must build ProviderCore and
 prompt SPI carries production sampling parameters into each engine request.
 See [native benchmark validation](test.md#resident-prefix-benchmark-validation)
 for sampling scope, regression filters and diagnostic restrictions.
+
+### Qwen packaged resource regression
+
+`python3 scripts/test-qwen4-packaged-resources.py` compiles the actual Qwen Metal resource accessor into a small optimized app, then runs it from a relocated app and an installer-style executable symlink. It checks all three preamble hashes, rejects missing or empty files and resource links outside the app, and proves that developer/cwd copies cannot mask a broken packaged resource. It needs Swift on macOS, but no model weights or GPU. Both SDK 27 release lanes and Provider Tests run this check. The full provider `runtime-smoke` exercises the same accessor before publication, installation, and update.
+
+## Promotion payload helper
+
+`python3 scripts/model-token-promotion.py --help` prepares a model-specific, calendar-day grant payload without making API calls. It requires Python with `zoneinfo` and timezone data. The [promotion runbook](../operations/model-token-promotions.md) covers review and approved application; the [test guide](test.md) covers calendar and settlement validation.

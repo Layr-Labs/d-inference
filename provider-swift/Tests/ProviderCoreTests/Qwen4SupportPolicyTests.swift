@@ -8,8 +8,8 @@ import Testing
 
 @Suite("Qwen4 private artifact and context policy")
 struct Qwen4SupportPolicyTests {
-    @Test func onlyOwnedArtifactReceivesAutomaticDefaults() {
-        let owned = Qwen4SupportPolicy.ownedModelID
+    @Test(arguments: [Qwen4SupportPolicy.ownedModelID, Qwen4SupportPolicy.registryModelID])
+    func onlyQualifiedArtifactsReceiveAutomaticDefaults(owned: String) {
         #expect(EngineV2SupportedModels.isQwen4ExpListingModelID(owned))
         #expect(EngineV2KVBackendPolicy.preferredBackend(
             selection: .auto, modelID: owned) == .paged)
@@ -21,7 +21,8 @@ struct Qwen4SupportPolicyTests {
         for other in [
             "", "qwen4_exp", "qwen4_exp_text", "org/qwen4_exp-copy",
             "Qwen/Qwen3.8-Flash-Next", "Jundot/Qwen3.8-Flash-Next-oQ4e-mtp",
-            owned.lowercased(), "\(owned)-other", "other/\(owned)", " \(owned)",
+            "QWEN3.8-FLASH-NEXT", Qwen4SupportPolicy.ownedModelID.lowercased(),
+            "\(owned)-other", "other/\(owned)", " \(owned)",
         ] {
             #expect(!EngineV2SupportedModels.isQwen4ExpListingModelID(other))
             #expect(EngineV2KVBackendPolicy.preferredBackend(
@@ -47,7 +48,9 @@ struct Qwen4SupportPolicyTests {
             #expect(Qwen4SupportPolicy.isQwen4ModelType(type))
             #expect(EngineV2SupportedModels.isSupported(modelType: type))
             #expect(Qwen4SupportPolicy.contextLimit(
-                modelID: "private/unnamed", modelType: type, environment: [:]) == 82_000)
+                modelID: "private/unnamed", modelType: type, environment: [:]) == nil)
+            #expect(Qwen4SupportPolicy.contextLimit(modelID: "private/unnamed",
+                modelType: type, nativeContextTokens: 524_288, environment: [:]) == 524_288)
         }
         for type in [nil, "qwen3_5", "qwen4_exp_other", "other_qwen4_exp"] as [String?] {
             #expect(!Qwen4SupportPolicy.isQwen4ModelType(type))
@@ -58,10 +61,10 @@ struct Qwen4SupportPolicyTests {
 
     @Test func contextOverrideCanOnlyLowerTheLimit() {
         let key = Qwen4SupportPolicy.contextEnvironmentKey
-        #expect(Qwen4SupportPolicy.configuredContextTokens(environment: [:]) == 82_000)
+        #expect(Qwen4SupportPolicy.configuredContextTokens(environment: [:]) == 262_144)
         for value in ["", " ", "0", "-1", "false", "invalid", "1.5", "262144", String(Int.max),
                       "99999999999999999999999999999"] {
-            #expect(Qwen4SupportPolicy.configuredContextTokens(environment: [key: value]) == 82_000)
+            #expect(Qwen4SupportPolicy.configuredContextTokens(environment: [key: value]) == 262_144)
         }
         for (value, expected) in [("1", 1), ("8192", 8192), (" 4096\n", 4096), ("82000", 82_000)] {
             #expect(Qwen4SupportPolicy.configuredContextTokens(environment: [key: value]) == expected)
@@ -69,13 +72,18 @@ struct Qwen4SupportPolicyTests {
         #expect(Qwen4SupportPolicy.contextLimit(
             modelID: Qwen4SupportPolicy.ownedModelID,
             nativeContextTokens: 4096, environment: [:]) == 4096)
-        #expect(Qwen4SupportPolicy.boundedContextTokens(Int.max) == 82_000)
-        #expect(Qwen4SupportPolicy.boundedContextTokens(0) == 82_000)
-        #expect(Qwen4SupportPolicy.boundedContextTokens(nil) == nil)
+        #expect(Qwen4SupportPolicy.configuredContextTokens(nativeContextTokens: 524_288,
+            environment: [:]) == 524_288)
+        #expect(Qwen4SupportPolicy.configuredContextTokens(nativeContextTokens: 524_288,
+            environment: [key: "600000"]) == 524_288)
+        #expect(Qwen4SupportPolicy.validatedContextTokens(524_288) == 524_288)
+        #expect(Qwen4SupportPolicy.validatedContextTokens(0) == nil)
+        #expect(Qwen4SupportPolicy.validatedContextTokens(-1) == nil)
+        #expect(Qwen4SupportPolicy.validatedContextTokens(nil) == nil)
     }
 
-    @Test func listedKnownArtifactIsClampedBeforeLoading() async throws {
-        let owned = Qwen4SupportPolicy.ownedModelID
+    @Test(arguments: [Qwen4SupportPolicy.ownedModelID, Qwen4SupportPolicy.registryModelID])
+    func listedKnownArtifactUsesNativeCapacityBeforeLoading(owned: String) async throws {
         let engine = MultiModelBatchSchedulerEngine(
             acquire: { id in throw MultiModelBatchSchedulerEngineError.modelNotLoaded(id) },
             tokenizerProvider: { _ in
@@ -85,6 +93,7 @@ struct Qwen4SupportPolicyTests {
         let models = try await engine.availableModels()
         let known = try #require(models.first { $0.id == owned })
         #expect(known.contextLength == Qwen4SupportPolicy.contextLimit(modelID: owned))
+        #expect(known.contextLength == 262_144)
         #expect(models.first { $0.id != owned }?.contextLength == nil)
         let json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(known))
             as? [String: Any])
@@ -137,6 +146,40 @@ struct Qwen4SupportPolicyTests {
         }
     }
 
+    @Test(arguments: [Qwen4SupportPolicy.ownedModelID, Qwen4SupportPolicy.registryModelID])
+    func nativeWindowIncludesReservedOutputAndRejectsOverflow(modelID: String) async throws {
+        let cases: [(Int, Int, Bool)] = [
+            (82_001, 1, true), (229_376, 32_768, true), (229_377, 32_768, false),
+            (262_143, 1, true), (262_144, 1, false), (1, Int.max, false),
+        ]
+        for (prompt, output, accepted) in cases {
+            let native = Qwen4PolicyEngine()
+            let bridge = makePolicyBridge(native, cap: 262_144, modelID: modelID)
+            do {
+                let stream = try await bridge.submitTokenized(
+                    promptTokens: Array(repeating: 1, count: prompt),
+                    request: policyRequest(output: output, modelID: modelID),
+                    requestId: "native-context-boundary", firstContentDeadline: nil)
+                for await _ in stream {}
+                #expect(accepted)
+            } catch let error as MultiModelBatchSchedulerEngineError {
+                #expect(!accepted)
+                #expect(error == .advertisedContextExceeded)
+            }
+            #expect(native.submittedOutputs == (accepted ? [output] : []))
+            if !accepted { #expect(native.prefixProbes == 0) }
+            #expect(await bridge._testPendingSubmissionCount() == 0)
+            await bridge.shutdown()
+        }
+    }
+
+    @Test func genericBridgeDoesNotApplyQwenCapacityToOtherModels() async {
+        let native = Qwen4PolicyEngine()
+        let bridge = makePolicyBridge(native, cap: 524_288, modelID: "foreign/native-model")
+        #expect(bridge.advertisedContextTokens == 524_288)
+        await bridge.shutdown()
+    }
+
     @Test func nonthrowingBridgeRetainsBoundedContextRejection() async {
         let native = Qwen4PolicyEngine()
         let bridge = makePolicyBridge(native, cap: 8)
@@ -181,17 +224,18 @@ struct Qwen4SupportPolicyTests {
 }
 
 private func makePolicyBridge(
-    _ engine: Qwen4PolicyEngine, cap: Int, defaultOutput: Int = 2
+    _ engine: Qwen4PolicyEngine, cap: Int, defaultOutput: Int = 2,
+    modelID: String = Qwen4SupportPolicy.ownedModelID
 ) -> EngineV2Bridge {
     EngineV2Bridge(
-        engine: engine, modelId: Qwen4SupportPolicy.ownedModelID,
+        engine: engine, modelId: modelID,
         tokenizer: TokenizerHandle(Qwen4PolicyTokenizer()), eosTokenIds: [],
         defaultMaxTokens: defaultOutput, advertisedContextTokens: cap)
 }
 
-private func policyRequest(output: Int?) -> ChatCompletionRequest {
+private func policyRequest(output: Int?, modelID: String = Qwen4SupportPolicy.ownedModelID) -> ChatCompletionRequest {
     ChatCompletionRequest(
-        model: Qwen4SupportPolicy.ownedModelID,
+        model: modelID,
         messages: [ChatMessage(role: "user", content: "hi")], max_tokens: output)
 }
 

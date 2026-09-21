@@ -946,10 +946,11 @@ type RuntimeMismatch struct {
 // TrustStatusMessage is sent by the coordinator to inform a provider of its
 // current trust level for local operator diagnostics.
 type TrustStatusMessage struct {
-	Type       string `json:"type"`
-	TrustLevel string `json:"trust_level"` // "none", "self_signed", "hardware"
-	Status     string `json:"status"`      // "online", "untrusted", etc.
-	Reason     string `json:"reason,omitempty"`
+	Type          string                        `json:"type"`
+	TrustLevel    string                        `json:"trust_level"` // "none", "self_signed", "hardware"
+	Status        string                        `json:"status"`      // "online", "untrusted", etc.
+	Reason        string                        `json:"reason,omitempty"`
+	Authorization *ProviderServingAuthorization `json:"authorization,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

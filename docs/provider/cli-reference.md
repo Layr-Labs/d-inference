@@ -1,16 +1,26 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-15 · commit `a4692e70e`
+> Last updated: 2026-09-20 · commit `a26b1107b`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
 defaults, the environment variables it forwards to the daemon, and its runtime
 constants, as declared in `provider-swift/Sources/darkbloom/` (`Darkbloom`,
-version `ProviderCore.version` = `0.9.5` in
+version `ProviderCore.version` = `0.9.7` in
 `provider-swift/Sources/ProviderCore/ProviderCore.swift`). For operators; types
 and defaults are the ArgumentParser declarations; `—` means required.
 
 ## Global options
+
+Every `darkbloom` invocation on macOS below 27 prints an informational upgrade
+warning to stderr before command parsing or AppKit hosting, including help,
+version and background commands. `MacOSUpgradeNotice.emit` in
+`provider-swift/Sources/darkbloom/MacOSUpgradeNotice.swift` names the local OS,
+upcoming Darkbloom MDM deactivation, continued legacy verification during the
+transition and the need to retain the profile until App Attest migration is
+approved. The warning performs no network/config/profile operations and does
+not change command execution, exit codes or stdout/JSON. macOS 27+ prints no
+upgrade warning. It is independent of `DARKBLOOM_NO_UPDATE_CHECK`.
 
 | Option | Type | Default | Effect | Source |
 |---|---|---|---|---|
@@ -43,7 +53,7 @@ Declaration order of `Darkbloom.configuration.subcommands` (21):
 | `update` | Self-update | ✓ | `UpdateCommand.swift` (`Update`) |
 | `verify` | `doctor --strict` | ✓ | `VerifyCommand.swift` (`Verify`) |
 | `enroll` | Fetch and open the MDM enrollment profile | ✓ | `EnrollCommand.swift` (`Enroll`) |
-| `unenroll` | Open System Settings to remove the profile; delete local data | | `UnenrollCommand.swift` (`Unenroll`) |
+| `unenroll` | Choose full exit or MDM removal with App Attest | | `UnenrollCommand.swift` (`Unenroll`) |
 | `logs` | Unified logs for subsystem `dev.darkbloom.provider` | | `LogsCommand.swift` (`Logs`) |
 | `report` | Upload recent unified logs to the coordinator | ✓ | `ReportCommand.swift` (`Report`) |
 | `autoupdate` | Toggle `provider.auto_update` | ✓ | `AutoUpdateCommand.swift` (`AutoUpdate`) |
@@ -149,6 +159,13 @@ Same checks as `doctor`; any WARN or FAIL exits 1.
 Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 (`LocalEndpoint.readLiveInfo`, `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift`).
 
+Provider-local Chat Completions, Completions and Responses reject negative output
+token limits with HTTP 400 before model invocation or streaming headers. Explicit
+zero, positive and omitted limits retain their existing semantics. This local
+SDK validation does not change coordinator normalization or model numerics
+(`libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/OpenAIRequestValidation.swift`,
+`OpenAIRequestValidation.preparedRequest`).
+
 ### `darkbloom login` / `darkbloom logout`
 
 `login` takes `--config` only and runs `performDeviceCodeLogin`
@@ -157,6 +174,12 @@ Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 `~/.darkbloom/auth_token`. `logout` takes no flags and deletes that file.
 
 ### `darkbloom benchmark`
+
+The throughput sweep installs the same `MLXMemoryGuard` allocator limits as
+serving before it loads weights. Its progress log separates active allocations,
+reusable cache bytes and the active-allocation peak at each decode cell and
+shutdown (`provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift`,
+`run` and `runDecodeBatch`). These counters are not OS process footprint.
 
 | Group | Flags (type = default) |
 |---|---|
@@ -182,6 +205,10 @@ validated**; benchmark selection alone is not release evidence.
 
 Environment inputs for the harnesses are in
 [`reference/configuration.md`](../reference/configuration.md).
+[Model verification I/O](../reference/configuration.md#model-verification-io)
+uses reusable-buffer reads and up to four independent file readers by default,
+retaining complete integrity checks. It affects load/verification work, not
+ordinary resident decode; explicit overrides provide the original serial path.
 For a pinned GPT-OSS matrix with aggregate B=2/B=4 decode, raw token timing,
 and mixed prompt arrivals, see [the profiling workflow](../developer/test.md#6-scripts-and-release-integrity).
 
@@ -199,12 +226,21 @@ See [installation → Update](./installation.md#update).
 
 ### `darkbloom enroll` / `darkbloom unenroll`
 
+`EnrollmentService.enroll` in `provider-swift/Sources/ProviderCore/Auth/Enrollment.swift`
+returns App Attest setup guidance on macOS 27 or later before checking profiles,
+contacting the enrollment endpoint or opening Settings. Older macOS retains the
+legacy profile flow. `ProviderOnboardingPolicy` in
+`provider-swift/Sources/ProviderCore/Auth/ProviderOnboardingPolicy.swift` owns the
+OS choice and the upgrade/upcoming MDM deactivation notice. The OS choice never
+grants serving authorization or removes an existing profile.
+
 | Command | Flag | Type | Default | Effect |
 |---|---|---|---|---|
 | `enroll` | `--coordinator <url>` | `String?` | config URL | Coordinator to request the profile from |
 | `enroll` | `--no-open` | flag | `false` | Save the `.mobileconfig`; do not open System Settings |
-| `unenroll` | `--force` | flag | `false` | Delete config dir, `auth_token` and legacy keys without asking |
+| `unenroll` | `--force` | flag | `false` | Select full exit, stop the service and confirm local-data cleanup without prompting |
 | `unenroll` | `--no-open` | flag | `false` | Do not open System Settings |
+| `unenroll` | `--keep-serving` | flag | `false` | Require fresh coordinator App Attest removal readiness, preserve identity/account data and guide removal of only Darkbloom enrollment |
 
 ### `darkbloom logs`
 
@@ -657,17 +693,22 @@ darkbloom enroll [--coordinator <url>] [--no-open]
 
 ## `darkbloom unenroll`
 
-Open System Settings to remove the Darkbloom MDM profile and optionally clean up
-local data.
+Without a flag, ask whether to fully exit Darkbloom or remove only MDM and keep serving with App Attest. Enter or closed input cancels without changing anything. The App Attest option requires macOS 27 or later and fresh coordinator removal approval; an unsupported/unqualified choice never falls back to cleanup.
+
+Full exit stops the launchd provider and disables its automatic restart before profile-removal guidance and a separate local cleanup confirmation. If a foreground provider is still running, cleanup is refused. The cleanup list includes the current and legacy Secure Enclave signing keys. Model downloads and server-side account history remain intact.
+
+Code: `provider-swift/Sources/darkbloom/UnenrollCommand+Choice.swift` (`chooseUnenrollmentMode`, `performUnenrollment`); `provider-swift/Sources/darkbloom/UnenrollCommand.swift` (`performFullUnenrollment`). Noninteractive use requires an explicit mode flag.
 
 ```bash
 darkbloom unenroll [--force] [--no-open]
+darkbloom unenroll --keep-serving [--no-open]
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--force` | Skip the local-data cleanup confirmation |
+| `--force` | Select full exit and confirm local cleanup; cannot combine with `--keep-serving` |
 | `--no-open` | Do not open System Settings |
+| `--keep-serving` | Select macOS 27+ App Attest migration directly, retaining account/keys/data |
 
 ## `darkbloom local`
 
@@ -784,6 +825,14 @@ override `provider.toml` for one process, are in
 
 ## LaunchAgent environment passthrough
 
+The [Bonsai performance profile](../reference/configuration.md#bonsai-performance-qualification)
+uses source-default-on eligible paths in foreground and daemon processes. It
+leaves model bytes, native precision, context limits and MTP capabilities unchanged.
+Explicit `0` restores the prior path; other explicit values except `1` also
+disable it. These names are not daemon shell-environment passthrough entries:
+foreground overrides work, but do not assume a shell setting reaches an installed
+LaunchAgent. The generic constant-cache kill switch remains effective.
+
 For native Flash-Next foreground/local serving, the lower-only
 `DARKBLOOM_QWEN4_LISTING_CONTEXT` control bounds the complete request envelope.
 Its parsing, default and mandatory PLE acceptance setting are in the
@@ -802,7 +851,7 @@ provider plist's `EnvironmentVariables`
 `passthroughEnvironment`). Every other variable — including `PATH` and all the
 media, SSD-prefix and memory-cap tunables — reaches the engine only under
 `darkbloom start --foreground` or `--local`. The `DARKBLOOM_PREFIX_CACHE` switch
-defaults to enabled for the exact Qwen and Nemotron Lightning artifacts and
+defaults to enabled for the exact Qwen, Nemotron Lightning and Bonsai 2 artifacts,
 Gemma 4 26B QAT (`gemma-4-26b-qat-4bit`) and GPT-OSS 20B (`gpt-oss-20b`); see
 [prefix-cache defaults](../architecture/prefix-cache.md#kv-layouts). Other models need an
 explicit affirmative value for SSD caching. Resident payload retention requires

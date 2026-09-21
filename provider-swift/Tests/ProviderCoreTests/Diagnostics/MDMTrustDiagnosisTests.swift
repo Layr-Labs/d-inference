@@ -71,7 +71,7 @@ import Testing
         // "enrolled but pending" case (different name + message), so the operator
         // doesn't conflate the two flows.
         let d = MDMTrustDiagnosis.diagnose(
-            trustLevel: "self_signed", status: "online", enrollment: .notEnrolled)
+            trustLevel: "self_signed", status: "online", enrollment: .notEnrolled, macOSMajorVersion: 26)
         let diag = try #require(d)
         #expect(diag.level == .warn)
         #expect(diag.name == "mdm enrollment")
@@ -91,7 +91,8 @@ import Testing
         let d = MDMTrustDiagnosis.diagnose(
             trustLevel: "self_signed",
             status: "online",
-            enrollment: .enrolledOtherMDM(serverURL: "https://corp.kandji.io/mdm/commands"))
+            enrollment: .enrolledOtherMDM(serverURL: "https://corp.kandji.io/mdm/commands"),
+            macOSMajorVersion: 26)
         let diag = try #require(d)
         #expect(diag.level == .warn)
         #expect(diag.name == "mdm enrollment")
@@ -105,5 +106,28 @@ import Testing
             trustLevel: "self_signed", status: "online", enrollment: .checkFailed) == nil)
         #expect(MDMTrustDiagnosis.diagnose(
             trustLevel: nil, status: nil, enrollment: .checkFailed) == nil)
+    }
+
+    @Test func macOS27DoesNotSendNewOrEmployerManagedProvidersToMDM() throws {
+        let states: [MDMEnrollmentState] = [.notEnrolled, .enrolledOtherMDM(serverURL: "https://corp.example/mdm")]
+        for enrollment in states {
+            let diagnostic = try #require(MDMTrustDiagnosis.diagnose(
+                trustLevel: "self_signed", status: "online", enrollment: enrollment,
+                macOSMajorVersion: 27))
+            #expect(diagnostic.level == .warn)
+            #expect(diagnostic.name == "App Attest setup")
+            #expect(diagnostic.message.contains("unconfirmed"))
+            #expect(diagnostic.fix?.contains("`darkbloom enroll`") == false)
+            #expect(diagnostic.fix?.contains("Keep existing management") == true)
+        }
+    }
+
+    @Test func legacyTrustMessageOnMacOS27DoesNotRecommendEnrollment() {
+        let advice = TrustReasonCatalog.advice(
+            level: "self_signed", status: "online",
+            reason: "SE attestation verified, awaiting MDM verification",
+            macOSMajorVersion: 27)
+        #expect(advice.fix?.contains("`darkbloom enroll`") == false)
+        #expect(advice.message.contains("does not confirm"))
     }
 }

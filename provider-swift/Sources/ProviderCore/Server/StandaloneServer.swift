@@ -1707,9 +1707,10 @@ public actor StandaloneServer {
             // + existing grants restored inside the catch (unwind ordering)
             // — the catch below just surfaces it as a 503-shaped capacity
             // error.
-            var slotBuild: SlotBuild
-            do {
-                slotBuild = try await resliceAndBuildBundle(
+            // Both attempts use the same target and verified cache identity.
+            // Only the optional assistant preparation changes on fallback.
+            func buildSlot(preparation: SpecDecPreparation) async throws -> SlotBuild {
+                try await resliceAndBuildBundle(
                     modelId: modelId,
                     modelType: modelInfo.modelType,
                     isVLM: slotIsVLM,
@@ -1717,8 +1718,12 @@ public actor StandaloneServer {
                     newcomer: newcomer,
                     tokenizer: tokenizer,
                     targetSizing: targetSizing,
-                    specDecPreparation: mtpPreparation,
+                    specDecPreparation: preparation,
                     cacheEligibleWeightHash: cacheEligibleWeightHash)
+            }
+            var slotBuild: SlotBuild
+            do {
+                slotBuild = try await buildSlot(preparation: mtpPreparation)
             } catch let error as StandaloneServerError {
                 MLX.Memory.clearCache()
                 throw error
@@ -1758,15 +1763,7 @@ public actor StandaloneServer {
                 bundle.releaseAssistant()
                 MLX.Memory.clearCache()
                 do {
-                    slotBuild = try await resliceAndBuildBundle(
-                        modelId: modelId,
-                        modelType: modelInfo.modelType,
-                        isVLM: slotIsVLM,
-                        modelDirectory: modelPath,
-                        newcomer: newcomer,
-                        tokenizer: tokenizer,
-                        targetSizing: targetSizing,
-                        specDecPreparation: mtpPreparation.fallingBack(reason))
+                    slotBuild = try await buildSlot(preparation: mtpPreparation.fallingBack(reason))
                 } catch {
                     await resliceGrowSurvivors()
                     MLX.Memory.clearCache()

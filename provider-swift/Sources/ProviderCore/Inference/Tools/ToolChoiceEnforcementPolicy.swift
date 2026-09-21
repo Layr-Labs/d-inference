@@ -17,6 +17,14 @@ enum ToolChoiceEnforcementPolicy {
 
     static let qwen38ConstrainedModelID = "EigenLabs/Qwen3.8-27B-4bit"
 
+    /// Bonsai media uses the same withheld/schema-validated native tool frames
+    /// as its text path; it does not require a sampler grammar. Admission must
+    /// also attest the actual loaded native wrapper, not only caller metadata.
+    static func supportsForcedMedia(context: ChatTemplateFixContext, nativeWrapperLoaded: Bool) -> Bool {
+        nativeWrapperLoaded && context.modelType == "prism_hadamard_qwen35"
+            && EngineV2SupportedModels.isBonsai2ListingModelID(context.modelId)
+    }
+
     static func isFramingWhitespace(_ text: String) -> Bool {
         // XML framing whitespace only. Foundation's broader character set
         // also includes invisible Unicode characters that are not framing.
@@ -64,8 +72,22 @@ enum ToolChoiceEnforcementPolicy {
     static func nativeStructuredTarget(_ context: ChatTemplateFixContext) -> Bool {
         let type = context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if type == "qwen4_exp" || type == "qwen4_exp_text" { return true }
+        if type == "prism_hadamard_qwen35" {
+            return EngineV2SupportedModels.isBonsai2ListingModelID(context.modelId)
+        }
         return type == "nemotron_h"
             && EngineV2SupportedModels.isNemotron35ListingModelID(context.modelId)
+    }
+
+    /// Nested examples inside native XML-family reasoning stay reasoning.
+    /// Admission is family-specific; this is a wire policy, not an architecture
+    /// alias, and must not change legacy Nemotron or other model behavior.
+    static func preservesInnerReasoningSpans(_ context: ChatTemplateFixContext) -> Bool {
+        if Qwen4ModelIdentity.isQualified(context.modelId), context.modelType == "qwen4_exp" {
+            return true
+        }
+        return context.modelType == "prism_hadamard_qwen35"
+            && EngineV2SupportedModels.isBonsai2ListingModelID(context.modelId)
     }
 
     static func validateParser(
@@ -85,6 +107,7 @@ enum ToolChoiceEnforcementPolicy {
             let type = modelContext?.modelType?
                 .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             let nativeQwen = type == "qwen4_exp" || type == "qwen4_exp_text"
+                || type == "prism_hadamard_qwen35"
             let framedFormat: ToolCallFormat = nativeQwen ? .qwen35 : .nemotron
             guard format == .xmlFunction || format == framedFormat else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(

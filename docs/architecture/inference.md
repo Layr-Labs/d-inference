@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-17 · commit `77d1d1d86`
+> Last updated: 2026-09-20 · commit `0cb0c6310`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -10,6 +10,19 @@ legacy engine and no subprocess. For the memory model see
 [`prefix-cache.md`](prefix-cache.md).
 
 ## Context
+
+The `prism_hadamard_qwen35` adapter reuses the native dense Qwen text backbone
+and retains its vision wrapper. The SDK validates signed-Hadamard metadata and
+packed weights before returning the model. Packed scales and embeddings are
+FP16, but the published FP32 normalizers promote native KV and recurrent
+convolution state to FP32; checkpoint declarations preserve that actual dtype.
+Packed recurrent prefill retains a compact convolution carry rather than an
+alias of the complete chunk allocation; the SDK copies those state bits without
+changing the recurrence or other model families.
+`EngineV2SupportedModels.bonsai2ModelID` selects paged KV automatically;
+MTP remains unsupported because the checkpoint has no assistant tensors.
+See `libs/mlx-swift-lm/docs/bonsai2.md` for the checkpoint contract and current
+qualification scope. This implementation does not activate a catalog entry.
 
 Every advertised model is served through CBv2; a `model_type` without a CBv2
 adapter is dropped from the advertised set at scan time and never loads
@@ -22,8 +35,8 @@ adapter is dropped from the advertised set at scan time and never loads
 |---|---|---|
 | `ProviderLoop` / `StandaloneServer` | Coordinator WebSocket and local HTTP ingress; model load/unload; heartbeat | `provider-swift/Sources/ProviderCore/ProviderLoop.swift`, `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift` |
 | `MultiModelBatchSchedulerEngine` | Implements the upstream `MLXServerEngine` contract: OpenAI translation, chat-template render, tool-parser and tool-choice resolution, model acquire, dispatch by `request.model` | `provider-swift/Sources/ProviderCore/Inference/Engine/Scheduler/MultiModelBatchSchedulerEngine.swift` |
-| `EngineV2Bridge` (one per model) | Provider↔CBv2 boundary: request-id normalisation, `CBv2Request` translation, resident/SSD selection, cache evidence, shared-KV reservation, deadline projection, `engine.submit`, event pump, telemetry | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift` with `+Submission`, `+Admission`, `+Lifecycle`, `+Resizing`, `+Identity`, `+Events`, `+Accounting`, `+Translation`, `+Profile`, `+Liveness`, `+MTP`, and `+PrefixCache` |
-| `EngineV2SlotFactory` | Builds one slot: model prep, MTP assistant, KV-backend selection and vetoes, paged preflight, resident and SSD prefix-cache construction gates | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` |
+| `EngineV2Bridge` (one per model) | Provider↔CBv2 boundary: request-id normalisation, `CBv2Request` translation, resident/SSD selection, cache evidence, shared-KV reservation, deadline projection, `engine.submit`, event pump, telemetry | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge.swift` with `+Submission`, `+Admission`, `+Lifecycle`, `+Resizing`, `+Identity`, `+Events`, `+Accounting`, `+Translation`, `+Profile`, `+Liveness`, `+MTP`, `+PrefixCache`, and `+PrefixCacheTelemetry`; `EngineV2RequestUsageSignal` owns per-request terminal and cache outcome reconciliation |
+| `EngineV2SlotFactory` | Builds one slot: model prep, MTP assistant, KV-backend selection and vetoes, paged preflight, resident and SSD prefix-cache construction gates | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` and `EngineV2SlotFactory+AttentionPrefixCache.swift` |
 | `EngineV2Factory` (production) | `prepareProductionBackend`, `productionSchedulerConfig`, engine assembly | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift` with `+Configuration`, `+BackendPreparation`, and `+ModelAdapter` |
 | `EngineV2Runtime` | Process-wide registry of bridges; capacity summary for heartbeats; cancellation fan-out | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2Runtime.swift` |
 | CBv2 engine loop | Admission, KV allocation, chunked prefill, batched decode, detokenisation, leases | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`, `SchedulerV2.swift` |
@@ -456,7 +469,15 @@ the same owned external resources
 `ModelMediaPolicy.advertisesMedia` keeps scanner/template/loader media policy
 consistent (`provider-swift/Sources/ProviderCoreFoundation/ModelMediaPolicy.swift`).
 
-The slot factory passes the bounded candidate context into the bridge.
+The registry and legacy serving IDs share exact native policies through
+`provider-swift/Sources/ProviderCoreFoundation/Qwen4ModelIdentity.swift`.
+HF source/download identifiers are not substituted for the registry ID, and
+the developer-only model-path override remains limited to the legacy ID.
+
+The slot factory passes native context (or an explicitly lower operator limit)
+into the bridge; the generic bridge does not impose a second Qwen-sized cap
+on this or other model families. Coordinator admission owns SLA policy, while
+provider context and physical-memory checks remain mandatory.
 `EngineV2Bridge.submitTokenized` checks prompt plus the translated output
 reservation with overflow-safe arithmetic before cache probes or tickets.
 `advertisedContextExceeded` stays a content-free client error through both
@@ -545,7 +566,7 @@ these sources recursively (`provider-swift/Package.swift`, `package`).
 | Admission and resizing | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Admission.swift` (`firstTokenDeadlineAdmission`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Resizing.swift` (`updateKVBytesCapacity`) |
 | Cancellation and completion | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Lifecycle.swift` (`cancel`, `shutdown`); `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Events.swift` (`runPump`, `finishAndEmit`) |
 | Sampling translation | `provider-swift/Sources/ProviderCore/Inference/Engine/Bridge/EngineV2Bridge+Translation.swift` (`samplingParams`) |
-| Slot construction | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` |
+| Slot construction | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2SlotFactory.swift` and `EngineV2SlotFactory+AttentionPrefixCache.swift` |
 | Scheduler config, backend prep | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Configuration.swift` (`productionSchedulerConfig`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BackendPreparation.swift` (`prepareProductionBackend`) |
 | Model adaptation and assembly | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+ModelAdapter.swift` (`ProductionModelAdapter`, `directServingModel`); `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+Production.swift` (`assembleProductionBuild`) |
 | Refusal taxonomy, retired env knobs | `provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Config.swift` (`EngineV2RefusalReason`) |

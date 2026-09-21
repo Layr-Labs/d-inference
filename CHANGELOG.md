@@ -1,6 +1,93 @@
 # Changelog
 
-## Release candidate v0.9.5 — Qwen 3.8 Next / native Qwen4 follow-up (not shipped; 2026-09-15)
+## Unreleased
+
+- Persist independently approved App Attest builds and revocations; refresh qualification without per-release coordinator restarts, with bounded failure/expiry and stale-grant fencing.
+- Stage immutable signed provider artifacts before publication. Block unqualified releases before updater/latest aliases advance; retry the separate publication job using the same signed bytes, without rebuilding or notarizing again.
+
+## Release candidate v0.9.7 — MDM-optional providers and account-scoped SLAs (not shipped; 2026-09-20)
+
+- Align `ProviderCore.version` and the coordinator's `LatestProviderVersion` fallback at 0.9.7. Publication, coordinator deployment and App Attest serving/removal activation remain separate rollout steps.
+
+### Model verification I/O
+
+- Enable reusable-buffer reads and up to four independent file readers by default for model integrity verification, preserving complete SHA digests, failure handling and load-time checks. Explicit overrides retain the original reader and serial hashing for rollback.
+- Pin MLX Swift and MLX Swift LM to their merged Bonsai constant-reuse, carry-scheduling and HTTP-validation updates. Preserve the existing MLX core/C pins and native Qwen4 support.
+
+### Bonsai performance and API stability
+
+- Enable encrypted SSD prefix-cache eligibility by default for the three exact supported Bonsai 2 MLX identities. Preserve the global cache opt-out, fresh load hashes and runtime capability/identity gates; resident RAM retention stays opt-in. Signed persistent-restart qualification and coordinator artifact allowlisting remain separate rollout steps.
+
+- Complete late local Chat/Completions failures with a sanitized SSE error event instead of truncating the HTTP body. Preserve cancellation, pre-header errors and the direct SDK throwing contract; this does not change model generation or turn failed tool calls into successes.
+
+- Enable qualified earlier compact-carry submission and exact FP16-to-FP32 constant reuse by default on eligible Bonsai paths. Unset and exact `1` enable each path; explicit `0` restores its prior behavior and other explicit spellings remain disabled. Keep all shape/dtype/fault gates, generic cache rollback, published weights, native precision, architecture, context limits and absent-MTP capability unchanged.
+- Record matched M3 Ultra/M5 Max prefill, decode and memory measurements, including prefill tradeoffs and the real retained-constant cost. Dependency review, post-merge repinning and deployment remain separate actions; this performance draft is not a release.
+- Qualify early provider-local rejection of negative output-token limits through the SDK service, preserving explicit zero and valid requests. Coordinator validation and model numerics are unchanged.
+- Preserve the fixed SDK input-validation error through local chat interception, and explicitly admit the qualified Bonsai XML family to nested-reasoning routing for both text and media. Preserve opaque argument bytes and existing other-family policies; do not guess string unescaping.
+
+### Account-scoped first-content SLA
+
+- Apply the first-content SLA only to authenticated accounts selected by `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS`; configure the intended account privately in the deployment environment. Direct users and other service accounts have no first-content timeout, including no 600-second fallback; queue limits, client cancellation and post-content response timers remain.
+- Preserve configurable model timing for selected accounts, including Bonsai’s 9s + 5ms/token coordinator cutoff, and support explicit public-model policies before alias resolution.
+
+### MDM-optional provider authorization
+
+- Warn on stderr for every CLI invocation below macOS 27, including help/version, while preserving commands and JSON output. Add prominent setup/dashboard upgrade notices, distinguish older from unknown reported OS versions, and retain legacy service during the transition.
+- Show current App Attest authorization on the owner dashboard without demanding legacy MDM verification; expire cached grants locally if polling fails and preserve independent legacy proof fields.
+
+- Retry first-proof App Attest readiness outages with a bounded early assertion retry (one minute, then five minutes, capped at the normal ten-minute cadence); recheck the complete proof, identity and serving policy after recovery.
+
+- Reflect App Attest revocation in untrusted status, availability and fleet counts without duplicate decrements or legacy-challenge recovery. Require a coordinator decision received within 10 seconds before offering MDM removal, even when the daemon keeps rewriting its state file.
+
+- Skip new MDM enrollment in the installer and CLI on macOS 27 or later; guide users through App Attest approval. Explain that upgrading avoids MDM and Darkbloom MDM will be deactivated soon. Keep existing profiles and coordinator authorization/removal gates intact; pending App Attest never falls back to automatic MDM enrollment.
+
+- Fence successful admin revocations even when the request deadline expires, and fence freshly verified revoked credentials before their first serving grant. Preserve bounded leases/refresh records through unknown readiness results without extending authorization.
+- Preserve legacy identity/MDA recovery for providers outside the authenticated rollout cohort and on older macOS. Restore a previously missing historical baseline after a later canonical merge without double-counting live work.
+- Count only authorized inference handoffs as provider dispatches; rejected frames clear provisional timing, and cancellation while waiting for authorization preserves the healthy connection.
+- Commit pending base-reward allocations atomically and reallocate after a late authorization/identity rejection, preserving prior finalized payments and pool/account caps. Resolve same-account endpoint continuity while session inventory catches up.
+
+- Consolidate App Attest session, archive, receipt, inventory and authorization workers under `coordinator/appattest/service`, with their unit tests. Keep only API wiring/authentication/release adapters; retain storage and scheduler locking with their owning packages.
+
+- Make plain `darkbloom unenroll` offer full exit or App Attest migration, with an explicit macOS 27+ requirement and fresh coordinator approval for migration. Cancel/EOF makes no changes; full exit stops the provider service before optional cleanup, and the cleanup prompt explicitly lists Secure Enclave signing keys.
+
+- Add independently enabled App Attest serving alongside complete legacy MDM/MDA and APNs verification. Require qualified signed code, current encrypted-endpoint assertions, durable evidence, valid receipts and fresh revocation state; preserve legacy trust flags.
+- Fence every new inference handoff on expiry, revocation, connection/endpoint replacement and policy changes, including queued requests and retries. Durable revocation refresh has a bounded lifetime; database failures cannot extend permission.
+- Preserve verified canonical machine history across reconnects and credential rotation, without allowing a claimed serial to evict another provider. Extend base rewards to qualified App Attest-only machines with canonical duplicate/epoch settlement protection and preserved historical balances.
+- Add coordinator-derived authorization diagnostics and `darkbloom unenroll --keep-serving`. Require fresh removal readiness, preserve local identity/account data and identify only Darkbloom's enrollment profile before guiding the user through System Settings; company management is retained.
+- Keep serving/removal disabled by default and retain explicit signed-artifact/security-transition qualification before activation. DeviceCheck's separate two-bit API is not required.
+
+## Unreleased — model token promotions
+
+- List Bonsai first in the chat model dropdown. Show its “Free” badge only after a confirmed claim for that exact model with available tokens; hide it while grant status is unknown, on lookup errors, or when the allowance is exhausted or fully reserved.
+
+- Enable thinking by default in frontend chat requests.
+
+- Configure one-time, model-specific token grants before registration. Eligible users explicitly claim non-expiring tokens shared across their account keys, with an atomic campaign cap and signup cutoff. Prepare the Bonsai draft for 250 claims through September 19 by accounts created through September 18 (Los Angeles time). Exhaustion falls back to paid credit, with clear console allowance/error states.
+- Reserve and settle free tokens, paid credit and provider earnings atomically; retain platform-priced provider payouts on sponsored traffic, protect same-account serving, and recover orphaned reservations.
+- Recover usage, key spend and fee accounting after promotion settlement retries; release holds after deterministic failures and reject zero-token payouts.
+- Bound sponsored provider earnings to exact token prices, carrying fractional micro-dollars atomically instead of funding a minimum payout for each tiny request.
+- Give Bonsai 2 a 10-second plus 5-ms-per-input-token upstream first-content SLA, retaining coordinator response headroom. Add exact-model overrides for both SLA terms.
+
+## Unreleased — Ternary Bonsai 2 onboarding draft
+
+- Compact Bonsai's retained recurrent convolution carry after prefill, preserving exact FP32 state bits without retaining whole chunk buffers. Other model families and single-token decode are unchanged.
+- Apply the existing serving allocator guard before throughput-sweep model loading; bound freed-buffer retention and report active/cache memory separately without changing model precision or KV limits.
+- Add the `prism_hadamard_qwen35` native CBv2 adapter for the unchanged Prism Bonsai 2 27B affine 2-bit pack, including its real vision tower and explicit absence of MTP heads. Preserve signed-Hadamard transforms, FP16 packing, paging safeguards and matching provider/coordinator prompt semantics. Register `hadamard.json` as an integrity-bound config asset. Qualification and catalog/release activation are separate; this draft does not deploy the model.
+
+## Release candidate v0.9.6 — Flash-Next signed-app resource recovery (not shipped; 2026-09-17)
+
+- Wait for the SSD write-behind consumer task to finish when draining after shutdown, so the final payload is released before teardown completes. Preserve reusable drains while the pipeline is running; cover the shutdown handoff with 10,000 regression cycles and both SDK 27 CI lanes.
+- Resolve native Qwen Metal preambles from the signed app’s `Contents/Resources`, including installer symlinks; prevent developer build paths from hiding missing packaged files. Model weights and kernel bytes are unchanged.
+- Exercise all Qwen Metal preambles in `runtime-smoke` before signing, after notarization, and through the existing installer/updater smoke. Add relocated-app, missing-resource, symlink-escape, and standalone-development regression checks.
+- Require provider 0.9.6 or newer for `qwen3.8-flash-next`, excluding the crashing 0.9.5 bundle without changing other models. Keep the 262144-token native context and memory safeguards. Cold SSD-offload accounting requires the separately deployed coordinator.
+
+## v0.9.5 — Qwen 3.8 Next / native Qwen4 follow-up (shipped; 2026-09-17)
+
+- Recognize the exact `qwen3.8-flash-next` registry ID alongside the legacy developer ID for native Qwen4 media, paging/prefix, tool and reasoning policies. Keep artifact/configuration checks and developer-only path overrides intact.
+- Use native model context in listing and runtime policy, with a 262144 fallback only for the known artifact identities. Remove the extra 82K bridge clamp; retain lower-only operator overrides, checked prompt-plus-output budgets, physical-memory safeguards and coordinator SLA admission.
+- Mirror the registry-ID prompt semantics in Rust and bump the shared Swift/Go/Rust normalization contract to v6. Old contracts fail cold rather than receiving cache credit under different semantics.
+- Gate the registry ID on provider 0.9.5 or newer across request shapes; legacy and other models keep existing version floors. Align the provider version and coordinator display fallback without retagging 0.9.5 or deploying this draft.
+- Leave SDK, model weights, quantization, embedded MTP and numerical kernels unchanged. Physical full-context and composed API qualification remain separate from policy-level tests.
 
 ### Release reliability and build reuse
 

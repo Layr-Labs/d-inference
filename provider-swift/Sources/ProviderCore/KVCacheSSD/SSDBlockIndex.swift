@@ -130,7 +130,16 @@ final class SSDBlockIndex: @unchecked Sendable {
 
     /// Globally-oldest entry (LRU eviction candidate).
     func oldest() -> (tag16: Data, lastAccess: Int64, fileBytes: Int)? {
-        oldestEntries().first
+        // Budget selection needs one candidate, not a sorted copy of every
+        // model's index. Keep the same tag tie-break as oldestEntries().
+        lock.withLock {
+            entries.min {
+                if $0.value.lastAccess != $1.value.lastAccess {
+                    return $0.value.lastAccess < $1.value.lastAccess
+                }
+                return $0.key.lexicographicallyPrecedes($1.key)
+            }.map { (tag16: $0.key, lastAccess: $0.value.lastAccess, fileBytes: $0.value.fileBytes) }
+        }
     }
 
     /// Stable oldest-first snapshot. Eviction walks this bounded list so one

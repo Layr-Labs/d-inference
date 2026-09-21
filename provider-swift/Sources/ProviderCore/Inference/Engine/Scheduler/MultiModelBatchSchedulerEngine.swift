@@ -27,6 +27,7 @@
 //     owns the typed error surface and the scheduler-message parser.
 
 import Foundation
+import ProviderCoreFoundation
 import MLXLMCommon
 import MLXLMServer
 import MLXVLM
@@ -300,7 +301,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         do {
             try checkFirstContentDeadline()
             if isVLM, let container, MediaIngest.hasMedia(request) {
-                nativeMediaTools = await container.perform { ctx in ctx.model is MLXVLM.Qwen4Exp }
+                nativeMediaTools = await container.perform { ctx in
+                    ctx.model is MLXVLM.Qwen4Exp || ctx.model is MLXVLM.PrismHadamardQwen35
+                }
             }
             if !MediaIngest.hasMedia(request) || nativeMediaTools {
                 toolHandler = try ToolStreamPreparation.makeHandler(
@@ -335,9 +338,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             try await checkFirstContentDeadline(releasing: releaseBox)
             // `.auto` constrains nothing and `.none` hides the tools outright
             // (post-generation validation rejects any emitted call), so both
-            // ride the media path unchanged. `.required`/`.named` need the
-            // token automaton this path cannot install.
-            guard prepared.mode == .auto || prepared.mode == .none else {
+            // ride the media path unchanged. Bonsai's native parser withholds
+            // and validates required/named frames exactly as on its text path;
+            // other families retain their existing grammar-dependent refusal.
+            guard prepared.mode == .auto || prepared.mode == .none
+                || ToolChoiceEnforcementPolicy.supportsForcedMedia(
+                    context: .init(modelId: modelId, modelType: modelType),
+                    nativeWrapperLoaded: nativeMediaTools)
+            else {
                 await releaseBox.fire()
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
                     "inference-enforced tool_choice is not supported for multimodal requests")
@@ -521,65 +529,32 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                             ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
                                 tokenizer.inner.decode(tokenIds: Array(visionPrepared.promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                                        skipSpecialTokens: false)) ?? "<think></think>") : nil,
-                        preserveInnerReasoningSpans: modelId == ModelMediaPolicy.ownedQwen4ModelID
-                            && modelType == "qwen4_exp"
+                        preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
+                            .init(modelId: modelId, modelType: modelType))
                     )
-                } catch let failure as PreContentDeadlineFailure {
-                    await mediaGate.release(requestId: mediaReqId)
-                    await releaseBox.fire()
-                    throw failure
-                } catch is CancellationError {
-                    // The CALLER went away mid-construction — that is not a
-                    // v2 failure, so don't burn a refusal ERROR. Release and
-                    // propagate like every other pre-stream throw above.
-                    await mediaGate.release(requestId: mediaReqId)
-                    await releaseBox.fire()
-                    throw CancellationError()
-                } catch let mediaError as MediaIngest.MediaError {
-                    // Deterministic input fault from the preparer's single
-                    // decode pass. It fails identically on any provider, so it
-                    // keeps its 4xx mapping instead of becoming a misleading
-                    // retriable refusal.
-                    await mediaGate.release(requestId: mediaReqId)
-                    await releaseBox.fire()
-                    throw mediaError
-                } catch EngineV2VisionPrefillError.noProcessedMedia {
-                    // Every media part sits on a non-user role, so the
-                    // processor had nothing to consume (`buildUserInput`
-                    // drops non-user media — identically on the legacy
-                    // path). Deterministic for this request on EVERY
-                    // provider: a 400 client fault, not a refusal — no
-                    // ERROR telemetry, no failover burn.
-                    await mediaGate.release(requestId: mediaReqId)
-                    await releaseBox.fire()
-                    throw MultiModelBatchSchedulerEngineError.multimodalRejected(
-                        "multimodal_rejected: media parts must be attached to user "
-                            + "messages; none of this request's media was consumable")
-                } catch let visionError as EngineV2VisionPrefillError {
-                    if case .unsupportedMedia(let detail) = visionError {
-                        await mediaGate.release(requestId: mediaReqId)
-                        await releaseBox.fire()
-                        throw MultiModelBatchSchedulerEngineError.multimodalRejected(
-                            "multimodal_rejected: \(detail)")
-                    }
-                    await mediaGate.release(requestId: mediaReqId)
-                    await releaseBox.fire()
-                    let mediaKind = EngineV2VisionPrefill.mediaKind(of: visionRequest)
-                    plumbing.emitTelemetry(
-                        EngineV2VisionPrefill.refusalTelemetryEvent(
-                            modelId: modelId, mediaKind: mediaKind, error: visionError))
-                    throw MultiModelBatchSchedulerEngineError.requestRejected(
-                        "engine_v2 media prefill construction failed "
-                            + "(media=\(mediaKind.rawValue)): "
-                            + EngineV2VisionPrefill.refusalDetail(for: visionError)
-                            + " — request not started; retry on another provider")
                 } catch {
-                    // REFUSAL: v2 media-prefill construction failed on this
-                    // provider. ERROR telemetry (media-kind tagged) + 503 —
-                    // the request was never started, so the coordinator's
-                    // pre-content failover retries it invisibly elsewhere.
+                    // Every failed media construction releases the same reservations
+                    // before classifying the failure or publishing refusal telemetry.
                     await mediaGate.release(requestId: mediaReqId)
                     await releaseBox.fire()
+                    if let failure = error as? PreContentDeadlineFailure { throw failure }
+                    if error is CancellationError { throw CancellationError() }
+                    if let mediaError = error as? MediaIngest.MediaError { throw mediaError }
+                    if let visionError = error as? EngineV2VisionPrefillError {
+                        switch visionError {
+                        case .noProcessedMedia:
+                            throw MultiModelBatchSchedulerEngineError.multimodalRejected(
+                                "multimodal_rejected: media parts must be attached to user "
+                                    + "messages; none of this request's media was consumable")
+                        case .unsupportedMedia(let detail):
+                            throw MultiModelBatchSchedulerEngineError.multimodalRejected(
+                                "multimodal_rejected: \(detail)")
+                        default:
+                            break
+                        }
+                    }
+                    // Construction failures are retryable; deterministic input faults,
+                    // cancellation and deadlines above keep their original mappings.
                     let mediaKind = EngineV2VisionPrefill.mediaKind(of: visionRequest)
                     plumbing.emitTelemetry(
                         EngineV2VisionPrefill.refusalTelemetryEvent(
@@ -770,8 +745,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
                     tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
                                            skipSpecialTokens: false)) ?? "<think></think>") : nil,
-            preserveInnerReasoningSpans: modelId == ModelMediaPolicy.ownedQwen4ModelID
-                && modelType == "qwen4_exp"
+            preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
+                .init(modelId: modelId, modelType: modelType))
         )
     }
 
@@ -1080,7 +1055,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         if let modelId, registry[modelId] == nil {
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
         }
-        if let firstKey = registry.keys.sorted().first,
+        if let firstKey = registry.keys.min(),
             let entry = registry[firstKey]
         {
             return TokenizerResolution(

@@ -38,6 +38,9 @@ runs:
     - name: Select SDK 27 provider toolchain
       shell: bash
       run: ./scripts/prepare-provider-release-toolchain.sh
+    - name: Test Qwen resources in a relocated app
+      shell: bash
+      run: python3 scripts/test-qwen4-packaged-resources.py
     - name: Record build identity
       id: identity
       shell: bash

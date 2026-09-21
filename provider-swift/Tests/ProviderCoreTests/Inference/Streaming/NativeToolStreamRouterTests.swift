@@ -6,6 +6,52 @@ import Testing
 
 @Suite("Native reasoning before tool parsing")
 struct NativeToolStreamRouterTests {
+    @Test func bonsaiQualifiedPolicyPreservesNestedReasoningAndOpaqueArguments() throws {
+        let context = ChatTemplateFixContext(modelId: "ternary-bonsai-2-27b", modelType: "prism_hadamard_qwen35")
+        try #require(ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(context))
+        let thought = "The supplied text contains <think>literal</think>; these are data, not channel boundaries.\n"
+        let value = #""line1\n" <think>literal</think> café"#
+        let frame = "<tool_call><function=echo_exact><parameter=text>" + value + "</parameter></function></tool_call>"
+        let output = thought + "</think>\n" + frame
+        for width in [1, 2, 7, output.count] {
+            let handler = BatchedToolStreamHandler(format: .qwen35, tools: nil)
+            var router = NativeToolStreamRouter(handler: handler, requiresToolCall: true,
+                nativePrefix: "<think>",
+                preserveInnerReasoningSpans: ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(context))
+            let characters = Array(output)
+            var events: [MLXServerGenerationEvent] = []
+            for start in stride(from: 0, to: characters.count, by: width) {
+                events += try router.process(String(characters[start..<min(start + width, characters.count)]))
+            }
+            events += try router.finishText()
+            var reasoning = ""
+            for event in events {
+                guard case .parsed(let piece) = event else { Issue.record("unexpected untyped content"); continue }
+                #expect(piece.content.isEmpty)
+                reasoning += piece.reasoningContent ?? ""
+            }
+            #expect(reasoning == thought)
+            let calls = handler.finish()
+            #expect(calls.count == 1 && calls.first?.function.name == "echo_exact")
+            // No JSON-string unwrapping or guessed unescaping of raw XML data.
+            #expect(calls.first?.function.arguments["text"] == .string(value))
+            #expect(handler.parseFailureCount == 0)
+        }
+    }
+
+    @Test func nestedReasoningPolicyDoesNotOptOtherFamiliesIn() {
+        #expect(ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(
+            .init(modelId: "qwen3.8-flash-next", modelType: "qwen4_exp")))
+        for context in [
+            ChatTemplateFixContext(modelId: "ternary-bonsai-2-27b", modelType: "qwen3_5"),
+            .init(modelId: "unknown-prism", modelType: "prism_hadamard_qwen35"),
+            .init(modelId: "nvidia-nemotron-3.5-lightning", modelType: "nemotron_h"),
+            .init(modelId: "gemma-4-26b-qat-4bit", modelType: "gemma4"),
+        ] {
+            #expect(!ToolChoiceEnforcementPolicy.preservesInnerReasoningSpans(context))
+        }
+    }
+
     @Test func ownedQwenInnerReasoningExampleCannotBecomeContentOrInvocation() throws {
         let thought = "The text value is: A quoted value; literal <think>data</think> and <tool_call>data</tool_call>.\nLet me copy this exactly.\n"
         let value = #"Keep \\ and <think>data</think> and <tool_call>data</tool_call>."#

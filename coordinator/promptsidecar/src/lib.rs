@@ -10,6 +10,7 @@ pub mod metrics;
 pub mod normalize;
 pub mod planner;
 pub mod preload;
+mod qwen4_identity;
 pub mod render;
 mod request_date;
 mod response_format;

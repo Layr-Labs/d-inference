@@ -1,8 +1,8 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-16 · commit `c547b8788`
+> Last updated: 2026-09-20 · commit `3b1b6a476`
 
-The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
+The complete public HTTP surface of the coordinator, derived from the 116 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
 Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`.
 
@@ -13,6 +13,27 @@ provider downloads; the admin registration accepts the same object. See the
 Admin request-profile records expose additive
 [prediction decision fields](prediction-decision-telemetry.md). Public inference
 responses and error codes are unchanged.
+
+## App Attest authorization additions
+
+| Surface | Contract | Code |
+|---|---|---|
+| `POST /v1/admin/app-attest/revoke` | Admin authenticated; account/key/reason body, durable idempotent revocation and immediate local dispatch fencing; [exact response and errors](provider-authorization.md#admin-revocation) | `coordinator/api/app_attest_revocation.go` (`handleAdminAppAttestRevoke`) |
+| `GET /v1/providers/attestation` | Additive `app_attest_authorized` boolean and `authorization_expires_at` Unix deadline; no account, credential, canonical machine IDs or raw evidence exposed | `coordinator/api/provider.go` (`handleProviderAttestation`) |
+
+`GET /v1/me/providers` adds account-scoped `app_attest_authorized` and optional
+`authorization_expires_at` (exclusive Unix seconds), computed from the current
+connection's complete registry authorization; stored/offline records never
+restore that grant. These fields add no private App Attest IDs or proof bytes
+and never change legacy `trust_level` or `mda_verified`. Code:
+`coordinator/api/me_authorization.go` (`attachMyProviderAuthorization`).
+
+Each owner-visible provider may also include `os_version`, the current or last
+app-reported macOS version retained from its signed registration blob in
+`attestation.VerificationResult.OSVersion`. This is upgrade guidance, not
+Apple-certified inventory or serving authorization. A live connection without
+an OS report clears any older stored version; absent values mean unknown.
+Code: `coordinator/api/me_handlers.go` (`buildMyProvider`).
 
 ## Conventions used in the route tables
 
@@ -25,6 +46,7 @@ responses and error codes are unchanged.
 | `privy` | Bearer must be a Privy JWT. API keys → 403 `forbidden` | `requirePrivyAuth` |
 | `user` | `key` or `privy` plus an in-handler check that a resolved account user is in the context (Privy JWT, or an API key linked to a Privy account). Admin key and unlinked legacy keys → 401 `auth_error` | `requirePrivyUser` (`coordinator/api/billing_handlers.go`) |
 | `admin` | In-handler check: Bearer equals the admin key (`EIGENINFERENCE_ADMIN_KEY`), or the context holds a Privy user whose email is in the admin list. Otherwise 403 `forbidden`. When the route is registered *without* `requireAuth` no user is ever placed in the context, so only the admin key can pass; those rows say `admin-key` | `isAdminAuthorized` (`coordinator/api/release_handlers.go`), `requireAdminKey` (`coordinator/api/invite_handlers.go`), `isAdmin` (`coordinator/api/billing_handlers.go`) |
+| `admin-session` | `requireAuth` verifies the Privy JWT or admin key; the handler requires an allowlisted admin and rejects inference API keys/provider tokens even when owned by an admin. Missing/invalid credentials → 401; authenticated non-admin or non-interactive account credentials → 403 | `isBuildAdminAuthorized` (`coordinator/api/app_attest_builds.go`) |
 | `publishing` | `X-Darkbloom-Publishing-Key` header or Bearer equal to the bootstrap `MODEL_REGISTRY_PUBLISHING_KEY`, the admin key, or a publishing key stored in the DB | `requirePublishingAPIKey` (`coordinator/api/model_registry_handlers.go`) |
 | `release` | Bearer equal to `EIGENINFERENCE_RELEASE_KEY`; otherwise 401 `unauthorized` | `handleRegisterRelease` (`coordinator/api/release_handlers.go`) |
 | `stripe-sig` | Stripe webhook signature | `handleStripeWebhook` (`coordinator/api/billing_handlers.go`), `handleStripeConnectWebhook` (`coordinator/api/stripe_payouts_webhooks.go`) |
@@ -95,7 +117,7 @@ Lifecycle semantics: [`../consumer/authentication.md`](../consumer/authenticatio
 
 Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInterval` = 5 (`interval`). The `token` is a **provider token** (`eigeninference-pt-` + 64 hex characters, labelled `device-<user_code>`; only its SHA-256 hash is stored) used by the provider CLI to link a machine to the account; it is not a consumer API key. The small-body cap [`maxControlPlaneBodyBytes`](#limits-and-validation) applies to these unauthenticated endpoints.
 
-### Account, balance, usage and pricing (13)
+### Account, balance, usage and pricing (15)
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
@@ -105,6 +127,8 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | GET | `/v1/billing/methods` | `handleBillingMethods` (`coordinator/api/billing_handlers.go`) | `—` | — | Which top-up methods are enabled |
 | GET | `/v1/provider/earnings` | `handleProviderEarnings` (`coordinator/api/consumer.go`) | `—` | — | Legacy lookup by `?wallet=` query or `X-Provider-Wallet` header; `ProviderEarningsResponse` |
 | GET | `/v1/provider/account-earnings` | `handleAccountEarnings` (`coordinator/api/billing_handlers.go`) | `key` | — | Earnings across the account's providers |
+| GET | `/v1/me/token-promotions` | `handleMyModelTokenPromotions` (`coordinator/api/model_token_promotions.go`) | `privy` | — | Account-scoped grants and eligible offers |
+| POST | `/v1/me/token-promotions/claim` | `handleMyModelTokenPromotions` (`coordinator/api/model_token_promotions.go`) | `privy` | `fin` | Claim a capped grant; [campaign procedure](../operations/model-token-promotions.md) |
 | GET | `/v1/me/summary` | `handleMySummary` (`coordinator/api/me_handlers.go`) | `user` | — | Console account summary; includes `latest_provider_version` |
 | GET | `/v1/me/providers` | `handleMyProviders` (`coordinator/api/me_handlers.go`) | `user` | — | Machines linked to the account |
 | GET | `/v1/me/self-route-models` | `handleMySelfRouteModels` (`coordinator/api/me_handlers.go`) | `user` | — | Models the account's own machines can serve |
@@ -113,7 +137,7 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | PUT | `/v1/pricing` | `handleSetPricing` (`coordinator/api/billing_handlers.go`) | `user` | — | Provider sets its own prices |
 | DELETE | `/v1/pricing` | `handleDeletePricing` (`coordinator/api/billing_handlers.go`) | `user` | — | Revert to defaults |
 
-The four `/v1/me/*` routes are wrapped in `requirePrivyAuth`, so they are Privy-JWT only.
+All six `/v1/me/*` routes are wrapped in `requirePrivyAuth`, so they are Privy-JWT only.
 
 ### Stripe, payouts and MDM (13)
 
@@ -187,6 +211,16 @@ envelope when their required data is unavailable.
 | GET | `/v1/releases/latest` | `handleLatestRelease` (`coordinator/api/release_handlers.go`) | `—` | Latest release record |
 | GET | `/readyz` | `handleReadyz` (`coordinator/api/drain.go`) | `—` | 200 normally; 503 while draining |
 
+The 0.9.7 candidate sets `LatestProviderVersion = "0.9.7"` in
+`coordinator/api/server.go`. A registered active release still takes precedence
+for version displays; this fallback change does not publish an updater release.
+`GET /v1/releases/latest` requires a registered release and returns 404 when none
+exists (`coordinator/api/release_handlers.go`, `handleLatestRelease`).
+
+`POST /v1/releases` accepts additive `code_directory_hash`, `source_commit`, `ci_run_id`, and `require_app_attest_qualification`. The production workflow requires durable approval; enabled production App Attest serving also enforces the gate server-side. The scoped release key cannot create approval. Missing or conflicting approval returns 409 without advancing latest; unavailable qualification returns 503. Both the legacy version path and a bundle-hash-qualified `releases/v<VERSION>/artifacts/<BUNDLE_SHA256>/darkbloom-bundle-<PLATFORM>.tar.gz` path are accepted only on the configured R2 origin. Code: `coordinator/api/app_attest_publication.go` (`persistReleaseForPublication`), `coordinator/api/release_handlers.go` (`trustedReleaseArtifactURL`).
+
+Admin `GET/POST /v1/admin/app-attest/builds` lists/approves signed builds; admin `POST /v1/admin/app-attest/builds/revoke` records a permanent withdrawal. See [request/response and error contracts](provider-authorization.md#durable-build-qualification). With production App Attest serving enabled, even cached `/v1/releases/latest` and `/api/version` responses return 503 when the selected release lacks fresh qualification/catalog readiness; this does not silently select a different release.
+
 Release publishing: [`../operations/provider-release.md`](../operations/provider-release.md).
 
 ### Enrollment and provider transport (3)
@@ -203,7 +237,7 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 |---|---|---|---|---|
 | POST | `/v1/telemetry/events` | `handleTelemetryIngest` (`coordinator/api/telemetry_handlers.go`) | `—` | Always **410 Gone** `telemetry_ingest_disabled`. Live telemetry is described in [`../architecture/telemetry.md`](../architecture/telemetry.md) |
 
-### Admin (35)
+### Admin (41)
 
 | Method | Path | Handler | Auth | Notes |
 |---|---|---|---|---|
@@ -216,6 +250,11 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | DELETE | `/v1/admin/models/aliases/{aliasID}` | `handleModelAliasDelete` (`coordinator/api/model_alias_handlers.go`) | `publishing` | |
 | GET / POST | `/v1/admin/models/openrouter-aliases` | `handleOpenRouterAliasList`, `handleOpenRouterAliasUpsert` (`coordinator/api/openrouter_alias_handlers.go`) | `publishing` | Two registrations |
 | DELETE | `/v1/admin/models/openrouter-aliases/{aliasID}` | `handleOpenRouterAliasDelete` (`coordinator/api/openrouter_alias_handlers.go`) | `publishing` | |
+| GET / PUT | `/v1/admin/token-promotions` | `handleAdminModelTokenPromotions` (`coordinator/api/model_token_promotions.go`) | `admin-key` | Two registrations; inspect/configure token campaigns |
+| POST | `/v1/admin/app-attest/revoke` | `handleAdminAppAttestRevoke` (`coordinator/api/app_attest_revocation.go`) | `admin-key` | Revoke an account-owned credential; [contract](provider-authorization.md#admin-revocation) |
+| GET | `/v1/admin/app-attest/builds` | `handleAdminAppAttestBuilds` (`coordinator/api/app_attest_builds.go`) | `admin-session` | List exact signed build qualifications and audits |
+| POST | `/v1/admin/app-attest/builds` | `handleAdminAppAttestBuilds` (`coordinator/api/app_attest_builds.go`) | `admin-session` | Independently approve signed bytes and record test evidence; [contract](provider-authorization.md#durable-build-qualification) |
+| POST | `/v1/admin/app-attest/builds/revoke` | `handleAdminAppAttestBuildRevoke` (`coordinator/api/app_attest_builds.go`) | `admin-session` | Permanently withdraw build approval and fence local grants; [contract](provider-authorization.md#durable-build-qualification) |
 | GET / DELETE | `/v1/admin/releases` | `handleAdminListReleases`, `handleAdminDeleteRelease` (`coordinator/api/release_handlers.go`) | `admin-key` | Two registrations |
 | GET | `/v1/admin/state-export` | `handleAdminStateExport` (`coordinator/api/admin_state_export.go`) | `admin-key` | 404 unless `EIGENINFERENCE_STATE_EXPORT_ENABLED=true`; 412 `precondition_failed` without an encryption recipient. See [`../operations/state-export.md`](../operations/state-export.md) |
 | POST | `/v1/admin/auth/init` | `handleAdminAuthInit` (`coordinator/api/release_handlers.go`) | `—` | Body `{"email"}`; starts a Privy email OTP for an admin email. 503 `not_configured` when Privy is not configured; 500 `otp_error` when sending fails |
@@ -241,7 +280,7 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 |---|---|---|
 | `/v1/` | `handleUnimplementedEndpoint` | Any `/v1/*` request matching no registered method+path — including a wrong method on a real path — gets 404 `invalid_request_error` with message `endpoint <METHOD> <path> is not implemented` |
 
-Total: 4 + 9 + 10 + 3 + 13 + 13 + 6 + 5 + 5 + 3 + 1 + 35 + 1 = **108 registrations**, matching `routes()`.
+Total: 4 + 9 + 10 + 3 + 15 + 13 + 6 + 5 + 5 + 3 + 1 + 41 + 1 = **116 registrations**, matching `routes()`.
 
 ## Exact cache status
 
@@ -482,7 +521,7 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
    and `metadata.job_id`, not in a new response ID. If no valid provider ID has
    been observed, the existing `chatcmpl-<job-id>` fallback is used.
 5. **Termination**: exactly one `data: [DONE]\n\n`, written by the coordinator after every coordinator-appended event. Any `[DONE]` from the provider is stripped first (`stripSSEDoneEvents`). Responses streams end with `response.completed` / `response.incomplete` instead.
-6. **No keepalives.** The coordinator never writes comment frames or pings; a silent stream means the provider has not produced a token. Before commit the first-content deadline bounds the silence (a miss is answered with 429 + `Retry-After`, see the status table); after commit `inferenceTimeout` bounds it (a terminal `error` event of type `timeout`).
+6. **No keepalives.** The coordinator never writes comment frames or pings; a silent stream means the provider has not produced a token. Before commit a first-content deadline bounds the silence only for accounts selected by `EIGENINFERENCE_FIRST_CONTENT_SLA_ACCOUNTS` (a miss is answered with 429 + `Retry-After`, see the status table). Other accounts have no first-content timeout and remain subject to client cancellation and provider-disconnect cleanup; after commit `inferenceTimeout` bounds it (a terminal `error` event of type `timeout`).
 7. **Chat errors after commit** are one terminal `data: {"error": {...}}` event, without `[DONE]`; optional authoritative metadata precedes it.
 8. **Sealed mode** seals each SSE event individually (see below).
 
@@ -511,9 +550,9 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 
 | Constant | Value | Where | Effect |
 |---|---|---|---|
-| `inferenceTimeout` | 600 s | `coordinator/api/consumer.go` | Streaming: maximum silence between chunks (the timer resets on every chunk) → terminal SSE `error` event, type `timeout`. Non-streaming: total wait for the response → 504 `timeout` |
-| `defaultFirstContentDeadlineBase` | the compiled default of [`EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS`](configuration.md#routing-admission-and-ttft) | `coordinator/api/consumer.go` | Fallback base of the request-absolute first-content deadline when the variable is unset. Deadline = `CoordinatorFirstContentDeadline(model, promptTokens, base)` = base + 1 ms per estimated prompt token, tightened per model by exact-model overrides (`coordinator/modelpolicy/first_content_deadline.go`, replaceable via `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES`). Expiry before any content → 429 `rate_limit_exceeded` + `Retry-After` (the pre-content 504 is reclassified by `classifyExhaustedStatus`) |
-| `preambleContentTimeout` | 90 s | `coordinator/api/consumer.go` | Cap from a provider's first preamble chunk (role delta / Responses lifecycle event, nothing written to the client yet) to its first content chunk; a provider that stalls after preamble fails over instead of holding the request for `inferenceTimeout`. Never exceeds the remaining first-content budget |
+| `inferenceTimeout` | 600 s | `coordinator/api/consumer.go` | Streaming: maximum silence between chunks (the timer resets on every chunk) → terminal SSE `error` event, type `timeout`. Non-streaming: remaining response wait after first-content commit → 504 `timeout` |
+| `defaultFirstContentDeadlineBase` | the compiled default of [`EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS`](configuration.md#routing-admission-and-ttft) | `coordinator/api/consumer.go` | Fallback base of the request-absolute first-content deadline for selected accounts when the variable is unset. Other accounts have no SLA deadline or provider budget. Deadline = `CoordinatorFirstContentDeadline(model, promptTokens, base)` = base + 1 ms per estimated prompt token, tightened per model by exact-model overrides (`coordinator/modelpolicy/first_content_deadline.go`, replaceable via `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES`). Expiry before any content → 429 `rate_limit_exceeded` + `Retry-After` (the pre-content 504 is reclassified by `classifyExhaustedStatus`) |
+| `preambleContentTimeout` | 90 s | `coordinator/api/consumer.go` | For SLA-selected accounts, cap from a provider's first preamble chunk (role delta / Responses lifecycle event, nothing written to the client yet) to its first content chunk; a provider that stalls after preamble fails over instead of holding the request for `inferenceTimeout`. Never exceeds the remaining first-content budget |
 | `maxDispatchAttempts` | 64 | `coordinator/api/consumer.go` | Upper bound on provider attempts per request |
 | `chunkBufferSize` | 256 | `coordinator/api/consumer.go` | Pre-commit chunk buffer per attempt |
 | `apiKeyCacheTTL` | 60 s | `coordinator/api/server.go` | API-key lookups are cached; a revocation takes effect within one TTL |
@@ -528,12 +567,17 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 
 Three distinct version values govern providers:
 
-- `LatestProviderVersion = "0.8.16"` (`coordinator/api/server.go`) is the newest provider build the coordinator knows about. `handleVersion` (`/api/version`) and `/v1/me/summary` report the highest active release in the store and fall back to this constant when none is registered.
+- `LatestProviderVersion = "0.9.7"` (`coordinator/api/server.go`) is the source's provider-version display fallback. `handleVersion` (`/api/version`) and `/v1/me/summary` report the highest active release in the store and fall back to this constant when none is registered. With production App Attest serving enabled, `/api/version` returns 503 instead of a download fallback when release authorization is unavailable. Preparing a source bump does not create a release row or alter `/v1/releases/latest`.
 - `minProviderVersionForDesiredModels = "0.5.17"` (`coordinator/api/server.go`) is a **feature floor for the WebSocket `desired_models` message**: only Swift-runtime providers at or above it receive the message (`providerSupportsDesiredModels`, `fanOutDesiredModels` in `coordinator/api/model_alias_handlers.go`), because older decoders disconnect on unknown message types. It does not affect HTTP routes.
 - `EIGENINFERENCE_MIN_PROVIDER_VERSION` (`MinProviderVersion`, `coordinator/api/server_config.go`; `SetMinProviderVersion`) is the **routing floor**: a provider that registers or re-attests below it stays connected but is marked not runtime-verified and excluded from routing (`coordinator/api/provider.go`, registration and `applyChallengeMinVersionPolicy`), and its log uploads get 426 `upgrade_required`.
 - **Feature floors** exclude too-old providers from serving specific request traits rather than the whole model: tools require providers ≥ `0.6.3` (`capabilityVersionFloors`, `coordinator/registry/request_traits.go`); vision requests strip repetition-penalty fields for providers below `penaltySafeProviderVersion` = `0.6.7` (`coordinator/api/consumer.go`); reconnect attestation needs `minProviderVersionForReconnectAttestation` = `0.8.15` (`coordinator/api/provider.go`); servability gating uses `servabilityActivationFloorMinVersion` = `0.8.0` and `servabilityPerModelFloorMinVersion` = `0.8.16` (`coordinator/registry/servability.go`); private slot grants need `privateSlotGrantsMinVersion` = `0.7.5` (`coordinator/registry/pooled_admission.go`). When no provider clears the floor for a request, the client sees 503 `model_unavailable` (or 400 `param: tool_choice` when the fleet serves the model but no provider advertises the tool-constraint protocol).
 
 A consumer never sees a version error directly; an under-served model surfaces as 503 `model_unavailable`.
+
+The exact Flash-Next registry ID also has an all-request compatibility floor,
+separate from tool-only capability floors. See the
+[native identity routing gate](../architecture/routing.md#native-model-capacity-and-registry-identity);
+a catalog listing alone does not grant an older provider the matching policy.
 
 ## Sealed transport wire shape
 
@@ -588,3 +632,16 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Drain, admin telemetry, profiler, state export, telemetry stub | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/admin_state_export.go`, `coordinator/api/telemetry_handlers.go` |
 | Rate-limit bucket consumption | `coordinator/ratelimit/ratelimit.go` (`allowBucket`, `debitBucket`): fixed and per-key rate paths share token consumption and retry calculation while keeping their own admission and clamp rules |
 | Shared types and helpers | `coordinator/api/types/types.go`, `coordinator/api/httputil.go`, `coordinator/ratelimit/ratelimit.go`, `coordinator/modelpolicy/first_content_deadline.go` |
+
+## Model token promotions
+
+| Method/path | Authorization | Behavior | Code |
+|---|---|---|---|
+| `PUT /v1/admin/token-promotions` | Admin | Create immutable terms or toggle `enabled` for an exact model ID, even before registration | `coordinator/api/model_token_promotions.go` (`handleAdminModelTokenPromotions`) |
+| `GET /v1/admin/token-promotions` | Admin | List configured promotions | `coordinator/api/model_token_promotions.go` (`handleAdminModelTokenPromotions`) |
+| `POST /v1/me/token-promotions/claim` | Privy only | Explicitly claim the requested `model_id` for an eligible individual account; atomically enforce signup cutoff and campaign capacity | `coordinator/api/model_token_promotions.go` (`handleMyModelTokenPromotions`) |
+| `GET /v1/me/token-promotions` | Privy only | Return account grants and available offers without issuing any | `coordinator/api/model_token_promotions.go` (`handleMyModelTokenPromotions`) |
+
+Promotion input is `{ "model_id": "...", "tokens": 150000000, "claim_starts_at": "RFC3339", "claim_ends_at": "RFC3339 or null", "signup_cutoff_at": "RFC3339", "max_claims": 250, "enabled": true }`. Signup eligibility is strictly before `signup_cutoff_at` using the persisted account creation timestamp. `max_claims` accepts integers in `[1, 1000000]`. A null claim end is supported, but the Bonsai launch draft has an explicit end. Only `enabled` is mutable; conflicting terms return `409 promotion_conflict`. Tokens are integers in `[1, 1000000000000]`. Grant responses have a `grants` array containing `model_id`, `total_tokens`, `used_tokens`, `reserved_tokens`, `remaining_tokens` (available after reservations), and `claimed_at`. There is no expiry field. Claiming requires `{"model_id":"..."}`, uses the server clock and does not require catalog registration. Repeated successful claims return the existing grant without consuming another slot, including after the window or cap closes. Service accounts receive no grant. Responses also include `offers` with `model_id`, `tokens`, `max_claims`, `remaining_claims`, `signup_cutoff_at`, `claim_ends_at` and `status` (`available`, `claimed`, `sold_out`, `ineligible`, or `unavailable`). Claim failures return `403 promotion_ineligible`, `409 promotion_sold_out`, `409 promotion_unavailable`, or `404 promotion_not_found`.
+
+Inference returns `402 free_tokens_exhausted` when the claimed allowance is exhausted or held by active requests and paid balance is insufficient. `402 promotion_balance_required` means remaining free tokens plus paid balance cannot cover the request's upper bound. Both carry an OpenAI-compatible `error.code` and user-facing message. Paid fallback succeeds when funded. See [operations/model-token-promotions.md](../operations/model-token-promotions.md).

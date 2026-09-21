@@ -102,17 +102,7 @@ struct Update: AsyncParsableCommand {
         case .updated(let from, let to):
             print("Updated: v\(from) -> v\(to)")
             if LaunchAgent.isLoaded() {
-                print("Restarting provider via launchd...")
-                do {
-                    try updater.prepareCandidateLaunch(
-                        operation: "manual-update-restart"
-                    )
-                    try ProcessLifecycle.restartAfterUpdate()
-                } catch {
-                    try? updater.cancelPendingCandidateAttempt(
-                        operation: "manual-restart-failure")
-                    throw error
-                }
+                try restartInstalledProvider(updater, operation: "manual-update-restart")
             } else {
                 print("Restart the provider for the new version to take effect.")
             }
@@ -120,17 +110,7 @@ struct Update: AsyncParsableCommand {
         case .restartRequired(let from, let to):
             print("v\(to) is already installed (current process: v\(from)).")
             if LaunchAgent.isLoaded() {
-                print("Restarting provider via launchd...")
-                do {
-                    try updater.prepareCandidateLaunch(
-                        operation: "manual-candidate-restart"
-                    )
-                    try ProcessLifecycle.restartAfterUpdate()
-                } catch {
-                    try? updater.cancelPendingCandidateAttempt(
-                        operation: "manual-restart-failure")
-                    throw error
-                }
+                try restartInstalledProvider(updater, operation: "manual-candidate-restart")
             } else {
                 print("Restart the provider for v\(to) to take effect.")
             }
@@ -165,4 +145,16 @@ struct Update: AsyncParsableCommand {
             throw ExitCode.failure
         }
     }
+
+    private func restartInstalledProvider(_ updater: SelfUpdater, operation: String) throws {
+        print("Restarting provider via launchd...")
+        do {
+            try updater.prepareCandidateLaunch(operation: operation)
+            try ProcessLifecycle.restartAfterUpdate()
+        } catch {
+            try? updater.cancelPendingCandidateAttempt(operation: "manual-restart-failure")
+            throw error
+        }
+    }
+
 }

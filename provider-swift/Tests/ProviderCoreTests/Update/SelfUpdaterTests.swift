@@ -388,6 +388,25 @@ struct SelfUpdaterTests {
         try LiveInferenceFixtures.buildProduct(name)
     }
 
+    @Test("runtime fixtures use only products beside the running test bundle", arguments: ["debug", "release"])
+    func buildProductsFollowActiveTestBundle(configuration: String) throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("self-updater-products-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let products = root.appendingPathComponent("custom-scratch/arm64-apple-macosx/\(configuration)")
+        let bundle = products.appendingPathComponent("ProviderPackageTests.xctest")
+        let unrelated = root.appendingPathComponent(".build/debug/darkbloom")
+        try FileManager.default.createDirectory(at: unrelated.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("unrelated-build".utf8).write(to: unrelated)
+        #expect(throws: CocoaError.self) {
+            try LiveInferenceFixtures.buildProduct("darkbloom", testBundleURL: bundle)
+        }
+        try FileManager.default.createDirectory(at: products, withIntermediateDirectories: true)
+        let active = products.appendingPathComponent("darkbloom")
+        try Data("active-build".utf8).write(to: active)
+        #expect(try LiveInferenceFixtures.buildProduct("darkbloom", testBundleURL: bundle) == active)
+    }
+
     private func makeSignedRuntimeFixture(
         root: URL,
         includeResource: Bool,

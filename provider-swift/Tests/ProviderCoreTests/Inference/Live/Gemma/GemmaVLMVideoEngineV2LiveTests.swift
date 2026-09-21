@@ -387,7 +387,7 @@ struct GemmaVLMVideoEngineV2LiveTests {
             // comes first.
             let imageSpans = mixedPrepared.spans.filter { $0.length >= 280 }
             let videoSpans = mixedPrepared.spans.filter { $0.length < 280 }
-            #expect(imageSpans.count == 1, "expected one image span, got \(imageSpans.count)")
+            try #require(imageSpans.count == 1, "expected one image span, got \(imageSpans.count)")
             #expect(!videoSpans.isEmpty)
             #expect(
                 imageSpans[0].tokenOffset < (videoSpans.first?.tokenOffset ?? .max),

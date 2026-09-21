@@ -13,6 +13,8 @@ type AuthorizationBinding struct {
 }
 
 type AuthorizationEvidence struct {
+	// Full SHA-256 from verified Apple metadata, retained for policy refresh.
+	CodeDirectoryHash                            string
 	CodeMeasurementKnown, CodeMeasurementMatched bool
 	VerificationKeyKnown, VerificationKeyMatched bool
 	HardwareKnown, HardwareMatched               bool

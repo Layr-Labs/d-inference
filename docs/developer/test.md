@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-17 · commit `53e135e9e`
+> Last updated: 2026-09-20 · commit `826fa102e`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -37,6 +37,70 @@ and schema response formats plus multi-system and text/tool/endpoint forms; it c
 actual Swift tokens and scope-bound hashes with Rust plans. No production
 prompts or model weights are needed (`scripts/verify-prompt-parity.sh`).
 
+Installer onboarding regression coverage runs with `scripts/test-install-atomic.sh`.
+It invokes `scripts/test-install-onboarding.py`, which executes the actual setup
+function with profile/network/Settings effects mocked: macOS 27+, older and unknown
+versions, existing management, and unavailable enrollment. This checks setup
+routing only; signed Mac App Attest qualification is separate.
+
+Build qualification regressions run in `coordinator/store/app_attest_builds_test.go`, `coordinator/appattest/service/build_qualifications_test.go`, `coordinator/api/app_attest_builds_test.go`, and `coordinator/api/app_attest_builds_auth_test.go`. The route tests validate real ES256 Privy JWTs through the mux, server-attributed audit actors, and rejection of admin-owned inference keys. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not replace final signed-Mac/Apple qualification.
+
+## Bonsai performance qualification
+
+The default-on eligible profile is documented in
+`libs/mlx-swift-lm/docs/bonsai2.md`. Record unset/default, explicit `1` and
+explicit `0` process profiles separately; an unset control is no longer OFF.
+Unchanged weights and equal greedy tokens do not replace independent raw-logit
+and native-state comparisons. `Float16ConstantCastTests` and
+`PrismPrefillCarryPolicyTests` cover absent/explicit/invalid overrides;
+`PrismPrefillCarrySubmissionTests` runs the real scheduling, fault and retirement
+checks in both unset/default and explicit-ON processes with its GPU/witness opt-ins.
+
+`BonsaiEncryptedCheckpointLiveTests` requires the verified unchanged artifact
+and an exclusively owned GPU lane. Select it separately from other live model
+suites; its gate is `DARKBLOOM_BONSAI2_LIVE_MODEL` plus
+`DARKBLOOM_BONSAI2_EXCLUSIVE_GPU=1`. It prepares actual image/tool/video inputs,
+checks native three-row joins/shrink/cancellation against isolated tokens, then
+uses the production paged factory and encrypted complete-checkpoint store for
+cold/hot, same-process reopen, tenant/prefix misses and corrupted-ciphertext
+recomputation. Its random fixture key/root do not touch Keychain or production
+cache data and do not qualify signed persistence or hosted routing.
+
+```sh
+cd provider-swift
+DARKBLOOM_BONSAI2_LIVE_MODEL=/absolute/path/to/verified-artifact \
+DARKBLOOM_BONSAI2_EXCLUSIVE_GPU=1 \
+DARKBLOOM_BONSAI_PREFILL_CARRY_ASYNC=1 \
+DARKBLOOM_BONSAI_F16_CONSTANT_CACHE=1 \
+swift test --build-system native -c release -Xswiftc -enable-testing \
+  -Xswiftc -DDEBUG --filter BonsaiEncryptedCheckpointLiveTests --no-parallel
+```
+
+These are qualification instructions, not a claim that an unrun gate passed.
+Use a separate test build, its adjacent resource bundles and exact matching
+Metal library, and an owned-process memory/time guard. The ordinary production
+binary must also pass the final local Chat/Responses, reasoning/tool/history and
+multimodal API matrix. Keep the final local OpenRouter-compatible weather/tool
+gate distinct from any unavailable hosted certification.
+
+`LocalOutputTokenLimitTests` checks the complete provider-local responder stack,
+not only the SDK router: authenticated intercepted chat aliases/batches and
+routed Completions/Responses must preserve the SDK's early HTTP 400 before
+model acquisition, while missing authentication still returns 401.
+`NativeToolStreamRouterTests` includes Bonsai's explicit nested-reasoning policy
+and opaque XML string arguments. Its policy must be wired for both text and
+media, with other families unchanged. Do not "repair" generated quoted strings
+by guessing JSON unescaping; the published template renders string parameters
+as raw values. Keep model copying quality separate from transport fidelity.
+
+`LocalStreamingFailureTests` also exercises the authenticated chat-upload
+interceptor, not just the SDK routes. A failure after HTTP headers must finish
+with a sanitized SSE error event, without a success terminal or fabricated tool
+call. The SDK's `ChatStreamingFailureHTTPTests` covers Chat/Completions framing,
+observed-only usage, cancellation and the unchanged direct-service throwing
+contract. Successful tool-generation gates remain separate: a correctly framed
+error does not satisfy a required tool call or repair its generated arguments.
+
 ## SDK 27 release qualification
 
 The `qualify-sdk` job in `.github/workflows/release-swift.yml` runs production
@@ -55,11 +119,21 @@ simulated headroom and retries on the same server. Physical memory and native
 allocator tests retain real measurements; fixture success does not qualify the
 full Flash-Next model.
 
-Run the focused fixture and the CPU-only pipeline checks before a release:
+The SSD write-behind pipeline tests in
+`provider-swift/Tests/ProviderCoreTests/KVCacheSSD/BoundedSingleConsumerPipelineTests.swift`
+cover reusable drains, bounded retention, overflow, cancellation and shutdown.
+`pipelineShutdownDrainReleasesLastPayload` repeats the final-payload handoff
+10,000 times: after shutdown, drain must wait for the consumer task to finish,
+not just for its pending count to reach zero. This catches the payload-release
+race that failed the 0.9.6 SDK qualification run. These pipeline source/test
+changes also trigger both SDK 27 PR lanes.
+
+Run the focused fixtures and the CPU-only pipeline checks before a release:
 
 ```bash
 cd provider-swift
 swift test --filter Qwen4StandaloneAdmissionTests --no-parallel
+swift test --filter pipeline --no-parallel
 cd ..
 python3 scripts/test-provider-release-cache.py
 python3 scripts/test-prepare-metal-toolchain.py
@@ -409,6 +483,51 @@ production prompt vectors against it with
 CI also applies the [restored-resource cleanup](build.md#restored-swiftpm-runtime-resources)
 before building the debug test product.
 
+`BetaCommandTests` and `IdleCommandTests` pass `migrateOnDisk: false` through
+`setBetaFeature` and `setIdleUnloadMinutes` to the existing runtime-snapshot
+loader. Their unique temporary config directories are the only mutation and
+cleanup targets; they never create or remove the operator's canonical config.
+The mixed-mutation fixture checks both explicit pins and unrelated legacy
+settings. Run these with `RuntimeSnapshotConfigTests` when changing
+`provider-swift/Sources/darkbloom/ConfigMutation.swift` (`withMutableConfig`).
+CLI calls retain default-on migration before the sidecar lock and reload.
+
+`WatchdogCommandTests` fails immediately if writing its temporary TOML fails.
+Config-only assertions supply an empty environment to `Watchdog.settings`, while
+the update opt-out case supplies `DARKBLOOM_NO_UPDATE_CHECK` explicitly.
+`LocalEndpointFileTests` checks its temporary-directory environment override and
+restores the inherited `DARKBLOOM_LOCAL_DIR` value after each fixture. Run both
+suites with `--no-parallel`; suite serialization alone does not isolate other
+suites from process-wide environment changes.
+
+`HiddenFileSkippingTest` includes hidden allowlisted weights and configuration,
+so removing hidden-entry skipping changes the manifest. `TemplateRenderCheckTests`
+uses templates that reject an incorrect BOS value for both tokenizer-config
+forms and require the empty default when the config is absent.
+`storeRejectsTamperedMetadata` in
+`provider-swift/Tests/ProviderCoreTests/KVCache/EncryptedKVStoreTests.swift`
+keeps changed metadata valid JSON and requires a `KVCacheKEKError` from the
+authenticated read; it separately retains malformed-metadata rejection.
+Run these after building and staging the test product as described below:
+
+```bash
+cd provider-swift
+swift test --skip-build --no-parallel \
+  --filter 'HiddenFileSkippingTest|TemplateRenderCheckTests|storeRejectsTamperedMetadata'
+```
+
+These fixtures use temporary files and an in-memory KEK. They do not exercise
+model inference or a hardware-backed encryption key.
+
+For SSD authentication and donation changes, run the filter
+`SSDBlockStoreTests|SSDPrefixCacheLifecycleTests|SSDPrefixCacheReadyReceiptTests|SSDPrefixCacheDonationGateTests`
+with `--no-parallel`. In `provider-swift/Tests/ProviderCoreTests/KVCacheSSD/SSDPrefixCacheTests.swift`,
+`tamperFailsClosed` distinguishes valid metadata rejected by DEK authentication
+from invalid schemas rejected by header parsing. `responsePathNotDelayed`
+requires donation to return while maintenance is held; negative write and ready
+checks await `waitForWritesForTesting` before inspecting the result. These use
+temporary encrypted files and tiny MLX arrays, not a downloaded model.
+
 The general provider suite passes `--no-parallel` explicitly to Swift Testing.
 Unrelated cases share process-wide MLX state and executor capacity; overlapping
 thousands of them can starve bounded test handshakes. Concurrency tests retain
@@ -447,6 +566,13 @@ make provider-test
 #   cd provider-swift && swift test --skip-build
 ```
 
+`PagedKernelPreflightTests.noisyChildCannotDeadlock` runs an owned failing child
+with more stderr than a pipe buffer. It checks the bounded result ends with the
+child's unique final diagnostic and excludes its initial marker, so keeping the
+first bytes cannot pass as a valid tail. The same suite covers child failure,
+fast-exit diagnostics, timeout and model-specific native smoke shapes. Run it
+with the staged test product described here.
+
 The metallib staging is not optional: MLX loads `mlx.metallib` from beside the
 running executable, and for tests the executable is the `.xctest` runner.
 Without it kernel-backed tests fail or silently exercise a different kernel
@@ -458,6 +584,17 @@ For a custom SwiftPM `--scratch-path`, stage the authoritative `mlx.metallib`
 in the active `debug` or `release` directory containing the `.xctest` bundle.
 `LiveInferenceFixtures.findSourceMetallib` uses that same-configuration source
 before replacing the runner copy; a runner-local file alone is insufficient.
+
+Live-fixture result collection must retain both ordinary errors and typed
+terminal failures. The loop-path arms in
+`provider-swift/Tests/ProviderCoreTests/Inference/Live/EngineV2PagedParityLiveTests.swift`
+reuse `collect` and require completion usage as well as output.
+`provider-swift/Tests/ProviderCoreTests/Inference/Live/Gemma/GemmaToolCallLiveTests.swift`
+uses `LiveInferenceFixtures.swift`'s shared `collect` result before parsing a
+tool call. The video mixed-media and standalone response fixtures use throwing
+requirements before accessing a required image span or response choice. Run
+each enabled live suite in its own supervised process; disabled model gates
+provide no inference evidence.
 
 `LiveInferenceFixtures.buildProduct` likewise anchors updater child executables,
 fan helpers and resource bundles to the running test bundle's configuration.
@@ -482,6 +619,26 @@ See `standaloneServerStopAndWaitReleaseResidentBridgeAndSSDResources` in
 `provider-swift/Tests/ProviderCoreTests/Server/StandaloneServerTests.swift` and
 `periodicSamplerEmitsForEverySlot` / `shutdownStopsSampler` in
 `provider-swift/Tests/ProviderCoreTests/Telemetry/MTPPostureTelemetryTests.swift`.
+
+#### Stream and model-list assertions
+
+After building and staging the test product above, run:
+
+```bash
+cd provider-swift
+swift test --skip-build --no-parallel \
+  --filter 'batcherDeliversEveryFrameExactlyOnce|multiModelEngineReturnsSortedIDs|tokenizeFailure'
+```
+
+`provider-swift/Tests/ProviderCoreTests/Coordinator/ChunkSenderTests.swift`
+(`batcherDeliversEveryFrameExactlyOnce`) requires the complete sequence of unique
+eight-byte frames after the existing delivery deadline and flush barrier.
+`provider-swift/Tests/ProviderCoreTests/Inference/Engine/MultiModelBatchSchedulerEngineTests.swift`
+(`multiModelEngineReturnsSortedIDs`) checks nonempty registry and advertised
+model lists; the advertised input is deliberately out of order.
+`provider-swift/Tests/ProviderCoreTests/Inference/Engine/EngineV2BridgeTests.swift`
+(`tokenizeFailure`) requires an error event before checking its message.
+These use the real batcher and adapter with scripted dependencies, not model inference.
 
 **Nested `libs/mlx-swift-lm` suites.** The paged-KV correctness gates live in
 the submodule, not in `provider-swift/`. Build them once, stage the metallib,
@@ -1304,6 +1461,13 @@ This prevents task scheduling from silently changing admission order. Sources: `
 
 ### 7. Docs lint
 
+Long-prompt throughput qualification must retain both MLX active/cache counters
+and an independent OS process-footprint sample. The sweep applies the serving
+allocator guard before loading (`provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift`,
+`run`); `MLXMemoryGuardTests` cover the shared limit policy. A large unbounded
+reuse pool is not live KV. Rerun identical prompt/token budgets and compare token
+IDs when changing allocation policy; do not reduce state precision to hide growth.
+
 The lightweight Contribution Policy workflow runs before review and again when
 the `docs-not-needed` label is added or removed. Its `Commit Signatures` job
 queries GitHub's pull-request commit list and requires
@@ -1398,6 +1562,21 @@ binary that already has `mlx.metallib` beside it.
 | `e2e/benchmark_test.go` | `TestBenchmark_SingleProviderStreaming`, `_SingleProviderNonStreaming`, `_MultiModelMultiProvider`, `_HighConcurrency`, `_QueueSaturation`, `_ManyUsers`, `_SingleModelScaling`, `_HeavyLoad_100Concurrent_10KB`; config tests `TestBenchmarkSuiteConfig*`, `TestBenchmarkControlSuiteIsIsolatedAndMatchesPosture`, `TestBenchmarkCapacitySaturationPolicy` |
 
 ### 9. Prompt-contract parity fixtures and vectors
+
+For the registry-ID/native-context follow-up, run `Qwen4SupportPolicyTests`,
+`Qwen4OwnedVLMRoutingTests`, `Qwen4ToolChoicePromptPolicyTests`,
+`Qwen4ReasoningEffortValidationTests` and `PromptContractIdentityTests` against
+the freshly built provider test product. These cover both exact serving IDs,
+foreign-ID rejection, native prompt-plus-output boundaries, no second clamp on
+other models, media factory selection and native tool/reasoning policy. Rust
+`qwen4_native_tool_prompt` and Go `TestQwen4Catalog` tests cover the mirrors and
+mixed-fleet version floor. Require nonzero executed counts and no hidden skips.
+
+Normalization v6 requires regenerated contract/cache hashes; compare all
+existing production vectors' request/provider bodies, template inputs and token
+arrays against v5 before accepting the update. The shared corpus does not
+include the full Flash-Next artifact: these checks are not full-model API,
+262K memory, multimodal or MTP qualification. Record those gates separately.
 
 `fixtures/prompt-contract/v1` is shared by the Rust, Go and Swift
 prompt-contract tests: `contract_vectors.json` and `block_hash_vectors.json`
@@ -1843,9 +2022,9 @@ The private admin queries have PostgreSQL coverage in
 `admin-ui/src/lib/queries/app-attest.test.ts`.
 
 After the optimized provider is packaged with its resources, run
-`Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`. Require all three markers:
+`Darkbloom.app/Contents/MacOS/darkbloom runtime-smoke`. Require all four markers:
 `app-attest-callback-runtime-smoke: ok`, `gemma-optimizations-runtime-smoke: ok`,
-and `paged-kernel-runtime-smoke: ok`. Callback completion and expiry are exercised
+`paged-kernel-runtime-smoke: ok`, and `qwen4-metal-resources-runtime-smoke: ok`. Callback completion and expiry are exercised
 without Apple service calls or a Keychain item. This linked-binary check catches
 a release-only allocator failure that debug tests missed. Run
 `bash scripts/test-install-atomic.sh` for installer acceptance and rollback cases.
@@ -1862,3 +2041,27 @@ from real Apple receipt renewal and final signed-artifact fleet qualification.
 - [`../operations/provider-release.md`](../operations/provider-release.md) — release checks that also run in CI.
 - [`../architecture/components/provider.md`](../architecture/components/provider.md) — what the provider does at runtime.
 - [`../architecture/prompt-contract-sidecar.md`](../architecture/prompt-contract-sidecar.md) — what prompt parity protects.
+
+### Qwen packaged resource regression
+
+`python3 scripts/test-qwen4-packaged-resources.py` compiles the actual Qwen Metal resource accessor into a small optimized app, then runs it from a relocated app and an installer-style executable symlink. It checks all three preamble hashes, rejects missing or empty files and resource links outside the app, and proves that developer/cwd copies cannot mask a broken packaged resource. It needs Swift on macOS, but no model weights or GPU. Both SDK 27 release lanes and Provider Tests run this check. The full provider `runtime-smoke` exercises the same accessor before publication, installation, and update.
+
+## Model token promotion and SLA checks
+
+`coordinator/api/model_token_pricing_test.go` checks exact input/output prices, fee shares, mixed paid/sponsored requests, overflow rejection, and 100 tiny completions with a lost commit acknowledgement. `coordinator/store/model_token_earnings_test.go` races fractional settlements and duplicate replays on both backends, rejects invalid fractions, and reopens PostgreSQL to verify remainder durability.
+
+`coordinator/store/model_token_promotions_test.go` runs the grant/ledger contract on both memory and disposable PostgreSQL backends: one-time claims, day boundaries, concurrent reservations, partial paid fallback, provider earnings, refund/settlement races, media top-ups and orphan recovery. Never point these tests at a production database: the store harness truncates tables. `coordinator/store/model_token_zero_usage_test.go` rejects payouts or charges with no token usage on both backends. `coordinator/api/model_token_reconciliation_test.go` injects pre-commit failures and lost commit acknowledgements, replays reconciliation concurrently, verifies usage/key-spend/referral/platform accounting once, and exercises deterministic cash failures caused by price increases or usage overages.
+
+```sh
+cd coordinator
+DATABASE_URL='postgres://USER@127.0.0.1:PORT/THROWAWAY_DB?sslmode=disable' \
+  go test -race ./store -run TestModelTokenPromotion -count=1
+go test -race ./api ./modelpolicy \
+  -run 'Test(ModelTokenPromotion|ModelSpecificFirstContentDeadline|Bonsai|CustomFirstContent)' -count=1
+```
+
+`console-ui/src/components/app-providers/ModelTokenPromotionsProvider.test.tsx` covers read-only login discovery, explicit claims, sold-out/ineligible states, account-switch races and paid-fallback copy. `coordinator/store/model_token_claims_test.go` races 270 distinct claimants against a 250-grant cap and verifies the signup cutoff. `console-ui/src/lib/chat/stream-thinking.test.ts` checks that frontend thinking defaults on. `console-ui/src/lib/chat/errors.test.ts` preserves promotion errors instead of replacing them with a generic credit error. `python3 scripts/test-model-token-promotion.py` checks local-day boundaries across daylight-saving transitions. Operator steps: [model-token-promotions.md](../operations/model-token-promotions.md).
+
+## Account-scoped first-content SLA
+
+`coordinator/api/first_content_accounts_test.go` covers exact account/email selection, unrelated service accounts, header spoofing, public-model override precedence, disabled clocks and identity-store failures. `coordinator/api/first_content_accounts_integration_test.go` runs streaming and non-streaming requests through chat, Responses, completions and messages past the old deadline with hard TTFT rejection enabled; exempt requests omit their wire budget and scheduler ceiling, while the configured OpenRouter email still times out. The existing deadline/queue/retry/provider-wire suites explicitly opt their fixture account into the SLA. `coordinator/api/media_resolve_test.go` verifies a pinned exemption cannot be recomputed during media fetch.

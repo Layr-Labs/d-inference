@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-17 · commit `04bf27d00`
+> Last updated: 2026-09-18 · commit `5fc48d460`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -11,6 +11,7 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Bonsai 2 lossless performance and API stability](2026-09-18-bonsai2-lossless-performance.md) — matched M3 Ultra/M5 Max prefill, decode and memory measurements, exactness/lifecycle evidence and preserved quality/release limits.
 - [Qwen 3.8 Next native API and cache qualification](2026-09-15-qwen38-native-api-qualification.md) — synchronized native tool prompts, response/accounting fixes, final local API/cache regressions and preserved multirow/quality limits.
 - [Qwen 3.8 Next performance and stability update](2026-09-15-qwen38-performance-stability.md) — qualified opt-in speed/cache work and native tool framing, with distinct checkpoint results and open quality/release gates.
 - [Security reports](security/README.md) — focused security reviews, including the macOS 27 App Attest enforcement gaps that remain after enforcement is enabled.

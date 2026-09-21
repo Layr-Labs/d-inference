@@ -127,6 +127,28 @@ func TestNativeLoadAllowanceRequiresExplicitValidDeclaration(t *testing.T) {
 	}
 }
 
+func TestFlash096ColdBudgetFitsReported32810TokensWithoutOverridingWarmCeiling(t *testing.T) {
+	// Exact immutable-weight declaration observed on the 128 GiB Flash host.
+	info := protocol.ModelInfo{ID: qwen4RegistryModelID, ModelType: "qwen4_exp",
+		SizeBytes: 106294664646, SSDOffloadedWeightBytes: 32000153600,
+		EstimatedMemoryGB: 75.02614405564964, NativeLoadTransientBytes: 6264197720}
+	p := &Provider{Version: "0.9.6", Models: []protocol.ModelInfo{info}}
+	snap := routingSnapshot{model: qwen4RegistryModelID, totalMemoryGB: 128,
+		modelSizeGB: 106.294664646, availableOnDisk: true, binaryVersion: p.Version}
+	if fits, known := providerBudgetFits(&snap, 42, 32768); fits || !known {
+		t.Fatal("the legacy full-disk estimate should reproduce the cold-capacity rejection")
+	}
+	snap.estimatedOffloadedMemoryGB = advertisedOffloadedMemoryGBLocked(p, info.ID)
+	if fits, known := providerBudgetFits(&snap, 42, 32768); !fits || !known {
+		t.Fatal("validated native offload should admit the reported 32,810-token request")
+	}
+	snap.modelLoaded = true
+	snap.activeTokenBudgetMax = 32000
+	if fits, known := providerBudgetFits(&snap, 42, 32768); fits || !known {
+		t.Fatal("a real warm slot ceiling must still override the optimistic cold estimate")
+	}
+}
+
 func TestModelsUpdateRetainsOffloadDeclaration(t *testing.T) {
 	reg := New(testLogger())
 	reg.SetModelCatalog([]CatalogEntry{{ID: "qwen"}})

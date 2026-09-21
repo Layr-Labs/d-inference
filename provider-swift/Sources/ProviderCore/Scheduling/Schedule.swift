@@ -169,6 +169,22 @@ struct ParsedWindow: Sendable {
     let end: TimeOfDay
     /// True when end <= start (e.g. 22:00-08:00 = serve overnight).
     let overnight: Bool
+
+    /// The same membership rule drives availability and the close timer.
+    func secondsUntilEnd(on today: DayOfWeek, nowSeconds: Int) -> Int? {
+        if overnight {
+            if days.contains(today) && nowSeconds >= start.totalSeconds {
+                return 86400 - nowSeconds + end.totalSeconds
+            }
+            if days.contains(today.previous) && nowSeconds < end.totalSeconds {
+                return end.totalSeconds - nowSeconds
+            }
+        } else if days.contains(today),
+                  nowSeconds >= start.totalSeconds, nowSeconds < end.totalSeconds {
+            return end.totalSeconds - nowSeconds
+        }
+        return nil
+    }
 }
 
 /// A fully-parsed schedule ready for `isActiveNow()` checks.
@@ -216,29 +232,8 @@ public struct Schedule: Sendable {
               let today = DayOfWeek.fromFoundationWeekday(weekday)
         else { return false }
 
-        let now = TimeOfDay(hour: hour, minute: minute)
-        let yesterday = today.previous
-
-        for w in windows {
-            if w.overnight {
-                // Overnight window (e.g. 22:00-08:00):
-                //   Active if: (today in days AND time >= start)
-                //           OR (yesterday in days AND time < end)
-                if w.days.contains(today) && now >= w.start {
-                    return true
-                }
-                if w.days.contains(yesterday) && now < w.end {
-                    return true
-                }
-            } else {
-                // Same-day window (e.g. 09:00-17:00):
-                if w.days.contains(today) && now >= w.start && now < w.end {
-                    return true
-                }
-            }
-        }
-
-        return false
+        let nowSeconds = hour * 3600 + minute * 60
+        return windows.contains { $0.secondsUntilEnd(on: today, nowSeconds: nowSeconds) != nil }
     }
 
     /// How long until the current active window ends.
@@ -253,29 +248,13 @@ public struct Schedule: Sendable {
               let today = DayOfWeek.fromFoundationWeekday(weekday)
         else { return nil }
 
-        let now = TimeOfDay(hour: hour, minute: minute)
         let nowSeconds = hour * 3600 + minute * 60 + second
-        let yesterday = today.previous
-
-        for w in windows {
-            if w.overnight {
-                if w.days.contains(today) && now >= w.start {
-                    // Window ends tomorrow at w.end
-                    let remainingToday = 86400 - nowSeconds
-                    let intoTomorrow = w.end.totalSeconds
-                    return TimeInterval(remainingToday + intoTomorrow)
-                }
-                if w.days.contains(yesterday) && now < w.end {
-                    // Window ends today at w.end
-                    let diff = w.end.totalSeconds - nowSeconds
-                    return TimeInterval(diff)
-                }
-            } else if w.days.contains(today) && now >= w.start && now < w.end {
-                let diff = w.end.totalSeconds - nowSeconds
-                return TimeInterval(diff)
+        // Preserve configured window order when availability windows overlap.
+        for window in windows {
+            if let remaining = window.secondsUntilEnd(on: today, nowSeconds: nowSeconds) {
+                return TimeInterval(remaining)
             }
         }
-
         return nil
     }
 

@@ -92,3 +92,49 @@ fn native_validation_and_auto_none_are_not_bypassed() {
         assert!(normalize(body.as_object().unwrap().clone(), Some("qwen4_exp")).is_err());
     }
 }
+
+#[test]
+fn registered_identity_matches_legacy_native_messages_and_controls() {
+    for choice in [
+        json!("auto"),
+        json!("none"),
+        json!("required"),
+        json!({"type":"function","function":{"name":"second"}}),
+    ] {
+        for thinking in [false, true] {
+            for parallel in [false, true] {
+                let mut legacy = request(choice.clone());
+                legacy["reasoning"] = json!({"enabled":thinking});
+                legacy["parallel_tool_calls"] = json!(parallel);
+                let mut registered = legacy.clone();
+                registered["model"] = json!("qwen3.8-flash-next");
+                let a = normalize(legacy.as_object().unwrap().clone(), Some("qwen4_exp")).unwrap();
+                let b =
+                    normalize(registered.as_object().unwrap().clone(), Some("qwen4_exp")).unwrap();
+                assert_eq!(a.messages, b.messages);
+                assert_eq!(a.tools, b.tools);
+                assert_eq!(a.additional_context, b.additional_context);
+            }
+        }
+    }
+}
+
+#[test]
+fn registered_identity_preserves_rejections_and_media_fallback() {
+    for model in ["qwen3.8-flash-next", "DarkBloom/Qwen3.8-Flash-Next-Q4-mtp"] {
+        for effort in ["high", "minimal", "unsupported"] {
+            let mut body = request(json!("required"));
+            body["model"] = json!(model);
+            body["reasoning"] = json!({"enabled":true,"effort":effort});
+            assert!(normalize(body.as_object().unwrap().clone(), Some("qwen4_exp")).is_err());
+        }
+        let mut body = request(json!("required"));
+        body["model"] = json!(model);
+        body["messages"][1]["content"] = json!([{"type":"text","text":"describe"},
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]);
+        let native = normalize(body.as_object().unwrap().clone(), Some("qwen4_exp")).unwrap();
+        let fallback = normalize(body.as_object().unwrap().clone(), None).unwrap();
+        assert_eq!(native.messages, fallback.messages);
+        assert_eq!(native.tools, fallback.tools);
+    }
+}

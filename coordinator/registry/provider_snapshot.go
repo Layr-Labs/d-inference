@@ -1,59 +1,100 @@
 package registry
 
+import "time"
+
 // ProviderSnapshot is a flat, read-only view of the per-provider fields the
 // base-rewards engine needs to build settlement candidates. It is a copy taken
 // under the registry lock, so the engine can iterate the fleet without holding
 // any registry mutex or reaching into Provider internals.
 type ProviderSnapshot struct {
-	ID             string
-	ProviderKey    string // base64 X25519 public key — earnings/session identity
-	SerialNumber   string
-	HardwareModel  string // SE-signed Apple model id (e.g. "Mac15,8"); "" if unattested
-	MemoryGB       int    // self-reported unified memory (Phase 0 tier source)
-	TrustLevel     TrustLevel
-	Attested       bool
-	Online         bool    // status is online (not offline/untrusted)
-	ModelLoaded    bool    // an advertised model is currently loaded for routing
-	CurrentModel   string  // model currently loaded/served; "" if none
-	MemoryPressure float64 // live system metric (0..1)
-	ThermalState   string  // nominal/fair/serious/critical
+	ID                  string
+	AccountID           string // authenticated owner
+	MachineID           string // verified canonical machine; never a client-supplied serial
+	AppAttestAuthorized bool   // complete, current independent serving authorization
+	ServingAuthorized   bool   // complete public authorization through either path
+	ProviderKey         string // base64 X25519 public key — earnings/session identity
+	SerialNumber        string
+	HardwareModel       string // SE-signed Apple model id (e.g. "Mac15,8"); "" if unattested
+	MemoryGB            int    // self-reported unified memory (Phase 0 tier source)
+	TrustLevel          TrustLevel
+	Attested            bool
+	Online              bool    // status is online (not offline/untrusted)
+	ModelLoaded         bool    // an advertised model is currently loaded for routing
+	CurrentModel        string  // model currently loaded/served; "" if none
+	MemoryPressure      float64 // live system metric (0..1)
+	ThermalState        string  // nominal/fair/serious/critical
 }
 
 // ListProviders returns a read-only snapshot of every connected provider. It is
 // safe to call from outside the registry: each entry is a value copy taken under
 // the registry read lock and the per-provider lock, so callers never observe a
-// live Provider. Behavior-preserving — it mutates nothing.
+// live Provider. Authorization is evaluated at snapshot time; historical trust
+// flags remain separate from the independent App Attest verdict.
 func (r *Registry) ListProviders() []ProviderSnapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	out := make([]ProviderSnapshot, 0, len(r.providers))
+	now := time.Now()
 	for _, p := range r.providers {
 		p.mu.Lock()
-		serial := ""
-		hardwareModel := ""
-		if p.AttestationResult != nil {
-			serial = p.AttestationResult.SerialNumber
-			hardwareModel = p.AttestationResult.HardwareModel
-		}
-		warm := r.warmServingModelLocked(p)
-		out = append(out, ProviderSnapshot{
-			ID:             p.ID,
-			ProviderKey:    p.PublicKey,
-			SerialNumber:   serial,
-			HardwareModel:  hardwareModel,
-			MemoryGB:       p.Hardware.MemoryGB,
-			TrustLevel:     p.TrustLevel,
-			Attested:       p.Attested,
-			Online:         p.Status == StatusOnline || p.Status == StatusServing,
-			ModelLoaded:    warm != "",
-			CurrentModel:   warm,
-			MemoryPressure: p.SystemMetrics.MemoryPressure,
-			ThermalState:   p.SystemMetrics.ThermalState,
-		})
+		out = append(out, r.providerRewardSnapshotLocked(p, now))
 		p.mu.Unlock()
 	}
 	return out
+}
+
+// GetProviderRewardSnapshot rechecks one live connection immediately before
+// settlement without walking the fleet again. A snapshot is not an evergreen
+// authorization; callers must compare its key/account/machine to their candidate.
+func (r *Registry) GetProviderRewardSnapshot(providerID string) (ProviderSnapshot, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p := r.providers[providerID]
+	if p == nil {
+		return ProviderSnapshot{}, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return r.providerRewardSnapshotLocked(p, time.Now()), true
+}
+
+func (r *Registry) providerRewardSnapshotLocked(p *Provider, now time.Time) ProviderSnapshot {
+	serial := ""
+	hardwareModel := ""
+	if p.AttestationResult != nil {
+		serial = p.AttestationResult.SerialNumber
+		hardwareModel = p.AttestationResult.HardwareModel
+	}
+	appAttestAuthorized := r.providerAppAttestServingAuthorizedLocked(p, now)
+	machineID := ""
+	if p.verifiedMachineAccount == p.AccountID {
+		machineID = p.verifiedMachineID
+	}
+	memoryGB := p.Hardware.MemoryGB
+	if appAttestAuthorized {
+		hardwareModel = p.appAttestAuthorization.MachineModel
+		memoryGB = p.appAttestAuthorization.MemoryGB
+	}
+	warm := r.warmServingModelLocked(p)
+	return ProviderSnapshot{
+		ID:                  p.ID,
+		AccountID:           p.AccountID,
+		MachineID:           machineID,
+		AppAttestAuthorized: appAttestAuthorized,
+		ServingAuthorized:   !p.PrivateOnly && (appAttestAuthorized || r.providerLegacyServingAuthorizedLocked(p, now)),
+		ProviderKey:         p.PublicKey,
+		SerialNumber:        serial,
+		HardwareModel:       hardwareModel,
+		MemoryGB:            memoryGB,
+		TrustLevel:          p.TrustLevel,
+		Attested:            p.Attested,
+		Online:              p.Status == StatusOnline || p.Status == StatusServing,
+		ModelLoaded:         warm != "",
+		CurrentModel:        warm,
+		MemoryPressure:      p.SystemMetrics.MemoryPressure,
+		ThermalState:        p.SystemMetrics.ThermalState,
+	}
 }
 
 // warmServingModelLocked returns a model that is both loaded and currently

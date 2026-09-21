@@ -142,21 +142,6 @@ struct IdleCommandTests {
         return url
     }
 
-    /// Mirrors BetaCommandTests: a non-canonical config path triggers the
-    /// legacy→canonical copy when the canonical file is ABSENT; never plant
-    /// fixtures in the operator's real config.
-    private func withGuardedCanonicalConfig(_ body: () throws -> Void) rethrows {
-        let canonical = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/darkbloom/provider.toml")
-        let existedBefore = FileManager.default.fileExists(atPath: canonical.path)
-        defer {
-            if !existedBefore, FileManager.default.fileExists(atPath: canonical.path) {
-                try? FileManager.default.removeItem(at: canonical)
-            }
-        }
-        try body()
-    }
-
     @Test("keep-loaded pins idle_timeout_mins = 0 under [backend]")
     func keepLoadedPersistsZero() throws {
         let url = try makeTempConfig("""
@@ -165,11 +150,9 @@ struct IdleCommandTests {
             """)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        try withGuardedCanonicalConfig {
-            let result = try setIdleUnloadMinutes(0, configPath: url.path)
-            #expect(result.changed)
-            #expect(result.path == url)
-        }
+        let result = try setIdleUnloadMinutes(0, configPath: url.path, migrateOnDisk: false)
+        #expect(result.changed)
+        #expect(result.path == url)
         let written = try String(contentsOf: url, encoding: .utf8)
         #expect(tomlKeyPresent(written, section: "backend", key: "idle_timeout_mins"))
         #expect(written.contains("idle_timeout_mins = 0"))
@@ -186,18 +169,16 @@ struct IdleCommandTests {
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         #expect(!idleTimeoutPinned(at: url))
 
-        try withGuardedCanonicalConfig {
-            // Decodes to 60 already, but "Free when idle" must be pinned so a
-            // future default flip cannot silently move this provider.
-            let first = try setIdleUnloadMinutes(60, configPath: url.path)
-            #expect(first.changed)
-            // Now pinned at the requested value: a true no-op, no rewrite.
-            let pinned = try String(contentsOf: url, encoding: .utf8)
-            let second = try setIdleUnloadMinutes(60, configPath: url.path)
-            #expect(second.changed == false)
-            let after = try String(contentsOf: url, encoding: .utf8)
-            #expect(after == pinned)
-        }
+        // Decodes to 60 already, but "Free when idle" must be pinned so a
+        // future default flip cannot silently move this provider.
+        let first = try setIdleUnloadMinutes(60, configPath: url.path, migrateOnDisk: false)
+        #expect(first.changed)
+        // Now pinned at the requested value: a true no-op, no rewrite.
+        let pinned = try String(contentsOf: url, encoding: .utf8)
+        let second = try setIdleUnloadMinutes(60, configPath: url.path, migrateOnDisk: false)
+        #expect(second.changed == false)
+        let after = try String(contentsOf: url, encoding: .utf8)
+        #expect(after == pinned)
         #expect(idleTimeoutPinned(at: url))
     }
 
@@ -209,10 +190,8 @@ struct IdleCommandTests {
             """)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        try withGuardedCanonicalConfig {
-            let result = try setIdleUnloadMinutes(45, configPath: url.path)
-            #expect(result.changed)
-        }
+        let result = try setIdleUnloadMinutes(45, configPath: url.path, migrateOnDisk: false)
+        #expect(result.changed)
         let config = try ConfigManager.load(from: url)
         #expect(config.backend.idleTimeoutMins == 45)
         let written = try String(contentsOf: url, encoding: .utf8)
@@ -228,10 +207,8 @@ struct IdleCommandTests {
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let before = try String(contentsOf: url, encoding: .utf8)
 
-        withGuardedCanonicalConfig {
-            #expect(throws: (any Error).self) {
-                try setIdleUnloadMinutes(IdleUnloadPolicy.maxMinutes + 1, configPath: url.path)
-            }
+        #expect(throws: (any Error).self) {
+            try setIdleUnloadMinutes(IdleUnloadPolicy.maxMinutes + 1, configPath: url.path, migrateOnDisk: false)
         }
         #expect(try String(contentsOf: url, encoding: .utf8) == before)
     }

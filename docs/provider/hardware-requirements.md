@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-17 · commit `77d1d1d86`
+> Last updated: 2026-09-17 · commit `954f570d1`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -21,6 +21,16 @@ and are not repeated here.
 | Storage | Weights per model (catalog `size_gb`) under the Hugging Face hub cache, plus the SSD prefix-cache budget (`ssdDiskBudgetBytes`, [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules)) when that cache is active | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift` (`defaultCacheDirectory`), `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` |
 | Network | Outbound `wss://api.darkbloom.dev/ws/provider` and HTTPS on 443; a heartbeat every `heartbeat_interval_secs` ([`cli-reference.md`](./cli-reference.md#providertoml-keys-read-by-the-cli)); no inbound port | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |
 | Security posture | SIP enabled and Full Security boot; a logged-in GUI session for APNs code-identity attestation | [`attestation.md`](./attestation.md) |
+
+## Bonsai 2 qualification scope
+
+The unchanged Prism Bonsai 2 27B MLX 2-bit payload is 8,595,477,990 bytes,
+including its vision tensors. File size is not a RAM-tier qualification:
+activation/KV reserves and live OS headroom remain required. The initial draft
+targets M5 Max testing; no minimum-RAM catalog value, full-context guarantee or
+MTP capability is introduced. `EngineV2KVBackendPolicy` selects paging for the
+exact artifact ID; all existing admission checks remain in effect. The artifact
+contract is in `libs/mlx-swift-lm/docs/bonsai2.md`.
 
 ## Chip families
 
@@ -100,8 +110,8 @@ the separate [offload declaration gate](../architecture/routing.md#ssd-offloaded
 Mapped pages can still occupy reclaimable OS cache. Target KV, QSA index,
 GDN/PLE state, MTP history, restore scratch and concurrent requests add live
 allocations with their own owners. Arithmetic weight fit is not hardware
-qualification: this text-only private candidate does not establish 128 GB
-support or its full native-context ceiling. Existing catalog minimum RAM,
+qualification: retaining native multimodal support and listing full native
+context does not establish full-window operation on 128 GiB hardware. Existing catalog minimum RAM,
 runtime headroom and actual capacity gates remain in force.
 
 ## Gemma QAT assistant footprint and availability

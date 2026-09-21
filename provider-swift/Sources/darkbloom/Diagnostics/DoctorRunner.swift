@@ -17,6 +17,8 @@ enum DoctorRunner {
         // "Fresh" = the daemon is running AND its state snapshot isn't stale, so
         // its live fields (trust level, current model, capacity) are trustworthy.
         let stateFresh = daemonUp && !(state?.isStale(now: now) ?? true)
+        let authorization = state?.currentProviderAuthorization(coordinatorURL: coordinatorURL, now: now)
+        let appAttestAuthorized = authorization?.hasCurrentAppAttestAuthorization(now: now) == true
 
         // ---- Attestation key (read-only daemon state) ----
         let attestationIdentity = resolveDoctorAttestationIdentity(
@@ -33,12 +35,19 @@ enum DoctorRunner {
         // session, no auto-login, or idle auto-logout each break attestation.
         // Pure verdict logic lives in ProviderCore; here we only feed it the
         // live machine signals.
-        out.append(contentsOf: AttestationReadiness.evaluate(
-            AttestationReadiness.gather(),
-            sleepPrevented: systemSleepPrevented()))
+        if !appAttestAuthorized {
+            out.append(contentsOf: AttestationReadiness.evaluate(
+                AttestationReadiness.gather(),
+                sleepPrevented: systemSleepPrevented()))
+        }
 
         // ---- Coordinator trust (from the daemon's last trust_status) ----
-        if let state, let trust = state.trust, daemonUp, !state.isStale(now: now) {
+        if let authorization {
+            out.append(Diagnostic(section: .trust, name: "serving authorization",
+                                  level: appAttestAuthorized || authorization.path == "legacy" ? .pass : .warn,
+                                  message: ProviderAuthorizationReadiness.summary(authorization, now: now),
+                                  fix: nil))
+        } else if let state, let trust = state.trust, daemonUp, !state.isStale(now: now) {
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
             let level = TrustReasonCatalog.level(trustLevel: trust.trustLevel, status: trust.status)
             out.append(Diagnostic(section: .trust, name: "trust level",
@@ -67,7 +76,7 @@ enum DoctorRunner {
         // the previously-silent stall that left operators thinking they passed
         // while earning nothing.
         let alreadyHardwareTrusted = stateFresh && state?.trust?.trustLevel == "hardware"
-        if !alreadyHardwareTrusted {
+        if !alreadyHardwareTrusted && !appAttestAuthorized {
             let liveTrustLevel = stateFresh ? state?.trust?.trustLevel : nil
             let liveStatus = stateFresh ? state?.trust?.status : nil
             let enrollment = checkMDMEnrollment(coordinatorURL: snapshot.config.coordinator.url)
@@ -244,12 +253,19 @@ enum DoctorRunner {
     /// Best-effort read of whether the system is currently being kept awake,
     /// via `pmset -g assertions`. Informational only (the provider
     /// self-caffeinates while serving), so nil/UNKNOWN on any failure is fine.
-    private static func systemSleepPrevented() -> Bool? {
-        guard let data = try? BoundedProcess.runCapturingStandardOutput(
-            URL(fileURLWithPath: "/usr/bin/pmset"), arguments: ["-g", "assertions"],
-            timeout: 5
-        ) else { return nil }
-        guard let text = String(data: data, encoding: .utf8) else { return nil }
+    static func systemSleepPrevented(runner: SecurityCommandRunner? = nil) -> Bool? {
+        let text: String
+        if let runner {
+            guard let result = try? runner.run("/usr/bin/pmset", ["-g", "assertions"]),
+                  result.terminationStatus == 0 else { return nil }
+            text = result.stdout
+        } else {
+            guard let data = try? BoundedProcess.runCapturingStandardOutput(
+                URL(fileURLWithPath: "/usr/bin/pmset"), arguments: ["-g", "assertions"],
+                timeout: 5
+            ), let output = String(data: data, encoding: .utf8) else { return nil }
+            text = output
+        }
         // `PreventUserIdleSystemSleep` / `PreventSystemSleep` report 1 when an
         // assertion (e.g. caffeinate, an active inference) is holding the system
         // awake. Any "1" on those lines ⇒ sleep currently prevented.

@@ -323,14 +323,17 @@ public enum EngineV2VisionPrefill {
         // rasterizes its frames; no plaintext file exists to clean up.
         // Bind native tool/history templating to the actual loaded wrapper,
         // not a caller-supplied model label. Other VLMs retain their path.
-        let nativeToolMessages = await container.perform { ctx in
-            ctx.model is MLXVLM.Qwen4Exp
+        let nativeToolModelType: String? = await container.perform { ctx in
+            if ctx.model is MLXVLM.Qwen4Exp { return "qwen4_exp" }
+            if ctx.model is MLXVLM.PrismHadamardQwen35 { return "prism_hadamard_qwen35" }
+            return nil
         }
+        let nativeToolMessages = nativeToolModelType != nil
         let userInput = try await MediaIngest.buildUserInput(
             from: request, templateControls: templateControls,
             tools: nativeToolMessages ? request.tools?.map { $0.toolSpec() } : nil,
             preserveTemplateFields: nativeToolMessages,
-            modelType: nativeToolMessages ? "qwen4_exp" : nil)
+            modelType: nativeToolModelType)
         let towerLimits = VisionTowerBudget.liveLimits
         return try await container.perform(nonSendable: userInput) { ctx, userInput in
             // MLX's DEFAULT error handler is `fatalError`. A C++ fault raised

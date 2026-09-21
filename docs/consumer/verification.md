@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-20 · commit `76a8f03d`
+> Last updated: 2026-09-21 · commit `5f74801fa`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -23,7 +23,9 @@ messages display unavailable rather than inferring a method from `attested`.
 For live state, use the provider directory. Its method filters and verified
 count include App Attest-only providers. Dual-path connections are counted once
 in the total and in both breakdowns. Connections are distinct from known unique
-machine inventory. Reported macOS 27 adoption is a separate count. Map method
+machine inventory. Reported macOS 27 adoption is a separate count. Missing verdicts are unknown,
+not zero verified: counts use the available-verdict denominator and show how
+many records are unavailable. Map method
 counts describe the indicated source snapshot. See the
 [exact fields and freshness rules](../reference/api-contracts.md#verification-presentation-contract).
 

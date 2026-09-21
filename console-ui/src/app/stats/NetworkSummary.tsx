@@ -1,4 +1,4 @@
-import { summarizeVerification } from "@/lib/verification";
+import { summarizeVerification, verificationCountLabel } from "@/lib/verification";
 import { Cpu, Activity, ShieldCheck, Server } from "lucide-react";
 import { activeNetworkPowerWatts } from "@/lib/network-power";
 import { formatPower } from "@/lib/format-power";
@@ -12,7 +12,7 @@ export function NetworkSummary({ stats, totals24h }: { stats: PlatformStats; tot
   const tokens = stats.last_24h_total_tokens ?? totals24h?.tokens;
   const metrics = [
     { label: "Connections", value: stats.active_providers.toLocaleString(), detail: stats.verification_counts ? `${stats.verification_counts.known_unique_machines} known unique machines · ${stats.verification_counts.connections_without_machine_identity} unidentified connections` : "Connected providers; unique machines unknown", icon: Cpu },
-    { label: "Currently verified", value: `${v.authorized} / ${v.total}`, detail: `${v.appAttest} App Attest · ${v.legacy} legacy · ${v.overlap} both (counted once)`, icon: ShieldCheck },
+    { label: "Currently verified", value: verificationCountLabel(v), detail: `${v.known} of ${v.total} verdicts available · ${v.unknown} unknown. ${v.appAttest} App Attest · ${v.legacy} legacy · ${v.overlap} both (counted once)`, icon: ShieldCheck },
     { label: "Requests · 24 hours", value: requests === undefined ? "—" : formatCompactNumber(requests), detail: `${formatCompactNumber(stats.total_requests)} since launch`, icon: Activity },
     { label: "Tokens · 24 hours", value: tokens === undefined ? "—" : formatCompactNumber(tokens), detail: `${formatCompactNumber(stats.total_tokens)} since launch`, icon: Server },
   ];

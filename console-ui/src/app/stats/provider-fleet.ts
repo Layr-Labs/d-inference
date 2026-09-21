@@ -80,6 +80,10 @@ export function providerRouteReason(provider: ProviderStats, now = Date.now()): 
   if (provider.routable === true) return "The coordinator reports this node as eligible for public routing.";
   if (provider.routable === false) return "The coordinator reports this node as excluded from public routing.";
   const unknown = "Routing eligibility is not published for this node.";
+  if (provider.verification) {
+    const verdict = verificationPresentation(currentVerification(provider.verification, now));
+    return `${unknown} ${verdict.verified ? `${verdict.label}; the coordinator authorization verdict is current.` : verdict.label + "."}`;
+  }
   if (passesPublishedVerificationChecks(provider, now)) return `${unknown} The published hardware, runtime, and challenge checks are current.`;
   if (provider.runtime_verified === false) return `${unknown} The latest published runtime verification did not pass.`;
   if (provider.last_challenge_verified && !hasFreshChallenge(provider.last_challenge_verified, now)) return `${unknown} The last routing challenge is outside the sixteen-minute verification window.`;

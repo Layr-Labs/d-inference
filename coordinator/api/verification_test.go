@@ -91,9 +91,9 @@ func TestOwnerVerificationRemainsOfflineAndAccountScoped(t *testing.T) {
 func (s *Server) publicVerificationCounts(verifications map[string]registry.Verification) verificationCounts {
 	var c verificationCounts
 	machines := map[[2]string]struct{}{}
-	s.registry.ForEachProvider(func(p *registry.Provider) {
+	s.registry.ForEachProviderVerification(func(p *registry.Provider, verification registry.Verification, _ registry.PublicProviderModelSnapshot) {
 		if !p.PrivateOnly {
-			c.addProvider(p, verifications[p.ID], machines)
+			c.addProvider(p, verification, machines)
 		}
 	})
 	return c

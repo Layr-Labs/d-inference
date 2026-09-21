@@ -29,8 +29,8 @@ export function StatusPill({ status }: { status: string }) {
   );
 }
 
-export function TrustPill({ verification }: { verification?: Verification }) {
-  const view = verificationPresentation(verification);
+export function TrustPill({ verification, presentation }: { verification?: Verification; presentation?: ReturnType<typeof verificationPresentation> }) {
+  const view = presentation ?? verificationPresentation(verification);
   const Icon = view.verified ? ShieldCheck : ShieldX;
   return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${view.verified ? "bg-accent-green/10 text-accent-green" : "bg-text-tertiary/15 text-text-tertiary"}`}>
     <Icon size={10} />{view.label}

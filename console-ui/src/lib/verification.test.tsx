@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, render, renderHook, screen } from "@testing-library/react";
-import { currentVerification, parseVerification, summarizeVerification, verificationPresentation, type Verification, type VerificationState } from "./verification";
+import { verificationCountLabel, currentVerification, parseVerification, summarizeVerification, verificationPresentation, type Verification, type VerificationState } from "./verification";
 import { extractTrustMeta } from "./chat/stream";
 import { TrustBadge } from "@/components/TrustBadge";
 import { ProofDetails } from "@/components/verification/ProofDetails";
@@ -38,7 +38,7 @@ it.each<[VerificationState, string]>([["pending", "Verification pending"], ["exp
 it("counts the union once and filters each method independently", () => {
   vi.useFakeTimers(); vi.setSystemTime(now * 1000);
   const providers = [snapshot(), snapshot("pending", "verified"), snapshot("verified", "verified"), snapshot("revoked", "revoked")].map((verification) => ({ verification }));
-  expect(summarizeVerification(providers)).toEqual({ authorized: 3, appAttest: 2, legacy: 2, overlap: 1, total: 4 });
+  expect(summarizeVerification(providers)).toEqual({ authorized: 3, appAttest: 2, legacy: 2, overlap: 1, total: 4, known: 4, unknown: 0 });
   const dual = hardwareProvider({ verification: providers[2].verification, trust_level: "self_signed" });
   for (const filter of ["verified", "app_attest", "legacy", "dual"] as const) expect(matchesTrustFilter(dual, filter)).toBe(true);
   expect(matchesTrustFilter(dual, "basic")).toBe(false);
@@ -63,4 +63,16 @@ it("explains the proof boundary, unknown details, and historical freshness", () 
   expect(screen.getByText(/does not independently validate Apple certificates/)).toBeInTheDocument();
   expect(screen.getAllByText("Not published")).toHaveLength(3);
   expect(screen.getByText(/do not certify reported RAM/)).toBeInTheDocument();
+});
+
+
+it("reports missing and stale fleet verdicts as unavailable rather than unverified", () => {
+  vi.useFakeTimers(); vi.setSystemTime(now * 1000);
+  const missing = summarizeVerification([{}, {}]);
+  expect(missing).toMatchObject({ known: 0, unknown: 2, total: 2 });
+  expect(verificationCountLabel(missing)).toBe("Unavailable");
+  const partial = summarizeVerification([{ verification: snapshot() }, {}]);
+  expect(verificationCountLabel(partial)).toBe("1 / 1");
+  expect(partial.unknown).toBe(1);
+  expect(verificationCountLabel(summarizeVerification([{ verification: snapshot() }], (now + 61) * 1000))).toBe("Unavailable");
 });

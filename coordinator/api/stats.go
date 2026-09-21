@@ -140,16 +140,14 @@ func (s *Server) computeStats() ([]byte, error) {
 
 	var verificationTotals verificationCounts
 	machines := map[[2]string]struct{}{}
-	publicProviderModels := s.registry.PublicProviderModels()
-	verifications := s.registry.ProviderVerifications()
-	s.registry.ForEachProvider(func(p *registry.Provider) {
+	s.registry.ForEachProviderVerification(func(p *registry.Provider, verification registry.Verification, modelSnapshot registry.PublicProviderModelSnapshot) {
 		// Private-only providers serve only their owner's self-route traffic and
 		// are not part of the public fleet, so they must not inflate public
 		// totals, provider counts, per-model provider counts, or active power.
 		if p.PrivateOnly {
 			return
 		}
-		verificationTotals.addProvider(p, verifications[p.ID], machines)
+		verificationTotals.addProvider(p, verification, machines)
 		activePowerWatts += registry.EstimateMachineWatts(p.Hardware.ChipFamily, p.Hardware.ChipTier, p.Hardware.GPUCores)
 		totalRequests += p.Stats.RequestsServed
 		totalTokensGen += p.Stats.TokensGenerated
@@ -165,18 +163,17 @@ func (s *Server) computeStats() ([]byte, error) {
 
 		// Use the registry's capability-filtered provider snapshot so a catalog
 		// hot change cannot leave an ineligible pair on the public stats feed.
-		modelSnapshot := publicProviderModels[p.ID]
 		provModels := modelSnapshot.Models
 
 		lastChallengeVerified := ""
-		if last := p.GetLastChallengeVerified(); !last.IsZero() {
+		if last := p.LastChallengeVerified; !last.IsZero() {
 			lastChallengeVerified = last.UTC().Format(time.RFC3339)
 		}
 
 		prov := map[string]any{
 			"id":                             p.ID,
-			"verification":                   verifications[p.ID],
-			"os_version":                     reportedOSVersion(p),
+			"verification":                   verification,
+			"os_version":                     reportedOSVersionLocked(p),
 			"chip":                           p.Hardware.ChipName,
 			"chip_family":                    p.Hardware.ChipFamily,
 			"chip_tier":                      p.Hardware.ChipTier,
@@ -370,8 +367,7 @@ func (s *Server) aggregateProviderLocations() (
 	cities := make(map[cityKey]*cityAgg)
 	regions := make(map[regionKey]*regionAgg)
 
-	verifications := s.registry.ProviderVerifications()
-	s.registry.ForEachProvider(func(p *registry.Provider) {
+	s.registry.ForEachProviderVerification(func(p *registry.Provider, verification registry.Verification, _ registry.PublicProviderModelSnapshot) {
 		// Private-only providers are not part of the public fleet — keep them off
 		// the public network map and out of its provider/hardware counts.
 		if p.PrivateOnly {
@@ -394,7 +390,7 @@ func (s *Server) aggregateProviderLocations() (
 			cities[ck] = ca
 		}
 		ca.providers++
-		ca.verification.add(verifications[p.ID])
+		ca.verification.add(verification)
 		ca.hardwareAttested += hwAttested
 		ca.gpuCores += p.Hardware.GPUCores
 		ca.memoryGB += p.Hardware.MemoryGB
@@ -411,7 +407,7 @@ func (s *Server) aggregateProviderLocations() (
 			regions[rk] = ra
 		}
 		ra.providers++
-		ra.verification.add(verifications[p.ID])
+		ra.verification.add(verification)
 		ra.hardwareAttested += hwAttested
 		ra.gpuCores += p.Hardware.GPUCores
 		ra.memoryGB += p.Hardware.MemoryGB

@@ -17,17 +17,23 @@ function validPath(value: unknown): value is VerificationPath {
   return states.has(p.state) && [p.verified_at, p.expires_at].every((v) => v === undefined || (Number.isFinite(v) && v > 0));
 }
 
+export function isVerification(value: unknown): value is Verification {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Verification;
+  return Number.isFinite(v.observed_at) && v.observed_at > 0 && validPath(v.app_attest) && validPath(v.legacy);
+}
+
 export function parseVerification(raw: string | null): Verification | undefined {
   if (!raw) return undefined;
   try {
     const v = JSON.parse(raw) as Verification;
-    if (!v || !Number.isFinite(v.observed_at) || v.observed_at <= 0 || !validPath(v.app_attest) || !validPath(v.legacy)) return undefined;
+    if (!isVerification(v)) return undefined;
     return v;
   } catch { return undefined; }
 }
 
 export function currentVerification(v: Verification | undefined, now = Date.now()): Verification | undefined {
-  if (!v) return undefined;
+  if (!isVerification(v)) return undefined;
   const age = now - v.observed_at * 1000;
   const path = (p: VerificationPath): VerificationPath => {
     if (p.state !== "verified") return p;
@@ -40,6 +46,7 @@ export function currentVerification(v: Verification | undefined, now = Date.now(
 
 /** Historical verdicts are judged at dispatch, never against today's clock. */
 export function verificationPresentation(v: Verification | undefined) {
+  if (!isVerification(v)) v = undefined;
   const at = v?.observed_at ?? 0;
   const verified = (p?: VerificationPath) => p?.state === "verified" && at > 0 &&
     typeof p.verified_at === "number" && p.verified_at <= at && typeof p.expires_at === "number" && p.expires_at > at;
@@ -59,14 +66,29 @@ export function verificationPresentation(v: Verification | undefined) {
   return { method, appAttest, legacy, verified: method !== "none", label };
 }
 
-export function summarizeVerification(providers: { verification?: Verification }[]) {
-  const counts = { authorized: 0, appAttest: 0, legacy: 0, overlap: 0, total: providers.length };
+export function hasUsableVerification(v: Verification | undefined, now = Date.now()): boolean {
+  if (!isVerification(v)) return false;
+  const age = now - v.observed_at * 1000;
+  if (age < 0 || age >= LIVE_VERIFICATION_MAX_AGE_MS) return false;
+  const current = currentVerification(v, now)!;
+  return verificationPresentation(current).verified ||
+    (current.app_attest.state !== "unknown" && current.legacy.state !== "unknown");
+}
+
+export function summarizeVerification(providers: { verification?: Verification }[], now = Date.now()) {
+  const counts = { authorized: 0, appAttest: 0, legacy: 0, overlap: 0, total: providers.length, known: 0, unknown: 0 };
   for (const p of providers) {
-    const v = verificationPresentation(currentVerification(p.verification));
+    if (!hasUsableVerification(p.verification, now)) { counts.unknown++; continue; }
+    counts.known++;
+    const v = verificationPresentation(currentVerification(p.verification, now));
     if (v.verified) counts.authorized++;
     if (v.appAttest) counts.appAttest++;
     if (v.legacy) counts.legacy++;
     if (v.method === "dual") counts.overlap++;
   }
   return counts;
+}
+
+export function verificationCountLabel(c: ReturnType<typeof summarizeVerification>): string {
+  return c.total > 0 && c.known === 0 ? "Unavailable" : `${c.authorized} / ${c.known}`;
 }

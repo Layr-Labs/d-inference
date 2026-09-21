@@ -41,9 +41,7 @@ func (c *verificationMethodCounts) add(v registry.Verification) {
 	}
 }
 
-func reportedOSVersion(p *registry.Provider) string {
-	p.Mu().Lock()
-	defer p.Mu().Unlock()
+func reportedOSVersionLocked(p *registry.Provider) string {
 	if p.AttestationResult == nil {
 		return ""
 	}
@@ -52,16 +50,17 @@ func reportedOSVersion(p *registry.Provider) string {
 
 // addProvider is called in the same fleet walk that produces public rows, so
 // the denominator cannot change halfway through constructing a response.
+// Caller holds the provider lock (ForEachProviderVerification).
 func (c *verificationCounts) addProvider(p *registry.Provider, v registry.Verification, machines map[[2]string]struct{}) {
 	c.add(v)
-	account, machine := p.GetVerifiedMachineIdentity()
+	account, machine := p.VerifiedMachineIdentityLocked()
 	if account != "" && machine != "" {
 		machines[[2]string{account, machine}] = struct{}{}
 	} else {
 		c.UnknownMachines++
 	}
 	c.KnownMachines = len(machines)
-	os := reportedOSVersion(p)
+	os := reportedOSVersionLocked(p)
 	if os != "" {
 		c.ReportedOS++
 	}

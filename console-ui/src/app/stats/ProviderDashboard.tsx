@@ -2,13 +2,13 @@
 
 import { useMemo, useState } from "react";
 import { ArrowLeft, ArrowRight } from "lucide-react";
-import { summarizeVerification } from "@/lib/verification";
+import { summarizeVerification, verificationCountLabel } from "@/lib/verification";
 import { isProviderRoutable, shortProviderModel, summarizeProviderFleet, type ProviderStats } from "./provider-fleet";
 import { ProviderFilters } from "./providers/ProviderFilters";
 import { ProviderTable } from "./providers/ProviderTable";
 import { DEFAULT_DIRECTORY_FILTERS, filterProviderDirectory, providerDirectoryPage, providerModels, type ProviderDirectoryFilters } from "./providers/provider-directory";
 
-function FleetMetric({ label, value }: { label: string; value: number }) {
+function FleetMetric({ label, value }: { label: string; value: number | string }) {
   return <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5"><p className="text-xl font-semibold tabular-nums tracking-tight text-text-primary">{value.toLocaleString()}</p><p className="text-xs text-text-tertiary">{label}</p></div>;
 }
 
@@ -46,7 +46,7 @@ export function ProviderDashboard({ providers }: { providers: ProviderStats[] })
       </div>
       <div className="mt-4 grid grid-cols-2 gap-x-5 gap-y-3 border-b border-border-dim pb-4 sm:grid-cols-4">
         <FleetMetric label="Visible nodes" value={summary.visible} />
-        <FleetMetric label="Currently verified" value={summarizeVerification(providers).authorized} />
+        <FleetMetric label="Currently verified" value={verificationCountLabel(summarizeVerification(providers))} />
         <FleetMetric label="Serving now" value={summary.serving} />
         <FleetMetric label="Routing unreported" value={summary.unreported} />
       </div>

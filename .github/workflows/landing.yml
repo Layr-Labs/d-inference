@@ -1,34 +1,35 @@
-name: Marketing UI
+name: Landing
 
 on:
   pull_request:
     paths:
-      - 'marketing-ui/**'
-      - '.github/workflows/marketing-ui.yml'
+      - 'landing/**'
+      - '.github/workflows/landing.yml'
   push:
     branches: [master, main]
     paths:
-      - 'marketing-ui/**'
-      - '.github/workflows/marketing-ui.yml'
+      - 'landing/**'
+      - '.github/workflows/landing.yml'
 
 permissions:
   contents: read
 
 jobs:
   check:
-    name: Marketing UI Lint & Build
+    name: Landing Lint, Build & Test
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     defaults:
       run:
-        working-directory: marketing-ui
+        working-directory: landing
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: marketing-ui/package-lock.json
+          cache-dependency-path: landing/package-lock.json
       - run: npm ci
       - run: npm run lint
       - run: npm run build
+      - run: npm test

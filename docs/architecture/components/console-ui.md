@@ -283,31 +283,12 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 
 ## Landing (`landing/`)
 
-The older marketing site is static HTML plus vanilla JavaScript with no build step and no `package.json`: `landing/index.html`, `landing/terms.html`, `landing/privacy.html`, `landing/earn-calculator-core.js`, `landing/earn-calculator.js`, `landing/network-stats.js`, `landing/earn-calculator-core.test.js`, plus `landing/fonts/` and `landing/assets/`.
+The Next.js site imported from eigen-homepages replaces the static landing page.
+Its source, content, media, fonts, and configuration live in `landing/`;
+it has its own npm lockfile and shares no build dependencies with the console.
+See the [marketing README](../../../landing/README.md).
 
-**Earn calculator.** `landing/earn-calculator-core.js` is a hand-maintained mirror of `console-ui/src/app/earn/calc.ts` (with `MIN_PROVIDER_MEMORY_GB` from `console-ui/src/app/earn/providerReadiness.ts`); the two must change together, and `landing/earn-calculator-core.test.js` (`node --test landing/earn-calculator-core.test.js`) pins the shared values. Both files hard-code: `DEFAULT_DUTY_CYCLE_PERCENT = 5`, `DECODE_BANDWIDTH_EFFICIENCY = 0.65`, `MONTH_SECONDS = 30 * 24 * 60 * 60`, `MIN_PROVIDER_MEMORY_GB = 48`, the `MAC_CONFIGS` table (Mac type, chip, `ramOptions`, `bandwidthGBs`), and `CALCULATOR_MODELS` — `qwen3.6-35b-a3b-mxfp8`, `gemma-4-26b-a4b-mxfp8`, `gpt-oss-20b-mxfp4`, each with `minRAMGB`, `sizeGB`, `activeParameterCount`, `bytesPerParameter`, and a pinned `outputPriceMicroUSDPerMillion` that is **not fetched from the coordinator** (live prices: [`../../reference/pricing-model.md`](../../reference/pricing-model.md)). `calculateCapacityRevenue(model, hardware, memoryGB, dutyCyclePercent)` returns `null` when `memoryGB < model.minRAMGB` (the model does not fit) and otherwise computes:
-
-```text
-activeWeightGBPerToken = activeParameterCount × bytesPerParameter / 1e9
-decodeTokensPerSecond  = bandwidthGBs × DECODE_BANDWIDTH_EFFICIENCY / activeWeightGBPerToken
-activeSecondsPerMonth  = MONTH_SECONDS × dutyCyclePercent / 100
-outputTokensPerMonth   = decodeTokensPerSecond × activeSecondsPerMonth
-monthlyRevenueUSD      = outputTokensPerMonth / 1e6 × (outputPriceMicroUSDPerMillion / 1e6)
-annualRevenueUSD       = monthlyRevenueUSD × 12
-```
-
-It is a decode-bandwidth capacity estimate at the chosen duty cycle, not a forecast, and it excludes base rewards (`calc.ts` keeps `FLOOR_TIERS` only for the unmounted `BaseRewardsPanel`). `landing/earn-calculator.js` binds the `<select>` elements in `landing/index.html` to the core.
-
-**Network stats.** `landing/network-stats.js` reads `GET <coordinator>/v1/stats` (default `https://api.darkbloom.dev`, overridable with `?coord=<origin>`) and estimates fleet power from `POWER_TABLE` (`machineWatts`, `formatPower`). The `<script src="network-stats.js">` tag in `landing/index.html` is commented out — the HTML comment records that the `/v1/stats` CORS allowance is not yet deployed — so the live-network strip is not rendered; the console's `/stats` page, which goes through `/api/stats`, is the working equivalent.
-
-## Marketing site (`marketing-ui/`)
-
-The Next.js site imported from eigen-homepages is a separate npm application.
-Its source, content, media, fonts, and configuration live in `marketing-ui/`;
-it shares no code or build dependencies with the console or the older static
-landing site. See the [marketing README](../../../marketing-ui/README.md).
-
-The browser calls same-origin routes under `marketing-ui/src/app/api/`:
+The browser calls same-origin routes under `landing/src/app/api/`:
 `chat/route.ts` proxies coordinator inference and usage-ledger requests,
 `network/route.ts` combines console stats with coordinator earnings,
 `about/route.ts` loads fleet stats and the model catalog/pricing, and
@@ -316,9 +297,12 @@ webhook. Credentials stay on the server. The network route retains a fixed
 fallback snapshot when upstream stats are unavailable; the chat route
 returns an unavailable response when its credential is absent.
 
-Deployment uses `marketing-ui` as the project root and requires a Next.js
-server for the API routes. Importing these files does not change the domains
-or deployment settings of either marketing site.
+Deployment uses `landing` as the project root and requires a Next.js
+server for the API routes. `landing/next.config.ts` redirects `/index.html`,
+`/terms.html` and `/privacy.html` to the new routes. The terms and privacy
+text is preserved. The old homepage calculator is removed; the console
+calculator remains at `console-ui/src/app/earn/`. The original
+`landing/assets/cube-hero.png` stays in place for pinned vision fixtures.
 
 ## Visual reference
 

@@ -203,8 +203,7 @@ provider, with the Python runner and original oracles owned by this repository.
 | `provider-swift/` | SwiftPM | Products: `darkbloom` (CLI), `darkbloom-enclave`, `darkbloom-fan-helper`, `darkbloom-publish`; libraries `ProviderCore`, `ProviderCoreFoundation`, `DarkbloomFan*`. Platform `macOS 14+`. |
 | `console-ui/` | Next.js 16 / React 19 | `npm`; tests with Vitest. |
 | `admin-ui/` | Next.js 16 / React 19 | `npm`; dev/start on port `4001`. |
-| `landing/` | static HTML/JS | No build step; `earn-calculator-core.test.js` runs with `node --test`. |
-| `marketing-ui/` | Next.js 16 / React 19 | Standalone npm app; `make marketing` installs, lints and builds; dev/start on port `3008`. |
+| `landing/` | Next.js 16 / React 19 | Standalone npm app; `make landing` installs, lints, builds and runs route tests; dev/start on port `3008`. |
 | `Makefile` | — | Every target below; `make help` lists them. |
 
 Provider tests are grouped by subsystem inside their existing SwiftPM targets.
@@ -555,26 +554,22 @@ npm run build    # next build
 npm run dev      # next dev -p 4001
 ```
 
-### 8. Marketing sites
+### 8. Landing page
 
-Static files in `landing/` (`index.html`, `earn-calculator*.js`, `terms.html`,
-`privacy.html`); nothing to build. Run its one test with
-`node --test landing/earn-calculator-core.test.js`.
-
-The imported Next.js site lives in `marketing-ui/` and has its own npm
+The imported Next.js site lives in `landing/` and has its own npm
 lockfile and configuration. It does not depend on the eigen-homepages
 workspace. From the repository root:
 
 ```bash
-make marketing
-cd marketing-ui && npm run dev
+make landing
+cd landing && npm run dev
 ```
 
-Copy `marketing-ui/.env.example` to `.env.local` inside that directory to
+Copy `landing/.env.example` to `.env.local` inside that directory to
 configure runtime integrations. A production build needs no credentials.
-The hosting root is `marketing-ui`, with the Next.js preset; its API routes
+The hosting root is `landing`, with the Next.js preset; its API routes
 require a server runtime rather than a static export. See the
-[marketing README](../../marketing-ui/README.md) for deployment handoff.
+[marketing README](../../landing/README.md) for deployment handoff.
 
 ### 9. Coordinator container image
 

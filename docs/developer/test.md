@@ -1383,14 +1383,15 @@ make ui-test                     # cd console-ui && npm test  (vitest run)
 make ui-lint                     # npx eslint src/
 make ui-build                    # next build
 cd admin-ui && npm test && npm run lint && npm run build
-node --test landing/earn-calculator-core.test.js
-make marketing                  # standalone install, lint and production build
+make landing                    # standalone install, lint, build and HTTP route tests
 ```
 
-The marketing app has no automated interaction suite. Its path-filtered
-`.github/workflows/marketing-ui.yml` workflow runs `npm ci`, lint and the
-production build, including TypeScript checks. For a migration or deployment,
-start it on port `3008` and check `/`, `/about`, `/privacy`, `/terms`, the
+The path-filtered `.github/workflows/landing.yml` workflow runs `npm ci`,
+lint, the production build (including TypeScript checks), and `npm test`.
+The Node test suite in `landing/tests/routes.test.mjs` starts an isolated
+production server to verify pages, legacy redirects, assets and unconfigured
+API responses without production credentials or upstream requests. For a
+migration or deployment, start it on port `3008` and check `/`, `/about`, `/privacy`, `/terms`, the
 `/docs` redirect, fonts/media, desktop and mobile scrolling, and chat states.
 Verify `/api/network` and `/api/about` against the configured upstreams;
 without a key, `/api/chat` should return `503`. Exercise story delivery with

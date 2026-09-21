@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-20 · commit `826fa102e`
+> Last updated: 2026-09-20 · commit `76a8f03d9`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -358,6 +358,10 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 ```
 
 ### 2. Coordinator (Go)
+
+The Go module lives at the repository root. Run `go test ./coordinator/...`
+there to select coordinator packages; keep component `cd` commands in separate
+shells when following the repository README examples.
 
 Run prediction telemetry checks from the repository root:
 
@@ -1383,6 +1387,10 @@ node --test landing/earn-calculator-core.test.js
 ```
 
 ### 6. Scripts and release integrity
+
+`python3 scripts/test_operations_scripts.py` checks admin JSON fields, fleet
+partial-failure exit status and smoke-file ownership using stub transports. It
+makes no network request, writes no login token and updates no host.
 
 ```bash
 make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contbatch/tests -t .   (in scripts/)

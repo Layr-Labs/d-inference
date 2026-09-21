@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-20 · commit `826fa102e`
+> Last updated: 2026-09-20 · commit `76a8f03d9`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -34,6 +34,10 @@ production build or substitute its benchmark archive with a test binary.
 Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 `scripts/publish-model.sh` to registration. See the
 [model publishing procedure](../operations/model-migration.md).
+
+The admin, smoke and fleet helpers use the tools pinned here. Their local fixture
+checks are covered by [script validation](test.md#6-scripts-and-release-integrity);
+the [dev operations runbook](../operations/dev-environment.md) covers invocation.
 
 Profiler wire changes require both coordinator and provider builds; the shared
 Go/Swift fixture and focused checks are described in [test.md](test.md) and
@@ -88,6 +92,9 @@ See the [release cache procedure](../operations/provider-release.md#prepare-and-
 for first-run costs and rerun behavior.
 
 ## Prerequisites
+
+- Start commands from the repository root. Component examples that use
+  `(cd path && command)` run in a subshell and preserve your current directory.
 
 - **Toolchain via [`mise`](https://mise.jdx.dev/).** Every version is pinned in
   [`mise.toml`](../../mise.toml); `mise install` installs them all.

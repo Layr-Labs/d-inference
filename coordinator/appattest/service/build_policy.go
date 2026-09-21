@@ -23,8 +23,11 @@ func qualifiedAppAttestBuild(configured, hash string) bool {
 // the same final signed artifact. No client field can add a mapping. The active
 // release catalog and separate qualification allowlist must also approve it.
 func qualifiedAppAttestMeasurement(configured, binaryHash string, metadata *appattest.Key) (known, matched bool) {
-	measurement := metadata.CodeDirectorySHA256()
-	if !appAttestSHA256Hex(binaryHash) || len(measurement) == 0 || strings.TrimSpace(configured) == "" {
+	return qualifiedAppAttestCode(configured, binaryHash, hex.EncodeToString(metadata.CodeDirectorySHA256()))
+}
+
+func qualifiedAppAttestCode(configured, binaryHash, measurement string) (known, matched bool) {
+	if !appAttestSHA256Hex(binaryHash) || !appAttestSHA256Hex(measurement) || strings.TrimSpace(configured) == "" {
 		return false, false
 	}
 	expected := ""
@@ -40,7 +43,7 @@ func qualifiedAppAttestMeasurement(configured, binaryHash string, metadata *appa
 			expected = code
 		}
 	}
-	return expected != "", expected != "" && expected == hex.EncodeToString(measurement)
+	return expected != "", expected != "" && expected == measurement
 }
 
 func appAttestSHA256Hex(hash string) bool {

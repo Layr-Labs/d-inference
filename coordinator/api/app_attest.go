@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"github.com/eigeninference/d-inference/coordinator/store"
+	"reflect"
 
 	attestservice "github.com/eigeninference/d-inference/coordinator/appattest/service"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -25,6 +27,7 @@ func (s *Server) appAttestFeature() *attestservice.Service {
 			},
 			SendTrustStatus:      s.sendTrustStatus,
 			CurrentReleasePolicy: s.currentAppAttestReleasePolicy,
+			RefreshReleasePolicy: s.refreshAppAttestReleaseCatalog,
 		})
 	})
 	return s.appAttest
@@ -53,6 +56,16 @@ func (s *Server) currentAppAttestReleasePolicy() attestservice.ReleasePolicy {
 		return attestservice.ReleasePolicy{}
 	}
 	return attestservice.ReleasePolicy{Generation: snapshot.Generation, Known: len(snapshot.ByBinaryHash) > 0,
+		ContainsQualifiedRelease: func(release store.Release) bool {
+			expected := &releaseTrustPolicySnapshot{ByBinaryHash: make(map[string][]approvedReleasePolicy)}
+			expected.addRelease(&release, release.BinaryHash)
+			for _, policy := range snapshot.ByBinaryHash[release.BinaryHash] {
+				if reflect.DeepEqual(policy, expected.ByBinaryHash[release.BinaryHash][0]) {
+					return true
+				}
+			}
+			return false
+		},
 		Approves: func(p *registry.Provider, status *protocol.AppAttestStatus) bool {
 			return appAttestReleaseApproved(snapshot, p, status)
 		}}

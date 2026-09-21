@@ -39,6 +39,14 @@ created: "2026-05-14"
 # computation correctness, or move inference into the Secure Enclave. Final
 # signed-artifact and physical SIP/boot-security transition qualification remain
 # required before enabling serving or scoped Darkbloom profile removal.
+# Durable build qualification added 2026-09-20: an independently authenticated
+# operator approves the exact signed binary, full CodeDirectory, bundle/runtime,
+# source and CI provenance. CI release keys cannot grant approval. Publication
+# atomically checks the approval under the revocation row lock; stale cached
+# authorization cannot extend beyond a 30s qualification snapshot or survive a
+# local qualification-generation change. Revocation tombstones override legacy
+# env mappings and persist across restarts. Signed physical-Mac qualification
+# remains an operator evidence requirement, never inferred from a CI green check.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference

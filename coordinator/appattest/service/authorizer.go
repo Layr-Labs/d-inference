@@ -199,6 +199,7 @@ func (a *authorizer) apply(p *registry.Provider, record *appAttestAuthorizationR
 	snapshot := a.s.currentReleasePolicySnapshot()
 	e.CatalogKnown = snapshot != nil && snapshot.Known
 	e.BuildMatched = appAttestReleaseApproved(snapshot, p, &record.status)
+	qualificationGeneration, qualificationUntil := a.s.applyBuildQualification(&e, &record.status, snapshot)
 	verdict := appattest.EvaluateAuthorization(e, time.Now().UTC())
 	if verdict.Outcome != "eligible" || snapshot == nil {
 		if verdict.Outcome != "unknown" {
@@ -208,10 +209,11 @@ func (a *authorizer) apply(p *registry.Provider, record *appAttestAuthorizationR
 		return false
 	}
 	until := minAuthorizationTime(verdict.ValidUntil, observedAt.Add(appAttestRevocationFreshness))
+	until = minAuthorizationTime(until, qualificationUntil)
 	lease := registry.AppAttestServingAuthorization{
 		AccountID: e.Binding.Account, MachineID: e.Binding.Machine, CredentialID: e.Binding.Credential,
 		ConnectionID: p.ID, ProofSessionID: record.proofSession, Endpoint: e.Binding.Endpoint,
-		PolicyGeneration: snapshot.Generation, IssuedAt: e.AssertionAt, ValidUntil: until,
+		PolicyGeneration: snapshot.Generation, QualificationGeneration: qualificationGeneration, IssuedAt: e.AssertionAt, ValidUntil: until,
 		MachineModel: record.status.MachineModel,
 	}
 	lease.MemoryGB, _ = strconv.Atoi(record.status.MemoryGB)

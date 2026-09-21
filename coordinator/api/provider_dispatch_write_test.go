@@ -226,7 +226,7 @@ func TestUnauthorizedRetryDoesNotIncreasePreviouslyCommittedExhaustionCount(t *t
 }
 
 func TestQueuedAppAttestExpiryOrRevocationDoesNotPublishDispatch(t *testing.T) {
-	for _, reason := range []string{"expired", "revoked"} {
+	for _, reason := range []string{"expired", "revoked", "build_revoked"} {
 		t.Run(reason, func(t *testing.T) {
 			s, p, peer := dispatchAccountingProvider(t)
 			p.Mu().Lock()
@@ -255,6 +255,8 @@ func TestQueuedAppAttestExpiryOrRevocationDoesNotPublishDispatch(t *testing.T) {
 			metadata, err := d.writeQueuedProviderInferenceRequest(context.Background(), func(at time.Time) ([]byte, error) {
 				if reason == "expired" {
 					<-time.After(time.Until(lease.ValidUntil))
+				} else if reason == "build_revoked" {
+					s.registry.SetAppAttestQualificationGeneration(1)
 				} else {
 					s.registry.RevokeAppAttestCredential(lease.CredentialID)
 				}

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -25,6 +26,9 @@ func TestFirstProofReadinessOutageRetriesEarlyAndRecovers(t *testing.T) {
 			t.Fatalf("first readiness retry delay=%s, want one minute", delay)
 		}
 		time.Sleep(time.Minute)
+		if err := s.RefreshBuildQualifications(context.Background()); err != nil {
+			t.Fatal(err)
+		}
 		// The retry supplies a new verified assertion. The recovered lookup
 		// must still qualify it before any refresh record or grant is created.
 		e.AssertionAt = time.Now()

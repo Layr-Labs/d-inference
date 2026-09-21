@@ -16,6 +16,7 @@ appattest/
     archive.go, storage.go         Durable evidence recording and shared storage limits
     receipt*.go, maintenance.go    Receipt renewal and evidence recovery
     inventory*.go                 Identity/OS observations and reconciliation workers
+    build_qualifications.go         Durable approval snapshots, expiry and revocation fencing
     authorizer.go, policy.go       Current serving authorization and revocation refresh
     authorization*.go             Identity association, readiness and operator status
     *_test.go                     Feature unit tests beside the code under test

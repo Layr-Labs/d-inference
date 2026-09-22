@@ -11,6 +11,8 @@ The legacy levels and flags below retain their meaning. With the explicit servin
 
 The [durable build qualification policy](../../reference/provider-authorization.md#durable-build-qualification) adds a separate qualification generation to App Attest leases. `coordinator/appattest/service/authorizer.go` (`apply`) recomputes the build/code match using the current approved record and retained Apple-signed full measurement; cached true booleans cannot survive withdrawal. `coordinator/registry/app_attest_authorization.go` (`providerHasAppAttestAuthorizationLocked`) rejects stale generations at every shared dispatch gate. Qualification expiry is independent of assertion and receipt expiry.
 
+MDM removal guidance is a separate local operation. `provider-swift/Sources/ProviderCore/Security/DarkbloomMDMRemoval.swift` (`installedTarget`) validates the exact Darkbloom profile and, when needed, uses `ProfileInventoryAuthorization.readAuthenticatedProfiles` for a fixed read-only inventory. That helper retains the foreground terminal process group for native `sudo` authentication, inherits only terminal input/error and captured XML output, and returns no target on denial. The CLI never removes the profile itself or grants serving permission; coordinator authorization still gates the App Attest path.
+
 ## Presentation and dispatch history
 
 `coordinator/registry/verification.go` (`ProviderVerificationAndAuthorization`) evaluates the
@@ -32,7 +34,6 @@ so store work between aggregation stages cannot mix connection generations. See
 for cache bounds and unknown-field behavior. No raw Apple certificate or receipt
 is added to public/owner presentation; detailed archive access remains on its
 existing authorized operations path.
-
 
 ## Context
 

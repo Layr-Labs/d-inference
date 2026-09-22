@@ -11,6 +11,8 @@ identity-bearing evidence behind it.
 
 An App Attest grant also depends on a fresh [durable build qualification](../reference/provider-authorization.md#durable-build-qualification). Withdrawing it fences old qualification generations; cached download metadata or a prior successful signature cannot grant new dispatch. Independently valid legacy verification remains a separate serving path.
 
+Local profile-inventory authentication during `darkbloom unenroll` only identifies the Darkbloom enrollment for user-guided removal. It does not verify or extend serving authorization; the [provider procedure](../provider/attestation.md#app-attest-without-darkbloom-mdm) explains the separate coordinator readiness requirement.
+
 ## Read verification in chat and network stats
 
 Open a response's verification panel to see **Verified via App Attest**,
@@ -38,7 +40,6 @@ does not independently validate Apple evidence. App Attest does not certify RAM
 or chip reports, guarantee memory wiping, prove computation correctness, or
 remove the coordinator as a plaintext endpoint; see
 [encryption boundaries](../architecture/security/encryption.md).
-
 
 ## Public attestation endpoint
 

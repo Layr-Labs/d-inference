@@ -40,6 +40,8 @@
 
 ### MDM-optional provider authorization
 
+- Keep the interactive `darkbloom unenroll` administrator profile inventory in the foreground terminal group so `sudo` can hide password input and complete the read. Denied and noninteractive reads withhold removal guidance without changing profiles or authorization.
+
 - Warn on stderr for every CLI invocation below macOS 27, including help/version, while preserving commands and JSON output. Add prominent setup/dashboard upgrade notices, distinguish older from unknown reported OS versions, and retain legacy service during the transition.
 - Show current App Attest authorization on the owner dashboard without demanding legacy MDM verification; expire cached grants locally if polling fails and preserve independent legacy proof fields.
 

@@ -64,17 +64,31 @@ public enum DarkbloomMDMRemoval {
         allowAdministratorPrompt: Bool = false,
         beforeAdministratorPrompt: (() -> Void)? = nil
     ) -> DarkbloomMDMRemovalTarget? {
+        installedTarget(coordinatorURL: coordinatorURL, allowAdministratorPrompt: allowAdministratorPrompt,
+                        beforeAdministratorPrompt: beforeAdministratorPrompt,
+                        read: { readProfiles(executable: $0, arguments: $1, showErrors: $2) },
+                        readAuthenticated: { ProfileInventoryAuthorization.readAuthenticatedProfiles(arguments: $0) })
+    }
+
+    /// Test seam for credential gating and the fixed, noninteractive read argv.
+    static func installedTarget(
+        coordinatorURL: String,
+        allowAdministratorPrompt: Bool,
+        beforeAdministratorPrompt: (() -> Void)?,
+        read: (String, [String], Bool) -> Data?,
+        readAuthenticated: ([String]) -> Data?
+    ) -> DarkbloomMDMRemovalTarget? {
         let arguments = ["show", "-type", "configuration", "-output", "stdout-xml"]
-        if let data = readProfiles(executable: "/usr/bin/profiles", arguments: arguments),
+        if let data = read("/usr/bin/profiles", arguments, false),
            let target = target(in: data, coordinatorURL: coordinatorURL) { return target }
         // Device-level configuration may not appear in the unprivileged
         // user's inventory. Elevate only this fixed read command after an
         // explicit interactive migration action, never the provider process.
         guard allowAdministratorPrompt else { return nil }
         beforeAdministratorPrompt?()
-        guard let data = readProfiles(executable: "/usr/bin/sudo",
-                                      arguments: ["--", "/usr/bin/profiles"] + arguments + ["-all"],
-                                      showErrors: true) else { return nil }
+        // The sudo/profile read stays in this terminal's foreground process
+        // group so the native password prompt can turn echo off safely.
+        guard let data = readAuthenticated(arguments + ["-all"]) else { return nil }
         return target(in: data, coordinatorURL: coordinatorURL)
     }
 

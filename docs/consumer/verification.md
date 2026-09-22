@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-22 · commit `ce809b792`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -103,6 +103,9 @@ hash using its `AttestationSigner`
 `responseBody` is the producer's accumulated content, reasoning and encoded
 tool calls, not the final coordinator JSON or SSE representation
 (`ProviderLoop.handleInferenceRequest`, `provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`).
+For System One, the producer signs its original native decision JSON before
+the coordinator rewrites the public model alias and adds response metadata
+(`ProviderLoop.handleSystemOneRequest`, `provider-swift/Sources/ProviderCore/ProviderLoop+SystemOne.swift`).
 
 Field presence alone is not verification. Verify the signature against the
 provided hash and the matching provider key; do not compare the hash with a

@@ -398,6 +398,15 @@ func liveRemainingBudget(snap *routingSnapshot) (budget int64, known bool) {
 // open. A reqMaxTokens ≤ 0 is normalized to defaultRequestedMaxTokens, the
 // same defaulting the pending-budget accounting applies.
 func providerBudgetFits(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int) (fits, known bool) {
+	if reqMaxTokens <= 0 {
+		reqMaxTokens = defaultRequestedMaxTokens
+	}
+	return providerBudgetFitsExact(snap, reqPromptTokens, reqMaxTokens)
+}
+
+// providerBudgetFitsExact consumes already-normalized admission estimates.
+// Native decision requests intentionally retain zero output tokens.
+func providerBudgetFitsExact(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int) (fits, known bool) {
 	budget, known := liveRemainingBudget(snap)
 	if !known {
 		return true, false
@@ -406,10 +415,7 @@ func providerBudgetFits(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int
 	if prompt < 0 {
 		prompt = 0
 	}
-	maxTok := reqMaxTokens
-	if maxTok <= 0 {
-		maxTok = defaultRequestedMaxTokens
-	}
+	maxTok := max(0, reqMaxTokens)
 	return int64(prompt)+int64(maxTok) <= budget, true
 }
 
@@ -438,7 +444,7 @@ func (r *Registry) PredictServable(model string, estimatedPromptTokens, contextP
 		reqContextPrompt = reqPrompt
 	}
 	reqMax := requestedMaxTokens
-	if reqMax <= 0 {
+	if reqMax <= 0 && !traits.SystemOne {
 		reqMax = defaultRequestedMaxTokens
 	}
 	budgetRequestTokens := reqPrompt + reqMax

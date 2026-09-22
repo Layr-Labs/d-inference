@@ -216,7 +216,7 @@ extension ProviderLoop {
         // resident-slot return.
         try throwIfRetiring(modelId)
 
-        if modelSlots[modelId] != nil {
+        if isModelResident(modelId) {
             return
         }
 
@@ -234,7 +234,7 @@ extension ProviderLoop {
             // on may have FAILED its self-test and begun retiring while we
             // were parked.
             try throwIfRetiring(modelId)
-            if modelSlots[modelId] != nil { return }
+            if isModelResident(modelId) { return }
             try await ensureModelLoaded(
                 modelId: modelId, allowEviction: allowEviction)
             return
@@ -269,7 +269,7 @@ extension ProviderLoop {
         // begun retiring this model meanwhile; the resident return below
         // must not hand the request to the failed build.
         try throwIfRetiring(modelId)
-        if modelSlots[modelId] != nil { return }
+        if isModelResident(modelId) { return }
         if modelsLoading.contains(modelId) {
             try await ensureModelLoaded(
                 modelId: modelId, allowEviction: allowEviction)
@@ -291,12 +291,20 @@ extension ProviderLoop {
             }
             // Same rule at the load-gate wait's resident return.
             try throwIfRetiring(modelId)
-            if modelSlots[modelId] != nil { return }
+            if isModelResident(modelId) { return }
         }
         isLoadingAny = true
 
+        do {
+            try await prepareDecisionExclusivity(modelId: modelId, isDecision: modelInfo.systemOne == true, allowEviction: allowEviction)
+        } catch {
+            isLoadingAny = false
+            releaseLoadGateWaiters()
+            throw error
+        }
+
         // Re-check slot cap after gate (another load may have consumed a slot)
-        if modelSlots.count >= maxModelSlots {
+        if residentModelIDs.count >= maxModelSlots {
             let evictable = evictableModelSlots()
             if evictable.isEmpty || !allowEviction {
                 isLoadingAny = false
@@ -412,8 +420,8 @@ extension ProviderLoop {
             let preLoadHash = try await captureWeightHash(
                 modelId: modelId,
                 modelPath: modelPath,
-                requireFreshCryptographicHash: reusableSSDRequested)
-            if !reusableSSDRequested {
+                requireFreshCryptographicHash: reusableSSDRequested || modelInfo.systemOne == true)
+            if !reusableSSDRequested && modelInfo.systemOne != true {
                 await publishWeightHash(modelId: modelId, snapshot: preLoadHash)
             }
 
@@ -440,6 +448,20 @@ extension ProviderLoop {
             // weights BEFORE survivor grants are restored/regrown. Never
             // bind `borrow()` to a long-lived local — that would keep the
             // weights alive past `release()`.
+            if modelInfo.systemOne == true {
+                try await installDecisionSlot(modelId: modelId, directory: modelPath, modelInfo: modelInfo, preLoadHash: preLoadHash, lease: acceptedLoad, startedAt: loadStartedAt)
+                await kvBudget.finishPendingLoad(acceptedLoad)
+                pendingLoadLeases.removeValue(forKey: modelId)
+                modelsLoading.remove(modelId)
+                isLoadingAny = false
+                for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] { waiter.resume() }
+                releaseLoadGateWaiters()
+                syncWarmModelState()
+                persistLoadedModelSet()
+                await updateAggregateCapacity()
+                await retryReserveDeferredPrefetches()
+                return
+            }
             let newcomer = EngineV2NewcomerBox(try await loadModelContainer(from: modelPath, modelID: modelId))
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
@@ -841,6 +863,9 @@ extension ProviderLoop {
             || requestToModel.values.contains(modelId) || hasLocalReservation(modelId)) {
             return false
         }
+        if decisionSlots[modelId] != nil {
+            return await unloadDecisionSlot(modelId, forEviction: forEviction)
+        }
         // Bind only the bridge, never the whole slot: remove the slot's
         // container and opaque drafter ownership before the cache purge,
         // without extending it through a local. Explicit retirement can leave
@@ -900,16 +925,15 @@ extension ProviderLoop {
     /// state. Idle/unloaded advertised models remain absent.
     internal func loadedModelHashesSnapshot() -> [String: String] {
         var result: [String: String] = [:]
-        for modelId in modelSlots.keys where !modelsUnloading.contains(modelId) {
+        for modelId in residentModelIDs where !modelsUnloading.contains(modelId) {
             result[modelId] = liveModelHashes[modelId] ?? ""
         }
         return result
     }
 
     internal func syncWarmModelState() {
-        let loaded = modelSlots.keys.filter { !modelsUnloading.contains($0) }.sorted()
-        state.warmModels = loaded
-        let activeSlots = modelSlots.filter { !modelsUnloading.contains($0.key) }
+        let activeSlots = residentModelFacts.filter { !modelsUnloading.contains($0.key) }
+        state.warmModels = activeSlots.keys.sorted()
         let inflightModels = Set(requestToModel.values)
         let currentCandidates = activeSlots.filter { inflightModels.contains($0.key) }
         let candidates = currentCandidates.isEmpty ? activeSlots : currentCandidates
@@ -970,7 +994,7 @@ extension ProviderLoop {
             // reserve push and its insert into advertisedModels) are in
             // the basis too, so a load admitted during that push already
             // sees the raised floor — see `pendingAdvertise`.
-            modelIDs: Array(advertisedModels.keys) + Array(modelSlots.keys)
+            modelIDs: Array(advertisedModels.keys) + Array(residentModelIDs)
                 + Array(modelsLoading) + Array(pendingAdvertise))
     }
 
@@ -1008,19 +1032,20 @@ extension ProviderLoop {
     /// One actor-local eviction snapshot shared by slot-cap, memory-load and
     /// pre-accept admission decisions. Callers still recheck after suspension;
     /// unloadModel(forEviction:) is the authoritative final gate.
-    private func evictableModelSlots() -> [String: ModelSlot] {
+    private func evictableModelSlots() -> [String: ResidentModelFacts] {
         let modelsWithInflight = Set(requestToModel.values)
-        return modelSlots.filter {
+        return residentModelFacts.filter {
             !modelsWithInflight.contains($0.key)
+                && !decisionRequestOwners.values.contains($0.key)
                 && !hasLocalReservation($0.key)
                 && !modelsUnloading.contains($0.key)
                 && !isMTPUpgradeTargetRetained($0.key)
         }
     }
 
-    private func reclaimableMemoryGb(from slots: [String: ModelSlot]) -> Double {
+    private func reclaimableMemoryGb(from slots: [String: ResidentModelFacts]) -> Double {
         slots.reduce(0.0) {
-            $0 + Double(max(0, $1.value.sizing.weightsBytes)) / 1_073_741_824.0
+            $0 + Double(max(0, $1.value.weightsBytes)) / 1_073_741_824.0
         } + Double(max(0, MLX.GPU.cacheMemory)) / 1_073_741_824.0
     }
 
@@ -1142,8 +1167,9 @@ extension ProviderLoop {
         if isRefusedByRetirement(modelId) {
             return true
         }
+        if !decisionExclusivityAvailable(modelId: modelId) { return true }
         // Already resident — definitely serviceable.
-        if modelSlots[modelId] != nil {
+        if isModelResident(modelId) {
             return false
         }
 
@@ -1180,7 +1206,7 @@ extension ProviderLoop {
         if isRefusedByRetirement(modelId) {
             return true
         }
-        if modelSlots[modelId] != nil {
+        if isModelResident(modelId) {
             return false
         }
 
@@ -1218,7 +1244,7 @@ extension ProviderLoop {
             if isRefusedByRetirement(modelId) {  // retirement began mid-retry
                 return true
             }
-            if modelSlots[modelId] != nil {  // a concurrent load won the race
+            if isModelResident(modelId) {  // a concurrent load won the race
                 return false
             }
             if retried < requiredGb && !(Qwen4SupportPolicy.isQwen4ModelType(modelInfo.modelType)
@@ -1229,7 +1255,7 @@ extension ProviderLoop {
 
         // Mirrors the slot-cap guard in ensureModelLoaded: all slots full and
         // none idle to evict.
-        if modelSlots.count >= maxModelSlots && !hasEvictable {
+        if residentModelIDs.count >= maxModelSlots && !hasEvictable {
             return true
         }
 

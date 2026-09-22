@@ -1,8 +1,26 @@
 # Models reference
 
-> Last updated: 2026-09-17 · commit `954f570d1`
+> Last updated: 2026-09-22 · commit `ce809b792`
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
+
+## Native decision models
+
+Laya is served through [`POST /v1/systemone`](system-one.md), with `choice`,
+`score` and `noul` questions. Native decision models have catalog capability
+`system_one` and require a provider that advertises `system_one: true`.
+Chat-completion requests cannot select a decision-only model. A model listing,
+public alias, enabled campaign and prices remain operator-managed catalog
+state; native library support does not publish or activate a listing
+(`coordinator/registry/request_traits.go`, `providerEligibleForTraitsLocked`;
+`provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift`, `parseModelInfo`).
+
+The console keeps decision models in the model library and API-key model
+allowlists. Their catalog rows show the System One endpoint and API
+documentation. Chat selection, send and retry paths exclude them; a stale
+selection falls back to the first eligible chat model
+(`console-ui/src/lib/model-capabilities.ts`, `isDecisionModel`;
+`console-ui/src/lib/store.ts`, `setModels`).
 
 ## `GET /v1/models`
 

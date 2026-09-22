@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-20 · commit `76a8f03d9`
+> Last updated: 2026-09-22 · commit `ce809b792`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -122,10 +122,10 @@ for first-run costs and rerun behavior.
 
 The provider consumes the local packages through immutable Git submodule pins:
 
-| Package | Merged revision | Included update |
+| Package | Pinned revision | Included update |
 |---|---|---|
 | `libs/mlx-swift` | `0f4fe403bef6899e8a72882bc6d4036a7a62ae31` | [PR #28](https://github.com/Layr-Labs/mlx-swift/pull/28): exact constant reuse for eligible Bonsai packed projections |
-| `libs/mlx-swift-lm` | `e22fc82bdb7bfbd93874d56c7df9ca3306782b09` | [PR #155](https://github.com/Layr-Labs/mlx-swift-lm/pull/155): exact Bonsai carry scheduling and safe HTTP failures |
+| `libs/mlx-swift-lm` | `327af8b9412be6967873077682d67d9b6fe6ba9a` | [PR #156](https://github.com/Layr-Labs/mlx-swift-lm/pull/156): native Laya typed decisions, local HTTP serving and numerical qualification; retains the existing Bonsai updates |
 
 Keep both local packages in the provider build. The SDK's standalone package
 manifest can still reference a pre-merge Swift review revision; the nested-test
@@ -133,6 +133,23 @@ procedure in [test.md](test.md#4-provider-swift--unit-tests-with-a-source-matche
 Swift gitlink. The MLX core and C-wrapper pins are unchanged by this update.
 Rebuild the consumer after changing pins; earlier full-model measurements are
 evidence for their recorded dependency set, not a new benchmark of these pins.
+
+### Native Laya decisions
+
+The provider links the SDK's `MLXDecisions` product for native bidirectional
+inference. Build the local qualification executable through the provider graph
+to use the same local MLX dependencies:
+
+```bash
+swift build --package-path provider-swift --product laya-probe
+./scripts/fetch-metallib.sh "$PWD/provider-swift/.build/debug"
+```
+
+`laya-probe` accepts a local checkpoint and System One request JSON. A separate
+local HTTP mode is available in `mlx-server --model-type laya`; this mode loads
+the decision runtime without an autoregressive model container. See
+[Laya onboarding](../operations/laya-onboarding.md) and
+[native decision tests](test.md#native-laya-decision-qualification).
 
 ### Native Flash-Next candidate
 

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-20 · commit `a26b1107b`
+> Last updated: 2026-09-22 · commit `ce809b792`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -81,6 +81,14 @@ Exit 1 (`ExitCode.failure`) when `--local` and `--local-endpoint` are combined,
 a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
 detection fails, no model is selected, or the local server does not bind within
 5 s (`StartCommand+Preflight.swift`, `StartCommand+Modes.swift`).
+
+`--local-endpoint` also exposes `POST /v1/systemone` for configured native
+Laya checkpoints, using the same local bearer token. The native model is
+served through `ProviderLoop`'s decision slot and shared load gate; the
+coordinator-less `--local` engine remains autoregressive. See
+[native inference](../architecture/inference.md#native-system-one-decisions)
+and the [request contract](../consumer/system-one.md)
+(`provider-swift/Sources/ProviderCore/ProviderLoop+LocalEndpoint.swift`, `startLocalEndpoint`).
 
 ### `darkbloom stop`
 

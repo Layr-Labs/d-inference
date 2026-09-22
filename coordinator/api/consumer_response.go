@@ -52,6 +52,10 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 					}
 				default:
 				}
+				if pr.ConsumerEndpoint == systemOneEndpoint {
+					s.writeSystemOneResponse(ctx, w, pr, chunks)
+					return
+				}
 				// The provider forwards the raw backend response as a single
 				// chunk. Detect complete responses (object=chat.completion
 				// or object=response) and pass through directly — this is

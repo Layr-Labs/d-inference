@@ -45,6 +45,15 @@ const catalogFixture = {
       size_gb: 1,
       metadata: {},
     },
+    {
+      id: "vendor/decisions",
+      display_name: "Native decisions",
+      model_type: "laya",
+      capabilities: ["system_one"],
+      supported_features: ["system_one"],
+      output_modalities: ["decision"],
+      metadata: {},
+    },
   ],
   aliases: [
     {
@@ -61,10 +70,14 @@ let previousCoordinatorUrl: string | undefined;
 
 beforeAll(async () => {
   server = createServer((req, res) => {
-    const path = new URL(req.url ?? "/", "http://localhost").pathname;
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const path = url.pathname;
     if (path === "/v1/models/catalog") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(catalogFixture));
+      const models = url.searchParams.get("type") === "text"
+        ? catalogFixture.models.filter((model) => model.model_type === "text")
+        : catalogFixture.models;
+      res.end(JSON.stringify({ ...catalogFixture, models }));
       return;
     }
     if (path === "/v1/models/capacity") {
@@ -100,6 +113,14 @@ async function fetchPublicCatalog() {
 }
 
 describe("GET /api/models (public catalog)", () => {
+  it("retains native decision models and their capability metadata in the full catalog", async () => {
+    const rows = await fetchPublicCatalog();
+    const native = rows.get("vendor/decisions");
+    expect(native?.output_modalities).toEqual(["decision"]);
+    expect(native?.supported_features).toEqual(["system_one"]);
+    expect(native?.metadata).toMatchObject({ capabilities: ["system_one"] });
+  });
+
   it("passes required_provider_capabilities through to the public alias row", async () => {
     const rows = await fetchPublicCatalog();
     // The concrete build is hidden behind its alias; the alias inherits the gate.

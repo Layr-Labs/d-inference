@@ -12,9 +12,11 @@ const mocks = vi.hoisted(() => ({
   retry: vi.fn(),
   auth: { authenticated: true, apiKeyReady: true, ready: true, login: vi.fn() },
 }));
+const DECISION_MODEL_NAME = "Decision model";
 const models: Model[] = [
   { id: "test/text", object: "model", display_name: "Text model", input_modalities: ["text"] },
   { id: "test/vision", object: "model", display_name: "Vision model", input_modalities: ["text", "image"] },
+  { id: "test/decision", object: "model", display_name: DECISION_MODEL_NAME, capabilities: ["system_one"], output_modalities: ["decision"] },
 ];
 const SEND_LABEL = "Send message";
 const EDITED_PROMPT = "Help me debug this Swift function.";
@@ -37,6 +39,27 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Chat workspace", () => {
+  it("repairs a persisted decision selection and exposes only chat models after catalog loading", async () => {
+    useStore.setState({ selectedModel: models[2].id, models: [] });
+    render(<ChatPage />);
+    await waitFor(() => expect(useStore.getState().selectedModel).toBe(models[0].id));
+    expect(useStore.getState().models.map((model) => model.id)).toEqual([models[0].id, models[1].id]);
+    fireEvent.click(screen.getByRole("button", { name: "Choose model: Text model" }));
+    expect(screen.queryByText(DECISION_MODEL_NAME)).not.toBeInTheDocument();
+  });
+
+  it("keeps a decision model out of the selector and blocks sending before selection is repaired", () => {
+    useStore.setState({ selectedModel: models[2].id });
+    render(<ChatInput onSend={mocks.send} onStop={mocks.stop} isStreaming={false} />);
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Do not send this to decisions." } });
+    expect(screen.getByRole("button", { name: SEND_LABEL })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
+    expect(mocks.send).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Choose model: Choose a model" }));
+    expect(screen.queryByText(DECISION_MODEL_NAME)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Text model Text" })).toBeInTheDocument();
+  });
+
   it("puts a suggested prompt in an editable draft without sending it", async () => {
     render(<ChatPage />);
     await act(async () => {});

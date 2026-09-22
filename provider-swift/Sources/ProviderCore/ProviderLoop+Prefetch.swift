@@ -260,7 +260,7 @@ extension ProviderLoop {
     /// re-hashes), so we do not pay a full re-download for a good build — but we
     /// never report `.verified` for an unverified snapshot.
     internal func prefetchPreCheck(modelId: String) -> PrefetchPreCheck {
-        if modelSlots[modelId] != nil { return .alreadyAvailable }
+        if isModelResident(modelId) { return .alreadyAvailable }
         if advertisedModels[modelId] != nil, modelHashes[modelId] != nil {
             return .alreadyAvailable
         }
@@ -364,11 +364,11 @@ extension ProviderLoop {
         // whose family has no CBv2 adapter can never serve — advertising it
         // would invite requests that always refuse. Keep the previous build
         // serving; the catalog entry is the thing that needs fixing.
-        guard EngineV2SupportedModels.isSupported(model: info) else {
+        guard info.systemOne == true || EngineV2SupportedModels.isSupported(model: info) else {
             desiredSwapDrop.removeValue(forKey: modelId)
             logger.error(
                 "Prefetch verified \(modelId) but model_type '\(info.modelType ?? "unknown")' "
-                    + "has no CBv2 adapter (v0.7.5 serves everything through engine v2); "
+                    + "has no supported native runtime; "
                     + "not advertising (keeping the previous build)")
             return
         }
@@ -414,7 +414,7 @@ extension ProviderLoop {
         // explicitly at every exit (the load path's idiom).
         await acquireResliceGate()
         let raisedReserve = UnifiedMemoryCap.resolvedActivationReserveBytes(
-            modelIDs: Array(advertisedModels.keys) + Array(modelSlots.keys)
+            modelIDs: Array(advertisedModels.keys) + Array(residentModelIDs)
                 + Array(modelsLoading) + [modelId])
         // The raise shrinks the fleet KV budget the RESIDENT slots share;
         // on a tight multi-slot box it can push a survivor below the

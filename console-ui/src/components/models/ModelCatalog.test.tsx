@@ -49,4 +49,24 @@ describe("model discovery flow", () => {
     expect(screen.getByRole("searchbox")).toHaveValue("");
     expect(screen.getByRole("button", { name: "All models" })).toHaveAttribute("aria-pressed", "true");
   });
+
+  it.each([
+    { capabilities: ["system_one"] },
+    { supported_features: ["system_one"] },
+    { output_modalities: ["decision"] },
+  ])("retains decision models in the catalog with API documentation instead of a chat action: %j", (capability) => {
+    const catalog = vi.mocked(useModelCatalog).getMockImplementation()!();
+    vi.mocked(useModelCatalog).mockReturnValue({ ...catalog, models: [
+      ...catalog.models,
+      { id: "arbitrary/native-model", object: "model", display_name: "Native decisions", ...capability },
+    ] });
+    render(<ModelCatalog />);
+    expect(within(screen.getByRole("list", { name: "Models" })).getAllByRole("listitem")).toHaveLength(3);
+    expect(screen.getByText("Native decisions")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Start a new chat with Native decisions" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "System One API documentation for Native decisions" })).toHaveAttribute("href", expect.stringContaining("#systemone-decisions"));
+    expect(screen.getByText("/v1/systemone")).toBeInTheDocument();
+    expect(useStore.getState().chats).toEqual([]);
+    expect(push).not.toHaveBeenCalled();
+  });
 });

@@ -320,6 +320,15 @@ extension ProviderLoop {
             return
         }
 
+        if Self.isSystemOneRequest(decryptedData) {
+            receiptTransferredToTask = true
+            await handleSystemOneRequest(
+                requestId: requestId, data: decryptedData, senderKey: senderKey,
+                firstContentDeadline: firstContentDeadline, profile: profile,
+                lookupReceiptFinalizer: lookupReceiptFinalizer, send: send)
+            return
+        }
+
         // 2. Parse the chat completion request into the upstream
         // `OpenAIChatCompletionRequest` shape. `decodeOpenAIRequest`
         // strict-decodes on the fast path and, on failure, normalises a
@@ -389,6 +398,13 @@ extension ProviderLoop {
         // deliberately conservative: when in doubt it admits and lets the
         // post-accept load path below make the final call.
         let modelId = chatRequest.model
+        guard advertisedModels[modelId]?.systemOne != true else {
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(requestId: requestId,
+                    failure: InferenceFailure(code: .modelUnavailable, statusCode: 404), profile: profile),
+                fallbackFailure: .policy, send: send)
+            return
+        }
         if rejectIfDrainingForMTP(modelId: modelId, requestId: requestId, send: send,
             lookupReceiptFinalizer: lookupReceiptFinalizer) { return }
         // Warm/cold classification for the TTFT tracker, captured BEFORE the

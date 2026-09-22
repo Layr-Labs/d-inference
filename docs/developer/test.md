@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-20 · commit `76a8f03d9`
+> Last updated: 2026-09-22 · commit `7983cc343`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -44,6 +44,44 @@ versions, existing management, and unavailable enrollment. This checks setup
 routing only; signed Mac App Attest qualification is separate.
 
 Build qualification regressions run in `coordinator/store/app_attest_builds_test.go`, `coordinator/appattest/service/build_qualifications_test.go`, `coordinator/api/app_attest_builds_test.go`, and `coordinator/api/app_attest_builds_auth_test.go`. The route tests validate real ES256 Privy JWTs through the mux, server-attributed audit actors, and rejection of admin-owned inference keys. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not replace final signed-Mac/Apple qualification.
+
+## Native Laya decision qualification
+
+The SDK owns request parsing, ordered JSON, ModernBERT, the decision heads,
+calibration, and the dedicated local HTTP mode. After building nested tests
+with the local MLX dependency and staging the source-matched metallib as in
+[provider testing](#4-provider-swift--unit-tests-with-a-source-matched-metallib),
+run the hermetic gates:
+
+```bash
+cd libs/mlx-swift-lm
+for suite in SystemOneRequestTests LayaConfigurationTests LayaResponseTests SystemOneHTTPTests; do
+  ../../scripts/run-nested-suite.sh "$suite"
+done
+```
+
+CI runs each gate with a nonempty/no-skip check. They cover API bounds,
+generation-control rejection, object order, structured Unicode and numeric
+rendering, calibration, and HTTP validation/admission recovery. They do not
+download model weights.
+
+With the pinned checkpoint downloaded, run `LayaPromptCheckpointTests` with
+`LAYA_TEST_CHECKPOINT` set to its directory. This checks the real tokenizer's
+header-budget rejection without dropping choice options. Native model parity
+and measured timing use `libs/mlx-swift-lm/scripts/qualify-laya.py` and `laya-probe`;
+see the [module guide](https://github.com/Layr-Labs/mlx-swift-lm/blob/327af8b9412be6967873077682d67d9b6fe6ba9a/Libraries/MLXDecisions/README.md).
+
+`SystemOneProviderTests` and `LayaModelLayoutTests` cover native provider
+ownership, scanning, local HTTP and encrypted dispatch. Set
+`DARKBLOOM_LAYA_TEST_MODEL_PATH` to the checkpoint directory to execute their real-model
+cases. A skipped model fixture does not qualify the provider. Coordinator
+`SystemOne` tests exercise native shape validation, capability fences,
+encrypted dispatch, response validation and input-only usage. Run the complete
+coordinator tests before publishing a change to routing or billing.
+
+These are distinct from signed provider-build qualification, production
+activation, public model publication and fleet latency measurement. Follow the
+[onboarding runbook](../operations/laya-onboarding.md) for those operations.
 
 ## Bonsai performance qualification
 

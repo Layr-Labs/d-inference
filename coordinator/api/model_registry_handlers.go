@@ -286,6 +286,10 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 		// Replace capabilities wholesale (normalized: trimmed, de-duped, ordered).
 		caps := normalizeCapabilities(req.Capabilities)
 		entry := registryEntryFromRecord(rec)
+		if err := validateSystemOneDefinition(rec.Architecture, caps); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
+			return
+		}
 		entry.Capabilities = caps
 		if err := s.store.UpsertModelRegistryEntry(entry); err != nil {
 			s.writeModelRegistryStoreError(w, "update capabilities", err)
@@ -575,6 +579,9 @@ func parseAdminModelActionPath(p string) (string, string, bool) {
 }
 
 func validateRegisterModelRequest(req registerModelRequest) error {
+	if err := validateSystemOneDefinition(req.Architecture, req.Capabilities); err != nil {
+		return err
+	}
 	if err := req.HuggingFaceArtifact.Validate(); err != nil {
 		return err
 	}
@@ -596,7 +603,14 @@ func validateRegisterModelRequest(req registerModelRequest) error {
 	if req.MaxContextLength <= 0 {
 		return fmt.Errorf("max_context_length must be greater than zero")
 	}
-	if req.MaxOutputLength <= 0 {
+	if isSystemOneRegistration(req) {
+		if req.MaxContextLength != systemOneTokensPerQuestion {
+			return fmt.Errorf("Laya requires max_context_length %d", systemOneTokensPerQuestion)
+		}
+		if req.MaxOutputLength != 0 || req.OutputPrice != 0 {
+			return fmt.Errorf("SystemOne models require max_output_length and output_price to be zero")
+		}
+	} else if req.MaxOutputLength <= 0 {
 		return fmt.Errorf("max_output_length must be greater than zero")
 	}
 	if req.MinRAMGB <= 0 {
@@ -605,7 +619,7 @@ func validateRegisterModelRequest(req registerModelRequest) error {
 	if req.InputPrice <= 0 {
 		return fmt.Errorf("input_price is required and must be positive (micro-USD per 1M tokens)")
 	}
-	if req.OutputPrice <= 0 {
+	if req.OutputPrice <= 0 && !isSystemOneRegistration(req) {
 		return fmt.Errorf("output_price is required and must be positive (micro-USD per 1M tokens)")
 	}
 	if err := validateRequiredProviderCapabilities(
@@ -889,6 +903,10 @@ func catalogModelFromRegistryRecord(rec *store.ModelRegistryRecord) map[string]a
 		"supported_features":            supportedFeaturesFromCapabilities(rec.Capabilities),
 		"supported_sampling_parameters": defaultSamplingParameters(),
 	}
+	if isSystemOneRegistryModel(rec) {
+		model["supported_features"] = []string{"system_one"}
+		model["supported_sampling_parameters"] = []string{}
+	}
 	if !rec.CreatedAt.IsZero() {
 		model["created"] = rec.CreatedAt.Unix()
 	}
@@ -962,6 +980,9 @@ func supportedModelFromRegistryRecord(rec *store.ModelRegistryRecord) store.Supp
 		Active:       active,
 		RequiredProviderCapabilities: append(
 			[]string{}, rec.RequiredProviderCapabilities...),
+	}
+	if isSystemOneRegistryModel(rec) {
+		model.ModelType = "laya"
 	}
 	if rec.ActiveVersion != nil {
 		model.S3Name = rec.ActiveVersion.R2Prefix

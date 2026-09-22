@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-18 · commit `dab62c50a`
+> Last updated: 2026-09-22 · commit `ce809b792`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -41,6 +41,31 @@ content beyond that. See [`data-flow.md`](data-flow.md) and
 [`security/encryption.md`](security/encryption.md).
 
 ## Mechanism
+
+### Native decisions
+
+The SystemOne endpoint attaches `RequestTraits.SystemOne` to every dispatch,
+retry, plan reservation, and queued request. The catalog must identify the
+native decision family and the provider must advertise `model_type:laya` with
+`system_one:true` for that exact build. Ordinary generation cannot select these
+models, and old providers cannot receive native decisions. This additional gate
+retains the existing trust, ownership, serial, capacity, and model-hash gates
+(`coordinator/registry/system_one.go`, `providerSystemOneEligibleLocked`).
+
+Native requests reserve zero output tokens throughout pending-budget and queue
+accounting. The coordinator uses 512 input tokens per question as a conservative
+upper bound; actual billing comes from the sum of encoded rows in completion
+usage. The context limit belongs to each independent row, so the native handler
+does not apply the generation path's single-sequence context check to that sum.
+The provider enforces its encoder context and resource bounds. Native input is
+not lowered to chat or offered to prefix-cache planning
+(`coordinator/api/system_one.go`, `handleSystemOne`).
+
+Native requests skip the generation-based hard TTFT prediction gate because
+autoregressive prefill/decode rates do not predict their encoder workload. The
+actual request-absolute first-content deadline and capacity gates still apply
+(`coordinator/api/inference_admission.go`, `runInferenceAdmission`;
+`coordinator/registry/scheduler.go`, `scanCandidatesLocked`).
 
 ### Entry points
 

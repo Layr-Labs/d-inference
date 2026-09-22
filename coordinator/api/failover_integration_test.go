@@ -88,6 +88,8 @@ func setupFailoverServer(t *testing.T) (*registry.Registry, *store.MemoryStore, 
 // independent of the Go struct shape (protocol.ModelInfo.TemplateRenderOK
 // *bool has landed and decodes this field).
 type failoverModelSpec struct {
+	ModelType        string
+	SystemOne        bool
 	ID               string
 	TemplateRenderOK *bool
 }
@@ -179,6 +181,12 @@ func startFailoverProvider(t *testing.T, ctx context.Context, ts *httptest.Serve
 			"size_bytes":   int64(1000),
 			"model_type":   "chat",
 			"quantization": "4bit",
+		}
+		if m.ModelType != "" {
+			entry["model_type"] = m.ModelType
+		}
+		if m.SystemOne {
+			entry["system_one"] = true
 		}
 		if m.TemplateRenderOK != nil {
 			entry["template_render_ok"] = *m.TemplateRenderOK

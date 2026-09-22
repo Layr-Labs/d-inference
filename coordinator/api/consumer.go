@@ -1087,7 +1087,7 @@ func (s *Server) dispatchWithReserver(
 	// dispatch serves the best-available provider instead of re-rejecting an
 	// over-threshold request the preflight already chose to soft-serve. (Mirrors
 	// queueMaxTTFTMs, which already returns 0 in soft mode.)
-	if !policy.enabled && !policy.prefer && s.hardTTFTGateApplies(requiresVision) {
+	if !policy.enabled && !policy.prefer && !traits.SystemOne && s.hardTTFTGateApplies(requiresVision) {
 		pr.MaxTTFTMs = float64(requestDeadline.Milliseconds())
 	}
 	// Refresh immediately before reservation: every retry spends the same
@@ -1507,6 +1507,14 @@ func routingTraitsForProviderBody(
 // added as prompt_cache_key when the attempt carries one, size-checked
 // against the sealed-frame cap.
 func bodyForCacheAttempt(rawBody []byte, requiresVision bool, provider *registry.Provider, pr *registry.PendingRequest) ([]byte, error) {
+	// Native decisions have no prompt cache. Preserve the native body and its
+	// tighter frame budget even if a legacy cache key was previously stamped.
+	if pr != nil && pr.Traits.SystemOne {
+		if len(rawBody) > maxSystemOneBodyBytes {
+			return nil, fmt.Errorf("%w: native request exceeds %d-byte limit", errProviderBodyTooLarge, maxSystemOneBodyBytes)
+		}
+		return rawBody, nil
+	}
 	body := bodyForProvider(rawBody, requiresVision, provider)
 	if pr == nil || pr.LegacyCacheBustKey == "" {
 		if len(body) > maxInferenceBodyBytes {
@@ -1829,6 +1837,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	originalRawBody := prelude.originalRawBody
 	parsed := prelude.parsed
 	model := prelude.model
+	if s.rejectSystemOneGeneration(w, model) {
+		return
+	}
 	runtimeDefaults := newModelRuntimeDefaults(parsed)
 	_, reasoningProvided := parsed["reasoning"]
 
@@ -2701,6 +2712,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	originalRawBody := prelude.originalRawBody
 	parsed := prelude.parsed
 	model := prelude.model
+	if s.rejectSystemOneGeneration(w, model) {
+		return
+	}
 	runtimeDefaults := newModelRuntimeDefaults(parsed)
 	endpointKind := promptcontract.EndpointCompletions
 	if endpoint == "/v1/messages" {

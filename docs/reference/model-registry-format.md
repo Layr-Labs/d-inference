@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-08 · commit `efb5517fc`
+> Last updated: 2026-09-22 · commit `ce809b792`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -86,7 +86,7 @@ Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
 | `architecture` | string | no | stored as given |
 | `quantization` | string | yes | non-empty |
 | `max_context_length` | integer | yes | > 0 |
-| `max_output_length` | integer | yes | > 0 |
+| `max_output_length` | integer | yes | > 0 for generation; exactly 0 for native Laya (`architecture:laya`, `capabilities:[system_one]`) |
 | `min_ram_gb` | integer | yes | > 0 |
 | `capabilities` | array of string | no | free-form OpenRouter-style feature names (`tools`, `reasoning`, …) |
 | `required_provider_capabilities` | array of string | no | each must be `apple_m5` or `mlx_nax`, trimmed, unique (`validateRequiredProviderCapabilities`); `EigenLabs/Qwen3.8-27B-4bit` must list both |
@@ -95,7 +95,7 @@ Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
 | `metadata` | object | no | opaque; see [metadata keys](#metadata-keys) |
 | `promote` | boolean | no | activate this version immediately |
 | `input_price` | integer | yes | > 0, micro-USD per 1M tokens |
-| `output_price` | integer | yes | > 0, micro-USD per 1M tokens |
+| `output_price` | integer | yes | > 0 for generation; exactly 0 for native Laya; micro-USD per 1M tokens |
 
 Server-side sequence, in order; any failure before step 5 persists nothing:
 
@@ -427,7 +427,7 @@ Unauthenticated; used by providers and `scripts/install.sh`.
 
 | Endpoint | Handler | Response |
 |---|---|---|
-| `GET /v1/models/catalog[?type=text][&include_aliases=1]` | `handleModelCatalog` (`coordinator/api/billing_handlers.go`) | `{"models":[<catalog model>...]}`; with `include_aliases`, also `"aliases"`; cached `time.Minute`; `type` other than `text` → 400 |
+| `GET /v1/models/catalog[?type=text|laya][&include_aliases=1]` | `handleModelCatalog` (`coordinator/api/billing_handlers.go`) | `{"models":[<catalog model>...]}`; with `include_aliases`, also `"aliases"`; cached `time.Minute`; `type` selects `text` or `laya`; omitted returns both; other values → 400 |
 | `GET /v1/models/catalog/{id}` | `handleModelCatalogItem` | one catalog model, or 404 |
 | `GET /v1/models/catalog/manifest/{id}` | `handleModelCatalogManifest` | the stored `ModelManifest` for the active version, or 404 |
 
@@ -463,3 +463,14 @@ build; aliases with neither are omitted).
 - [`api-contracts.md`](api-contracts.md) — consumer-facing `GET /v1/models`.
 - [`protocol-messages.md`](protocol-messages.md) — `desired_models`, `models_update`, `prefetch_model_status` field tables.
 - [`configuration.md`](configuration.md) — `MODEL_REGISTRY_CDN_BASE_URL`, `MODEL_REGISTRY_PUBLISHING_KEY`, `DARKBLOOM_R2_CDN_URL`.
+
+## Native decision models
+
+| Surface | Rule | Code |
+|---|---|---|
+| Laya identity | Architecture `laya` and exactly `capabilities:[system_one]`; capability updates cannot turn this family into generation | `coordinator/api/system_one_catalog.go` (`validateSystemOneDefinition`) |
+| Native output | Registration requires `max_output_length:0` and `output_price:0`; input price remains positive | `coordinator/api/model_registry_handlers.go` (`validateRegisterModelRequest`) |
+| Public discovery | Catalog `model_type:laya`, `supported_features:[system_one]`, no sampling controls, output modality `decision`; the text-only OpenRouter feed excludes it | `coordinator/api/model_registry_handlers.go` (`catalogModelFromRegistryRecord`), `coordinator/api/openrouter_models.go` (`deriveModalities`) |
+
+The [SystemOne API contract](api-contracts.md#systemone-decisions) owns the
+request, response, capability, and usage rules.

@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Check, ChevronDown, Search, SlidersHorizontal } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { modelSupportsImages } from "@/lib/image-upload";
+import { modelSupportsChat } from "@/lib/model-capabilities";
 import { trackEvent } from "@/lib/google-analytics";
 import type { Model } from "@/lib/api";
 import { useModelTokenPromotions } from "@/components/app-providers/ModelTokenPromotionsProvider";
@@ -30,9 +31,10 @@ export function ChatModelSelector() {
   const searchRef = useRef<HTMLInputElement>(null);
   const popupId = useId();
   const titleId = useId();
-  const selected = models.find((model) => model.id === selectedModel);
-  const displayName = selected?.display_name || selectedModel.split("/").pop() || "Choose a model";
-  const filtered = models
+  const chatModels = models.filter(modelSupportsChat);
+  const selected = chatModels.find((model) => model.id === selectedModel);
+  const displayName = selected?.display_name || selected?.id.split("/").pop() || "Choose a model";
+  const filtered = chatModels
     .filter((model) => `${model.display_name ?? ""} ${model.id}`.toLowerCase().includes(query.toLowerCase()))
     .sort((a, b) => Number(isBonsai(b)) - Number(isBonsai(a)));
 
@@ -119,7 +121,7 @@ export function ChatModelSelector() {
                 {selectedModel === model.id && <Check size={16} className="shrink-0" />}
               </button>
             ))}
-            {filtered.length === 0 && <p className="px-3 py-5 text-sm text-text-secondary">{models.length ? "No models match your search." : "No models are available yet."}</p>}
+            {filtered.length === 0 && <p className="px-3 py-5 text-sm text-text-secondary">{chatModels.length ? "No models match your search." : "No chat models are available yet."}</p>}
           </div>
         </div>
       )}

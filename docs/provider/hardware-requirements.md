@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-17 · commit `954f570d1`
+> Last updated: 2026-09-22 · commit `ce809b792`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -31,6 +31,19 @@ targets M5 Max testing; no minimum-RAM catalog value, full-context guarantee or
 MTP capability is introduced. `EngineV2KVBackendPolicy` selects paging for the
 exact artifact ID; all existing admission checks remain in effect. The artifact
 contract is in `libs/mlx-swift-lm/docs/bonsai2.md`.
+
+## Native Laya decisions
+
+| Constraint | Behavior | Code |
+|---|---|---|
+| GPU | Native MLX Metal execution; no subprocess or CPU fallback | `provider-swift/Sources/ProviderCore/ProviderLoop+DecisionSlots.swift`, `installDecisionSlot` |
+| Load memory | Ordinary scanner weight padding, shared memory cap, unmeasured activation floor and minimum headroom remain required; small checkpoint size is not a minimum-RAM qualification | `provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift`, `ensureModelLoaded` |
+| Residency | Initially exclusive with autoregressive slots and other decision models; busy models and retained targets cannot be evicted | `provider-swift/Sources/ProviderCore/ProviderLoop+DecisionSlots.swift`, `prepareDecisionExclusivity` |
+| Concurrency | One native request per provider, up to 64 questions, batches of 16 and 512 compiled tokens per question | `libs/mlx-swift-lm/Libraries/MLXDecisions/LayaRuntime.swift`, `maximumBatchSize`; `libs/mlx-swift-lm/Libraries/MLXDecisions/SystemOneRequest.swift`, `maximumQuestions` |
+| KV / output | No autoregressive KV allocation or generated output tokens | `libs/mlx-swift-lm/Libraries/MLXDecisions/LayaRuntime.swift`, `predict` |
+
+Catalog registration and fleet hardware qualification are separate from native
+runtime support. See [native inference](../architecture/inference.md#native-system-one-decisions).
 
 ## Chip families
 

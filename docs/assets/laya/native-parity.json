@@ -1,0 +1,91 @@
+{
+  "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "python_mlx_version": "0.32.2",
+  "dtype": "float16",
+  "checkpoint": "aac6fef/laya-mlx@20aed815fc6acde75733882e7ec0e3f28aeb9717",
+  "logit_atol": 0.05,
+  "action_rtol": 0.002,
+  "answer_atol": 0.005,
+  "results": [
+    {
+      "case": "mixed",
+      "questions": 3,
+      "input_tokens": 127,
+      "max_logit_abs_error": 5.000000014021566e-08,
+      "max_action_logit_abs_error": 0.0,
+      "max_answer_abs_error": 0,
+      "exact_tokens": true,
+      "action_logits_within_tolerance": true,
+      "passed": true
+    },
+    {
+      "case": "single-and-padding",
+      "questions": 2,
+      "input_tokens": 78,
+      "max_logit_abs_error": 1.2499999924031613e-08,
+      "max_action_logit_abs_error": 0.0,
+      "max_answer_abs_error": 0,
+      "exact_tokens": true,
+      "action_logits_within_tolerance": true,
+      "passed": true
+    },
+    {
+      "case": "structured-unicode",
+      "questions": 1,
+      "input_tokens": 76,
+      "max_logit_abs_error": 6.249999962015806e-10,
+      "max_action_logit_abs_error": 0.0,
+      "max_answer_abs_error": 0,
+      "exact_tokens": true,
+      "action_logits_within_tolerance": true,
+      "passed": true
+    },
+    {
+      "case": "context-limit",
+      "questions": 1,
+      "input_tokens": 512,
+      "max_logit_abs_error": 4.999999969612645e-08,
+      "max_action_logit_abs_error": 0.0,
+      "max_answer_abs_error": 0,
+      "exact_tokens": true,
+      "action_logits_within_tolerance": true,
+      "passed": true
+    },
+    {
+      "case": "cardinality",
+      "questions": 1,
+      "input_tokens": 40,
+      "max_logit_abs_error": 2.500000007010783e-08,
+      "max_action_logit_abs_error": 0.0,
+      "max_answer_abs_error": 0,
+      "exact_tokens": true,
+      "action_logits_within_tolerance": true,
+      "passed": true
+    },
+    {
+      "case": "numeric-json",
+      "questions": 1,
+      "input_tokens": 111,
+      "max_logit_abs_error": 2.4999999848063226e-09,
+      "max_action_logit_abs_error": 0.0,
+      "max_answer_abs_error": 0,
+      "exact_tokens": true,
+      "action_logits_within_tolerance": true,
+      "passed": true
+    },
+    {
+      "case": "batch-boundary",
+      "questions": 18,
+      "input_tokens": 672,
+      "max_logit_abs_error": 5.000000014021566e-08,
+      "max_action_logit_abs_error": 0.0,
+      "max_answer_abs_error": 0,
+      "exact_tokens": true,
+      "action_logits_within_tolerance": true,
+      "passed": true
+    }
+  ],
+  "passed": true,
+  "reference_source": "mizorewww/laya-mlx@fc1df62828a3fedf4d8229fdac1cbd85f1cdf337",
+  "hardware": "Apple M4 Max, 128 GiB"
+}

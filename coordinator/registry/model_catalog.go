@@ -9,6 +9,7 @@ import (
 
 // CatalogEntry holds metadata about an active model in the catalog.
 type CatalogEntry struct {
+	SystemOne                    bool // catalog-owned native decision family
 	ID                           string
 	WeightHash                   string  // expected SHA-256 weight fingerprint (empty = not enforced)
 	SizeGB                       float64 // disk/GPU footprint of the model weights (zero = unknown, gate disabled)

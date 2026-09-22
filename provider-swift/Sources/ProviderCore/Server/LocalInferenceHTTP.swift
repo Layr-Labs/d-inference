@@ -41,7 +41,7 @@ public typealias LocalInferenceApplication =
         LocalDisconnectResponder<LocalAuthResponder<
             CORSResponder<
                 LocalMetricsResponder<
-                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>
+                    LocalSystemOneResponder<LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>>>
 
 /// Builds the local OpenAI-compatible Hummingbird application from a model
 /// registry expressed as three closures. Shared by `StandaloneServer` and the
@@ -70,6 +70,7 @@ func makeLocalInferenceApplication(
     tokenizerProvider: @escaping @Sendable (String?) async throws -> MultiModelBatchSchedulerEngine.TokenizerResolution,
     availableModels: @escaping @Sendable () async -> [String],
     mtpSlots: @escaping @Sendable () async -> [MTPSlotMetricsSample],
+    systemOne: (@Sendable (Data) async throws -> Data)? = nil,
     onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }
 ) -> LocalInferenceApplication {
     // The upstream OpenAI request shape intentionally ignores Qwen's
@@ -105,7 +106,7 @@ func makeLocalInferenceApplication(
     // ServerMetrics body plus the provider-owned MTP posture lines (see
     // LocalMetricsResponder for why the upstream route cannot be extended).
     let metricsResponder = LocalMetricsResponder(
-        inner: uploadResponder, service: service, mtpSlots: mtpSlots)
+        inner: LocalSystemOneResponder(inner: uploadResponder, predict: systemOne), service: service, mtpSlots: mtpSlots)
     let corsResponder = CORSResponder(inner: metricsResponder)
     // Auth rejects unauthenticated requests before body/model handling. The
     // outer disconnect layer only binds lifetime; it does not inspect content.

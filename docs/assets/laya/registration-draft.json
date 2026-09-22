@@ -1,0 +1,28 @@
+{
+  "model_id": "aac6fef/laya-mlx",
+  "version": "2026-09-21-r1",
+  "display_name": "Laya",
+  "family": "laya",
+  "architecture": "laya",
+  "quantization": "fp16",
+  "capabilities": [
+    "system_one"
+  ],
+  "required_provider_capabilities": [],
+  "max_context_length": 512,
+  "max_output_length": 0,
+  "min_ram_gb": 16,
+  "description": "Native typed decisions: choice, score and yes/no probabilities. Up to 512 encoded tokens per question; zero generated output tokens.",
+  "runtime_parameters": {},
+  "hugging_face_artifact": {
+    "repo_id": "aac6fef/laya-mlx",
+    "revision": "20aed815fc6acde75733882e7ec0e3f28aeb9717"
+  },
+  "metadata": {
+    "license": "apache-2.0",
+    "hugging_face_id": "convaiinnovations/laya"
+  },
+  "promote": false,
+  "input_price": 10000,
+  "output_price": 0
+}

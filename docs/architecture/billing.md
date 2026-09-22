@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-18 · commit `e64b9df42`
+> Last updated: 2026-09-22 · commit `ce809b792`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -40,6 +40,18 @@ The remaining epoch allocation commits as one transaction in `coordinator/paymen
   `coordinator/store/postgres_withdrawable_migration.go`).
 
 ## Mechanism
+
+### Native decision accounting
+
+SystemOne reserves only input tokens, bounded by 512 per question, then settles
+the actual sum of tokenized encoder rows. It reports zero completion tokens;
+this is successful decision work, not a missing generation result. The normal
+input price, direct-consumer minimum, fee, service pricing and owned-provider
+rules apply. Native answers are checked against the request's ephemeral
+question schema before the completion can settle; invalid/missing answers,
+nonzero output counts, or input counts above the reservation bound fail the
+request (`coordinator/api/system_one.go`, `handleSystemOne`;
+`coordinator/api/provider.go`, `handleChunk`, `handleCompleteAt`).
 
 ### Prices
 

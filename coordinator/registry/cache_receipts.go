@@ -28,7 +28,7 @@ func newCacheReceiptNonce() (string, error) {
 // providers receive a unique encrypted-body buster; v0/v1 providers otherwise
 // remain ordinary serving candidates without cache preference.
 func (r *Registry) PrepareCacheAttempt(pr *PendingRequest, provider *Provider) error {
-	if r == nil || pr == nil || provider == nil {
+	if r == nil || pr == nil || provider == nil || pr.Traits.SystemOne {
 		return nil
 	}
 	provider.mu.Lock()

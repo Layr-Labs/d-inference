@@ -1229,6 +1229,7 @@ func (s *Server) SyncModelCatalog() {
 			continue
 		}
 		entries = append(entries, registry.CatalogEntry{
+			SystemOne:  isSystemOneRegistryModel(&row),
 			ID:         row.ID,
 			WeightHash: row.ActiveVersion.AggregateSHA256,
 			SizeGB:     float64(row.ActiveVersion.TotalSizeBytes) / 1e9,
@@ -2697,6 +2698,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/chat/completions", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions)))))
 	s.mux.HandleFunc("POST /v1/responses", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions))))) // Responses API — same handler, auto-detects input vs messages
 	s.mux.HandleFunc("POST /v1/completions", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleCompletions)))))
+	s.mux.HandleFunc("POST /v1/systemone", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleSystemOne)))))
 	s.mux.HandleFunc("POST /v1/messages", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleAnthropicMessages)))))
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
 	// Dedicated OpenRouter provider feed — pure OpenRouter schema, no Darkbloom metadata.

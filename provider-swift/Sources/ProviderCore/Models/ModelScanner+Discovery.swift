@@ -116,13 +116,15 @@ extension ModelScanner {
 
     /// Parse model info from a snapshot directory (fast, no weight hashing).
     static func parseModelInfo(snapshotDir: URL, modelName: String) -> ModelInfo? {
-        let configPath = snapshotDir.appendingPathComponent("config.json")
+        let isDecision = LayaModelLayout.isSupported(at: snapshotDir)
+        let configPath = snapshotDir.appendingPathComponent(isDecision ? "encoder/config.json" : "config.json")
 
-        let (modelType, parameters) = FileManager.default.fileExists(atPath: configPath.path)
+        let (encoderModelType, parameters) = FileManager.default.fileExists(atPath: configPath.path)
             ? parseConfigJSON(at: configPath)
             : (nil, nil)
+        let modelType = isDecision ? "laya" : encoderModelType
 
-        let quantization = detectQuantization(modelName: modelName, snapshotDir: snapshotDir)
+        let quantization = isDecision ? "fp16" : detectQuantization(modelName: modelName, snapshotDir: snapshotDir)
         let (sizeBytes, _) = collectWeightFiles(in: snapshotDir)
 
         guard sizeBytes > 0 else { return nil }
@@ -151,7 +153,7 @@ extension ModelScanner {
         // template throws at request time. nil = no template found (key omitted
         // on the wire); false = some fixture threw (the routing signal).
         // `renderOK` never throws — the startup scan must stay crash-free.
-        let templateRenderOK = TemplateRenderCheck.renderOK(at: snapshotDir, modelID: modelName)
+        let templateRenderOK = isDecision ? nil : TemplateRenderCheck.renderOK(at: snapshotDir, modelID: modelName)
         let toolConstraintTemplateHash =
             Gemma4ToolConstraintContract.supports(modelType: modelType)
             ? Gemma4ToolConstraintContract.templateSHA256(at: snapshotDir)
@@ -160,11 +162,13 @@ extension ModelScanner {
         return ModelInfo(
             id: modelName,
             modelType: modelType,
-            parameters: parameters,
+            // The generic encoder estimate excludes Laya's decision/action heads.
+            parameters: isDecision ? nil : parameters,
             quantization: quantization,
             sizeBytes: sizeBytes,
             estimatedMemoryGb: estimatedMemoryGb,
             isVision: isVision ? true : nil,
+            systemOne: isDecision ? true : nil,
             templateRenderOK: templateRenderOK,
             toolConstraintTemplateHash: toolConstraintTemplateHash,
             ssdOffloadedWeightBytes: mmapExcluded > 0 && mmapExcluded < sizeBytes ? mmapExcluded : nil,

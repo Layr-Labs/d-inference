@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-18 · commit `e64b9df42`
+> Last updated: 2026-09-22 · commit `ce809b792`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -43,6 +43,15 @@ pieces fit together, and what they guarantee, is explained in
 | Financial rate limiter | `0.2` rps, burst `3` | `create-session`, `POST/PATCH/DELETE /v1/keys`, referral register/apply, invite create/redeem, Stripe dashboard link | `coordinator/ratelimit/config.go` (`Financial`) |
 | Service rate limiter | `200` rps, burst `600` | `RoleService` accounts | `coordinator/ratelimit/config.go` (`Service`) |
 | `FloorPoolBudgetMicroUSD` | `9_000_000_000` | base-rewards monthly pool ($9,000), prorated per epoch by `PeriodBudget` | `coordinator/payments/baserewards/alloc.go`, `epoch.go` |
+
+## Native decisions
+
+| Quantity | Rule | Citation |
+|---|---|---|
+| SystemOne input reservation | `systemOneTokensPerQuestion = 512` × number of questions, at most `maxSystemOneQuestions = 64` | `coordinator/api/system_one_request.go`, `coordinator/api/system_one.go` (`handleSystemOne`) |
+| Settled input | Actual sum of encoded question rows from terminal `prompt_tokens`; positive and at most the reservation's input-token bound | `coordinator/api/provider.go` (`handleCompleteAt`) |
+| Output | Exactly zero generated tokens; native registration requires `output_price:0` and `max_output_length:0` | `coordinator/api/system_one_catalog.go`, `coordinator/api/model_registry_handlers.go` (`validateRegisterModelRequest`) |
+| Charging | Normal input pricing, per-request minimum, service and owned-provider rules apply | `coordinator/payments/pricing.go` (`calculateCost`), `coordinator/api/provider.go` (`handleCompleteAt`) |
 
 ## Price resolution
 

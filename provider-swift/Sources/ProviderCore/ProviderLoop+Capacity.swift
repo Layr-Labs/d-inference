@@ -124,6 +124,10 @@ extension ProviderLoop {
             totalActive += engineV2.activeRequests
         }
 
+        let decisions = decisionCapacitySlots()
+        allSlots.append(contentsOf: decisions)
+        totalActive += decisions.reduce(0) { $0 + Int($1.numRunning) }
+
         let gbDivisor = 1024.0 * 1024.0 * 1024.0
         let processMemory = kvBudget.memoryHeadroomSnapshot()
         let totalMem = processMemory.totalBytes

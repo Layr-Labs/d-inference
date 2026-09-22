@@ -6,6 +6,7 @@ import { streamChat, type ChatMessage as ApiChatMessage } from "@/lib/api";
 import { toApiMessages } from "@/lib/chat-messages";
 import { useToastStore } from "@/hooks/useToast";
 import { trackEvent } from "@/lib/google-analytics";
+import { modelSupportsChat } from "@/lib/model-capabilities";
 
 const SYSTEM_PROMPT = `You are an AI assistant running on Darkbloom, a decentralized private inference platform built by Eigen Labs. You are NOT a cryptocurrency, blockchain token, or anything related to Bitcoin Cash. Darkbloom is an AI infrastructure project.
 
@@ -165,6 +166,9 @@ export function useChatStream() {
     async (content: string, images: string[] = []) => {
       const trimmedContent = content.trim();
       if (!trimmedContent && images.length === 0) return;
+      const state = useStore.getState();
+      const selected = state.models.find((model) => model.id === state.selectedModel);
+      if (!selected || !modelSupportsChat(selected)) return;
 
       let chatId = useStore.getState().activeChatId;
       const isNewChat = !chatId;
@@ -232,7 +236,9 @@ export function useChatStream() {
 
   const handleRetry = useCallback(
     (errorMsgId: string) => {
-      const { activeChatId, chats, selectedModel, useMyMachine } = useStore.getState();
+      const { activeChatId, chats, selectedModel, models, useMyMachine } = useStore.getState();
+      const selected = models.find((model) => model.id === selectedModel);
+      if (!selected || !modelSupportsChat(selected)) return;
       const activeChat = chats.find((c) => c.id === activeChatId);
       if (!activeChat || isStreaming) return;
       const messages = activeChat.messages;

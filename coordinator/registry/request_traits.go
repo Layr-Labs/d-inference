@@ -10,6 +10,8 @@ import (
 // eligibility beyond the model id. Stamped onto PendingRequest by the consumer
 // handler and enforced in the scheduler's candidate filter and final admit.
 type RequestTraits struct {
+	// SystemOne requests use the native decision endpoint and reserve no output tokens.
+	SystemOne bool
 	// HasTools is true when the request carries an OpenAI tools/functions
 	// schema. Tool schemas are rendered through the model's chat template on
 	// the provider, and old binaries crash on schema shapes they don't
@@ -61,6 +63,9 @@ type RequestTraits struct {
 // the only viable cross-package signature; the integrator should ensure the
 // consumer calls CooldownShape().
 func (t RequestTraits) CooldownShape() string {
+	if t.SystemOne {
+		return "system_one"
+	}
 	if t.HasTools {
 		return "tools"
 	}
@@ -208,6 +213,9 @@ func providerTemplateRenderBrokenLocked(p *Provider, model string) bool {
 //
 // Caller holds r.mu and p.mu (same discipline as providerServesVisionModelLocked).
 func (r *Registry) providerEligibleForTraitsLocked(p *Provider, model string, t RequestTraits) bool {
+	if !r.providerSystemOneEligibleLocked(p, model, t.SystemOne) {
+		return false
+	}
 	if !providerMeetsQwen4CatalogPolicyLocked(p, model) {
 		return false
 	}
@@ -218,7 +226,7 @@ func (r *Registry) providerEligibleForTraitsLocked(p *Provider, model string, t 
 		return false
 	}
 	// Render-broken: applies to ALL requests for the model.
-	if providerTemplateRenderBrokenLocked(p, model) {
+	if !t.SystemOne && providerTemplateRenderBrokenLocked(p, model) {
 		return false
 	}
 	// Version floors: trait-scoped (tools-only today).

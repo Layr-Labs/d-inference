@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-18 · commit `e64b9df42`
+> Last updated: 2026-09-22 · commit `ce809b792`
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -196,6 +196,14 @@ The form shows the bank's published deposit minimum and maximum in local currenc
 Choose **Unlink Stripe account and start over** to remove the destination currently shown. For Global Payouts this removes only Darkbloom's recipient mapping; an older Connect destination may then reappear. For Connect it removes the stored Connect mapping. This does not close either Stripe account or cancel submitted withdrawals.
 
 ## Verify
+
+For [SystemOne decisions](system-one.md), check `usage.input_tokens` and
+`usage.output_tokens:0`. Input usage sums the encoded question rows, including
+state repeated across questions. Zero output tokens does not make the request
+free: the input rate and the ordinary per-request minimum still apply. See the
+[native decision pricing rules](../reference/pricing-model.md#native-decisions).
+
+
 
 - `GET /v1/billing/stripe/session?id=…` shows `"status": "completed"` and
   `GET /v1/payments/balance` has risen by `amount_micro_usd`.

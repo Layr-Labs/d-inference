@@ -51,13 +51,13 @@ extension ProviderLoop {
     /// Re-validates each candidate before unloading since `await unloadModel`
     /// is a suspension point that could allow new requests to arrive.
     private func tickIdleMonitor(timeout: Duration) async {
-        guard !modelSlots.isEmpty else { return }
+        guard !residentModelIDs.isEmpty else { return }
 
         let now = ContinuousClock.now
 
         var candidates: [String] = []
         let modelsWithInflight = Set(requestToModel.values)
-        for (modelId, slot) in modelSlots {
+        for (modelId, slot) in residentModelFacts {
             if modelsUnloading.contains(modelId) || isMTPUpgradeTargetRetained(modelId) { continue }
             let elapsed = now - slot.lastInferenceAt
             let hasInflight = modelsWithInflight.contains(modelId) || hasLocalReservation(modelId)
@@ -77,7 +77,7 @@ extension ProviderLoop {
             guard !currentInflight.contains(modelId),
                   !hasLocalReservation(modelId),
                   !modelsUnloading.contains(modelId),
-                  let slot = modelSlots[modelId] else { continue }
+                  let slot = residentModelFacts[modelId] else { continue }
 
             let elapsed = ContinuousClock.now - slot.lastInferenceAt
             guard IdleTimeoutPolicy.shouldUnload(

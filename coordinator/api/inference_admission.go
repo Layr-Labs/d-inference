@@ -680,7 +680,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		}
 	}
 	if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
-		if !s.hardTTFTGateApplies(p.requiresVision) {
+		if requestTraits().SystemOne || !s.hardTTFTGateApplies(p.requiresVision) {
 			// Soft TTFT path: either global hard rejection is disabled (the
 			// default), or this is media whose decode+tower costs are absent
 			// from the token-prefill estimate. pr.MaxTTFTMs stays 0, so dispatch
@@ -689,7 +689,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			// routable desired build to an older alias.
 			// Keep the text soft-gate pressure signal, but do not teach the warm
 			// pool from a media projection that omits decode and tower work.
-			if !p.requiresVision {
+			if !p.requiresVision && !requestTraits().SystemOne {
 				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
 				s.triggerWarmPool()
 			}

@@ -200,9 +200,12 @@ public actor ProviderLoop {
     /// Per-model inference slots. Each loaded model gets one EngineV2Bridge.
     /// Keyed by model ID.
     internal var modelSlots: [String: ModelSlot] = [:]
+    internal var decisionSlots: [String: DecisionSlot] = [:]
+    /// Remains pinned until native eval actually exits, including cancelled work.
+    internal var decisionRequestOwners: [String: String] = [:]
 
     /// ContinuousBatchingV2 bridge registry consulted by capacity and
-    /// cancellation hooks. It is the sole inference-engine registry in v0.7.5.
+    /// cancellation hooks. It tracks autoregressive slots; native decision slots have separate ownership.
     /// Defaults to the process-global instance; tests inject an isolated one.
     internal var engineV2Runtime: EngineV2Runtime = .shared
 
@@ -615,10 +618,9 @@ public actor ProviderLoop {
         self.specDecFunnel = SpecDecArtifactFunnel(
             resolver: SpecDecResolver(),
             catalog: SpecDecCatalogLookup(coordinatorURL: config.coordinatorURL))
-        // Architecture-derived supported set (v0.7.5 fail-loud): the v2
-        // engine is the ONLY engine, so a model whose family has no CBv2
-        // adapter can never serve — advertising it would invite requests
-        // that always 5xx. Drop unsupported families here (the single
+        // Architecture-derived supported set: autoregressive models require a
+        // CBv2 adapter; native decision models require the scanner's explicit
+        // format capability. Drop unsupported families here (the single
         // chokepoint: registration filters through this set, and the local
         // /v1/models reads it), and WARN so the operator sees why a model
         // on disk isn't advertised. A stale-catalog load request for a
@@ -634,7 +636,7 @@ public actor ProviderLoop {
                 ineligibleModelIds.append(model.id)
                 continue
             }
-            if EngineV2SupportedModels.isSupported(model: model) {
+            if model.systemOne == true || EngineV2SupportedModels.isSupported(model: model) {
                 advertised[model.id] = model
             } else {
                 unsupportedModelIds.append(model.id)
@@ -696,8 +698,7 @@ public actor ProviderLoop {
                 + " GiB for serving set [\(advertised.keys.sorted().joined(separator: ", "))]")
         if !unsupportedModelIds.isEmpty {
             logger.warning(
-                "Not advertising \(unsupportedModelIds.count) model(s) without a CBv2 adapter "
-                    + "(v0.7.5 serves everything through engine v2): "
+                "Not advertising \(unsupportedModelIds.count) model(s) without a supported native runtime: "
                     + unsupportedModelIds.sorted().joined(separator: ", "))
         }
         if !ineligibleModelIds.isEmpty {

@@ -381,7 +381,7 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 	if pr.Model == "" {
 		pr.Model = model
 	}
-	if pr.RequestedMaxTokens <= 0 {
+	if pr.RequestedMaxTokens <= 0 && !pr.Traits.SystemOne {
 		pr.RequestedMaxTokens = defaultRequestedMaxTokens
 	}
 	exclude := make(map[string]struct{}, len(excludeIDs)+len(pr.ExcludedProviderIDs))
@@ -395,7 +395,7 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 	for _, serial := range pr.AllowedProviderSerials {
 		allowedSerials[serial] = struct{}{}
 	}
-	enforceTTFT := pr.MaxTTFTMs > 0 && !pr.RequiresVision
+	enforceTTFT := pr.MaxTTFTMs > 0 && !pr.RequiresVision && !pr.Traits.SystemOne
 
 	var skips []PlanSkip
 	lock := r.commitLock("commit_plan")
@@ -480,7 +480,7 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 		// Same calibrator-join rule as the primary path: warm text dispatches
 		// only (see reserveProvider).
 		bd := candidate.breakdown
-		if !pr.RequiresVision && bd.RawTTFTMs > 0 && bd.StateMs == 0 {
+		if !pr.RequiresVision && !pr.Traits.SystemOne && bd.RawTTFTMs > 0 && bd.StateMs == 0 {
 			ttftCalibration.notePrediction(pr.RequestID, pr.Attempt, model, candidate.snapshot.chipFamily, bd.RawTTFTMs)
 		}
 		// Winner-specific fields only: the scan tallies belong to the plan

@@ -281,6 +281,18 @@ jobs:
         # Runtime smoke over the JIT-compiled paged Metal kernels.
         timeout-minutes: 10
         run: ../../scripts/run-nested-suite.sh CBv2PagedSafetyTests
+      - name: Run native System One contract gates
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        timeout-minutes: 5
+        run: |
+          decisions_failed=0
+          for suite in SystemOneRequestTests LayaConfigurationTests LayaResponseTests SystemOneHTTPTests; do
+            if ! ../../scripts/run-nested-suite.sh "$suite"; then
+              decisions_failed=1
+            fi
+          done
+          exit "$decisions_failed"
       - name: Run nested prompt-hash tests
         if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm

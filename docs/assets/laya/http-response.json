@@ -1,0 +1,48 @@
+{
+  "model": "laya",
+  "answers": {
+    "department": {
+      "type": "choice",
+      "confidence": 0.8174,
+      "action": {
+        "act_probability": 1.0
+      },
+      "choice": "billing",
+      "probabilities": {
+        "billing": 0.9587,
+        "technical": 0.0227,
+        "sales": 0.0187
+      }
+    },
+    "urgency": {
+      "type": "score",
+      "confidence": 0.0931,
+      "action": {
+        "act_probability": 1.0
+      },
+      "score": 1.3591,
+      "legend": {
+        "0": "not urgent",
+        "1": "soon",
+        "2": "critical"
+      },
+      "probabilities": {
+        "0": 0.153,
+        "1": 0.3349,
+        "2": 0.5121
+      }
+    },
+    "refund": {
+      "type": "noul",
+      "confidence": 0.8217,
+      "action": {
+        "act_probability": 1.0
+      },
+      "noul": 0.8217
+    }
+  },
+  "usage": {
+    "input_tokens": 132,
+    "output_tokens": 0
+  }
+}

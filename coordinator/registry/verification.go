@@ -18,13 +18,13 @@ type VerificationPath struct {
 }
 
 // ProviderAuthorizationSnapshot keeps public diagnostic fields and the
-// owner-only compatibility lease bound to one live connection observation.
+// owner-only compatibility authorization fields bound to one live observation.
 type ProviderAuthorizationSnapshot struct {
-	Verification Verification
-	Lease        AppAttestServingAuthorization
-	AccountID    string
-	Status       ProviderStatus
-	Authorized   bool
+	Verification           Verification
+	AccountID              string
+	Status                 ProviderStatus
+	Authorized             bool
+	AuthorizationExpiresAt int64
 }
 
 func (v Verification) Method() string {
@@ -46,7 +46,7 @@ func (r *Registry) ProviderVerification(p *Provider) Verification {
 }
 
 // ProviderVerificationAndAuthorization returns the diagnostic verdict and
-// compatibility lease from one registry/provider-locked observation. Callers
+// compatibility fields from one registry/provider-locked observation. Callers
 // must still enforce the requesting account before exposing either field.
 func (r *Registry) ProviderVerificationAndAuthorization(p *Provider) ProviderAuthorizationSnapshot {
 	r.mu.RLock()
@@ -62,8 +62,8 @@ func (r *Registry) ProviderVerificationAndAuthorization(p *Provider) ProviderAut
 		Status:       p.Status,
 	}
 	if snapshot.Verification.AppAttest.State == "verified" {
-		snapshot.Lease = p.appAttestAuthorization
 		snapshot.Authorized = true
+		snapshot.AuthorizationExpiresAt = p.appAttestAuthorization.ValidUntil.Unix()
 	}
 	return snapshot
 }

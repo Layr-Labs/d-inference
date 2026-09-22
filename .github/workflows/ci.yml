@@ -22,6 +22,7 @@ jobs:
           python3 scripts/test-provider-release-publication.py
           python3 scripts/test-provider-signing-validation.py
           python3 scripts/test-provider-test-watchdog.py
+          python3 scripts/test-stage-test-metallib.py
           python3 scripts/test-app-attest-entitlements.py
           ./scripts/sync-install-embed.sh check
           ./scripts/test-prod-env-refresh.sh
@@ -189,9 +190,7 @@ jobs:
         working-directory: provider-swift
         # Reuse the built bundle and matched metallib. The exact allocator
         # suite runs in its own process even if the general suite fails.
-        run: |
-          python3 ../scripts/test-stage-test-metallib.py
-          ../scripts/run-provider-tests.sh
+        run: ../scripts/run-provider-tests.sh
       - name: Verify production prompt parity
         run: ./scripts/verify-prompt-parity.sh
       # FLAKE-ORDERING GUARD (audit fix, v0.8.0): every nested step below runs

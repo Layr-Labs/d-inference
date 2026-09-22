@@ -1,0 +1,16 @@
+/* Route context in the global navigation. */
+.site-nav nav a.is-active {
+  color: var(--white);
+  opacity: 1;
+}
+
+.site-nav nav a.is-inactive {
+  color: rgba(255, 255, 255, .5);
+  opacity: 1;
+}
+
+.site-nav nav a.is-inactive:hover,
+.site-nav nav a.is-inactive:focus-visible {
+  color: var(--white);
+  opacity: 1;
+}

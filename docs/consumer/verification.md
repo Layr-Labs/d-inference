@@ -44,6 +44,8 @@ remove the coordinator as a plaintext endpoint; see
 
 An Apple API error can leave an App Attest-only provider pending while the coordinator retries. Retry activity is not successful verification: only an unexpired coordinator-derived authorization permits that path to serve. Independently valid legacy authorization retains its own evidence requirements.
 
+An enrolled App Attest key can remain pending while Apple supplies the first risk metric. The coordinator retries the first assertion without treating the incomplete receipt as serving authorization. Only a current authorized verdict marks the provider verified.
+
 ```bash
 curl https://api.darkbloom.dev/v1/providers/attestation
 ```

@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-17 · commit `954f570d1`
+> Last updated: 2026-09-20 · commit `76a8f03d9`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -11,6 +11,12 @@ once in [`../architecture/hardware-support.md`](../architecture/hardware-support
 and are not repeated here.
 
 ## Minimum requirements
+
+Native DiffusionGemma retains its vision tower and applies the existing per-frame
+allocation checks and shared process budget; enabling media discovery does not
+lower load, activation or KV reserves. See the [native block memory and media
+contract](../architecture/native-block-inference.md). No new physical RAM-tier
+or throughput guarantee follows from the capability flag.
 
 | Component | Requirement | Code |
 |---|---|---|

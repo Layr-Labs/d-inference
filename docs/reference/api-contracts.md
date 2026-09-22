@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-21 · commit `b581bfd21`
 
 The complete public HTTP surface of the coordinator, derived from the 116 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -68,6 +68,15 @@ Both tiers set `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, `
 ### Inference (4)
 
 All four share the chain `drainGate → requireAuth → rateLimitConsumer → sealedTransport → handler` and the pipeline in `coordinator/api/consumer.go`.
+
+After authentication, shared preprocessing rejects negative or malformed
+top-level `max_tokens`, `max_completion_tokens` and `max_output_tokens` with
+HTTP400 `invalid_request_error` naming the field, before budget defaulting or
+inference admission (`invalidOutputTokenField`,
+`coordinator/api/output_budget_validation.go`). Omitted, null and zero retain
+their existing default-bound behavior; valid positive integer bounds and alias
+precedence are unchanged. Nested tool arguments and schemas are not inspected
+as inference budgets.
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
@@ -395,7 +404,7 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `withCode` in `coo
 
 | Status | `type` values | Raised by |
 |---|---|---|
-| 400 | `invalid_request_error`, `invalid_sealed_envelope`, `kid_mismatch`, `decryption_failed`, `invalid_request`, `bad_request`, `referral_error` | Body/JSON validation, `n > 1`, tool-choice and vision rules, inference-enforced `tool_choice` combined with images (`param: tool_choice`), sealed-envelope faults, device-code and key-management input, unknown catalog `?type=` |
+| 400 | `invalid_request_error`, `invalid_sealed_envelope`, `kid_mismatch`, `decryption_failed`, `invalid_request`, `bad_request`, `referral_error` | Body/JSON validation, `n > 1`, tool-choice and vision rules, native media tools unsupported by a model's serving fleet (`param: model`), sealed-envelope faults, device-code and key-management input, unknown catalog `?type=` |
 | 401 | `authentication_error`, `auth_error`, `unauthorized` | Missing/invalid bearer (`requireAuth`, `requirePrivyAuth`), no account user (`requirePrivyUser`), release key |
 | 402 | `insufficient_funds` (balance below the reservation), `insufficient_quota` (per-key spend cap); `code` is `insufficient_quota` for both | `reserveInferenceBalance` (`coordinator/api/inference_admission.go`); the per-cause table, including the provider-price 402, is [Payment-required responses](../architecture/billing.md#payment-required-responses) |
 | 403 | `forbidden`, `model_not_allowed` | API key on a `privy` route; non-admin on an `admin` route; model outside the key's `allowed_models` (`keyModelAllowed`, `coordinator/api/apikey_handlers.go`) |
@@ -486,6 +495,31 @@ provider sends none (`handleStreamingResponseWithFirstChunkAndError`,
 
 ### Responses API
 
+Non-empty string `instructions` becomes a leading system message before `input`,
+preserving whitespace, existing system/developer messages and tool history.
+Missing, null or empty instructions add no message; other types return400.
+Both serving and text-cache preparation use `lowerResponsesWithContent`
+(`coordinator/promptcontract/endpoint_lower_responses.go`); Rust mirrors the
+text-cache contract in `lower_responses` (`coordinator/promptsidecar/src/endpoint.rs`).
+Routing and billing reservation estimates include the new system message before
+lowering (`routingShape`, `billingBytes`, `coordinator/api/request_introspection.go`).
+
+Serving uses `LowerResponsesInferenceBody`
+(`coordinator/promptcontract/endpoint_responses_inference.go`) to preserve
+ordered inline media alongside text and function history. `input_image` accepts
+a string `image_url`; canonical `image_url` and `video_url` parts accept their
+`{"url": ...}` objects. These references must be inline `data:` URIs. Uploaded
+file IDs, files, audio, unknown parts and the unsupported `input_video` alias
+return400 rather than being omitted or fetched. The existing Chat remote-media
+resolver policy is unchanged. Media-bearing `function_call_output.output`
+arrays participate in vision routing and media-aware token estimates.
+
+This serving path is distinct from `LowerProviderBody`, the text-only Go/Rust
+cache-planning contract. That contract rejects media, including media in tool
+outputs; accepting a Responses image for inference does not establish exact
+coordinator cache-routing eligibility. Native model codec, media-size, context
+and tool-capability checks still apply.
+
 Bodies are lowered into the chat pipeline (`coordinator/promptcontract/endpoint_lower_responses.go`) and the provider's chat output is raised back into `ResponsesResponse` (`coordinator/api/types/types.go`): `id` (`resp_…`), `object`, `created_at`, `status`, `error`, `incomplete_details.reason`, `instructions`, `max_output_tokens`, `model`, `output[]`, `parallel_tool_calls`, `temperature`, `tool_choice`, `tools`, `top_p`, `metadata`, `usage` (`input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`), `se_signature`, `response_hash`. Streams use `event:`-typed frames from `response.created` / `response.in_progress` through the item deltas to `response.completed` (or `response.incomplete` when truncated) and carry **no** `data: [DONE]` (`newResponsesStreamEmitter`, `coordinator/api/responses_stream.go`).
 
 `usage.total_tokens` is always emitted as `input_tokens + output_tokens`, including
@@ -542,7 +576,7 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 | Tool schemas | Normalised to strict JSON Schema before dispatch; schemas the constraint parser cannot compile → 422 | `NormalizeToolSchemas`, `validateResolvedToolConstraintParser` |
 | Vision | Image parts require a vision-capable model, otherwise 400; a vision model with no vision-capable provider online → 503 `model_unavailable` | `detectMediaRequirement` (`coordinator/api/request_introspection.go`), `visionToolsFailFast` (`coordinator/api/inference_preprocess.go`) |
 | Remote images | `http(s)` `image_url` parts are gated before dispatch and fetched by the coordinator; the fetch is billed as media | `gateRemoteMediaPreDispatch`, `resolveRemoteMedia` (`coordinator/api/media_resolve.go`) |
-| Inference-enforced `tool_choice` + images | `required` or a named `tool_choice` (modes that need provider-side constraint enforcement) together with image content → 400, `param: tool_choice`. `response_format` is not validated by the coordinator | `handleChatCompletions` |
+| Forced media tools / media tool results | Requires explicit per-model native media-tool capability. A public model served only by providers lacking it → 400, `param: model`; no currently eligible capable provider → 503. Applies to `required`/named tools with media and media-bearing tool results even with `tool_choice: none`. Other vision/tool checks remain; `response_format` is not validated by the coordinator | `nativeMediaToolsFailFast`, `coordinator/api/native_media_tools.go` |
 | Token rate limits | Per-account input and output tokens per minute → 429 with `Retry-After` | `applyTokenRateLimitWithAdmission`, `writeTokenRateLimited` |
 | Model shedding | A model currently rejecting → 429 with `Retry-After` from `estimateRetryAfter` | `shedIfModelRejected` |
 

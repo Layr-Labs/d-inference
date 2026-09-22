@@ -17,6 +17,7 @@
 
 import Foundation
 import MLXLMCommon
+import MLXVLM
 
 public extension MultiModelBatchSchedulerEngine {
 
@@ -33,6 +34,7 @@ public extension MultiModelBatchSchedulerEngine {
         /// The loaded model container. Present for VLM models so multimodal
         /// requests can run the non-batched `prepare`/`generate` vision path.
         public let container: ModelContainer?
+        public let diffusionContainer: DiffusionGemmaContainer?
         /// Whether this model is a vision-language model (config has a
         /// `vision_config`). When true, requests that carry image/video
         /// content are routed to the media path.
@@ -48,13 +50,14 @@ public extension MultiModelBatchSchedulerEngine {
         public init(
             tokenizer: TokenizerHandle,
             modelType: String? = nil,
-            container: ModelContainer? = nil, isVLM: Bool = false,
+            container: ModelContainer? = nil, diffusionContainer: DiffusionGemmaContainer? = nil, isVLM: Bool = false,
             engineV2Bridge: EngineV2Bridge? = nil,
             visionGate: VisionMemoryGate? = nil
         ) {
             self.tokenizer = tokenizer
             self.modelType = modelType
             self.container = container
+            self.diffusionContainer = diffusionContainer
             self.isVLM = isVLM
             self.engineV2Bridge = engineV2Bridge
             self.visionGate = visionGate
@@ -93,6 +96,7 @@ public extension MultiModelBatchSchedulerEngine {
         /// The loaded model container (present for VLM models — see
         /// ``ModelRegistryEntry/container``).
         public let container: ModelContainer?
+        public let diffusionContainer: DiffusionGemmaContainer?
         /// Whether this model is a vision-language model.
         public let isVLM: Bool
         /// ContinuousBatchingV2 bridge — the serving engine (see
@@ -107,6 +111,7 @@ public extension MultiModelBatchSchedulerEngine {
             releaseToken: OneShotRelease,
             modelType: String? = nil,
             container: ModelContainer? = nil,
+            diffusionContainer: DiffusionGemmaContainer? = nil,
             isVLM: Bool = false,
             engineV2Bridge: EngineV2Bridge? = nil,
             visionGate: VisionMemoryGate? = nil
@@ -115,6 +120,7 @@ public extension MultiModelBatchSchedulerEngine {
             self.releaseToken = releaseToken
             self.modelType = modelType
             self.container = container
+            self.diffusionContainer = diffusionContainer
             self.isVLM = isVLM
             self.engineV2Bridge = engineV2Bridge
             self.visionGate = visionGate

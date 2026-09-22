@@ -42,6 +42,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// The owned native Flash-Next template does not support the resolved
     /// thinking effort. Deterministic request error, before template rendering.
     case unsupportedReasoningEffort
+    /// Native binary-thinking model received an unknown effort alias.
+    case unsupportedNativeReasoningEffort
     /// The MODEL failed to satisfy the request's forced `tool_choice`
     /// contract, or the inference-time grammar reached an impossible state.
     /// This depends on what the model GENERATED —
@@ -103,6 +105,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return message
         case .unsupportedReasoningEffort:
             return "Qwen3.8-Flash-Next supports reasoning effort low, medium, or xhigh when thinking is enabled"
+        case .unsupportedNativeReasoningEffort:
+            return "DiffusionGemma supports binary reasoning: none/off/0 or minimal/low/medium/high/xhigh"
         case .toolChoiceViolation(let message):
             return message
         case .tokenBudgetExhausted(let message):

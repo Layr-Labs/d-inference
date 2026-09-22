@@ -7,17 +7,34 @@ import (
 )
 
 func lowerResponses(input map[string]any) (map[string]any, error) {
+	return lowerResponsesWithContent(input, func(content any) (any, error) {
+		return responsesContentText(content), nil
+	})
+}
+
+func lowerResponsesWithContent(input map[string]any, lowerContent func(any) (any, error)) (map[string]any, error) {
 	rawInput, ok := input["input"]
 	if !ok {
 		return nil, ErrEndpointBodyInvalid
 	}
-	messages, err := lowerResponsesMessages(rawInput)
+	messages, err := lowerResponsesMessagesWithContent(rawInput, lowerContent)
 	if err != nil {
 		return nil, err
 	}
+	if raw := input["instructions"]; raw != nil {
+		instructions, ok := raw.(string)
+		if !ok {
+			return nil, ErrEndpointBodyInvalid
+		}
+		if instructions != "" {
+			messages = append([]any{map[string]any{
+				"role": "system", "content": instructions,
+			}}, messages...)
+		}
+	}
 
 	output := cloneObject(input)
-	for _, key := range []string{"input", "endpoint", "max_output_tokens", "text"} {
+	for _, key := range []string{"input", "instructions", "endpoint", "max_output_tokens", "text"} {
 		delete(output, key)
 	}
 	output["messages"] = messages
@@ -41,6 +58,12 @@ func lowerResponses(input map[string]any) (map[string]any, error) {
 }
 
 func lowerResponsesMessages(input any) ([]any, error) {
+	return lowerResponsesMessagesWithContent(input, func(content any) (any, error) {
+		return responsesContentText(content), nil
+	})
+}
+
+func lowerResponsesMessagesWithContent(input any, lowerContent func(any) (any, error)) ([]any, error) {
 	if text, ok := input.(string); ok {
 		return []any{map[string]any{"role": "user", "content": text}}, nil
 	}
@@ -66,9 +89,11 @@ func lowerResponsesMessages(input any) ([]any, error) {
 				if !ok {
 					return nil, ErrEndpointBodyInvalid
 				}
-				messages = append(messages, map[string]any{
-					"role": role, "content": responsesContentText(item["content"]),
-				})
+				content, err := lowerContent(item["content"])
+				if err != nil {
+					return nil, err
+				}
+				messages = append(messages, map[string]any{"role": role, "content": content})
 			case "function_call":
 				callID, _ := item["call_id"].(string)
 				if _, exists := item["call_id"]; !exists {
@@ -94,9 +119,13 @@ func lowerResponsesMessages(input any) ([]any, error) {
 				})
 			case "function_call_output":
 				callID, _ := item["call_id"].(string)
+				content, err := lowerContent(item["output"])
+				if err != nil {
+					return nil, err
+				}
 				messages = append(messages, map[string]any{
 					"role": "tool", "tool_call_id": callID,
-					"content": responsesContentText(item["output"]),
+					"content": content,
 				})
 			case "reasoning":
 			default:
@@ -113,9 +142,11 @@ func lowerResponsesMessages(input any) ([]any, error) {
 		if !ok {
 			return nil, ErrEndpointBodyInvalid
 		}
-		messages = append(messages, map[string]any{
-			"role": role, "content": responsesContentText(item["content"]),
-		})
+		content, err := lowerContent(item["content"])
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, map[string]any{"role": role, "content": content})
 	}
 	if len(messages) == 0 {
 		return nil, ErrEndpointBodyInvalid

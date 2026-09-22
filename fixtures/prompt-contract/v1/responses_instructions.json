@@ -1,0 +1,37 @@
+[
+  {
+    "name": "string input preserves instruction whitespace",
+    "request": {"input": "hello", "instructions": "  Answer in French.\n"},
+    "expected": {"messages": [{"role": "system", "content": "  Answer in French.\n"}, {"role": "user", "content": "hello"}]}
+  },
+  {
+    "name": "instructions precede existing system and developer messages",
+    "request": {"instructions": "First rule", "input": [{"role": "system", "content": "Second rule"}, {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "Third rule"}]}, {"role": "user", "content": "hello"}]},
+    "expected": {"messages": [{"role": "system", "content": "First rule"}, {"role": "system", "content": "Second rule"}, {"role": "system", "content": "Third rule"}, {"role": "user", "content": "hello"}]}
+  },
+  {
+    "name": "instructions preserve function history",
+    "request": {"instructions": "Use tools", "input": [{"type": "function_call", "call_id": "c1", "name": "weather", "arguments": "{}"}, {"type": "function_call_output", "call_id": "c1", "output": "sunny"}]},
+    "expected": {"messages": [{"role": "system", "content": "Use tools"}, {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "weather", "arguments": "{}"}}]}, {"role": "tool", "tool_call_id": "c1", "content": "sunny"}]}
+  },
+  {
+    "name": "omitted instructions",
+    "request": {"input": "hello"},
+    "expected": {"messages": [{"role": "user", "content": "hello"}]}
+  },
+  {
+    "name": "null instructions",
+    "request": {"input": "hello", "instructions": null},
+    "expected": {"messages": [{"role": "user", "content": "hello"}]}
+  },
+  {
+    "name": "empty instructions",
+    "request": {"input": "hello", "instructions": ""},
+    "expected": {"messages": [{"role": "user", "content": "hello"}]}
+  },
+  {"name": "reject numeric instructions", "request": {"input": "hello", "instructions": 42}, "invalid": true},
+  {"name": "reject boolean instructions", "request": {"input": "hello", "instructions": false}, "invalid": true},
+  {"name": "reject object instructions", "request": {"input": "hello", "instructions": {"text": "rules"}}, "invalid": true},
+  {"name": "reject array instructions", "request": {"input": "hello", "instructions": ["rules"]}, "invalid": true},
+  {"name": "instructions do not replace required input", "request": {"instructions": "rules"}, "invalid": true}
+]

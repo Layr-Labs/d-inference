@@ -62,7 +62,7 @@ extension SSDHybridCheckpointStore {
             return
         }
         let hostReservation: ProcessHostBufferReservation?
-        if source.usesProcessMemoryOwner {
+        if source.usesProcessMemoryOwner || source.manifest.backendLayout == CBv2CompleteCheckpointManifest.diffusionBlockLayout {
             guard let kvBudget,
                 let reservation = kvBudget.reserveHostBuffers(bytes: UInt64(Self.ioScratchBytes))
             else {
@@ -115,13 +115,17 @@ extension SSDHybridCheckpointStore {
         guard !isClosed else { return .refused(.cacheClosed) }
         guard hasSafeRoot else { return .refused(.unsafeCacheRoot) }
         let manifest = source.manifest
+        let nativeMedia = config.backendLayout == CBv2CompleteCheckpointManifest.diffusionBlockLayout
+            && manifest.mediaIdentity != nil
         guard manifest.position >= config.minEffectiveTokens else { return .refused(.belowEffectiveTokenFloor) }
-        guard manifest.position > 0, manifest.position % PrefixCachePolicy.blockSize == 0 else {
+        guard manifest.position > 0, nativeMedia || manifest.position % PrefixCachePolicy.blockSize == 0 else {
             return .refused(.noCompleteBlock)
         }
         guard manifest.identity == identity, manifest.backendLayout == config.backendLayout,
             manifest.cacheSalt == cacheSalt,
-            manifest.position < tokens.count, tokens.starts(with: manifest.prefixTokens)
+            (manifest.backendLayout == CBv2CompleteCheckpointManifest.diffusionBlockLayout
+                ? manifest.position <= tokens.count : manifest.position < tokens.count),
+            tokens.starts(with: manifest.prefixTokens)
         else { return .refused(.incompleteLayerState) }
         let envelope: SSDHybridCheckpointEnvelope
         do {
@@ -131,10 +135,20 @@ extension SSDHybridCheckpointStore {
         } catch {
             return .refused(.incompleteLayerState)
         }
-        let chain = hashes(tokens: tokens, scope: cacheSalt ?? "")
-        let offset = manifest.position / PrefixCachePolicy.blockSize - 1
-        guard chain.indices.contains(offset) else { return .refused(.noCompleteBlock) }
-        let tag = lookupKeys.checkpointTag(chainHash: chain[offset], cacheSalt: cacheSalt ?? "")
+        let digest: Data
+        if nativeMedia {
+            guard manifest.chunkSize == config.nativePrefillChunkSize,
+                let values = try? NativeDiffusionCheckpointKeys.hashes(tokens: manifest.prefixTokens,
+                    positions: [manifest.position], promptContractID: identity.promptContractID, scope: cacheSalt ?? ""),
+                let value = values[manifest.position] else { return .refused(.incompleteLayerState) }
+            digest = value
+        } else {
+            let chain = hashes(tokens: tokens, scope: cacheSalt ?? "")
+            let offset = manifest.position / PrefixCachePolicy.blockSize - 1
+            guard chain.indices.contains(offset) else { return .refused(.noCompleteBlock) }
+            digest = chain[offset]
+        }
+        let tag = lookupKeys.checkpointTag(chainHash: digest, cacheSalt: cacheSalt ?? "")
         let short = Data(tag.prefix(16))
         let repeated = writeDemand.observe(short, now: config.nowSeconds())
         // Novel writes use a 90% sub-budget, leaving capacity for known

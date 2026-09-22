@@ -17,11 +17,20 @@ enum ToolChoiceEnforcementPolicy {
 
     static let qwen38ConstrainedModelID = "EigenLabs/Qwen3.8-27B-4bit"
 
+    /// Per-model wire capability, never inferred from a caller's model label.
+    /// Other families retain their existing media/grammar behavior until their
+    /// complete forced-choice and tool-result-media paths are qualified.
+    static func advertisesNativeMediaTools(for model: ModelInfo) -> Bool {
+        model.modelType == "diffusion_gemma" && model.isVision == true
+            && model.templateRenderOK == true && advertisesCapability(for: model)
+    }
+
     /// Bonsai media uses the same withheld/schema-validated native tool frames
     /// as its text path; it does not require a sampler grammar. Admission must
     /// also attest the actual loaded native wrapper, not only caller metadata.
     static func supportsForcedMedia(context: ChatTemplateFixContext, nativeWrapperLoaded: Bool) -> Bool {
-        nativeWrapperLoaded && context.modelType == "prism_hadamard_qwen35"
+        if nativeWrapperLoaded && context.modelType == "diffusion_gemma" { return true }
+        return nativeWrapperLoaded && context.modelType == "prism_hadamard_qwen35"
             && EngineV2SupportedModels.isBonsai2ListingModelID(context.modelId)
     }
 
@@ -72,6 +81,10 @@ enum ToolChoiceEnforcementPolicy {
     static func nativeStructuredTarget(_ context: ChatTemplateFixContext) -> Bool {
         let type = context.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if type == "qwen4_exp" || type == "qwen4_exp_text" { return true }
+        // Native block diffusion retains its trained sampler. Required/named
+        // calls use prompt selection plus withheld schema/cardinality validation,
+        // never an AR automaton advanced on provisional canvas tokens.
+        if type == "diffusion_gemma" { return true }
         if type == "prism_hadamard_qwen35" {
             return EngineV2SupportedModels.isBonsai2ListingModelID(context.modelId)
         }
@@ -106,6 +119,13 @@ enum ToolChoiceEnforcementPolicy {
         case .structuredPostValidation:
             let type = modelContext?.modelType?
                 .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if type == "diffusion_gemma" {
+                guard format == .gemma else {
+                    throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                        "native diffusion tool_choice requires the Gemma tool parser")
+                }
+                return
+            }
             let nativeQwen = type == "qwen4_exp" || type == "qwen4_exp_text"
                 || type == "prism_hadamard_qwen35"
             let framedFormat: ToolCallFormat = nativeQwen ? .qwen35 : .nemotron

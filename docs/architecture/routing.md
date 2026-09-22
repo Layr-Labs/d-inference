@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-18 · commit `dab62c50a`
+> Last updated: 2026-09-21 · commit `b581bfd21`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -12,6 +12,17 @@ Capacity, queues, slot states and the warm pool are covered in
 eligible providers.
 
 ## Context
+
+Forced tool choice with media, and media-bearing tool results even with
+`tool_choice: none`, carry `RequestTraits.RequiresNativeMediaTools`. The shared
+eligibility gate requires the selected model's explicit `native_media_tools`
+advertisement, vision support and existing tool-constraint protocol. This trait
+survives alias resolution, queued requests, retries and final reservation;
+ordinary media or text-only tools do not acquire it. A model update or disconnect
+immediately removes eligibility. Code: `coordinator/api/native_media_tools.go`
+(`requestHasMediaToolResults`), `coordinator/registry/native_media_tools.go`
+(`providerSupportsNativeMediaToolsLocked`) and
+`coordinator/registry/request_traits.go` (`providerEligibleForTraitsLocked`).
 
 The fleet is heterogeneous consumer Apple-silicon hardware that comes and
 goes. Any single provider may be cold for a model, thermally throttled,

@@ -16,7 +16,8 @@ extension EngineV2Bridge {
         usageSignal: EngineV2RequestUsageSignal? = nil,
         prefixCacheReceiptID: CBv2RequestID? = nil,
         readyReceiptRegistered: Bool = false,
-        profile: RequestProfileBuilder? = nil
+        profile: RequestProfileBuilder? = nil,
+        nativeRetirement: CBv2RequestRetirement? = nil
     ) {
         let bridge = self
         usageSignal?.beginTerminalObservation()
@@ -29,17 +30,23 @@ extension EngineV2Bridge {
                 usageSignal: usageSignal,
                 prefixCacheReceiptID: prefixCacheReceiptID,
                 readyReceiptRegistered: readyReceiptRegistered,
-                profile: profile
+                profile: profile,
+                nativeRetirement: nativeRetirement
             )
-            await bridge.clearPumpTask(id: id)
+            await bridge.clearPumpTask(id: id, releaseNativeIdentity: nativeRetirement != nil)
         }
         pumpTasks[id] = task
     }
 
     /// Remove a completed pump's task handle (called from the pump task after
     /// `pump` returns, on every exit path).
-    func clearPumpTask(id: String) {
+    func clearPumpTask(id: String, releaseNativeIdentity: Bool = false) {
         pumpTasks.removeValue(forKey: id)
+        if releaseNativeIdentity {
+            pendingSubmissionIDs.remove(id)
+            pendingCancellationIDs.remove(id)
+            pendingProfiles.removeValue(forKey: id)
+        }
     }
 
     private func pump(
@@ -52,7 +59,8 @@ extension EngineV2Bridge {
         usageSignal: EngineV2RequestUsageSignal? = nil,
         prefixCacheReceiptID: CBv2RequestID? = nil,
         readyReceiptRegistered: Bool = false,
-        profile: RequestProfileBuilder? = nil
+        profile: RequestProfileBuilder? = nil,
+        nativeRetirement: CBv2RequestRetirement? = nil
     ) async {
         // Resolve only after record(usage:) has delivered the lookup callback
         // or teardown has finalized its failure, and owned resources retire.
@@ -74,6 +82,9 @@ extension EngineV2Bridge {
         eventLoop: for await event in events {
             switch event {
             case .delta(let text, let tokens, let logprobs):
+                #if DEBUG
+                _testNativeTextObserver?(id, text)
+                #endif
                 if profile != nil, !tokens.isEmpty {
                     lastDeltaAt = .now
                 }
@@ -114,6 +125,10 @@ extension EngineV2Bridge {
                     continuation.yield(.chunk(text))
                 }
             case .finished(let reason, let usage):
+                // Only hold the pre-submit identity after active work ends:
+                // marking it pending during decode would divert ordinary cancel
+                // into the pre-admission cancellation path instead of the engine.
+                if nativeRetirement != nil { pendingSubmissionIDs.insert(id) }
                 #if DEBUG
                 if let gate = _testBeforeNativeTerminal {
                     _testBeforeNativeTerminal = nil
@@ -152,11 +167,19 @@ extension EngineV2Bridge {
         // Closing without a terminal is a teardown error, including task
         // cancellation while waiting for the engine's next event.
         if !sawTerminal {
+            if nativeRetirement != nil { pendingSubmissionIDs.insert(id) }
             continuation.yield(.error("request stream closed by engine teardown"))
             if !sawFirstToken {
                 wedgeMonitor.recordTerminalWithoutFirstToken()
             }
             dropRequest(id: id)
+        }
+        if let nativeRetirement {
+            // Return the terminal to the client without claiming device cleanup.
+            // This uncancellable retirement wait retains KV, staged imports and
+            // receipt IDs until actual engine-queue release, even on a wedge.
+            continuation.finish()
+            await nativeRetirement.wait()
         }
         // Every exit releases only the resources owned by this submission.
         // Staging completion is an idempotent backstop for lookup misses.

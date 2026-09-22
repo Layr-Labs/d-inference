@@ -19,7 +19,14 @@ public struct LocalTokenizerLoader: TokenizerLoader, Sendable {
     public init() {}
 
     public func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
-        let upstream = try await AutoTokenizer.from(modelFolder: directory)
+        let upstream: any Tokenizers.Tokenizer
+        if let inputs = try DiffusionGemmaTokenizerConfiguration.load(from: directory) {
+            upstream = try PreTrainedTokenizer(
+                tokenizerConfig: .init(inputs.configurationDictionary()),
+                tokenizerData: .init(inputs.dataDictionary()))
+        } else {
+            upstream = try await AutoTokenizer.from(modelFolder: directory)
+        }
         let templateURL = directory.appendingPathComponent("chat_template.jinja")
         let chatTemplate: String?
         if FileManager.default.fileExists(atPath: templateURL.path) {
@@ -87,6 +94,28 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer 
                 tools: tools,
                 additionalContext: additionalContext
             )
+        } catch Tokenizers.TokenizerError.missingChatTemplate {
+            throw MLXLMCommon.TokenizerError.missingChatTemplate
+        }
+    }
+
+    func applyChatTemplate(
+        messages: [[String: any Sendable]], chatTemplate: String
+    ) throws -> [Int] {
+        try applyChatTemplate(messages: messages, chatTemplate: chatTemplate,
+                              tools: nil, additionalContext: nil)
+    }
+
+    func applyChatTemplate(
+        messages: [[String: any Sendable]], chatTemplate: String,
+        tools: [[String: any Sendable]]?, additionalContext: [String: any Sendable]?
+    ) throws -> [Int] {
+        do {
+            return try upstream.applyChatTemplate(
+                messages: messages,
+                chatTemplate: .literal(normalizeSwiftJinjaTemplate(chatTemplate)),
+                addGenerationPrompt: true, truncation: false, maxLength: nil,
+                tools: tools, additionalContext: additionalContext)
         } catch Tokenizers.TokenizerError.missingChatTemplate {
             throw MLXLMCommon.TokenizerError.missingChatTemplate
         }

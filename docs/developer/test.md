@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-20 · commit `76a8f03d9`
+> Last updated: 2026-09-21 · commit `b581bfd21`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -36,6 +36,184 @@ preparation seam before tokenization. The shared public corpus covers JSON-objec
 and schema response formats plus multi-system and text/tool/endpoint forms; it compares
 actual Swift tokens and scope-bound hashes with Rust plans. No production
 prompts or model weights are needed (`scripts/verify-prompt-parity.sh`).
+
+For a new native family, run the same production corpus against its exact
+config/tokenizer/template artifacts before accepting cache routing. Diffusion
+controls are mirrored by `coordinator/promptsidecar/src/diffusion.rs`; its tests
+cover positive effort, explicit boolean precedence, absence and invalid efforts.
+`DiffusionGemmaPromptParityLiveTests` can isolate the real artifact's tool-turn
+shape without loading weights. `DiffusionGemmaMediaNormalizationTests` checks
+that media follows the same input formatter without losing decoded assets or
+enabling AR grammar. Keep renderer/prompt parity distinct from generation quality.
+
+`DiffusionToolResultMediaTests` verifies decoded tool-result pixels and symbolic
+placeholder order against actual call IDs, including reversed result arrival,
+unsupported-role refusals and legacy isolation. `NativeMediaToolsCapabilityTests`
+covers family-scoped advertisement plus ordinary/attested registration and model
+updates. Go `TestNativeMediaTools` cases cover model updates/revocation, final
+reservation, aliases, owner routing, retry exclusions and queued media-result
+requests without forced choice. Run these before actual encrypted coordinator
+media/tool fixtures; component passes do not establish generated tool quality.
+
+`TestLowerResponsesInstructions` runs the same shared instruction vectors through
+serving and cache lowering. `TestResponsesInlineMediaReachesEncryptedProviderInOrder`
+combines instructions with ordered user and tool-result media in both transport
+modes. `TestResponsesInstructionsAdmissionEstimates` checks pre-lowering routing
+and billing bounds. When this contract changes, regenerate the current full
+production corpus from its immutable manifests and verify independent Swift
+tokenizer/template parity; do not replace a current corpus with older PR fixtures.
+
+`DiffusionGemmaTokenizerParityLiveTests` compares the actual local tokenizer
+against an independently produced synthetic oracle without loading weights.
+Enable `DARKBLOOM_DIFFUSION_TOKENIZER_PARITY=1`, set
+`DARKBLOOM_DIFFUSION_TOKENIZER_DIR` to the verified tokenizer directory and
+`DARKBLOOM_DIFFUSION_TOKENIZER_ORACLE` to the retained oracle JSON. The oracle
+contains 16 entries with `text`, `tokenIds`, `decoded` and
+`decodedSkippingSpecial`; compare exact UTF-8 bytes, not Unicode-equivalent
+Swift strings. The SDK has the matching `DiffusionGemmaTokenizerLiveTests` gate.
+Keep encoding, decoding and model semantic quality verdicts distinct.
+
+`DiffusionGemmaRawCaseLiveTests` replays retained synthetic API fixtures through
+the same native prompt contract and records output before reasoning/tool parsing.
+Its explicit `DARKBLOOM_DIFFUSION_RAW_CASE_DIAGNOSTIC` opt-in requires the selected
+artifact and `DARKBLOOM_DIFFUSION_RAW_CASES_DIR`; run it alone under an external
+memory/time guard. Keep raw diagnostics private. Fixed diagnostic seeds do not
+reproduce an earlier unseeded API failure, and successful execution is not a
+semantic-quality pass. Never repair literal arguments merely to satisfy a fixture.
+
+`DiffusionGemmaFourCallDiagnosticLiveTests` uses the existing DEBUG-only native
+text observer during a bounded set of actual authenticated HTTP requests. Its
+`DARKBLOOM_DIFFUSION_FOUR_CALL_DIAGNOSTIC` opt-in records every new unseeded
+trajectory and compares parsing of original chunks with their concatenation.
+`DARKBLOOM_DIFFUSION_FOUR_CALL_CASE` selects only `responses-four-on-stream`
+(the default) or `responses-four-on-plain` from the retained synthetic directory.
+The test checks the fixture's case and transport flag, records its receipt hash,
+and keeps the same fixed sixteen-trial budget. Unknown names and traversal are
+rejected by `DiffusionGemmaFourCallFixtureTests`; selecting a plain fixture must
+not be represented as streaming coverage or replay of the original random draw.
+It retains failures and checks drain between requests; it is not retry-until-pass
+qualification or an exact replay of an earlier unrecorded random seed. Raw text
+and response captures remain private and are never production telemetry.
+`NativeToolStreamRouterTests` separately proves that four complete native frames
+remain four calls, while four starts with only one closing marker fail closed
+across chunk boundaries. A permissive parser returning one call is not a passing
+four-call result; do not silently repair the omitted protocol markers.
+
+`DiffusionGemmaNamedToolDiagnosticLiveTests` adds a fixed four-round matrix of
+retained named-tool Responses requests, reasoning on/off and plain/streaming.
+Its `DARKBLOOM_DIFFUSION_NAMED_TOOL_DIAGNOSTIC=1` opt-in uses the same model and
+synthetic case-directory inputs. It captures native chunks before parsing and
+compares joined/chunked parser outcomes, with a bounded drain after every request.
+Successful diagnostic collection is not a tool-quality pass. Keep both earlier
+unseeded failures and every newly captured outcome; never retry until green.
+
+`DiffusionGemmaReasoningEmissionTests` deterministically replays the captured
+unclosed-thought shape through the provider adapter without loading weights.
+It requires failure without exposing disabled reasoning or invoking the embedded
+tool, at fragmented and whole-chunk boundaries. It also preserves enabled
+reasoning, empty envelopes and literal markers in arguments, and verifies that a
+failed router cannot resume. `DiffusionGemmaReasoningControlTests` compares output
+permission against the renderer's Boolean/effort precedence. These component
+checks complement, but do not replace, actual model and HTTP qualification.
+The same suite sends the scripted captured output through the real shared local
+HTTP application on a loopback socket, covering both APIs and stream modes. It
+checks authentication before submission, sanitized failure terminals, absence of
+disabled thought/tool bytes and the unchanged forced-tool 422 classification.
+This transport fixture is not live model-generation evidence.
+
+For media-cache deadline attribution only,
+`DARKBLOOM_DIFFUSION_MEDIA_TRACE_ROOT` points to a new private directory for exact
+synthetic image/video request bodies. `DiffusionGemmaMediaPrefixLiveTests` records
+phase timings and preserves its original client deadline and assertions. The
+export excludes authentication headers and weights. A later quiet pass does not
+erase an earlier cold timeout; compare the captured request on the actual
+optimized CLI and keep diagnostic versus normal-gate results separate.
+
+`DiffusionLongContextLiveTests` exercises repeated contiguous and paged requests
+through the normal native benchmark factory, including load-hash brackets and
+shared memory admission. Enable `DARKBLOOM_DIFFUSION_LONG_CONTEXT_LIVE=1`, point
+`DARKBLOOM_DIFFUSION_MODEL_DIR` at the verified selected artifact, and choose one
+`DARKBLOOM_DIFFUSION_CONTEXT_TOKENS` value per guarded process. It defaults to
+4096; larger cells require a fresh physical-memory/headroom check. Prompts retain
+complete chat framing and are sized using the actual tokenizer. Require exact
+output equality, the known-answer oracle and post-retirement owner release.
+The `262016` target reserves the artifact's remaining output capacity so the
+actual prompt plus requested output equals its native context exactly; it does
+not claim that many input tokens alone or suppress an early native EOS.
+The short answer measures long prefill/state correctness, not sustained decode
+or finalized-visible-token performance. Its MLX peak includes loading; preserve
+the external physical-footprint trace separately. A SwiftPM helper is a distinct
+executable from its test bundle: runtime identity requires the source-matched
+Metal library beside the actual test host, without modifying the installed
+toolchain or bypassing production binding.
+The native benchmark installs the same `MLXMemoryGuard.configureOnce` policy
+as serving before loading. The fixture asserts the actual allocator limits;
+do not use MLX's uncapped default pool as a production memory baseline.
+
+`DiffusionVisibleThroughputLiveTests` measures sustained finalized visible output
+through the same native factory. Enable `DARKBLOOM_DIFFUSION_VISIBLE_BENCH_LIVE=1`
+with the verified `DARKBLOOM_DIFFUSION_MODEL_DIR`. It runs three 2,048-token-output
+iterations per contiguous/paged backend with the unchanged native canvas and
+sampler. Require equal original token IDs across repeats, sufficient visible
+output, and post-retirement release. The metric excludes initial protocol framing
+only at a proved original-token boundary and includes first-block generation;
+it does not count refinement work or retokenize displayed text. Run its metric
+helper tests as well, including literal markers and malformed framing. Inspect
+the generated synthetic text separately: a valid rate/equality result is not a
+quality pass or proof of the performance target. Retain all iteration timings,
+exact build configuration and source/resource identities.
+
+The ordinary native benchmark can emit the
+[descriptor-route diagnostic](../reference/configuration.md#native-diffusiongemma-expert-reduction).
+Run it only with an idle, exclusively owned model process. The first iteration
+observes core descriptor dispatch, DiffusionGemma weighted reduction and
+soft-conditioning projection and compiled-sampler dispatch; later
+iterations require the disarmed counters to remain unchanged. All iterations
+remain in benchmark output, so exclude the first from performance comparisons.
+`DiffusionBenchmarkRouteProbeTests` checks explicit activation, warmup/order,
+changed counters and invalid boundaries without loading a model. This observer
+does not change requested routing or establish numerical/API qualification.
+The SDK's `DiffusionGemmaSoftEmbeddingTests` covers explicit activation,
+geometry/device/training exclusions, compile/grad/JVP/vmap guards, exact fallback
+computation and counter arming/retirement. Full-weight qualification separately
+compares both conditioning formats, complete raw logits/state and original
+committed output. A projection-only timing is not a model or provider speedup.
+`DiffusionGemmaNativeSamplerTests` checks fallback controls and request-local key
+ordering. Its bounded GPU regression requires both
+`DARKBLOOM_DIFFUSION_SAMPLER_NUMERICAL_EDGE_LIVE=1` and the compiled-sampler switch
+from the configuration reference. It exercises near-uniform categorical draws
+at an extreme finite temperature without loading model weights. Preserve exact
+integer, uniform/Gumbel, state and committed-output checks; equal seeds alone
+do not establish unchanged sampling. Full serving, first-use and memory gates
+remain separate from that regression.
+
+`DiffusionGemmaConcurrencyLiveTests` compares native mixed text, reasoning
+OFF/ON tools and image cohorts with isolated responses, requiring actual native
+overlap at widths two and four. It also tests quiet socket-reset cancellation,
+survivor equality and retained-old-bridge unload/reload. The existing short-prompt
+cell can finish a row before media preparation admits the fourth; preserve any
+missed-width result rather than treating four launched tasks as proof. The
+separate `DARKBLOOM_DIFFUSION_UNCACHED_PREFILL_COHORT_LIVE=1` cell requires cacheOFF
+and matched prompts over1,024tokens to sustain overlap. It retains the same
+four-way criterion, native execution and deadlines, and records HTTP start/finish
+and sampled native-active transitions. Neither cell proves fused GPU batching.
+
+`DiffusionGemmaStopLiveTests` separately checks authenticated Chat HTTP and SSE
+on paged storage, with a known-answer control and a caller stop inside that
+answer. It requires `DARKBLOOM_DIFFUSION_STOP_HTTP_LIVE=1` and the same selected
+artifact locator. Require clipped content, reduced completion usage, matching
+stream/nonstream usage, one terminal and released request reservations. SDK
+`NativeBlockEngineTests` provides the independent original-token accounting
+oracle for same-block/cross-block stops, Unicode, cleanup, EOS and cancellation.
+
+Child-executable fixtures resolve only the running test configuration through
+`LiveInferenceFixtures.buildProduct`: native SwiftPM `debug`/`release` and
+SwiftBuild `Debug`/`Release` are supported without borrowing a peer build.
+`LiveInferenceMetallibSourceTests` covers both layouts and rejects unknown or
+escaping paths. Stage all declared resources in the consumer's expected layout,
+including Qwen4 Metal headers, before running the real child `runtime-smoke` and
+`SelfUpdaterTests`. Resource discovery is distinct from model inference; local
+ad-hoc signed fixtures do not establish release signing or production attestation.
 
 Installer onboarding regression coverage runs with `scripts/test-install-atomic.sh`.
 It invokes `scripts/test-install-onboarding.py`, which executes the actual setup

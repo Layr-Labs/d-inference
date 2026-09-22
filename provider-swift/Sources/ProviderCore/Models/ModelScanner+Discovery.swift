@@ -157,7 +157,7 @@ extension ModelScanner {
             ? Gemma4ToolConstraintContract.templateSHA256(at: snapshotDir)
             : nil
 
-        return ModelInfo(
+        var info = ModelInfo(
             id: modelName,
             modelType: modelType,
             parameters: parameters,
@@ -170,6 +170,10 @@ extension ModelScanner {
             ssdOffloadedWeightBytes: mmapExcluded > 0 && mmapExcluded < sizeBytes ? mmapExcluded : nil,
             nativeLoadTransientBytes: nativeLoad?.transientBytes
         )
+        if ToolChoiceEnforcementPolicy.advertisesNativeMediaTools(for: info) {
+            info.nativeMediaTools = true
+        }
+        return info
     }
 
     /// Whether config.json and provider identity policy allow serving media.

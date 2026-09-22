@@ -451,6 +451,7 @@ extension ProviderLoop {
         let tokenizer = slot.tokenizer
         let modelType = slot.modelType
         let slotContainer = slot.container
+        let slotDiffusionContainer = slot.modelContainer.diffusion
         let slotIsVLM = slot.isVLM
         let slotEngineV2 = slot.engineV2
         let slotVisionGate = slot.visionGate(kvBudget: kvBudget)
@@ -468,7 +469,7 @@ extension ProviderLoop {
             registryProvider: { @Sendable in
                 [modelId: .init(
                     tokenizer: tokenizer, modelType: modelType,
-                    container: slotContainer, isVLM: slotIsVLM,
+                    container: slotContainer, diffusionContainer: slotDiffusionContainer, isVLM: slotIsVLM,
                     engineV2Bridge: slotEngineV2,
                     visionGate: slotVisionGate)]
             },

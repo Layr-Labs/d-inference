@@ -27,6 +27,8 @@ enum ProviderPromptContractPipeline {
         modelType: String?,
         templateControls: ChatTemplateControls
     ) throws -> [Int] {
+        try DiffusionGemmaReasoningControl.validate(
+            request: request, controls: templateControls, modelType: modelType)
         let messages = prepared.messages.map { $0.templateMessageDict() }
         let tools = prepared.tools?.map { $0.toolSpec() }
         let context = ChatTemplateFixContext(

@@ -140,6 +140,7 @@ extension ProviderLoop {
             // hard-swap drop window (see ModelSlot.modelType).
             modelType: slot.modelType,
             container: slot.container,
+            diffusionContainer: slot.modelContainer.diffusion,
             isVLM: slot.isVLM,
             // ONE ENGINE (v0.7.5): local requests route through the same v2
             // bridge as coordinator requests; the vision gate covers the

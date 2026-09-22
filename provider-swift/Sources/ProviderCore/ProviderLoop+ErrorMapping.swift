@@ -60,7 +60,7 @@ extension ProviderLoop {
         switch engineError {
         case .modelNotLoaded, .noModelLoadedForTokenization:
             return .modelLoad
-        case .invalidRole, .invalidToolPayload, .unsupportedReasoningEffort, .mediaUnsupportedByModel,
+        case .invalidRole, .invalidToolPayload, .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort, .mediaUnsupportedByModel,
             .multimodalRejected, .advertisedContextExceeded:
             return .clientError
         case .toolChoiceViolation:
@@ -159,7 +159,7 @@ extension ProviderLoop {
             switch engineError {
             case .modelNotLoaded, .noModelLoadedForTokenization:
                 return .modelUnavailable
-            case .invalidRole, .invalidToolPayload, .unsupportedReasoningEffort, .advertisedContextExceeded:
+            case .invalidRole, .invalidToolPayload, .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort, .advertisedContextExceeded:
                 return .invalidRequest
             case .toolChoiceViolation, .generationFailed:
                 return .generationFailure
@@ -257,7 +257,7 @@ extension ProviderLoop {
                 return 400
             case .invalidToolPayload:
                 return 400
-            case .unsupportedReasoningEffort:
+            case .unsupportedReasoningEffort, .unsupportedNativeReasoningEffort:
                 return 400
             case .advertisedContextExceeded:
                 return 400

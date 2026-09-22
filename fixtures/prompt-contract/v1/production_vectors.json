@@ -922,9 +922,12 @@
           },
           "provider_body": {
             "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
-            "instructions": "Be concise.",
             "_darkbloom_prompt_date": "2028-02-29",
             "messages": [
+              {
+                "role": "system",
+                "content": "Be concise."
+              },
               {
                 "role": "user",
                 "content": "Responses endpoint"
@@ -935,6 +938,10 @@
             "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
             "messages": [
               {
+                "role": "system",
+                "content": "Be concise."
+              },
+              {
                 "role": "user",
                 "content": "Responses endpoint"
               }
@@ -943,7 +950,7 @@
           },
           "plan": {
             "prompt_contract_id": "2dcff358f55d07c26bf238d15184148b78b50dc277e59ae7ef9a758534687064",
-            "prompt_token_count": 54,
+            "prompt_token_count": 58,
             "block_boundaries": []
           },
           "token_ids": [
@@ -986,6 +993,10 @@
             279,
             1534,
             4087,
+            13,
+            271,
+            3320,
+            61446,
             13,
             248046,
             198,
@@ -8391,9 +8402,12 @@
           },
           "provider_body": {
             "model": "gemma-4-26b",
-            "instructions": "Be concise.",
             "_darkbloom_prompt_date": "2028-02-29",
             "messages": [
+              {
+                "role": "system",
+                "content": "Be concise."
+              },
               {
                 "role": "user",
                 "content": "Responses endpoint"
@@ -8404,6 +8418,10 @@
             "model": "gemma-4-26b",
             "messages": [
               {
+                "role": "system",
+                "content": "Be concise."
+              },
+              {
                 "role": "user",
                 "content": "Responses endpoint"
               }
@@ -8412,11 +8430,19 @@
           },
           "plan": {
             "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
-            "prompt_token_count": 15,
+            "prompt_token_count": 23,
             "block_boundaries": []
           },
           "token_ids": [
             2,
+            105,
+            9731,
+            107,
+            3912,
+            63510,
+            236761,
+            106,
+            107,
             105,
             2364,
             107,
@@ -15230,9 +15256,12 @@
           },
           "provider_body": {
             "model": "gemma-4-26b-8bit",
-            "instructions": "Be concise.",
             "_darkbloom_prompt_date": "2028-02-29",
             "messages": [
+              {
+                "role": "system",
+                "content": "Be concise."
+              },
               {
                 "role": "user",
                 "content": "Responses endpoint"
@@ -15243,6 +15272,10 @@
             "model": "gemma-4-26b-8bit",
             "messages": [
               {
+                "role": "system",
+                "content": "Be concise."
+              },
+              {
                 "role": "user",
                 "content": "Responses endpoint"
               }
@@ -15251,11 +15284,19 @@
           },
           "plan": {
             "prompt_contract_id": "9b3a784f687e7ea077514151f259cbd4baabc1268e7933ff3a87415b3cd8766d",
-            "prompt_token_count": 15,
+            "prompt_token_count": 23,
             "block_boundaries": []
           },
           "token_ids": [
             2,
+            105,
+            9731,
+            107,
+            3912,
+            63510,
+            236761,
+            106,
+            107,
             105,
             2364,
             107,
@@ -22069,9 +22110,12 @@
           },
           "provider_body": {
             "model": "gemma-4-26b-qat-4bit",
-            "instructions": "Be concise.",
             "_darkbloom_prompt_date": "2028-02-29",
             "messages": [
+              {
+                "role": "system",
+                "content": "Be concise."
+              },
               {
                 "role": "user",
                 "content": "Responses endpoint"
@@ -22082,6 +22126,10 @@
             "model": "gemma-4-26b-qat-4bit",
             "messages": [
               {
+                "role": "system",
+                "content": "Be concise."
+              },
+              {
                 "role": "user",
                 "content": "Responses endpoint"
               }
@@ -22090,11 +22138,19 @@
           },
           "plan": {
             "prompt_contract_id": "df0df26e5a932891e31ca3f50bfdc9fd736c1fdf3b0f9055b9b34da2beebf345",
-            "prompt_token_count": 15,
+            "prompt_token_count": 23,
             "block_boundaries": []
           },
           "token_ids": [
             2,
+            105,
+            9731,
+            107,
+            3912,
+            63510,
+            236761,
+            106,
+            107,
             105,
             2364,
             107,
@@ -29139,9 +29195,12 @@
           },
           "provider_body": {
             "model": "gpt-oss-20b",
-            "instructions": "Be concise.",
             "_darkbloom_prompt_date": "2028-02-29",
             "messages": [
+              {
+                "role": "system",
+                "content": "Be concise."
+              },
               {
                 "role": "user",
                 "content": "Responses endpoint"
@@ -29152,6 +29211,10 @@
             "model": "gpt-oss-20b",
             "messages": [
               {
+                "role": "system",
+                "content": "Be concise."
+              },
+              {
                 "role": "user",
                 "content": "Responses endpoint"
               }
@@ -29160,7 +29223,7 @@
           },
           "plan": {
             "prompt_contract_id": "1a9b6252ebf0ce31cc8a683e78b3a94797ccc753617c34bd5792547dc0eaefb3",
-            "prompt_token_count": 69,
+            "prompt_token_count": 79,
             "block_boundaries": []
           },
           "token_ids": [
@@ -29224,6 +29287,16 @@
             1753,
             3176,
             13,
+            200007,
+            200006,
+            77944,
+            200008,
+            2,
+            68406,
+            279,
+            3238,
+            82463,
+            364,
             200007,
             200006,
             1428,
@@ -36918,9 +36991,12 @@
           },
           "provider_body": {
             "model": "qwen3.5-35b-a3b",
-            "instructions": "Be concise.",
             "_darkbloom_prompt_date": "2028-02-29",
             "messages": [
+              {
+                "role": "system",
+                "content": "Be concise."
+              },
               {
                 "role": "user",
                 "content": "Responses endpoint"
@@ -36931,6 +37007,10 @@
             "model": "qwen3.5-35b-a3b",
             "messages": [
               {
+                "role": "system",
+                "content": "Be concise."
+              },
+              {
                 "role": "user",
                 "content": "Responses endpoint"
               }
@@ -36939,10 +37019,18 @@
           },
           "plan": {
             "prompt_contract_id": "3c2871cddd40bf0c9627c2b75928210525ee77b031fcba764e4127634eabf1dc",
-            "prompt_token_count": 12,
+            "prompt_token_count": 20,
             "block_boundaries": []
           },
           "token_ids": [
+            248045,
+            8678,
+            198,
+            3320,
+            61446,
+            13,
+            248046,
+            198,
             248045,
             846,
             198,
@@ -44247,9 +44335,12 @@
           },
           "provider_body": {
             "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
-            "instructions": "Be concise.",
             "_darkbloom_prompt_date": "2028-02-29",
             "messages": [
+              {
+                "role": "system",
+                "content": "Be concise."
+              },
               {
                 "role": "user",
                 "content": "Responses endpoint"
@@ -44260,6 +44351,10 @@
             "model": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
             "messages": [
               {
+                "role": "system",
+                "content": "Be concise."
+              },
+              {
                 "role": "user",
                 "content": "Responses endpoint"
               }
@@ -44268,10 +44363,18 @@
           },
           "plan": {
             "prompt_contract_id": "260ce4b2c1d96b290e61d049163a1066c5a2bb6b5e6d34c84a8055ddc472481b",
-            "prompt_token_count": 12,
+            "prompt_token_count": 20,
             "block_boundaries": []
           },
           "token_ids": [
+            248045,
+            8678,
+            198,
+            3320,
+            61446,
+            13,
+            248046,
+            198,
             248045,
             846,
             198,

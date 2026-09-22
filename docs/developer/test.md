@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-22 · commit `632a94adc`
+> Last updated: 2026-09-22 · commit `c0a43dbec`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -9,6 +9,19 @@ the docs lint locally; CI runs a subset per pull request (see the CI workflow
 map: the console UI job lints and builds but does not run vitest, and the
 benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
 Mac with the test checkpoints cached.
+
+## PR activity checks
+
+Run `python3 scripts/pr-activity.py <PR number> --json` from an authenticated
+`gh` session to read a PR's current state, check results, review-thread
+resolution, and comments and reviews. Pass `--since 2026-09-22T00:00:00Z` to
+select comments and reviews created or edited at or after that time. The
+timestamp is inclusive. Edited bot comments appear at their edit time. Thread
+resolution and check changes are current snapshots without event timestamps;
+compare JSON snapshots from successive runs to detect those transitions. The
+script reads GitHub only and does not schedule polling. Run
+`python3 scripts/test-pr-activity.py` for its pagination, edit-time, and thread
+mapping tests.
 
 The Nemotron coordinator-serving path uses typed SDK events. `OpenAIServiceTests`
 and `ToolCallParserIntegrationTests` in `libs/mlx-swift-lm/Tests/MLXLMServerTests`

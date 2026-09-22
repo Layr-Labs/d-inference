@@ -54,6 +54,44 @@ class ReleaseToolchainTests(unittest.TestCase):
         self.assertIn("requires preinstalled SDK 27", result.stderr)
         self.assertFalse((self.root / "env").exists())
 
+    def use_xcode(self):
+        del self.env["DARKBLOOM_RELEASE_TOOLCHAIN_ROOT"]
+        del self.env["DARKBLOOM_RELEASE_SDK_ROOT"]
+        self.env["DEVELOPER_DIR"] = str(self.root / "Xcode 27.app/Contents/Developer")
+        self.env["PATH"] = str(self.root) + os.pathsep + self.env["PATH"]
+        self.env["TEST_COMPILER"] = str(self.compiler)
+        self.env["TEST_SDK"] = str(self.sdk)
+        xcrun = self.root / "xcrun"
+        xcrun.write_text("#!/usr/bin/env bash\nset -eu\n"
+                          'case "$*" in\n'
+                          '  "--sdk macosx --find swift") echo "$TEST_COMPILER" ;;\n'
+                          '  "--sdk macosx --show-sdk-path") echo "$TEST_SDK" ;;\n'
+                          '  *) exit 9 ;;\nesac\n')
+        xcrun.chmod(0o755)
+        xcodebuild = self.root / "xcodebuild"
+        xcodebuild.write_text("#!/usr/bin/env bash\necho 'Xcode 27.0'\n")
+        xcodebuild.chmod(0o755)
+
+    def test_explicit_xcode_selects_its_compiler_and_sdk(self):
+        self.use_xcode()
+        selected = self.select()
+        self.assertEqual(selected.returncode, 0, selected.stderr)
+        env = (self.root / "env").read_text()
+        self.assertIn(f"PROVIDER_SWIFT={self.compiler}\n", env)
+        self.assertIn(f"PROVIDER_SDKROOT={self.sdk}\n", env)
+
+    def test_explicit_xcode_with_old_sdk_fails_closed(self):
+        self.use_xcode()
+        (self.sdk / "SDKSettings.json").write_text('{"Version":"26.5"}')
+        self.assertNotEqual(self.select().returncode, 0)
+        self.assertFalse((self.root / "env").exists())
+
+    def test_missing_xcode_cannot_fall_back_to_clt(self):
+        self.use_xcode()
+        (self.root / "xcrun").write_text("#!/usr/bin/env bash\nexit 1\n")
+        self.assertNotEqual(self.select().returncode, 0)
+        self.assertFalse((self.root / "env").exists())
+
     def test_old_swift_cannot_select_sdk_27(self):
         self.compiler.write_text("#!/usr/bin/env bash\necho 'Apple Swift version 6.3'\n")
         result = self.select()

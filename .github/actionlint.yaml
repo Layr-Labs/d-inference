@@ -1,9 +1,7 @@
-# actionlint runner-label vocabulary. The repo runs on Blacksmith-hosted
-# runners, whose labels actionlint cannot know about; without this file every
-# job flags [runner-label] and the lint is unusable as a gate.
+# External runner labels and GitHub SDK 27 preview label.
 self-hosted-runner:
   labels:
-    - blacksmith-4vcpu-ubuntu-2404
+    - tenki-standard-medium-4c-8g
+    - tenki-macos-26-large
     - blacksmith-12vcpu-macos-latest
     - xcode-27
-    - xcode-27-xlarge

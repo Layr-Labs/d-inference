@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
-# Select the preinstalled SDK 27 tools on the xcode-27 runner. Keep Xcode
+# Select preinstalled SDK 27 tools from explicit Xcode or GitHub's CLT. Keep Xcode
 # selected for Metal/signing; the wrapper scopes this to Swift builds/tests.
 set -euo pipefail
 : "${GITHUB_ENV:?}"
 : "${GITHUB_PATH:?}"
 : "${RUNNER_TEMP:?}"
 : "${GITHUB_WORKSPACE:?}"
-toolchain="${DARKBLOOM_RELEASE_TOOLCHAIN_ROOT:-/Library/Developer/CommandLineTools}"
-sdk="${DARKBLOOM_RELEASE_SDK_ROOT:-$toolchain/SDKs/MacOSX27.0.sdk}"
+if [[ -n "${DEVELOPER_DIR:-}" && -z "${DARKBLOOM_RELEASE_TOOLCHAIN_ROOT:-}" ]]; then
+  # Tenki installs Xcode 27 as an app; never fall back to an older CLT.
+  xcodebuild -version
+  compiler=$(xcrun --sdk macosx --find swift)
+  toolchain="${compiler%/usr/bin/swift}"
+  sdk="${DARKBLOOM_RELEASE_SDK_ROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
+else
+  toolchain="${DARKBLOOM_RELEASE_TOOLCHAIN_ROOT:-/Library/Developer/CommandLineTools}"
+  sdk="${DARKBLOOM_RELEASE_SDK_ROOT:-$toolchain/SDKs/MacOSX27.0.sdk}"
+fi
 
 ready() {
   [[ -x "$toolchain/usr/bin/swift" && -f "$sdk/SDKSettings.json" ]] || return 1
@@ -22,7 +30,7 @@ PY
 }
 
 if ! ready; then
-  echo 'Provider release requires preinstalled SDK 27 / Swift 6.4; use the xcode-27 runner' >&2
+  echo 'Provider release requires preinstalled SDK 27 / Swift 6.4; select Xcode 27 or use the xcode-27 runner' >&2
   exit 1
 fi
 

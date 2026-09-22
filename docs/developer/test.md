@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-22 · commit `632a94adc`
+> Last updated: 2026-09-22 · commit `b1bebd54b`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1695,11 +1695,53 @@ models, artifacts or corpus cases and unrecognised template incompatibilities
 fail the gate (`require_model_manifests`, `require_case_ids`); no fabricated
 token IDs are accepted.
 
+## CI runner migration checks
+
+Run `python3 scripts/test-ci-runner-policy.py` and
+`python3 scripts/check-ci-runner-policy.py` with `PyYAML==6.0.3` installed.
+The mutation cases reject inherited write/OIDC tokens, workflow-level secrets,
+secret expressions in local actions, persistent checkout credentials, attached
+environments and privileged jobs moved off GitHub. `actionlint` recognizes the
+Tenki and GitHub SDK 27 labels in `.github/actionlint.yaml`.
+
+`python3 scripts/test-provider-release-toolchain.py` covers both explicit Xcode
+app selection and the GitHub Command Line Tools layout, including missing Xcode
+and rejection of an older compiler/SDK. Runner logs must show SDK 27 before
+compilation. See the [credential boundary](build.md#ci-runner-and-credential-boundary).
+
+Provider and nested paged tests require `pagedattention.metal` in the built
+SwiftPM resource bundle, and MLX needs the staged source-matched
+`mlx.metallib`. On Tenki, select the native SwiftPM build system before the
+build and `swift test`; otherwise Xcode 27's alternate output layout can leave
+the paged resource outside the test runner's lookup roots. A missing resource
+must fail the paged gate. The E2E and benchmark jobs set
+`LC_ALL=en_US.UTF-8` so Homebrew PostgreSQL can start on macOS.
+
+For rollout, verify actual Tenki assignment in Actions and require the existing
+provider/Metal, SDK qualification and E2E gates to pass. A matching label or a
+successful compile does not prove GPU availability or enough runtime memory.
+The standard Tenki Mac has 32 GB; keep admission limits and no-skip numerical
+gates unchanged. `TestBenchmark_MultiModelMultiProvider` requires the existing
+48 GB Blacksmith runner because its three concurrent models exceed 32 GB in
+weights alone. Do not promote benchmark results from a smaller host as a new
+inference baseline.
+If a job remains queued, check the Tenki App's repository access and workspace
+concurrency. Missing Xcode 27 fails instead of selecting an older SDK.
+
+Benchmarks retain their manual cost approval in a GitHub-only `approve` job.
+The Blacksmith `benchmark` job uploads a report named for `github.run_attempt`;
+GitHub's `report` job reads that attempt's artifact as data
+and posts with a write token without checking out or executing candidate code.
+Fork PRs retain the artifact but skip commenting. Integration tests download
+public checkpoints anonymously on both pushes and PRs; download failures do not
+fall back to stored Hugging Face credentials.
+
 ## CI workflow map
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh` · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm run build` |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh` · **Provider Tests** (Tenki macOS 26, 8 vCPU) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm run build` |
+| [`.github/workflows/landing.yml`](../../.github/workflows/landing.yml) | landing changes on push, PR | **Landing Lint, Build & Test** — Node 22, `npm ci`, lint, build and tests on Tenki Linux |
 | [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 120 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) → current coordinator vs released v0.7.12 provider (`scripts/fetch-v0712-provider.sh`, `DARKBLOOM_MIXED_VERSION_EXPECT=artifact`, fails unless `MIXED_VERSION_TIER_ARTIFACT_OK` appears) → released v0.7.12 coordinator (`git worktree add … v0.7.12`) vs candidate provider (`NonStreamingInference`, `StreamingInference`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |

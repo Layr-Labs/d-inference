@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-20 · commit `826fa102e`
+> Last updated: 2026-09-21 · commit `76a8f03d9`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -97,7 +97,7 @@ For App Attest coexistence, both signing workflows prepare optional profile-auth
 1. After merging release inputs, let **SDK 27 release preparation** complete on
    `master`, or dispatch `.github/workflows/provider-release-cache.yml` on
    `master`. It runs optimized compilation and SDK qualification on separate
-   `xcode-27-xlarge` runners, with no signing secrets or publication steps. This seeds
+   `tenki-macos-26-large` runners, with no signing secrets or publication steps. This seeds
    caches in the default branch's scope, which release tags can restore. PR
    validation caches stay isolated to their PR and do not seed `master`.
    Pipeline shutdown changes run these lanes on their PR as well; the
@@ -122,7 +122,7 @@ For App Attest coexistence, both signing workflows prepare optional profile-auth
    notarization or runner scheduling instantaneous. No fixed release duration is
    guaranteed by this workflow change.
 
-GitHub caches are immutable and scoped to their branch or tag; one tag cannot
+Actions caches are immutable and scoped to their branch or tag; one tag cannot
 restore another tag's cache. The previous release cache therefore could exist
 while a new tag still rebuilt everything. See [GitHub's cache access rules](https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows#restrictions-for-accessing-a-cache).
 The new build cache writes after successful compilation even if later test
@@ -318,11 +318,14 @@ R2 uploads, release registration and GitHub Release creation. The default remain
 The Actions artifact contains the final signed tarball and
 `darkbloom-validation-identity.json`, with source/submodule revisions and final
 bundle, executable and metallib hashes plus the full SHA-256 CodeDirectory digest and build SDK version.
-The release build uses GitHub’s `xcode-27` runner with Apple Command Line Tools
-27.0 / Swift 6.4 preinstalled. The ordinary Blacksmith runner was observed on
-macOS 26.3, below the SDK 27 installer’s 26.4 minimum; it remains the general
-PR CI environment. The selector refuses an older SDK/compiler instead of
-installing software or falling back.
+Unsigned release builds and qualification use Tenki's `tenki-macos-26-large`
+with `DEVELOPER_DIR=/Applications/Xcode_27.0.app/Contents/Developer`.
+`scripts/prepare-provider-release-toolchain.sh` resolves that Xcode's compiler
+and SDK through `xcrun`. Signing stays on GitHub's `xcode-27` runner with Apple
+Command Line Tools 27.0 / Swift 6.4 preinstalled. Both paths reject an older
+SDK/compiler instead of falling back. R2 staging and publication run on GitHub's
+`ubuntu-24.04`; the signed-artifact compatibility smoke uses Tenki macOS 26
+without signing credentials. See the [CI runner boundary](../developer/build.md#ci-runner-and-credential-boundary).
 The workflow obtains Xcode's matching Metal compiler through
 `xcodebuild -downloadComponent MetalToolchain` when the image omits it, and
 checks availability before computing the source-matched metallib cache key.

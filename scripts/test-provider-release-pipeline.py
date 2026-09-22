@@ -24,7 +24,7 @@ class ReleasePipelineTests(unittest.TestCase):
         for name, lane in [('build-provider', 'release'), ('qualify-sdk', 'qualification')]:
             content = job(RELEASE, name)
             self.assertRegex(content, r'(?m)^    needs: resolve-env$')
-            self.assertIn('runs-on: xcode-27-xlarge', content)
+            self.assertIn('runs-on: tenki-macos-26-large', content)
             self.assertIn('lane: ' + lane, content)
             self.assertIn('contents: read', content)
             self.assertNotIn('secrets.', content)
@@ -112,7 +112,7 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn("github.event_name == 'pull_request' || github.ref == 'refs/heads/master'", WARM)
         self.assertIn('lane: [release, qualification]', WARM)
         self.assertIn('max-parallel: 2', WARM)
-        self.assertIn('runs-on: xcode-27-xlarge', WARM)
+        self.assertIn('runs-on: tenki-macos-26-large', WARM)
         self.assertNotRegex(WARM, r'(?m)^  (pull_request_target|workflow_run):')
         for text in [WARM, ACTION]:
             for forbidden in ['secrets.', 'contents: write', 'gh release create', 'aws s3', 'notarytool']:

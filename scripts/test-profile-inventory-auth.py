@@ -60,6 +60,11 @@ finally:
     os.close(fd)
 print("FAKE_AUTH_COMPLETED", flush=True)
 ''')
+        cls.failed_command = root / "failed_command.py"
+        cls.failed_command.write_text('''import sys
+print("FAKE_NONZERO_RAN", file=sys.stderr, flush=True)
+sys.exit(7)
+''')
         cls.background_prompt = root / "background_prompt.py"
         cls.background_prompt.write_text('''import os
 print("UNEXPECTED_BACKGROUND_SPAWN", flush=True)
@@ -146,10 +151,62 @@ sys.exit(child.returncode)
                     pass
             os.close(terminal)
 
+    def _run_foreground_probe(self, *args):
+        pid, terminal = pty.fork()
+        if pid == 0:
+            os.execl(str(self.binary), str(self.binary), *args)
+        output = b""
+        status = None
+        try:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if select.select([terminal], [], [], 0.1)[0]:
+                    try:
+                        chunk = os.read(terminal, 8192)
+                    except OSError as error:
+                        if error.errno != errno.EIO:
+                            raise
+                        chunk = b""
+                    output += chunk
+                    self.assertLess(len(output), 65536)
+                child, child_status = os.waitpid(pid, os.WNOHANG)
+                if child:
+                    status = child_status
+                    while select.select([terminal], [], [], 0)[0]:
+                        try:
+                            chunk = os.read(terminal, 8192)
+                        except OSError as error:
+                            if error.errno == errno.EIO:
+                                break
+                            raise
+                        if not chunk:
+                            break
+                        output += chunk
+                    break
+            self.assertIsNotNone(status, output.decode(errors="replace"))
+            self.assertTrue(os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0,
+                            output.decode(errors="replace"))
+            return output.decode(errors="replace")
+        finally:
+            if status is None:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    # The probe may have exited during timeout cleanup.
+                    pass
+                try:
+                    os.waitpid(pid, 0)
+                except ChildProcessError:
+                    # The polling loop may already have reaped the probe.
+                    pass
+            os.close(terminal)
+
     def test_nonzero_exit_and_failed_spawn_deny_authorization(self):
-        for args in (["/usr/bin/false"], ["/nonexistent/profile-auth-test"]):
-            result = subprocess.run([str(self.binary), *args], capture_output=True, text=True, timeout=10)
-            self.assertEqual(result.stdout.strip(), "AUTHORIZATION_SUCCESS=false")
+        failure = self._run_foreground_probe(sys.executable, str(self.failed_command))
+        self.assertIn("FAKE_NONZERO_RAN", failure)
+        self.assertIn("AUTHORIZATION_SUCCESS=false", failure)
+        failed_spawn = self._run_foreground_probe("/nonexistent/profile-auth-test")
+        self.assertIn("AUTHORIZATION_SUCCESS=false", failed_spawn)
 
     def test_background_terminal_job_withholds_prompt(self):
         pid, terminal = pty.fork()

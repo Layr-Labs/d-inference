@@ -30,10 +30,6 @@ created: "2026-05-14"
 # verification public key, preventing substitution of model/runtime signature
 # credentials during the later trust transition. Reward rules are unchanged.
 # MDM-optional authorization added 2026-09-15: explicit serving opt-in consumes
-# Interactive profile inventory during MDM removal retains the foreground
-# terminal group for native sudo prompting and reads only the fixed profiles
-# command; background jobs and denial withhold guidance and cannot grant
-# serving authorization.
 # qualified protocol3 evidence; it never sets legacy MDA/APNs flags. Fresh
 # connection/endpoint/policy-bound permission is checked at every final dispatch.
 # Receipt/revocation polling has a 30s ceiling from query start, and failed reads
@@ -43,6 +39,10 @@ created: "2026-05-14"
 # computation correctness, or move inference into the Secure Enclave. Final
 # signed-artifact and physical SIP/boot-security transition qualification remain
 # required before enabling serving or scoped Darkbloom profile removal.
+# Interactive profile inventory during MDM removal retains the foreground
+# terminal group for native sudo prompting and reads only the fixed profiles
+# command; background jobs and denial withhold guidance and cannot grant
+# serving authorization.
 # Durable build qualification added 2026-09-20: an independently authenticated
 # operator approves the exact signed binary, full CodeDirectory, bundle/runtime,
 # source and CI provenance. CI release keys cannot grant approval. Publication

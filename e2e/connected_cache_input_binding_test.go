@@ -51,7 +51,10 @@ func canonicalConnectedInput(raw []byte) ([]byte, []map[string]any, error) {
 	consumedCatalog := after["catalog"].([]any)
 	notes := []map[string]any{}
 	for index, model := range input.Catalog {
-		original := rawCatalog[index].(map[string]any)
+		original, ok := rawCatalog[index].(map[string]any)
+		if !ok {
+			return nil, nil, fmt.Errorf("catalog model object required")
+		}
 		consumed := consumedCatalog[index].(map[string]any)
 		originalEntry, ok := original["Entry"].(map[string]any)
 		if !ok {
@@ -189,4 +192,11 @@ func TestPrepareConnectedInputBindings(t *testing.T) {
 	proof, err := json.MarshalIndent(map[string]any{"results": results, "host_or_model_calls": false}, "", "  ")
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(plan.OutputDirectory, "roundtrip-proof.json"), append(proof, '\n'), 0600))
+}
+
+func TestIntegrationConnectedInputRejectsNullCatalogWithoutPanic(t *testing.T) {
+	require.NotPanics(t, func() {
+		_, _, err := canonicalConnectedInput([]byte(`{"catalog":[null]}`))
+		require.Error(t, err)
+	})
 }

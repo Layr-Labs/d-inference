@@ -480,7 +480,9 @@ func qwen38SuiteConfig(cfg qwen38E2EConfig) testbed.SuiteConfig {
 func qwen38ExpectedBuiltKVBackend(requested string) (string, error) {
 	switch requested {
 	case "", testbed.KVBackendAuto:
-		// The provider's production .auto selection resolves contiguous.
+		// This tools/video fixture pins the base artifact. Automatic paged
+		// selection is qualified for the distinct -mtp publication, which
+		// is covered by the exact-catalog release-default gate.
 		return testbed.KVBackendContiguous, nil
 	case testbed.KVBackendPaged, testbed.KVBackendContiguous:
 		return requested, nil
@@ -489,7 +491,7 @@ func qwen38ExpectedBuiltKVBackend(requested string) (string, error) {
 	}
 }
 
-func TestQwen38ExpectedBuiltKVBackend(t *testing.T) {
+func TestQwen38BaseArtifactBackendSelection(t *testing.T) {
 	for requested, want := range map[string]string{
 		"":                          testbed.KVBackendContiguous,
 		testbed.KVBackendAuto:       testbed.KVBackendContiguous,

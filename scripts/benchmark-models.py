@@ -56,10 +56,6 @@ async def call_model(session: aiohttp.ClientSession, model: str, run_id: int) ->
     print(f"  [{short_name} run={run_id}] sending request...")
 
     t0 = time.monotonic()
-    first_token_time = None
-    full_text = ""
-    token_count = 0
-
     try:
         async with session.post(
             f"{BASE_URL}/chat/completions",

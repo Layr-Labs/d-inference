@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Create the complete dev Secret Manager resource set before boot validation so fresh projects can populate Stripe keys and rerun startup successfully.
 - **Privacy descriptions** — Describe encrypted network hops and plaintext processing at the coordinator and provider, distinguish qualified MDM-optional App Attest authorization from legacy MDA evidence, and remove unsupported memory-wiping and recipient-key forward-secrecy guarantees.
 - Operations helpers encode admin JSON fields, return a failure after any fleet host fails while still visiting remaining hosts, and isolate smoke-test response files.
 - **Admin email login** — Encode Privy OTP email/code fields as JSON strings so quoted addresses and escape characters cannot break or reshape the upstream request.
@@ -167,6 +168,25 @@ coordinator deployment.
 - Add negotiated App Attest shadow enrollment and fresh connection assertions, with independent certificate/policy verification, durable counters, and coverage/latency observations. APNs and MDM remain authoritative; shadow success or failure changes no routing, trust, payments, or supported OS floor.
 - Keep the CLI and app launch flow; add profile-authorized App Attest signing alongside APNs in release and validation workflows. Actual macOS 27 acceptance requires the final signed app on physical hardware.
 - Accept macOS Developer ID profiles granting only the App Attest CDhash opt-in, including array grants. Preserve existing APNs/keychain entitlements; validate the attested environment on the coordinator even when the optional environment entitlement is absent.
+## Unreleased
+
+- Dev coordinator boot now uses the same validated environment writer as deploys. Failed critical-secret or metadata downloads preserve the existing configuration instead of overwriting it with empty values.
+## Unreleased
+
+- Provider installation retains the previous app or legacy bundle if restoring it after a failed swap also fails. The installer reports the recovery path instead of deleting the only backup or claiming successful restoration.
+- Installer downloads use private temporary files and remove incomplete downloads on failure.
+## Unreleased
+
+- Provider releases use the same profile and signed CLI entitlement checks as signing validation, rejecting unrelated app identities and missing profile expiry before publication. Release registration encodes quoted and multiline tag text as JSON data.
+## Unreleased
+
+- **Contributor guidance** — Issue forms and the PR template reference the current components, provider commands and review requirements. Go dependency update checks use the repository's root module.
+## Unreleased
+
+- Model publishing stops before uploads on failed or empty R2 credential reads. Rollback preparation validates registry inputs before copying objects, cleans its local staging on exit, and reaches promotion on macOS Bash.
+## Unreleased
+
+- The cache soak monitor stops after an interrupt or termination signal and counts cache markers once when log lines arrive across multiple writes.
 
 ## Unreleased — Qwen 3.8 Next (Flash-Next) support candidate
 

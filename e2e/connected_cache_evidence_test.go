@@ -61,7 +61,12 @@ func validateConnectedCase(row connectedCase, cache, mtp, expect string) error {
 		return fmt.Errorf("expected exactly one correlated dispatch, got %d", dispatches)
 	}
 	for _, event := range row.Wire {
-		if event.RequestID != "" && event.RequestID != requestID {
+		if event.RequestID == "" {
+			switch event.Type {
+			case "inference_request", "prefix_cache_lookup_v2", "cancel", "inference_complete", "inference_error":
+				return fmt.Errorf("request-scoped %s event is missing its request ID", event.Type)
+			}
+		} else if event.RequestID != requestID {
 			return fmt.Errorf("unrelated attempt contaminated sequential case")
 		}
 	}

@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from .config import Cell, environment
+from .config import Cell, environment, instrumentation_controls
 
 
 def load_design(path):
@@ -64,9 +64,7 @@ def load_design(path):
         if not isinstance(overrides, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in overrides.items()):
             raise ValueError("Arm environment must map string keys to string values")
         _, explicit = environment({}, [f"{key}={value}" for key, value in overrides.items()])
-        instrumentation = [key for key, value in explicit.items()
-                           if any(word in key for word in ("PROFILE", "TRACE", "TIMING", "CAPTURE", "DEBUG"))
-                           and value.lower() not in {"0", "false", "no", "off", ""}]
+        instrumentation = instrumentation_controls(explicit)
         if instrumentation:
             raise ValueError(f"ABBA timing controls require instrumentation disabled: {instrumentation}")
         arm["environment"] = explicit

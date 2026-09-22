@@ -16,6 +16,7 @@ def collect(packet, transfer, transfer_sha256, root):
     q, k, v = (packet.tensors[name].values for name in ("queries", "storedKeys", "storedValues"))
     reference, stages = attention(q, k, v, packet.scale)
     results, values = {}, {}
+    narrowed = None
     reasons = []
     for arm in ARMS:
         arm_root = (root / arm).resolve(strict=True)
@@ -70,7 +71,9 @@ def collect(packet, transfer, transfer_sha256, root):
         if DISPATCH[arm] == packet.record["dispatch"] and not entry["capturedOutputByteIdentity"]:
             reasons.append(arm + " does not reproduce its original captured output")
         if packet.tensors["queries"].descriptor["dtype"] == "float32" and packet.tensors["storedKeys"].descriptor["dtype"] != "float32":
-            narrowed, _ = attention(rounded(q, packet.tensors["storedKeys"].descriptor["dtype"]), k, v, packet.scale)
+            if narrowed is None:
+                # Every arm replays the same inputs; only its actual output differs.
+                narrowed, _ = attention(rounded(q, packet.tensors["storedKeys"].descriptor["dtype"]), k, v, packet.scale)
             entry["narrowedQueryCounterfactual"] = {
                 "comparison": compare(actual, narrowed), "differenceFromOriginalReference": compare(narrowed, reference)}
         results[arm] = entry

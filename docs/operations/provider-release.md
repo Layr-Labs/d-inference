@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-20 · commit `826fa102e`
+> Last updated: 2026-09-21 · commit `ce809b792`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -141,6 +141,12 @@ Implementation: `.github/actions/provider-release-build/action.yml`,
 [SDK qualification checks](../developer/test.md#sdk-27-release-qualification).
 
 ## Environment-free signing validation
+
+Both signing workflows use `scripts/provider-signing-validation.py` for decoded
+profile and signed CLI entitlement checks. Profiles must authorize the provider
+team/app, keychain group and production APNs, with at least 30 days until expiry.
+The signed CLI must have the provider keychain group, production APNs and no
+enabled or malformed debug-task entitlement (`profile`, `cli_entitlements`).
 
 [`provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml)
 is a separate manual workflow for a reviewed full `source_sha` and its existing
@@ -479,6 +485,21 @@ curl -fsS "$COORD/v1/admin/releases" -H "Authorization: Bearer $ADMIN_KEY" | jq 
   `binary_hash`.
 
 ## Rollback
+
+For a local installer swap failure, `scripts/install.sh` attempts to restore the
+previous app and bin paths, including directory symlinks. Permissions and bin
+links are prepared before replacement, and unrelated bin entries are preserved.
+If a restoration rename fails, it leaves that old payload
+in the reported `.install-backup-*` directory and exits unsuccessfully. Preserve
+that directory, resolve the reported filesystem error, and restore its
+`Darkbloom.app` and/or `bin` payload before retrying. Keep relative symlinks as
+symlinks when moving them back to their original path. Installer output does not claim
+that a failed restoration left the live installation unchanged.
+
+If replacement succeeds but obsolete backup cleanup fails, installation continues
+successfully and reports the leftover path. The new app and bin are already
+active: resolve the cleanup error before removing that obsolete backup; this
+warning does not call for restoring the previous installation.
 
 A registered release is immutable (hash-pinned); rollback means **deactivating
 it** so the previous active version becomes "latest" again.

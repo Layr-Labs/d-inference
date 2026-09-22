@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-21 · commit `ce809b792`
+> Last updated: 2026-09-22 · commit `632a94adc`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -709,6 +709,8 @@ for sampling scope, regression filters and diagnostic restrictions.
 ### Qwen packaged resource regression
 
 `python3 scripts/test-qwen4-packaged-resources.py` compiles the actual Qwen Metal resource accessor into a small optimized app, then runs it from a relocated app and an installer-style executable symlink. It checks all three preamble hashes, rejects missing or empty files and resource links outside the app, and proves that developer/cwd copies cannot mask a broken packaged resource. It needs Swift on macOS, but no model weights or GPU. Both SDK 27 release lanes and Provider Tests run this check. The full provider `runtime-smoke` exercises the same accessor before publication, installation, and update.
+
+Provider Tests also runs `python3 scripts/test-profile-inventory-auth.py` on macOS. It compiles the production `ProfileInventoryAuthorization` helper into a terminal fixture without invoking real `sudo` or changing profiles; the test procedure is in [test.md](test.md).
 
 ## Promotion payload helper
 

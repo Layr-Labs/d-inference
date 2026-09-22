@@ -19,6 +19,10 @@ func TestModelMaxMemoryGB(t *testing.T) {
 		{"Mac17,8", 64, true},        // 16" M5 Pro MacBook Pro
 		{"Mac17,7", 128, true},       // 14" M5 Max MacBook Pro
 		{"Mac17,6", 128, true},       // 16" M5 Max MacBook Pro
+		{"Mac17,16", 64, true},       // M5 Pro Mac mini
+		{"Mac17,14", 128, true},      // M5 Max Mac Studio
+		{"Mac17,15", 512, true},      // M5 Ultra Mac Studio
+		{"Mac18,5", 32, true},        // M6 Mac mini
 		{"Mac17,5", 8, true},         // MacBook Neo (A18 Pro), below reward floor
 		{"Mac13,2", 128, true},       // M1 Ultra Studio
 		{"Mac14,13", 96, true},       // M2 Max Studio

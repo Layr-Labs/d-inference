@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-17 · commit `954f570d1`
+> Last updated: 2026-09-22 · commit `ce809b792`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -14,7 +14,7 @@ and are not repeated here.
 
 | Component | Requirement | Code |
 |---|---|---|
-| CPU / GPU | Apple Silicon with Metal; `ChipFamily` recognised: `M1`, `M2`, `M3`, `M4`, `M5` (`Unknown` still runs) | `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift` (`requireMetal`), `provider-swift/Sources/ProviderCore/Protocol/Enums.swift` |
+| CPU / GPU | Apple Silicon with Metal; `ChipFamily` recognised: `M1`, `M2`, `M3`, `M4`, `M5`, `M6` (`Unknown` still runs) | `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift` (`requireMetal`), `provider-swift/Sources/ProviderCore/Protocol/Enums.swift` |
 | Architecture | `arm64` only; the installer refuses Intel Macs | `coordinator/api/install.sh` |
 | RAM | At least 8 GB to start at all ([`../architecture/hardware-support.md#context`](../architecture/hardware-support.md#context)); per-model needs below | `provider-swift/Sources/darkbloom/StartCommand+Preflight.swift` (`hardware.memoryGb < 8`) |
 | macOS | 14 (Sonoma) or later, the build floor; `darkbloom doctor` warns below macOS 26 (`recommendedMacOSMajorVersion`, [`../architecture/hardware-support.md#context`](../architecture/hardware-support.md#context)) but does not block | `provider-swift/Package.swift` (`.macOS(.v14)`), `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |
@@ -39,11 +39,34 @@ contract is in `libs/mlx-swift-lm/docs/bonsai2.md`.
 | M1, M2 | `ChipFamily.m1`, `.m2` | MTP `maxRectangularTokens = 4` (`provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`) |
 | M3, M4 | `.m3`, `.m4` | MTP `maxRectangularTokens = 8` |
 | M5 | `.m5` | As M3/M4, plus the provider advertises runtime capability `apple_m5` (and `mlx_nax` when the NAX kernels are available); the catalog's `required_provider_capabilities` uses these to decide eligibility (`provider-swift/Sources/ProviderCore/Models/ModelRuntimeRequirements.swift`, `coordinator/registry/provider_capabilities.go`) |
+| M6 | `.m6` | Uses a conservative 153 GB/s nominal bandwidth and the 4-token MTP rectangle limit until physically qualified; a passing NAX diagnostic can advertise `mlx_nax`, but M6 does not claim the M5-specific `apple_m5` capability (`provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`, `provider-swift/Sources/ProviderCore/Inference/MTP/MTPAutomaticVerificationPolicy.swift`, `provider-swift/Sources/ProviderCore/Models/ModelRuntimeRequirements.swift`) |
 | Other | `.unknown` | Treated like M1/M2 for MTP |
 
 Chip tier (`Base`, `Pro`, `Max`, `Ultra`) is reported to the coordinator but
 does not gate any model (`provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`,
 `parseChipIdentity`).
+
+## New 2026 desktop identifiers
+
+These identifiers are in the base-reward memory-cap catalog
+(`coordinator/hardware/mac_models.go`, `ModelMaxMemoryGB`). They do not
+bypass serving authorization, catalog model requirements or the provider load
+gate. Actual model serving on these machines still needs physical validation.
+
+| Mac | Identifier | Maximum unified memory | Catalog code |
+|---|---|---:|---|
+| Mac mini, M6 | `Mac18,5` | 32 GB | `coordinator/hardware/mac_models.go` (`ModelMaxMemoryGB`) |
+| Mac mini, M5 Pro | `Mac17,16` | 64 GB | `coordinator/hardware/mac_models.go` (`ModelMaxMemoryGB`) |
+| Mac Studio, M5 Max | `Mac17,14` | 128 GB | `coordinator/hardware/mac_models.go` (`ModelMaxMemoryGB`) |
+| Mac Studio, M5 Ultra | `Mac17,15` | 512 GB | `coordinator/hardware/mac_models.go` (`ModelMaxMemoryGB`) |
+
+Apple's [Mac mini identification page](https://support.apple.com/en-us/102852)
+currently prints `Mac17,15` for the M5 Pro mini, while its
+[Mac Studio page](https://support.apple.com/en-us/102231) prints that identifier
+for the M5 Ultra Studio. An [M5 Pro mini benchmark submission](https://browser.geekbench.com/v7/cpu/425786)
+reports `Mac17,16`. Confirm `hw.model` on a physical mini before relying on
+its base-reward tier; the catalog uses the observed identifier to avoid giving
+the mini the Ultra's 512 GB ceiling.
 
 ## RAM tiers and catalog models
 

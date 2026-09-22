@@ -10,6 +10,8 @@
   const MONTH_SECONDS = 30 * 24 * 60 * 60;
   const MIN_PROVIDER_MEMORY_GB = 48;
   const QWEN_OUTPUT_PRICE_MICRO_USD_PER_MILLION = 700000;
+  const M5_MAX_32_CORE = "M5 Max (32-core GPU)";
+  const M5_MAX_40_CORE = "M5 Max (40-core GPU)";
   const MAC_CONFIGS = [
     { macType: "MacBook Pro", chip: "M1", ramOptions: [8, 16], bandwidthGBs: 68 },
     { macType: "MacBook Pro", chip: "M1 Pro", ramOptions: [16, 32], bandwidthGBs: 200 },
@@ -27,13 +29,14 @@
     { macType: "MacBook Pro", chip: "M4 Max (16-core CPU)", ramOptions: [48, 64, 128], bandwidthGBs: 546 },
     { macType: "MacBook Pro", chip: "M5", ramOptions: [16, 24, 32], bandwidthGBs: 153 },
     { macType: "MacBook Pro", chip: "M5 Pro", ramOptions: [24, 48, 64], bandwidthGBs: 307 },
-    { macType: "MacBook Pro", chip: "M5 Max (32-core GPU)", ramOptions: [36], bandwidthGBs: 460 },
-    { macType: "MacBook Pro", chip: "M5 Max (40-core GPU)", ramOptions: [48, 64, 128], bandwidthGBs: 614 },
+    { macType: "MacBook Pro", chip: M5_MAX_32_CORE, ramOptions: [36], bandwidthGBs: 460 },
+    { macType: "MacBook Pro", chip: M5_MAX_40_CORE, ramOptions: [48, 64, 128], bandwidthGBs: 614 },
     { macType: "Mac Mini", chip: "M1", ramOptions: [8, 16], bandwidthGBs: 68 },
     { macType: "Mac Mini", chip: "M2", ramOptions: [8, 16, 24], bandwidthGBs: 100 },
     { macType: "Mac Mini", chip: "M2 Pro", ramOptions: [16, 32], bandwidthGBs: 200 },
     { macType: "Mac Mini", chip: "M4", ramOptions: [16, 24, 32], bandwidthGBs: 120 },
     { macType: "Mac Mini", chip: "M4 Pro", ramOptions: [24, 48, 64], bandwidthGBs: 273 },
+    { macType: "Mac Mini", chip: "M5 Pro", ramOptions: [24, 48, 64], bandwidthGBs: 307 },
     { macType: "Mac Mini", chip: "M6", ramOptions: [16, 24, 32], bandwidthGBs: 170 },
     { macType: "Mac Studio", chip: "M1 Max", ramOptions: [32, 64], bandwidthGBs: 400 },
     { macType: "Mac Studio", chip: "M1 Ultra", ramOptions: [64, 128], bandwidthGBs: 800 },
@@ -43,6 +46,8 @@
     { macType: "Mac Studio", chip: "M5 Ultra", ramOptions: [96, 256, 512], bandwidthGBs: 1200 },
     { macType: "Mac Studio", chip: "M4 Max (14-core CPU)", ramOptions: [36], bandwidthGBs: 410 },
     { macType: "Mac Studio", chip: "M4 Max (16-core CPU)", ramOptions: [48, 64, 128], bandwidthGBs: 546 },
+    { macType: "Mac Studio", chip: M5_MAX_32_CORE, ramOptions: [36], bandwidthGBs: 460 },
+    { macType: "Mac Studio", chip: M5_MAX_40_CORE, ramOptions: [48, 64, 128], bandwidthGBs: 614 },
     { macType: "Mac Pro", chip: "M2 Ultra", ramOptions: [64, 128, 192], bandwidthGBs: 800 },
   ];
   const CHIP_ORDER = [
@@ -50,7 +55,7 @@
     "M2", "M2 Pro", "M2 Max", "M2 Ultra",
     "M3", "M3 Pro", "M3 Max (14-core CPU)", "M3 Max (16-core CPU)", "M3 Ultra",
     "M4", "M4 Pro", "M4 Max (14-core CPU)", "M4 Max (16-core CPU)",
-    "M5", "M5 Pro", "M5 Max (32-core GPU)", "M5 Max (40-core GPU)", "M5 Ultra", "M6",
+    "M5", "M5 Pro", M5_MAX_32_CORE, M5_MAX_40_CORE, "M5 Ultra", "M6",
   ];
   const MAC_TYPE_ORDER = ["MacBook Pro", "Mac Mini", "Mac Studio", "Mac Pro"];
   const HARDWARE_OPTIONS = MAC_CONFIGS.map(function (config) {

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Recognize the 2026 M6 and M5 Pro Mac minis and M5 Max and M5 Ultra Mac Studios for base-reward memory caps and complete their earnings-calculator choices. Report M6 as its own chip family and use the published M5 Ultra bandwidth; keep M6 on conservative MTP and model-capability gates pending physical qualification.
+
 - **Privacy descriptions** — Describe encrypted network hops and plaintext processing at the coordinator and provider, distinguish qualified MDM-optional App Attest authorization from legacy MDA evidence, and remove unsupported memory-wiping and recipient-key forward-secrecy guarantees.
 - Operations helpers encode admin JSON fields, return a failure after any fleet host fails while still visiting remaining hosts, and isolate smoke-test response files.
 - **Admin email login** — Encode Privy OTP email/code fields as JSON strings so quoted addresses and escape characters cannot break or reshape the upstream request.

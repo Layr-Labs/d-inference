@@ -19,7 +19,9 @@ Open a machine's verification panel to inspect the coordinator's separate App
 Attest and legacy decisions, verification times and authorization deadlines.
 Green requires a current server verdict; expired, revoked, unsupported, offline
 and stale/missing states do not manufacture a current grant from saved hardware
-trust. App Attest-only machines retain their legacy `self_signed` field.
+trust. App Attest-only machines retain their legacy `self_signed` field. A
+provider advertising an App Attest protocol other than version 3 displays
+`unsupported`, even if its reported OS supports App Attest.
 
 The footer counts the union once and reports both method counts and overlap.
 Offline machine records stay in the owned-machine denominator but not current

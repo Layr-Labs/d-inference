@@ -43,11 +43,18 @@ while live views still expire grants at the recorded deadline.
 `GET /v1/stats` provider rows include the same `verification` object evaluated
 at snapshot time. Owner records with no live connection are offline. Connected but untrusted owned
 providers retain their live verification verdict (including revocation), while
-serving authorization remains false. Public attestation rows capture verification,
+serving authorization remains false. Owner `verification`,
+`app_attest_authorized` and expiry are checked with current account and status
+in one registry/provider-locked observation (`ProviderVerificationAndAuthorization` in
+`coordinator/registry/verification.go`), so grant changes cannot mix opposing
+verdicts in one row. Unknown App Attest protocol versions remain `unsupported`;
+only protocol 3 can show a pending current authorization path. Public attestation rows capture verification,
 compatibility authorization flags, and catalog models in one registry/provider
 locked walk (`ForEachProviderVerification` in `coordinator/registry/verification.go`).
-Stats rows and geography aggregates use the same locked visitor, so a new or
-replacement connection cannot inherit an earlier connection's verdict. Missing
+Stats rows and geography aggregates use one locked visitor and detached location
+values (`aggregateProviderLocations` in `coordinator/api/stats_provider_locations.go`),
+so a new or replacement connection cannot change the geography between the row
+and count observations. Missing
 or stale verification metadata is counted as unknown in the UI, with a separate
 known-verdict denominator. Owner views retain explicit `app_attest_authorized`
 and expiry guidance during older-coordinator rollout without inventing missing
@@ -253,7 +260,7 @@ Cache behavior is implemented by `coordinator/api/cache_refresher.go`
 | `geography_snapshot_at` | RFC 3339 UTC observation start for the geography attempt, separate from core `snapshot_at`; empty before an attempt or after expiry | `coordinator/api/stats_geography.go` (`statsGeography`) |
 | `request_locations`, `request_regions`, `unknown_request_location_requests`, `suppressed_request_city_requests` | `null` when locations are unavailable; successful empty windows retain arrays and numeric counts. A failed attempt replaces previous geography rather than presenting stale figures as current | `coordinator/api/stats_geography.go` (`computeStatsGeography`, `addTo`) |
 | `request_flows` | `null` when flows are unavailable, an array (possibly empty) on success; independent of location status | `coordinator/api/stats_geography.go` (`computeStatsGeography`) |
-| `provider_locations`, `provider_regions` | Still computed from the live fleet with core stats; request-geography failures do not hide provider geography | `coordinator/api/stats.go` (`computeStats`, `aggregateProviderLocations`) |
+| `provider_locations`, `provider_regions` | Computed from the same live-fleet walk as core provider rows and verification counts; request-geography failures do not hide provider geography | `coordinator/api/stats.go` (`computeStats`); `coordinator/api/stats_provider_locations.go` (`aggregateProviderLocations`) |
 
 The stats, totals, and series handlers emit the 503 `service_unavailable` error
 envelope when their required data is unavailable.

@@ -78,3 +78,21 @@ func TestVerificationNeverPublishesPrivateEvidenceOrInfersFromOS(t *testing.T) {
 		}
 	}
 }
+
+func TestVerificationRejectsUnsupportedAppAttestProtocolVersions(t *testing.T) {
+	r, p, _ := appAttestTestProvider(t)
+	for _, version := range []int{0, 1, 2, 4, 100} {
+		p.mu.Lock()
+		p.appAttestProtocol = version
+		p.mu.Unlock()
+		if got := r.ProviderVerification(p); got.AppAttest.State != "unsupported" {
+			t.Fatalf("protocol %d state=%s, want unsupported", version, got.AppAttest.State)
+		}
+	}
+	p.mu.Lock()
+	p.appAttestProtocol = 3
+	p.mu.Unlock()
+	if got := r.ProviderVerification(p); got.AppAttest.State != "pending" {
+		t.Fatalf("protocol 3 state=%s, want pending", got.AppAttest.State)
+	}
+}

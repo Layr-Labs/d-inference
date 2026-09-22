@@ -130,3 +130,41 @@ func TestStatsAndGeographyUseTheCurrentConnectionVerdict(t *testing.T) {
 	replacement.Mu().Unlock()
 	assertSnapshot(false)
 }
+
+type afterFleetWalkStore struct {
+	store.Store
+	onUsageTotals func()
+	once          sync.Once
+}
+
+func (s *afterFleetWalkStore) UsageTotals() (store.UsageTotals, error) {
+	s.once.Do(s.onUsageTotals)
+	return s.Store.UsageTotals()
+}
+
+func TestStatsGeographyUsesTheSameFleetWalkAsProviderRows(t *testing.T) {
+	s, p, _ := newAuthorizationFixture(t)
+	s.readCache = newTTLCache()
+	p.Mu().Lock()
+	p.Location = &store.ProviderLocation{CountryCode: "US", Country: "United States", Region: "California"}
+	p.Mu().Unlock()
+	s.store = &afterFleetWalkStore{Store: s.store, onUsageTotals: func() { s.registry.Disconnect(p.ID) }}
+	raw, err := s.computeStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		Providers []struct {
+			Verification registry.Verification `json:"verification"`
+		} `json:"providers"`
+		Counts  verificationCounts             `json:"verification_counts"`
+		Regions []publicProviderLocationBucket `json:"provider_regions"`
+	}
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Providers) != 1 || snapshot.Counts.Connections != 1 || len(snapshot.Regions) != 1 ||
+		snapshot.Regions[0].Providers != 1 || snapshot.Regions[0].Verification.Authorized != snapshot.Counts.Authorized {
+		t.Fatalf("geography changed after fleet walk: %s", raw)
+	}
+}

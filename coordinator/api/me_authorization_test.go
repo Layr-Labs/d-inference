@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -54,6 +55,47 @@ func TestOwnerFleetAppAttestAuthorizationIsLiveScopedAndRedacted(t *testing.T) {
 	}
 	if !needsAttention(&fleet[0], "0.9.4") {
 		t.Fatal("revoked provider lost attention warning")
+	}
+}
+
+func TestOwnerVerificationAndCompatibilityLeaseRemainConsistentDuringGrantChurn(t *testing.T) {
+	s, p, _ := newAuthorizationFixture(t)
+	lease := p.GetAppAttestServingAuthorization()
+	var workers sync.WaitGroup
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		for range 500 {
+			s.registry.ClearAppAttestServingAuthorization(p)
+			s.registry.GrantAppAttestServingAuthorization(p, lease)
+		}
+	}()
+	defer workers.Wait()
+	for range 500 {
+		mp := buildMyProvider(nil, p)
+		s.attachMyProviderAuthorization(&mp, p, "account")
+		verified := mp.Verification.AppAttest.State == "verified"
+		if mp.AppAttestAuthorized != verified {
+			t.Fatalf("mixed owner authorization snapshots: %+v", mp)
+		}
+		if verified && mp.AuthorizationExpiresAt != mp.Verification.AppAttest.ExpiresAt {
+			t.Fatalf("mixed owner authorization deadlines: %+v", mp)
+		}
+		if !verified && mp.AuthorizationExpiresAt != 0 {
+			t.Fatalf("inactive owner lease retained a deadline: %+v", mp)
+		}
+	}
+}
+
+func TestOwnerVerificationWithholdsChangedAccountConnection(t *testing.T) {
+	s, p, _ := newAuthorizationFixture(t)
+	mp := buildMyProvider(nil, p)
+	p.Mu().Lock()
+	p.AccountID = "other-account"
+	p.Mu().Unlock()
+	s.attachMyProviderAuthorization(&mp, p, "account")
+	if mp.Online || mp.AppAttestAuthorized || mp.Verification.AppAttest.State != "offline" {
+		t.Fatalf("former account retained a live authorization verdict: %+v", mp)
 	}
 }
 

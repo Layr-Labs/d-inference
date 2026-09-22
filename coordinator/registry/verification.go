@@ -17,6 +17,16 @@ type VerificationPath struct {
 	ExpiresAt  int64  `json:"expires_at,omitempty"`
 }
 
+// ProviderAuthorizationSnapshot keeps public diagnostic fields and the
+// owner-only compatibility lease bound to one live connection observation.
+type ProviderAuthorizationSnapshot struct {
+	Verification Verification
+	Lease        AppAttestServingAuthorization
+	AccountID    string
+	Status       ProviderStatus
+	Authorized   bool
+}
+
 func (v Verification) Method() string {
 	a, l := v.AppAttest.State == "verified", v.Legacy.State == "verified"
 	switch {
@@ -32,14 +42,30 @@ func (v Verification) Method() string {
 }
 
 func (r *Registry) ProviderVerification(p *Provider) Verification {
+	return r.ProviderVerificationAndAuthorization(p).Verification
+}
+
+// ProviderVerificationAndAuthorization returns the diagnostic verdict and
+// compatibility lease from one registry/provider-locked observation. Callers
+// must still enforce the requesting account before exposing either field.
+func (r *Registry) ProviderVerificationAndAuthorization(p *Provider) ProviderAuthorizationSnapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if p == nil || r.providers[p.ID] != p {
-		return Verification{ObservedAt: time.Now().Unix(), AppAttest: VerificationPath{State: "offline"}, Legacy: VerificationPath{State: "offline"}}
+		return ProviderAuthorizationSnapshot{Verification: Verification{ObservedAt: time.Now().Unix(), AppAttest: VerificationPath{State: "offline"}, Legacy: VerificationPath{State: "offline"}}, Status: StatusOffline}
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return r.providerVerificationLocked(p, time.Now())
+	snapshot := ProviderAuthorizationSnapshot{
+		Verification: r.providerVerificationLocked(p, time.Now()),
+		AccountID:    p.AccountID,
+		Status:       p.Status,
+	}
+	if snapshot.Verification.AppAttest.State == "verified" {
+		snapshot.Lease = p.appAttestAuthorization
+		snapshot.Authorized = true
+	}
+	return snapshot
 }
 
 // ProviderVerifications avoids recursively taking r.mu inside ForEachProvider.
@@ -92,7 +118,7 @@ func (r *Registry) providerVerificationLocked(p *Provider, now time.Time) Verifi
 		v.AppAttest.State, v.Legacy.State = "revoked", "revoked"
 		return v
 	}
-	if p.appAttestProtocol < 3 {
+	if p.appAttestProtocol != 3 {
 		v.AppAttest.State = "unsupported"
 	}
 	a := p.appAttestAuthorization

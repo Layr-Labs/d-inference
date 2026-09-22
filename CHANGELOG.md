@@ -5,7 +5,7 @@
 - Recognize the 2026 M6 and M5 Pro Mac minis and M5 Max Mac Studio for base-reward memory caps and complete the new desktops' earnings-calculator choices. Recognize M5 Ultra for serving bandwidth while withholding its disputed identifier from base rewards. Report M6 as its own chip family with conservative MTP and model-capability gates pending physical qualification.
 
 - **Privacy descriptions** — Describe encrypted network hops and plaintext processing at the coordinator and provider, distinguish qualified MDM-optional App Attest authorization from legacy MDA evidence, and remove unsupported memory-wiping and recipient-key forward-secrecy guarantees.
-- Unify App Attest and legacy verification labels, dispatch-time chat proof summaries, live authorization expiry, and network method counts without changing legacy trust fields or exposing private Apple evidence.
+- Unify App Attest and legacy verification labels, dispatch-time chat proof summaries, live authorization expiry, and network method counts without changing legacy trust fields or exposing private Apple evidence. Keep owner lease fields and geography counts on the same live authorization snapshot, and label unsupported App Attest protocol versions accurately.
 - Operations helpers encode admin JSON fields, return a failure after any fleet host fails while still visiting remaining hosts, and isolate smoke-test response files.
 - **Admin email login** — Encode Privy OTP email/code fields as JSON strings so quoted addresses and escape characters cannot break or reshape the upstream request.
 - Persist independently approved App Attest builds and revocations; refresh qualification without per-release coordinator restarts, with bounded failure/expiry and stale-grant fencing.

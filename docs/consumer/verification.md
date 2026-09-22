@@ -28,6 +28,8 @@ not zero verified: counts use the available-verdict denominator and show how
 many records are unavailable. Map method
 counts describe the indicated source snapshot. See the
 [exact fields and freshness rules](../reference/api-contracts.md#verification-presentation-contract).
+Provider rows, method totals and map regions now share one fleet observation;
+a connection change during later store work does not mix their authorization counts.
 
 The proof view explains coordinator-side Apple chain/key enrollment, current
 assertion, receipt policy and qualified-build checks. Detailed certificate and

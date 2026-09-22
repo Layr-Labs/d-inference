@@ -52,7 +52,10 @@ created: "2026-05-14"
 # identifiers. Inference captures the winning verdict at final dispatch; live
 # UI bounds cached verdict age and expiry. Neither generic attested nor OS
 # reports establish App Attest; machine-inventory counts do not prove physical
-# uniqueness. This changes presentation, not serving or revocation policy.
+# uniqueness. Owner compatibility fields and public geography use the same
+# locked authorization observation as their diagnostic verdicts, avoiding
+# mixed states during revocation or connection replacement. This changes
+# presentation, not serving or revocation policy.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference

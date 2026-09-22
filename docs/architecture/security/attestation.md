@@ -13,9 +13,11 @@ The [durable build qualification policy](../../reference/provider-authorization.
 
 ## Presentation and dispatch history
 
-`coordinator/registry/verification.go` (`ProviderVerification`) evaluates the
-two authorization paths under registry/provider locks and exports only bounded
-states and timestamps. Legacy hardware trust is preserved as evidence, not
+`coordinator/registry/verification.go` (`ProviderVerificationAndAuthorization`) evaluates the
+two authorization paths, owner compatibility lease and live account/status under
+one registry/provider lock observation; unsupported App Attest protocol versions
+never appear pending. It exports only bounded public states and timestamps.
+Legacy hardware trust is preserved as evidence, not
 rewritten by App Attest. `authorizeInferenceHandoff` captures the verdict on the
 pending request at the final writer check. The response metadata uses that
 immutable winning-attempt snapshot, not a later live grant.
@@ -23,7 +25,9 @@ immutable winning-attempt snapshot, not a later live grant.
 Live views use each path's expiry and a bounded source-snapshot age. Historical
 chat uses the recorded dispatch time; revocation fences future work without
 rewriting prior claims. Counts distinguish connection-level union/breakdowns
-from privately deduplicated machine inventory and reported OS adoption. See
+from privately deduplicated machine inventory and reported OS adoption. Stats
+location buckets are derived from the same detached fleet walk as provider rows,
+so store work between aggregation stages cannot mix connection generations. See
 [the presentation contract](../../reference/api-contracts.md#verification-presentation-contract)
 for cache bounds and unknown-field behavior. No raw Apple certificate or receipt
 is added to public/owner presentation; detailed archive access remains on its

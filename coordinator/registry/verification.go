@@ -120,12 +120,13 @@ func (r *Registry) providerVerificationLocked(p *Provider, now time.Time) Verifi
 	}
 	if p.appAttestProtocol != 3 {
 		v.AppAttest.State = "unsupported"
-	}
-	a := p.appAttestAuthorization
-	if r.providerAppAttestServingAuthorizedLocked(p, now) {
-		v.AppAttest = VerificationPath{State: "verified", VerifiedAt: a.IssuedAt.Unix(), ExpiresAt: a.ValidUntil.Unix()}
-	} else if !a.ValidUntil.IsZero() && !a.ValidUntil.After(now) {
-		v.AppAttest.State = "expired"
+	} else {
+		a := p.appAttestAuthorization
+		if r.providerAppAttestServingAuthorizedLocked(p, now) {
+			v.AppAttest = VerificationPath{State: "verified", VerifiedAt: a.IssuedAt.Unix(), ExpiresAt: a.ValidUntil.Unix()}
+		} else if !a.ValidUntil.IsZero() && !a.ValidUntil.After(now) {
+			v.AppAttest.State = "expired"
+		}
 	}
 	// Legacy trust is evidence, not a current serving grant. Require the full
 	// policy plus actual hardware trust even in permissive development configs.

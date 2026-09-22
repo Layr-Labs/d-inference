@@ -19,6 +19,7 @@ struct MTPConfigKeyTests {
         #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: "Apple M3 Pro") == 8)
         #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: "Apple M4 Max") == 8)
         #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: "Apple M5") == 8)
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: "Apple M6") == 4)
         #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: "Unknown") == 4)
         #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
             environment: ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "12"],

@@ -48,6 +48,10 @@ extension ProviderLoop {
                 guard let self else { return [] }
                 return await self.mtpSlotMetricsSamplesForLocal()
             },
+            systemOne: { [weak self] data in
+                guard let self else { throw MultiModelBatchSchedulerEngineError.queueFull("Provider unavailable") }
+                return try await self.predictSystemOneForLocal(data: data)
+            },
             // Fires only once OUR server has actually bound the socket — the
             // authoritative bind signal. We publish discovery here (never from a
             // best-effort HTTP probe that a foreign process on the same port
@@ -102,6 +106,9 @@ extension ProviderLoop {
     /// goes through the same `ensureModelLoaded` gate as coordinator requests, so
     /// the shared `GlobalKVCacheBudget` and memory admission apply uniformly.
     func acquireModelForLocal(_ modelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
+        guard advertisedModels[modelId]?.systemOne != true else {
+            throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
+        }
         // Fast-path drain/shutdown reject; an authoritative re-check follows the
         // `await` below, right before the reservation is taken (see comment there).
         try throwIfRefusingNewLocalWork(modelId: modelId)

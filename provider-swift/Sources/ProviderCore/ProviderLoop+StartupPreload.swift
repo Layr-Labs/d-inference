@@ -98,7 +98,7 @@ extension ProviderLoop {
         // that never serves — every unit test exercising load/unload — must
         // not write the operator's real loaded-models file.
         guard loadedModelsPersistenceEnabled else { return }
-        let loaded = modelSlots.keys.filter { !modelsUnloading.contains($0) }.sorted()
+        let loaded = residentModelIDs.filter { !modelsUnloading.contains($0) }.sorted()
         LoadedModelsStore.write(loaded, to: loadedModelsFileURL())
     }
 
@@ -439,6 +439,15 @@ extension ProviderLoop {
     /// with a tiny prompt. Holds a local reservation so eviction can't pull
     /// the model out from under the decode.
     internal func runStartupSelfTestDecode(modelId: String) async throws -> Duration {
+        if decisionSlots[modelId] != nil {
+            let started = ContinuousClock.now
+            let data = try JSONSerialization.data(withJSONObject: [
+                "model": modelId, "state": "The sky is blue.",
+                "questions": ["sky": ["type": "noul", "instructions": "The sky is blue."]],
+            ])
+            _ = try Self.systemOneUsage(await predictSystemOneForLocal(data: data))
+            return ContinuousClock.now - started
+        }
         guard let slot = modelSlots[modelId], !modelsUnloading.contains(modelId) else {
             throw InferenceError.noModelLoaded
         }

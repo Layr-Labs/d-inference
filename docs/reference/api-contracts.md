@@ -1,8 +1,8 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-22 · commit `ce809b792`
 
-The complete public HTTP surface of the coordinator, derived from the 116 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
+The complete public HTTP surface of the coordinator, derived from the `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
 Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`.
 
@@ -65,9 +65,9 @@ Both tiers set `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, `
 
 ## Routes
 
-### Inference (4)
+### Inference (5)
 
-All four share the chain `drainGate → requireAuth → rateLimitConsumer → sealedTransport → handler` and the pipeline in `coordinator/api/consumer.go`.
+All five share the chain `drainGate → requireAuth → rateLimitConsumer → sealedTransport → handler` and the pipeline in `coordinator/api/consumer.go`.
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
@@ -75,6 +75,29 @@ All four share the chain `drainGate → requireAuth → rateLimitConsumer → se
 | POST | `/v1/responses` | `handleChatCompletions` — the same handler; it detects `input` (Responses) versus `messages` (Chat) | `key` | same | OpenAI Responses; lowered by `coordinator/promptcontract/endpoint_lower_responses.go`, streamed by `newResponsesStreamEmitter` (`coordinator/api/responses_stream.go`) |
 | POST | `/v1/completions` | `handleCompletions` (`coordinator/api/consumer.go`) | `key` | same | Legacy text completions; response built by `coordinator/api/generic_endpoint_response.go`, streamed by `newGenericEndpointStreamEmitter` (`coordinator/api/generic_endpoint_stream.go`) |
 | POST | `/v1/messages` | `handleAnthropicMessages` (`coordinator/api/consumer.go`) | `key` | same | Anthropic Messages; lowered by `coordinator/promptcontract/endpoint_lower_messages.go`, streamed by `newMessagesStreamEmitter` |
+| POST | `/v1/systemone` | `handleSystemOne` (`coordinator/api/system_one.go`) | `key` | same | Native non-streaming decision inference; typed answer response and input-only accounting |
+
+### SystemOne decisions
+
+`POST /v1/systemone` evaluates native Laya decisions. See the
+[consumer how-to](../consumer/system-one.md). This is non-streaming encoder
+inference; the caller receives typed answers and zero output tokens.
+
+| Field or rule | Contract | Code |
+|---|---|---|
+| `model` | Required catalog build or alias with architecture `laya` and only capability `system_one`; chat endpoints reject this family with 422 | `coordinator/api/system_one.go` (`handleSystemOne`), `coordinator/api/system_one_catalog.go` (`rejectSystemOneGeneration`) |
+| Body cap | 1 MiB plaintext before parsing and after model/endpoint forwarding; oversized body returns 413 | `coordinator/api/system_one.go` (`handleSystemOne`) |
+| `state` | Required string, object, or array | `coordinator/api/system_one_request.go` (`validateSystemOneRequest`) |
+| `questions` | Map of 1–64 question IDs to typed questions; `instructions` is string/object/array | `coordinator/api/system_one_request.go` (`validateSystemOneRequest`) |
+| `choice` | `criteria` object with 1–255 options; description string/object/array/null | `coordinator/api/system_one_request.go` (`validateSystemOneRequest`) |
+| `score` | `criteria` array with 2–10 descriptions; each string/object/array | `coordinator/api/system_one_request.go` (`validateSystemOneRequest`) |
+| `noul` | Optional `criteria` object with `true`/`false` descriptions, each string/object/array | `coordinator/api/system_one_request.go` (`validateSystemOneRequest`) |
+| Generation controls | `stream:true`, generation inputs, tools, sampling and output-length controls are rejected with 422; malformed JSON is 400 | `coordinator/api/system_one_request.go` (`validateSystemOneRequest`) |
+| Provider input | Only `model`, `state`, `questions`, and the coordinator-owned `endpoint` are forwarded; nested JSON order is preserved | `coordinator/api/system_one_request.go` (`systemOneProviderBody`) |
+| Response | `model`, `answers` keyed by requested question IDs, and `usage:{input_tokens,output_tokens:0}`; choice/score probabilities, confidence, and `action.act_probability` preserved | `coordinator/api/system_one_response.go` (`validateSystemOneResponse`, `writeSystemOneResponse`) |
+| Usage | Sum of tokenized question rows, bounded by 512 per question; input-only reservation/rate admission; completion with nonzero output or missing/invalid native answers fails before settlement | `coordinator/api/system_one.go` (`handleSystemOne`), `coordinator/api/provider.go` (`handleChunk`, `handleCompleteAt`) |
+| Discovery | `metadata.model_type:laya`, `supported_features:[system_one]`, output modality `decision`, no sampling parameters; excluded from the text-generation OpenRouter feed | `coordinator/api/system_one_catalog.go`, `coordinator/api/openrouter_models.go` (`openRouterModelFieldsFor`, `deriveModalities`) |
+| Catalog registration | Exactly `architecture:laya`, `capabilities:[system_one]`, `max_output_length:0`, `output_price:0`; positive input price still required | `coordinator/api/model_registry_handlers.go` (`validateRegisterModelRequest`) |
 
 ### Models and catalog (9)
 

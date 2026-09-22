@@ -1908,6 +1908,17 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		})
 		return
 	}
+	if pr.Traits.SystemOne {
+		_, valid := validateSystemOneResponse([]byte(strings.TrimPrefix(chunkData, "data: ")), pr.SystemOneQuestions)
+		if !valid || !pr.SystemOneResponseValidated.CompareAndSwap(false, true) {
+			s.sendProviderCancel(provider, msg.RequestID)
+			s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
+				RequestID: msg.RequestID, StatusCode: http.StatusBadGateway,
+				Error: "invalid native decision response",
+			})
+			return
+		}
+	}
 	if ap := pr.Profile; ap != nil {
 		ap.ChunksIn.Add(1)
 		ap.DecryptUSTotal.Add(time.Since(decryptStart).Microseconds())
@@ -2094,6 +2105,21 @@ func (s *Server) handleCompleteAt(
 	}
 	if receivedAt.IsZero() {
 		receivedAt = time.Now()
+	}
+	// Validate parked requests too: a disconnected consumer must not turn a
+	// malformed native terminal into billable output.
+	nativePending := provider.GetPending(msg.RequestID)
+	if nativePending == nil && s.settlements != nil {
+		nativePending = s.settlements.peek(msg.RequestID)
+	}
+	if nativePending != nil && nativePending.Traits.SystemOne &&
+		(!nativePending.SystemOneResponseValidated.Load() || msg.Usage.PromptTokens <= 0 ||
+			msg.Usage.PromptTokens > nativePending.EstimatedPromptTokens || msg.Usage.CompletionTokens != 0) {
+		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
+			RequestID: msg.RequestID, StatusCode: http.StatusBadGateway,
+			Error: "invalid native decision usage",
+		})
+		return
 	}
 	// terminalOwner is true only for the frame that claimed the attempt's
 	// terminal first: concurrent duplicate completions for one request all
@@ -2319,7 +2345,7 @@ func (s *Server) handleCompleteAt(
 	// is billed $0 (and fully refunded). The provider-side fix (EngineBridge
 	// max + content-frame floor) should prevent this, but emit a metric so any
 	// residual leak is visible on the dashboard rather than silent.
-	if msg.Usage.CompletionTokens == 0 {
+	if msg.Usage.CompletionTokens == 0 && !pr.Traits.SystemOne {
 		s.ddIncr("billing.zero_usage_complete", []string{"model:" + pr.Model})
 		s.logger.Warn("completed request reported zero completion tokens — billed $0",
 			"provider_id", providerID,

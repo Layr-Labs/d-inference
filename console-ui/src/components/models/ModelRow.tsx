@@ -1,8 +1,9 @@
 "use client";
 
 import { useId, useState } from "react";
-import { Check, ChevronDown, Copy, MessageSquare, ShieldCheck } from "lucide-react";
+import { BookOpen, Check, ChevronDown, Copy, MessageSquare, ShieldCheck } from "lucide-react";
 import type { Model } from "@/lib/api";
+import { isDecisionModel } from "@/lib/model-capabilities";
 import { providerRequirementBadge, providerRequirementTitle } from "@/lib/provider-capabilities";
 import { formatContext, formatPrice, modelContext, modelFeatures, modelName, type CatalogPrice } from "./catalog";
 
@@ -67,6 +68,7 @@ export function ModelRow({ model, price, onChat }: { model: Model; price?: Catal
   const features = modelFeatures(model);
   const requirement = providerRequirementBadge(model.required_provider_capabilities);
   const name = modelName(model);
+  const decision = isDecisionModel(model);
 
   return (
     <li className="border-b border-border-dim last:border-0">
@@ -79,6 +81,7 @@ export function ModelRow({ model, price, onChat }: { model: Model; price?: Catal
             </span>
           </button>
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs leading-relaxed text-text-secondary">
+            {decision && <span>System One · <code>/v1/systemone</code></span>}
             {features.map((feature) => <span key={feature}>{FEATURE_LABELS.get(feature)}</span>)}
             {features.length === 0 && model.model_type && <span className="capitalize">{model.model_type}</span>}
             {model.trust_level === "hardware" && <span className="inline-flex items-center gap-1.5"><ShieldCheck size={13} className="text-coral" />Hardware attestation</span>}
@@ -101,10 +104,12 @@ export function ModelRow({ model, price, onChat }: { model: Model; price?: Catal
           </div>
         </div>
 
-        <button onClick={() => onChat(model)} aria-label={`Start a new chat with ${name}`} className="focus-ring col-start-2 row-start-1 inline-flex min-h-10 items-center justify-center gap-2 self-start rounded-lg border border-border-dim px-3 text-sm font-medium text-coral transition-colors hover:border-coral/25 hover:bg-coral-light xl:col-start-5 xl:self-center">
+        {decision ? <a href="https://github.com/Layr-Labs/d-inference/blob/master/docs/reference/api-contracts.md#systemone-decisions" target="_blank" rel="noopener noreferrer" aria-label={`System One API documentation for ${name}`} className="focus-ring col-start-2 row-start-1 inline-flex min-h-10 items-center justify-center gap-2 self-start rounded-lg border border-border-dim px-3 text-sm font-medium text-coral transition-colors hover:border-coral/25 hover:bg-coral-light xl:col-start-5 xl:self-center">
+          <BookOpen size={14} aria-hidden="true" /> API docs
+        </a> : <button onClick={() => onChat(model)} aria-label={`Start a new chat with ${name}`} className="focus-ring col-start-2 row-start-1 inline-flex min-h-10 items-center justify-center gap-2 self-start rounded-lg border border-border-dim px-3 text-sm font-medium text-coral transition-colors hover:border-coral/25 hover:bg-coral-light xl:col-start-5 xl:self-center">
           <MessageSquare size={14} aria-hidden="true" />
           Chat
-        </button>
+        </button>}
       </div>
       <div id={detailsID} hidden={!expanded} className="pb-5">{expanded && <ModelDetails model={model} />}</div>
     </li>

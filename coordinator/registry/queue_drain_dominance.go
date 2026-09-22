@@ -67,7 +67,7 @@ func drainRequestSize(pr *PendingRequest) (prompt, maxTok int) {
 		prompt = 0
 	}
 	maxTok = pr.RequestedMaxTokens
-	if maxTok <= 0 {
+	if maxTok <= 0 && !pr.Traits.SystemOne {
 		maxTok = defaultRequestedMaxTokens
 	}
 	return prompt, maxTok

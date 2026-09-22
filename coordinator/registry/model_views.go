@@ -76,6 +76,10 @@ func (r *Registry) ListModels() []AggregateModel {
 			if !r.providerModelAllowedByCatalogLocked(p, m) {
 				continue
 			}
+			native := r.modelCatalog[m.ID].SystemOne || m.ModelType == "laya" || m.SystemOne
+			if !r.providerSystemOneEligibleLocked(p, m.ID, native) {
+				continue
+			}
 			a, ok := agg[m.ID]
 			if !ok {
 				a = &modelAgg{

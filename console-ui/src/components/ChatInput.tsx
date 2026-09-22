@@ -5,6 +5,7 @@ import { ArrowUp, Square, LogIn, Cpu, ImagePlus, LockKeyhole, X } from "lucide-r
 import { useStore } from "@/lib/store";
 import { trackEvent } from "@/lib/google-analytics";
 import { modelSupportsImages, MAX_IMAGES_PER_MESSAGE } from "@/lib/image-upload";
+import { modelSupportsChat } from "@/lib/model-capabilities";
 import { useImageUpload } from "@/hooks/useImageUpload";
 import { ChatModelSelector } from "@/components/chat/ChatModelSelector";
 
@@ -39,7 +40,7 @@ export function ChatInput({
   const setUseMyMachine = useStore((s) => s.setUseMyMachine);
   const selectedModelObj = models.find((model) => model.id === selectedModel);
   const supportsImages = modelSupportsImages(selectedModelObj);
-  const canSubmit = authenticated && submitReady && !!selectedModel;
+  const canSubmit = authenticated && submitReady && !!selectedModelObj && modelSupportsChat(selectedModelObj);
   const {
     images, imgError, atLimit: atImageLimit, fileInputRef,
     removeImage, clearImages, handlePaste, handleFileInputChange,

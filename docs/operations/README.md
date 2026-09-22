@@ -1,6 +1,6 @@
 # Operations runbooks
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-22 · commit `ce809b792`
 
 Procedures for deploying, migrating, and operating Darkbloom production
 infrastructure. Every runbook has the same shape — when to use, prerequisites,
@@ -11,6 +11,7 @@ shapes under [`../reference/README.md`](../reference/README.md).
 
 | Runbook | Scope |
 |---|---|
+| [laya-onboarding.md](laya-onboarding.md) | Qualify and publish the pinned native Laya checkpoint, then activate System One serving |
 | [`model-token-promotions.md`](model-token-promotions.md) | Configure capped model-token claims, signup eligibility, paid fallback and provider settlement |
 | [app-attest-build-qualification.md](app-attest-build-qualification.md) | Approve exact signed builds, retry publication without rebuilding, and revoke durable qualifications |
 | [mdm-optional-rollout.md](mdm-optional-rollout.md) | Qualify and activate App Attest serving, then scoped Darkbloom enrollment removal |

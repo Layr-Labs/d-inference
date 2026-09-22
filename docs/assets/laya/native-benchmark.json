@@ -1,0 +1,20 @@
+{
+  "active_memory_bytes": 842602010,
+  "iterations": 30,
+  "load_duration": "0.483956792 seconds",
+  "max_ms": 69.731583,
+  "median_ms": 32.0973125,
+  "min_ms": 25.903125,
+  "peak_memory_bytes": 1041208465,
+  "warmup": 5,
+  "hardware": "Apple M4 Max, 128 GiB",
+  "precision": "float16",
+  "questions": 3,
+  "input_tokens": 132,
+  "output_tokens": 0,
+  "sdk_source_revision": "327af8b9412be6967873077682d67d9b6fe6ba9a",
+  "checkpoint_revision": "20aed815fc6acde75733882e7ec0e3f28aeb9717",
+  "scope": "Warm in-process runtime including JSON parsing, tokenization, native inference and result serialization; excludes HTTP/network. Development host, not a dedicated benchmark host.",
+  "memory_scope": "MLX allocator, not total process RSS",
+  "binary_sha256": "fb07bc43db23ef0ff98cb511420031c6b5e8b672bd6333809ec370a656f68523"
+}

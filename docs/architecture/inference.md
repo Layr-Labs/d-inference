@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-20 · commit `0cb0c6310`
+> Last updated: 2026-09-22 · commit `ce809b792`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process: one in-process engine (`mlx-swift-lm`
@@ -24,8 +24,8 @@ MTP remains unsupported because the checkpoint has no assistant tensors.
 See `libs/mlx-swift-lm/docs/bonsai2.md` for the checkpoint contract and current
 qualification scope. This implementation does not activate a catalog entry.
 
-Every advertised model is served through CBv2; a `model_type` without a CBv2
-adapter is dropped from the advertised set at scan time and never loads
+Every advertised autoregressive model is served through CBv2; a `model_type` without a CBv2
+adapter is dropped from that serving path at scan time and never loads
 (`provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2SupportedModels.swift`,
 `isSupported`). The path is HTTP/WebSocket → `ProviderLoop` /
 `StandaloneServer` → `MultiModelBatchSchedulerEngine` → `EngineV2Bridge` →
@@ -41,6 +41,54 @@ adapter is dropped from the advertised set at scan time and never loads
 | `EngineV2Runtime` | Process-wide registry of bridges; capacity summary for heartbeats; cancellation fan-out | `provider-swift/Sources/ProviderCore/Inference/Engine/EngineV2Runtime.swift` |
 | CBv2 engine loop | Admission, KV allocation, chunked prefill, batched decode, detokenisation, leases | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`, `SchedulerV2.swift` |
 | promptsidecar boundary | Coordinator-side Rust process that computes the same `prompt_contract_id` and block chain ([`prefix-cache.md#block-hashing`](prefix-cache.md#block-hashing)) the provider derives with `PromptContractIdentity.compute(modelDirectory:)`; the provider never calls it | `coordinator/promptsidecar/`, `provider-swift/Sources/ProviderCoreFoundation/PromptContractIdentity.swift` — see [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md) |
+
+## Native System One decisions
+
+`POST /v1/systemone` uses the `MLXDecisions.LayaRuntime` actor for the native
+ModernBERT encoder, option head and action head. The provider decrypts the
+existing `inference_request`, recognizes the authenticated `endpoint` field,
+and returns one encrypted JSON answer followed by `inference_complete`.
+`input_tokens` counts actual compiled input tokens; `output_tokens` is zero.
+The response attestation covers that JSON body. No chat template or generated
+text participates (`provider-swift/Sources/ProviderCore/ProviderLoop+SystemOne.swift`,
+`handleSystemOneRequest`; `libs/mlx-swift-lm/Libraries/MLXDecisions/LayaRuntime.swift`,
+`predict`). See the [System One API guide](../consumer/system-one.md).
+
+The original checkpoint layout has `mlx_config.json`, `rl_agent_config.json`,
+`encoder/config.json`, nested tokenizer files and `model.safetensors`.
+`LayaModelLayout.isSupported` recognizes that format independently of catalog
+ID; the scanner advertises `system_one: true` and leaves `template_render_ok`
+absent. Native configuration, nested tokenizer files, `LICENSE` and `NOTICE`
+enter the manifest/weight hash only for the explicit Laya format; existing
+autoregressive hash membership stays unchanged (`provider-swift/Sources/ProviderCoreFoundation/LayaModelLayout.swift`;
+`provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift`).
+
+1. `ensureModelLoaded` uses the shared serialized load gate, padded scanner
+   estimate, pending-load lease, fresh weight hashes before and after loading,
+   and measured post-load headroom. The unmeasured activation floor stays in
+   effect (`provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift`;
+   `provider-swift/Sources/ProviderCore/ProviderLoop+DecisionSlots.swift`, `installDecisionSlot`).
+2. Decision slots initially require exclusive residency: they cannot coexist
+   with autoregressive slots or another decision model. Only idle models may
+   be evicted, and preloads with eviction disabled preserve resident models
+   (`prepareDecisionExclusivity`). This restriction remains until mixed
+   serving-set activation memory is qualified.
+3. One request owns the decision slot at a time. Up to 64 questions run in
+   bounded batches of 16, with at most 512 compiled tokens per question.
+   Cancellation retains the ownership pin until native evaluation exits;
+   runtime shutdown waits behind evaluation before releasing weights
+   (`LayaRuntime.evaluate`, `shutdown`; `decisionRequestOwners`).
+4. Native slots participate in the shared resident model count, heartbeat,
+   loaded-weight attestation, warm/current model selection, persisted preload
+   set, idle timeout and shutdown. Startup self-test performs a real native
+   decision (`runStartupSelfTestDecode`).
+
+The unified local endpoint (`--local-endpoint`) serves the same native runtime
+behind its existing bearer authentication, CORS and disconnect handling.
+`--local` retains its autoregressive standalone engine. Native local requests
+share the remote request's one-owner limit and load gate
+(`provider-swift/Sources/ProviderCore/ProviderLoop+LocalSystemOne.swift`,
+`predictSystemOneForLocal`; `provider-swift/Sources/ProviderCore/Server/LocalSystemOneResponder.swift`).
 
 ## Mechanism
 

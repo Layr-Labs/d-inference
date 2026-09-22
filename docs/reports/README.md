@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-18 · commit `5fc48d460`
+> Last updated: 2026-09-22 · commit `ce809b792`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -10,6 +10,8 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
+
+- [Laya native decision integration](2026-09-21-laya-native-decisions.md) — pinned artifact, native/reference numerical parity, real local/provider transport checks and rollout limits.
 
 - [Bonsai 2 lossless performance and API stability](2026-09-18-bonsai2-lossless-performance.md) — matched M3 Ultra/M5 Max prefill, decode and memory measurements, exactness/lifecycle evidence and preserved quality/release limits.
 - [Qwen 3.8 Next native API and cache qualification](2026-09-15-qwen38-native-api-qualification.md) — synchronized native tool prompts, response/accounting fixes, final local API/cache regressions and preserved multirow/quality limits.

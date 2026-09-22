@@ -103,6 +103,8 @@ public struct ModelInfo: Codable, Sendable, Equatable {
     /// true (matches the coordinator's `is_vision,omitempty`), so pre-0.6.0
     /// providers and text-only builds omit it and are never routed media requests.
     public var isVision: Bool?
+    /// Native decision inference; absent for autoregressive models.
+    public var systemOne: Bool?
     /// Tri-state template-render self-check result (DAR-130 class): the scanner
     /// renders the model's chat template(s) against canonical request fixtures
     /// (`TemplateRenderCheck`). nil = no template found / check didn't run
@@ -127,6 +129,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         case nativeLoadTransientBytes = "native_load_transient_bytes"
         case weightHash = "weight_hash"
         case isVision = "is_vision"
+        case systemOne = "system_one"
         case templateRenderOK = "template_render_ok"
         case toolConstraintTemplateHash = "tool_constraint_template_hash"
     }
@@ -140,6 +143,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         estimatedMemoryGb: Double,
         weightHash: String? = nil,
         isVision: Bool? = nil,
+        systemOne: Bool? = nil,
         templateRenderOK: Bool? = nil,
         toolConstraintTemplateHash: String? = nil,
         ssdOffloadedWeightBytes: UInt64? = nil,
@@ -155,6 +159,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         self.nativeLoadTransientBytes = nativeLoadTransientBytes
         self.weightHash = weightHash
         self.isVision = isVision
+        self.systemOne = systemOne
         self.templateRenderOK = templateRenderOK
         self.toolConstraintTemplateHash = toolConstraintTemplateHash
     }
@@ -178,6 +183,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         if isVision == true {
             try container.encode(true, forKey: .isVision)
         }
+        if systemOne == true { try container.encode(true, forKey: .systemOne) }
         // Tri-state: encode BOTH true and false when the check ran — false is
         // the broken-template routing signal. Omit only when unknown (nil), so
         // the coordinator can distinguish "check didn't run" from "passed".

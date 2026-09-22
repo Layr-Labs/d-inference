@@ -45,6 +45,14 @@ func (h *settlementHolder) hold(pr *registry.PendingRequest, grace time.Duration
 	})
 }
 
+// peek reads a parked request without consuming terminal ownership. Completion
+// validation uses it before the ordinary terminal handler claims settlement.
+func (h *settlementHolder) peek(requestID string) *registry.PendingRequest {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.pending[requestID]
+}
+
 // claim removes and returns the held record for requestID, or nil if none
 // (already claimed, expired, or never held).
 func (h *settlementHolder) claim(requestID string) *registry.PendingRequest {

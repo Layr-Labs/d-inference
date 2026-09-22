@@ -17,6 +17,9 @@ func (s *Server) modelEntryForConcrete(
 	registryEntry store.ModelRegistryEntry,
 	hasRegistryEntry bool,
 ) types.ModelEntry {
+	if inCatalog && catalogModel.ModelType == "laya" {
+		model.ModelType = catalogModel.ModelType
+	}
 	metadata := types.ModelMetadata{
 		ModelType:         model.ModelType,
 		Quantization:      model.Quantization,
@@ -103,6 +106,9 @@ func concreteModelEligibleForOpenRouterFeed(
 ) bool {
 	catalogModel, ok := catalogByID[modelID]
 	if !ok {
+		return false
+	}
+	if isNonTextModelType(catalogModel.ModelType) {
 		return false
 	}
 	modelType := catalogModel.ModelType

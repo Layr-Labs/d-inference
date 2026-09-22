@@ -1,0 +1,35 @@
+[
+  {
+    "case": "health",
+    "status": 200
+  },
+  {
+    "case": "models",
+    "status": 200
+  },
+  {
+    "case": "mixed-three",
+    "status": 200,
+    "usage": {
+      "input_tokens": 132,
+      "output_tokens": 0
+    },
+    "choice": "billing"
+  },
+  {
+    "case": "malformed",
+    "status": 400
+  },
+  {
+    "case": "wrong-model",
+    "status": 404
+  },
+  {
+    "case": "generation-control",
+    "status": 422
+  },
+  {
+    "case": "scalar-state",
+    "status": 422
+  }
+]

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add native Laya typed decisions through authenticated `POST /v1/systemone`, with a Swift/MLX encoder runtime, capability-gated provider routing, bounded question batches, and input-only token accounting. Laya uses its own decision model slots and cannot be sent through chat endpoints. The console retains decision models in the catalog and API-key lists while excluding them from chat selection. Model publication, pricing, provider release and coordinator deployment remain separate rollout operations.
 - **Privacy descriptions** — Describe encrypted network hops and plaintext processing at the coordinator and provider, distinguish qualified MDM-optional App Attest authorization from legacy MDA evidence, and remove unsupported memory-wiping and recipient-key forward-secrecy guarantees.
 - Operations helpers encode admin JSON fields, return a failure after any fleet host fails while still visiting remaining hosts, and isolate smoke-test response files.
 - **Admin email login** — Encode Privy OTP email/code fields as JSON strings so quoted addresses and escape characters cannot break or reshape the upstream request.

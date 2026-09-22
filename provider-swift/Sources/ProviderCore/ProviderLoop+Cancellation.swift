@@ -147,7 +147,7 @@ extension ProviderLoop {
     /// (`localReservations`). Drain logic (shutdown + update hot-swap) waits on
     /// all three so a local stream is never cut off mid-generation.
     internal var hasInflightWork: Bool {
-        !inflightTasks.isEmpty || !requestToModel.isEmpty || localReservations.hasAny
+        !inflightTasks.isEmpty || !requestToModel.isEmpty || !decisionRequestOwners.isEmpty || localReservations.hasAny
     }
 
     internal func waitForInflightDrain(timeout: Duration, reason: String = "shutdown") async -> Bool {

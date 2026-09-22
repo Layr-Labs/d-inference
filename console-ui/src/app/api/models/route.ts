@@ -222,7 +222,7 @@ function applyGemmaRolloutQuickFix(catalogModels: unknown[], capacityByID: Map<s
 
 async function publicCatalogResponse(coordUrl: string) {
   const [catalogRes, capacityRes] = await Promise.all([
-    fetch(`${coordUrl}/v1/models/catalog?type=text&include_aliases=1`),
+    fetch(`${coordUrl}/v1/models/catalog?include_aliases=1`),
     fetch(`${coordUrl}/v1/models/capacity`).catch(() => null),
   ]);
 

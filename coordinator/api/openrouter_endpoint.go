@@ -152,6 +152,9 @@ func (s *Server) openRouterAliasEntries(
 		primary := members[0]
 
 		cm := catalogByID[primary]
+		if isNonTextModelType(cm.ModelType) {
+			continue
+		}
 		modelType := cm.ModelType
 		if at, ok := aggTypeByID[primary]; ok {
 			modelType = at

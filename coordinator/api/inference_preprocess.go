@@ -152,7 +152,7 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error",
-				fmt.Sprintf("request body exceeds the %d-byte limit", maxInferenceBodyBytes)))
+				fmt.Sprintf("request body exceeds the %d-byte limit", maxBytesErr.Limit)))
 			return inferencePrelude{}, false
 		}
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "failed to read request body"))

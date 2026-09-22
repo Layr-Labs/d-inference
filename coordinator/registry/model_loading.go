@@ -543,7 +543,12 @@ func (r *Registry) RejectUnservableQueuedRequests(modelID string) {
 	// after 120s) — fall through to fail them fast.
 	// Base-shape check: "can any provider serve this model at all?" carries no
 	// tool/vision constraint, so use the default (base) traits.
-	candidates, capacityRejections, _ := r.QuickCapacityCheck(modelID, 500, defaultRequestedMaxTokens, RequestTraits{})
+	traits := RequestTraits{SystemOne: r.IsSystemOneModel(modelID)}
+	maxOutput := defaultRequestedMaxTokens
+	if traits.SystemOne {
+		maxOutput = 0
+	}
+	candidates, capacityRejections, _ := r.QuickCapacityCheck(modelID, 500, maxOutput, traits)
 	if candidates > 0 || capacityRejections > 0 {
 		return
 	}
@@ -558,7 +563,7 @@ func (r *Registry) RejectUnservableQueuedRequests(modelID string) {
 		// Base-shape question (like the QuickCapacityCheck above): does the
 		// owner have ANY box serving this model — no per-request trait/vision
 		// constraint at this granularity.
-		_, servesModel := r.OwnedProviderSummary(owner, modelID, RequestTraits{}, false)
+		_, servesModel := r.OwnedProviderSummary(owner, modelID, traits, false)
 		preferOwnerEligible[owner] = servesModel > 0
 	}
 

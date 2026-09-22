@@ -380,12 +380,12 @@ extension ProviderLoop {
             await cancelAllInflight()
         }
         await coordinator.shutdown()
-        while !modelSlots.isEmpty {
+        while !residentModelIDs.isEmpty {
             if let unloading = modelsUnloading.first {
                 await waitForModelUnload(unloading)
                 continue
             }
-            for modelId in Array(modelSlots.keys) {
+            for modelId in Array(residentModelIDs) {
                 await unloadModel(modelId)
             }
         }

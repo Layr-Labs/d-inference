@@ -104,6 +104,10 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			if !r.providerModelAllowedByCatalogLocked(p, m) {
 				continue
 			}
+			native := r.modelCatalog[m.ID].SystemOne || m.ModelType == "laya" || m.SystemOne
+			if !r.providerSystemOneEligibleLocked(p, m.ID, native) {
+				continue
+			}
 			// Use the SAME quality-concurrency-capped headroom the routing/preflight
 			// path enforces, so the public capacity feed doesn't advertise a capped
 			// box (e.g. Gemma at 2) as routable up to the flat fallback (24) and lure
@@ -176,6 +180,9 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 				snap.warm = p.CurrentModel == m.ID
 			}
 
+			if native {
+				snap.effectiveTPS = 0 // decisions do not decode output tokens
+			}
 			snaps = append(snaps, snap)
 		}
 		p.mu.Unlock()

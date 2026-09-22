@@ -161,6 +161,9 @@ type ModelInfo struct {
 	// consumer sees are governed separately by the catalog capabilities, so this
 	// advertisement does not by itself light up vision in the API.
 	IsVision bool `json:"is_vision,omitempty"`
+	// SystemOne explicitly advertises native non-generative decision inference.
+	// Omitted by legacy providers, which must never receive /v1/systemone.
+	SystemOne bool `json:"system_one,omitempty"`
 	// TemplateRenderOK is set by 0.6.5+ providers after rendering the model's
 	// chat template against canonical fixtures (tool schemas with nullable or
 	// missing types, multimodal content parts). false means the template render

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { TrustMetadata, Model } from "./api";
+import { modelSupportsChat } from "./model-capabilities";
 
 // localStorage key for the persisted store. Exported so the app shell can detect
 // a first-time visitor (no persisted state yet) when applying responsive defaults.
@@ -132,8 +133,9 @@ export const useStore = create<AppState>()(
       setSelectedModel: (model) => set({ selectedModel: model }),
       setModels: (models) => {
         const current = get().selectedModel;
-        const hasCurrent = models.some((m) => m.id === current);
-        const defaultModel = hasCurrent ? current : (models[0]?.id ?? "");
+        const chatModels = models.filter(modelSupportsChat);
+        const hasCurrent = chatModels.some((m) => m.id === current);
+        const defaultModel = hasCurrent ? current : (chatModels[0]?.id ?? "");
         set({
           models,
           selectedModel: defaultModel,

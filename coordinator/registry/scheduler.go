@@ -527,7 +527,7 @@ func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bo
 	if pr.Model == "" {
 		pr.Model = model
 	}
-	if pr.RequestedMaxTokens <= 0 {
+	if pr.RequestedMaxTokens <= 0 && !pr.Traits.SystemOne {
 		pr.RequestedMaxTokens = defaultRequestedMaxTokens
 	}
 
@@ -753,7 +753,7 @@ func (r *Registry) commitProviderReservation(
 		return nil, nil, reservationCandidateRejected,
 			routingDecisionForCommitRejection(model, reason, false)
 	}
-	if pr.MaxTTFTMs > 0 && !pr.RequiresVision && snapshot.hasBackendCapacity &&
+	if pr.MaxTTFTMs > 0 && !pr.RequiresVision && !pr.Traits.SystemOne && snapshot.hasBackendCapacity &&
 		candidate.breakdown.TTFTMs > pr.MaxTTFTMs {
 		return nil, nil, reservationCandidateRejected,
 			routingDecisionForCommitRejection(model, rejectNone, true)
@@ -794,7 +794,7 @@ func (r *Registry) commitProviderReservation(
 	if !slotStateModelLoaded(candidate.snapshot.slotState) {
 		r.RecordWarmPoolColdDispatch(model)
 	}
-	if !pr.RequiresVision && candidate.breakdown.RawTTFTMs > 0 && candidate.breakdown.StateMs == 0 {
+	if !pr.RequiresVision && !pr.Traits.SystemOne && candidate.breakdown.RawTTFTMs > 0 && candidate.breakdown.StateMs == 0 {
 		ttftCalibration.notePrediction(
 			pr.RequestID, pr.Attempt, model, candidate.snapshot.chipFamily,
 			candidate.breakdown.RawTTFTMs)
@@ -1157,7 +1157,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	// Vision preparation is absent from the token-prefill projection, so media
 	// estimates are advisory even if a caller accidentally supplies a ceiling.
 	// The request-absolute first-content deadline remains authoritative.
-	enforceTTFT := pr.MaxTTFTMs > 0 && !pr.RequiresVision
+	enforceTTFT := pr.MaxTTFTMs > 0 && !pr.RequiresVision && !pr.Traits.SystemOne
 	for _, p := range providers {
 		scan.scanned++
 		owned := providerOwnedBy(p, pr.OwnerAccountID)
@@ -1815,7 +1815,7 @@ func freeMemoryAdmits(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int) 
 	}
 
 	if !snap.modelLoaded {
-		if fits, known := providerBudgetFits(snap, reqPromptTokens, reqMaxTokens); known && !fits {
+		if fits, known := providerBudgetFitsExact(snap, reqPromptTokens, reqMaxTokens); known && !fits {
 			return false
 		}
 	}
@@ -1919,7 +1919,7 @@ func pendingTokenBudget(pr *PendingRequest) int {
 		prompt = 0
 	}
 	maxTok := pr.RequestedMaxTokens
-	if maxTok <= 0 {
+	if maxTok <= 0 && !pr.Traits.SystemOne {
 		maxTok = defaultRequestedMaxTokens
 	}
 	return prompt + maxTok
@@ -1978,7 +1978,7 @@ func (r *Registry) buildCandidateInto(c *routingCandidate, pr *PendingRequest, n
 	}
 
 	reqMax := pr.RequestedMaxTokens
-	if reqMax <= 0 {
+	if reqMax <= 0 && !pr.Traits.SystemOne {
 		reqMax = defaultRequestedMaxTokens
 	}
 	reqPrompt := pr.EstimatedPromptTokens
@@ -2596,11 +2596,12 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 	if estimatedPromptTokens <= 0 {
 		estimatedPromptTokens = 500
 	}
-	if requestedMaxTokens <= 0 {
+	if requestedMaxTokens <= 0 && !traits.SystemOne {
 		requestedMaxTokens = defaultRequestedMaxTokens
 	}
 	dummyPR := &PendingRequest{
 		RequestID:             "capacity-check",
+		Traits:                traits,
 		Model:                 model,
 		EstimatedPromptTokens: estimatedPromptTokens,
 		RequestedMaxTokens:    requestedMaxTokens,

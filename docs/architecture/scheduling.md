@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-18 · commit `397b4d902`
+> Last updated: 2026-09-22 · commit `ce809b792`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -33,6 +33,25 @@ serving policy as dispatch (`coordinator/registry/warm_pool_controller.go`,
 legacy trust flags. See [provider authorization](../reference/provider-authorization.md).
 
 ## Mechanism
+
+### Native decision budgets
+
+SystemOne is an encoder workload with a zero output-token reservation. Its
+`RequestTraits.SystemOne` travels with the pending request, so primary and
+plan reservations, capacity preflight, pending-budget accounting, and queue
+size comparisons preserve zero instead of substituting the generation default
+(`coordinator/registry/scheduler.go`, `pendingTokenBudget`;
+`coordinator/registry/dispatch_plan.go`, `ReserveNextFromPlan`;
+`coordinator/registry/queue_drain_dominance.go`, `drainRequestSize`).
+
+After model-load failure, `RejectUnservableQueuedRequests` checks the native
+model's actual endpoint traits before rejecting its queued work. Public model
+and capacity views count only providers advertising the matching native
+capability. Native capacity reports zero aggregate decode TPS because decisions
+produce no decoded tokens (`coordinator/registry/model_loading.go`,
+`coordinator/registry/model_capacity.go`). The normal memory and concurrency
+gates remain in effect; [native routing](routing.md#native-decisions) describes
+the endpoint fence.
 
 ### Per-model request queue
 

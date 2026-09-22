@@ -138,6 +138,8 @@ public struct ModelScanner: Sendable {
         let nameLower = modelName.lowercased()
         let fm = FileManager.default
 
+        if LayaModelLayout.isSupported(at: snapshotDir) { return true }
+
         // Name contains "mlx" -- definitely MLX
         if nameLower.contains("mlx") {
             return true
@@ -209,7 +211,7 @@ public struct ModelScanner: Sendable {
            filename == "vocab.json" || filename == "merges.txt" {
             return "tokenizer"
         }
-        if filename == "config.json" || filename == "hadamard.json" || filename == "generation_config.json" || filename == "quantize_config.json" {
+        if filename == "config.json" || filename == "mlx_config.json" || filename == "rl_agent_config.json" || filename == "hadamard.json" || filename == "generation_config.json" || filename == "quantize_config.json" {
             return "config"
         }
         if filename == "chat_template.jinja" || filename == "chat_template.json" {
@@ -246,12 +248,18 @@ public struct ModelScanner: Sendable {
             return (0, [])
         }
 
+        // Preserve every existing generative checkpoint's hash contract. Native
+        // decision metadata is included only for its explicit artifact format.
+        let decisionMetadata = LayaModelLayout.integrityMetadataFiles(at: snapshotDir)
         var totalSize: UInt64 = 0
         var paths: [URL] = []
 
         for case let entry as URL in enumerator {
             let name = entry.lastPathComponent
-            guard isIntegrityFile(name) else { continue }
+            let isDecisionMetadata = decisionMetadata.contains(name)
+                && entry.deletingLastPathComponent().resolvingSymlinksInPath().path
+                    == snapshotDir.resolvingSymlinksInPath().path
+            guard isIntegrityFile(name) || isDecisionMetadata else { continue }
 
             let isWeight = isWeightFile(name)
 

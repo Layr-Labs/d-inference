@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { ArrowUpRight, RefreshCw } from "lucide-react";
 import { useStore } from "@/lib/store";
 import type { Model } from "@/lib/api";
+import { modelSupportsChat } from "@/lib/model-capabilities";
 import { CatalogToolbar } from "./CatalogToolbar";
 import { CatalogResults } from "./CatalogResults";
 import { buildCatalogPrices, filterModels, type ModelFilter, type ModelSort } from "./catalog";
@@ -26,6 +27,7 @@ export function ModelCatalog() {
   }
 
   function startChat(model: Model) {
+    if (!modelSupportsChat(model)) return;
     const store = useStore.getState();
     store.setModels(models);
     store.setSelectedModel(model.id);
@@ -38,7 +40,7 @@ export function ModelCatalog() {
       <div className="mb-9 flex flex-col items-start justify-between gap-5 sm:flex-row sm:items-center">
         <div>
           <h1 className="font-logo text-4xl font-normal tracking-tight text-ink sm:text-5xl" style={{ fontFamily: "var(--font-logo)" }}>Model library</h1>
-          <p className="mt-3 max-w-xl text-sm leading-relaxed text-text-secondary">Compare capabilities and token prices, then start a new chat.</p>
+          <p className="mt-3 max-w-xl text-sm leading-relaxed text-text-secondary">Compare capabilities and token prices for chat and the API.</p>
         </div>
         <Link href="/api-console" className="focus-ring inline-flex min-h-10 shrink-0 items-center gap-2 rounded-lg border border-border-dim bg-bg-white px-4 text-sm text-text-primary transition-colors hover:bg-bg-secondary">
           Use the API <ArrowUpRight size={15} aria-hidden="true" />

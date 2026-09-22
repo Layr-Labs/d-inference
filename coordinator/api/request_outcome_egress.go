@@ -95,6 +95,11 @@ func generatedContentJSONDepth(data []byte, depth int) bool {
 	if json.Unmarshal(data, &v) != nil {
 		return false
 	}
+	if len(v["answers"]) > 0 {
+		if _, valid := parseSystemOneResponse(data); valid {
+			return true
+		}
+	}
 	text := func(raw json.RawMessage) bool { var s string; return json.Unmarshal(raw, &s) == nil && s != "" }
 	var choices []map[string]json.RawMessage
 	_ = json.Unmarshal(v["choices"], &choices)

@@ -631,9 +631,9 @@ func modelCatalogCacheKey(typeFilter string, includeAliases bool) string {
 }
 
 func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
-	// Optional filter: ?type=text
+	// Optional filter: ?type=text or ?type=laya
 	typeFilter := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("type")))
-	if typeFilter != "" && typeFilter != "text" {
+	if typeFilter != "" && typeFilter != "text" && typeFilter != "laya" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "unsupported catalog type", withParam("type")))
 		return
 	}
@@ -651,11 +651,11 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch model catalog"))
 		return
 	}
-	// The catalog is text-only today; an explicit non-text filter yields nothing.
 	models := make([]map[string]any, 0, len(registryRows))
-	if typeFilter == "" || typeFilter == "text" {
-		for i := range registryRows {
-			models = append(models, catalogModelFromRegistryRecord(&registryRows[i]))
+	for i := range registryRows {
+		model := catalogModelFromRegistryRecord(&registryRows[i])
+		if typeFilter == "" || model["model_type"] == typeFilter {
+			models = append(models, model)
 		}
 	}
 	response := map[string]any{"models": models}

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowDown } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { fetchModels } from "@/lib/api";
+import { modelSupportsChat } from "@/lib/model-capabilities";
 import { useAuth } from "@/hooks/useAuth";
 import { useChatStream } from "@/hooks/useChatStream";
 import { ChatMessage } from "@/components/chat/ChatMessage";
@@ -36,7 +37,7 @@ export default function ChatPage() {
     setModelLoadFailed(false);
     fetchModels()
       .then((models) => {
-        if (!cancelled) setModels(models);
+        if (!cancelled) setModels(models.filter(modelSupportsChat));
         return models;
       })
       .catch(() => {

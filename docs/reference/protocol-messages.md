@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-18 · commit `4a453679b`
+> Last updated: 2026-09-22 · commit `ce809b792`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -134,6 +134,7 @@ Go `ModelInfo` · Swift `ModelInfo` (`Types.swift`).
 | `quantization` | `string` | `String?` | req in Go | |
 | `weight_hash` | `string` | `String?` | opt | SHA-256 of the weight files |
 | `is_vision` | `bool` | `Bool?` | opt | v0.6.0+; Swift encodes only `true`; absent decodes `false` → never selected for media |
+| `system_one` | `bool` | `Bool?` | opt | Explicit native decision capability for this concrete `model_type:laya` build; omitted/false cannot receive SystemOne requests |
 | `template_render_ok` | `*bool` | `Bool?` | ptr | 0.6.5+; **explicit `false` survives the wire** and excludes the model from tool requests; absent = no opinion |
 | `tool_constraint_template_hash` | `string` | `String?` | opt | binds grammar capability to the loaded template bytes |
 | `estimated_memory_gb` | `float64` | `Double` | Go opt; Swift always encodes | Padded native-weight load estimate in GiB; used for reduced offload admission only with a valid family-matched offload declaration |
@@ -730,3 +731,21 @@ comment in `coordinator/registry/capacity_cooldown.go`.
 - [`../architecture/telemetry.md`](../architecture/telemetry.md) — what the coordinator does with heartbeat data
 - [`telemetry-inventory.md`](telemetry-inventory.md) — producer, sink and cadence of every datum
 - [`api-contracts.md#headers`](api-contracts.md#headers) — the `X-Timing` header
+
+## Native SystemOne inference
+
+SystemOne reuses `inference_request`, encrypted `inference_response_chunk`,
+`inference_complete`, and `cancel`. The encrypted request body carries
+`endpoint:"/v1/systemone"`, `model`, `state`, and `questions` without chat
+lowering. One encrypted response chunk carries the native answer JSON; the
+terminal usage has positive `prompt_tokens` and zero `completion_tokens`.
+`coordinator/api/system_one_request.go` (`systemOneProviderBody`) and
+`coordinator/api/provider.go` (`handleChunk`, `handleCompleteAt`) enforce the
+native payload and usage contract. The [HTTP reference](api-contracts.md#systemone-decisions)
+defines the caller-visible fields.
+
+`ModelInfo.system_one` follows the existing model-list lifecycle: registration
+installs it, validated `models_update` replaces it per build, and disconnect
+removes the live provider. It does not grant trust or serving authorization;
+`coordinator/registry/system_one.go` (`providerSystemOneEligibleLocked`) adds an
+endpoint fence to the existing authorization chain.

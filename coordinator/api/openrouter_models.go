@@ -72,6 +72,8 @@ func mapQuantizationToOpenRouter(q string) string {
 func deriveModalities(modelType string, capabilities []string) (input, output []string) {
 	mt := strings.ToLower(strings.TrimSpace(modelType))
 	switch mt {
+	case "laya", "system_one":
+		return []string{"text"}, []string{"decision"}
 	case "embedding", "embeddings":
 		return []string{"text"}, []string{"embedding"}
 	}
@@ -244,6 +246,10 @@ func (s *Server) openRouterModelFieldsFor(modelID, rawQuantization string, reg s
 		f.MaxOutputLength = reg.MaxOutputLength
 		f.SupportedFeatures = supportedFeaturesFromCapabilities(reg.Capabilities)
 		f.DeprecationDate = deprecationDateFromMetadata(reg.Metadata)
+		if isSystemOneDefinition(reg.Architecture, reg.Capabilities) {
+			f.SupportedSamplingParameters = nil
+			f.SupportedFeatures = []string{"system_one"}
+		}
 	}
 	return f
 }
@@ -306,7 +312,7 @@ func contains(s []string, v string) bool {
 // image, rerank).
 func isNonTextModelType(modelType string) bool {
 	switch strings.ToLower(strings.TrimSpace(modelType)) {
-	case "embedding", "embeddings", "tts", "stt", "speech", "audio", "image", "vision", "rerank", "reranker":
+	case "laya", "system_one", "embedding", "embeddings", "tts", "stt", "speech", "audio", "image", "vision", "rerank", "reranker":
 		return true
 	default:
 		return false

@@ -66,7 +66,9 @@ type PendingRequest struct {
 	// ConsumerEndpoint identifies a non-chat API whose request was lowered to
 	// the provider's chat-completions wire shape. Response writers translate
 	// chat output back to this endpoint's native JSON/SSE schema.
-	ConsumerEndpoint string
+	ConsumerEndpoint           string
+	SystemOneQuestions         map[string]SystemOneQuestion
+	SystemOneResponseValidated atomic.Bool
 	// RequestedStopSequences is the caller-authored Anthropic stop allowlist.
 	// MatchedStopSequence is accepted from the provider only when it is a member
 	// of this list, then translated back into native /v1/messages responses.

@@ -53,7 +53,7 @@ extension ProviderLoop {
             return
         }
 
-        if modelSlots[modelId] != nil, !modelsUnloading.contains(modelId) {
+        if isModelResident(modelId), !modelsUnloading.contains(modelId) {
             logger.info("Preload for \(modelId): already loaded, replying succeeded")
             send.send(.loadModelStatus(
                 modelId: modelId,

@@ -1,0 +1,60 @@
+{
+  "aggregate_sha256" : "1c9dacab4be23506e8b182ba5aaeb5ac608e73627d369e96396db0774b2ade20",
+  "created_at" : "2026-09-22T02:08:29Z",
+  "file_count" : 8,
+  "files" : [
+    {
+      "path" : "LICENSE",
+      "role" : "other",
+      "sha256" : "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9",
+      "size_bytes" : 10173
+    },
+    {
+      "path" : "NOTICE",
+      "role" : "other",
+      "sha256" : "f23ae8ae701f5a43e186182e387aeef00b666daed18a946fc7c9ea827b00a8fa",
+      "size_bytes" : 698
+    },
+    {
+      "path" : "encoder\/config.json",
+      "role" : "config",
+      "sha256" : "bf3ab80598fdccf414855a2ce80f22859e4492d06ca8a62ddd1cfb63972f8979",
+      "size_bytes" : 2083
+    },
+    {
+      "path" : "mlx_config.json",
+      "role" : "config",
+      "sha256" : "c022368f128dc9b7f6478a9163c96e0406f1da6a7c6bae660ea8515b016ed7ef",
+      "size_bytes" : 290
+    },
+    {
+      "path" : "model.safetensors",
+      "role" : "weight",
+      "sha256" : "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
+      "size_bytes" : 842609225
+    },
+    {
+      "path" : "rl_agent_config.json",
+      "role" : "config",
+      "sha256" : "d96dc2cb39d6375e030ff48c9957088f3c52668f45c30c56504f4e801ed3ee62",
+      "size_bytes" : 746
+    },
+    {
+      "path" : "tokenizer\/tokenizer.json",
+      "role" : "tokenizer",
+      "sha256" : "6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30",
+      "size_bytes" : 3583228
+    },
+    {
+      "path" : "tokenizer\/tokenizer_config.json",
+      "role" : "tokenizer",
+      "sha256" : "50044de60daaa73df97d262e15a40d4faf0160e7d742df64b377877a1320dd12",
+      "size_bytes" : 308
+    }
+  ],
+  "model_id" : "aac6fef\/laya-mlx",
+  "r2_prefix" : "v2\/aac6fef-laya-mlx--37f50c0b83ad\/2026-09-21-r1",
+  "schema_version" : 1,
+  "total_size_bytes" : 846206751,
+  "version" : "2026-09-21-r1"
+}

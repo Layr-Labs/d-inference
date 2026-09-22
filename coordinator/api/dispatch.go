@@ -106,6 +106,8 @@ type dispatchState struct {
 	tokenAdmission         registry.TokenAdmission
 	requiresVision         bool
 	hasTools               bool
+	systemOne              bool
+	systemOneQuestions     map[string]registry.SystemOneQuestion
 	requiresToolConstraint bool
 	toolChoiceMode         string
 	toolChoiceName         string
@@ -291,6 +293,7 @@ type dispatchState struct {
 // the most recently failed provider's binary version.
 func (d *dispatchState) traits() registry.RequestTraits {
 	return registry.RequestTraits{
+		SystemOne:              d.systemOne,
 		HasTools:               d.hasTools,
 		RequiresToolConstraint: d.requiresToolConstraint,
 		ToolChoiceMode:         d.toolChoiceMode,
@@ -307,6 +310,7 @@ func (d *dispatchState) configurePending(pr *registry.PendingRequest) {
 	}
 	stampModelTokenReservation(pr, modelTokenReservation(d.r))
 	pr.ConsumerEndpoint = d.consumerEndpoint
+	pr.SystemOneQuestions = d.systemOneQuestions
 	pr.RequestedStopSequences = append(
 		pr.RequestedStopSequences[:0], d.requestedStopSequences...)
 	pr.MetadataDetails = d.metadataDetails
@@ -1409,7 +1413,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			FreeSelfRoute:          d.policy.enabled,
 			MetadataDetails:        d.metadataDetails,
 			MaxTTFTMs: queueMaxTTFTMs(
-				d.policy, d.deadline, d.s.hardTTFTGateApplies(d.requiresVision)),
+				d.policy, d.deadline, !d.systemOne && d.s.hardTTFTGateApplies(d.requiresVision)),
 			MinDecodeTPS: d.s.minDecodeTPS,
 			AcceptedCh:   make(chan struct{}, 1),
 			ChunkCh:      make(chan registry.ProviderChunk, chunkBufferSize),

@@ -31,6 +31,8 @@ const (
 	// Provider → Coordinator.
 	TypeRegister               = "register"
 	TypeHeartbeat              = "heartbeat"
+	TypeProviderDrain          = "provider_drain"
+	TypeProviderDrainAck       = "provider_drain_ack"
 	TypeInferenceAccepted      = "inference_accepted"
 	TypeInferenceResponseChunk = "inference_response_chunk"
 	TypeInferenceComplete      = "inference_complete"
@@ -1029,6 +1031,12 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		}
 		pm.Payload = &msg
 
+	case TypeProviderDrain:
+		var msg ProviderDrainMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return err
+		}
+		pm.Payload = &msg
 	case TypeHeartbeat:
 		var msg HeartbeatMessage
 		if err := json.Unmarshal(data, &msg); err != nil {

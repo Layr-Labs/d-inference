@@ -129,6 +129,12 @@ let standaloneLogger = Logger(
 )
 
 public actor StandaloneServer {
+    nonisolated let responseTracker = LocalResponseTracker()
+    var lifecycleDraining = false
+    var lifecycleControlTask: Task<Void, Never>?
+    var lifecycleDrainTask: Task<ProviderDrainStatus, Never>?
+    var lifecycleCommandID: String?
+    var lifecycleStatus = ProviderDrainStatus()
 
     /// One resident model: its v2 bridge, loaded container (the VLM owns both
     /// vision and the exact text tower served by the bridge), and KV sizing
@@ -486,6 +492,8 @@ public actor StandaloneServer {
     public func start() throws {
         guard lifecycleState == .stopped else { return }
 
+        responseTracker.setAccepting(true)
+        lifecycleDraining = false
         didBind = false
         bindFailed = false
         let app = makeApplication()
@@ -556,6 +564,8 @@ public actor StandaloneServer {
     /// Stop the server and fully release resident serving resources. Concurrent
     /// callers and `waitUntilStopped()` join one teardown task.
     public func stop() async {
+        lifecycleControlTask?.cancel()
+        lifecycleControlTask = nil
         switch lifecycleState {
         case .stopped:
             return
@@ -581,6 +591,8 @@ public actor StandaloneServer {
     }
 
     private func finishShutdown(serviceTask: Task<Void, Never>?) async {
+        lifecycleControlTask?.cancel()
+        lifecycleControlTask = nil
         kvSweepTask?.cancel()
         kvSweepTask = nil
         serviceTask?.cancel()
@@ -614,6 +626,8 @@ public actor StandaloneServer {
             MLX.Memory.clearCache()
         }
         serverTask = nil
+        responseTracker.setAccepting(true)
+        lifecycleDraining = false
         didBind = false
         bindFailed = false
         lifecycleState = .stopped
@@ -1329,6 +1343,7 @@ public actor StandaloneServer {
     /// reservation if the lookup somehow fails so a partial-acquire
     /// doesn't pin a missing model forever.
     func acquireModel(_ modelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
+        if lifecycleDraining { throw MultiModelBatchSchedulerEngineError.queueFull("provider draining") }
         try throwIfMTPUpgradeDraining(modelId)
         do {
             try await ensureModelLoaded(modelId)
@@ -1350,6 +1365,7 @@ public actor StandaloneServer {
         }
         await waitForMTPUpgrade(modelId)
         try Task.checkCancellation()
+        if lifecycleDraining { throw MultiModelBatchSchedulerEngineError.queueFull("provider draining") }
         try throwIfMTPUpgradeDraining(modelId)
         reserveSlot(modelId)
         guard let slot = slots[modelId], !evictingModels.contains(modelId) else {

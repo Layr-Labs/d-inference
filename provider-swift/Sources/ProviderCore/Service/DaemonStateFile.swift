@@ -45,6 +45,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// memory filters) — doctor's serving-set floor basis when fresh.
     /// Optional so state files from older daemons continue to decode.
     public var advertisedModels: [String]?
+    public var lifecycle: ProviderDrainStatus?
     public var inferenceActive: Bool
     public var stats: Stats
     public var system: SystemInfo?
@@ -218,6 +219,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         warmModels: [String] = [],
         advertisedModels: [String]? = nil,
         inferenceActive: Bool = false,
+        lifecycle: ProviderDrainStatus? = nil,
         stats: Stats = Stats(),
         system: SystemInfo? = nil,
         capacity: Capacity? = nil,
@@ -237,6 +239,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.currentModel = currentModel
         self.warmModels = warmModels
         self.advertisedModels = advertisedModels
+        self.lifecycle = lifecycle
         self.inferenceActive = inferenceActive
         self.stats = stats
         self.system = system

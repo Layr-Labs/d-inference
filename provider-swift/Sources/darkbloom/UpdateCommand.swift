@@ -27,6 +27,7 @@ struct Update: AsyncParsableCommand {
     )
 
     @OptionGroup var configOptions: ConfigOptions
+    @OptionGroup var drain: DrainOptions
 
     @Option(help: "Override coordinator URL.")
     var coordinator: String?
@@ -101,16 +102,16 @@ struct Update: AsyncParsableCommand {
 
         case .updated(let from, let to):
             print("Updated: v\(from) -> v\(to)")
-            if LaunchAgent.isLoaded() {
-                try restartInstalledProvider(updater, operation: "manual-update-restart")
+            if LaunchAgent.isAnySupportedLabelLoaded() {
+                try await restartInstalledProvider(updater, operation: "manual-update-restart")
             } else {
                 print("Restart the provider for the new version to take effect.")
             }
 
         case .restartRequired(let from, let to):
             print("v\(to) is already installed (current process: v\(from)).")
-            if LaunchAgent.isLoaded() {
-                try restartInstalledProvider(updater, operation: "manual-candidate-restart")
+            if LaunchAgent.isAnySupportedLabelLoaded() {
+                try await restartInstalledProvider(updater, operation: "manual-candidate-restart")
             } else {
                 print("Restart the provider for v\(to) to take effect.")
             }
@@ -146,15 +147,29 @@ struct Update: AsyncParsableCommand {
         }
     }
 
-    private func restartInstalledProvider(_ updater: SelfUpdater, operation: String) throws {
-        print("Restarting provider via launchd...")
+    private func restartInstalledProvider(_ updater: SelfUpdater, operation: String) async throws {
+        let previous = LaunchAgent.launchSnapshot()?.process
+        let session = try await ServiceDrain.prepare(options: drain)
+        defer { session.release() }
+        // A stop that won the update lease while download/install completed
+        // must not be resurrected by a late updater restart.
+        guard LaunchAgent.isAnySupportedLabelLoaded() else {
+            print("Provider is stopped; the installed update will be used on the next start.")
+            return
+        }
+        print("Accepted requests drained. Restarting the installed provider...")
         do {
-            try updater.prepareCandidateLaunch(operation: operation)
-            try ProcessLifecycle.restartAfterUpdate()
+            try updater.prepareCandidateLaunch(session: session, baseline: LaunchAgent.launchSnapshot())
+            try await ServiceDrain.stopDrainedProvider(unloadService: false)
+            try LaunchAgent.restartAfterDrain()
+            ServiceDrain.rearmWatchdog(explicitConfig: configOptions.config)
         } catch {
-            try? updater.cancelPendingCandidateAttempt(operation: "manual-restart-failure")
+            session.release()
+            try? updater.cancelPendingCandidateAttempt(operation: operation + "-failure")
             throw error
         }
+        session.release()
+        try await ServiceDrain.waitForRestart(previous: previous, timeout: 180)
     }
 
 }

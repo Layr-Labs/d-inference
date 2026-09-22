@@ -819,7 +819,8 @@ struct StartupPreloadPostRegistrationRetirementTests {
             stats: AtomicProviderStats(),
             state: ProviderState()
         )
-        let (_, _) = await client.start()
+        let (events, _) = await client.start()
+        for await event in events { if case .connected = event { break } }
         defer { Task { await client.shutdown() } }
 
         let first = try await mock.awaitFirstRegister(timeout: .seconds(10))
@@ -839,6 +840,17 @@ struct StartupPreloadPostRegistrationRetirementTests {
                 startupSelftest: true,
                 startupSelftestFailClosed: true))
         await loop.setCoordinatorClientForTesting(client)
+        await loop.finishPlannedReconnect()
+        let reader = Task {
+            for await event in events {
+                switch event {
+                case .drainAck(let id): await client.completeDrainAcknowledgement(id)
+                case .connected: await loop.finishPlannedReconnect()
+                default: break
+                }
+            }
+        }
+        defer { reader.cancel() }
         await loop.setStartupPreloadLoadOverrideForTesting({ _ in })
         await loop.setStartupSelfTestOverrideForTesting({ id in
             if id == "flaky" { throw PreloadStubError.selfTestExploded }
@@ -851,6 +863,7 @@ struct StartupPreloadPostRegistrationRetirementTests {
         // forced a reconnect whose fresh register no longer announces flaky.
         let snap = try await mock.waitForSnapshot(timeout: .seconds(10)) { $0.registers.count >= 2 }
         let registers = try #require(snap).registers
+        #expect(snap?.drainBarriers.count == 1)
         let second = try #require(registers.last)
         #expect(!second.models.map(\.id).contains("flaky"))
         #expect(second.models.map(\.id).contains("healthy"))

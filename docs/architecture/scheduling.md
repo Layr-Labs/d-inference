@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-21 · commit `b581bfd21`
+> Last updated: 2026-09-22 · commit `73f8c13f`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -9,6 +9,18 @@ derived from them, demand-driven model loads, and the warm-pool controller
 that keeps enough providers resident for each model. Choosing *which*
 eligible provider gets a request is the subject of
 [`routing.md`](routing.md); this page stops where that choice begins.
+
+## Draining providers
+
+A lifecycle-draining connection is excluded from `modelLoadCandidatePendingLocked`
+and `providerHasWarmModelLocked` in `coordinator/registry/model_loading.go`, from
+`warmPoolCandidateReasonLocked` in `coordinator/registry/warm_pool_controller.go`,
+and from load/prefetch command submission in `coordinator/registry/model_commands.go`.
+A slot being warm does not make a stopped provider available. Provider admission
+and the final inference writer still fence races after planning; existing accepted
+work retains its model pin until terminal completion. See
+[the routing boundary](routing.md#provider-lifecycle-drain-boundary).
+
 
 ## Context
 

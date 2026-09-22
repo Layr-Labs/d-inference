@@ -37,6 +37,8 @@ extension CoordinatorClient {
         }
 
         switch parsed {
+        case .drainAck(let id):
+            if drainAcknowledgements[id] != nil { eventContinuation?.yield(.drainAck(id)) }
         case .inferenceRequest(let request):
             let requestId = request.requestId
             // The receive callback anchored this before executor scheduling,

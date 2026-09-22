@@ -14,6 +14,26 @@ Admin request-profile records expose additive
 [prediction decision fields](prediction-decision-telemetry.md). Public inference
 responses and error codes are unchanged.
 
+## Graceful provider lifecycle
+
+Lifecycle drains preserve the existing public inference protocol. A reservation
+that reaches a newly draining provider's final writer is retried as transient
+503 capacity, with no sent frame or new usage debit. Already accepted requests
+continue through their normal streaming/non-streaming terminal and settlement
+paths. The additive [provider WebSocket barrier](protocol-messages.md#provider-lifecycle-drain)
+is connection-scoped and never exposed as an unauthenticated HTTP stop endpoint.
+The unified local API refuses new admissions with 503 during drain and tracks
+accepted response bodies until their final write. This applies to local-only
+CLI replacement as well as coordinator-connected providers; CLI lifecycle
+control remains private to the local OS user.
+
+The `trust_status.authorization` readiness diagnostic can use `self_route` for
+an account-owned connection that passes existing self/preferred-owner liveness
+and privacy gates below the public trust floor. It does not grant public-fleet
+eligibility or bypass per-model dispatch checks. Code:
+`coordinator/registry/owner_authorization.go` (`ProviderOwnerServingAuthorized`)
+and `coordinator/api/app_attest.go` (`providerServingAuthorizationStatus`).
+
 ## Verification presentation contract
 
 `X-Provider-Authorization-Method` is `app_attest`, `legacy`, `dual`, or `none`.

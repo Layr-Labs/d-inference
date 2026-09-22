@@ -77,6 +77,8 @@ struct ProviderRuntimeCapabilityTests {
         #expect(ProviderRuntimeCapabilityDetector.detect(
             chipFamily: .m4, naxAvailable: { true }, liveMetallibHash: { "abc" }) == [.mlxNAX])
         #expect(ProviderRuntimeCapabilityDetector.detect(
+            chipFamily: .m6, naxAvailable: { true }, liveMetallibHash: { "abc" }) == [.mlxNAX])
+        #expect(ProviderRuntimeCapabilityDetector.detect(
             chipFamily: .unknown, naxAvailable: { false }, liveMetallibHash: { nil }).isEmpty)
         for family in [ChipFamily.m1, .m2, .m3, .m4] {
             let capabilities = ProviderRuntimeCapabilityDetector.detect(

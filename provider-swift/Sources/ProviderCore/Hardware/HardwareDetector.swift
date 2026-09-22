@@ -142,7 +142,9 @@ internal func parseChipIdentity(_ chipName: String) -> (ChipFamily, ChipTier) {
     let name = chipName.lowercased()
 
     let family: ChipFamily
-    if name.contains("m5") {
+    if name.contains("m6") {
+        family = .m6
+    } else if name.contains("m5") {
         family = .m5
     } else if name.contains("m4") {
         family = .m4
@@ -198,6 +200,11 @@ internal func lookupBandwidth(family: ChipFamily, tier: ChipTier, gpuCores: UInt
     case (.m5, .base):  return 153
     case (.m5, .pro):   return 307
     case (.m5, .max):   return gpuCores >= 40 ? 614 : 460
+    case (.m5, .ultra): return 1200
+
+    // Apple's 16 GB M6 mini is 153 GB/s; larger-memory variants are
+    // 170 GB/s. Use the conservative nominal value without a memory input.
+    case (.m6, .base): return 153
 
     default: return 100
     }
@@ -220,6 +227,7 @@ internal func gpuClockGHz(family: ChipFamily, tier _: ChipTier) -> Double? {
     case .m2, .m3: return 1.40
     case .m4: return 1.80
     case .m5: return 1.90
+    case .m6: return nil
     case .unknown: return nil
     }
 }
@@ -233,6 +241,7 @@ internal func flopPerCorePerCycle(family: ChipFamily) -> Double? {
     switch family {
     case .m1, .m2, .m3, .m4: return 512
     case .m5: return 2048
+    case .m6: return nil
     case .unknown: return nil
     }
 }

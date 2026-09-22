@@ -20,7 +20,8 @@ package hardware
 //	M2   24GB / Pro 32 / Max 96 / Ultra 192
 //	M3   24GB / Pro 36 / Max 128
 //	M4   32GB / Pro 64 / Max 128 / (Mac Studio M4 Max 128, M3 Ultra 512)
-//	M5   32GB / Pro 64 / Max 128
+//	M5   32GB / Pro 64 / Max 128 / Ultra 512 (ambiguous model ID excluded)
+//	M6   32GB (Mac mini)
 //	A18  8GB (MacBook Neo; earns $0 under the floor table)
 //
 // Sources cross-checked: Apple Tech Specs, EveryMac model-identifier pages,
@@ -90,7 +91,7 @@ var modelMaxMemoryGB = map[string]int{
 
 	// --- M5 family (Mac17,x) ---
 	// Sources: Apple Support "Identify your MacBook Pro/Air model" + 2025/2026
-	// Apple tech specs. M5 tops at 32GB, M5 Pro at 64GB, M5 Max at 128GB.
+	// Apple tech specs. M5 tops at 32GB, Pro at 64GB, Max at 128GB.
 	"Mac17,2": 32,  // MacBook Pro 14" (M5, 2025)
 	"Mac17,3": 32,  // MacBook Air 13" (M5, 2026)
 	"Mac17,4": 32,  // MacBook Air 15" (M5, 2026)
@@ -98,6 +99,15 @@ var modelMaxMemoryGB = map[string]int{
 	"Mac17,8": 64,  // MacBook Pro 16" (M5 Pro, 2026)
 	"Mac17,7": 128, // MacBook Pro 14" (M5 Max, 2026)
 	"Mac17,6": 128, // MacBook Pro 16" (M5 Max, 2026)
+	// A Mac mini benchmark reports Mac17,16; Apple's Mac mini support page
+	// currently lists Mac17,15, which its Studio page assigns to M5 Ultra.
+	// Leave Mac17,15 unknown until the conflict is resolved: a 512GB reward cap
+	// could overpay a 64GB mini whose identifier is actually Mac17,15.
+	"Mac17,16": 64,  // Mac mini (M5 Pro, 2026)
+	"Mac17,14": 128, // Mac Studio (M5 Max, 2026)
+
+	// --- M6 family (Mac18,x) ---
+	"Mac18,5": 32, // Mac mini (M6, 2026)
 
 	// --- A-series Mac family ---
 	"Mac17,5": 8, // MacBook Neo (A18 Pro, 2026) — below the 24GB floor threshold

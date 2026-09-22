@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-22 · commit `33064807e`
+> Last updated: 2026-09-22 · commit `03e65d36f`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -37,6 +37,8 @@ existing authorized operations path.
 ## Context
 
 Generic client-reported Apple API failures (`apple_error`) use bounded [exchange recovery](../../reference/app-attest-shadow.md). They are unknown observations, not verified security denials. Retrying neither creates a serving grant nor extends its deadline; fresh proof still passes all qualification, receipt, revocation and binding checks. Verified cryptographic or policy violations remain terminal.
+
+A verified first App Attest assertion may still lack a usable risk receipt. The coordinator retries that first assertion on a bounded schedule while the receipt worker renews evidence. The [serving authorization policy](../../reference/provider-authorization.md) requires the complete risk metric, fresh assertion, non-revoked credential, qualified build and bound identity before granting permission.
 
 Providers are adversarial until proven otherwise ([`../../threat-model.yaml`](../../threat-model.yaml),
 `ADV-001`). A provider's self-report is worthless on its own — the reporter is

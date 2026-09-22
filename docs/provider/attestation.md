@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-22 · commit `33064807e`
+> Last updated: 2026-09-22 · commit `03e65d36f`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -33,6 +33,8 @@ and the [wire contract](../reference/api-contracts.md#verification-presentation-
 ## App Attest without Darkbloom MDM
 
 If Apple's API returns a generic error during setup, the coordinator retries after one minute, then five minutes, then hourly while the provider stays connected. Retrying cannot approve the machine without a successful qualified proof. Keep the provider running and inspect `darkbloom status` or `darkbloom doctor`; the [recovery policy](../reference/provider-authorization.md#controls) does not require deleting credentials or management profiles.
+
+After first enrollment, Apple may provide a verified receipt without its risk metric. The coordinator keeps the connection pending and requests another signed assertion on a bounded schedule while receipt renewal completes. Continue checking `darkbloom status`; the absence of the metric cannot be treated as approval.
 
 New setup on macOS 27 or later skips MDM profile download in both the installer and `darkbloom enroll`. Darkbloom MDM will be deactivated soon; upgrade to macOS 27 to avoid legacy enrollment. A qualified macOS 27 provider can use [App Attest authorization](../reference/provider-authorization.md) when the coordinator explicitly enables it. Start the signed provider and check `darkbloom status` / `darkbloom doctor` for current App Attest authorization. Company-managed Macs keep their employer profile; they do not enroll into Darkbloom MDM for this path.
 

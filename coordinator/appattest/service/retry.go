@@ -66,8 +66,9 @@ func appAttestRetryDelay(failures int) time.Duration {
 	return time.Hour
 }
 
-// A verified first assertion with unavailable readiness has no authorizer
-// refresh record yet. Reuse the existing bounded backoff for a fresh assertion,
+// A verified first assertion with unavailable readiness or an initial receipt
+// awaiting its risk metric has no authorizer refresh record yet. Reuse the
+// existing bounded backoff for a fresh assertion,
 // capped at the normal cadence: one minute, five minutes, then ten minutes.
 // A known decision or an existing refresh record restores the normal cadence.
 // Only the serialized session worker reads or writes this retry state.

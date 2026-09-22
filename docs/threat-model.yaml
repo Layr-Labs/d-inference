@@ -57,6 +57,9 @@ created: "2026-05-14"
 # mixed states during revocation or connection replacement. This changes
 # presentation, not serving or revocation policy.
 methodology: STRIDE
+# Apple API recovery reviewed 2026-09-21: generic apple_error is an unknown
+# exchange outcome retried with bounded backoff. Retry does not authorize,
+# extend an existing grant, erase credentials, or weaken verified denial gates.
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
   platform. Covers production only. Dev environment, nation-state adversaries, and

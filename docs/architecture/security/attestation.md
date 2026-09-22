@@ -36,6 +36,8 @@ existing authorized operations path.
 
 ## Context
 
+Generic client-reported Apple API failures (`apple_error`) use bounded [exchange recovery](../../reference/app-attest-shadow.md). They are unknown observations, not verified security denials. Retrying neither creates a serving grant nor extends its deadline; fresh proof still passes all qualification, receipt, revocation and binding checks. Verified cryptographic or policy violations remain terminal.
+
 Providers are adversarial until proven otherwise ([`../../threat-model.yaml`](../../threat-model.yaml),
 `ADV-001`). A provider's self-report is worthless on its own — the reporter is
 the thing being judged — so every claim that matters is either signed by a key

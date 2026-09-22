@@ -85,7 +85,11 @@ func (x *Session) nextAssertionDelay() time.Duration {
 
 func retryableAppAttestOutcome(outcome string) bool {
 	switch outcome {
-	case "timeout", "operation_timeout", "apple_unavailable", "busy", "storage_error", "enrollment_storage_error", "write_failed", "send_failed", "storage_busy", "verifier_busy", "key_unregistered", "apple_invalid_key", "keychain_error":
+	// Released clients collapse unknown DeviceCheck/system failures into
+	// apple_error. It conveys no verified policy violation: retry with the
+	// existing bounded backoff instead of abandoning this live connection.
+	// A retry still needs fresh, fully qualified evidence before serving.
+	case "timeout", "operation_timeout", "apple_unavailable", "apple_error", "busy", "storage_error", "enrollment_storage_error", "write_failed", "send_failed", "storage_busy", "verifier_busy", "key_unregistered", "apple_invalid_key", "keychain_error":
 		return true
 	}
 	return false

@@ -1,6 +1,6 @@
 # Provider serving authorization
 
-> Last updated: 2026-09-22 · commit `33064807e`
+> Last updated: 2026-09-22 · commit `03e65d36f`
 
 The coordinator can authorize private inference through complete legacy verification or a qualified App Attest connection. These are separate evidence paths; App Attest never sets legacy MDA/APNs flags. The [rollout runbook](../operations/mdm-optional-rollout.md) separates code availability from activation qualification.
 

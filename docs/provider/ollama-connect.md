@@ -29,6 +29,8 @@ prompts into Ollama or convert Ollama weights.
    The script creates `experiments/ollama-connect/dist/DarkbloomConnect.app`.
    Its ad hoc development signature is not a provider credential. Opening the
    app performs metadata reads only; it does not start or stop inference.
+   Rebuilding stops only a companion launched from this worktree before
+   replacing its executable; it never stops the provider.
 
 2. Review **Model library**. Ollama inventory is read-only, unverified metadata.
    It never establishes artifact compatibility or serving permission.

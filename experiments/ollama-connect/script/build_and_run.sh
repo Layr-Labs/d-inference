@@ -5,6 +5,12 @@ APP_NAME="DarkbloomConnect"
 APP_BUNDLE="$ROOT_DIR/dist/$APP_NAME.app"
 MODE="${1:-run}"
 case "$MODE" in run|--verify|--build) ;; *) echo "usage: $0 [run|--verify|--build]" >&2; exit 2 ;; esac
+# Stop only this checkout's companion before replacing its mapped executable.
+# The provider and companions launched from other worktrees are untouched.
+while IFS= read -r pid; do
+    command_line="$(ps -p "$pid" -o command= || true)"
+    if [[ "$command_line" == "$APP_BUNDLE/Contents/MacOS/$APP_NAME" ]]; then kill "$pid" || true; fi
+done < <(pgrep -x "$APP_NAME" || true)
 swift build --package-path "$ROOT_DIR"
 BIN_PATH="$(swift build --package-path "$ROOT_DIR" --show-bin-path)"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
@@ -26,10 +32,13 @@ PLIST
 # never an attested provider and never a replacement for the signed worker.
 /usr/bin/codesign --force --sign - "$APP_BUNDLE"
 if [[ "$MODE" == "--build" ]]; then exit 0; fi
-# Exact executable identity prevents stopping another checkout or the provider.
-while IFS= read -r pid; do
-    command_line="$(ps -p "$pid" -o command=)"
-    if [[ "$command_line" == "$APP_BUNDLE/Contents/MacOS/$APP_NAME" ]]; then kill "$pid"; fi
-done < <(pgrep -x "$APP_NAME" || true)
 /usr/bin/open -n "$APP_BUNDLE"
-if [[ "$MODE" == "--verify" ]]; then sleep 1; pgrep -x "$APP_NAME" >/dev/null; fi
+if [[ "$MODE" == "--verify" ]]; then
+    sleep 1
+    while IFS= read -r pid; do
+        command_line="$(ps -p "$pid" -o command= || true)"
+        if [[ "$command_line" == "$APP_BUNDLE/Contents/MacOS/$APP_NAME" ]]; then exit 0; fi
+    done < <(pgrep -x "$APP_NAME" || true)
+    echo "This checkout's companion did not launch." >&2
+    exit 1
+fi

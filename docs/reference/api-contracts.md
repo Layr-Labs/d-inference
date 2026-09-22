@@ -34,6 +34,10 @@ and opt-in chat `metadata.verification` even if its grant expires or is revoked
 before the first response byte. Existing `X-Provider-Trust-Level` and MDA fields
 keep their legacy meaning. The console proxy forwards the verification and
 provider-hop encryption headers; it does not construct them from provider output.
+The server decides `verified` with precise time before dispatch; Unix-second
+serialization can make a valid final fractional second show equal `observed_at`
+and `expires_at`. Historical display preserves that frozen server verdict,
+while live views still expire grants at the recorded deadline.
 
 `GET /v1/me/providers`, `GET /v1/providers/attestation`, and individual public
 `GET /v1/stats` provider rows include the same `verification` object evaluated

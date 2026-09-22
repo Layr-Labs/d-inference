@@ -6,8 +6,8 @@ import { capacityModelsFromResponse, catalogDataFromResponse, type CapacityModel
 import type { PlatformStats } from "./platform-types";
 import type { NetworkWindowTotals } from "./types";
 
-import { useVerificationClock } from "@/hooks/useVerificationClock";
 import { currentVerification } from "@/lib/verification";
+import { useStatsVerificationClock } from "./verification-clock";
 
 export const STATS_REFRESH_MS = 30_000;
 
@@ -26,6 +26,7 @@ async function fetchJSON(url: string, signal: AbortSignal) {
 /** Keep the primary snapshot responsive even if a secondary endpoint is slow. */
 export function useNetworkStats() {
   const [stats, setStats] = useState<PlatformStats | null>(null);
+  const [statsReceivedAt, setStatsReceivedAt] = useState(() => Date.now());
   const [catalogData, setCatalogData] = useState<CatalogDataSummary | null>(null);
   const [capacityModels, setCapacityModels] = useState<CapacityModelSummary[] | null>(null);
   const [totals24h, setTotals24h] = useState<NetworkWindowTotals | null>(null);
@@ -63,6 +64,7 @@ export function useNetworkStats() {
           if (!Array.isArray(data.providers) || !Array.isArray(data.models)) throw new Error("Invalid stats response");
           if (lifecycle.aborted) return;
           setStats(data);
+          setStatsReceivedAt(Date.now());
           setIsMock(response.headers.get("X-Stats-Cache") === "MOCK");
           const capturedAt = response.headers.get("X-Stats-Snapshot-At");
           setSnapshotAt(capturedAt && Number.isFinite(Date.parse(capturedAt)) ? capturedAt : null);
@@ -102,7 +104,7 @@ export function useNetworkStats() {
   }, []);
 
   useVisiblePolling(refresh, STATS_REFRESH_MS);
-  const now = useVerificationClock();
+  const now = useStatsVerificationClock(stats, statsReceivedAt);
   const currentStats = useMemo(() => stats && ({ ...stats, providers: stats.providers.map((p) => ({ ...p, verification: currentVerification(p.verification, now) })) }), [stats, now]);
   return { stats: currentStats, catalogData, capacityModels, totals24h, snapshotAt, fetchedAt, isMock, refreshing, error, secondaryError, refresh };
 }

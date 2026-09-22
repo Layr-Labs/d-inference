@@ -57,6 +57,16 @@ it("expires live grants and stale cached checks without rewriting a historical r
   expect(result.current[0].app_attest_authorized).toBe(false);
 });
 
+it("retains a verified dispatch in the final fractional second of its lease", () => {
+  const at = now;
+  const finalSecond = snapshot();
+  finalSecond.app_attest.expires_at = at;
+  expect(verificationPresentation(finalSecond)).toMatchObject({ method: "app_attest", verified: true });
+  expect(verificationPresentation({ ...finalSecond, app_attest: { ...finalSecond.app_attest, state: "expired" } }).verified).toBe(false);
+  expect(verificationPresentation({ ...finalSecond, app_attest: { ...finalSecond.app_attest, expires_at: at - 1 } }).verified).toBe(false);
+  expect(currentVerification(finalSecond, at * 1000)?.app_attest.state).toBe("expired");
+});
+
 it("explains the proof boundary, unknown details, and historical freshness", () => {
   render(<ProofDetails verification={snapshot()} historical />);
   expect(screen.getByText(/not the provider’s current authorization/)).toBeInTheDocument();

@@ -49,7 +49,10 @@ export function verificationPresentation(v: Verification | undefined) {
   if (!isVerification(v)) v = undefined;
   const at = v?.observed_at ?? 0;
   const verified = (p?: VerificationPath) => p?.state === "verified" && at > 0 &&
-    typeof p.verified_at === "number" && p.verified_at <= at && typeof p.expires_at === "number" && p.expires_at > at;
+    // The coordinator has already checked the precise dispatch instant.
+    // Unix-second serialization can round a still-valid expiry down to the
+    // same second as observed_at; keep that historical verified verdict.
+    typeof p.verified_at === "number" && p.verified_at <= at && typeof p.expires_at === "number" && p.expires_at >= at;
   const appAttest = verified(v?.app_attest), legacy = verified(v?.legacy);
   let method: VerificationMethod = "none";
   if (appAttest && legacy) method = "dual";

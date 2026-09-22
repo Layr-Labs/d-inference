@@ -1356,6 +1356,9 @@ func (s *Server) dispatchWithReserver(
 			s.sendProviderCancel(provider, requestID)
 			return nil, nil, decision, plan, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
 		}
+		if errors.Is(writeErr, registry.ErrProviderDraining) {
+			return nil, nil, decision, plan, protocol.ProviderDrainingForUpdate, http.StatusServiceUnavailable
+		}
 		return nil, nil, decision, plan, "failed to send request to provider", http.StatusBadGateway
 	}
 	pendingCleanup = false

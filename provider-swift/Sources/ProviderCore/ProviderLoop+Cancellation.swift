@@ -123,6 +123,7 @@ extension ProviderLoop {
     }
 
     internal func finishInflightRequest(requestId: String) async {
+        acceptedLifecycleRequests.remove(requestId)
         let hadRegisteredTask = inflightTasks.removeValue(forKey: requestId) != nil
         let modelId = requestToModel.removeValue(forKey: requestId)
         // Dropping the map entry does not disarm the builder's
@@ -147,7 +148,7 @@ extension ProviderLoop {
     /// (`localReservations`). Drain logic (shutdown + update hot-swap) waits on
     /// all three so a local stream is never cut off mid-generation.
     internal var hasInflightWork: Bool {
-        !inflightTasks.isEmpty || !requestToModel.isEmpty || localReservations.hasAny
+        !acceptedLifecycleRequests.isEmpty || !inflightTasks.isEmpty || !requestToModel.isEmpty || localReservations.hasAny || localResponseTracker.activeCount > 0
     }
 
     internal func waitForInflightDrain(timeout: Duration, reason: String = "shutdown") async -> Bool {

@@ -87,6 +87,8 @@ public enum PreContentDeadlineFailure: String, Error, LocalizedError, Sendable, 
 // MARK: - Event Types
 
 public enum CoordinatorEvent: Sendable {
+    /// Ordered behind earlier inference events so late arrivals are refused before the barrier completes.
+    case drainAck(String)
     case connected
     case disconnected
     /// `ciphertext` is the **decoded** NaCl-box ciphertext (nonce ‖ tag ‖ body),
@@ -231,6 +233,7 @@ public struct RuntimeHashes: Sendable {
 // MARK: - Outbound message type (provider -> coordinator)
 
 public enum OutboundMessage: Sendable {
+    case drainBarrier(String)
     case inferenceAccepted(requestId: String)
     case inferenceChunk(requestId: String, data: String, encryptedData: EncryptedPayload?)
     /// `profile` rides the terminal as the live BUILDER, not the wire

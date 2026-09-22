@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-18 · commit `dab62c50a`
+> Last updated: 2026-09-21 · commit `12599b420`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -10,6 +10,26 @@ is slow to produce first content — races a second provider against it.
 Capacity, queues, slot states and the warm pool are covered in
 [`scheduling.md`](scheduling.md); this page covers only choosing among
 eligible providers.
+
+## Provider lifecycle drain boundary
+
+`provider_drain` permanently fences a live connection until disconnect, unlike
+the existing TTL-bounded update heartbeat. `authorizeInferenceHandoff` in
+`coordinator/registry/inference_authorization.go` rechecks the drain after writer
+queueing and reservation: direct, queued, cold, retry and hedge reservations
+cannot send a new inference frame across the boundary. A late reservation gets
+`ErrProviderDraining`, releases its unused reservation, and retries through the
+existing transient-capacity path. No response output is replayed by this change.
+
+Warm/cold model-load and prefetch selection also exclude drains. Provider-side
+admission checks remain necessary for already handed-off frames: these receive
+a typed 503 draining refusal before acceptance. Already accepted coordinator
+queues (including a cold model load) finish. Local requests that have not acquired
+a model may still receive 503; acquired local requests and their HTTP response
+writes are drained. See [the terminal barrier](../reference/protocol-messages.md#provider-lifecycle-drain)
+for the asynchronous settlement boundary. Existing draining-capacity preflight
+semantics (transient 429/capacity, not structural absence) remain unchanged.
+
 
 ## Context
 
@@ -817,3 +837,13 @@ must not run in parallel with other scheduler tests in the same process.
 For exempt accounts, zero explicitly disables first-content deadlines: preflight skips its TTFT ceiling, queued and dispatched requests retain an empty `FirstContentDeadline`, and the provider frame omits `first_content_budget_ms`. The Swift inbound handler already interprets an omitted budget as no coordinator first-content deadline. `coordinator/api/first_token_clock.go` (`newFirstContentTimer`) disables the timeout select arm in every first-content wait, including accepted, retry and speculative-race paths. There is no 600-second first-content fallback. Clean empty completions remain eligible for speculative arbitration even with a zero deadline.
 
 Queue limits, provider write watchdogs, client cancellation and disconnect cleanup remain. The existing response/stream timers apply after first content commits. Ranking, ordinary hedge launch hints and capacity probes remain active; exempt probes use a finite advisory planning horizon without arming a request timeout or advancing SLA hedges. Exempt primary scans use the short admission scan-wait slice. Speculative backup scans only acquire an immediately available scan slot; saturation skips the backup and resumes reading the primary. Shadow TTFT metrics remain counterfactual measurements, not enforcement.
+
+### Planned provider reconnects
+
+`provider-swift/Sources/ProviderCore/ProviderLoop+PlannedDisconnect.swift`
+(`requestPlannedReconnect`, `waitForSafeDisconnect`) gates late APNs registration
+and inventory reconciliation on the same accepted-work/terminal barrier used
+for update activation. Requests are coalesced by revision so an inventory change
+while a close is underway cannot be lost. Deadlines leave work alive; lifecycle
+stop takes precedence. Unexpected network loss still cancels work on the dead
+connection and does not replay partially emitted output.

@@ -137,6 +137,7 @@ public enum CoordinatorClientCodec {
 
     public static func providerMessage(for outbound: OutboundMessage) -> ProviderMessage {
         switch outbound {
+        case .drainBarrier(let id): return .drainBarrier(id)
         case .inferenceAccepted(let requestId):
             return .inferenceAccepted(ProviderMessage.InferenceAccepted(requestId: requestId))
 

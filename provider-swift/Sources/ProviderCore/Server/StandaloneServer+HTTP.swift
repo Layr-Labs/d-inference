@@ -76,6 +76,7 @@ extension StandaloneServer {
                 guard let self else { return [] }
                 return await self.mtpSlotMetricsSamples()
             },
+            responseTracker: responseTracker,
             onServerRunning: { [weak self] _ in
                 await self?.markBound()
             }

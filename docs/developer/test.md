@@ -46,6 +46,35 @@ routing only; signed Mac App Attest qualification is separate.
 
 Build qualification regressions run in `coordinator/store/app_attest_builds_test.go`, `coordinator/appattest/service/build_qualifications_test.go`, `coordinator/api/app_attest_builds_test.go`, and `coordinator/api/app_attest_builds_auth_test.go`. The route tests validate real ES256 Privy JWTs through the mux, server-attributed audit actors, and rejection of admin-owned inference keys. The real PostgreSQL contract requires a **disposable** `DATABASE_URL` (the harness truncates test tables). Test memory/decorated/Postgres persistence, conflicting identities, publish/revoke races, cache fencing, lease expiry and reload; run the affected Go packages with `-race`. `python3 scripts/test-provider-release-publication.py` tests blocked publication, immutable artifacts, retained-byte R2 staging retries across workflow attempts, literal tag-note preservation and recovery after draft creation, interrupted upload, completed upload and publication failures without credentials or live writes; CI runs it with `scripts/test-provider-release-pipeline.py`. The annotated-tag fixture supplies its own commit/tag identity with global and system Git configuration disabled, so a developer account cannot mask missing CI setup. These checks do not replace final signed-Mac/Apple qualification.
 
+## Provider lifecycle regression checks
+
+Run `make provider-test` to build tests and install the source-matched Metal
+library beside the runner. Focused suites include `ProviderLifecycleTests`,
+`LifecycleMailboxTests`, `ServiceDrainTests`, `LocalResponseTrackerTests`,
+`CoordinatorLifecycleBarrierTests`, `ProviderSignalTests`, and
+`AutoUpdateLifecycleOverlapTests`. They cover accepted concurrent/cold work,
+slow final writes, expiry, force, command interruption, update overlap, process
+identity, wire ordering, unsupported acknowledgements and real-process SIGTERM.
+
+The isolated launchd integration is opt-in on a logged-in macOS session:
+
+```bash
+cd provider-swift
+DARKBLOOM_LAUNCHD_TESTS=1 swift test --skip-build --filter LaunchAgentDrainIntegrationTests
+```
+
+It uses a unique temporary GUI-domain label and plist, never the installed
+provider/watchdog. `TestProviderDrainAckFollowsUsageSettlementAndKeepsControlTrafficAlive`
+in `coordinator/api/provider_drain_barrier_test.go` runs both streaming and
+non-streaming traffic against the actual coordinator, delays asynchronous
+settlement, sends duplicate terminals, and verifies one usage record before
+acknowledgement. Run it and the dispatch/drain tests with Go's race detector.
+
+Release qualification still requires a Developer ID-signed installed provider
+against real coordinator traffic, with App Attest or legacy authorization. A
+unit test, simulated provider, ad-hoc signature or green CI is not that evidence.
+
+
 ## Bonsai performance qualification
 
 The default-on eligible profile is documented in
@@ -2085,3 +2114,13 @@ go test -race ./api ./modelpolicy \
 ## Account-scoped first-content SLA
 
 `coordinator/api/first_content_accounts_test.go` covers exact account/email selection, unrelated service accounts, header spoofing, public-model override precedence, disabled clocks and identity-store failures. `coordinator/api/first_content_accounts_integration_test.go` runs streaming and non-streaming requests through chat, Responses, completions and messages past the old deadline with hard TTFT rejection enabled; exempt requests omit their wire budget and scheduler ceiling, while the configured OpenRouter email still times out. The existing deadline/queue/retry/provider-wire suites explicitly opt their fixture account into the SLA. `coordinator/api/media_resolve_test.go` verifies a pinned exemption cannot be recomputed during media fetch.
+
+### Replacement and reconnect coverage
+
+`PlannedProviderDisconnectTests` exercises late-APNs and inventory reconnects
+against a mock WebSocket coordinator while accepted work is held open.
+`StandaloneLifecycleControlTests` holds a local response across a mailbox drain.
+`LifecycleRecoveryRollbackTests` checks failures before and after command publication;
+`ProcessLifecycleTests` verifies that lock acquisition cannot kill a live PID owner.
+`TestRestartStatusReportsOwnerAuthorizationWithoutPublicGrant` checks explicit
+owner authorization while retaining runtime/security denials.

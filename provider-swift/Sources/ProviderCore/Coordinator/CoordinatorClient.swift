@@ -36,6 +36,7 @@ public actor CoordinatorClient {
     /// is recreated per connection (see OutboundRouter / connectAndRun); reusing
     /// one AsyncStream across reconnects silently kills outbound delivery.
     internal let outboundRouter = OutboundRouter()
+    internal var drainAcknowledgements: [String: AsyncStream<Bool>.Continuation] = [:]
 
     /// Inference-chunk fast path. `chunkBatcher` owns the dedicated serial queue
     /// + coalescing; `chunkSender` is the nonisolated, Sendable handle the
@@ -219,6 +220,7 @@ public actor CoordinatorClient {
     }
 
     public func shutdown() {
+        failDrainBarriers()
         shutdownFlag.request()
         closeCurrentConnection()
         eventContinuation?.finish()
@@ -255,28 +257,17 @@ public actor CoordinatorClient {
         connection.cancel()
     }
 
-    /// Re-register over a fresh connection carrying a device token that arrived
-    /// after the initial registration. Cancelling the socket (without setting
-    /// `shutdownRequested`) surfaces as a connection error, so the reconnect loop
-    /// re-runs `sendRegistration` with the override token — letting the
-    /// coordinator bind T↔K and push the code-identity challenge. No-op if the
-    /// token is unchanged.
-    public func refreshAPNsToken(_ token: String) {
-        guard apnsTokenOverride != token else { return }
+    /// Record late token delivery without interrupting a live connection.
+    /// ProviderLoop owns the subsequent drain and re-registration.
+    internal func updateAPNsTokenForNextRegistration(_ token: String) -> Bool {
+        guard apnsTokenOverride != token else { return false }
         apnsTokenOverride = token
-        closeCurrentConnection()
+        return true
     }
 
-    /// Tear down the current connection (clean close frame) WITHOUT setting
-    /// `shutdownRequested`, so the reconnect loop re-runs `sendRegistration`
-    /// with the CURRENT advertised set. Used when the advertised set SHRINKS
-    /// after registration (e.g. a startup self-test retirement under
-    /// `startup_selftest_fail_closed`): `models_update` is additive, so a
-    /// fresh `register` is the existing wire mechanism that communicates a
-    /// removal. Same reconnect path the coordinator handles on any network
-    /// blip; no-op when no connection is up (registration hasn't happened
-    /// yet — the register that follows will already carry the current set).
-    public func forceReconnect() {
+    /// Raw transport action. Production callers must pass through ProviderLoop's
+    /// admitted-work + terminal acknowledgement barrier before invoking it.
+    internal func reconnectAfterDrain() {
         closeCurrentConnection()
     }
 

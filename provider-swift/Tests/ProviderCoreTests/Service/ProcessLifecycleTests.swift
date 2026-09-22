@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Testing
 @testable import ProviderCore
 
@@ -112,4 +113,63 @@ struct ProcessLifecycleTests {
         #expect(telemetryPurgeCount == 0)
         #expect(videoPurgeCount == 0)
     }
+}
+
+
+@Test func reusedLivePIDDoesNotBlockLockAcquisition() throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+    process.arguments = ["30"]
+    try process.run()
+    defer { process.terminate(); process.waitUntilExit() }
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".pid")
+    let statePath = path.appendingPathExtension("state")
+    defer {
+        try? FileManager.default.removeItem(at: path)
+        try? FileManager.default.removeItem(at: path.appendingPathExtension("lock"))
+        try? FileManager.default.removeItem(at: statePath)
+    }
+    try "\(process.processIdentifier)\n".write(to: path, atomically: true, encoding: .utf8)
+    let live = try #require(ProcessIdentity.read(pid: process.processIdentifier))
+    let stale = ProcessIdentity(pid: live.pid, startTimeMicros: live.startTimeMicros - 1)
+    DaemonStateFile.write(.init(pid: stale.pid, processIdentity: stale, version: "old",
+                                writtenAt: 0, startedAt: 0), to: statePath)
+    try ProcessLifecycle.acquireSingleInstanceLock(at: path, terminationGracePeriod: 0, stateFile: statePath)
+    #expect(process.isRunning)
+    #expect(ProcessLifecycle.existingPID(at: path) == getpid())
+    ProcessLifecycle.releaseSingleInstanceLock(at: path)
+    #expect(ProcessLifecycle.existingPID(at: path) == nil)
+}
+
+@Test func confirmedLegacyPIDOwnerIsPreserved() throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+    process.arguments = ["30"]
+    try process.run()
+    defer { process.terminate(); process.waitUntilExit() }
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".pid")
+    let statePath = path.appendingPathExtension("state")
+    defer {
+        try? FileManager.default.removeItem(at: path)
+        try? FileManager.default.removeItem(at: path.appendingPathExtension("lock"))
+        try? FileManager.default.removeItem(at: statePath)
+    }
+    let identity = try #require(ProcessIdentity.read(pid: process.processIdentifier))
+    try "\(identity.pid)\n".write(to: path, atomically: true, encoding: .utf8)
+    DaemonStateFile.write(.init(pid: identity.pid, processIdentity: identity, version: "test",
+                                writtenAt: Date().timeIntervalSince1970, startedAt: 0), to: statePath)
+    #expect(throws: ProcessLifecycle.InstanceError.self) {
+        try ProcessLifecycle.acquireSingleInstanceLock(at: path, stateFile: statePath)
+    }
+    #expect(process.isRunning)
+    #expect(ProcessLifecycle.existingPID(at: path) == identity.pid)
+}
+
+@Test func launchdRecoverySnapshotPreservesDisabledOverrides() {
+    let states = ServiceRecoverySnapshot.enabledStates(labels: ["provider", "watchdog", "absent"],
+        output: "disabled services = { \"provider\" => false \"watchdog\" => true }")
+    #expect(states == ["provider": true, "watchdog": false, "absent": true])
+    let modern = ServiceRecoverySnapshot.enabledStates(labels: ["provider", "watchdog"],
+        output: "disabled services = { \"provider\" => enabled \"watchdog\" => disabled }")
+    #expect(modern == ["provider": true, "watchdog": false])
 }

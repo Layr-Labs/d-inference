@@ -172,6 +172,7 @@ public struct PrefixCacheAnchor: Codable, Sendable, Equatable {
 // MARK: - Provider -> Coordinator
 
 public enum ProviderMessage: Sendable, Equatable {
+    case drainBarrier(String)
     case register(Register)
     case heartbeat(Heartbeat)
     case inferenceAccepted(InferenceAccepted)
@@ -848,6 +849,7 @@ public enum ProviderMessage: Sendable, Equatable {
 
 extension ProviderMessage: Codable {
     enum TypeValue: String, Codable {
+        case drainBarrier = "provider_drain"
         case register
         case heartbeat
         case inferenceAccepted = "inference_accepted"
@@ -970,6 +972,9 @@ extension ProviderMessage: Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
 
         switch self {
+        case .drainBarrier(let id):
+            try container.encode(TypeValue.drainBarrier, forKey: .type)
+            try container.encode(id, forKey: .requestId)
         case .register(let r):
             try container.encode(TypeValue.register, forKey: .type)
             try container.encode(r.hardware, forKey: .hardware)
@@ -1229,6 +1234,8 @@ extension ProviderMessage: Codable {
         let type = try container.decode(TypeValue.self, forKey: .type)
 
         switch type {
+        case .drainBarrier:
+            self = .drainBarrier(try container.decode(String.self, forKey: .requestId))
         case .register:
             self = .register(Register(
                 hardware: try container.decode(HardwareInfo.self, forKey: .hardware),
@@ -1500,6 +1507,7 @@ extension ProviderMessage: Codable {
 // MARK: - Coordinator -> Provider
 
 public enum CoordinatorMessage: Sendable, Equatable {
+    case drainAck(String)
     case inferenceRequest(InferenceRequest)
     case cancel(Cancel)
     case attestationChallenge(AttestationChallenge)
@@ -1694,6 +1702,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
 
 extension CoordinatorMessage: Codable {
     enum TypeValue: String, Codable {
+        case drainAck = "provider_drain_ack"
         case inferenceRequest = "inference_request"
         case cancel
         case attestationChallenge = "attestation_challenge"
@@ -1741,6 +1750,9 @@ extension CoordinatorMessage: Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
 
         switch self {
+        case .drainAck(let id):
+            try container.encode(TypeValue.drainAck, forKey: .type)
+            try container.encode(id, forKey: .requestId)
         case .inferenceRequest(let r):
             try container.encode(TypeValue.inferenceRequest, forKey: .type)
             try container.encode(r.requestId, forKey: .requestId)
@@ -1829,6 +1841,8 @@ extension CoordinatorMessage: Codable {
         let type = try container.decode(TypeValue.self, forKey: .type)
 
         switch type {
+        case .drainAck:
+            self = .drainAck(try container.decode(String.self, forKey: .requestId))
         case .inferenceRequest:
             self = .inferenceRequest(InferenceRequest(
                 requestId: try container.decode(String.self, forKey: .requestId),

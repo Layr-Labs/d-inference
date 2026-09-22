@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-22 · commit `863a91851`
+> Last updated: 2026-09-22 · commit `b1bebd54b`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -49,11 +49,11 @@ Provider signing, R2 staging and publication run in separate jobs in `.github/wo
 
 ## CI runner and credential boundary
 
-Unsigned builds and tests use Tenki: Linux jobs run on
+Unsigned builds and tests generally use Tenki: Linux jobs run on
 `tenki-standard-medium-4c-8g` (4 vCPU, 8 GB), and Apple Silicon jobs on
-`tenki-macos-26-large` (8 vCPU, 32 GB). Every compiling Mac job selects
+`tenki-macos-26-large` (8 vCPU, 32 GB). Tenki compiling Mac jobs select
 `DEVELOPER_DIR=/Applications/Xcode_27.0.app/Contents/Developer`.
-Mac CI selects SwiftPM's native build system with
+Tenki Mac CI selects SwiftPM's native build system with
 `scripts/prepare-provider-release-toolchain.sh` before compiling tests or
 provider binaries. This keeps copied Metal resource bundles in the layout
 that the provider's paged-kernel preflight searches. The manual unsigned
@@ -62,12 +62,19 @@ Runner specifications: [Tenki labels](https://tenki.cloud/docs/runners/sizes).
 The Tenki Runners GitHub App must already have access to this repository;
 runner labels alone do not install or authorize it.
 
+The benchmark is the one compute exception. `e2e/benchmark_test.go`
+(`TestBenchmark_MultiModelMultiProvider`) starts two GPT-OSS providers and one
+Gemma provider on a shared 48 GB Mac; their model weights alone exceed Tenki's
+largest published 32 GB Mac. `.github/workflows/benchmarks.yml` therefore
+retains `blacksmith-12vcpu-macos-latest` for that read-only job until a larger
+Tenki Mac is available. Its approval and report-posting jobs run on GitHub.
+
 Signing and notarization use GitHub's `xcode-27` runner. R2 staging, release
 publication, model registration and credentialed review automation use
 GitHub's `ubuntu-24.04`. Coordinator container builds/deploys retain their
 existing GCP workflow. No production deployment is triggered by this migration.
 
-Tenki jobs have explicit read-only GitHub permissions, no `secrets` expressions,
+Tenki and Blacksmith compute jobs have explicit read-only GitHub permissions, no `secrets` expressions,
 no GitHub environment, and `persist-credentials: false` on checkout. They still
 receive the short-lived read-only GitHub job token and Actions runtime tokens
 needed for checkout, caches and artifacts; this is not a token-free runner.

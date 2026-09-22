@@ -32,8 +32,7 @@ class RunnerPolicyTests(unittest.TestCase):
                      for name in ('ci.yml', 'integration.yml', 'benchmarks.yml',
                                   'provider-signing-validation.yml')}
         for filename, job_name in (('ci.yml', 'test-provider'), ('ci.yml', 'cache-swift'),
-                                   ('integration.yml', 'integration-tests'),
-                                   ('benchmarks.yml', 'benchmark')):
+                                   ('integration.yml', 'integration-tests')):
             with self.subTest(job=f'{filename}/{job_name}'):
                 job = workflows[filename]['jobs'][job_name]
                 self.assertTrue(any('prepare-provider-release-toolchain.sh' in step.get('run', '')
@@ -80,6 +79,23 @@ class RunnerPolicyTests(unittest.TestCase):
         for runner in ['${{ inputs.runner }}', ['self-hosted'], 'blacksmith-4vcpu-ubuntu-2404']:
             self.job['runs-on'] = runner
             self.assertTrue(self.errors())
+
+    def test_blacksmith_is_limited_to_read_only_benchmark(self):
+        self.job['runs-on'] = 'blacksmith-12vcpu-macos-latest'
+        self.assertTrue(self.errors())
+        benchmark = policy.load(policy.ROOT / '.github/workflows/benchmarks.yml')
+        self.assertEqual(policy.check({'benchmarks.yml': benchmark}), [])
+        benchmark['jobs']['benchmark']['permissions'] = {'contents': 'write'}
+        self.assertTrue(policy.check({'benchmarks.yml': benchmark}))
+
+    def test_report_artifact_is_scoped_to_current_attempt(self):
+        benchmark = policy.load(policy.ROOT / '.github/workflows/benchmarks.yml')
+        upload = next(step for step in benchmark['jobs']['benchmark']['steps']
+                      if step.get('name') == 'Retain benchmark report')
+        self.assertEqual(upload['with']['name'], 'benchmark-report-${{ github.run_attempt }}')
+        report = benchmark['jobs']['report']['steps'][0]['run']
+        self.assertIn('benchmark-report-$GITHUB_RUN_ATTEMPT', report)
+        self.assertIn('--name "$artifact_name"', report)
 
     def test_privileged_job_cannot_move_to_tenki_even_without_secret_expression(self):
         self.workflow['jobs'] = {'register': self.job}

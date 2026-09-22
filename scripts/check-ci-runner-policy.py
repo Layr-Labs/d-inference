@@ -9,6 +9,8 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 TENKI = {'tenki-standard-medium-4c-8g', 'tenki-macos-26-large'}
 GITHUB = {'ubuntu-24.04', 'xcode-27'}
+BLACKSMITH = {'blacksmith-12vcpu-macos-latest'}
+EXTERNAL = TENKI | BLACKSMITH
 # Jobs entrusted with credentials or writes must never drift to a third party.
 PROTECTED = {
     'release-swift.yml': {'resolve-env', 'build-and-release', 'stage-release', 'publish-release'},
@@ -49,12 +51,14 @@ def check(workflows, root=ROOT):
         for name, job in jobs.items():
             label = f'{filename}/{name}'
             runner = job.get('runs-on')
-            if not isinstance(runner, str) or runner not in TENKI | GITHUB:
+            if not isinstance(runner, str) or runner not in EXTERNAL | GITHUB:
                 errors.append(f'{label}: runner must be an approved static label')
                 continue
+            if runner in BLACKSMITH and (filename, name) != ('benchmarks.yml', 'benchmark'):
+                errors.append(f'{label}: Blacksmith is allowed only for the 48 GB benchmark')
             if name in PROTECTED.get(filename, set()) and runner not in GITHUB:
                 errors.append(f'{label}: privileged job must use GitHub')
-            if runner not in TENKI:
+            if runner not in EXTERNAL:
                 continue
             permissions = job.get('permissions', workflow.get('permissions'))
             if not isinstance(permissions, dict) or any(
@@ -66,7 +70,7 @@ def check(workflows, root=ROOT):
                 errors.append(f'{label}: environments, secret inheritance and reusable jobs are forbidden')
             scopes = [job, workflow.get('env', {}), workflow.get('defaults', {})]
             if any(SECRET.search(text) for scope in scopes for text in strings(scope)):
-                errors.append(f'{label}: secrets context must not reach Tenki')
+                errors.append(f'{label}: secrets context must not reach external runners')
             if runner == 'tenki-macos-26-large' and name != 'validate-older-macos':
                 env = {**workflow.get('env', {}), **job.get('env', {})}
                 if env.get('DEVELOPER_DIR') != '/Applications/Xcode_27.0.app/Contents/Developer':
@@ -104,4 +108,4 @@ if __name__ == '__main__':
         print(problem, file=sys.stderr)
     if problems:
         sys.exit(1)
-    print('CI runner policy: Tenki jobs are read-only and contain no secret references; privileged jobs use GitHub.')
+    print('CI runner policy: external jobs are read-only and contain no secret references; privileged jobs use GitHub.')

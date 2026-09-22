@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-22 · commit `863a91851`
+> Last updated: 2026-09-22 · commit `b1bebd54b`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1715,18 +1715,22 @@ SwiftPM resource bundle, and MLX needs the staged source-matched
 build and `swift test`; otherwise Xcode 27's alternate output layout can leave
 the paged resource outside the test runner's lookup roots. A missing resource
 must fail the paged gate. The E2E and benchmark jobs set
-`LC_ALL=en_US.UTF-8` so Homebrew PostgreSQL can start on Tenki macOS.
+`LC_ALL=en_US.UTF-8` so Homebrew PostgreSQL can start on macOS.
 
 For rollout, verify actual Tenki assignment in Actions and require the existing
 provider/Metal, SDK qualification and E2E gates to pass. A matching label or a
 successful compile does not prove GPU availability or enough runtime memory.
-The standard Mac has 32 GB; keep admission limits and no-skip numerical gates
-unchanged. Benchmark results identify the new hardware and are a new baseline.
+The standard Tenki Mac has 32 GB; keep admission limits and no-skip numerical
+gates unchanged. `TestBenchmark_MultiModelMultiProvider` requires the existing
+48 GB Blacksmith runner because its three concurrent models exceed 32 GB in
+weights alone. Do not promote benchmark results from a smaller host as a new
+inference baseline.
 If a job remains queued, check the Tenki App's repository access and workspace
 concurrency. Missing Xcode 27 fails instead of selecting an older SDK.
 
 Benchmarks retain their manual cost approval in a GitHub-only `approve` job.
-The Tenki `benchmark` job uploads a report; GitHub's `report` job reads it as data
+The Blacksmith `benchmark` job uploads a report named for `github.run_attempt`;
+GitHub's `report` job reads that attempt's artifact as data
 and posts with a write token without checking out or executing candidate code.
 Fork PRs retain the artifact but skip commenting. Integration tests download
 public checkpoints anonymously on both pushes and PRs; download failures do not

@@ -115,10 +115,12 @@ print("FAKE_AUTH_COMPLETED", flush=True)
                     try:
                         os.kill(pid, signal.SIGKILL)
                     except OSError:
+                        # The child may have exited between the timeout and cleanup.
                         pass
                 try:
                     os.waitpid(pid, 0)
                 except ChildProcessError:
+                    # The polling loop may already have reaped this child.
                     pass
             os.close(terminal)
 

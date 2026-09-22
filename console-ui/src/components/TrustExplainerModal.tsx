@@ -27,71 +27,18 @@ interface StepData {
 }
 
 const STEPS: StepData[] = [
-  {
-    icon: Cpu,
-    iconColor: "text-purple",
-    iconBg: "bg-purple-light",
-    title: "Apple Hardware",
-    description:
-      "The coordinator verifies the provider's identity and current permission to serve inference.",
-    technical:
-      "The provider runs on Apple Silicon with a Secure Enclave identity key. " +
-      "Legacy hardware trust uses MDM SecurityInfo to check System Integrity Protection and Secure Boot, with MDA certificate proof reported separately. " +
-      "Eligible macOS 27+ providers can instead serve through an independently enabled, qualified App Attest path without MDM.",
-  },
-  {
-    icon: Fingerprint,
-    iconColor: "text-teal",
-    iconBg: "bg-teal-light",
-    title: "Secure Enclave",
-    description:
-      "The machine's identity key is sealed in a tamper-proof chip that can't be cloned.",
-    technical:
-      "A P-256 key pair is generated inside Apple's Secure Enclave Processor (SEP). " +
-      "The private key never leaves the hardware — it cannot be exported, copied, or read by software. " +
-      "The provider signs attestation blobs with ECDSA (SHA-256 + P-256), proving identity without " +
-      "revealing the key. The SEP has its own isolated firmware (SepOS) and memory.",
-  },
-  {
-    icon: ShieldCheck,
-    iconColor: "text-blue",
-    iconBg: "bg-blue-light",
-    title: "Legacy MDA Certificate",
-    description:
-      "Legacy MDA verification confirms an Apple-signed device certificate. App Attest authorization is separate and does not imply MDA verification.",
-    technical:
-      "When mda_verified is true, the coordinator has verified the device certificate chain " +
-      "against Apple's pinned Enterprise Attestation Root CA. This proof is reported separately from hardware trust. " +
-      "The leaf certificate embeds device-specific OIDs signed by Apple; " +
-      "the raw certificate, serial number, and UDID remain private to the provider and coordinator.",
-  },
-  {
-    icon: Lock,
-    iconColor: "text-coral",
-    iconBg: "bg-coral-light",
-    title: "Encryption in Transit",
-    description:
-      "Requests travel over encrypted connections. The coordinator and provider process plaintext; so does the console proxy when sender sealing is off.",
-    technical:
-      "HTTPS terminates at the console service. By default its /api/chat proxy parses plaintext requests " +
-      "before forwarding them over HTTPS. Turning on Encrypt to coordinator adds X25519/NaCl box sealing " +
-      "in the browser, so that proxy forwards ciphertext and the coordinator opens it. " +
-      "The coordinator processes plaintext in confidential-VM memory for routing and billing, " +
-      "without logging or retaining prompt content, then re-seals to the provider's registered key. " +
-      "The attested provider decrypts the request for inference. This is hop-by-hop encryption.",
-  },
-  {
-    icon: RefreshCw,
-    iconColor: "text-gold",
-    iconBg: "bg-gold-light",
-    title: "Continuous Verification",
-    description:
-      "Periodic checks keep provider trust up to date. Providers that fail required security checks stop receiving requests.",
-    technical:
-      "Legacy verification uses periodic signed challenges and security-posture checks. " +
-      "App Attest serving permission is time-limited, refreshed and checked before each inference handoff; expired or revoked permission cannot authorize a new request. " +
-      "Legacy trust decisions distinguish proven security failures from transient timeouts; RDMA enablement alone does not revoke hardware trust.",
-  },
+  { icon: ShieldCheck, iconColor: "text-blue", iconBg: "bg-blue-light", title: "Two verification methods",
+    description: "App Attest and legacy MDM/MDA/APNs are separate ways to earn serving authorization. A provider may qualify through either or both.",
+    technical: "App Attest requires Apple key enrollment, connection-bound assertions, receipt policy and a qualified signed build. Legacy authorization requires its own device, application and challenge evidence. A self_signed legacy field does not rule out App Attest." },
+  { icon: Fingerprint, iconColor: "text-teal", iconBg: "bg-teal-light", title: "Apple evidence and Darkbloom authorization",
+    description: "The coordinator validates Apple's evidence and applies Darkbloom's serving policy. Your browser displays that verdict.",
+    technical: "Raw certificate chains and Apple receipts can contain private device and credential information. Public views omit them. Reported chip, memory and macOS properties are not certified merely because App Attest succeeded." },
+  { icon: Lock, iconColor: "text-coral", iconBg: "bg-coral-light", title: "Encryption between hops",
+    description: "Encrypted requests are decrypted in the coordinator’s confidential VM, then re-encrypted to the provider.",
+    technical: "NaCl Box protects each encrypted leg. The provider is a plaintext endpoint and the coordinator handles routing and billing. The provider-hop encryption header does not establish browser-to-coordinator encryption." },
+  { icon: RefreshCw, iconColor: "text-gold", iconBg: "bg-gold-light", title: "Freshness and request history",
+    description: "Live authorization expires and can be revoked. Each chat message retains the verification recorded at dispatch.",
+    technical: "Each method has its own verification and expiry timestamps. Live views also expire stale cached verdicts. Historical response metadata is not evidence of a current authorization and does not prove that an inference result is correct." },
 ];
 
 function TechnicalDetails({ text }: { text: string }) {
@@ -156,7 +103,7 @@ export function TrustExplainerModal({ open, onClose }: TrustExplainerModalProps)
                 How Your Privacy is Protected
               </h2>
               <p className="text-sm text-text-secondary mt-1">
-                5 layers of hardware-backed security
+                How provider verification works
               </p>
             </div>
             <button
@@ -220,8 +167,8 @@ export function TrustExplainerModal({ open, onClose }: TrustExplainerModalProps)
                   Privacy-Preserving Verification
                 </p>
                 <p className="text-xs text-text-secondary mt-1 leading-relaxed">
-                  The coordinator reports legacy hardware/MDA evidence and
-                  App Attest authorization separately, without exposing the
+                  The coordinator verifies Apple&apos;s certificate chain and
+                  publishes the resulting trust status without exposing the
                   device&apos;s serial number, UDID, or raw certificate.
                 </p>
               </div>

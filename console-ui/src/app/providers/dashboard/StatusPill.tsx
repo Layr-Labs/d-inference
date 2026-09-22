@@ -1,7 +1,9 @@
 // Status + trust pills, shared by the machine card header and the attention
 // feed machine chips. Extracted so the styling stays consistent everywhere.
 
-import { ShieldCheck, ShieldQuestion, ShieldX } from "lucide-react";
+import { ShieldCheck, ShieldX } from "lucide-react";
+
+import { verificationPresentation, type Verification } from "@/lib/verification";
 
 const STATUS: Record<string, { color: string; label: string; live: boolean }> = {
   serving: { color: "bg-accent-green/15 text-accent-green", label: "Serving", live: true },
@@ -27,31 +29,10 @@ export function StatusPill({ status }: { status: string }) {
   );
 }
 
-export function TrustPill({ trustLevel, appAttest = false }: { trustLevel: string; appAttest?: boolean }) {
-  if (appAttest) {
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent-green/10 text-accent-green text-[10px] font-semibold uppercase tracking-wider">
-        <ShieldCheck size={10} /> App Attest
-      </span>
-    );
-  }
-  if (trustLevel === "hardware") {
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent-green/10 text-accent-green text-[10px] font-semibold uppercase tracking-wider">
-        <ShieldCheck size={10} /> Hardware
-      </span>
-    );
-  }
-  if (trustLevel === "self_signed") {
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent-amber/10 text-accent-amber text-[10px] font-semibold uppercase tracking-wider">
-        <ShieldQuestion size={10} /> Self-signed
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-text-tertiary/15 text-text-tertiary text-[10px] font-semibold uppercase tracking-wider">
-      <ShieldX size={10} /> Unverified
-    </span>
-  );
+export function TrustPill({ verification, presentation }: { verification?: Verification; presentation?: ReturnType<typeof verificationPresentation> }) {
+  const view = presentation ?? verificationPresentation(verification);
+  const Icon = view.verified ? ShieldCheck : ShieldX;
+  return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${view.verified ? "bg-accent-green/10 text-accent-green" : "bg-text-tertiary/15 text-text-tertiary"}`}>
+    <Icon size={10} />{view.label}
+  </span>;
 }

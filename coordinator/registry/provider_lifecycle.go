@@ -86,6 +86,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		Hardware:                    msg.Hardware,
 		Models:                      models,
 		Backend:                     msg.Backend,
+		appAttestProtocol:           msg.AppAttestProtocol,
 		ReportedRuntimeCapabilities: normalizeRuntimeCapabilities(msg.RuntimeCapabilities, msg.Hardware),
 		RuntimeCapabilities:         nil,
 		PublicKey:                   pubKey,

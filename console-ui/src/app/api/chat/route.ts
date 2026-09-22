@@ -47,6 +47,9 @@ export async function POST(req: NextRequest) {
 
   const passthroughHeaders = [
     "x-provider-attested",
+    "x-provider-encrypted",
+    "x-provider-verification",
+    "x-provider-authorization-method",
     "x-provider-trust-level",
     "x-provider-secure-enclave",
     "x-provider-mda-verified",

@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-22 · commit `32824d734`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -12,6 +12,23 @@ and is not restated here.
 Optional [App Attest shadow checks](../reference/app-attest-shadow.md) run in the background. Shadow results do not change these enrollment requirements or your existing trust eligibility. Version/cohort controls protect older clients; see the [rollout procedure](../operations/app-attest-rollout.md).
 
 A signed version must be [qualified by the coordinator](../reference/provider-authorization.md#durable-build-qualification) before publication. Build approvals persist across coordinator restarts. Missing approval keeps App Attest-only serving pending; it does not require deleting your credentials or replacing an existing employer profile.
+
+## Read current verification in the dashboard
+
+Open a machine's verification panel to inspect the coordinator's separate App
+Attest and legacy decisions, verification times and authorization deadlines.
+Green requires a current server verdict; expired, revoked, unsupported, offline
+and stale/missing states do not manufacture a current grant from saved hardware
+trust. App Attest-only machines retain their legacy `self_signed` field. A
+provider advertising an App Attest protocol other than version 3 displays
+`unsupported`, even if its reported OS supports App Attest.
+
+The footer counts the union once and reports both method counts and overlap.
+Offline machine records stay in the owned-machine denominator but not current
+authorization. Public proof views omit raw certificates, receipt blobs and
+credential identifiers. See [consumer verification](../consumer/verification.md)
+and the [wire contract](../reference/api-contracts.md#verification-presentation-contract).
+
 
 ## App Attest without Darkbloom MDM
 

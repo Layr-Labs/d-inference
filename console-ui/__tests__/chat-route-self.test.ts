@@ -47,3 +47,14 @@ describe("POST /api/chat self-route header forwarding", () => {
     expect(opts.headers["X-Darkbloom-Route"]).toBeUndefined();
   });
 });
+
+ it("forwards coordinator verification without accepting a client-authored verdict", async () => {
+   const verdict = JSON.stringify({ observed_at: 123, app_attest: { state: "verified", verified_at: 120, expires_at: 200 }, legacy: { state: "pending" } });
+   upstream.fetch.mockResolvedValueOnce(new Response("data: {}\n\n", { headers: { "content-type": "text/event-stream", "x-provider-verification": verdict, "x-provider-authorization-method": "app_attest", "x-provider-trust-level": "self_signed", "x-provider-encrypted": "true" } }));
+   const { POST } = await import("@/app/api/chat/route");
+   const response = await POST(chatRequest({ "content-type": "application/json", "x-provider-verification": "forged" }));
+   expect(response.headers.get("x-provider-verification")).toBe(verdict);
+   expect(response.headers.get("x-provider-trust-level")).toBe("self_signed");
+   expect(response.headers.get("x-provider-encrypted")).toBe("true");
+   expect(upstream.fetch.mock.calls[0][1].headers["x-provider-verification"]).toBeUndefined();
+ });

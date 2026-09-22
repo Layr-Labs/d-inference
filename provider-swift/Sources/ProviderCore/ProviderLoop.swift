@@ -738,7 +738,7 @@ public actor ProviderLoop {
     static func inferReasoningParser(for modelType: String?) -> ReasoningParserFormat {
         guard let type = modelType?.lowercased() else { return .qwen3 }
         if type == "gpt_oss" { return .harmony }
-        if type.hasPrefix("gemma") { return .gemma4 }
+        if type.hasPrefix("gemma") || type == "diffusion_gemma" { return .gemma4 }
         if type.hasPrefix("qwen") { return .qwen3 }
         if type.hasPrefix("deepseek") { return .deepseekR1 }
         // Safe default: qwen3's <think> parser handles the most common format.
@@ -754,7 +754,8 @@ public actor ProviderLoop {
         var engineV2: EngineV2Bridge { engineBundle.bridge }
         /// Retained for VLM vision preprocessing and liveness rebuilds; the
         /// wrapper owns the exact text tower retained by the engine.
-        let container: MLXLMCommon.ModelContainer
+        let modelContainer: ProviderModelContainer
+        var container: MLXLMCommon.ModelContainer? { modelContainer.autoregressive }
         let tokenizer: TokenizerHandle
         /// Scheduler-free sizing facts (weights, fp16 KV rate, context) —
         /// feeds re-slicing, heartbeat fleet context, and the vision gate.
@@ -798,8 +799,23 @@ public actor ProviderLoop {
             modelType: String?,
             lastInferenceAt: ContinuousClock.Instant
         ) {
+            self.init(engineBundle: engineBundle, modelContainer: .autoregressive(container),
+                tokenizer: tokenizer, sizing: sizing, cacheEligibleWeightHash: cacheEligibleWeightHash,
+                isVLM: isVLM, modelType: modelType, lastInferenceAt: lastInferenceAt)
+        }
+
+        init(
+            engineBundle: ProviderEngineBundle,
+            modelContainer: ProviderModelContainer,
+            tokenizer: TokenizerHandle,
+            sizing: SlotSizingSnapshot,
+            cacheEligibleWeightHash: String? = nil,
+            isVLM: Bool,
+            modelType: String?,
+            lastInferenceAt: ContinuousClock.Instant
+        ) {
             self.engineBundle = engineBundle
-            self.container = container
+            self.modelContainer = modelContainer
             self.tokenizer = tokenizer
             self.sizing = sizing
             self.cacheEligibleWeightHash = cacheEligibleWeightHash

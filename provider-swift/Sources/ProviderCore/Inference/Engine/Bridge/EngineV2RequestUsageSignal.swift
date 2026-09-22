@@ -94,7 +94,7 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
             // must be billed/telemetried as memory and must not mint a durable
             // holder receipt. nil preserves scripted/older-engine fallback.
             let engineTier: PrefixCacheTier? = switch usage.prefixCacheTier {
-            case .resident: .memory
+            case .resident, .memorySnapshot: .memory
             case .snapshot: .ssd
             case nil: nil
             }

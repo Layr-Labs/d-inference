@@ -1897,8 +1897,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var validatedPolicy validatedToolConstraintPolicy
 	var validationErr error
 	if isResponsesAPI {
-		loweredConstraintBody, err := promptcontract.LowerProviderBody(
-			promptcontract.EndpointResponses, originalRawBody)
+		loweredConstraintBody, err := promptcontract.LowerResponsesInferenceBody(originalRawBody)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, errorResponse(
 				"invalid_request_error", err.Error()))
@@ -1929,19 +1928,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	parallelToolCalls := validatedPolicy.parallel
 	s.recordToolConstraintMetric(validatedMode, "requested")
 	requiresToolConstraint := validatedMode.requiresInferenceConstraint()
-	if requiresToolConstraint && requiresVision {
-		writeJSON(w, http.StatusBadRequest, errorResponse(
-			"invalid_request_error",
-			"inference-enforced tool_choice is not supported for multimodal requests",
-			withParam("tool_choice")))
-		return
-	}
+	requiresNativeMediaTools := requiresVision && (requiresToolConstraint || requestHasMediaToolResults(parsed))
 	aliasTraits := registry.RequestTraits{
-		HasTools:               hasTools,
-		RequiresToolConstraint: requiresToolConstraint,
-		ToolChoiceMode:         string(validatedMode),
-		ToolChoiceName:         toolChoiceName,
-		ParallelToolCalls:      parallelToolCalls,
+		HasTools:                 hasTools,
+		RequiresToolConstraint:   requiresToolConstraint,
+		RequiresNativeMediaTools: requiresNativeMediaTools,
+		ToolChoiceMode:           string(validatedMode),
+		ToolChoiceName:           toolChoiceName,
+		ParallelToolCalls:        parallelToolCalls,
 	}
 
 	// Resolve a public alias (e.g. "gemma-4-26b") to a concrete build id, now
@@ -1977,12 +1971,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		body.markDirty()
 	}
 
-	// Shared media/tools fail-fast. Chat completions additionally rejects media
-	// sent via the Responses API surface (input-without-messages), because the
-	// Responses→chat lowering doesn't carry image/video parts through.
+	// The serving lowerer has already validated Responses media without dropping
+	// content. Keep the ordinary vision/provider capability gates on both APIs.
+	if requiresNativeMediaTools && s.nativeMediaToolsFailFast(w, model, publicModel, policy, allowedProviderSerials) {
+		return
+	}
 	if s.visionToolsFailFast(w, model, publicModel, requiresVision, hasTools,
 		requiresToolConstraint, string(validatedMode),
-		input != nil && len(messages) == 0, policy, allowedProviderSerials) {
+		policy, allowedProviderSerials) {
 		return
 	}
 	// Remote media URL gate (phase 1, pre-billing). With the media resolver
@@ -2066,7 +2062,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	providerBody := rawBody
 	if isResponsesAPI {
-		loweredProviderBody, err := promptcontract.LowerProviderBody(promptcontract.EndpointResponses, rawBody)
+		loweredProviderBody, err := promptcontract.LowerResponsesInferenceBody(rawBody)
 		if err != nil {
 			s.recordRejection(rejectionInfo{
 				r:                     r,
@@ -2111,6 +2107,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			traits = registry.RequestTraits{HasTools: hasTools}
 		}
 		traits.RequiresToolConstraint = requiresToolConstraint
+		traits.RequiresNativeMediaTools = requiresNativeMediaTools
 		traits.ToolChoiceMode = string(validatedMode)
 		traits.ToolChoiceName = toolChoiceName
 		traits.ParallelToolCalls = parallelToolCalls
@@ -2233,7 +2230,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return true
 		}
 		var err error
-		providerBody, err = promptcontract.LowerProviderBody(promptcontract.EndpointResponses, rawBody)
+		providerBody, err = promptcontract.LowerResponsesInferenceBody(rawBody)
 		if err != nil {
 			refundReservation()
 			s.recordRejection(rejectionInfo{
@@ -2750,12 +2747,14 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	requiresToolConstraint := validatedMode.requiresInferenceConstraint()
 	requiresVision := detectMediaRequirement(parsed)
 	hasTools := requestHasTools(parsed)
+	requiresNativeMediaTools := requiresVision && (requiresToolConstraint || requestHasMediaToolResults(parsed))
 	aliasTraits := registry.RequestTraits{
-		HasTools:               hasTools,
-		RequiresToolConstraint: requiresToolConstraint,
-		ToolChoiceMode:         string(validatedMode),
-		ToolChoiceName:         toolChoiceName,
-		ParallelToolCalls:      parallelToolCalls,
+		HasTools:                 hasTools,
+		RequiresToolConstraint:   requiresToolConstraint,
+		RequiresNativeMediaTools: requiresNativeMediaTools,
+		ToolChoiceMode:           string(validatedMode),
+		ToolChoiceName:           toolChoiceName,
+		ParallelToolCalls:        parallelToolCalls,
 	}
 
 	// Resolve a public alias to a concrete build id, constraint-aware (after
@@ -2797,12 +2796,13 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", publicModel), withParam("model")))
 		return
 	}
-	// Shared media/tools fail-fast (see visionToolsFailFast). Completions and
-	// Anthropic bodies share the top-level "tools" field; neither has the
-	// Responses-API media surface, so rejectResponsesMedia is false here.
+	// Shared media/tools fail-fast (see visionToolsFailFast).
+	if requiresNativeMediaTools && s.nativeMediaToolsFailFast(w, model, publicModel, policy, allowedProviderSerials) {
+		return
+	}
 	if s.visionToolsFailFast(w, model, publicModel, requiresVision, hasTools,
 		requiresToolConstraint, string(validatedMode),
-		false, policy, allowedProviderSerials) {
+		policy, allowedProviderSerials) {
 		return
 	}
 	if s.rejectRemoteMediaURLs(w, r, parsed, model, publicModel, requiresVision, hasTools) {
@@ -2904,6 +2904,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		traits, _ := routingTraitsForProviderBody(
 			hasTools, candidateBody, requiresVision)
 		traits.RequiresToolConstraint = requiresToolConstraint
+		traits.RequiresNativeMediaTools = requiresNativeMediaTools
 		traits.ToolChoiceMode = string(validatedMode)
 		traits.ToolChoiceName = toolChoiceName
 		traits.ParallelToolCalls = parallelToolCalls
@@ -2939,6 +2940,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		routingTraits, _ = routingTraitsForProviderBody(
 			hasTools, inferenceBody, requiresVision)
 		routingTraits.RequiresToolConstraint = requiresToolConstraint
+		routingTraits.RequiresNativeMediaTools = requiresNativeMediaTools
 		routingTraits.ToolChoiceMode = string(validatedMode)
 		routingTraits.ToolChoiceName = toolChoiceName
 		routingTraits.ParallelToolCalls = parallelToolCalls

@@ -212,7 +212,7 @@ func TestToolConstraintCapabilityErrorSeparatesPermanentFromTransient(t *testing
 		response := httptest.NewRecorder()
 		handled := srv.visionToolsFailFast(
 			response, model, model, false, hasTools, requiresConstraint,
-			"required", false, selfRoutePolicy{}, nil)
+			"required", selfRoutePolicy{}, nil)
 		if requiresConstraint && !handled {
 			t.Fatal("incapable constrained request was allowed into the queue")
 		}

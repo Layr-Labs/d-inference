@@ -12,6 +12,12 @@ and are not repeated here.
 
 ## Minimum requirements
 
+Native DiffusionGemma retains its vision tower and applies the existing per-frame
+allocation checks and shared process budget; enabling media discovery does not
+lower load, activation or KV reserves. See the [native block memory and media
+contract](../architecture/native-block-inference.md). No new physical RAM-tier
+or throughput guarantee follows from the capability flag.
+
 | Component | Requirement | Code |
 |---|---|---|
 | CPU / GPU | Apple Silicon with Metal; `ChipFamily` recognised: `M1`, `M2`, `M3`, `M4`, `M5`, `M6` (`Unknown` still runs) | `provider-swift/Sources/ProviderCore/Inference/Engine/GPUEnforcement.swift` (`requireMetal`), `provider-swift/Sources/ProviderCore/Protocol/Enums.swift` |

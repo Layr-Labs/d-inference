@@ -4,6 +4,12 @@ import Testing
 @testable import ProviderBenchmark
 
 struct ModelBenchmarkDispatchTests {
+    @Test func diffusionHasItsOwnNativeBlockDispatch() {
+        #expect(ModelBenchmark.usesNativeBlockGeneration(modelType: "diffusion_gemma"))
+        for modelType in [nil, "qwen4_exp", "gemma4", "diffusion_gemma_text", "prism_hadamard_qwen35"] {
+            #expect(!ModelBenchmark.usesNativeBlockGeneration(modelType: modelType))
+        }
+    }
     @Test func nativePackedFamiliesUseTheNativeBenchmark() {
         #expect(ModelBenchmark.usesNativeGeneration(modelType: "qwen4_exp"))
         #expect(ModelBenchmark.usesNativeGeneration(modelType: "qwen4_exp_text"))

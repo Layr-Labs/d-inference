@@ -25,12 +25,12 @@ final class StagedStandaloneMTPUpgrade: @unchecked Sendable {
 
 extension StandaloneServer {
     var mtpStagingBytes: UInt64 {
-        mtpStagingReservations.extraBytes(residentTargets: Set(slots.values.map { ObjectIdentifier($0.container) }))
+        mtpStagingReservations.extraBytes(residentTargets: Set(slots.values.map { $0.modelContainer.identity }))
     }
 
     func isMTPUpgradeTargetRetained(_ modelID: String) -> Bool {
         guard let slot = slots[modelID] else { return false }
-        return mtpStagingReservations.retains(ObjectIdentifier(slot.container))
+        return mtpStagingReservations.retains(slot.modelContainer.identity)
     }
 
     func startMTPUpgradeMonitor() {
@@ -77,7 +77,7 @@ extension StandaloneServer {
             SpecDecArtifactFunnel.killSwitchEnabled(environment: ProcessInfo.processInfo.environment)
         else { return [] }
         return slots.compactMap { modelID, slot in
-            guard modelID == "gemma-4-26b-qat-4bit", !slot.bundle.mtpStatus.active,
+            guard slot.container != nil, modelID == "gemma-4-26b-qat-4bit", !slot.bundle.mtpStatus.active,
                 config.mtpMode.enablesMTP(
                     forModelType: slot.modelType, embeddedArtifactDeclared: false, modelID: modelID),
                 !evictingModels.contains(modelID), models.contains(where: { $0.id == modelID })
@@ -89,7 +89,7 @@ extension StandaloneServer {
     func prepareMTPUpgrade(_ modelID: String, modelDirectory: URL? = nil) async throws -> StagedStandaloneMTPUpgrade? {
         guard pendingMTPUpgradeModels().contains(modelID), !isLoadingAny,
             let target = slots[modelID].map({
-                (ObjectIdentifier($0.container), UInt64(max(0, $0.sizing.weightsBytes)))
+                ($0.modelContainer.identity, UInt64(max(0, $0.sizing.weightsBytes)))
             }) else { return nil }
         let retention = mtpStagingReservations.retainPreparingTarget(target.0, bytes: target.1)
         do {
@@ -106,7 +106,8 @@ extension StandaloneServer {
     private func prepareRetainedMTPUpgrade(_ modelID: String, modelDirectory: URL?,
                                           target: ObjectIdentifier) async throws -> StagedStandaloneMTPUpgrade? {
         guard pendingMTPUpgradeModels().contains(modelID), !isLoadingAny,
-            let original = slots[modelID], ObjectIdentifier(original.container) == target,
+            let original = slots[modelID], original.modelContainer.identity == target,
+            let originalContainer = original.container,
             let info = models.first(where: { $0.id == modelID }),
             let directory = modelDirectory ?? ModelScanner.resolveLocalPath(modelID: modelID)
         else { return nil }
@@ -128,7 +129,7 @@ extension StandaloneServer {
             await finishMTPUpgradeLoad()
             throw MTPIdleUpgrade.PreparationError.insufficientMemory
         }
-        mtpStagingReservations.reserve(lease, target: ObjectIdentifier(original.container),
+        mtpStagingReservations.reserve(lease, target: original.modelContainer.identity,
             targetBytes: UInt64(max(0, original.sizing.weightsBytes)),
             assistantBytes: artifact.residentBytes, kvBytes: UInt64(grant))
         let preparationStarted = ContinuousClock.now
@@ -139,7 +140,7 @@ extension StandaloneServer {
             guard await kvBudget.recheckPendingLoad(lease) else { throw CancellationError() }
             prepared = try await EngineV2SlotFactory.prepareProductionModel(
                 modelId: modelID, isVLM: original.isVLM, modelDirectory: directory,
-                container: original.container, specDecPreparation: preparation,
+                container: originalContainer, specDecPreparation: preparation,
                 assistantLoader: v2TestHooks?.assistantLoader ?? ProductionProviderMTPAssistantLoader(),
                 emitTelemetry: v2TestHooks?.emitTelemetry,
                 logInfo: { standaloneLogger.info("\($0)") }, logWarning: { standaloneLogger.warning("\($0)") })
@@ -154,7 +155,7 @@ extension StandaloneServer {
             v2TestHooks?.onCacheEligibleWeightHash?(original.cacheEligibleWeightHash)
             replacement = try await EngineV2SlotFactory.makeProductionBundle(
                 modelId: modelID, modelType: original.modelType, isVLM: original.isVLM,
-                modelDirectory: directory, container: original.container, tokenizer: original.tokenizer,
+                modelDirectory: directory, container: originalContainer, tokenizer: original.tokenizer,
                 sizing: sizing, kvBytesCapacity: grant,
                 maxConcurrentRequests: engineV2MaxConcurrent(forModel: modelID), kvBudget: kvBudget,
                 activationReserveBytes: resolvedActivationReserveBytes,
@@ -200,7 +201,7 @@ extension StandaloneServer {
 
     func commitMTPUpgradeIfIdle(_ staged: StagedStandaloneMTPUpgrade) async throws -> Bool {
         let modelID = staged.modelID
-        guard let original = staged.original else { throw CancellationError() }
+        guard let original = staged.original, let originalContainer = original.container else { throw CancellationError() }
         try Task.checkCancellation()
         guard slots[modelID]?.bridge === original.bridge,
             pendingMTPUpgradeModels().contains(modelID)
@@ -220,7 +221,7 @@ extension StandaloneServer {
         // gate so accepted requests never wait behind their admission drain.
         mtpUpgradeTransitions.insert(modelID)
         slots[modelID] = CachedSlot(
-            bundle: staged.replacement, container: original.container,
+            bundle: staged.replacement, container: originalContainer,
             tokenizer: original.tokenizer, modelType: original.modelType,
             isVLM: original.isVLM, sizing: staged.sizing,
             lastUsedAt: original.lastUsedAt,

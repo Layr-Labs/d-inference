@@ -15,6 +15,15 @@ public enum ModelMediaPolicy {
     }
 
     public static func advertisesMedia(_ configuration: [String: Any], modelID: String? = nil) -> Bool {
+        if configuration["model_type"] as? String == "diffusion_gemma_text" { return false }
+        if configuration["model_type"] as? String == "diffusion_gemma" {
+            guard configuration["language_model_only"] as? Bool != true,
+                let vision = configuration["vision_config"] as? [String: Any],
+                let text = configuration["text_config"] as? [String: Any]
+            else { return false }
+            return vision["model_type"] as? String == "gemma4_vision"
+                && text["model_type"] as? String == "diffusion_gemma_text"
+        }
         if isNativeQwen4Type(configuration["model_type"] as? String) {
             // Restore only the owned full Flash-Next tower. Bare text types,
             // unknown identities, and missing/true text-only overlays stay cold

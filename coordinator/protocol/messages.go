@@ -163,6 +163,9 @@ type ModelInfo struct {
 	// consumer sees are governed separately by the catalog capabilities, so this
 	// advertisement does not by itself light up vision in the API.
 	IsVision bool `json:"is_vision,omitempty"`
+	// NativeMediaTools covers forced media tool choice and media-bearing tool
+	// results. Missing/false must never be inferred from a parser or model name.
+	NativeMediaTools bool `json:"native_media_tools,omitempty"`
 	// TemplateRenderOK is set by 0.6.5+ providers after rendering the model's
 	// chat template against canonical fixtures (tool schemas with nullable or
 	// missing types, multimodal content parts). false means the template render

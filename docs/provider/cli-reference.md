@@ -584,13 +584,53 @@ darkbloom benchmark [--model <id>] [--prompt <text>] [--iterations <n>] [--max-t
 For native Qwen4 model types, the ordinary command uses the production CBv2
 model/factory path with MTP and prefix caching off. It preserves model/tokenizer
 EOS, checks complete weight integrity before and after load, and releases the
-session between independent runs. Other model types keep their generic path
+session between independent runs. Non-native model types keep their generic path
 and JSON5 configuration support (`ModelBenchmark.run`,
 `provider-swift/Sources/ProviderBenchmark/ModelBenchmarkNativeQwen4.swift`).
 Iteration/output counts must be positive. The prefill column measures time to
 the first generated token, including prompt preparation; model loading and
 integrity hashing are outside the reported iteration time. An eight-token
 smoke proves entry-point operation, not sustained decode performance.
+
+For `diffusion_gemma`, the ordinary command uses the
+[native block benchmark](../architecture/native-block-inference.md#ordinary-cli-benchmark).
+`--kv-backend auto|contiguous|paged` selects storage (`auto` remains contiguous).
+The prefill column is encoder prefill, not time to first output. Each
+`NATIVE_BLOCK_BENCHMARK` JSON row separately reports first committed output,
+generation including first-block work, completion usage including EOS, committed
+tokens excluding EOS, resolved backend and the production KV grant. Native framing
+can be included in committed tokens; the row does not certify a visible-token
+performance target. Loading and its integrity hashes have a separate clock.
+The row also exposes existing native execution/prefill quantum counts,
+post-first-block commit count and quantum wall-time sum/maximum. Those are work
+diagnostics, not output tokens or GPU-only timing. Prefill, refinement and
+committed-block re-encoding all contribute native work; do not count the
+execution-quanta total as refinement passes without separating those phases.
+Emitting these counters adds no sampling or GPU evaluation step.
+AR sweep, scheduler-prefill, arrival, teacher-forcing and parity modes reject this
+architecture instead of substituting an autoregressive iterator.
+
+Eligible native inference uses the SDK's
+[ordered expert-output reduction](../reference/configuration.md#native-diffusiongemma-expert-reduction).
+That reference defines `DARKBLOOM_DIFFUSION_EXPERT_UNSORT` and its explicit
+rollback. Compare warmed original/optimized runs with unchanged artifact,
+prompt, seed and denoising controls; cold JIT timings and isolated kernel
+timings do not establish a request-throughput improvement.
+
+For an exclusive native benchmark, the
+[descriptor-route diagnostic](../reference/configuration.md#native-diffusiongemma-expert-reduction)
+adds `DIFFUSION_PROVIDER_ROUTE` rows. It observes the first iteration and checks
+that counters stay disarmed for subsequent iterations; it does not remove the
+first sample from the ordinary output. Configure expert routing through
+`[gemma_optimizations].weighted_r1`; the benchmark refuses conflicting low-level
+environment overrides. DiffusionGemma's separate expert reduction control remains
+independent of the Gemma-specific weighted-unsort setting.
+The same reference documents opt-in soft-conditioning and native compiled-sampler
+candidates. `softEmbeddingCalls` and `compiledSamplerCalls` prove dispatch in the
+observed first iteration; subsequent iterations must retain the disarmed counts.
+Report first-use compilation separately from warmed results. An environment value alone does not
+prove shape eligibility or a request-throughput gain. Keep native weights,
+sampling, canvas and output-count oracles identical when comparing either route.
 
 ### Teacher-forced scores
 

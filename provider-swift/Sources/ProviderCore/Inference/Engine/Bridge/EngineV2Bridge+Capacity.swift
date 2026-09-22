@@ -191,7 +191,8 @@ extension EngineV2Bridge {
             // legacy `heartbeatSlotState` precedence — so the coordinator
             // deroutes the model without treating it as crashed-forever.
             state = "reloading"
-        } else if wedgeMonitor.wedgeSuspected(now: now) {
+        } else if (ownedEngine as? CBv2NativeBlockEngine)?.isHealthy == false
+            || wedgeMonitor.wedgeSuspected(now: now) {
             // Same truthful-derouting contract as the legacy heartbeat: a
             // wedged slot must not keep advertising healthy.
             state = "crashed"
@@ -281,7 +282,14 @@ extension EngineV2Bridge {
     /// Number of requests currently active on this bridge (heartbeat
     /// aggregate `inferenceActive` input).
     public func activeRequestCount() -> Int {
-        active.count
+        if let native = ownedEngine as? CBv2NativeBlockEngine {
+            let capacity = native.capacity()
+            // Early terminal delivery is not an idle/evictable native slot.
+            // Include pending retirement and requests still owned by its queue.
+            return max(Set(active.keys).union(pendingSubmissionIDs).count,
+                capacity.activeRequests + capacity.waitingRequests)
+        }
+        return active.count
     }
 
     /// This engine's live-KV admission ceiling in bytes.

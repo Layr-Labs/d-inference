@@ -248,6 +248,7 @@ public enum MediaIngest {
                 modelID: request.model, modelType: modelType, additionalContext: additionalContext)
         }
         var chatMessages: [Chat.Message] = []
+        let retainToolMedia = preserveTemplateFields && modelType == "diffusion_gemma"
         var totalPixels = 0
         var totalVideoPixels = 0
         var imageCount = 0
@@ -270,7 +271,8 @@ public enum MediaIngest {
             case .assistant:
                 chatMessages.append(.assistant(text))
             case .tool:
-                chatMessages.append(.tool(text))
+                chatMessages.append(.init(role: .tool, content: text,
+                    images: retainToolMedia ? images : [], videos: retainToolMedia ? videos : []))
             }
             if preserveTemplateFields {
                 chatMessages[chatMessages.count - 1].templateFields = message.templateMessageDict()
@@ -283,7 +285,8 @@ public enum MediaIngest {
             let generator = Qwen3VLMessageGenerator()
             let messages = zip(request.messages, chatMessages).map { original, decoded in
                 var message = generator.generate(messages: [decoded])[0]
-                if original.role == .user, case .parts(let parts) = original.content {
+                if original.role == .user || (retainToolMedia && original.role == .tool),
+                    case .parts(let parts) = original.content {
                     message["content"] = parts.compactMap { part -> [String: String]? in
                         switch part {
                         case .text(let text): return ["type": "text", "text": text]
@@ -307,8 +310,9 @@ public enum MediaIngest {
 
 
     /// Split a message's content into the concatenated text plus decoded
-    /// image/video media. Non-user roles drop media at the call site, but
-    /// we still decode here so a malformed inline payload fails loudly
+    /// image/video media. Unsupported roles drop media at the call site, but
+    /// the native Diffusion path also retains tool-result assets. We still
+    /// decode here so a malformed inline payload fails loudly
     /// rather than being silently ignored.
     private static func parts(
         from content: OpenAIMessageContent,

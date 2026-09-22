@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-20 · commit `76a8f03d`
+> Last updated: 2026-09-22 · commit `73f8c13f`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -65,7 +65,7 @@ absolute first-content clock. The queue's error vocabulary:
 | `ErrQueueTimeout` | Waited `maxWait` without a reservation. |
 | `ErrQueueTTFTTooSlow` | Hard-reject mode: every otherwise-eligible provider fails only the TTFT ceiling, so waiting cannot help. |
 | `ErrQueueFirstContentDeadline` | The request-absolute first-content clock expired while queued. |
-| `ErrQueueToolConstraintUnavailable` | No provider left that can honour a required tool constraint. |
+| `ErrQueueToolConstraintUnavailable` | No provider left that can honour a required tool constraint or the request's native media-tool capability. |
 
 **Draining.** A queue is drained — waiters popped in order and offered to the
 routing path — whenever fleet state changes. The event is recorded on the

@@ -103,7 +103,8 @@ struct Benchmark: AsyncParsableCommand {
         measured engine (decode[].resolvedKVBackend, \
         samples[].resolvedKVBackend) and de-duplicated in each report's \
         kvBackend block. Candidate rollout is not yet validated; see \
-        docs/design/qwen-first-paged-ssd-rollout.md.
+        docs/design/qwen-first-paged-ssd-rollout.md. Ordinary native \
+        DiffusionGemma benchmarks also honor this backend selection.
         """)
     var kvBackend = "auto"
 
@@ -239,6 +240,11 @@ struct Benchmark: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
+        if let error = nativeBlockModeError(modelType: selectedModel.modelType) {
+            printError(error)
+            throw ExitCode(2)
+        }
+
         if let teacherForcedInput {
             let result = try await TeacherForcedBenchmark.run(
                 modelID: selectedModel.id, modelDirectory: modelPath,
@@ -295,7 +301,8 @@ struct Benchmark: AsyncParsableCommand {
             prompt: prompt,
             iterations: iterations,
             maxTokens: maxTokens,
-            hardware: hardware
+            hardware: hardware,
+            kvBackend: kvBackend
         )
 
         report.printTable()
@@ -314,6 +321,12 @@ struct Benchmark: AsyncParsableCommand {
             return "benchmark modes are mutually exclusive: \(selected.joined(separator: ", "))"
         }
         return nil
+    }
+
+    func nativeBlockModeError(modelType: String?) -> String? {
+        guard modelType == "diffusion_gemma",
+            sweep || schedulerPrefill || arrivalInvariance || parity || teacherForcedInput != nil else { return nil }
+        return "Native block diffusion uses the ordinary benchmark command; AR sweep, teacher-forcing, arrival and parity modes are unsupported for this architecture."
     }
 
     func teacherForcedOptionError() -> String? {

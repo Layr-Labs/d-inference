@@ -18,7 +18,7 @@ var (
 		"image": {}, "image_url": {}, "video": {}, "video_url": {},
 	}
 	responsesMediaTypes = map[string]struct{}{
-		"input_image": {}, "input_file": {}, "image": {}, "image_url": {},
+		"input_image": {}, "input_file": {}, "input_video": {}, "image": {}, "image_url": {},
 		"video": {}, "video_url": {},
 	}
 	messagesMediaTypes = map[string]struct{}{
@@ -109,7 +109,8 @@ func contentCollectionHasMedia(value any, mediaTypes map[string]struct{}) bool {
 				return true
 			}
 		}
-		return contentCollectionHasMedia(value["content"], mediaTypes)
+		return contentCollectionHasMedia(value["content"], mediaTypes) ||
+			(value["type"] == "function_call_output" && contentCollectionHasMedia(value["output"], mediaTypes))
 	}
 	return false
 }

@@ -5,6 +5,23 @@ import Testing
 
 @Suite("Native model forced-tool enforcement")
 struct NativeModelToolChoiceTests {
+    @Test func diffusionUsesItsNativeFrameAndDoesNotBroadenGemmaARGrammar() throws {
+        let context = ChatTemplateFixContext(modelId: "native-diffusion", modelType: "diffusion_gemma")
+        #expect(!Gemma4TemplateFix.applies(to: context))
+        for mode: ToolConstraintMode in [.required, .named("get_weather")] {
+            let strategy = try ToolChoiceEnforcementPolicy.forcedStrategy(mode: mode, modelContext: context)
+            #expect(strategy == .structuredPostValidation)
+            try ToolChoiceEnforcementPolicy.validateParser(.gemma, strategy: strategy, modelContext: context)
+            for wrong: ToolCallFormat in [.xmlFunction, .qwen35, .nemotron, .json] {
+                #expect(throws: (any Error).self) {
+                    try ToolChoiceEnforcementPolicy.validateParser(wrong, strategy: strategy, modelContext: context)
+                }
+            }
+        }
+        #expect(!ToolChoiceEnforcementPolicy.nativeStructuredTarget(
+            .init(modelId: "looks-like-diffusion_gemma", modelType: "llama")))
+    }
+
     @Test func bonsaiUsesNativeQwenFramingWithoutAdvertisingOtherArtifacts() throws {
         let context = ChatTemplateFixContext(
             modelId: EngineV2SupportedModels.bonsai2ModelID, modelType: "prism_hadamard_qwen35")

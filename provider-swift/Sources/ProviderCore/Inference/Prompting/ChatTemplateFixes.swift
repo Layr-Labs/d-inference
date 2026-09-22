@@ -18,6 +18,12 @@ struct ChatTemplateFixContext: Sendable {
 }
 
 enum ChatTemplateFixes {
+    /// Share the native turn/tool input format without broadening Gemma's
+    /// separate autoregressive grammar eligibility predicate.
+    private static func usesGemmaInputFormat(_ context: ChatTemplateFixContext) -> Bool {
+        context.modelType == "diffusion_gemma" || Gemma4TemplateFix.applies(to: context)
+    }
+
     static func normalizeMessages(
         _ messages: [[String: any Sendable]],
         context: ChatTemplateFixContext
@@ -32,7 +38,7 @@ enum ChatTemplateFixes {
         }
         try validateGenericToolHistory(normalized)
 
-        if Gemma4TemplateFix.applies(to: context) {
+        if usesGemmaInputFormat(context) {
             return try Gemma4TemplateFix.normalizeMessages(normalized)
         }
         return normalized
@@ -57,7 +63,7 @@ enum ChatTemplateFixes {
         if GPTOSSHarmonyTemplateFix.applies(to: context) {
             return GPTOSSHarmonyTemplateFix.normalizeTools(sanitized)
         }
-        if Gemma4TemplateFix.applies(to: context) {
+        if usesGemmaInputFormat(context) {
             return Gemma4TemplateFix.normalizeTools(sanitized)
         }
         return sanitized
@@ -88,7 +94,7 @@ enum ChatTemplateFixes {
         return ids
     }
 
-    private static func validateGenericToolHistory(
+    static func validateGenericToolHistory(
         _ messages: [[String: any Sendable]]
     ) throws {
         var toolResultsAllowed = false

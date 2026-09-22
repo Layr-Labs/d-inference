@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-22 · commit `ce809b792`
+> Last updated: 2026-09-22 · commit `6253ca765`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -298,8 +298,9 @@ The base-reward model memory ceiling lives in `coordinator/hardware/mac_models.g
 cap, eligibility rule, serial/accounting key, or payout. `coordinator/mdm/mac_models.go`
 retains a compatibility wrapper. App Attest hardware claims are observational in
 this release; they do not replace the existing reward inputs or eligibility gates.
-The current catalog includes the 2026 M6 and M5 Pro Mac minis and M5 Max and
-M5 Ultra Mac Studios; see the
+The current catalog includes the 2026 M6 and M5 Pro Mac minis and M5 Max Mac
+Studio. The M5 Ultra Studio identifier remains excluded because Apple's model
+pages also assign it to the lower-memory M5 Pro mini; see the
 [identifier table](../provider/hardware-requirements.md#new-2026-desktop-identifiers).
 
 ## Invariants

@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Recognize the 2026 M6 and M5 Pro Mac minis and M5 Max and M5 Ultra Mac Studios for base-reward memory caps and complete their earnings-calculator choices. Report M6 as its own chip family and use the published M5 Ultra bandwidth; keep M6 on conservative MTP and model-capability gates pending physical qualification.
+- Recognize the 2026 M6 and M5 Pro Mac minis and M5 Max Mac Studio for base-reward memory caps and complete the new desktops' earnings-calculator choices. Recognize M5 Ultra for serving bandwidth while withholding its disputed identifier from base rewards. Report M6 as its own chip family with conservative MTP and model-capability gates pending physical qualification.
 
 - **Privacy descriptions** — Describe encrypted network hops and plaintext processing at the coordinator and provider, distinguish qualified MDM-optional App Attest authorization from legacy MDA evidence, and remove unsupported memory-wiping and recipient-key forward-secrecy guarantees.
 - Operations helpers encode admin JSON fields, return a failure after any fleet host fails while still visiting remaining hosts, and isolate smoke-test response files.

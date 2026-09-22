@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-22 · commit `ce809b792`
+> Last updated: 2026-09-22 · commit `6253ca765`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -48,25 +48,27 @@ does not gate any model (`provider-swift/Sources/ProviderCore/Hardware/HardwareD
 
 ## New 2026 desktop identifiers
 
-These identifiers are in the base-reward memory-cap catalog
-(`coordinator/hardware/mac_models.go`, `ModelMaxMemoryGB`). They do not
-bypass serving authorization, catalog model requirements or the provider load
-gate. Actual model serving on these machines still needs physical validation.
+The base-reward catalog (`coordinator/hardware/mac_models.go`,
+`ModelMaxMemoryGB`) includes the three unambiguous identifiers below. It
+excludes the M5 Ultra's disputed identifier until the conflict is resolved.
+This catalog does not bypass serving authorization, model requirements or the
+provider load gate. Actual model serving still needs physical validation.
 
-| Mac | Identifier | Maximum unified memory | Catalog code |
-|---|---|---:|---|
-| Mac mini, M6 | `Mac18,5` | 32 GB | `coordinator/hardware/mac_models.go` (`ModelMaxMemoryGB`) |
-| Mac mini, M5 Pro | `Mac17,16` | 64 GB | `coordinator/hardware/mac_models.go` (`ModelMaxMemoryGB`) |
-| Mac Studio, M5 Max | `Mac17,14` | 128 GB | `coordinator/hardware/mac_models.go` (`ModelMaxMemoryGB`) |
-| Mac Studio, M5 Ultra | `Mac17,15` | 512 GB | `coordinator/hardware/mac_models.go` (`ModelMaxMemoryGB`) |
+| Mac | Identifier | Maximum unified memory | Base-reward memory cap |
+|---|---|---:|---:|
+| Mac mini, M6 | `Mac18,5` | 32 GB | 32 GB |
+| Mac mini, M5 Pro | `Mac17,16` | 64 GB | 64 GB |
+| Mac Studio, M5 Max | `Mac17,14` | 128 GB | 128 GB |
+| Mac Studio, M5 Ultra | `Mac17,15` | 512 GB | Ineligible pending identifier confirmation |
 
 Apple's [Mac mini identification page](https://support.apple.com/en-us/102852)
 currently prints `Mac17,15` for the M5 Pro mini, while its
 [Mac Studio page](https://support.apple.com/en-us/102231) prints that identifier
 for the M5 Ultra Studio. An [M5 Pro mini benchmark submission](https://browser.geekbench.com/v7/cpu/425786)
 reports `Mac17,16`. Confirm `hw.model` on a physical mini before relying on
-its base-reward tier; the catalog uses the observed identifier to avoid giving
-the mini the Ultra's 512 GB ceiling.
+its base-reward tier. `Mac17,15` remains unknown to the reward catalog so a
+mini cannot inherit the Ultra's 512 GB cap; this does not block the Studio
+from enrolling or serving otherwise eligible models.
 
 ## RAM tiers and catalog models
 

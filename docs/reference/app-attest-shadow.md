@@ -1,6 +1,6 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-22 · commit `33064807e`
 
 App Attest shadow collection records stable machine identities, fleet adoption, submitted proofs and receipts alongside legacy verification. Shadow alone changes no routing, rewards or trust. The separately enabled [provider authorization path](provider-authorization.md) uses qualified evidence for MDM-optional serving and rewards. DeviceCheck's separate two-bit API remains deferred.
 
@@ -112,7 +112,7 @@ Apple's [receipt contract](https://developer.apple.com/documentation/devicecheck
 | Protocol | 48 KiB frame, 32 KiB decoded proof; bounded CBOR and status fields. |
 | Response/storage | 90-second response deadline; two-second handling budget, with a separate two-second budget for deferred archive completion. Standalone events and enrollment writes each have a two-second storage timeout. |
 | Assertions | Every ten minutes after success; a fresh encrypted challenge after reconnect or recovery. A failure immediately supersedes the last prospective verdict. |
-| Session recovery | Transient failures retry after one minute, then five minutes, then hourly. Every attempt gets a new session/nonce and reloads durable acceptance/counters. Successful assertions reset backoff. Permanent crypto/policy rejections stop; cancellation stops retries. Code: `coordinator/appattest/service/retry.go`. |
+| Session recovery | Transient failures, including the released client's coarse `apple_error` result, retry after one minute, then five minutes, then hourly. Every attempt gets a new session/nonce and reloads durable acceptance/counters. Successful assertions reset backoff. An Apple API error is an unknown prospective verdict and grants no permission; verified crypto/policy rejections remain terminal, and cancellation stops retries. Code: `coordinator/appattest/service/retry.go`. |
 | Apple callbacks | 25-second waiter deadline. The actual uncancellable Apple operation retains admission until its callback arrives; retries receive `busy` in the meantime. A token fences duplicate late callbacks from unlocking a newer operation. A pre-cancelled call does not acquire admission. Code: `AppleOperationGate.swift` and `AppleAppAttestService.swift` in `provider-swift/Sources/ProviderAppAttest/`. |
 | Attestation retries | At most three attempts, 2/8-second waits, only for service unavailable, using the same key/hash. |
 | Key generation | Per-key one-hour replacement cooldown plus five generations per coordinator/environment per hour across account scopes, persisted before calling Apple. |

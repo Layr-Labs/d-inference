@@ -1,6 +1,13 @@
 # Test
 
-> Last updated: 2026-09-20 · commit `76a8f03d9`
+> Last updated: 2026-09-21 · commit `ce809b792`
+
+The [Ollama companion POC](../provider/ollama-connect.md) has an independent
+`make ollama-connect-test` target. Its hostile-server tests require loopback
+port 11434 to be unused and never stop an existing Ollama process. Coordinator
+boundary coverage is `go test -race ./registry -run 'TestOllamaBridge|TestAppAttest'`
+from `coordinator/`; the existing encrypted-inference E2E test remains a separate
+real-runtime check, with synthetic testbed trust.
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs

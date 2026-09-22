@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add an experimental native Ollama onboarding companion: read-only local discovery, live catalog selection, signed-provider setup handoff and expiring coordinator-corroborated App Attest status. Private inference stays in the existing Darkbloom worker; stock Ollama proxying and GGUF import remain unsupported.
+
 - **Privacy descriptions** — Describe encrypted network hops and plaintext processing at the coordinator and provider, distinguish qualified MDM-optional App Attest authorization from legacy MDA evidence, and remove unsupported memory-wiping and recipient-key forward-secrecy guarantees.
 - Operations helpers encode admin JSON fields, return a failure after any fleet host fails while still visiting remaining hosts, and isolate smoke-test response files.
 - **Admin email login** — Encode Privy OTP email/code fields as JSON strings so quoted addresses and escape characters cannot break or reshape the upstream request.

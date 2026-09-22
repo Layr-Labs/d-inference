@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-21 · commit `ce809b792`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -12,6 +12,10 @@ identity-bearing evidence behind it.
 An App Attest grant also depends on a fresh [durable build qualification](../reference/provider-authorization.md#durable-build-qualification). Withdrawing it fences old qualification generations; cached download metadata or a prior successful signature cannot grant new dispatch. Independently valid legacy verification remains a separate serving path.
 
 ## Public attestation endpoint
+
+The [Ollama companion](../architecture/security/ollama-connect.md) uses this
+listing for expiring status display only. It cannot authorize a provider or
+make an Ollama process an approved plaintext recipient.
 
 ```bash
 curl https://api.darkbloom.dev/v1/providers/attestation

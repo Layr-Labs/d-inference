@@ -6,6 +6,7 @@
         ui-install ui-build ui-lint ui-test ui \
         e2e-integration e2e-benchmark e2e \
         docs-check docs-impact-check docs-stamp \
+        ollama-connect ollama-connect-build ollama-connect-test \
         test build all clean
 
 help:
@@ -81,6 +82,18 @@ benchmark-wrapper-test: ## Unit-test the Gemma benchmark wrapper (no GPU or weig
 
 benchmark-gemma-contbatch: ## Build and benchmark Gemma 4 26B continuous batching
 	python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)
+
+# ---- Ollama companion POC (native macOS, independent SwiftPM package) ------
+
+ollama-connect: ## Build and open the native Ollama companion POC
+	./experiments/ollama-connect/script/build_and_run.sh --verify
+
+ollama-connect-build: ## Build the Ollama companion without opening it
+	./experiments/ollama-connect/script/build_and_run.sh --build
+
+ollama-connect-test: ## Test the Ollama companion policies and hostile metadata server
+	swift test --package-path experiments/ollama-connect
+	python3 experiments/ollama-connect/script/test_transport.py
 
 # ---- Console UI (Next.js 16) ----------------------------------------------
 

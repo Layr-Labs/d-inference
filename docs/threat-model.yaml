@@ -48,6 +48,11 @@ created: "2026-05-14"
 # env mappings and persist across restarts. Signed physical-Mac qualification
 # remains an operator evidence requirement, never inferred from a CI green check.
 methodology: STRIDE
+# The experimental Ollama companion (2026-09-21) reads untrusted local model
+# metadata and corroborates signed-provider status via the public coordinator.
+# It has no inference/proxy endpoint, reads no account token, and changes no
+# serving gate. See architecture/security/ollama-connect.md and the coordinator
+# TestOllamaBridgeCannotInheritAppAttestServing regression test.
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
   platform. Covers production only. Dev environment, nation-state adversaries, and

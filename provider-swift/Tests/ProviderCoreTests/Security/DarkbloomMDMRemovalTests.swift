@@ -55,4 +55,35 @@ import Testing
         let data = try PropertyListSerialization.data(fromPropertyList: original, format: .xml, options: 0)
         #expect(DarkbloomMDMRemoval.target(in: data, coordinatorURL: coordinator)?.identifier == "io.darkbloom.enroll")
     }
+
+    @Test func administratorAccessPrecedesOnlyTheFixedRead() throws {
+        let xml = try PropertyListSerialization.data(fromPropertyList: ["_computerlevel": [profile()]],
+                                                      format: .xml, options: 0)
+        var calls: [String] = []
+        let selected = DarkbloomMDMRemoval.installedTarget(
+            coordinatorURL: coordinator, allowAdministratorPrompt: true,
+            beforeAdministratorPrompt: { calls.append("notice") },
+            read: { executable, args, showErrors in
+                calls.append("read \(executable) \(args.joined(separator: " ")) errors=\(showErrors)")
+                return executable == "/usr/bin/sudo" ? xml : nil
+            },
+            readAuthenticated: { arguments in
+                calls.append("sudo \(arguments.joined(separator: " "))")
+                return xml
+            })
+        #expect(selected?.identifier == DarkbloomMDMRemoval.profileIdentifier)
+        #expect(calls == [
+            "read /usr/bin/profiles show -type configuration -output stdout-xml errors=false",
+            "notice", "sudo show -type configuration -output stdout-xml -all",
+        ])
+
+        calls.removeAll()
+        let denied = DarkbloomMDMRemoval.installedTarget(
+            coordinatorURL: coordinator, allowAdministratorPrompt: true,
+            beforeAdministratorPrompt: { calls.append("notice") },
+            read: { executable, _, _ in calls.append("read \(executable)"); return nil },
+            readAuthenticated: { _ in calls.append("sudo"); return nil })
+        #expect(denied == nil)
+        #expect(calls == ["read /usr/bin/profiles", "notice", "sudo"])
+    }
 }

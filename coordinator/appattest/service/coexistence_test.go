@@ -41,7 +41,7 @@ func TestShadowProofsNeverMutateLegacyTrust(t *testing.T) {
 		return []any{p.Status, p.TrustLevel, p.CodeAttested, p.FreshCodeAttested, p.MDAVerified, p.RuntimeVerified, p.AccountID, p.PublicKey}
 	}
 	before := snapshot()
-	for _, failure := range []string{"unsupported", "not_configured", "apple_unavailable", "apple_invalid_key", "anything-untrusted"} {
+	for _, failure := range []string{"unsupported", "not_configured", "apple_unavailable", "apple_error", "apple_invalid_key", "anything-untrusted"} {
 		if next := x.handle(ctx, protocol.AppAttestShadowPayload{Action: x.expected, Session: x.id, Result: failure}); next != "stop" {
 			t.Fatal(next)
 		}

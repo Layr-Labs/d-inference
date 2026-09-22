@@ -66,8 +66,9 @@ func appAttestRetryDelay(failures int) time.Duration {
 	return time.Hour
 }
 
-// A verified first assertion with unavailable readiness has no authorizer
-// refresh record yet. Reuse the existing bounded backoff for a fresh assertion,
+// A verified first assertion with unavailable readiness or an initial receipt
+// awaiting its risk metric has no authorizer refresh record yet. Reuse the
+// existing bounded backoff for a fresh assertion,
 // capped at the normal cadence: one minute, five minutes, then ten minutes.
 // A known decision or an existing refresh record restores the normal cadence.
 // Only the serialized session worker reads or writes this retry state.
@@ -85,7 +86,11 @@ func (x *Session) nextAssertionDelay() time.Duration {
 
 func retryableAppAttestOutcome(outcome string) bool {
 	switch outcome {
-	case "timeout", "operation_timeout", "apple_unavailable", "busy", "storage_error", "enrollment_storage_error", "write_failed", "send_failed", "storage_busy", "verifier_busy", "key_unregistered", "apple_invalid_key", "keychain_error":
+	// Released clients collapse unknown DeviceCheck/system failures into
+	// apple_error. It conveys no verified policy violation: retry with the
+	// existing bounded backoff instead of abandoning this live connection.
+	// A retry still needs fresh, fully qualified evidence before serving.
+	case "timeout", "operation_timeout", "apple_unavailable", "apple_error", "busy", "storage_error", "enrollment_storage_error", "write_failed", "send_failed", "storage_busy", "verifier_busy", "key_unregistered", "apple_invalid_key", "keychain_error":
 		return true
 	}
 	return false

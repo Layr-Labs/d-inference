@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-22 · commit `632a94adc`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -11,7 +11,35 @@ The legacy levels and flags below retain their meaning. With the explicit servin
 
 The [durable build qualification policy](../../reference/provider-authorization.md#durable-build-qualification) adds a separate qualification generation to App Attest leases. `coordinator/appattest/service/authorizer.go` (`apply`) recomputes the build/code match using the current approved record and retained Apple-signed full measurement; cached true booleans cannot survive withdrawal. `coordinator/registry/app_attest_authorization.go` (`providerHasAppAttestAuthorizationLocked`) rejects stale generations at every shared dispatch gate. Qualification expiry is independent of assertion and receipt expiry.
 
+MDM removal guidance is a separate local operation. `provider-swift/Sources/ProviderCore/Security/DarkbloomMDMRemoval.swift` (`installedTarget`) validates the exact Darkbloom profile and, when needed, uses `ProfileInventoryAuthorization.readAuthenticatedProfiles` for a fixed read-only inventory. That helper requires its own process group to own the foreground terminal before launching native `sudo` authentication, inherits only terminal input/error and captured XML output, and returns no target on denial or background execution. The CLI never removes the profile itself or grants serving permission; coordinator authorization still gates the App Attest path.
+
+## Presentation and dispatch history
+
+`coordinator/registry/verification.go` (`ProviderVerificationAndAuthorization`) evaluates the
+two authorization paths, owner compatibility lease and live account/status under
+one registry/provider lock observation; unsupported App Attest protocol versions
+never appear pending. It exports only bounded public states and timestamps.
+Legacy hardware trust is preserved as evidence, not
+rewritten by App Attest. `authorizeInferenceHandoff` captures the verdict on the
+pending request at the final writer check. The response metadata uses that
+immutable winning-attempt snapshot, not a later live grant.
+
+Live views use each path's expiry and a bounded source-snapshot age. Historical
+chat uses the recorded dispatch time; revocation fences future work without
+rewriting prior claims. Counts distinguish connection-level union/breakdowns
+from privately deduplicated machine inventory and reported OS adoption. Stats
+location buckets are derived from the same detached fleet walk as provider rows,
+so store work between aggregation stages cannot mix connection generations. See
+[the presentation contract](../../reference/api-contracts.md#verification-presentation-contract)
+for cache bounds and unknown-field behavior. No raw Apple certificate or receipt
+is added to public/owner presentation; detailed archive access remains on its
+existing authorized operations path.
+
 ## Context
+
+Generic client-reported Apple API failures (`apple_error`) use bounded [exchange recovery](../../reference/app-attest-shadow.md). They are unknown observations, not verified security denials. Retrying neither creates a serving grant nor extends its deadline; fresh proof still passes all qualification, receipt, revocation and binding checks. Verified cryptographic or policy violations remain terminal.
+
+A verified first App Attest assertion may still lack a usable risk receipt. The coordinator retries that first assertion on a bounded schedule while the receipt worker renews evidence. The [serving authorization policy](../../reference/provider-authorization.md) requires the complete risk metric, fresh assertion, non-revoked credential, qualified build and bound identity before granting permission.
 
 Providers are adversarial until proven otherwise ([`../../threat-model.yaml`](../../threat-model.yaml),
 `ADV-001`). A provider's self-report is worthless on its own — the reporter is

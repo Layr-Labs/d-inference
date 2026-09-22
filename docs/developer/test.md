@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-21 · commit `b581bfd21`
+> Last updated: 2026-09-22 · commit `31a6ca37f`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -36,6 +36,34 @@ preparation seam before tokenization. The shared public corpus covers JSON-objec
 and schema response formats plus multi-system and text/tool/endpoint forms; it compares
 actual Swift tokens and scope-bound hashes with Rust plans. No production
 prompts or model weights are needed (`scripts/verify-prompt-parity.sh`).
+
+For the DiffusionGemma live gates, use the immutable public checkpoint:
+
+```bash
+hf download mlx-community/diffusiongemma-26B-A4B-it-4bit \
+  --revision a7a81407613811e8ba63af92ac0d852b809e191f
+export DARKBLOOM_DIFFUSION_MODEL_DIR="$HOME/.cache/huggingface/hub/models--mlx-community--diffusiongemma-26B-A4B-it-4bit/snapshots/a7a81407613811e8ba63af92ac0d852b809e191f"
+(cd provider-swift && swift build --build-tests)
+./scripts/stage-test-metallib.sh "$(cd provider-swift && swift build --show-bin-path)"
+(cd provider-swift && DARKBLOOM_DIFFUSION_ENCRYPTED_LIVE=1 DARKBLOOM_PREFIX_CACHE=0 \
+  ../scripts/run-nested-suite.sh nativeTextToolsMediaAndHistoryCrossTheEncryptedWire --no-parallel)
+```
+
+The encrypted provider gate and SDK portable-state gate share
+`libs/mlx-swift-lm/Tests/MLXLMTests/DiffusionGemmaArtifactFixture.swift`
+(`DiffusionGemmaArtifactFixture.verify`). It pins the file inventory, sizes and
+SHA-256 checksums from that revision and streams the actual bytes, including
+processor and generation metadata. HF snapshot symlinks are supported; missing,
+modified or additional files fail verification. No private local verification
+receipt is required. The provider imports the same test helper through a source
+symlink; it does not change startup scanning or production attestation.
+
+`scripts/stage-test-metallib.sh` first calls the source-verifying metallib builder,
+then replaces both the executable-colocated library and the nested test resource
+used for cache identity. Use it after rebuilding either Swift package's tests.
+The Make target and CI use this shared setup. The native cancellation fixture
+resolves `localhost` and tries its address families; its hermetic socket test
+covers separate IPv4 and IPv6 listeners.
 
 For a new native family, run the same production corpus against its exact
 config/tokenizer/template artifacts before accepting cache routing. Diffusion
@@ -216,6 +244,7 @@ including Qwen4 Metal headers, before running the real child `runtime-smoke` and
 ad-hoc signed fixtures do not establish release signing or production attestation.
 
 Installer onboarding regression coverage runs with `scripts/test-install-atomic.sh`.
+The provider CI job runs `python3 scripts/test-profile-inventory-auth.py` on macOS. Its pseudo-terminal fixtures compile the production profile-inventory helper, verify foreground password prompting without echo, exercise nonzero exits and failed spawns in a foreground terminal, and reject background terminal jobs and noninteractive reads without invoking real `sudo` or changing profiles.
 It invokes `scripts/test-install-onboarding.py`, which executes the actual setup
 function with profile/network/Settings effects mocked: macOS 27+, older and unknown
 versions, existing management, and unavailable enrollment. This checks setup
@@ -1554,15 +1583,26 @@ procedure, its inputs and the regeneration flow are in
 install/replace path of `scripts/install.sh` in a temp dir (and runs
 `scripts/sync-install-embed.sh check` first).
 
-### 5. Console UI and Admin UI
+### 5. Web UIs
 
 ```bash
 make ui-test                     # cd console-ui && npm test  (vitest run)
 make ui-lint                     # npx eslint src/
 make ui-build                    # next build
 cd admin-ui && npm test && npm run lint && npm run build
-node --test landing/earn-calculator-core.test.js
+make landing                    # standalone install, lint, build and HTTP route tests
 ```
+
+The path-filtered `.github/workflows/landing.yml` workflow runs `npm ci`,
+lint, the production build (including TypeScript checks), and `npm test`.
+The Node test suite in `landing/tests/routes.test.mjs` starts an isolated
+production server to verify pages, legacy redirects, assets and unconfigured
+API responses without production credentials or upstream requests. For a
+migration or deployment, start it on port `3008` and check `/`, `/about`, `/privacy`, `/terms`, the
+`/docs` redirect, fonts/media, desktop and mobile scrolling, and chat states.
+Verify `/api/network` and `/api/about` against the configured upstreams;
+without a key, `/api/chat` should return `503`. Exercise story delivery with
+a test webhook rather than sending test submissions to the production inbox.
 
 ### 6. Scripts and release integrity
 

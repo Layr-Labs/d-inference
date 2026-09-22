@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-21 · commit `b581bfd21`
+> Last updated: 2026-09-22 · commit `ce809b792`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -114,7 +114,7 @@ Go `Hardware` · Swift `HardwareInfo`. All fields required.
 |---|---|---|
 | `machine_model` | `string` | `String` |
 | `chip_name` | `string` | `String` |
-| `chip_family` | `string` | `ChipFamily` (`"M1"`, `"M2"`, `"M3"`, `"M4"`, `"M5"`, `"Unknown"`; `Protocol/Enums.swift`) |
+| `chip_family` | `string` | `ChipFamily` (`"M1"`, `"M2"`, `"M3"`, `"M4"`, `"M5"`, `"M6"`, `"Unknown"`; `Protocol/Enums.swift`) |
 | `chip_tier` | `string` | `ChipTier` (`"Base"`, `"Pro"`, `"Max"`, `"Ultra"`, `"Unknown"`) |
 | `memory_gb` | `int` | `UInt64` |
 | `memory_available_gb` | `float64` | `UInt64` |

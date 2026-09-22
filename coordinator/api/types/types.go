@@ -9,6 +9,8 @@ package types
 import (
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/registry"
+
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -109,6 +111,7 @@ type RequestTimingDetails struct {
 // Location is region/country GeoIP only — city, coordinates, lookup source,
 // and raw IPs are omitted. Device serials are never included.
 type ChatCompletionMetadata struct {
+	Verification           *registry.Verification  `json:"verification,omitempty"`
 	ProviderID             string                  `json:"provider_id,omitempty"`
 	ProviderAttested       bool                    `json:"provider_attested"`
 	ProviderTrustLevel     string                  `json:"provider_trust_level,omitempty"`

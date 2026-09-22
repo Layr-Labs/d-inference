@@ -1,6 +1,6 @@
 # Glossary — the one name for each thing
 
-> Last updated: 2026-09-13 · commit `d66a38b77`
+> Last updated: 2026-09-21 · commit `ce809b792`
 
 Canonical terms used across the docs and the code, one line each, with the page
 that owns the full definition. Use these spellings everywhere (including code
@@ -16,7 +16,7 @@ owner page. Terms are grouped by concern and alphabetical within a group.
 | **Console** | The web app at `console.darkbloom.dev` (`console-ui/`): keys, chat, billing, provider dashboards; talks to the coordinator only through its own `/api/*` relays | [`architecture/components/console-ui.md`](architecture/components/console-ui.md) |
 | **Consumer** | Anyone calling the HTTP API with an API key or Privy JWT | [`architecture/components/consumer.md`](architecture/components/consumer.md) |
 | **Coordinator** | The Go control plane (`coordinator/`): HTTP API, provider WebSocket, routing, billing, persistence. One process per environment (`api.darkbloom.dev`, `api.dev.darkbloom.xyz`) | [`architecture/components/coordinator.md`](architecture/components/coordinator.md) |
-| **Landing** | Static marketing site (`landing/`) with the earnings calculator | [`architecture/components/console-ui.md`](architecture/components/console-ui.md) |
+| **Landing** | Next.js marketing site (`landing/`) with live grid telemetry and chat | [`architecture/components/console-ui.md`](architecture/components/console-ui.md) |
 | **Provider** (node) | A Mac running the `darkbloom` CLI (`provider-swift/`), connected to the coordinator over `/ws/provider`, serving models | [`architecture/components/provider.md`](architecture/components/provider.md) |
 | **Prompt-contract sidecar** (`promptsidecar`) | Rust child process of the coordinator (`EIGENINFERENCE_PROMPT_SIDECAR_ENABLED`) that derives deterministic, provider-compatible token boundaries for exact-cache routing; always fails cold, never blocks inference | [`architecture/prompt-contract-sidecar.md`](architecture/prompt-contract-sidecar.md) |
 

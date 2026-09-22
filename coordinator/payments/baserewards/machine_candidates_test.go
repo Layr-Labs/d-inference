@@ -10,6 +10,28 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
+func TestRewardMemoryGBNewMacIdentifierConflict(t *testing.T) {
+	cases := []struct {
+		model string
+		want  int
+		known bool
+	}{
+		{"Mac17,15", 0, false}, // Apple's mini and Studio pages both claim this ID.
+		{"Mac17,16", 64, true},
+		{"Mac17,14", 128, true},
+		{"Mac18,5", 32, true},
+	}
+	for _, tc := range cases {
+		got, known := rewardMemoryGB(registry.ProviderSnapshot{
+			HardwareModel: tc.model, MemoryGB: 512,
+		})
+		if got != tc.want || known != tc.known {
+			t.Errorf("rewardMemoryGB(%q, 512) = (%d, %v), want (%d, %v)",
+				tc.model, got, known, tc.want, tc.known)
+		}
+	}
+}
+
 type machineEngineStore struct {
 	*engineStore
 	onSum       func()

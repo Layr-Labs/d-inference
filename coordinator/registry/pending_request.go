@@ -34,6 +34,8 @@ type PendingRequest struct {
 	// ceilings from this timestamp; zero preserves legacy relative behavior.
 	FirstContentDeadline time.Time
 	ProviderID           string
+	// Immutable privacy-safe verdict captured at the final writer authorization boundary.
+	DispatchVerification Verification
 	// Captured atomically with this provider's pending debit. A later lease
 	// cannot transfer already-queued work onto a changed endpoint or identity.
 	providerAuthorizationBinding providerRequestAuthorizationBinding

@@ -30,8 +30,7 @@ struct DiffusionGemmaEncryptedHandlerLiveTests {
             try #require(resolved.appendingPathComponent(name).resolvingSymlinksInPath()
                 == directory.appendingPathComponent(name).resolvingSymlinksInPath())
         }
-        try #require(hashFile(atPath: directory.appendingPathComponent("local-verified-manifest.json").path)
-            == "33eb488387819e31d1a848e7d0f20465ae6ad0ae1ed31dac7aa4cb5e0461d53d")
+        try DiffusionGemmaArtifactFixture.verify(directory: directory)
         try #require(!FileManager.default.fileExists(atPath: LegacyKVCacheSweeper.defaultKVRoot().path))
         _ = Bundle(for: DiffusionEncryptedBundleAnchor.self).bundleURL
         let originalHash = try #require(WeightHasher.computeHash(snapshotDir: directory, modelID: Self.modelID))

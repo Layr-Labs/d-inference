@@ -32,7 +32,7 @@ struct DiffusionGemmaStandaloneLiveTests {
             ProcessInfo.processInfo.environment["DARKBLOOM_DIFFUSION_MODEL_DIR"]))
         let resolved = try #require(ModelScanner.resolveLocalPath(modelID: modelID))
         try #require(resolved.appendingPathComponent("config.json").resolvingSymlinksInPath().standardizedFileURL
-            == selected.appendingPathComponent("config.json").standardizedFileURL)
+            == selected.appendingPathComponent("config.json").resolvingSymlinksInPath().standardizedFileURL)
         // Do not let a live fixture delete an operator's retired cache tree.
         try #require(!FileManager.default.fileExists(atPath: LegacyKVCacheSweeper.defaultKVRoot().path))
         _ = Bundle(for: DiffusionStandaloneBundleAnchor.self).bundleURL

@@ -77,5 +77,6 @@ func (r *Registry) authorizeInferenceHandoff(p *Provider, pending *PendingReques
 		!r.providerEligibleForTraitsLocked(p, pending.Model, pending.Traits) {
 		return ErrProviderServingUnauthorized
 	}
+	pending.DispatchVerification = r.providerVerificationLocked(p, now)
 	return nil
 }

@@ -312,7 +312,7 @@ Running a node also makes your **own** inference free.
 | `provider-swift/` | Swift | `darkbloom` provider CLI for Apple Silicon (in-process MLX inference) |
 | `console-ui/` | Next.js 16 / React 19 | Web dashboard: chat, billing, models, provider verification |
 | `admin-ui/` | Next.js | Internal read-only operator dashboard over the Postgres read replica |
-| `landing/` | Static HTML | Marketing landing page |
+| `landing/` | Next.js 16 / React 19 | [Darkbloom marketing site](landing/README.md), imported from eigen-homepages |
 | `e2e/` | Go | System-level end-to-end & load test harness |
 | `scripts/` | Shell | Installer, admin CLI, model publishing, deploy helpers, docs lint (`docs-check.sh`, `docs-stamp.sh`) |
 | `libs/` | Git submodules | Pinned forks of `mlx`, `mlx-swift`, `mlx-swift-lm` compiled into the provider |

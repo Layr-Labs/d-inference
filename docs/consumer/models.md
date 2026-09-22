@@ -1,6 +1,6 @@
 # Models reference
 
-> Last updated: 2026-09-21 · commit `b581bfd21`
+> Last updated: 2026-09-22 · commit `31a6ca37f`
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
@@ -168,3 +168,15 @@ certify full native-context operation on the minimum-RAM device.
 - Aliases, builds and the registry lifecycle: [`../architecture/model-registry.md`](../architecture/model-registry.md)
 - Prices: [`../reference/pricing-model.md`](../reference/pricing-model.md)
 - Making your first call: [`quickstart.md`](quickstart.md)
+
+### DiffusionGemma exact tool arguments
+
+DiffusionGemma tool calls are checked for function name, schema and cardinality
+by `ToolChoiceEnforcementPolicy` and `ToolConstraintValidation`. Those checks do
+not establish that free-form string arguments faithfully copy a user's text.
+The live `record_text` fixture currently fails when asked to copy literal native
+channel markers, with thinking both enabled and disabled; the direct native
+output already contains the changed value before parsing. Consumers requiring
+byte-exact arguments must validate that requirement before executing a tool.
+This is an unresolved model-quality limitation, not a repaired parser case.
+See [native block inference](../architecture/native-block-inference.md).

@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-21 · commit `b581bfd21`
+> Last updated: 2026-09-22 · commit `32824d734`
 
 The complete public HTTP surface of the coordinator, derived from the 116 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -13,6 +13,70 @@ provider downloads; the admin registration accepts the same object. See the
 Admin request-profile records expose additive
 [prediction decision fields](prediction-decision-telemetry.md). Public inference
 responses and error codes are unchanged.
+
+## Verification presentation contract
+
+`X-Provider-Authorization-Method` is `app_attest`, `legacy`, `dual`, or `none`.
+`X-Provider-Verification` is compact JSON with `observed_at`, `app_attest`, and
+`legacy`. Each method has `state` and optional `verified_at` / `expires_at`
+(exclusive Unix seconds). Server states are `verified`, `pending`, `expired`,
+`revoked`, `unsupported`, and `offline`; missing metadata is unknown. Unsupported
+means the registered App Attest protocol lacks the qualified protocol 3 path,
+not an inference from a reported OS version. Times absent from the response are
+unavailable. No certificate, receipt, account, credential, serial or canonical
+machine identifier is included. Code: `coordinator/registry/verification.go`
+(`ProviderVerification`).
+
+For inference these fields are frozen at `authorizeInferenceHandoff` in
+`coordinator/registry/inference_authorization.go`, after the writer queue and
+last authorization check. The winning attempt's snapshot is used for headers
+and opt-in chat `metadata.verification` even if its grant expires or is revoked
+before the first response byte. Existing `X-Provider-Trust-Level` and MDA fields
+keep their legacy meaning. The console proxy forwards the verification and
+provider-hop encryption headers; it does not construct them from provider output.
+The server decides `verified` with precise time before dispatch; Unix-second
+serialization can make a valid final fractional second show equal `observed_at`
+and `expires_at`. Historical display preserves that frozen server verdict,
+while live views still expire grants at the recorded deadline.
+
+`GET /v1/me/providers`, `GET /v1/providers/attestation`, and individual public
+`GET /v1/stats` provider rows include the same `verification` object evaluated
+at snapshot time. Owner records with no live connection are offline. Connected but untrusted owned
+providers retain their live verification verdict (including revocation), while
+serving authorization remains false. Owner `verification`,
+`app_attest_authorized` and expiry are checked with current account and status
+in one registry/provider-locked observation (`ProviderVerificationAndAuthorization` in
+`coordinator/registry/verification.go`), so grant changes cannot mix opposing
+verdicts in one row. Unknown App Attest protocol versions remain `unsupported`;
+only protocol 3 can show a pending current authorization path. Public attestation rows capture verification,
+compatibility authorization flags, and catalog models in one registry/provider
+locked walk (`ForEachProviderVerification` in `coordinator/registry/verification.go`).
+Stats rows and geography aggregates use one locked visitor and detached location
+values (`aggregateProviderLocations` in `coordinator/api/stats_provider_locations.go`),
+so a new or replacement connection cannot change the geography between the row
+and count observations. Missing
+or stale verification metadata is counted as unknown in the UI, with a separate
+known-verdict denominator. Owner views retain explicit `app_attest_authorized`
+and expiry guidance during older-coordinator rollout without inventing missing
+proof timestamps; connected untrusted records remain in the connected count.
+`verification_counts` in stats and privacy-floored provider geography buckets
+contains `connections`, `authorized` (union), `app_attest`, `legacy`, and
+`overlap`. Both method counts include the overlap. Legacy `hardware_attested`
+counts remain evidence counts. Top-level counts additionally report
+`known_unique_machines`, `connections_without_machine_identity`,
+`reported_macos_27_or_later`, and `connections_with_reported_os`. Known machines
+are deduplicated privately from verified account/machine inventory; this is not
+proof of physical uniqueness. OS counts are app reports, not successful App
+Attest counts. Private-only providers are excluded. These aggregates describe
+the source snapshot, not a reusable routing grant. Code:
+`coordinator/api/stats_verification.go` (`addProvider`).
+
+Live console views honor each method's expiry and stop showing cached verified
+verdicts after 60 seconds from `observed_at`, even if polling fails. Revocation
+appears on refresh, subject to server/cache/poll delay; no instant push is
+promised. Chat history uses dispatch time instead of the live clock. No
+telemetry wire enums or authorization gates change.
+
 
 ## App Attest authorization additions
 
@@ -205,7 +269,7 @@ Cache behavior is implemented by `coordinator/api/cache_refresher.go`
 | `geography_snapshot_at` | RFC 3339 UTC observation start for the geography attempt, separate from core `snapshot_at`; empty before an attempt or after expiry | `coordinator/api/stats_geography.go` (`statsGeography`) |
 | `request_locations`, `request_regions`, `unknown_request_location_requests`, `suppressed_request_city_requests` | `null` when locations are unavailable; successful empty windows retain arrays and numeric counts. A failed attempt replaces previous geography rather than presenting stale figures as current | `coordinator/api/stats_geography.go` (`computeStatsGeography`, `addTo`) |
 | `request_flows` | `null` when flows are unavailable, an array (possibly empty) on success; independent of location status | `coordinator/api/stats_geography.go` (`computeStatsGeography`) |
-| `provider_locations`, `provider_regions` | Still computed from the live fleet with core stats; request-geography failures do not hide provider geography | `coordinator/api/stats.go` (`computeStats`, `aggregateProviderLocations`) |
+| `provider_locations`, `provider_regions` | Computed from the same live-fleet walk as core provider rows and verification counts; request-geography failures do not hide provider geography | `coordinator/api/stats.go` (`computeStats`); `coordinator/api/stats_provider_locations.go` (`aggregateProviderLocations`) |
 
 The stats, totals, and series handlers emit the 503 `service_unavailable` error
 envelope when their required data is unavailable.

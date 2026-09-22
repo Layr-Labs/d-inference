@@ -98,8 +98,7 @@ struct DiffusionGemmaConcurrencyLiveTests {
   private final class ResetSocket {
     private var descriptor: Int32 = -1
     init(port: Int, token: String, body: Data) throws {
-      descriptor = Darwin.socket(AF_INET, SOCK_STREAM, 0)
-      try #require(descriptor >= 0)
+      descriptor = try Self.connectLoopback(port: port)
       do {
         var noSignal: Int32 = 1
         try #require(
@@ -116,17 +115,6 @@ struct DiffusionGemmaConcurrencyLiveTests {
           setsockopt(
             descriptor, SOL_SOCKET, SO_LINGER, &reset,
             socklen_t(MemoryLayout.size(ofValue: reset))) == 0)
-        var address = sockaddr_in()
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = UInt16(port).bigEndian
-        address.sin_addr.s_addr = inet_addr("127.0.0.1")
-        let connected = withUnsafePointer(to: &address) { pointer in
-          pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-            Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-          }
-        }
-        try #require(connected == 0)
         let header =
           "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost:\(port)\r\nAuthorization: Bearer \(token)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
         let payload = Data(header.utf8) + body
@@ -145,6 +133,32 @@ struct DiffusionGemmaConcurrencyLiveTests {
         throw error
       }
     }
+    private static func connectLoopback(port: Int) throws -> Int32 {
+      guard (1...65535).contains(port) else { throw POSIXError(.EINVAL) }
+      var hints = addrinfo()
+      hints.ai_family = AF_UNSPEC
+      hints.ai_socktype = SOCK_STREAM
+      hints.ai_flags = AI_NUMERICSERV
+      var addresses: UnsafeMutablePointer<addrinfo>?
+      let status = getaddrinfo("localhost", String(port), &hints, &addresses)
+      guard status == 0, let addresses else {
+        throw NSError(domain: "DiffusionLoopbackResolution", code: Int(status))
+      }
+      defer { freeaddrinfo(addresses) }
+      var next: UnsafeMutablePointer<addrinfo>? = addresses
+      var lastError = ECONNREFUSED
+      while let candidate = next {
+        let address = candidate.pointee
+        next = address.ai_next
+        let socket = Darwin.socket(address.ai_family, address.ai_socktype, address.ai_protocol)
+        if socket < 0 { lastError = errno; continue }
+        if Darwin.connect(socket, address.ai_addr, address.ai_addrlen) == 0 { return socket }
+        lastError = errno
+        Darwin.close(socket)
+      }
+      throw POSIXError(POSIXErrorCode(rawValue: lastError) ?? .ECONNREFUSED)
+    }
+
     func close() {
       if descriptor >= 0 {
         Darwin.close(descriptor)
@@ -153,6 +167,40 @@ struct DiffusionGemmaConcurrencyLiveTests {
     }
     deinit { close() }
   }
+  @Test(arguments: [AF_INET, AF_INET6])
+  func resetSocketConnectsToEitherLoopbackFamily(_ family: Int32) throws {
+    var hints = addrinfo()
+    hints.ai_family = family
+    hints.ai_socktype = SOCK_STREAM
+    hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV
+    var addresses: UnsafeMutablePointer<addrinfo>?
+    try #require(getaddrinfo(family == AF_INET ? "127.0.0.1" : "::1", "0", &hints, &addresses) == 0)
+    let address = try #require(addresses)
+    defer { freeaddrinfo(address) }
+    let listener = Darwin.socket(family, SOCK_STREAM, 0)
+    try #require(listener >= 0)
+    defer { Darwin.close(listener) }
+    if family == AF_INET6 {
+      var onlyIPv6: Int32 = 1
+      try #require(setsockopt(listener, IPPROTO_IPV6, IPV6_V6ONLY, &onlyIPv6,
+        socklen_t(MemoryLayout<Int32>.size)) == 0)
+    }
+    try #require(Darwin.bind(listener, address.pointee.ai_addr, address.pointee.ai_addrlen) == 0)
+    try #require(Darwin.listen(listener, 1) == 0)
+    var storage = sockaddr_storage()
+    var size = socklen_t(MemoryLayout<sockaddr_storage>.size)
+    var service = [CChar](repeating: 0, count: 16)
+    try withUnsafeMutablePointer(to: &storage) { pointer in
+      try pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+        try #require(getsockname(listener, $0, &size) == 0)
+        try #require(getnameinfo($0, size, nil, 0, &service, socklen_t(service.count), NI_NUMERICSERV) == 0)
+      }
+    }
+    let port = try #require(Int(String(cString: service)))
+    let reset = try ResetSocket(port: port, token: "synthetic", body: Data("{}".utf8))
+    reset.close()
+  }
+
   private func eventually(_ name: String, _ predicate: @escaping @Sendable () async -> Bool)
     async throws
   {

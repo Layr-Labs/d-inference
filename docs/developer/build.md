@@ -1,11 +1,11 @@
 # Build
 
-> Last updated: 2026-09-20 · commit `76a8f03d9`
+> Last updated: 2026-09-22 · commit `31a6ca37f`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
-source-matched `mlx.metallib`), and the two Next.js UIs. `make build` does all
-of it; the per-component steps below explain what each target runs.
+source-matched `mlx.metallib`), and the console and marketing Next.js UIs.
+`make build` builds those components; the admin UI is built separately below.
 
 Registry-ID support changes Swift provider policy and Rust prompt normalization
 together. Build the paired coordinator/sidecar/provider candidate; the v6
@@ -203,7 +203,7 @@ provider, with the Python runner and original oracles owned by this repository.
 | `provider-swift/` | SwiftPM | Products: `darkbloom` (CLI), `darkbloom-enclave`, `darkbloom-fan-helper`, `darkbloom-publish`; libraries `ProviderCore`, `ProviderCoreFoundation`, `DarkbloomFan*`. Platform `macOS 14+`. |
 | `console-ui/` | Next.js 16 / React 19 | `npm`; tests with Vitest. |
 | `admin-ui/` | Next.js 16 / React 19 | `npm`; dev/start on port `4001`. |
-| `landing/` | static HTML/JS | No build step; `earn-calculator-core.test.js` runs with `node --test`. |
+| `landing/` | Next.js 16 / React 19 | Standalone npm app; `make landing` installs, lints, builds and runs route tests; dev/start on port `3008`. |
 | `Makefile` | — | Every target below; `make help` lists them. |
 
 Provider tests are grouped by subsystem inside their existing SwiftPM targets.
@@ -556,9 +556,20 @@ npm run dev      # next dev -p 4001
 
 ### 8. Landing page
 
-Static files in `landing/` (`index.html`, `earn-calculator*.js`, `terms.html`,
-`privacy.html`); nothing to build. Run its one test with
-`node --test landing/earn-calculator-core.test.js`.
+The imported Next.js site lives in `landing/` and has its own npm
+lockfile and configuration. It does not depend on the eigen-homepages
+workspace. From the repository root:
+
+```bash
+make landing
+cd landing && npm run dev
+```
+
+Copy `landing/.env.example` to `.env.local` inside that directory to
+configure runtime integrations. A production build needs no credentials.
+The hosting root is `landing`, with the Next.js preset; its API routes
+require a server runtime rather than a static export. See the
+[marketing README](../../landing/README.md) for deployment handoff.
 
 ### 9. Coordinator container image
 
@@ -699,6 +710,19 @@ for sampling scope, regression filters and diagnostic restrictions.
 
 `python3 scripts/test-qwen4-packaged-resources.py` compiles the actual Qwen Metal resource accessor into a small optimized app, then runs it from a relocated app and an installer-style executable symlink. It checks all three preamble hashes, rejects missing or empty files and resource links outside the app, and proves that developer/cwd copies cannot mask a broken packaged resource. It needs Swift on macOS, but no model weights or GPU. Both SDK 27 release lanes and Provider Tests run this check. The full provider `runtime-smoke` exercises the same accessor before publication, installation, and update.
 
+Provider Tests also runs `python3 scripts/test-profile-inventory-auth.py` on macOS. It compiles the production `ProfileInventoryAuthorization` helper into a terminal fixture without invoking real `sudo` or changing profiles; the test procedure is in [test.md](test.md).
+
 ## Promotion payload helper
 
 `python3 scripts/model-token-promotion.py --help` prepares a model-specific, calendar-day grant payload without making API calls. It requires Python with `zoneinfo` and timezone data. The [promotion runbook](../operations/model-token-promotions.md) covers review and approved application; the [test guide](test.md) covers calendar and settlement validation.
+
+## Source-matched test libraries
+
+After `swift build --build-tests`, run `scripts/stage-test-metallib.sh` with the
+package's `swift build --show-bin-path` directory. The helper builds or verifies
+the matching MLX library and stages it beside each test executable and in the
+nested resource bundle used by native checkpoint identity tests. `make provider-test`
+and the provider/nested CI jobs invoke this helper. A missing test runner or
+failed source verification is an error; an existing library is always replaced.
+See [the live-test setup](test.md) for the pinned DiffusionGemma artifact and
+opt-in encrypted transport gate.

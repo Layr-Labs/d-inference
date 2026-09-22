@@ -25,20 +25,21 @@ const (
 // publicProviderLocationBucket is the privacy-safe shape returned to
 // callers in the provider_locations array.
 type publicProviderLocationBucket struct {
-	Key              string   `json:"key"`
-	Scope            string   `json:"scope"`
-	City             string   `json:"city,omitempty"`
-	Region           string   `json:"region,omitempty"`
-	RegionCode       string   `json:"region_code,omitempty"`
-	Country          string   `json:"country,omitempty"`
-	CountryCode      string   `json:"country_code,omitempty"`
-	Latitude         float64  `json:"latitude,omitempty"`
-	Longitude        float64  `json:"longitude,omitempty"`
-	Providers        int      `json:"providers"`
-	HardwareAttested int      `json:"hardware_attested"`
-	GPUCores         int      `json:"gpu_cores"`
-	MemoryGB         int      `json:"memory_gb"`
-	Models           []string `json:"models,omitempty"`
+	Key              string                   `json:"key"`
+	Scope            string                   `json:"scope"`
+	City             string                   `json:"city,omitempty"`
+	Region           string                   `json:"region,omitempty"`
+	RegionCode       string                   `json:"region_code,omitempty"`
+	Country          string                   `json:"country,omitempty"`
+	CountryCode      string                   `json:"country_code,omitempty"`
+	Latitude         float64                  `json:"latitude,omitempty"`
+	Longitude        float64                  `json:"longitude,omitempty"`
+	Providers        int                      `json:"providers"`
+	HardwareAttested int                      `json:"hardware_attested"`
+	Verification     verificationMethodCounts `json:"verification_counts"`
+	GPUCores         int                      `json:"gpu_cores"`
+	MemoryGB         int                      `json:"memory_gb"`
+	Models           []string                 `json:"models,omitempty"`
 }
 
 // publicRequestLocationBucket is the privacy-safe shape returned for
@@ -126,25 +127,41 @@ func (s *Server) computeStats() ([]byte, error) {
 	// and bounded stale-on-error reads; downstream caches must not renew its age.
 	snapshotAt := time.Now()
 	var (
-		totalRequests    int64
-		totalTokensGen   int64
-		totalGPUCores    int
-		totalCPUCores    int
-		totalMemoryGB    int
-		totalBandwidthGB float64
-		providers        []map[string]any
-		modelMap         = map[string]int{} // model ID → provider count
-		activePowerWatts float64            // sum of estimated watts over online public providers
+		totalRequests             int64
+		totalTokensGen            int64
+		totalGPUCores             int
+		totalCPUCores             int
+		totalMemoryGB             int
+		totalBandwidthGB          float64
+		providers                 []map[string]any
+		providerLocationsSnapshot []providerLocationSnapshot
+		modelMap                  = map[string]int{} // model ID → provider count
+		activePowerWatts          float64            // sum of estimated watts over online public providers
 	)
 
-	publicProviderModels := s.registry.PublicProviderModels()
-	s.registry.ForEachProvider(func(p *registry.Provider) {
+	var verificationTotals verificationCounts
+	machines := map[[2]string]struct{}{}
+	s.registry.ForEachProviderVerification(func(p *registry.Provider, verification registry.Verification, modelSnapshot registry.PublicProviderModelSnapshot) {
 		// Private-only providers serve only their owner's self-route traffic and
 		// are not part of the public fleet, so they must not inflate public
 		// totals, provider counts, per-model provider counts, or active power.
 		if p.PrivateOnly {
 			return
 		}
+		verificationTotals.addProvider(p, verification, machines)
+		locationSnapshot := providerLocationSnapshot{
+			verification: verification,
+			gpuCores:     p.Hardware.GPUCores,
+			memoryGB:     p.Hardware.MemoryGB,
+		}
+		if p.Location != nil {
+			locationSnapshot.location = *p.Location
+			locationSnapshot.hasLocation = true
+		}
+		if p.Attested && p.TrustLevel == registry.TrustHardware {
+			locationSnapshot.hardwareAttested = 1
+		}
+		providerLocationsSnapshot = append(providerLocationsSnapshot, locationSnapshot)
 		activePowerWatts += registry.EstimateMachineWatts(p.Hardware.ChipFamily, p.Hardware.ChipTier, p.Hardware.GPUCores)
 		totalRequests += p.Stats.RequestsServed
 		totalTokensGen += p.Stats.TokensGenerated
@@ -160,16 +177,17 @@ func (s *Server) computeStats() ([]byte, error) {
 
 		// Use the registry's capability-filtered provider snapshot so a catalog
 		// hot change cannot leave an ineligible pair on the public stats feed.
-		modelSnapshot := publicProviderModels[p.ID]
 		provModels := modelSnapshot.Models
 
 		lastChallengeVerified := ""
-		if last := p.GetLastChallengeVerified(); !last.IsZero() {
+		if last := p.LastChallengeVerified; !last.IsZero() {
 			lastChallengeVerified = last.UTC().Format(time.RFC3339)
 		}
 
 		prov := map[string]any{
 			"id":                             p.ID,
+			"verification":                   verification,
+			"os_version":                     reportedOSVersionLocked(p),
 			"chip":                           p.Hardware.ChipName,
 			"chip_family":                    p.Hardware.ChipFamily,
 			"chip_tier":                      p.Hardware.ChipTier,
@@ -260,7 +278,7 @@ func (s *Server) computeStats() ([]byte, error) {
 	}
 
 	// --- Provider location aggregation ---
-	providerLocations, providerRegions, unknownLocationProviders, suppressedCityProviders := s.aggregateProviderLocations()
+	providerLocations, providerRegions, unknownLocationProviders, suppressedCityProviders := aggregateProviderLocations(providerLocationsSnapshot)
 
 	// Geography queries run independently of the core stats refresher. Never
 	// wait for them here, including on a cold cache or during a geo outage.
@@ -297,6 +315,7 @@ func (s *Server) computeStats() ([]byte, error) {
 		"location_window_hours":          24,
 		"avg_tokens_per_request":         avgTokens,
 		"active_providers":               len(providers),
+		"verification_counts":            verificationTotals,
 		"active_power_watts":             activePowerWatts,
 		"code_attested_providers":        codeAttestedProviders,
 		"code_attestation_enforced":      codeAttestationEnforced,
@@ -323,145 +342,6 @@ func (s *Server) computeStats() ([]byte, error) {
 	}
 	geography.addTo(resp)
 	return json.Marshal(resp)
-}
-
-// aggregateProviderLocations builds privacy-floored city and region
-// buckets from the live provider fleet.
-func (s *Server) aggregateProviderLocations() (
-	cityBuckets []publicProviderLocationBucket,
-	regionBuckets []publicProviderLocationBucket,
-	unknownProviders int,
-	suppressedCityProviders int,
-) {
-	type cityKey struct {
-		City, Region, RegionCode, Country, CountryCode string
-	}
-	type regionKey struct {
-		Region, RegionCode, Country, CountryCode string
-	}
-	type cityAgg struct {
-		key              cityKey
-		latSum, lngSum   float64
-		coordCount       int
-		providers        int
-		hardwareAttested int
-		gpuCores         int
-		memoryGB         int
-	}
-	type regionAgg struct {
-		key              regionKey
-		latSum, lngSum   float64
-		coordCount       int
-		providers        int
-		hardwareAttested int
-		gpuCores         int
-		memoryGB         int
-	}
-	cities := make(map[cityKey]*cityAgg)
-	regions := make(map[regionKey]*regionAgg)
-
-	s.registry.ForEachProvider(func(p *registry.Provider) {
-		// Private-only providers are not part of the public fleet — keep them off
-		// the public network map and out of its provider/hardware counts.
-		if p.PrivateOnly {
-			return
-		}
-		if p.Location == nil || p.Location.CountryCode == "" {
-			unknownProviders++
-			return
-		}
-		loc := p.Location
-		hwAttested := 0
-		if p.Attested && p.TrustLevel == registry.TrustHardware {
-			hwAttested = 1
-		}
-
-		ck := cityKey{loc.City, loc.Region, loc.RegionCode, loc.Country, loc.CountryCode}
-		ca, ok := cities[ck]
-		if !ok {
-			ca = &cityAgg{key: ck}
-			cities[ck] = ca
-		}
-		ca.providers++
-		ca.hardwareAttested += hwAttested
-		ca.gpuCores += p.Hardware.GPUCores
-		ca.memoryGB += p.Hardware.MemoryGB
-		if loc.Latitude != 0 || loc.Longitude != 0 {
-			ca.latSum += loc.Latitude
-			ca.lngSum += loc.Longitude
-			ca.coordCount++
-		}
-
-		rk := regionKey{loc.Region, loc.RegionCode, loc.Country, loc.CountryCode}
-		ra, ok := regions[rk]
-		if !ok {
-			ra = &regionAgg{key: rk}
-			regions[rk] = ra
-		}
-		ra.providers++
-		ra.hardwareAttested += hwAttested
-		ra.gpuCores += p.Hardware.GPUCores
-		ra.memoryGB += p.Hardware.MemoryGB
-		if loc.Latitude != 0 || loc.Longitude != 0 {
-			ra.latSum += loc.Latitude
-			ra.lngSum += loc.Longitude
-			ra.coordCount++
-		}
-	})
-
-	cityBuckets = make([]publicProviderLocationBucket, 0, len(cities))
-	for _, ca := range cities {
-		if ca.providers < minProvidersPerCityBucket {
-			suppressedCityProviders += ca.providers
-			continue
-		}
-		b := publicProviderLocationBucket{
-			Key:              locationKey(ca.key.CountryCode, ca.key.RegionCode, ca.key.City),
-			Scope:            "city",
-			City:             ca.key.City,
-			Region:           ca.key.Region,
-			RegionCode:       ca.key.RegionCode,
-			Country:          ca.key.Country,
-			CountryCode:      ca.key.CountryCode,
-			Providers:        ca.providers,
-			HardwareAttested: ca.hardwareAttested,
-			GPUCores:         ca.gpuCores,
-			MemoryGB:         ca.memoryGB,
-		}
-		if ca.coordCount > 0 {
-			b.Latitude = ca.latSum / float64(ca.coordCount)
-			b.Longitude = ca.lngSum / float64(ca.coordCount)
-		}
-		cityBuckets = append(cityBuckets, b)
-	}
-	sort.Slice(cityBuckets, func(i, j int) bool {
-		return cityBuckets[i].Providers > cityBuckets[j].Providers
-	})
-
-	regionBuckets = make([]publicProviderLocationBucket, 0, len(regions))
-	for _, ra := range regions {
-		b := publicProviderLocationBucket{
-			Key:              locationKey(ra.key.CountryCode, ra.key.RegionCode, ""),
-			Scope:            "region",
-			Region:           ra.key.Region,
-			RegionCode:       ra.key.RegionCode,
-			Country:          ra.key.Country,
-			CountryCode:      ra.key.CountryCode,
-			Providers:        ra.providers,
-			HardwareAttested: ra.hardwareAttested,
-			GPUCores:         ra.gpuCores,
-			MemoryGB:         ra.memoryGB,
-		}
-		if ra.coordCount > 0 {
-			b.Latitude = ra.latSum / float64(ra.coordCount)
-			b.Longitude = ra.lngSum / float64(ra.coordCount)
-		}
-		regionBuckets = append(regionBuckets, b)
-	}
-	sort.Slice(regionBuckets, func(i, j int) bool {
-		return regionBuckets[i].Providers > regionBuckets[j].Providers
-	})
-	return
 }
 
 // aggregateRequestLocations builds privacy-floored city and region

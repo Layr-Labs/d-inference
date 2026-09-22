@@ -84,7 +84,7 @@ export function AttestationPanel({
     setChallengeStale(age > (challengeMaxAgeSeconds || 360));
   }, [p.last_challenge_verified, challengeMaxAgeSeconds]);
 
-  if (p.app_attest_authorized || p.authorization_expires_at !== undefined) {
+  if (p.verification || p.app_attest_authorized || p.authorization_expires_at !== undefined) {
     return <AppAttestPanel provider={p} />;
   }
 

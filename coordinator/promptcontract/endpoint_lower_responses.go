@@ -57,12 +57,6 @@ func lowerResponsesWithContent(input map[string]any, lowerContent func(any) (any
 	return output, nil
 }
 
-func lowerResponsesMessages(input any) ([]any, error) {
-	return lowerResponsesMessagesWithContent(input, func(content any) (any, error) {
-		return responsesContentText(content), nil
-	})
-}
-
 func lowerResponsesMessagesWithContent(input any, lowerContent func(any) (any, error)) ([]any, error) {
 	if text, ok := input.(string); ok {
 		return []any{map[string]any{"role": "user", "content": text}}, nil

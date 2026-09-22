@@ -27,6 +27,26 @@ class RunnerPolicyTests(unittest.TestCase):
         workflows = {p.name: policy.load(p) for p in (policy.ROOT / '.github/workflows').glob('*.yml')}
         self.assertEqual(policy.check(workflows), [])
 
+    def test_tenki_mac_jobs_use_native_swift_and_valid_postgres_locale(self):
+        workflows = {name: policy.load(policy.ROOT / '.github/workflows' / name)
+                     for name in ('ci.yml', 'integration.yml', 'benchmarks.yml',
+                                  'provider-signing-validation.yml')}
+        for filename, job_name in (('ci.yml', 'test-provider'), ('ci.yml', 'cache-swift'),
+                                   ('integration.yml', 'integration-tests'),
+                                   ('benchmarks.yml', 'benchmark')):
+            with self.subTest(job=f'{filename}/{job_name}'):
+                job = workflows[filename]['jobs'][job_name]
+                self.assertTrue(any('prepare-provider-release-toolchain.sh' in step.get('run', '')
+                                    for step in job['steps']))
+        for filename, job_name in (('integration.yml', 'integration-tests'),
+                                   ('benchmarks.yml', 'benchmark')):
+            self.assertEqual(workflows[filename]['jobs'][job_name]['env']['LC_ALL'],
+                             'en_US.UTF-8')
+        signing_build = workflows['provider-signing-validation.yml']['jobs']['build']
+        build_step = next(step for step in signing_build['steps']
+                          if step.get('name') == 'Build exact source and stage unsigned app')
+        self.assertIn('swift build --build-system native --sdk "$sdk"', build_step['run'])
+
     def test_inherited_and_job_write_tokens_are_rejected(self):
         for permissions in [None, 'write-all', {'contents': 'write'}, {'id-token': 'write'}]:
             with self.subTest(permissions=permissions):

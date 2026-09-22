@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-22 · commit `632a94adc`
+> Last updated: 2026-09-22 · commit `863a91851`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1708,6 +1708,14 @@ Tenki and GitHub SDK 27 labels in `.github/actionlint.yaml`.
 app selection and the GitHub Command Line Tools layout, including missing Xcode
 and rejection of an older compiler/SDK. Runner logs must show SDK 27 before
 compilation. See the [credential boundary](build.md#ci-runner-and-credential-boundary).
+
+Provider and nested paged tests require `pagedattention.metal` in the built
+SwiftPM resource bundle, and MLX needs the staged source-matched
+`mlx.metallib`. On Tenki, select the native SwiftPM build system before the
+build and `swift test`; otherwise Xcode 27's alternate output layout can leave
+the paged resource outside the test runner's lookup roots. A missing resource
+must fail the paged gate. The E2E and benchmark jobs set
+`LC_ALL=en_US.UTF-8` so Homebrew PostgreSQL can start on Tenki macOS.
 
 For rollout, verify actual Tenki assignment in Actions and require the existing
 provider/Metal, SDK qualification and E2E gates to pass. A matching label or a

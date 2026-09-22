@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-22 · commit `632a94adc`
+> Last updated: 2026-09-22 · commit `863a91851`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -53,6 +53,11 @@ Unsigned builds and tests use Tenki: Linux jobs run on
 `tenki-standard-medium-4c-8g` (4 vCPU, 8 GB), and Apple Silicon jobs on
 `tenki-macos-26-large` (8 vCPU, 32 GB). Every compiling Mac job selects
 `DEVELOPER_DIR=/Applications/Xcode_27.0.app/Contents/Developer`.
+Mac CI selects SwiftPM's native build system with
+`scripts/prepare-provider-release-toolchain.sh` before compiling tests or
+provider binaries. This keeps copied Metal resource bundles in the layout
+that the provider's paged-kernel preflight searches. The manual unsigned
+signing-validation build selects the same build system and SDK explicitly.
 Runner specifications: [Tenki labels](https://tenki.cloud/docs/runners/sizes).
 The Tenki Runners GitHub App must already have access to this repository;
 runner labels alone do not install or authorize it.

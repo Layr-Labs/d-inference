@@ -171,6 +171,8 @@ jobs:
           xcodebuild -version
           xcrun swift --version
           test "$(xcrun --sdk macosx --show-sdk-version)" = '27.0'
+      - name: Select native SwiftPM resource layout
+        run: ./scripts/prepare-provider-release-toolchain.sh
       - name: Test Qwen resources in a relocated app
         run: python3 scripts/test-qwen4-packaged-resources.py
       - name: Test profile inventory authentication in a terminal
@@ -398,6 +400,8 @@ jobs:
           xcodebuild -version
           xcrun swift --version
           test "$(xcrun --sdk macosx --show-sdk-version)" = '27.0'
+      - name: Select native SwiftPM resource layout
+        run: ./scripts/prepare-provider-release-toolchain.sh
       - name: Restore SwiftPM cache
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:

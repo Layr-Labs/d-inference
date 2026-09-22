@@ -68,10 +68,11 @@ jobs:
           candidate/scripts/check-release-version.sh "$EXPECTED_VERSION"
           command -v cmake >/dev/null 2>&1 || brew install cmake
           cd candidate/provider-swift
-          swift build -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom
-          swift build -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom-enclave
-          swift build -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom-fan-helper
-          bin_dir=$(swift build -c release --scratch-path "$RUNNER_TEMP/provider-build" --show-bin-path)
+          sdk=$(xcrun --sdk macosx --show-sdk-path)
+          swift build --build-system native --sdk "$sdk" -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom
+          swift build --build-system native --sdk "$sdk" -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom-enclave
+          swift build --build-system native --sdk "$sdk" -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom-fan-helper
+          bin_dir=$(swift build --build-system native --sdk "$sdk" -c release --scratch-path "$RUNNER_TEMP/provider-build" --show-bin-path)
           cd "$GITHUB_WORKSPACE"
           METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" candidate/scripts/fetch-metallib.sh "$RUNNER_TEMP/metallib"
           python3 tooling/scripts/provider-signing-validation.py stage \

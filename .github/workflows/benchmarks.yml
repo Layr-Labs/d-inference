@@ -38,6 +38,7 @@ jobs:
     timeout-minutes: 45
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+      LC_ALL: en_US.UTF-8
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
       TESTBED_PROVIDER_CONFIG: debug
       BENCHMARK_MD_PATH: /tmp/benchmark-results.md
@@ -59,6 +60,8 @@ jobs:
           xcodebuild -version
           xcrun swift --version
           test "$(xcrun --sdk macosx --show-sdk-version)" = '27.0'
+      - name: Select native SwiftPM resource layout
+        run: ./scripts/prepare-provider-release-toolchain.sh
       - name: Install Postgres
         run: brew install postgresql@16
 

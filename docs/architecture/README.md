@@ -1,6 +1,6 @@
 # Architecture — how Darkbloom works
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-21 · commit `ce809b792`
 
 Explanation pages: context, mechanism, invariants, failure modes, and a code
 map for each part of the system. The code in `coordinator/`,
@@ -25,7 +25,7 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 | [components/coordinator.md](components/coordinator.md) | Go control plane: process layout, HTTP and WebSocket servers, store, background jobs |
 | [components/provider.md](components/provider.md) | Swift `darkbloom` provider: connection loop, engine bridge, hardened runtime, service management, auto-update |
 | [components/consumer.md](components/consumer.md) | The coordinator's OpenAI/Anthropic-compatible request pipeline, stage by stage: parsing, admission, routing, sealing, streaming, settlement |
-| [components/console-ui.md](components/console-ui.md) | Next.js console: pages, `/api/*` relay handlers, Privy and console-key credential paths, SSE chat, optional browser-side sealing; the static `landing/` site |
+| [components/console-ui.md](components/console-ui.md) | Next.js console: pages, `/api/*` relay handlers, Privy and console-key credential paths, SSE chat, optional browser-side sealing; the Next.js `landing/` site |
 | [components/admin-ui.md](components/admin-ui.md) | Internal read-only operator dashboard: HTTP Basic gate, single `pg.Pool` on the read replica, SELECT-only server components |
 | [components/mlx-swift.md](components/mlx-swift.md) | The three pinned submodules (`mlx`, `mlx-swift`, `mlx-swift-lm`), what each provides, what `MLXLMServer` is used for, and the source-matched `mlx.metallib` |
 

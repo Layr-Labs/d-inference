@@ -6,19 +6,32 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
-// Call only after building the live snapshot and releasing the provider lock:
-// ProviderServingAuthorization takes registry and provider locks itself.
+// Call only after building the live snapshot and releasing the provider lock.
+// The verdict and compatibility fields use one registry/provider observation.
 func (s *Server) attachMyProviderAuthorization(mp *myProvider, live *registry.Provider, account string) {
 	mp.AppAttestAuthorized, mp.AuthorizationExpiresAt = false, 0
-	if live == nil || mp.AccountID != account || !mp.Online {
+	mp.Verification = s.registry.ProviderVerification(nil)
+	if live == nil || mp.AccountID != account {
 		return
 	}
-	lease, valid := s.registry.ProviderServingAuthorization(live)
-	if !valid || lease.AccountID != account || lease.Endpoint != mp.ProviderKey {
+	snapshot := s.registry.ProviderVerificationAndAuthorization(live)
+	if snapshot.AccountID != account {
+		// A live connection may change owners after the earlier fleet merge.
+		// Do not expose the new owner's verification or lease to the former account.
+		mp.Status, mp.Online = "offline", false
+		return
+	}
+	mp.Verification = snapshot.Verification
+	mp.Status = string(snapshot.Status)
+	mp.Online = snapshot.Status != registry.StatusOffline && snapshot.Status != registry.StatusUntrusted
+	// Connected, untrusted machines still have a live verification verdict
+	// (including revocation). A verified verdict already passed online and
+	// endpoint gates at the same instant as these compatibility fields.
+	if !snapshot.Authorized {
 		return
 	}
 	mp.AppAttestAuthorized = true
-	mp.AuthorizationExpiresAt = lease.ValidUntil.Unix()
+	mp.AuthorizationExpiresAt = snapshot.AuthorizationExpiresAt
 }
 
 func myProviderHasAppAttestAuthorization(mp *myProvider, now time.Time) bool {

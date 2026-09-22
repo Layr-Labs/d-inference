@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-22 · commit `632a94adc`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -11,7 +11,41 @@ identity-bearing evidence behind it.
 
 An App Attest grant also depends on a fresh [durable build qualification](../reference/provider-authorization.md#durable-build-qualification). Withdrawing it fences old qualification generations; cached download metadata or a prior successful signature cannot grant new dispatch. Independently valid legacy verification remains a separate serving path.
 
+Local profile-inventory authentication during `darkbloom unenroll` only identifies the Darkbloom enrollment for user-guided removal. It does not verify or extend serving authorization; the [provider procedure](../provider/attestation.md#app-attest-without-darkbloom-mdm) explains the separate coordinator readiness requirement.
+
+## Read verification in chat and network stats
+
+Open a response's verification panel to see **Verified via App Attest**,
+**Verified via legacy authorization**, both methods, or an unavailable/pending
+verdict. A legacy `self_signed` field can coexist with a valid App Attest grant.
+The panel shows verification **at dispatch**; an old response makes no claim
+about the machine's current permission to serve. Missing snapshots on older
+messages display unavailable rather than inferring a method from `attested`.
+
+For live state, use the provider directory. Its method filters and verified
+count include App Attest-only providers. Dual-path connections are counted once
+in the total and in both breakdowns. Connections are distinct from known unique
+machine inventory. Reported macOS 27 adoption is a separate count. Missing verdicts are unknown,
+not zero verified: counts use the available-verdict denominator and show how
+many records are unavailable. Map method
+counts describe the indicated source snapshot. See the
+[exact fields and freshness rules](../reference/api-contracts.md#verification-presentation-contract).
+Provider rows, method totals and map regions now share one fleet observation;
+a connection change during later store work does not mix their authorization counts.
+
+The proof view explains coordinator-side Apple chain/key enrollment, current
+assertion, receipt policy and qualified-build checks. Detailed certificate and
+receipt data are not published; missing timestamps are unavailable. Your browser
+does not independently validate Apple evidence. App Attest does not certify RAM
+or chip reports, guarantee memory wiping, prove computation correctness, or
+remove the coordinator as a plaintext endpoint; see
+[encryption boundaries](../architecture/security/encryption.md).
+
 ## Public attestation endpoint
+
+An Apple API error can leave an App Attest-only provider pending while the coordinator retries. Retry activity is not successful verification: only an unexpired coordinator-derived authorization permits that path to serve. Independently valid legacy authorization retains its own evidence requirements.
+
+An enrolled App Attest key can remain pending while Apple supplies the first risk metric. The coordinator retries the first assertion without treating the incomplete receipt as serving authorization. Only a current authorized verdict marks the provider verified.
 
 ```bash
 curl https://api.darkbloom.dev/v1/providers/attestation

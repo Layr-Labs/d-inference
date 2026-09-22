@@ -1,5 +1,7 @@
 "use client";
 
+import { ProofDetails } from "@/components/verification/ProofDetails";
+import { currentVerification } from "@/lib/verification";
 import { ShieldCheck } from "lucide-react";
 import { providerRouteReason, providerRouteState, relativeChallengeLabel, shortProviderModel, type ProviderStats } from "./provider-fleet";
 import { formatCompactNumber } from "./format";
@@ -51,11 +53,13 @@ export function ProviderNodeDetail({ provider }: { provider: ProviderStats | nul
         </section>
         <section aria-label="Attestation status"><h4 className="flex items-center gap-2 text-sm font-semibold text-text-primary"><ShieldCheck size={16} className="text-text-tertiary" />Attestation</h4>
           <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-5">
-            <DetailMetric label="Trust level" value={provider.trust_level === "hardware" ? "Hardware backed" : "Basic identity"} />
+            <DetailMetric label="Legacy trust evidence" value={provider.trust_level} />
             <DetailMetric label="Apple device attestation" value={certificate} />
             <DetailMetric label="Last routing challenge" value={relativeChallengeLabel(provider.last_challenge_verified)} />
             <DetailMetric label="Device identity" value="Private" />
+            <DetailMetric label="Reported macOS" value={provider.os_version || "Unavailable"} />
           </dl>
+          <div className="mt-5"><ProofDetails verification={currentVerification(provider.verification)} /></div>
         </section>
       </div>
     </article>

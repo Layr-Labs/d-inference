@@ -374,7 +374,11 @@ extension Start {
         schedule: Schedule
     ) async throws {
         while !Task.isCancelled {
-            if await ProviderTermination.shared.terminationRequested { return }
+            await installIdleScheduleTerminationHandler()
+            if await ProviderTermination.shared.terminationRequested {
+                _ = await ProviderTermination.shared.request()
+                return
+            }
             if !schedule.isActiveNow() {
                 let wait = schedule.durationUntilNextActive()
                 print("Outside availability schedule; next window opens in \(formatDuration(wait)).")

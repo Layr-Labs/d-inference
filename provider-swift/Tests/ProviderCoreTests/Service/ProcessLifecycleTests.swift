@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Testing
 @testable import ProviderCore
 
@@ -115,23 +116,53 @@ struct ProcessLifecycleTests {
 }
 
 
-@Test func livePIDOwnerIsNeverKilledByLockAcquisition() throws {
+@Test func reusedLivePIDDoesNotBlockLockAcquisition() throws {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/bin/sleep")
     process.arguments = ["30"]
     try process.run()
     defer { process.terminate(); process.waitUntilExit() }
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".pid")
-    defer { try? FileManager.default.removeItem(at: path); try? FileManager.default.removeItem(at: path.appendingPathExtension("lock")) }
+    let statePath = path.appendingPathExtension("state")
+    defer {
+        try? FileManager.default.removeItem(at: path)
+        try? FileManager.default.removeItem(at: path.appendingPathExtension("lock"))
+        try? FileManager.default.removeItem(at: statePath)
+    }
     try "\(process.processIdentifier)\n".write(to: path, atomically: true, encoding: .utf8)
+    let live = try #require(ProcessIdentity.read(pid: process.processIdentifier))
+    let stale = ProcessIdentity(pid: live.pid, startTimeMicros: live.startTimeMicros - 1)
+    DaemonStateFile.write(.init(pid: stale.pid, processIdentity: stale, version: "old",
+                                writtenAt: 0, startedAt: 0), to: statePath)
+    try ProcessLifecycle.acquireSingleInstanceLock(at: path, terminationGracePeriod: 0, stateFile: statePath)
+    #expect(process.isRunning)
+    #expect(ProcessLifecycle.existingPID(at: path) == getpid())
+    ProcessLifecycle.releaseSingleInstanceLock(at: path)
+    #expect(ProcessLifecycle.existingPID(at: path) == nil)
+}
+
+@Test func confirmedLegacyPIDOwnerIsPreserved() throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+    process.arguments = ["30"]
+    try process.run()
+    defer { process.terminate(); process.waitUntilExit() }
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".pid")
+    let statePath = path.appendingPathExtension("state")
+    defer {
+        try? FileManager.default.removeItem(at: path)
+        try? FileManager.default.removeItem(at: path.appendingPathExtension("lock"))
+        try? FileManager.default.removeItem(at: statePath)
+    }
+    let identity = try #require(ProcessIdentity.read(pid: process.processIdentifier))
+    try "\(identity.pid)\n".write(to: path, atomically: true, encoding: .utf8)
+    DaemonStateFile.write(.init(pid: identity.pid, processIdentity: identity, version: "test",
+                                writtenAt: Date().timeIntervalSince1970, startedAt: 0), to: statePath)
     #expect(throws: ProcessLifecycle.InstanceError.self) {
-        try ProcessLifecycle.acquireSingleInstanceLock(at: path, terminationGracePeriod: 0)
+        try ProcessLifecycle.acquireSingleInstanceLock(at: path, stateFile: statePath)
     }
     #expect(process.isRunning)
-    #expect(ProcessLifecycle.existingPID(at: path) == process.processIdentifier)
-    // An old process's cleanup cannot delete another owner's PID file.
-    ProcessLifecycle.releaseSingleInstanceLock(at: path)
-    #expect(ProcessLifecycle.existingPID(at: path) == process.processIdentifier)
+    #expect(ProcessLifecycle.existingPID(at: path) == identity.pid)
 }
 
 @Test func launchdRecoverySnapshotPreservesDisabledOverrides() {

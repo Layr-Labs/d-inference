@@ -24,7 +24,7 @@ func newAuthorizationFixture(t *testing.T) (*Server, *registry.Provider, *protoc
 	r := registry.New(logger)
 	r.SetAppAttestServingPolicy(true, 7)
 	key := base64.StdEncoding.EncodeToString(make([]byte, 32))
-	p := r.Register("connection", nil, &protocol.RegisterMessage{PublicKey: key, Backend: registry.BackendMLXSwift, EncryptedResponseChunks: true, Hardware: protocol.Hardware{MachineModel: "Mac16,10", MemoryGB: 32}})
+	p := r.Register("connection", nil, &protocol.RegisterMessage{PublicKey: key, AppAttestProtocol: 3, Backend: registry.BackendMLXSwift, EncryptedResponseChunks: true, Hardware: protocol.Hardware{MachineModel: "Mac16,10", MemoryGB: 32}})
 	p.AccountID, p.RuntimeVerified, p.RuntimeManifestChecked = "account", true, true
 	p.PrivacyCapabilities = &protocol.PrivacyCapabilities{TextBackendInprocess: true, TextProxyDisabled: true, AntiDebugEnabled: true, CoreDumpsDisabled: true, EnvScrubbed: true}
 	p.Version, p.MetallibVerified = "0.9.4", true

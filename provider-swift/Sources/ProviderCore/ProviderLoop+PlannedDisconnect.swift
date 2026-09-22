@@ -41,9 +41,25 @@ extension ProviderLoop {
     }
 
     private func performPlannedReconnect(taskGeneration: UInt64) async {
-        defer { if plannedReconnectTaskGeneration == taskGeneration { pendingRetirementReconnect = nil } }
+        defer {
+            if plannedReconnectTaskGeneration == taskGeneration {
+                pendingRetirementReconnect = nil
+                startPlannedReconnectIfNeeded()
+            }
+        }
         while !Task.isCancelled, servingDrain.owner == .reconnect, !isShuttingDown {
-            guard let client = coordinatorClient, await client.hasRegisteredConnection() else { return }
+            let revision = plannedReconnectRevision
+            guard let client = coordinatorClient, await client.hasRegisteredConnection() else {
+                // No registration was sent on the current connection. The
+                // client's next automatic registration carries the updated
+                // token/model set; no drain or second reconnect is needed.
+                issuedReconnectRevision = revision
+                servingDrain.resumeReconnect()
+                setRetirementReconnectBarrier(false)
+                localResponseTracker.setAccepting(!servingDrain.refusing && !isShuttingDown)
+                if !servingDrain.refusing { lifecycleStatus = .init() }
+                return
+            }
             if await waitForSafeDisconnect(timeout: .seconds(ProviderTermination.timeoutSeconds), reason: "planned reconnect") {
                 guard !Task.isCancelled, servingDrain.owner == .reconnect, !isShuttingDown else { return }
                 issuedReconnectRevision = plannedReconnectRevision

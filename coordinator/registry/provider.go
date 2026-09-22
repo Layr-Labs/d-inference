@@ -69,6 +69,7 @@ type Provider struct {
 
 	// App Attest is an independent, expiring serving authorization, never a
 	// synthetic hardware-trust or APNs flag. All fields are guarded by mu.
+	appAttestProtocol       int
 	appAttestAuthorization  AppAttestServingAuthorization
 	appAttestCredentialID   string // last granted credential, retained after lease expiry/clear
 	appAttestSecurityDenied bool

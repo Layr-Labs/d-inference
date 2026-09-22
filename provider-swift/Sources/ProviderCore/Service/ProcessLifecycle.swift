@@ -44,13 +44,20 @@ public enum ProcessLifecycle {
     @discardableResult
     public static func acquireSingleInstanceLock(
         at pidFile: URL = ProcessLifecycle.defaultPIDFile(),
-        terminationGracePeriod: TimeInterval = 2.0
+        terminationGracePeriod: TimeInterval = 2.0,
+        stateFile: URL = DaemonStateFile.path()
     ) throws -> URL {
         _ = terminationGracePeriod // retained for source compatibility, never a kill deadline
         return try instanceLocks.mutex.withLock {
             if instanceLocks.held[pidFile] != nil { return pidFile }
             let lock = try UpdateProcessLock.acquire(at: pidFile.appendingPathExtension("lock"), operation: "provider-instance")
-            if let existing = readPID(at: pidFile), existing != getpid(), processIsAlive(existing) {
+            // A live PID alone is not ownership: after a crash the kernel can
+            // reuse that number while the instance lock is free. Preserve the
+            // legacy unlocked provider only when its state proves the exact
+            // process identity still owns this PID file.
+            if let existing = readPID(at: pidFile), existing != getpid(),
+               let identity = DaemonStateFile.read(from: stateFile)?.processIdentity,
+               identity.pid == existing, identity.isCurrent() {
                 lock.release()
                 throw InstanceError.alreadyRunning(existing)
             }
@@ -237,14 +244,6 @@ public enum ProcessLifecycle {
         }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         return Int32(trimmed)
-    }
-
-    private static func processIsAlive(_ pid: Int32) -> Bool {
-        // kill(pid, 0) returns 0 if we have permission to signal the process,
-        // even if signal 0 is a no-op. ESRCH means the process is gone.
-        let rc = kill(pid, 0)
-        if rc == 0 { return true }
-        return errno != ESRCH
     }
 
     private static func sendSignal(_ signo: Int32, to pid: Int32) {

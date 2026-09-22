@@ -39,6 +39,10 @@ created: "2026-05-14"
 # computation correctness, or move inference into the Secure Enclave. Final
 # signed-artifact and physical SIP/boot-security transition qualification remain
 # required before enabling serving or scoped Darkbloom profile removal.
+# Interactive profile inventory during MDM removal retains the foreground
+# terminal group for native sudo prompting and reads only the fixed profiles
+# command; background jobs and denial withhold guidance and cannot grant
+# serving authorization.
 # Durable build qualification added 2026-09-20: an independently authenticated
 # operator approves the exact signed binary, full CodeDirectory, bundle/runtime,
 # source and CI provenance. CI release keys cannot grant approval. Publication
@@ -47,7 +51,22 @@ created: "2026-05-14"
 # local qualification-generation change. Revocation tombstones override legacy
 # env mappings and persist across restarts. Signed physical-Mac qualification
 # remains an operator evidence requirement, never inferred from a CI green check.
+# Verification presentation added 2026-09-20 (base 76a8f03d): public method
+# verdicts expose only states/times; no raw certificate/receipt or credential
+# identifiers. Inference captures the winning verdict at final dispatch; live
+# UI bounds cached verdict age and expiry. Neither generic attested nor OS
+# reports establish App Attest; machine-inventory counts do not prove physical
+# uniqueness. Owner compatibility fields and public geography use the same
+# locked authorization observation as their diagnostic verdicts, avoiding
+# mixed states during revocation or connection replacement. This changes
+# presentation, not serving or revocation policy.
 methodology: STRIDE
+# Apple API recovery reviewed 2026-09-21: generic apple_error is an unknown
+# exchange outcome retried with bounded backoff. Retry does not authorize,
+# extend an existing grant, erase credentials, or weaken verified denial gates.
+# Initial App Attest risk-receipt recovery reviewed 2026-09-22: bounded fresh
+# assertion retries run while a verified enrollment receipt lacks its risk
+# metric. Missing evidence never becomes an authorization or extends a lease.
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
   platform. Covers production only. Dev environment, nation-state adversaries, and

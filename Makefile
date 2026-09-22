@@ -4,6 +4,7 @@
         prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-build prompt-sidecar \
         provider-build provider-test provider benchmark-gemma-contbatch benchmark-wrapper-test \
         ui-install ui-build ui-lint ui-test ui \
+        landing-install landing-build landing-lint landing-test landing \
         e2e-integration e2e-benchmark e2e \
         docs-check docs-impact-check docs-stamp \
         test build all clean
@@ -98,6 +99,22 @@ ui-test: ## vitest for console-ui
 
 ui: ui-install ui-lint ui-test ui-build ## Install, lint, test, build console-ui
 
+# ---- Marketing site (Next.js 16) ------------------------------------------
+
+landing-install: ## npm ci for landing
+	cd landing && npm ci
+
+landing-build: ## next build for landing
+	cd landing && npm run build
+
+landing-lint: ## eslint check for landing sources
+	cd landing && npm run lint
+
+landing-test: landing-build ## Test landing routes against its production server
+	cd landing && npm test
+
+landing: landing-install landing-lint landing-test ## Install, lint, build and test landing
+
 # ---- E2E integration tests -------------------------------------------------
 # Requires Postgres + Swift provider binary + MLX model downloaded.
 
@@ -122,12 +139,13 @@ docs-stamp: ## Refresh the freshness stamp on changed docs (FILES=... to target 
 
 # ---- Aggregates ------------------------------------------------------------
 
-test: coordinator-test prompt-sidecar-test provider-test ui-test benchmark-wrapper-test docs-check ## Run all unit tests + docs lint
+test: coordinator-test prompt-sidecar-test provider-test ui-test landing-test benchmark-wrapper-test docs-check ## Run all tests + docs lint
 
-build: coordinator-build prompt-sidecar-build provider-build ui-build ## Build all components
+build: coordinator-build prompt-sidecar-build provider-build ui-build landing-build ## Build all components
 
 all: test build ## Test + build everything
 
 clean: ## Remove built artifacts
 	rm -f coordinator/coordinator coordinator/coordinator-linux
 	rm -rf coordinator/promptsidecar/target provider-swift/.build console-ui/.next console-ui/node_modules
+	rm -rf landing/.next landing/node_modules

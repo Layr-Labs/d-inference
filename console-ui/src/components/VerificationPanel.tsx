@@ -1,5 +1,6 @@
 "use client";
 
+import { verificationPresentation } from "@/lib/verification";
 import { useState } from "react";
 import type { TrustMetadata } from "@/lib/api";
 import { useVerificationMode } from "@/components/app-providers/verification-mode";
@@ -14,18 +15,11 @@ export function VerificationPanel({ trust }: { trust: TrustMetadata }) {
   const { mode, toggle } = useVerificationMode();
   const [open, setOpen] = useState(false);
   const [showExplainer, setShowExplainer] = useState(false);
-  const isHardware = trust.trustLevel === "hardware";
-
-  const Icon = isHardware ? ShieldCheck : Shield;
-  const color = isHardware ? "text-accent-green" : "text-text-tertiary";
-  const bg = isHardware ? "bg-accent-green/5" : "bg-bg-secondary";
-  const title = isHardware
-    ? trust.mdaVerified
-      ? mode === "normal"
-        ? "Apple-verified hardware"
-        : "Apple Attested"
-      : "Hardware Verified"
-    : "Unverified";
+  const view = verificationPresentation(trust.verification);
+  const Icon = view.verified ? ShieldCheck : Shield;
+  const color = view.verified ? "text-accent-green" : "text-text-tertiary";
+  const bg = view.verified ? "bg-accent-green/5" : "bg-bg-secondary";
+  const title = view.label;
 
   const chipLabel = trust.providerChip;
 
@@ -57,7 +51,7 @@ export function VerificationPanel({ trust }: { trust: TrustMetadata }) {
             <div className="flex items-center justify-between mt-2 mb-2">
               <p className="text-xs text-text-tertiary font-medium uppercase tracking-wider">
                 {mode === "normal"
-                  ? "Security Guarantees"
+                  ? "Verification at dispatch"
                   : "Provider Security Verification"}
               </p>
               <button

@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-09-17 · commit `77d1d1d86`
+> Last updated: 2026-09-22 · commit `ce809b792`
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -24,7 +24,7 @@ the packages described in
 (`provider-swift/Sources/ProviderCore/Security/BootSecurity.swift`). The three
 values are in [Constants](#constants). Chip
 identity is parsed from the brand string into `ChipFamily` ∈ {`M1`, `M2`,
-`M3`, `M4`, `M5`, `Unknown`} and `ChipTier` ∈ {`Base`, `Pro`, `Max`, `Ultra`,
+`M3`, `M4`, `M5`, `M6`, `Unknown`} and `ChipTier` ∈ {`Base`, `Pro`, `Max`, `Ultra`,
 `Unknown`} (`provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`,
 `parseChipIdentity`; `provider-swift/Sources/ProviderCore/Protocol/Enums.swift`).
 

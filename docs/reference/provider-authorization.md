@@ -1,6 +1,6 @@
 # Provider serving authorization
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-22 · commit `03e65d36f`
 
 The coordinator can authorize private inference through complete legacy verification or a qualified App Attest connection. These are separate evidence paths; App Attest never sets legacy MDA/APNs flags. The [rollout runbook](../operations/mdm-optional-rollout.md) separates code availability from activation qualification.
 
@@ -16,7 +16,8 @@ The [App Attest module map](../../coordinator/appattest/README.md) explains the 
 | Registration identity cohort | Use the authenticated token account and configured percentage in production; providers outside that cohort, including explicit macOS versions below 27, retain legacy history/MDA recovery and duplicate handling | `coordinator/appattest/service/authorization_identity.go` (`appAttestIdentityCandidate`) |
 | Assertion freshness | `AssertionFreshness = 15 * time.Minute`; receipt and revocation deadlines may shorten it | `coordinator/appattest/authorization.go` (`EvaluateAuthorization`) |
 | Durable revocation/receipt refresh | `appAttestAuthorizationRefresh = 5 * time.Second`, batched at most 1000 distinct keys per query | `coordinator/appattest/service/authorizer.go` (`refresh`) |
-| First-proof readiness lookup failure | Without an existing authorizer record, request a fresh assertion after one minute, then five minutes, then the normal ten-minute cadence while the lookup remains unavailable. A known decision or retained refresh record resets the backoff; all identity and policy gates still apply before granting | `coordinator/appattest/service/retry.go` (`nextAssertionDelay`); `coordinator/appattest/service/authorization_identity.go` (`updateServingAuthorization`) |
+| First-proof readiness or risk-receipt wait | Without an existing authorizer record, request a fresh assertion after one minute, then five minutes, then the normal ten-minute cadence while the readiness lookup is unavailable or a verified enrollment receipt lacks its risk metric. A known complete decision or retained refresh record resets the backoff; all identity and policy gates still apply before granting. A verified `ATTEST` receipt without a risk metric cannot grant serving | `coordinator/appattest/service/retry.go` (`nextAssertionDelay`); `coordinator/appattest/service/authorization_identity.go` (`updateServingAuthorization`) |
+| Apple API failure | The coarse `apple_error` result retries on the same provider connection after one minute, then five minutes, then hourly. Each attempt uses a fresh exchange and reloads durable state. Failed exchanges remain unknown, cannot establish or extend a grant, and do not replace independently valid legacy authorization | `coordinator/appattest/service/retry.go` (`runRecovering`); `coordinator/appattest/service/policy.go` (`observeFailedPolicy`) |
 | Revocation freshness ceiling | `appAttestRevocationFreshness = 30 * time.Second` from the query start; a failed read cannot renew it | Same (`apply`) |
 
 ## Durable build qualification

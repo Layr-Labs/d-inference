@@ -166,7 +166,7 @@ func TestAppAttestServingAndRemovalAreIndependentOptIns(t *testing.T) {
 	if v := s.providerServingAuthorizationStatus(p); v.Path != "app_attest" || v.MDMRemovalReady {
 		t.Fatal("migration switch ineffective")
 	}
-	for _, reason := range []string{"apple_invalid_key", "keychain_error", "timeout", "authenticator_trailing_data", "storage_error"} {
+	for _, reason := range []string{"apple_invalid_key", "apple_error", "keychain_error", "timeout", "authenticator_trailing_data", "storage_error"} {
 		if confirmedAppAttestViolation(reason) {
 			t.Fatalf("recovery classified as tamper: %s", reason)
 		}

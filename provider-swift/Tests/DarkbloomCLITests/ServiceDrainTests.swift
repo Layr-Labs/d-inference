@@ -96,6 +96,27 @@ struct ServiceDrainTests {
     }
 }
 
+@Test func signalBeforeScheduleHandlerInstallationDisarmsRecovery() async {
+    await #expect(processExitsWith: .success) {
+        let marker = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let start = try Start.parse([])
+        let signals = ProviderSignalHandler { _ = await ProviderTermination.shared.request() }
+        _ = kill(getpid(), SIGTERM)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while await !ProviderTermination.shared.terminationRequested, ContinuousClock.now < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        await start.installIdleScheduleTerminationHandler(disarmRecovery: {
+            try Data("disarmed".utf8).write(to: marker)
+        })
+        let exited = try await start.waitOutsideSchedule(seconds: 30, coordinatorURL: "http://127.0.0.1:0")
+        withExtendedLifetime(signals) {}
+        let disarmed = (try? Data(contentsOf: marker)) == Data("disarmed".utf8)
+        try? FileManager.default.removeItem(at: marker)
+        exit(exited && disarmed ? 0 : 1)
+    }
+}
+
 
 @Suite("Lifecycle recovery rollback")
 struct LifecycleRecoveryRollbackTests {

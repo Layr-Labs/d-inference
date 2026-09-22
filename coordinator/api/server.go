@@ -3508,6 +3508,8 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 		}
 
+		w.Header().Set("Access-Control-Expose-Headers", "X-Provider-Verification, X-Provider-Authorization-Method, X-Provider-Encrypted, X-Provider-Trust-Level, X-Provider-Attested")
+
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

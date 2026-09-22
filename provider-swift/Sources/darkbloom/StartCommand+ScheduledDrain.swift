@@ -2,6 +2,24 @@ import Foundation
 import ProviderCore
 
 extension Start {
+    /// No serve loop exists before the first window (or between windows), so
+    /// its usual termination handler cannot disarm crash recovery.
+    internal func installIdleScheduleTerminationHandler(
+        disarmRecovery: @escaping @Sendable () throws -> Void = { try WatchdogAgent.stop() }
+    ) async {
+        await ProviderTermination.shared.install {
+            if let identity = ProcessIdentity.current(),
+               let request = LifecycleMailbox(identity: identity).readRequest(),
+               request.isValid(for: identity) {
+                // The CLI already owns recovery for this command. Do not
+                // disarm a watchdog just armed by a replacement process.
+                return true
+            }
+            try? disarmRecovery()
+            return true
+        }
+    }
+
     /// Outside a schedule window there is no ProviderLoop, connection or
     /// admitted work. Keep command handling/liveness alive instead of sleeping
     /// through stop/restart. Once a command is acknowledged, never open another
@@ -13,7 +31,10 @@ extension Start {
         var draining = false
         var status = ProviderDrainStatus(outcome: .drained)
         repeat {
-            if await ProviderTermination.shared.terminationRequested { return true }
+            if await ProviderTermination.shared.terminationRequested {
+                _ = await ProviderTermination.shared.request()
+                return true
+            }
             if let request = mailbox.readRequest(), request.isValid(for: identity) {
                 draining = true
                 status = ProviderDrainStatus(requestID: request.id, outcome: request.force ? .forced : .drained,

@@ -3739,13 +3739,14 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	type providerAttestation struct {
-		ProviderID             string `json:"provider_id"`
-		ChipName               string `json:"chip_name"`
-		HardwareModel          string `json:"hardware_model"`
-		TrustLevel             string `json:"trust_level"`
-		Status                 string `json:"status"`
-		AppAttestAuthorized    bool   `json:"app_attest_authorized"`
-		AuthorizationExpiresAt int64  `json:"authorization_expires_at,omitempty"`
+		ProviderID             string                `json:"provider_id"`
+		ChipName               string                `json:"chip_name"`
+		HardwareModel          string                `json:"hardware_model"`
+		TrustLevel             string                `json:"trust_level"`
+		Status                 string                `json:"status"`
+		Verification           registry.Verification `json:"verification"`
+		AppAttestAuthorized    bool                  `json:"app_attest_authorized"`
+		AuthorizationExpiresAt int64                 `json:"authorization_expires_at,omitempty"`
 
 		// Hardware specs
 		MemoryGB int      `json:"memory_gb"`
@@ -3778,25 +3779,14 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 
 	var providers []providerAttestation
 
-	publicProviderModels := s.registry.PublicProviderModels()
-	// Read current authorization outside ForEachProvider's registry lock.
-	// Never publish account, credential or canonical machine identifiers here.
-	appAttestLeases := make(map[string]registry.AppAttestServingAuthorization)
-	for _, id := range s.registry.ProviderIDs() {
-		if lease, ok := s.registry.ProviderServingAuthorization(s.registry.GetProvider(id)); ok {
-			appAttestLeases[id] = lease
-		}
-	}
-	s.registry.ForEachProvider(func(p *registry.Provider) {
-		// Snapshot mutable fields under provider lock to avoid racing
-		// with background MDA verification and challenge goroutines.
-		p.Mu().Lock()
+	// The registry holds membership and provider locks for the whole row:
+	// verification and compatibility fields cannot observe different grants.
+	s.registry.ForEachProviderVerification(func(p *registry.Provider, verification registry.Verification, models registry.PublicProviderModelSnapshot) {
 		trustLevel := p.TrustLevel
 		status := p.Status
 		mdaVerified := p.MDAVerified
 		attestResult := p.AttestationResult
 		mdaResult := p.MDAResult
-		p.Mu().Unlock()
 
 		// The public proofs (mdm/mda) are reported true ONLY for a connection
 		// that currently holds hardware trust. A hardware proof is meaningful for
@@ -3807,18 +3797,19 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		// consistent.
 		isHardware := trustLevel == registry.TrustHardware
 		pa := providerAttestation{
-			ProviderID:  p.ID,
-			TrustLevel:  string(trustLevel),
-			Status:      string(status),
-			MemoryGB:    p.Hardware.MemoryGB,
-			GPUCores:    p.Hardware.GPUCores,
-			MDMVerified: isHardware,
-			MDAVerified: mdaVerified && isHardware,
+			ProviderID:   p.ID,
+			Verification: verification,
+			TrustLevel:   string(trustLevel),
+			Status:       string(status),
+			MemoryGB:     p.Hardware.MemoryGB,
+			GPUCores:     p.Hardware.GPUCores,
+			MDMVerified:  isHardware,
+			MDAVerified:  mdaVerified && isHardware,
 		}
 
-		pa.Models = append(pa.Models, publicProviderModels[p.ID].Models...)
-		if lease, ok := appAttestLeases[p.ID]; ok {
-			pa.AppAttestAuthorized, pa.AuthorizationExpiresAt = true, lease.ValidUntil.Unix()
+		pa.Models = models.Models
+		if verification.AppAttest.State == "verified" {
+			pa.AppAttestAuthorized, pa.AuthorizationExpiresAt = true, verification.AppAttest.ExpiresAt
 		}
 
 		if attestResult != nil {

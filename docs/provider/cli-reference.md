@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-21 · commit `12599b420`
+> Last updated: 2026-09-22 · commit `632a94adc`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -749,6 +749,8 @@ darkbloom enroll [--coordinator <url>] [--no-open]
 Without a flag, ask whether to fully exit Darkbloom or remove only MDM and keep serving with App Attest. Enter or closed input cancels without changing anything. The App Attest option requires macOS 27 or later and fresh coordinator removal approval; an unsupported/unqualified choice never falls back to cleanup.
 
 Full exit stops the launchd provider and disables its automatic restart before profile-removal guidance and a separate local cleanup confirmation. If a foreground provider is still running, cleanup is refused. The cleanup list includes the current and legacy Secure Enclave signing keys. Model downloads and server-side account history remain intact.
+
+If profile inventory needs administrator access, run this command in the foreground of an interactive terminal. `sudo` prompts there with terminal echo disabled; only the fixed, read-only profile inventory command is elevated. A denied prompt, noninteractive session, or background terminal job withholds profile-removal guidance. The command does not remove a profile itself; confirm the exact Darkbloom profile in System Settings. See [`attestation.md`](./attestation.md#app-attest-without-darkbloom-mdm).
 
 Code: `provider-swift/Sources/darkbloom/UnenrollCommand+Choice.swift` (`chooseUnenrollmentMode`, `performUnenrollment`); `provider-swift/Sources/darkbloom/UnenrollCommand.swift` (`performFullUnenrollment`). Noninteractive use requires an explicit mode flag.
 

@@ -415,4 +415,22 @@ struct PlannedProviderDisconnectTests {
         #expect(await loop.state.refusingNewWork)
         await loop.finishPlannedWork()
     }
+
+    @Test func reconnectRequestedDuringOutageResumesAdmission() async throws {
+        let loop = try makeDrainTestLoop()
+        let state = await loop.state
+        let client = makeHeartbeatClient(state: state)
+        await loop.setCoordinatorClientForTesting(client)
+        await loop.requestPlannedReconnect()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while state.refusingNewWork && ContinuousClock.now < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect(!state.refusingNewWork)
+        let planned = await loop.plannedReconnectRevision
+        let issued = await loop.issuedReconnectRevision
+        #expect(planned == issued)
+        await loop.finishPlannedReconnect()
+        #expect(!state.refusingNewWork)
+    }
 }

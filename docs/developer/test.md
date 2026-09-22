@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-21 · commit `12599b420`
+> Last updated: 2026-09-22 · commit `632a94adc`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -38,6 +38,7 @@ actual Swift tokens and scope-bound hashes with Rust plans. No production
 prompts or model weights are needed (`scripts/verify-prompt-parity.sh`).
 
 Installer onboarding regression coverage runs with `scripts/test-install-atomic.sh`.
+The provider CI job runs `python3 scripts/test-profile-inventory-auth.py` on macOS. Its pseudo-terminal fixtures compile the production profile-inventory helper, verify foreground password prompting without echo, exercise nonzero exits and failed spawns in a foreground terminal, and reject background terminal jobs and noninteractive reads without invoking real `sudo` or changing profiles.
 It invokes `scripts/test-install-onboarding.py`, which executes the actual setup
 function with profile/network/Settings effects mocked: macOS 27+, older and unknown
 versions, existing management, and unavailable enrollment. This checks setup
@@ -387,6 +388,10 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 ```
 
 ### 2. Coordinator (Go)
+
+The Go module lives at the repository root. Run `go test ./coordinator/...`
+there to select coordinator packages; keep component `cd` commands in separate
+shells when following the repository README examples.
 
 Run prediction telemetry checks from the repository root:
 
@@ -1401,17 +1406,32 @@ procedure, its inputs and the regeneration flow are in
 install/replace path of `scripts/install.sh` in a temp dir (and runs
 `scripts/sync-install-embed.sh check` first).
 
-### 5. Console UI and Admin UI
+### 5. Web UIs
 
 ```bash
 make ui-test                     # cd console-ui && npm test  (vitest run)
 make ui-lint                     # npx eslint src/
 make ui-build                    # next build
 cd admin-ui && npm test && npm run lint && npm run build
-node --test landing/earn-calculator-core.test.js
+make landing                    # standalone install, lint, build and HTTP route tests
 ```
 
+The path-filtered `.github/workflows/landing.yml` workflow runs `npm ci`,
+lint, the production build (including TypeScript checks), and `npm test`.
+The Node test suite in `landing/tests/routes.test.mjs` starts an isolated
+production server to verify pages, legacy redirects, assets and unconfigured
+API responses without production credentials or upstream requests. For a
+migration or deployment, start it on port `3008` and check `/`, `/about`, `/privacy`, `/terms`, the
+`/docs` redirect, fonts/media, desktop and mobile scrolling, and chat states.
+Verify `/api/network` and `/api/about` against the configured upstreams;
+without a key, `/api/chat` should return `503`. Exercise story delivery with
+a test webhook rather than sending test submissions to the production inbox.
+
 ### 6. Scripts and release integrity
+
+`python3 scripts/test_operations_scripts.py` checks admin JSON fields, fleet
+partial-failure exit status and smoke-file ownership using stub transports. It
+makes no network request, writes no login token and updates no host.
 
 ```bash
 make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contbatch/tests -t .   (in scripts/)

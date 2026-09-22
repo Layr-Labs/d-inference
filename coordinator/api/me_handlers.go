@@ -64,8 +64,9 @@ type myProvider struct {
 	MDAVerified bool   `json:"mda_verified"`
 	// Live App Attest guidance is independent of legacy proof fields and is
 	// never restored from a stored record. The client honors the lease deadline.
-	AppAttestAuthorized    bool  `json:"app_attest_authorized"`
-	AuthorizationExpiresAt int64 `json:"authorization_expires_at,omitempty"`
+	Verification           registry.Verification `json:"verification"`
+	AppAttestAuthorized    bool                  `json:"app_attest_authorized"`
+	AuthorizationExpiresAt int64                 `json:"authorization_expires_at,omitempty"`
 	// Deprecated: the ACME device-attest-01 leg was removed. Key kept (always
 	// false) because shipped provider builds decode it as a required field.
 	ACMEVerified bool   `json:"acme_verified"`

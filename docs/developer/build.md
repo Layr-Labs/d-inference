@@ -1,11 +1,11 @@
 # Build
 
-> Last updated: 2026-09-20 · commit `826fa102e`
+> Last updated: 2026-09-22 · commit `632a94adc`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
-source-matched `mlx.metallib`), and the two Next.js UIs. `make build` does all
-of it; the per-component steps below explain what each target runs.
+source-matched `mlx.metallib`), and the console and marketing Next.js UIs.
+`make build` builds those components; the admin UI is built separately below.
 
 Registry-ID support changes Swift provider policy and Rust prompt normalization
 together. Build the paired coordinator/sidecar/provider candidate; the v6
@@ -34,6 +34,10 @@ production build or substitute its benchmark archive with a test binary.
 Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 `scripts/publish-model.sh` to registration. See the
 [model publishing procedure](../operations/model-migration.md).
+
+The admin, smoke and fleet helpers use the tools pinned here. Their local fixture
+checks are covered by [script validation](test.md#6-scripts-and-release-integrity);
+the [dev operations runbook](../operations/dev-environment.md) covers invocation.
 
 Profiler wire changes require both coordinator and provider builds; the shared
 Go/Swift fixture and focused checks are described in [test.md](test.md) and
@@ -88,6 +92,9 @@ See the [release cache procedure](../operations/provider-release.md#prepare-and-
 for first-run costs and rerun behavior.
 
 ## Prerequisites
+
+- Start commands from the repository root. Component examples that use
+  `(cd path && command)` run in a subshell and preserve your current directory.
 
 - **Toolchain via [`mise`](https://mise.jdx.dev/).** Every version is pinned in
   [`mise.toml`](../../mise.toml); `mise install` installs them all.
@@ -196,7 +203,7 @@ provider, with the Python runner and original oracles owned by this repository.
 | `provider-swift/` | SwiftPM | Products: `darkbloom` (CLI), `darkbloom-enclave`, `darkbloom-fan-helper`, `darkbloom-publish`; libraries `ProviderCore`, `ProviderCoreFoundation`, `DarkbloomFan*`. Platform `macOS 14+`. |
 | `console-ui/` | Next.js 16 / React 19 | `npm`; tests with Vitest. |
 | `admin-ui/` | Next.js 16 / React 19 | `npm`; dev/start on port `4001`. |
-| `landing/` | static HTML/JS | No build step; `earn-calculator-core.test.js` runs with `node --test`. |
+| `landing/` | Next.js 16 / React 19 | Standalone npm app; `make landing` installs, lints, builds and runs route tests; dev/start on port `3008`. |
 | `Makefile` | — | Every target below; `make help` lists them. |
 
 Provider tests are grouped by subsystem inside their existing SwiftPM targets.
@@ -549,9 +556,20 @@ npm run dev      # next dev -p 4001
 
 ### 8. Landing page
 
-Static files in `landing/` (`index.html`, `earn-calculator*.js`, `terms.html`,
-`privacy.html`); nothing to build. Run its one test with
-`node --test landing/earn-calculator-core.test.js`.
+The imported Next.js site lives in `landing/` and has its own npm
+lockfile and configuration. It does not depend on the eigen-homepages
+workspace. From the repository root:
+
+```bash
+make landing
+cd landing && npm run dev
+```
+
+Copy `landing/.env.example` to `.env.local` inside that directory to
+configure runtime integrations. A production build needs no credentials.
+The hosting root is `landing`, with the Next.js preset; its API routes
+require a server runtime rather than a static export. See the
+[marketing README](../../landing/README.md) for deployment handoff.
 
 ### 9. Coordinator container image
 
@@ -691,6 +709,8 @@ for sampling scope, regression filters and diagnostic restrictions.
 ### Qwen packaged resource regression
 
 `python3 scripts/test-qwen4-packaged-resources.py` compiles the actual Qwen Metal resource accessor into a small optimized app, then runs it from a relocated app and an installer-style executable symlink. It checks all three preamble hashes, rejects missing or empty files and resource links outside the app, and proves that developer/cwd copies cannot mask a broken packaged resource. It needs Swift on macOS, but no model weights or GPU. Both SDK 27 release lanes and Provider Tests run this check. The full provider `runtime-smoke` exercises the same accessor before publication, installation, and update.
+
+Provider Tests also runs `python3 scripts/test-profile-inventory-auth.py` on macOS. It compiles the production `ProfileInventoryAuthorization` helper into a terminal fixture without invoking real `sudo` or changing profiles; the test procedure is in [test.md](test.md).
 
 ## Promotion payload helper
 

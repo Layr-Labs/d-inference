@@ -24,7 +24,7 @@ struct ConnectionView: View {
             HStack {
                 CheckRow(title: "Signed Darkbloom provider", detail: store.snapshot?.worker == nil ? "Install the official provider to continue." : "Developer ID and hardened runtime checked on this Mac.", ready: store.snapshot?.worker != nil)
                 if store.snapshot?.worker == nil {
-                    Button("Get provider") { store.open("https://darkbloom.dev/earn") }.controlSize(.small)
+                    Button("Get provider") { store.open("https://console.darkbloom.dev/providers/setup") }.controlSize(.small)
                 }
             }
             Divider().padding(.leading, 34)

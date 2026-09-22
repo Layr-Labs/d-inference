@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-21 · commit `76a8f03d9`
 
 The complete public HTTP surface of the coordinator, derived from the 116 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -175,7 +175,7 @@ Ledger semantics, reservations and payouts: [`../architecture/billing.md`](../ar
 | Method | Path | Handler | Auth | Notes |
 |---|---|---|---|---|
 | GET | `/v1/stats` | `handleStats` (`coordinator/api/stats.go`) | `—` | Refresh every 30 s; preserve the UTC source observation time in `snapshot_at` (`time.RFC3339Nano`). Geography refreshes independently and reports availability per section. Retain a successful core body up to 5 min on core refresh failure; 503 `service_unavailable` without an unexpired success |
-| GET | `/v1/leaderboard` | `handleLeaderboard` (`coordinator/api/leaderboard.go`) | `—` | Cached 5 min (full) / 1 min (recent window) |
+| GET | `/v1/leaderboard` | `handleLeaderboard` (`coordinator/api/leaderboard.go`) | `—` | Successful boards cached 5 min; 503 `service_unavailable` on a store error after a miss, with no failed result cached |
 | GET | `/v1/network/totals` | `handleNetworkTotals` (`coordinator/api/network_totals.go`) | `—` | Totals refreshed every minute with the same 5 min safety TTL; 503 `service_unavailable` without an unexpired success; canonical windows `24h`, `7d`, `30d`, `all` (`1d` → `24h`, empty/`lifetime` → `all`) |
 | GET | `/v1/network/series` | `handleNetworkSeries` (`coordinator/api/network_series.go`) | `—` | Time series, cached 1 min; 503 `service_unavailable` on a store error after a miss, with no failed result cached |
 | GET | `/health` | `handleHealth` (`coordinator/api/consumer.go`) | `—` | `HealthResponse` `{status: "ok", draining, providers, version, build_commit, build_date}` |
@@ -198,8 +198,8 @@ Cache behavior is implemented by `coordinator/api/cache_refresher.go`
 | `request_flows` | `null` when flows are unavailable, an array (possibly empty) on success; independent of location status | `coordinator/api/stats_geography.go` (`computeStatsGeography`) |
 | `provider_locations`, `provider_regions` | Still computed from the live fleet with core stats; request-geography failures do not hide provider geography | `coordinator/api/stats.go` (`computeStats`, `aggregateProviderLocations`) |
 
-The stats, totals, and series handlers emit the 503 `service_unavailable` error
-envelope when their required data is unavailable.
+The stats, totals, series, and leaderboard handlers emit the 503
+`service_unavailable` error envelope when their required data is unavailable.
 
 ### Release and install (5)
 

@@ -7,6 +7,7 @@
 - **Admin email login** — Encode Privy OTP email/code fields as JSON strings so quoted addresses and escape characters cannot break or reshape the upstream request.
 - Persist independently approved App Attest builds and revocations; refresh qualification without per-release coordinator restarts, with bounded failure/expiry and stale-grant fencing.
 - Stage immutable signed provider artifacts before publication. Block unqualified releases before updater/latest aliases advance; retry the separate publication job using the same signed bytes, without rebuilding or notarizing again.
+- Return 503 `service_unavailable` from `GET /v1/leaderboard` when the ranking query fails (typically the store timeout) instead of publishing and caching an empty board as a successful result. A successful empty window still returns 200 with empty entries.
 
 ## Release candidate v0.9.7 — MDM-optional providers and account-scoped SLAs (not shipped; 2026-09-20)
 

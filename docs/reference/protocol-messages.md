@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-23 · commit `afb71c63d`
+> Last updated: 2026-09-23 · commit `378a35a64`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -704,6 +704,14 @@ background-prefetch any missing desired build, hard-swap, emit `models_update`.
 Go `TrustStatusMessage` · Swift `TrustStatus`. `trust_level` ∈ {`none`,
 `self_signed`, `hardware`}; `status` (`online`, `untrusted`, …); `reason`
 (opt in Go, `String` in Swift). Operator diagnostics only.
+
+The optional `authorization.reason` carries bounded policy codes. When a
+hardware-trusted connection lacks the complete legacy serving path,
+`legacy_*` names its first missing prerequisite (for example,
+`legacy_code_identity_unverified` or `legacy_release_evidence_missing`) while
+`authorization.path` remains `none`. These codes contain no machine or key
+identity and cannot grant routing or MDM removal. See the
+[provider diagnostics](provider-authorization.md#provider-diagnostics).
 
 ### `capacity_probe`
 

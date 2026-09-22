@@ -21,6 +21,8 @@ func (s *Service) providerServingAuthorizationStatus(p *registry.Provider) *prot
 		result.MDMRemovalReady = s.config.MDMRemovalEnabled
 	} else if s.registry.ProviderLegacyServingAuthorized(p) {
 		result.Path, result.Reason = "legacy", "legacy_verification_active"
+	} else if reason := s.registry.ProviderLegacyServingDenialReason(p); reason != "" {
+		result.Reason = reason
 	}
 	return result
 }

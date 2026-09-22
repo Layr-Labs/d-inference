@@ -178,6 +178,29 @@ func TestAppAttestServingAndRemovalAreIndependentOptIns(t *testing.T) {
 	}
 }
 
+func TestHardwareLegacyDenialReportsCurrentGateInsteadOfAppAttestQualification(t *testing.T) {
+	s, p, _, _ := newAuthorizationFixture(t)
+	if status := s.providerServingAuthorizationStatus(p); status.Path != "none" || status.Reason != "app_attest_qualification_required" {
+		t.Fatalf("self-signed App Attest candidate changed: %+v", status)
+	}
+	s.registry.SetCodeAttestationPolicy(true, time.Now().Add(-time.Minute))
+	p.SetAttested(true, registry.TrustHardware)
+	p.ChallengeVerifiedSIP = true
+	p.SetLastChallengeVerified(time.Now())
+	if s.registry.ProviderLegacyServingAuthorized(p) {
+		t.Fatal("code identity gate unexpectedly passed")
+	}
+	status := s.providerServingAuthorizationStatus(p)
+	if status.Path != "none" || status.Reason != "legacy_code_identity_unverified" || status.MDMRemovalReady {
+		t.Fatalf("denied legacy guidance = %+v", status)
+	}
+	p.CodeAttested = true
+	status = s.providerServingAuthorizationStatus(p)
+	if status.Path != "legacy" || status.Reason != "legacy_verification_active" || status.MDMRemovalReady {
+		t.Fatalf("authorized legacy guidance = %+v", status)
+	}
+}
+
 func TestAppAttestSignedNegativeCannotFallbackToLegacy(t *testing.T) {
 	s, p, record, state := newAuthorizationFixture(t)
 	if !s.authorizer.apply(p, record, state, time.Now()) {

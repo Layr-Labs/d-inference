@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-22 · commit `ce809b792`
+> Last updated: 2026-09-22 · commit `7983cc343`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -69,7 +69,7 @@ With the pinned checkpoint downloaded, run `LayaPromptCheckpointTests` with
 `LAYA_TEST_CHECKPOINT` set to its directory. This checks the real tokenizer's
 header-budget rejection without dropping choice options. Native model parity
 and measured timing use `libs/mlx-swift-lm/scripts/qualify-laya.py` and `laya-probe`;
-see the [module guide](../../libs/mlx-swift-lm/Libraries/MLXDecisions/README.md).
+see the [module guide](https://github.com/Layr-Labs/mlx-swift-lm/blob/327af8b9412be6967873077682d67d9b6fe6ba9a/Libraries/MLXDecisions/README.md).
 
 `SystemOneProviderTests` and `LayaModelLayoutTests` cover native provider
 ownership, scanning, local HTTP and encrypted dispatch. Set

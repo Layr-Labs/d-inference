@@ -1,6 +1,6 @@
 # Onboard Laya System One decisions
 
-> Last updated: 2026-09-22 · commit `ce809b792`
+> Last updated: 2026-09-22 · commit `7983cc343`
 
 Runbook for publishing the pinned English Laya checkpoint and enabling native
 decision inference. Local runtime qualification, provider release, coordinator
@@ -49,7 +49,7 @@ for request shapes and limits.
 
 2. Build the native probe and run numerical qualification against the pinned
    Python MLX reference. Follow the module's
-   [runtime and parity guide](../../libs/mlx-swift-lm/Libraries/MLXDecisions/README.md).
+   [runtime and parity guide](https://github.com/Layr-Labs/mlx-swift-lm/blob/327af8b9412be6967873077682d67d9b6fe6ba9a/Libraries/MLXDecisions/README.md).
    Record source revisions, checkpoint revision, hardware, toolchain,
    source-matched metallib, precision, question counts, sequence lengths, and
    observed error/latency ranges.

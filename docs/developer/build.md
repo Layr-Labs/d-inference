@@ -1,6 +1,11 @@
 # Build
 
-> Last updated: 2026-09-20 · commit `76a8f03d9`
+> Last updated: 2026-09-21 · commit `ce809b792`
+
+The optional [Ollama companion POC](../provider/ollama-connect.md) builds independently
+with `make ollama-connect-build` and launches with `make ollama-connect`. It uses
+SwiftPM and system frameworks, without the MLX submodules. Its development app
+signature does not qualify it as a provider.
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its

@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-15 · commit `2a843bb2c`
+> Last updated: 2026-09-21 · commit `ce809b792`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -97,6 +97,8 @@
 - [`provider/fan-control.md`](provider/fan-control.md): the opt-in root fan helper.
 - [`provider/beta-features.md`](provider/beta-features.md): `darkbloom beta` toggles and retired flags.
 - [`provider/troubleshooting.md`](provider/troubleshooting.md): symptom → check → fix, including "connected but not routable" and the `doctor` check names.
+- [`provider/ollama-connect.md`](provider/ollama-connect.md): build and try the native Ollama companion POC, with a separate signed provider for network inference.
+- [`architecture/security/ollama-connect.md`](architecture/security/ollama-connect.md): metadata-only Ollama integration, signed-worker checks, evidence expiry and qualification limits.
 
 ## Developer how-tos
 

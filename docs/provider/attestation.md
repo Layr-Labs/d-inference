@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-21 · commit `ce809b792`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -20,6 +20,10 @@ New setup on macOS 27 or later skips MDM profile download in both the installer 
 After the coordinator enables removal and reports readiness, run `darkbloom unenroll` and choose the App Attest option. Removal guidance requires a coordinator decision received within the last 10 seconds, as well as a current daemon snapshot and unexpired authorization; a local state-file rewrite cannot extend readiness. It requires macOS 27 or later; `--keep-serving` remains a direct shortcut. The command preserves credentials/account data, validates the exact Darkbloom enrollment and guides removal in System Settings. A read-only administrator profile inventory may be required. The full-exit option stops the provider and offers identity cleanup, so choose App Attest to retain provider identity. Older macOS uses the complete legacy path below. New macOS 27+ setup remains pending if App Attest is unavailable or unqualified; diagnose with `darkbloom doctor` instead of installing an MDM profile. The legacy steps below apply only to older macOS and existing enrollments.
 
 ## Existing machines and upgrade notices
+
+The [Ollama companion POC](ollama-connect.md) hands setup to this same signed
+provider and preserves its authorization checks. It does not attest Ollama
+or introduce a separate path for serving private requests.
 
 Existing eligible machines continue through legacy verification during the
 transition. Upgrading macOS does not uninstall MDM. After upgrading to macOS 27

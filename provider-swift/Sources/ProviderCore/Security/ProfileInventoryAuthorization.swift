@@ -6,7 +6,6 @@ import Foundation
 /// a separate group on macOS, which stops an interactive child on SIGTTIN.
 enum ProfileInventoryAuthorization {
     static func readAuthenticatedProfiles(arguments: [String]) -> Data? {
-        guard isatty(STDIN_FILENO) != 0 else { return nil }
         return runInCurrentProcessGroup(
             executable: "/usr/bin/sudo",
             arguments: ["--", "/usr/bin/profiles"] + arguments)
@@ -15,6 +14,10 @@ enum ProfileInventoryAuthorization {
     /// Internal PTY-test seam. Production uses only the fixed sudo/profiles
     /// path and arguments; no shell or password handling enters this process.
     static func runInCurrentProcessGroup(executable: String, arguments: [String]) -> Data? {
+        // A background job still has a TTY, but terminal reads stop it with
+        // SIGTTIN. Withhold guidance before launching an interactive child.
+        guard isatty(STDIN_FILENO) != 0,
+              tcgetpgrp(STDIN_FILENO) == getpgrp() else { return nil }
         var descriptors = [Int32](repeating: 0, count: 2)
         guard pipe(&descriptors) == 0 else { return nil }
         defer { close(descriptors[0]) }

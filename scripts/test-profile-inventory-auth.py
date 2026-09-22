@@ -60,6 +60,28 @@ finally:
     os.close(fd)
 print("FAKE_AUTH_COMPLETED", flush=True)
 ''')
+        cls.background_prompt = root / "background_prompt.py"
+        cls.background_prompt.write_text('''import os
+print("UNEXPECTED_BACKGROUND_SPAWN", flush=True)
+fd = os.open("/dev/tty", os.O_RDONLY)
+os.read(fd, 1)
+''')
+        cls.background_driver = root / "background_driver.py"
+        cls.background_driver.write_text('''import os, signal, subprocess, sys
+child = subprocess.Popen([sys.argv[1], sys.executable, sys.argv[2]],
+                         preexec_fn=os.setpgrp, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True)
+try:
+    output, errors = child.communicate(timeout=3)
+except subprocess.TimeoutExpired:
+    os.killpg(child.pid, signal.SIGKILL)
+    child.communicate()
+    print("BACKGROUND_CHILD_STOPPED", flush=True)
+    sys.exit(2)
+sys.stdout.write(output)
+sys.stderr.write(errors)
+sys.exit(child.returncode)
+''')
 
     def test_prompt_reads_input_without_echo_or_job_control_stop(self):
         pid, terminal = pty.fork()
@@ -128,6 +150,55 @@ print("FAKE_AUTH_COMPLETED", flush=True)
         for args in (["/usr/bin/false"], ["/nonexistent/profile-auth-test"]):
             result = subprocess.run([str(self.binary), *args], capture_output=True, text=True, timeout=10)
             self.assertEqual(result.stdout.strip(), "AUTHORIZATION_SUCCESS=false")
+
+    def test_background_terminal_job_withholds_prompt(self):
+        pid, terminal = pty.fork()
+        if pid == 0:
+            os.execl(sys.executable, sys.executable, str(self.background_driver),
+                     str(self.binary), str(self.background_prompt))
+        output = b""
+        status = None
+        try:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if select.select([terminal], [], [], 0.1)[0]:
+                    try:
+                        output += os.read(terminal, 8192)
+                    except OSError as error:
+                        if error.errno != errno.EIO:
+                            raise
+                child, child_status = os.waitpid(pid, os.WNOHANG)
+                if child:
+                    status = child_status
+                    while select.select([terminal], [], [], 0)[0]:
+                        try:
+                            chunk = os.read(terminal, 8192)
+                        except OSError as error:
+                            if error.errno == errno.EIO:
+                                break
+                            raise
+                        if not chunk:
+                            break
+                        output += chunk
+                    break
+            self.assertIsNotNone(status, output.decode(errors="replace"))
+            self.assertTrue(os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0,
+                            output.decode(errors="replace"))
+            self.assertIn(b"AUTHORIZATION_SUCCESS=false", output)
+            self.assertNotIn(b"UNEXPECTED_BACKGROUND_SPAWN", output)
+        finally:
+            if status is None:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    # The wrapper may have exited during timeout cleanup.
+                    pass
+                try:
+                    os.waitpid(pid, 0)
+                except ChildProcessError:
+                    # The polling loop may already have reaped the wrapper.
+                    pass
+            os.close(terminal)
 
     def test_noninteractive_input_never_launches_sudo(self):
         result = subprocess.run([str(self.binary), "noninteractive"], stdin=subprocess.DEVNULL,

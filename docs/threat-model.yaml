@@ -32,7 +32,8 @@ created: "2026-05-14"
 # MDM-optional authorization added 2026-09-15: explicit serving opt-in consumes
 # Interactive profile inventory during MDM removal retains the foreground
 # terminal group for native sudo prompting and reads only the fixed profiles
-# command; denial withholds guidance and cannot grant serving authorization.
+# command; background jobs and denial withhold guidance and cannot grant
+# serving authorization.
 # qualified protocol3 evidence; it never sets legacy MDA/APNs flags. Fresh
 # connection/endpoint/policy-bound permission is checked at every final dispatch.
 # Receipt/revocation polling has a 30s ceiling from query start, and failed reads

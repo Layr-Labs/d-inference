@@ -51,8 +51,15 @@ func (x *Session) prepareClientHash(ctx context.Context, action string, reply pr
 		if err != nil {
 			return [32]byte{}, nil, errors.New("enrollment_storage_error")
 		}
-		if e == nil || e.Owner != x.owner || e.KeyID != id || e.AppID != x.s.config.AppID || e.Environment != x.s.config.Environment || e.AccountScope != x.accountScope() || time.Since(e.CreatedAt) > 24*time.Hour || e.CreatedAt.After(time.Now()) {
+		now := time.Now()
+		if e == nil || e.Owner != x.owner || e.KeyID != id || e.AppID != x.s.config.AppID || e.Environment != x.s.config.Environment || e.AccountScope != x.accountScope() || e.CreatedAt.After(now) {
 			return [32]byte{}, nil, errors.New("enrollment_context")
+		}
+		if now.Sub(e.CreatedAt) > 24*time.Hour {
+			// The client's proof-cache clock starts after Apple's response;
+			// this server context starts before the call. Reject the old proof
+			// but allow a later prepare to observe expiry and replace the key.
+			return [32]byte{}, nil, errors.New("enrollment_expired")
 		}
 		// This recovers enrollment only. A fresh assertion, encrypted to the
 		// new connection's actual endpoint, must still follow every reconnect.

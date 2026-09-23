@@ -1,7 +1,6 @@
 "use client";
 
 import { ProofDetails } from "@/components/verification/ProofDetails";
-import { currentVerification } from "@/lib/verification";
 import { ShieldCheck } from "lucide-react";
 import { providerRouteReason, providerRouteState, relativeChallengeLabel, shortProviderModel, type ProviderStats } from "./provider-fleet";
 import { formatCompactNumber } from "./format";
@@ -59,7 +58,7 @@ export function ProviderNodeDetail({ provider }: { provider: ProviderStats | nul
             <DetailMetric label="Device identity" value="Private" />
             <DetailMetric label="Reported macOS" value={provider.os_version || "Unavailable"} />
           </dl>
-          <div className="mt-5"><ProofDetails verification={currentVerification(provider.verification)} /></div>
+          <div className="mt-5"><ProofDetails verification={provider.verification} snapshot /></div>
         </section>
       </div>
     </article>

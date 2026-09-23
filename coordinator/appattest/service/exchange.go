@@ -89,7 +89,7 @@ func (x *Session) handleExchange(ctx context.Context, reply protocol.AppAttestSh
 		return "stop"
 	}
 	if reply.Result != "ok" {
-		x.observe(x.expected, shadowClientResult(reply.Result), nil)
+		x.observeWithAppleError(x.expected, shadowClientResult(reply.Result), nil, reply.AppleError)
 		return "stop"
 	}
 	if x.expected == "ready" {
@@ -136,8 +136,9 @@ func (x *Session) handleExchange(ctx context.Context, reply protocol.AppAttestSh
 	hash, err := prepared.Hash, prepared.Err
 	if err != nil {
 		reason := "enrollment_context"
-		if err.Error() == "enrollment_storage_error" {
-			reason = "enrollment_storage_error"
+		switch err.Error() {
+		case "enrollment_storage_error", "enrollment_expired":
+			reason = err.Error()
 		}
 		x.observe(x.expected, reason, nil)
 		return "stop"

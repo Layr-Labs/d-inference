@@ -9,9 +9,14 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/appattest"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 func (x *Session) observe(stage, outcome string, metadata *appattest.Key) {
+	x.observeWithAppleError(stage, outcome, metadata, nil)
+}
+
+func (x *Session) observeWithAppleError(stage, outcome string, metadata *appattest.Key, appleError *protocol.AppAttestAppleError) {
 	if stage != "archive" {
 		x.lastOutcome = outcome
 	}
@@ -56,6 +61,9 @@ func (x *Session) observe(stage, outcome string, metadata *appattest.Key) {
 		x.s.ddIncr("app_attest.shadow.metadata", []string{"result:" + policy})
 	}
 	fields["account_id"] = x.account
+	if appleError != nil && appleError.Valid() {
+		fields["apple_error"] = appleError
+	}
 	if stage == "prospective_policy" {
 		for key, value := range x.policyFields {
 			fields[key] = value

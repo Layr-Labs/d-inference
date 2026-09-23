@@ -1,6 +1,6 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-09-22 · commit `03e65d36f`
+> Last updated: 2026-09-22 · commit `736911a19`
 
 App Attest shadow collection records stable machine identities, fleet adoption, submitted proofs and receipts alongside legacy verification. Shadow alone changes no routing, rewards or trust. The separately enabled [provider authorization path](provider-authorization.md) uses qualified evidence for MDM-optional serving and rewards. DeviceCheck's separate two-bit API remains deferred.
 
@@ -40,9 +40,15 @@ Frames use `type = "app_attest_shadow"` and nested `payload`. Every request has 
 
 Code: `coordinator/protocol/app_attest_shadow.go`, `coordinator/protocol/app_attest_status.go`, and `provider-swift/Sources/ProviderAppAttest/ShadowProtocol.swift`.
 
+Error replies may include optional `apple_error` diagnostics with `domain`, signed 32-bit `code`, and an optional paired `underlying_domain` / `underlying_code`. Domains are the closed buckets `devicecheck`, `osstatus`, `url`, `cocoa`, and `other`. The coordinator validates the bounds before admission, retains valid details in the evidence context and error event, and never uses them as proof or metric-tag cardinality. Native descriptions, arbitrary domains and `NSError.userInfo` are excluded. Older peers may omit or ignore this additive field. Code: `coordinator/protocol/app_attest_error.go` (`AppAttestAppleError.Valid`), `provider-swift/Sources/ProviderAppAttest/AppAttestAppleError.swift`.
+
 All transcript versions encode UTF-8 fields preceded by four-byte big-endian byte lengths, then SHA-256 the result. Version 1 fields are domain `darkbloom.app-attest.shadow.v1`, action, session, environment, key ID, plaintext challenge, and the app-owned X25519 public key. Version 2 changes the domain to `darkbloom.app-attest.shadow.v2` and appends account scope, OS version, OS build, app version, chip, and binary hash in that order. Version 3 uses domain `darkbloom.app-attest.shadow.v3` and additionally appends machine model, physical RAM in GiB, total/performance/efficiency CPU cores and GPU cores as canonical decimal strings, followed by the app’s existing attestation public key. Go and Swift tests pin independent vectors. The coordinator compares these signed app measurements against the registration; version 2 cannot authenticate the added fields.
 
 The app derives status locally. The server never supplies a replacement endpoint key or arbitrary status to sign. Assertion-bound status is authenticated app reporting; it is not an independent Apple certification of the OS version, chip, or binary hash. The prospective policy requires the current Apple launch category and full CodeDirectory SHA-256 measurement, an active catalog match and separately qualified binary/code-hash pair. Missing assertion metadata never falls back to enrollment metadata or an app-reported version.
+
+## macOS attestation framing
+
+The verifier revision is `mac-shadow-v5`. Production macOS 27 attestations can contain a complete CDhash extension map while the ED flag is clear. `coordinator/appattest/authenticator.go` (`authData`) accepts only a bounded, fully decoded attestation map with launch category and type-2 SHA-256 CodeDirectory measurement in this case. The Apple certificate chain, exact Mac ACL and nonce over all authenticator bytes are checked first. Unflagged assertion tails, duplicate/trailing CBOR and incomplete measurements remain rejected. This compatibility rule does not itself grant serving.
 
 ## Machine inventory and identity
 
@@ -115,9 +121,10 @@ Apple's [receipt contract](https://developer.apple.com/documentation/devicecheck
 | Session recovery | Transient failures, including the released client's coarse `apple_error` result, retry after one minute, then five minutes, then hourly. Every attempt gets a new session/nonce and reloads durable acceptance/counters. Successful assertions reset backoff. An Apple API error is an unknown prospective verdict and grants no permission; verified crypto/policy rejections remain terminal, and cancellation stops retries. Code: `coordinator/appattest/service/retry.go`. |
 | First-risk-receipt wait | A valid first assertion with a verified enrollment receipt but no risk metric stays unknown. Without an existing authorization record, a fresh assertion retries after one minute, five minutes, then at the normal ten-minute cadence while Apple's receipt renewal runs independently. Only complete fresh evidence can authorize serving. Code: `coordinator/appattest/service/authorization_identity.go` and `retry.go`. |
 | Apple callbacks | 25-second waiter deadline. The actual uncancellable Apple operation retains admission until its callback arrives; retries receive `busy` in the meantime. A token fences duplicate late callbacks from unlocking a newer operation. A pre-cancelled call does not acquire admission. Code: `AppleOperationGate.swift` and `AppleAppAttestService.swift` in `provider-swift/Sources/ProviderAppAttest/`. |
-| Attestation retries | At most three attempts, 2/8-second waits, only for service unavailable, using the same key/hash. |
+| Attestation retries | At most three attempts, 2/8-second waits, only for service unavailable. `ShadowEnrollmentAttempt` persists the original key/hash, status, session and timestamp across later coordinator retries, reconnects and v2/v3 upgrades, as [Apple requires](https://developer.apple.com/documentation/devicecheck/dcerror-swift.struct/code/serverunavailable). Successful recovery uses the original stored server transaction; a subsequent serving assertion always signs fresh status/challenge/endpoint. Expired or malformed retry state retires under existing generation limits. |
+| Failed one-time enrollment | Non-service-unavailable Apple failures retire the enrollment key identifier under the existing generation limits. The app persists `attestationStartedAt` before calling Apple; an interrupted attempt without a saved proof is retired on the next prepare. Cached successful proofs remain recoverable. Generic assertion failures do not rotate accepted keys; an explicit invalid-key response can retire them. Code: `provider-swift/Sources/ProviderAppAttest/EnrollmentKeyLifecycle.swift` and `AppAttestShadowClient.swift`. |
 | Key generation | Per-key one-hour replacement cooldown plus five generations per coordinator/environment per hour across account scopes, persisted before calling Apple. |
-| Lost enrollment response | Keychain temporarily retains proof and original status; retry uses a server-persisted, same-owner transaction up to 24 hours old. Its stored protocol selects the original transcript; a version 3 upgrade can recover an old version 2 enrollment, but the following fresh assertion must use the new protocol. Expired pending proof is replaced under the generation budget. |
+| Lost enrollment response | Keychain temporarily retains proof and original status; retry uses a server-persisted, same-owner transaction up to 24 hours old. Its stored protocol selects the original transcript; a version 3 upgrade can recover an old version 2 enrollment, but the following fresh assertion must use the new protocol. The server measures the 24-hour limit from its original challenge, before the client caches the completed proof. A matching but expired transaction returns `enrollment_expired` and uses bounded exchange retries so a later prepare can expire the local cache and replace the key; binding mismatches remain terminal. Expired pending proof is replaced under the generation budget. |
 | Acknowledgement | An assertion request follows durable enrollment acceptance; the successful local assertion clears the cached enrollment proof. |
 | Cancellation | Connection generation prevents late delivery into a different session. |
 
@@ -125,11 +132,14 @@ Code: `AppAttestShadowClient.swift`, `CallbackDeadline.swift`, `AppleAppAttestSe
 
 ## Prospective authorization
 
-`coordinator/appattest/authorization.go` (`EvaluateAuthorization`) evaluates the
-future policy without MDM/APNs inputs or registry mutations. It is not wired as
-a serving gate in this release. `coordinator/appattest/service/policy.go`
-records its versioned outcome after each durably accepted assertion; failed
-exchanges supersede the previous verdict.
+`coordinator/appattest/authorization.go` (`EvaluateAuthorization`) is the pure
+eligibility evaluator used for observations and the independently enabled
+[App Attest serving path](provider-authorization.md). It has no MDM/APNs inputs
+and does not mutate registry state itself. `coordinator/appattest/service/policy.go`
+records the versioned result after each durably accepted assertion;
+`coordinator/appattest/service/authorization_identity.go` applies eligible evidence
+through the authorizer when serving is enabled. Failed exchanges supersede the
+prospective observation; current dispatch still checks its bounded authorization.
 
 | Condition | Missing evidence | Negative evidence |
 |---|---|---|
@@ -145,8 +155,8 @@ exchanges supersede the previous verdict.
 
 `eligible` receives an expiry bounded by assertion freshness, receipt expiration
 and renewal freshness. It is a prospective observation, not a portable cached
-lease. A future serving gate must reevaluate current connection, revocation and
-release policy at dispatch. Raw risk counts are evidence, not an invented fraud
+lease. The separately enabled serving path reevaluates current connection,
+revocation and release policy at dispatch. Raw risk counts are evidence, not an invented fraud
 threshold or physical-device identifier. `app_attest_key_revocations` and
 `RevokeAppAttestKey` persist account-scoped, idempotent revocations without
 changing legacy trust. The [rollout runbook](../operations/app-attest-rollout.md)
@@ -158,7 +168,6 @@ A controlled physical macOS 27 test of the same probe with SDK 26.5 and SDK 27.0
 
 `coordinator/appattest/code_measurement.go` parses the bounded signed fields and exposes only the observed type-2 SHA-256 format for matching. `coordinator/appattest/service/build_policy.go` requires an explicit qualified mapping for the reported binary hash; the independently loaded release catalog also pins that binary hash and version. The policy never accepts a code hash supplied in ordinary client status as Apple's measurement. Unknown algorithms remain recorded but cannot qualify. Assertions and enrollment observations retain `attested_code_directory_type` and `attested_code_directory_hash`; only the current assertion feeds prospective authorization. Parsed measurements are also committed atomically into the proof decision details. Verified OS/build status is recorded even when readiness storage fails or the key is revoked; only identity alias attachment depends on a known non-revoked credential. SDK 26 builds remain safe shadow clients and stay unknown for replacement readiness.
 
-
 ## Dashboard and telemetry
 
 The private admin dashboard at `/app-attest` queries the read replica. It distinguishes 24-hour/7-day windows, distinct accounts, stable machine records, provisional/key-bound/hardware-verified identities, connection sessions, latest OS, first recorded macOS 27+ observation, fresh assertions, stage outcomes, latency, and archive/receipt health. The machine list displays the latest 200 identities; aggregate census counts cover the whole window. Evidence history is paginated at 100 submissions per page.
@@ -168,6 +177,16 @@ Machine drill-downs download complete evidence/context and receipt history. Both
 Code: `admin-ui/src/lib/queries/app-attest.ts`, `admin-ui/src/lib/queries/app-attest-readiness.ts`, and `admin-ui/src/app/app-attest/page.tsx`. Readiness groups the newest observed connection per machine/version, shows all recent identities with offline cohorts separately, checks verdict expiration, current policy version and revocation, and lists missing/rejected conditions. Expired or missing expiry contributes `verdict_expired_or_missing`; a retired policy contributes `policy_version_stale`. A current revocation immediately contributes `credential_revoked` to the reasons table, even before another assertion; repeated reasons count each machine once. An earlier connection’s success never qualifies its replacement. These are recent evaluations; catalog or qualification changes require another evaluation.
 
 Metrics include `app_attest.shadow.events`, `app_attest.shadow.duration_ms`, `app_attest.shadow.metadata`, `app_attest.inventory.recorded`, `app_attest.inventory.failed`, `app_attest.archive.received`, `app_attest.archive.completed`, `app_attest.events.storage_failed`, and receipt/archive failure counters. `app_attest.receipt.configured` reports whether both credential settings are present; `app_attest.maintenance.interrupted`, `app_attest.maintenance.receipt_recovery` and `app_attest.maintenance.failed` expose reconciliation. Machine/account IDs appear in private records and logs, not high-cardinality metric tags. Logs complement the durable census rather than defining the denominator.
+
+These identifiers are not confined to PostgreSQL: `coordinator/appattest/service/observation.go`
+(`observeWithAppleError`) emits account/machine IDs and policy credential IDs to
+the process logger and configured Datadog Logs API through
+`coordinator/telemetry/emitter.go` (`Emit`). Raw proofs and receipts stay in the
+evidence archive, not these event fields. The admin download uses a shared
+Basic Auth credential, not per-operator identity or a dedicated download audit
+trail. Operators must account for both storage destinations when reviewing
+access and retention; a successful parser test does not verify those controls.
+See the [privacy audit and remaining limits](../reports/2026-09-22-app-attest-recovery.md#privacy-and-data-exposure-audit).
 
 `app_attest.inventory.reconciled` counts repaired terminal records; `app_attest.inventory.reconcile_failed` distinguishes contention from storage failures.
 

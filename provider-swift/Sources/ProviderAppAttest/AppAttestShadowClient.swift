@@ -26,6 +26,7 @@ public actor AppAttestShadowClient {
         guard !busy else { response.result = ShadowFailure.busy.rawValue; return response }
         busy = true
         defer { busy = false }
+        var calledAttestation = false
         do {
             guard request.protocolVersion == nil || [1,2,3].contains(request.protocolVersion ?? 0),
                   request.session.utf8.count == 44, Data(base64Encoded: request.session)?.count == 32,
@@ -39,8 +40,19 @@ public actor AppAttestShadowClient {
                 }
                 let keyScope = scope + ":" + environment + ([2,3].contains(request.protocolVersion ?? 0) ? ":account:" + (request.accountScope ?? "") : "")
                 var key = try storage.load(scope: keyScope)
+                if var interrupted = key, interrupted.attestationStartedAt != nil, interrupted.pendingProof == nil {
+                    interrupted.retireEnrollment()
+                    try storage.save(interrupted, scope: keyScope)
+                    key = interrupted
+                }
+                if var stale = key, let attempt = stale.retryEnrollment,
+                   !attempt.canResume(keyID: stale.keyID, session: request.session, protocolVersion: request.protocolVersion, now: Date()) {
+                    stale.retireEnrollment()
+                    try storage.save(stale, scope: keyScope)
+                    key = stale
+                }
                 if var expired=key, expired.pendingProof != nil, Date().timeIntervalSince(expired.pendingCreatedAt ?? expired.createdAt)>86400 {
-                    expired.keyID=""; expired.pendingProof=nil; expired.pendingEnrollment=nil; expired.pendingStatus=nil; expired.pendingCreatedAt=nil
+                    expired.retireEnrollment()
                     try storage.save(expired,scope:keyScope); key=expired
                 }
                 if key == nil || key?.keyID.isEmpty == true {
@@ -90,16 +102,44 @@ public actor AppAttestShadowClient {
                         throw ShadowFailure.keyUnregistered
                     }
                     // Retry only an unavailable Apple service, with the SAME key/hash.
+                    // Persist the original transcript across coordinator retries,
+                    // reconnects and upgrades, not just the immediate loop below.
+                    let enrollment = key.retryEnrollment ?? ShadowEnrollmentAttempt(
+                        keyID: key.keyID, clientHash: hash, session: request.session,
+                        protocolVersion: request.protocolVersion, status: status, createdAt: Date())
+                    key.retryEnrollment = enrollment
                     var proof: Data?
                     for attempt in 0..<3 {
-                        do { proof = try await service.attestKey(key.keyID, hash: hash); break }
-                        catch ShadowFailure.appleUnavailable where attempt < 2 {
+                        do {
+                            key.attestationStartedAt = Date()
+                            try storage.save(key, scope: keyScope)
+                            record = key
+                            calledAttestation = true
+                            proof = try await service.attestKey(key.keyID, hash: enrollment.clientHash)
+                            break
+                        } catch where appAttestFailure(error) == .appleUnavailable && attempt < 2 {
+                            // Apple answered: this key is safe to retry. A
+                            // cancellation/crash during backoff is not an
+                            // interrupted one-time call and must not retire it.
+                            calledAttestation = false
+                            key.attestationStartedAt = nil
+                            record = key
+                            try storage.save(key, scope: keyScope)
                             try await appAttestSleep(seconds: attempt == 0 ? 2 : 8)
                         }
                     }
                     guard let proof, proof.count <= 32*1024 else { throw ShadowFailure.appleError }
                     key.attested = true
-                    if [2,3].contains(request.protocolVersion ?? 0) { key.pendingProof=proof.base64EncodedString(); key.pendingEnrollment=request.session; key.pendingStatus=status; key.pendingCreatedAt=Date() }
+                    key.attestationStartedAt = nil
+                    key.retryEnrollment = nil
+                    if [2,3].contains(request.protocolVersion ?? 0) {
+                        key.pendingProof = proof.base64EncodedString()
+                        key.pendingEnrollment = enrollment.session
+                        key.pendingStatus = enrollment.status
+                        key.pendingCreatedAt = enrollment.createdAt
+                        response.enrollmentSession = enrollment.session
+                        response.status = enrollment.status
+                    }
                     record = key
                     try storage.save(key, scope: keyScope)
                     response.proof = proof.base64EncodedString()
@@ -108,7 +148,7 @@ public actor AppAttestShadowClient {
                     // acknowledgement was lost. A real assertion establishes usability.
                     let proof = try await service.generateAssertion(key.keyID, hash: hash)
                     guard proof.count <= 32*1024 else { throw ShadowFailure.appleError }
-                    key.attested=true; key.pendingProof=nil; key.pendingEnrollment=nil; key.pendingStatus=nil; key.pendingCreatedAt=nil
+                    key.attested=true; key.pendingProof=nil; key.pendingEnrollment=nil; key.pendingStatus=nil; key.pendingCreatedAt=nil; key.attestationStartedAt=nil; key.retryEnrollment=nil
                     record=key; try storage.save(key, scope:keyScope)
                     response.proof = proof.base64EncodedString()
                 } else { throw ShadowFailure.invalidRequest }
@@ -116,10 +156,19 @@ public actor AppAttestShadowClient {
             try Task.checkCancellation()
             response.result = "ok"
         } catch {
-            let failure = error is CancellationError ? ShadowFailure.cancelled : (error as? ShadowFailure ?? .appleError)
-            if failure == .appleInvalidKey, var key = record, let keyScope = preparedScope {
-                key.keyID = ""; record = key
-                try? storage.save(key, scope: keyScope)
+            let failure = appAttestFailure(error)
+            response.appleError = (error as? AppleAppAttestFailure)?.details
+            if (calledAttestation || (request.action == "assert" && failure == .appleInvalidKey)), var key = record, let keyScope = preparedScope {
+                // A successfully cached proof remains recoverable after a local
+                // write/cancellation failure. Never replace it with an error.
+                if failure == .appleInvalidKey || (calledAttestation && key.pendingProof == nil && shouldRetireEnrollmentKey(after: failure)) {
+                    key.retireEnrollment()
+                } else if failure == .appleUnavailable || failure == .busy {
+                    key.attestationStartedAt = nil
+                }
+                record = key
+                do { try storage.save(key, scope: keyScope) }
+                catch { response.result = ShadowFailure.keychainError.rawValue; return response }
             }
             response.result = failure.rawValue
         }

@@ -3,11 +3,14 @@ import { verificationPresentation, type Verification } from "@/lib/verification"
 const date = (seconds?: number) => seconds ? new Date(seconds * 1000).toLocaleString() : "Unavailable";
 
 /** Public proof summary: no certificate bytes, receipts, or stable identities. */
-export function ProofDetails({ verification, historical = false }: { verification?: Verification; historical?: boolean }) {
+export function ProofDetails({ verification, historical = false, snapshot = false }: { verification?: Verification; historical?: boolean; snapshot?: boolean }) {
   const view = verificationPresentation(verification);
+  let context = "Current serving authorization, as last checked by the coordinator. Routing also depends on model and capacity checks.";
+  if (historical) context = "Verification recorded when this request was dispatched. This is not the provider’s current authorization.";
+  if (snapshot) context = "Verification recorded in this network snapshot. This is not the provider’s current authorization.";
   return <div className="space-y-2 text-xs text-text-secondary">
     <p className={view.verified ? "font-semibold text-accent-green" : "font-semibold text-text-tertiary"}>{view.label}</p>
-    <p>{historical ? "Verification recorded when this request was dispatched. This is not the provider’s current authorization." : "Current serving authorization, as last checked by the coordinator. Routing also depends on model and capacity checks."}</p>
+    <p>{context}</p>
     <p>Apple provides attestation evidence; Darkbloom validates it and grants permission to serve. This browser displays the coordinator’s verdict and does not independently validate Apple certificates.</p>
     <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
       <dt>Coordinator check</dt><dd>{date(verification?.observed_at)}</dd>

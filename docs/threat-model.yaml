@@ -6,6 +6,12 @@ created: "2026-05-14"
 # disk) — see docs/architecture/security/encryption.md and identity-binding.md.
 # Every other entry still reflects the 2026-05-14 review and has not been
 # re-verified.
+# Public attestation roster privacy re-checked 2026-09-22 against 736911a19:
+# the 0.9.9 candidate excludes private-only rows before shared caching. Public
+# legacy SE keys still link public sessions; this is not an identifier-free API.
+# App Attest account/machine/credential IDs also enter operational logs and
+# configured Datadog, while raw evidence remains in the private archive.
+# See docs/reports/2026-09-22-app-attest-recovery.md for scope and residuals.
 # SSD disk policy re-checked 2026-09-08 against PR #866 (base 4be02331e):
 # default available-disk/2 without a fixed ceiling, 20 GiB unknown-space
 # budget fallback, and a fixed 20 GiB pre-write reserve including the pending
@@ -60,6 +66,20 @@ created: "2026-05-14"
 # locked authorization observation as their diagnostic verdicts, avoiding
 # mixed states during revocation or connection replacement. This changes
 # presentation, not serving or revocation policy.
+# Enrollment recovery and snapshot presentation reviewed 2026-09-22:
+# uncertain/failed one-time Apple enrollment keys retire under persistent
+# generation budgets; only serverUnavailable permits same-key enrollment retry.
+# Persisted retry hashes are enrollment-only; the original server transaction
+# must validate and a fresh current-endpoint assertion is still required.
+# Accepted assertion credentials do not rotate on generic API errors. Native
+# diagnostic domain buckets and signed numeric codes are untrusted metadata;
+# arbitrary strings/userInfo and raw Apple evidence are not published.
+# Authenticated macOS attestation CDhash extensions without ED are parsed only
+# after chain/nonce/exact-ACL verification; unflagged assertion tails still fail.
+# Expired enrollment transactions reject their proof but permit bounded recovery;
+# binding mismatches are checked first and remain terminal.
+# Network stats describe source snapshots; owner controls and all dispatch paths
+# retain live expiry/revocation. Historical display is never authorization.
 methodology: STRIDE
 # Apple API recovery reviewed 2026-09-21: generic apple_error is an unknown
 # exchange outcome retried with bounded backoff. Retry does not authorize,
@@ -837,7 +857,8 @@ trust_boundaries:
         (nonce, timestamp) pair, though in practice base64 nonces (44 chars) and RFC3339
         timestamps are statistically non-overlapping."
       - "MDA freshness code is sha256(SE_public_key_bytes). The SE public key remains
-        visible in the privacy-redacted GET /v1/providers/attestation status response.
+        visible for public connections in GET /v1/providers/attestation and can link
+        successive sessions. Private-only providers are excluded before shared caching.
         An attacker can pre-compute the expected freshness code for any known provider."
       - "No OCSP or CRL checks on the Apple Enterprise Attestation Root CA chain. A
         compromised or revoked Apple intermediate CA certificate would be accepted by the

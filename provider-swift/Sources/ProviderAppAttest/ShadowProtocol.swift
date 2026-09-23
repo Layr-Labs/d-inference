@@ -23,6 +23,8 @@ public struct AppAttestShadowPayload: Codable, Sendable, Equatable {
     public var challenge: String?
     public var result: String?
     public var appleError: AppAttestAppleError?
+    public var availabilityReason: AppAttestAvailabilityReason?
+    public var appleErrorSource: AppAttestAppleErrorSource?
     public var proof: String?
     public var encryptedChallenge: ShadowEncryptedChallenge?
 
@@ -36,6 +38,8 @@ public struct AppAttestShadowPayload: Codable, Sendable, Equatable {
         case keyID = "key_id"
         case encryptedChallenge = "encrypted_challenge"
         case appleError = "apple_error"
+        case availabilityReason = "availability_reason"
+        case appleErrorSource = "apple_error_source"
     }
 
     public func clientHash(publicKey: String) -> Data {

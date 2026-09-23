@@ -32,6 +32,8 @@ type AppAttestShadowPayload struct {
 	Challenge          string               `json:"challenge,omitempty"`
 	Result             string               `json:"result,omitempty"`
 	AppleError         *AppAttestAppleError `json:"apple_error,omitempty"`
+	AvailabilityReason string               `json:"availability_reason,omitempty"`
+	AppleErrorSource   string               `json:"apple_error_source,omitempty"`
 	Proof              string               `json:"proof,omitempty"`
 	EncryptedChallenge *EncryptedPayload    `json:"encrypted_challenge,omitempty"`
 }

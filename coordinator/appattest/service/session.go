@@ -173,7 +173,7 @@ func (x *Session) offer(p protocol.AppAttestShadowPayload) {
 		x.markDropped()
 		return
 	}
-	if !p.AppleError.Valid() || (p.Status != nil && len(p.Status.AttestationPublicKey) > 128) {
+	if !p.AppleError.Valid() || !p.ValidClientDiagnostics() || (p.Status != nil && len(p.Status.AttestationPublicKey) > 128) {
 		x.markDropped()
 		return
 	}

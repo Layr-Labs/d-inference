@@ -32,7 +32,10 @@ func mayRetryKeyGeneration(after error: any Error) -> Bool {
 
 func appAttestFailure(_ error: any Error) -> ShadowFailure {
     if error is CancellationError { return .cancelled }
-    return (error as? AppleAppAttestFailure)?.failure ?? (error as? ShadowFailure) ?? .appleError
+    return (error as? AppAttestAvailabilityFailure)?.failure
+        ?? (error as? AppleAppAttestFailure)?.failure
+        ?? (error as? ShadowFailure)
+        ?? .appleError
 }
 
 /// Apple permits reusing an enrollment key after serverUnavailable only. A

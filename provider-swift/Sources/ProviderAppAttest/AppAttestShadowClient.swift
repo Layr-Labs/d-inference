@@ -143,7 +143,8 @@ public actor AppAttestShadowClient {
                             try await appAttestSleep(seconds: attempt == 0 ? 2 : 8)
                         }
                     }
-                    guard let proof, proof.count <= 32*1024 else { throw ShadowFailure.appleError }
+                    guard let proof else { throw ShadowFailure.appleError }
+                    guard proof.count <= 32*1024 else { throw AppAttestAppleErrorSource.proofOversize }
                     key.attested = true
                     key.attestationStartedAt = nil
                     key.retryEnrollment = nil
@@ -174,7 +175,7 @@ public actor AppAttestShadowClient {
                         }
                     }
                     guard let proof else { throw ShadowFailure.appleError }
-                    guard proof.count <= 32*1024 else { throw ShadowFailure.appleError }
+                    guard proof.count <= 32*1024 else { throw AppAttestAppleErrorSource.proofOversize }
                     key.attested=true; key.pendingProof=nil; key.pendingEnrollment=nil; key.pendingStatus=nil; key.pendingCreatedAt=nil; key.attestationStartedAt=nil; key.retryEnrollment=nil
                     record=key; try storage.save(key, scope:keyScope)
                     response.proof = proof.base64EncodedString()
@@ -185,6 +186,8 @@ public actor AppAttestShadowClient {
         } catch {
             let failure = appAttestFailure(error)
             response.appleError = (error as? AppleAppAttestFailure)?.details
+            response.availabilityReason = (error as? AppAttestAvailabilityFailure)?.reason
+            response.appleErrorSource = error as? AppAttestAppleErrorSource
             if (calledAttestation || (request.action == "assert" && failure == .appleInvalidKey)), var key = record, let keyScope = preparedScope {
                 // A successfully cached proof remains recoverable after a local
                 // write/cancellation failure. Never replace it with an error.
@@ -195,7 +198,13 @@ public actor AppAttestShadowClient {
                 }
                 record = key
                 do { try storage.save(key, scope: keyScope) }
-                catch { response.result = ShadowFailure.keychainError.rawValue; return response }
+                catch {
+                    response.result = ShadowFailure.keychainError.rawValue
+                    response.appleError = nil
+                    response.availabilityReason = nil
+                    response.appleErrorSource = nil
+                    return response
+                }
             }
             response.result = failure.rawValue
         }

@@ -1,6 +1,6 @@
 # App Attest enrollment recovery and network snapshot investigation
 
-> Last updated: 2026-09-22 · commit `08d78d49d`
+> Last updated: 2026-09-22 · commit `736911a19`
 
 This investigation covers provider 0.9.8 and coordinator source `011ccd3d1`.
 The repairs described here are a proposed patch, not a production deployment
@@ -86,11 +86,66 @@ are not allowed to accumulate. Apple's native cause in the historical assertion
 case remains unavailable because the old client discarded it. New diagnostic
 codes and actual post-upgrade proofs are needed before calling that case resolved.
 
+## Privacy and data exposure audit
+
+The additional audit compared Apple's current [validation contract](https://developer.apple.com/documentation/devicecheck/validating-apps-that-connect-to-your-server),
+[receipt contract](https://developer.apple.com/documentation/devicecheck/assessing-fraud-risk)
+and [retry contract](https://developer.apple.com/documentation/devicecheck/dcerror-swift.struct/code/serverunavailable)
+against this PR. It traced the provider callback/transcript, key storage,
+coordinator verifier, evidence archive, operational event sinks, public API and
+authenticated admin export. This is a source audit with local regressions, not
+a claim that production access controls or every affected Mac were qualified.
+
+| Finding | Evidence and disposition |
+|---|---|
+| Private-only providers appeared in an unauthenticated roster | `handleProviderAttestation` iterated all registry providers, unlike public stats. A regression failed because the response exposed a private connection, hardware metadata and persistent legacy SE public key. The handler now excludes private-only rows before serialization and shared caching. Tests preserve normal public verification fields and owner-only visibility. This requires a coordinator deployment; no provider upgrade is needed for this filter. |
+| Public legacy keys permit cross-session linkage | The roster intentionally includes `se_public_key`, also used by response verification and older provider diagnostics. It is not the App Attest credential or a private key. The patch preserves compatibility and corrects the privacy description; replacing it with session-scoped evidence requires a separate consumer/diagnostic migration. Hiding private-only sessions cannot erase keys exposed in earlier public sessions. |
+| Operational IDs leave the evidence database | `observeWithAppleError` emits account/machine IDs and prospective-policy credential IDs through the shared emitter to process logs and configured Datadog Logs API. Raw proofs and receipts do not enter those event fields. This is operational data sharing, not an unauthenticated endpoint. Minimized external log fields and explicit log access/retention controls remain follow-ups. |
+| Evidence access is authenticated but uses shared credentials | The admin proxy and evidence download both require Basic Auth, fail closed when configuration is missing, and downloads use `private, no-store`. The code provides neither individual operator identity nor a dedicated download audit trail. SSO/RBAC and attributed export auditing remain follow-ups. Production IAM, database encryption, backups and third-party log retention were not inspected in this pass. |
+| Some presentation still described shadow-only operation | The reference still called the dispatch gate a future feature, and the admin page claimed APNs/MDM alone remained authoritative. Both now distinguish evidence collection from separately enabled, current serving authorization. Historical proof success alone does not grant serving. |
+
+The reviewed verifier checks the embedded Apple chain, nonce, signing App ID,
+key binding, environment, enrollment counter and strictly increasing assertion
+counter. The exact Mac access-policy value requires SIP and Full Security.
+Serving separately checks the current signed-code measurement against qualified
+release policy, owner/connection/endpoint bindings, receipts and revocation.
+The earlier framing repair remains limited to authenticated attestation data;
+assertions do not accept unflagged tails.
+
+The App Attest call receives a hash of Darkbloom's attestation transcript, not
+inference prompts. The Apple exchange also carries Apple's own attestation
+evidence; this does not imply that Apple receives no device/app information.
+The app's assertion adapter uses its own process-generated X25519 endpoint and
+locally measured status, and decrypts the coordinator challenge itself. The
+reviewed App Attest path does not expose a generic remote signing API. Keychain
+stores the key identifier and recovery state, not the App Attest private key;
+new records are nonsynchronizing and device-only. Native error diagnostics
+contain bounded domain/code values rather than descriptions or `userInfo`.
+
+These checks do not turn CPU/GPU inference into Secure Enclave execution or
+prove the absence of runtime vulnerabilities. The provider remains a plaintext
+endpoint, alongside the coordinator's confidential-VM processing. Exact signed
+artifact validation and security-transition tests remain release requirements.
+Apple's approximate recent key-count risk metric is not an immutable physical
+machine ID; neither canonical Darkbloom identity nor receipt history establishes
+physical uniqueness.
+
+No private-key or inference-prompt disclosure was found in the reviewed App
+Attest transcript, event fields or public verdict. That statement is limited to
+these paths; it is not a complete audit of inference/media handling, every log,
+or production infrastructure. The historical generic assertion failure above
+still lacks the native diagnostic needed to establish its initiating cause.
+
 ## Validation and rollout boundary
 
-The full coordinator suite, focused App Attest/protocol race tests, 29 focused
+The full coordinator suite, focused App Attest/protocol race tests, 33 focused
 Swift App Attest tests, 803 console tests, console lint/build and docs checks
-passed during preparation. The focused Swift harness compiles the actual module
+passed during preparation. The privacy follow-up additionally tests the public
+roster, shared cache, owner/account isolation and concurrent verification under
+the Go race detector. Admin lint/build and 16 tests pass; two disposable-Postgres
+integration tests remain skipped. The admin build uses a non-production
+placeholder database URL for required configuration, not a live connection.
+The focused Swift harness compiles the actual module
 and tests without the inference dependency graph; it is not signed-app
 qualification. The full provider suite and final CI results belong to the PR's
 validation record.

@@ -3730,9 +3730,10 @@ const providerAttestationCacheTTL = 2 * time.Second
 
 const providerAttestationCacheKey = "providers:attestation:v1"
 
-// handleProviderAttestation returns privacy-redacted trust status for all providers.
-// Device identity and raw MDA certificates stay coordinator-private because
-// Apple's leaf certificate embeds the hardware serial number and UDID.
+// handleProviderAttestation returns trust status for public providers only.
+// Serial numbers, UDIDs and raw MDA certificates stay coordinator-private.
+// The legacy SE public key remains public for response signature verification;
+// unlike the connection ID, that key can link successive public sessions.
 func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Request) {
 	if body, ok := s.readCacheGet(providerAttestationCacheKey); ok {
 		writeCachedJSON(w, body)
@@ -3782,6 +3783,11 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 	// The registry holds membership and provider locks for the whole row:
 	// verification and compatibility fields cannot observe different grants.
 	s.registry.ForEachProviderVerification(func(p *registry.Provider, verification registry.Verification, models registry.PublicProviderModelSnapshot) {
+		// Match the public stats roster. Private connections must never enter
+		// this unauthenticated response or its shared cache.
+		if p.PrivateOnly {
+			return
+		}
 		trustLevel := p.TrustLevel
 		status := p.Status
 		mdaVerified := p.MDAVerified

@@ -1,6 +1,6 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-09-22 · commit `08d78d49d`
+> Last updated: 2026-09-22 · commit `736911a19`
 
 App Attest shadow collection records stable machine identities, fleet adoption, submitted proofs and receipts alongside legacy verification. Shadow alone changes no routing, rewards or trust. The separately enabled [provider authorization path](provider-authorization.md) uses qualified evidence for MDM-optional serving and rewards. DeviceCheck's separate two-bit API remains deferred.
 
@@ -155,8 +155,8 @@ prospective observation; current dispatch still checks its bounded authorization
 
 `eligible` receives an expiry bounded by assertion freshness, receipt expiration
 and renewal freshness. It is a prospective observation, not a portable cached
-lease. A future serving gate must reevaluate current connection, revocation and
-release policy at dispatch. Raw risk counts are evidence, not an invented fraud
+lease. The separately enabled serving path reevaluates current connection,
+revocation and release policy at dispatch. Raw risk counts are evidence, not an invented fraud
 threshold or physical-device identifier. `app_attest_key_revocations` and
 `RevokeAppAttestKey` persist account-scoped, idempotent revocations without
 changing legacy trust. The [rollout runbook](../operations/app-attest-rollout.md)
@@ -177,6 +177,16 @@ Machine drill-downs download complete evidence/context and receipt history. Both
 Code: `admin-ui/src/lib/queries/app-attest.ts`, `admin-ui/src/lib/queries/app-attest-readiness.ts`, and `admin-ui/src/app/app-attest/page.tsx`. Readiness groups the newest observed connection per machine/version, shows all recent identities with offline cohorts separately, checks verdict expiration, current policy version and revocation, and lists missing/rejected conditions. Expired or missing expiry contributes `verdict_expired_or_missing`; a retired policy contributes `policy_version_stale`. A current revocation immediately contributes `credential_revoked` to the reasons table, even before another assertion; repeated reasons count each machine once. An earlier connection’s success never qualifies its replacement. These are recent evaluations; catalog or qualification changes require another evaluation.
 
 Metrics include `app_attest.shadow.events`, `app_attest.shadow.duration_ms`, `app_attest.shadow.metadata`, `app_attest.inventory.recorded`, `app_attest.inventory.failed`, `app_attest.archive.received`, `app_attest.archive.completed`, `app_attest.events.storage_failed`, and receipt/archive failure counters. `app_attest.receipt.configured` reports whether both credential settings are present; `app_attest.maintenance.interrupted`, `app_attest.maintenance.receipt_recovery` and `app_attest.maintenance.failed` expose reconciliation. Machine/account IDs appear in private records and logs, not high-cardinality metric tags. Logs complement the durable census rather than defining the denominator.
+
+These identifiers are not confined to PostgreSQL: `coordinator/appattest/service/observation.go`
+(`observeWithAppleError`) emits account/machine IDs and policy credential IDs to
+the process logger and configured Datadog Logs API through
+`coordinator/telemetry/emitter.go` (`Emit`). Raw proofs and receipts stay in the
+evidence archive, not these event fields. The admin download uses a shared
+Basic Auth credential, not per-operator identity or a dedicated download audit
+trail. Operators must account for both storage destinations when reviewing
+access and retention; a successful parser test does not verify those controls.
+See the [privacy audit and remaining limits](../reports/2026-09-22-app-attest-recovery.md#privacy-and-data-exposure-audit).
 
 `app_attest.inventory.reconciled` counts repaired terminal records; `app_attest.inventory.reconcile_failed` distinguishes contention from storage failures.
 

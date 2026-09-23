@@ -9,6 +9,7 @@
 - Accept authenticated macOS CDhash attestation extensions when Apple omits the extension flag; retain complete certificate, nonce, Mac ACL, key, transcript and serving-policy verification.
 - Retain bounded Apple error domain/code diagnostics without error descriptions, user-info dictionaries or raw identity data.
 - Show public network verification counts and filters at their source snapshot instead of expiring cached App Attest rows into a false zero. Owner serving controls retain live expiry.
+- Exclude private-only providers from the unauthenticated attestation roster and its shared cache. Preserve owner access and document public legacy-key linkability and private audit-data destinations.
 
 ## v0.9.8 — graceful lifecycle and App Attest recovery (2026-09-22)
 

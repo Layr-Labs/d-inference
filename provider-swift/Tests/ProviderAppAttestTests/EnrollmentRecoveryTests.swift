@@ -30,6 +30,7 @@ private actor EnrollmentService: AppAttestService {
     var assertionFailure: ShadowFailure?
     var nativeEnrollmentFailure: AppleAppAttestFailure?
     private var enrollmentCalls: [(String, Data)] = []
+    private var assertionCalls: [(String, Data)] = []
     private var generations = 0
     init(enrollmentFailure: ShadowFailure? = nil, assertionFailure: ShadowFailure? = nil) {
         self.enrollmentFailure = enrollmentFailure; self.assertionFailure = assertionFailure
@@ -43,13 +44,15 @@ private actor EnrollmentService: AppAttestService {
         return Data("test-attestation".utf8)
     }
     func generateAssertion(_ id: String, hash: Data) throws -> Data {
+        assertionCalls.append((id, hash))
         if let assertionFailure { throw assertionFailure }
         return Data("test-assertion".utf8)
     }
-    func allowEnrollment() { enrollmentFailure = nil }
+    func allowEnrollment() { enrollmentFailure = nil; nativeEnrollmentFailure = nil }
     func generated() -> Int { generations }
     func failNatively(_ error: AppleAppAttestFailure) { nativeEnrollmentFailure = error }
     func calls() -> [(String, Data)] { enrollmentCalls }
+    func assertions() -> [(String, Data)] { assertionCalls }
 }
 
 final class EnrollmentRecoveryTests: XCTestCase {
@@ -103,6 +106,36 @@ final class EnrollmentRecoveryTests: XCTestCase {
         let client = AppAttestShadowClient(scope: "test", service: service, storage: storage)
         let ready = await client.respond(to: request("prepare"), publicKey: endpoint)
         XCTAssertEqual(ready.result, "ok"); XCTAssertNotEqual(ready.keyID, oldKey)
+        let count = await service.generated(); XCTAssertEqual(count, 1)
+    }
+
+    func testLaterPrepareRetiresExpiredCachedProofAndEnrollsAgain() async {
+        let storage = EnrollmentStorage(); let service = EnrollmentService()
+        var cached = ShadowKeyRecord(keyID: oldKey, attested: true, createdAt: Date(timeIntervalSinceNow: -90000))
+        cached.pendingProof = Data("cached-proof".utf8).base64EncodedString()
+        cached.pendingEnrollment = "original-enrollment"
+        cached.pendingStatus = status
+        // Apple's response arrived later than the coordinator saved its
+        // transaction. The server can reject expiry while this cache is fresh.
+        cached.pendingCreatedAt = Date(timeIntervalSinceNow: -86375)
+        storage.save(cached, scope: scope)
+        let client = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+        _ = await client.respond(to: request("prepare"), publicKey: endpoint)
+        let replay = await client.respond(to: request("attest", key: oldKey), publicKey: endpoint, status: status)
+        XCTAssertEqual(replay.proof, cached.pendingProof)
+        XCTAssertEqual(replay.enrollmentSession, cached.pendingEnrollment)
+        var calls = await service.calls(); XCTAssertTrue(calls.isEmpty)
+
+        // Model the passage of the server's bounded retry delay by aging the
+        // stored timestamp. The next prepare must not retain the expired proof.
+        cached.pendingCreatedAt = Date(timeIntervalSinceNow: -86435)
+        storage.save(cached, scope: scope)
+        let ready = await client.respond(to: request("prepare"), publicKey: endpoint)
+        XCTAssertEqual(ready.result, "ok"); XCTAssertNotEqual(ready.keyID, oldKey)
+        let replacement = await client.respond(to: request("attest", key: ready.keyID), publicKey: endpoint, status: status)
+        XCTAssertEqual(replacement.result, "ok")
+        XCTAssertNotEqual(replacement.proof, cached.pendingProof)
+        calls = await service.calls(); XCTAssertEqual(calls.count, 1)
         let count = await service.generated(); XCTAssertEqual(count, 1)
     }
 
@@ -171,6 +204,96 @@ final class EnrollmentRecoveryTests: XCTestCase {
         let calls = await service.calls(); XCTAssertEqual(calls.count, 3)
         XCTAssertTrue(calls.allSatisfy { $0.0 == oldKey && $0.1 == calls[0].1 })
         let count = await service.generated(); XCTAssertEqual(count, 0)
+    }
+
+    func testUnavailableEnrollmentKeepsOriginalHashAcrossRestartAndProtocolUpgrade() async {
+        let storage = EnrollmentStorage(); let service = EnrollmentService(enrollmentFailure: .appleUnavailable)
+        storage.save(ShadowKeyRecord(keyID: oldKey, attested: false, createdAt: Date(timeIntervalSinceNow: -7200)), scope: scope)
+        let first = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+        _ = await first.respond(to: request("prepare"), publicKey: endpoint)
+        let unavailable = await first.respond(to: request("attest", key: oldKey), publicKey: endpoint, status: status)
+        XCTAssertEqual(unavailable.result, "apple_unavailable")
+        await service.allowEnrollment()
+        let restarted = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+        let newEndpoint = Data(repeating: 8, count: 32).base64EncodedString()
+        var prepare = request("prepare")
+        prepare.session = Data(repeating: 11, count: 32).base64EncodedString()
+        prepare.protocolVersion = 3
+        let ready = await restarted.respond(to: prepare, publicKey: newEndpoint)
+        var retry = request("attest", key: ready.keyID)
+        retry.session = prepare.session; retry.protocolVersion = 3
+        retry.challenge = Data(repeating: 12, count: 32).base64EncodedString()
+        var newStatus = status; newStatus.appVersion = "0.9.9"
+        let recovered = await restarted.respond(to: retry, publicKey: newEndpoint, status: newStatus)
+        XCTAssertEqual(recovered.result, "ok")
+        XCTAssertEqual(recovered.enrollmentSession, request("attest").session)
+        XCTAssertEqual(recovered.status, status)
+        let calls = await service.calls(); XCTAssertEqual(calls.count, 4)
+        XCTAssertTrue(calls.allSatisfy { $0.0 == oldKey && $0.1 == calls[0].1 })
+        let count = await service.generated(); XCTAssertEqual(count, 0)
+        retry.action = "assert"
+        retry.challenge = Data(repeating: 13, count: 32).base64EncodedString()
+        let asserted = await restarted.respond(to: retry, publicKey: newEndpoint, status: newStatus)
+        XCTAssertEqual(asserted.result, "ok"); XCTAssertEqual(asserted.status, newStatus)
+        retry.status = newStatus
+        let assertions = await service.assertions(); XCTAssertEqual(assertions.count, 1)
+        XCTAssertEqual(assertions[0].1, retry.clientHash(publicKey: newEndpoint))
+        XCTAssertNotEqual(assertions[0].1, calls[0].1)
+        XCTAssertNil(storage.load(scope: scope)?.retryEnrollment)
+    }
+
+    func testCancellationDuringUnavailableBackoffKeepsRetryableKey() async throws {
+        let storage = EnrollmentStorage(); let service = EnrollmentService(enrollmentFailure: .appleUnavailable)
+        storage.save(ShadowKeyRecord(keyID: oldKey, attested: false, createdAt: Date()), scope: scope)
+        let client = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+        _ = await client.respond(to: request("prepare"), publicKey: endpoint)
+        let enrollmentRequest = request("attest", key: oldKey)
+        let callEndpoint = endpoint, callStatus = status
+        let task = Task { await client.respond(to: enrollmentRequest, publicKey: callEndpoint, status: callStatus) }
+        // Observe the first failed call during its two-second retry backoff.
+        // Bound the wait so a broken implementation cannot hang this test.
+        let deadline = Date(timeIntervalSinceNow: 1)
+        while Date() < deadline {
+            let calls = await service.calls()
+            if calls.count == 1 && storage.load(scope: scope)?.attestationStartedAt == nil { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        task.cancel()
+        let cancelled = await task.value
+        XCTAssertEqual(cancelled.result, "cancelled")
+        XCTAssertEqual(storage.load(scope: scope)?.keyID, oldKey)
+        XCTAssertNil(storage.load(scope: scope)?.attestationStartedAt)
+        await service.allowEnrollment()
+        let restarted = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+        var prepare = request("prepare"); prepare.session = Data(repeating: 21, count: 32).base64EncodedString()
+        let ready = await restarted.respond(to: prepare, publicKey: endpoint)
+        XCTAssertEqual(ready.result, "ok"); XCTAssertEqual(ready.keyID, oldKey)
+        var retry = request("attest", key: ready.keyID); retry.session = prepare.session
+        let proof = await restarted.respond(to: retry, publicKey: endpoint, status: status)
+        XCTAssertEqual(proof.result, "ok")
+        let calls = await service.calls(); XCTAssertEqual(calls.count, 2)
+        XCTAssertTrue(calls.allSatisfy { $0.1 == calls[0].1 })
+        let count = await service.generated(); XCTAssertEqual(count, 0)
+    }
+
+    func testExpiredOrInvalidRetryTranscriptIsRetiredBeforeAppleUse() async {
+        for scenario in ["expired", "future", "wrong key", "short hash", "legacy session"] {
+            let storage = EnrollmentStorage(); let service = EnrollmentService()
+            var key = ShadowKeyRecord(keyID: oldKey, attested: false, createdAt: Date(timeIntervalSinceNow: -90000))
+            key.retryEnrollment = ShadowEnrollmentAttempt(
+                keyID: scenario == "wrong key" ? "different" : oldKey,
+                clientHash: Data(repeating: 1, count: scenario == "short hash" ? 31 : 32),
+                session: Data(repeating: 17, count: 32).base64EncodedString(),
+                protocolVersion: scenario == "legacy session" ? 1 : 2, status: status,
+                createdAt: Date(timeIntervalSinceNow: scenario == "expired" ? -86401 : scenario == "future" ? 3600 : -60))
+            storage.save(key, scope: scope)
+            let client = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+            let ready = await client.respond(to: request("prepare"), publicKey: endpoint)
+            XCTAssertEqual(ready.result, "ok", scenario)
+            XCTAssertNotEqual(ready.keyID, oldKey, scenario)
+            let calls = await service.calls(); XCTAssertTrue(calls.isEmpty, scenario)
+            let count = await service.generated(); XCTAssertEqual(count, 1, scenario)
+        }
     }
 
     func testReplacementRespectsSharedGenerationBudgetAcrossAccounts() async {

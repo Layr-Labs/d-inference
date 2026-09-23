@@ -10,6 +10,7 @@ extension ShadowKeyRecord {
         pendingStatus = nil
         pendingCreatedAt = nil
         attestationStartedAt = nil
+        retryEnrollment = nil
     }
 }
 

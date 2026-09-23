@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-22 · commit `011ccd3d1`
+> Last updated: 2026-09-22 · commit `08d78d49d`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -11,7 +11,7 @@ The legacy levels and flags below retain their meaning. With the explicit servin
 
 The [durable build qualification policy](../../reference/provider-authorization.md#durable-build-qualification) adds a separate qualification generation to App Attest leases. `coordinator/appattest/service/authorizer.go` (`apply`) recomputes the build/code match using the current approved record and retained Apple-signed full measurement; cached true booleans cannot survive withdrawal. `coordinator/registry/app_attest_authorization.go` (`providerHasAppAttestAuthorizationLocked`) rejects stale generations at every shared dispatch gate. Qualification expiry is independent of assertion and receipt expiry.
 
-Initial App Attest enrollment is a one-time Apple operation. `provider-swift/Sources/ProviderAppAttest/AppAttestShadowClient.swift` persists an attempt marker before the call and uses `EnrollmentKeyLifecycle.swift` to retire uncertain or failed enrollment keys under the existing generation budgets. Service-unavailable retries retain the key/hash; cached proofs survive response loss. Generic assertion errors never rotate an already accepted credential. This follows [Apple’s attestation error guidance](https://developer.apple.com/documentation/devicecheck/establishing-your-app-s-integrity) without weakening independent authorization or revocation.
+Initial App Attest enrollment is a one-time Apple operation. `provider-swift/Sources/ProviderAppAttest/AppAttestShadowClient.swift` persists an attempt marker before the call and uses `EnrollmentKeyLifecycle.swift` to retire uncertain or failed enrollment keys under the existing generation budgets. Service-unavailable retries retain the original key/hash and enrollment transaction across reconnects and upgrades; cached proofs survive response loss. Generic assertion errors never rotate an already accepted credential. A cached enrollment whose original server transaction has expired is rejected and retried later, allowing local cache retirement; owner, account, key and environment mismatches remain terminal. This follows [Apple’s attestation error guidance](https://developer.apple.com/documentation/devicecheck/establishing-your-app-s-integrity) without weakening independent authorization or revocation.
 
 `coordinator/appattest/authenticator.go` accepts the observed macOS attestation variant whose authenticated CDhash extension dictionary omits the ED bit, only after `Verifier.Attestation` in `coordinator/appattest/verify.go` validates the chain, Mac ACL and nonce. Parsing remains bounded and exact; unflagged assertion tails stay invalid. Public network verification is labeled at its source snapshot; live owner controls continue to enforce expiry.
 

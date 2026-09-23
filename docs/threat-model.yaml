@@ -63,11 +63,15 @@ created: "2026-05-14"
 # Enrollment recovery and snapshot presentation reviewed 2026-09-22:
 # uncertain/failed one-time Apple enrollment keys retire under persistent
 # generation budgets; only serverUnavailable permits same-key enrollment retry.
+# Persisted retry hashes are enrollment-only; the original server transaction
+# must validate and a fresh current-endpoint assertion is still required.
 # Accepted assertion credentials do not rotate on generic API errors. Native
 # diagnostic domain buckets and signed numeric codes are untrusted metadata;
 # arbitrary strings/userInfo and raw Apple evidence are not published.
 # Authenticated macOS attestation CDhash extensions without ED are parsed only
 # after chain/nonce/exact-ACL verification; unflagged assertion tails still fail.
+# Expired enrollment transactions reject their proof but permit bounded recovery;
+# binding mismatches are checked first and remain terminal.
 # Network stats describe source snapshots; owner controls and all dispatch paths
 # retain live expiry/revocation. Historical display is never authorization.
 methodology: STRIDE

@@ -1,6 +1,6 @@
 # App Attest enrollment recovery and network snapshot investigation
 
-> Last updated: 2026-09-22 · commit `011ccd3d1`
+> Last updated: 2026-09-22 · commit `08d78d49d`
 
 This investigation covers provider 0.9.8 and coordinator source `011ccd3d1`.
 The repairs described here are a proposed patch, not a production deployment
@@ -56,6 +56,35 @@ may differ. Synthetic regression coverage pins the original 1,139-connection
 failure at +40 seconds and verifies that live expiry still works.
 
 ![Local console showing verification at the source snapshot](images/2026-09-22-app-attest-snapshot.png)
+
+## 0.9.9 follow-up audit
+
+The follow-up checked Apple's enrollment, assertion, error and macOS policy
+contracts against the key lifecycle, callback adapter, stored enrollment context,
+receipt worker, authorization evaluator, dispatch gates and rollout docs.
+
+| Additional finding | Reproduction and change |
+|---|---|
+| Service-unavailable recovery changed the original hash after a reconnect | Apple's [serverUnavailable contract](https://developer.apple.com/documentation/devicecheck/dcerror-swift.struct/code/serverunavailable) requires the same key and hash. The immediate loop complied, but the next coordinator attempt changed its session/challenge/endpoint transcript. A restart/protocol-upgrade test failed on the old code. `ShadowEnrollmentAttempt` now persists the original enrollment inputs and returns their original server context; subsequent serving assertions use fresh current-process inputs. |
+| Cancellation during known-safe backoff retired the key | The PR review identified a marker still armed after Apple's server-unavailable reply. A reproduced cancellation then cleared a fresh key and hit its one-hour generation cooldown. The marker is now cleared durably before backoff and armed separately before each Apple call. The cancellation/restart test preserves the key and original hash. |
+| Expired original enrollment could stop recovery permanently | The server's 24-hour clock starts before the Apple call, while older clients cached its successful reply afterward. A regression reproduces the expiry as a terminal `enrollment_context` result. Matching expired transactions now reject the proof as `enrollment_expired` and retry later, so the client can retire its expired cache. Binding mismatches are tested separately and remain terminal. |
+| Rollout docs described obsolete shadow-only behavior | The shared evaluator already feeds the enabled serving path. Turning shadow off alone does not stop exchanges when serving remains enabled. The current runbook preserves existing serving settings during upgrades and explains the availability impact of explicitly disabling both paths. |
+
+The version constants and release runbook now prepare **0.9.9**, without publishing
+it or changing the active release. A bounded read-only production inspection at
+20:30 America/Los_Angeles found no archived `enrollment_context`,
+`enrollment_storage_error`, `counter_replay` or `certificate_chain` outcomes in
+the preceding 24 hours. The expiry correction is a reproduced code defect, not
+an attribution for the current Slack reports.
+
+The audit retains the security boundaries: no accepted-key rotation on generic
+assertion errors; no support inferred from OS version alone; no authorization
+from a cached enrollment proof, diagnostic field or network snapshot; no change
+to revocation, receipt expiry or exact signed-build qualification. A permanently
+unanswered Apple callback still holds its operation slot; repeated live calls
+are not allowed to accumulate. Apple's native cause in the historical assertion
+case remains unavailable because the old client discarded it. New diagnostic
+codes and actual post-upgrade proofs are needed before calling that case resolved.
 
 ## Validation and rollout boundary
 

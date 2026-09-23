@@ -77,6 +77,7 @@ public struct ShadowKeyRecord: Codable, Sendable {
     public var pendingStatus: AppAttestStatus?
     public var pendingCreatedAt: Date?
     public var generationCount: Int?
+    public var retryEnrollment: ShadowEnrollmentAttempt?
     /// Persisted before the one-time Apple enrollment call. A process exit or
     /// late callback cannot make an uncertain key look safe to attest again.
     public var attestationStartedAt: Date?

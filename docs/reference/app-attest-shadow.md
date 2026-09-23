@@ -1,6 +1,6 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-09-22 · commit `011ccd3d1`
+> Last updated: 2026-09-22 · commit `08d78d49d`
 
 App Attest shadow collection records stable machine identities, fleet adoption, submitted proofs and receipts alongside legacy verification. Shadow alone changes no routing, rewards or trust. The separately enabled [provider authorization path](provider-authorization.md) uses qualified evidence for MDM-optional serving and rewards. DeviceCheck's separate two-bit API remains deferred.
 
@@ -121,10 +121,10 @@ Apple's [receipt contract](https://developer.apple.com/documentation/devicecheck
 | Session recovery | Transient failures, including the released client's coarse `apple_error` result, retry after one minute, then five minutes, then hourly. Every attempt gets a new session/nonce and reloads durable acceptance/counters. Successful assertions reset backoff. An Apple API error is an unknown prospective verdict and grants no permission; verified crypto/policy rejections remain terminal, and cancellation stops retries. Code: `coordinator/appattest/service/retry.go`. |
 | First-risk-receipt wait | A valid first assertion with a verified enrollment receipt but no risk metric stays unknown. Without an existing authorization record, a fresh assertion retries after one minute, five minutes, then at the normal ten-minute cadence while Apple's receipt renewal runs independently. Only complete fresh evidence can authorize serving. Code: `coordinator/appattest/service/authorization_identity.go` and `retry.go`. |
 | Apple callbacks | 25-second waiter deadline. The actual uncancellable Apple operation retains admission until its callback arrives; retries receive `busy` in the meantime. A token fences duplicate late callbacks from unlocking a newer operation. A pre-cancelled call does not acquire admission. Code: `AppleOperationGate.swift` and `AppleAppAttestService.swift` in `provider-swift/Sources/ProviderAppAttest/`. |
-| Attestation retries | At most three attempts, 2/8-second waits, only for service unavailable, using the same key/hash. |
+| Attestation retries | At most three attempts, 2/8-second waits, only for service unavailable. `ShadowEnrollmentAttempt` persists the original key/hash, status, session and timestamp across later coordinator retries, reconnects and v2/v3 upgrades, as [Apple requires](https://developer.apple.com/documentation/devicecheck/dcerror-swift.struct/code/serverunavailable). Successful recovery uses the original stored server transaction; a subsequent serving assertion always signs fresh status/challenge/endpoint. Expired or malformed retry state retires under existing generation limits. |
 | Failed one-time enrollment | Non-service-unavailable Apple failures retire the enrollment key identifier under the existing generation limits. The app persists `attestationStartedAt` before calling Apple; an interrupted attempt without a saved proof is retired on the next prepare. Cached successful proofs remain recoverable. Generic assertion failures do not rotate accepted keys; an explicit invalid-key response can retire them. Code: `provider-swift/Sources/ProviderAppAttest/EnrollmentKeyLifecycle.swift` and `AppAttestShadowClient.swift`. |
 | Key generation | Per-key one-hour replacement cooldown plus five generations per coordinator/environment per hour across account scopes, persisted before calling Apple. |
-| Lost enrollment response | Keychain temporarily retains proof and original status; retry uses a server-persisted, same-owner transaction up to 24 hours old. Its stored protocol selects the original transcript; a version 3 upgrade can recover an old version 2 enrollment, but the following fresh assertion must use the new protocol. Expired pending proof is replaced under the generation budget. |
+| Lost enrollment response | Keychain temporarily retains proof and original status; retry uses a server-persisted, same-owner transaction up to 24 hours old. Its stored protocol selects the original transcript; a version 3 upgrade can recover an old version 2 enrollment, but the following fresh assertion must use the new protocol. The server measures the 24-hour limit from its original challenge, before the client caches the completed proof. A matching but expired transaction returns `enrollment_expired` and uses bounded exchange retries so a later prepare can expire the local cache and replace the key; binding mismatches remain terminal. Expired pending proof is replaced under the generation budget. |
 | Acknowledgement | An assertion request follows durable enrollment acceptance; the successful local assertion clears the cached enrollment proof. |
 | Cancellation | Connection generation prevents late delivery into a different session. |
 
@@ -132,11 +132,14 @@ Code: `AppAttestShadowClient.swift`, `CallbackDeadline.swift`, `AppleAppAttestSe
 
 ## Prospective authorization
 
-`coordinator/appattest/authorization.go` (`EvaluateAuthorization`) evaluates the
-future policy without MDM/APNs inputs or registry mutations. It is not wired as
-a serving gate in this release. `coordinator/appattest/service/policy.go`
-records its versioned outcome after each durably accepted assertion; failed
-exchanges supersede the previous verdict.
+`coordinator/appattest/authorization.go` (`EvaluateAuthorization`) is the pure
+eligibility evaluator used for observations and the independently enabled
+[App Attest serving path](provider-authorization.md). It has no MDM/APNs inputs
+and does not mutate registry state itself. `coordinator/appattest/service/policy.go`
+records the versioned result after each durably accepted assertion;
+`coordinator/appattest/service/authorization_identity.go` applies eligible evidence
+through the authorizer when serving is enabled. Failed exchanges supersede the
+prospective observation; current dispatch still checks its bounded authorization.
 
 | Condition | Missing evidence | Negative evidence |
 |---|---|---|

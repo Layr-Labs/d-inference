@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-15 · commit `2a843bb2c`
+> Last updated: 2026-09-21 · commit `a07a4832e`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -91,6 +91,7 @@
 - [`provider/quickstart.md`](provider/quickstart.md): login, start, check status, start earning.
 - [`provider/hardware-requirements.md`](provider/hardware-requirements.md): minimum hardware, chip families, RAM tiers → which catalog models load, disk for the SSD cache.
 - [`provider/cli-reference.md`](provider/cli-reference.md): every `darkbloom` subcommand, flag, path, `provider.toml` key with its default, and runtime constant.
+- [`provider/solo-tps-calibration.md`](provider/solo-tps-calibration.md): benchmark every eligible local catalog model on one chip class and derive a conservative cold-start solo-TPS seed.
 - [`provider/attestation.md`](provider/attestation.md): reach and keep `hardware` trust — enrol, approve the MDM profile, confirm posture; what `darkbloom status` shows.
 - [`provider/direct-mode.md`](provider/direct-mode.md): serve a local OpenAI-compatible endpoint without the coordinator.
 - [`provider/self-route.md`](provider/self-route.md): pin your own API traffic to your own provider machine.

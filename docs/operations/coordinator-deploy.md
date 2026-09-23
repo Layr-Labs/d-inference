@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-18 · commit `4a453679b`
+> Last updated: 2026-09-21 · commit `a07a4832e`
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -227,6 +227,12 @@ spelling, such as `1000.0`, remains an explicit override. The migration changes 
 routing mode/cohort/QPS setting and does not enable cache routing. New release
 defaults supply blank values; older binaries interpret blanks as their previous
 stock limits, while the backup preserves the exact pre-refresh file.
+
+The M4 Max solo-TPS seed migration replaces only the exact prior stock
+`EIGENINFERENCE_MODEL_SOLO_TPS_SEED` string with the benchmark-backed release
+default. Any added, removed, reordered, or retuned entry is treated as an
+operator override and remains unchanged. Review the seed's `MIGRATE` line
+before applying; the backup preserves the previous value for rollback.
 
 ```bash
 # Every deploy: install the reviewed candidate's refresh script and manifests.

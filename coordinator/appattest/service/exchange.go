@@ -52,6 +52,9 @@ func (x *Session) send(ctx context.Context, action string) bool {
 		}
 	}
 	if action == "assert" {
+		// The baseline belongs to the challenge, not to dequeue time. A
+		// later inbox drop must not be absorbed by an older queued proof.
+		x.beginAssertionChallenge()
 		pub, err := base64.StdEncoding.DecodeString(x.publicKey)
 		if err != nil || len(pub) != 32 {
 			x.observe(action, "encryption_key", nil)

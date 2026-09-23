@@ -52,6 +52,9 @@ created: "2026-05-14"
 # Durable build qualification added 2026-09-20: an independently authenticated
 # operator approves the exact signed binary, full CodeDirectory, bundle/runtime,
 # source and CI provenance. CI release keys cannot grant approval. Publication
+# Apple's signed 20-byte CandidateCDHash must uniquely bind to that same
+# approved full 32-byte hash across all durable rows, including revocations;
+# it cannot use a reported hash or environment-only bootstrap as approval.
 # atomically checks the approval under the revocation row lock; stale cached
 # authorization cannot extend beyond a 30s qualification snapshot or survive a
 # local qualification-generation change. Revocation tombstones override legacy
@@ -75,7 +78,9 @@ created: "2026-05-14"
 # diagnostic domain buckets and signed numeric codes are untrusted metadata;
 # arbitrary strings/userInfo and raw Apple evidence are not published.
 # Authenticated macOS attestation CDhash extensions without ED are parsed only
-# after chain/nonce/exact-ACL verification; unflagged assertion tails still fail.
+# after chain/nonce/exact-ACL verification; the follow-up also accepts only a
+# fully signed, measured Developer ID assertion with the same ED-clear shape.
+# Arbitrary unflagged assertion tails still fail.
 # Expired enrollment transactions reject their proof but permit bounded recovery;
 # binding mismatches are checked first and remain terminal.
 # Network stats describe source snapshots; owner controls and all dispatch paths

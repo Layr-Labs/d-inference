@@ -110,7 +110,7 @@ func (s *Service) startBuildQualifications(ctx context.Context) {
 // Re-evaluate qualification on EVERY lease refresh, using only the measurement
 // parsed from verified Apple metadata. Cached match booleans are not evidence.
 func (s *Service) applyBuildQualification(e *appattest.AuthorizationEvidence, status *protocol.AppAttestStatus, catalog *ReleasePolicy) (uint64, time.Time) {
-	e.BuildQualified, e.CodeMeasurementKnown, e.CodeMeasurementMatched = false, false, false
+	e.BuildQualified, e.CodeMeasurementKnown, e.CodeMeasurementMatched, e.CodeMeasurementAmbiguous = false, false, false, false
 	snapshot := s.qualifications.Load()
 	if snapshot == nil || status == nil {
 		return 0, time.Time{}
@@ -123,17 +123,56 @@ func (s *Service) applyBuildQualification(e *appattest.AuthorizationEvidence, st
 		if q.RevokedAt.IsZero() && q.AppAttestBuildIdentity.Validate() == nil &&
 			q.Release.Version == status.AppVersion && q.Release.Platform == "macos-arm64" {
 			e.BuildQualified = catalog != nil && catalog.Known && catalog.ContainsQualifiedRelease != nil && catalog.ContainsQualifiedRelease(q.Release)
-			e.CodeMeasurementKnown = appAttestSHA256Hex(e.CodeDirectoryHash)
-			e.CodeMeasurementMatched = e.CodeMeasurementKnown && e.CodeDirectoryHash == q.CodeDirectoryHash
+			if e.CodeMeasurementTruncated {
+				approved := !q.ApprovedAt.IsZero() && strings.TrimSpace(q.ApprovedBy) != "" && strings.TrimSpace(q.Evidence) != ""
+				e.CodeMeasurementKnown = approved && appAttestSHA256PrefixHex(e.CodeDirectoryHash)
+				// Match the Apple-signed prefix to exactly one durable full
+				// digest independently of the release catalog. A temporarily
+				// unavailable catalog cannot turn a genuine proof into a hard
+				// code-mismatch verdict and wrongly fence legacy serving.
+				if e.CodeMeasurementKnown {
+					e.CodeMeasurementMatched, e.CodeMeasurementAmbiguous = uniqueDurableCodePrefix(
+						snapshot.builds, status.BinaryHash, q.CodeDirectoryHash, e.CodeDirectoryHash)
+				}
+				// Approval and active-catalog membership are separate serving
+				// gates. Neither can be inferred from a matching prefix.
+				e.BuildQualified = e.BuildQualified && approved
+			} else {
+				e.CodeMeasurementKnown = appAttestSHA256Hex(e.CodeDirectoryHash)
+				e.CodeMeasurementMatched = e.CodeMeasurementKnown && e.CodeDirectoryHash == q.CodeDirectoryHash
+			}
 		}
 	} else {
 		// Compatibility for already-qualified deployments only. Durable rows,
 		// including tombstones, always override env; unavailable storage denies
 		// both. New releases MUST carry durable qualification to be published.
-		e.BuildQualified = qualifiedAppAttestBuild(s.config.QualifiedBuildHashes, status.BinaryHash)
-		e.CodeMeasurementKnown, e.CodeMeasurementMatched = qualifiedAppAttestCode(s.config.QualifiedCodeHashes, status.BinaryHash, e.CodeDirectoryHash)
+		if !e.CodeMeasurementTruncated {
+			e.BuildQualified = qualifiedAppAttestBuild(s.config.QualifiedBuildHashes, status.BinaryHash)
+			e.CodeMeasurementKnown, e.CodeMeasurementMatched = qualifiedAppAttestCode(s.config.QualifiedCodeHashes, status.BinaryHash, e.CodeDirectoryHash)
+		}
 	}
 	return snapshot.generation, until
+}
+
+// The 160-bit prefix is accepted only if exactly one durable qualification row
+// has it. Check all rows, including revoked rows, before trusting the provider's
+// self-reported binary hash to select a candidate.
+func uniqueDurableCodePrefix(builds map[string]store.AppAttestBuildQualification, binaryHash, fullHash, prefix string) (matched, ambiguous bool) {
+	if !appAttestSHA256Hex(fullHash) || !appAttestSHA256PrefixHex(prefix) {
+		return false, false
+	}
+	matches := 0
+	selected := false
+	for hash, q := range builds {
+		if !appAttestSHA256Hex(q.CodeDirectoryHash) || !strings.HasPrefix(q.CodeDirectoryHash, prefix) {
+			continue
+		}
+		matches++
+		if hash == binaryHash && q.CodeDirectoryHash == fullHash {
+			selected = true
+		}
+	}
+	return selected && matches == 1, matches > 1
 }
 
 // Publication requires the durable record, never the compatibility env list.

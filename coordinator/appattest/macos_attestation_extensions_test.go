@@ -68,6 +68,28 @@ func TestMacAttestationExtensionsWithoutEDFlag(t *testing.T) {
 	}
 }
 
+func TestMacAttestationRetainsSignedTruncatedSHA256Measurement(t *testing.T) {
+	extensions, err := cbor.Marshal(map[string]any{
+		"apple_validation_category_01": []byte{6, 0, 0, 0},
+		"apple_cd_hash_type_01":        []byte{2},
+		"apple_cd_hash_hash_01":        bytes.Repeat([]byte{0x42}, 20),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := makeFixtureWithAuth(t, true, func(auth []byte) []byte {
+		return replaceAttestationExtensions(t, auth, extensions)
+	})
+	key, err := f.verifier.Attestation(f.proof, f.keyID, f.hash)
+	if err != nil || !bytes.Equal(key.CodeDirectorySHA256Candidate(), bytes.Repeat([]byte{0x42}, 20)) || key.CodeDirectorySHA256() != nil {
+		t.Fatalf("short signed attestation measurement not preserved distinctly: key=%+v err=%v", key, err)
+	}
+	wrong := sha256.Sum256([]byte("different enrollment"))
+	if _, err := f.verifier.Attestation(f.proof, f.keyID, wrong); err == nil || err.Error() != "nonce" {
+		t.Fatalf("short measurement escaped Apple nonce binding: %v", err)
+	}
+}
+
 func TestUnflaggedMacAttestationRequiresCompleteBoundedExtensions(t *testing.T) {
 	valid := macAttestationExtensions(t)
 	categoryOnly, _ := cbor.Marshal(map[string]any{"apple_validation_category_01": []byte{6, 0, 0, 0}})

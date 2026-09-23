@@ -36,6 +36,7 @@ func TestAuthorizationRequiresEveryCurrentConnectionCondition(t *testing.T) {
 		{"stale assertion", "assertion_stale_or_missing", "unknown", func(e *AuthorizationEvidence) { e.AssertionAt = now.Add(-AssertionFreshness) }},
 		{"future assertion", "assertion_stale_or_missing", "unknown", func(e *AuthorizationEvidence) { e.AssertionAt = now.Add(time.Second) }},
 		{"missing Apple code measurement", "apple_code_measurement_unavailable", "unknown", func(e *AuthorizationEvidence) { e.CodeMeasurementKnown = false }},
+		{"ambiguous Apple code prefix", "apple_code_measurement_ambiguous", "unknown", func(e *AuthorizationEvidence) { e.CodeMeasurementAmbiguous = true; e.CodeMeasurementMatched = false }},
 		{"wrong Apple code measurement", "apple_code_measurement_mismatch", "ineligible", func(e *AuthorizationEvidence) { e.CodeMeasurementMatched = false }},
 		{"wrong build", "bundle_version_mismatch", "ineligible", func(e *AuthorizationEvidence) { e.BundleVersion = "0.9.3" }},
 		{"catalog removal", "release_not_approved", "ineligible", func(e *AuthorizationEvidence) { e.BuildMatched = false }},

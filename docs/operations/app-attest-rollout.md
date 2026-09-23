@@ -1,6 +1,6 @@
 # Roll out App Attest recovery with MDM coexistence
 
-> Last updated: 2026-09-23 · commit `dd93e3b9c`
+> Last updated: 2026-09-23 · commit `ac4a776de`
 
 Use this runbook for App Attest reliability upgrades on a fleet that may already
 serve without MDM. [Provider authorization](../reference/provider-authorization.md)

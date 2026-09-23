@@ -171,8 +171,8 @@ extension Models {
                 }
             }
 
-            // -- Local-only models (downloaded but not in current catalog) --
-            for line in ModelsCatalogPresentation.localOnlyLines(
+            // -- Other local models (absent from the displayed catalog) --
+            for line in ModelsCatalogPresentation.otherLocalLines(
                 localModels: localModels, catalogIDs: catalogIDs
             ) {
                 print(line)

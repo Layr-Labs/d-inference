@@ -13,10 +13,10 @@ import (
 )
 
 func (x *Session) observe(stage, outcome string, metadata *appattest.Key) {
-	x.observeWithAppleError(stage, outcome, metadata, nil)
+	x.observeWithClientDiagnostics(stage, outcome, metadata, protocol.AppAttestShadowPayload{})
 }
 
-func (x *Session) observeWithAppleError(stage, outcome string, metadata *appattest.Key, appleError *protocol.AppAttestAppleError) {
+func (x *Session) observeWithClientDiagnostics(stage, outcome string, metadata *appattest.Key, reply protocol.AppAttestShadowPayload) {
 	if stage != "archive" {
 		x.lastOutcome = outcome
 	}
@@ -71,8 +71,16 @@ func (x *Session) observeWithAppleError(stage, outcome string, metadata *appatte
 		x.s.ddIncr("app_attest.shadow.metadata", []string{"result:" + policy})
 	}
 	fields["account_id"] = x.account
-	if appleError != nil && appleError.Valid() {
-		fields["apple_error"] = appleError
+	if reply.AppleError != nil && reply.AppleError.Valid() {
+		fields["apple_error"] = reply.AppleError
+	}
+	if reply.ValidClientDiagnostics() {
+		if reply.AvailabilityReason != "" {
+			fields["availability_reason"] = reply.AvailabilityReason
+		}
+		if reply.AppleErrorSource != "" {
+			fields["apple_error_source"] = reply.AppleErrorSource
+		}
 	}
 	if stage == "prospective_policy" {
 		for key, value := range x.policyFields {

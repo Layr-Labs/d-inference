@@ -44,6 +44,12 @@ private struct CapturedAppAttestCallbacks: AppAttestCallbacks {
 }
 
 final class AppleAppAttestServiceTests: XCTestCase {
+    func testCallbackWithoutNSErrorRemainsAppleErrorWithClosedSource() {
+        let failure = SystemAppAttestCallbacks.failure(nil)
+        XCTAssertEqual(failure as? AppAttestAppleErrorSource, .callbackWithoutNSError)
+        XCTAssertEqual(appAttestFailure(failure), .appleError)
+    }
+
     private enum Operation: CaseIterable {
         case key, attestation, assertion
 

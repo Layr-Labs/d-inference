@@ -1,6 +1,6 @@
 # Roll out App Attest recovery with MDM coexistence
 
-> Last updated: 2026-09-23 · commit `ac4a776de`
+> Last updated: 2026-09-23 · commit `afb71c63d`
 
 Use this runbook for App Attest reliability upgrades on a fleet that may already
 serve without MDM. [Provider authorization](../reference/provider-authorization.md)
@@ -58,8 +58,10 @@ instructions to reset an already enabled fleet to a shadow-only cohort.
 5. Observe enrollment and assertion outcomes separately by provider version and
    macOS cohort. Distinguish verification, receipt readiness, current App Attest-only /
    dual / legacy authorization, and distinct successfully completed requests.
-   Generic native errors do not identify their underlying Apple cause. Compare
-   the bounded domain/code diagnostics on upgraded clients before assigning one.
+   Compare bounded native domain/code on upgraded clients with the closed
+   `availability_reason` for failed preflight and `apple_error_source` for
+   failures without a native `NSError`. A generic error without one of these
+   details remains unclassified; do not assign it a cause from an OS report.
 6. Confirm recovery in the affected cohort before claiming an incident resolved.
    Do not infer a verified provider-to-person mapping from a hardware screenshot
    alone. Canonical Darkbloom identities do not prove immutable physical devices.
@@ -75,6 +77,16 @@ instructions to reset an already enabled fleet to a shadow-only cohort.
 | Identity/revocation | Stable same-account identity after verified reconnect; cross-account/claimed-key negatives; revocation and expiry enforced at every dispatch path |
 | Serving | Real completed requests from upgraded App Attest-only, dual and legacy providers; disconnects and failures compared with preceding cohorts |
 | Presentation | Public stats explicitly describe their source snapshot; owner controls and MDM-removal readiness remain current and bounded |
+
+For a macOS 27 provider without a grant, classify the **current exchange** before
+changing its key or legacy authorization:
+
+| Observation | Next inspection |
+|---|---|
+| Failed `ready` with `availability_reason` | Check the reported client OS against the local prerequisite, signed full-app launch context, CDhash opt-in and `isSupported` result. An app-reported OS or SIP bit alone is not Apple proof. |
+| `apple_error` with bounded native `apple_error` domain/code | Group by `ready` / `attestation` / `assertion` stage and exact native code. Preserve an already accepted key until a definite invalid-key result or other verified cause warrants rotation. |
+| `apple_error_source=callback_without_nserror` or `proof_oversize` | Investigate a local callback/proof-bound failure; no native `NSError` was available for that exchange. Do not label it an Apple server outage. |
+| Verified assertion without a current grant | Inspect the separate receipt/risk, machine association, exact build qualification, revocation and lease gates; another client retry cannot substitute for a missing server decision. |
 
 For a credential revocation, use the approved administrative
 [revocation endpoint](../reference/provider-authorization.md#admin-revocation).

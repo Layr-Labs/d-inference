@@ -31,8 +31,8 @@ struct SystemAppAttestCallbacks: AppAttestCallbacks {
         }
     }
 
-    private static func failure(_ error: Error?) -> any Error {
-        guard let error = error as NSError? else { return ShadowFailure.appleError }
+    static func failure(_ error: Error?) -> any Error {
+        guard let error = error as NSError? else { return AppAttestAppleErrorSource.callbackWithoutNSError }
         return AppleAppAttestFailure(error)
     }
 }

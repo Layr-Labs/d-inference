@@ -1,6 +1,6 @@
 # Provider serving authorization
 
-> Last updated: 2026-09-22 · commit `03e65d36f`
+> Last updated: 2026-09-23 · commit `afb71c63d`
 
 The coordinator can authorize private inference through complete legacy verification or a qualified App Attest connection. These are separate evidence paths; App Attest never sets legacy MDA/APNs flags. The [rollout runbook](../operations/mdm-optional-rollout.md) separates code availability from activation qualification.
 
@@ -17,7 +17,7 @@ The [App Attest module map](../../coordinator/appattest/README.md) explains the 
 | Assertion freshness | `AssertionFreshness = 15 * time.Minute`; receipt and revocation deadlines may shorten it | `coordinator/appattest/authorization.go` (`EvaluateAuthorization`) |
 | Durable revocation/receipt refresh | `appAttestAuthorizationRefresh = 5 * time.Second`, batched at most 1000 distinct keys per query | `coordinator/appattest/service/authorizer.go` (`refresh`) |
 | First-proof readiness or risk-receipt wait | Without an existing authorizer record, request a fresh assertion after one minute, then five minutes, then the normal ten-minute cadence while the readiness lookup is unavailable or a verified enrollment receipt lacks its risk metric. A known complete decision or retained refresh record resets the backoff; all identity and policy gates still apply before granting. A verified `ATTEST` receipt without a risk metric cannot grant serving | `coordinator/appattest/service/retry.go` (`nextAssertionDelay`); `coordinator/appattest/service/authorization_identity.go` (`updateServingAuthorization`) |
-| Apple API failure | The coarse `apple_error` result retries on the same provider connection after one minute, then five minutes, then hourly. Each attempt uses a fresh exchange and reloads durable state. Failed exchanges remain unknown, cannot establish or extend a grant, and do not replace independently valid legacy authorization | `coordinator/appattest/service/retry.go` (`runRecovering`); `coordinator/appattest/service/policy.go` (`observeFailedPolicy`) |
+| Apple API failure | `apple_error` and `apple_unavailable` retry on the same provider connection after one minute, then five minutes, then every ten minutes. Other transient coordinator/storage failures retain the one-minute, five-minute, then hourly backoff. Each exchange uses a fresh session and reloads durable state. Failed exchanges remain unknown, cannot establish or extend a grant, and do not replace independently valid legacy authorization | `coordinator/appattest/service/retry.go` (`appAttestExchangeRetryDelay`, `runRecovering`); `coordinator/appattest/service/policy.go` (`observeFailedPolicy`) |
 | Revocation freshness ceiling | `appAttestRevocationFreshness = 30 * time.Second` from the query start; a failed read cannot renew it | Same (`apply`) |
 
 ## Durable build qualification

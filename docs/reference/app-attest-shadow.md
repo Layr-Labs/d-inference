@@ -1,6 +1,6 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-09-23 · commit `ac4a776de`
+> Last updated: 2026-09-23 · commit `afb71c63d`
 
 App Attest shadow collection records stable machine identities, fleet adoption, submitted proofs and receipts alongside legacy verification. Shadow alone changes no routing, rewards or trust. The separately enabled [provider authorization path](provider-authorization.md) uses qualified evidence for MDM-optional serving and rewards. DeviceCheck's separate two-bit API remains deferred.
 
@@ -41,6 +41,8 @@ Frames use `type = "app_attest_shadow"` and nested `payload`. Every request has 
 Code: `coordinator/protocol/app_attest_shadow.go`, `coordinator/protocol/app_attest_status.go`, and `provider-swift/Sources/ProviderAppAttest/ShadowProtocol.swift`.
 
 Error replies may include optional `apple_error` diagnostics with `domain`, signed 32-bit `code`, and an optional paired `underlying_domain` / `underlying_code`. Domains are the closed buckets `devicecheck`, `osstatus`, `url`, `cocoa`, and `other`. The coordinator validates the bounds before admission, retains valid details in the evidence context and error event, and never uses them as proof or metric-tag cardinality. Native descriptions, arbitrary domains and `NSError.userInfo` are excluded. Older peers may omit or ignore this additive field. Code: `coordinator/protocol/app_attest_error.go` (`AppAttestAppleError.Valid`), `provider-swift/Sources/ProviderAppAttest/AppAttestAppleError.swift`.
+
+Failed `ready` replies may also carry a closed `availability_reason`: `os_below_27`, `not_app_bundle`, `signing_info_unavailable`, `opt_in_missing`, `environment_entitlement_invalid`, `environment_mismatch`, or `is_supported_false`. A synthetic `apple_error` with no native `NSError` may carry `apple_error_source` as `callback_without_nserror` or `proof_oversize`. These fields are client-reported diagnostics only, not part of the signed transcript or authorization policy. The coordinator rejects unknown values before storage and retains valid values in private evidence and failure events. No bundle path, entitlement value, native description or `NSError.userInfo` crosses the wire. Code: `coordinator/protocol/app_attest_client_diagnostic.go` (`ValidClientDiagnostics`), `provider-swift/Sources/ProviderAppAttest/AppleAppAttestService.swift` (`checkAvailability`), and `AppAttestCallbacks.swift` (`failure`).
 
 All transcript versions encode UTF-8 fields preceded by four-byte big-endian byte lengths, then SHA-256 the result. Version 1 fields are domain `darkbloom.app-attest.shadow.v1`, action, session, environment, key ID, plaintext challenge, and the app-owned X25519 public key. Version 2 changes the domain to `darkbloom.app-attest.shadow.v2` and appends account scope, OS version, OS build, app version, chip, and binary hash in that order. Version 3 uses domain `darkbloom.app-attest.shadow.v3` and additionally appends machine model, physical RAM in GiB, total/performance/efficiency CPU cores and GPU cores as canonical decimal strings, followed by the app’s existing attestation public key. Go and Swift tests pin independent vectors. The coordinator compares these signed app measurements against the registration; version 2 cannot authenticate the added fields.
 

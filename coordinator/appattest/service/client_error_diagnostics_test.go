@@ -42,3 +42,40 @@ func TestClientAppleFailureArchivedWithOriginalProofContext(t *testing.T) {
 		t.Fatalf("native diagnostic absent from evidence context: %+v, %v", details, err)
 	}
 }
+
+func TestClientPreflightFailureRetainsClosedAvailabilityReasonWithoutAuthorization(t *testing.T) {
+	s, p, record, _ := newAuthorizationFixture(t)
+	x := sessionForAuthorization(s, p, record)
+	x.expected = "ready"
+	var observed map[string]any
+	s.emitEvent = func(fields map[string]any) { observed = fields }
+	reply := protocol.AppAttestShadowPayload{Action: "ready", Result: "unsupported", AvailabilityReason: "is_supported_false"}
+	if next := x.handleExchange(context.Background(), reply, nil); next != "stop" || observed["availability_reason"] != "is_supported_false" {
+		t.Fatalf("bounded preflight reason lost: %s, %+v", next, observed)
+	}
+	if _, ok := s.registry.ProviderServingAuthorization(p); ok {
+		t.Fatal("client preflight diagnostic authorized a provider")
+	}
+	reply.AvailabilityReason = "arbitrary private text"
+	x.handleExchange(context.Background(), reply, nil)
+	if _, ok := observed["availability_reason"]; ok {
+		t.Fatal("unbounded preflight reason entered telemetry")
+	}
+}
+
+func TestSyntheticAppleErrorSourceArchivedWithoutNativeDetails(t *testing.T) {
+	archive := &capturedProofArchive{}
+	x := &Session{s: &Service{}, provider: newSessionProvider("endpoint", "se"), archive: archive, expected: "attestation", rejectReason: "verifier_busy"}
+	x.handle(context.Background(), protocol.AppAttestShadowPayload{Action: "attestation", Result: "apple_error", AppleErrorSource: "callback_without_nserror"})
+	var context map[string]json.RawMessage
+	if err := json.Unmarshal(archive.evidence.Context, &context); err != nil {
+		t.Fatal(err)
+	}
+	var source string
+	if err := json.Unmarshal(context["apple_error_source"], &source); err != nil || source != "callback_without_nserror" {
+		t.Fatalf("synthetic Apple error cause absent from evidence: %s, %v", source, err)
+	}
+	if _, ok := context["apple_error"]; ok {
+		t.Fatal("synthetic failure fabricated a native NSError")
+	}
+}

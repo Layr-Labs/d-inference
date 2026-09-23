@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-22 · commit `632a94adc`
+> Last updated: 2026-09-23 · commit `7c0b8e03a9`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -532,6 +532,14 @@ Manage locally cached MLX models.
 ### `darkbloom models catalog`
 
 Show the coordinator's supported-model catalog.
+
+In text output, a checkmark beside a catalog ID means the exact ID was found
+on disk; it does not mean the model is loaded or receiving requests. The
+`Local only` section lists separate cache IDs absent from the current catalog.
+For example, `mlx-community/gemma-4-26B-A4B-it-qat-4bit` may appear there
+while the downloaded catalog ID `gemma-4-26b-qat-4bit` remains supported.
+Check `darkbloom status` or `darkbloom doctor` for serving readiness before
+removing an unused local copy. JSON output contains catalog entries only.
 
 ```bash
 darkbloom models catalog [--coordinator <url>] [--json] [--type <type>]

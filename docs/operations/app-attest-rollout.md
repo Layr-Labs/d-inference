@@ -1,6 +1,6 @@
 # Roll out App Attest recovery with MDM coexistence
 
-> Last updated: 2026-09-23 · commit `cb9418cad`
+> Last updated: 2026-09-23 · commit `dd93e3b9c`
 
 Use this runbook for App Attest reliability upgrades on a fleet that may already
 serve without MDM. [Provider authorization](../reference/provider-authorization.md)
@@ -68,9 +68,9 @@ instructions to reset an already enabled fleet to a shadow-only cohort.
 
 | Gate | Evidence required |
 |---|---|
-| Enrollment | Failed/interrupted attempts recover under generation budgets; service-unavailable retry preserves its key; cached proofs survive lost replies; expired original transactions reject the proof and retry later without weakening binding checks |
-| Assertions | Fresh endpoint-bound signatures and increasing counters; generic errors do not rotate accepted keys; rejected/timed-out work cannot create a grant |
-| Receipt/readiness | Valid current receipt and risk metric, healthy renewal, complete accepted-proof blobs; missing/unavailable data remains unknown |
+| Enrollment | A failed `generateKey` without an ID recovers after the persisted one-minute cooldown and shared five-per-hour budget; issued/uncertain keys retain one-hour protection; service-unavailable attestation retry preserves the same key/hash; cached proofs survive lost replies and expired original transactions cannot bypass binding checks |
+| Assertions | Definite Apple server-unavailable error retries once with the same key/hash; fresh endpoint-bound signatures and increasing counters are still required; generic errors do not rotate accepted keys; rejected/timed-out work cannot create a grant |
+| Receipt/readiness | A first unverified receipt or missing risk metric prompts bounded fresh-assertion rechecks while independent renewal completes; only a valid current receipt and risk metric with complete accepted-proof blobs authorize serving |
 | Mac/build policy | Exact Apple Mac ACL, launch category, Apple-signed type-2 measurement, active release and full-hash durable qualification; test ambiguous/revoked 20-byte candidates, reduced-security and altered-app negatives |
 | Identity/revocation | Stable same-account identity after verified reconnect; cross-account/claimed-key negatives; revocation and expiry enforced at every dispatch path |
 | Serving | Real completed requests from upgraded App Attest-only, dual and legacy providers; disconnects and failures compared with preceding cohorts |

@@ -77,6 +77,9 @@ public struct ShadowKeyRecord: Codable, Sendable {
     public var pendingStatus: AppAttestStatus?
     public var pendingCreatedAt: Date?
     public var generationCount: Int?
+    /// Only a failed generateKey call with no returned identifier may shorten
+    /// the pre-key cooldown. An issued/retired key never sets this field.
+    public var generationRetryAfter: Date?
     public var retryEnrollment: ShadowEnrollmentAttempt?
     /// Persisted before the one-time Apple enrollment call. A process exit or
     /// late callback cannot make an uncertain key look safe to attest again.

@@ -55,11 +55,32 @@ func TestAppleErrorRetriesExchangeWithBoundedBackoff(t *testing.T) {
 				}
 				return true
 			})
-			if attempts != 4 || !reflect.DeepEqual(delays, []time.Duration{time.Minute, 5 * time.Minute, time.Hour}) {
+			if attempts != 4 || !reflect.DeepEqual(delays, []time.Duration{time.Minute, 5 * time.Minute, shadowAssertionInterval}) {
 				t.Fatalf("Apple error stopped recovery: attempts=%d delays=%v", attempts, delays)
 			}
 			if !reflect.DeepEqual(policies, []string{"unknown", "unknown", "unknown", "unknown"}) {
 				t.Fatalf("infrastructure failure presented as known ineligibility: %v", policies)
+			}
+		})
+	}
+}
+
+func TestAppAttestAppleFailureRecoveryCadenceDoesNotAccelerateStorageFailures(t *testing.T) {
+	for _, tc := range []struct {
+		outcome string
+		want    []time.Duration
+	}{
+		{"apple_error", []time.Duration{time.Minute, 5 * time.Minute, shadowAssertionInterval, shadowAssertionInterval}},
+		{"apple_unavailable", []time.Duration{time.Minute, 5 * time.Minute, shadowAssertionInterval, shadowAssertionInterval}},
+		{"storage_error", []time.Duration{time.Minute, 5 * time.Minute, time.Hour, time.Hour}},
+	} {
+		t.Run(tc.outcome, func(t *testing.T) {
+			var got []time.Duration
+			for failures := range tc.want {
+				got = append(got, appAttestExchangeRetryDelay(tc.outcome, failures))
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("delay=%v, want %v", got, tc.want)
 			}
 		})
 	}

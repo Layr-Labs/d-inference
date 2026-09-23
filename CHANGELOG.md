@@ -13,6 +13,9 @@
 - Accept fully signed, measured macOS App Attest assertions when Apple omits the extension flag, and recover serving authorization after a fresh, completely archived proof despite an earlier recorded frame refusal. Repair the startup inventory-backfill race only for current authenticated sessions while retaining genuine disconnects and revocations.
 - Distinguish an eligible Apple proof from a successfully granted serving lease in App Attest operations, with bounded failure reasons for identity, storage and runtime gates.
 - Recognize Apple's signed 20-byte SHA-256 CandidateCDHash only when it uniquely matches the same active, durably qualified signed artifact's full 32-byte CodeDirectory hash; all independent release, receipt, revocation and runtime checks still apply.
+- Retry only a completed Apple key-generation callback that returned an error with no usable key ID after a persisted one-minute cooldown, within the normal provider's generation budget. Timeout, cancellation, busy admission, and crash keep the one-hour marker; the budget also bounds possible internally created but inaccessible keys. Retry a definite assertion `serverUnavailable` once with the same key and challenge.
+- Recheck a first App Attest grant after one, five and ten minutes while Apple risk-receipt renewal is still unverified; a fresh assertion, verified risk metric and every existing serving check remain required. macOS 27 alone never grants authorization.
+- Reprobe a live connection's generic or server-unavailable Apple App Attest failure after one, five, then every ten minutes instead of leaving its accepted key idle for an hour. Storage failures retain their slower backoff; signed policy failures remain terminal.
 
 ## v0.9.8 — graceful lifecycle and App Attest recovery (2026-09-22)
 

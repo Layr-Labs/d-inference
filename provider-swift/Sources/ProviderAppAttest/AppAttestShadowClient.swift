@@ -57,13 +57,14 @@ public actor AppAttestShadowClient {
                 }
                 if key == nil || key?.keyID.isEmpty == true {
                     // An unregistered/invalid old key may be replaced at most hourly,
-                    // including across restarts; never generate keys in a retry loop.
-                    if let key, Date().timeIntervalSince(key.createdAt) < 3600 { throw ShadowFailure.busy }
-                    // Establish writable persistence and record the generation budget
-                    // BEFORE asking Apple for a key. A locked/broken Keychain must not
-                    // create an unrecorded key on every reconnect.
-                    let pending = ShadowKeyRecord(keyID: "", attested: false, createdAt: Date())
-                    try storage.save(pending, scope: keyScope)
+                    // including across restarts. A failed generateKey that returned
+                    // no identifier may be retried sooner under the shared budget.
+                    if let key, !key.mayGenerateKey(at: Date()) { throw ShadowFailure.busy }
+                    // Record the generation budget and establish writable key
+                    // persistence BEFORE asking Apple for a key. Budget I/O goes
+                    // first so its failure cannot leave a new empty key marker
+                    // that strands an otherwise healthy device for an hour.
+                    var pending = ShadowKeyRecord(keyID: "", attested: false, createdAt: Date())
                     // Persist a shared budget across account scopes as well as the
                     // per-key cooldown, so account churn cannot bypass it.
                     let budgetScope=scope+":"+environment+":generation-budget"
@@ -73,7 +74,21 @@ public actor AppAttestShadowClient {
                     guard (budget.generationCount ?? 0)<5 else { throw ShadowFailure.busy }
                     budget.generationCount=(budget.generationCount ?? 0)+1
                     try storage.save(budget,scope:budgetScope)
-                    let id = try await service.generateKey()
+                    try storage.save(pending, scope: keyScope)
+                    let id: String
+                    do {
+                        id = try await service.generateKey()
+                    } catch {
+                        // The pre-call marker and budget were already persisted.
+                        // Only Apple's completed error callback with no key ID
+                        // permits a shorter retry. Cancellation, local admission
+                        // and timeout are uncertain and retain the hour marker.
+                        if mayRetryKeyGeneration(after: error) {
+                            pending.generationRetryAfter = Date().addingTimeInterval(60)
+                            try storage.save(pending, scope: keyScope)
+                        }
+                        throw error
+                    }
                     key = ShadowKeyRecord(keyID: id, attested: false, createdAt: pending.createdAt)
                     try storage.save(key!, scope: keyScope)
                 }
@@ -146,7 +161,19 @@ public actor AppAttestShadowClient {
                 } else if request.action == "assert" {
                     // The coordinator may have persisted an attestation whose local
                     // acknowledgement was lost. A real assertion establishes usability.
-                    let proof = try await service.generateAssertion(key.keyID, hash: hash)
+                    // A definite serverUnavailable response has no proof to send.
+                    // Retry this exchange only, with its original key and signed
+                    // challenge; the coordinator still verifies the counter.
+                    var proof: Data?
+                    // Each Apple callback has a 25s deadline. One retry stays
+                    // well inside the coordinator's 90s exchange timeout.
+                    for attempt in 0..<2 {
+                        do { proof = try await service.generateAssertion(key.keyID, hash: hash); break }
+                        catch where appAttestFailure(error) == .appleUnavailable && attempt == 0 {
+                            try await appAttestSleep(seconds: 2)
+                        }
+                    }
+                    guard let proof else { throw ShadowFailure.appleError }
                     guard proof.count <= 32*1024 else { throw ShadowFailure.appleError }
                     key.attested=true; key.pendingProof=nil; key.pendingEnrollment=nil; key.pendingStatus=nil; key.pendingCreatedAt=nil; key.attestationStartedAt=nil; key.retryEnrollment=nil
                     record=key; try storage.save(key, scope:keyScope)

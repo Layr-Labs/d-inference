@@ -27,9 +27,8 @@ func (v *Verifier) authData(data []byte, attest bool) (*authenticator, error) {
 	if attest && data[32]&0x40 == 0 {
 		return nil, invalid("authenticator_flags")
 	}
-	// Real macOS assertions retain the AT bit but contain only the 37-byte
-	// header. Only attestation objects carry credential data; the assertion
-	// parser still rejects trailing bytes unless ED declares extensions.
+	// Real macOS assertions can retain the AT bit without carrying credential
+	// data. Only attestation objects carry the credential fields below.
 	a := &authenticator{counter: binary.BigEndian.Uint32(data[33:37])}
 	tail := data[37:]
 	if attest {
@@ -54,14 +53,11 @@ func (v *Verifier) authData(data []byte, attest bool) (*authenticator, error) {
 	if !declaresExtensions && len(tail) == 0 {
 		return a, nil
 	}
-	// Some production macOS 27 attestation objects contain Apple's CDhash
-	// extension dictionary while leaving ED clear (flags 0x40). Attestation
-	// already verified the Apple certificate, exact Mac ACL and nonce over ALL
-	// authenticator bytes before reaching this parser. Accept only that measured
-	// attestation shape, never arbitrary trailing bytes or unflagged assertions.
-	if !declaresExtensions && !attest {
-		return nil, invalid("authenticator_trailing_data")
-	}
+	// Some production macOS 27 attestation objects and assertions contain
+	// Apple's CDhash extension dictionary while leaving ED clear (flags 0x40).
+	// The attestation certificate nonce or assertion signature binds ALL
+	// authenticator bytes before this parser runs. Accept only the complete
+	// measured shape below, never arbitrary unflagged trailing bytes.
 	var extensions map[string]cbor.RawMessage
 	if len(tail) == 0 || decoder.Unmarshal(tail, &extensions) != nil || extensions == nil {
 		return nil, invalid("extensions")
@@ -83,8 +79,17 @@ func (v *Verifier) authData(data []byte, attest bool) (*authenticator, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !declaresExtensions && (a.category == nil || a.codeType == nil || *a.codeType != 2 || len(a.codeHash) != 32) {
-		return nil, invalid("authenticator_trailing_data")
+	if !declaresExtensions {
+		if a.category == nil || a.codeType == nil || *a.codeType != 2 ||
+			(len(a.codeHash) != 32 && len(a.codeHash) != 20) {
+			return nil, invalid("authenticator_trailing_data")
+		}
+		// This assertion exception is for the observed Developer ID release
+		// shape. The normal ED-declared path still records other categories for
+		// the later authorization policy to evaluate.
+		if !attest && (data[32] != 0x40 || *a.category != 6) {
+			return nil, invalid("authenticator_trailing_data")
+		}
 	}
 	return a, nil
 }

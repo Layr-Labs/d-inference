@@ -75,7 +75,10 @@ func (r *Registry) GrantAppAttestServingAuthorization(p *Provider, lease AppAtte
 		p.Status = StatusOnline
 	}
 	p.appAttestAuthorization = lease
-	valid := r.providerHasAppAttestAuthorizationLocked(p, now) &&
+	// Validate the same final gates used by dispatch before a recoverable
+	// Untrusted connection is promoted or counted online. The failure branch
+	// below restores both the previous lease and status atomically.
+	valid := r.providerAppAttestServingAuthorizedLocked(p, now) &&
 		!lease.IssuedAt.IsZero() && !lease.IssuedAt.After(now) &&
 		lease.ValidUntil.Sub(lease.IssuedAt) <= maxAppAttestServingLease
 	if !valid {

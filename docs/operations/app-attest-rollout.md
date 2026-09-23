@@ -1,6 +1,6 @@
 # Roll out App Attest recovery with MDM coexistence
 
-> Last updated: 2026-09-22 · commit `08d78d49d`
+> Last updated: 2026-09-23 · commit `cb9418cad`
 
 Use this runbook for App Attest reliability upgrades on a fleet that may already
 serve without MDM. [Provider authorization](../reference/provider-authorization.md)
@@ -31,6 +31,13 @@ instructions to reset an already enabled fleet to a shadow-only cohort.
   Include real Apple enrollment/assertions, process/coordinator restart, account
   change, SIP/Full Security transitions and supported older-macOS behavior.
   Local unsigned tests do not complete those checks.
+- Check the affected cohort through enrollment, a fresh verified assertion,
+  durable evidence and current authorization on the same connection. Repeat
+  across a coordinator restart and a bounded archive/identity lookup failure;
+  an `eligible` observation alone is insufficient. Qualify the exact signed
+  artifact with its full 32-byte CodeDirectory hash. A 20-byte Apple-signed
+  CandidateCDHash is usable only when it uniquely binds to that durable
+  qualification and passes the other current serving checks.
 
 ## Steps
 
@@ -64,7 +71,7 @@ instructions to reset an already enabled fleet to a shadow-only cohort.
 | Enrollment | Failed/interrupted attempts recover under generation budgets; service-unavailable retry preserves its key; cached proofs survive lost replies; expired original transactions reject the proof and retry later without weakening binding checks |
 | Assertions | Fresh endpoint-bound signatures and increasing counters; generic errors do not rotate accepted keys; rejected/timed-out work cannot create a grant |
 | Receipt/readiness | Valid current receipt and risk metric, healthy renewal, complete accepted-proof blobs; missing/unavailable data remains unknown |
-| Mac/build policy | Exact Apple Mac ACL, launch category, full CodeDirectory measurement, active release and durable qualification; real reduced-security and altered-app negatives |
+| Mac/build policy | Exact Apple Mac ACL, launch category, Apple-signed type-2 measurement, active release and full-hash durable qualification; test ambiguous/revoked 20-byte candidates, reduced-security and altered-app negatives |
 | Identity/revocation | Stable same-account identity after verified reconnect; cross-account/claimed-key negatives; revocation and expiry enforced at every dispatch path |
 | Serving | Real completed requests from upgraded App Attest-only, dual and legacy providers; disconnects and failures compared with preceding cohorts |
 | Presentation | Public stats explicitly describe their source snapshot; owner controls and MDM-removal readiness remain current and bounded |

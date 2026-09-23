@@ -160,6 +160,59 @@ func TestAppAttestAuthorizationTransientAndSecurityFailures(t *testing.T) {
 	}
 }
 
+func TestAppAttestGrantDoesNotPromoteUntilFinalRuntimeAndPrivacyGatesPass(t *testing.T) {
+	for _, blocked := range []string{"runtime", "privacy"} {
+		t.Run(blocked, func(t *testing.T) {
+			r, p, lease := appAttestTestProvider(t)
+			r.MarkUntrustedTransient(p.ID)
+			p.mu.Lock()
+			if p.Status != StatusUntrusted || !p.untrustedRecoverable {
+				p.mu.Unlock()
+				t.Fatal("fixture did not enter recoverable state")
+			}
+			if blocked == "runtime" {
+				p.RuntimeVerified = false
+			} else {
+				p.PrivacyCapabilities.TextBackendInprocess = false
+			}
+			p.mu.Unlock()
+			beforeOnline := r.onlineCount.Load()
+			modelCount := func() int64 {
+				r.mu.RLock()
+				count := r.modelProviders[appAttestTestModel]
+				r.mu.RUnlock()
+				if count == nil {
+					return 0
+				}
+				return count.Load()
+			}
+			beforeModel := modelCount()
+			if r.GrantAppAttestServingAuthorization(p, lease) {
+				t.Fatal("incomplete final gate accepted")
+			}
+			p.mu.Lock()
+			status, recoverable, saved := p.Status, p.untrustedRecoverable, p.appAttestAuthorization
+			if blocked == "runtime" {
+				p.RuntimeVerified = true
+			} else {
+				p.PrivacyCapabilities.TextBackendInprocess = true
+			}
+			p.mu.Unlock()
+			if status != StatusUntrusted || !recoverable || saved.CredentialID != "" ||
+				r.onlineCount.Load() != beforeOnline || modelCount() != beforeModel {
+				t.Fatal("failed grant promoted status or capacity accounting")
+			}
+			if !r.GrantAppAttestServingAuthorization(p, lease) {
+				t.Fatal("recovered final gate did not grant")
+			}
+			if p.GetStatus() != StatusOnline || r.onlineCount.Load() != beforeOnline+1 ||
+				modelCount() != beforeModel+1 {
+				t.Fatal("successful recovery did not promote exactly once")
+			}
+		})
+	}
+}
+
 func TestAppAttestAuthorizationQueueAndRetry(t *testing.T) {
 	r, p, lease := appAttestTestProvider(t)
 	queued := &QueuedRequest{RequestID: "queued", Model: appAttestTestModel, ResponseCh: make(chan *Provider, 1), Pending: &PendingRequest{RequestID: "queued", Model: appAttestTestModel}}

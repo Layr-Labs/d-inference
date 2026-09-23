@@ -38,6 +38,7 @@ export default async function AppAttestPage({ searchParams }: { searchParams: Pr
       </p>
     </> : unavailable(census.reason)}
     <p className="text-sm text-[var(--text-dim)]">The denominator includes every registered identity seen in this window, including older clients and failures. Reconnects count as sessions. Key-bound and provisional identities are not proven unique physical Macs. OS values are app-reported; old records without OS data stay unknown. Historical backfill runs in bounded batches.</p>
+    <p className="text-sm text-[var(--text-dim)]">Readiness is the latest recorded proof and authorization attempt. Current serving authorization can expire or be revoked afterward.</p>
     <AppAttestReadiness days={days} />
     <div className="space-y-2"><h2 className="font-semibold">Machine adoption</h2>
       <p className="text-sm text-[var(--text-dim)]">Latest 200 identities by last observation. “First 27+” is the first recorded observation, not the installation date. Fresh assertion means within the last 15 minutes.</p>

@@ -1,6 +1,6 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-09-22 · commit `736911a19`
+> Last updated: 2026-09-23 · commit `cb9418cad`
 
 App Attest shadow collection records stable machine identities, fleet adoption, submitted proofs and receipts alongside legacy verification. Shadow alone changes no routing, rewards or trust. The separately enabled [provider authorization path](provider-authorization.md) uses qualified evidence for MDM-optional serving and rewards. DeviceCheck's separate two-bit API remains deferred.
 
@@ -10,7 +10,7 @@ App Attest shadow collection records stable machine identities, fleet adoption, 
 |---|---|---|
 | `EIGENINFERENCE_APP_ATTEST_SHADOW` | `false` | Enables negotiated shadow requests. Disabling it preserves machine inventory, legacy verification, and renewal of existing receipts when credentials are configured. |
 | `EIGENINFERENCE_APP_ATTEST_ROLLOUT_PERCENT` | `0` | Stable authenticated-account cohort, integer 0–100. Invalid values exclude all clients. The hard provider floor is `0.9.4`; older, missing, malformed and prerelease versions below that floor never receive Apple operations. |
-| `EIGENINFERENCE_APP_ATTEST_QUALIFIED_CODE_HASHES` | unset | Comma-separated `binary_sha256:full_code_directory_sha256` pairs from the same final qualified signed artifact. Only full SHA-256 CodeDirectory measurements (Apple type 2, 32 bytes) can match. Legacy bootstrap only when no durable build row exists and the qualification store is fresh. Missing, malformed or conflicting mappings remain unknown. A durable approval or revocation overrides this value. New gated publications require a durable approval. |
+| `EIGENINFERENCE_APP_ATTEST_QUALIFIED_CODE_HASHES` | unset | Comma-separated `binary_sha256:full_code_directory_sha256` pairs from the same final qualified signed artifact. Legacy bootstrap matches only Apple's full type-2 32-byte measurement, when no durable build row exists and the qualification store is fresh. Apple's 20-byte type-2 form requires an active durable approval for the unique full 32-byte qualified hash and never uses this bootstrap. Missing, malformed or conflicting mappings remain unknown. A durable approval or revocation overrides this value. New gated publications require a durable approval. |
 | `EIGENINFERENCE_APP_ATTEST_QUALIFIED_BUILD_HASHES` | unset | Comma-separated immutable binary hashes with completed Mac build/security-transition qualification. This does not override the active release catalog or missing Apple metadata. Legacy bootstrap only; empty remains unknown unless a durable qualification exists. Durable revocation always wins. |
 | `EIGENINFERENCE_APP_ATTEST_APP_ID` | `SLDQ2GJ6TL.io.darkbloom.provider` | Expected team prefix and macOS signing identifier. |
 | `EIGENINFERENCE_APP_ATTEST_ENVIRONMENT` | `production` | Apple attestation environment; `development` is also supported. |
@@ -44,11 +44,23 @@ Error replies may include optional `apple_error` diagnostics with `domain`, sign
 
 All transcript versions encode UTF-8 fields preceded by four-byte big-endian byte lengths, then SHA-256 the result. Version 1 fields are domain `darkbloom.app-attest.shadow.v1`, action, session, environment, key ID, plaintext challenge, and the app-owned X25519 public key. Version 2 changes the domain to `darkbloom.app-attest.shadow.v2` and appends account scope, OS version, OS build, app version, chip, and binary hash in that order. Version 3 uses domain `darkbloom.app-attest.shadow.v3` and additionally appends machine model, physical RAM in GiB, total/performance/efficiency CPU cores and GPU cores as canonical decimal strings, followed by the app’s existing attestation public key. Go and Swift tests pin independent vectors. The coordinator compares these signed app measurements against the registration; version 2 cannot authenticate the added fields.
 
-The app derives status locally. The server never supplies a replacement endpoint key or arbitrary status to sign. Assertion-bound status is authenticated app reporting; it is not an independent Apple certification of the OS version, chip, or binary hash. The prospective policy requires the current Apple launch category and full CodeDirectory SHA-256 measurement, an active catalog match and separately qualified binary/code-hash pair. Missing assertion metadata never falls back to enrollment metadata or an app-reported version.
+The app derives status locally. The server never supplies a replacement endpoint key or arbitrary status to sign. Assertion-bound status is authenticated app reporting; it is not an independent Apple certification of the OS version, chip, or binary hash. The prospective policy requires the current Apple launch category and a type-2 CodeDirectory measurement, an active catalog match and separately qualified binary/code-hash pair. The signed 20-byte form must uniquely bind to the same durable qualified artifact's full 32-byte hash; the full 32-byte wire form matches directly. Missing assertion metadata never falls back to enrollment metadata or an app-reported version.
 
 ## macOS attestation framing
 
-The verifier revision is `mac-shadow-v5`. Production macOS 27 attestations can contain a complete CDhash extension map while the ED flag is clear. `coordinator/appattest/authenticator.go` (`authData`) accepts only a bounded, fully decoded attestation map with launch category and type-2 SHA-256 CodeDirectory measurement in this case. The Apple certificate chain, exact Mac ACL and nonce over all authenticator bytes are checked first. Unflagged assertion tails, duplicate/trailing CBOR and incomplete measurements remain rejected. This compatibility rule does not itself grant serving.
+The verifier revision is `mac-shadow-v7`. Production macOS 27 attestations and
+assertions can contain a complete CDhash extension map while the ED flag is
+clear. `coordinator/appattest/authenticator.go` (`authData`) accepts only the
+fully decoded Developer ID category 6, type-2 **32-byte or 20-byte** SHA-256
+CodeDirectory measurement on an unflagged assertion. The 20-byte form is a
+truncated CandidateCDHash, not a full digest or independent build approval.
+`Verifier.Assertion` in
+`coordinator/appattest/verify.go` verifies the signature over **all** the
+authenticator bytes first, then validates App ID and the increasing counter.
+Enrollment separately verifies Apple's certificate chain, exact Mac ACL and
+nonce. Missing or malformed measurements, duplicate/trailing CBOR and arbitrary
+unflagged tails remain rejected. This compatibility rule does not itself grant
+serving.
 
 ## Machine inventory and identity
 
@@ -69,7 +81,30 @@ Code: `coordinator/store/machine_inventory.go`, `postgres_machine_inventory.go`,
 
 Alias merges update the current session-to-machine mapping while retaining `original_machine_id`, account attribution, original evidence/session records, and an explicit merge audit. App Attest credentials are account/machine scoped; canonical lookup recognizes a verified machine merge without replacing an existing key's owner or resetting its counter. No client-supplied UUID selects a machine. An existing credential on the same authenticated account may attempt an encrypted fresh assertion before association; `keyOwnerMatches` is not acceptance of a claimed identity.
 
-A bounded background backfill imports existing provider records. Only previously valid endpoint-bound keys create historical key aliases. Historical MDA booleans and serials do not create hardware-verified mappings. Backfill does not overwrite a live session. Missing historical OS data stays unknown; raw historical proofs discarded before this release cannot be recreated.
+A bounded background backfill imports existing provider records. Only previously
+valid endpoint-bound keys create historical key aliases. Historical MDA
+booleans and serials do not create hardware-verified mappings. Backfill skips
+recent provider records and rows with an open provider session, so a live
+registration can save its inventory before any historical tombstone is
+considered. After an empty batch it rechecks once a minute; a skipped row
+can be imported later if its live capture never succeeds and it becomes
+historical. Missing historical OS data stays unknown; raw historical proofs
+discarded before this release cannot be recreated.
+
+For tombstones left by the earlier startup race, a newly committed Apple
+assertion and exact live presenter pointer precede any repair. A store
+transaction requires the same authenticated account and persisted nonrevoked
+key, an open provider session with a fresh heartbeat after the historical
+`observed_disconnect`, and the matching `historical_registration` source.
+It cannot reopen an actual live-session closure. A new live inventory capture
+then attaches the verified key alias and performs normal canonical merges;
+`ResolveMachineContinuity` still requires the resulting open, associated
+machine before registry permission is granted. A historical row alone is
+never serving evidence. Code: `coordinator/store/machine_inventory_backfill.go`
+(`BackfillMachineInventory`), `postgres_machine_continuity_recovery.go`
+(`RecoverLiveAppAttestMachineSession`) and
+`coordinator/appattest/service/authorization_identity.go`
+(`updateServingAuthorization`).
 
 The existing serial-based MDM lookup, duplicate-connection handling, fault/quarantine history, routing allowlists, and accounting identifiers remain operational. This release adds the machine inventory used by new evidence and adoption views; it does not rewrite historical payouts or replace live verification. See the [identity design and serial-use inventory](../design/app-attest-release-observability.md).
 
@@ -94,6 +129,18 @@ The archive stores invalid base64 verbatim and preserves invalid, replayed, wron
 `acquireStorage` in `coordinator/appattest/service/storage.go` admits at most four concurrent session storage operations. Normal verification, verifier-busy rejection, disconnect draining, standalone events, and outbound enrollment writes share this limit. Admission is nonblocking; an admitted proof retains its permit through deferred archive completion, and nested observations reuse it. Refused proof submissions increment the session's dropped count and report `archive/storage_busy`; event persistence refusals emit `app_attest.events.storage_failed` with `reason:busy`. Metrics/logs remain available without making another unbounded database call. Inventory and receipt renewal retain their separate worker limits.
 
 Input refused by frame, queue, or storage admission bounds is counted rather than retained without limit. Storage failures pause that connection's shadow exchange and appear in metrics; they do not interrupt inference. The system cannot guarantee recording bytes it never accepts or durably receives during an outage. Re-verification uses the archived context and original evaluation time, never treats a historical assertion as a fresh challenge.
+
+The cumulative refused-frame count stays in machine inventory for audit. For
+authorization, `coordinator/appattest/service/session.go` (`markDropped`)
+fences the existing App Attest lease on a refusal, serialized with grant
+evaluation. A new `assert` challenge captures the count before enqueue;
+only a fully archived and verified response to that challenge, with no later
+drop, can reestablish a lease. A previous missed frame remains in the audit
+count and cannot itself authorize. Archive completion failures also fence the
+lease. `coordinator/appattest/service/authorizer.go` (`applyDetailed`) rechecks
+this proof-scoped state on each refresh. The new `authorization` event and
+`authorization_result` field describe the outcome at proof time; current
+serving status must still be read from the live registry.
 
 The protocol decoder returns a distinct error for App Attest frames exceeding 48 KiB. The WebSocket read loop increments the negotiated shadow session's atomic refusal counter before discarding the frame; periodic and terminal inventory captures persist that count for the census. It also emits `app_attest.shadow.frames_rejected` with `reason:oversized`, including when no shadow session is negotiated. This path decodes no proof payload, writes no database rows on the read loop, and continues processing normal provider traffic. Other decoder errors do not increment the oversized-shadow counter. Code: `coordinator/protocol/messages.go` and `coordinator/api/provider.go`.
 
@@ -144,11 +191,11 @@ prospective observation; current dispatch still checks its bounded authorization
 | Condition | Missing evidence | Negative evidence |
 |---|---|---|
 | Account, machine, credential, connection, endpoint, app and environment binding | `unknown` | `ineligible` on a binding mismatch |
-| Complete admitted evidence for this connection | `unknown` when a proof was refused or its initial archive write failed | No readiness claim can erase a recorded archive gap |
+| Complete admitted evidence for this connection | `unknown` when the current proof was refused or its archive write failed | A later, separately challenged and completely archived proof can recover; the earlier gap remains in the audit |
 | Protocol 3 existing verification key matches the verified registration key | `unknown` if unavailable/unbound | `ineligible` on substitution; keeps existing model/runtime signatures linked to the verified app |
 | Protocol 3 static hardware claims match registration | `unknown` if absent/unbound | `ineligible` for a model, chip, RAM or CPU/GPU mismatch |
 | Verified credential, endpoint custody and current assertion | `unknown`; assertions expire after `AssertionFreshness = 15 * time.Minute` | Existing crypto verifier rejects invalid signatures/replay |
-| Current Apple launch category and exact code measurement | `unknown` for absent metadata, unsupported algorithm or missing qualified mapping; no enrollment fallback | `ineligible` for non-Developer-ID launch, a code-hash mismatch, or a present bundle-version mismatch. A missing bundle version is allowed only with the required matching code measurement. |
+| Current Apple launch category and exact code measurement | `unknown` for absent metadata, unsupported algorithm, missing qualified mapping or an ambiguous 20-byte prefix; no enrollment fallback | `ineligible` for non-Developer-ID launch, a definite code-hash mismatch, or a present bundle-version mismatch. A missing bundle version is allowed only with the required matching code measurement. |
 | Active release catalog plus qualified immutable build | `unknown` when unavailable/unqualified | `ineligible` for a known catalog mismatch |
 | Credential revocation | `unknown` when storage is unavailable | `ineligible` when revoked |
 | Verified unexpired receipt, risk metric and configured renewal | `unknown` | Renewal overdue by 24 hours remains `unknown`, not a zero risk metric |
@@ -164,9 +211,9 @@ lists qualification and retirement gates.
 
 ### macOS SDK and signed code measurements
 
-A controlled physical macOS 27 test of the same probe with SDK 26.5 and SDK 27.0 found that only the SDK 27 build returned the launch category and code measurement. With CDhash opt-in, its assertions carried `apple_cd_hash_type_01` as one byte (`2`) and `apple_cd_hash_hash_01` as the full 32-byte SHA-256 CodeDirectory digest. That digest exactly matched `codesign -d --verbose=4` `CandidateCDHashFull sha256`; it is neither the truncated 20-byte `CDHash` nor the SHA-256 of the entire signed executable. No bundle-version extension was present. These are observed wire semantics requiring qualification on the final artifact and supported OS builds, not a promise of an undocumented future format.
+A controlled physical macOS 27 test of the same probe with SDK 26.5 and SDK 27.0 found that only the SDK 27 build returned the launch category and code measurement. With CDhash opt-in, its assertions carried `apple_cd_hash_type_01` as one byte (`2`) and `apple_cd_hash_hash_01` as the full 32-byte SHA-256 CodeDirectory digest. That digest exactly matched `codesign -d --verbose=4` `CandidateCDHashFull sha256`, not the SHA-256 of the entire signed executable. A later Apple-signed proof carried the 20-byte truncation. Apple [TN3126](https://developer.apple.com/documentation/technotes/tn3126-inside-code-signing-hashes) distinguishes `CandidateCDHash sha256` from `CandidateCDHashFull sha256`. No bundle-version extension was present. These are observed wire semantics requiring qualification on the final artifact and supported OS builds, not a promise of an undocumented future format.
 
-`coordinator/appattest/code_measurement.go` parses the bounded signed fields and exposes only the observed type-2 SHA-256 format for matching. `coordinator/appattest/service/build_policy.go` requires an explicit qualified mapping for the reported binary hash; the independently loaded release catalog also pins that binary hash and version. The policy never accepts a code hash supplied in ordinary client status as Apple's measurement. Unknown algorithms remain recorded but cannot qualify. Assertions and enrollment observations retain `attested_code_directory_type` and `attested_code_directory_hash`; only the current assertion feeds prospective authorization. Parsed measurements are also committed atomically into the proof decision details. Verified OS/build status is recorded even when readiness storage fails or the key is revoked; only identity alias attachment depends on a known non-revoked credential. SDK 26 builds remain safe shadow clients and stay unknown for replacement readiness.
+`coordinator/appattest/code_measurement.go` parses the bounded signed fields and exposes only type-2 20- or 32-byte SHA-256 candidates for matching. A 20-byte candidate qualifies only when it uniquely prefixes one full 32-byte hash across **all** durable qualifications, including revoked rows, and that exact row is approved, unrevoked, active in the release catalog and matches the reported binary/version. It cannot use environment bootstrap. The signed-prefix match and active-catalog qualification are separate checks: a catalog outage or ambiguous prefix withholds App Attest permission as `unknown`, without falsely treating the signed code as tampered or hard-denying independent MDM/APNs trust. `coordinator/appattest/service/build_policy.go` requires an explicit qualified mapping for the reported binary hash; the independently loaded release catalog also pins that binary hash and version. The policy never accepts a code hash supplied in ordinary client status as Apple's measurement. Unknown algorithms remain recorded but cannot qualify. Assertions and enrollment observations retain `attested_code_directory_type` and `attested_code_directory_hash`; only the current assertion feeds prospective authorization. Parsed measurements are also committed atomically into the proof decision details. Verified OS/build status is recorded even when readiness storage fails or the key is revoked; only identity alias attachment depends on a known non-revoked credential. SDK 26 builds remain safe shadow clients and stay unknown for replacement readiness.
 
 ## Dashboard and telemetry
 

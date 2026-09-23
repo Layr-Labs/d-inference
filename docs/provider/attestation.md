@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-23 · commit `ac4a776de`
+> Last updated: 2026-09-23 · commit `0e6c98345`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -55,6 +55,13 @@ qualified; do not delete a working credential to bypass that check.
 New setup on macOS 27 or later skips MDM profile download in both the installer and `darkbloom enroll`. Darkbloom MDM will be deactivated soon; upgrade to macOS 27 to avoid legacy enrollment. A qualified macOS 27 provider can use [App Attest authorization](../reference/provider-authorization.md) when the coordinator explicitly enables it. Start the signed provider and check `darkbloom status` / `darkbloom doctor` for current App Attest authorization. Company-managed Macs keep their employer profile; they do not enroll into Darkbloom MDM for this path.
 
 After the coordinator enables removal and reports readiness, run `darkbloom unenroll` and choose the App Attest option. Removal guidance requires a coordinator decision received within the last 10 seconds, as well as a current daemon snapshot and unexpired authorization; a local state-file rewrite cannot extend readiness. It requires macOS 27 or later; `--keep-serving` remains a direct shortcut. The command preserves credentials/account data, validates the exact Darkbloom enrollment and guides removal in System Settings. If the read-only administrator inventory is needed, run the command in the foreground of an interactive terminal: `sudo` reads the password with terminal echo disabled. Refusing authentication, running without a terminal, or running as a background job withholds guidance; no profile is removed by the CLI. The full-exit option stops the provider and offers identity cleanup, so choose App Attest to retain provider identity. Older macOS uses the complete legacy path below. New macOS 27+ setup remains pending if App Attest is unavailable or unqualified; diagnose with `darkbloom doctor` instead of installing an MDM profile. The legacy steps below apply only to older macOS and existing enrollments.
+
+An owner-dashboard badge that says **Verified via legacy authorization** means
+the current legacy path passed; it does not approve removing the Darkbloom MDM
+profile. Keep that profile until `darkbloom unenroll` confirms both current App
+Attest authorization and coordinator removal readiness for this Mac. A public
+network snapshot or another provider's successful migration cannot supply that
+decision.
 
 ## Existing machines and upgrade notices
 

@@ -23,7 +23,7 @@ func (s *PostgresStore) ensureProviderRestoreIndexes(ctx context.Context) error 
 		{"idx_providers_restore_se_key", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_providers_restore_se_key ON providers(se_public_key, last_seen DESC, id DESC) WHERE se_public_key <> ''`},
 	} {
 		started := time.Now()
-		err := s.ensureProviderRestoreIndex(ctx, index.name, index.ddl)
+		err := s.ensureConcurrentIndex(ctx, index.name, index.ddl)
 		logStartupMigration(index.name, started, err)
 		if err != nil {
 			return err
@@ -32,19 +32,22 @@ func (s *PostgresStore) ensureProviderRestoreIndexes(ctx context.Context) error 
 	return nil
 }
 
-func (s *PostgresStore) ensureProviderRestoreIndex(ctx context.Context, name, ddl string) error {
+// ensureConcurrentIndex builds one index CONCURRENTLY at boot: no-op when a
+// valid index already exists, an error (never a silent rebuild) when a previous
+// concurrent build was interrupted and left an invalid index behind.
+func (s *PostgresStore) ensureConcurrentIndex(ctx context.Context, name, ddl string) error {
 	// Use the current schema, so an index in another schema cannot satisfy the
 	// gate. An interrupted concurrent build must not silently bypass readiness.
 	var exists, valid bool
 	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_index WHERE indexrelid = to_regclass(format('%I.%I', current_schema(), $1::text))),
 		COALESCE((SELECT indisvalid AND indisready FROM pg_index WHERE indexrelid = to_regclass(format('%I.%I', current_schema(), $1::text))), false)`, name).Scan(&exists, &valid); err != nil {
-		return fmt.Errorf("store: inspect restore index %s: %w", name, err)
+		return fmt.Errorf("store: inspect index %s: %w", name, err)
 	}
 	if valid {
 		return nil
 	}
 	if exists {
-		return fmt.Errorf("store: restore index %s is invalid; repair the interrupted concurrent index build before retrying", name)
+		return fmt.Errorf("store: index %s is invalid; repair the interrupted concurrent index build before retrying", name)
 	}
 	// One statement via simple protocol, outside a transaction. Only index
 	// creation is concurrent; this is not permission to run two serving replicas.
@@ -54,10 +57,10 @@ func (s *PostgresStore) ensureProviderRestoreIndex(ctx context.Context, name, dd
 	}
 	defer conn.Release()
 	if _, err := conn.Conn().PgConn().Exec(ctx, ddl).ReadAll(); err != nil {
-		return fmt.Errorf("store: create restore index %s: %w", name, err)
+		return fmt.Errorf("store: create index %s: %w", name, err)
 	}
 	if err := conn.QueryRow(ctx, `SELECT indisvalid AND indisready FROM pg_index WHERE indexrelid = to_regclass(format('%I.%I', current_schema(), $1::text))`, name).Scan(&valid); err != nil || !valid {
-		return fmt.Errorf("store: restore index %s did not become valid (query error: %v)", name, err)
+		return fmt.Errorf("store: index %s did not become valid (query error: %v)", name, err)
 	}
 	return nil
 }

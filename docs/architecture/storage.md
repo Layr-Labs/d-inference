@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-21 · commit `76a8f03d9`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -209,7 +209,8 @@ flowchart LR
   C --> D[migrate: idempotent DDL slice]
   D --> E[one-shot data migrations\ngated by schema_migrations]
   E --> F[ensureProviderEarningsJobIndex\nCONCURRENTLY, fast-path if present]
-  F --> G[SeedKey admin key]
+  F --> F2[ensureProviderEarningsWindowIndex\nBRIN CONCURRENTLY + analyze cadence]
+  F2 --> G[SeedKey admin key]
   B -- no, ALLOW_MEMORY_STORE=true --> H[NewMemory + 15 min pruner]
   B -- no --> X[exit 1]
   D -. any error .-> X
@@ -296,7 +297,13 @@ KV blocks under a per-model key, not tokens.
    `provider_earnings(job_id)` unique index is built `CONCURRENTLY`, only after
    a duplicate check, and skipped when already valid; the dedupe that violated
    this lives in `coordinator/store/migrations/dedupe_provider_earnings.sql` and
-   is manual (`ensureProviderEarningsJobIndex`).
+   is manual (`ensureProviderEarningsJobIndex`). The BRIN index on
+   `provider_earnings(created_at)` that serves the windowed network-totals and
+   leaderboard aggregates is built the same way, and the table's
+   `autovacuum_analyze_scale_factor` is pinned to `0.005` so `created_at`
+   statistics keep pace with millions of inserts a day
+   (`ensureProviderEarningsWindowIndex`,
+   `coordinator/store/postgres_earnings_window_index.go`).
 5. **Money is micro-USD integers in an append-only ledger.** `LedgerStore`
    and `balances` never store floats; see
    [`billing.md#invariants`](billing.md#invariants).
@@ -318,6 +325,7 @@ KV blocks under a per-model key, not tokens.
 | `EIGENINFERENCE_DATABASE_URL is required in production` | No DSN and no memory-store opt-in | The environment file; see [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md). |
 | Billing or key state gone after a restart | The process ran on the memory store | Startup log line `using in-memory store`. |
 | `/v1/stats` slow and pool saturated | Full scans on `usage` holding connections; the 80-connection floor is the mitigation, not a fix | `pg_stat_activity`; the read cache. |
+| `/v1/network/totals` or `/v1/leaderboard` 503 on cache misses (10 s store timeout) | Windowed `provider_earnings` aggregates scanning the whole heap: `idx_provider_earnings_created_at_brin` missing or invalid, or `created_at` statistics stale | `pg_indexes`; `pg_stat_user_tables.last_autoanalyze`; `EXPLAIN` the window query. |
 | `request_waterfall` view missing after a fresh database | It is applied by hand, not at boot | `coordinator/store/migrations/request_waterfall.sql`. |
 | Provider re-challenged after every coordinator deploy | Trust-reuse rows missing (memory store) or `provider_trust_reuse` revoked | [`security/attestation.md`](security/attestation.md). |
 | Provider SSD cache empty after reboot | Budget clamp or block TTL ([size and eviction rules](../reference/ssd-kv-cache.md#size-and-eviction-rules)), or the KEK item missing | [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md); `darkbloom doctor`. |
@@ -329,6 +337,7 @@ KV blocks under a per-model key, not tokens.
 | Interface and record types | `coordinator/store/interface.go`, `coordinator/store/interface_domains.go` |
 | Backend selection and validation | `coordinator/store/config.go`, `coordinator/cmd/coordinator/main.go` |
 | Postgres pool, schema, one-shot migrations | `coordinator/store/postgres.go`, `coordinator/store/postgres_usage_totals_migration.go`, `coordinator/store/postgres_withdrawable_migration.go`, `coordinator/store/postgres_log_report_privacy.go` |
+| Boot-time concurrent index builds | `coordinator/store/postgres_startup.go` (`ensureConcurrentIndex`), `coordinator/store/postgres_earnings_window_index.go`, `ensureProviderEarningsJobIndex` in `coordinator/store/postgres.go` |
 | Provider identity and usage reads | `coordinator/store/postgres_provider_read.go` (`providerRecordColumns`, `scanProviderRecord`, `GetProviderRecord`, `GetProviderBySerial`); `coordinator/store/provider_restore.go` (`GetProviderForRestore`, using the same projection); `coordinator/store/postgres_usage_read.go` (`readUsageRecords`, `UsageRecords`, `UsageRecordsSince`); `coordinator/store/postgres_row.go` (`rowScanner`) |
 | Domain files | `coordinator/store/postgres_model_registry.go`, `coordinator/store/postgres_base_rewards.go`, `coordinator/store/postgres_profiles.go`, `coordinator/store/route_telemetry.go`, `coordinator/store/usage_time_series.go`, `coordinator/store/apikey.go` |
 | Memory backend | `coordinator/store/memory.go`, `coordinator/store/memory_base_rewards.go` |

@@ -46,6 +46,7 @@
 
 - Persist independently approved App Attest builds and revocations; refresh qualification without per-release coordinator restarts, with bounded failure/expiry and stale-grant fencing.
 - Stage immutable signed provider artifacts before publication. Block unqualified releases before updater/latest aliases advance; retry the separate publication job using the same signed bytes, without rebuilding or notarizing again.
+- Build a BRIN index on `provider_earnings(created_at)` at coordinator boot (`CONCURRENTLY`, no-op once valid) and pin the table's analyze cadence, so the 24h/7d network-totals and leaderboard aggregates stop scanning the whole table and timing out. Run the leaderboard query with the analytics `work_mem` like the other stats statements.
 
 ## v0.9.7 — MDM-optional providers and account-scoped SLAs (shipped; 2026-09-20)
 

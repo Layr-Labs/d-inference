@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-22 · commit `632a94adc`
+> Last updated: 2026-09-22 · commit `011ccd3d1`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -22,16 +22,9 @@ The panel shows verification **at dispatch**; an old response makes no claim
 about the machine's current permission to serve. Missing snapshots on older
 messages display unavailable rather than inferring a method from `attested`.
 
-For live state, use the provider directory. Its method filters and verified
-count include App Attest-only providers. Dual-path connections are counted once
-in the total and in both breakdowns. Connections are distinct from known unique
-machine inventory. Reported macOS 27 adoption is a separate count. Missing verdicts are unknown,
-not zero verified: counts use the available-verdict denominator and show how
-many records are unavailable. Map method
-counts describe the indicated source snapshot. See the
-[exact fields and freshness rules](../reference/api-contracts.md#verification-presentation-contract).
-Provider rows, method totals and map regions now share one fleet observation;
-a connection change during later store work does not mix their authorization counts.
+Public network counts, directory method filters and proof details show **verification at the source snapshot**. They include App Attest-only providers and count dual-path connections once in the total and in both breakdowns. The snapshot age remains visible, including when stale. An expired lease in an old snapshot does not prove the coordinator stopped renewing it; the browser does not turn those historical App Attest counts into zero. Refresh to obtain another observation.
+
+The owner provider dashboard and MDM-removal controls remain live views: stale or expired authorization cannot enable serving or removal. Connections are distinct from known unique machine inventory; reported macOS 27 adoption is separate. Missing verdicts are unknown and use the available-verdict denominator. See the [fields and freshness rules](../reference/api-contracts.md#verification-presentation-contract).
 
 The proof view explains coordinator-side Apple chain/key enrollment, current
 assertion, receipt policy and qualified-build checks. Detailed certificate and

@@ -28,6 +28,11 @@ type fixture struct {
 
 func makeFixture(t *testing.T, acl bool) fixture {
 	t.Helper()
+	return makeFixtureWithAuth(t, acl, nil)
+}
+
+func makeFixtureWithAuth(t *testing.T, acl bool, transform func([]byte) []byte) fixture {
+	t.Helper()
 	now := time.Now()
 	rootKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	root := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "TEST ONLY"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
@@ -42,6 +47,9 @@ func makeFixture(t *testing.T, acl bool) fixture {
 	keyID := base64.StdEncoding.EncodeToString(id[:])
 	hash := sha256.Sum256([]byte("fresh server transcript"))
 	auth := testAuth(t, key, 0, true, "production")
+	if transform != nil {
+		auth = transform(auth)
+	}
 	nonce := digest(auth, hash)
 	wrap := func(b []byte) []byte {
 		data, _ := asn1.Marshal(struct {

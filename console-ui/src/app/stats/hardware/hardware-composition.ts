@@ -1,4 +1,4 @@
-import { summarizeVerification } from "@/lib/verification";
+import { summarizeSnapshotVerification } from "@/lib/verification";
 import type { PlatformStats } from "../platform-types";
 import type { ProviderStats } from "../provider-fleet";
 
@@ -11,7 +11,7 @@ export interface HardwareFamily {
 }
 
 export interface HardwareCompositionData {
-  verification: ReturnType<typeof summarizeVerification>;
+  verification: ReturnType<typeof summarizeSnapshotVerification>;
   families: HardwareFamily[];
   chartFamilies: HardwareFamily[];
   providers: number;
@@ -83,7 +83,7 @@ export function buildHardwareComposition(stats: PlatformStats): HardwareComposit
   }
   const ordered = [...families.values()].sort((a, b) => b.providers - a.providers || a.label.localeCompare(b.label));
   return {
-    verification: summarizeVerification(stats.providers),
+    verification: summarizeSnapshotVerification(stats.providers),
     families: ordered,
     chartFamilies: chartFamilies(ordered),
     providers: stats.providers.length,

@@ -50,11 +50,17 @@ func (v *Verifier) authData(data []byte, attest bool) (*authenticator, error) {
 		}
 		a.publicKey = append(append([]byte{4}, x...), y...)
 	}
-	if data[32]&0x80 == 0 {
-		if len(tail) != 0 {
-			return nil, invalid("authenticator_trailing_data")
-		}
+	declaresExtensions := data[32]&0x80 != 0
+	if !declaresExtensions && len(tail) == 0 {
 		return a, nil
+	}
+	// Some production macOS 27 attestation objects contain Apple's CDhash
+	// extension dictionary while leaving ED clear (flags 0x40). Attestation
+	// already verified the Apple certificate, exact Mac ACL and nonce over ALL
+	// authenticator bytes before reaching this parser. Accept only that measured
+	// attestation shape, never arbitrary trailing bytes or unflagged assertions.
+	if !declaresExtensions && !attest {
+		return nil, invalid("authenticator_trailing_data")
 	}
 	var extensions map[string]cbor.RawMessage
 	if len(tail) == 0 || decoder.Unmarshal(tail, &extensions) != nil || extensions == nil {
@@ -76,6 +82,9 @@ func (v *Verifier) authData(data []byte, attest bool) (*authenticator, error) {
 	a.codeHash, a.codeType, err = codeDirectoryMeasurement(extensions)
 	if err != nil {
 		return nil, err
+	}
+	if !declaresExtensions && (a.category == nil || a.codeType == nil || *a.codeType != 2 || len(a.codeHash) != 32) {
+		return nil, invalid("authenticator_trailing_data")
 	}
 	return a, nil
 }

@@ -89,7 +89,7 @@ func (x *Session) handleExchange(ctx context.Context, reply protocol.AppAttestSh
 		return "stop"
 	}
 	if reply.Result != "ok" {
-		x.observe(x.expected, shadowClientResult(reply.Result), nil)
+		x.observeWithAppleError(x.expected, shadowClientResult(reply.Result), nil, reply.AppleError)
 		return "stop"
 	}
 	if x.expected == "ready" {

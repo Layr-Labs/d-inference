@@ -24,7 +24,7 @@ import (
 var appleRoot []byte
 
 const MaxProofBytes = 32 * 1024
-const VerifierVersion = "mac-shadow-v4"
+const VerifierVersion = "mac-shadow-v5"
 
 func RootSHA256() string { hash := sha256.Sum256(appleRoot); return hex.EncodeToString(hash[:]) }
 

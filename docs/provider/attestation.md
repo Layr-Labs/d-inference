@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-22 · commit `632a94adc`
+> Last updated: 2026-09-22 · commit `011ccd3d1`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -31,6 +31,9 @@ and the [wire contract](../reference/api-contracts.md#verification-presentation-
 
 
 ## App Attest without Darkbloom MDM
+
+A failed initial enrollment can leave an Apple key unusable even when its identifier is still in Keychain. Darkbloom replaces that identifier after non-service-unavailable failures or interrupted attempts, subject to the persisted one-hour replacement cooldown and shared hourly generation budget. Service-unavailable failures keep the same key, and already saved enrollment proofs are retained for retry. Do not delete account, machine, Keychain or employer-management state to force retries. This recovery is not proof that the Mac is authorized; check the coordinator verdict before removing Darkbloom MDM. See the [key lifecycle](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle).
+
 
 If Apple's API returns a generic error during setup, the coordinator retries after one minute, then five minutes, then hourly while the provider stays connected. Retrying cannot approve the machine without a successful qualified proof. Keep the provider running and inspect `darkbloom status` or `darkbloom doctor`; the [recovery policy](../reference/provider-authorization.md#controls) does not require deleting credentials or management profiles.
 

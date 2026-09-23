@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-22 · commit `c0a43dbec`
+> Last updated: 2026-09-22 · commit `011ccd3d1`
 
 The complete public HTTP surface of the coordinator, derived from the 116 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -57,7 +57,7 @@ provider-hop encryption headers; it does not construct them from provider output
 The server decides `verified` with precise time before dispatch; Unix-second
 serialization can make a valid final fractional second show equal `observed_at`
 and `expires_at`. Historical display preserves that frozen server verdict,
-while live views still expire grants at the recorded deadline.
+while live views still expire grants at the recorded deadline. Public network statistics are explicitly historical source observations: `summarizeSnapshotVerification` in `console-ui/src/lib/verification.ts` keeps those method counts stable until the next snapshot, while the stats header exposes age. Directory filters and proof details use that same observation. Owner dashboard/removal controls continue to use live expiry; a stale statistics snapshot never grants permission to serve.
 
 `GET /v1/me/providers`, `GET /v1/providers/attestation`, and individual public
 `GET /v1/stats` provider rows include the same `verification` object evaluated

@@ -1,6 +1,6 @@
 # App Attest shadow protocol, machine inventory, and evidence
 
-> Last updated: 2026-09-22 · commit `03e65d36f`
+> Last updated: 2026-09-22 · commit `011ccd3d1`
 
 App Attest shadow collection records stable machine identities, fleet adoption, submitted proofs and receipts alongside legacy verification. Shadow alone changes no routing, rewards or trust. The separately enabled [provider authorization path](provider-authorization.md) uses qualified evidence for MDM-optional serving and rewards. DeviceCheck's separate two-bit API remains deferred.
 
@@ -40,9 +40,15 @@ Frames use `type = "app_attest_shadow"` and nested `payload`. Every request has 
 
 Code: `coordinator/protocol/app_attest_shadow.go`, `coordinator/protocol/app_attest_status.go`, and `provider-swift/Sources/ProviderAppAttest/ShadowProtocol.swift`.
 
+Error replies may include optional `apple_error` diagnostics with `domain`, signed 32-bit `code`, and an optional paired `underlying_domain` / `underlying_code`. Domains are the closed buckets `devicecheck`, `osstatus`, `url`, `cocoa`, and `other`. The coordinator validates the bounds before admission, retains valid details in the evidence context and error event, and never uses them as proof or metric-tag cardinality. Native descriptions, arbitrary domains and `NSError.userInfo` are excluded. Older peers may omit or ignore this additive field. Code: `coordinator/protocol/app_attest_error.go` (`AppAttestAppleError.Valid`), `provider-swift/Sources/ProviderAppAttest/AppAttestAppleError.swift`.
+
 All transcript versions encode UTF-8 fields preceded by four-byte big-endian byte lengths, then SHA-256 the result. Version 1 fields are domain `darkbloom.app-attest.shadow.v1`, action, session, environment, key ID, plaintext challenge, and the app-owned X25519 public key. Version 2 changes the domain to `darkbloom.app-attest.shadow.v2` and appends account scope, OS version, OS build, app version, chip, and binary hash in that order. Version 3 uses domain `darkbloom.app-attest.shadow.v3` and additionally appends machine model, physical RAM in GiB, total/performance/efficiency CPU cores and GPU cores as canonical decimal strings, followed by the app’s existing attestation public key. Go and Swift tests pin independent vectors. The coordinator compares these signed app measurements against the registration; version 2 cannot authenticate the added fields.
 
 The app derives status locally. The server never supplies a replacement endpoint key or arbitrary status to sign. Assertion-bound status is authenticated app reporting; it is not an independent Apple certification of the OS version, chip, or binary hash. The prospective policy requires the current Apple launch category and full CodeDirectory SHA-256 measurement, an active catalog match and separately qualified binary/code-hash pair. Missing assertion metadata never falls back to enrollment metadata or an app-reported version.
+
+## macOS attestation framing
+
+The verifier revision is `mac-shadow-v5`. Production macOS 27 attestations can contain a complete CDhash extension map while the ED flag is clear. `coordinator/appattest/authenticator.go` (`authData`) accepts only a bounded, fully decoded attestation map with launch category and type-2 SHA-256 CodeDirectory measurement in this case. The Apple certificate chain, exact Mac ACL and nonce over all authenticator bytes are checked first. Unflagged assertion tails, duplicate/trailing CBOR and incomplete measurements remain rejected. This compatibility rule does not itself grant serving.
 
 ## Machine inventory and identity
 
@@ -116,6 +122,7 @@ Apple's [receipt contract](https://developer.apple.com/documentation/devicecheck
 | First-risk-receipt wait | A valid first assertion with a verified enrollment receipt but no risk metric stays unknown. Without an existing authorization record, a fresh assertion retries after one minute, five minutes, then at the normal ten-minute cadence while Apple's receipt renewal runs independently. Only complete fresh evidence can authorize serving. Code: `coordinator/appattest/service/authorization_identity.go` and `retry.go`. |
 | Apple callbacks | 25-second waiter deadline. The actual uncancellable Apple operation retains admission until its callback arrives; retries receive `busy` in the meantime. A token fences duplicate late callbacks from unlocking a newer operation. A pre-cancelled call does not acquire admission. Code: `AppleOperationGate.swift` and `AppleAppAttestService.swift` in `provider-swift/Sources/ProviderAppAttest/`. |
 | Attestation retries | At most three attempts, 2/8-second waits, only for service unavailable, using the same key/hash. |
+| Failed one-time enrollment | Non-service-unavailable Apple failures retire the enrollment key identifier under the existing generation limits. The app persists `attestationStartedAt` before calling Apple; an interrupted attempt without a saved proof is retired on the next prepare. Cached successful proofs remain recoverable. Generic assertion failures do not rotate accepted keys; an explicit invalid-key response can retire them. Code: `provider-swift/Sources/ProviderAppAttest/EnrollmentKeyLifecycle.swift` and `AppAttestShadowClient.swift`. |
 | Key generation | Per-key one-hour replacement cooldown plus five generations per coordinator/environment per hour across account scopes, persisted before calling Apple. |
 | Lost enrollment response | Keychain temporarily retains proof and original status; retry uses a server-persisted, same-owner transaction up to 24 hours old. Its stored protocol selects the original transcript; a version 3 upgrade can recover an old version 2 enrollment, but the following fresh assertion must use the new protocol. Expired pending proof is replaced under the generation budget. |
 | Acknowledgement | An assertion request follows durable enrollment acceptance; the successful local assertion clears the cached enrollment proof. |
@@ -157,7 +164,6 @@ lists qualification and retirement gates.
 A controlled physical macOS 27 test of the same probe with SDK 26.5 and SDK 27.0 found that only the SDK 27 build returned the launch category and code measurement. With CDhash opt-in, its assertions carried `apple_cd_hash_type_01` as one byte (`2`) and `apple_cd_hash_hash_01` as the full 32-byte SHA-256 CodeDirectory digest. That digest exactly matched `codesign -d --verbose=4` `CandidateCDHashFull sha256`; it is neither the truncated 20-byte `CDHash` nor the SHA-256 of the entire signed executable. No bundle-version extension was present. These are observed wire semantics requiring qualification on the final artifact and supported OS builds, not a promise of an undocumented future format.
 
 `coordinator/appattest/code_measurement.go` parses the bounded signed fields and exposes only the observed type-2 SHA-256 format for matching. `coordinator/appattest/service/build_policy.go` requires an explicit qualified mapping for the reported binary hash; the independently loaded release catalog also pins that binary hash and version. The policy never accepts a code hash supplied in ordinary client status as Apple's measurement. Unknown algorithms remain recorded but cannot qualify. Assertions and enrollment observations retain `attested_code_directory_type` and `attested_code_directory_hash`; only the current assertion feeds prospective authorization. Parsed measurements are also committed atomically into the proof decision details. Verified OS/build status is recorded even when readiness storage fails or the key is revoked; only identity alias attachment depends on a known non-revoked credential. SDK 26 builds remain safe shadow clients and stay unknown for replacement readiness.
-
 
 ## Dashboard and telemetry
 

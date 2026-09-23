@@ -65,6 +65,9 @@ func (x *Session) handle(ctx context.Context, reply protocol.AppAttestShadowPayl
 		if enrollment != nil {
 			inputs["enrollment_context"] = enrollment
 		}
+		if reply.AppleError != nil && reply.AppleError.Valid() {
+			inputs["apple_error"] = reply.AppleError
+		}
 		inputs["proof_field_sha256"] = hex.EncodeToString(sum[:])
 		inputs["proof_field_checksum_encoding"] = "proof_field_utf8"
 		inputs["proof_decode_valid"] = decodeErr == nil

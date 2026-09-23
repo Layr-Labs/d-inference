@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — App Attest recovery and snapshot accuracy
+
+- Retire failed or interrupted one-time App Attest enrollment keys instead of retrying them indefinitely. Preserve server-unavailable retries, cached enrollment proofs, accepted assertion credentials, account identity, and persisted generation limits.
+- Accept authenticated macOS CDhash attestation extensions when Apple omits the extension flag; retain complete certificate, nonce, Mac ACL, key, transcript and serving-policy verification.
+- Retain bounded Apple error domain/code diagnostics without error descriptions, user-info dictionaries or raw identity data.
+- Show public network verification counts and filters at their source snapshot instead of expiring cached App Attest rows into a false zero. Owner serving controls retain live expiry.
+
 ## Release candidate v0.9.8 — graceful lifecycle and App Attest recovery (not shipped; 2026-09-22)
 
 - Align `ProviderCore.version` and the coordinator's `LatestProviderVersion` fallback at 0.9.8. Deploy coordinator drain-barrier support before publishing this provider; qualify the exact signed artifact independently before advancing the registered release.

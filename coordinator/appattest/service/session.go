@@ -167,7 +167,7 @@ func (x *Session) offer(p protocol.AppAttestShadowPayload) {
 		x.dropped.Add(1)
 		return
 	}
-	if p.Status != nil && len(p.Status.AttestationPublicKey) > 128 {
+	if !p.AppleError.Valid() || (p.Status != nil && len(p.Status.AttestationPublicKey) > 128) {
 		x.dropped.Add(1)
 		return
 	}

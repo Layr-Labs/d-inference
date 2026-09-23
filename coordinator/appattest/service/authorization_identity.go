@@ -50,11 +50,13 @@ func (x *Session) updateServingAuthorization(status *protocol.AppAttestStatus, e
 		// Keep its refresh record so recovery does not require another assertion;
 		// unknown evidence neither replaces the proof nor extends its lease.
 		// A first proof has no such record. Retry the assertion earlier after a
-		// failed readiness lookup or while a verified enrollment receipt awaits
-		// its first risk metric. Receipt renewal can finish independently of this
-		// session; recovery must repeat identity and all policy checks before grant.
+		// failed readiness lookup or while an enrollment receipt awaits its
+		// first verified risk receipt. The initial receipt may itself require
+		// renewal before readiness exposes any verified receipt. Receipt renewal
+		// finishes independently of this session; recovery must repeat identity
+		// and all policy checks before grant.
 		a.mu.Lock()
-		readinessPending := !evidence.RevocationKnown || (evidence.ReceiptVerified && evidence.RiskMetric == nil && evidence.RenewalConfigured)
+		readinessPending := !evidence.RevocationKnown || (evidence.RenewalConfigured && (!evidence.ReceiptVerified || evidence.RiskMetric == nil))
 		x.readinessRetryPending = readinessPending && a.current[x.provider] == nil
 		a.mu.Unlock()
 		x.s.sendAppAttestAuthorizationStatus(x.provider)

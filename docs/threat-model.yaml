@@ -77,6 +77,16 @@ created: "2026-05-14"
 # Accepted assertion credentials do not rotate on generic API errors. Native
 # diagnostic domain buckets and signed numeric codes are untrusted metadata;
 # arbitrary strings/userInfo and raw Apple evidence are not published.
+# If a completed Apple generateKey callback reports failure without a usable ID,
+# a persisted one-minute cooldown may retry within the normal single-provider
+# shared generation budget, which bounds internally created but inaccessible
+# keys. Busy, timeout, cancellation and crash-before-return remain uncertain
+# and keep the one-hour key cooldown; no accepted key rotates
+# merely because a later assertion reports a generic Apple failure.
+# First-grant recovery may reassert after 1m/5m/10m while an initial receipt is
+# unverified or lacks a risk metric. Receipt renewal remains independent;
+# every serving grant still needs a fresh verified risk receipt, new assertion,
+# qualified build, nonrevoked key and current connection binding.
 # Authenticated macOS attestation CDhash extensions without ED are parsed only
 # after chain/nonce/exact-ACL verification; the follow-up also accepts only a
 # fully signed, measured Developer ID assertion with the same ED-clear shape.

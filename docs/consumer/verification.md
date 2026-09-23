@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-23 · commit `cb9418cad`
+> Last updated: 2026-09-23 · commit `ac4a776de`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -39,7 +39,7 @@ remove the coordinator as a plaintext endpoint; see
 
 An Apple API error can leave an App Attest-only provider pending while the coordinator retries. Retry activity is not successful verification: only an unexpired coordinator-derived authorization permits that path to serve. Independently valid legacy authorization retains its own evidence requirements.
 
-An enrolled App Attest key can remain pending while Apple supplies the first risk metric. The coordinator retries the first assertion without treating the incomplete receipt as serving authorization. Only a current authorized verdict marks the provider verified.
+An enrolled App Attest key can remain pending while Apple renews an initial receipt into a verified risk receipt or supplies its first risk metric. The coordinator requests fresh assertions on a bounded schedule during that wait. Neither an unverified receipt nor a retry is serving authorization; only a current authorized verdict marks the provider verified.
 
 A signed proof can also be eligible while the coordinator is still restoring
 the current account-scoped machine identity or checking the final runtime and

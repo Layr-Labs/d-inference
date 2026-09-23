@@ -25,18 +25,41 @@ private final class FailingEnrollmentStorage: ShadowKeyStorage, @unchecked Senda
     }
 }
 
+private final class FailOnceBudgetStorage: ShadowKeyStorage, @unchecked Sendable {
+    let backing = EnrollmentStorage()
+    private let lock = NSLock()
+    private var failRead = true
+    func load(scope: String) throws -> ShadowKeyRecord? {
+        lock.lock()
+        let shouldFail = scope.hasSuffix(":generation-budget") && failRead
+        if shouldFail { failRead = false }
+        lock.unlock()
+        if shouldFail { throw ShadowFailure.keychainError }
+        return backing.load(scope: scope)
+    }
+    func save(_ record: ShadowKeyRecord, scope: String) { backing.save(record, scope: scope) }
+}
+
 private actor EnrollmentService: AppAttestService {
+    var generationFailure: ShadowFailure?
+    var nativeGenerationFailure: AppleAppAttestFailure?
     var enrollmentFailure: ShadowFailure?
     var assertionFailure: ShadowFailure?
     var nativeEnrollmentFailure: AppleAppAttestFailure?
+    var transientAssertionFailures = 0
     private var enrollmentCalls: [(String, Data)] = []
     private var assertionCalls: [(String, Data)] = []
     private var generations = 0
-    init(enrollmentFailure: ShadowFailure? = nil, assertionFailure: ShadowFailure? = nil) {
-        self.enrollmentFailure = enrollmentFailure; self.assertionFailure = assertionFailure
+    init(generationFailure: ShadowFailure? = nil, enrollmentFailure: ShadowFailure? = nil, assertionFailure: ShadowFailure? = nil) {
+        self.generationFailure = generationFailure; self.enrollmentFailure = enrollmentFailure; self.assertionFailure = assertionFailure
     }
     func checkAvailability(environment: String) {}
-    func generateKey() -> String { generations += 1; return Data(repeating: UInt8(generations), count: 32).base64EncodedString() }
+    func generateKey() throws -> String {
+        generations += 1
+        if let nativeGenerationFailure { throw nativeGenerationFailure }
+        if let generationFailure { throw generationFailure }
+        return Data(repeating: UInt8(generations), count: 32).base64EncodedString()
+    }
     func attestKey(_ id: String, hash: Data) throws -> Data {
         enrollmentCalls.append((id, hash))
         if let nativeEnrollmentFailure { throw nativeEnrollmentFailure }
@@ -45,10 +68,17 @@ private actor EnrollmentService: AppAttestService {
     }
     func generateAssertion(_ id: String, hash: Data) throws -> Data {
         assertionCalls.append((id, hash))
+        if transientAssertionFailures > 0 {
+            transientAssertionFailures -= 1
+            throw AppleAppAttestFailure(NSError(domain: DCErrorDomain, code: DCError.Code.serverUnavailable.rawValue))
+        }
         if let assertionFailure { throw assertionFailure }
         return Data("test-assertion".utf8)
     }
     func allowEnrollment() { enrollmentFailure = nil; nativeEnrollmentFailure = nil }
+    func allowGeneration() { generationFailure = nil; nativeGenerationFailure = nil }
+    func failGenerationNatively(_ error: AppleAppAttestFailure) { nativeGenerationFailure = error }
+    func failNextAssertionsUnavailable(_ count: Int) { transientAssertionFailures = count }
     func generated() -> Int { generations }
     func failNatively(_ error: AppleAppAttestFailure) { nativeEnrollmentFailure = error }
     func calls() -> [(String, Data)] { enrollmentCalls }
@@ -96,6 +126,124 @@ final class EnrollmentRecoveryTests: XCTestCase {
         let retry = await restarted.respond(to: request("prepare"), publicKey: endpoint)
         XCTAssertEqual(retry.result, "busy")
         let count = await service.generated(); XCTAssertEqual(count, 1)
+    }
+
+    func testFailedGenerateKeyWithoutIdentifierRetriesAfterCooldownAcrossRestart() async {
+        let storage = EnrollmentStorage(); let service = EnrollmentService()
+        await service.failGenerationNatively(AppleAppAttestFailure(NSError(
+            domain: DCErrorDomain, code: DCError.Code.unknownSystemFailure.rawValue)))
+        let first = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+        let failed = await first.respond(to: request("prepare"), publicKey: endpoint)
+        XCTAssertEqual(failed.result, "apple_error")
+        XCTAssertEqual(failed.appleError?.domain, "devicecheck")
+        var pending = storage.load(scope: scope)!
+        XCTAssertTrue(pending.keyID.isEmpty)
+        XCTAssertNotNil(pending.generationRetryAfter)
+        let immediate = await first.respond(to: request("prepare"), publicKey: endpoint)
+        XCTAssertEqual(immediate.result, "busy")
+        let firstCalls = await service.generated(); XCTAssertEqual(firstCalls, 1)
+
+        // Simulate the coordinator's bounded retry after a process restart.
+        pending.generationRetryAfter = Date(timeIntervalSinceNow: -1)
+        storage.save(pending, scope: scope)
+        await service.allowGeneration()
+        let restarted = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+        let ready = await restarted.respond(to: request("prepare"), publicKey: endpoint)
+        XCTAssertEqual(ready.result, "ok")
+        XCTAssertFalse(ready.keyID?.isEmpty ?? true)
+        let calls = await service.generated(); XCTAssertEqual(calls, 2)
+        XCTAssertNil(storage.load(scope: scope)?.generationRetryAfter)
+    }
+
+    func testBudgetReadFailureCannotStrandEmptyKeyBeforeAppleCall() async {
+        let storage = FailOnceBudgetStorage(); let service = EnrollmentService()
+        let client = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+        let failed = await client.respond(to: request("prepare"), publicKey: endpoint)
+        XCTAssertEqual(failed.result, "keychain_error")
+        XCTAssertNil(storage.backing.load(scope: scope))
+        let before = await service.generated(); XCTAssertEqual(before, 0)
+        let restarted = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+        let ready = await restarted.respond(to: request("prepare"), publicKey: endpoint)
+        XCTAssertEqual(ready.result, "ok")
+        let after = await service.generated(); XCTAssertEqual(after, 1)
+    }
+
+    func testFailedGenerationCannotBypassSharedHourlyBudget() async {
+        let storage = EnrollmentStorage(); let service = EnrollmentService()
+        await service.failGenerationNatively(AppleAppAttestFailure(NSError(
+            domain: DCErrorDomain, code: DCError.Code.unknownSystemFailure.rawValue)))
+        let client = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+        for attempt in 0..<5 {
+            if attempt > 0 {
+                var pending = storage.load(scope: scope)!
+                pending.generationRetryAfter = Date(timeIntervalSinceNow: -1)
+                storage.save(pending, scope: scope)
+            }
+            let failure = await client.respond(to: request("prepare"), publicKey: endpoint)
+            XCTAssertEqual(failure.result, "apple_error")
+        }
+        var pending = storage.load(scope: scope)!
+        pending.generationRetryAfter = Date(timeIntervalSinceNow: -1)
+        storage.save(pending, scope: scope)
+        let restarted = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+        let limited = await restarted.respond(to: request("prepare"), publicKey: endpoint)
+        XCTAssertEqual(limited.result, "busy")
+        let calls = await service.generated(); XCTAssertEqual(calls, 5)
+    }
+
+    func testUnsupportedGenerateKeyKeepsOneHourCooldown() async {
+        let storage = EnrollmentStorage(); let service = EnrollmentService(generationFailure: .unsupported)
+        let client = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+        let failed = await client.respond(to: request("prepare"), publicKey: endpoint)
+        XCTAssertEqual(failed.result, "unsupported")
+        XCTAssertNil(storage.load(scope: scope)?.generationRetryAfter)
+        let retry = await client.respond(to: request("prepare"), publicKey: endpoint)
+        XCTAssertEqual(retry.result, "busy")
+        let calls = await service.generated(); XCTAssertEqual(calls, 1)
+    }
+
+    func testUncertainGenerationFailureNeverShortensPreCallCooldown() async {
+        for failure in [ShadowFailure.busy, .operationTimeout, .cancelled, .appleUnavailable, .appleError] {
+            let storage = EnrollmentStorage(); let service = EnrollmentService(generationFailure: failure)
+            let client = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+            let failed = await client.respond(to: request("prepare"), publicKey: endpoint)
+            XCTAssertEqual(failed.result, failure.rawValue)
+            XCTAssertNil(storage.load(scope: scope)?.generationRetryAfter)
+            let restarted = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+            let retry = await restarted.respond(to: request("prepare"), publicKey: endpoint)
+            XCTAssertEqual(retry.result, "busy")
+            let calls = await service.generated(); XCTAssertEqual(calls, 1)
+        }
+    }
+
+    func testNativeUnavailableGenerationCanRetryWithoutKeyIdentifier() async {
+        let storage = EnrollmentStorage(); let service = EnrollmentService()
+        await service.failGenerationNatively(AppleAppAttestFailure(NSError(
+            domain: DCErrorDomain, code: DCError.Code.serverUnavailable.rawValue)))
+        let client = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+        let failed = await client.respond(to: request("prepare"), publicKey: endpoint)
+        XCTAssertEqual(failed.result, "apple_unavailable")
+        XCTAssertNotNil(storage.load(scope: scope)?.generationRetryAfter)
+    }
+
+    func testGenerationRetryMarkerRoundTripsAndCrashMarkerRetainsHourLimit() throws {
+        let now = Date()
+        var returnedFailure = ShadowKeyRecord(keyID: "", attested: false, createdAt: now)
+        returnedFailure.generationRetryAfter = now.addingTimeInterval(60)
+        let persisted = try JSONDecoder().decode(ShadowKeyRecord.self, from: JSONEncoder().encode(returnedFailure))
+        XCTAssertFalse(persisted.mayGenerateKey(at: now.addingTimeInterval(59)))
+        XCTAssertTrue(persisted.mayGenerateKey(at: now.addingTimeInterval(61)))
+
+        // The pre-call marker is the same shape as an older Keychain record.
+        // If the process exits before a callback, it must not become a short
+        // retry merely because the new optional field is absent.
+        let crashMarker = ShadowKeyRecord(keyID: "", attested: false, createdAt: now)
+        let legacyData = try JSONEncoder().encode(crashMarker)
+        XCTAssertNil((try JSONSerialization.jsonObject(with: legacyData) as? [String: Any])?["generationRetryAfter"])
+        let recovered = try JSONDecoder().decode(ShadowKeyRecord.self, from: legacyData)
+        XCTAssertNil(recovered.generationRetryAfter)
+        XCTAssertFalse(recovered.mayGenerateKey(at: now.addingTimeInterval(61)))
+        XCTAssertTrue(recovered.mayGenerateKey(at: now.addingTimeInterval(3601)))
     }
 
     func testInterruptedOneTimeEnrollmentIsNotRetriedAfterProcessRestart() async {
@@ -158,6 +306,21 @@ final class EnrollmentRecoveryTests: XCTestCase {
         XCTAssertEqual(failed.result, "apple_error")
         XCTAssertEqual(storage.load(scope: scope)?.keyID, oldKey)
         let count = await service.generated(); XCTAssertEqual(count, 0)
+        let assertions = await service.assertions(); XCTAssertEqual(assertions.count, 1)
+    }
+
+    func testAssertionServerUnavailableRetriesSameKeyAndChallenge() async {
+        let storage = EnrollmentStorage(); let service = EnrollmentService()
+        await service.failNextAssertionsUnavailable(1)
+        storage.save(ShadowKeyRecord(keyID: oldKey, attested: true, createdAt: Date(timeIntervalSinceNow: -7200)), scope: scope)
+        let client = AppAttestShadowClient(scope: "test", service: service, storage: storage)
+        _ = await client.respond(to: request("prepare"), publicKey: endpoint)
+        let reply = await client.respond(to: request("assert", key: oldKey), publicKey: endpoint, status: status)
+        XCTAssertEqual(reply.result, "ok")
+        let calls = await service.assertions()
+        XCTAssertEqual(calls.count, 2)
+        XCTAssertTrue(calls.allSatisfy { $0.0 == oldKey && $0.1 == calls[0].1 })
+        XCTAssertEqual(storage.load(scope: scope)?.keyID, oldKey)
     }
 
     func testAttemptPersistenceFailureDoesNotCallAppleOrRetireKey() async {

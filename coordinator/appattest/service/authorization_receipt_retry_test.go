@@ -86,3 +86,61 @@ func TestRiskReceiptRetryDoesNotReplaceRetainedProofOrIgnoreDenial(t *testing.T)
 		}
 	}
 }
+
+func TestUnverifiedEnrollmentReceiptRetriesFirstGrantWithoutSkippingRiskCheck(t *testing.T) {
+	s, p, record, state := newAuthorizationFixture(t)
+	x := sessionForAuthorization(s, p, record)
+	initial := state
+	initial.Receipt = nil // Renewal has not produced a verified risk receipt.
+	e := record.evidence
+	applyAppAttestReadiness(&e, initial)
+	verdict := appattest.EvaluateAuthorization(e, time.Now())
+	if verdict.Outcome != "unknown" || e.ReceiptVerified || e.RiskMetric != nil {
+		t.Fatal("fixture must lack a verified receipt and risk metric")
+	}
+	for _, want := range []time.Duration{time.Minute, 5 * time.Minute, shadowAssertionInterval} {
+		x.updateServingAuthorization(&record.status, e, verdict)
+		if _, granted := s.registry.ProviderServingAuthorization(p); granted || s.authorizer.current[p] != nil {
+			t.Fatal("unverified enrollment receipt granted serving or retained proof")
+		}
+		if got := x.nextAssertionDelay(); got != want {
+			t.Fatalf("first-grant receipt retry delay=%s, want %s", got, want)
+		}
+	}
+	// A fresh assertion after independent receipt renewal may grant normally.
+	s.store = &statusReadinessStore{MemoryStore: store.NewMemory(store.Config{}), state: state}
+	e.AssertionAt = time.Now().UTC()
+	applyAppAttestReadiness(&e, state)
+	x.updateServingAuthorization(&record.status, e, appattest.EvaluateAuthorization(e, time.Now()))
+	if _, granted := s.registry.ProviderServingAuthorization(p); !granted {
+		t.Fatal("verified risk receipt did not recover first grant")
+	}
+	if got := x.nextAssertionDelay(); got != shadowAssertionInterval {
+		t.Fatalf("grant did not restore normal assertion cadence: %s", got)
+	}
+}
+
+func TestMissingReceiptDoesNotRetryEarlyWithoutRenewalOrAfterSignedDenial(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(*appattest.AuthorizationEvidence)
+	}{
+		{"renewal unavailable", func(e *appattest.AuthorizationEvidence) { e.RenewalConfigured = false }},
+		{"signed code mismatch", func(e *appattest.AuthorizationEvidence) { e.CodeMeasurementMatched = false }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, p, record, _ := newAuthorizationFixture(t)
+			x := sessionForAuthorization(s, p, record)
+			e := record.evidence
+			applyAppAttestReadiness(&e, store.AppAttestReadiness{})
+			tc.edit(&e)
+			x.updateServingAuthorization(&record.status, e, appattest.EvaluateAuthorization(e, time.Now()))
+			if got := x.nextAssertionDelay(); got != shadowAssertionInterval {
+				t.Fatalf("unsafe early retry scheduled: %s", got)
+			}
+			if _, granted := s.registry.ProviderServingAuthorization(p); granted {
+				t.Fatal("missing receipt or signed denial granted serving")
+			}
+		})
+	}
+}

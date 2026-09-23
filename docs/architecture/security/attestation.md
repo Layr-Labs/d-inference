@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-23 · commit `cb9418cad`
+> Last updated: 2026-09-23 · commit `ac4a776de`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -58,7 +58,7 @@ existing authorized operations path.
 
 Generic client-reported Apple API failures (`apple_error`) use bounded [exchange recovery](../../reference/app-attest-shadow.md). They are unknown observations, not verified security denials. Retrying neither creates a serving grant nor extends its deadline; fresh proof still passes all qualification, receipt, revocation and binding checks. Verified cryptographic or policy violations remain terminal.
 
-A verified first App Attest assertion may still lack a usable risk receipt. The coordinator retries that first assertion on a bounded schedule while the receipt worker renews evidence. The [serving authorization policy](../../reference/provider-authorization.md) requires the complete risk metric, fresh assertion, non-revoked credential, qualified build and bound identity before granting permission.
+A verified first App Attest assertion may have no **verified** risk receipt yet: the initial `ATTEST` receipt can require renewal, or a verified receipt can lack a risk metric. With receipt renewal configured and no first serving record, the coordinator requests a fresh assertion after one minute, five minutes, then at the normal ten-minute cadence while the independent receipt worker renews evidence. An unverified receipt or another assertion does not itself create a grant. The [serving authorization policy](../../reference/provider-authorization.md) still requires a verified current risk receipt and complete metric, fresh assertion, non-revoked credential, qualified build and bound identity before granting permission.
 
 Providers are adversarial until proven otherwise ([`../../threat-model.yaml`](../../threat-model.yaml),
 `ADV-001`). A provider's self-report is worthless on its own — the reporter is

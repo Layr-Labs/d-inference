@@ -17,7 +17,8 @@
 - Retry only a completed Apple key-generation callback that returned an error with no usable key ID after a persisted one-minute cooldown, within the normal provider's generation budget. Timeout, cancellation, busy admission, and crash keep the one-hour marker; the budget also bounds possible internally created but inaccessible keys. Retry a definite assertion `serverUnavailable` once with the same key and challenge.
 - Recheck a first App Attest grant after one, five and ten minutes while Apple risk-receipt renewal is still unverified; a fresh assertion, verified risk metric and every existing serving check remain required. macOS 27 alone never grants authorization.
 - Reprobe a live connection's generic or server-unavailable Apple App Attest failure after one, five, then every ten minutes instead of leaving its accepted key idle for an hour. Storage failures retain their slower backoff; signed policy failures remain terminal.
-- Clarify that `darkbloom models catalog` lists extra local cache IDs separately from supported catalog IDs; a downloaded catalog model is not retired by a similarly named local-only directory, and a download checkmark does not establish live serving.
+- Clarify that `darkbloom models catalog` lists other local cache IDs separately from displayed catalog IDs; a downloaded catalog model is not retired by a similarly named cache directory, and a download checkmark does not establish live serving. The `--type` filter can also put other supported types in that section.
+
 
 
 ## v0.9.8 — graceful lifecycle and App Attest recovery (2026-09-22)

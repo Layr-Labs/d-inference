@@ -34,6 +34,18 @@ import Testing
         #expect(operations == ["stop", "cleanup"])
     }
 
+    @Test func fullExitUsesParsedGracefulStopDefaults() throws {
+        let unenroll = try command(["--force"])
+        #expect(try unenroll.chooseUnenrollmentMode(isInteractive: false, osMajor: 27) == .fullExit)
+
+        // The real full-exit path must not construct an unparsed `Stop()`:
+        // reading its @OptionGroup crashes before draining or cleanup.
+        let stop = try Unenroll.stopCommandForFullExit()
+        #expect(stop.drain.timeout == 600)
+        #expect(!stop.drain.force)
+        #expect(!stop.uninstall)
+    }
+
     @Test func emptyOrClosedInputNeverStopsOrCleansAnything() async throws {
         for input: String? in [nil, "", " \n"] {
             let mode = try command().chooseUnenrollmentMode(

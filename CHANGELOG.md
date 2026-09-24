@@ -2,6 +2,7 @@
 
 ## Release candidate v0.9.9 — App Attest recovery and snapshot accuracy (not shipped; 2026-09-22)
 
+- Fix the interactive `darkbloom unenroll` full-exit choice crashing before service stop because its internal `Stop` command was never parsed. Preserve the default graceful drain and the cleanup prompt (or explicit `unenroll --force`); that flag does not interrupt accepted requests.
 - Distinguish signed-app availability failures and synthetic Apple callback/proof errors with closed, privacy-bounded diagnostics. Keep the result and trust policy unchanged; native `NSError` codes remain separate.
 - Align `ProviderCore.version` and the coordinator display fallback at 0.9.9. Deploy coordinator and console fixes before publishing the separately qualified signed provider.
 - Retire failed or interrupted one-time App Attest enrollment keys instead of retrying them indefinitely. Preserve server-unavailable retries, cached enrollment proofs, accepted assertion credentials, account identity, and persisted generation limits.

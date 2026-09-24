@@ -43,6 +43,10 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Cloudflare in front of r2.dev answers the default Python-urllib User-Agent
+# with 403 (error code 1010); name the client instead.
+USER_AGENT = 'darkbloom-provider-release/1 (+https://github.com/Layr-Labs/d-inference)'
+
 SCHEMA = 'darkbloom.provider-qualification-result/v1'
 TEAM_ID = 'SLDQ2GJ6TL'
 CLI_NAME = 'darkbloom'
@@ -162,7 +166,8 @@ def resolve_input(args, created_temp_dirs):
     tmp_dir = Path(tempfile.mkdtemp(prefix='darkbloom-qualify-download-'))
     created_temp_dirs.append(tmp_dir)
     dest = tmp_dir / BUNDLE_NAME
-    with urllib.request.urlopen(args.url, timeout=120) as resp, open(dest, 'wb') as out:
+    request = urllib.request.Request(args.url, headers={'User-Agent': USER_AGENT})
+    with urllib.request.urlopen(request, timeout=120) as resp, open(dest, 'wb') as out:
         shutil.copyfileobj(resp, out)
     return dest, load_identity(payload)
 
@@ -491,6 +496,7 @@ def _coord_url():
 def _http_json(method, url, headers=None, body=None, timeout=60):
     data = json.dumps(body).encode() if body is not None else None
     req_headers = dict(headers or {})
+    req_headers.setdefault('User-Agent', USER_AGENT)
     if data is not None:
         req_headers.setdefault('Content-Type', 'application/json')
     req = urllib.request.Request(url, data=data, method=method, headers=req_headers)
@@ -562,7 +568,8 @@ def live_graceful_drain(ctx):
             req = urllib.request.Request(
                 f'{_coord_url()}/v1/chat/completions', data=json.dumps(body).encode(), method='POST',
                 headers={'Authorization': f'Bearer {api_key}', 'X-Darkbloom-Route': 'self',
-                         'Content-Type': 'application/json', 'Accept': 'text/event-stream'})
+                         'Content-Type': 'application/json', 'Accept': 'text/event-stream',
+                         'User-Agent': USER_AGENT})
             with urllib.request.urlopen(req, timeout=180) as resp:
                 for raw_line in resp:
                     line = raw_line.decode(errors='replace').strip()

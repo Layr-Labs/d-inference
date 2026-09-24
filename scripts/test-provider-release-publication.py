@@ -815,7 +815,7 @@ class VerifyOperationTests(PublicationFixture):
         super().setUp()
         self.serve_dir = self.base / 'r2-origin'
         self.serve_dir.mkdir()
-        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(self.serve_dir))
+        handler = functools.partial(self.handler_class(), directory=str(self.serve_dir))
         self.file_server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), handler)
         self.file_thread = threading.Thread(target=self.file_server.serve_forever, daemon=True)
         self.file_thread.start()
@@ -837,6 +837,9 @@ class VerifyOperationTests(PublicationFixture):
         latest_dir.mkdir(parents=True, exist_ok=True)
         (latest_dir / PUB.BUNDLE).write_bytes(bundle_bytes)
         (latest_dir / 'eigeninference-bundle-macos-arm64.tar.gz').write_bytes(bundle_bytes)
+
+    def handler_class(self):
+        return http.server.SimpleHTTPRequestHandler
 
     def run_verify(self, latest_response):
         with patch.object(PUB, 'coordinator', return_value=latest_response):
@@ -867,6 +870,35 @@ class VerifyOperationTests(PublicationFixture):
         with self.assertRaises(RuntimeError) as cm:
             self.run_verify({'version': '0.9.7', 'bundle_hash': 'f' * 64})
         self.assertIn('registration', str(cm.exception))
+
+
+class CloudflareUserAgentHandler(http.server.SimpleHTTPRequestHandler):
+    """r2.dev answers the default Python-urllib User-Agent with 403 (error code 1010)."""
+
+    def do_GET(self):
+        if self.headers.get('User-Agent', '').startswith('Python-urllib'):
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(b'error code: 1010')
+            return
+        super().do_GET()
+
+    def log_message(self, *args):
+        pass
+
+
+class VerifyBehindCloudflareTests(VerifyOperationTests):
+    """Every verify case again, against an origin that rejects the default urllib agent."""
+
+    def handler_class(self):
+        return CloudflareUserAgentHandler
+
+    def test_download_error_is_reported_as_an_error_not_a_mismatch(self):
+        (self.serve_dir / PUB.object_key(self.verify_payload)).unlink()
+        with self.assertRaises(RuntimeError) as cm:
+            self.run_verify({'version': self.verify_payload['version'],
+                              'bundle_hash': self.verify_payload['bundle_hash']})
+        self.assertIn('immutable object (ERROR (HTTPError', str(cm.exception))
 
 
 class ReviewRegressionTests(PublicationFixture):

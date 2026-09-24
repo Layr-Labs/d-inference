@@ -21,6 +21,9 @@ import urllib.request
 from provider_release_github import publish_github_release
 
 BUNDLE = 'darkbloom-bundle-macos-arm64.tar.gz'
+# Cloudflare in front of r2.dev answers the default Python-urllib User-Agent
+# with 403 (error code 1010); every release request names itself instead.
+USER_AGENT = 'darkbloom-provider-release/1 (+https://github.com/Layr-Labs/d-inference)'
 
 
 class ReadinessPending(RuntimeError):
@@ -125,7 +128,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def coordinator(env, path, payload=None):
-    headers = {'Accept': 'application/json'}
+    headers = {'Accept': 'application/json', 'User-Agent': USER_AGENT}
     data = None
     if payload is not None:
         headers.update({'Content-Type': 'application/json', 'Authorization': 'Bearer ' + env['RELEASE_KEY']})
@@ -157,7 +160,7 @@ def qualification_status(env, payload):
     must not block a release outright. A 503 raises ReadinessPending so
     `await` can retry it; a successful response is returned untouched.
     """
-    headers = {'Accept': 'application/json', 'Content-Type': 'application/json',
+    headers = {'Accept': 'application/json', 'Content-Type': 'application/json', 'User-Agent': USER_AGENT,
                'Authorization': 'Bearer ' + env['RELEASE_KEY']}
     request = urllib.request.Request(env['COORDINATOR_URL'].rstrip('/') + '/v1/releases/qualification',
                                       data=json.dumps(payload).encode(), headers=headers)
@@ -550,7 +553,7 @@ def resume_source(env, run_id):
 
 def _download_sha256(url):
     hasher = hashlib.sha256()
-    request = urllib.request.Request(url)
+    request = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
     with urllib.request.build_opener(NoRedirect()).open(request, timeout=150) as response:
         while True:
             chunk = response.read(65536)
@@ -571,10 +574,11 @@ def verify(root, env):
     surfaces = []
 
     def probe(name, fn):
+        # A download or API error is reported as the error, never as a digest mismatch.
         try:
-            ok = bool(fn())
-        except Exception:
-            ok = False
+            ok = 'ok' if fn() else 'MISMATCH'
+        except Exception as exc:
+            ok = f'ERROR ({type(exc).__name__}: {exc})'
         surfaces.append((name, ok))
 
     if is_latest:
@@ -620,8 +624,8 @@ def verify(root, env):
 
     print('surface -> ok')
     for name, ok in surfaces:
-        print(f'{name} -> {"ok" if ok else "MISMATCH"}')
-    failed = [name for name, ok in surfaces if not ok]
+        print(f'{name} -> {ok}')
+    failed = [f'{name} ({ok})' for name, ok in surfaces if ok != 'ok']
     if failed:
         raise RuntimeError('verify: surface mismatch: ' + ', '.join(failed))
 

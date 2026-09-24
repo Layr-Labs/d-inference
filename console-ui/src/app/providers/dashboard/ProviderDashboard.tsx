@@ -17,6 +17,7 @@ import {
 import { DashboardHeader } from "./DashboardHeader";
 import { FleetHealthStrip } from "./FleetHealthStrip";
 import { AttentionFeed } from "./AttentionFeed";
+import { FleetActivity } from "./FleetActivity";
 import { MachineGrid } from "./MachineGrid";
 import { TrustFooter } from "./TrustFooter";
 import { OnboardingState } from "./OnboardingState";
@@ -83,6 +84,7 @@ export function ProviderDashboard() {
       />
       <MacOSUpgradeNotice providers={providers} />
       <FleetHealthStrip verdict={verdict} summary={summary} />
+      <FleetActivity providers={providers} />
       <AttentionFeed groups={groups} />
       <MachineGrid providers={providers} ctx={ctx} fleetMaxDecodeTps={maxDecode} onRemoved={refetch} />
       <TrustFooter providers={providers} />

@@ -26,9 +26,10 @@ describe("CardEarningsRow", () => {
     expect(screen.getByText("—")).toBeInTheDocument();
   });
 
-  it("keeps the operational per-box stats (Reputation, Tokens, Avg TTFT)", () => {
+  it("shows lifetime activity without a reputation rating", () => {
     render(<CardEarningsRow provider={makeProvider()} />);
-    expect(screen.getByText("Reputation")).toBeInTheDocument();
+    expect(screen.queryByText(/reputation/i)).not.toBeInTheDocument();
+    expect(screen.getByText("Requests served")).toBeInTheDocument();
     expect(screen.getByText("Tokens")).toBeInTheDocument();
     expect(screen.getByText("Avg TTFT")).toBeInTheDocument();
   });

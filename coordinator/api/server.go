@@ -2759,8 +2759,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/version", s.handleVersion)
 
 	// Releases — versioned provider binary distribution.
-	s.mux.HandleFunc("POST /v1/releases", s.handleRegisterRelease)     // scoped release key (GitHub Action)
-	s.mux.HandleFunc("GET /v1/releases/latest", s.handleLatestRelease) // public (install.sh)
+	s.mux.HandleFunc("POST /v1/releases", s.handleRegisterRelease)                          // scoped release key (GitHub Action)
+	s.mux.HandleFunc("GET /v1/releases/latest", s.handleLatestRelease)                      // public (install.sh)
+	s.mux.HandleFunc("POST /v1/releases/qualification", s.handleReleaseQualificationStatus) // scoped release key, read-only status check
 
 	// Device authorization flow — providers link to user accounts.
 	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)   // no auth — provider not yet authenticated

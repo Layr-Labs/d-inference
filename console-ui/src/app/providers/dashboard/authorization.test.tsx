@@ -30,6 +30,21 @@ describe("App Attest dashboard authorization", () => {
     render(<AttestationPanel provider={{ ...provider, verification: { observed_at: Date.now() / 1000, app_attest: { state: "verified", verified_at: Date.now() / 1000, expires_at: provider.authorization_expires_at }, legacy: { state: "pending" } } }} challengeMaxAgeSeconds={360} />);
     expect(screen.getByText("Verified via App Attest")).toBeInTheDocument();
     expect(screen.queryByText("MDM security posture")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Legacy verification alone does not authorize MDM removal/)).not.toBeInTheDocument();
+  });
+
+  it("does not present a current legacy badge as MDM removal readiness", () => {
+    const now = Date.now() / 1000;
+    const provider = makeProvider({ trust_level: "hardware", verification: {
+      observed_at: now,
+      app_attest: { state: "pending" },
+      legacy: { state: "verified", verified_at: now - 1, expires_at: now + 60 },
+    } });
+    render(<AttestationPanel provider={provider} challengeMaxAgeSeconds={360} />);
+    expect(screen.getByText("Verified via legacy authorization")).toBeInTheDocument();
+    const guidance = screen.getByText(/Legacy verification alone does not authorize MDM removal/);
+    expect(guidance).toHaveTextContent("darkbloom unenroll");
+    expect(guidance).toHaveTextContent("current App Attest authorization and coordinator removal readiness");
   });
 
   it("does not override revocation, offline state, runtime failure or expired/unknown deadlines", () => {

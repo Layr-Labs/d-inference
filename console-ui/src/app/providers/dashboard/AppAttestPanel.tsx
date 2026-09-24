@@ -1,7 +1,7 @@
 import { hasCurrentAppAttestAuthorization } from "../authorization";
 import type { MyProvider } from "../types";
 import { ProofDetails } from "@/components/verification/ProofDetails";
-import { currentVerification } from "@/lib/verification";
+import { currentVerification, verificationPresentation } from "@/lib/verification";
 
 export function AppAttestPanel({ provider }: { provider: MyProvider }) {
   if (!provider.verification) {
@@ -14,5 +14,10 @@ export function AppAttestPanel({ provider }: { provider: MyProvider }) {
       <p>Verification time, certificate, receipt and qualified-build details are unavailable in this format. The browser displays the coordinator’s decision and has not independently validated Apple evidence.</p>
     </div>;
   }
-  return <ProofDetails verification={currentVerification(provider.verification)} />;
+  const verification = currentVerification(provider.verification);
+  const legacyVerified = verificationPresentation(verification).legacy;
+  return <div className="space-y-3">
+    <ProofDetails verification={verification} />
+    {legacyVerified && <p className="text-xs text-text-secondary">Legacy verification alone does not authorize MDM removal. Keep any installed Darkbloom MDM profile until <code>darkbloom unenroll</code> confirms current App Attest authorization and coordinator removal readiness.</p>}
+  </div>;
 }

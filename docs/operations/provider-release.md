@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-22 · commit `08d78d49d`
+> Last updated: 2026-09-24 · commit `b6f9574ed`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -26,41 +26,23 @@ Production publication requires independent [durable App Attest build qualificat
 
 ### 0.9.9 rollout order
 
-1. Merge the version bump and verify CI plus both SDK 27 release-preparation
-   lanes on the final source. Compilation caches can warm while deployment is
-   prepared; a failed artifact download does not count as qualification.
-2. Deploy the matching coordinator using the [coordinator runbook](coordinator-deploy.md).
-   Verify the authenticated macOS App Attest framing fix and bounded native-error
-   diagnostics before clients adopt 0.9.9. Deploy the console separately for
-   source-snapshot verification counts. Retain `provider_drain` /
-   `provider_drain_ack` settlement-barrier support. Preserve existing build approvals, legacy
-   serving, App Attest controls, payouts, SLA selectors and cache policy. Confirm
-   existing 0.9.8 providers still complete requests. The additive message
-   contract is defined in [protocol messages](../reference/protocol-messages.md).
-3. Push `v0.9.9` at the reviewed merged source and let the release workflow build,
-   sign, notarize and stage its immutable artifact. Build/sign/stage can overlap
-   coordinator rollout, but hold production publication until the coordinator
-   and exact-artifact qualification are ready.
-4. Qualify those signed bytes on macOS 27 and a supported older macOS. Exercise
-   failed and interrupted enrollment recovery, same-key Apple service-unavailable
-   retries, cached-proof recovery, and current assertion diagnostics. Test
-   App Attest-only and legacy serving, stop/restart during streaming and
-   non-streaming work, planned reconnects, deadline/force behavior, terminal
-   accounting, and fresh authorization after restart. Use an isolated
-   qualification coordinator for serving tests before production registration:
-   registering a release advances the fleet's updater, not a canary-only channel.
-   Record the actual evidence using the [build qualification runbook](app-attest-build-qualification.md).
-   The production tag workflow does not run `validate-older-macos`; that job is
-   conditional on validation-only mode, so verify the final production artifact
-   on older macOS separately.
-5. Approve the exact 0.9.9 build through the admin qualification endpoint, then
-   approve **Publish qualified signed release**. Registration, R2 latest aliases
-   and the GitHub Release must all complete using the retained signed artifact.
-   Keep earlier build approvals active during adoption.
-6. Verify public latest/install metadata, real completed requests by provider
-   version, App Attest freshness, drain acknowledgements, disconnect outcomes
-   and earnings. Deploy or verify the console independently for the new proof
-   labels and stats; the provider workflow does not deploy the frontend.
+1. Merge the version bump and verify CI plus both SDK 27 release-preparation lanes on the final source. Compilation caches can warm while deployment is prepared; a failed artifact download does not count as qualification.
+
+2. Deploy the matching coordinator using the [coordinator runbook](coordinator-deploy.md). Verify the authenticated macOS App Attest framing fix and bounded native-error diagnostics before clients adopt 0.9.9. Deploy the console separately for source-snapshot verification counts. Retain `provider_drain` / `provider_drain_ack` settlement-barrier support. Preserve existing build approvals, legacy serving, App Attest controls, payouts, SLA selectors and cache policy. Confirm existing 0.9.8 providers still complete requests. The additive message contract is defined in [protocol messages](../reference/protocol-messages.md).
+
+3. Push `v0.9.9` at the reviewed merged source and let the release workflow build, sign, notarize and stage its immutable artifact. Build/sign/stage can overlap coordinator rollout, but hold production publication until the coordinator and exact-artifact qualification are ready.
+
+4. After `build-and-release` (signing) and `stage-release` (R2 upload) complete, the workflow runs independent validators on both lanes:
+   - `validate-macos-27` runs on xcode-27 and qualifies with static, smoke, and live checks.
+   - `validate-older-macos` runs on blacksmith-12vcpu-macos-latest and qualifies with static, smoke, and live checks.
+   
+   Both lanes run in parallel and upload `provider-qualification-<lane>-<source_sha>-<run_attempt>` artifacts. Live checks require enrollment on a provider linked to the account, plus `DARKBLOOM_QUALIFY_LIVE=1` and related environment variables. Review the retained qualification results and operator notes.
+
+5. Download the `provider-publication-<SOURCE_SHA>-<SIGNING_ATTEMPT>` artifact, review the exact hashes and code identity, then aggregate the qualification evidence from both lanes using `provider-release-publication.py evidence`. Run the admin approval curl as described in [build qualification](app-attest-build-qualification.md#steps). A 200 response confirms durable approval.
+
+6. Approve **Publish qualified signed release**. The `publish-release` job downloads the retained artifact, verifies its digest and metadata, polls the coordinator for approval via `POST /v1/releases/qualification` (up to `QUALIFICATION_WAIT_MINUTES`, default 60), then registers via `POST /v1/releases`, updates R2 latest aliases and creates the GitHub Release. Registration, R2 latest aliases and the GitHub Release must all complete using the retained signed artifact. The new `verify-release` job validates `/v1/releases/latest`, both latest aliases, and (on prod) the GitHub release asset.
+
+7. Verify public latest/install metadata, real completed requests by provider version, App Attest freshness, drain acknowledgements, disconnect outcomes and earnings. Deploy or verify the console independently for the new proof labels and stats; the provider workflow does not deploy the frontend. To re-enter the qualification-wait workflow from a prior run's artifact without rebuilding or re-signing, dispatch with `resume_run_id=<source run>` on the same tag/ref.
 
 The drain implementation lives in `provider-swift/Sources/darkbloom/ServiceDrain.swift`
 (`ServiceDrain`) and `coordinator/api/provider_completion_barrier.go`
@@ -334,6 +316,8 @@ this before writing job outputs or requesting environment approval.
 ```bash
 gh workflow run release-swift.yml --ref <branch> -f environment=dev
 # optional: -f version_override=0.9.9
+# to reuse a prior run's retained artifact without rebuilding:
+gh workflow run release-swift.yml --ref <ref> -f environment=dev -f resume_run_id=<source run>
 ```
 
 Without a tag the version is read from `ProviderCore.swift` (or
@@ -341,6 +325,12 @@ Without a tag the version is read from `ProviderCore.swift` (or
 without a tag is refused ("Production publication requires a source-matching
 release tag"). Dev releases use `DEV_*` secrets, register with the dev
 coordinator, and create no GitHub Release.
+
+Resume runs with `resume_run_id=<source run>` re-enter the qualification-wait
+and publication steps from a prior completed run's retained artifact, skipping
+build, sign, stage and validation. The resumed workflow uses the same tag/ref
+and never rebuilds or re-signs. Resume dispatch on prod is not allowed with
+`validation_only=true`.
 
 ### Signed validation bundle
 
@@ -415,13 +405,14 @@ A transient R2/artifact-download failure belongs to this downstream job:
 when the workflow attempt number changes. Publication explicitly depends on
 successful staging.
 
-After R2 staging succeeds, review/test these final signed bytes for production, fill in the template's
-actual qualification evidence, and submit it through the admin approval route
+After R2 staging succeeds, both `validate-older-macos` and `validate-macos-27`
+run in parallel to independently qualify the retained bytes. After both
+validation jobs complete, review/test the qualification results, fill in the
+template's actual evidence, and submit it through the admin approval route
 as described in [build qualification](app-attest-build-qualification.md#steps).
-Use a verified Privy admin session from `scripts/admin.sh login` or the admin
-key; the publication key and admin-owned inference/provider credentials cannot
-approve builds. A 200 approval response confirms durable/local readiness but
-does not publish the artifact.
+Use a verified Privy admin session from `scripts/admin.sh login` or the
+admin-session key. A 200 approval response confirms durable/local readiness
+but does not publish the artifact.
 
 Approve the environment-protected **Publish qualified signed release** job
 (`publish-release`, Linux). Its steps are separate from signing:
@@ -430,10 +421,13 @@ Approve the environment-protected **Publish qualified signed release** job
 |---|---|---|
 | 1 | Checkout · Resolve env-specific secrets | Load the source-matching publication helper and scoped release/R2 credentials |
 | 2 | Download this run's exact signed publication artifact · Install publication tools | Retrieve the retained signed bytes without compiling or notarizing again |
-| 3 | Register release with coordinator and publish aliases: registration | Revalidate source/run/version/origin/bundle digest, then `POST /v1/releases`; the coordinator verifies the artifact and atomically checks the exact independent approval |
-| 4 | Readiness | Wait boundedly for `/v1/releases/latest` to report the committed qualified build, or a newer release; do not treat an older cached response as completed publication |
-| 5 | R2 aliases | Only for the current latest build, update both `releases/latest/darkbloom-bundle-macos-arm64.tar.gz` and its legacy `eigeninference-bundle` alias |
-| 6 | GitHub publication | Prod/tag only: create or resume a draft, upload a missing bundle (repair only an incomplete `starter` placeholder), verify the downloaded asset's exact hash, then publish. An already published exact asset is verified without replacement |
+| 3 | Await independent build qualification | Polls `POST /v1/releases/qualification` for up to `QUALIFICATION_WAIT_MINUTES` (default 60); `revoked` or `mismatched` fail at once; `approved` proceeds; `pending` sleeps and retries; unsupported (404/405) logs a warning and proceeds |
+| 4 | Register release with coordinator and publish aliases: registration | Revalidate source/run/version/origin/bundle digest, then `POST /v1/releases`; the coordinator verifies the artifact and atomically checks the exact independent approval |
+| 5 | Readiness | Wait boundedly for `/v1/releases/latest` to report the committed qualified build, or a newer release; do not treat an older cached response as completed publication |
+| 6 | R2 aliases | Only for the current latest build, update both `releases/latest/darkbloom-bundle-macos-arm64.tar.gz` and its legacy `eigeninference-bundle` alias |
+| 7 | GitHub publication | Prod/tag only: create or resume a draft, upload a missing bundle (repair only an incomplete `starter` placeholder), verify the downloaded asset's exact hash, then publish. An already published exact asset is verified without replacement |
+
+New `verify-release` job after `publish-release` runs `verify` to validate `/v1/releases/latest`, both `releases/latest/` aliases, and (on prod) the GitHub release asset.
 
 If qualification is absent, the publication job stops with 409 before advancing
 the registered/latest release or aliases. Approve the retained artifact and

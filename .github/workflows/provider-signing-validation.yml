@@ -126,6 +126,8 @@ jobs:
           security import "$RUNNER_TEMP/signing-certificate.p12" -k "$keychain" \
             -P "$P12_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+          python3 tooling/scripts/provider-signing-validation.py keychain \
+            --keychain "$keychain" --identity "$DEVELOPER_ID"
           rm -f "$RUNNER_TEMP/signing-certificate.p12"
           app="$RUNNER_TEMP/signing-stage/Darkbloom.app"
           printf '%s' "$PROFILE_BASE64" | base64 --decode > "$app/Contents/embedded.provisionprofile"

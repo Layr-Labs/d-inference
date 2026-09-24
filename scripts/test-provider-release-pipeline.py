@@ -18,6 +18,14 @@ def job(workflow, name):
     return match.group(1)
 
 
+def needs_of(content):
+    """Return the raw `needs:` block of a job, single-line list or YAML `- item` form."""
+    match = re.search(r'(?m)^    needs:(?:[ \t]*\[[^\]]*\]|(?:\n      -[^\n]*)+)', content)
+    if match is None:
+        raise AssertionError('Missing needs: block')
+    return match.group(0)
+
+
 class ReleasePipelineTests(unittest.TestCase):
     maxDiff = 1000
     def test_parallel_lanes_use_sdk27_without_signing_secrets(self):
@@ -56,11 +64,14 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertIn('provider-release-publication.py stage', stage)
         self.assertIn('provider-release-publication.py publish', publish)
         self.assertIn('needs: [resolve-env, build-and-release]', stage)
-        self.assertIn('needs: [resolve-env, build-and-release, stage-release]', publish)
+        publish_needs = needs_of(publish)
+        for dependency in ['resolve-env', 'build-and-release', 'stage-release']:
+            self.assertIn(dependency, publish_needs)
         for content in [stage, publish]:
             self.assertIn('environment: ${{ needs.resolve-env.outputs.environment }}', content)
             self.assertIn('needs.build-and-release.outputs.publication_artifact', content)
-            self.assertIn('gh run download "$GITHUB_RUN_ID"', content)
+            self.assertIn('gh run download "$SOURCE_RUN_ID"', content)
+            self.assertIn('needs.resolve-env.outputs.source_run_id', content)
             self.assertNotIn('GITHUB_RUN_ATTEMPT', content)
             self.assertNotIn('notarytool', content)
             self.assertNotIn('APPLE_', content)
@@ -134,6 +145,124 @@ class ReleasePipelineTests(unittest.TestCase):
         step = ACTION.split('- name: Test Qwen resources in a relocated app\n', 1)[1].split('\n    - name:', 1)[0]
         self.assertIn('python3 scripts/test-qwen4-packaged-resources.py', step)
         self.assertNotIn('if:', step)
+
+    # -- #1177 C5: qualification gate before registration (W1-W5) --------------
+
+    def test_publish_awaits_independent_qualification_before_registering(self):
+        """W1: await runs before registration, the job timeout covers the wait
+        window, and publish-release cannot proceed without both macOS lanes."""
+        content = job(RELEASE, 'publish-release')
+        self.assertIn('Await independent build qualification', content)
+        self.assertIn('provider-release-publication.py await', content)
+        self.assertIn('Register release with coordinator and publish aliases', content)
+        self.assertLess(
+            content.index('Await independent build qualification'),
+            content.index('Register release with coordinator and publish aliases'),
+            'qualification must be awaited before registration')
+        timeout = re.search(r'(?m)^    timeout-minutes:\s*(\d+)\s*$', content)
+        self.assertIsNotNone(timeout, 'publish-release must declare a job timeout-minutes')
+        self.assertGreaterEqual(
+            int(timeout.group(1)), 75,
+            'timeout-minutes must cover the default 60-minute wait window plus 15')
+        needs = needs_of(content)
+        self.assertIn('validate-older-macos', needs)
+        self.assertIn('validate-macos-27', needs)
+
+    def test_stage_release_writes_pending_summary_and_holds_no_release_key(self):
+        """W2: stage writes the pending-qualification summary after staging and
+        never handles a release key (only publish-release approves/registers)."""
+        content = job(RELEASE, 'stage-release')
+        self.assertIn('provider-release-publication.py stage', content)
+        self.assertIn('provider-release-publication.py summary', content)
+        self.assertLess(
+            content.index('provider-release-publication.py stage'),
+            content.index('provider-release-publication.py summary'),
+            'summary must run after stage')
+        self.assertNotIn('RELEASE_KEY', content)
+
+    def test_validation_lanes_qualify_the_retained_publication_artifact(self):
+        """W3: both macOS lanes validate the retained publication artifact on
+        publish runs (not a re-signed validation artifact), each uploading its
+        own result JSON, neither touching signing secrets."""
+        older = job(RELEASE, 'validate-older-macos')
+        macos27 = job(RELEASE, 'validate-macos-27')
+        self.assertIn('runs-on: xcode-27', macos27)
+        cases = [
+            ('older-macos', older, 'qualification-result-older-macos.json'),
+            ('macos-27', macos27, 'qualification-result-macos-27.json'),
+        ]
+        for lane, content, result_file in cases:
+            self.assertIn('scripts/provider-release-qualify.py', content)
+            self.assertIn('--lane ' + lane, content)
+            self.assertIn('--level static,smoke', content)
+            self.assertIn(result_file, content)
+            self.assertIn(
+                'provider-qualification-' + lane + '-', content,
+                'uploaded artifact must be named provider-qualification-<lane>-<source_sha>-<run_attempt>')
+            self.assertIn(
+                'publication_artifact', content,
+                'must download the retained publication artifact, not a re-signed one')
+            self.assertIn(
+                'SOURCE_RUN_ID', content,
+                'download must target the source run id, not always this run')
+            for secret in ['APPLE_CERTIFICATE_P12', 'APPLE_APP_PASSWORD', 'PROVISIONING_PROFILE']:
+                self.assertNotIn(secret, content, lane + ' lane must not touch signing secrets')
+        self.assertNotRegex(
+            older, r"(?m)^    if: needs\.resolve-env\.outputs\.publish == 'false'\s*$",
+            'validate-older-macos must also run against publish runs, not only validation-only runs')
+
+    def test_resume_run_skips_build_jobs_and_binds_to_the_source_run(self):
+        """W4: workflow_dispatch exposes resume_run_id, resolve-env resolves the
+        source run via resume-source, build/sign jobs are skipped on resume, and
+        downstream jobs pull from the source run id rather than this run."""
+        self.assertIn('resume_run_id', RELEASE)
+        resolve = job(RELEASE, 'resolve-env')
+        self.assertIn('inputs.resume_run_id', resolve)
+        self.assertIn('provider-release-publication.py resume-source', resolve)
+        for output in ['resume', 'source_run_id', 'source_sha', 'publication_artifact']:
+            self.assertRegex(
+                resolve, r'(?m)^      ' + re.escape(output) + r':',
+                'resolve-env must expose output ' + output)
+        for name in ['build-provider', 'qualify-sdk', 'build-and-release']:
+            content = job(RELEASE, name)
+            if_line = re.search(r'(?m)^    if:.*$', content)
+            self.assertIsNotNone(if_line, name + ' needs a job-level if to skip on resume runs')
+            self.assertIn('resume', if_line.group(0))
+            self.assertTrue(
+                "!= 'true'" in if_line.group(0) or "== 'false'" in if_line.group(0),
+                name + " if must exclude resume runs, got: " + if_line.group(0))
+        for name in ['stage-release', 'publish-release']:
+            content = job(RELEASE, name)
+            self.assertIn('SOURCE_RUN_ID', content)
+            self.assertIn('SOURCE_SHA', content)
+            self.assertNotRegex(
+                content, r'gh run download "\$GITHUB_RUN_ID"',
+                name + ' must download from the resolved source run, not always this run')
+
+    def test_verify_release_runs_after_publish(self):
+        """W5: a verify-release job exists, needs publish-release, and proves
+        every public surface via the verify operation."""
+        content = job(RELEASE, 'verify-release')
+        needs = needs_of(content)
+        self.assertIn('publish-release', needs)
+        self.assertIn('provider-release-publication.py verify', content)
+        self.assertIn('SOURCE_RUN_ID', content)
+
+    def test_only_signing_job_touches_apple_secrets(self):
+        """No job other than build-and-release references the Apple signing
+        secrets, including the two new C5 jobs."""
+        all_jobs = [
+            'resolve-env', 'build-provider', 'qualify-sdk', 'build-and-release',
+            'stage-release', 'publish-release', 'validate-older-macos',
+            'validate-macos-27', 'verify-release',
+        ]
+        forbidden = ['APPLE_CERTIFICATE_P12', 'APPLE_CERTIFICATE_PASSWORD', 'APPLE_APP_PASSWORD']
+        for name in all_jobs:
+            if name == 'build-and-release':
+                continue
+            content = job(RELEASE, name)
+            for secret in forbidden:
+                self.assertNotIn(secret, content, name + ' must not reference ' + secret)
 
 
 if __name__ == '__main__':

@@ -17,6 +17,15 @@ name: Release Provider Bundle (Swift)
 # build. The legacy `release.yml` was deleted alongside `app/` once we
 # committed to a CLI-only migration.
 #
+# After staging, publication waits in a visible "pending qualification"
+# state: stage-release writes a summary naming the retained artifact and
+# every required check as "not yet run", validate-older-macos and
+# validate-macos-27 independently qualify those exact retained bytes, and
+# publish-release polls the coordinator for an admin's approval before it
+# registers anything. workflow_dispatch input `resume_run_id` re-enters that
+# wait (and publish) from a prior run's retained artifact without rebuilding
+# or re-signing; verify-release then proves every public surface afterward.
+#
 # Swift cutover tag conventions:
 #   - vX.Y.Z           -> prod Swift release (reviewer approval required)
 #   - vX.Y.Z-swift     -> accepted alias while the migration is in progress
@@ -59,6 +68,10 @@ on:
         required: false
         type: boolean
         default: false
+      resume_run_id:
+        description: 'Resume awaiting qualification and publishing from a prior completed run id (skips build/sign/stage; not allowed with validation_only)'
+        required: false
+        type: string
 
 permissions:
   contents: write   # gh release create
@@ -89,6 +102,10 @@ jobs:
       environment: ${{ steps.pick.outputs.environment }}
       version: ${{ steps.pick.outputs.version }}
       publish: ${{ steps.pick.outputs.publish }}
+      resume: ${{ steps.resume.outputs.resume }}
+      source_run_id: ${{ steps.resume.outputs.source_run_id }}
+      source_sha: ${{ steps.resume.outputs.source_sha }}
+      publication_artifact: ${{ steps.resume.outputs.publication_artifact }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - id: pick
@@ -97,10 +114,33 @@ jobs:
           RELEASE_VERSION_OVERRIDE: ${{ inputs.version_override }}
           RELEASE_VALIDATION_ONLY: ${{ inputs.validation_only || false }}
         run: ./scripts/resolve-provider-release.sh
+      - id: resume
+        name: Resolve resume source run, or bind identity to this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+          PUBLISH: ${{ steps.pick.outputs.publish }}
+        run: |
+          set -euo pipefail
+          if [ -n "$RESUME_RUN_ID" ]; then
+            if [ "$PUBLISH" != 'true' ]; then
+              echo '::error::resume_run_id is refused on a validation_only run; publish must be true' >&2
+              exit 1
+            fi
+            echo "resume=true" >> "$GITHUB_OUTPUT"
+            python3 scripts/provider-release-publication.py resume-source --run-id "$RESUME_RUN_ID"
+          else
+            {
+              echo "resume=false"
+              echo "source_run_id=$GITHUB_RUN_ID"
+              echo "source_sha=$GITHUB_SHA"
+            } >> "$GITHUB_OUTPUT"
+          fi
 
   build-provider:
     name: Build optimized SDK 27 provider
     needs: resolve-env
+    if: needs.resolve-env.outputs.resume != 'true'
     runs-on: xcode-27-xlarge
     timeout-minutes: 60
     permissions:
@@ -147,6 +187,7 @@ jobs:
   qualify-sdk:
     name: Qualify provider with SDK 27
     needs: resolve-env
+    if: needs.resolve-env.outputs.resume != 'true'
     runs-on: xcode-27-xlarge
     timeout-minutes: 60
     permissions:
@@ -163,6 +204,7 @@ jobs:
   build-and-release:
     name: Sign, notarize and retain exact artifact
     needs: [resolve-env, build-provider, qualify-sdk]
+    if: needs.resolve-env.outputs.resume != 'true'
     # App Attest's current code measurements require SDK 27. The ordinary
     # Blacksmith image is macOS 26.3 and cannot install Apple's SDK 27 tools.
     runs-on: xcode-27
@@ -818,7 +860,7 @@ jobs:
   stage-release:
     name: Stage retained signed artifact in R2
     needs: [resolve-env, build-and-release]
-    if: needs.resolve-env.outputs.publish == 'true'
+    if: ${{ !cancelled() && needs.resolve-env.outputs.publish == 'true' && (needs.resolve-env.outputs.resume == 'true' || needs.build-and-release.result == 'success') }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     environment: ${{ needs.resolve-env.outputs.environment }}
@@ -875,14 +917,21 @@ jobs:
             echo "${outkey}=${value}" >> "$GITHUB_ENV"
           done
 
-      - name: Download this run's exact signed publication artifact
+      - name: Download the source run's exact signed publication artifact
         env:
           GH_TOKEN: ${{ github.token }}
-          PUBLICATION_ARTIFACT: ${{ needs.build-and-release.outputs.publication_artifact }}
+          SOURCE_RUN_ID: ${{ needs.resolve-env.outputs.source_run_id }}
+          SOURCE_SHA: ${{ needs.resolve-env.outputs.source_sha }}
+          PUBLICATION_ARTIFACT: ${{ needs.resolve-env.outputs.resume == 'true' && needs.resolve-env.outputs.publication_artifact || needs.build-and-release.outputs.publication_artifact }}
         run: |
           set -euo pipefail
           test -n "$PUBLICATION_ARTIFACT"
-          gh run download "$GITHUB_RUN_ID" --name "$PUBLICATION_ARTIFACT" --dir "$RUNNER_TEMP/provider-publication"
+          {
+            echo "SOURCE_RUN_ID=$SOURCE_RUN_ID"
+            echo "SOURCE_SHA=$SOURCE_SHA"
+            echo "PUBLICATION_ARTIFACT=$PUBLICATION_ARTIFACT"
+          } >> "$GITHUB_ENV"
+          gh run download "$SOURCE_RUN_ID" --name "$PUBLICATION_ARTIFACT" --dir "$RUNNER_TEMP/provider-publication"
       - name: Install publication tools
         run: |
           set -euo pipefail
@@ -898,13 +947,17 @@ jobs:
           R2_BUCKET: ${{ env.r2_bucket }}
           R2_PUBLIC_URL: ${{ env.r2_public_url }}
         run: python3 scripts/provider-release-publication.py stage --directory "$RUNNER_TEMP/provider-publication"
+      - name: Write pending-qualification summary
+        env:
+          R2_PUBLIC_URL: ${{ env.r2_public_url }}
+        run: python3 scripts/provider-release-publication.py summary --directory "$RUNNER_TEMP/provider-publication"
 
   publish-release:
     name: Publish qualified signed release
-    needs: [resolve-env, build-and-release, stage-release]
-    if: needs.resolve-env.outputs.publish == 'true'
+    needs: [resolve-env, build-and-release, stage-release, validate-older-macos, validate-macos-27]
+    if: ${{ !cancelled() && needs.resolve-env.outputs.publish == 'true' && (needs.resolve-env.outputs.resume == 'true' || needs.build-and-release.result == 'success') && needs.stage-release.result == 'success' && contains(fromJSON('["success","failure"]'), needs.validate-older-macos.result) && contains(fromJSON('["success","failure"]'), needs.validate-macos-27.result) }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 15
+    timeout-minutes: 90
     environment: ${{ needs.resolve-env.outputs.environment }}
     concurrency:
       group: provider-publication-${{ needs.resolve-env.outputs.environment }}
@@ -966,20 +1019,38 @@ jobs:
             echo "${outkey}=${value}" >> "$GITHUB_ENV"
           done
 
-      - name: Download this run's exact signed publication artifact
+      - name: Download the source run's exact signed publication artifact
         env:
           GH_TOKEN: ${{ github.token }}
-          PUBLICATION_ARTIFACT: ${{ needs.build-and-release.outputs.publication_artifact }}
+          SOURCE_RUN_ID: ${{ needs.resolve-env.outputs.source_run_id }}
+          SOURCE_SHA: ${{ needs.resolve-env.outputs.source_sha }}
+          PUBLICATION_ARTIFACT: ${{ needs.resolve-env.outputs.resume == 'true' && needs.resolve-env.outputs.publication_artifact || needs.build-and-release.outputs.publication_artifact }}
         run: |
           set -euo pipefail
           test -n "$PUBLICATION_ARTIFACT"
-          gh run download "$GITHUB_RUN_ID" --name "$PUBLICATION_ARTIFACT" --dir "$RUNNER_TEMP/provider-publication"
+          {
+            echo "SOURCE_RUN_ID=$SOURCE_RUN_ID"
+            echo "SOURCE_SHA=$SOURCE_SHA"
+            echo "PUBLICATION_ARTIFACT=$PUBLICATION_ARTIFACT"
+          } >> "$GITHUB_ENV"
+          gh run download "$SOURCE_RUN_ID" --name "$PUBLICATION_ARTIFACT" --dir "$RUNNER_TEMP/provider-publication"
       - name: Install publication tools
         run: |
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/publication-tools"
           "$RUNNER_TEMP/publication-tools/bin/pip" install awscli
           echo "$RUNNER_TEMP/publication-tools/bin" >> "$GITHUB_PATH"
+      - name: Await independent build qualification
+        env:
+          COORDINATOR_URL: ${{ env.coordinator_url }}
+          RELEASE_KEY: ${{ env.release_key }}
+          QUALIFICATION_WAIT_MINUTES: ${{ vars.QUALIFICATION_WAIT_MINUTES || '60' }}
+          SOURCE_RUN_ID: ${{ env.SOURCE_RUN_ID }}
+          SOURCE_SHA: ${{ env.SOURCE_SHA }}
+          R2_PUBLIC_URL: ${{ env.r2_public_url }}
+          VERSION: ${{ env.VERSION }}
+          ENV_PREFIX: ${{ env.ENV_PREFIX }}
+        run: python3 scripts/provider-release-publication.py await --directory "$RUNNER_TEMP/provider-publication"
       - name: Register release with coordinator and publish aliases
         env:
           GH_TOKEN: ${{ github.token }}
@@ -990,19 +1061,25 @@ jobs:
           R2_PUBLIC_URL: ${{ env.r2_public_url }}
           COORDINATOR_URL: ${{ env.coordinator_url }}
           RELEASE_KEY: ${{ env.release_key }}
+          SOURCE_RUN_ID: ${{ env.SOURCE_RUN_ID }}
+          SOURCE_SHA: ${{ env.SOURCE_SHA }}
         run: python3 scripts/provider-release-publication.py publish --directory "$RUNNER_TEMP/provider-publication"
 
   validate-older-macos:
     name: Signed SDK 27 artifact on older macOS
     needs: [resolve-env, build-and-release]
-    if: needs.resolve-env.outputs.publish == 'false'
+    if: ${{ !cancelled() && (needs.resolve-env.outputs.publish == 'false' || needs.resolve-env.outputs.resume == 'true' || needs.build-and-release.result == 'success') }}
     runs-on: blacksmith-12vcpu-macos-latest
     permissions:
       contents: read
       actions: read
+    env:
+      SOURCE_RUN_ID: ${{ needs.resolve-env.outputs.source_run_id }}
+      SOURCE_SHA: ${{ needs.resolve-env.outputs.source_sha }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Verify and smoke the exact signed validation artifact
+        if: needs.resolve-env.outputs.publish == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           SIGNED_VALIDATION_ARTIFACT: ${{ needs.build-and-release.outputs.validation_artifact }}
@@ -1035,3 +1112,127 @@ jobs:
           for marker in app-attest-callback-runtime-smoke gemma-optimizations-runtime-smoke paged-kernel-runtime-smoke qwen4-metal-resources-runtime-smoke; do
             printf '%s\n' "$OUTPUT" | grep -Fqx "$marker: ok"
           done
+      - name: Download the retained publication artifact
+        if: needs.resolve-env.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLICATION_ARTIFACT: ${{ needs.resolve-env.outputs.resume == 'true' && needs.resolve-env.outputs.publication_artifact || needs.build-and-release.outputs.publication_artifact }}
+        run: |
+          set -euo pipefail
+          test -n "$PUBLICATION_ARTIFACT"
+          gh run download "$SOURCE_RUN_ID" --name "$PUBLICATION_ARTIFACT" --dir "$RUNNER_TEMP/provider-publication"
+      - name: Qualify the retained build on older macOS
+        if: needs.resolve-env.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          python3 scripts/provider-release-qualify.py \
+            --directory "$RUNNER_TEMP/provider-publication" --lane older-macos \
+            --level static,smoke --output "$RUNNER_TEMP/qualification-result-older-macos.json"
+      - name: Upload the older-macos qualification result
+        if: always() && needs.resolve-env.outputs.publish == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: provider-qualification-older-macos-${{ env.SOURCE_SHA }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qualification-result-older-macos.json
+          if-no-files-found: error
+          retention-days: 30
+
+  validate-macos-27:
+    name: Signed SDK 27 artifact on the SDK 27 host
+    needs: [resolve-env, build-and-release]
+    if: ${{ !cancelled() && needs.resolve-env.outputs.publish == 'true' && (needs.resolve-env.outputs.resume == 'true' || needs.build-and-release.result == 'success') }}
+    runs-on: xcode-27
+    permissions:
+      contents: read
+      actions: read
+    env:
+      SOURCE_RUN_ID: ${{ needs.resolve-env.outputs.source_run_id }}
+      SOURCE_SHA: ${{ needs.resolve-env.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Download the retained publication artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLICATION_ARTIFACT: ${{ needs.resolve-env.outputs.resume == 'true' && needs.resolve-env.outputs.publication_artifact || needs.build-and-release.outputs.publication_artifact }}
+        run: |
+          set -euo pipefail
+          test -n "$PUBLICATION_ARTIFACT"
+          gh run download "$SOURCE_RUN_ID" --name "$PUBLICATION_ARTIFACT" --dir "$RUNNER_TEMP/provider-publication"
+      - name: Qualify the retained build on SDK 27
+        run: |
+          set -euo pipefail
+          python3 scripts/provider-release-qualify.py \
+            --directory "$RUNNER_TEMP/provider-publication" --lane macos-27 \
+            --level static,smoke --output "$RUNNER_TEMP/qualification-result-macos-27.json"
+      - name: Upload the macos-27 qualification result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: provider-qualification-macos-27-${{ env.SOURCE_SHA }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qualification-result-macos-27.json
+          if-no-files-found: error
+          retention-days: 30
+
+  verify-release:
+    name: Verify every public release surface
+    needs: [resolve-env, build-and-release, publish-release]
+    if: ${{ !cancelled() && needs.publish-release.result == 'success' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.resolve-env.outputs.version }}
+      ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Resolve env-specific secrets
+        env:
+          ENV_PREFIX: ${{ needs.resolve-env.outputs.environment }}
+          DEV_R2_PUBLIC_URL: ${{ secrets.DEV_R2_PUBLIC_URL }}
+          PROD_R2_PUBLIC_URL: ${{ secrets.PROD_R2_PUBLIC_URL }}
+          DEV_COORDINATOR_URL: ${{ secrets.DEV_COORDINATOR_URL }}
+          PROD_COORDINATOR_URL: ${{ secrets.PROD_COORDINATOR_URL }}
+          # Legacy unprefixed prod secrets (pre-DEV_/PROD_ split). Fall back
+          # to these when PROD_* is empty so we don't have to duplicate every
+          # secret in the GitHub UI just to satisfy the new naming scheme.
+          LEGACY_R2_PUBLIC_URL: ${{ secrets.R2_PUBLIC_URL }}
+          LEGACY_COORDINATOR_URL: ${{ secrets.COORDINATOR_URL }}
+        run: |
+          set -euo pipefail
+          PREFIX=$(echo "$ENV_PREFIX" | tr '[:lower:]' '[:upper:]')
+          for key in R2_PUBLIC_URL COORDINATOR_URL; do
+            primary="${PREFIX}_${key}"
+            legacy="LEGACY_${key}"
+            outkey=$(echo "$key" | tr '[:upper:]' '[:lower:]')
+            value="${!primary:-}"
+            if [ -z "$value" ] && [ "$PREFIX" = "PROD" ]; then
+              value="${!legacy:-}"
+              if [ -n "$value" ]; then
+                echo "::notice::Using legacy unprefixed secret for ${key} (set PROD_${key} to silence this)"
+              fi
+            fi
+            if [ -z "$value" ]; then
+              echo "::error::No value resolved for ${PREFIX}_${key} (also tried LEGACY_${key})"
+              exit 1
+            fi
+            echo "${outkey}=${value}" >> "$GITHUB_ENV"
+          done
+      - name: Download the source run's exact signed publication artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ needs.resolve-env.outputs.source_run_id }}
+          SOURCE_SHA: ${{ needs.resolve-env.outputs.source_sha }}
+          PUBLICATION_ARTIFACT: ${{ needs.resolve-env.outputs.resume == 'true' && needs.resolve-env.outputs.publication_artifact || needs.build-and-release.outputs.publication_artifact }}
+        run: |
+          set -euo pipefail
+          test -n "$PUBLICATION_ARTIFACT"
+          echo "SOURCE_RUN_ID=$SOURCE_RUN_ID" >> "$GITHUB_ENV"
+          echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
+          gh run download "$SOURCE_RUN_ID" --name "$PUBLICATION_ARTIFACT" --dir "$RUNNER_TEMP/provider-publication"
+      - name: Verify every public release surface
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COORDINATOR_URL: ${{ env.coordinator_url }}
+          R2_PUBLIC_URL: ${{ env.r2_public_url }}
+        run: python3 scripts/provider-release-publication.py verify --directory "$RUNNER_TEMP/provider-publication"

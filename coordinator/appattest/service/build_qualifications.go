@@ -175,6 +175,20 @@ func uniqueDurableCodePrefix(builds map[string]store.AppAttestBuildQualification
 	return selected && matches == 1, matches > 1
 }
 
+// BuildQualificationSnapshot returns the most recently refreshed qualification
+// row for the given binary hash, read-only. Callers are responsible for
+// applying their own status precedence (revoked/pending/mismatched/approved,
+// see coordinator/api/release_qualification_status.go); this accessor does
+// not evaluate freshness, Matches, or Validate, and never mutates state.
+func (s *Service) BuildQualificationSnapshot(binaryHash string) (store.AppAttestBuildQualification, bool) {
+	snapshot := s.qualifications.Load()
+	if snapshot == nil {
+		return store.AppAttestBuildQualification{}, false
+	}
+	q, ok := snapshot.builds[binaryHash]
+	return q, ok
+}
+
 // Publication requires the durable record, never the compatibility env list.
 func (s *Service) BuildReady(b store.AppAttestBuildIdentity) bool {
 	snapshot := s.qualifications.Load()

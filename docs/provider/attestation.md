@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-23 · commit `ac4a776de`
+> Last updated: 2026-09-23 · commit `378a35a64`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -63,6 +63,14 @@ transition. Upgrading macOS does not uninstall MDM. After upgrading to macOS 27
 and updating the provider, restart it and check `darkbloom status`; remove only
 the Darkbloom profile through the approved `darkbloom unenroll` App Attest path.
 Keep employer management installed.
+
+If an older Mac still shows `hardware` trust but `darkbloom doctor` reports
+legacy serving pending, read the specific coordinator reason in the serving
+authorization check. A fresh MDM/MDA badge alone does not prove the separate
+APNs code-identity, signed-release, runtime/privacy and challenge-freshness
+gates passed. Keep the existing profile while diagnosing the reported gate;
+re-enrolling is not a general repair for a missing code-identity proof. See the
+[authorization diagnostics](../reference/provider-authorization.md#provider-diagnostics).
 
 Every command in the updated CLI warns on stderr when the local OS is below
 27. The setup page and dashboard also show the transition notice; machine

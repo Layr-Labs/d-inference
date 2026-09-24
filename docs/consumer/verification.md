@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-23 · commit `ac4a776de`
+> Last updated: 2026-09-23 · commit `378a35a64`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -11,6 +11,13 @@ remain visible and can link successive public sessions.
 [App Attest shadow measurements](../reference/app-attest-shadow.md) do not authorize serving. When separately enabled and qualified, the [App Attest serving path](../reference/provider-authorization.md) appears as `app_attest_authorized` and an exclusive Unix-seconds `authorization_expires_at` deadline in the public listing. The existing `trust_level`, MDM and MDA fields still describe legacy evidence; they are not rewritten to represent App Attest. The listing has its existing short cache window and is diagnostic, not a reusable serving credential.
 
 An App Attest grant also depends on a fresh [durable build qualification](../reference/provider-authorization.md#durable-build-qualification). Withdrawing it fences old qualification generations; cached download metadata or a prior successful signature cannot grant new dispatch. Independently valid legacy verification remains a separate serving path.
+
+The live legacy verification state requires the full serving gate, including
+current code identity, release evidence and challenge freshness. A historical
+`hardware` trust label or MDA badge can remain visible while the current legacy
+path is pending. The provider's `darkbloom doctor` reports a bounded failure
+reason for a hardware-trusted connection; public proof views do not expose
+identity-bearing diagnostics.
 
 Local profile-inventory authentication during `darkbloom unenroll` only identifies the Darkbloom enrollment for user-guided removal. It does not verify or extend serving authorization; the [provider procedure](../provider/attestation.md#app-attest-without-darkbloom-mdm) explains the separate coordinator readiness requirement.
 

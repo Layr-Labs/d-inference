@@ -19,6 +19,20 @@ import Testing
         #expect(!ProviderAuthorizationReadiness.removalReady(notEnabled, now: 100))
     }
 
+    @Test func hardwareLegacyGateFailureIsNotPresentedAsAppAttestEnrollment() {
+        var denied = status(path: "none")
+        denied.reason = "legacy_code_identity_unverified"
+        let summary = ProviderAuthorizationReadiness.summary(denied, now: 100, macOSMajorVersion: 26)
+        #expect(summary.contains("APNs code identity has not been verified"))
+        #expect(summary.contains("Keep the Darkbloom MDM profile installed"))
+        #expect(!summary.contains("coordinator supports App Attest"))
+        #expect(!ProviderAuthorizationReadiness.removalReady(denied, now: 100))
+
+        denied.reason = "legacy_release_evidence_missing"
+        #expect(ProviderAuthorizationReadiness.summary(denied, now: 100, macOSMajorVersion: 26)
+            .contains("signed-release evidence is missing"))
+    }
+
     @Test func expiryAndIdentityFieldsAreRequired() {
         #expect(!ProviderAuthorizationReadiness.removalReady(status(expiresAt: 100), now: 100))
         #expect(!ProviderAuthorizationReadiness.removalReady(status(expiresAt: .nan), now: 100))

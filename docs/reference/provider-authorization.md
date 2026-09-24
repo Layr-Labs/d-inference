@@ -1,6 +1,6 @@
 # Provider serving authorization
 
-> Last updated: 2026-09-23 · commit `afb71c63d`
+> Last updated: 2026-09-23 · commit `378a35a64`
 
 The coordinator can authorize private inference through complete legacy verification or a qualified App Attest connection. These are separate evidence paths; App Attest never sets legacy MDA/APNs flags. The [rollout runbook](../operations/mdm-optional-rollout.md) separates code availability from activation qualification.
 
@@ -76,6 +76,18 @@ The additive `trust_status.authorization` object is coordinator-to-provider only
 | `mdm_removal_ready` | Current full App Attest authorization plus explicit removal rollout |
 | `reason` | Operator-facing bounded policy explanation |
 | `session_id`, `machine_id` | Current connection and verified canonical machine; never caller-selected authorization |
+
+When a hardware-trusted legacy connection has `path: none`, `reason` names the
+first failed legacy serving prerequisite, such as
+`legacy_code_identity_unverified`, `legacy_release_evidence_missing`, or
+`legacy_challenge_stale`. The closed reason comes from
+`coordinator/registry/legacy_serving_diagnostic.go`
+(`ProviderLegacyServingDenialReason`); it contains no key or machine identifier.
+`hardware` trust and an MDA badge alone do not show that APNs code identity,
+signed-release evidence, runtime/privacy checks and challenge freshness all
+pass. The reason is operator guidance, never a serving grant or an instruction
+to remove an MDM profile. A self-signed App Attest candidate keeps its own
+App Attest reason instead.
 
 `darkbloom status` and `darkbloom doctor` distinguish App Attest authorization from legacy verification. `darkbloom unenroll` offers full exit or App Attest migration. The migration option and direct `--keep-serving` shortcut require macOS 27 or later and a fresh running-provider snapshot, matching coordinator and process identity, and an unexpired removal-ready authorization. Both the state-file write and receipt of the coordinator decision must be at most `snapshotMaxAge = 10` seconds old (`provider-swift/Sources/ProviderCore/Diagnostics/ProviderAuthorizationReadiness.swift`, `currentStatus`); periodic local writes cannot refresh an old removal decision. It preserves account/config/key data and opens System Settings only after identifying the exact Darkbloom enrollment. It never removes a company profile or the app's embedded signing profile. Full exit stops the provider service before offering profile removal and optional cleanup. Enter/EOF cancels; noninteractive use requires an explicit mode flag. Code: `provider-swift/Sources/darkbloom/UnenrollCommand+KeepServing.swift` and `provider-swift/Sources/ProviderCore/Security/DarkbloomMDMRemoval.swift`.
 

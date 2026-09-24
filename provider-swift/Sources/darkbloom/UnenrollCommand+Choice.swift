@@ -75,8 +75,18 @@ extension Unenroll {
         }
     }
 
+    static func stopCommandForFullExit() throws -> Stop {
+        guard let stop = try Darkbloom.parseAsRoot(["stop"]) as? Stop else {
+            throw ValidationError("Could not initialize the provider stop command.")
+        }
+        return stop
+    }
+
     static func stopProviderBeforeUnenrollment() async throws {
-        var stop = Stop()
+        // ArgumentParser wrappers must be decoded before `Stop.run()` reads
+        // its drain options and uninstall flag. Preserve normal graceful
+        // drain defaults; unenroll --force only confirms local cleanup.
+        var stop = try stopCommandForFullExit()
         try await stop.run()
         // `stop` disables launchd/watchdog restarts. A separately foregrounded
         // provider may still be running: never purge identity beneath it, nor

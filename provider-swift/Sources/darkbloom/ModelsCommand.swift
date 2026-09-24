@@ -171,18 +171,11 @@ extension Models {
                 }
             }
 
-            // -- Local-only models (downloaded but not in current catalog) --
-            let localOnly = localModels.filter { !catalogIDs.contains($0.id) }
-            if !localOnly.isEmpty {
-                print()
-                print("Local only (not in current catalog)")
-                print()
-                for m in localOnly {
-                    print("  \(m.id)  \(String(format: "%.1f", m.estimatedMemoryGb)) GB")
-                }
-                print()
-                print("  These models are no longer served by the network.")
-                print("  Remove with: darkbloom models remove <id>")
+            // -- Other local models (absent from the displayed catalog) --
+            for line in ModelsCatalogPresentation.otherLocalLines(
+                localModels: localModels, catalogIDs: catalogIDs
+            ) {
+                print(line)
             }
         }
     }

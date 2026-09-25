@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-25 · commit `b6f9574ed`
+> Last updated: 2026-09-25 · commit `beb002de2`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -633,8 +633,8 @@ golangci-lint run                          # .golangci.yml
 ```
 
 CI writes the total statement coverage to the job summary and keeps
-`coverage.out` for 14 days as the `coordinator-coverage` artifact. There is
-no coverage floor; the number is for information only.
+`coverage.out` for 14 days as the `coordinator-coverage` artifact. The number
+is for information only. A low number does not fail the job.
 
 `TestProfile_RequestProfilesRecorded` checks that the stored transport estimate
 matches the difference of coordinator and provider spans. Negative values remain
@@ -723,14 +723,18 @@ production prompt vectors against it with
 `scripts/verify-prompt-sidecar-linux.sh <binary>`.
 
 CI then measures coverage with `cargo-llvm-cov` 0.9.1 and writes the line
-coverage from its `TOTAL` row to the job summary. There is no coverage floor.
-To get the same numbers locally:
+coverage from its `TOTAL` row to the job summary. A low number does not fail
+the job. `cargo llvm-cov` runs the sidecar tests a second time, with coverage
+instrumentation, so a test failure can first appear in the Report coverage
+step. To measure it locally:
 
 ```bash
 rustup component add llvm-tools-preview --toolchain 1.88.0
 cargo install cargo-llvm-cov --version 0.9.1 --locked
-cd coordinator/promptsidecar && cargo llvm-cov --locked --all-targets --summary-only
+cd coordinator/promptsidecar && cargo +1.88.0 llvm-cov --locked --all-targets --summary-only
 ```
+
+A number measured on macOS can differ from the Linux number in CI.
 
 
 ### 4. Provider (Swift) — unit tests with a source-matched metallib

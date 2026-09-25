@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-25 · commit `b6f9574ed`
+> Last updated: 2026-09-25 · commit `abe106d6e`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -556,7 +556,7 @@ npm run dev      # next dev -p 4001
 
 `npm run build` needs `ADMIN_DB_URL` set, because `admin-ui/src/lib/db.ts`
 (`makePool`) throws at module load without it. Every data route is dynamic, so
-the build does not connect, and any well-formed URL works:
+the build does not connect to the database. Any well-formed URL works:
 
 ```bash
 ADMIN_DB_URL=postgres://127.0.0.1:1/admin-ui-build npm run build
@@ -640,7 +640,7 @@ local stub servers; its default observation mode sends only public GETs.
 | `e2e` | `e2e-integration` |
 | `docs-check` | `scripts/docs-check.sh` (stamps, links, cited paths, orphans) |
 | `docs-stamp` | `scripts/docs-stamp.sh $(FILES)` — refresh freshness stamps |
-| `test` | `coordinator-test prompt-sidecar-test provider-test ui-test benchmark-wrapper-test docs-check` |
+| `test` | `coordinator-test prompt-sidecar-test provider-test ui-test landing-test benchmark-wrapper-test docs-check` (not the admin UI suite) |
 | `build` | `coordinator-build prompt-sidecar-build provider-build ui-build` |
 | `all` | `test build` |
 | `clean` | remove `./coordinator/coordinator{,-linux}`, `./coordinator/promptsidecar/target`, `./provider-swift/.build`, `./console-ui/.next`, `./console-ui/node_modules` |

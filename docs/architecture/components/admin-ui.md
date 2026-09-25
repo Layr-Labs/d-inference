@@ -1,6 +1,6 @@
 # Admin UI (`admin-ui/`)
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-25 · commit `abe106d6e`
 
 `admin-ui/` is the internal, read-only operations dashboard: a separate Next.js 16 / React 19 application (`admin-ui/package.json`) whose pages are React Server Components that run parameterised `SELECT` statements against the coordinator database's read-only replica at request time. It has one authentication surface (HTTP Basic, enforced by `admin-ui/src/proxy.ts`), no API routes, and no browser-side data fetching. It is not the consumer console — that is [`console-ui.md`](console-ui.md) — and it never talks to the coordinator's HTTP API.
 
@@ -113,8 +113,9 @@ Names and effect only; requiredness and defaults are in [`../../reference/config
 | SQL, per page | `admin-ui/src/lib/queries/` (`overview.ts`, `users.ts`, `providers.ts`, `machine.ts`, `operators.ts`, `sessions.ts`, `usage.ts`, `billing.ts`, `earnings.ts`, `apikeys.ts`, `models.ts`, `openrouter.ts`, `releases.ts`, `referrals.ts`) |
 | Layout, navigation, error boundary | `admin-ui/src/app/layout.tsx` (`RootLayout`), `admin-ui/src/components/AppShell.tsx` (`NAV`), `admin-ui/src/app/error.tsx` (`RouteError`), `admin-ui/src/components/DbError.tsx` |
 | Security headers | `admin-ui/next.config.ts` (`cspDirectives`, `securityHeaders`, `serverExternalPackages`) |
-| Formatting helpers and the only test | `admin-ui/src/lib/format.ts`, `admin-ui/src/lib/format.test.ts` (`npm test`, vitest, `environment: node`) |
-| Build, lint, run | `admin-ui/package.json` (`dev`, `build`, `start`, `lint`, `test`) — not wired into the root `Makefile` or CI |
+| Formatting helpers | `admin-ui/src/lib/format.ts` |
+| Unit tests | `admin-ui/src/lib/format.test.ts`, `admin-ui/src/lib/table-rows.test.ts`, `admin-ui/src/components/DataTable.test.ts`, `admin-ui/src/lib/queries/app-attest.test.ts` (`npm test`, vitest, `environment: node`, `admin-ui/vitest.config.ts`). The App Attest query test runs only when `APP_ATTEST_TEST_DATABASE_URL` points at the designated disposable database. |
+| Build, lint, run | `admin-ui/package.json` (`dev`, `build`, `start`, `lint`, `test`). The root `Makefile` has no admin UI target. CI job **Admin UI Lint, Test & Build** (`test-admin-ui` in `.github/workflows/ci.yml`) runs lint, `npm test` and `npm run build`. |
 
 ## Related
 

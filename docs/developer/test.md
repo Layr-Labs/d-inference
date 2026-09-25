@@ -1,14 +1,15 @@
 # Test
 
-> Last updated: 2026-09-25 · commit `b6f9574ed`
+> Last updated: 2026-09-25 · commit `abe106d6e`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
-lint — and which CI workflow runs what. `make test` runs every unit suite plus
-the docs lint locally. CI runs the same suites on each pull request, plus the
-admin UI suite; the landing tests run only when `landing/` changes (see the CI
-workflow map). The e2e suite needs an Apple Silicon Mac with the test
-checkpoints cached.
+lint — and which CI workflow runs what. `make test` runs the docs lint and
+every unit suite except the admin UI suite. Run that suite from `admin-ui/`
+(see [Web UIs](#5-web-uis)). CI runs the same suites on each pull request, and
+the admin UI suite too. The landing tests are the exception: CI runs them only
+when `landing/` changes (see the CI workflow map). The e2e suite needs an Apple
+Silicon Mac with the test checkpoints cached.
 
 The Nemotron coordinator-serving path uses typed SDK events. `OpenAIServiceTests`
 and `ToolCallParserIntegrationTests` in `libs/mlx-swift-lm/Tests/MLXLMServerTests`
@@ -587,11 +588,14 @@ The [App Attest shadow validation commands](../reference/app-attest-shadow.md#va
 
 ## Steps
 
-### 1. Run everything CI runs as unit tests
+### 1. Run the unit suites with `make test`
 
 ```bash
-make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchmark-wrapper-test docs-check
+make test   # coordinator-test prompt-sidecar-test provider-test ui-test landing-test benchmark-wrapper-test docs-check
 ```
+
+`make test` does not run the admin UI suite. CI runs it in job
+**Admin UI Lint, Test & Build**. To run it locally, see [Web UIs](#5-web-uis).
 
 ### 2. Coordinator (Go)
 
@@ -1618,14 +1622,17 @@ install/replace path of `scripts/install.sh` in a temp dir (and runs
 make ui-test                     # cd console-ui && npm test  (vitest run)
 make ui-lint                     # npx eslint src/
 make ui-build                    # next build
-cd admin-ui && npm test && npm run lint && npm run build
+cd admin-ui && npm test && npm run lint && ADMIN_DB_URL=postgres://127.0.0.1:1/admin-ui-build npm run build
 make landing                    # standalone install, lint, build and HTTP route tests
 ```
 
 CI job **Console UI Lint & Build** runs the console UI lint, vitest suite and
 build. CI job **Admin UI Lint, Test & Build** does the same for the admin UI.
-Its build sets a placeholder `ADMIN_DB_URL`; see
-[the admin UI build](build.md#7-admin-ui-nextjs) for why.
+Its build sets a placeholder `ADMIN_DB_URL`.
+[The admin UI build](build.md#7-admin-ui-nextjs) explains why.
+`admin-ui/src/lib/queries/app-attest.test.ts` runs only when
+`APP_ATTEST_TEST_DATABASE_URL` points at the designated disposable database, so
+it skips in CI.
 
 The path-filtered `.github/workflows/landing.yml` workflow runs `npm ci`,
 lint, the production build (including TypeScript checks), and `npm test`.

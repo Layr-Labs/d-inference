@@ -61,7 +61,7 @@ make prompt-sidecar          # cargo fmt --check, clippy -D warnings, test, rele
 make provider-test           # swift build + swift test with a source-matched mlx.metallib (Apple Silicon)
 make ui-lint ui-test         # eslint + vitest for console-ui
 make docs-check              # freshness stamps, links, cited paths, orphans
-make test                    # everything CI runs as unit tests
+make test                    # every unit suite except admin-ui, plus the docs lint
 ```
 
 Details, including the Swift nested test suites, the e2e suite, and the CI workflow map, are in [`docs/developer/build.md`](docs/developer/build.md) and [`docs/developer/test.md`](docs/developer/test.md).

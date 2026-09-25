@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-23 · commit `cb9418cad`
+> Last updated: 2026-09-25 · commit `b6f9574ed`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -11,6 +11,7 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [OpenRouter-perspective review](2026-09-26-openrouter-perspective-review/README.md) — 108-issue parity backlog comparing the consumer surface against OpenRouter, filed in the DiCompute What/Why/Prompt/Workflow/Loop/Graph/Layout/Flow format.
 - [App Attest post-swap authorization failures](2026-09-22-app-attest-postswap-grants.md) — signed assertion framing, archive-gap recovery, and the distinction between prospective policy and an active grant.
 - [App Attest recovery and snapshot investigation](2026-09-22-app-attest-recovery.md) — authenticated macOS framing, failed enrollment recovery, false-zero UI reproduction and distinct unresolved native assertion failures.
 

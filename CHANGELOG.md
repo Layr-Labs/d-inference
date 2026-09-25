@@ -48,6 +48,7 @@
 - Fail unexpected nonempty DiffusionGemma reasoning before exposing it when thinking is disabled, while preserving empty native envelopes and never promoting tool examples from an unclosed thought.
 - Avoid restoring the sorted expert-output intermediate on eligible native DiffusionGemma inference paths. Preserve the existing weighted-reduction order, model weights and denoising controls; retain legacy training, shape, precision and stream paths plus an explicit rollback.
 
+- Add a repository-managed Datadog monitor on `d_inference.cache.refresh_failed` (`deploy/datadog/monitors/`, applied by `deploy/datadog/apply-monitor.sh`) so a failing public-stats refresher pages on-call instead of going unnoticed until the endpoints 503.
 - Persist independently approved App Attest builds and revocations; refresh qualification without per-release coordinator restarts, with bounded failure/expiry and stale-grant fencing.
 - Stage immutable signed provider artifacts before publication. Block unqualified releases before updater/latest aliases advance; retry the separate publication job using the same signed bytes, without rebuilding or notarizing again.
 

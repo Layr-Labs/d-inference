@@ -92,6 +92,15 @@
       "docs_any_of": [
         "docs/operations/provider-release.md"
       ]
+    },
+    {
+      "name": "datadog dashboards and monitors",
+      "source_patterns": [
+        "deploy/datadog/**"
+      ],
+      "docs_any_of": [
+        "docs/operations/coordinator-deploy.md"
+      ]
     }
   ]
 }

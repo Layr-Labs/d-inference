@@ -24,6 +24,7 @@ jobs:
           python3 scripts/test-provider-test-watchdog.py
           python3 scripts/test-stage-test-metallib.py
           python3 scripts/test-app-attest-entitlements.py
+          python3 scripts/test-datadog-monitors.py
           ./scripts/sync-install-embed.sh check
           ./scripts/test-prod-env-refresh.sh
       - name: Test startup observer against local stubs

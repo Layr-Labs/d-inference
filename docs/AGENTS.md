@@ -1,6 +1,6 @@
 # Darkbloom docs — how this documentation is organised and maintained
 
-> Last updated: 2026-09-13 · commit `ec73023e4`
+> Last updated: 2026-09-21 · commit `76a8f03d9`
 
 Rules for anyone — human or agent — who reads, writes, or checks a file under
 `docs/`. The code is the source of truth; a doc that disagrees with the code is
@@ -165,6 +165,7 @@ their original source. Docs Lint checks out full history for this validation.
 | Store schema / migration | `architecture/storage.md` |
 | Provider version bump (`ProviderCore.version` ↔ `LatestProviderVersion`) | `operations/provider-release.md`; `CHANGELOG.md` |
 | Build, test, CI, or script | `developer/build.md`, `developer/test.md`; `operations/` runbook that invokes it |
+| Datadog dashboard or monitor (`deploy/datadog/`) | `operations/coordinator-deploy.md` (Alerting) |
 | New model family or engine capability | `architecture/inference.md`, `consumer/models.md`, `provider/hardware-requirements.md` |
 | Anything user-visible | `CHANGELOG.md` |
 

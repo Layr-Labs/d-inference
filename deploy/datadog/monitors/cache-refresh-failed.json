@@ -1,0 +1,24 @@
+{
+  "name": "[d-inference] public stats refresh failing",
+  "type": "query alert",
+  "query": "sum(last_5m):default_zero(sum:d_inference.cache.refresh_failed{*} by {env,key}.as_count()) > 3",
+  "message": "{{#is_alert}}\nThe coordinator's read-cache refresh for `{{key.name}}` failed more than 3 times in 5 minutes on `{{env.name}}`.\nA healthy refresher never emits this counter: `network_totals:<window>` refreshes every 60 s, `stats:v1` every 30 s, and `leaderboard:*` only on a cache miss.\nSustained failures mean the public stats plane is degrading \u2014 `/v1/network/totals`, `/v1/stats` or `/v1/leaderboard` will answer 503 once the last good body ages out of its 5-minute safety TTL.\n\nMost often the cause is the 10 s store timeout on the `provider_earnings` aggregates (`coordinator/api/cache_refresher.go` logs `cache refresh failed; keeping previous value` with the error).\nCheck: `curl -s https://api.darkbloom.dev/v1/network/totals?window=24h`, coordinator logs for `cache refresh failed`, and `pg_stat_activity` for long-running aggregates.\nRunbook: docs/operations/coordinator-deploy.md, \"Alerting\".\n{{/is_alert}}\n{{#is_recovery}}\nRead-cache refresh for `{{key.name}}` on `{{env.name}}` is succeeding again.\n{{/is_recovery}}\n__NOTIFY__",
+  "tags": [
+    "service:d-inference-coordinator",
+    "area:coordinator",
+    "managed-by:deploy/datadog"
+  ],
+  "priority": 2,
+  "options": {
+    "thresholds": {
+      "critical": 3
+    },
+    "notify_no_data": false,
+    "notify_audit": false,
+    "require_full_window": false,
+    "include_tags": true,
+    "renotify_interval": 60,
+    "evaluation_delay": 60,
+    "new_group_delay": 60
+  }
+}

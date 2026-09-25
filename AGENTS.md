@@ -79,7 +79,7 @@ console-ui/           Next.js 16 / React 19 frontend
 └── src/proxy.ts      Next.js 16 proxy (replaces middleware.ts)
 
 admin-ui/             Next.js 16 internal read-only ops dashboard (SELECT-only queries against the
-                      prod read replica; Basic Auth via src/proxy.ts; has vitest tests, not in CI)
+                      prod read replica; Basic Auth via src/proxy.ts; vitest tests run in CI)
 
 landing/              Next.js marketing site imported from eigen-homepages; standalone npm app
                       (make landing: install, lint, build, route tests; dev/start port 3008)

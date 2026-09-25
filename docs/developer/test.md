@@ -1,14 +1,14 @@
 # Test
 
-> Last updated: 2026-09-22 · commit `31a6ca37f`
+> Last updated: 2026-09-25 · commit `b6f9574ed`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
 lint — and which CI workflow runs what. `make test` runs every unit suite plus
-the docs lint locally; CI runs a subset per pull request (see the CI workflow
-map: the console UI job lints and builds but does not run vitest, and the
-benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
-Mac with the test checkpoints cached.
+the docs lint locally. CI runs the same suites on each pull request, plus the
+admin UI suite; the landing tests run only when `landing/` changes (see the CI
+workflow map). The e2e suite needs an Apple Silicon Mac with the test
+checkpoints cached.
 
 The Nemotron coordinator-serving path uses typed SDK events. `OpenAIServiceTests`
 and `ToolCallParserIntegrationTests` in `libs/mlx-swift-lm/Tests/MLXLMServerTests`
@@ -1622,6 +1622,11 @@ cd admin-ui && npm test && npm run lint && npm run build
 make landing                    # standalone install, lint, build and HTTP route tests
 ```
 
+CI job **Console UI Lint & Build** runs the console UI lint, vitest suite and
+build. CI job **Admin UI Lint, Test & Build** does the same for the admin UI.
+Its build sets a placeholder `ADMIN_DB_URL`; see
+[the admin UI build](build.md#7-admin-ui-nextjs) for why.
+
 The path-filtered `.github/workflows/landing.yml` workflow runs `npm ci`,
 lint, the production build (including TypeScript checks), and `npm test`.
 The Node test suite in `landing/tests/routes.test.mjs` starts an isolated
@@ -1648,10 +1653,11 @@ python3 scripts/test-provider-release-resolution.py # signed-validation and publ
 ./scripts/test-publish-model.sh         # scripts/publish-model.sh dry-run contract
 ```
 
-Version checks, release routing, installer parity and production environment refresh
-run in CI job "Release Integrity". The production env refresh test checks automatic
-payout activation, preservation of an explicit off switch, and rejection of missing
-payout prerequisites before the live env is changed.
+Version checks, release routing, installer parity, production environment
+refresh and the benchmark-wrapper tests run in CI job "Release Integrity". The
+production env refresh test checks automatic payout activation, preservation of
+an explicit off switch, and rejection of missing payout prerequisites before the
+live env is changed.
 
 For GPT-OSS profiling, first build a release benchmark binary and identify its
 loaded Metal library and the exact downloaded model snapshot. Run on an idle
@@ -1934,7 +1940,7 @@ token IDs are accepted.
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh` · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm run build` |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh`, benchmark-wrapper tests (`python3 -m unittest discover -s gemma_contbatch/tests -t .` in `scripts/`) · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh` · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm test` (vitest), `npm run build` · **Admin UI Lint, Test & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm test` (vitest), `npm run build` with a placeholder `ADMIN_DB_URL` |
 | [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 120 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) → current coordinator vs released v0.7.12 provider (`scripts/fetch-v0712-provider.sh`, `DARKBLOOM_MIXED_VERSION_EXPECT=artifact`, fails unless `MIXED_VERSION_TIER_ARTIFACT_OK` appears) → released v0.7.12 coordinator (`git worktree add … v0.7.12`) vs candidate provider (`NonStreamingInference`, `StreamingInference`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |

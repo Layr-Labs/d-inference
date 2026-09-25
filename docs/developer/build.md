@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-22 · commit `31a6ca37f`
+> Last updated: 2026-09-25 · commit `b6f9574ed`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -553,6 +553,16 @@ npm test         # vitest run
 npm run build    # next build
 npm run dev      # next dev -p 4001
 ```
+
+`npm run build` needs `ADMIN_DB_URL` set, because `admin-ui/src/lib/db.ts`
+(`makePool`) throws at module load without it. Every data route is dynamic, so
+the build does not connect, and any well-formed URL works:
+
+```bash
+ADMIN_DB_URL=postgres://127.0.0.1:1/admin-ui-build npm run build
+```
+
+CI job **Admin UI Lint, Test & Build** uses the same placeholder.
 
 ### 8. Landing page
 

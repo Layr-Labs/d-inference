@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-22 · commit `31a6ca37f`
+> Last updated: 2026-09-25 · commit `beb002de2`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -626,10 +626,15 @@ by evidence manifests. Live Go source remains subject to the formatting gate.
 make coordinator-test                      # cd coordinator && go test ./...
 # what CI runs (repo root, race detector, Postgres-backed store tests included):
 DATABASE_URL='postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable' \
-  go test -race $(go list ./... | grep -v /e2e)
+  go test -race -coverprofile=coverage.out -covermode=atomic $(go list ./... | grep -v /e2e)
+go tool cover -func=coverage.out | tail -n 1   # total statement coverage
 gofmt -l .                                 # must print nothing
 golangci-lint run                          # .golangci.yml
 ```
+
+CI writes the total statement coverage to the job summary and keeps
+`coverage.out` for 14 days as the `coordinator-coverage` artifact. The number
+is for information only. A low number does not fail the job.
 
 `TestProfile_RequestProfilesRecorded` checks that the stored transport estimate
 matches the difference of coordinator and provider spans. Negative values remain
@@ -716,6 +721,20 @@ CI additionally builds the static Linux binary through the Dockerfile stage
 checks `file` reports `statically linked|static-pie linked`, and replays the
 production prompt vectors against it with
 `scripts/verify-prompt-sidecar-linux.sh <binary>`.
+
+CI then measures coverage with `cargo-llvm-cov` 0.9.1 and writes the line
+coverage from its `TOTAL` row to the job summary. A low number does not fail
+the job. `cargo llvm-cov` runs the sidecar tests a second time, with coverage
+instrumentation, so a test failure can first appear in the Report coverage
+step. To measure it locally:
+
+```bash
+rustup component add llvm-tools-preview --toolchain 1.88.0
+cargo install cargo-llvm-cov --version 0.9.1 --locked
+cd coordinator/promptsidecar && cargo +1.88.0 llvm-cov --locked --all-targets --summary-only
+```
+
+A number measured on macOS can differ from the Linux number in CI.
 
 
 ### 4. Provider (Swift) — unit tests with a source-matched metallib
@@ -1934,7 +1953,7 @@ token IDs are accepted.
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh` · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm run build` |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race -coverprofile=… -covermode=atomic $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence; total statement coverage in the job summary, `coverage.out` kept 14 days as the `coordinator-coverage` artifact · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh`, then `cargo llvm-cov` (0.9.1) line coverage in the job summary · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm run build` |
 | [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 120 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) → current coordinator vs released v0.7.12 provider (`scripts/fetch-v0712-provider.sh`, `DARKBLOOM_MIXED_VERSION_EXPECT=artifact`, fails unless `MIXED_VERSION_TIER_ARTIFACT_OK` appears) → released v0.7.12 coordinator (`git worktree add … v0.7.12`) vs candidate provider (`NonStreamingInference`, `StreamingInference`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |

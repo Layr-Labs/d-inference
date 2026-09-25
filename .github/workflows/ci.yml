@@ -72,7 +72,7 @@ jobs:
           # Word splitting is the point here: one argument per package path,
           # and Go package paths contain no spaces.
           # shellcheck disable=SC2046
-          go test -race $(go list ./... | grep -v /e2e)
+          go test -race -coverprofile="$RUNNER_TEMP/coverage.out" -covermode=atomic $(go list ./... | grep -v /e2e)
       - name: Check formatting
         run: |
           set -o pipefail
@@ -84,6 +84,29 @@ jobs:
             echo "$UNFORMATTED"
             exit 1
           fi
+      - name: Report coverage
+        run: |
+          set -o pipefail
+          # A profile with only its "mode:" line measured nothing.
+          if [ "$(wc -l < "$RUNNER_TEMP/coverage.out")" -le 1 ]; then
+            echo "coverage.out has no coverage data"
+            exit 1
+          fi
+          total=$(go tool cover -func="$RUNNER_TEMP/coverage.out" | awk '$1 == "total:" {print $NF}')
+          test -n "$total"
+          echo "Coordinator (Go) statement coverage: $total"
+          {
+            echo "| Component | Statement coverage |"
+            echo "|---|---|"
+            echo "| Coordinator (Go) | $total |"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage profile
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coordinator-coverage
+          path: ${{ runner.temp }}/coverage.out
+          if-no-files-found: error
+          retention-days: 14
 
   lint-coordinator:
     name: Coordinator Lint
@@ -130,6 +153,26 @@ jobs:
           chmod +x "$RUNNER_TEMP/promptsidecar-linux"
           file "$RUNNER_TEMP/promptsidecar-linux" | grep -Eq "statically linked|static-pie linked"
           ./scripts/verify-prompt-sidecar-linux.sh "$RUNNER_TEMP/promptsidecar-linux"
+      - name: Install coverage tools
+        run: |
+          rustup component add llvm-tools-preview --toolchain 1.88.0
+          cargo install cargo-llvm-cov --version 0.9.1 --locked
+      - name: Report coverage
+        working-directory: coordinator/promptsidecar
+        run: |
+          set -o pipefail
+          cargo llvm-cov --locked --all-targets --summary-only | tee "$RUNNER_TEMP/sidecar-coverage.txt"
+          # Column 10 of the TOTAL row is the line coverage percent.
+          lines=$(awk '$1 == "TOTAL" {v = $10} END {print v}' "$RUNNER_TEMP/sidecar-coverage.txt")
+          if ! [[ "$lines" =~ ^[0-9]+\.[0-9]+%$ ]]; then
+            echo "Unexpected line coverage value: '$lines'"
+            exit 1
+          fi
+          {
+            echo "| Component | Line coverage |"
+            echo "|---|---|"
+            echo "| Prompt sidecar (Rust) | $lines |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   test-provider:
     name: Provider Tests

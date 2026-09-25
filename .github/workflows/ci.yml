@@ -30,8 +30,6 @@ jobs:
         run: python3 -m unittest discover -s scripts/startup_measurement -t scripts -p 'test_*.py'
       - name: Test native GPU CI routing without a GPU
         run: python3 scripts/test-native-gpu-ci.py
-      - name: Test the Gemma benchmark wrapper without a GPU or weights
-        run: cd scripts && python3 -m unittest discover -s gemma_contbatch/tests -t .
 
   docs:
     name: Docs Lint

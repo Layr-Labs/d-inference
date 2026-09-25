@@ -93,16 +93,18 @@ func settleProviderFloorDraw(ctx context.Context, db floorDrawDB, draw *Provider
 			ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
 			RETURNING account_id, provider_key, amount_micro_usd
 		), summary_account AS (
-			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-			SELECT account_id, 'account', 0, amount_micro_usd, 0, 0, NOW() FROM earning
+			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, total_base_reward_micro_usd, updated_at)
+			SELECT account_id, 'account', 0, amount_micro_usd, 0, 0, amount_micro_usd, NOW() FROM earning
 			ON CONFLICT (key, key_type) DO UPDATE SET
 			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
+			  total_base_reward_micro_usd = earnings_summary.total_base_reward_micro_usd + EXCLUDED.total_base_reward_micro_usd,
 			  updated_at = NOW()
 		), summary_provider AS (
-			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-			SELECT provider_key, 'provider', 0, amount_micro_usd, 0, 0, NOW() FROM earning WHERE provider_key <> ''
+			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, total_base_reward_micro_usd, updated_at)
+			SELECT provider_key, 'provider', 0, amount_micro_usd, 0, 0, amount_micro_usd, NOW() FROM earning WHERE provider_key <> ''
 			ON CONFLICT (key, key_type) DO UPDATE SET
 			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
+			  total_base_reward_micro_usd = earnings_summary.total_base_reward_micro_usd + EXCLUDED.total_base_reward_micro_usd,
 			  updated_at = NOW()
 		)
 		SELECT EXISTS (SELECT 1 FROM draw)`,

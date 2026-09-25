@@ -50,6 +50,7 @@
 
 - Persist independently approved App Attest builds and revocations; refresh qualification without per-release coordinator restarts, with bounded failure/expiry and stale-grant fencing.
 - Stage immutable signed provider artifacts before publication. Block unqualified releases before updater/latest aliases advance; retry the separate publication job using the same signed bytes, without rebuilding or notarizing again.
+- Serve all-time `GET /v1/network/totals` and `GET /v1/leaderboard` from `earnings_summary` instead of scanning `provider_earnings`. The summary gains `total_base_reward_micro_usd`, maintained by every earnings writer and backfilled once at boot from `provider_floor_draws`, so the work/reward split is unchanged. Windowed queries are unaffected.
 
 ## v0.9.7 — MDM-optional providers and account-scoped SLAs (shipped; 2026-09-20)
 

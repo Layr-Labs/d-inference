@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-20 · commit `3b1b6a476`
+> Last updated: 2026-09-21 · commit `76a8f03d9`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -107,6 +107,7 @@ ordered slice of idempotent statements — `CREATE TABLE IF NOT EXISTS`,
 `ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `DROP TABLE IF EXISTS`
 for retired tables — on every start, followed by:
 `migrateEarningsSummary` (`postgres_earnings_summary_migration.go`),
+`migrateEarningsSummaryBaseReward` (`postgres_earnings_base_reward_migration.go`),
 `ensureProviderRestoreIndexes` (`postgres_startup.go`),
 `migrateUsageTotals` (`postgres_usage_totals_migration.go`),
 `migrateWithdrawableBalance` (`postgres_withdrawable_migration.go`) and
@@ -156,6 +157,23 @@ inserted earning rows, so duplicate non-empty job IDs never increment twice.
 `base_reward` contributes money but zero inference count/tokens, matching floor
 draw settlement and MemoryStore. The record-only method does not credit balances
 or create ledger entries.
+
+`earnings_summary.total_base_reward_micro_usd` carries the base-reward share of
+`total_micro_usd` so the all-time `NetworkTotals` and `Leaderboard` can report
+the work/reward split from the summary instead of scanning `provider_earnings`
+(`coordinator/store/postgres_earnings_all_time.go`; windowed queries still
+scan). Every summary writer maintains it: `RecordProviderEarning`,
+`creditProviderAccount` (behind `CreditProviderAccount`) and
+`SettleProviderFloorDraw`. `migrateEarningsSummaryBaseReward` fills the history
+once from `provider_floor_draws`, the settlement record behind every
+`base_reward` earning: a `REPEATABLE READ` plan commits per-key deltas to
+`earnings_summary_base_reward_pending` together with the
+`prepare_earnings_summary_base_reward_v1` marker, short per-key transactions add
+and dequeue them, and `backfill_earnings_summary_base_reward_v1` is recorded once
+the queue is empty. Base rewards a previous coordinator settles after the plan
+snapshot during a blue-green overlap land in `total_micro_usd` but not in this
+column: totals stay exact, the split undercounts reward by that amount. Any new
+writer of `base_reward` earnings must maintain the column.
 
 Normal upgrades do not require subtracting historical base rewards from existing
 summaries: `SettleProviderFloorDraw` has atomically maintained both summary rows
@@ -226,7 +244,7 @@ Roughly forty tables; grouped by what would be lost if the family vanished.
 | Usage and routing telemetry | `usage`, `usage_totals`, `inference_routes`, `request_rejections`, `request_profiles`, `fleet_snapshots`, `request_outcomes` | Row per request, per dispatched attempt, per rejection, per profiled attempt, per fleet sample; `usage_totals` is a single-row counter kept by `migrateUsageTotals`. |
 | Provider fleet and trust | `providers`, `provider_reputation`, `provider_sessions`, `provider_trust_reuse`, `provider_verification_jobs`, `code_attestations`, `code_attest_push_budgets`, `provider_log_reports` | Trust reuse and code attestations are durable. `code_attestations.continuous_coverage_until` is compare-and-updated only for the exact original proof tuple; it never refreshes `attested_at` or inserts proof. This allows bounded same-process resume after a redeploy; see [`security/attestation.md`](security/attestation.md). `provider_log_reports.serial_number` is kept empty by trigger. |
 | Models and releases | `model_registry`, `model_versions`, `model_version_files`, `model_active_versions`, `model_aliases`, `releases` | The catalog the registry syncs at boot; see [`model-registry.md`](model-registry.md). |
-| Bookkeeping | `schema_migrations`, `earnings_summary_backfill_pending` | Completion/plan markers and resumable per-key historical deltas. |
+| Bookkeeping | `schema_migrations`, `earnings_summary_backfill_pending`, `earnings_summary_base_reward_pending` | Completion/plan markers and resumable per-key historical deltas. |
 
 ### Global Payouts state
 
@@ -328,7 +346,8 @@ KV blocks under a per-model key, not tokens.
 |---|---|
 | Interface and record types | `coordinator/store/interface.go`, `coordinator/store/interface_domains.go` |
 | Backend selection and validation | `coordinator/store/config.go`, `coordinator/cmd/coordinator/main.go` |
-| Postgres pool, schema, one-shot migrations | `coordinator/store/postgres.go`, `coordinator/store/postgres_usage_totals_migration.go`, `coordinator/store/postgres_withdrawable_migration.go`, `coordinator/store/postgres_log_report_privacy.go` |
+| Postgres pool, schema, one-shot migrations | `coordinator/store/postgres.go`, `coordinator/store/postgres_usage_totals_migration.go`, `coordinator/store/postgres_withdrawable_migration.go`, `coordinator/store/postgres_log_report_privacy.go`, `coordinator/store/postgres_earnings_base_reward_migration.go` |
+| All-time network totals and leaderboard | `coordinator/store/postgres_earnings_all_time.go` (`networkTotalsAllTime`, `leaderboardAllTime`) |
 | Provider identity and usage reads | `coordinator/store/postgres_provider_read.go` (`providerRecordColumns`, `scanProviderRecord`, `GetProviderRecord`, `GetProviderBySerial`); `coordinator/store/provider_restore.go` (`GetProviderForRestore`, using the same projection); `coordinator/store/postgres_usage_read.go` (`readUsageRecords`, `UsageRecords`, `UsageRecordsSince`); `coordinator/store/postgres_row.go` (`rowScanner`) |
 | Domain files | `coordinator/store/postgres_model_registry.go`, `coordinator/store/postgres_base_rewards.go`, `coordinator/store/postgres_profiles.go`, `coordinator/store/route_telemetry.go`, `coordinator/store/usage_time_series.go`, `coordinator/store/apikey.go` |
 | Memory backend | `coordinator/store/memory.go`, `coordinator/store/memory_base_rewards.go` |

@@ -6,16 +6,22 @@ import Security
 public actor AppleAppAttestService: AppAttestService {
     private let callbacks: any AppAttestCallbacks
     private let operationTimeout: Double
-    private let operations = AppleOperationGate()
+    private let operations: AppleOperationGate
 
     public init() {
         callbacks = SystemAppAttestCallbacks()
         operationTimeout = 25
+        operations = AppleOperationGate()
     }
 
-    init(callbacks: any AppAttestCallbacks, operationTimeout: Double) {
+    init(callbacks: any AppAttestCallbacks, operationTimeout: Double, now: @escaping @Sendable () -> Date = Date.init) {
         self.callbacks = callbacks
         self.operationTimeout = operationTimeout
+        operations = AppleOperationGate(now: now)
+    }
+
+    public func operationHeldSince() -> Date? {
+        operations.heldSince
     }
 
     public func checkAvailability(environment: String) throws {

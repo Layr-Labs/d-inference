@@ -2,9 +2,17 @@ import Foundation
 
 extension ShadowKeyRecord {
     func mayGenerateKey(at now: Date) -> Bool {
-        guard keyID.isEmpty else { return false }
-        if now.timeIntervalSince(createdAt) >= 3600 { return true }
-        return generationRetryAfter.map { now >= $0 } ?? false
+        guard let allowed = generationAllowedAt else { return false }
+        return now >= allowed
+    }
+
+    /// Earliest replacement time for a retired or failed key: one hour after
+    /// the pre-call marker, or the shorter retry a completed native Apple
+    /// failure permits. Nil while a usable key identifier is stored.
+    var generationAllowedAt: Date? {
+        guard keyID.isEmpty else { return nil }
+        let hourly = createdAt.addingTimeInterval(KeyGenerationBudget.window)
+        return generationRetryAfter.map { min($0, hourly) } ?? hourly
     }
 
     /// Keep the persisted generation budget even when retiring an unusable key.

@@ -123,9 +123,14 @@ type codeAttestThrottle struct {
 	challengeValidity time.Duration
 	resumeTimeout     time.Duration
 
-	maxAttempts int
-	now         func() time.Time
-	jitter      func(max time.Duration) time.Duration
+	// maxAttempts is the number of pushes on the fast retry cadence. After
+	// them a still-live, still-unattested connection keeps retrying on the
+	// slow cadence: at most one push per slowRetryInterval, each still
+	// admitted by reservePush and the durable per-device budget.
+	maxAttempts       int
+	slowRetryInterval time.Duration
+	now               func() time.Time
+	jitter            func(max time.Duration) time.Duration
 
 	// store persists the reuse cache across restarts/deploys (W5 Fix 2). nil
 	// until wired by Server.SeedCodeAttestCache at startup (and nil in unit tests
@@ -190,6 +195,7 @@ func newCodeAttestThrottle() *codeAttestThrottle {
 		challengeValidity:      CodeAttestResponseTimeout,
 		resumeTimeout:          ChallengeResponseTimeout,
 		maxAttempts:            3,
+		slowRetryInterval:      60 * time.Minute, // after maxAttempts: <= 1 push/hour/connection
 		now:                    time.Now,
 		jitter:                 defaultJitter,
 	}

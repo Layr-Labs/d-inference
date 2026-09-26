@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-23 · commit `ac4a776de`
+> Last updated: 2026-09-26 · commit `292bfa291`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -38,6 +38,12 @@ After a macOS upgrade, the running signed app checks App Attest again on its nex
 
 
 If Apple's API returns a generic error during setup, the coordinator retries after one minute, then five minutes, then every ten minutes while the provider stays connected. Retrying cannot approve the machine without a successful qualified proof. Persistent generic errors can still require a signed provider update and diagnosis from the bounded native Apple error code; `darkbloom status` or `darkbloom doctor` reports current authorization. The [recovery policy](../reference/provider-authorization.md#controls) does not require deleting credentials or management profiles.
+
+When the coordinator asks the provider to enroll a key that this Mac already enrolled, the provider clears that key and answers `key_unregistered`; the next exchange generates a replacement within the one-hour cooldown and shared hourly generation budget. The replacement goes through the full enrollment checks. Do not delete the Keychain item yourself.
+
+`darkbloom doctor` shows the provider's local App Attest state in the `APP ATTEST` section: whether a key is stored and enrolled, any remaining key-generation cooldown, whether the provider runs in the logged-in GUI session, and a stalled Apple call. The daemon records this on each coordinator App Attest exchange (`provider-swift/Sources/ProviderCore/Diagnostics/AppAttestLocalDiagnosis.swift`). If Apple reports App Attest as unsupported (`is_supported_false`), log in at the console and run `darkbloom restart` so the provider runs inside the GUI session, and confirm SIP is enabled and Startup Security Utility is set to Full Security.
+
+If an Apple DeviceCheck call never answers, every later App Attest call answers `busy` until the provider process restarts. The provider reports the stall and restarts itself through the normal drain when it is idle; the thresholds and limits are in the [App Attest reference](../reference/app-attest-shadow.md#bounds-and-credential-lifecycle). The log line starts with `App Attest: Apple operation stalled`. Run `darkbloom restart` to recover immediately.
 
 After first enrollment, Apple may provide a receipt that is not yet a verified risk receipt or lacks its risk metric. The coordinator keeps the connection pending and requests another signed assertion after one minute, five minutes, then at the normal ten-minute interval while receipt renewal completes. Continue checking `darkbloom status`; the absence of a verified risk metric cannot be treated as approval.
 

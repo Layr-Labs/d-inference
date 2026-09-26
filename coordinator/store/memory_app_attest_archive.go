@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 )
 
 type memoryAppAttestEvidence struct {
@@ -48,7 +49,9 @@ func (s *MemoryStore) CompleteAppAttestEvidence(ctx context.Context, id string, 
 		}
 		old, ok := s.appAttestShadowKeys[d.Key.KeyID]
 		if !ok {
-			s.appAttestShadowKeys[d.Key.KeyID] = *cloneAppAttestKey(*d.Key)
+			key := *cloneAppAttestKey(*d.Key)
+			key.UpdatedAt = time.Now().UTC()
+			s.appAttestShadowKeys[d.Key.KeyID] = key
 		} else if old.Owner != d.Key.Owner || old.AppID != d.Key.AppID || old.Environment != d.Key.Environment || string(old.PublicKey) != string(d.Key.PublicKey) {
 			d.Outcome = "key_owner_or_policy"
 		}
@@ -59,6 +62,7 @@ func (s *MemoryStore) CompleteAppAttestEvidence(ctx context.Context, id string, 
 			d.Outcome = "counter_conflict"
 		} else {
 			old.Counter = *d.Counter
+			old.UpdatedAt = time.Now().UTC()
 			s.appAttestShadowKeys[d.KeyID] = old
 		}
 	}

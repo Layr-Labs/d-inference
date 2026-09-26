@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-09-14 · commit `b725a72a8`
+> Last updated: 2026-09-25 · commit `b6f9574ed`
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -51,7 +51,7 @@ has started, leaves the previous install untouched.
 ## Doctor checks
 
 `darkbloom doctor` prints an operator diagnosis (sections attestation key,
-attestation readiness, trust, model fit, runtime, billing, version;
+App Attest, attestation readiness, trust, model fit, runtime, billing, version;
 `provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swift`,
 `buildOperatorDiagnosis`) followed by `DETAILED CHECKS`
 (`provider-swift/Sources/darkbloom/DoctorCommand.swift`, `buildDoctorChecks`,
@@ -67,6 +67,7 @@ attestation readiness, trust, model fit, runtime, billing, version;
 | `mdm enrollment`, `mdm verification` | Profile installed; coordinator has cross-checked `SecurityInfo` | `darkbloom enroll`; the steps and what to expect: [Reaching and keeping `hardware` trust](./attestation.md#steps) |
 | `console session`, `automatic login`, `auto-logout on idle`, `sleep prevention` | Attestation readiness (`provider-swift/Sources/ProviderCore/Diagnostics/AttestationReadiness.swift`) | A real console user must be logged in; enable automatic login; disable auto-logout; the daemon self-caffeinates while serving |
 | `active se key` | Secure Enclave signing key self-test | `darkbloom-enclave info`; hardware without SE runs at reduced trust |
+| `launch session`, `app attest support`, `apple operation`, `app attest key` | macOS 27+ only: the daemon's last local App Attest observation (`provider-swift/Sources/ProviderCore/Diagnostics/AppAttestLocalDiagnosis.swift`) — GUI session, `is_supported_false`, a stalled DeviceCheck call, stored/enrolled key and generation cooldown | Run the provider inside the logged-in GUI session (`darkbloom restart` after logging in) and keep SIP and Full Security; a stall clears when the provider restarts ([attestation](./attestation.md#app-attest-without-darkbloom-mdm)); never delete the Keychain item |
 | `coordinator health`, `minimum version`, `coordinator trust` | Coordinator reachable, this version is accepted, trust verdict with reasons | `darkbloom update`; reasons are explained in [attestation](./attestation.md) |
 | `trust level` stuck at `self_signed` | The MDM `SecurityInfo` cross-check has not passed for this connection | `darkbloom enroll` if not enrolled; otherwise wait — see [Reaching and keeping `hardware` trust](./attestation.md#troubleshooting) |
 | `daemon`, `daemon connected`, `daemon state freshness` | Daemon process alive, WebSocket connected, snapshot refreshed | See [service lifecycle](#the-service-does-not-stay-running); a stale snapshot ⇒ `darkbloom restart` |

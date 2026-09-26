@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-22 · commit `73f8c13f`
+> Last updated: 2026-09-25 · commit `b6f9574ed`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -9,7 +9,7 @@ symbol; a production or dev host may pin a different value in its environment
 file. Secrets are named, never valued. Unless a row says *live*, the variable is
 read once at process start and a restart applies a change.
 
-[App Attest shadow configuration](app-attest-shadow.md#configuration) defines evidence collection and receipt renewal. [Provider authorization](provider-authorization.md#controls) defines the separate serving and MDM-removal opt-ins, both disabled by default. The account cohort, safe-version floor and qualified build/code hashes remain required. [Durable build approvals](provider-authorization.md#durable-build-qualification) replace per-release env edits; existing env pairs are a bootstrap fallback that cannot override a durable revocation. Shadow alone grants no trust; an explicitly enabled qualified App Attest path can replace legacy serving verification.
+[App Attest shadow configuration](app-attest-shadow.md#configuration) defines evidence collection and receipt renewal. [Provider authorization](provider-authorization.md#controls) defines the separate serving and MDM-removal opt-ins, both disabled by default. The account cohort, safe-version floor and qualified build/code hashes remain required. `EIGENINFERENCE_APP_ATTEST_KEY_ROTATION_PERCENT` (default `100`) selects the separate account cohort for coordinator-requested [dead-key rotation](app-attest-shadow.md#dead-key-rotation). [Durable build approvals](provider-authorization.md#durable-build-qualification) replace per-release env edits; existing env pairs are a bootstrap fallback that cannot override a durable revocation. Shadow alone grants no trust; an explicitly enabled qualified App Attest path can replace legacy serving verification.
 
 ## Provider drain deadline
 

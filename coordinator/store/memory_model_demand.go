@@ -22,19 +22,25 @@ func (s *MemoryStore) projectModelDemandLocked(r RequestOutcomeRecord) {
 		s.modelDemand = make(map[string]modelDemandObservation)
 	}
 	d := *r.PublicDemand
-	if r.EvidenceConflict {
-		d.Outcome = "unknown"
-	}
 	if old, ok := s.modelDemand[r.CoordRequestID]; ok {
-		if r.Revision < old.Revision {
+		conflict := old.EvidenceConflict || r.EvidenceConflict ||
+			!old.ReceivedAt.Equal(r.ReceivedAt) || old.Scope.Model != d.Model || old.Scope.ConsumerHash != d.ConsumerHash ||
+			(old.Revision == r.Revision && (old.Scope.Outcome != d.Outcome || old.HTTPStatus != r.HTTPStatus))
+		if r.Revision <= old.Revision {
+			if conflict {
+				old.Scope.Outcome = "unknown"
+				old.EvidenceConflict = true
+				s.modelDemand[r.CoordRequestID] = old
+			}
 			return
 		}
-		if old.EvidenceConflict {
-			d.Outcome = "unknown"
-			r.EvidenceConflict = true
-		}
+		r.ReceivedAt = old.ReceivedAt
+		r.EvidenceConflict = conflict
 		d.Model = old.Scope.Model
 		d.ConsumerHash = old.Scope.ConsumerHash
+	}
+	if r.EvidenceConflict {
+		d.Outcome = "unknown"
 	}
 	s.modelDemand[r.CoordRequestID] = modelDemandObservation{r.ReceivedAt, d, r.HTTPStatus, r.Revision, r.EvidenceConflict}
 }

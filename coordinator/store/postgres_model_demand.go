@@ -19,6 +19,15 @@ const modelDemandTableDDL = `CREATE TABLE IF NOT EXISTS model_demand_requests (
  evidence_conflict BOOLEAN NOT NULL DEFAULT FALSE
 )`
 
+// Retained public evidence remains authoritative after the diagnostic ledger
+// expires. Receipt/model/consumer identity is immutable at every revision.
+const modelDemandProjectionConflictSQL = `model_demand_requests.evidence_conflict OR EXCLUDED.evidence_conflict
+ OR model_demand_requests.received_at <> EXCLUDED.received_at
+ OR model_demand_requests.model <> EXCLUDED.model
+ OR model_demand_requests.consumer_hash <> EXCLUDED.consumer_hash
+ OR (model_demand_requests.revision = EXCLUDED.revision AND
+     (model_demand_requests.outcome <> EXCLUDED.outcome OR model_demand_requests.http_status <> EXCLUDED.http_status))`
+
 // Read the winning ledger revision inside the SAME transaction. A stale write
 // cannot regress the projection, and same-revision conflicts remain unknown.
 const projectModelDemandSQL = `INSERT INTO model_demand_requests
@@ -29,10 +38,12 @@ const projectModelDemandSQL = `INSERT INTO model_demand_requests
  (record->>'http_status')::integer,revision,evidence_conflict
  FROM request_outcomes WHERE coord_request_id=$1 AND record->'public_demand' IS NOT NULL
  ON CONFLICT (coord_request_id) DO UPDATE SET
- outcome=CASE WHEN model_demand_requests.evidence_conflict OR EXCLUDED.evidence_conflict THEN 'unknown' ELSE EXCLUDED.outcome END,
- http_status=EXCLUDED.http_status, revision=EXCLUDED.revision,
- evidence_conflict=model_demand_requests.evidence_conflict OR EXCLUDED.evidence_conflict
- WHERE EXCLUDED.revision >= model_demand_requests.revision`
+ outcome=CASE WHEN ` + modelDemandProjectionConflictSQL + ` THEN 'unknown'
+   WHEN EXCLUDED.revision > model_demand_requests.revision THEN EXCLUDED.outcome ELSE model_demand_requests.outcome END,
+ http_status=CASE WHEN EXCLUDED.revision > model_demand_requests.revision THEN EXCLUDED.http_status ELSE model_demand_requests.http_status END,
+ revision=GREATEST(model_demand_requests.revision,EXCLUDED.revision),
+ evidence_conflict=` + modelDemandProjectionConflictSQL + `
+ WHERE EXCLUDED.revision > model_demand_requests.revision OR ` + modelDemandProjectionConflictSQL
 
 func (s *PostgresStore) ModelDemand(ctx context.Context, since, until time.Time) (ModelDemandSnapshot, error) {
 	width := ModelDemandBucketSize(since, until)

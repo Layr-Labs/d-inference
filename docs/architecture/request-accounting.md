@@ -1,6 +1,6 @@
 # Incoming request accounting
 
-> Last updated: 2026-09-26 · commit `c0d06f9ba`
+> Last updated: 2026-09-26 · commit `abfb4e1c1`
 
 `request_outcomes` records unsampled observations of incoming inference requests, including early rejections, independently of sampled attempt profiles. Operators use this source to distinguish final request outcomes from internal retries. The public Stats page exposes a narrower, explicitly scoped recorded-request view; it does not establish traffic-wide completeness.
 
@@ -123,6 +123,14 @@ conflicts become unknown. The compact projection keeps revisions for 31 days,
 even when the detailed ledger expires, and prevents an old replay from
 regressing a terminal. Hourly counters avoid scanning a month of individual
 requests for every public read. Collection epoch metadata survives restarts.
+
+Both backends compare replays against the retained compact observation, not
+only the detailed ledger. Conflicting outcomes or HTTP statuses at the same
+revision, and receipt/model/consumer identity changes at any revision, set a
+sticky conflict and publish `unknown`. The original receipt cohort and scope
+remain fixed; later revisions cannot erase the conflict. This remains true
+after diagnostic-ledger expiry (`projectModelDemandSQL` and
+`projectModelDemandLocked`).
 
 `coordinator/store/postgres_model_demand_series.go` (`readModelDemandSeries`)
 reads per-model intervals in the same transaction as the summary.

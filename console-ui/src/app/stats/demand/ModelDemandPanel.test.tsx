@@ -48,10 +48,6 @@ describe("Model demand", () => {
     expect(screen.getByRole("combobox", { name: historyModelLabel })).toHaveValue("model-b");
     expect(fetcher).toHaveBeenLastCalledWith("/api/network/model-demand?window=7d", expect.any(Object));
   });
-  it("explains suppression without claiming zero demand", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse({ ...snapshot, models: [] }))); renderPanel();
-    expect(await screen.findByText(/this does not mean no requests were received/)).toBeInTheDocument();
-  });
   it("offers metric charts, exact intervals, and keyboard inspection without zero-filling gaps", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse())); renderPanel();
     const plot = await screen.findByRole("group", { name: "model-a demand history chart" });

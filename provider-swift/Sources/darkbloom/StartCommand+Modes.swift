@@ -162,11 +162,13 @@ extension Start {
     ) async throws {
         warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: true)
 
+        let launchManaged = ProcessIdentity.current().map { LaunchAgent.launchSnapshot()?.process == $0 } ?? false
+        let usePinnedSelection = Self.usesPinnedModelSelection(configPath: snapshot.configPath, launchManaged: launchManaged)
         let selectedModels = advertisedModels(
             from: snapshot.models,
             config: config,
-            modelOverrides: model,
-            includeDisabled: all,
+            modelOverrides: usePinnedSelection ? [] : model,
+            includeDisabled: usePinnedSelection ? false : all,
             runtimeCapabilities: runtimeCapabilities)
 
         guard !selectedModels.isEmpty else {
@@ -294,12 +296,15 @@ extension Start {
             runtimeCapabilities: runtimeCapabilities,
             modelHashes: modelHashes,
             modelHashFingerprints: modelHashFingerprints,
-            localEndpoint: localEndpointConfig
+            localEndpoint: localEndpointConfig,
+            configPath: snapshot.configPath
         )
 
         do {
             if let schedule {
-                try await runScheduled(loopConfig: loopConfig, schedule: schedule)
+                try await runScheduled(
+                    loopConfig: loopConfig, schedule: schedule,
+                    configFileExists: snapshot.configFileExists)
             } else {
                 let loop = try ProviderLoop(config: loopConfig)
                 try await runProviderLoopWithFanLease(loop)
@@ -371,8 +376,10 @@ extension Start {
 
     private func runScheduled(
         loopConfig: ProviderLoopConfig,
-        schedule: Schedule
+        schedule: Schedule,
+        configFileExists: Bool
     ) async throws {
+        var selection = ScheduledWindowSelection(startup: loopConfig, configFileExists: configFileExists)
         while !Task.isCancelled {
             await installIdleScheduleTerminationHandler()
             if await ProviderTermination.shared.terminationRequested {
@@ -389,7 +396,8 @@ extension Start {
             let activeFor = schedule.durationUntilInactive() ?? 3600
             print("Availability window active for \(formatDuration(activeFor)).")
 
-            let loop = try ProviderLoop(config: loopConfig)
+            let windowConfig = try selection.nextWindowConfiguration()
+            let loop = try ProviderLoop(config: windowConfig)
             try await withThrowingTaskGroup(of: ScheduledLoopResult.self) { group in
                 group.addTask {
                     try await runProviderLoopWithFanLease(loop)
@@ -411,6 +419,7 @@ extension Start {
                     return
                 }
             }
+            if await loop.hasPersistedModelSwitch { selection.notePersistedSwitch() }
         }
     }
 

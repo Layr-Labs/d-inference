@@ -36,6 +36,11 @@ extension ProviderLoop {
         beginServingDrain(owner: .lifecycle)
         pendingRetirementReconnect?.cancel()
         pendingRetirementReconnect = nil
+        // A stop/signal owns admission now. Let an in-progress inventory
+        // transaction settle before issuing the final lifecycle barrier.
+        let switching = modelSwitchTask
+        switching?.cancel()
+        _ = await switching?.value
         let deadline = ContinuousClock.now.advanced(by: .seconds(request.timeoutSeconds))
         lifecycleStatus = ProviderDrainStatus(requestID: request.id, outcome: .draining,
             remaining: lifecycleRemaining, deadline: Date().timeIntervalSince1970 + Double(request.timeoutSeconds))
@@ -105,11 +110,17 @@ extension ProviderLoop {
         let mailbox = LifecycleMailbox(identity: identity, directory: (daemonStateFileOverride ?? DaemonStateFile.path()).deletingLastPathComponent().appendingPathComponent("lifecycle"))
         lifecycleMonitorTask = Task { [weak self] in
             var handled: String?
+            var handledSwitch: String?
             while !Task.isCancelled {
                 if let request = mailbox.readRequest(), request.id != handled,
                    request.isValid(for: identity) {
                     handled = request.id
                     Task { await self?.handleLifecycleCommand(request) }
+                }
+                if let request = mailbox.readSwitchRequest(), request.id != handledSwitch,
+                   request.isValid(for: identity) {
+                    handledSwitch = request.id
+                    Task { _ = await self?.switchModels(request: request) }
                 }
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }

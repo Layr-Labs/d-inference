@@ -21,6 +21,11 @@ public struct LifecycleMailbox: Sendable {
     public func readRequest() -> ProviderDrainRequest? { read(ProviderDrainRequest.self, suffix: "request") }
     public func readStatus() -> ProviderDrainStatus? { read(ProviderDrainStatus.self, suffix: "status") }
 
+    public func writeSwitchRequest(_ request: ProviderModelSwitchRequest) throws { try write(request, suffix: "switch-request") }
+    public func writeSwitchStatus(_ status: ProviderModelSwitchStatus) throws { try write(status, suffix: "switch-status") }
+    public func readSwitchRequest() -> ProviderModelSwitchRequest? { read(ProviderModelSwitchRequest.self, suffix: "switch-request") }
+    public func readSwitchStatus() -> ProviderModelSwitchStatus? { read(ProviderModelSwitchStatus.self, suffix: "switch-status") }
+
     private func write<T: Encodable>(_ value: T, suffix: String) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                attributes: [.posixPermissions: 0o700])

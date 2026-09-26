@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-22 · commit `73f8c13f`
+> Last updated: 2026-09-25 · commit `b6f9574ed`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -13,8 +13,8 @@ eligible providers.
 
 ## Provider lifecycle drain boundary
 
-`provider_drain` permanently fences a live connection until disconnect, unlike
-the existing TTL-bounded update heartbeat. `authorizeInferenceHandoff` in
+`provider_drain` fences a live connection until disconnect or an explicit,
+validated model replacement; heartbeat TTL expiry cannot reopen it. `authorizeInferenceHandoff` in
 `coordinator/registry/inference_authorization.go` rechecks the drain after writer
 queueing and reservation: direct, queued, cold, retry and hedge reservations
 cannot send a new inference frame across the boundary. A late reservation gets
@@ -29,6 +29,16 @@ a model may still receive 503; acquired local requests and their HTTP response
 writes are drained. See [the terminal barrier](../reference/protocol-messages.md#provider-lifecycle-drain)
 for the asynchronous settlement boundary. Existing draining-capacity preflight
 semantics (transient 429/capacity, not structural absence) remain unchanged.
+
+`darkbloom switch` resumes the same provider session through `models_replace`
+(`coordinator/registry/provider_models_replace.go`, `ReplaceProviderModels`).
+The latest drain must be settled, and its generation must match the completion
+callback even if a provider reuses a request ID. A validation-only request checks
+the complete model set without unloading models or changing routing. A committed
+replacement updates model indexes and removes stale residency/cache evidence
+before clearing the drain; invalid selections leave the inventory and drain
+unchanged. Provider-side admission reopens only after the correlated commit
+receipt. See [the replacement contract](../reference/protocol-messages.md#models_replace--models_replace_ack).
 
 
 ## Context

@@ -2,16 +2,11 @@ import Foundation
 
 /// Thread-safe, mutable holder for the provider's advertised model list.
 ///
-/// The advertised list is fixed at startup from the disk scan ∩ `enabledModels`,
-/// but background prefetch (Layer 3) can make a NEW build available on disk at
-/// runtime. When that happens the provider must start advertising the new build
-/// WITHOUT dropping the model it is currently serving — so the set is a union of
-/// the startup models plus anything added at runtime, deduplicated by model id.
-///
-/// Registration reads this holder (instead of a captured immutable array) so a
-/// re-registration after a verified prefetch carries the updated `Models` list.
-/// The currently-served model is never removed here, satisfying the
-/// "advertise BOTH old and new during the transition" requirement.
+/// Seeded from the startup disk scan and operator selection. Verified prefetch
+/// adds builds without dropping the current one; an operator switch replaces
+/// the complete set after draining. Registration reads this live holder so an
+/// ordinary reconnect uses the latest intended inventory, including a switch
+/// whose commit receipt was lost.
 ///
 /// A lock (matching `OutboundRouter`/`PongTracker`) is used rather than actor
 /// isolation so the synchronous registration encoder can read it without an
@@ -71,6 +66,14 @@ final class AdvertisedModelStore: @unchecked Sendable {
         if isNew { order.append(model.id) }
         byID[model.id] = model
         return isNew
+    }
+
+    /// Atomic full inventory replacement; the caller validates unique IDs first.
+    func replace(_ models: [ModelInfo]) {
+        let replacement = Dictionary(uniqueKeysWithValues: models.map { ($0.id, $0) })
+        lock.lock(); defer { lock.unlock() }
+        byID = replacement
+        order = models.map(\.id)
     }
 
     /// Retire a build from the advertised set (a hard swap: once the desired build

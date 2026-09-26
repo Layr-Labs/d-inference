@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-22 · commit `73f8c13f`
+> Last updated: 2026-09-25 · commit `b6f9574ed`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -16,16 +16,35 @@ read once at process start and a restart applies a change.
 | Setting | Default / bounds | Consumer |
 |---|---|---|
 | `darkbloom start/stop/restart/update --timeout` | `600` seconds; 0–3600 | `provider-swift/Sources/darkbloom/ServiceDrain.swift` (`DrainOptions`) |
+| `darkbloom switch --timeout` | `600` seconds; 0–3600; no force mode | `provider-swift/Sources/darkbloom/SwitchCommand.swift` (`Switch`) |
 | `darkbloom restart --startup-timeout` | `180` seconds; 1–3600 | `provider-swift/Sources/darkbloom/RestartCommand.swift` (`Restart`) |
 | `DARKBLOOM_DRAIN_TIMEOUT_SECONDS` | `600` seconds when missing/invalid; valid 1–3600 | Signal/AppKit and planned metadata-reconnect drain in `provider-swift/Sources/ProviderCore/Service/ProviderTermination.swift` (`timeoutSeconds`); launchd environment allowlist preserves it |
 | launchd `ExitTimeOut` | `3660` seconds on install or CLI restart | `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` (`makeServicePlist`, `refreshTerminationAllowance`) |
 
-A CLI deadline expiry leaves a running, non-admitting process and disables
-watchdog/login restart. Signal-only shutdown preserves configured login startup. See [lifecycle commands](../provider/cli-reference.md#graceful-stop-and-restart)
+A start/stop/restart/update CLI deadline expiry leaves a running, non-admitting
+process and disables watchdog/login restart. A `switch` timeout also keeps
+accepted work alive and admission closed, but never changes recovery settings.
+Signal-only shutdown preserves configured login startup. See [lifecycle commands](../provider/cli-reference.md#graceful-stop-and-restart)
 for recovery and explicit force semantics. Existing loaded launchd jobs must be
 restarted to adopt the new allowance. Local mailbox files are owner-only under
 `lifecycle/` beside the daemon state file and bind PID plus kernel process-start
 time; they are not network control endpoints or serving credentials.
+
+## Provider model selection
+
+| Setting | Default / precedence | Consumer |
+|---|---|---|
+| `backend.enabled_models` | `[]` means all eligible local models; a successful `switch` pins its complete nonempty selection | `provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift` (`save`) |
+| launchd-managed `start --foreground --model` | Explicitly pinned `enabled_models` overrides stale baked arguments, including restart and watchdog recovery | `provider-swift/Sources/darkbloom/StartCommand.swift` (`usesPinnedModelSelection`); `provider-swift/Sources/darkbloom/StartCommand+Modes.swift` (`runForeground`) |
+| direct manual `start --foreground --model` | Explicit command-line IDs still override the saved selection | `provider-swift/Sources/darkbloom/StartCommand+Modes.swift` (`runForeground`) |
+| later scheduled serving windows | Keep the initial foreground selection until a live switch or saved `enabled_models` change; then reload only that selection, validating exact local models and refreshing weight hashes before each window | `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift` (`ScheduledWindowSelection`); `provider-swift/Sources/darkbloom/StartCommand+Modes.swift` (`runScheduled`) |
+
+`start` saves its selected models before installing the daemon. Live
+[`switch`](../provider/cli-reference.md#darkbloom-switch) uses the running
+daemon's resolved config path and does not optimistically write from the CLI.
+The daemon persists the accepted selection using a stable config sidecar lock,
+reloading before saving so unrelated settings survive concurrent config writes.
+Other config changes remain process-start settings unless documented otherwise.
 
 
 ## Where values are set

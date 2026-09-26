@@ -45,6 +45,8 @@ const (
 	TypeLoadModelStatus         = "load_model_status"
 	TypePrefetchModelStatus     = "prefetch_model_status"
 	TypeModelsUpdate            = "models_update"
+	TypeModelsReplace           = "models_replace"
+	TypeModelsReplaceAck        = "models_replace_ack"
 	TypePrefixCacheLookup       = "prefix_cache_lookup"
 	TypePrefixCacheReady        = "prefix_cache_ready"
 	TypePrefixCacheLookupV2     = "prefix_cache_lookup_v2"
@@ -841,6 +843,27 @@ type ModelsUpdateMessage struct {
 	ToolConstraintModels   []string    `json:"tool_constraint_models,omitempty"`
 }
 
+// ModelsReplaceMessage validates or atomically replaces the full inventory after
+// a settled drain on this exact connection. Unlike models_update it is never additive.
+type ModelsReplaceMessage struct {
+	Type                   string      `json:"type"`
+	RequestID              string      `json:"request_id"`
+	DrainRequestID         string      `json:"drain_request_id"`
+	ValidateOnly           bool        `json:"validate_only,omitempty"`
+	Models                 []ModelInfo `json:"models"`
+	ToolConstraintProtocol int         `json:"tool_constraint_protocol,omitempty"`
+	ToolConstraintModels   []string    `json:"tool_constraint_models,omitempty"`
+}
+
+type ModelsReplaceAckMessage struct {
+	Type           string `json:"type"`
+	RequestID      string `json:"request_id"`
+	DrainRequestID string `json:"drain_request_id"`
+	ValidateOnly   bool   `json:"validate_only"`
+	Accepted       bool   `json:"accepted"`
+	Error          string `json:"error,omitempty"`
+}
+
 // PrefetchModelStatusMessage is the provider's progress/terminal reply to a
 // PrefetchModelMessage. Status is one of PrefetchModelStatusStarted,
 // PrefetchModelStatusDownloading, PrefetchModelStatusVerified,
@@ -1104,6 +1127,13 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg ModelsUpdateMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal models_update: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeModelsReplace:
+		var msg ModelsReplaceMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal models_replace: %w", err)
 		}
 		pm.Payload = &msg
 

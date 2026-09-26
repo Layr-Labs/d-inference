@@ -27,8 +27,8 @@ extension ProviderLoop {
     }
 
     private func startPlannedReconnectIfNeeded() {
-        guard pendingRetirementReconnect == nil, updatePhase == .idle,
-              servingDrain.owner != .lifecycle, !isShuttingDown,
+        guard pendingRetirementReconnect == nil, modelSwitchTask == nil, updatePhase == .idle,
+              servingDrain.owner != .lifecycle, servingDrain.owner != .modelSwitch, !isShuttingDown,
               plannedReconnectRevision > issuedReconnectRevision else { return }
         beginServingDrain(owner: .reconnect)
         setRetirementReconnectBarrier(true)

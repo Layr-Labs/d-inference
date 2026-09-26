@@ -634,7 +634,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// This read loop has processed all preceding terminal/usage frames.
 			// Mark before acknowledging, so reservations waiting in the writer
 			// fail their final eligibility check while control traffic continues.
-			s.registry.CommitProviderDrain(provider)
+			generation := s.registry.CommitProviderDrain(provider, barrier.RequestID)
+			if generation == 0 {
+				return
+			}
 			select {
 			case drainAcks <- struct{}{}:
 			default:
@@ -652,10 +655,20 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 						return
 					}
 				}
+				if !s.registry.CompleteProviderDrain(provider, barrier.RequestID, generation) {
+					return
+				}
 				ackCtx, cancel := context.WithTimeout(loopCtx, 10*time.Second)
 				defer cancel()
 				_ = provider.WriteTextControl(ackCtx, ack)
 			})
+
+		case protocol.TypeModelsReplace:
+			if provider == nil {
+				_ = conn.Close(websocket.StatusPolicyViolation, "register before models_replace")
+				return
+			}
+			s.handleModelsReplace(loopCtx, provider, msg.Payload.(*protocol.ModelsReplaceMessage))
 
 		case protocol.TypeHeartbeat:
 			if provider == nil {

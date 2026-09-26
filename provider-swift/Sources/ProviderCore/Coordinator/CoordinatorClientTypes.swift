@@ -269,6 +269,7 @@ public enum OutboundMessage: Sendable {
     /// (e.g. a verified prefetch), carrying full `ModelInfo` including the
     /// computed weight hash so the coordinator can cross-check before routing.
     case modelsUpdate(models: [ModelInfo])
+    case modelsReplace(requestId: String, drainID: String, models: [ModelInfo], validateOnly: Bool)
     case prefixCacheLookup(
         requestId: String,
         cacheReceiptNonce: String,

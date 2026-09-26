@@ -24,6 +24,7 @@ extension ProviderLoop {
     /// `installPrefetchCoordinatorForTesting`.
     internal func makePrefetchCoordinator() -> ModelPrefetchCoordinator {
         let me = self
+        let selectionRevision = modelSelectionRevision
         let prefetcher: any ModelPrefetcher =
             CatalogModelPrefetcher(
                 coordinatorURL: loopConfig.coordinatorURL,
@@ -31,7 +32,9 @@ extension ProviderLoop {
         return ModelPrefetchCoordinator(
             prefetcher: prefetcher,
             preCheck: { modelId in await me.prefetchPreCheck(modelId: modelId) },
-            onVerified: { modelId in await me.applyVerifiedPrefetch(modelId: modelId) }
+            onVerified: { modelId in
+                await me.applyVerifiedPrefetch(modelId: modelId, selectionRevision: selectionRevision)
+            }
         )
     }
 
@@ -288,7 +291,11 @@ extension ProviderLoop {
         return failed.isEmpty || failed == hash
     }
 
-    func applyVerifiedPrefetch(modelId: String) async {
+    func applyVerifiedPrefetch(modelId: String, selectionRevision: UInt64? = nil) async {
+        guard servingDrain.owner != .modelSwitch,
+              selectionRevision == nil || selectionRevision == modelSelectionRevision else { return }
+        modelAdvertisementsInFlight += 1
+        defer { modelAdvertisementsInFlight -= 1 }
         guard ModelRuntimeRequirements.isEligible(
             modelID: modelId, available: loopConfig.runtimeCapabilities)
         else {

@@ -326,6 +326,14 @@ public actor ProviderLoop {
     internal var lifecycleDrainRequestID: String?
     internal var lifecycleCommandReceived = false
     internal var lifecycleMonitorTask: Task<Void, Never>?
+    internal var modelSwitchTask: Task<ProviderModelSwitchStatus, Never>?
+    internal var modelSwitchStatus = ProviderModelSwitchStatus()
+    /// Invalidates prefetch work begun before an operator replaced the set.
+    internal var modelSelectionRevision: UInt64 = 0
+    internal var modelAdvertisementsInFlight = 0
+    /// Distinguishes an explicit switch back to the already-saved IDs from
+    /// unchanged TOML while a manual foreground override was serving.
+    public internal(set) var hasPersistedModelSwitch = false
     internal var acceptedLifecycleRequests: Set<String> = []
     internal let localResponseTracker = LocalResponseTracker()
     internal var mtpStagingReservations = MTPStagingReservations()

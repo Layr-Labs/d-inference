@@ -250,6 +250,7 @@ extension ProviderLoop {
 
                 case .disconnected:
                     clearConnectionAuthorization()
+                    modelSwitchTask?.cancel()
                     cancelAppAttestShadow()
                     logger.warning(.coordinatorDisconnected)
                     // Cancel all in-flight requests on disconnect -- the coordinator
@@ -339,6 +340,9 @@ extension ProviderLoop {
         clearConnectionAuthorization()
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
+        let switching = modelSwitchTask
+        switching?.cancel()
+        _ = await switching?.value
         // Quote path mirror (routing v2): a shutting-down provider quotes
         // `slot_state` rejections for the brief window the socket stays up.
         state.refusingNewWork = true

@@ -105,6 +105,13 @@ struct Status: AsyncParsableCommand {
             state: state,
             now: now,
             heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs))
+        if let status = state.modelSwitch {
+            let stale = state.isStale(now: now) ? " (stale)" : ""
+            print("Model switch: \(status.outcome.rawValue)\(stale); \(status.remaining) unfinished request(s)")
+            if let requestID = status.requestID { print("  Request: \(requestID)") }
+            if let message = status.message { print("  \(message)") }
+            print("  Selection: \(status.models.joined(separator: ", "))")
+        }
 
         let authorization = state.currentProviderAuthorization(
             coordinatorURL: config.coordinator.url, now: now)

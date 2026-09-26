@@ -1,8 +1,5 @@
 import Foundation
 import ProviderCore
-#if canImport(Darwin)
-import Darwin
-#endif
 
 /// Resolve migrations before taking the stable sidecar lock, then reload inside
 /// the lock so concurrent beta/idle changes cannot overwrite each other. Callers
@@ -21,40 +18,6 @@ func withMutableConfig<Result>(
             ? ConfigManager.load(from: savePath) : snapshot.config
         return try body(savePath, &config)
     }
-}
-
-/// Guards one config-file mutation window with an exclusive `flock(2)` on a
-/// stable `<config-name>.lock` sidecar next to the config file. The lock must
-/// NOT be taken out on provider.toml itself: `ConfigManager.save` writes
-/// atomically via temp-file + rename, so the config file's inode changes on
-/// every save and concurrent writers would be locking DIFFERENT inodes (no
-/// mutual exclusion). The sidecar path is never renamed, so every contending
-/// process locks the same inode. Closing the fd (the defer) also releases the
-/// kernel lock if the explicit LOCK_UN is ever skipped by a throw.
-@discardableResult
-func withExclusiveConfigLock<T>(at configPath: URL, _ body: () throws -> T) throws -> T {
-    let directory = configPath.deletingLastPathComponent()
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    let lockURL = directory.appendingPathComponent(configPath.lastPathComponent + ".lock")
-
-    let fd = open(lockURL.path, O_RDWR | O_CREAT, 0o644)
-    guard fd >= 0 else {
-        throw ConfigError.writeFailed(
-            path: lockURL.path,
-            underlying: NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-        )
-    }
-    defer { close(fd) }
-
-    guard flock(fd, LOCK_EX) == 0 else {
-        throw ConfigError.writeFailed(
-            path: lockURL.path,
-            underlying: NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-        )
-    }
-    defer { _ = flock(fd, LOCK_UN) }
-
-    return try body()
 }
 
 /// Whether TOML `content` materially sets `key` inside `[section]`.

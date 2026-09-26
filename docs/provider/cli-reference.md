@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-22 · commit `632a94adc`
+> Last updated: 2026-09-25 · commit `b6f9574ed`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -36,11 +36,12 @@ set to any value skips it. Logging goes to stderr so launchd captures it in
 
 ## Subcommands
 
-Declaration order of `Darkbloom.configuration.subcommands` (21):
+Subcommands declared by `Darkbloom.configuration.subcommands`:
 
 | Command | Purpose | `--config` | Source (`provider-swift/Sources/darkbloom/…`) |
 |---|---|---|---|
 | `start` | Serve. Default: install and start the LaunchAgent; `--local` for a coordinator-less server | ✓ | `StartCommand.swift` (`Start`) |
+| `switch` | Gracefully replace hosted models in the running coordinator-connected provider, without restart or reconnect | | `SwitchCommand.swift` (`Switch`) |
 | `stop` | Drain accepted requests, then stop the LaunchAgent; `--uninstall` removes both plists | | `StopCommand.swift` (`Stop`) |
 | `restart` | Drain, restart with recorded configuration, and confirm fresh authorization | ✓ | `RestartCommand.swift` (`Restart`) |
 | `status` | Config, hardware, schedule, live daemon state (including the coordinator's last `Trust: <level> / <status>` message), per-slot KV/MTP posture | ✓ | `StatusCommand.swift` (`Status`) |
@@ -88,6 +89,61 @@ A replacement start completes the picker/preflight first, then drains and stops
 the old provider before installing the chosen configuration. Foreground/local
 starts also require a drained handoff. The process-lifetime kernel lock refuses
 a live owner; it never silently sends SIGKILL after a short grace period.
+The selected IDs are saved to `backend.enabled_models` before daemon installation.
+On launchd-managed foreground starts (including restart and watchdog recovery),
+an explicitly pinned `enabled_models` takes precedence over old `--model` plist
+arguments. A directly invoked foreground `--model` still overrides config
+(`Start.usesPinnedModelSelection`, `Start.launchDaemon`).
+
+### `darkbloom switch`
+
+| Flag | Type | Default | Effect |
+|---|---|---|---|
+| `--model <id>` | `[String]`, repeatable | `[]` | Replace the complete hosted selection with these local IDs; any invalid ID rejects the whole selection |
+| `--all` | flag | `false` | Select all eligible local models; mutually exclusive with `--model` |
+| `--timeout <seconds>` | integer, 0–3600 | `600` | Graceful drain deadline; never cancels accepted requests |
+
+With neither selection flag, this command reuses the `start` catalog picker and
+downloader. It checks fresh daemon identity and switch capability before opening
+the picker, and uses the running daemon's runtime capabilities rather than
+initializing a second inference runtime. There is no `--force` or `--config`:
+the daemon's own resolved config path, including a custom path, is authoritative.
+
+The provider validates local artifacts before fencing new coordinator and
+unified-local admissions, finishes accepted requests and terminal usage, and
+asks the coordinator to validate the complete selection before unloading anything.
+It then replaces its full model inventory on the existing coordinator session.
+It does not restart the process, reconnect, re-attest, install a service, or
+change watchdog/login recovery settings. Coordinator URL, authentication and
+local endpoint settings remain unchanged. Selected resident models can stay
+loaded; new models load on demand under the existing memory safeguards.
+The coordinator must support `models_replace`; deploy the coordinator upgrade
+before enabling this command on providers. Unsupported or missing receipts fail
+closed rather than forcing a reconnect.
+
+Success requires a matching completion receipt from the running provider, not
+just mailbox publication. A successful selection is persisted for later restart,
+watchdog recovery and scheduled serving windows. Stale/missing/older daemons and
+standalone `--local` servers fail without launching anything. A drain timeout returns failure and
+leaves admission closed while accepted work continues; retry `switch` after
+the outstanding work finishes. Rejected selections are not partially applied.
+An unavailable completion receipt is reported as unconfirmed, never success.
+`status` displays the latest switch outcome, request ID, unfinished-request count,
+message and selection; stale daemon snapshots are explicitly marked
+(`Status.printDaemonStatus` in `provider-swift/Sources/darkbloom/StatusCommand.swift`).
+Sources: `provider-swift/Sources/darkbloom/SwitchCommand.swift` (`Switch`),
+`provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift`
+(`ProviderModelSelection.save`).
+
+Scheduled serving keeps the initial foreground selection, including manual
+`--model` overrides, until a live switch or a change to `backend.enabled_models`
+on disk. Each later window reads that selection from the same resolved config path and validates
+and hashes exactly those models before reopening; an invalid selection fails
+instead of reverting to startup models. Other provider settings, runtime
+identity/capabilities and local endpoint options remain frozen for the process
+(`ScheduledWindowSelection` in `provider-swift/Sources/darkbloom/ScheduledWindowSelection.swift`;
+`Start.runScheduled` in `provider-swift/Sources/darkbloom/StartCommand+Modes.swift`).
+
 
 ### Graceful stop and restart
 

@@ -114,9 +114,26 @@ func (r *Registry) ProviderDraining(id string) bool {
 	return providerDrainingLocked(p, time.Now())
 }
 
-// CommitProviderDrain is the lifecycle barrier: stale idle heartbeats and the
-// heartbeat TTL cannot reopen admission. A new connection is required to serve.
-func (r *Registry) CommitProviderDrain(p *Provider) bool {
+// CommitProviderDrain fences admission until disconnect or an inventory replacement
+// authorized by this barrier. A later barrier supersedes every earlier receipt,
+// even when the caller reuses its wire request ID. Zero means the session is stale.
+func (r *Registry) CommitProviderDrain(p *Provider, requestID string) uint64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if p == nil || r.providers[p.ID] != p {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.drainCommitted = true
+	p.drainRequestID = requestID
+	p.drainGeneration++
+	p.drainReady = false
+	return p.drainGeneration
+}
+
+// CompleteProviderDrain binds terminal settlement to the exact barrier generation.
+func (r *Registry) CompleteProviderDrain(p *Provider, requestID string, generation uint64) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if p == nil || r.providers[p.ID] != p {
@@ -124,6 +141,9 @@ func (r *Registry) CommitProviderDrain(p *Provider) bool {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.drainCommitted = true
+	if !p.drainCommitted || p.drainRequestID != requestID || p.drainGeneration != generation {
+		return false
+	}
+	p.drainReady = true
 	return true
 }

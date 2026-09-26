@@ -1,6 +1,6 @@
 # Dev environment
 
-> Last updated: 2026-09-26 · commit `b6f9574ed`
+> Last updated: 2026-09-26 · commit `6dc1835a9`
 
 Runbook for the Darkbloom dev environment on Google Cloud (project
 `darkbloom-dev`): a GCE VM running the same coordinator container as production,
@@ -8,9 +8,9 @@ plus a dev console on Vercel, a dev R2 bucket, and a small Mac fleet. Cloud
 Build deploys the VM on each push to `master` once the trigger in step 6
 exists; that trigger does not exist yet
 ([#1067](https://github.com/Layr-Labs/d-inference/issues/1067)). The previous
-dev project, `sepolia-ai`, is retired and nothing runs there. Dev exists so
-coordinator, provider bundle, console, MDM enrollment, and the release pipeline
-can be exercised end-to-end without touching production. Nothing here deploys to
+dev project, `sepolia-ai`, is retired. Dev exists so coordinator, provider
+bundle, console, MDM enrollment, and the release pipeline can be exercised
+end-to-end without touching production. Nothing here deploys to
 production (`darkbloom-mainnet`); that is
 [coordinator-deploy.md](coordinator-deploy.md).
 
@@ -144,9 +144,9 @@ with no approval step.
 - **Non-secret value** (`EIGENINFERENCE_MIN_TRUST`, `EIGENINFERENCE_ADMIN_EMAILS`,
   `EIGENINFERENCE_REFERRAL_SHARE_PCT`, `EIGENINFERENCE_BASE_URL`, …): these are
   literal lines in **both** `deploy/gcp/refresh-env.sh` and
-  `deploy/gcp/vm-startup.sh` (the boot path). Edit both, merge, and let Cloud
-  Build redeploy. There is no `--set-env-vars`; the env file is the only
-  source.
+  `deploy/gcp/vm-startup.sh` (the boot path). Edit both, merge, then redeploy
+  with step 4's `gcloud builds submit` until the step 6 trigger exists. There is
+  no `--set-env-vars`; the env file is the only source.
 - Variables are read once at process start; a restart is always required.
 
 ### 8. Dev provider release
@@ -200,7 +200,8 @@ gcloud compute ssh d-inference-dev --zone=us-central1-a --project=darkbloom-dev 
   'sudo systemctl restart d-inference-coordinator'
 ```
 
-The next `master` push will move `DINF_IMAGE_TAG` forward again.
+Once the step 6 trigger exists, the next `master` push moves `DINF_IMAGE_TAG`
+forward again. Until then, the next `gcloud builds submit` does.
 
 **Provider bundle** — deactivate the release on the dev coordinator
 (`DELETE /v1/admin/releases`, or `scripts/admin.sh releases deactivate <version>`)

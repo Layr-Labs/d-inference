@@ -1,6 +1,7 @@
 # Cloud Build config for the d-inference DEV coordinator on Google Cloud.
 #
-# Triggered on push to master (path filter: coordinator/** | deploy/gcp/**).
+# Intended trigger: push to master (path filter: coordinator/** | deploy/gcp/**);
+# see #1067.
 # Builds coordinator/Dockerfile (the same container target as GCP prod), pushes to
 # Artifact Registry, then pins the VM's container image tag and restarts the
 # systemd unit so it picks up the new image.

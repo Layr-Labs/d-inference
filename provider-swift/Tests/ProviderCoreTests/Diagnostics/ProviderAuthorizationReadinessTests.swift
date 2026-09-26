@@ -98,7 +98,8 @@ import Testing
     }
 
     @Test func expiredStatusNeverClaimsThatRemovalIsAvailable() {
-        let description = ProviderAuthorizationReadiness.summary(status(expiresAt: 100), now: 100)
+        let description = ProviderAuthorizationReadiness.summary(
+            status(expiresAt: 100), enrollment: .enrolledDarkbloom(serverURL: ourServer), now: 100)
         #expect(!description.contains("removal is available"))
         #expect(description.contains("not currently qualified"))
     }
@@ -106,9 +107,85 @@ import Testing
     @Test func disabledCoordinatorLeavesMacOS27SetupPendingWithoutMDMFallback() {
         var disabled = status(path: "none")
         disabled.appAttestAvailable = false
-        let summary = ProviderAuthorizationReadiness.summary(disabled, now: 100, macOSMajorVersion: 27)
+        let summary = ProviderAuthorizationReadiness.summary(
+            disabled, enrollment: .enrolledDarkbloom(serverURL: ourServer), now: 100,
+            macOSMajorVersion: 27)
         #expect(summary.contains("setup remains pending"))
         #expect(!summary.contains("enrollment is still required"))
         #expect(!ProviderAuthorizationReadiness.removalReady(disabled, now: 100))
+    }
+
+    // MARK: - Removal is only advertised when OUR profile is installed
+
+    private let ourServer = "https://api.darkbloom.dev/mdm/connect"
+    private let foreignServer = "https://3a58bd58.web-api.kandji.io/mdm/commands"
+
+    private func summary(_ enrollment: MDMEnrollmentState) -> String {
+        ProviderAuthorizationReadiness.summary(status(), enrollment: enrollment, now: 100)
+    }
+
+    @Test func removalIsOfferedOnlyWhenTheDarkbloomProfileIsInstalled() {
+        let ours = summary(.enrolledDarkbloom(serverURL: ourServer))
+        #expect(ours.contains("App Attest authorizes this connection."))
+        #expect(ours.contains("Darkbloom MDM removal is available: run darkbloom unenroll and choose App Attest."))
+    }
+
+    /// Regression for #1198: a Mac managed by a corporate/university MDM has no
+    /// Darkbloom profile, so `mdm_removal_ready` (a fleet-wide rollout flag) must
+    /// never turn into "run darkbloom unenroll" — that pointed operators at their
+    /// organization's profile.
+    @Test func foreignMDMIsNeverToldToRemoveManagement() {
+        let foreign = summary(.enrolledOtherMDM(serverURL: foreignServer))
+        #expect(foreign.contains("App Attest authorizes this connection."))
+        #expect(foreign.contains("No Darkbloom MDM profile is installed"))
+        #expect(foreign.contains("keep that profile installed"))
+        #expect(foreign.contains(foreignServer))
+        #expect(!foreign.contains("removal is available"))
+        #expect(!foreign.contains("darkbloom unenroll"))
+    }
+
+    @Test func unenrolledMacIsNotOfferedARemovalItCannotPerform() {
+        let none = summary(.notEnrolled)
+        #expect(none.contains("App Attest authorizes this connection."))
+        #expect(none.contains("nothing to remove"))
+        #expect(!none.contains("removal is available"))
+        #expect(!none.contains("darkbloom unenroll"))
+    }
+
+    /// An unreadable profile inventory is UNKNOWN, not "no Darkbloom profile" and
+    /// not "removal is available" — matching `unenroll --keep-serving`, which
+    /// refuses on `.checkFailed` rather than guessing.
+    @Test func unreadableProfileInventoryWithholdsRemovalGuidance() {
+        let unknown = summary(.checkFailed)
+        #expect(unknown.contains("could not be read"))
+        #expect(unknown.contains("keep existing profiles installed"))
+        #expect(!unknown.contains("removal is available"))
+        #expect(!unknown.contains("darkbloom unenroll"))
+    }
+
+    /// The rollout flag still gates the offer on machines that DO have our
+    /// profile: enrollment is a necessary condition, not a replacement.
+    @Test func rolloutFlagStillGatesEnrolledDarkbloomMachines() {
+        var notEnabled = status()
+        notEnabled.mdmRemovalReady = false
+        let summary = ProviderAuthorizationReadiness.summary(
+            notEnabled, enrollment: .enrolledDarkbloom(serverURL: ourServer), now: 100)
+        #expect(summary.contains("not enabled for this machine yet"))
+        #expect(!summary.contains("removal is available"))
+    }
+
+    /// No enrollment state can resurrect the sentence once the lease is gone.
+    @Test func noEnrollmentStateAdvertisesRemovalWithoutACurrentLease() {
+        for enrollment: MDMEnrollmentState in [
+            .enrolledDarkbloom(serverURL: ourServer), .enrolledOtherMDM(serverURL: foreignServer),
+            .notEnrolled, .checkFailed,
+        ] {
+            let expired = ProviderAuthorizationReadiness.summary(
+                status(expiresAt: 100), enrollment: enrollment, now: 100)
+            #expect(!expired.contains("removal is available"))
+            let missing = ProviderAuthorizationReadiness.summary(
+                nil, enrollment: enrollment, now: 100)
+            #expect(!missing.contains("removal is available"))
+        }
     }
 }

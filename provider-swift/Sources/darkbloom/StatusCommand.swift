@@ -121,7 +121,10 @@ struct Status: AsyncParsableCommand {
         let authorization = state.currentProviderAuthorization(
             coordinatorURL: config.coordinator.url, now: now)
         if let authorization {
-            print("Authorization: \(ProviderAuthorizationReadiness.summary(authorization, now: now))")
+            // Local profile state, not the coordinator's fleet-wide rollout flag,
+            // decides whether this Mac has a Darkbloom profile to remove.
+            let enrollment = checkMDMEnrollment(coordinatorURL: config.coordinator.url)
+            print("Authorization: \(ProviderAuthorizationReadiness.summary(authorization, enrollment: enrollment, now: now))")
             if !authorization.machineID.isEmpty { print("Machine ID: \(authorization.machineID)") }
         } else if let trust = state.trust {
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)

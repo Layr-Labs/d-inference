@@ -36,6 +36,15 @@ func (x *Session) deriveKeyLifecycleDiagnostics(ctx context.Context) {
 	if !ok {
 		return
 	}
+	// Keep optional reads bounded independently from proof storage. Busy
+	// diagnostics remain unknown instead of consuming a proof archival slot.
+	x.s.diagnosticOnce.Do(func() { x.s.diagnosticSlots = make(chan struct{}, 1) })
+	select {
+	case x.s.diagnosticSlots <- struct{}{}:
+		defer func() { <-x.s.diagnosticSlots }()
+	default:
+		return
+	}
 	// An optional lookup has its own small budget; errors leave unknown fields
 	// and never become storage failures, dropped proofs, or authorization fences.
 	lookup, cancel := context.WithTimeout(ctx, 100*time.Millisecond)

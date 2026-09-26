@@ -6,7 +6,9 @@ import ProviderAppAttest
 /// connection or process reports what happened to earlier pushes. Holds no
 /// device token, nonce or payload.
 public struct APNsPushHistory: Codable, Sendable, Equatable {
-    public static let cap = 50
+    // More than a day of the coordinator's 75-second alert cadence, including
+    // token-rotation budget resets. The wire count still saturates at 1,000.
+    public static let cap = 2_048
     public static let window: TimeInterval = 86_400
 
     public var receivedAt: [Double]

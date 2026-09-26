@@ -84,11 +84,11 @@ struct APNsPushHistoryTests {
         let now = Date(timeIntervalSince1970: 1_000_000)
         var history = APNsPushHistory()
         for offset in stride(from: 100_000.0, through: 0, by: -1_000) { history.recordReceipt(at: now.addingTimeInterval(-offset)) }
-        #expect(history.receivedAt.count == APNsPushHistory.cap)
+        #expect(history.receivedAt.count == 101)
         history.recordReply(at: now.addingTimeInterval(-7_200))
         let summary = history.summary(deviceTokenPresent: true, now: now)
         #expect(summary.deviceTokenPresent == true)
-        #expect(summary.pushesReceivedLast24h == 50, "all 50 retained receipts fall inside 24 h")
+        #expect(summary.pushesReceivedLast24h == 87, "only receipts inside the trailing 24 h count")
         #expect(summary.lastPushReceivedAgeSeconds == 0)
         #expect(summary.lastReplySentAgeSeconds == 7_200)
 
@@ -99,6 +99,41 @@ struct APNsPushHistoryTests {
         #expect(stale.lastPushReceivedAgeSeconds == nil, "latest is in the future: omit rather than go negative")
         #expect(stale.lastReplySentAgeSeconds == nil)
         #expect(stale.deviceTokenPresent == nil)
+    }
+
+    @Test(arguments: [1_200.0, 75.0])
+    func dailyPushStormSurvivesReloadAndAgesOut(interval: Double) throws {
+        let dir = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let count = Int(APNsPushHistory.window / interval)
+        var history = APNsPushHistory()
+        for index in 0..<count {
+            history.recordReceipt(at: now.addingTimeInterval(-Double(count - 1 - index) * interval))
+        }
+        let store = APNsPushHistoryStore(directory: dir)
+        try JSONEncoder().encode(history).write(to: store.url)
+        let loaded = APNsPushHistoryStore(directory: dir).load()
+        #expect(loaded.receivedAt.count == count)
+        #expect(loaded.summary(deviceTokenPresent: true, now: now).pushesReceivedLast24h
+                == min(1_000, count))
+        // After six hours the daily background and alert counts are below the
+        // wire cap, so old arrivals must expire without losing the newer ones.
+        #expect(loaded.summary(deviceTokenPresent: true, now: now.addingTimeInterval(21_600))
+            .pushesReceivedLast24h == count * 3 / 4)
+    }
+
+    @Test func timestampTailsRemainBounded() {
+        var history = APNsPushHistory()
+        for index in 0..<(APNsPushHistory.cap + 10) {
+            let date = Date(timeIntervalSince1970: Double(index))
+            history.recordReceipt(at: date)
+            history.recordReply(at: date)
+        }
+        #expect(history.receivedAt.count == APNsPushHistory.cap)
+        #expect(history.repliedAt.count == APNsPushHistory.cap)
+        #expect(history.receivedAt.first == 10)
+        #expect(history.repliedAt.first == 10)
     }
 
     @Test func corruptFileStartsFresh() throws {

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Replace provider reputation ratings with total, successful, and failed job counts. Remove the composite score calculation and owner API field; historical job failures no longer imply reduced routing priority in the dashboard.
+
 ## Unreleased — App Attest dead-key recovery and release-recovery fixes
 
 - Correct App Attest diagnostics for hung security probes, unknown boot security, late APNs tokens, failed WebSocket writes, terminating push loops, full-day key churn, and non-stalled busy replies.

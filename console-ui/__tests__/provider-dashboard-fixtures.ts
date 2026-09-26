@@ -30,7 +30,6 @@ export function baseProvider(overrides: Partial<MyProvider> = {}): MyProvider {
     pending_requests: 0,
     max_concurrency: 8,
     reputation: {
-      score: 0.85,
       total_jobs: 100,
       successful_jobs: 98,
       failed_jobs: 2,

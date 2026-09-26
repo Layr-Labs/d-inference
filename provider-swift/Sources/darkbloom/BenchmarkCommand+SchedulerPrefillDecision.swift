@@ -122,6 +122,9 @@ extension Benchmark {
             printError(String(describing: error))
             throw ExitCode(2)
         }
+        let snapshot = try loadRuntimeSnapshot(
+            configPath: configOptions.config, migrateOnDisk: false)
+        ModelScanner.configureCacheDirectory(snapshot.configuredModelCacheDirectory)
 
         guard let modelDirectory = ModelScanner.resolveLocalPath(
             modelID: options.modelID)

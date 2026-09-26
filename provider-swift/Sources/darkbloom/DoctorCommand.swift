@@ -249,20 +249,9 @@ func buildDoctorChecks(
         detail: snapshot.configFileExists ? "loaded" : "missing, defaults are in memory only"
     ))
 
-    if let cacheDir = ModelScanner.defaultCacheDirectory(),
-       FileManager.default.fileExists(atPath: cacheDir.path) {
-        checks.append(.init(
-            name: "huggingface cache",
-            status: .pass,
-            detail: cacheDir.path
-        ))
-    } else {
-        checks.append(.init(
-            name: "huggingface cache",
-            status: .warn,
-            detail: "not found"
-        ))
-    }
+    // Diagnose the saved location or unchanged legacy cache, never ambient HF variables.
+    checks.append(hfCacheCheck(
+        configuredDirectory: snapshot.configuredModelCacheDirectory))
 
     checks.append(.init(
         name: "local mlx models",
@@ -469,3 +458,4 @@ func describeMDMEnrollment(_ state: MDMEnrollmentState) -> String {
     case .checkFailed: return "unknown (profiles tool failed)"
     }
 }
+

@@ -13,12 +13,12 @@ func withMutableConfig<Result>(
     migrateOnDisk: Bool = true,
     _ body: (URL, inout ProviderConfig) throws -> Result
 ) throws -> Result {
-    let snapshot = try loadRuntimeSnapshot(configPath: configPath, migrateOnDisk: migrateOnDisk)
+    let loaded = try loadRuntimeConfiguration(configPath: configPath, migrateOnDisk: migrateOnDisk)
     // Default-path lookup must happen after a possible legacy migration.
-    let savePath = try configPath != nil ? snapshot.configPath : ConfigManager.defaultConfigPath()
+    let savePath = try configPath != nil ? loaded.configPath : ConfigManager.defaultConfigPath()
     return try withExclusiveConfigLock(at: savePath) {
         var config = try FileManager.default.fileExists(atPath: savePath.path)
-            ? ConfigManager.load(from: savePath) : snapshot.config
+            ? ConfigManager.load(from: savePath) : loaded.config
         return try body(savePath, &config)
     }
 }

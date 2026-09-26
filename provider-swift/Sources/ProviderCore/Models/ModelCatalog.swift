@@ -9,8 +9,9 @@
 /// Downloads prefer a pinned Hugging Face artifact when configured, with R2
 /// fallback (the coordinator never fronts model
 /// weights). The model lives in the standard HuggingFace cache layout
-/// at `~/.cache/huggingface/hub/models--{org}--{name}/snapshots/{hash}/`,
-/// matching what `ModelScanner` already discovers.
+/// at `{hf-cache}/models--{org}--{name}/snapshots/{hash}/`. The shared
+/// `ModelScanner.cacheDirectory` resolver selects the explicitly saved location
+/// or the unchanged home default for discovery and downloads alike.
 
 import Foundation
 

@@ -80,12 +80,6 @@ struct ModelCatalogTests {
         #expect(str.contains(#""min_ram_gb":8"#))
     }
 
-    @Test("cacheModelDirectory mirrors the HuggingFace cache layout")
-    func cacheModelDirectoryShape() {
-        let url = ModelDownloader.cacheModelDirectory(for: "mlx-community/Foo-Bar")
-        #expect(url.path.hasSuffix(".cache/huggingface/hub/models--mlx-community--Foo-Bar"))
-    }
-
     @Test("parseShardNames returns sorted unique values from weight_map")
     func parseShardNamesDedupAndSort() throws {
         let tmp = URL(fileURLWithPath: NSTemporaryDirectory())

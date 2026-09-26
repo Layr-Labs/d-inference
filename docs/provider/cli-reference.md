@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-26 · commit `292bfa291`
+> Last updated: 2026-09-26 · commit `0ce33cee2`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -160,8 +160,16 @@ Same checks as `doctor`; any WARN or FAIL exits 1.
 | `download` | `<modelID>` | `String` | — | Catalog id (or S3 name) |
 | `download` | `--coordinator <url>` | `String?` | config URL | Resolve the catalog entry |
 | `download` | `--r2-cdn <url>` | `String?` | `DARKBLOOM_R2_CDN_URL`, else `https://models.darkbloom.ai` (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`, `defaultR2CDNURL`) | Mirror base URL |
-| `remove` | `<modelID>` | `String` | — | Model to delete from `~/.cache/huggingface/hub` |
+| `remove` | `<modelID>` | `String` | — | Model to delete from the effective model cache |
 | `remove` | `--force` | flag | `false` | Skip confirmation |
+| `location` | `[PATH]` | `String?` | status/menu | Select an existing readable, writable cache directory; interactive changes require `yes` |
+| `location` | `--check` | flag | `false` | Inspect PATH, or the effective cache, without changing config or weights |
+| `location` | `--from-env` | flag | `false` | Explicitly import the current Hugging Face environment cache once and save its absolute path |
+| `location` | `--reset` | flag | `false` | Clear the saved location and restore the legacy home cache, regardless of ambient variables |
+
+All model subcommands accept `--config <path>`. Location behavior is implemented
+by `Models.Location` in `provider-swift/Sources/darkbloom/ModelsLocationCommand.swift`;
+cache precedence is specified in [model cache configuration](../reference/configuration.md#model-cache-location).
 
 ### `darkbloom local`
 
@@ -567,6 +575,46 @@ Delete a downloaded model.
 darkbloom models remove <id> [--force]
 ```
 
+### `darkbloom models location`
+
+Inspect a cache or explicitly save its location in `provider.toml`
+(`Models.Location`, `provider-swift/Sources/darkbloom/ModelsLocationCommand.swift`).
+No beta flag is involved. Without a saved location, existing providers continue
+using the legacy cache even if Hugging Face/XDG variables are exported.
+
+```bash
+darkbloom models location                              # terminal menu; status otherwise
+darkbloom models location /Volumes/Models/hub           # explicitly save an existing hub root
+darkbloom models location --from-env                    # explicitly import and pin the current HF cache
+darkbloom models location --check /Volumes/Models/hub   # inspect only; never opts in
+darkbloom models location --reset                       # restore the legacy default; retain all weights
+```
+
+The menu offers keeping the current location, restoring the default, choosing a
+custom path, or importing the detected environment cache. Enter/EOF cancels;
+terminal changes require `yes`. An explicit PATH or `--from-env` also works
+noninteractively. `--from-env` cannot be combined with PATH, `--check`, or `--reset`.
+An import pins the resolved absolute directory; later environment changes cannot
+switch it. No valid cache variable means no import and no saved change. See the
+[one-time import precedence](../reference/configuration.md#model-cache-location).
+
+Empty writable directories are valid for future downloads. Missing directories
+are not created: mount the external volume and create the intended directory
+explicitly first. Nothing moves or deletes existing weights, downloads models,
+or restarts a running provider. `--reset` returns to the legacy home cache even
+when cache environment variables remain set.
+
+Before applying a selection, inspect the chosen directory and confirm the
+expected model IDs. `--check` can succeed for an empty writable directory; it is
+discovery, not weight-integrity verification or network eligibility. Use
+`models list --hash <model-id>` for an on-demand aggregate hash and `doctor` for
+serving diagnostics.
+
+After saving, apply the configuration with `darkbloom restart`, or `darkbloom
+start` if stopped. Use the intended `--config <path>` on the location command and
+`start` for a custom config; restart retains the installed job's config argument.
+The CLI reports the selected config, not a running daemon's already-loaded state.
+
 ## `darkbloom benchmark`
 
 Run a standardized local inference benchmark.
@@ -885,7 +933,7 @@ manual use.
 | Provider LaunchAgent | label `io.darkbloom.provider`; `~/Library/LaunchAgents/io.darkbloom.provider.plist`; `RunAtLoad = true`, `KeepAlive = false`; stdout/stderr → `~/.darkbloom/provider.log` | `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift` (`label`, `plistPath`, `logPath`) |
 | Watchdog LaunchAgent | label `io.darkbloom.watchdog`; `~/Library/LaunchAgents/io.darkbloom.watchdog.plist`; log `~/.darkbloom/watchdog.log` | `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` |
 | Unified-log subsystem | `dev.darkbloom.provider` | `provider-swift/Sources/darkbloom/LogsCommand.swift` (`Logs.subsystem`) |
-| Model cache | `~/.cache/huggingface/hub` (HuggingFace hub layout) | `provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift` |
+| Model cache | Hugging Face hub layout under the [resolved model cache](../reference/configuration.md#model-cache-location) | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift` (`ModelScanner.resolveCache`) |
 | Keychain KEK item | service `io.darkbloom.kv.kek.v1`; access group `SLDQ2GJ6TL.io.darkbloom.provider` (`DARKBLOOM_KEYCHAIN_ACCESS_GROUP`) | `provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift` (`defaultService`); `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultAccessGroup`) |
 | Secure Enclave key labels | `io.darkbloom.provider.attestation-signing.v2`; legacy `…v1` migrated on first use | `provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift` (`defaultLabel`, `legacyLabelV1`) |
 | Apple Team ID | `SLDQ2GJ6TL` (pinned in installer requirements and fan IPC) | `scripts/install.sh`; `provider-swift/Sources/DarkbloomFanProtocol/FanIPC.swift` (`teamID`) |
@@ -907,6 +955,7 @@ override `provider.toml` for one process, are in
 | `[provider] auto_restart` | `true` | Arm the watchdog LaunchAgent |
 | `[provider] update_jitter_seconds` | `300` | Max random delay before an automatic install or a network provider drains a model for a prepared MTP replacement; serving continues during the delay. `0` disables jitter; capped at `3600`. Standalone MTP upgrades skip this delay. Random staggering provides no fleet availability guarantee (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `updateJitterSeconds`; `provider-swift/Sources/ProviderCore/Update/UpdateJitter.swift`, `delay`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`, `waitBeforeMTPUpgradeDrain`) |
 | `[backend] enabled_models` | `[]` | Advertise only these ids; empty = all serveable |
+| `[backend] model_cache_directory` | unset | Explicit saved hub directory; set or import once with `models location`, clear with `--reset`. Ambient cache variables never override it; hand-written relative paths are anchored to the config file (`provider-swift/Sources/ProviderCore/Config/ModelCacheConfiguration.swift`, `ConfigManager.modelCacheDirectory`) |
 | `[backend] idle_timeout_mins` | `60` | Unload a model idle this long; `0` disables |
 | `[backend] max_model_slots` | `3` | Resident models |
 | `[backend] engine_v2_max_concurrent` | `4` (clamped to `[1, 8]`) | Concurrent requests per engine |
@@ -921,6 +970,11 @@ override `provider.toml` for one process, are in
 | `[backend] continuous_batching`, `adaptive_prefill`, `engine_v2`, `legacy_compiled_decode`, `kv_quant` | retired | Parsed for presence only; one startup WARN each (`RetiredCodingKeys`) |
 
 ## LaunchAgent environment passthrough
+
+Model-cache locations are read from `provider.toml`; Hugging Face/XDG cache
+variables are neither forwarded nor runtime overrides. The optional
+[`--from-env` import](#darkbloom-models-location) saves an absolute path once,
+so the foreground CLI and daemon use the same explicitly selected directory.
 
 The [Bonsai performance profile](../reference/configuration.md#bonsai-performance-qualification)
 uses source-default-on eligible paths in foreground and daemon processes. It

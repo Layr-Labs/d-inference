@@ -139,6 +139,8 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
 public struct BackendSettings: Sendable, Equatable, Codable {
     public var port: UInt16
     public var model: String?
+    /// Explicitly selected HuggingFace hub directory; unset preserves the legacy home cache.
+    public var modelCacheDirectory: String?
     /// Which models to advertise to the network. If empty, all downloaded models
     /// are advertised. If set, only these models are offered.
     public var enabledModels: [String]
@@ -282,6 +284,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public init(
         port: UInt16 = 8100,
         model: String? = nil,
+        modelCacheDirectory: String? = nil,
         enabledModels: [String] = [],
         idleTimeoutMins: UInt64 = 60,
         maxModelSlots: UInt64 = 3,
@@ -301,6 +304,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     ) {
         self.port = port
         self.model = model
+        self.modelCacheDirectory = modelCacheDirectory
         self.enabledModels = enabledModels
         self.idleTimeoutMins = idleTimeoutMins
         self.maxModelSlots = maxModelSlots
@@ -321,6 +325,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     enum CodingKeys: String, CodingKey {
         case port
         case model
+        case modelCacheDirectory = "model_cache_directory"
         case enabledModels = "enabled_models"
         case idleTimeoutMins = "idle_timeout_mins"
         case maxModelSlots = "max_model_slots"
@@ -355,6 +360,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.port = try container.decodeIfPresent(UInt16.self, forKey: .port) ?? 8100
         self.model = try container.decodeIfPresent(String.self, forKey: .model)
+        self.modelCacheDirectory = try container.decodeIfPresent(String.self, forKey: .modelCacheDirectory)
         self.enabledModels = try container.decodeIfPresent([String].self, forKey: .enabledModels) ?? []
         self.idleTimeoutMins = try container.decodeIfPresent(UInt64.self, forKey: .idleTimeoutMins) ?? 60
         self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 3
@@ -400,6 +406,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(port, forKey: .port)
         try container.encodeIfPresent(model, forKey: .model)
+        try container.encodeIfPresent(modelCacheDirectory, forKey: .modelCacheDirectory)
         try container.encode(enabledModels, forKey: .enabledModels)
         try container.encode(idleTimeoutMins, forKey: .idleTimeoutMins)
         try container.encode(maxModelSlots, forKey: .maxModelSlots)

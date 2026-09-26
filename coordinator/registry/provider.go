@@ -105,23 +105,24 @@ type Provider struct {
 	// draining (heartbeat status "draining" or a typed draining rejection);
 	// routing skips it until its next idle/serving heartbeat or the TTL
 	// (drain_state.go). Guarded by p.mu.
-	drainCommitted             bool // fenced until matching provider readiness or disconnect
-	drainRequestID             string
-	drainGeneration            uint64 // increases per barrier, including reused wire request IDs
-	drainReady                 bool   // preceding reservations and terminal usage have settled
-	drainReplacementPending    bool   // inventory committed, waiting for receipt and provider readiness
-	drainReplacementAcked      bool
-	drainReplacementReadySeq   uint64 // heartbeat seq built after local admission reopened
-	drainReplacementAppliedSeq uint64 // accepted serving heartbeat for this replacement
-	drainReplacementID         string
-	drainRemovedModels         []string // accumulated across reconciliation drains until readiness
-	drainingUntil              time.Time
-	Conn                       *websocket.Conn
-	writer                     *providerWriter
-	LastHeartbeat              time.Time
-	registeredAt               time.Time               // immutable connection creation order for verified duplicate arbitration
-	Stats                      protocol.HeartbeatStats // lifetime counters shown to users
-	lastSessionStats           protocol.HeartbeatStats // raw counters from the current provider process
+	drainCommitted              bool // fenced until matching provider readiness or disconnect
+	drainRequestID              string
+	drainGeneration             uint64 // increases per barrier, including reused wire request IDs
+	drainReady                  bool   // preceding reservations and terminal usage have settled
+	drainReplacementPending     bool   // inventory committed, waiting for receipt and provider readiness
+	drainReplacementAcked       bool
+	drainReplacementReadySeq    uint64 // heartbeat seq built after local admission reopened
+	drainReplacementAppliedSeq  uint64 // accepted serving heartbeat for this replacement
+	drainReplacementID          string
+	drainRemovedModels          []string                             // accumulated across reconciliation drains until readiness
+	lastResumedModelReplacement protocol.ModelsReplaceResumedMessage // exact-session duplicate receipt
+	drainingUntil               time.Time
+	Conn                        *websocket.Conn
+	writer                      *providerWriter
+	LastHeartbeat               time.Time
+	registeredAt                time.Time               // immutable connection creation order for verified duplicate arbitration
+	Stats                       protocol.HeartbeatStats // lifetime counters shown to users
+	lastSessionStats            protocol.HeartbeatStats // raw counters from the current provider process
 
 	// Until restore finishes, verified identities cannot route, and persisted
 	// records must not advertise a reusable serial/SE identity. Includes

@@ -51,7 +51,7 @@ func TestReplaceProviderModelsRejectsAtomicallyAndCanResumeOldSet(t *testing.T) 
 				t.Fatalf("old inventory could not confirm receipt: %v", err)
 			}
 			markReplacementCapacityFresh(p)
-			_, _, resumed := r.ResumeProviderModels(p, "rollback", "drain", 1)
+			_, _, resumed, _ := r.ResumeProviderModels(p, "rollback", "drain", 1)
 			if !resumed || r.ProviderDraining(p.ID) {
 				t.Fatalf("old inventory could not resume: %v", err)
 			}
@@ -98,7 +98,7 @@ func TestReplaceProviderModelsAllowsOwnerOnlyOffCatalogInventory(t *testing.T) {
 				t.Fatalf("off-catalog replacement rejected or resumed before its receipt: %v", err)
 			}
 			markReplacementCapacityFresh(p)
-			_, _, resumed := r.ResumeProviderModels(p, msg.RequestID, msg.DrainRequestID, 1)
+			_, _, resumed, _ := r.ResumeProviderModels(p, msg.RequestID, msg.DrainRequestID, 1)
 			if !resumed {
 				t.Fatal("off-catalog replacement did not resume after provider readiness")
 			}
@@ -205,7 +205,7 @@ func TestReplaceProviderModelsPreservesSessionAndRemovesRoutingState(t *testing.
 		t.Fatal("replacement must remain fenced until the exact receipt is written")
 	}
 	markReplacementCapacityFresh(p)
-	_, _, resumed := r.ResumeProviderModels(p, "replace", "drain", 1)
+	_, _, resumed, _ := r.ResumeProviderModels(p, "replace", "drain", 1)
 	if !resumed {
 		t.Fatal("replacement did not resume after provider readiness")
 	}

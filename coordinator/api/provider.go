@@ -647,7 +647,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				_ = conn.Close(websocket.StatusPolicyViolation, "register before models_replace_ready")
 				return
 			}
-			s.handleModelsReplaceReady(provider, msg.Payload.(*protocol.ModelsReplaceReadyMessage))
+			s.handleModelsReplaceReady(loopCtx, provider, msg.Payload.(*protocol.ModelsReplaceReadyMessage))
 
 		case protocol.TypeHeartbeat:
 			if provider == nil {
@@ -699,7 +699,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				}
 			}
 			if s.applyProviderHeartbeat(providerID, provider, hbMsg) {
-				s.handleModelsReplaceHeartbeat(provider)
+				s.handleModelsReplaceHeartbeat(loopCtx, provider)
 			}
 			// W5 Fix 2 (2a): a late/changed APNs token carried in the heartbeat
 			// re-arms a code-identity challenge WITHOUT a reconnect.

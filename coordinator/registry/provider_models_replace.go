@@ -174,17 +174,26 @@ func (r *Registry) ConfirmProviderModelsReceipt(p *Provider, requestID string, g
 // ResumeProviderModels records matching local readiness. Routing opens only
 // after an accepted serving heartbeat has replaced the pre-switch capacity.
 // A stale readiness frame cannot resume a newer drain or another session.
-func (r *Registry) ResumeProviderModels(p *Provider, requestID, drainRequestID string, capacitySeq uint64) (added, removed []string, resumed bool) {
+func (r *Registry) ResumeProviderModels(p *Provider, requestID, drainRequestID string, capacitySeq uint64) (added, removed []string, resumed bool, ack *protocol.ModelsReplaceResumedMessage) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if p == nil || r.providers[p.ID] != p {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// A control-writer failure after routing resumed must not turn a retry of
+	// the identical ready frame into a permanently unacknowledged switch.
+	if requestID != "" && drainRequestID != "" && capacitySeq > 0 && !p.drainCommitted &&
+		p.lastResumedModelReplacement.RequestID == requestID &&
+		p.lastResumedModelReplacement.DrainRequestID == drainRequestID &&
+		p.lastResumedModelReplacement.CapacitySeq == capacitySeq {
+		last := p.lastResumedModelReplacement
+		return nil, nil, false, &last
+	}
 	if !p.drainCommitted || !p.drainReplacementPending || !p.drainReplacementAcked ||
 		p.drainReplacementID != requestID || p.drainRequestID != drainRequestID || capacitySeq == 0 {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	if capacitySeq > p.drainReplacementReadySeq {
 		p.drainReplacementReadySeq = capacitySeq
@@ -195,11 +204,11 @@ func (r *Registry) ResumeProviderModels(p *Provider, requestID, drainRequestID s
 // ResumeProviderModelsAfterHeartbeat completes a replacement whose readiness
 // arrived before its refreshed capacity heartbeat. Heartbeat marked freshness
 // under p.mu only after applying an ordered, serving capacity snapshot.
-func (r *Registry) ResumeProviderModelsAfterHeartbeat(p *Provider) (added, removed []string, resumed bool) {
+func (r *Registry) ResumeProviderModelsAfterHeartbeat(p *Provider) (added, removed []string, resumed bool, ack *protocol.ModelsReplaceResumedMessage) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if p == nil || r.providers[p.ID] != p {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -207,10 +216,14 @@ func (r *Registry) ResumeProviderModelsAfterHeartbeat(p *Provider) (added, remov
 }
 
 // Caller holds p.mu and the registry read lock.
-func (p *Provider) resumeProviderModelsIfReadyLocked() (added, removed []string, resumed bool) {
+func (p *Provider) resumeProviderModelsIfReadyLocked() (added, removed []string, resumed bool, ack *protocol.ModelsReplaceResumedMessage) {
 	if !p.drainCommitted || !p.drainReplacementPending || !p.drainReplacementAcked ||
 		p.drainReplacementReadySeq == 0 || p.drainReplacementAppliedSeq < p.drainReplacementReadySeq {
-		return nil, nil, false
+		return nil, nil, false, nil
+	}
+	confirmation := protocol.ModelsReplaceResumedMessage{
+		Type: protocol.TypeModelsReplaceResumed, RequestID: p.drainReplacementID,
+		DrainRequestID: p.drainRequestID, CapacitySeq: p.drainReplacementReadySeq,
 	}
 	for _, model := range p.Models {
 		added = append(added, model.ID)
@@ -225,5 +238,6 @@ func (p *Provider) resumeProviderModelsIfReadyLocked() (added, removed []string,
 	p.drainRemovedModels = nil
 	p.drainRequestID = ""
 	p.drainingUntil = time.Time{}
-	return added, removed, true
+	p.lastResumedModelReplacement = confirmation
+	return added, removed, true, &confirmation
 }

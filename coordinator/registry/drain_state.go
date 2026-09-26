@@ -138,6 +138,7 @@ func (r *Registry) CommitProviderDrain(p *Provider, requestID string) uint64 {
 	p.drainReplacementReadySeq = 0
 	p.drainReplacementAppliedSeq = 0
 	p.drainReplacementID = ""
+	p.lastResumedModelReplacement = protocol.ModelsReplaceResumedMessage{}
 	// A failed replacement already changed inventory. Keep the removed IDs
 	// through a new barrier so its eventual readiness can reconcile old queues.
 	if len(p.pendingReqs) > 0 && p.drainPendingDone == nil {

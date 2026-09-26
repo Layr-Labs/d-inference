@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-26 · commit `7c8fc8f1e`
+> Last updated: 2026-09-26 · commit `8a1b36f70`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -113,6 +113,7 @@ deliver a graceful-drain acknowledgement.
 | provider → coordinator | `models_replace` | `ModelsReplaceMessage` | `.modelsReplace` |
 | coordinator → provider | `models_replace_ack` | `ModelsReplaceAckMessage` | `.modelsReplaceAck` |
 | provider → coordinator | `models_replace_ready` | `ModelsReplaceReadyMessage` | `.modelsReplaceReady` |
+| coordinator → provider | `models_replace_resumed` | `ModelsReplaceResumedMessage` | `.modelsReplaceResumed` |
 | provider → coordinator | `prefix_cache_lookup` | `PrefixCacheLookupMessage` | `.prefixCacheLookup` |
 | provider → coordinator | `prefix_cache_ready` | `PrefixCacheReadyMessage` | `.prefixCacheReady` |
 | provider → coordinator | `prefix_cache_lookup_v2` | `PrefixCacheLookupV2Message` | `.prefixCacheLookupV2` |
@@ -555,7 +556,7 @@ encoding as `register`); `tool_constraint_protocol` (`int`, opt);
 `weight_hash` against the catalog before merging, so a verified build becomes
 routable without a re-register.
 
-### `models_replace` / `models_replace_ack` / `models_replace_ready`
+### `models_replace` / `models_replace_ack` / `models_replace_ready` / `models_replace_resumed`
 
 Non-destructive target validation followed by atomic full inventory replacement
 and resume on the same registered connection; `models_update` retains its existing
@@ -566,6 +567,7 @@ merge semantics.
 | `models_replace` | `request_id`, `drain_request_id`, nonempty `models`; optional `validate_only` (Bool, omitted means false), `tool_constraint_protocol`, `tool_constraint_models` | `coordinator/protocol/messages.go` (`ModelsReplaceMessage`); Swift `provider-swift/Sources/ProviderCore/Protocol/ModelsReplace.swift` (`ModelsReplace`) |
 | `models_replace_ack` | matching `request_id`, `drain_request_id`, and echoed `validate_only` (Bool, always present), `accepted`; optional `error` | `coordinator/protocol/messages.go` (`ModelsReplaceAckMessage`); Swift `ModelsReplaceAck` |
 | `models_replace_ready` | matching `request_id`, `drain_request_id`, and nonzero `capacity_seq` stamped after the provider opens local admission | `coordinator/protocol/messages.go` (`ModelsReplaceReadyMessage`); Swift `ModelsReplaceReady` |
+| `models_replace_resumed` | exact `request_id`, `drain_request_id`, and `capacity_seq` from the accepted readiness frame | `coordinator/protocol/messages.go` (`ModelsReplaceResumedMessage`); Swift `ModelsReplaceResumed` |
 
 `request_id` is nonempty and at most 64 bytes. `drain_request_id` must name the
 latest committed **and settled** `provider_drain` on this exact live connection.
@@ -610,7 +612,13 @@ queue cleanup survives a later same-session reconciliation drain and is consumed
 only when routing resumes or the session disconnects. After resume the
 coordinator sends a fresh `desired_models` snapshot
 for the replaced inventory, bypassing its prior-snapshot deduplication, then
-reconciles queues including requests for removed models. A drain remains reusable
+reconciles queues including requests for removed models. It then sends
+`models_replace_resumed` on the same connection. The provider reports switch
+success only after receiving the matching receipt. If that receipt is lost or
+the connection drops, the result is unconfirmed even though routing may have
+resumed; retrying the same readiness frame on that connection resends the
+receipt without repeating the routing transition. A newer drain invalidates
+that retry. A drain remains reusable
 after validation but not after commit or disconnect. Sources:
 `coordinator/registry/provider_models_replace.go` (`ReplaceProviderModels`, `ResumeProviderModels`),
 `coordinator/api/provider_models_replace.go` (`handleModelsReplace`, `handleModelsReplaceReady`).

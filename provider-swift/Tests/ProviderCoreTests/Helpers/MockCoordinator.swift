@@ -179,6 +179,7 @@ public final class MockCoordinator: @unchecked Sendable {
 
     private let lock = NSLock()
     private var captured = CapturedMessages()
+    private var acknowledgedReadiness = Set<String>()
     private var activeOutbound: WebSocketOutboundWriter?
     private var bound: BoundServer?
 
@@ -196,6 +197,7 @@ public final class MockCoordinator: @unchecked Sendable {
 
     private let acknowledgeDrains: Bool
     private let acknowledgeModelReplacements: Bool
+    private let acknowledgeModelReadiness: Bool
     private let modelReplacementRejection: String?
     private let rejectedReplacementModelIDs: Set<String>
 
@@ -204,6 +206,7 @@ public final class MockCoordinator: @unchecked Sendable {
     public init(
         acknowledgeDrains: Bool = true,
         acknowledgeModelReplacements: Bool = true,
+        acknowledgeModelReadiness: Bool = true,
         modelReplacementRejection: String? = nil,
         rejectedReplacementModelIDs: Set<String> = [],
         catalog: [CatalogModel] = MockCoordinator.defaultCatalog,
@@ -215,6 +218,7 @@ public final class MockCoordinator: @unchecked Sendable {
     ) {
         self.acknowledgeDrains = acknowledgeDrains
         self.acknowledgeModelReplacements = acknowledgeModelReplacements
+        self.acknowledgeModelReadiness = acknowledgeModelReadiness
         self.modelReplacementRejection = modelReplacementRejection
         self.rejectedReplacementModelIDs = rejectedReplacementModelIDs
         self.catalog = catalog
@@ -396,6 +400,10 @@ public final class MockCoordinator: @unchecked Sendable {
 
     public func pushModelsReplaceAck(_ ack: CoordinatorMessage.ModelsReplaceAck) async throws {
         try await sendCoordinatorMessage(.modelsReplaceAck(ack))
+    }
+
+    public func pushModelsReplaceResumed(_ ack: CoordinatorMessage.ModelsReplaceResumed) async throws {
+        try await sendCoordinatorMessage(.modelsReplaceResumed(ack))
     }
 
     public func pushDesiredModels(_ entries: [CoordinatorMessage.DesiredModelEntry]) async throws {
@@ -663,6 +671,29 @@ public final class MockCoordinator: @unchecked Sendable {
                     validateOnly: replacement.validateOnly,
                     accepted: rejection == nil,
                     error: rejection)))
+            }
+        }
+        if acknowledgeModelReadiness {
+            let readyToAck: ProviderMessage.ModelsReplaceReady? = lock.withLock {
+                switch parsed {
+                case .heartbeat, .modelsReplaceReady: break
+                default: return nil
+                }
+                guard let ready = captured.modelsReplacementReadiness.last,
+                      captured.heartbeats.contains(where: { heartbeat in
+                          (heartbeat.status == .idle || heartbeat.status == .serving) &&
+                              (heartbeat.backendCapacity?.capacitySeq ?? 0) >= ready.capacitySeq
+                      }) else { return nil }
+                let key = "\(ready.requestId):\(ready.drainRequestId):\(ready.capacitySeq)"
+                if case .heartbeat = parsed, acknowledgedReadiness.contains(key) { return nil }
+                acknowledgedReadiness.insert(key)
+                return ready
+            }
+            if let readyToAck {
+                Task { try? await self.sendCoordinatorMessage(.modelsReplaceResumed(.init(
+                    requestId: readyToAck.requestId,
+                    drainRequestId: readyToAck.drainRequestId,
+                    capacitySeq: readyToAck.capacitySeq))) }
             }
         }
     }

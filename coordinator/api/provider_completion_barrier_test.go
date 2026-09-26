@@ -108,7 +108,7 @@ func TestProviderCompletionBarrierReusedDrainIDWaitsForLatestSettlement(t *testi
 		t.Fatalf("latest settled drain could not commit: %v", err)
 	}
 	reg.Heartbeat(provider.ID, &protocol.HeartbeatMessage{Status: "idle", BackendCapacity: &protocol.BackendCapacity{CapacitySeq: 1}})
-	if _, _, resumed := reg.ResumeProviderModels(provider, msg.RequestID, msg.DrainRequestID, 1); !resumed {
+	if _, _, resumed, _ := reg.ResumeProviderModels(provider, msg.RequestID, msg.DrainRequestID, 1); !resumed {
 		t.Fatal("settled replacement did not resume after provider readiness")
 	}
 }

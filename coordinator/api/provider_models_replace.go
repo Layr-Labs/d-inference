@@ -31,33 +31,42 @@ func (s *Server) handleModelsReplace(ctx context.Context, provider *registry.Pro
 	s.registry.ConfirmProviderModelsReceipt(provider, msg.RequestID, generation)
 }
 
-func (s *Server) handleModelsReplaceReady(provider *registry.Provider, msg *protocol.ModelsReplaceReadyMessage) {
-	added, removed, resumed := s.registry.ResumeProviderModels(provider, msg.RequestID, msg.DrainRequestID, msg.CapacitySeq)
-	s.finishModelsReplaceReady(provider, added, removed, resumed)
+func (s *Server) handleModelsReplaceReady(ctx context.Context, provider *registry.Provider, msg *protocol.ModelsReplaceReadyMessage) {
+	added, removed, resumed, ack := s.registry.ResumeProviderModels(provider, msg.RequestID, msg.DrainRequestID, msg.CapacitySeq)
+	s.finishModelsReplaceReady(ctx, provider, added, removed, resumed, ack)
 }
 
-func (s *Server) handleModelsReplaceHeartbeat(provider *registry.Provider) {
-	added, removed, resumed := s.registry.ResumeProviderModelsAfterHeartbeat(provider)
-	s.finishModelsReplaceReady(provider, added, removed, resumed)
+func (s *Server) handleModelsReplaceHeartbeat(ctx context.Context, provider *registry.Provider) {
+	added, removed, resumed, ack := s.registry.ResumeProviderModelsAfterHeartbeat(provider)
+	s.finishModelsReplaceReady(ctx, provider, added, removed, resumed, ack)
 }
 
-func (s *Server) finishModelsReplaceReady(provider *registry.Provider, added, removed []string, resumed bool) {
-	if !resumed {
+func (s *Server) finishModelsReplaceReady(ctx context.Context, provider *registry.Provider, added, removed []string,
+	resumed bool, ack *protocol.ModelsReplaceResumedMessage) {
+	if ack == nil {
 		return
 	}
-	provider.Mu().Lock()
-	backend, version := provider.Backend, provider.Version
-	provider.Mu().Unlock()
-	if s.providerSupportsDesiredModels(backend, version) {
-		if err := s.registry.RefreshDesiredModels(provider); err != nil {
-			s.logger.Warn("failed to refresh desired_models after replacement", "provider_id", provider.ID, "error", err)
+	if resumed {
+		provider.Mu().Lock()
+		backend, version := provider.Backend, provider.Version
+		provider.Mu().Unlock()
+		if s.providerSupportsDesiredModels(backend, version) {
+			if err := s.registry.RefreshDesiredModels(provider); err != nil {
+				s.logger.Warn("failed to refresh desired_models after replacement", "provider_id", provider.ID, "error", err)
+			}
+		}
+		for _, id := range added {
+			s.registry.DrainQueuedRequestsForModel(id)
+		}
+		for _, id := range removed {
+			s.registry.DrainQueuedRequestsForModel(id)
+			s.registry.RejectUnservableQueuedRequests(id)
 		}
 	}
-	for _, id := range added {
-		s.registry.DrainQueuedRequestsForModel(id)
-	}
-	for _, id := range removed {
-		s.registry.DrainQueuedRequestsForModel(id)
-		s.registry.RejectUnservableQueuedRequests(id)
+	data, _ := json.Marshal(ack)
+	ackCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := provider.WriteTextControl(ackCtx, data); err != nil {
+		s.logger.Warn("failed to send models_replace_resumed acknowledgement", "provider_id", provider.ID, "error", err)
 	}
 }

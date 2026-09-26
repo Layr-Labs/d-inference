@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-26 · commit `7c8fc8f1e`
+> Last updated: 2026-09-26 · commit `8a1b36f70`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -45,6 +45,9 @@ running. Live [`switch`](../provider/cli-reference.md#darkbloom-switch) uses the
 daemon's resolved config path and does not optimistically write from the CLI.
 The daemon persists the accepted selection using a stable config sidecar lock,
 reloading before saving so unrelated settings survive concurrent config writes.
+`darkbloom autoupdate enable` and `disable` use that lock and reload before
+saving `provider.auto_update`, so they preserve a concurrent switch selection
+(`provider-swift/Sources/darkbloom/AutoUpdateCommand.swift`, `setAutoUpdate`).
 Other config changes remain process-start settings unless documented otherwise.
 For replacement start, the same sidecar lock covers saving and synchronous
 drain setup. Setup failure restores the original bytes or file absence, so

@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-26 · commit `7c8fc8f1e`
+> Last updated: 2026-09-26 · commit `8a1b36f70`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -30,6 +30,8 @@ Readiness and the heartbeat may arrive in either order; earlier sequence numbers
 draining status, and missing capacity do not release the fence. Only then does
 the API reconcile queues and force a current `desired_models`
 snapshot through `RefreshDesiredModels` in `coordinator/registry/model_commands.go`.
+The API then sends `models_replace_resumed`, and the provider waits for the
+matching receipt before reporting success.
 That refresh bypasses per-connection delivery deduplication, retains the existing
 capability/version guards and retired-alias lineage, and emits an empty snapshot
 when deselected aliases no longer apply. The provider preserves a snapshot that

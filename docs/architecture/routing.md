@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-26 · commit `7c8fc8f1e`
+> Last updated: 2026-09-26 · commit `8a1b36f70`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -50,10 +50,14 @@ queued work. The readiness frame is matched to the current session, replacement
 and drain; its sequence was stamped after local admission opened. Either
 readiness or that heartbeat may arrive first. Only after both does
 the coordinator force desired-model reconciliation and dispatch queued work.
+It sends `models_replace_resumed` after those steps. The provider reports a
+successful switch only when that receipt matches the current connection,
+replacement, drain and capacity sequence; a missing receipt leaves the outcome
+unconfirmed even if routing already resumed.
 Removed model IDs remain queued for cleanup across a failed receipt and another
 same-session drain, until routing resumes or disconnect.
 Invalid selections leave inventory and drain unchanged. See
-[the replacement contract](../reference/protocol-messages.md#models_replace--models_replace_ack--models_replace_ready).
+[the replacement contract](../reference/protocol-messages.md#models_replace--models_replace_ack--models_replace_ready--models_replace_resumed).
 
 
 ## Context

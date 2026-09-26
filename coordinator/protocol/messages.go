@@ -48,6 +48,7 @@ const (
 	TypeModelsReplace           = "models_replace"
 	TypeModelsReplaceAck        = "models_replace_ack"
 	TypeModelsReplaceReady      = "models_replace_ready"
+	TypeModelsReplaceResumed    = "models_replace_resumed"
 	TypePrefixCacheLookup       = "prefix_cache_lookup"
 	TypePrefixCacheReady        = "prefix_cache_ready"
 	TypePrefixCacheLookupV2     = "prefix_cache_lookup_v2"
@@ -869,6 +870,15 @@ type ModelsReplaceAckMessage struct {
 // after receiving the committing acknowledgement. It belongs to that exact
 // replacement and drain on the current WebSocket session.
 type ModelsReplaceReadyMessage struct {
+	Type           string `json:"type"`
+	RequestID      string `json:"request_id"`
+	DrainRequestID string `json:"drain_request_id"`
+	CapacitySeq    uint64 `json:"capacity_seq"`
+}
+
+// ModelsReplaceResumedMessage confirms that the coordinator applied the named
+// capacity and reopened routing on this exact provider connection.
+type ModelsReplaceResumedMessage struct {
 	Type           string `json:"type"`
 	RequestID      string `json:"request_id"`
 	DrainRequestID string `json:"drain_request_id"`

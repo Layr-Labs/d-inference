@@ -78,7 +78,7 @@ extension ProviderLoop {
             let replacementID = try await commitModelSelection(selection, drainID: drainID)
             try checkModelSwitchOwnership()
             guard await resumeAfterModelSwitch(requestID: replacementID, drainID: drainID) else {
-                throw ModelSelectionFailure("Refreshed coordinator capacity was not confirmed after the switch.")
+                throw ModelSelectionFailure("Model selection applied locally, but coordinator routing readiness is unconfirmed.")
             }
             guard servingDrain.owner == nil, !isShuttingDown, !Task.isCancelled else {
                 throw ModelSelectionFailure("Model selection applied, but shutdown superseded resuming service.")
@@ -151,7 +151,9 @@ extension ProviderLoop {
     }
 
     @discardableResult
-    internal func resumeAfterModelSwitch(requestID: String? = nil, drainID: String? = nil) async -> Bool {
+    internal func resumeAfterModelSwitch(
+        requestID: String? = nil, drainID: String? = nil, readyTimeout: Duration = .seconds(30)
+    ) async -> Bool {
         guard servingDrain.owner == .modelSwitch, !isShuttingDown, !Task.isCancelled else { return false }
         if requestID != nil && (drainID == nil || outboundSend == nil || coordinatorClient == nil) { return false }
         servingDrain.resumeModelSwitch()
@@ -161,16 +163,24 @@ extension ProviderLoop {
         // Build a capacity heartbeat only after local admission has opened.
         // Its sequence binds readiness to the refreshed reserve and slot grants,
         // regardless of which outbound frame reaches the coordinator first.
-        if let requestID, let drainID {
-            guard let capacitySeq = await coordinatorClient?.sendEventHeartbeatWithCapacitySeq(), capacitySeq > 0,
+        if let requestID, let drainID, let client = coordinatorClient {
+            guard let capacitySeq = await client.sendEventHeartbeatWithCapacitySeq(), capacitySeq > 0,
                   servingDrain.owner == nil, !isShuttingDown, !Task.isCancelled else {
                 if servingDrain.owner == nil && !isShuttingDown {
                     beginServingDrain(owner: .modelSwitch)
                 }
                 return false
             }
-            outboundSend?.send(.modelsReplaceReady(
-                requestId: requestID, drainID: drainID, capacitySeq: capacitySeq))
+            do {
+                try await client.confirmModelReplacementReady(
+                    requestID: requestID, drainID: drainID, capacitySeq: capacitySeq,
+                    timeout: readyTimeout)
+            } catch {
+                // The coordinator may already have resumed and dispatched
+                // work. Keep local admission open but report an unknown result.
+                return false
+            }
+            guard servingDrain.owner == nil, !isShuttingDown, !Task.isCancelled else { return false }
         } else {
             await coordinatorClient?.sendEventHeartbeat()
         }

@@ -1527,6 +1527,7 @@ extension ProviderMessage: Codable {
 public enum CoordinatorMessage: Sendable, Equatable {
     case drainAck(String)
     case modelsReplaceAck(ModelsReplaceAck)
+    case modelsReplaceResumed(ModelsReplaceResumed)
     case inferenceRequest(InferenceRequest)
     case cancel(Cancel)
     case attestationChallenge(AttestationChallenge)
@@ -1723,6 +1724,7 @@ extension CoordinatorMessage: Codable {
     enum TypeValue: String, Codable {
         case drainAck = "provider_drain_ack"
         case modelsReplaceAck = "models_replace_ack"
+        case modelsReplaceResumed = "models_replace_resumed"
         case inferenceRequest = "inference_request"
         case cancel
         case attestationChallenge = "attestation_challenge"
@@ -1775,6 +1777,9 @@ extension CoordinatorMessage: Codable {
             try container.encode(id, forKey: .requestId)
         case .modelsReplaceAck(let ack):
             try container.encode(TypeValue.modelsReplaceAck, forKey: .type)
+            try ack.encode(to: encoder)
+        case .modelsReplaceResumed(let ack):
+            try container.encode(TypeValue.modelsReplaceResumed, forKey: .type)
             try ack.encode(to: encoder)
         case .inferenceRequest(let r):
             try container.encode(TypeValue.inferenceRequest, forKey: .type)
@@ -1868,6 +1873,8 @@ extension CoordinatorMessage: Codable {
             self = .drainAck(try container.decode(String.self, forKey: .requestId))
         case .modelsReplaceAck:
             self = .modelsReplaceAck(try ModelsReplaceAck(from: decoder))
+        case .modelsReplaceResumed:
+            self = .modelsReplaceResumed(try ModelsReplaceResumed(from: decoder))
         case .inferenceRequest:
             self = .inferenceRequest(InferenceRequest(
                 requestId: try container.decode(String.self, forKey: .requestId),

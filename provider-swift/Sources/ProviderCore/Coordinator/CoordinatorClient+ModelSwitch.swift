@@ -29,6 +29,14 @@ internal struct PendingModelReplacement: Sendable {
     let continuation: AsyncStream<Result<Void, ModelSwitchError>>.Continuation
 }
 
+internal struct PendingModelReadiness: Sendable {
+    let requestID: String
+    let drainID: String
+    let capacitySeq: UInt64
+    let connection: NWConnection
+    let continuation: AsyncStream<Result<Void, ModelSwitchError>>.Continuation
+}
+
 extension CoordinatorClient {
     /// Keeps the next registration truthful while the caller mutates its local
     /// inventory under a closed admission gate. This sends no wire traffic.
@@ -146,9 +154,72 @@ extension CoordinatorClient {
         pending.continuation.finish()
     }
 
+    /// Await the coordinator's proof that this connection applied the named
+    /// capacity and reopened routing. A write completion alone cannot prove
+    /// the ready frame was received or acted on by the coordinator.
+    internal func confirmModelReplacementReady(
+        requestID: String, drainID: String, capacitySeq: UInt64, timeout: Duration
+    ) async throws {
+        guard !requestID.isEmpty, !drainID.isEmpty, capacitySeq > 0 else {
+            throw ModelSwitchError.invalidDrain
+        }
+        guard hasRegisteredConnection(), let connection = nwConnection else {
+            throw ModelSwitchError.disconnected
+        }
+        guard modelReadiness == nil else { throw ModelSwitchError.switchInProgress }
+        let (stream, continuation) = AsyncStream<Result<Void, ModelSwitchError>>.makeStream()
+        modelReadiness = PendingModelReadiness(
+            requestID: requestID, drainID: drainID, capacitySeq: capacitySeq,
+            connection: connection, continuation: continuation)
+        defer {
+            if let pending = modelReadiness,
+               pending.requestID == requestID, pending.drainID == drainID,
+               pending.capacitySeq == capacitySeq, pending.connection === connection {
+                modelReadiness = nil
+            }
+            continuation.finish()
+        }
+        outboundRouter.yield(.modelsReplaceReady(
+            requestId: requestID, drainID: drainID, capacitySeq: capacitySeq))
+        let result = await withTaskGroup(of: Result<Void, ModelSwitchError>.self) { group in
+            group.addTask {
+                for await result in stream { return result }
+                return .failure(.disconnected)
+            }
+            group.addTask {
+                try? await taskSleep(timeout)
+                return .failure(.timedOut)
+            }
+            let result = await group.next() ?? .failure(.disconnected)
+            group.cancelAll()
+            return result
+        }
+        try Task.checkCancellation()
+        switch result {
+        case .success:
+            guard nwConnection === connection, hasRegisteredConnection() else {
+                throw ModelSwitchError.disconnected
+            }
+        case .failure(let error):
+            throw error
+        }
+    }
+
+    internal func completeModelReplacementReadiness(_ ack: CoordinatorMessage.ModelsReplaceResumed) {
+        guard let pending = modelReadiness,
+              pending.requestID == ack.requestId, pending.drainID == ack.drainRequestId,
+              pending.capacitySeq == ack.capacitySeq,
+              pending.connection === nwConnection else { return }
+        pending.continuation.yield(.success(()))
+        pending.continuation.finish()
+    }
+
     internal func failModelReplacements() {
         modelReplacement?.continuation.yield(.failure(.disconnected))
         modelReplacement?.continuation.finish()
         modelReplacement = nil
+        modelReadiness?.continuation.yield(.failure(.disconnected))
+        modelReadiness?.continuation.finish()
+        modelReadiness = nil
     }
 }

@@ -42,7 +42,7 @@ func applyReplacementCapacity(t *testing.T, s *Server, p *registry.Provider, mod
 	if !s.applyProviderHeartbeat(p.ID, p, msg) {
 		t.Fatal("fresh replacement heartbeat was rejected")
 	}
-	s.handleModelsReplaceHeartbeat(p)
+	s.handleModelsReplaceHeartbeat(context.Background(), p)
 }
 
 func TestModelsReplaceFailedAckKeepsRoutingFencedAndQueuesUntouched(t *testing.T) {
@@ -77,7 +77,7 @@ func TestModelsReplaceFailedAckKeepsRoutingFencedAndQueuesUntouched(t *testing.T
 	if len(models) != 1 || models[0].ID != "replacement" {
 		t.Fatalf("expected committed inventory behind the fence, got %+v", models)
 	}
-	s.handleModelsReplaceReady(p, &protocol.ModelsReplaceReadyMessage{RequestID: "replace", DrainRequestID: "drain", CapacitySeq: 1})
+	s.handleModelsReplaceReady(context.Background(), p, &protocol.ModelsReplaceReadyMessage{RequestID: "replace", DrainRequestID: "drain", CapacitySeq: 1})
 	if !s.registry.ProviderDraining(p.ID) {
 		t.Fatal("readiness without a written commit receipt reopened admission")
 	}
@@ -108,13 +108,18 @@ func TestModelsReplaceFailedAckKeepsRoutingFencedAndQueuesUntouched(t *testing.T
 	if !receipt.Accepted || receipt.RequestID != "retry" || !s.registry.ProviderDraining(p.ID) {
 		t.Fatalf("same-session reconciliation failed: %+v", receipt)
 	}
-	s.handleModelsReplaceReady(p, &protocol.ModelsReplaceReadyMessage{RequestID: "retry", DrainRequestID: "reconcile", CapacitySeq: 1})
+	s.handleModelsReplaceReady(context.Background(), p, &protocol.ModelsReplaceReadyMessage{RequestID: "retry", DrainRequestID: "reconcile", CapacitySeq: 1})
 	if !s.registry.ProviderDraining(p.ID) || s.registry.Queue().QueueSize("replacement") != 1 {
 		t.Fatal("readiness dispatched before refreshed capacity")
 	}
 	applyReplacementCapacity(t, s, p, "replacement")
 	if s.registry.ProviderDraining(p.ID) {
 		t.Fatal("matching provider readiness and capacity failed to resume admission")
+	}
+	var resumed protocol.ModelsReplaceResumedMessage
+	readReplacementFrame(t, ctx, peer, protocol.TypeModelsReplaceResumed, &resumed)
+	if resumed.RequestID != "retry" || resumed.DrainRequestID != "reconcile" || resumed.CapacitySeq != 1 {
+		t.Fatalf("wrong routing-resumed receipt: %+v", resumed)
 	}
 	select {
 	case selected := <-queued[1].ResponseCh:
@@ -131,6 +136,48 @@ func TestModelsReplaceFailedAckKeepsRoutingFencedAndQueuesUntouched(t *testing.T
 		}
 	case <-ctx.Done():
 		t.Fatal("removed model queue was not reconciled after the retry drain")
+	}
+}
+
+func TestModelsReplaceResumedReceiptCanBeRetriedAfterWriteFailure(t *testing.T) {
+	s, p, peer := dispatchAccountingProvider(t)
+	generation := s.registry.CommitProviderDrain(p, "drain")
+	if !s.registry.CompleteProviderDrain(p, "drain", generation) {
+		t.Fatal("drain did not settle")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s.handleModelsReplace(ctx, p, &protocol.ModelsReplaceMessage{
+		RequestID: "replace", DrainRequestID: "drain", Models: append([]protocol.ModelInfo(nil), p.Models...),
+	})
+	readReplacementFrame(t, ctx, peer, protocol.TypeModelsReplaceAck, nil)
+	free := 24.0
+	if !s.applyProviderHeartbeat(p.ID, p, &protocol.HeartbeatMessage{
+		Status: "idle", BackendCapacity: &protocol.BackendCapacity{CapacitySeq: 1, FreeForLoadGB: &free},
+	}) {
+		t.Fatal("fresh capacity was not applied")
+	}
+	ready := &protocol.ModelsReplaceReadyMessage{RequestID: "replace", DrainRequestID: "drain", CapacitySeq: 1}
+	failedCtx, fail := context.WithCancel(context.Background())
+	fail()
+	s.handleModelsReplaceReady(failedCtx, p, ready)
+	if s.registry.ProviderDraining(p.ID) {
+		t.Fatal("failed resumed-ack write re-fenced routing")
+	}
+	// An identical frame on this session resends only the receipt; it does not
+	// repeat the inventory or queue transition.
+	s.handleModelsReplaceReady(ctx, p, ready)
+	var resumed protocol.ModelsReplaceResumedMessage
+	readReplacementFrame(t, ctx, peer, protocol.TypeModelsReplaceResumed, &resumed)
+	if resumed.RequestID != ready.RequestID || resumed.DrainRequestID != ready.DrainRequestID ||
+		resumed.CapacitySeq != ready.CapacitySeq {
+		t.Fatalf("retry did not receive the matching receipt: %+v", resumed)
+	}
+	if next := s.registry.CommitProviderDrain(p, "new-drain"); next == 0 {
+		t.Fatal("new barrier failed")
+	}
+	if _, _, resumedAgain, ack := s.registry.ResumeProviderModels(p, ready.RequestID, ready.DrainRequestID, ready.CapacitySeq); resumedAgain || ack != nil {
+		t.Fatal("old readiness was acknowledged after a newer drain")
 	}
 }
 
@@ -179,7 +226,7 @@ func TestModelsReplaceRefreshesDesiredSnapshotAfterAck(t *testing.T) {
 			if !s.registry.ProviderDraining(p.ID) {
 				t.Fatal("receipt reopened admission before provider readiness")
 			}
-			s.handleModelsReplaceReady(p, &protocol.ModelsReplaceReadyMessage{RequestID: "replace", DrainRequestID: "drain", CapacitySeq: 1})
+			s.handleModelsReplaceReady(context.Background(), p, &protocol.ModelsReplaceReadyMessage{RequestID: "replace", DrainRequestID: "drain", CapacitySeq: 1})
 			applyReplacementCapacity(t, s, p, "selected")
 			var after protocol.DesiredModelsMessage
 			readReplacementFrame(t, ctx, peer, protocol.TypeDesiredModels, &after)

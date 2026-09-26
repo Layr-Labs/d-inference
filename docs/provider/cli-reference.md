@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-26 · commit `7c8fc8f1e`
+> Last updated: 2026-09-26 · commit `8a1b36f70`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -155,7 +155,9 @@ models still need their pinned catalog hashes and required runtime capabilities
 (`coordinator/registry/provider_models_replace.go`, `ReplaceProviderModels`).
 
 Success requires a matching completion receipt from the running provider, not
-just mailbox publication. A successful selection is persisted for later restart,
+just mailbox publication. The provider requires a matching
+`models_replace_resumed` receipt from the coordinator before writing that
+completion receipt. A successful selection is persisted for later restart,
 watchdog recovery and scheduled serving windows. Stale/missing/older daemons and
 standalone `--local` servers fail without launching anything. A drain timeout returns failure and
 leaves admission closed while accepted work continues; retry `switch` after
@@ -164,7 +166,9 @@ Live rollback restores an originally absent model key/file when no other edit
 intervened. Concurrent unrelated config changes are retained; a newer model
 selection is never silently overwritten. An unavailable completion receipt is
 reported as unconfirmed, never success, and coordinator routing stays fenced
-when that receipt cannot be written.
+when the committing `models_replace_ack` cannot be written. If the final
+`models_replace_resumed` receipt is lost, routing may already have resumed;
+`switch` reports the outcome as unconfirmed.
 `status` displays the latest switch outcome, request ID, unfinished-request count,
 message and selection; stale daemon snapshots are explicitly marked
 (`Status.printDaemonStatus` in `provider-swift/Sources/darkbloom/StatusCommand.swift`).
@@ -427,7 +431,9 @@ Examples:
 |---|---|---|---|
 | `action` | `String` | — (required) | `enable`/`on`/`true`, `disable`/`off`/`false`, or `status`; anything else exits 1 |
 
-Writes `provider.auto_update` to the config file.
+Writes `provider.auto_update` to the config file under the shared config lock,
+reloading the file before saving so a concurrent live switch's model selection
+is retained.
 
 ### `darkbloom beta`
 
@@ -843,7 +849,9 @@ Enable or disable automatic update checks at startup.
 darkbloom autoupdate <enable|disable|status>
 ```
 
-This toggles `provider.auto_update` in `provider.toml`.
+This toggles `provider.auto_update` in `provider.toml`. It reloads the file
+under the same sidecar lock as `darkbloom switch`, preserving a selection saved
+by a concurrent switch.
 
 ## `darkbloom beta`
 

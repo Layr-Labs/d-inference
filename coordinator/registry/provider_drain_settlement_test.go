@@ -22,7 +22,7 @@ func TestReplacementReadinessWaitsForAppliedServingCapacity(t *testing.T) {
 	if err != nil || !r.ConfirmProviderModelsReceipt(p, "replace", receipt) {
 		t.Fatalf("replacement receipt: %v", err)
 	}
-	if _, _, resumed := r.ResumeProviderModels(p, "replace", "drain", 3); resumed {
+	if _, _, resumed, _ := r.ResumeProviderModels(p, "replace", "drain", 3); resumed {
 		t.Fatal("readiness reopened routing with pre-switch capacity")
 	}
 	if !r.Heartbeat(p.ID, &protocol.HeartbeatMessage{
@@ -30,7 +30,7 @@ func TestReplacementReadinessWaitsForAppliedServingCapacity(t *testing.T) {
 	}) {
 		t.Fatal("draining capacity was not applied")
 	}
-	if _, _, resumed := r.ResumeProviderModelsAfterHeartbeat(p); resumed {
+	if _, _, resumed, _ := r.ResumeProviderModelsAfterHeartbeat(p); resumed {
 		t.Fatal("draining capacity reopened routing")
 	}
 	if r.Heartbeat(p.ID, &protocol.HeartbeatMessage{
@@ -38,7 +38,7 @@ func TestReplacementReadinessWaitsForAppliedServingCapacity(t *testing.T) {
 	}) {
 		t.Fatal("stale capacity sequence was applied")
 	}
-	if _, _, resumed := r.ResumeProviderModelsAfterHeartbeat(p); resumed {
+	if _, _, resumed, _ := r.ResumeProviderModelsAfterHeartbeat(p); resumed {
 		t.Fatal("stale serving capacity reopened routing")
 	}
 	free := 2.0
@@ -47,7 +47,7 @@ func TestReplacementReadinessWaitsForAppliedServingCapacity(t *testing.T) {
 	}) {
 		t.Fatal("fresh serving capacity was not applied")
 	}
-	if _, _, resumed := r.ResumeProviderModelsAfterHeartbeat(p); !resumed || r.ProviderDraining(p.ID) {
+	if _, _, resumed, _ := r.ResumeProviderModelsAfterHeartbeat(p); !resumed || r.ProviderDraining(p.ID) {
 		t.Fatal("matching readiness and fresh capacity did not reopen routing")
 	}
 	if got := p.BackendCapacitySnapshot(); got == nil || got.FreeForLoadGB == nil || *got.FreeForLoadGB != free {
@@ -71,10 +71,10 @@ func TestReplacementCapacityMayArriveBeforeReadyFrame(t *testing.T) {
 	}) {
 		t.Fatal("fresh capacity was not applied")
 	}
-	if _, _, resumed := r.ResumeProviderModelsAfterHeartbeat(p); resumed || !r.ProviderDraining(p.ID) {
+	if _, _, resumed, _ := r.ResumeProviderModelsAfterHeartbeat(p); resumed || !r.ProviderDraining(p.ID) {
 		t.Fatal("capacity alone reopened routing")
 	}
-	if _, _, resumed := r.ResumeProviderModels(p, "replace", "drain", 1); !resumed || r.ProviderDraining(p.ID) {
+	if _, _, resumed, _ := r.ResumeProviderModels(p, "replace", "drain", 1); !resumed || r.ProviderDraining(p.ID) {
 		t.Fatal("matching ready frame did not complete the replacement")
 	}
 }
@@ -96,7 +96,7 @@ func TestDuplicateReadyCannotLowerRequiredCapacitySequence(t *testing.T) {
 		t.Fatal("older serving heartbeat was not applied")
 	}
 	for _, readySeq := range []uint64{3, 1} {
-		if _, _, resumed := r.ResumeProviderModels(p, "replace", "drain", readySeq); resumed {
+		if _, _, resumed, _ := r.ResumeProviderModels(p, "replace", "drain", readySeq); resumed {
 			t.Fatal("older duplicate readiness lowered the required capacity sequence")
 		}
 	}
@@ -105,7 +105,7 @@ func TestDuplicateReadyCannotLowerRequiredCapacitySequence(t *testing.T) {
 	}) {
 		t.Fatal("newer serving heartbeat was not applied")
 	}
-	if _, _, resumed := r.ResumeProviderModelsAfterHeartbeat(p); !resumed {
+	if _, _, resumed, _ := r.ResumeProviderModelsAfterHeartbeat(p); !resumed {
 		t.Fatal("required serving capacity did not complete the replacement")
 	}
 }
@@ -136,7 +136,7 @@ func TestReplacementRemovalsSurviveReconciliationDrain(t *testing.T) {
 			t.Fatalf("retry receipt: %v", err)
 		}
 		markReplacementCapacityFresh(p)
-		_, pendingRemoved, resumed := r.ResumeProviderModels(p, "retry", "second", 1)
+		_, pendingRemoved, resumed, _ := r.ResumeProviderModels(p, "retry", "second", 1)
 		if !resumed || (len(pendingRemoved) == 1) != !restored {
 			t.Fatalf("reconciliation removals restored=%v: %v", restored, pendingRemoved)
 		}
@@ -198,7 +198,7 @@ func TestReplacementReceiptCannotResumeNewerDrainOrSession(t *testing.T) {
 	r := New(testLogger())
 	p := registerDrainStateProvider(t, r, "session", 100)
 	first := r.CommitProviderDrain(p, "same-id")
-	if _, _, resumed := r.ResumeProviderModels(p, "replace", "same-id", 1); resumed {
+	if _, _, resumed, _ := r.ResumeProviderModels(p, "replace", "same-id", 1); resumed {
 		t.Fatal("uncommitted inventory resumed admission")
 	}
 	r.CompleteProviderDrain(p, "same-id", first)
@@ -211,19 +211,19 @@ func TestReplacementReceiptCannotResumeNewerDrainOrSession(t *testing.T) {
 	if !r.ProviderDraining(p.ID) {
 		t.Fatal("idle heartbeat reopened a commit without its receipt")
 	}
-	if _, _, resumed := r.ResumeProviderModels(p, "replace", "same-id", 1); resumed {
+	if _, _, resumed, _ := r.ResumeProviderModels(p, "replace", "same-id", 1); resumed {
 		t.Fatal("provider readiness reopened before the receipt reached the wire")
 	}
 	if !r.ConfirmProviderModelsReceipt(p, "replace", receipt) {
 		t.Fatal("could not confirm committed receipt")
 	}
 	for _, correlation := range [][2]string{{"other", "same-id"}, {"replace", "other"}} {
-		if _, _, resumed := r.ResumeProviderModels(p, correlation[0], correlation[1], 1); resumed || !r.ProviderDraining(p.ID) {
+		if _, _, resumed, _ := r.ResumeProviderModels(p, correlation[0], correlation[1], 1); resumed || !r.ProviderDraining(p.ID) {
 			t.Fatal("mismatched readiness reopened admission")
 		}
 	}
 	second := r.CommitProviderDrain(p, "same-id")
-	if _, _, resumed := r.ResumeProviderModels(p, "replace", "same-id", 1); resumed || !r.ProviderDraining(p.ID) {
+	if _, _, resumed, _ := r.ResumeProviderModels(p, "replace", "same-id", 1); resumed || !r.ProviderDraining(p.ID) {
 		t.Fatal("late replacement receipt reopened the newer drain")
 	}
 	r.CompleteProviderDrain(p, "same-id", second)
@@ -237,7 +237,7 @@ func TestReplacementReceiptCannotResumeNewerDrainOrSession(t *testing.T) {
 	r.Disconnect(p.ID)
 	fresh := registerDrainStateProvider(t, r, p.ID, 100)
 	r.CommitProviderDrain(fresh, "same-id")
-	if _, _, resumed := r.ResumeProviderModels(p, "replace", "same-id", 1); resumed || !r.ProviderDraining(fresh.ID) {
+	if _, _, resumed, _ := r.ResumeProviderModels(p, "replace", "same-id", 1); resumed || !r.ProviderDraining(fresh.ID) {
 		t.Fatal("old connection receipt reopened another session")
 	}
 }

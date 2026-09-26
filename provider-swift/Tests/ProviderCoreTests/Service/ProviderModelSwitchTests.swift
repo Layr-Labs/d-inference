@@ -183,6 +183,41 @@ struct ProviderModelSwitchTests {
     }
 
     @Test(arguments: [false, true])
+    func switchReportsSuccessOnlyAfterMatchingRoutingReceipt(dropConnection: Bool) async throws {
+        let mock = MockCoordinator(acknowledgeModelReadiness: false)
+        let url = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+        let (loop, root) = try await switchLoop(url: url.mockProviderWebSocketURL())
+        defer { try? FileManager.default.removeItem(at: root) }
+        let snapshot = try switchSnapshot(in: root)
+        await loop.useSwitchSnapshot(snapshot)
+        let (client, reader) = await connectSwitchLoop(loop, url: url.mockProviderWebSocketURL())
+        defer { reader.cancel(); Task { await client.shutdown() } }
+        let request = ProviderModelSwitchRequest(target: try #require(ProcessIdentity.current()),
+            models: ["new-model"], timeoutSeconds: 0)
+        let switching = Task { await loop.switchModels(request: request) }
+        let captured = try #require(try await mock.waitForSnapshot { !$0.modelsReplacementReadiness.isEmpty })
+        let ready = try #require(captured.modelsReplacementReadiness.last)
+        #expect(await loop.modelSwitchStatus.outcome == .switching)
+        if dropConnection {
+            await mock.dropActiveWebSocket()
+            let result = await switching.value
+            #expect(result.outcome != .switched)
+            #expect(result.message?.contains("unconfirmed") == true)
+        } else {
+            try await mock.pushModelsReplaceResumed(.init(requestId: ready.requestId,
+                drainRequestId: ready.drainRequestId, capacitySeq: ready.capacitySeq + 1))
+            try await Task.sleep(for: .milliseconds(100))
+            #expect(await loop.modelSwitchStatus.outcome == .switching)
+            try await mock.pushModelsReplaceResumed(.init(requestId: ready.requestId,
+                drainRequestId: ready.drainRequestId, capacitySeq: ready.capacitySeq))
+            let result = await switching.value
+            #expect(result.outcome == .switched)
+            #expect(mock.snapshot().registers.count == 1)
+        }
+    }
+
+    @Test(arguments: [false, true])
     func zeroTimeoutDoesNotWaitForInferenceOrModelMutation(mutation: Bool) async throws {
         let mock = MockCoordinator()
         let url = try await mock.start()

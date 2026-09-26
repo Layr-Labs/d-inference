@@ -169,6 +169,8 @@ export const TELEMETRY_ALLOWED_FIELDS = new Set<string>([
   // Token counts, never token contents.
   "mtp_proposed_tokens",
   "mtp_accepted_tokens",
+  // The installed acceptance rule ("exact" / "typical").
+  "mtp_acceptance",
 ]);
 
 // Heartbeat capacity diagnostics mirror coordinator/protocol/profile.go and

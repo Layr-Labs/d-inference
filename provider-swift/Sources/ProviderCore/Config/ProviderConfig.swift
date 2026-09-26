@@ -257,6 +257,20 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// involved. Takes precedence over the `spec_dec` download when set. nil
     /// (default) = resolve via the catalog's `spec_dec` pointer.
     public var mtpDrafterPath: String?
+    /// MTP draft acceptance rule for sampled requests (`mtp_acceptance`
+    /// under `[backend]`): `"exact"` or `"typical"`. nil (default, key
+    /// absent) means "not set" and resolves to the built-in `exact`.
+    /// Optional on purpose: `TOMLEncoder` writes every non-optional key, and
+    /// a written default would shadow every lower-precedence source for the
+    /// life of the file. `typical` keeps a draft when the target's filtered
+    /// probability for it clears an entropy-scaled floor; sampled output is
+    /// then not distribution-exact. Greedy requests never change. See
+    /// `MTPAcceptancePolicy`.
+    public var mtpAcceptance: String?
+    /// Optional per-model override map (`mtp_acceptance_by_model` under
+    /// `[backend]`, TOML table of model id → "exact" | "typical"). Missing
+    /// ids use `mtpAcceptance`.
+    public var mtpAcceptanceByModel: [String: String]
     /// RETIRED `[backend]` keys found in the decoded provider.toml
     /// (`engine_v2`, `continuous_batching`, `adaptive_prefill`,
     /// `legacy_compiled_decode`, `kv_quant`). The keys parse cleanly — an
@@ -300,7 +314,9 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         mtp: Bool? = nil,
         mtpMode: MTPMode = .auto,
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
-        mtpDrafterPath: String? = nil
+        mtpDrafterPath: String? = nil,
+        mtpAcceptance: String? = nil,
+        mtpAcceptanceByModel: [String: String] = [:]
     ) {
         self.port = port
         self.model = model
@@ -320,6 +336,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.mtpMode = mtp.map { $0 ? .on : .off } ?? mtpMode
         self.prefillDeadlineMode = prefillDeadlineMode
         self.mtpDrafterPath = mtpDrafterPath
+        self.mtpAcceptance = mtpAcceptance
+        self.mtpAcceptanceByModel = mtpAcceptanceByModel
     }
 
     enum CodingKeys: String, CodingKey {
@@ -342,6 +360,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case mtpMode = "mtp_mode"
         case prefillDeadlineMode = "prefill_deadline_mode"
         case mtpDrafterPath = "mtp_drafter_path"
+        case mtpAcceptance = "mtp_acceptance"
+        case mtpAcceptanceByModel = "mtp_acceptance_by_model"
     }
 
     /// RETIRED `[backend]` keys: parsed for presence only, values ignored.
@@ -394,6 +414,10 @@ public struct BackendSettings: Sendable, Equatable, Codable {
                 PrefillDeadlineMode.self,
                 forKey: .prefillDeadlineMode)
         self.mtpDrafterPath = try container.decodeIfPresent(String.self, forKey: .mtpDrafterPath)
+        self.mtpAcceptance = try container.decodeIfPresent(String.self, forKey: .mtpAcceptance)
+        self.mtpAcceptanceByModel =
+            try container.decodeIfPresent(
+                [String: String].self, forKey: .mtpAcceptanceByModel) ?? [:]
         // Retired keys: presence-only scan so startup can WARN (values are
         // ignored; an old provider.toml must keep loading cleanly).
         let retired = try decoder.container(keyedBy: RetiredCodingKeys.self)
@@ -422,6 +446,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         try container.encode(mtpMode, forKey: .mtpMode)
         try container.encodeIfPresent(prefillDeadlineMode, forKey: .prefillDeadlineMode)
         try container.encodeIfPresent(mtpDrafterPath, forKey: .mtpDrafterPath)
+        try container.encodeIfPresent(mtpAcceptance, forKey: .mtpAcceptance)
+        try container.encode(mtpAcceptanceByModel, forKey: .mtpAcceptanceByModel)
     }
 }
 

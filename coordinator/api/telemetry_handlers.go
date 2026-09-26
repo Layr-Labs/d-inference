@@ -153,6 +153,9 @@ var telemetryFieldAllowlist = map[string]struct{}{
 	"mtp_acceptance_rate": {},
 	"mtp_proposed_tokens": {},
 	"mtp_accepted_tokens": {},
+	// mtp_acceptance names the installed acceptance rule ("exact" /
+	// "typical") so acceptance rates roll up per rule.
+	"mtp_acceptance": {},
 	// Console UI context
 	"url":        {},
 	"user_agent": {},

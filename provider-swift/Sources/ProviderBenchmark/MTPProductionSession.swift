@@ -171,6 +171,11 @@ public final class MTPProductionModelBundle: @unchecked Sendable {
             }
         }()
         let automaticRectangularTokens = MTPAutomaticVerificationPolicy.maxRectangularTokens()
+        // Benchmark-only: `DARKBLOOM_MTP_ACCEPTANCE=exact|typical[:<delta>]`.
+        // Serving reads no environment variable for the acceptance rule.
+        let acceptance =
+            MTPAcceptancePolicy.benchmarkOverride(
+                environment: ProcessInfo.processInfo.environment) ?? .exact
         let mtpDrafter: (any CBv2MTPDrafter)?
         let mtpConfig: CBv2MTPConfig
         switch mode.kind {
@@ -189,7 +194,8 @@ public final class MTPProductionModelBundle: @unchecked Sendable {
                 maxSpeculativeBatch: 8,
                 fixedDraftTokens: fixedDraftTokens,
                 verificationMode: verificationMode,
-                maxAutomaticRectangularTokens: automaticRectangularTokens)
+                maxAutomaticRectangularTokens: automaticRectangularTokens,
+                acceptance: acceptance)
         case .adaptive:
             mtpDrafter = drafter
             mtpConfig = CBv2MTPConfig(
@@ -198,7 +204,8 @@ public final class MTPProductionModelBundle: @unchecked Sendable {
                 maxSpeculativeBatch: 8,
                 fixedDraftTokens: nil,
                 verificationMode: verificationMode,
-                maxAutomaticRectangularTokens: automaticRectangularTokens)
+                maxAutomaticRectangularTokens: automaticRectangularTokens,
+                acceptance: acceptance)
         }
         let engine = try EngineV2Factory.makeProductionEngine(
             model: servingModel,

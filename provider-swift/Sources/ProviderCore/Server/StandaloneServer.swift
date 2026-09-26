@@ -87,6 +87,10 @@ public struct StandaloneServerConfig: Sendable {
     /// Source-compatible view for callers that still inspect the old boolean.
     public var mtp: Bool { mtpMode == .on }
     public let mtpDrafterPath: String?
+    /// MTP draft acceptance (`[backend] mtp_acceptance`, nil = not set →
+    /// `exact`) and its per-model table. See `MTPAcceptancePolicy`.
+    public let mtpAcceptance: String?
+    public let mtpAcceptanceByModel: [String: String]
     public let coordinatorURL: String
 
     public init(
@@ -104,6 +108,8 @@ public struct StandaloneServerConfig: Sendable {
         mtp: Bool? = nil,
         mtpMode: MTPMode = .auto,
         mtpDrafterPath: String? = nil,
+        mtpAcceptance: String? = nil,
+        mtpAcceptanceByModel: [String: String] = [:],
         coordinatorURL: String = CoordinatorSettings().url
     ) {
         self.port = port
@@ -119,6 +125,8 @@ public struct StandaloneServerConfig: Sendable {
         self.prefillDeadlineMode = prefillDeadlineMode
         self.mtpMode = mtp.map { $0 ? .on : .off } ?? mtpMode
         self.mtpDrafterPath = mtpDrafterPath
+        self.mtpAcceptance = mtpAcceptance
+        self.mtpAcceptanceByModel = mtpAcceptanceByModel
         self.coordinatorURL = coordinatorURL
     }
 }
@@ -1098,6 +1106,8 @@ public actor StandaloneServer {
                 activationReserveBytes: resolvedActivationReserveBytes,
                 kvBackendConfig: config.engineV2KVBackend,
                 kvBackendConfigByModel: config.engineV2KVBackendByModel,
+                mtpAcceptanceConfig: config.mtpAcceptance,
+                mtpAcceptanceConfigByModel: config.mtpAcceptanceByModel,
                 prefillDeadlineMode: config.prefillDeadlineMode,
                 weightHash: cacheEligibleWeightHash,
                 specDecPreparation: specDecPreparation,

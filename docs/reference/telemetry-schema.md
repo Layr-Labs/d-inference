@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-09-20 · commit `76a8f03d`
+> Last updated: 2026-09-26 · commit `8c912a46f`
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, the field allowlist, and the tests
@@ -143,7 +143,7 @@ content are never admitted.
 | Exact-prefix replay | `prefix_reuse_strategy`, `prefix_matched_tokens`, `prefix_replay_tokens`, `prefix_saved_tokens`, `prefix_boundary_splits`, `prefix_construction_failure`, `prefix_capacity_refusal`, `prefix_cold_fallback` |
 | KV-backend discriminator | `kv_backend` (`paged`/`contiguous`, same key as `BackendSlotCapacity.KVBackend` on the heartbeat), `prefix_reuse_backend` (`contiguous_unquantized`/`contiguous_quantized`/`paged_fp16`/`unknown`) |
 | Paged KV pool | `pool_utilization` (occupancy ratio), `pool_bytes`, `pool_deferred_growth_bytes`, `pool_stranded_bytes` (raw bytes; `pages_pinned` and `cow_events` are deliberately absent because neither mechanism exists) |
-| Multi-token prediction | `mtp_enabled`, `mtp_active`, `mtp_inactive_reason` (`MTPFallbackReason` values plus `inert_kv_unsupported`), `mtp_acceptance_rate`, `mtp_proposed_tokens`, `mtp_accepted_tokens` |
+| Multi-token prediction | `mtp_enabled`, `mtp_active`, `mtp_inactive_reason` (`MTPFallbackReason` values plus `inert_kv_unsupported`), `mtp_acceptance_rate`, `mtp_proposed_tokens`, `mtp_accepted_tokens`, `mtp_acceptance` (`exact` / `typical`, the installed draft acceptance rule) |
 | Console UI context | `url`, `user_agent`, `route` |
 
 `GlobalKVCacheBudget.recordCommitRejection` reports ownership during sustained

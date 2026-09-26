@@ -302,8 +302,11 @@ public enum TelemetryFieldFilter {
         // mtp_proposed_tokens / mtp_accepted_tokens are the cumulative
         // counters behind mtp_acceptance_rate — the weights a roll-up needs.
         // Token COUNTS, never token contents.
+        // mtp_acceptance names the installed acceptance rule (`exact` /
+        // `typical`) so acceptance rates roll up per rule.
         "mtp_enabled", "mtp_active", "mtp_inactive_reason",
         "mtp_acceptance_rate", "mtp_proposed_tokens", "mtp_accepted_tokens",
+        "mtp_acceptance",
     ]
 
     /// Filter a dictionary to only the keys the coordinator accepts.

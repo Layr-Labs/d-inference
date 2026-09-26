@@ -6,6 +6,9 @@ public actor AppAttestShadowClient {
     private let service: any AppAttestService
     private let storage: any ShadowKeyStorage
     private let scope: String
+    private let runtimeContext: @Sendable () -> AppAttestRuntimeContext
+    private let now: @Sendable () -> Date
+    private let processDiagnostics: @Sendable () async -> AppAttestProcessDiagnostics
     private var busy = false
     private var session: String?
     private var record: ShadowKeyRecord?
@@ -13,12 +16,117 @@ public actor AppAttestShadowClient {
     private var preparedScope: String?
     private var preparedAccountScope: String?
     private var preparedProtocol: Int?
+    private var localStatus: AppAttestLocalStatus?
+    /// The generation budget does not change during proofs. Keep the prepare
+    /// observation so proof diagnostics need no additional Keychain reads.
+    private var localKeyContext: (scope: String, budget: ShadowKeyRecord?)?
+    private var lastAppleFailure: AppAttestLastAppleFailure?
 
-    public init(scope: String, service: any AppAttestService = AppleAppAttestService(), storage: any ShadowKeyStorage = KeychainShadowKeyStorage()) {
+    /// `processDiagnostics` supplies the process-level `ready` context owned
+    /// by ProviderCore (run marker, SIP probes, preflight, APNs history).
+    public init(scope: String, service: any AppAttestService = AppleAppAttestService(), storage: any ShadowKeyStorage = KeychainShadowKeyStorage(),
+                runtimeContext: @escaping @Sendable () -> AppAttestRuntimeContext = { AppAttestRuntimeContext.current() },
+                now: @escaping @Sendable () -> Date = Date.init,
+                processDiagnostics: @escaping @Sendable () async -> AppAttestProcessDiagnostics = { AppAttestProcessDiagnostics() }) {
         self.scope = scope; self.service = service; self.storage = storage
+        self.runtimeContext = runtimeContext; self.now = now; self.processDiagnostics = processDiagnostics
+    }
+
+    /// Last local observation for the daemon state file; nil before any `prepare`.
+    public func currentLocalStatus() -> AppAttestLocalStatus? { localStatus }
+
+    /// When the outstanding uncancellable Apple call was admitted, or nil when
+    /// idle. Readable while an exchange is in flight.
+    public func appleOperationHeldSince() async -> Date? {
+        await service.operationHeldSince()
     }
 
     public func respond(to request: AppAttestShadowPayload, publicKey: String, status: AppAttestStatus? = nil) async -> AppAttestShadowPayload {
+        guard request.action == "prepare" else {
+            let response = await exchange(request, publicKey: publicKey, status: status)
+            refreshLocalKeyStatus()
+            recordAppleFailure(response)
+            return response
+        }
+        let context = runtimeContext()
+        var response: AppAttestShadowPayload
+        if let stalled = AppleOperationStall.reportedSeconds(heldSince: await appleOperationHeldSince(), now: now()) {
+            // Apple never answered an earlier call; only a new process frees
+            // its admission, so every Apple call would answer busy anyway.
+            response = AppAttestShadowPayload(action: "ready", session: request.session)
+            response.protocolVersion = request.protocolVersion
+            response.result = ShadowFailure.busy.rawValue
+            response.operationStalledSeconds = stalled
+        } else {
+            response = await exchange(request, publicKey: publicKey, status: status)
+        }
+        response.launchSession = context.launchSession
+        response.bootTime = context.bootTime
+        let diagnostics = await processDiagnostics()
+        response.attach(diagnostics)
+        response.keyHistory = recordLocalStatus(request: request, response: response, context: context, diagnostics: diagnostics)
+        return response
+    }
+
+    /// Returns the `key_history` it derived from the same Keychain reads.
+    private func recordLocalStatus(request: AppAttestShadowPayload, response: AppAttestShadowPayload,
+                                   context: AppAttestRuntimeContext, diagnostics: AppAttestProcessDiagnostics) -> AppAttestKeyHistory? {
+        let current = now()
+        var key: AppAttestKeyState?
+        var history: AppAttestKeyHistory?
+        localKeyContext = nil
+        // An availability failure never reaches Keychain in the exchange; keep it that way.
+        if response.availabilityReason == nil, let environment = request.environment,
+           let keyScope = keyScope(for: request, environment: environment) {
+            // A Keychain read error leaves both nil (doctor reports it); a
+            // missing record is a valid "no key" state.
+            do {
+                let record: ShadowKeyRecord?
+                if response.result == "ok", preparedScope == keyScope, session == request.session {
+                    record = self.record
+                } else {
+                    record = try storage.load(scope: keyScope)
+                }
+                let budget = try storage.load(scope: KeyGenerationBudget.scope(scope, environment: environment))
+                key = AppAttestKeyState(record: record, budget: budget, now: current)
+                history = AppAttestKeyHistory.build(record: record, budget: budget, now: current, bootTime: context.bootTime)
+                localKeyContext = (keyScope, budget)
+            } catch {}
+        }
+        localStatus = AppAttestLocalStatus(
+            observedAt: current.timeIntervalSince1970, launchSession: context.launchSession, bootTime: context.bootTime,
+            availabilityReason: response.availabilityReason, operationStalledSeconds: response.operationStalledSeconds, key: key,
+            process: diagnostics, keyHistory: history, lastAppleFailure: lastAppleFailure)
+        return history
+    }
+
+    private func refreshLocalKeyStatus() {
+        guard let record, let context = localKeyContext, context.scope == preparedScope,
+              var status = localStatus else { return }
+        let current = now()
+        status.observedAt = current.timeIntervalSince1970
+        status.key = AppAttestKeyState(record: record, budget: context.budget, now: current)
+        status.keyHistory = AppAttestKeyHistory.build(
+            record: record, budget: context.budget, now: current, bootTime: status.bootTime)
+        status.keyHistoryObservedAt = current.timeIntervalSince1970
+        localStatus = status
+    }
+
+    /// Keeps the last Apple failure of an attestation/assertion for doctor.
+    private func recordAppleFailure(_ response: AppAttestShadowPayload) {
+        guard let failure = AppAttestLastAppleFailure(response: response, observedAt: now().timeIntervalSince1970) else { return }
+        lastAppleFailure = failure
+        localStatus?.lastAppleFailure = failure
+    }
+
+    private func keyScope(for request: AppAttestShadowPayload, environment: String) -> String? {
+        guard ["production", "development"].contains(environment) else { return nil }
+        guard [2, 3].contains(request.protocolVersion ?? 0) else { return scope + ":" + environment }
+        guard let account = request.accountScope, account.utf8.count == 64 else { return nil }
+        return scope + ":" + environment + ":account:" + account
+    }
+
+    private func exchange(_ request: AppAttestShadowPayload, publicKey: String, status: AppAttestStatus?) async -> AppAttestShadowPayload {
         var response = AppAttestShadowPayload(action: ["prepare":"ready", "attest":"attestation", "assert":"assertion"][request.action] ?? "error", session: request.session)
         response.protocolVersion=request.protocolVersion
         response.keyID = request.keyID
@@ -27,6 +135,7 @@ public actor AppAttestShadowClient {
         busy = true
         defer { busy = false }
         var calledAttestation = false
+        var assertionFailures = 0
         do {
             guard request.protocolVersion == nil || [1,2,3].contains(request.protocolVersion ?? 0),
                   request.session.utf8.count == 44, Data(base64Encoded: request.session)?.count == 32,
@@ -35,10 +144,7 @@ public actor AppAttestShadowClient {
             try Task.checkCancellation()
             if request.action == "prepare" {
                 try await service.checkAvailability(environment: environment)
-                if [2,3].contains(request.protocolVersion ?? 0) {
-                    guard let accountScope=request.accountScope, accountScope.utf8.count == 64 else { throw ShadowFailure.invalidRequest }
-                }
-                let keyScope = scope + ":" + environment + ([2,3].contains(request.protocolVersion ?? 0) ? ":account:" + (request.accountScope ?? "") : "")
+                guard let keyScope = keyScope(for: request, environment: environment) else { throw ShadowFailure.invalidRequest }
                 var key = try storage.load(scope: keyScope)
                 if var interrupted = key, interrupted.attestationStartedAt != nil, interrupted.pendingProof == nil {
                     interrupted.retireEnrollment()
@@ -56,41 +162,11 @@ public actor AppAttestShadowClient {
                     try storage.save(expired,scope:keyScope); key=expired
                 }
                 if key == nil || key?.keyID.isEmpty == true {
-                    // An unregistered/invalid old key may be replaced at most hourly,
-                    // including across restarts. A failed generateKey that returned
-                    // no identifier may be retried sooner under the shared budget.
-                    if let key, !key.mayGenerateKey(at: Date()) { throw ShadowFailure.busy }
-                    // Record the generation budget and establish writable key
-                    // persistence BEFORE asking Apple for a key. Budget I/O goes
-                    // first so its failure cannot leave a new empty key marker
-                    // that strands an otherwise healthy device for an hour.
-                    var pending = ShadowKeyRecord(keyID: "", attested: false, createdAt: Date())
-                    // Persist a shared budget across account scopes as well as the
-                    // per-key cooldown, so account churn cannot bypass it.
-                    let budgetScope=scope+":"+environment+":generation-budget"
-                    let oldBudget=try storage.load(scope:budgetScope)
-                    var budget=oldBudget ?? ShadowKeyRecord(keyID:"budget",attested:false,createdAt:Date())
-                    if Date().timeIntervalSince(budget.createdAt)>=3600 { budget.createdAt=Date(); budget.generationCount=0 }
-                    guard (budget.generationCount ?? 0)<5 else { throw ShadowFailure.busy }
-                    budget.generationCount=(budget.generationCount ?? 0)+1
-                    try storage.save(budget,scope:budgetScope)
-                    try storage.save(pending, scope: keyScope)
-                    let id: String
-                    do {
-                        id = try await service.generateKey()
-                    } catch {
-                        // The pre-call marker and budget were already persisted.
-                        // Only Apple's completed error callback with no key ID
-                        // permits a shorter retry. Cancellation, local admission
-                        // and timeout are uncertain and retain the hour marker.
-                        if mayRetryKeyGeneration(after: error) {
-                            pending.generationRetryAfter = Date().addingTimeInterval(60)
-                            try storage.save(pending, scope: keyScope)
-                        }
-                        throw error
-                    }
-                    key = ShadowKeyRecord(keyID: id, attested: false, createdAt: pending.createdAt)
-                    try storage.save(key!, scope: keyScope)
+                    key = try await ShadowKeyGeneration(
+                        service: service, storage: storage,
+                        budgetScope: KeyGenerationBudget.scope(scope, environment: environment), keyScope: keyScope,
+                        bootTime: runtimeContext().bootTime, appVersion: status?.appVersion
+                    ).generate(replacing: key)
                 }
                 record = key; session = request.session; preparedEnvironment = environment; preparedScope = keyScope; preparedAccountScope=request.accountScope; preparedProtocol=request.protocolVersion
                 response.keyID = key?.keyID
@@ -156,6 +232,7 @@ public actor AppAttestShadowClient {
                         response.enrollmentSession = enrollment.session
                         response.status = enrollment.status
                     }
+                    key.recordAppleSuccess(at: now())
                     record = key
                     try storage.save(key, scope: keyScope)
                     response.proof = proof.base64EncodedString()
@@ -170,13 +247,16 @@ public actor AppAttestShadowClient {
                     // well inside the coordinator's 90s exchange timeout.
                     for attempt in 0..<2 {
                         do { proof = try await service.generateAssertion(key.keyID, hash: hash); break }
-                        catch where appAttestFailure(error) == .appleUnavailable && attempt == 0 {
+                        catch {
+                            if ShadowKeyRecord.isAppleCallFailure(error) { assertionFailures += 1 }
+                            guard appAttestFailure(error) == .appleUnavailable && attempt == 0 else { throw error }
                             try await appAttestSleep(seconds: 2)
                         }
                     }
                     guard let proof else { throw ShadowFailure.appleError }
                     guard proof.count <= 32*1024 else { throw AppAttestAppleErrorSource.proofOversize }
                     key.attested=true; key.pendingProof=nil; key.pendingEnrollment=nil; key.pendingStatus=nil; key.pendingCreatedAt=nil; key.attestationStartedAt=nil; key.retryEnrollment=nil
+                    key.recordAppleSuccess(at: now())
                     record=key; try storage.save(key, scope:keyScope)
                     response.proof = proof.base64EncodedString()
                 } else { throw ShadowFailure.invalidRequest }
@@ -188,7 +268,18 @@ public actor AppAttestShadowClient {
             response.appleError = (error as? AppleAppAttestFailure)?.details
             response.availabilityReason = (error as? AppAttestAvailabilityFailure)?.reason
             response.appleErrorSource = error as? AppAttestAppleErrorSource
-            if (calledAttestation || (request.action == "assert" && failure == .appleInvalidKey)), var key = record, let keyScope = preparedScope {
+            if request.action != "prepare", failure == .appleError || failure == .appleInvalidKey,
+               let chain = (error as? AppleAppAttestFailure)?.chain, !chain.isEmpty {
+                response.nativeErrorChain = chain
+            }
+            let persistsKey = calledAttestation || (request.action == "assert" && failure == .appleInvalidKey)
+            if !persistsKey, assertionFailures > 0, var key = record, let keyScope = preparedScope {
+                // Diagnostic counter only: a failed write never changes the result.
+                key.recordAssertionFailures(assertionFailures)
+                record = key
+                try? storage.save(key, scope: keyScope)
+            }
+            if persistsKey, var key = record, let keyScope = preparedScope {
                 // A successfully cached proof remains recoverable after a local
                 // write/cancellation failure. Never replace it with an error.
                 if failure == .appleInvalidKey || (calledAttestation && key.pendingProof == nil && shouldRetireEnrollmentKey(after: failure)) {
@@ -203,6 +294,7 @@ public actor AppAttestShadowClient {
                     response.appleError = nil
                     response.availabilityReason = nil
                     response.appleErrorSource = nil
+                    response.nativeErrorChain = nil
                     return response
                 }
             }

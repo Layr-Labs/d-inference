@@ -83,6 +83,7 @@ private actor EnrollmentService: AppAttestService {
     func failNatively(_ error: AppleAppAttestFailure) { nativeEnrollmentFailure = error }
     func calls() -> [(String, Data)] { enrollmentCalls }
     func assertions() -> [(String, Data)] { assertionCalls }
+    func operationHeldSince() -> Date? { nil }
 }
 
 final class EnrollmentRecoveryTests: XCTestCase {

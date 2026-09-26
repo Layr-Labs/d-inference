@@ -153,8 +153,8 @@ extension ProviderLoop {
     /// Atomically claim the update cycle. Returns `false` if a cycle is already
     /// underway (re-entrancy guard for overlapping monitor ticks). On `true`,
     /// enter the `.installing` phase — still serving while the new bundle
-    /// downloads and stages.
-    private func claimUpdateStart(updater: SelfUpdater) -> Bool {
+    /// downloads and stages. The App Attest stall restart claims the same lease.
+    internal func claimUpdateStart(updater: SelfUpdater) -> Bool {
         guard updatePhase == .idle, !servingDrain.refusing, !isShuttingDown else { return false }
         do {
             let session = try updater.beginUpdateSession(
@@ -279,7 +279,9 @@ extension ProviderLoop {
         }
     }
 
-    private func prepareInstalledCandidateRestart(
+    /// Arms an installed-but-not-running candidate (no-op without one) and
+    /// releases the lease before any launchd restart, update or App Attest stall.
+    internal func prepareInstalledCandidateRestart(
         updater: SelfUpdater
     ) -> AutoUpdateController.StepOutcome {
         guard let session = updateSession else {

@@ -3270,9 +3270,15 @@ func (s *Server) verifyProviderAttestation(ctx context.Context, providerID strin
 	// Independently recover the newest non-empty durable MDA chain. A newer
 	// empty record must not shadow a chain earned by an earlier session. The
 	// hardware-grant path still re-verifies the certificate and SE-key binding.
-	if !identityCandidate {
-		s.stageDurableMDAChain(provider, result.SerialNumber)
-	}
+	//
+	// Identity candidates stage it too, although their self-reported serial
+	// restores no history and evicts no duplicate: the serial only selects a
+	// CANDIDATE chain, never a grant. attachCachedMDAProof attaches it only
+	// after this connection holds hardware trust, the chain re-verifies to
+	// Apple's pinned root, its FreshnessCode equals SHA-256 of THIS
+	// connection's SE key, and any Apple serial matches the attested one. A
+	// chain earned by another machine's SE key can never bind here.
+	s.stageDurableMDAChain(provider, result.SerialNumber)
 
 	// Deduplicate: if another provider connection exists from the same physical
 	// device (same serial number), disconnect it. This prevents multiple

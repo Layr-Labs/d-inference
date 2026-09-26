@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-22 · commit `6253ca765`
+> Last updated: 2026-09-26 · commit `0ce33cee2`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -184,6 +184,36 @@ See [engine MTP constraints](../architecture/inference.md#multi-token-prediction
 | Box-wide budget (`ssdDiskBudgetBytes`, based on currently available space), the `DARKBLOOM_PREFIX_CACHE_DISK_GB` override, LRU eviction | [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules) | `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`) |
 | Low-disk write stop (`lowDiskFloorBytes`; reads continue) and the daily write cap (`defaultMaxWriteBytesPerDay`) | [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` |
 | When it is used at all | Exact `gpt-oss-20b` defaults to encrypted complete SSD caching with segmented paged storage; contiguous fallback serves cold. Eligible Qwen and selected Nemotron Lightning use complete SSD on native contiguous or segmented paged target storage; historical GPT-OSS/Gemma complete checkpoints require paged storage. Loaded capability, identity and key gates apply; resident RAM is opt-in | [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md) |
+
+## Storage
+
+Model discovery and downloads share the [resolved Hugging Face hub cache](../reference/configuration.md#model-cache-location)
+(`ModelScanner.resolveCache`, `provider-swift/Sources/ProviderCoreFoundation/ModelScanner+CacheDirectory.swift`).
+Use [`darkbloom models location`](cli-reference.md#darkbloom-models-location) to inspect
+or choose an existing directory, including one on an external volume. Empty
+directories are valid for future downloads; the command never moves existing
+weights. `--check` lists discovered MLX model IDs without claiming integrity or
+network eligibility. Existing providers keep their legacy cache until a location
+is explicitly saved; ambient Hugging Face/XDG variables never override it.
+`--from-env` is an explicit one-time import that pins the resolved directory.
+
+After saving a location, use `darkbloom restart` (or `darkbloom start` if stopped)
+to apply it. Mount external volumes first; a missing selected cache does not fall
+back to another directory. No automatic weight movement or restart occurs.
+
+Plan disk space per model from the catalog output of `darkbloom models catalog`.
+Logs and telemetry are small; the bundle plus `mlx.metallib` is roughly 200 MB.
+
+## Network
+
+| Direction | Requirement |
+|-----------|-------------|
+| Outbound | `wss://api.darkbloom.dev/ws/provider` and `https://api.darkbloom.dev` on port 443 |
+| Inbound | None for normal provider operation |
+| Local | Optional: `darkbloom start --local` or `--local-endpoint` binds a loopback/tailnet address |
+
+Persistent WebSocket idle bandwidth is low (heartbeat every 5 seconds by
+default).
 
 ## Thermal and power
 

@@ -37,6 +37,7 @@ func (x *Session) handle(ctx context.Context, reply protocol.AppAttestShadowPayl
 			x.observe("archive", "unavailable", nil)
 			return "stop"
 		}
+		x.deriveKeyLifecycleDiagnostics(ctx)
 		raw, decodeErr := base64.StdEncoding.DecodeString(reply.Proof)
 		if decodeErr != nil {
 			// Partial decode output is not a complete proof. The exact original
@@ -76,6 +77,14 @@ func (x *Session) handle(ctx context.Context, reply protocol.AppAttestShadowPayl
 			if reply.AppleErrorSource != "" {
 				inputs["apple_error_source"] = reply.AppleErrorSource
 			}
+		}
+		// Runtime context from this attempt's ready reply (or this reply, if
+		// it is itself an archived ready frame); sanitized, never trusted.
+		for key, value := range x.readyDiagnostics {
+			inputs[key] = value
+		}
+		for key, value := range reply.RuntimeDiagnosticFields(time.Now()) {
+			inputs[key] = value
 		}
 		inputs["proof_field_sha256"] = hex.EncodeToString(sum[:])
 		inputs["proof_field_checksum_encoding"] = "proof_field_utf8"

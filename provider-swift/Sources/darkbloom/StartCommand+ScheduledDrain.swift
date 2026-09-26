@@ -8,11 +8,14 @@ extension Start {
         disarmRecovery: @escaping @Sendable () throws -> Void = { try WatchdogAgent.stop() }
     ) async {
         await ProviderTermination.shared.install {
+            // AppKit may terminate immediately after this handler returns.
+            defer { ProviderProcessRun.finish() }
             if let identity = ProcessIdentity.current(),
                let request = LifecycleMailbox(identity: identity).readRequest(),
                request.isValid(for: identity) {
                 // The CLI already owns recovery for this command. Do not
                 // disarm a watchdog just armed by a replacement process.
+                ProviderProcessRun.noteLifecycleCommand()
                 return true
             }
             try? disarmRecovery()

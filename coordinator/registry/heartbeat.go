@@ -346,9 +346,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 			}
 		}
 	}
-	// Credit wall-clock time since the previous heartbeat as uptime, so an
-	// always-online provider's uptimeRate reaches 1.0 and its reputation can
-	// exceed the old 0.85 cap (RecordUptime was never called in prod).
+	// Credit wall-clock time since the previous heartbeat as provider uptime.
 	// Bound the credit to a window just above the heartbeat interval (30s) and
 	// within the eviction staleness (90s): a larger gap means the provider was
 	// effectively offline (it would have been reaped, or this is an in-process

@@ -64,6 +64,7 @@ type MemoryStore struct {
 	appAttestEvidence    map[string]memoryAppAttestEvidence
 	appAttestEnrollments map[string]AppAttestEnrollment
 	appAttestBuilds      map[string]AppAttestBuildQualification
+	appAttestRotations   map[string]AppAttestKeyRotation
 
 	// Referral system
 	referrersByCode    map[string]*Referrer // code → referrer

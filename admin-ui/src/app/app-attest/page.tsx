@@ -19,7 +19,7 @@ export default async function AppAttestPage({ searchParams }: { searchParams: Pr
   return <div className="space-y-6">
     <div><h1 className="text-lg font-semibold">App Attest · evidence and authorization</h1>
       <p className="mt-1 text-sm text-[var(--text-dim)]">Evidence collection and serving authorization are separate. MDM-free serving requires current coordinator authorization; a historical successful proof does not establish it.</p>
-      <div className="mt-3 flex gap-4"><Link href="?days=1">Last 24 hours</Link><Link href="?days=7">Last 7 days</Link><span className="text-[var(--text-faint)]">Showing {days === 1 ? "24 hours" : "7 days"}</span></div>
+      <div className="mt-3 flex gap-4"><Link href="?days=1">Last 24 hours</Link><Link href="?days=7">Last 7 days</Link><span className="text-[var(--text-faint)]">Showing {days === 1 ? "24 hours" : "7 days"}</span><Link className="text-blue-400" href={`/app-attest/diagnostics?days=${days}`}>Failure diagnostics →</Link></div>
     </div>
     {census.status === "fulfilled" ? <>
       <div className="grid gap-3 md:grid-cols-4">

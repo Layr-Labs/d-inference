@@ -70,6 +70,7 @@ func modelDemandContract(t *testing.T, s demandTestStore) {
 		if v.CollectionStartedAt.IsZero() || len(v.Models) != 1 {
 			t.Fatalf("privacy or coverage: %+v", v)
 		}
+		assertModelDemandPublishedSums(t, v.Models)
 		return v.Models[0]
 	}
 	c := get()
@@ -144,7 +145,7 @@ func TestModelDemandCancelledRead(t *testing.T) {
 func modelDemandSeriesPrivacyContract(t *testing.T, s demandTestStore) {
 	t.Helper()
 	ctx := context.Background()
-	end := time.Now().UTC().Truncate(24 * time.Hour)
+	end := time.Date(2026, time.September, 25, 13, 0, 0, 0, time.UTC)
 	var rows []RequestOutcomeRecord
 	for i := 0; i < 24; i++ {
 		at := end.Add(-2*time.Hour + time.Duration(i/12)*time.Hour + time.Minute)
@@ -153,32 +154,69 @@ func modelDemandSeriesPrivacyContract(t *testing.T, s demandTestStore) {
 	if err := s.RecordRequestOutcomes(ctx, rows); err != nil {
 		t.Fatal(err)
 	}
+	for _, days := range []int{1, 7, 30} {
+		out, err := s.ModelDemand(ctx, end.Add(-time.Duration(days)*24*time.Hour), end)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Models) != 0 {
+			t.Fatalf("%dd: wider buckets restored suppressed hours: %+v", days, out.Models)
+		}
+	}
+	// Reaching exactly 20 requests with three consumers publishes only that hour.
+	var added []RequestOutcomeRecord
+	for i := 24; i < 32; i++ {
+		r := cloneRequestOutcome(rows[i%12])
+		r.CoordRequestID = fmt.Sprintf("interval-%d", i)
+		added = append(added, r)
+	}
+	if err := s.RecordRequestOutcomes(ctx, added); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		days, buckets, seconds int
-		published              int
-	}{{1, 24, 3600, 0}, {7, 28, 21600, 1}, {30, 30, 86400, 1}} {
+	}{{1, 24, 3600}, {7, 28, 21600}, {30, 30, 86400}} {
 		out, err := s.ModelDemand(ctx, end.Add(-time.Duration(tc.days)*24*time.Hour), end)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(out.Models) != 1 || out.Models[0].Requests != 24 || out.BucketSeconds != int64(tc.seconds) {
-			t.Fatalf("window %+v", out)
+		want := DemandOutcomeCounts{Requests: 20, CapacityRejected: 20, HTTP429: 20}
+		if len(out.Models) != 1 || out.Models[0].DemandOutcomeCounts != want || out.BucketSeconds != int64(tc.seconds) {
+			t.Fatalf("%dd: hourly threshold: %+v", tc.days, out)
 		}
 		series := out.Models[0].TimeSeries
 		if len(series) != tc.buckets {
 			t.Fatalf("buckets %d", len(series))
 		}
-		published := 0
-		for _, b := range series {
-			if b.Counts != nil {
-				published++
-				if b.Counts.Requests != 24 || b.Counts.CapacityRejected != 24 || b.Counts.HTTP429 != 24 {
-					t.Fatalf("interval %+v", b)
+		index := tc.buckets - 1
+		if tc.days == 1 {
+			index--
+		}
+		for i, b := range series {
+			if i == index {
+				if b.Counts == nil || *b.Counts != want {
+					t.Fatalf("%dd: eligible interval %+v, want %+v", tc.days, b, want)
 				}
+			} else if b.Counts != nil {
+				t.Fatalf("%dd: suppressed interval became public: %+v", tc.days, b)
 			}
 		}
-		if published != tc.published {
-			t.Fatalf("%dd: published %d, want %d", tc.days, published, tc.published)
+	}
+	// Removing one request from the cohort suppresses the hour again. Neither
+	// an old revision nor an excluded 429 may keep it above the request floor.
+	excluded := cloneRequestOutcome(rows[0])
+	excluded.Revision++
+	excluded.PublicDemand.Outcome = "excluded"
+	if err := s.RecordRequestOutcomes(ctx, []RequestOutcomeRecord{excluded, rows[0], excluded}); err != nil {
+		t.Fatal(err)
+	}
+	for _, days := range []int{1, 7, 30} {
+		out, err := s.ModelDemand(ctx, end.Add(-time.Duration(days)*24*time.Hour), end)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Models) != 0 {
+			t.Fatalf("%dd: revised cohort below the floor remained public: %+v", days, out.Models)
 		}
 	}
 }

@@ -49,7 +49,7 @@ func (s *Server) handleModelDemand(w http.ResponseWriter, r *http.Request) {
 			EndAt     time.Time `json:"end_at"`
 			UpdatedAt time.Time `json:"updated_at"`
 			Coverage  string    `json:"coverage"`
-		}{snapshot, window, start, end, time.Now().UTC(), "recorded_requests_only"})
+		}{snapshot, window, start, end, time.Now().UTC(), "published_hourly_cohorts"})
 	})
 	if !ok {
 		writeJSON(w, 503, errorResponse("service_unavailable", "model demand is temporarily unavailable"))

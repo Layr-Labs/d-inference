@@ -1,6 +1,6 @@
 # Incoming request accounting
 
-> Last updated: 2026-09-26 · commit `a9d070236`
+> Last updated: 2026-09-26 · commit `76b44a972`
 
 `request_outcomes` records unsampled observations of incoming inference requests, including early rejections, independently of sampled attempt profiles. Operators use this source to distinguish final request outcomes from internal retries. The public Stats page exposes a narrower, explicitly scoped recorded-request view; it does not establish traffic-wide completeness.
 
@@ -108,7 +108,7 @@ are outside this cohort. Admin-key traffic is excluded. Unlabelled authenticated
 
 `publicDemandOutcome` assigns one closed outcome per observation. Completed
 requests use the ledger's completion contract; explicit capacity reasons,
-including `queue_full`, map to `capacity_rejected`; predictive TTFT refusals map
+including `queue_full` and `unservable_token_budget`, map to `capacity_rejected`; predictive TTFT refusals map
 to `latency_rejected`. First-content/queue timeouts, including expiry of the
 absolute first-content clock while queued (`queue_deadline`), map to `timed_out`.
 Failed/interrupted responses,
@@ -135,13 +135,21 @@ after diagnostic-ledger expiry (`projectModelDemandSQL` and
 `projectModelDemandLocked`).
 
 `coordinator/store/postgres_model_demand_series.go` (`readModelDemandSeries`)
-reads per-model intervals in the same transaction as the summary.
-`ModelDemandBucketSize` selects hourly, six-hourly or daily intervals for the
-24-hour, 7-day and 30-day windows. Each interval independently passes the
-request and distinct-consumer privacy floors. Unpublished intervals have
-`counts: null`; the UI hatches these gaps and reports visible-interval coverage.
-It never zero-fills them or interpolates across them. The chart, exact interval
-table and CSV export use the same response.
+applies the privacy floor to each UTC clock hour for each model before any
+public aggregation. An hour contributes only when its non-excluded observations
+include at least `ModelDemandMinRequests` requests from
+`ModelDemandMinConsumers` distinct consumer accounts. Models with no qualifying
+hours are omitted.
+
+`ModelDemandBucketSize` selects hourly, six-hourly or daily display intervals for
+the 24-hour, 7-day and 30-day windows. Every interval and model summary sums only
+the same qualifying hourly cohorts. A wider interval may include only some of
+its constituent hours; it never makes a suppressed hour publishable. Summary
+counts equal the fieldwise sum of non-null interval counts, including `http_429`.
+No independent full-window totals or hidden residuals are returned, so combining
+summaries and differently sized intervals does not restore suppressed hours.
+Intervals with no qualifying hours have `counts: null`, never measured zeros.
+The chart, exact interval table and CSV export all use these published counts.
 
 `coordinator/store/postgres_model_demand.go` (`ModelDemand`) reads aggregates in
 a repeatable-read, read-only transaction with an 8-second statement timeout
@@ -153,12 +161,12 @@ fixed hourly boundaries with at least one hour of delay reduce fine-grained
 activity exposure. No raw identities, suppressed counts or per-request timing
 are public. These thresholds do not establish differential privacy.
 
-The public UI labels counts and percentages as recorded-request observations,
-shows partial history when collection began inside the window, and never
-claims that absent records are zero demand or successes. Projection and rollup
-writes share the best-effort sink's loss risk; missing initial, final or entire
-observations cannot be reconstructed from these aggregates. Coverage is
-`recorded_requests_only` even when no current-process drops are visible.
+The public UI labels counts and percentages as published hourly observations,
+not complete window totals or a network-wide success rate. It shows partial
+history when collection began inside the window and never interprets absent
+records as zero demand or successes. Projection and rollup writes share the
+best-effort sink's loss risk; missing observations are not estimated. Coverage
+is `published_hourly_cohorts`, even when no current-process drops are visible.
 Token demand remains omitted until measured and estimated counts can be
 reconciled. See [the API contract](../reference/api-contracts.md#model-demand-response).
 

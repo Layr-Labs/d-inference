@@ -39,6 +39,7 @@ func modelDemandRetainedEvidenceContract(t *testing.T, s demandTestStore) {
 		if len(snapshot.Models) != 1 {
 			t.Fatalf("retained model cohort: %+v", snapshot)
 		}
+		assertModelDemandPublishedSums(t, snapshot.Models)
 		model := snapshot.Models[0]
 		want := DemandOutcomeCounts{Requests: 24, Completed: 24 - unknown, Unknown: unknown}
 		if model.Model != "retained-model" || model.DemandOutcomeCounts != want {

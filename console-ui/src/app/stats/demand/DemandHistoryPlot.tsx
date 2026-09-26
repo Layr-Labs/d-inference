@@ -27,11 +27,11 @@ export function DemandHistoryPlot({ model, metric, bucketSeconds }: { model: Mod
     <div className="min-h-20 text-xs leading-5 text-text-secondary" role="status" aria-live="polite" aria-atomic="true">
       {bucket ? <>
         <p className="font-medium text-text-primary">{bucketLabel(bucket.timestamp, bucketSeconds)}</p>
-        {counts ? <p className="mt-1 flex flex-wrap gap-x-5 gap-y-1 tabular-nums"><span>{counts.requests.toLocaleString()} received</span><span>{counts.completed.toLocaleString()} completed · {percent(counts.completed, counts.requests)}</span><span>{counts.capacity_rejected.toLocaleString()} capacity rejected</span><span>{counts.latency_rejected.toLocaleString()} latency limited</span><span>{counts.timed_out.toLocaleString()} timed out</span><span>{counts.failed.toLocaleString()} service errors</span>{metric === "http_429" && <span>{counts.http_429.toLocaleString()} HTTP 429</span>}</p>
-          : <p className="mt-1">Interval not published: no observations or below the privacy threshold. This is not a measured zero.</p>}
-      </> : <p>Hover, tap, or use the arrow keys to inspect exact interval counts.</p>}
+        {counts ? <p className="mt-1 flex flex-wrap gap-x-5 gap-y-1 tabular-nums"><span>{counts.requests.toLocaleString()} published requests</span><span>{counts.completed.toLocaleString()} completed · {percent(counts.completed, counts.requests)}</span><span>{counts.capacity_rejected.toLocaleString()} capacity rejected</span><span>{counts.latency_rejected.toLocaleString()} latency limited</span><span>{counts.timed_out.toLocaleString()} timed out</span><span>{counts.failed.toLocaleString()} service errors</span>{metric === "http_429" && <span>{counts.http_429.toLocaleString()} HTTP 429</span>}</p>
+          : <p className="mt-1">Interval not published: no eligible hourly observations. This is not a measured zero.</p>}
+      </> : <p>Hover, tap, or use the arrow keys to inspect published interval counts.</p>}
     </div>
-    <div role="group" aria-label={`${model.model} demand history chart`} aria-describedby={`${id}-help`} tabIndex={0}
+    <div role="group" aria-label={`${model.model} published demand history chart`} aria-describedby={`${id}-help`} tabIndex={0}
       onFocus={() => setSelected(current => current ?? 0)} onBlur={() => setSelected(null)}
       onPointerMove={event => selectAt(event.clientX)} onPointerDown={event => selectAt(event.clientX)} onPointerLeave={() => setSelected(null)}
       onKeyDown={event => {

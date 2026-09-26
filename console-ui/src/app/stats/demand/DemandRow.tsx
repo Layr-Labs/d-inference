@@ -22,8 +22,8 @@ export function DemandRow({ model, name, maximum, expanded, onToggle }: {
           <span className="min-w-0"><span className="block break-words text-[15px] font-semibold text-text-primary">{name}</span><span className="mt-1 block truncate text-xs text-text-tertiary" title={model.model}>{model.model}</span></span>
         </span>
         <span className="col-span-2 lg:col-span-1">
-          <span className="mb-2 block text-sm tabular-nums text-text-primary" title={`${exact(model.requests)} recorded requests`}>{formatCompactNumber(model.requests)} <span className="text-xs text-text-tertiary">requests</span></span>
-          <span role="img" aria-label={`${name}: ${exact(model.completed)} completed, ${exact(model.capacity_rejected)} capacity rejected, ${exact(other)} other outcomes; shared scale to ${exact(maximum)} requests`} className="block h-3 w-full">
+          <span className="mb-2 block text-sm tabular-nums text-text-primary" title={`${exact(model.requests)} published requests`}>{formatCompactNumber(model.requests)} <span className="text-xs text-text-tertiary">published requests</span></span>
+          <span role="img" aria-label={`${name} published observations: ${exact(model.completed)} completed, ${exact(model.capacity_rejected)} capacity rejected, ${exact(other)} other outcomes; shared scale to ${exact(maximum)} published requests`} className="block h-3 w-full">
             <span className="flex h-3 overflow-hidden rounded-sm" style={{ width: `${100 * model.requests / maximum}%` }}>
               <span className="h-full bg-accent-brand" style={{ width: `${100 * model.completed / model.requests}%` }} />
               <span className="h-full bg-accent-amber" style={{ width: `${100 * model.capacity_rejected / model.requests}%` }} />
@@ -44,7 +44,7 @@ export function DemandRow({ model, name, maximum, expanded, onToggle }: {
         <dl className="grid gap-x-8 gap-y-3 rounded-xl bg-bg-secondary p-5 sm:grid-cols-2 lg:grid-cols-3">
           {outcomeEntries(model).map(([key, label, count]) => <div key={key} className="flex items-baseline justify-between gap-3 text-xs"><dt className="text-text-secondary">{label}</dt><dd className="shrink-0 whitespace-nowrap tabular-nums text-text-primary">{exact(count)} <span className="text-text-tertiary">· {percent(count, model.requests)}</span></dd></div>)}
         </dl>
-        <p className="mt-3 text-xs leading-5 text-text-tertiary">HTTP 429 responses: {exact(model.http_429)}. These overlap the outcomes above; a 429 can reflect capacity, latency limits, or a timeout. Latency limited means rejected before dispatch for the first-token target. Pending / unknown includes incomplete or conflicting observations.</p>
+        <p className="mt-3 text-xs leading-5 text-text-tertiary">Counts and percentages above cover published hourly observations only. Published HTTP 429 responses: {exact(model.http_429)}. These overlap the outcomes above; a 429 can reflect capacity, latency limits, or a timeout. Latency limited means rejected before dispatch for the first-token target. Pending / unknown includes incomplete or conflicting observations.</p>
       </div>}
     </div>
   );

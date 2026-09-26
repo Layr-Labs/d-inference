@@ -19,7 +19,7 @@ export interface ModelDemandResponse {
   end_at: string;
   updated_at: string;
   collection_started_at: string;
-  coverage: "recorded_requests_only";
+  coverage: "published_hourly_cohorts";
   models: ModelDemand[];
 }
 export function outcomeEntries(m: DemandCounts) { return [
@@ -32,10 +32,12 @@ export function outcomeEntries(m: DemandCounts) { return [
   ["unknown", "Pending / unknown", m.unknown],
 ] as const; }
 
+const COUNT_FIELDS = ["requests", "completed", "capacity_rejected", "timed_out", "latency_rejected", "failed", "cancelled", "unknown", "http_429"] as const;
+
 export function isModelDemandResponse(value: unknown, window: DemandWindow): value is ModelDemandResponse {
   if (!value || typeof value !== "object") return false;
   const r = value as ModelDemandResponse;
-  if (r.window !== window || r.coverage !== "recorded_requests_only" || !Array.isArray(r.models)) return false;
+  if (r.window !== window || r.coverage !== "published_hourly_cohorts" || !Array.isArray(r.models)) return false;
   if (![r.start_at, r.end_at, r.updated_at, r.collection_started_at].every(v => typeof v === "string" && Number.isFinite(Date.parse(v)))) return false;
   if (Date.parse(r.start_at) >= Date.parse(r.end_at)) return false;
   let width = 3600;
@@ -50,7 +52,14 @@ export function isModelDemandResponse(value: unknown, window: DemandWindow): val
     if (!m || typeof m.model !== "string" || !m.model || models.has(m.model)) return false;
     models.add(m.model);
     if (!validCounts(m) || m.requests === 0 || !Array.isArray(m.time_series) || m.time_series.length !== length) return false;
-    return m.time_series.every((bucket, index) => bucket && Date.parse(bucket.timestamp) === Date.parse(r.start_at) + index * width * 1000 && (bucket.counts === null || validCounts(bucket.counts)));
+    const totals: DemandCounts = { requests: 0, completed: 0, capacity_rejected: 0, timed_out: 0, latency_rejected: 0, failed: 0, cancelled: 0, unknown: 0, http_429: 0 };
+    for (const [index, bucket] of m.time_series.entries()) {
+      if (!bucket || Date.parse(bucket.timestamp) !== Date.parse(r.start_at) + index * width * 1000) return false;
+      if (bucket.counts === null) continue;
+      if (!validCounts(bucket.counts) || bucket.counts.requests < 20) return false;
+      for (const field of COUNT_FIELDS) totals[field] += bucket.counts[field];
+    }
+    return COUNT_FIELDS.every(field => m[field] === totals[field]);
   });
 }
 function validCounts(m: DemandCounts) {

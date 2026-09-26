@@ -2,10 +2,13 @@ package store
 
 import (
 	"context"
+	"sort"
 	"time"
 )
 
 const ModelDemandRetention = 31 * 24 * time.Hour
+
+// Both privacy floors apply per model and UTC clock hour, for every window.
 const ModelDemandMinRequests = 20
 const ModelDemandMinConsumers = 3
 
@@ -18,7 +21,7 @@ type PublicDemandScope struct {
 	Outcome      string `json:"outcome"`
 }
 
-// ModelDemandCounts partitions every recorded arrival into exactly one outcome.
+// DemandOutcomeCounts partitions recorded arrivals into exactly one outcome.
 // HTTP429 overlaps these outcomes and is diagnostic, not another partition.
 type DemandOutcomeCounts struct {
 	Requests         int64 `json:"requests"`
@@ -32,18 +35,21 @@ type DemandOutcomeCounts struct {
 	HTTP429          int64 `json:"http_429"`
 }
 
-// Missing bucket counts are privacy-suppressed or unobserved, never zero-filled.
+// Missing bucket counts mean no eligible hourly cohorts, never zero-filled.
+// Coarse buckets sum eligible UTC hours only, not all demand in the interval.
 type ModelDemandBucket struct {
 	Timestamp time.Time            `json:"timestamp"`
 	Counts    *DemandOutcomeCounts `json:"counts"`
 }
 
+// ModelDemandCounts totals are exactly the sum of its published time series.
 type ModelDemandCounts struct {
 	Model string `json:"model"`
 	DemandOutcomeCounts
 	TimeSeries []ModelDemandBucket `json:"time_series"`
 }
 
+// ModelDemandBucketSize selects presentation width, never privacy eligibility.
 func ModelDemandBucketSize(since, until time.Time) time.Duration {
 	if until.Sub(since) >= 30*24*time.Hour {
 		return 24 * time.Hour
@@ -102,4 +108,34 @@ func (c *DemandOutcomeCounts) add(outcome string, status int) {
 	default:
 		c.Unknown++
 	}
+}
+
+func (c *DemandOutcomeCounts) merge(other *DemandOutcomeCounts) {
+	c.Requests += other.Requests
+	c.Completed += other.Completed
+	c.CapacityRejected += other.CapacityRejected
+	c.LatencyRejected += other.LatencyRejected
+	c.TimedOut += other.TimedOut
+	c.Failed += other.Failed
+	c.Cancelled += other.Cancelled
+	c.Unknown += other.Unknown
+	c.HTTP429 += other.HTTP429
+}
+
+// Summaries never include private residuals from suppressed hours.
+func summarizeModelDemand(out *ModelDemandSnapshot) {
+	for i := range out.Models {
+		model := &out.Models[i]
+		for j := range model.TimeSeries {
+			if counts := model.TimeSeries[j].Counts; counts != nil {
+				model.merge(counts)
+			}
+		}
+	}
+	sort.Slice(out.Models, func(i, j int) bool {
+		if out.Models[i].Requests != out.Models[j].Requests {
+			return out.Models[i].Requests > out.Models[j].Requests
+		}
+		return out.Models[i].Model < out.Models[j].Model
+	})
 }

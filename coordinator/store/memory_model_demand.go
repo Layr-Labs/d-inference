@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"sort"
 	"time"
 )
 
@@ -53,52 +52,48 @@ func (s *MemoryStore) ModelDemand(ctx context.Context, since, until time.Time) (
 	defer s.mu.RUnlock()
 	width := ModelDemandBucketSize(since, until)
 	out := ModelDemandSnapshot{BucketSeconds: int64(width / time.Second), CollectionStartedAt: s.modelDemandStartedAt, Models: []ModelDemandCounts{}}
-	counts := map[string]*ModelDemandCounts{}
-	consumers := map[string]map[string]bool{}
-	type seriesKey struct {
+	type hourKey struct {
 		model string
-		index int
+		at    time.Time
 	}
-	seriesCounts := map[seriesKey]*DemandOutcomeCounts{}
-	seriesConsumers := map[seriesKey]map[string]bool{}
+	type hourCounts struct {
+		DemandOutcomeCounts
+		consumers map[string]struct{}
+	}
+	hours := map[hourKey]*hourCounts{}
 	for _, r := range s.modelDemand {
 		if r.ReceivedAt.Before(since) || !r.ReceivedAt.Before(until) || r.Scope.Outcome == "excluded" {
 			continue
 		}
-		m := r.Scope.Model
-		if counts[m] == nil {
-			counts[m] = &ModelDemandCounts{Model: m}
-			consumers[m] = map[string]bool{}
+		key := hourKey{r.Scope.Model, r.ReceivedAt.UTC().Truncate(time.Hour)}
+		c := hours[key]
+		if c == nil {
+			c = &hourCounts{consumers: make(map[string]struct{}, ModelDemandMinConsumers)}
+			hours[key] = c
 		}
-		counts[m].add(r.Scope.Outcome, r.HTTPStatus)
-		consumers[m][r.Scope.ConsumerHash] = true
-		key := seriesKey{m, int(r.ReceivedAt.Sub(since) / width)}
-		if seriesCounts[key] == nil {
-			seriesCounts[key] = &DemandOutcomeCounts{}
-			seriesConsumers[key] = map[string]bool{}
-		}
-		seriesCounts[key].add(r.Scope.Outcome, r.HTTPStatus)
-		seriesConsumers[key][r.Scope.ConsumerHash] = true
-	}
-	for m, c := range counts {
-		if c.Requests >= ModelDemandMinRequests && len(consumers[m]) >= ModelDemandMinConsumers {
-			c.TimeSeries = emptyModelDemandSeries(since, until, width)
-			for i := range c.TimeSeries {
-				key := seriesKey{m, i}
-				counts := seriesCounts[key]
-				if counts != nil && counts.Requests >= ModelDemandMinRequests && len(seriesConsumers[key]) >= ModelDemandMinConsumers {
-					c.TimeSeries[i].Counts = counts
-				}
-			}
-			out.Models = append(out.Models, *c)
+		c.add(r.Scope.Outcome, r.HTTPStatus)
+		if len(c.consumers) < ModelDemandMinConsumers {
+			c.consumers[r.Scope.ConsumerHash] = struct{}{}
 		}
 	}
-	sort.Slice(out.Models, func(i, j int) bool {
-		if out.Models[i].Requests != out.Models[j].Requests {
-			return out.Models[i].Requests > out.Models[j].Requests
+	byModel := map[string]int{}
+	for key, c := range hours {
+		if c.Requests < ModelDemandMinRequests || len(c.consumers) < ModelDemandMinConsumers {
+			continue
 		}
-		return out.Models[i].Model < out.Models[j].Model
-	})
+		i, ok := byModel[key.model]
+		if !ok {
+			i = len(out.Models)
+			byModel[key.model] = i
+			out.Models = append(out.Models, ModelDemandCounts{Model: key.model, TimeSeries: emptyModelDemandSeries(since, until, width)})
+		}
+		bucket := &out.Models[i].TimeSeries[int(key.at.Sub(since)/width)]
+		if bucket.Counts == nil {
+			bucket.Counts = &DemandOutcomeCounts{}
+		}
+		bucket.Counts.merge(&c.DemandOutcomeCounts)
+	}
+	summarizeModelDemand(&out)
 	return out, nil
 }
 

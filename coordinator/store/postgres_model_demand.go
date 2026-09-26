@@ -62,33 +62,10 @@ func (s *PostgresStore) ModelDemand(ctx context.Context, since, until time.Time)
 	if err = tx.QueryRow(ctx, `SELECT started_at FROM model_demand_collection WHERE singleton=TRUE`).Scan(&out.CollectionStartedAt); err != nil {
 		return out, err
 	}
-	rows, err := tx.Query(ctx, `SELECT model,SUM(requests-excluded)::bigint,
- SUM(completed)::bigint,SUM(capacity_rejected)::bigint,SUM(latency_rejected)::bigint,
- SUM(timed_out)::bigint,SUM(failed)::bigint,SUM(cancelled)::bigint,SUM(unknown)::bigint,
- SUM(http_429)::bigint
- FROM model_demand_hourly
- WHERE hour >= $1 AND hour < $2 AND requests > excluded
- GROUP BY model HAVING SUM(requests-excluded) >= $3
- AND COUNT(DISTINCT consumer_hash) >= $4
- ORDER BY SUM(requests-excluded) DESC,model`, since, until, ModelDemandMinRequests, ModelDemandMinConsumers)
-	if err != nil {
-		return out, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var c ModelDemandCounts
-		if err = rows.Scan(&c.Model, &c.Requests, &c.Completed, &c.CapacityRejected, &c.LatencyRejected, &c.TimedOut, &c.Failed, &c.Cancelled, &c.Unknown, &c.HTTP429); err != nil {
-			return out, err
-		}
-		out.Models = append(out.Models, c)
-	}
-	if err = rows.Err(); err != nil {
-		return out, err
-	}
-	rows.Close()
 	if err := readModelDemandSeries(ctx, tx, &out, since, until, width); err != nil {
 		return out, err
 	}
+	summarizeModelDemand(&out)
 	return out, tx.Commit(ctx)
 }
 

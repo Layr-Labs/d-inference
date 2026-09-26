@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-26 · commit `a9d070236`
+> Last updated: 2026-09-26 · commit `76b44a972`
 
 The complete public HTTP surface of the coordinator, derived from the 117 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -302,16 +302,20 @@ envelope when their required data is unavailable.
 `coordinator/api/model_demand.go` (`handleModelDemand`) serves a fixed receipt-time
 window ending at the preceding UTC hour (at least one hour behind now). The
 JSON has `window`, `start_at`, `end_at`, `updated_at`, `collection_started_at`,
-`coverage: "recorded_requests_only"`, `bucket_seconds`, and `models`. Each model object has `model`,
+`coverage: "published_hourly_cohorts"`, `bucket_seconds`, and `models`. Each model object has `model`,
 `requests`, `completed`, `capacity_rejected`, `latency_rejected`, `timed_out`,
 `failed`, `cancelled`, `unknown`, and `http_429` (all counts are integers).
-Each model also contains `time_series`: fixed intervals with `timestamp` and
-`counts` (the same outcome counters, or `null` when not publishable). Intervals
-are 1 hour for `24h`, 6 hours for `7d`, and 24 hours for `30d`. Both the overall
-model and each interval independently need 20 requests from 3 consumer accounts.
-Unpublished intervals are gaps, not measured zeros, and the sum of published
-intervals may be smaller than the model total. Totals and series share one
-repeatable-read transaction.
+Each model also contains `time_series`: fixed display intervals with `timestamp`
+and `counts` (the same outcome counters, or `null` when no hours are publishable).
+Intervals are 1 hour for `24h`, 6 hours for `7d`, and 24 hours for `30d`.
+Publication eligibility is always evaluated per model and UTC clock hour:
+at least 20 non-excluded recorded requests from 3 consumer accounts. Larger
+display intervals sum only eligible hours and may cover only part of their
+duration. They never restore suppressed hours. Each model's totals equal the
+fieldwise sum of its non-null interval counts; no complete-window totals or
+suppressed residuals are exposed. Models without an eligible hour are omitted.
+Null intervals are gaps, not measured zeros. All counts share one repeatable-read
+transaction and the same hourly publication rule across all three windows.
 
 The seven outcome counts sum to `requests`; `http_429` overlaps that partition.
 No token estimates, identifiers, provider details, raw reasons, or suppressed
@@ -327,11 +331,12 @@ traffic. Public aliases retain their requested identity through build fallback.
 Client retries count separately; internal dispatch attempts do not.
 
 `ModelDemandMinRequests = 20` and `ModelDemandMinConsumers = 3` suppress sparse
-model cohorts in the selected window. A gateway is one authenticated consumer,
-not a count of its downstream users. A successful empty list means no cohort
-qualifies for publication, not zero traffic. Collection can cover only part of a
-selected window; even a full-age window remains best-effort observed data, not
-an independently reconciled network-wide denominator. Completion establishes
+hourly model cohorts. A gateway is one authenticated consumer, not a count of
+its downstream users. A successful empty list means no hour qualifies for
+publication, not zero traffic. Counts and percentages describe published hours
+only, not the complete selected window. Collection may also have partial history;
+recording remains best-effort, not an independently reconciled network-wide
+denominator. Completion establishes
 coordinator-observed provider completion and successful terminal writes, not
 client receipt. See [incoming request accounting](../architecture/request-accounting.md).
 

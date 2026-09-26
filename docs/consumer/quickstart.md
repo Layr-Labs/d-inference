@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-26 · commit `c0d06f9ba`
+> Last updated: 2026-09-26 · commit `76b44a972`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -128,20 +128,22 @@ your last displayed value and retry later; do not replace it with zero.
 Successful empty windows are valid data.
 
 The Stats page also shows **Model demand & fulfillment**. Select 24 hours,
-7 days or 30 days, sort by request volume or capacity rejections, and expand a
-model to inspect outcomes. Use the demand-history controls to select a model
-and chart requests, capacity rejections, timeouts, service errors or completion
-rate. Hover, tap or use arrow keys for exact interval counts; expand the
-interval table or download its CSV for analysis. Hatched chart intervals are
-unpublished, not zeros, and CSV exports leave their counts blank.
+7 days or 30 days, sort by published request volume or capacity rejections, and
+expand a model to inspect outcomes. Use the demand-history controls to select
+a model and chart published requests, capacity rejections, timeouts, service
+errors or completion rate. Hover, tap or use arrow keys for exact published
+counts; expand the interval table or download its CSV for analysis. Hatched
+intervals contain no publishable hours, not measured zeros, and CSV exports leave
+their counts blank. Larger display intervals can include only some of their hours.
 `GET /v1/network/model-demand?window=24h` exposes the
-same aggregates. Counts cover recorded public requests reaching routing
-admission; private routes, account-limit failures and invalid requests are
-excluded. Internal retries do not add requests, but client retries do. The
-page labels partial history and best-effort recording. Sparse cohorts are
-hidden, so an empty result does not establish zero demand. Data is delayed by
-at least one hour. A 429 count overlaps outcomes and is not itself a capacity
-rejection count.
+same aggregates. Only UTC hours meeting the per-model request and consumer
+privacy floors contribute to summaries or charts; these are not complete window
+totals. Counts cover recorded public requests reaching routing admission;
+private routes, account-limit failures and invalid requests are excluded.
+Internal retries do not add requests, but client retries do. The page labels
+partial history and best-effort recording. An empty result does not establish
+zero demand. Data is delayed by at least one hour. A 429 count overlaps outcomes
+and is not itself a capacity rejection count.
 The [public stats contract](../reference/api-contracts.md#public-stats-and-health-5)
 defines refresh intervals, maximum cached staleness, and window aliases.
 

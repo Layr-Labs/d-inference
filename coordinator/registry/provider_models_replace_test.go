@@ -35,13 +35,13 @@ func TestReplaceProviderModelsRejectsAtomicallyAndCanResumeOldSet(t *testing.T) 
 			generation := r.CommitProviderDrain(p, "drain")
 			r.CompleteProviderDrain(p, "drain", generation)
 			for _, validateOnly := range []bool{true, false} {
-				_, _, err := r.ReplaceProviderModels(p, &protocol.ModelsReplaceMessage{RequestID: "replace", DrainRequestID: tc.drain, ValidateOnly: validateOnly, Models: tc.models, ToolConstraintProtocol: 1, ToolConstraintModels: tc.tools})
+				_, _, _, err := r.ReplaceProviderModels(p, &protocol.ModelsReplaceMessage{RequestID: "replace", DrainRequestID: tc.drain, ValidateOnly: validateOnly, Models: tc.models, ToolConstraintProtocol: 1, ToolConstraintModels: tc.tools})
 				if err == nil || !reflect.DeepEqual(p.Models, old) || !r.ProviderDraining(p.ID) || !p.drainReady || p.drainRequestID != "drain" || p.drainGeneration != generation {
 					t.Fatalf("rejection mutated state: validateOnly=%v err=%v models=%+v", validateOnly, err, p.Models)
 				}
 			}
-			_, _, err := r.ReplaceProviderModels(p, &protocol.ModelsReplaceMessage{RequestID: "rollback", DrainRequestID: "drain", Models: old})
-			if err != nil || r.ProviderDraining(p.ID) {
+			_, _, receipt, err := r.ReplaceProviderModels(p, &protocol.ModelsReplaceMessage{RequestID: "rollback", DrainRequestID: "drain", Models: old})
+			if err != nil || !r.ProviderDraining(p.ID) || !r.ResumeProviderModels(p, receipt) || r.ProviderDraining(p.ID) {
 				t.Fatalf("old inventory could not resume: %v", err)
 			}
 		})
@@ -75,15 +75,15 @@ func TestReplaceProviderModelsAllowsOwnerOnlyOffCatalogInventory(t *testing.T) {
 			msg := &protocol.ModelsReplaceMessage{
 				RequestID: "validate", DrainRequestID: "drain", ValidateOnly: true, Models: models,
 			}
-			if _, _, err := r.ReplaceProviderModels(p, msg); err != nil {
+			if _, _, _, err := r.ReplaceProviderModels(p, msg); err != nil {
 				t.Fatalf("off-catalog preflight rejected: %v", err)
 			}
 			if !reflect.DeepEqual(p.Models, old) || !r.ProviderDraining(p.ID) || !p.drainReady {
 				t.Fatal("preflight changed inventory or consumed the settled drain")
 			}
 			msg.RequestID, msg.ValidateOnly = "replace", false
-			if _, _, err := r.ReplaceProviderModels(p, msg); err != nil {
-				t.Fatalf("off-catalog replacement rejected: %v", err)
+			if _, _, receipt, err := r.ReplaceProviderModels(p, msg); err != nil || !r.ProviderDraining(p.ID) || !r.ResumeProviderModels(p, receipt) {
+				t.Fatalf("off-catalog replacement rejected or resumed before its receipt: %v", err)
 			}
 			if !reflect.DeepEqual(p.Models, models) || r.ProviderDraining(p.ID) {
 				t.Fatal("replacement did not install the complete set and resume")
@@ -148,7 +148,7 @@ func TestReplaceProviderModelsPreservesSessionAndRemovesRoutingState(t *testing.
 	oldModels := append([]protocol.ModelInfo(nil), p.Models...)
 	oldRevision, oldCapacity := p.prefixCacheRevision, p.BackendCapacity
 	loadUntil, loadStarted := r.pendingModelLoads[key], r.pendingModelLoadStarted[key]
-	added, removed, err := r.ReplaceProviderModels(p, &protocol.ModelsReplaceMessage{
+	added, removed, _, err := r.ReplaceProviderModels(p, &protocol.ModelsReplaceMessage{
 		RequestID: "validate", DrainRequestID: "drain", ValidateOnly: true,
 		Models: []protocol.ModelInfo{{ID: "new"}},
 	})
@@ -180,9 +180,12 @@ func TestReplaceProviderModelsPreservesSessionAndRemovesRoutingState(t *testing.
 		t.Fatal("validation changed the routing index")
 	}
 	assertModelIndexConsistent(t, r)
-	_, removed, err = r.ReplaceProviderModels(p, &protocol.ModelsReplaceMessage{RequestID: "replace", DrainRequestID: "drain", Models: []protocol.ModelInfo{{ID: "new"}}})
+	_, removed, receipt, err := r.ReplaceProviderModels(p, &protocol.ModelsReplaceMessage{RequestID: "replace", DrainRequestID: "drain", Models: []protocol.ModelInfo{{ID: "new"}}})
 	if err != nil || !reflect.DeepEqual(removed, []string{drainStateTestModel}) {
 		t.Fatalf("replace: %v removed=%v", err, removed)
+	}
+	if !r.ProviderDraining(p.ID) || !r.ResumeProviderModels(p, receipt) {
+		t.Fatal("replacement must remain fenced until the exact receipt is written")
 	}
 	if r.GetProvider(p.ID) != p || p.TrustLevel != trust || !reflect.DeepEqual(p.Reputation, reputation) || p.LastChallengeVerified != challenge || p.registeredAt != registered {
 		t.Fatal("replacement reset live session/trust/reputation")
@@ -219,7 +222,7 @@ func TestReplaceProviderModelsRequiresSettledLatestLiveDrain(t *testing.T) {
 	first := r.CommitProviderDrain(p, "first")
 	for _, validateOnly := range []bool{true, false} {
 		msg.ValidateOnly = validateOnly
-		if _, _, err := r.ReplaceProviderModels(p, msg); err == nil {
+		if _, _, _, err := r.ReplaceProviderModels(p, msg); err == nil {
 			t.Fatalf("phase validateOnly=%v crossed unsettled terminal usage", validateOnly)
 		}
 	}
@@ -230,7 +233,7 @@ func TestReplaceProviderModelsRequiresSettledLatestLiveDrain(t *testing.T) {
 	r.CompleteProviderDrain(p, "second", second)
 	for _, validateOnly := range []bool{true, false} {
 		msg.ValidateOnly = validateOnly
-		if _, _, err := r.ReplaceProviderModels(p, msg); err == nil {
+		if _, _, _, err := r.ReplaceProviderModels(p, msg); err == nil {
 			t.Fatalf("phase validateOnly=%v used an old receipt for a newer lifecycle drain", validateOnly)
 		}
 	}
@@ -239,7 +242,7 @@ func TestReplaceProviderModelsRequiresSettledLatestLiveDrain(t *testing.T) {
 	msg.DrainRequestID = "second"
 	for _, validateOnly := range []bool{true, false} {
 		msg.ValidateOnly = validateOnly
-		if _, _, err := r.ReplaceProviderModels(p, msg); err == nil || r.GetProvider(p.ID) != fresh || r.ProviderDraining(fresh.ID) {
+		if _, _, _, err := r.ReplaceProviderModels(p, msg); err == nil || r.GetProvider(p.ID) != fresh || r.ProviderDraining(fresh.ID) {
 			t.Fatalf("phase validateOnly=%v changed a replacement session from a stale connection", validateOnly)
 		}
 	}
@@ -254,13 +257,13 @@ func TestReusedDrainIDCannotSettleNewerBarrier(t *testing.T) {
 		t.Fatal("earlier terminal snapshot settled a newer drain with the same wire ID")
 	}
 	msg := &protocol.ModelsReplaceMessage{RequestID: "validate", DrainRequestID: "reused", ValidateOnly: true, Models: p.Models}
-	if _, _, err := r.ReplaceProviderModels(p, msg); err == nil {
+	if _, _, _, err := r.ReplaceProviderModels(p, msg); err == nil {
 		t.Fatal("validation crossed unsettled usage despite empty pending reservations")
 	}
 	if !r.CompleteProviderDrain(p, "reused", second) {
 		t.Fatal("latest barrier could not settle")
 	}
-	if _, _, err := r.ReplaceProviderModels(p, msg); err != nil {
+	if _, _, _, err := r.ReplaceProviderModels(p, msg); err != nil {
 		t.Fatalf("settled validation failed: %v", err)
 	}
 	if !p.drainReady || !r.ProviderDraining(p.ID) {

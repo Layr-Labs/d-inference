@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-26 · commit `e0d2da6d0`
+> Last updated: 2026-09-26 · commit `9b7d5fbc5`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -103,6 +103,8 @@ was pinned. Restoration failures are reported. Once publication succeeds, a
 later drain timeout retains the replacement intent; no config lock is held while
 waiting (`ProviderModelSelection.withReplacement`,
 `provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift`).
+Missing custom files are seeded from this invocation's resolved configuration,
+not from the separate canonical config file.
 
 ### `darkbloom switch`
 
@@ -158,13 +160,20 @@ watchdog recovery and scheduled serving windows. Stale/missing/older daemons and
 standalone `--local` servers fail without launching anything. A drain timeout returns failure and
 leaves admission closed while accepted work continues; retry `switch` after
 the outstanding work finishes. Rejected selections are not partially applied.
-An unavailable completion receipt is reported as unconfirmed, never success.
+Live rollback restores an originally absent model key/file when no other edit
+intervened. Concurrent unrelated config changes are retained; a newer model
+selection is never silently overwritten. An unavailable completion receipt is
+reported as unconfirmed, never success, and coordinator routing stays fenced
+when that receipt cannot be written.
 `status` displays the latest switch outcome, request ID, unfinished-request count,
 message and selection; stale daemon snapshots are explicitly marked
 (`Status.printDaemonStatus` in `provider-swift/Sources/darkbloom/StatusCommand.swift`).
 Sources: `provider-swift/Sources/darkbloom/SwitchCommand.swift` (`Switch`),
 `provider-swift/Sources/ProviderCore/Service/ProviderModelSelection.swift`
-(`ProviderModelSelection.save`).
+(`ProviderModelSelection.stageReplacement`, `ProviderModelSelection.restore`).
+After acknowledged replacement, the coordinator refreshes desired alias builds
+for the current inventory; the provider preserves snapshots received during the
+commit wait and resumes convergence after reopening admission.
 
 Scheduled serving keeps the initial foreground selection, including manual
 `--model` overrides, until a live switch or a change to `backend.enabled_models`

@@ -397,6 +397,10 @@ public final class MockCoordinator: @unchecked Sendable {
         try await sendCoordinatorMessage(.modelsReplaceAck(ack))
     }
 
+    public func pushDesiredModels(_ entries: [CoordinatorMessage.DesiredModelEntry]) async throws {
+        try await sendCoordinatorMessage(.desiredModels(.init(models: entries)))
+    }
+
     public func pushLoadModel(modelId: String) async throws {
         let msg = CoordinatorMessage.loadModel(.init(modelId: modelId))
         try await sendCoordinatorMessage(msg)

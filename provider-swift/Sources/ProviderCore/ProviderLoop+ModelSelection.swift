@@ -14,12 +14,8 @@ extension ProviderLoop {
                 return model
             }.sorted { $0.id < $1.id },
             fingerprints: modelHashFingerprints)
-        let previousSelection = try loopConfig.configPath.map { path in
-            try FileManager.default.fileExists(atPath: path.path)
-                ? ConfigManager.load(from: path).backend.enabledModels : loopConfig.config.backend.enabledModels
-        }
         let previouslyPersistedSwitch = hasPersistedModelSwitch
-        var saved = false
+        var persistedReplacement: ProviderModelSelection.Replacement?
         var mutationStarted = false
         do {
             try validateModelSwitchSelfTests(models)
@@ -29,14 +25,14 @@ extension ProviderLoop {
             await client.stageModelSelection(models)
             try checkModelSwitchOwnership()
             if let path = loopConfig.configPath {
-                try ProviderModelSelection.save(models.map(\.id), configPath: path)
-                saved = true
+                persistedReplacement = try ProviderModelSelection.stageReplacement(
+                    models.map(\.id), configPath: path, fallbackConfig: loopConfig.config)
                 hasPersistedModelSwitch = true
             }
-            try await client.replaceModelsAfterDrain(models, drainID: drainID, timeout: .seconds(30))
-            // Replacements arriving after a lost receipt must not restore an
-            // obsolete selection. An unknown outcome remains fenced for retry.
+            // Discard only pre-commit state. The coordinator forces a current
+            // desired snapshot after this ack; preserve arrivals during the wait.
             discardObsoleteModelPrefetches()
+            try await client.replaceModelsAfterDrain(models, drainID: drainID, timeout: .seconds(30))
         } catch {
             await client.stageModelSelection(advertisedModels.values.sorted { $0.id < $1.id })
             if let wire = error as? ModelSwitchError {
@@ -51,10 +47,11 @@ extension ProviderLoop {
             do {
                 if mutationStarted { try await applyModelSelection(previous) }
                 await client.stageModelSelection(previous.models)
-                if saved, let path = loopConfig.configPath, let previousSelection {
-                    try ProviderModelSelection.save(previousSelection, configPath: path)
+                if let persistedReplacement {
+                    try ProviderModelSelection.restore(persistedReplacement)
                     hasPersistedModelSwitch = previouslyPersistedSwitch
                 }
+                discardObsoleteModelPrefetches()
                 try await client.replaceModelsAfterDrain(previous.models, drainID: drainID, timeout: .seconds(30))
                 await resumeAfterModelSwitch()
             } catch let rollbackError {
@@ -125,8 +122,8 @@ extension ProviderLoop {
     }
 
     private func discardObsoleteModelPrefetches() {
-        // Old desired snapshots refer to the pre-switch inventory. The next
-        // coordinator reconcile is based on the new set; don't replay the old one.
+        // Old desired snapshots refer to the pre-switch inventory. Clear before
+        // sending the commit, never after its ack (a fresh push may be deferred).
         deferredDesiredModels = nil
         staleDesiredPrefetches.formUnion(desiredPrefetchTargets.subtracting(advertisedModels.keys))
         desiredPrefetchTargets.removeAll()

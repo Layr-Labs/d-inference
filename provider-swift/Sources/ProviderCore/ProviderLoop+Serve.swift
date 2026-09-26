@@ -314,16 +314,7 @@ extension ProviderLoop {
                     }
 
                 case .desiredModels(let entries):
-                    if isDraining {
-                        // Keep only the latest push (desired state is
-                        // declarative). A successful restart makes it moot —
-                        // registration receives fresh desired state — but an
-                        // aborted restart replays it via resumeServingAfterUpdate.
-                        deferredDesiredModels = entries
-                        logger.info("Deferring desired_models during update drain (\(entries.count) entr(ies)); replayed if the restart is aborted")
-                    } else {
-                        await reconcileDesiredModels(entries, send: send)
-                    }
+                    await handleDesiredModels(entries, send: send)
 
                 case .trustStatus(let trustLevel, let status, let reason, let authorization):
                     handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason,

@@ -8,16 +8,15 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
-// ReplaceProviderModels validates or resumes only the exact live session that
-// completed the named drain. Validation is all-or-nothing under r.mu -> p.mu,
-// the same order as disconnect and load reservation; no catalog or session can
-// change between validation and commit. Validation-only and rejection leave all
-// inventory, routing, and drain state unchanged.
-func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplaceMessage) (added, removed []string, err error) {
+// ReplaceProviderModels validates or commits inventory on the exact live session
+// that completed the named drain. Routing stays fenced through commit; the caller
+// must successfully write the receipt before ResumeProviderModels with the returned
+// generation. Validation-only and rejection leave inventory and drain unchanged.
+func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplaceMessage) (added, removed []string, generation uint64, err error) {
 	r.mu.Lock()
 	if p == nil || r.providers[p.ID] != p {
 		r.mu.Unlock()
-		return nil, nil, errors.New("disconnected")
+		return nil, nil, 0, errors.New("disconnected")
 	}
 	p.mu.Lock()
 	defer func() {
@@ -26,18 +25,18 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 	}()
 	if msg.RequestID == "" || len(msg.RequestID) > 64 || msg.DrainRequestID == "" ||
 		!p.drainCommitted || !p.drainReady || p.drainRequestID != msg.DrainRequestID {
-		return nil, nil, errors.New("invalid_drain")
+		return nil, nil, 0, errors.New("invalid_drain")
 	}
 	if len(msg.Models) == 0 || len(p.pendingReqs) != 0 || msg.ToolConstraintProtocol < 0 || msg.ToolConstraintProtocol > ToolConstraintProtocolV1 {
-		return nil, nil, errors.New("invalid_models")
+		return nil, nil, 0, errors.New("invalid_models")
 	}
 	selected := make(map[string]protocol.ModelInfo, len(msg.Models))
 	for _, model := range msg.Models {
 		if model.ID == "" {
-			return nil, nil, errors.New("invalid_models")
+			return nil, nil, 0, errors.New("invalid_models")
 		}
 		if _, duplicate := selected[model.ID]; duplicate {
-			return nil, nil, errors.New("invalid_models")
+			return nil, nil, 0, errors.New("invalid_models")
 		}
 		// Like registration, inventory may include off-catalog local models
 		// regardless of ownership or PrivateOnly. A configured catalog still
@@ -45,22 +44,22 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 		entry := r.modelCatalog[model.ID]
 		if !r.providerMeetsModelRequirementsLocked(p, model.ID) ||
 			(entry.WeightHash != "" && !strings.EqualFold(model.WeightHash, entry.WeightHash)) {
-			return nil, nil, errors.New("invalid_models")
+			return nil, nil, 0, errors.New("invalid_models")
 		}
 		selected[model.ID] = model
 	}
 	tools := make(map[string]struct{}, len(msg.ToolConstraintModels))
 	for _, id := range msg.ToolConstraintModels {
 		if _, exists := selected[id]; !exists || msg.ToolConstraintProtocol != ToolConstraintProtocolV1 {
-			return nil, nil, errors.New("invalid_models")
+			return nil, nil, 0, errors.New("invalid_models")
 		}
 		if _, duplicate := tools[id]; duplicate {
-			return nil, nil, errors.New("invalid_models")
+			return nil, nil, 0, errors.New("invalid_models")
 		}
 		tools[id] = struct{}{}
 	}
 	if msg.ValidateOnly {
-		return nil, nil, nil
+		return nil, nil, 0, nil
 	}
 
 	// Retained slots survive only with the same weight identity. Cache evidence
@@ -132,9 +131,27 @@ func (r *Registry) ReplaceProviderModels(p *Provider, msg *protocol.ModelsReplac
 		}
 	}
 	p.syncModelIndexLocked()
-	p.drainCommitted = false
 	p.drainReady = false
+	p.drainReplacementPending = true
+	return added, removed, p.drainGeneration, nil
+}
+
+// ResumeProviderModels opens admission only after a committed replacement receipt
+// reached the wire. A late write cannot resume a newer drain or another session.
+func (r *Registry) ResumeProviderModels(p *Provider, generation uint64) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if p == nil || r.providers[p.ID] != p || generation == 0 {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.drainCommitted || !p.drainReplacementPending || p.drainGeneration != generation {
+		return false
+	}
+	p.drainCommitted = false
+	p.drainReplacementPending = false
 	p.drainRequestID = ""
 	p.drainingUntil = time.Time{}
-	return added, removed, nil
+	return true
 }

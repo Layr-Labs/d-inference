@@ -155,6 +155,10 @@ extension ProviderLoop {
         lifecycleStatus = .init()
         localResponseTracker.setAccepting(true)
         state.refusingNewWork = false
+        if let entries = deferredDesiredModels, let send = outboundSend {
+            deferredDesiredModels = nil
+            await reconcileDesiredModels(entries, send: send)
+        }
         await coordinatorClient?.sendEventHeartbeat()
     }
 

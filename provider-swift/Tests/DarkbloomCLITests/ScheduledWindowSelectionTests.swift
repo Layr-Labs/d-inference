@@ -61,7 +61,7 @@ struct ScheduledWindowSelectionTests {
         edited.backend.idleTimeoutMins = 99
         edited.coordinator.url = "wss://not-live.invalid"
         try ConfigManager.save(edited, to: path)
-        try ProviderModelSelection.save(["fixture/b"], configPath: path)
+        try ProviderModelSelection.save(["fixture/b"], configPath: path, fallbackConfig: original)
         let next = try selection.nextWindowConfiguration(
             resolveModels: { ids, _ in try resolve(ids, cache: directory, paths: ["fixture/b": b]) },
             resolveLocalPath: { $0 == "fixture/b" ? b : nil })
@@ -116,7 +116,7 @@ struct ScheduledWindowSelectionTests {
         var selection = ScheduledWindowSelection(
             startup: startup(config: original, path: path, model: "manual-argv"), configFileExists: true)
         #expect(try selection.nextWindowConfiguration().models.map(\.id) == ["manual-argv"])
-        try ProviderModelSelection.save(["fixture/b"], configPath: path)
+        try ProviderModelSelection.save(["fixture/b"], configPath: path, fallbackConfig: original)
         selection.notePersistedSwitch()
         let next = try selection.nextWindowConfiguration(
             resolveModels: { ids, _ in try resolve(ids, cache: directory, paths: ["fixture/b": target]) },
@@ -142,7 +142,7 @@ struct ScheduledWindowSelectionTests {
         // the already resolved startup selection rather than re-select from disk.
         #expect(try selection.nextWindowConfiguration().models.map(\.id) == ["manual-argv"])
         for ids in [["fixture/b"], ["fixture/a"], ["fixture/b", "fixture/a"]] {
-            try ProviderModelSelection.save(ids, configPath: path)
+            try ProviderModelSelection.save(ids, configPath: path, fallbackConfig: original)
             let next = try selection.nextWindowConfiguration(
                 resolveModels: { ids, _ in try resolve(ids, cache: directory, paths: paths) },
                 resolveLocalPath: { paths[$0] })
@@ -161,9 +161,9 @@ struct ScheduledWindowSelectionTests {
         try ConfigManager.save(config, to: path)
         var selection = ScheduledWindowSelection(startup: startup(config: config, path: path), configFileExists: true)
         _ = try selection.nextWindowConfiguration()
-        try ProviderModelSelection.save(["missing-\(UUID().uuidString)"], configPath: path)
+        try ProviderModelSelection.save(["missing-\(UUID().uuidString)"], configPath: path, fallbackConfig: config)
         #expect(throws: (any Error).self) { _ = try selection.nextWindowConfiguration() }
-        try ProviderModelSelection.save([], configPath: path)
+        try ProviderModelSelection.save([], configPath: path, fallbackConfig: config)
         #expect(throws: (any Error).self) { _ = try selection.nextWindowConfiguration() }
         try "[backend]\nenabled_models = 42\n".write(to: path, atomically: true, encoding: .utf8)
         #expect(throws: (any Error).self) { _ = try selection.nextWindowConfiguration() }
@@ -178,7 +178,7 @@ struct ScheduledWindowSelectionTests {
         var config = ProviderConfig(provider: ProviderSettings(name: "initial-window"))
         config.backend.enabledModels = ["fixture/a"]
         var selection = ScheduledWindowSelection(startup: startup(config: config, path: path), configFileExists: false)
-        try ProviderModelSelection.save(["missing-\(UUID().uuidString)"], configPath: path)
+        try ProviderModelSelection.save(["missing-\(UUID().uuidString)"], configPath: path, fallbackConfig: config)
         #expect(try selection.nextWindowConfiguration().models.map(\.id) == ["fixture/a"])
         #expect(throws: (any Error).self) { _ = try selection.nextWindowConfiguration() }
     }

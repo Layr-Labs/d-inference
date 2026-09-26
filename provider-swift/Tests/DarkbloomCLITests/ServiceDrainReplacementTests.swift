@@ -2,6 +2,7 @@ import ArgumentParser
 import Darwin
 import Foundation
 import Testing
+import TOMLKit
 @testable import darkbloom
 @testable import ProviderCore
 
@@ -31,6 +32,7 @@ struct LifecycleRecoveryRollbackTests {
         let original: Data?
         let mailbox: LifecycleMailbox
         let request: ProviderDrainRequest
+        let fallbackConfig = ProviderConfig(provider: ProviderSettings(name: "resolved-custom-provider"))
 
         init(previous: PreviousSelection = .pinned) throws {
             root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -69,7 +71,7 @@ struct LifecycleRecoveryRollbackTests {
         try #require(chflags(fixture.configPath.path, UInt32(UF_IMMUTABLE)) == 0)
         defer { _ = chflags(fixture.configPath.path, 0) }
         #expect(throws: ConfigError.self) {
-            try ProviderModelSelection.withReplacement(["replacement"], configPath: fixture.configPath) {
+            try ProviderModelSelection.withReplacement(["replacement"], configPath: fixture.configPath, fallbackConfig: fixture.fallbackConfig) {
                 try ServiceDrain.publishWithRecoveryRollback(disable: {
                     try Data("disabled".utf8).write(to: fixture.recoveryPath)
                 }, publish: {
@@ -97,7 +99,7 @@ struct LifecycleRecoveryRollbackTests {
             try Data("keep".utf8).write(to: fixture.mailbox.directory)
         }
         #expect(throws: (any Error).self) {
-            try ProviderModelSelection.withReplacement(["replacement"], configPath: fixture.configPath) {
+            try ProviderModelSelection.withReplacement(["replacement"], configPath: fixture.configPath, fallbackConfig: fixture.fallbackConfig) {
                 try ServiceDrain.publishWithRecoveryRollback(disable: {
                     #expect(try ConfigManager.load(from: fixture.configPath).backend.enabledModels == ["replacement"])
                     try Data("disabled".utf8).write(to: fixture.recoveryPath)
@@ -124,7 +126,7 @@ struct LifecycleRecoveryRollbackTests {
         try Data("not-a-directory".utf8).write(to: fixture.mailbox.directory)
         let recoveryError = CocoaError(.fileWriteNoPermission)
         #expect(throws: ValidationError.self) {
-            try ProviderModelSelection.withReplacement(["replacement"], configPath: fixture.configPath) {
+            try ProviderModelSelection.withReplacement(["replacement"], configPath: fixture.configPath, fallbackConfig: fixture.fallbackConfig) {
                 try ServiceDrain.publishWithRecoveryRollback(disable: {
                     try Data("disabled".utf8).write(to: fixture.recoveryPath)
                 }, publish: {
@@ -143,7 +145,7 @@ struct LifecycleRecoveryRollbackTests {
         let setupError = CocoaError(.fileWriteOutOfSpace)
         let recoveryError = CocoaError(.fileWriteNoPermission)
         do {
-            try ProviderModelSelection.withReplacement(["replacement"], configPath: fixture.configPath) {
+            try ProviderModelSelection.withReplacement(["replacement"], configPath: fixture.configPath, fallbackConfig: fixture.fallbackConfig) {
                 try ServiceDrain.publishWithRecoveryRollback(disable: {
                     try Data("disabled".utf8).write(to: fixture.recoveryPath)
                 }, publish: {
@@ -167,7 +169,7 @@ struct LifecycleRecoveryRollbackTests {
     @Test func publishedTimeoutKeepsReplacementAndRecoveryDisabled() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
-        try ProviderModelSelection.withReplacement(["replacement"], configPath: fixture.configPath) {
+        try ProviderModelSelection.withReplacement(["replacement"], configPath: fixture.configPath, fallbackConfig: fixture.fallbackConfig) {
             try ServiceDrain.publishWithRecoveryRollback(disable: {
                 try Data("disabled".utf8).write(to: fixture.recoveryPath)
             }, publish: {
@@ -218,7 +220,7 @@ struct LifecycleRecoveryRollbackTests {
         }
         let failure = CocoaError(.fileWriteNoPermission)
         #expect(throws: CocoaError.self) {
-            try ProviderModelSelection.withReplacement(["replacement"], configPath: fixture.configPath) {
+            try ProviderModelSelection.withReplacement(["replacement"], configPath: fixture.configPath, fallbackConfig: fixture.fallbackConfig) {
                 try ServiceDrain.publishWithRecoveryRollback(disable: {
                     try Data("disabled".utf8).write(to: fixture.recoveryPath)
                     beginWriter.signal()
@@ -242,6 +244,88 @@ struct LifecycleRecoveryRollbackTests {
         #expect(config.provider.name == "prior-provider")
         #expect(try String(contentsOf: fixture.recoveryPath, encoding: .utf8) == "enabled")
         #expect(fixture.mailbox.readRequest() == nil)
+    }
+
+    @Test(arguments: PreviousSelection.allCases)
+    func liveRollbackPreservesConcurrentSettingsAndLegacyArgv(previous: PreviousSelection) throws {
+        let fixture = try Fixture(previous: previous)
+        defer { fixture.remove() }
+        let replacement = try ProviderModelSelection.stageReplacement(["replacement"],
+            configPath: fixture.configPath, fallbackConfig: fixture.fallbackConfig)
+        let fd = open(fixture.configPath.path + ".lock", O_RDWR)
+        try #require(fd >= 0)
+        defer { close(fd) }
+        try #require(flock(fd, LOCK_EX | LOCK_NB) == 0, "No lease may span the coordinator wait")
+        _ = flock(fd, LOCK_UN)
+        try setIdleUnloadMinutes(45, configPath: fixture.configPath.path, migrateOnDisk: false)
+        try setBetaFeature("mtp", enabled: false, configPath: fixture.configPath.path, migrateOnDisk: false)
+        try withExclusiveConfigLock(at: fixture.configPath) {
+            let content = try String(contentsOf: fixture.configPath, encoding: .utf8)
+            try (content + "\n[operator_metadata]\nnote = '''enabled_models = [\"not-a-selection\"]'''\n")
+                .write(to: fixture.configPath, atomically: true, encoding: .utf8)
+        }
+        try ProviderModelSelection.restore(replacement)
+        let config = try ConfigManager.load(from: fixture.configPath)
+        #expect(config.backend.idleTimeoutMins == 45)
+        #expect(config.backend.mtpMode == .off)
+        #expect(config.backend.enabledModels == (previous == .pinned ? ["old-a", "old-b"] : []))
+        let content = try String(contentsOf: fixture.configPath, encoding: .utf8)
+        let table = try TOMLTable(string: content)
+        #expect(table["operator_metadata"]?.table?["note"]?.string == "enabled_models = [\"not-a-selection\"]")
+        let pinned = Start.usesPinnedModelSelection(configPath: fixture.configPath, launchManaged: true)
+        #expect(pinned == (previous == .pinned))
+        let models = ["old-a", "old-b", "legacy-argv", "replacement"].map {
+            ModelInfo(id: $0, sizeBytes: 1, estimatedMemoryGb: 1)
+        }
+        let restarted = advertisedModels(from: models, config: config,
+            modelOverrides: pinned ? [] : ["legacy-argv"])
+        #expect(restarted.map(\.id) == (previous == .pinned ? ["old-a", "old-b"] : ["legacy-argv"]))
+    }
+
+    @Test(arguments: [false, true])
+    func liveRollbackDoesNotOverwriteNewerSelection(removed: Bool) throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let replacement = try ProviderModelSelection.stageReplacement(["replacement"],
+            configPath: fixture.configPath, fallbackConfig: fixture.fallbackConfig)
+        if removed {
+            try FileManager.default.removeItem(at: fixture.configPath)
+        } else {
+            try ProviderModelSelection.save(["newer-operator-selection"],
+                configPath: fixture.configPath, fallbackConfig: fixture.fallbackConfig)
+        }
+        let current = removed ? nil : try Data(contentsOf: fixture.configPath)
+        #expect(throws: ProviderModelSelection.SelectionConflict.self) {
+            try ProviderModelSelection.restore(replacement)
+        }
+        if let current {
+            #expect(try Data(contentsOf: fixture.configPath) == current)
+        } else {
+            #expect(!FileManager.default.fileExists(atPath: fixture.configPath.path))
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func missingCustomConfigUsesResolvedSnapshot(synchronousSetup: Bool) throws {
+        let fixture = try Fixture(previous: .missing)
+        defer { fixture.remove() }
+        var resolved = fixture.fallbackConfig
+        resolved.provider.autoRestart = false
+        resolved.provider.autoUpdate = false
+        resolved.coordinator = .init(url: "wss://custom.invalid/ws/provider", heartbeatIntervalSecs: 23, privateOnly: true)
+        resolved.backend.idleTimeoutMins = 17
+        resolved.backend.port = 8234
+        resolved.backend.mtpMode = .off
+        resolved.schedule = .init(enabled: true, windows: [.init(days: ["mon"], start: "10:00", end: "11:00")])
+        if synchronousSetup {
+            try ProviderModelSelection.withReplacement(["replacement"], configPath: fixture.configPath,
+                fallbackConfig: resolved) {}
+        } else {
+            _ = try ProviderModelSelection.stageReplacement(["replacement"], configPath: fixture.configPath,
+                fallbackConfig: resolved)
+        }
+        resolved.backend.enabledModels = ["replacement"]
+        #expect(try ConfigManager.load(from: fixture.configPath) == resolved)
     }
 
     @Test func startAndUpdateExposeExplicitReplacementPolicy() throws {

@@ -582,6 +582,17 @@ extension ProviderLoop {
         logger.info("Hard swap: dropped superseded build \(buildID) from advertised set (\(advertisedModels.count) remaining)")
     }
 
+    internal func handleDesiredModels(_ entries: [CoordinatorMessage.DesiredModelEntry], send: SendHandle) async {
+        if isDraining {
+            // Declarative state: keep only the latest snapshot until a switch
+            // resumes or an update aborts. A reconnect gets a fresh snapshot.
+            deferredDesiredModels = entries
+            logger.info("Deferring desired_models during serving drain (\(entries.count) entr(ies))")
+        } else {
+            await reconcileDesiredModels(entries, send: send)
+        }
+    }
+
     /// Reconcile the coordinator's declarative desired-state: for each public model
     /// name, converge to its desired build. Already-serving → ensure the previous
     /// build is dropped; missing → background-prefetch it (applyVerifiedPrefetch

@@ -381,11 +381,10 @@ public actor ProviderLoop {
     /// durable commit.
     internal var updateSession: SelfUpdater.UpdateSession?
 
-    /// Latest `desired_models` push received while update-draining. Normally
-    /// the restart makes it moot (registration gets fresh desired state), but
-    /// if the restart is aborted (commit/restart failure) the deferred state
-    /// is replayed by `resumeServingAfterUpdate` so the provider does not keep
-    /// serving from a desired set the coordinator has since changed.
+    /// Latest desired_models push received while admission is closed. A switch
+    /// clears obsolete state before committing, then replays the fresh snapshot
+    /// after reopening; an aborted update likewise replays its deferred state.
+    /// Reconnecting providers receive a new snapshot during registration.
     internal var deferredDesiredModels: [CoordinatorMessage.DesiredModelEntry]?
 
     /// Models remain tracked while their scheduler is tearing down so

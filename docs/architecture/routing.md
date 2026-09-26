@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-26 · commit `02048322b`
+> Last updated: 2026-09-26 · commit `9b7d5fbc5`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -32,13 +32,21 @@ semantics (transient 429/capacity, not structural absence) remain unchanged.
 
 `darkbloom switch` resumes the same provider session through `models_replace`
 (`coordinator/registry/provider_models_replace.go`, `ReplaceProviderModels`).
-The latest drain must be settled, and its generation must match the completion
-callback even if a provider reuses a request ID. A validation-only request checks
-the complete model set without unloading models or changing routing. A committed
-replacement updates model indexes and removes stale residency/cache evidence
-before clearing the drain; invalid selections leave the inventory and drain
-unchanged. Provider-side admission reopens only after the correlated commit
-receipt. See [the replacement contract](../reference/protocol-messages.md#models_replace--models_replace_ack).
+The latest drain must be settled, and its generation must match both completion
+and the control-writer handoff even if a provider reuses a request ID. One
+connection-bound acknowledgement worker coalesces the latest barrier rather than
+dropping it when prior settlement is slow. It waits for pre-barrier reservations
+to leave the writer/pending set and for terminal billing before acknowledgement
+(`providerReadLoop` in `coordinator/api/provider.go`).
+
+A validation-only request checks the complete model set without changing routing.
+A committed replacement updates model indexes and stale residency/cache evidence
+but keeps the fence until its acknowledgement is written successfully and the
+same drain generation is still current. Ack failure never dispatches queued work.
+Successful resume forces current desired-model reconciliation before explicit
+queue reconciliation. Invalid selections leave inventory and drain unchanged;
+provider-side admission opens only after the correlated commit receipt. See
+[the replacement contract](../reference/protocol-messages.md#models_replace--models_replace_ack).
 
 
 ## Context

@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-26 · commit `02048322b`
+> Last updated: 2026-09-26 · commit `9b7d5fbc5`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -30,23 +30,30 @@ App Attest error replies optionally carry `apple_error: {domain, code, underlyin
 | Coordinator → provider | `provider_drain_ack` | Matching `request_id` | Swift `CoordinatorMessage.drainAck`; only the issuing connection's current waiter can consume it |
 
 The registered provider closes admission first, then sends a barrier over the
-FIFO control writer. The coordinator fences that connection from
-new dispatch and asynchronously waits for all earlier completion/billing workers
-before acknowledging. Heartbeat/challenge reads continue during that wait; the
-connection has at most two pending acknowledgement workers. Each received barrier
-gets a new internal generation: reusing a wire `request_id` cannot let an earlier
-terminal snapshot settle the latest drain. A final barrier after accepted requests
-and local response writes finish establishes that prior terminal usage has been
-processed. The Swift acknowledgement also passes through
-the ordered provider event queue, so earlier inbound inference frames are refused
-before the barrier completes. It is not a bearer credential or permission
-to serve. A stale idle heartbeat or drain TTL cannot reopen this connection.
-Only a successful committing `models_replace` (`validate_only` omitted or false)
-against the latest settled drain resumes the same connection; a restart instead
+FIFO control writer. The coordinator fences that connection from new dispatch
+and asynchronously waits for held/queued inference reservations to be removed,
+then for completion/billing workers to settle. Pending removal signals an event;
+there is no polling and ordinary serving allocates no reservation-wait tracking.
+Billing begun during reservation cleanup or settlement is included before the
+receipt. Heartbeat/challenge reads continue during that wait. Each connection
+has one acknowledgement worker and one coalesced latest barrier, so overlapping
+switch, preliminary-stop, and final-stop barriers cannot strand the final waiter.
+Every received barrier gets a new internal generation. The control writer checks
+that generation again at handoff: reusing a wire `request_id` cannot let an earlier
+worker or queued receipt settle the latest drain. Disconnect cancels the wait and
+clears its reservation tracking. A final barrier after accepted requests and local
+response writes finish establishes that prior terminal usage has been processed.
+The Swift acknowledgement also passes through the ordered provider event queue,
+so earlier inbound inference frames are refused before the barrier completes.
+It is not a bearer credential or permission to serve. A stale idle heartbeat or
+drain TTL cannot reopen this connection. Only a committing `models_replace`
+(`validate_only` omitted or false) against the latest settled drain, followed by
+successful receipt delivery, resumes the same connection; a restart instead
 registers and authorizes a new connection. Code:
 `coordinator/api/provider_completion_barrier.go` (`providerCompletionBarrier`),
+`coordinator/api/provider_drain_ack.go` (`providerDrainAcker`),
 `coordinator/api/provider.go` (`providerReadLoop`),
-`coordinator/registry/drain_state.go` (`CommitProviderDrain`, `CompleteProviderDrain`),
+`coordinator/registry/drain_state.go` (`CommitProviderDrain`, `ProviderDrainPending`, `WriteProviderDrainAck`),
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Drain.swift`
 (`acknowledgeDrain`).
 
@@ -584,9 +591,15 @@ It is a preflight, not a reservation: the committing request revalidates the tar
 Committing success preserves the provider object, session, trust, reputation, and
 challenge state. Removed or hash-changed models lose warm/current/slot, pending-load,
 template, and cache evidence; tool capabilities become the complete new allowlist.
-Routing indexes and queues reconcile the new set, including requests for removed
-models. A drain remains reusable after validation but not after resume or disconnect. Sources:
-`coordinator/registry/provider_models_replace.go` (`ReplaceProviderModels`),
+Routing indexes reflect the new set immediately, but admission stays fenced until
+the accepted committing acknowledgement is successfully written. A failed write
+does not dispatch or reject queued work and does not force a reconnect. Only the
+exact session and committed generation may resume; a late receipt cannot reopen a
+newer drain. After resume the coordinator sends a fresh `desired_models` snapshot
+for the replaced inventory, bypassing its prior-snapshot deduplication, then
+reconciles queues including requests for removed models. A drain remains reusable
+after validation but not after commit or disconnect. Sources:
+`coordinator/registry/provider_models_replace.go` (`ReplaceProviderModels`, `ResumeProviderModels`),
 `coordinator/api/provider_models_replace.go` (`handleModelsReplace`).
 
 Swift `prepareModelSwitch(timeout:)` returns the settled drain ID or nil.
@@ -760,9 +773,15 @@ replies with `prefetch_model_status` and then `models_update`.
 
 Go `DesiredModelsMessage` · Swift `DesiredModels`. `models` (`[]DesiredModelEntry`):
 `model_name` (public alias), `desired_build` (concrete build id),
-`previous_build` (opt; still acceptable mid-rollout). Sent once right after
-`register` and again whenever a desired build changes. The provider reconciles:
-background-prefetch any missing desired build, hard-swap, emit `models_update`.
+`previous_build` (opt; still acceptable mid-rollout). Sent right after `register`,
+when desired builds or eligible capabilities change, and freshly recomputed after
+a successful committed replacement acknowledgement even when the alias snapshot
+equals the one sent before switching. The same backend/version and attested
+capability guards apply. Entries describe aliases whose desired, previous, or
+retired build is in the provider's advertised inventory; an empty set revokes old
+targets. The provider reconciles by background-prefetching a missing desired
+build, hard-swapping, and emitting `models_update`. Source:
+`coordinator/registry/model_commands.go` (`DesiredModelsForProvider`, `RefreshDesiredModels`).
 
 ### `trust_status`
 

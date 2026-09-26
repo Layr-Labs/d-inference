@@ -65,7 +65,8 @@ extension Start {
         // Resolve selection before closing admission; a cancelled picker never
         // disturbs the existing provider. Keep the update lease through install.
         let replacement = try await ServiceDrain.prepare(options: drain, withConfigurationChange: { setup in
-            try ProviderModelSelection.withReplacement(selectedModelIDs, configPath: snapshot.configPath, body: setup)
+            try ProviderModelSelection.withReplacement(selectedModelIDs, configPath: snapshot.configPath,
+                fallbackConfig: config, body: setup)
         })
         defer { replacement.release() }
         try await ServiceDrain.stopDrainedProvider()

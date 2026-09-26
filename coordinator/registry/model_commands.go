@@ -126,19 +126,33 @@ func (r *Registry) SendPrefetchModel(providerID, modelID string, priority int) e
 // understands desired_models, because a pre-feature provider's strict decoder
 // throws on unknown message types.
 func (r *Registry) SendDesiredModels(providerID string, entries []protocol.DesiredModelEntry) error {
-	originallyNonEmpty := len(entries) > 0
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
 	r.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("provider %q not found", providerID)
 	}
+	return r.sendDesiredModels(p, entries, false)
+}
+
+// RefreshDesiredModels recomputes the alias snapshot from this exact session's
+// current inventory, even if an identical snapshot was sent before replacement.
+func (r *Registry) RefreshDesiredModels(p *Provider) error {
+	return r.sendDesiredModels(p, nil, true)
+}
+
+func (r *Registry) sendDesiredModels(p *Provider, entries []protocol.DesiredModelEntry, refresh bool) error {
+	providerID := p.ID
 
 	// Serialize compute → wire write → last-snapshot update per connection.
 	// Registry/provider locks are released before I/O; sendMu preserves order so
 	// an untrust revoke always lands after any already-started nonempty frame.
 	p.desiredModelsSendMu.Lock()
 	defer p.desiredModelsSendMu.Unlock()
+	if refresh {
+		entries = r.DesiredModelsForProvider(providerID)
+	}
+	originallyNonEmpty := len(entries) > 0
 
 	r.mu.RLock()
 	current, ok := r.providers[providerID]
@@ -172,7 +186,7 @@ func (r *Registry) SendDesiredModels(providerID string, entries []protocol.Desir
 	if entries == nil {
 		entries = []protocol.DesiredModelEntry{}
 	}
-	if p.desiredModelsSent && desiredModelEntriesEqual(p.lastDesiredModels, entries) {
+	if !refresh && p.desiredModelsSent && desiredModelEntriesEqual(p.lastDesiredModels, entries) {
 		p.mu.Unlock()
 		r.mu.RUnlock()
 		return nil
